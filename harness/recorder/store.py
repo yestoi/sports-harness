@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy.dialects.postgresql import insert
@@ -33,7 +33,7 @@ def finish_run(session: Session, run: Run, status: str, error: str | None = None
     run.odds_remaining = odds_remaining
     run.budget_exhausted = budget_exhausted
     run.notes = notes or {}
-    run.finished_at = finished_at or datetime.now(tz=run.started_at.tzinfo)
+    run.finished_at = finished_at or datetime.now(timezone.utc)
     session.commit()
 
 

@@ -35,3 +35,10 @@ def test_source_state_and_watermarks(db_session):
     upsert_watermark(db_session, "T1", NOW, Decimal("12.00"))
     wm = get_watermarks(db_session)
     assert wm["T1"].last_volume_fp == Decimal("12.00")
+
+
+def test_finish_run_default_finished_at_is_utc(db_session):
+    run = start_run(db_session, NOW)
+    finish_run(db_session, run, "ok")
+    assert run.finished_at.tzinfo is not None
+    assert run.finished_at.utcoffset().total_seconds() == 0
