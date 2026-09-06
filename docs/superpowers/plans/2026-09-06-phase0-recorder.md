@@ -1673,7 +1673,8 @@ def test_first_tick_fetches_everything_and_records(env_settings, db_session):
     respx.get("https://e/college-football/scoreboard").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(
         return_value=httpx.Response(200, json=ODDS, headers={"x-requests-last": "3", "x-requests-remaining": "100"}))
-    respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(return_value=httpx.Response(200, json={}))
+    alt = respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(
+        return_value=httpx.Response(200, json={}, headers={"x-requests-last": "2", "x-requests-remaining": "98"}))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
     respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": [
         {"trade_id": "t1", "created_time": "2026-09-09T22:59:00Z"}]}))
@@ -1689,7 +1690,10 @@ def test_first_tick_fetches_everything_and_records(env_settings, db_session):
     assert ("odds_api", "/sports/americanfootball_nfl/events/e1f2a3/odds") in sources  # commence within 36h
     assert ("kalshi", "/markets") in sources
     assert ("kalshi", "/markets/trades") in sources  # fixture market has volume 1234 and no watermark
-    assert run.credits_used == 3 * 2 + 2 * 2  # 2 featured calls at 3 + 2 alternates calls at 2 (fixture served for both sports)
+    # 2 featured calls at 3 credits each; the fixture event is served for both sports but the
+    # odds_alt:<event_id> source-state key dedupes it, so alternates are fetched once at 2 credits.
+    assert alt.call_count == 1
+    assert run.credits_used == 3 * 2 + 2
     wm = db_session.get(TradeWatermark, "KXNFLGAME-26SEP21NYGLAR-NYG")
     assert wm is not None and wm.last_ts == datetime(2026, 9, 9, 22, 59, tzinfo=timezone.utc)
 
@@ -1892,13 +1896,14 @@ class Recorder:
                 store.store_raw(session, run.id, "kalshi", "/markets/trades", {"ticker": ticker, "min_ts": min_ts.isoformat()}, r)
                 ctx["n"] += 1
                 if r.status == 200:
-                    newest = now
-                    for t in (r.body or {}).get("trades", []) if isinstance(r.body, dict) else []:
+                    stamps: list[datetime] = []
+                    trades_list = r.body.get("trades", []) if isinstance(r.body, dict) else []
+                    for t in trades_list:
                         try:
-                            ts = datetime.fromisoformat(t["created_time"].replace("Z", "+00:00"))
-                            newest = max(newest if newest != now else ts, ts)
-                        except (KeyError, ValueError):
+                            stamps.append(datetime.fromisoformat(t["created_time"].replace("Z", "+00:00")))
+                        except (KeyError, ValueError, AttributeError):
                             pass
+                    newest = max(stamps) if stamps else now
                     store.upsert_watermark(session, ticker, newest, vol.get(ticker, Decimal("0")))
                 ctx["fetched"] = True
             except Exception as e:  # noqa: BLE001
@@ -1951,7 +1956,7 @@ class Recorder:
 - [ ] **Step 4: Run the tests**
 
 Run: `pytest tests/test_tick.py -v`
-Expected: 4 PASS. If `test_first_tick...` fails on `credits_used`, check that both featured calls (nfl and ncaaf) hit the regex route and the alternates route returned a `x-requests-last` header; adjust the fixture headers, not the assertion, so that featured = 3 credits and alternates = 2 credits each (add `headers={"x-requests-last": "2"}` to the alternates mock).
+Expected: 4 PASS.
 
 - [ ] **Step 5: Run the whole suite**
 
