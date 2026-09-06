@@ -50,3 +50,21 @@ services:
       retries: 3
     restart: unless-stopped
     stop_grace_period: 120s
+
+  app-ws:
+    build: .
+    command: ["ws-record"]
+    env_file: .env
+    environment:
+      ODDS_API_KEY_FILE: /run/secrets/odds_api_key
+      KALSHI_KEY_ID_FILE: /run/secrets/kalshi_key_id
+      KALSHI_PRIVATE_KEY_FILE: /run/secrets/kalshi_private_key.pem
+    volumes:
+      - ./secrets/odds_api_key:/run/secrets/odds_api_key:ro
+      - ./secrets/kalshi_key_id:/run/secrets/kalshi_key_id:ro
+      - ./secrets/kalshi_private_key.pem:/run/secrets/kalshi_private_key.pem:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+    stop_grace_period: 30s

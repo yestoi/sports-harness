@@ -95,6 +95,20 @@ def reprocess_cmd(from_raw_id: int = 0, family: list[str] = typer.Option(None), 
         log.info("reprocess done %s", reprocess(session, from_raw_id, list(family) if family else None, truncate))
 
 
+@app.command("ws-record")
+def ws_record() -> None:
+    configure_logging()
+    s = get_settings()
+    if not s.has_kalshi_credentials():
+        log.info("kalshi credentials absent; ws recorder disabled")
+        return
+    from harness.recorder.ws_sink import WsSink
+    from harness.venues.kalshi.ws import WsRecorder
+
+    factory = make_session_factory(make_engine(s.database_url))
+    WsRecorder(s, factory, WsSink(factory)).run_forever()
+
+
 @app.command("match-report")
 def match_report(sport: str = "all") -> None:
     configure_logging()

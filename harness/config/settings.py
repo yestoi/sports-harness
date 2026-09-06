@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     kalshi_key_id_file: Path = Path("/run/secrets/kalshi_key_id")
     kalshi_private_key_file: Path = Path("/run/secrets/kalshi_private_key.pem")
     kalshi_ws_url: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    ws_max_tickers: int = 500
+    ws_lookahead_hours: int = 24
     espn_base_url: str = "https://site.api.espn.com/apis/site/v2/sports/football"
     tick_budget_s: int = 100
     http_timeout_s: float = 10.0
