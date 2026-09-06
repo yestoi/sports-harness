@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import text
 
 from harness.db.schema import ensure_partitions, week_bounds
@@ -10,6 +11,11 @@ def test_week_bounds_monday_to_monday_utc():
     start, end = week_bounds(now)
     assert start == datetime(2026, 9, 7, tzinfo=timezone.utc)
     assert end == datetime(2026, 9, 14, tzinfo=timezone.utc)
+
+
+def test_week_bounds_rejects_naive_datetime():
+    with pytest.raises(ValueError):
+        week_bounds(datetime(2026, 9, 9, 23, 0))
 
 
 def test_ensure_partitions_creates_two_weeks(db_session):

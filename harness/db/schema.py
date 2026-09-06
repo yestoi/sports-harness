@@ -7,6 +7,8 @@ from harness.db.models import Base
 
 
 def week_bounds(now: datetime) -> tuple[datetime, datetime]:
+    if now.tzinfo is None:
+        raise ValueError("week_bounds requires a tz-aware datetime")
     now = now.astimezone(timezone.utc)
     start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     return start, start + timedelta(days=7)
