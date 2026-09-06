@@ -2,7 +2,7 @@ import logging
 import re
 import sys
 
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter
 
 _PATTERNS = [
     (re.compile(r"(apiKey|api_key)=([^&\s]+)", re.I), r"\1=[REDACTED]"),
@@ -32,7 +32,7 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.handlers.clear()
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handler.setFormatter(JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     handler.addFilter(RedactionFilter())
     root.addHandler(handler)
     root.setLevel(level)
