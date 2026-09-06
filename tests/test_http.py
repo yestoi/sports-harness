@@ -46,3 +46,12 @@ def test_non_json_body_is_none():
     respx.get("https://x/e").mock(return_value=httpx.Response(200, text="<html>"))
     r = HttpClient(timeout_s=1, sleep=lambda s: None).get("https://x/e")
     assert r.status == 200 and r.body is None
+
+
+@respx.mock
+def test_fetched_at_uses_injected_clock():
+    from datetime import datetime, timezone
+    fixed = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
+    respx.get("https://x/f").mock(return_value=httpx.Response(200, json={}))
+    r = HttpClient(timeout_s=1, sleep=lambda s: None, clock=lambda: fixed).get("https://x/f")
+    assert r.fetched_at == fixed

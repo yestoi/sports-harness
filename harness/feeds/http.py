@@ -24,9 +24,11 @@ class FetchResult:
 
 
 class HttpClient:
-    def __init__(self, timeout_s: float, sleep: Callable[[float], None] = time.sleep):
+    def __init__(self, timeout_s: float, sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
         self._client = httpx.Client(timeout=timeout_s, headers={"User-Agent": "harness-recorder/0.1"})
         self._sleep = sleep
+        self._clock = clock
 
     def _redacted_url(self, resp: httpx.Response, redact_params: tuple[str, ...]) -> str:
         u = resp.request.url
@@ -64,7 +66,7 @@ class HttpClient:
                 status=resp.status_code,
                 headers={k.lower(): v for k, v in resp.headers.items()},
                 body=body,
-                fetched_at=datetime.now(timezone.utc),
+                fetched_at=self._clock(),
                 url=self._redacted_url(resp, redact_params),
                 elapsed_s=elapsed,
             )
