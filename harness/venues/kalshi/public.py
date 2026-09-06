@@ -62,6 +62,7 @@ def parse_market_summaries(body: dict | list | None) -> list[MarketSummary]:
         event_ticker = m.get("event_ticker", "")
         if not ticker:
             continue
+        vol = _dec(m.get("volume_fp"))
         out.append(MarketSummary(
             ticker=ticker,
             event_ticker=event_ticker,
@@ -69,7 +70,7 @@ def parse_market_summaries(body: dict | list | None) -> list[MarketSummary]:
             event_date=event_date_from_ticker(event_ticker),
             yes_bid=_dec(m.get("yes_bid_dollars")),
             yes_ask=_dec(m.get("yes_ask_dollars")),
-            volume_fp=_dec(m.get("volume_fp")) or Decimal("0"),
+            volume_fp=vol if vol is not None else Decimal("0"),
             close_time=_ts(m.get("close_time")),
         ))
     return out

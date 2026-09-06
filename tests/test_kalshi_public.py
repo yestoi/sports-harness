@@ -56,3 +56,8 @@ def test_fetch_orderbook_and_trades_params():
 
 def test_football_series_constant():
     assert "KXNCAAFTOTAL" in FOOTBALL_SERIES and len(FOOTBALL_SERIES) == 6
+
+
+def test_parse_market_summaries_preserves_explicit_zero_scale():
+    out = parse_market_summaries({"markets": [{"ticker": "T", "event_ticker": "E", "volume_fp": "0.00"}]})
+    assert str(out[0].volume_fp) == "0.00"
