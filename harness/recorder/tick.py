@@ -55,8 +55,8 @@ class Recorder:
         kickoffs: list[Kickoff] = []
         for sport in SPORTS:
             key = f"espn:{sport}"
-            body = None
             try:
+                body = None
                 if is_due(store.get_source_state(session, key), now, 900):
                     r = self.espn.fetch_scoreboard(sport)  # type: ignore[arg-type]
                     store.store_raw(session, run.id, "espn", _ESPN_PATH[sport], {}, r)
@@ -65,20 +65,20 @@ class Recorder:
                         store.set_source_state(session, key, now)
                         body = r.body
                     ctx["fetched"] = True
+                if body is None:
+                    body = self._latest_body(session, "espn", _ESPN_PATH[sport])
+                kickoffs.extend(parse_kickoffs(sport, body))
             except Exception as e:  # noqa: BLE001
                 log.exception("espn failed")
                 ctx["errors"].append({key: repr(e)})
-            if body is None:
-                body = self._latest_body(session, "espn", _ESPN_PATH[sport])
-            kickoffs.extend(parse_kickoffs(sport, body))
         return kickoffs
 
     def _odds(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff], ctx: dict) -> None:
         for sport, sport_key in SPORTS.items():
             key = f"odds_featured:{sport}"
-            interval = interval_for(sport, now, kickoffs, self.s.tz_local)
-            body = None
             try:
+                interval = interval_for(sport, now, kickoffs, self.s.tz_local)
+                body = None
                 if is_due(store.get_source_state(session, key), now, interval):
                     r = self.odds.fetch_featured(sport_key)
                     store.store_raw(session, run.id, "odds_api", f"/sports/{sport_key}/odds", {"markets": "featured"}, r)
@@ -90,53 +90,56 @@ class Recorder:
                         store.set_source_state(session, key, now)
                         body = r.body
                     ctx["fetched"] = True
+                if body is None:
+                    body = self._latest_body(session, "odds_api", f"/sports/{sport_key}/odds")
+                if interval is None:
+                    continue
+                events = parse_event_ids_and_times(body)
+                last_alt = {eid: ts for eid, _ in events
+                            if (ts := store.get_source_state(session, f"odds_alt:{eid}")) is not None}
+                for eid in alternates_due(now, events, last_alt):
+                    try:
+                        r = self.odds.fetch_event_alternates(sport_key, eid)
+                        store.store_raw(session, run.id, "odds_api", f"/sports/{sport_key}/events/{eid}/odds",
+                                        {"markets": "alternates"}, r)
+                        ctx["n"] += 1
+                        c = parse_credit_headers(r.headers)
+                        ctx["credits"] += c.last
+                        ctx["remaining"] = c.remaining
+                        if r.status == 200:
+                            store.set_source_state(session, f"odds_alt:{eid}", now)
+                        ctx["fetched"] = True
+                    except Exception as e:  # noqa: BLE001
+                        log.exception("odds alternates failed")
+                        ctx["errors"].append({f"odds_alt:{eid}": repr(e)})
             except Exception as e:  # noqa: BLE001
                 log.exception("odds featured failed")
                 ctx["errors"].append({key: repr(e)})
-            if body is None:
-                body = self._latest_body(session, "odds_api", f"/sports/{sport_key}/odds")
-            if interval is None:
-                continue
-            events = parse_event_ids_and_times(body)
-            last_alt = {eid: ts for eid, _ in events
-                        if (ts := store.get_source_state(session, f"odds_alt:{eid}")) is not None}
-            for eid in alternates_due(now, events, last_alt):
-                try:
-                    r = self.odds.fetch_event_alternates(sport_key, eid)
-                    store.store_raw(session, run.id, "odds_api", f"/sports/{sport_key}/events/{eid}/odds",
-                                    {"markets": "alternates"}, r)
-                    ctx["n"] += 1
-                    c = parse_credit_headers(r.headers)
-                    ctx["credits"] += c.last
-                    ctx["remaining"] = c.remaining
-                    if r.status == 200:
-                        store.set_source_state(session, f"odds_alt:{eid}", now)
-                    ctx["fetched"] = True
-                except Exception as e:  # noqa: BLE001
-                    log.exception("odds alternates failed")
-                    ctx["errors"].append({f"odds_alt:{eid}": repr(e)})
 
     def _kalshi_markets(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff], ctx: dict) -> list[MarketSummary]:
         summaries: list[MarketSummary] = []
         for series in FOOTBALL_SERIES:
             key = f"kalshi_markets:{series}"
-            interval = interval_for(_SERIES_SPORT[series], now, kickoffs, self.s.tz_local)
-            pages_bodies: list = []
             try:
+                interval = interval_for(_SERIES_SPORT[series], now, kickoffs, self.s.tz_local)
+                pages: list = []
                 if is_due(store.get_source_state(session, key), now, interval):
                     for r in self.kalshi.fetch_markets_all(series):
                         store.store_raw(session, run.id, "kalshi", "/markets", {"series_ticker": series}, r)
                         ctx["n"] += 1
-                        if r.status == 200:
-                            pages_bodies.append(r.body)
-                    if pages_bodies:
+                        pages.append(r)
+                    all_ok = all(r.status == 200 for r in pages)
+                    if pages and all_ok:
                         store.set_source_state(session, key, now)
+                    elif pages and not all_ok:
+                        ctx["errors"].append({key: f"partial pagination: statuses {[r.status for r in pages]}"})
                     ctx["fetched"] = True
+                for r in pages:
+                    if r.status == 200:
+                        summaries.extend(parse_market_summaries(r.body))
             except Exception as e:  # noqa: BLE001
                 log.exception("kalshi markets failed")
                 ctx["errors"].append({key: repr(e)})
-            for b in pages_bodies:
-                summaries.extend(parse_market_summaries(b))
         return summaries
 
     def _kalshi_trades_and_ladders(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff],

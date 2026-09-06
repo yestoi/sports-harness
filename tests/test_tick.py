@@ -93,3 +93,42 @@ def test_budget_exhaustion_stops_ladders(env_settings, db_session):
     rec, _ = _recorder(env_settings, db_session)
     run = rec.maybe_tick()
     assert run.budget_exhausted is True and ob.call_count == 0
+
+
+@respx.mock
+def test_non_http_exception_in_one_source_does_not_abort_tick(env_settings, db_session, monkeypatch):
+    import harness.recorder.tick as tick_mod
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": [], "trades": []}))
+
+    def boom(sport, body):
+        if sport == "nfl":
+            raise RuntimeError("parse exploded")
+        return []
+
+    monkeypatch.setattr(tick_mod, "parse_kickoffs", boom)
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "error" and "espn:nfl" in json.dumps(run.notes["errors"])
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi").count() == 6
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="odds_api").count() == 2
+
+
+@respx.mock
+def test_partial_kalshi_pagination_is_an_error_and_not_marked_fetched(env_settings, db_session):
+    from harness.recorder.store import get_source_state
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+
+    def pages(request):
+        if "cursor" in dict(request.url.params):
+            return httpx.Response(500)
+        return httpx.Response(200, json={"cursor": "abc", "markets": [{"ticker": "A", "event_ticker": "KXNFLGAME-26SEP21NYGLAR"}]})
+
+    respx.get("https://k/markets").mock(side_effect=pages)
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "error"
+    assert "partial pagination" in json.dumps(run.notes["errors"])
+    assert get_source_state(db_session, "kalshi_markets:KXNFLGAME") is None
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 12
