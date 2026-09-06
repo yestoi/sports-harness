@@ -1,0 +1,11 @@
+{
+  "cursor": "",
+  "trades": [
+    {"trade_id": "t2", "ticker": "KXNFLGAME-26SEP21NYGLAR-NYG", "created_time": "2026-09-09T22:59:30Z",
+     "count_fp": "12.00", "yes_price_dollars": "0.2400", "no_price_dollars": "0.7600",
+     "taker_side": "no", "is_block_trade": false},
+    {"trade_id": "t1", "ticker": "KXNFLGAME-26SEP21NYGLAR-NYG", "created_time": "2026-09-09T22:58:00Z",
+     "count_fp": "5.00", "yes_price_dollars": "0.2300", "no_price_dollars": "0.7700",
+     "taker_side": "yes", "is_block_trade": false}
+  ]
+}
