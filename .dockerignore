@@ -1,0 +1,6 @@
+.venv
+.git
+pgdata
+secrets
+tests
+docs
