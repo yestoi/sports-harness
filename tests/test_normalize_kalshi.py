@@ -3,6 +3,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from sqlalchemy import event
+
 from harness.db.models import Game, OrderbookSnapshot, VenueMarket, VenueQuote, VenueTrade
 from harness.matching.teams import seed_teams_from_espn
 from harness.normalize.kalshi import insert_orderbook, insert_trades, insert_venue_quotes, upsert_venue_markets
@@ -45,3 +47,37 @@ def test_quotes_orderbook_trades_idempotent(db_session):
     assert insert_trades(db_session, tr, raw_id=6) == 0
     t = db_session.query(VenueTrade).order_by(VenueTrade.ts).first()
     assert t.source == "rest" and t.yes_price == Decimal("0.2300") and t.taker_side in ("yes", "no")
+
+
+def test_upsert_venue_markets_preloads_existing_rows_in_one_query(db_session):
+    # Kalshi pages carry up to 1,000 markets; querying VenueMarket once per market stalls the
+    # tick for minutes on a backlog. upsert_venue_markets must preload the page's existing
+    # VenueMarket rows in a single query (ticker.in_(...)) instead of one query per market.
+    # Use a page of markets larger than the smallest possible page so a per-market query
+    # strategy is caught (5 classifiable markets here vs. the 2-item phase-0 fixture).
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=datetime(2026, 9, 21, 0, 20, tzinfo=timezone.utc)))
+    db_session.flush()
+
+    page = list(KM) + [
+        {"ticker": f"KXNFLGAME-26SEP21XXX{i}-X{i}", "event_ticker": f"KXNFLGAME-26SEP21XXX{i}",
+         "yes_sub_title": "Nobody", "close_time": "2026-09-24T00:15:00Z"}
+        for i in range(3)
+    ]
+
+    counts = {"n": 0}
+
+    def _count_venue_markets_query(conn, cursor, statement, parameters, context, executemany):
+        if "FROM venue_markets" in statement:
+            counts["n"] += 1
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", _count_venue_markets_query)
+    try:
+        res = upsert_venue_markets(db_session, "nfl", page, EVENTS, raw_id=1, fetched_at=NOW)
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", _count_venue_markets_query)
+
+    assert counts["n"] <= 2, counts["n"]
+    # unchanged matching/results semantics for this page (2 from KM matched/unmatched as before,
+    # plus 3 new unmatched markets with no recorded event title)
+    assert res.new == 5 and res.matched == 1 and res.unmatched == 4

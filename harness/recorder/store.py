@@ -26,15 +26,28 @@ def store_raw(session: Session, run_id: int, source: str, endpoint: str, params:
 def finish_run(session: Session, run: Run, status: str, error: str | None = None, *, n_requests: int = 0,
                credits_used: int = 0, odds_remaining: int | None = None, budget_exhausted: bool = False,
                notes: dict | None = None, finished_at: datetime | None = None) -> None:
-    run.status = status
-    run.error = error
-    run.n_requests = n_requests
-    run.credits_used = credits_used
-    run.odds_remaining = odds_remaining
-    run.budget_exhausted = budget_exhausted
-    run.notes = notes or {}
-    run.finished_at = finished_at or datetime.now(timezone.utc)
-    session.commit()
+    finished = finished_at or datetime.now(timezone.utc)
+
+    def _apply() -> None:
+        run.status = status
+        run.error = error
+        run.n_requests = n_requests
+        run.credits_used = credits_used
+        run.odds_remaining = odds_remaining
+        run.budget_exhausted = budget_exhausted
+        run.notes = notes or {}
+        run.finished_at = finished
+        session.commit()
+
+    try:
+        _apply()
+    except Exception:
+        # Defense in depth: if some earlier step left this session's transaction aborted
+        # (InFailedSqlTransaction) without rolling back, a plain commit/UPDATE here would also
+        # fail and the run would stay "running" forever. Roll back once and retry on a fresh
+        # transaction before giving up.
+        session.rollback()
+        _apply()
 
 
 def get_source_state(session: Session, key: str) -> datetime | None:

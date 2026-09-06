@@ -36,18 +36,22 @@ def _ts(v) -> datetime | None:
 def upsert_venue_markets(session: Session, sport: str, markets: list[dict], events_by_ticker: dict[str, dict],
                          raw_id: int, fetched_at: datetime) -> MarketsResult:
     res = MarketsResult()
+    tickers = [t for m in markets if (t := m.get("ticker"))]
+    existing = {vm.ticker: vm for vm in
+               session.query(VenueMarket).filter(VenueMarket.ticker.in_(tickers)).all()} if tickers else {}
     for m in markets:
         ticker, et = m.get("ticker"), m.get("event_ticker", "")
         mc = classify_market(m)
         if not ticker or mc is None:
             continue
-        vm = session.query(VenueMarket).filter_by(ticker=ticker).one_or_none()
+        vm = existing.get(ticker)
         if vm is None:
             vm = VenueMarket(venue="kalshi", ticker=ticker, event_ticker=et, series_ticker=et.split("-")[0],
                              market_type=mc.market_type, threshold=mc.threshold, side=(None if mc.side_kind == "team" else "over"),
                              kalshi_team_uuid=mc.team_uuid, first_seen_raw_id=raw_id, last_seen_at=fetched_at,
                              match_status="unmatched", match_reason="new")
             session.add(vm)
+            existing[ticker] = vm
             res.new += 1
         vm.last_seen_at = fetched_at
         vm.close_time = _ts(m.get("close_time")) or vm.close_time

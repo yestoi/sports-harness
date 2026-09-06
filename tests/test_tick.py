@@ -376,3 +376,27 @@ def test_tick_runs_normalizer_and_reports_counts(env_settings, db_session):
     rec, _ = _recorder(env_settings, db_session)
     run = rec.maybe_tick()
     assert "normalized" in run.notes and isinstance(run.notes["normalized"], dict)
+
+
+@respx.mock
+def test_normalize_failure_rolls_back_and_finishes_degraded(env_settings, db_session, monkeypatch):
+    # A DB error inside normalize_new (e.g. a missing table after an upgrade) must not leave the
+    # session in a failed transaction: the tick should roll back, record the warning, and still
+    # finish the run (rather than leaving it "running" forever when finish_run's UPDATE raises
+    # InFailedSqlTransaction).
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": [], "trades": [], "cursor": ""}))
+
+    from sqlalchemy import text
+
+    def broken_normalize_new(session, *a, **kw):
+        session.execute(text("select * from table_that_does_not_exist"))
+        return {}
+
+    monkeypatch.setattr("harness.recorder.tick.normalize_new", broken_normalize_new)
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+
+    assert run.status == "degraded", run.notes
+    assert any("normalize" in w for w in run.notes["warnings"]), run.notes
+    assert run.finished_at is not None

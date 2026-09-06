@@ -31,6 +31,9 @@ harness = "harness.cli:app"
 [tool.setuptools.packages.find]
 include = ["harness*"]
 
+[tool.setuptools.package-data]
+harness = ["matching/*.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

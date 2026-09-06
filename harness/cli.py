@@ -66,9 +66,9 @@ def serve(port: int = 8080, host: str = "0.0.0.0") -> None:
 @app.command("seed-teams")
 def seed_teams() -> None:
     configure_logging()
+    import importlib.resources
     import json
     import urllib.request
-    from pathlib import Path
 
     from harness.matching.teams import load_manual_aliases, seed_teams_from_espn
 
@@ -80,7 +80,16 @@ def seed_teams() -> None:
         for sport, url in urls:
             body = json.load(urllib.request.urlopen(url, timeout=20))
             log.info("seeded %s teams from %s", seed_teams_from_espn(session, sport, body), url)
-        n = load_manual_aliases(session, Path(__file__).parent / "matching" / "aliases_manual.yaml")
+        # Commit the ESPN-seeded teams before touching the manual-alias YAML, so a packaging or
+        # parsing problem with that file cannot roll back teams that were already seeded.
+        session.commit()
+        aliases_ref = importlib.resources.files("harness.matching").joinpath("aliases_manual.yaml")
+        if not aliases_ref.is_file():
+            log.error("manual aliases file not found at %s; teams were seeded but no manual aliases were loaded",
+                      aliases_ref)
+            return
+        with importlib.resources.as_file(aliases_ref) as aliases_path:
+            n = load_manual_aliases(session, aliases_path)
         session.commit()
         log.info("manual aliases loaded: %d", n)
 

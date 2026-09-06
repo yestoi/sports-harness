@@ -8,3 +8,5 @@ secrets/*
 pgdata/
 .pytest_cache/
 *.egg-info/
+build/
+dist/

@@ -42,3 +42,22 @@ def test_finish_run_default_finished_at_is_utc(db_session):
     finish_run(db_session, run, "ok")
     assert run.finished_at.tzinfo is not None
     assert run.finished_at.utcoffset().total_seconds() == 0
+
+
+def test_finish_run_recovers_from_an_already_aborted_transaction(db_session):
+    # Defense in depth: even if some earlier caller left the session's transaction aborted
+    # (InFailedSqlTransaction) without rolling back, finish_run must not blow up too -- it
+    # should roll back and retry its UPDATE once on a fresh transaction.
+    from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
+
+    run = start_run(db_session, NOW)
+    try:
+        db_session.execute(text("select * from table_that_does_not_exist"))
+    except ProgrammingError:
+        pass  # transaction is now aborted, and NOT rolled back -- mimics a careless caller
+
+    finish_run(db_session, run, "degraded", notes={"warnings": [{"normalize": "boom"}]})
+
+    got = db_session.get(Run, run.id)
+    assert got.status == "degraded" and got.finished_at is not None

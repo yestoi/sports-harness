@@ -308,6 +308,11 @@ class Recorder:
                 ctx["normalized"] = normalize_new(session, ctx=ctx, time_budget_s=30)
             except Exception as e:  # noqa: BLE001
                 log.exception("normalize failed")
+                # A DB error here (e.g. a missing table right after an upgrade) leaves the
+                # session's transaction aborted; roll back so finish_run's UPDATE below does not
+                # also fail with InFailedSqlTransaction. The raw rows already made it in via the
+                # per-source checkpoints, so nothing is lost.
+                session.rollback()
                 ctx["warnings"].append({"normalize": repr(e)})
             exhausted = (ctx["skipped_trades"] > 0 or ctx["skipped_ladders"] > 0
                          or ctx["skipped_alternates"] > 0)
