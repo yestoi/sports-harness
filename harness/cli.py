@@ -63,5 +63,72 @@ def serve(port: int = 8080, host: str = "0.0.0.0") -> None:
     uvicorn.run(create_app(factory), host=host, port=port, log_config=None)
 
 
+@app.command("seed-teams")
+def seed_teams() -> None:
+    configure_logging()
+    import json
+    import urllib.request
+    from pathlib import Path
+
+    from harness.matching.teams import load_manual_aliases, seed_teams_from_espn
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    base = s.espn_base_url.rstrip("/")
+    urls = [("nfl", f"{base}/nfl/teams?limit=100"), ("ncaaf", f"{base}/college-football/teams?limit=1000&groups=80")]
+    with factory() as session:
+        for sport, url in urls:
+            body = json.load(urllib.request.urlopen(url, timeout=20))
+            log.info("seeded %s teams from %s", seed_teams_from_espn(session, sport, body), url)
+        n = load_manual_aliases(session, Path(__file__).parent / "matching" / "aliases_manual.yaml")
+        session.commit()
+        log.info("manual aliases loaded: %d", n)
+
+
+@app.command("reprocess")
+def reprocess_cmd(from_raw_id: int = 0, family: list[str] = typer.Option(None), truncate: bool = False) -> None:
+    configure_logging()
+    from harness.normalize.runner import reprocess
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url))() as session:
+        log.info("reprocess done %s", reprocess(session, from_raw_id, list(family) if family else None, truncate))
+
+
+@app.command("match-report")
+def match_report(sport: str = "all") -> None:
+    configure_logging()
+    from sqlalchemy import func, text
+
+    from harness.db.models import Game, VenueMarket
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url))() as session:
+        sports = ["nfl", "ncaaf"] if sport == "all" else [sport]
+        for sp in sports:
+            prefix = "KXNFL" if sp == "nfl" else "KXNCAAF"
+            q = session.query(VenueMarket.match_status, func.count()).filter(VenueMarket.series_ticker.like(f"{prefix}%")).group_by(VenueMarket.match_status)
+            counts = dict(q.all())
+            total = sum(counts.values()) or 1
+            print(f"== {sp}: venue markets {total}")
+            for st in ("matched", "fuzzy", "manual", "unmatched"):
+                print(f"  {st:10s} {counts.get(st, 0):6d}  {100 * counts.get(st, 0) / total:5.1f}%")
+            reasons = session.execute(text(
+                "select match_reason, count(*), min(ticker) from venue_markets where series_ticker like :p and match_status='unmatched' "
+                "group by 1 order by 2 desc limit 30"), {"p": f"{prefix}%"}).all()
+            for reason, n, ex in reasons:
+                print(f"  {n:6d}  {reason!s:60.60s}  e.g. {ex}")
+            unlinked = session.query(Game).filter(Game.sport == sp, Game.espn_event_id.is_(None)).count()
+            print(f"  games without ESPN link: {unlinked}")
+        recent_notes = session.execute(text(
+            "select notes from runs where started_at >= now() - interval '7 days' and notes is not null "
+            "order by started_at desc limit 500")).scalars().all()
+        unresolved: set[str] = set()
+        for notes in recent_notes:
+            for name in (notes or {}).get("unresolved_teams", []):
+                unresolved.add(name)
+        print(f"unresolved Odds API names (7d): {sorted(unresolved) if unresolved else 'none'}")
+
+
 if __name__ == "__main__":
     app()

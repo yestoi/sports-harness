@@ -1,8 +1,17 @@
 # {sport: {source: {raw_name: espn_team_id}}}. raw_name is normalized before lookup.
+# The kalshi_name entries below cover real Kalshi event-title conventions observed in a
+# live seed-teams/tick-once/match-report run against the harness_test DB on 2026-09-06.
+# Note: Kalshi SPREAD/TOTAL event titles are "<team> vs <team>: Spread" / ": Total" --
+# harness/matching/kalshi.py::parse_event_title strips that suffix before team-name
+# resolution, so plain location/display-name aliases (already seeded from ESPN) cover
+# those markets; no separate ": Spread"/": Total" aliases are needed here.
 nfl:
   kalshi_name: {}
 ncaaf:
-  kalshi_name: {}
+  kalshi_name:
+    "Appalachian St.": 2026            # ESPN: App State Mountaineers
+    "Louisiana-Monroe": 2433           # ESPN: UL Monroe Warhawks
+    "Miami (FL)": 2390                 # ESPN: Miami Hurricanes (distinct from Miami (OH) RedHawks, id 193)
   odds_api:
     "Appalachian State Mountaineers": 2026   # ESPN: App State Mountaineers
     "Hawaii Rainbow Warriors": 62                 # ESPN: Hawai'i Rainbow Warriors

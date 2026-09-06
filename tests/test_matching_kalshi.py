@@ -33,6 +33,8 @@ def test_parse_event_title():
     assert parse_event_title("Alabama St. vs Troy") == ("Alabama St.", "Troy")
     assert parse_event_title("NY Giants vs LA Rams") == ("NY Giants", "LA Rams")
     assert parse_event_title("Just one") is None
+    assert parse_event_title("Denver vs Kansas City: Spread") == ("Denver", "Kansas City")
+    assert parse_event_title("Alabama vs Kentucky: Total") == ("Alabama", "Kentucky")
 
 
 def test_classify_market_from_fixture():

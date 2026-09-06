@@ -34,7 +34,16 @@ class EventMatch:
 
 
 def parse_event_title(title: str) -> tuple[str, str] | None:
-    parts = _VS.split(title or "")
+    title = title or ""
+    if ":" in title:
+        # Kalshi SPREAD/TOTAL event titles carry a trailing "<team> vs <team>: Spread" /
+        # ": Total" label. Strip it, but only when the colon comes after the " vs "/"@"
+        # separator (i.e. the part after the colon is not itself another pairing) so a
+        # colon that happens to be part of a team name is left untouched.
+        left, _, right = title.rpartition(":")
+        if left and not _VS.search(right):
+            title = left
+    parts = _VS.split(title)
     if len(parts) != 2 or not all(p.strip() for p in parts):
         return None
     return parts[0].strip(), parts[1].strip()

@@ -12,6 +12,7 @@ from harness.db.models import RawResponse, Run
 from harness.db.schema import ensure_partitions
 from harness.feeds.espn import EspnClient, Kickoff, parse_kickoffs
 from harness.feeds.odds_api import OddsApiClient, parse_credit_headers, parse_event_ids_and_times
+from harness.normalize.runner import normalize_new
 from harness.recorder import store
 from harness.recorder.cadence import (SPORTS, alternates_due, interval_for, is_due, select_ladders,
                                       select_trade_tickers)
@@ -303,6 +304,11 @@ class Recorder:
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed")
                 ctx["errors"].append({"tick": repr(e)})
+            try:
+                ctx["normalized"] = normalize_new(session, ctx=ctx)
+            except Exception as e:  # noqa: BLE001
+                log.exception("normalize failed")
+                ctx["warnings"].append({"normalize": repr(e)})
             exhausted = (ctx["skipped_trades"] > 0 or ctx["skipped_ladders"] > 0
                          or ctx["skipped_alternates"] > 0)
             if ctx["errors"]:
@@ -318,7 +324,10 @@ class Recorder:
                                     "skipped_trades": ctx["skipped_trades"],
                                     "skipped_ladders": ctx["skipped_ladders"],
                                     "skipped_alternates": ctx["skipped_alternates"],
-                                    "trade_gaps": ctx["trade_gaps"]},
+                                    "trade_gaps": ctx["trade_gaps"],
+                                    "normalized": ctx.get("normalized", {}),
+                                    "unresolved_teams": sorted(set(ctx.get("unresolved_teams", [])))[:50],
+                                    "normalize_errors": ctx.get("normalize_errors", [])},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
                      len(ctx["errors"]), len(ctx["warnings"]))

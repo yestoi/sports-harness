@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import httpx
+import pytest
 import respx
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session as SASession
@@ -15,9 +16,19 @@ from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
 from harness.health import create_app
+from harness.normalize import runner as runner_mod
 from harness.recorder import store
 from harness.recorder.tick import Recorder
 from harness.venues.kalshi.public import KalshiPublic
+
+
+@pytest.fixture(autouse=True)
+def _reset_normalize_events_cache():
+    # harness.normalize.runner._EVENTS is a module-level, process-wide cache; the tick now
+    # calls normalize_new(), so clear it between tests to avoid cross-test contamination.
+    runner_mod._EVENTS.clear()
+    yield
+    runner_mod._EVENTS.clear()
 
 FIXD = Path(__file__).parent / "fixtures"
 ODDS = json.loads((FIXD / "odds_featured_nfl.json").read_text())
@@ -357,3 +368,11 @@ def test_latest_body_is_served_from_the_in_process_cache(env_settings, db_sessio
     clock["now"] = NOW + timedelta(seconds=30)
     assert rec.maybe_tick().status == "skipped"
     assert calls["n"] == 0
+
+
+@respx.mock
+def test_tick_runs_normalizer_and_reports_counts(env_settings, db_session):
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": [], "trades": [], "cursor": ""}))
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert "normalized" in run.notes and isinstance(run.notes["normalized"], dict)
