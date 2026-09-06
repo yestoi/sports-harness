@@ -52,3 +52,16 @@ SIGTERM. Recorder exited cleanly with no errors logged and flushed pending write
 ## Known external quirks
 
 - ESPN's scoreboard API sits behind Akamai and returns HTTP 403 for custom or browser-like User-Agent strings while accepting httpx's default `python-httpx/x.y`. The HTTP client therefore sends no custom User-Agent. If ESPN rows show `http 403` in `runs.notes.errors`, check this first.
+
+## Upgrading to new code
+
+After pulling a new version, always run the schema step again before starting the services; `create_schema` is additive and idempotent, but the running containers never create tables on their own:
+
+```bash
+docker compose build
+docker compose run --rm app-run init-db
+docker compose run --rm app-run seed-teams   # phase 1+: teams and aliases (safe to repeat)
+docker compose up -d
+```
+
+Symptom of skipping this: `relation "teams" does not exist` in logs, `app-ws` restarting, and `notes.normalize_errors` on every run.
