@@ -21,6 +21,10 @@ class RedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.msg = redact(str(record.getMessage()))
         record.args = ()
+        if record.exc_info:
+            exc_text = logging.Formatter().formatException(record.exc_info)
+            record.exc_text = redact(exc_text)
+            record.exc_info = None
         return True
 
 

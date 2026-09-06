@@ -20,3 +20,16 @@ def test_json_logging_redacts(capsys):
     rec = json.loads(line)
     assert rec["message"] == "calling url apiKey=[REDACTED]"
     assert "levelname" in rec
+
+
+def test_json_logging_redacts_exception_traceback(capsys):
+    configure_logging("INFO")
+    try:
+        raise ValueError("request failed: apiKey=SECRET123")
+    except ValueError:
+        logging.getLogger("t").exception("boom")
+    line = capsys.readouterr().err.strip().splitlines()[-1]
+    rec = json.loads(line)
+    assert "SECRET123" not in line
+    assert "apiKey=[REDACTED]" in rec["exc_info"]
+    assert "ValueError" in rec["exc_info"]
