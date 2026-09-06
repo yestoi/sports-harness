@@ -51,7 +51,8 @@ def link_espn_scoreboard(session: Session, sport: str, body: dict) -> LinkResult
                 session.add(g)
             g.espn_event_id = eid
             res.linked += 1
-        status = _STATUS.get(ev.get("status", {}).get("type", {}).get("name", ""), "scheduled")
+        raw = ev.get("status", {}).get("type", {}).get("name", "")
+        status = _STATUS.get(raw, raw.lower() or "scheduled")
         hs, as_ = _score(home.get("score")), _score(away.get("score"))
         if (g.status, g.home_score, g.away_score) != (status, hs, as_):
             g.status, g.home_score, g.away_score = status, hs, as_

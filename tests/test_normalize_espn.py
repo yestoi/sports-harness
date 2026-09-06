@@ -29,3 +29,13 @@ def test_link_creates_espn_only_game(db_session):
     res = link_espn_scoreboard(db_session, "nfl", SB)
     assert res.linked == 1
     assert db_session.query(Game).filter_by(espn_event_id="401", odds_api_event_id=None).count() == 1
+
+
+def test_unknown_status_is_kept_raw_lowercased(db_session):
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    sb = {"events": [{"id": "402", "date": "2026-09-21T00:20Z", "status": {"type": {"name": "STATUS_SUSPENDED"}},
+          "competitions": [{"competitors": [
+              {"homeAway": "home", "team": {"id": "14", "displayName": "Los Angeles Rams"}},
+              {"homeAway": "away", "team": {"id": "19", "displayName": "New York Giants"}}]}]}]}
+    link_espn_scoreboard(db_session, "nfl", sb)
+    assert db_session.query(Game).filter_by(espn_event_id="402").one().status == "status_suspended"
