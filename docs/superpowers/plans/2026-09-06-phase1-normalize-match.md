@@ -1870,7 +1870,7 @@ git commit -m "feat: kalshi rsa-pss request signing and credential settings"
 
 **Interfaces:**
 - `select_ws_tickers(session, now) -> list[str]`: tickers of `venue_markets` with `match_status in (matched, fuzzy, manual)` whose game kicks off within the next 24 h or started less than 4 h ago, ordered by `volume_24h` of the latest quote desc, capped at `settings.ws_max_tickers` (default 500; Kalshi's per-connection limit is undocumented, so start at 500 and raise if no error).
-- `WsSink(session_factory)` with `handle(msg: dict, received_at: datetime) -> str | None`: for `type == "trade"` insert `VenueTrade(source="ws", trade_id=msg.msg.trade_id, ts=from ts_ms, ...)` (`ON CONFLICT DO NOTHING`, so REST and WS dedupe on `trade_id`); for `orderbook_snapshot` insert one `OrderbookEvent(kind="snapshot", raw=msg.msg, ts=received_at)`; for `orderbook_delta` insert `OrderbookEvent(kind="delta", side, price, delta, ts=from ts_ms or received_at)`; track `(sid → last seq)` and log a warning `seq gap sid=.. expected=.. got=..` on gaps (also insert an `OrderbookEvent(kind="gap")`). Commits every 100 messages or 2 s, whichever first. Returns the message type handled.
+- `WsSink(session_factory)` with `handle(msg: dict, received_at: datetime) -> str | None`: for `type == "trade"` insert `VenueTrade(source="ws", trade_id=msg.msg.trade_id, ts=from ts_ms, ...)` (`ON CONFLICT DO NOTHING ... RETURNING trade_id`, counting returned rows because psycopg3 reports rowcount -1 for that statement; REST and WS dedupe on `trade_id`); for `orderbook_snapshot` insert one `OrderbookEvent(kind="snapshot", raw=msg.msg, ts=received_at)`; for `orderbook_delta` insert `OrderbookEvent(kind="delta", side, price, delta, ts=from ts_ms or received_at)`; track `(sid → last seq)` and log a warning `seq gap sid=.. expected=.. got=..` on gaps (also insert an `OrderbookEvent(kind="gap")`). Commits every 100 messages or 2 s, whichever first. Returns the message type handled.
 - `WsRecorder(settings, session_factory, sink, ws_factory=websocket.create_connection, clock=utcnow)` with `run_forever()`: connect with signed headers (`sign_request(key_id, pem, "GET", "/trade-api/ws/v2", now_ms)`; verified working), subscribe `{"id": 1, "cmd": "subscribe", "params": {"channels": ["trade", "orderbook_delta"], "market_tickers": tickers}}`, loop `recv()` with a 30 s timeout, pass JSON messages to the sink, reply to ping frames (websocket-client does this automatically when `enable_multithread`/`ping` handling is default; verify), every 5 minutes recompute `select_ws_tickers` and send `update_subscription` `add_markets` / `delete_markets` with the diff, reconnect with exponential backoff (1 s → 60 s) on any exception, and stop on SIGTERM. `settings.kalshi_ws_url` (verified) is tried first; the fallback host is kept for resilience only.
 
 - [ ] **Step 1: Write failing tests**
@@ -1974,8 +1974,10 @@ class WsSink:
             if body.get("trade_id") and ticker and price is not None and count is not None:
                 stmt = insert(VenueTrade).values(venue="kalshi", trade_id=body["trade_id"], ticker=ticker, ts=_ts(body.get("ts_ms"), received_at),
                                                  yes_price=price, count=count, taker_side=body.get("taker_side") or "yes",
-                                                 is_block=bool(body.get("is_block_trade")), source="ws", raw_id=None).on_conflict_do_nothing()
-                self._pending += self._session.execute(stmt).rowcount
+                                                 is_block=bool(body.get("is_block_trade")), source="ws", raw_id=None
+                                                 ).on_conflict_do_nothing().returning(VenueTrade.trade_id)
+                # psycopg3 reports rowcount -1 for ON CONFLICT DO NOTHING; count returned rows instead (Task 6 ruling)
+                self._pending += len(self._session.execute(stmt).fetchall())
         elif kind == "orderbook_snapshot":
             if sid is not None and seq is not None:
                 self._last_seq[sid] = seq
