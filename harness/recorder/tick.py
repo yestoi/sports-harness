@@ -182,6 +182,26 @@ class Recorder:
                 ctx["errors"].append({key: repr(e)})
         return summaries
 
+    def _kalshi_events(self, session: Session, run: Run, now: datetime, ctx: dict) -> None:
+        for series in FOOTBALL_SERIES:
+            key = f"kalshi_events:{series}"
+            try:
+                pages: list = []
+                if is_due(store.get_source_state(session, key), now, 900):
+                    for r in self.kalshi.fetch_events_all(series):
+                        store.store_raw(session, run.id, "kalshi", "/events", {"series_ticker": series}, r)
+                        ctx["n"] += 1
+                        pages.append(r)
+                    all_ok = all(r.status == 200 for r in pages)
+                    if pages and all_ok:
+                        store.set_source_state(session, key, now)
+                    elif pages and not all_ok:
+                        ctx["errors"].append({key: f"partial pagination: statuses {[r.status for r in pages]}"})
+                    ctx["fetched"] = True
+            except Exception as e:  # noqa: BLE001
+                log.exception("kalshi events failed")
+                ctx["errors"].append({key: repr(e)})
+
     def _kalshi_trades_and_ladders(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff],
                                    summaries: list[MarketSummary], budget: _Budget, ctx: dict) -> None:
         wms = {t: (w.last_ts, Decimal(w.last_volume_fp)) for t, w in store.get_watermarks(session).items()}
@@ -274,6 +294,8 @@ class Recorder:
                 self._odds(session, run, now, kickoffs, budget, ctx)
                 self._checkpoint(session, run)
                 summaries = self._kalshi_markets(session, run, now, kickoffs, ctx)
+                self._checkpoint(session, run)
+                self._kalshi_events(session, run, now, ctx)
                 self._checkpoint(session, run)
                 if summaries:
                     self._kalshi_trades_and_ladders(session, run, now, kickoffs, summaries, budget, ctx)

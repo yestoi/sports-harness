@@ -1,0 +1,87 @@
+{
+    "cursor": "CgYIoLX41AYSGktYTkNBQUZHQU1FLTI2U0VQMDZXU1VXQVNI",
+    "events": [
+        {
+            "available_on_brokers": false,
+            "category": "Sports",
+            "collateral_return_type": "MECNET",
+            "event_ticker": "KXNCAAFGAME-26SEP06TXSOPV",
+            "exchange_index": 0,
+            "last_updated_ts": "2026-08-27T12:17:04.737077Z",
+            "mutually_exclusive": true,
+            "product_metadata": {
+                "competition": "NCAA Football",
+                "competition_scope": "Game"
+            },
+            "series_ticker": "KXNCAAFGAME",
+            "settlement_sources": [
+                {
+                    "name": "Kalshi using information originating from the NCAA",
+                    "url": "https://www.ncaa.com/sports/football/fbs"
+                },
+                {
+                    "name": "ESPN",
+                    "url": "https://www.espn.com"
+                }
+            ],
+            "strike_period": "",
+            "sub_title": "TXSO vs PV (Sep 6)",
+            "title": "Texas Southern vs Prairie View A&M"
+        },
+        {
+            "available_on_brokers": false,
+            "category": "Sports",
+            "collateral_return_type": "MECNET",
+            "event_ticker": "KXNCAAFGAME-26SEP06SCSTFAMU",
+            "exchange_index": 0,
+            "last_updated_ts": "2026-08-27T12:17:04.737077Z",
+            "mutually_exclusive": true,
+            "product_metadata": {
+                "competition": "NCAA Football",
+                "competition_scope": "Game"
+            },
+            "series_ticker": "KXNCAAFGAME",
+            "settlement_sources": [
+                {
+                    "name": "Kalshi using information originating from the NCAA",
+                    "url": "https://www.ncaa.com/sports/football/fbs"
+                },
+                {
+                    "name": "ESPN",
+                    "url": "https://www.espn.com"
+                }
+            ],
+            "strike_period": "",
+            "sub_title": "SCST vs FAMU (Sep 6)",
+            "title": "South Carolina St. vs Florida A&M"
+        },
+        {
+            "available_on_brokers": false,
+            "category": "Sports",
+            "collateral_return_type": "MECNET",
+            "event_ticker": "KXNCAAFGAME-26SEP06WSUWASH",
+            "exchange_index": 0,
+            "last_updated_ts": "2026-08-27T12:17:04.737077Z",
+            "mutually_exclusive": true,
+            "product_metadata": {
+                "competition": "NCAA Football",
+                "competition_scope": "Game"
+            },
+            "series_ticker": "KXNCAAFGAME",
+            "settlement_sources": [
+                {
+                    "name": "Kalshi using information originating from the NCAA",
+                    "url": "https://www.ncaa.com/sports/football/fbs"
+                },
+                {
+                    "name": "ESPN",
+                    "url": "https://www.espn.com"
+                }
+            ],
+            "strike_period": "",
+            "sub_title": "WSU vs WASH (Sep 6)",
+            "title": "Washington St. vs Washington"
+        }
+    ],
+    "milestones": []
+}

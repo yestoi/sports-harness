@@ -102,6 +102,21 @@ class KalshiPublic:
                 break
         return pages
 
+    def fetch_events_all(self, series_ticker: str, max_pages: int = 10) -> list[FetchResult]:
+        pages: list[FetchResult] = []
+        cursor = ""
+        for _ in range(max_pages):
+            params = {"series_ticker": series_ticker, "status": "open", "limit": "200"}
+            if cursor:
+                params["cursor"] = cursor
+            r = self._http.get(f"{self._base}/events", params=params, redact_params=())
+            pages.append(r)
+            cursor = (r.body or {}).get("cursor", "") if isinstance(r.body, dict) else ""
+            self._pause()
+            if not cursor or r.status != 200:
+                break
+        return pages
+
     def fetch_orderbook(self, ticker: str) -> FetchResult:
         r = self._http.get(f"{self._base}/markets/{ticker}/orderbook", params={"depth": "20"}, redact_params=())
         self._pause()

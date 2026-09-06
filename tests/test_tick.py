@@ -46,6 +46,7 @@ def test_first_tick_fetches_everything_and_records(env_settings, db_session):
     alt = respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(
         return_value=httpx.Response(200, json={}, headers={"x-requests-last": "2", "x-requests-remaining": "98"}))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
     respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": [
         {"trade_id": "t1", "created_time": "2026-09-09T22:59:00Z"}]}))
     respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={"orderbook_fp": {}}))
@@ -86,7 +87,7 @@ def test_source_failure_is_isolated(env_settings, db_session):
     rec, _ = _recorder(env_settings, db_session)
     run = rec.maybe_tick()
     assert run.status == "error" and "espn:nfl" in json.dumps(run.notes["errors"])
-    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi").count() == 6
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 6
 
 
 @respx.mock
@@ -116,8 +117,23 @@ def test_non_http_exception_in_one_source_does_not_abort_tick(env_settings, db_s
     rec, _ = _recorder(env_settings, db_session)
     run = rec.maybe_tick()
     assert run.status == "error" and "espn:nfl" in json.dumps(run.notes["errors"])
-    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi").count() == 6
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 6
     assert db_session.query(RawResponse).filter_by(run_id=run.id, source="odds_api").count() == 2
+
+
+@respx.mock
+def test_tick_records_kalshi_events(env_settings, db_session):
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+    ev = respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    rec, clock = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert ev.call_count == 6
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/events").count() == 6
+    clock["now"] = NOW + timedelta(seconds=60)
+    rec.maybe_tick()
+    assert ev.call_count == 6  # 15-minute interval, not due
 
 
 @respx.mock
@@ -183,6 +199,7 @@ def test_tick_commits_incrementally_before_finish_run(env_settings, db_session, 
     respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(return_value=httpx.Response(200, json=ODDS))
     respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(return_value=httpx.Response(200, json={}))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
     respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
     respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={}))
 
@@ -218,6 +235,7 @@ def test_non_2xx_trades_watermark_stops_the_refetch_loop(env_settings, db_sessio
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
     tr = respx.get("https://k/markets/trades").mock(return_value=httpx.Response(500, json={}))
 
     rec, clock = _recorder(env_settings, db_session)
@@ -240,6 +258,7 @@ def test_trades_pagination_is_stored_page_by_page(env_settings, db_session):
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
 
     def trade_pages(request):
         if dict(request.url.params).get("cursor"):
@@ -272,6 +291,7 @@ def test_trade_gap_is_recorded_when_cursor_unexhausted(env_settings, db_session,
         return httpx.Response(200, json={"cursor": "", "markets": []})
 
     respx.get("https://k/markets").mock(side_effect=markets_by_series)
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
     respx.get("https://k/markets/trades").mock(side_effect=lambda request: httpx.Response(
         200, json={"cursor": "more", "trades": [
             {"trade_id": "t1", "created_time": "2026-09-09T22:59:00Z"},
@@ -300,6 +320,7 @@ def test_secondary_non_2xx_is_degraded_and_healthz_stays_green(env_settings, db_
     respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(return_value=httpx.Response(200, json=ODDS))
     respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(return_value=httpx.Response(404, json={}))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
 
     rec, _ = _recorder(env_settings, db_session)
     run = rec.maybe_tick()
@@ -320,6 +341,7 @@ def test_latest_body_is_served_from_the_in_process_cache(env_settings, db_sessio
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
 
     rec, clock = _recorder(env_settings, db_session)
     assert rec.maybe_tick().status == "ok"
