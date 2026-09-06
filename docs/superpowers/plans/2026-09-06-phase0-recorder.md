@@ -2298,6 +2298,8 @@ git commit -m "feat: docker image, compose, phase 0 deploy runbook"
 
 **Deviations from spec, deliberate:** ladder selection uses event date and price band rather than "games inside T−3h" because game matching does not exist until phase 1; the superset is bounded by the 400 cap and the "any kickoff within 3 h" gate. Alternates are polled for all events within 36 h rather than only events with a Kalshi rung in band, for the same reason.
 
+**Execution ruling (2026-09-06, Task 10):** `HttpClient` gained an injectable `clock` kwarg (default real UTC now) used for `FetchResult.fetched_at`, because `ensure_partitions` keyed off the recorder's injected clock while `fetched_at` used wall-clock time, so test rows fell outside the test partition. Task 4's `HttpClient(timeout_s, sleep=..., clock=...)` and Task 10's `_recorder` helper pass the shared clock. Production behaviour is unchanged.
+
 **Placeholder scan:** none.
 
 **Type consistency:** `FetchResult` fields used identically in Tasks 4–10; `MarketSummary` field order matches between Task 7 and Task 9 tests; `store.finish_run` keyword names match Task 10 and Task 11 usage; `Recorder.__init__` signature matches `build_recorder` in Task 11 and `_recorder` in Task 10 tests.
