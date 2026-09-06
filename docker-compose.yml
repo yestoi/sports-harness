@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: harness
+      POSTGRES_PASSWORD: harness
+      POSTGRES_DB: harness
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harness -d harness"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app-run:
+    build: .
+    command: ["run"]
+    env_file: .env
+    environment:
+      ODDS_API_KEY_FILE: /run/secrets/odds_api_key
+    volumes:
+      - ./secrets/odds_api_key:/run/secrets/odds_api_key:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 120s
+
+  app-serve:
+    build: .
+    command: ["serve", "--port", "8080"]
+    env_file: .env
+    environment:
+      ODDS_API_KEY_FILE: /run/secrets/odds_api_key
+    volumes:
+      - ./secrets/odds_api_key:/run/secrets/odds_api_key:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 120s
