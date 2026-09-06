@@ -1,0 +1,14 @@
+{
+  "cursor": "",
+  "markets": [
+    {"ticker": "KXNFLGAME-26SEP21NYGLAR-NYG", "event_ticker": "KXNFLGAME-26SEP21NYGLAR", "title": "New York G wins",
+     "yes_sub_title": "New York G", "strike_type": "structured", "yes_bid_dollars": "0.2200", "yes_ask_dollars": "0.2300",
+     "no_bid_dollars": "0.7700", "no_ask_dollars": "0.7800", "volume_fp": "1234.00", "volume_24h_fp": "50.00",
+     "open_interest_fp": "900.00", "close_time": "2026-09-24T00:15:00Z", "status": "open"},
+    {"ticker": "KXNFLSPREAD-26SEP14DENKC-KC7", "event_ticker": "KXNFLSPREAD-26SEP14DENKC", "title": "Kansas City wins by over 6.5 points?",
+     "yes_sub_title": "Kansas City", "strike_type": "greater", "floor_strike": 6.5, "yes_bid_dollars": "0.3400", "yes_ask_dollars": "0.3500",
+     "no_bid_dollars": "0.6500", "no_ask_dollars": "0.6600", "volume_fp": "0.00", "volume_24h_fp": "0.00",
+     "open_interest_fp": "0.00", "close_time": "2026-09-17T00:15:00Z", "status": "open"},
+    {"ticker": "WEIRD", "event_ticker": "WEIRD"}
+  ]
+}
