@@ -1,0 +1,1683 @@
+{
+ "sports": [
+  {
+   "id": "20",
+   "leagues": [
+    {
+     "abbreviation": "NFL",
+     "id": "28",
+     "name": "National Football League",
+     "season": {
+      "displayName": "2026",
+      "year": 2026
+     },
+     "shortName": "NFL",
+     "slug": "nfl",
+     "teams": [
+      {
+       "team": {
+        "abbreviation": "KC",
+        "alternateColor": "ffb612",
+        "color": "e31837",
+        "displayName": "Kansas City Chiefs",
+        "id": "12",
+        "isActive": true,
+        "isAllStar": false,
+        "links": [
+         {
+          "href": "https://www.espn.com/nfl/team/_/name/kc/kansas-city-chiefs",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "clubhouse",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Clubhouse",
+          "text": "Clubhouse"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/roster/_/name/kc/kansas-city-chiefs",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "roster",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Roster",
+          "text": "Roster"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/stats/_/name/kc/kansas-city-chiefs",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "stats",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Statistics",
+          "text": "Statistics"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/schedule/_/name/kc",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "schedule",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Schedule",
+          "text": "Schedule"
+         },
+         {
+          "href": "https://www.vividseats.com/kansas-city-chiefs-tickets--sports-nfl-football/performer/427?wsUser=717",
+          "isExternal": true,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "tickets",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Tickets",
+          "text": "Tickets"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/depth/_/name/kc",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "depthchart",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Depth Chart",
+          "text": "Depth Chart"
+         }
+        ],
+        "location": "Kansas City",
+        "logos": [
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/kc.png",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/kc.png",
+          "rel": [
+           "full",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/kc.png",
+          "rel": [
+           "full",
+           "scoreboard"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/kc.png",
+          "rel": [
+           "full",
+           "scoreboard",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/grayscale.png",
+          "rel": [
+           "full",
+           "grayscale"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/primary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/primary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/primary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/primary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/primary_logo_black.png",
+          "rel": [
+           "full",
+           "primary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/primary_logo_white.png",
+          "rel": [
+           "full",
+           "primary_logo_white"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/secondary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/secondary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/secondary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/secondary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/secondary_logo_black.png",
+          "rel": [
+           "full",
+           "secondary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/f68f2343-8ceb-7a02-740d-af6338be21d2/logos/secondary_logo_white.png",
+          "rel": [
+           "full",
+           "secondary_logo_white"
+          ],
+          "width": 4096
+         }
+        ],
+        "name": "Chiefs",
+        "nickname": "Chiefs",
+        "shortDisplayName": "Chiefs",
+        "slug": "kansas-city-chiefs",
+        "uid": "s:20~l:28~t:12"
+       }
+      },
+      {
+       "team": {
+        "abbreviation": "LAR",
+        "alternateColor": "ffd100",
+        "color": "003594",
+        "displayName": "Los Angeles Rams",
+        "id": "14",
+        "isActive": true,
+        "isAllStar": false,
+        "links": [
+         {
+          "href": "https://www.espn.com/nfl/team/_/name/lar/los-angeles-rams",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "clubhouse",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Clubhouse",
+          "text": "Clubhouse"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/roster/_/name/lar/los-angeles-rams",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "roster",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Roster",
+          "text": "Roster"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/stats/_/name/lar/los-angeles-rams",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "stats",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Statistics",
+          "text": "Statistics"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/schedule/_/name/lar",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "schedule",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Schedule",
+          "text": "Schedule"
+         },
+         {
+          "href": "https://www.vividseats.com/los-angeles-rams-tickets--sports-nfl-football/performer/808?wsUser=717",
+          "isExternal": true,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "tickets",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Tickets",
+          "text": "Tickets"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/depth/_/name/lar",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "depthchart",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Depth Chart",
+          "text": "Depth Chart"
+         }
+        ],
+        "location": "Los Angeles",
+        "logos": [
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/lar.png",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/lar.png",
+          "rel": [
+           "full",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/lar.png",
+          "rel": [
+           "full",
+           "scoreboard"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/lar.png",
+          "rel": [
+           "full",
+           "scoreboard",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/grayscale.png",
+          "rel": [
+           "full",
+           "grayscale"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/primary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/primary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/primary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/primary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/primary_logo_black.png",
+          "rel": [
+           "full",
+           "primary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/primary_logo_white.png",
+          "rel": [
+           "full",
+           "primary_logo_white"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/secondary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/secondary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/secondary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/secondary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/secondary_logo_black.png",
+          "rel": [
+           "full",
+           "secondary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/2e1473b2-e269-fd7a-1137-c1edacb85986/logos/secondary_logo_white.png",
+          "rel": [
+           "full",
+           "secondary_logo_white"
+          ],
+          "width": 4096
+         }
+        ],
+        "name": "Rams",
+        "nickname": "Rams",
+        "shortDisplayName": "Rams",
+        "slug": "los-angeles-rams",
+        "uid": "s:20~l:28~t:14"
+       }
+      },
+      {
+       "team": {
+        "abbreviation": "NE",
+        "alternateColor": "c60c30",
+        "color": "002a5c",
+        "displayName": "New England Patriots",
+        "id": "17",
+        "isActive": true,
+        "isAllStar": false,
+        "links": [
+         {
+          "href": "https://www.espn.com/nfl/team/_/name/ne/new-england-patriots",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "clubhouse",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Clubhouse",
+          "text": "Clubhouse"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/roster/_/name/ne/new-england-patriots",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "roster",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Roster",
+          "text": "Roster"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/stats/_/name/ne/new-england-patriots",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "stats",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Statistics",
+          "text": "Statistics"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/schedule/_/name/ne",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "schedule",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Schedule",
+          "text": "Schedule"
+         },
+         {
+          "href": "https://www.vividseats.com/new-england-patriots-tickets--sports-nfl-football/performer/592?wsUser=717",
+          "isExternal": true,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "tickets",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Tickets",
+          "text": "Tickets"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/depth/_/name/ne",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "depthchart",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Depth Chart",
+          "text": "Depth Chart"
+         }
+        ],
+        "location": "New England",
+        "logos": [
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/ne.png",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/ne.png",
+          "rel": [
+           "full",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/ne.png",
+          "rel": [
+           "full",
+           "scoreboard"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/ne.png",
+          "rel": [
+           "full",
+           "scoreboard",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/grayscale.png",
+          "rel": [
+           "full",
+           "grayscale"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/primary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/primary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/primary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/primary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/primary_logo_black.png",
+          "rel": [
+           "full",
+           "primary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/primary_logo_white.png",
+          "rel": [
+           "full",
+           "primary_logo_white"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/secondary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/secondary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/secondary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/secondary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/secondary_logo_black.png",
+          "rel": [
+           "full",
+           "secondary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/0078f353-fe3e-67ed-a42c-43cca0568e21/logos/secondary_logo_white.png",
+          "rel": [
+           "full",
+           "secondary_logo_white"
+          ],
+          "width": 4096
+         }
+        ],
+        "name": "Patriots",
+        "nickname": "Patriots",
+        "shortDisplayName": "Patriots",
+        "slug": "new-england-patriots",
+        "uid": "s:20~l:28~t:17"
+       }
+      },
+      {
+       "team": {
+        "abbreviation": "NO",
+        "alternateColor": "000000",
+        "color": "d3bc8d",
+        "displayName": "New Orleans Saints",
+        "id": "18",
+        "isActive": true,
+        "isAllStar": false,
+        "links": [
+         {
+          "href": "https://www.espn.com/nfl/team/_/name/no/new-orleans-saints",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "clubhouse",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Clubhouse",
+          "text": "Clubhouse"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/roster/_/name/no/new-orleans-saints",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "roster",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Roster",
+          "text": "Roster"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/stats/_/name/no/new-orleans-saints",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "stats",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Statistics",
+          "text": "Statistics"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/schedule/_/name/no",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "schedule",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Schedule",
+          "text": "Schedule"
+         },
+         {
+          "href": "https://www.vividseats.com/new-orleans-saints-tickets--sports-nfl-football/performer/597?wsUser=717",
+          "isExternal": true,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "tickets",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Tickets",
+          "text": "Tickets"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/depth/_/name/no",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "depthchart",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Depth Chart",
+          "text": "Depth Chart"
+         }
+        ],
+        "location": "New Orleans",
+        "logos": [
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/no.png",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/no.png",
+          "rel": [
+           "full",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/no.png",
+          "rel": [
+           "full",
+           "scoreboard"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/no.png",
+          "rel": [
+           "full",
+           "scoreboard",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/grayscale.png",
+          "rel": [
+           "full",
+           "grayscale"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/primary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/primary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/primary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/primary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/primary_logo_black.png",
+          "rel": [
+           "full",
+           "primary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/primary_logo_white.png",
+          "rel": [
+           "full",
+           "primary_logo_white"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/secondary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/secondary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/secondary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/secondary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/secondary_logo_black.png",
+          "rel": [
+           "full",
+           "secondary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/97d2f6c9-2f22-459c-306a-046941ccab2a/logos/secondary_logo_white.png",
+          "rel": [
+           "full",
+           "secondary_logo_white"
+          ],
+          "width": 4096
+         }
+        ],
+        "name": "Saints",
+        "nickname": "Saints",
+        "shortDisplayName": "Saints",
+        "slug": "new-orleans-saints",
+        "uid": "s:20~l:28~t:18"
+       }
+      },
+      {
+       "team": {
+        "abbreviation": "NYG",
+        "alternateColor": "c9243f",
+        "color": "003c7f",
+        "displayName": "New York Giants",
+        "id": "19",
+        "isActive": true,
+        "isAllStar": false,
+        "links": [
+         {
+          "href": "https://www.espn.com/nfl/team/_/name/nyg/new-york-giants",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "clubhouse",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Clubhouse",
+          "text": "Clubhouse"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/roster/_/name/nyg/new-york-giants",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "roster",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Roster",
+          "text": "Roster"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/stats/_/name/nyg/new-york-giants",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "stats",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Statistics",
+          "text": "Statistics"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/schedule/_/name/nyg",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "schedule",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Schedule",
+          "text": "Schedule"
+         },
+         {
+          "href": "https://www.vividseats.com/new-york-giants-tickets--sports-nfl-football/performer/599?wsUser=717",
+          "isExternal": true,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "tickets",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Tickets",
+          "text": "Tickets"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/depth/_/name/nyg",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "depthchart",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Depth Chart",
+          "text": "Depth Chart"
+         }
+        ],
+        "location": "New York",
+        "logos": [
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/nyg.png",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/nyg.png",
+          "rel": [
+           "full",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/nyg.png",
+          "rel": [
+           "full",
+           "scoreboard"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/nyg.png",
+          "rel": [
+           "full",
+           "scoreboard",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/grayscale.png",
+          "rel": [
+           "full",
+           "grayscale"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/primary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/primary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/primary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/primary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/primary_logo_black.png",
+          "rel": [
+           "full",
+           "primary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/primary_logo_white.png",
+          "rel": [
+           "full",
+           "primary_logo_white"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/secondary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/secondary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/secondary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/secondary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/secondary_logo_black.png",
+          "rel": [
+           "full",
+           "secondary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/378600ea-2397-8364-8399-b7c1606a49a7/logos/secondary_logo_white.png",
+          "rel": [
+           "full",
+           "secondary_logo_white"
+          ],
+          "width": 4096
+         }
+        ],
+        "name": "Giants",
+        "nickname": "Giants",
+        "shortDisplayName": "Giants",
+        "slug": "new-york-giants",
+        "uid": "s:20~l:28~t:19"
+       }
+      },
+      {
+       "team": {
+        "abbreviation": "SEA",
+        "alternateColor": "69be28",
+        "color": "002a5c",
+        "displayName": "Seattle Seahawks",
+        "id": "26",
+        "isActive": true,
+        "isAllStar": false,
+        "links": [
+         {
+          "href": "https://www.espn.com/nfl/team/_/name/sea/seattle-seahawks",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "clubhouse",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Clubhouse",
+          "text": "Clubhouse"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/roster/_/name/sea/seattle-seahawks",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "roster",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Roster",
+          "text": "Roster"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/stats/_/name/sea/seattle-seahawks",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "stats",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Statistics",
+          "text": "Statistics"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/schedule/_/name/sea",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "schedule",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Schedule",
+          "text": "Schedule"
+         },
+         {
+          "href": "https://www.vividseats.com/seattle-seahawks-tickets--sports-nfl-football/performer/772?wsUser=717",
+          "isExternal": true,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "tickets",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Tickets",
+          "text": "Tickets"
+         },
+         {
+          "href": "https://www.espn.com/nfl/team/depth/_/name/sea",
+          "isExternal": false,
+          "isHidden": false,
+          "isPremium": false,
+          "language": "en-US",
+          "rel": [
+           "depthchart",
+           "desktop",
+           "team"
+          ],
+          "shortText": "Depth Chart",
+          "text": "Depth Chart"
+         }
+        ],
+        "location": "Seattle",
+        "logos": [
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/sea.png",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/sea.png",
+          "rel": [
+           "full",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/sea.png",
+          "rel": [
+           "full",
+           "scoreboard"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/i/teamlogos/nfl/500-dark/scoreboard/sea.png",
+          "rel": [
+           "full",
+           "scoreboard",
+           "dark"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 500,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/grayscale.png",
+          "rel": [
+           "full",
+           "grayscale"
+          ],
+          "width": 500
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/primary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/primary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/primary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/primary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "primary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/primary_logo_black.png",
+          "rel": [
+           "full",
+           "primary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/primary_logo_white.png",
+          "rel": [
+           "full",
+           "primary_logo_white"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/secondary_logo_on_white_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_white_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/secondary_logo_on_black_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_black_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/secondary_logo_on_primary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_primary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/secondary_logo_on_secondary_color.png",
+          "rel": [
+           "full",
+           "secondary_logo_on_secondary_color"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/secondary_logo_black.png",
+          "rel": [
+           "full",
+           "secondary_logo_black"
+          ],
+          "width": 4096
+         },
+         {
+          "alt": "",
+          "height": 4096,
+          "href": "https://a.espncdn.com/guid/3767a23c-a17d-294f-288a-9086ad1f0680/logos/secondary_logo_white.png",
+          "rel": [
+           "full",
+           "secondary_logo_white"
+          ],
+          "width": 4096
+         }
+        ],
+        "name": "Seahawks",
+        "nickname": "Seahawks",
+        "shortDisplayName": "Seahawks",
+        "slug": "seattle-seahawks",
+        "uid": "s:20~l:28~t:26"
+       }
+      }
+     ],
+     "uid": "s:20~l:28",
+     "year": 2026
+    }
+   ],
+   "name": "Football",
+   "slug": "football",
+   "uid": "s:20"
+  }
+ ]
+}

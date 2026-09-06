@@ -1,0 +1,84 @@
+from difflib import SequenceMatcher
+from pathlib import Path
+
+import yaml
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
+
+from harness.db.models import Team, TeamAlias
+from harness.matching.names import normalize_name
+
+PRIORITY = ("kalshi_uuid", "kalshi_name", "odds_api", "espn_display", "espn_location", "espn_short", "espn_abbr", "espn_slug")
+
+
+def _upsert_alias(session: Session, sport: str, source: str, raw_name: str, team_id: int) -> None:
+    key = raw_name if source == "kalshi_uuid" else normalize_name(raw_name)
+    if not key:
+        return
+    stmt = insert(TeamAlias).values(sport=sport, source=source, raw_name=key, team_id=team_id)
+    session.execute(stmt.on_conflict_do_update(index_elements=["sport", "source", "raw_name"], set_={"team_id": team_id}))
+
+
+def seed_teams_from_espn(session: Session, sport: str, body: dict) -> int:
+    n = 0
+    for entry in body["sports"][0]["leagues"][0]["teams"]:
+        t = entry["team"]
+        tid = int(t["id"])
+        vals = dict(display_name=t["displayName"], location=t.get("location", ""), name=t.get("name", ""),
+                    abbreviation=t.get("abbreviation", ""), short_display_name=t.get("shortDisplayName", ""))
+        stmt = insert(Team).values(sport=sport, id=tid, **vals)
+        session.execute(stmt.on_conflict_do_update(index_elements=["sport", "id"], set_=vals))
+        _upsert_alias(session, sport, "espn_display", t["displayName"], tid)
+        _upsert_alias(session, sport, "espn_short", t.get("shortDisplayName", ""), tid)
+        _upsert_alias(session, sport, "espn_location", t.get("location", ""), tid)
+        _upsert_alias(session, sport, "espn_abbr", t.get("abbreviation", ""), tid)
+        _upsert_alias(session, sport, "espn_slug", (t.get("slug") or "").replace("-", " "), tid)
+        n += 1
+    session.flush()
+    return n
+
+
+def load_manual_aliases(session: Session, path: Path) -> int:
+    data = yaml.safe_load(Path(path).read_text()) or {}
+    n = 0
+    for sport, by_source in data.items():
+        for source, names in (by_source or {}).items():
+            for raw_name, team_id in (names or {}).items():
+                _upsert_alias(session, sport, f"manual:{source}", str(raw_name), int(team_id))
+                n += 1
+    session.flush()
+    return n
+
+
+def learn_alias(session: Session, sport: str, source: str, raw_name: str, team_id: int) -> None:
+    _upsert_alias(session, sport, source, raw_name, team_id)
+
+
+def resolve_team(session: Session, sport: str, raw_name: str, sources: tuple[str, ...] = PRIORITY) -> tuple[int | None, str]:
+    key = normalize_name(raw_name)
+    rows = list(session.execute(select(TeamAlias).where(TeamAlias.sport == sport, TeamAlias.raw_name == key)).scalars())
+    if raw_name and "kalshi_uuid" in sources:
+        rows += list(session.execute(select(TeamAlias).where(TeamAlias.sport == sport, TeamAlias.source == "kalshi_uuid",
+                                                             TeamAlias.raw_name == raw_name)).scalars())
+    by_source = {r.source: r.team_id for r in rows}
+    for src in [x for x in by_source if x.startswith("manual:")]:
+        return by_source[src], src
+    for src in sources:
+        if src in by_source:
+            return by_source[src], src
+    return None, ""
+
+
+def resolve_fuzzy(session: Session, sport: str, raw_name: str) -> tuple[int | None, float]:
+    key = normalize_name(raw_name)
+    rows = session.execute(select(TeamAlias).where(TeamAlias.sport == sport,
+                                                   TeamAlias.source.in_(("espn_display", "espn_location")))).scalars().all()
+    scored = sorted(((SequenceMatcher(None, key, a.raw_name).ratio(), a.team_id) for a in rows), reverse=True)
+    if not scored:
+        return None, 0.0
+    best_ratio, best_id = scored[0]
+    runner_up = next((r for r, tid in scored[1:] if tid != best_id), 0.0)
+    if best_ratio >= 0.90 and runner_up < 0.85:
+        return best_id, best_ratio
+    return None, best_ratio

@@ -17,6 +17,7 @@ dependencies = [
   "uvicorn>=0.30",
   "python-json-logger>=2.0",
   "typer>=0.12",
+  "pyyaml>=6",
 ]
 
 [project.optional-dependencies]

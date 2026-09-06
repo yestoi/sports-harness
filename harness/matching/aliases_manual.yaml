@@ -1,0 +1,10 @@
+# {sport: {source: {raw_name: espn_team_id}}}. raw_name is normalized before lookup.
+nfl:
+  kalshi_name: {}
+ncaaf:
+  kalshi_name: {}
+  odds_api:
+    "Appalachian State Mountaineers": 2026   # ESPN: App State Mountaineers
+    "Hawaii Rainbow Warriors": 62                 # ESPN: Hawai'i Rainbow Warriors
+    "Southern Mississippi Golden Eagles": 2572    # ESPN: Southern Miss Golden Eagles
+    "Sam Houston State Bearkats": 2534            # ESPN: Sam Houston Bearkats
