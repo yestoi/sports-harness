@@ -44,9 +44,15 @@ def create_schema(engine: Engine) -> None:
         conn.execute(text("create index if not exists ix_raw_source_fetched on raw_responses (source, fetched_at)"))
         conn.execute(text("create index if not exists ix_raw_fetched_brin on raw_responses using brin (fetched_at)"))
         conn.execute(text("create index if not exists ix_raw_run on raw_responses (run_id)"))
+        conn.execute(text(
+            "create unique index if not exists uq_odds_snapshot_row on odds_snapshots "
+            "(raw_id, book, market_type, coalesce(outcome_team_id, -1), coalesce(outcome_side, ''), coalesce(point, 0))"))
 
 
 def drop_schema(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(text("drop table if exists raw_responses cascade"))
-        conn.execute(text("drop table if exists runs, trade_watermarks, source_state cascade"))
+        conn.execute(text(
+            "drop table if exists runs, trade_watermarks, source_state, teams, team_aliases, games, "
+            "odds_snapshots, venue_markets, venue_quotes, orderbook_snapshots, venue_trades, "
+            "orderbook_events, normalize_state cascade"))
