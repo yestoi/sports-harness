@@ -6,7 +6,11 @@
 # resolution, so plain location/display-name aliases (already seeded from ESPN) cover
 # those markets; no separate ": Spread"/": Total" aliases are needed here.
 nfl:
-  kalshi_name: {}
+  kalshi_name:
+    "New York J": 20                   # ESPN: New York Jets -- Kalshi truncates the nickname
+    "New York G": 19                   # ESPN: New York Giants
+    "JAC Jaguars": 30                  # Kalshi abbreviates Jacksonville JAC, ESPN JAX
+    "WAS Commanders": 28               # Kalshi abbreviates Washington WAS, ESPN WSH
 ncaaf:
   kalshi_name:
     "Appalachian St.": 2026            # ESPN: App State Mountaineers

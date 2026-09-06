@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -71,3 +72,57 @@ def test_reprocess_truncate_rebuilds_same_counts(db_session):
     reprocess(db_session, truncate=True)
     after = (db_session.query(OddsSnapshot).count(), db_session.query(VenueQuote).count(), db_session.query(VenueTrade).count())
     assert before == after and before[0] == 2
+
+
+def _trade(trade_id: str) -> dict:
+    return {"trades": [{"trade_id": trade_id, "ticker": "KXNFLGAME-26SEP21NYGLAR-NYG",
+                        "created_time": "2026-09-09T22:00:00Z", "yes_price_dollars": "0.5000",
+                        "count_fp": "1.00", "taker_side": "yes", "is_block_trade": False}]}
+
+
+def test_poison_row_is_isolated_by_savepoint_and_watermark_advances(db_session):
+    # C1: a row that raises a real database error must not discard the batch, must be
+    # recorded with its exception text, and must not be retried forever.
+    ensure_partitions(db_session, NOW)
+    run = Run(started_at=NOW, status="ok")
+    db_session.add(run)
+    db_session.flush()
+    bad_id = _raw(db_session, run.id, "kalshi", "/markets/trades", {"ticker": "K1"}, _trade("x" * 80))
+    good_id = _raw(db_session, run.id, "kalshi", "/markets/trades", {"ticker": "K1"}, _trade("good-1"))
+    ctx: dict = {}
+    counts = normalize_new(db_session, ctx=ctx)
+    assert counts["kalshi_trades"] == 1
+    assert db_session.query(VenueTrade).filter_by(trade_id="good-1").count() == 1
+    errs = [e["kalshi_trades"] for e in ctx["normalize_errors"] if "kalshi_trades" in e]
+    assert [e["raw_id"] for e in errs] == [bad_id]
+    assert "64" in errs[0]["error"] or "too long" in errs[0]["error"]
+    assert db_session.get(NormalizeState, "kalshi_trades").last_raw_id == good_id
+
+
+def test_reprocess_truncate_keeps_websocket_trades(db_session):
+    # C2: ws trades exist nowhere in raw_responses; a rebuild must not destroy them.
+    ensure_partitions(db_session, NOW)
+    db_session.add_all([
+        VenueTrade(venue="kalshi", trade_id="ws-1", ticker="K1", ts=NOW, yes_price=Decimal("0.5"),
+                   count=Decimal("1.00"), taker_side="yes", is_block=False, source="ws", raw_id=None),
+        VenueTrade(venue="kalshi", trade_id="rest-1", ticker="K1", ts=NOW, yes_price=Decimal("0.5"),
+                   count=Decimal("1.00"), taker_side="yes", is_block=False, source="rest", raw_id=1),
+    ])
+    db_session.flush()
+    reprocess(db_session, truncate=True)
+    assert {t.trade_id for t in db_session.query(VenueTrade).all()} == {"ws-1"}
+
+
+def test_normalize_drains_multiple_batches_in_one_call(db_session):
+    # I4: a family with more than `batch` pending rows must fully drain within one call.
+    ensure_partitions(db_session, NOW)
+    run = Run(started_at=NOW, status="ok")
+    db_session.add(run)
+    db_session.flush()
+    for _ in range(1200):
+        db_session.add(RawResponse(run_id=run.id, source="kalshi", endpoint="/events",
+                                   params={"series_ticker": "KXNFLGAME"}, fetched_at=NOW,
+                                   http_status=200, body={"cursor": "", "events": []}))
+    db_session.flush()
+    counts = normalize_new(db_session, batch=500)
+    assert counts["kalshi_events"] == 1200

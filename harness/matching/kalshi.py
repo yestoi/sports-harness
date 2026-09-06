@@ -10,7 +10,7 @@ from harness.matching.games import find_game_by_pair
 from harness.matching.names import normalize_name
 from harness.matching.teams import learn_alias, resolve_fuzzy, resolve_team
 
-KALSHI_SOURCES = ("kalshi_name", "espn_display", "espn_location", "espn_short")
+KALSHI_SOURCES = ("kalshi_name", "espn_display", "espn_abbr_name", "espn_location", "espn_short")
 _VS = re.compile(r"\s+(?:vs\.?|@)\s+")
 _SPREAD_TITLE = re.compile(r"^(?P<team>.+?) wins by over (?P<pts>\d+(?:\.5)?) points\??$", re.I)
 

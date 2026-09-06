@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -34,8 +35,20 @@ def test_upsert_is_idempotent_and_resolves_teams(db_session):
     seed_teams_from_espn(db_session, "nfl", NFL)  # fixture includes Seahawks(26) and Patriots(17)
     upsert_games_from_odds(db_session, "nfl", FEAT, raw_id=1)
     rows = parse_odds_body(FEAT, "nfl")
-    assert upsert_odds_rows(db_session, "nfl", rows, raw_id=1, run_id=1, fetched_at=NOW) == 6
-    assert upsert_odds_rows(db_session, "nfl", rows, raw_id=1, run_id=1, fetched_at=NOW) == 0
+    assert upsert_odds_rows(db_session, "nfl", rows, raw_id=1, run_id=1, fetched_at=NOW).inserted == 6
+    assert upsert_odds_rows(db_session, "nfl", rows, raw_id=1, run_id=1, fetched_at=NOW).inserted == 0
     snap = db_session.query(OddsSnapshot).filter_by(market_type="spreads").all()
     assert {s.point for s in snap} == {Decimal("-3.5"), Decimal("3.5")}
     assert all(s.outcome_team_id is not None and s.game_id is not None for s in snap)
+
+
+def test_upsert_counts_dropped_rows_by_reason(db_session):
+    # I8: a book that quoted nothing must be distinguishable from one whose rows were
+    # dropped because the game or the team name was unknown.
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    upsert_games_from_odds(db_session, "nfl", FEAT, raw_id=1)
+    rows = parse_odds_body(FEAT, "nfl")
+    orphan = [replace(r, event_id="no-such-event") for r in rows[:2]]
+    unknown_team = [replace(r, outcome_name="Nowhere Tech") for r in rows if r.market_type == "h2h"]
+    res = upsert_odds_rows(db_session, "nfl", orphan + unknown_team, raw_id=2, run_id=1, fetched_at=NOW)
+    assert (res.inserted, res.dropped_unknown_game, res.dropped_unresolved_team) == (0, 2, 2)

@@ -115,6 +115,7 @@ def match_report(sport: str = "all") -> None:
     from sqlalchemy import func, text
 
     from harness.db.models import Game, VenueMarket
+    from harness.matching.teams import AMBIGUOUS_TEAM_ID
 
     s = get_settings()
     with make_session_factory(make_engine(s.database_url))() as session:
@@ -142,6 +143,10 @@ def match_report(sport: str = "all") -> None:
             for name in (notes or {}).get("unresolved_teams", []):
                 unresolved.add(name)
         print(f"unresolved Odds API names (7d): {sorted(unresolved) if unresolved else 'none'}")
+        amb = session.execute(text(
+            "select sport || '/' || source || '/' || raw_name from team_aliases where team_id = :s order by 1"),
+            {"s": AMBIGUOUS_TEAM_ID}).scalars().all()
+        print(f"ambiguous aliases: {len(amb)} (first 10: {amb[:10]})")
 
 
 if __name__ == "__main__":

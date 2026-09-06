@@ -11,6 +11,13 @@ from harness.matching.teams import resolve_team
 
 
 @dataclass(frozen=True)
+class OddsUpsertResult:
+    inserted: int = 0
+    dropped_unknown_game: int = 0
+    dropped_unresolved_team: int = 0
+
+
+@dataclass(frozen=True)
 class OddsRow:
     event_id: str
     book: str
@@ -54,14 +61,16 @@ def parse_odds_body(body, sport: str) -> list[OddsRow]:
     return out
 
 
-def upsert_odds_rows(session: Session, sport: str, rows: list[OddsRow], raw_id: int, run_id: int, fetched_at: datetime) -> int:
+def upsert_odds_rows(session: Session, sport: str, rows: list[OddsRow], raw_id: int, run_id: int,
+                     fetched_at: datetime) -> OddsUpsertResult:
     games = {g.odds_api_event_id: g.id for g in session.execute(
         select(Game).where(Game.odds_api_event_id.in_({r.event_id for r in rows}))).scalars()}
-    inserted = 0
+    inserted = no_game = no_team = 0
     cache: dict[str, int | None] = {}
     for r in rows:
         gid = games.get(r.event_id)
         if gid is None:
+            no_game += 1
             continue
         team_id, side = None, None
         if r.outcome_name in ("Over", "Under"):
@@ -71,9 +80,10 @@ def upsert_odds_rows(session: Session, sport: str, rows: list[OddsRow], raw_id: 
                 cache[r.outcome_name] = resolve_team(session, sport, r.outcome_name, sources=("odds_api", "espn_display"))[0]
             team_id = cache[r.outcome_name]
             if team_id is None:
+                no_team += 1
                 continue
         stmt = insert(OddsSnapshot).values(raw_id=raw_id, run_id=run_id, book=r.book, game_id=gid, market_type=r.market_type,
                                            outcome_team_id=team_id, outcome_side=side, point=r.point, price_decimal=r.price,
                                            book_last_update=r.last_update, fetched_at=fetched_at).on_conflict_do_nothing().returning(OddsSnapshot.id)
         inserted += len(session.execute(stmt).fetchall())
-    return inserted
+    return OddsUpsertResult(inserted, no_game, no_team)

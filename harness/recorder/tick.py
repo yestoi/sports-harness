@@ -305,7 +305,7 @@ class Recorder:
                 log.exception("tick failed")
                 ctx["errors"].append({"tick": repr(e)})
             try:
-                ctx["normalized"] = normalize_new(session, ctx=ctx)
+                ctx["normalized"] = normalize_new(session, ctx=ctx, time_budget_s=30)
             except Exception as e:  # noqa: BLE001
                 log.exception("normalize failed")
                 ctx["warnings"].append({"normalize": repr(e)})
@@ -327,7 +327,8 @@ class Recorder:
                                     "trade_gaps": ctx["trade_gaps"],
                                     "normalized": ctx.get("normalized", {}),
                                     "unresolved_teams": sorted(set(ctx.get("unresolved_teams", [])))[:50],
-                                    "normalize_errors": ctx.get("normalize_errors", [])},
+                                    "normalize_errors": ctx.get("normalize_errors", []),
+                                    "odds_dropped": ctx.get("odds_dropped", {})},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
                      len(ctx["errors"]), len(ctx["warnings"]))

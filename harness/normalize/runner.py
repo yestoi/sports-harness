@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from datetime import datetime
 
 from sqlalchemy import select, text
@@ -13,7 +14,9 @@ from harness.normalize.odds import parse_odds_body, upsert_odds_rows
 
 log = logging.getLogger(__name__)
 FAMILIES = ("espn", "odds_featured", "odds_alternates", "kalshi_events", "kalshi_markets", "kalshi_orderbook", "kalshi_trades")
-NORMALIZED_TABLES = ("odds_snapshots", "venue_quotes", "orderbook_snapshots", "venue_trades", "venue_markets", "games")
+# Tables rebuildable in full from raw_responses. venue_trades is deliberately absent: it also
+# holds source='ws' rows that exist nowhere in raw_responses, so it is pruned by source instead.
+NORMALIZED_TABLES = ("odds_snapshots", "venue_quotes", "orderbook_snapshots", "venue_markets", "games")
 _EVENTS: dict[str, dict] = {}  # event_ticker -> event, refreshed from raw /events bodies
 _OB_RE = re.compile(r"^/markets/([^/]+)/orderbook$")
 
@@ -62,7 +65,10 @@ def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
         if family == "odds_featured":
             res = upsert_games_from_odds(session, sport, body, r.id)
             ctx.setdefault("unresolved_teams", []).extend(res.unresolved)
-        upsert_odds_rows(session, sport, parse_odds_body(body, sport), r.id, r.run_id, r.fetched_at)
+        odds = upsert_odds_rows(session, sport, parse_odds_body(body, sport), r.id, r.run_id, r.fetched_at)
+        dropped = ctx.setdefault("odds_dropped", {"unknown_game": 0, "unresolved_team": 0})
+        dropped["unknown_game"] += odds.dropped_unknown_game
+        dropped["unresolved_team"] += odds.dropped_unresolved_team
     elif family == "kalshi_events":
         for ev in (body or {}).get("events", []) if isinstance(body, dict) else []:
             if ev.get("event_ticker"):
@@ -79,27 +85,68 @@ def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
         insert_trades(session, body, r.id)
 
 
-def normalize_new(session: Session, batch: int = 500, ctx: dict | None = None) -> dict[str, int]:
+def _watermark(session: Session, family: str) -> NormalizeState:
+    state = session.get(NormalizeState, family)
+    if state is None:
+        state = NormalizeState(family=family, last_raw_id=0)
+        session.add(state)
+        session.flush()
+    return state
+
+
+def _drain_batch(session: Session, family: str, batch: int, ctx: dict) -> tuple[int, int, bool]:
+    """Process one batch of a family. Returns (normalized, fetched, committed)."""
+    state = _watermark(session, family)
+    last_committed = state.last_raw_id
+    rows = session.execute(select(RawResponse).where(_family_filter(family), RawResponse.http_status == 200,
+                                                     RawResponse.id > last_committed)
+                           .order_by(RawResponse.id).limit(batch)).scalars().all()
+    if not rows:
+        return 0, 0, True
+    n, last_id = 0, last_committed
+    for r in rows:
+        try:
+            # One savepoint per row: a database error aborts only this row, leaving the rest
+            # of the batch (and the watermark) intact.
+            with session.begin_nested():
+                _handle(session, family, r, ctx)
+            n += 1
+        except Exception as e:  # noqa: BLE001
+            log.exception("normalize %s raw_id=%s failed", family, r.id)
+            ctx.setdefault("normalize_errors", []).append({family: {"raw_id": r.id, "error": repr(e)[:300]}})
+        # A poison row is skipped, never retried in a loop.
+        last_id = r.id
+    _watermark(session, family).last_raw_id = last_id
+    try:
+        session.commit()
+    except Exception as e:  # noqa: BLE001
+        log.exception("normalize %s commit failed", family)
+        session.rollback()
+        ctx.setdefault("normalize_errors", []).append({family: {"commit_error": repr(e)[:300]}})
+        # The rollback restored the watermark to the last successfully committed row.
+        _watermark(session, family).last_raw_id = last_committed
+        session.commit()
+        return 0, len(rows), False
+    return n, len(rows), True
+
+
+def normalize_new(session: Session, batch: int = 500, ctx: dict | None = None,
+                  time_budget_s: float = 30.0) -> dict[str, int]:
     ctx = ctx if ctx is not None else {}
     if not _EVENTS:
         _load_events_cache(session)
     counts: dict[str, int] = {}
+    deadline = time.monotonic() + time_budget_s
     for family in FAMILIES:
-        state = session.get(NormalizeState, family) or NormalizeState(family=family, last_raw_id=0)
-        session.add(state)
-        rows = session.execute(select(RawResponse).where(_family_filter(family), RawResponse.http_status == 200,
-                                                         RawResponse.id > state.last_raw_id)
-                               .order_by(RawResponse.id).limit(batch)).scalars().all()
         n = 0
-        for r in rows:
-            try:
-                _handle(session, family, r, ctx)
-                n += 1
-            except Exception:  # noqa: BLE001
-                log.exception("normalize %s raw_id=%s failed", family, r.id)
-                ctx.setdefault("normalize_errors", []).append({family: r.id})
-            state.last_raw_id = r.id
-        session.commit()
+        while True:
+            done, fetched, committed = _drain_batch(session, family, batch, ctx)
+            n += done
+            if not committed or fetched < batch:
+                break
+            if time.monotonic() >= deadline:
+                log.warning("normalize %s: time budget %.0fs reached with a full batch pending", family, time_budget_s)
+                break
         counts[family] = n
     return counts
 
@@ -107,6 +154,8 @@ def normalize_new(session: Session, batch: int = 500, ctx: dict | None = None) -
 def reprocess(session: Session, from_raw_id: int = 0, families: list[str] | None = None, truncate: bool = False) -> dict[str, int]:
     if truncate:
         session.execute(text("truncate " + ", ".join(NORMALIZED_TABLES) + " restart identity cascade"))
+        # WebSocket trades are not rebuildable from raw_responses; only REST rows are.
+        session.execute(text("delete from venue_trades where source = 'rest'"))
     for family in families or FAMILIES:
         state = session.get(NormalizeState, family) or NormalizeState(family=family)
         state.last_raw_id = from_raw_id

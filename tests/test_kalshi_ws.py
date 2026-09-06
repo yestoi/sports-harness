@@ -1,11 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import sessionmaker
 
-from harness.db.models import OrderbookEvent, VenueTrade
+from harness.db.models import Game, OrderbookEvent, VenueMarket, VenueQuote, VenueTrade
 from harness.recorder.ws_sink import WsSink
-from harness.venues.kalshi.ws import diff_subscriptions
+from harness.venues.kalshi.ws import diff_subscriptions, is_stale, select_ws_tickers, should_reconnect
 
 NOW = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
 
@@ -51,3 +51,45 @@ def test_sink_recovers_after_exception(db_session, monkeypatch):
     assert sink.handle(trade, NOW) is None and sink.errors == 1
     assert sink.handle(trade, NOW) == "trade"
     assert db_session.query(VenueTrade).filter_by(trade_id="t-x").count() == 1
+
+
+def _market(session, ticker: str, game_id: int, last_seen) -> int:
+    vm = VenueMarket(venue="kalshi", ticker=ticker, event_ticker="E1", series_ticker="KXNFLGAME", game_id=game_id,
+                     market_type="moneyline", match_status="matched", match_confidence=Decimal("1.00"),
+                     match_reason="x", first_seen_raw_id=1, last_seen_at=last_seen)
+    session.add(vm)
+    session.flush()
+    return vm.id
+
+
+def test_select_ws_tickers_orders_by_latest_quote_volume(db_session):
+    # I5: last_seen_at is a near-total tie across markets, so the cap must be decided by
+    # the latest quote's 24h volume, not by an arbitrary tie-break.
+    g = Game(sport="nfl", home_team_id=19, away_team_id=14, kickoff_utc=NOW + timedelta(hours=3))
+    db_session.add(g)
+    db_session.flush()
+    quiet = _market(db_session, "K-QUIET", g.id, NOW)
+    busy = _market(db_session, "K-BUSY", g.id, NOW)
+    _market(db_session, "K-NONE", g.id, NOW)
+    for vmid, vol, at in ((quiet, "10.00", NOW), (busy, "1.00", NOW - timedelta(hours=2)),
+                          (busy, "900.00", NOW), (quiet, "5000.00", NOW - timedelta(hours=2))):
+        db_session.add(VenueQuote(raw_id=vmid * 100 + int(at.hour), run_id=1, venue_market_id=vmid,
+                                  volume_24h=Decimal(vol), fetched_at=at))
+    db_session.flush()
+    assert select_ws_tickers(db_session, NOW, cap=10) == ["K-BUSY", "K-QUIET", "K-NONE"]
+    assert select_ws_tickers(db_session, NOW, cap=1) == ["K-BUSY"]
+
+
+def test_should_reconnect_on_missing_ack_or_error_frame():
+    # I6: no `subscribed` ack inside the window, or an error frame, means reconnect.
+    assert should_reconnect(0, 20.0, None) is True
+    assert should_reconnect(0, 5.0, None) is False
+    assert should_reconnect(2, 600.0, None) is False
+    assert should_reconnect(2, 1.0, {"type": "error", "msg": {"code": 6}}) is True
+
+
+def test_is_stale_counts_consecutive_recv_timeouts():
+    # I7: 30 s recv timeout, so six consecutive timeouts is three minutes of silence.
+    assert is_stale(6, 30.0, 180) is True
+    assert is_stale(5, 30.0, 180) is False
+    assert is_stale(0, 30.0, 180) is False
