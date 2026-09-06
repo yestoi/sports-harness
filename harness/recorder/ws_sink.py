@@ -45,6 +45,11 @@ class WsSink:
                 self.errors += 1
             self._pending, self._last_commit = 0, time.monotonic()
 
+    def reset_sequences(self) -> None:
+        """Forget remembered seq numbers so a fresh subscription's restart-at-1 doesn't
+        look like a gap against the previous connection's sequence."""
+        self._last_seq.clear()
+
     def _check_seq(self, sid: int, seq: int, ticker: str, ts: datetime) -> None:
         last = self._last_seq.get(sid)
         if last is not None and seq != last + 1:

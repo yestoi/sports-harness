@@ -1,11 +1,17 @@
+import contextlib
+import json
+import time
+
+import websocket
+from sqlalchemy.orm import sessionmaker
+
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy.orm import sessionmaker
-
 from harness.db.models import Game, OrderbookEvent, VenueMarket, VenueQuote, VenueTrade
 from harness.recorder.ws_sink import WsSink
-from harness.venues.kalshi.ws import diff_subscriptions, is_stale, select_ws_tickers, should_reconnect
+from harness.venues.kalshi import ws as ws_module
+from harness.venues.kalshi.ws import WsRecorder, diff_subscriptions, is_stale, select_ws_tickers, should_reconnect
 
 NOW = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
 
@@ -93,3 +99,140 @@ def test_is_stale_counts_consecutive_recv_timeouts():
     assert is_stale(6, 30.0, 180) is True
     assert is_stale(5, 30.0, 180) is False
     assert is_stale(0, 30.0, 180) is False
+
+
+def test_select_ws_tickers_includes_market_with_no_quotes_sorted_last(db_session):
+    # Candidate-set-first rewrite must still surface a market that has never had a quote
+    # (LEFT JOIN LATERAL, not an inner join), and it must sort after every market that has one.
+    g = Game(sport="nfl", home_team_id=19, away_team_id=14, kickoff_utc=NOW + timedelta(hours=3))
+    db_session.add(g)
+    db_session.flush()
+    quoted = _market(db_session, "K-QUOTED", g.id, NOW)
+    _market(db_session, "K-EMPTY", g.id, NOW)
+    db_session.add(VenueQuote(raw_id=quoted, run_id=1, venue_market_id=quoted, volume_24h=Decimal("1.00"), fetched_at=NOW))
+    db_session.flush()
+    assert select_ws_tickers(db_session, NOW, cap=10) == ["K-QUOTED", "K-EMPTY"]
+
+
+class _FakeWs:
+    def __init__(self, messages):
+        self._messages = list(messages)
+
+    def send(self, *_a, **_kw):
+        pass
+
+    def recv(self):
+        if self._messages:
+            return self._messages.pop(0)
+        raise websocket.WebSocketTimeoutException()
+
+    def close(self):
+        pass
+
+
+class _FakeSettings:
+    kalshi_ws_url = "wss://fake.example/ws"
+    ws_max_tickers = 10
+    ws_lookahead_hours = 24
+    ws_stale_s = 180
+
+
+class _FakeSink:
+    def __init__(self, on_handle):
+        self._on_handle = on_handle
+        self.closed = False
+        self.reset_count = 0
+
+    def handle(self, msg, received_at):
+        self._on_handle(msg, received_at)
+
+    def reset_sequences(self):
+        self.reset_count += 1
+
+    def close(self):
+        self.closed = True
+
+
+def test_backoff_reset_deferred_until_first_data_message(monkeypatch):
+    # I6/backoff bug: a connection that succeeds but whose subscription is rejected (error
+    # frame) twice in a row must sleep 1, 2 (not 1, 1) -- the old code reset backoff to 1.0
+    # right after `_subscribe` sent the frame, before the subscription was proven to work.
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: [])
+
+    error = json.dumps({"type": "error", "msg": {"code": 6}})
+    subscribed = json.dumps({"type": "subscribed", "msg": {"sid": 1}})
+    trade = json.dumps({"type": "trade", "sid": 1, "seq": 1, "msg": {}})
+
+    connect_calls = {"n": 0}
+
+    def ws_factory(url, header, timeout):
+        connect_calls["n"] += 1
+        # First two connections succeed but the venue immediately rejects the subscription;
+        # the third connection's subscription is accepted and one real message follows.
+        if connect_calls["n"] <= 2:
+            return _FakeWs([error])
+        return _FakeWs([subscribed, trade])
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None, ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+
+    def on_handle(_msg, _ts):
+        recorder.stop()
+
+    recorder.sink = _FakeSink(on_handle)
+    recorder.run_forever()
+
+    assert sleeps == [1.0, 2.0]
+
+
+def test_backoff_resets_after_data_then_doubles_again_from_one(monkeypatch):
+    # Once real data has flowed, a fresh failure must sleep 1.0 again, not continue doubling
+    # from wherever the pre-data failures had left it.
+    sleeps: list[float] = []
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: [])
+
+    error = json.dumps({"type": "error", "msg": {"code": 6}})
+    subscribed = json.dumps({"type": "subscribed", "msg": {"sid": 1}})
+    trade = json.dumps({"type": "trade", "sid": 1, "seq": 1, "msg": {}})
+
+    connect_calls = {"n": 0}
+
+    def ws_factory(url, header, timeout):
+        connect_calls["n"] += 1
+        if connect_calls["n"] == 3:
+            return _FakeWs([subscribed, trade])
+        return _FakeWs([error])
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None, ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+
+    state = {"got_data": False}
+
+    def on_handle(_msg, _ts):
+        state["got_data"] = True
+
+    recorder.sink = _FakeSink(on_handle)
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        if state["got_data"] and len(sleeps) >= 3:
+            recorder.stop()
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    recorder.run_forever()
+
+    assert sleeps[:3] == [1.0, 2.0, 1.0]
+
+
+def test_ws_sink_reset_sequences_avoids_synthetic_gap_on_reconnect(db_session):
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    snap = {"type": "orderbook_snapshot", "sid": 2, "seq": 5, "msg": {"market_ticker": "K1"}}
+    sink.handle(snap, NOW)
+    sink.reset_sequences()
+    delta = {"type": "orderbook_delta", "sid": 2, "seq": 1, "msg": {"market_ticker": "K1", "price_dollars": "0.35", "delta_fp": "1.00"}}
+    sink.handle(delta, NOW)
+    kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
+    assert kinds == ["snapshot", "delta"]

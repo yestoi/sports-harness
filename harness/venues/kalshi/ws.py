@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 import websocket
-from sqlalchemy import func, select
+from sqlalchemy import select, true
 from sqlalchemy.orm import Session, sessionmaker
 
 from harness.config.settings import Settings
@@ -43,18 +43,33 @@ def diff_subscriptions(current: list[str], wanted: list[str]) -> tuple[list[str]
 
 def select_ws_tickers(session: Session, now: datetime, cap: int, lookahead_hours: int = 24) -> list[str]:
     lo, hi = now - timedelta(hours=4), now + timedelta(hours=lookahead_hours)
+    # Compute the (small) candidate set first -- markets whose game falls in the window and
+    # that are matched -- then pull each candidate's own latest quote via a LATERAL join that
+    # rides ix_quotes_market_fetched (venue_market_id, fetched_at). This avoids aggregating
+    # over all of venue_quotes (which grows ~1M rows/day) on every call.
+    candidates = (
+        select(VenueMarket.id.label("vmid"), VenueMarket.ticker.label("ticker"),
+               VenueMarket.last_seen_at.label("last_seen_at"))
+        .join(Game, Game.id == VenueMarket.game_id)
+        .where(VenueMarket.match_status.in_(("matched", "fuzzy", "manual")), Game.kickoff_utc >= lo, Game.kickoff_utc <= hi)
+        .subquery("candidates")
+    )
     # last_seen_at is a near-total tie (every market is refreshed in the same tick), so it
     # cannot decide which markets make the cap. Order by the latest quote's 24h volume.
-    latest = (select(VenueQuote.venue_market_id.label("vmid"), func.max(VenueQuote.fetched_at).label("mx"))
-              .group_by(VenueQuote.venue_market_id).subquery())
-    vol = (select(latest.c.vmid.label("vmid"), func.max(VenueQuote.volume_24h).label("v24"))
-           .join(VenueQuote, (VenueQuote.venue_market_id == latest.c.vmid) & (VenueQuote.fetched_at == latest.c.mx))
-           .group_by(latest.c.vmid).subquery())
+    latest_quote = (
+        select(VenueQuote.volume_24h.label("v24"))
+        .where(VenueQuote.venue_market_id == candidates.c.vmid)
+        .order_by(VenueQuote.fetched_at.desc())
+        .limit(1)
+        .correlate(candidates)
+        .lateral("latest_quote")
+    )
     rows = session.execute(
-        select(VenueMarket.ticker).join(Game, Game.id == VenueMarket.game_id)
-        .outerjoin(vol, vol.c.vmid == VenueMarket.id)
-        .where(VenueMarket.match_status.in_(("matched", "fuzzy", "manual")), Game.kickoff_utc >= lo, Game.kickoff_utc <= hi)
-        .order_by(vol.c.v24.desc().nullslast(), VenueMarket.last_seen_at.desc())).scalars().all()
+        select(candidates.c.ticker)
+        .select_from(candidates)
+        .outerjoin(latest_quote, true())
+        .order_by(latest_quote.c.v24.desc().nullslast(), candidates.c.last_seen_at.desc())
+    ).scalars().all()
     return list(rows)[:cap]
 
 
@@ -65,6 +80,7 @@ class WsRecorder:
         self._stop = False
         self._sids: list[int] = []
         self._current: list[str] = []
+        self._backoff = 1.0
 
     def _headers(self) -> list[str]:
         ts_ms = int(self.clock().timestamp() * 1000)
@@ -131,6 +147,10 @@ class WsRecorder:
                 log.warning("ws error frame: %s", json.dumps(msg)[:500])
             else:
                 self.sink.handle(msg, self.clock())
+                # Only a real data message proves the subscription actually works; resetting
+                # backoff any earlier (e.g. right after sending the subscribe frame) means a
+                # persistently rejected subscription reconnects at the minimum interval forever.
+                self._backoff = 1.0
             if should_reconnect(len(self._sids), time.monotonic() - subscribed_at, error_msg):
                 raise _Reconnect(f"subscription rejected: {json.dumps(error_msg)[:200] if error_msg else 'no ack'}")
             if time.monotonic() - last_plan >= 300:
@@ -142,7 +162,6 @@ class WsRecorder:
     def run_forever(self) -> None:
         signal.signal(signal.SIGTERM, self.stop)
         signal.signal(signal.SIGINT, self.stop)
-        backoff = 1.0
         while not self._stop:
             try:
                 with self.factory() as session:
@@ -150,8 +169,11 @@ class WsRecorder:
                 ws = self._connect()
                 self._sids, self._current = [], []
                 try:
+                    # Each new subscription restarts seq numbering at the venue, so any
+                    # sequence numbers remembered from a prior connection must be dropped
+                    # first or the next delta looks like a gap.
+                    self.sink.reset_sequences()
                     self._subscribe(ws, tickers)
-                    backoff = 1.0
                     self._recv_loop(ws)
                 finally:
                     try:
@@ -159,7 +181,7 @@ class WsRecorder:
                     except Exception:  # noqa: BLE001
                         log.debug("ws close failed", exc_info=True)
             except Exception as e:  # noqa: BLE001
-                log.warning("ws loop error: %r; reconnecting in %.0fs", e, backoff)
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
+                log.warning("ws loop error: %r; reconnecting in %.0fs", e, self._backoff)
+                time.sleep(self._backoff)
+                self._backoff = min(self._backoff * 2, 60.0)
         self.sink.close()
