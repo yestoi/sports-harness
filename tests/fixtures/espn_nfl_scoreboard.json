@@ -1,0 +1,15 @@
+{
+  "events": [
+    {
+      "id": "401872656",
+      "date": "2026-09-10T00:20Z",
+      "name": "New England Patriots at Seattle Seahawks",
+      "status": {"type": {"name": "STATUS_SCHEDULED"}},
+      "competitions": [{"competitors": [
+        {"homeAway": "home", "team": {"abbreviation": "SEA", "displayName": "Seattle Seahawks"}},
+        {"homeAway": "away", "team": {"abbreviation": "NE", "displayName": "New England Patriots"}}
+      ]}]
+    },
+    {"id": "bad", "date": "not-a-date", "competitions": []}
+  ]
+}
