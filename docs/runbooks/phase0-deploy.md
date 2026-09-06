@@ -17,3 +17,7 @@ With a fake or invalid key, `/healthz` returns 503 with `last_status` `error` by
    For unattended operation, point an external monitor (uptime checker, or a cron `curl -f`) at http://<nas>:8080/healthz; the container health status alone does not alert anyone.
 
 Must be running before Wed 2026-09-09 19:20 CT (NE at SEA).
+
+## Known external quirks
+
+- ESPN's scoreboard API sits behind Akamai and returns HTTP 403 for custom or browser-like User-Agent strings while accepting httpx's default `python-httpx/x.y`. The HTTP client therefore sends no custom User-Agent. If ESPN rows show `http 403` in `runs.notes.errors`, check this first.

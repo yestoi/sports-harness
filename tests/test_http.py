@@ -55,3 +55,10 @@ def test_fetched_at_uses_injected_clock():
     respx.get("https://x/f").mock(return_value=httpx.Response(200, json={}))
     r = HttpClient(timeout_s=1, sleep=lambda s: None, clock=lambda: fixed).get("https://x/f")
     assert r.fetched_at == fixed
+
+
+@respx.mock
+def test_user_agent_is_httpx_default():
+    route = respx.get("https://x/ua").mock(return_value=httpx.Response(200, json={}))
+    HttpClient(timeout_s=1, sleep=lambda s: None).get("https://x/ua")
+    assert route.calls[0].request.headers["user-agent"].startswith("python-httpx/")

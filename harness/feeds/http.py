@@ -26,7 +26,8 @@ class FetchResult:
 class HttpClient:
     def __init__(self, timeout_s: float, sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
-        self._client = httpx.Client(timeout=timeout_s, headers={"User-Agent": "harness-recorder/0.1"})
+        # ESPN (Akamai) returns 403 for custom or browser User-Agents but accepts httpx's default; keep the default.
+        self._client = httpx.Client(timeout=timeout_s)
         self._sleep = sleep
         self._clock = clock
 
