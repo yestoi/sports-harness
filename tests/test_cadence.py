@@ -87,3 +87,13 @@ def test_select_trade_tickers():
     wm = {"changed": (now - timedelta(hours=1), Decimal("10")), "same": (now - timedelta(hours=1), Decimal("10"))}
     out = select_trade_tickers(now, ms, wm)
     assert out == [("changed", now - timedelta(hours=1, seconds=5)), ("new_active", now - timedelta(hours=24))]
+
+
+def test_quiet_hours_suppressed_while_a_game_of_that_sport_is_in_progress():
+    now = datetime(2026, 9, 13, 7, 0, tzinfo=UTC)  # 02:00 CT Sunday
+    kick = now - timedelta(hours=2)
+    assert interval_for("ncaaf", now, [k("ncaaf", kick)], TZ) == 120
+    assert interval_for("ncaaf", now, [], TZ) is None
+    assert interval_for("nfl", now, [k("ncaaf", kick)], TZ) is None  # other sport still quiet
+    stale = now - timedelta(hours=5)  # ended more than 4h ago
+    assert interval_for("ncaaf", now, [k("ncaaf", stale)], TZ) is None

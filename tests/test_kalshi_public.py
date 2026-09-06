@@ -51,7 +51,29 @@ def test_fetch_orderbook_and_trades_params():
     c.fetch_orderbook("T1")
     c.fetch_trades("T1", datetime(2026, 9, 6, 16, 0, tzinfo=timezone.utc))
     assert dict(ob.calls[0].request.url.params) == {"depth": "20"}
+    # first page carries no cursor param
     assert dict(tr.calls[0].request.url.params) == {"ticker": "T1", "limit": "1000", "min_ts": "1788710400"}
+
+
+@respx.mock
+def test_fetch_trades_follows_cursor():
+    page1 = {"cursor": "abc", "trades": [{"trade_id": "a"}]}
+    page2 = {"cursor": "", "trades": [{"trade_id": "b"}]}
+    route = respx.get("https://k/markets/trades").mock(
+        side_effect=[httpx.Response(200, json=page1), httpx.Response(200, json=page2)])
+    c = KalshiPublic(HttpClient(1, sleep=lambda s: None), "https://k", sleep_s=0, sleep=lambda s: None)
+    pages = c.fetch_trades("T1", datetime(2026, 9, 6, 16, 0, tzinfo=timezone.utc))
+    assert [p.body["trades"][0]["trade_id"] for p in pages] == ["a", "b"]
+    assert "cursor" not in dict(route.calls[0].request.url.params)
+    assert dict(route.calls[1].request.url.params)["cursor"] == "abc"
+
+
+@respx.mock
+def test_fetch_trades_stops_on_non_200():
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(500))
+    c = KalshiPublic(HttpClient(1, sleep=lambda s: None), "https://k", sleep_s=0, sleep=lambda s: None)
+    pages = c.fetch_trades("T1", datetime(2026, 9, 6, 16, 0, tzinfo=timezone.utc))
+    assert [p.status for p in pages] == [500]  # no second page is requested
 
 
 def test_football_series_constant():

@@ -20,6 +20,8 @@ from harness.venues.kalshi.public import FOOTBALL_SERIES, KalshiPublic, MarketSu
 log = logging.getLogger(__name__)
 _ESPN_PATH = {"nfl": "/nfl/scoreboard", "ncaaf": "/college-football/scoreboard"}
 _SERIES_SPORT = {s: ("nfl" if "NFL" in s else "ncaaf") for s in FOOTBALL_SERIES}
+ALTERNATES_BUDGET_S = 40  # alternates may spend at most this much of the tick budget
+KALSHI_COMMIT_EVERY = 50  # commit after this many stored trade/ladder responses
 
 
 def utcnow() -> datetime:
@@ -34,6 +36,9 @@ class _Budget:
     def ok(self) -> bool:
         return self._mono() < self._deadline
 
+    def remaining_s(self) -> float:
+        return self._deadline - self._mono()
+
 
 class Recorder:
     def __init__(self, settings: Settings, session_factory: sessionmaker, odds: OddsApiClient, espn: EspnClient,
@@ -43,12 +48,29 @@ class Recorder:
         self.session_factory = session_factory
         self.odds, self.espn, self.kalshi = odds, espn, kalshi
         self.clock, self.monotonic = clock, monotonic
+        # I7: last known-good body per (source, endpoint); avoids re-reading multi-MB JSONB every tick.
+        self._last_good: dict[tuple[str, str], dict | list] = {}
 
     # ---- helpers -------------------------------------------------------------------
-    def _latest_body(self, session: Session, source: str, endpoint: str) -> dict | list | None:
+    def _latest_body_from_db(self, session: Session, source: str, endpoint: str) -> dict | list | None:
         row = (session.query(RawResponse).filter_by(source=source, endpoint=endpoint, http_status=200)
                .order_by(desc(RawResponse.fetched_at)).first())
         return row.body if row else None
+
+    def _latest_body(self, session: Session, source: str, endpoint: str) -> dict | list | None:
+        cached = self._last_good.get((source, endpoint))
+        if cached is not None:
+            return cached
+        body = self._latest_body_from_db(session, source, endpoint)
+        if body is not None:
+            self._last_good[(source, endpoint)] = body
+        return body
+
+    def _checkpoint(self, session: Session, run: Run) -> None:
+        """Commit what has been stored so far and drop it from the identity map (I1/I8)."""
+        session.commit()
+        session.expunge_all()
+        session.add(run)  # re-attach so finish_run still writes through this session
 
     # ---- sources -------------------------------------------------------------------
     def _espn(self, session: Session, run: Run, now: datetime, ctx: dict) -> list[Kickoff]:
@@ -64,6 +86,7 @@ class Recorder:
                     if r.status == 200:
                         store.set_source_state(session, key, now)
                         body = r.body
+                        self._last_good[("espn", _ESPN_PATH[sport])] = body
                     else:
                         ctx["errors"].append({key: f"http {r.status}"})
                     ctx["fetched"] = True
@@ -75,33 +98,42 @@ class Recorder:
                 ctx["errors"].append({key: repr(e)})
         return kickoffs
 
-    def _odds(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff], ctx: dict) -> None:
+    def _odds(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff], budget: _Budget,
+              ctx: dict) -> None:
+        # C2: alternates get a sub-budget so a slow Odds API cannot starve the Kalshi capture.
+        alt_floor = self.s.tick_budget_s - ALTERNATES_BUDGET_S
         for sport, sport_key in SPORTS.items():
             key = f"odds_featured:{sport}"
             try:
                 interval = interval_for(sport, now, kickoffs, self.s.tz_local)
+                endpoint = f"/sports/{sport_key}/odds"
                 body = None
                 if is_due(store.get_source_state(session, key), now, interval):
                     r = self.odds.fetch_featured(sport_key)
-                    store.store_raw(session, run.id, "odds_api", f"/sports/{sport_key}/odds", {"markets": "featured"}, r)
+                    store.store_raw(session, run.id, "odds_api", endpoint, {"markets": "featured"}, r)
                     ctx["n"] += 1
                     c = parse_credit_headers(r.headers)
                     ctx["credits"] += c.last
-                    ctx["remaining"] = c.remaining
+                    if "x-requests-remaining" in r.headers:  # I5
+                        ctx["remaining"] = c.remaining
                     if r.status == 200:
                         store.set_source_state(session, key, now)
                         body = r.body
+                        self._last_good[("odds_api", endpoint)] = body
                     else:
                         ctx["errors"].append({key: f"http {r.status}"})
                     ctx["fetched"] = True
                 if body is None:
-                    body = self._latest_body(session, "odds_api", f"/sports/{sport_key}/odds")
+                    body = self._latest_body(session, "odds_api", endpoint)
                 if interval is None:
                     continue
                 events = parse_event_ids_and_times(body)
                 last_alt = {eid: ts for eid, _ in events
                             if (ts := store.get_source_state(session, f"odds_alt:{eid}")) is not None}
                 for eid in alternates_due(now, events, last_alt):
+                    if budget.remaining_s() < alt_floor:
+                        ctx["skipped_alternates"] += 1
+                        continue
                     try:
                         r = self.odds.fetch_event_alternates(sport_key, eid)
                         store.store_raw(session, run.id, "odds_api", f"/sports/{sport_key}/events/{eid}/odds",
@@ -109,11 +141,12 @@ class Recorder:
                         ctx["n"] += 1
                         c = parse_credit_headers(r.headers)
                         ctx["credits"] += c.last
-                        ctx["remaining"] = c.remaining
+                        if "x-requests-remaining" in r.headers:  # I5
+                            ctx["remaining"] = c.remaining
                         if r.status == 200:
                             store.set_source_state(session, f"odds_alt:{eid}", now)
                         else:
-                            ctx["errors"].append({f"odds_alt:{eid}": f"http {r.status}"})
+                            ctx["warnings"].append({f"odds_alt:{eid}": f"http {r.status}"})
                         ctx["fetched"] = True
                     except Exception as e:  # noqa: BLE001
                         log.exception("odds alternates failed")
@@ -153,27 +186,47 @@ class Recorder:
         wms = {t: (w.last_ts, Decimal(w.last_volume_fp)) for t, w in store.get_watermarks(session).items()}
         trades = select_trade_tickers(now, summaries, wms)
         vol = {m.ticker: m.volume_fp for m in summaries}
+        stored = 0
+
+        def maybe_commit() -> None:
+            nonlocal stored
+            if stored >= KALSHI_COMMIT_EVERY:
+                self._checkpoint(session, run)
+                stored = 0
+
         for ticker, min_ts in trades:
             if not budget.ok():
                 ctx["skipped_trades"] += 1
                 continue
             try:
-                r = self.kalshi.fetch_trades(ticker, min_ts)
-                store.store_raw(session, run.id, "kalshi", "/markets/trades", {"ticker": ticker, "min_ts": min_ts.isoformat()}, r)
-                ctx["n"] += 1
-                if r.status == 200:
+                pages = self.kalshi.fetch_trades(ticker, min_ts)  # I3: follows the cursor
+                for r in pages:
+                    store.store_raw(session, run.id, "kalshi", "/markets/trades",
+                                    {"ticker": ticker, "min_ts": min_ts.isoformat()}, r)
+                    ctx["n"] += 1
+                    stored += 1
+                if not pages:
+                    continue
+                ctx["fetched"] = True
+                if all(r.status == 200 for r in pages):
                     stamps: list[datetime] = []
-                    trades_list = r.body.get("trades", []) if isinstance(r.body, dict) else []
-                    for t in trades_list:
-                        try:
-                            stamps.append(datetime.fromisoformat(t["created_time"].replace("Z", "+00:00")))
-                        except (KeyError, ValueError, AttributeError):
-                            pass
+                    for r in pages:
+                        trades_list = r.body.get("trades", []) if isinstance(r.body, dict) else []
+                        for t in trades_list:
+                            try:
+                                stamps.append(datetime.fromisoformat(t["created_time"].replace("Z", "+00:00")))
+                            except (KeyError, ValueError, AttributeError):
+                                pass
                     newest = max(stamps) if stamps else now
                     store.upsert_watermark(session, ticker, newest, vol.get(ticker, Decimal("0")))
                 else:
-                    ctx["errors"].append({f"kalshi_trades:{ticker}": f"http {r.status}"})
-                ctx["fetched"] = True
+                    # I2: record the failure but still park the volume watermark so the ticker is not
+                    # re-selected every tick. last_ts is left untouched, so no trades are skipped.
+                    ctx["warnings"].append(
+                        {f"kalshi_trades:{ticker}": f"http {[r.status for r in pages]}"})
+                    prior_ts = wms[ticker][0] if ticker in wms else min_ts
+                    store.upsert_watermark(session, ticker, prior_ts, vol.get(ticker, Decimal("0")))
+                maybe_commit()
             except Exception as e:  # noqa: BLE001
                 log.exception("kalshi trades failed")
                 ctx["errors"].append({f"kalshi_trades:{ticker}": repr(e)})
@@ -185,9 +238,11 @@ class Recorder:
                 r = self.kalshi.fetch_orderbook(ticker)
                 store.store_raw(session, run.id, "kalshi", f"/markets/{ticker}/orderbook", {"depth": 20}, r)
                 ctx["n"] += 1
+                stored += 1
                 if r.status != 200:
-                    ctx["errors"].append({f"kalshi_orderbook:{ticker}": f"http {r.status}"})
+                    ctx["warnings"].append({f"kalshi_orderbook:{ticker}": f"http {r.status}"})
                 ctx["fetched"] = True
+                maybe_commit()
             except Exception as e:  # noqa: BLE001
                 log.exception("kalshi orderbook failed")
                 ctx["errors"].append({f"kalshi_orderbook:{ticker}": repr(e)})
@@ -196,28 +251,40 @@ class Recorder:
     def maybe_tick(self) -> Run:
         now = self.clock()
         budget = _Budget(self.s.tick_budget_s, self.monotonic)
-        ctx: dict = {"n": 0, "credits": 0, "remaining": None, "errors": [], "fetched": False,
-                     "skipped_trades": 0, "skipped_ladders": 0}
+        ctx: dict = {"n": 0, "credits": 0, "remaining": None, "errors": [], "warnings": [], "fetched": False,
+                     "skipped_trades": 0, "skipped_ladders": 0, "skipped_alternates": 0}
         with self.session_factory() as session:
             ensure_partitions(session, now)
             run = store.start_run(session, now)
             try:
                 kickoffs = self._espn(session, run, now, ctx)
-                self._odds(session, run, now, kickoffs, ctx)
+                self._checkpoint(session, run)
+                self._odds(session, run, now, kickoffs, budget, ctx)
+                self._checkpoint(session, run)
                 summaries = self._kalshi_markets(session, run, now, kickoffs, ctx)
+                self._checkpoint(session, run)
                 if summaries:
                     self._kalshi_trades_and_ladders(session, run, now, kickoffs, summaries, budget, ctx)
                 session.flush()
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed")
                 ctx["errors"].append({"tick": repr(e)})
-            exhausted = ctx["skipped_trades"] > 0 or ctx["skipped_ladders"] > 0
-            status = "error" if ctx["errors"] else ("ok" if ctx["fetched"] else "skipped")
+            exhausted = (ctx["skipped_trades"] > 0 or ctx["skipped_ladders"] > 0
+                         or ctx["skipped_alternates"] > 0)
+            if ctx["errors"]:
+                status = "error"
+            elif ctx["warnings"]:
+                status = "degraded"
+            else:
+                status = "ok" if ctx["fetched"] else "skipped"
             store.finish_run(session, run, status, error=None if not ctx["errors"] else "see notes",
                              n_requests=ctx["n"], credits_used=ctx["credits"], odds_remaining=ctx["remaining"],
                              budget_exhausted=exhausted,
-                             notes={"errors": ctx["errors"], "skipped_trades": ctx["skipped_trades"],
-                                    "skipped_ladders": ctx["skipped_ladders"]},
+                             notes={"errors": ctx["errors"], "warnings": ctx["warnings"],
+                                    "skipped_trades": ctx["skipped_trades"],
+                                    "skipped_ladders": ctx["skipped_ladders"],
+                                    "skipped_alternates": ctx["skipped_alternates"]},
                              finished_at=self.clock())
-            log.info("tick %s n=%d credits=%d errors=%d", status, ctx["n"], ctx["credits"], len(ctx["errors"]))
+            log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
+                     len(ctx["errors"]), len(ctx["warnings"]))
             return run

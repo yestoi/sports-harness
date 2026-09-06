@@ -72,7 +72,7 @@ harness/
 
 | Loop | Cadence | Does |
 |---|---|---|
-| Recorder tick | Per sport: every 2 min from 3h before that sport's first kickoff of the day until its last kickoff; 5 min all day Sat/Sun; 15 min otherwise; none 01:00–08:00 CT. Burst 15–20s from T−100 to T−60 min for NFL games (inactives window) and for 10 min after any venue mid move ≥ 2 pts. | Odds API featured + alternates, Kalshi bulk markets, Kalshi trades since last cursor, Kalshi full ladders for games inside T−3h, ESPN scoreboard. Everything to `raw_responses`. Then normalize. |
+| Recorder tick | Per sport: every 2 min from 3h before that sport's first kickoff of the day until its last kickoff; 5 min all day Sat/Sun; 15 min otherwise; none 01:00–08:00 CT. Burst 15–20s from T−100 to T−60 min for NFL games (inactives window) and for 10 min after any venue mid move ≥ 2 pts. Quiet hours are suppressed while a game of that sport is in progress (kickoff to kickoff + 4 h). | Odds API featured + alternates, Kalshi bulk markets, Kalshi trades since last cursor, Kalshi full ladders for games inside T−3h, ESPN scoreboard. Everything to `raw_responses`. Then normalize. |
 | WS recorder | Continuous, reconnecting | Kalshi `trade` and `orderbook_delta` for all matched football tickers, appended to `orderbook_events`/`venue_trades`. Records only; never drives execution. |
 | Strategy | After each tick | Fair values → gap snapshots → signals per registered variant (filters as labels) → intents for the primary variant |
 | Execution | Every 60–120s | Reconcile resting orders to target: place/amend/cancel (paper: insert orders rows). Watcher rules §9.2 |
@@ -91,6 +91,7 @@ harness/
 - All internal times are tz-aware UTC. `America/Chicago` appears only in APScheduler trigger timezones and dashboard rendering. Container sets `TZ=UTC` with tzdata. DST ends 2026-11-01.
 - Clock check each tick: local time vs venue `Date` header; skew > 30s trips the kill switch.
 - Startup reconciliation runs before any job (§9.1).
+- Run status: `ok` | `degraded` (secondary-source non-2xx only) | `error` (exception or primary-source non-2xx) | `skipped`. Health is 503 only on stale or error.
 
 ## 5. Data layer
 

@@ -1,15 +1,21 @@
 import json
+import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
 import respx
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import RawResponse, Run, TradeWatermark
 from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
+from harness.health import create_app
+from harness.recorder import store
 from harness.recorder.tick import Recorder
 from harness.venues.kalshi.public import KalshiPublic
 
@@ -20,14 +26,15 @@ KM = json.loads((FIXD / "kalshi_markets_page.json").read_text())
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)  # Wed 18:00 CT, 1h20m before the 19:20 kickoff
 
 
-def _recorder(env_settings, db_session, now=NOW):
+def _recorder(env_settings, db_session, now=NOW, monotonic=time.monotonic):
     clock = {"now": now}
     http = HttpClient(1, sleep=lambda s: None, clock=lambda: clock["now"])
     odds = OddsApiClient(http, "https://o/v4", "KEY", "pinnacle")
     espn = EspnClient(http, "https://e")
     kalshi = KalshiPublic(http, "https://k", sleep_s=0, sleep=lambda s: None)
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
-    return Recorder(env_settings, factory, odds, espn, kalshi, clock=lambda: clock["now"]), clock
+    return (Recorder(env_settings, factory, odds, espn, kalshi, clock=lambda: clock["now"],
+                     monotonic=monotonic), clock)
 
 
 @respx.mock
@@ -144,3 +151,152 @@ def test_non_2xx_response_marks_run_error(env_settings, db_session):
     assert run.status == "error"
     assert "odds_featured:nfl" in json.dumps(run.notes["errors"]) and "http 401" in json.dumps(run.notes["errors"])
     assert db_session.query(RawResponse).filter_by(run_id=run.id, source="odds_api", http_status=401).count() == 2
+    assert run.odds_remaining is None  # I5: no credit headers must not read as an exhausted account
+
+
+@respx.mock
+def test_alternates_stop_once_the_sub_budget_is_spent(env_settings, db_session):
+    # C2: alternates may consume at most 40 s of the tick budget.
+    two_events = [dict(ODDS[0]), dict(ODDS[0]) | {"id": "e2b4c6"}]
+    mono = {"t": 0.0}
+
+    def alt_response(request):
+        mono["t"] += 41.0  # the first alternates call burns the whole sub-budget
+        return httpx.Response(200, json={})
+
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(return_value=httpx.Response(200, json=two_events))
+    alt = respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(side_effect=alt_response)
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+
+    rec, _ = _recorder(env_settings, db_session, monotonic=lambda: mono["t"])
+    run = rec.maybe_tick()
+    assert alt.call_count == 1
+    assert run.notes["skipped_alternates"] >= 1
+    assert run.budget_exhausted is True
+
+
+@respx.mock
+def test_tick_commits_incrementally_before_finish_run(env_settings, db_session, monkeypatch):
+    # I1/I8: raw responses must be durable before finish_run commits the run row.
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json=ESPN))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(return_value=httpx.Response(200, json=ODDS))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(return_value=httpx.Response(200, json={}))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={}))
+
+    seen: dict = {}
+    real_finish = store.finish_run
+
+    def spy_finish(session, run, status, **kw):
+        with sessionmaker(bind=db_session.get_bind())() as fresh:
+            seen["rows"] = fresh.query(RawResponse).filter_by(run_id=run.id).count()
+        return real_finish(session, run, status, **kw)
+
+    commits = {"n": 0}
+    real_commit = SASession.commit
+
+    def counting_commit(self):
+        commits["n"] += 1
+        return real_commit(self)
+
+    monkeypatch.setattr(store, "finish_run", spy_finish)
+    monkeypatch.setattr(SASession, "commit", counting_commit)
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "ok", run.notes
+    assert seen["rows"] > 0  # visible from a fresh session before finish_run committed
+    # start_run + after espn + after odds + after kalshi markets + finish_run
+    assert commits["n"] >= 5
+
+
+@respx.mock
+def test_non_2xx_trades_watermark_stops_the_refetch_loop(env_settings, db_session):
+    # I2: a failed trades call still advances the volume watermark, leaving last_ts unchanged.
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    tr = respx.get("https://k/markets/trades").mock(return_value=httpx.Response(500, json={}))
+
+    rec, clock = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "degraded", run.notes
+    wm = db_session.get(TradeWatermark, "KXNFLGAME-26SEP21NYGLAR-NYG")
+    assert wm is not None and Decimal(wm.last_volume_fp) == Decimal("1234.00")
+    assert wm.last_ts == NOW - timedelta(hours=24)
+
+    after_first = tr.call_count
+    assert after_first > 0
+    clock["now"] = NOW + timedelta(minutes=20)
+    second = rec.maybe_tick()
+    assert tr.call_count == after_first, second.notes
+
+
+@respx.mock
+def test_trades_pagination_is_stored_page_by_page(env_settings, db_session):
+    # I3: every trades page is stored and the watermark uses the newest stamp across pages.
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+
+    def trade_pages(request):
+        if dict(request.url.params).get("cursor"):
+            return httpx.Response(200, json={"cursor": "", "trades": [
+                {"trade_id": "old", "created_time": "2026-09-09T21:00:00Z"}]})
+        return httpx.Response(200, json={"cursor": "pg2", "trades": [
+            {"trade_id": "new", "created_time": "2026-09-09T22:59:00Z"}]})
+
+    respx.get("https://k/markets/trades").mock(side_effect=trade_pages)
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "ok", run.notes
+    stored = db_session.query(RawResponse).filter_by(run_id=run.id, endpoint="/markets/trades").count()
+    assert stored == 12  # 6 series x the same duplicated ticker x 2 pages
+    wm = db_session.get(TradeWatermark, "KXNFLGAME-26SEP21NYGLAR-NYG")
+    assert wm.last_ts == datetime(2026, 9, 9, 22, 59, tzinfo=timezone.utc)
+
+
+@respx.mock
+def test_secondary_non_2xx_is_degraded_and_healthz_stays_green(env_settings, db_session):
+    # I4: only secondary-source non-2xx -> degraded, and /healthz is 200 with last_status degraded.
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(return_value=httpx.Response(200, json=ODDS))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(return_value=httpx.Response(404, json={}))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "degraded", run.notes
+    assert run.notes["errors"] == []
+    assert "odds_alt:e1f2a3" in json.dumps(run.notes["warnings"])
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    client = TestClient(create_app(factory, clock=lambda: NOW))
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok" and r.json()["last_status"] == "degraded"
+
+
+@respx.mock
+def test_latest_body_is_served_from_the_in_process_cache(env_settings, db_session, monkeypatch):
+    # I7: after a successful fetch the fallback body comes from memory, never from raw_responses.
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+
+    rec, clock = _recorder(env_settings, db_session)
+    assert rec.maybe_tick().status == "ok"
+
+    calls = {"n": 0}
+    real = Recorder._latest_body_from_db
+
+    def counting(self, session, source, endpoint):
+        calls["n"] += 1
+        return real(self, session, source, endpoint)
+
+    monkeypatch.setattr(Recorder, "_latest_body_from_db", counting)
+    clock["now"] = NOW + timedelta(seconds=30)
+    assert rec.maybe_tick().status == "skipped"
+    assert calls["n"] == 0

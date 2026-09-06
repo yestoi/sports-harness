@@ -15,16 +15,18 @@ def _local(now: datetime, tz: str) -> datetime:
 
 def interval_for(sport: str, now: datetime, kickoffs: list[Kickoff], tz: str) -> int | None:
     loc = _local(now, tz)
-    if 1 <= loc.hour < 8:
-        return None
     mine = [x for x in kickoffs if x.sport == sport]
+    # A game of this sport is on the field: kickoff through kickoff + 4h.
+    in_progress = any(timedelta(0) <= (now - x.kickoff_utc) <= timedelta(hours=4) for x in mine)
+    if 1 <= loc.hour < 8 and not in_progress:
+        return None
     if sport == "nfl":
         for x in mine:
             delta = x.kickoff_utc - now
             if timedelta(minutes=60) <= delta <= timedelta(minutes=100):
                 return 20
     today = [x.kickoff_utc for x in mine if _local(x.kickoff_utc, tz).date() == loc.date()]
-    if today and (min(today) - timedelta(hours=3)) <= now <= max(today):
+    if in_progress or (today and (min(today) - timedelta(hours=3)) <= now <= max(today)):
         return 120
     if loc.weekday() >= 5:
         return 300

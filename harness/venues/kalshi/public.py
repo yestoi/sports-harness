@@ -107,9 +107,17 @@ class KalshiPublic:
         self._pause()
         return r
 
-    def fetch_trades(self, ticker: str, min_ts: datetime) -> FetchResult:
-        r = self._http.get(f"{self._base}/markets/trades",
-                           params={"ticker": ticker, "limit": "1000", "min_ts": str(int(min_ts.timestamp()))},
-                           redact_params=())
-        self._pause()
-        return r
+    def fetch_trades(self, ticker: str, min_ts: datetime, max_pages: int = 5) -> list[FetchResult]:
+        pages: list[FetchResult] = []
+        cursor = ""
+        for _ in range(max_pages):
+            params = {"ticker": ticker, "limit": "1000", "min_ts": str(int(min_ts.timestamp()))}
+            if cursor:
+                params["cursor"] = cursor
+            r = self._http.get(f"{self._base}/markets/trades", params=params, redact_params=())
+            pages.append(r)
+            cursor = (r.body or {}).get("cursor", "") if isinstance(r.body, dict) else ""
+            self._pause()
+            if not cursor or r.status != 200:
+                break
+        return pages
