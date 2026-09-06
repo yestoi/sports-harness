@@ -69,6 +69,16 @@ def test_fetch_trades_follows_cursor():
 
 
 @respx.mock
+def test_fetch_trades_respects_max_pages_when_cursor_never_exhausts():
+    route = respx.get("https://k/markets/trades").mock(
+        return_value=httpx.Response(200, json={"cursor": "more", "trades": [{"trade_id": "a"}]}))
+    c = KalshiPublic(HttpClient(1, sleep=lambda s: None), "https://k", sleep_s=0, sleep=lambda s: None)
+    pages = c.fetch_trades("T1", datetime(2026, 9, 6, 16, 0, tzinfo=timezone.utc), max_pages=2)
+    assert len(pages) == 2
+    assert dict(route.calls[1].request.url.params)["cursor"] == "more"
+
+
+@respx.mock
 def test_fetch_trades_stops_on_non_200():
     respx.get("https://k/markets/trades").mock(return_value=httpx.Response(500))
     c = KalshiPublic(HttpClient(1, sleep=lambda s: None), "https://k", sleep_s=0, sleep=lambda s: None)

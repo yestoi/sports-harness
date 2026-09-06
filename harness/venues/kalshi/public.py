@@ -107,7 +107,7 @@ class KalshiPublic:
         self._pause()
         return r
 
-    def fetch_trades(self, ticker: str, min_ts: datetime, max_pages: int = 5) -> list[FetchResult]:
+    def fetch_trades(self, ticker: str, min_ts: datetime, max_pages: int = 20) -> list[FetchResult]:
         pages: list[FetchResult] = []
         cursor = ""
         for _ in range(max_pages):

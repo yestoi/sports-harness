@@ -259,6 +259,41 @@ def test_trades_pagination_is_stored_page_by_page(env_settings, db_session):
 
 
 @respx.mock
+def test_trade_gap_is_recorded_when_cursor_unexhausted(env_settings, db_session, monkeypatch):
+    import harness.recorder.tick as tick_mod
+    monkeypatch.setattr(tick_mod, "TRADES_MAX_PAGES", 2)
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+
+    def markets_by_series(request):
+        series = dict(request.url.params).get("series_ticker")
+        if series == "KXNFLGAME":
+            return httpx.Response(200, json=KM)
+        return httpx.Response(200, json={"cursor": "", "markets": []})
+
+    respx.get("https://k/markets").mock(side_effect=markets_by_series)
+    respx.get("https://k/markets/trades").mock(side_effect=lambda request: httpx.Response(
+        200, json={"cursor": "more", "trades": [
+            {"trade_id": "t1", "created_time": "2026-09-09T22:59:00Z"},
+            {"trade_id": "t0", "created_time": "2026-09-09T22:00:00Z"}]}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={}))
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "degraded", run.notes
+    gaps = run.notes["trade_gaps"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["ticker"] == "KXNFLGAME-26SEP21NYGLAR-NYG"
+    assert gap["pages"] == 2
+    assert gap["oldest_seen"].startswith("2026-09-09T22:00")
+    wm = db_session.get(TradeWatermark, "KXNFLGAME-26SEP21NYGLAR-NYG")
+    assert wm is not None and wm.last_ts == datetime(2026, 9, 9, 22, 59, tzinfo=timezone.utc)
+    stored = db_session.query(RawResponse).filter_by(run_id=run.id, endpoint="/markets/trades").count()
+    assert stored == 2
+
+
+@respx.mock
 def test_secondary_non_2xx_is_degraded_and_healthz_stays_green(env_settings, db_session):
     # I4: only secondary-source non-2xx -> degraded, and /healthz is 200 with last_status degraded.
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))

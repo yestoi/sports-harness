@@ -22,6 +22,7 @@ _ESPN_PATH = {"nfl": "/nfl/scoreboard", "ncaaf": "/college-football/scoreboard"}
 _SERIES_SPORT = {s: ("nfl" if "NFL" in s else "ncaaf") for s in FOOTBALL_SERIES}
 ALTERNATES_BUDGET_S = 40  # alternates may spend at most this much of the tick budget
 KALSHI_COMMIT_EVERY = 50  # commit after this many stored trade/ladder responses
+TRADES_MAX_PAGES = 20  # 20,000 trades per window before we stop paginating and record a gap
 
 
 def utcnow() -> datetime:
@@ -199,7 +200,7 @@ class Recorder:
                 ctx["skipped_trades"] += 1
                 continue
             try:
-                pages = self.kalshi.fetch_trades(ticker, min_ts)  # I3: follows the cursor
+                pages = self.kalshi.fetch_trades(ticker, min_ts, max_pages=TRADES_MAX_PAGES)  # I3: follows the cursor
                 for r in pages:
                     store.store_raw(session, run.id, "kalshi", "/markets/trades",
                                     {"ticker": ticker, "min_ts": min_ts.isoformat()}, r)
@@ -219,6 +220,17 @@ class Recorder:
                                 pass
                     newest = max(stamps) if stamps else now
                     store.upsert_watermark(session, ticker, newest, vol.get(ticker, Decimal("0")))
+                    last = pages[-1]
+                    unexhausted = (isinstance(last.body, dict) and bool(last.body.get("cursor"))
+                                   and len(pages) >= TRADES_MAX_PAGES)
+                    if unexhausted:
+                        oldest = min(stamps) if stamps else min_ts
+                        ctx["warnings"].append(
+                            {f"kalshi_trades:{ticker}": f"trade gap: {len(pages)} pages, "
+                                                        f"oldest_seen={oldest.isoformat()}, "
+                                                        f"min_ts={min_ts.isoformat()}"})
+                        ctx["trade_gaps"].append({"ticker": ticker, "min_ts": min_ts.isoformat(),
+                                                  "oldest_seen": oldest.isoformat(), "pages": len(pages)})
                 else:
                     # I2: record the failure but still park the volume watermark so the ticker is not
                     # re-selected every tick. last_ts is left untouched, so no trades are skipped.
@@ -252,7 +264,7 @@ class Recorder:
         now = self.clock()
         budget = _Budget(self.s.tick_budget_s, self.monotonic)
         ctx: dict = {"n": 0, "credits": 0, "remaining": None, "errors": [], "warnings": [], "fetched": False,
-                     "skipped_trades": 0, "skipped_ladders": 0, "skipped_alternates": 0}
+                     "skipped_trades": 0, "skipped_ladders": 0, "skipped_alternates": 0, "trade_gaps": []}
         with self.session_factory() as session:
             ensure_partitions(session, now)
             run = store.start_run(session, now)
@@ -283,7 +295,8 @@ class Recorder:
                              notes={"errors": ctx["errors"], "warnings": ctx["warnings"],
                                     "skipped_trades": ctx["skipped_trades"],
                                     "skipped_ladders": ctx["skipped_ladders"],
-                                    "skipped_alternates": ctx["skipped_alternates"]},
+                                    "skipped_alternates": ctx["skipped_alternates"],
+                                    "trade_gaps": ctx["trade_gaps"]},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
                      len(ctx["errors"]), len(ctx["warnings"]))
