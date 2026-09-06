@@ -31,3 +31,23 @@ def test_sink_trade_and_delta_and_gap(db_session):
 def test_diff_subscriptions():
     add, remove = diff_subscriptions(current=["A", "B"], wanted=["B", "C"])
     assert (add, remove) == (["C"], ["A"])
+
+
+def test_sink_recovers_after_exception(db_session, monkeypatch):
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    real_execute = sink._session.execute
+    calls = {"n": 0}
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return real_execute(*a, **kw)
+
+    monkeypatch.setattr(sink._session, "execute", flaky)
+    trade = {"type": "trade", "sid": 1, "seq": 1, "msg": {"trade_id": "t-x", "market_ticker": "K1", "yes_price_dollars": "0.3600",
+             "no_price_dollars": "0.6400", "count_fp": "1.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": 1789234000000}}
+    assert sink.handle(trade, NOW) is None and sink.errors == 1
+    assert sink.handle(trade, NOW) == "trade"
+    assert db_session.query(VenueTrade).filter_by(trade_id="t-x").count() == 1
