@@ -64,6 +64,8 @@ class Recorder:
                     if r.status == 200:
                         store.set_source_state(session, key, now)
                         body = r.body
+                    else:
+                        ctx["errors"].append({key: f"http {r.status}"})
                     ctx["fetched"] = True
                 if body is None:
                     body = self._latest_body(session, "espn", _ESPN_PATH[sport])
@@ -89,6 +91,8 @@ class Recorder:
                     if r.status == 200:
                         store.set_source_state(session, key, now)
                         body = r.body
+                    else:
+                        ctx["errors"].append({key: f"http {r.status}"})
                     ctx["fetched"] = True
                 if body is None:
                     body = self._latest_body(session, "odds_api", f"/sports/{sport_key}/odds")
@@ -108,6 +112,8 @@ class Recorder:
                         ctx["remaining"] = c.remaining
                         if r.status == 200:
                             store.set_source_state(session, f"odds_alt:{eid}", now)
+                        else:
+                            ctx["errors"].append({f"odds_alt:{eid}": f"http {r.status}"})
                         ctx["fetched"] = True
                     except Exception as e:  # noqa: BLE001
                         log.exception("odds alternates failed")
@@ -165,6 +171,8 @@ class Recorder:
                             pass
                     newest = max(stamps) if stamps else now
                     store.upsert_watermark(session, ticker, newest, vol.get(ticker, Decimal("0")))
+                else:
+                    ctx["errors"].append({f"kalshi_trades:{ticker}": f"http {r.status}"})
                 ctx["fetched"] = True
             except Exception as e:  # noqa: BLE001
                 log.exception("kalshi trades failed")
@@ -177,6 +185,8 @@ class Recorder:
                 r = self.kalshi.fetch_orderbook(ticker)
                 store.store_raw(session, run.id, "kalshi", f"/markets/{ticker}/orderbook", {"depth": 20}, r)
                 ctx["n"] += 1
+                if r.status != 200:
+                    ctx["errors"].append({f"kalshi_orderbook:{ticker}": f"http {r.status}"})
                 ctx["fetched"] = True
             except Exception as e:  # noqa: BLE001
                 log.exception("kalshi orderbook failed")

@@ -132,3 +132,15 @@ def test_partial_kalshi_pagination_is_an_error_and_not_marked_fetched(env_settin
     assert "partial pagination" in json.dumps(run.notes["errors"])
     assert get_source_state(db_session, "kalshi_markets:KXNFLGAME") is None
     assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 12
+
+
+@respx.mock
+def test_non_2xx_response_marks_run_error(env_settings, db_session):
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(401, json={"message": "INVALID_KEY"}))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "error"
+    assert "odds_featured:nfl" in json.dumps(run.notes["errors"]) and "http 401" in json.dumps(run.notes["errors"])
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="odds_api", http_status=401).count() == 2

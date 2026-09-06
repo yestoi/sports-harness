@@ -31,3 +31,7 @@ include = ["harness*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+  "ignore::DeprecationWarning:starlette.*",
+  "ignore::starlette.exceptions.StarletteDeprecationWarning:fastapi.testclient",
+]
