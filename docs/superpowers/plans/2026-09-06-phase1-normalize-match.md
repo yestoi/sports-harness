@@ -33,7 +33,7 @@
 - **Kalshi markets** (from phase 0): `yes_sub_title` is a short team name (`"UCLA"`, `"San Jose St."`, `"New York G"`), `custom_strike.football_team` is a stable per-team UUID on game and spread markets, `strike_type` `greater` with `floor_strike` `6.5` on spreads/totals, `structured` on game winners. Spread title `"Kansas City wins by over 6.5 points?"`; total title `"over 63.5 points?"` shape (verify exact wording from recorded raw data in Task 1).
 - **Kalshi trades REST** (phase 0): `trade_id, ticker, created_time, count_fp, yes_price_dollars, no_price_dollars, taker_side, is_block_trade`.
 - **Kalshi WS (verified live 2026-09-06 with a production key):** `wss://api.elections.kalshi.com/trade-api/ws/v2` works with the signed headers below (signature path `/trade-api/ws/v2`); keep `wss://external-api-ws.kalshi.com/` only as a fallback. The subscribe ack is `{"type":"subscribed","id":1,"msg":{"channel":"trade","sid":1}}`, one ack per channel, with `sid` INSIDE `msg`. An `orderbook_snapshot` arrives per ticker with `seq` starting at 1 for that sid, then deltas. Auth headers `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP` (ms), `KALSHI-ACCESS-SIGNATURE` = base64(RSA-PSS-SHA256 over `f"{timestamp}{METHOD}{path}"`) with `GET` and path `/trade-api/ws/v2`. Subscribe: `{"id": 1, "cmd": "subscribe", "params": {"channels": ["trade", "orderbook_delta"], "market_tickers": [...]}}` → one `{"type": "subscribed", "id": 1, "msg": {"channel": "trade", "sid": 1}}` per channel; `update_subscription` with `action` `add_markets`/`delete_markets` and `sids`. Server pings every 10 s; client must pong. Messages: `orderbook_snapshot {market_ticker, yes_dollars_fp: [[price, qty]...], no_dollars_fp}` first, then `orderbook_delta {market_ticker, price_dollars, delta_fp, side, ts_ms}`; `trade {trade_id, market_ticker, yes_price_dollars, no_price_dollars, count_fp, taker_side, is_block_trade, ts_ms}`; every message carries `sid` and `seq` (gaps = lost updates).
-- **The Odds API names:** NFL uses full names identical to ESPN `displayName` (e.g. `"Seattle Seahawks"`). NCAAF uses `"<Location> <Nickname>"` (e.g. `"LSU Tigers"`), close to ESPN `displayName` but not guaranteed identical; unmatched names are surfaced by the match report and fixed with manual aliases.
+- **The Odds API names (measured 2026-09-06 on a live response):** all 32 NFL names equal ESPN `displayName`. Of 115 NCAAF names seen, 111 match ESPN display/location/short names after normalization; the 4 misses (App State, Hawai'i, Southern Miss, Sam Houston) are pre-seeded in `aliases_manual.yaml`. New misses surface in the match report.
 
 ## File structure
 
@@ -639,14 +639,18 @@ def resolve_fuzzy(session: Session, sport: str, raw_name: str) -> tuple[int | No
     return None, best_ratio
 ```
 
-`harness/matching/aliases_manual.yaml` (initial, extended as the match report reveals gaps):
+`harness/matching/aliases_manual.yaml` (initial; seeded with the four Odds API college names that do not match ESPN after normalization, measured against a live featured response on 2026-09-06: 111 of 115 matched; extended as the match report reveals gaps):
 ```yaml
 # {sport: {source: {raw_name: espn_team_id}}}. raw_name is normalized before lookup.
 nfl:
   kalshi_name: {}
 ncaaf:
   kalshi_name: {}
-  odds_api: {}
+  odds_api:
+    "Appalachian State Mountaineers": 2026   # ESPN: App State Mountaineers
+    "Hawaii Rainbow Warriors": 62                 # ESPN: Hawai'i Rainbow Warriors
+    "Southern Mississippi Golden Eagles": 2572    # ESPN: Southern Miss Golden Eagles
+    "Sam Houston State Bearkats": 2534            # ESPN: Sam Houston Bearkats
 ```
 
 Add `pyyaml>=6` to `pyproject.toml` dependencies and run `uv pip install -e . -p .venv/bin/python` (or `.venv/bin/pip install -e .`).
