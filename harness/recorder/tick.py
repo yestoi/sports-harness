@@ -300,7 +300,9 @@ class Recorder:
                 self._checkpoint(session, run)
                 if summaries:
                     self._kalshi_trades_and_ladders(session, run, now, kickoffs, summaries, budget, ctx)
-                session.flush()
+                # Commit the tail batch of trades/ladders before normalization so a rollback there
+                # can never discard fetched raw rows.
+                self._checkpoint(session, run)
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed")
                 ctx["errors"].append({"tick": repr(e)})
