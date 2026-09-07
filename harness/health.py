@@ -23,15 +23,26 @@ def compute_health(session_factory: sessionmaker, now: datetime, credits_budget:
     (a `Settings` object's `odds_monthly_credits` is not accepted directly here so this stays
     testable with a bare int) since this module has no settings object of its own.
     """
+    # `runs.started_at` has no index, so both lookups order by `id` desc (autoincrement PK,
+    # same order as insertion) rather than `started_at`.
     with session_factory() as s:
-        last = s.query(Run).order_by(desc(Run.started_at)).first()
+        last = s.query(Run).order_by(desc(Run.id)).first()
+        if last is not None:
+            last_with_credits = (
+                s.query(Run)
+                .filter(Run.odds_remaining.isnot(None))
+                .order_by(desc(Run.id))
+                .first()
+            )
+        else:
+            last_with_credits = None
     if last is None:
         return ({"status": "error", "last_run_at": None, "last_status": None, "seconds_since": None,
                  "credits_remaining": None, "credits_budget": credits_budget, "credits_low": False}, 503)
     since = (now - last.started_at).total_seconds()
     status = "stale" if since > STALE_AFTER_S else ("error" if last.status == "error" else "ok")
     code = 200 if status == "ok" else 503
-    credits_remaining = last.odds_remaining
+    credits_remaining = last_with_credits.odds_remaining if last_with_credits is not None else None
     credits_low = credits_remaining is not None and credits_remaining < CREDITS_LOW_FRACTION * credits_budget
     return ({"status": status, "last_run_at": last.started_at.isoformat(), "last_status": last.status,
              "seconds_since": int(since), "credits_remaining": credits_remaining,
