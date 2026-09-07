@@ -12,6 +12,14 @@ SIGMA_TOTAL = {"nfl": 10.0, "ncaaf": 13.0}
 _STD_NORMAL = NormalDist()
 
 
+def _clip_p(p: Decimal) -> float:
+    if p < MIN_P:
+        return float(MIN_P)
+    if p > MAX_P:
+        return float(MAX_P)
+    return float(p)
+
+
 @dataclass(frozen=True)
 class MarginModel:
     sport: str
@@ -30,14 +38,17 @@ class MarginModel:
         total_line: Decimal | None,
         p_over: Decimal | None,
     ) -> "MarginModel":
+        if sport not in SIGMA_MARGIN:
+            raise ValueError(f"unknown sport: {sport!r}")
+
         sigma_margin = SIGMA_MARGIN[sport]
-        mu_home_margin = -float(home_point) + sigma_margin * _STD_NORMAL.inv_cdf(float(p_home_cover))
+        mu_home_margin = -float(home_point) + sigma_margin * _STD_NORMAL.inv_cdf(_clip_p(p_home_cover))
 
         mu_total: float | None = None
         sigma_total: float | None = None
         if total_line is not None and p_over is not None:
             sigma_total = SIGMA_TOTAL[sport]
-            mu_total = float(total_line) + sigma_total * _STD_NORMAL.inv_cdf(float(p_over))
+            mu_total = float(total_line) + sigma_total * _STD_NORMAL.inv_cdf(_clip_p(p_over))
 
         source = {
             "home_point": str(home_point),

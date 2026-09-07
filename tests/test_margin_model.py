@@ -184,6 +184,42 @@ def test_source_total_none_when_no_total_given():
     assert model.sigma_total is None
 
 
+def test_extreme_p_home_cover_does_not_raise_and_yields_large_mu():
+    model = MarginModel.from_main_lines(
+        "nfl",
+        home_point=Decimal("-3.5"),
+        p_home_cover=Decimal("1"),
+        total_line=Decimal("44.5"),
+        p_over=Decimal("0"),
+    )
+    assert model.mu_home_margin > 20
+    assert model.mu_total is not None
+
+
+def test_boundary_p_inputs_do_not_raise():
+    for p in (Decimal("0.0001"), Decimal("0.9999")):
+        model = MarginModel.from_main_lines(
+            "nfl",
+            home_point=Decimal("-3.5"),
+            p_home_cover=p,
+            total_line=Decimal("44.5"),
+            p_over=p,
+        )
+        assert model.mu_home_margin is not None
+        assert model.mu_total is not None
+
+
+def test_unknown_sport_raises_value_error():
+    with pytest.raises(ValueError, match="unknown sport: 'nba'"):
+        MarginModel.from_main_lines(
+            "nba",
+            home_point=Decimal("-3.5"),
+            p_home_cover=Decimal("0.5"),
+            total_line=None,
+            p_over=None,
+        )
+
+
 def test_ncaaf_uses_wider_sigma():
     model = MarginModel.from_main_lines(
         "ncaaf",
