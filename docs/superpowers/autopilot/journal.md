@@ -478,3 +478,17 @@ Times are America/Chicago.
 - Rulings: (1) Carried fix 6 removed from the roadmap. (2) Entry 27 ruling 1's cause is corrected by entry 35 ruling 6: a forced tick fetches every family by design (tick.py line 56); the forced-tick double fetch after a deploy is expected and costs no credits (Kalshi is unmetered).
 - Carried forward: none (open: 9 with Task 2b's quiet-window deploy; 13 shipped in Task 2 on the branch, removed when its deploy's verify passes)
 - Next: phase 3 continues (Task 4 fix round, Task 3b implementing); game-window observation 19:15 CT; the FSU-SMU window 18:15-22:30 CT blocks deploys
+
+## 37. decision - stop at a safe point for a fresh session (context) - 2026-09-07 17:59 CT
+- Orient: n/a (user instruction in chat)
+- Branch / commits: `phase3-paper-execution` (docs only)
+- Result: done
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Decision (user, verbatim, 2026-09-07 17:59 CT): "Out context is getting high. Lets find a safe stopping point to start the loop over in a fresh session."
+- Rulings: (1) The stopping point is the next task boundary: no new dispatch from now; the loop waits for the two in-flight implementers (Task 3b sonnet, Task 5 opus) to report so their commits are on their branches, then journals `stopped` with the exact resume position and ends the pass; if either has not reported by 18:30 CT the loop stops anyway and the ledger's resume rule 2a (a dirty worktree is the dead implementer's partial work; re-dispatch with "keep what passes its tests, commit") covers it - cost if wrong: one re-dispatched task. (2) The Task 2b quiet-window deploy (01:00-08:00 CT) with `partition-bulk-tables` and the writers stopped is the fresh session's first deploy unit once its Orient reaches it; nothing deploys before the restart.
+- Carried forward: none
+- Next: stopped (entry 38) once the reports land
