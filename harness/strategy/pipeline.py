@@ -59,7 +59,9 @@ def _load_gap_rows(session: Session, run_id: int) -> list[GapRow]:
     return rows
 
 
-def _insert_signals(session: Session, run_id: int, variant: Variant, now: datetime, signals: list) -> int:
+def _insert_signals(
+    session: Session, run_id: int, variant: Variant, now: datetime, signals: list, replay: bool = False
+) -> int:
     if not signals:
         return 0
     values = [
@@ -83,7 +85,7 @@ def _insert_signals(session: Session, run_id: int, variant: Variant, now: dateti
             decision=s.decision,
             rejection_reason=s.rejection_reason,
             labels=s.labels,
-            replay=False,
+            replay=replay,
             created_at=now,
         )
         for s in signals

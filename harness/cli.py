@@ -4,6 +4,7 @@ import logging
 import signal
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import typer
 import uvicorn
@@ -161,6 +162,29 @@ def price_once(run_id: int = typer.Option(None, "--run-id")) -> None:
                 raise typer.Exit(1)
         result = price_and_signal(session, rid, datetime.now(timezone.utc), s, s.price_budget_s)
     print(f"run_id={rid} {result}")
+
+
+@app.command("replay")
+def replay_cmd(
+    from_run: int = typer.Option(..., "--from-run"),
+    to_run: int = typer.Option(..., "--to-run"),
+    variant: str = typer.Option(..., "--variant"),
+    file: Path = typer.Option(None, "--file"),
+) -> None:
+    configure_logging()
+    from harness.replay import replay
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    with factory() as session:
+        counts = replay(session, from_run, to_run, variant, variant_file=file)
+
+    total = counts.signals_candidate + counts.signals_rejected
+    rate = counts.signals_candidate / total if total else 0.0
+    print(
+        f"runs={counts.runs} candidate={counts.signals_candidate} rejected={counts.signals_rejected} "
+        f"inserted={counts.inserted} candidate_rate={rate:.4f}"
+    )
 
 
 @app.command("reprocess")
