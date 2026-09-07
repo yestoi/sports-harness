@@ -76,6 +76,22 @@ def test_replay_file_variant_registers_replay_tier_without_pruning_live_set(env_
     assert wide_row.active is True
 
 
+def test_replay_file_name_mismatch_raises_and_registers_nothing(env_settings, db_session, tmp_path):
+    game, run, markets = _seed(db_session)
+    _register_sharp_direct(db_session)
+    price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
+
+    wide_config = _sharp_direct_config() | {"name": "wide", "price_band": [0.10, 0.90]}
+    variant_file = tmp_path / "wide.yaml"
+    variant_file.write_text(yaml.safe_dump(wide_config))
+
+    with pytest.raises(ValueError, match="does not match"):
+        replay(db_session, run.id, run.id, "sharp_direct", variant_file=variant_file)
+
+    assert db_session.query(StrategyVariant).filter_by(name="wide").one_or_none() is None
+    assert db_session.query(Signal).filter_by(run_id=run.id, replay=True).count() == 0
+
+
 def test_replay_range_with_no_snapshots_returns_zero_runs(env_settings, db_session):
     game, run, markets = _seed(db_session)
     _register_sharp_direct(db_session)

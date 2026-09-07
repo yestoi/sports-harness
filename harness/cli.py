@@ -177,7 +177,11 @@ def replay_cmd(
     s = get_settings()
     factory = make_session_factory(make_engine(s.database_url))
     with factory() as session:
-        counts = replay(session, from_run, to_run, variant, variant_file=file)
+        try:
+            counts = replay(session, from_run, to_run, variant, variant_file=file)
+        except ValueError as exc:
+            log.error("%s", exc)
+            raise typer.Exit(1) from exc
 
     total = counts.signals_candidate + counts.signals_rejected
     rate = counts.signals_candidate / total if total else 0.0

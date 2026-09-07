@@ -38,6 +38,13 @@ def _resolve_variant(
 ) -> Variant:
     if variant_file is not None:
         config = dict(yaml.safe_load(Path(variant_file).read_text()))
+        # --variant is the operator's stated intent; a mismatch usually means the wrong file
+        # was passed (or vice versa), so this fails loudly before anything is registered
+        # rather than silently replaying whatever the file happens to contain.
+        if config.get("name") != variant_name:
+            raise ValueError(
+                f"--variant {variant_name!r} does not match file name {config.get('name')!r}"
+            )
         # Replay variants are out-of-band (spec §6.7): forcing the tier here means the
         # variant_id -- which hashes the whole config, tier included -- always reflects it,
         # even when the source YAML was written (or copied) with a different tier.
