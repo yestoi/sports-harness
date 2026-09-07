@@ -1,0 +1,99 @@
+{
+ "artboards": [
+  {
+   "file": "Pulse.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 1260,
+   "title": "Pulse \u00b7 phone"
+  },
+  {
+   "file": "Main.dc.html",
+   "x": 480,
+   "y": 0,
+   "w": 1440,
+   "h": 1240,
+   "title": "Floor \u00b7 desktop"
+  },
+  {
+   "file": "FloorPhone.dc.html",
+   "x": 2010,
+   "y": 0,
+   "w": 390,
+   "h": 1130,
+   "title": "Floor \u00b7 phone"
+  },
+  {
+   "file": "Study.dc.html",
+   "x": 0,
+   "y": 1380,
+   "w": 1440,
+   "h": 1820,
+   "title": "Study \u00b7 desktop"
+  },
+  {
+   "file": "Gate.dc.html",
+   "x": 1530,
+   "y": 1380,
+   "w": 1440,
+   "h": 1080,
+   "title": "Gate \u00b7 desktop"
+  },
+  {
+   "file": "HowItWorks.dc.html",
+   "x": 0,
+   "y": 3320,
+   "w": 1440,
+   "h": 1180,
+   "title": "How it works"
+  }
+ ],
+ "annotations": [
+  {
+   "id": "brief",
+   "x": 0,
+   "y": -260,
+   "w": 460,
+   "text": "Harness dashboard, four surfaces. Direction: mission control with game-day energy.\n\nEvery value here is a SAMPLE for layout only. Week 1 data starts with the phase 3 deploy; refine this canvas on or after Mon 09-14 with real numbers.\n\nSpec: docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md"
+  },
+  {
+   "id": "pulse-job",
+   "x": 0,
+   "y": -110,
+   "w": 390,
+   "text": "PULSE. Job A: is it alive and honest. Daily, 30 s, phone-first. One status word; red only by a named rule. Never shows P&L or CLV."
+  },
+  {
+   "id": "floor-job",
+   "x": 480,
+   "y": -110,
+   "w": 700,
+   "text": "FLOOR. Job B: what is it doing right now. Game day, 15 s refresh in a game window. Game board with live scores, the funnel with every leak counted, open orders racing the queue, fills, exposure lanes. Never shows CLV or markouts."
+  },
+  {
+   "id": "study-job",
+   "x": 0,
+   "y": 1280,
+   "w": 700,
+   "text": "STUDY. Job C: is the strategy any good. Monday, an hour. Every cell read from report_cells; the UI never computes a mean. No estimate without n and interval. Current week always PROVISIONAL."
+  },
+  {
+   "id": "learn",
+   "x": 0,
+   "y": 3220,
+   "w": 700,
+   "text": "LEARNABLE LAYER (added at the user\u2019s request). Every section opens with plain sentences written server-side from the snapshot; labels are plain first, technical second; dotted terms open a two-line definition; this page explains the pipeline once."
+  },
+  {
+   "id": "gate-job",
+   "x": 1530,
+   "y": 1280,
+   "w": 700,
+   "text": "GATE. The October read. Twelve criteria with stored definitions and history; gate variant beside the pre-registered primary. Criterion names shown here are placeholders until gate_reports.criteria_json exists."
+  }
+ ],
+ "launch": {
+  "view": "canvas"
+ }
+}

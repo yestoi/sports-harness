@@ -390,8 +390,10 @@ Lands with phase 4.5, not Task 12b.
 - Responsive from 360 px to 2560 px. Pulse and Floor are laid out phone-first; Study and Gate are
   desktop-first and remain readable on a phone by stacking. Tables scroll inside their own container.
 - Light and dark, following the OS, with a manual toggle stored in `localStorage`.
-- Visual direction is decided in the design canvas that accompanies this spec (Claude Design session on or
-  after 2026-09-14, after week 1 data exists) and then implemented from the canvas; this spec fixes the
+- Visual direction is decided: "mission control with game-day energy", fixed by the design canvas
+  (https://claude.ai/code/artifact/78f3e81e-bae8-4d69-aa30-2b6697e7dd3b; artboard sources under
+  `docs/superpowers/design/dashboard/`), approved 2026-09-07 and refinable after week 1 data exists;
+  the front end is implemented from the canvas; this spec fixes the
   surfaces, metrics and rules, not the typography or palette. Two fixed points: the `PAPER` badge is the
   same colour on every surface, and the interval mark with its cluster count is a single reusable
   component used everywhere an estimate appears.

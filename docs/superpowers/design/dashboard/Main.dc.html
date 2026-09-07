@@ -1,0 +1,189 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #0b0e13; color: #eef2f6; font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif; font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
+    a { color: #35c9d9; text-decoration: none; } a:hover { color: #7fe0eb; }
+    .num { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .display { font-family: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif; }
+    .hdr { height: 56px; display: flex; align-items: center; gap: 18px; padding: 0 24px; border-bottom: 1px solid #1f2733; background: #0f131a; }
+    .brand { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.14em; font-size: 12px; color: #eef2f6; }
+    .tabs { display: flex; gap: 2px; }
+    .tab { padding: 7px 12px; border-radius: 6px; color: #aab4c0; font-weight: 500; }
+    .tab.on { background: #1a212b; color: #eef2f6; }
+    .tab.legacy { color: #7c8794; font-size: 12px; }
+    .spacer { flex: 1; }
+    .status { display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.08em; font-size: 13px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #2bc257; box-shadow: 0 0 0 3px rgba(43,194,87,0.18); }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #35c9d9; color: #35c9d9; }
+    .pill.muted { border-color: #2a3441; color: #7c8794; }
+    .meta { color: #7c8794; font-size: 12px; }
+    .card { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 14px 16px; }
+    .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c8794; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .card h3 .tag { font-size: 10px; letter-spacing: 0.06em; color: #35c9d9; border: 1px solid #35c9d9; border-radius: 4px; padding: 1px 5px; }
+    .muted { color: #7c8794; } .sec { color: #aab4c0; }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .tile { background: #0f131a; border: 1px solid #1f2733; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .tile .lbl { font-size: 11px; color: #7c8794; }
+    .tile .val { font-size: 20px; font-weight: 600; color: #eef2f6; }
+    .tile .val small { font-size: 11px; font-weight: 500; color: #7c8794; margin-left: 4px; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; font-size: 11px; color: #7c8794; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #1f2733; letter-spacing: 0.04em; }
+    td { padding: 7px 8px; border-bottom: 1px solid #171d26; vertical-align: middle; }
+    td.r, th.r { text-align: right; }
+    .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+    .track { position: relative; height: 6px; border-radius: 3px; background: #232b36; overflow: hidden; }
+    .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #35c9d9; border-radius: 3px; }
+    .fill.warm { background: #f5a524; }
+    .n { font-size: 11px; color: #7c8794; }
+    .n b { color: #aab4c0; font-weight: 500; }
+    .grey { color: #5b6672; }
+    .flag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid #3b4653; color: #aab4c0; margin-left: 6px; }
+    .ok { color: #2bc257; } .warn { color: #fab219; } .bad { color: #e05252; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+    .badge.ok { background: rgba(43,194,87,0.14); color: #2bc257; }
+    .badge.warn { background: rgba(250,178,25,0.14); color: #fab219; }
+    .badge.bad { background: rgba(224,82,82,0.16); color: #e05252; }
+    .badge.dim { background: #1a212b; color: #7c8794; }
+    .gamecard { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 12px 14px; position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+    .gamecard .stripe { position: absolute; left: 0; right: 0; top: 0; height: 4px; }
+    .teams { display: flex; justify-content: space-between; align-items: baseline; }
+    .team { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; }
+    .score { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 500; }
+    .markers { display: flex; gap: 4px; }
+    .mk { width: 10px; height: 10px; border-radius: 2px; }
+    .live { color: #f5a524; font-weight: 600; font-size: 11px; letter-spacing: 0.08em; }
+    .lead { font-size: 14.5px; line-height: 1.5; color: #eef2f6; margin: 0 0 12px; max-width: 72ch; text-wrap: pretty; }
+    .lead b { font-weight: 600; }
+    .lead .soft { color: #aab4c0; }
+    .plain { font-size: 13px; font-weight: 600; color: #eef2f6; text-transform: none; letter-spacing: 0; }
+    .tech { font-size: 11px; color: #7c8794; font-family: 'IBM Plex Mono', monospace; text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .tabbar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; display: flex; border-top: 1px solid #1f2733; background: #0f131a; }
+    .tabbar div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: #7c8794; }
+    .tabbar div.on { color: #eef2f6; }
+    .tabbar svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</helmet>
+<div style="width: 1440px; min-height: 1240px; background: #0b0e13; position: relative; overflow: hidden;">
+<div class="hdr">
+  <div class="brand">HARNESS</div>
+  <div class="tabs"><div class="tab">Pulse</div><div class="tab on">Floor</div><div class="tab">Study</div><div class="tab">Gate</div><div class="tab legacy">How it works</div><div class="tab legacy">Legacy panel</div></div>
+  <div class="spacer"></div>
+  <div class="status"><span class="dot" style="background: #2bc257; box-shadow: 0 0 0 3px #2bc25730;"></span>FINE</div>
+  <span class="pill">PAPER</span>
+  <span class="pill muted">SAMPLE VALUES</span>
+  <span class="meta num">a0c0f4c</span>
+  <span class="meta">snapshots <span class="num">12 s</span></span>
+</div>
+<div style="display:grid; grid-template-columns: 900px 1fr; gap: 14px; padding: 16px 24px 20px;">
+  <div style="display:flex; flex-direction:column; gap:14px;">
+    <div class="card">
+      <h3><span class="plain">Today’s games</span> <span class="tech">games · game_score_events</span> <span class="tag">Sat 09-12 · 15:44 CT</span></h3>
+      <div class="lead">Two games are in play and two kick off tonight. The system holds <b>simulated</b> positions in all four; the small squares under each game are its open orders and positions, coloured by strategy variant. Scores come from ESPN and show their age.</div>
+      <div class="grid4"><div class="gamecard">
+  <div class="stripe" style="background: linear-gradient(90deg, #461D7C 0 50%, #0021A5 50% 100%);"></div>
+  <div class="row" style="justify-content: space-between;"><span class="live" style="font-size:11px; letter-spacing:0.08em; font-weight:600;">LIVE</span><span class="muted num" style="font-size:11px;">Q3 · 07:42 · ESPN 2 min ago</span></div>
+  <div class="teams"><span class="team">LSU <span class="score">17</span></span><span class="team"><span class="score">13</span> FLA</span></div>
+  <div class="row" style="justify-content: space-between;"><span class="n">our open orders and positions</span><span class="markers"><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#199e70"></span></span></div>
+</div><div class="gamecard">
+  <div class="stripe" style="background: linear-gradient(90deg, #14213D 0 50%, #BA0C2F 50% 100%);"></div>
+  <div class="row" style="justify-content: space-between;"><span class="live" style="font-size:11px; letter-spacing:0.08em; font-weight:600;">LIVE</span><span class="muted num" style="font-size:11px;">Q2 · 01:15 · ESPN 2 min ago</span></div>
+  <div class="teams"><span class="team">MISS <span class="score">7</span></span><span class="team"><span class="score">10</span> UGA</span></div>
+  <div class="row" style="justify-content: space-between;"><span class="n">our open orders and positions</span><span class="markers"><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#d95926"></span></span></div>
+</div><div class="gamecard">
+  <div class="stripe" style="background: linear-gradient(90deg, #9E1B32 0 50%, #C5050C 50% 100%);"></div>
+  <div class="row" style="justify-content: space-between;"><span class="muted" style="font-size:11px; letter-spacing:0.08em; font-weight:600;">KICKOFF IN</span><span class="muted num" style="font-size:11px;">1 h 48 m · 6:30 pm CT</span></div>
+  <div class="teams"><span class="team">ALA</span><span class="muted">at</span><span class="team">WIS</span></div>
+  <div class="row" style="justify-content: space-between;"><span class="n">our open orders and positions</span><span class="markers"><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#199e70"></span><span class="mk" style="background:#d95926"></span></span></div>
+</div><div class="gamecard">
+  <div class="stripe" style="background: linear-gradient(90deg, #154733 0 50%, #FF7300 50% 100%);"></div>
+  <div class="row" style="justify-content: space-between;"><span class="muted" style="font-size:11px; letter-spacing:0.08em; font-weight:600;">KICKOFF IN</span><span class="muted num" style="font-size:11px;">3 h 12 m · 7:54 pm CT</span></div>
+  <div class="teams"><span class="team">ORE</span><span class="muted">at</span><span class="team">OKST</span></div>
+  <div class="row" style="justify-content: space-between;"><span class="n">our open orders and positions</span><span class="markers"><span class="mk" style="background:#199e70"></span></span></div>
+</div></div>
+    </div>
+    <div class="card">
+      <h3><span class="plain">From prices seen to bets filled, last 6 hours</span> <span class="tech">funnel · signals, intents, orders, fills</span></h3>
+      <div class="lead">In the last 6 hours the system compared <b>1,204</b> Kalshi prices against what the sharp books think, found <b>41</b> worth a simulated bet, and placed <b>27</b> orders. <b>9</b> filled. <span class="soft">Of the prices it saw, 1,163 were not worth a bet, mostly for lack of edge. It passed on 14 it did want: six because the price was already gone, five because kickoff was too close, three because the order book was unreliable. It pulled back 11 orders after placing them. Every no is recorded with its reason.</span></div>
+      <svg style="width:100%; height:auto; display:block" viewBox="0 0 880 210"><rect x="20" y="69.6" width="60" height="80.4" rx="4" ry="4" fill="#2a3441"/><rect x="20" y="148" width="60" height="2" fill="#2a3441"/><text x="50" y="61.6" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#eef2f6">178</text><text x="50" y="168" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="#aab4c0">raw ticks</text><path d="M80,69.6 L170,40.0 L170,150 L80,150 Z" fill="#35c9d9" opacity="0.08"/><rect x="170" y="40.0" width="60" height="110.0" rx="4" ry="4" fill="#2a3441"/><rect x="170" y="148" width="60" height="2" fill="#2a3441"/><text x="200" y="32.0" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#eef2f6">1,204</text><text x="200" y="168" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="#aab4c0">gap snapshots</text><path d="M230,40.0 L320,92.0 L320,150 L230,150 Z" fill="#35c9d9" opacity="0.08"/><rect x="320" y="92.0" width="60" height="58.0" rx="4" ry="4" fill="#35c9d9"/><rect x="320" y="148" width="60" height="2" fill="#35c9d9"/><text x="350" y="84.0" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#eef2f6">41</text><text x="350" y="168" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="#aab4c0">candidates</text><path d="M380,92.0 L470,92.0 L470,150 L380,150 Z" fill="#35c9d9" opacity="0.08"/><rect x="470" y="92.0" width="60" height="58.0" rx="4" ry="4" fill="#35c9d9"/><rect x="470" y="148" width="60" height="2" fill="#35c9d9"/><text x="500" y="84.0" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#eef2f6">41</text><text x="500" y="168" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="#aab4c0">intents</text><path d="M530,92.0 L620,98.3 L620,150 L530,150 Z" fill="#35c9d9" opacity="0.08"/><rect x="620" y="98.3" width="60" height="51.7" rx="4" ry="4" fill="#35c9d9"/><rect x="620" y="148" width="60" height="2" fill="#35c9d9"/><text x="650" y="90.3" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#eef2f6">27</text><text x="650" y="168" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="#aab4c0">orders</text><path d="M680,98.3 L770,114.3 L770,150 L680,150 Z" fill="#35c9d9" opacity="0.08"/><rect x="770" y="114.3" width="60" height="35.7" rx="4" ry="4" fill="#35c9d9"/><rect x="770" y="148" width="60" height="2" fill="#35c9d9"/><text x="800" y="106.3" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#eef2f6">9</text><text x="800" y="168" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="#aab4c0">fills</text><line x1="260" y1="150" x2="260" y2="180" stroke="#e05252" stroke-width="1.5"/><circle cx="260" cy="180" r="3" fill="#e05252"/><text x="268" y="184" font-family="IBM Plex Sans, sans-serif" font-size="11" font-weight="600" fill="#eef2f6">not worth a bet 1,163</text><text x="268" y="198" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">not enough edge 812</text><text x="268" y="210" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">price feed too old 240</text><text x="268" y="222" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">over a bankroll cap 111</text><line x1="560" y1="150" x2="560" y2="180" stroke="#e05252" stroke-width="1.5"/><circle cx="560" cy="180" r="3" fill="#e05252"/><text x="568" y="184" font-family="IBM Plex Sans, sans-serif" font-size="11" font-weight="600" fill="#eef2f6">passed on 14</text><text x="568" y="198" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">price already gone 6</text><text x="568" y="210" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">too close to kickoff 5</text><text x="568" y="222" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">order book unreliable 3</text><line x1="710" y1="150" x2="710" y2="180" stroke="#e05252" stroke-width="1.5"/><circle cx="710" cy="180" r="3" fill="#e05252"/><text x="718" y="184" font-family="IBM Plex Sans, sans-serif" font-size="11" font-weight="600" fill="#eef2f6">pulled back 11</text><text x="718" y="198" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">market moved against us 6</text><text x="718" y="210" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">moved to a new price 3</text><text x="718" y="222" font-family="IBM Plex Mono, monospace" font-size="10" fill="#7c8794">edge shrank 2</text><text x="874" y="206" text-anchor="end" font-size="10" fill="#5b6672" font-family="IBM Plex Sans, sans-serif">heights on a log scale · trailing 6 h · reason codes in the glossary</text></svg>
+    </div>
+    <div class="card">
+      <h3><span class="plain">Is the trading loop healthy?</span> <span class="tech">exec_heartbeat · metric_samples, 2 h</span></h3>
+      <div class="lead">The loop runs every 15 seconds and is keeping up: a typical pass takes under half a second and the order-book feed is under a second old.</div>
+      <div class="grid3"><div class="tile"><div class="lbl">loop</div><div class="row" style="justify-content:space-between"><span class="val num" style="font-size:16px">412<small>ms</small></span><svg width="70" height="22" viewBox="0 0 70 22"><polyline points="1.0,20.0 9.5,19.4 18.0,16.7 26.5,17.6 35.0,2.0 43.5,16.4 52.0,16.9 60.5,17.1 69.0,16.6" fill="none" stroke="#5b6672" stroke-width="1.5" stroke-linejoin="round"/><circle cx="69.0" cy="16.6" r="2.5" fill="#35c9d9"/></svg></div></div><div class="tile"><div class="lbl">slowest 5 % of passes</div><div class="row" style="justify-content:space-between"><span class="val num" style="font-size:16px">880<small>ms</small></span><svg width="70" height="22" viewBox="0 0 70 22"><polyline points="1.0,20.0 9.5,19.7 18.0,19.1 26.5,17.0 35.0,2.0 43.5,17.3 52.0,17.4 60.5,17.6 69.0,17.3" fill="none" stroke="#5b6672" stroke-width="1.5" stroke-linejoin="round"/><circle cx="69.0" cy="17.3" r="2.5" fill="#35c9d9"/></svg></div></div><div class="tile"><div class="lbl">order-book updates</div><div class="row" style="justify-content:space-between"><span class="val num" style="font-size:16px">3,280<small>/min</small></span><svg width="70" height="22" viewBox="0 0 70 22"><polyline points="1.0,20.0 9.5,17.8 18.0,9.2 26.5,4.2 35.0,2.0 43.5,5.6 52.0,2.7 60.5,3.1 69.0,2.9" fill="none" stroke="#5b6672" stroke-width="1.5" stroke-linejoin="round"/><circle cx="69.0" cy="2.9" r="2.5" fill="#35c9d9"/></svg></div></div><div class="tile"><div class="lbl">dirty markets</div><div class="row" style="justify-content:space-between"><span class="val num" style="font-size:16px">1<small></small></span><svg width="70" height="22" viewBox="0 0 70 22"><polyline points="1.0,20.0 9.5,20.0 18.0,20.0 26.5,8.0 35.0,2.0 43.5,14.0 52.0,20.0 60.5,14.0 69.0,14.0" fill="none" stroke="#5b6672" stroke-width="1.5" stroke-linejoin="round"/><circle cx="69.0" cy="14.0" r="2.5" fill="#35c9d9"/></svg></div></div><div class="tile"><div class="lbl">passed on</div><div class="row" style="justify-content:space-between"><span class="val num" style="font-size:16px">2<small>/min</small></span><svg width="70" height="22" viewBox="0 0 70 22"><polyline points="1.0,20.0 9.5,15.5 18.0,20.0 26.5,6.5 35.0,11.0 43.5,15.5 52.0,2.0 60.5,11.0 69.0,11.0" fill="none" stroke="#5b6672" stroke-width="1.5" stroke-linejoin="round"/><circle cx="69.0" cy="11.0" r="2.5" fill="#35c9d9"/></svg></div></div><div class="tile"><div class="lbl">order-book feed age</div><div class="row" style="justify-content:space-between"><span class="val num" style="font-size:16px">0.8<small>s</small></span><svg width="70" height="22" viewBox="0 0 70 22"><polyline points="1.0,19.6 9.5,19.6 18.0,17.4 26.5,19.6 35.0,2.0 43.5,19.6 52.0,19.6 60.5,19.6 69.0,20.0" fill="none" stroke="#5b6672" stroke-width="1.5" stroke-linejoin="round"/><circle cx="69.0" cy="20.0" r="2.5" fill="#35c9d9"/></svg></div></div></div>
+    </div>
+  </div>
+  <div style="display:flex; flex-direction:column; gap:14px;">
+    <div class="card">
+      <h3><span class="plain">Orders waiting to fill</span> <span class="tech">orders · order_watch_samples</span> <span class="tag">5 · simulated</span></h3>
+      <div class="lead">Five simulated orders are resting on Kalshi’s order book. The bar shows how many other people’s orders are ahead of ours at the same price; when it fills up, ours is next. Nearest to filling is listed first.</div>
+      <table><thead><tr><th>game · what we bet</th><th>our price <span class="grey">market bid / ask</span></th><th>fair price · edge</th><th>orders ahead of ours</th></tr></thead><tbody><tr>
+  <td><span class="sw" style="background:#3987e5"></span><b>ALA @ WIS</b><div class="n">Alabama to win <span class="tech">GAME-ALA · yes</span></div></td>
+  <td class="num">0.71<div class="n">0.70 / 0.73</div></td>
+  <td class="num">0.762<div class="n">edge +3.1</div></td>
+  <td style="min-width:150px"><div class="row"><div class="track" style="flex:1"><div class="fill" style="width:73%"></div></div><svg width="60" height="16" viewBox="0 0 60 16"><polyline points="1.0,2.0 8.2,3.3 15.5,3.7 22.8,7.0 30.0,8.3 37.2,10.3 44.5,12.6 51.8,13.5 59.0,14.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="59.0" cy="14.0" r="2.5" fill="#35c9d9"/></svg></div><div class="n"><b class="num">118</b> of <span class="num">430</span> still ahead · resting 41 m · live feed</div></td>
+</tr><tr>
+  <td><span class="sw" style="background:#199e70"></span><b>ALA @ WIS</b><div class="n">Wisconsin +7 <span class="tech">SPREAD-WIS7 · no</span></div></td>
+  <td class="num">0.44<div class="n">0.43 / 0.46</div></td>
+  <td class="num">0.481<div class="n">edge +2.4</div></td>
+  <td style="min-width:150px"><div class="row"><div class="track" style="flex:1"><div class="fill" style="width:15%"></div></div><svg width="60" height="16" viewBox="0 0 60 16"><polyline points="1.0,4.1 8.2,5.7 15.5,6.1 22.8,10.1 30.0,11.6 37.2,14.0 44.5,2.0 51.8,5.4 59.0,7.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="59.0" cy="7.0" r="2.5" fill="#35c9d9"/></svg></div><div class="n"><b class="num">260</b> of <span class="num">305</span> still ahead · resting 12 m · live feed</div></td>
+</tr><tr>
+  <td><span class="sw" style="background:#199e70"></span><b>ORE @ OKST</b><div class="n">Over 55 points <span class="tech">TOTAL-O55 · yes</span></div></td>
+  <td class="num">0.52<div class="n">0.51 / 0.54</div></td>
+  <td class="num">0.559<div class="n">edge +2.2</div></td>
+  <td style="min-width:150px"><div class="row"><div class="track" style="flex:1"><div class="fill" style="width:3%"></div></div><svg width="60" height="16" viewBox="0 0 60 16"><polyline points="1.0,6.1 8.2,7.4 15.5,7.7 22.8,10.9 30.0,12.1 37.2,14.0 44.5,2.0 51.8,5.1 59.0,6.6" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="59.0" cy="6.6" r="2.5" fill="#35c9d9"/></svg></div><div class="n"><b class="num">505</b> of <span class="num">520</span> still ahead · resting 8 m · live feed</div></td>
+</tr><tr>
+  <td><span class="sw" style="background:#3987e5"></span><b>ALA @ WIS</b><div class="n">Under 48 points <span class="tech">TOTAL-U48 · yes</span></div></td>
+  <td class="num">0.48<div class="n">0.47 / 0.50</div></td>
+  <td class="num">0.514<div class="n">edge +1.9</div></td>
+  <td style="min-width:150px"><div class="row"><div class="track" style="flex:1"><div class="fill" style="width:0%"></div></div><svg width="60" height="16" viewBox="0 0 60 16"><polyline points="1.0,6.5 8.2,7.7 15.5,8.0 22.8,11.0 30.0,12.2 37.2,14.0 44.5,2.0 51.8,5.0 59.0,6.5" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="59.0" cy="6.5" r="2.5" fill="#35c9d9"/></svg></div><div class="n"><b class="num">890</b> of <span class="num">890</span> still ahead · resting 3 m · snapshot only<span class="badge warn" style="margin-left:6px">book unreliable 2 m</span></div></td>
+</tr><tr>
+  <td><span class="sw" style="background:#d95926"></span><b>ALA @ WIS</b><div class="n">Alabama to win <span class="tech">GAME-ALA · yes</span></div></td>
+  <td class="num">0.70<div class="n">0.70 / 0.73</div></td>
+  <td class="num">0.762<div class="n">edge +3.9</div></td>
+  <td style="min-width:150px"><div class="row"><div class="track" style="flex:1"><div class="fill" style="width:0%"></div></div><svg width="60" height="16" viewBox="0 0 60 16"><polyline points="1.0,6.5 8.2,7.7 15.5,8.0 22.8,11.0 30.0,12.2 37.2,14.0 44.5,2.0 51.8,5.0 59.0,6.5" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="59.0" cy="6.5" r="2.5" fill="#35c9d9"/></svg></div><div class="n"><b class="num">1,240</b> of <span class="num">1,240</span> still ahead · resting 41 m · live feed</div></td>
+</tr></tbody></table>
+      <div class="n" style="margin-top:6px">"live feed" means the queue is read from the live order-book feed; "snapshot only" means from a periodic copy, so the count is coarser. "Book unreliable" means the feed had a gap and no fill is simulated until it recovers.</div>
+    </div>
+    <div class="card">
+      <h3><span class="plain">Filled today</span> <span class="tech">fills · queue_model = filled from the recorded order book</span> <span class="tag">9 · simulated</span></h3>
+      <div class="lead">Nine simulated orders filled today. Each one is backed by a real trade that printed at our price on the recorded order book, marked <b>print</b>.</div>
+      <table><thead><tr><th>time</th><th>game · what we bet</th><th class="r">price</th><th class="r">contracts</th><th class="r">how it filled</th></tr></thead><tbody><tr><td class="num muted" style="width:52px">15:41</td><td><span class="sw" style="background:#3987e5"></span>LSU vs FLA<div class="n">LSU to win <span class="tech">GAME-LSU</span></div></td><td class="num r">0.63</td><td class="num r">40</td><td class="r"><span class="badge dim">waited in line</span><span class='badge ok' style='margin-left:4px'>print</span></td></tr><tr><td class="num muted" style="width:52px">15:38</td><td><span class="sw" style="background:#199e70"></span>MISS @ UGA<div class="n">Georgia −3 to fail <span class="tech">SPREAD-UGA3 · no</span></div></td><td class="num r">0.47</td><td class="num r">55</td><td class="r"><span class="badge dim">waited in line</span><span class='badge ok' style='margin-left:4px'>print</span></td></tr><tr><td class="num muted" style="width:52px">15:22</td><td><span class="sw" style="background:#3987e5"></span>MISS @ UGA<div class="n">Over 51 points <span class="tech">TOTAL-O51</span></div></td><td class="num r">0.55</td><td class="num r">36</td><td class="r"><span class="badge dim">swept through</span><span class='badge ok' style='margin-left:4px'>print</span></td></tr><tr><td class="num muted" style="width:52px">14:57</td><td><span class="sw" style="background:#d95926"></span>LSU vs FLA<div class="n">LSU to win <span class="tech">GAME-LSU</span></div></td><td class="num r">0.62</td><td class="num r">20</td><td class="r"><span class="badge dim">waited in line</span><span class='badge ok' style='margin-left:4px'>print</span></td></tr><tr><td class="num muted" style="width:52px">14:10</td><td><span class="sw" style="background:#3987e5"></span>LSU vs FLA<div class="n">LSU −3 <span class="tech">SPREAD-LSU3</span></div></td><td class="num r">0.51</td><td class="num r">42</td><td class="r"><span class="badge dim">waited in line</span><span class='badge ok' style='margin-left:4px'>print</span></td></tr></tbody></table>
+    </div>
+    <div class="card">
+      <h3><span class="plain">How much each strategy has at stake</span> <span class="tech">positions · ledger · equity_snapshots</span></h3>
+      <div class="lead">Three strategy variants trade with a simulated <b>$3,000</b> each. Cash is what has settled; cash + MTM adds open positions at today’s market price.</div>
+      <div style="display:flex; flex-direction:column; gap:8px;"><div class="tile" style="gap:6px">
+  <div class="row" style="justify-content:space-between"><span><span class="sw" style="background:#3987e5"></span><b>sharp_direct</b> <span class="n">primary</span></span><span class="n">paper</span></div>
+  <div class="row" style="justify-content:space-between"><span class="n">open stake <b class="num">$1,180</b></span><span class="n">positions <b class="num">9</b></span><span class="n">fills today <b class="num">4</b></span></div>
+  <div class="row" style="justify-content:space-between"><span class="n">cash <b class="num">$3,041.20</b></span><span class="n">cash + MTM <b class="num">$3,062.75</b> <span class="grey">92 % of positions priced</span></span></div>
+  <div class="n">bankroll caps are noted, not enforced, for this variant</div>
+</div><div class="tile" style="gap:6px">
+  <div class="row" style="justify-content:space-between"><span><span class="sw" style="background:#d95926"></span><b>constrained</b> <span class="n">secondary · apply_caps</span></span><span class="n">paper</span></div>
+  <div class="row" style="justify-content:space-between"><span class="n">open stake <b class="num">$410</b></span><span class="n">positions <b class="num">3</b></span><span class="n">fills today <b class="num">1</b></span></div>
+  <div class="row" style="justify-content:space-between"><span class="n">cash <b class="num">$2,988.60</b></span><span class="n">cash + MTM <b class="num">$2,991.10</b> <span class="grey">92 % of positions priced</span></span></div>
+  <div class="row" style="gap:6px"><span class="n">daily cap</span><div class="track" style="flex:1"><div class="fill warm" style="width:64%"></div></div><span class="n num">64%</span></div>
+</div><div class="tile" style="gap:6px">
+  <div class="row" style="justify-content:space-between"><span><span class="sw" style="background:#199e70"></span><b>sharp_two_sided</b> <span class="n">gate variant</span></span><span class="n">paper</span></div>
+  <div class="row" style="justify-content:space-between"><span class="n">open stake <b class="num">$905</b></span><span class="n">positions <b class="num">6</b></span><span class="n">fills today <b class="num">2</b></span></div>
+  <div class="row" style="justify-content:space-between"><span class="n">cash <b class="num">$3,018.40</b></span><span class="n">cash + MTM <b class="num">$3,030.05</b> <span class="grey">92 % of positions priced</span></span></div>
+  <div class="n">bankroll caps are noted, not enforced, for this variant</div>
+</div></div>
+    </div>
+  </div>
+</div>
+
+</div>
+</x-dc>
+</body>
+</html>

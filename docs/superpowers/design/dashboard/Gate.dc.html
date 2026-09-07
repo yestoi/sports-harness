@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #0b0e13; color: #eef2f6; font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif; font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
+    a { color: #35c9d9; text-decoration: none; } a:hover { color: #7fe0eb; }
+    .num { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .display { font-family: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif; }
+    .hdr { height: 56px; display: flex; align-items: center; gap: 18px; padding: 0 24px; border-bottom: 1px solid #1f2733; background: #0f131a; }
+    .brand { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.14em; font-size: 12px; color: #eef2f6; }
+    .tabs { display: flex; gap: 2px; }
+    .tab { padding: 7px 12px; border-radius: 6px; color: #aab4c0; font-weight: 500; }
+    .tab.on { background: #1a212b; color: #eef2f6; }
+    .tab.legacy { color: #7c8794; font-size: 12px; }
+    .spacer { flex: 1; }
+    .status { display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.08em; font-size: 13px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #2bc257; box-shadow: 0 0 0 3px rgba(43,194,87,0.18); }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #35c9d9; color: #35c9d9; }
+    .pill.muted { border-color: #2a3441; color: #7c8794; }
+    .meta { color: #7c8794; font-size: 12px; }
+    .card { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 14px 16px; }
+    .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c8794; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .card h3 .tag { font-size: 10px; letter-spacing: 0.06em; color: #35c9d9; border: 1px solid #35c9d9; border-radius: 4px; padding: 1px 5px; }
+    .muted { color: #7c8794; } .sec { color: #aab4c0; }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .tile { background: #0f131a; border: 1px solid #1f2733; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .tile .lbl { font-size: 11px; color: #7c8794; }
+    .tile .val { font-size: 20px; font-weight: 600; color: #eef2f6; }
+    .tile .val small { font-size: 11px; font-weight: 500; color: #7c8794; margin-left: 4px; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; font-size: 11px; color: #7c8794; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #1f2733; letter-spacing: 0.04em; }
+    td { padding: 7px 8px; border-bottom: 1px solid #171d26; vertical-align: middle; }
+    td.r, th.r { text-align: right; }
+    .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+    .track { position: relative; height: 6px; border-radius: 3px; background: #232b36; overflow: hidden; }
+    .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #35c9d9; border-radius: 3px; }
+    .fill.warm { background: #f5a524; }
+    .n { font-size: 11px; color: #7c8794; }
+    .n b { color: #aab4c0; font-weight: 500; }
+    .grey { color: #5b6672; }
+    .flag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid #3b4653; color: #aab4c0; margin-left: 6px; }
+    .ok { color: #2bc257; } .warn { color: #fab219; } .bad { color: #e05252; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+    .badge.ok { background: rgba(43,194,87,0.14); color: #2bc257; }
+    .badge.warn { background: rgba(250,178,25,0.14); color: #fab219; }
+    .badge.bad { background: rgba(224,82,82,0.16); color: #e05252; }
+    .badge.dim { background: #1a212b; color: #7c8794; }
+    .gamecard { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 12px 14px; position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+    .gamecard .stripe { position: absolute; left: 0; right: 0; top: 0; height: 4px; }
+    .teams { display: flex; justify-content: space-between; align-items: baseline; }
+    .team { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; }
+    .score { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 500; }
+    .markers { display: flex; gap: 4px; }
+    .mk { width: 10px; height: 10px; border-radius: 2px; }
+    .live { color: #f5a524; font-weight: 600; font-size: 11px; letter-spacing: 0.08em; }
+    .lead { font-size: 14.5px; line-height: 1.5; color: #eef2f6; margin: 0 0 12px; max-width: 72ch; text-wrap: pretty; }
+    .lead b { font-weight: 600; }
+    .lead .soft { color: #aab4c0; }
+    .plain { font-size: 13px; font-weight: 600; color: #eef2f6; text-transform: none; letter-spacing: 0; }
+    .tech { font-size: 11px; color: #7c8794; font-family: 'IBM Plex Mono', monospace; text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .tabbar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; display: flex; border-top: 1px solid #1f2733; background: #0f131a; }
+    .tabbar div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: #7c8794; }
+    .tabbar div.on { color: #eef2f6; }
+    .tabbar svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</helmet>
+<div style="width: 1440px; min-height: 1080px; background: #0b0e13; position: relative; overflow: hidden;">
+<div class="hdr">
+  <div class="brand">HARNESS</div>
+  <div class="tabs"><div class="tab">Pulse</div><div class="tab">Floor</div><div class="tab">Study</div><div class="tab on">Gate</div><div class="tab legacy">How it works</div><div class="tab legacy">Legacy panel</div></div>
+  <div class="spacer"></div>
+  <div class="status"><span class="dot" style="background: #2bc257; box-shadow: 0 0 0 3px #2bc25730;"></span>FINE</div>
+  <span class="pill">PAPER</span>
+  <span class="pill muted">SAMPLE VALUES</span>
+  <span class="meta num">a0c0f4c</span>
+  <span class="meta">snapshots <span class="num">12 s</span></span>
+</div>
+<div style="padding: 20px 24px 24px; display:grid; grid-template-columns: 1fr 400px; gap:16px; align-items:start">
+  <div style="display:flex; flex-direction:column; gap:14px">
+    <div class="row" style="gap:18px; align-items:flex-end">
+      <div class="display" style="font-size: 56px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; color: #e05252;">NOT PASSING</div>
+      <div>
+        <div class="sec"><span class="sw" style="background:#199e70"></span><b>sharp_two_sided</b> · gate variant since amendment 3</div>
+        <div class="n">evaluated Mon 09-14 <span class="num">09:03 CT</span> · definitions hash <span class="num">9f3a2c…7c1</span></div>
+      </div>
+    </div>
+    <div class="lead" style="max-width:100ch"><b>8 of 12</b> tests pass. The three that fail are all about not having enough data yet: 64 of the 150 fills needed, 23 of the 40 games needed, and none of the three passing weeks needed. One cannot be judged yet. <b>Nothing is failing on quality.</b> <span class="soft">Every test below shows its stored definition, the threshold, what was measured and how many games that rests on.</span></div>
+    <div class="card">
+      <h3><span class="plain">The twelve tests for going live</span> <span class="tech">gate_reports · criteria_json</span></h3>
+      <table><thead><tr><th>test · what it checks</th><th>needs</th><th>measured · games</th><th>result</th><th>past weeks</th></tr></thead><tbody><tr><td><b>Are our prices better than the closing price, on every benchmark that counts?</b><div class="n">mean CLV ≥ 0 under every gated benchmark · pinnacle_t5, consensus_close, kalshi_last_trade_pre_kick; cluster-robust lower bound</div></td><td class="num sec">lower bound > 0</td><td class="num">+0.3 pts<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge ok">PASS</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,2.0 53.0,2.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="2.0" r="2.5" fill="#2bc257"/></svg></td></tr><tr><td><b>Have enough simulated bets actually filled to judge anything?</b><div class="n">≥ 150 paper fill events · orders with ≥ 1 queue_model fill, distinct games, both sports</div></td><td class="num sec">≥ 150</td><td class="num">64<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge bad">FAIL</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,14.0 53.0,14.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="14.0" r="2.5" fill="#e05252"/></svg></td></tr><tr><td><b>Were most of those fills simulated from a trustworthy live order book?</b><div class="n">≥ 80 % of fill events on a clean WS book · book_source = ws and dirty_minutes = 0</div></td><td class="num sec">≥ 80 %</td><td class="num">91 %<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge ok">PASS</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,2.0 53.0,2.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="2.0" r="2.5" fill="#2bc257"/></svg></td></tr><tr><td><b>Are the bets that filled as good as the ones that did not? If only the bad ones fill, the edge is an illusion.</b><div class="n">filled − unfilled CLV equivalence · 90 % upper bound of mean(unfilled − filled) with ≥ 20 clusters per side</div></td><td class="num sec">< 1 pt</td><td class="num">insufficient · 14 clusters<div class="n">n<sub>g</sub> <b>14</b></div></td><td><span class="badge warn">INSUFFICIENT</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,14.0 53.0,14.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="14.0" r="2.5" fill="#e05252"/></svg></td></tr><tr><td><b>Is our fair price fresh enough when we act?</b><div class="n">median feed staleness · fair_values.staleness_s over the variant's candidates</div></td><td class="num sec">< 90 s</td><td class="num">41 s<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge ok">PASS</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,2.0 53.0,2.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="2.0" r="2.5" fill="#2bc257"/></svg></td></tr><tr><td><b>Do our results agree with Kalshi’s?</b><div class="n">zero settlement mismatches · ESPN vs venue result; ≥ 90 % of settled markets carry a venue row</div></td><td class="num sec">0 · ≥ 90 %</td><td class="num">0 · 96 %<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge ok">PASS</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,2.0 53.0,2.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="2.0" r="2.5" fill="#2bc257"/></svg></td></tr><tr><td><b>Did we ever bet on the wrong game?</b><div class="n">zero mismatched-market incidents · orders whose match_key changed after placement</div></td><td class="num sec">0</td><td class="num">0<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge ok">PASS</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,2.0 53.0,2.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="2.0" r="2.5" fill="#2bc257"/></svg></td></tr><tr><td><b>Did the market move against us right after we filled?</b><div class="n">markout at fill, 5 m, not negative · fill anchor, venue_mid, cluster-robust upper bound</div></td><td class="num sec">upper bound ≥ 0</td><td class="num">+0.1 pts<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge ok">PASS</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,2.0 53.0,2.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="2.0" r="2.5" fill="#2bc257"/></svg></td></tr><tr><td><b>Are the closing prices we compare against fresh?</b><div class="n">stale benchmark share · order_clv rows with stale = true, per benchmark</div></td><td class="num sec">< 20 %</td><td class="num">7 %<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge ok">PASS</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,2.0 53.0,2.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="2.0" r="2.5" fill="#2bc257"/></svg></td></tr><tr><td><b>Can we re-run the week from the recording and get the same answer?</b><div class="n">replay reproduces live · harness replay --execute order and fill counts</div></td><td class="num sec">within 2 %</td><td class="num">1.4 %<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge ok">PASS</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,2.0 53.0,2.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="2.0" r="2.5" fill="#2bc257"/></svg></td></tr><tr><td><b>Is the edge spread across enough games and both sports?</b><div class="n">distinct games across both sports · games with ≥ 1 fill event, NFL and CFB each</div></td><td class="num sec">≥ 40 · both</td><td class="num">23 · both<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge bad">FAIL</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,14.0 53.0,14.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="14.0" r="2.5" fill="#e05252"/></svg></td></tr><tr><td><b>Has all of this held for three weeks in a row?</b><div class="n">three consecutive passing weeks · weekly evaluations with every criterion passing</div></td><td class="num sec">3</td><td class="num">0<div class="n">n<sub>g</sub> <b>31</b></div></td><td><span class="badge bad">FAIL</span></td><td><svg width="54" height="16" viewBox="0 0 54 16"><polyline points="1.0,14.0 18.3,14.0 35.7,14.0 53.0,14.0" fill="none" stroke="#3b4653" stroke-width="1.5" stroke-linejoin="round"/><circle cx="53.0" cy="14.0" r="2.5" fill="#e05252"/></svg></td></tr></tbody></table>
+    </div>
+  </div>
+  <div style="display:flex; flex-direction:column; gap:14px">
+    <div class="card">
+      <h3><span class="plain">The original strategy, for comparison</span> <span class="tech">primary · reported, not judged</span></h3>
+      <div class="sec" style="margin-bottom:8px"><span class="sw" style="background:#3987e5"></span><b>sharp_direct</b> was registered first and is judged on the same twelve tests, but only <b>sharp_two_sided</b> decides.</div>
+      <table><thead><tr><th>test</th><th>measured · games</th><th>result</th></tr></thead><tbody><tr><td class="n">Are our prices better than the closing price, on every benchmark that counts?</td><td class="num">+0.6 pts<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge ok">PASS</span></td></tr><tr><td class="n">Have enough simulated bets actually filled to judge anything?</td><td class="num">48<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge bad">FAIL</span></td></tr><tr><td class="n">Were most of those fills simulated from a trustworthy live order book?</td><td class="num">89 %<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge ok">PASS</span></td></tr><tr><td class="n">Are the bets that filled as good as the ones that did not? If only the bad ones fill, the edge is an illusion.</td><td class="num">insufficient<div class="n">n<sub>g</sub> <b>14</b></div></td><td><span class="badge warn">INSUFF.</span></td></tr><tr><td class="n">Is our fair price fresh enough when we act?</td><td class="num">41 s<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge ok">PASS</span></td></tr><tr><td class="n">Do our results agree with Kalshi’s?</td><td class="num">0 · 96 %<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge ok">PASS</span></td></tr><tr><td class="n">Did we ever bet on the wrong game?</td><td class="num">0<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge ok">PASS</span></td></tr><tr><td class="n">Did the market move against us right after we filled?</td><td class="num">+0.2 pts<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge ok">PASS</span></td></tr><tr><td class="n">Are the closing prices we compare against fresh?</td><td class="num">7 %<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge ok">PASS</span></td></tr><tr><td class="n">Can we re-run the week from the recording and get the same answer?</td><td class="num">1.1 %<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge ok">PASS</span></td></tr><tr><td class="n">Is the edge spread across enough games and both sports?</td><td class="num">19 · both<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge bad">FAIL</span></td></tr><tr><td class="n">Has all of this held for three weeks in a row?</td><td class="num">0<div class="n">n<sub>g</sub> <b>29</b></div></td><td><span class="badge bad">FAIL</span></td></tr></tbody></table>
+    </div>
+    <div class="card" style="border-color:#35c9d9">
+      <h3 style="color:#35c9d9">What this page can and cannot do</h3>
+      <div class="sec" style="display:flex; flex-direction:column; gap:6px">
+        <div>Every number on this page is <b>simulated</b>. No order has ever been sent to Kalshi and no money is at risk.</div>
+        <div>Live trading is a separate legal decision by the operator, taken outside this system.</div>
+        <div>The loop prepares the report and the numbers. It never decides.</div>
+        <div class="n">The twelve tests and their thresholds were written down before any data existed and cannot be changed by this system. This page shows them; it never recomputes them.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</x-dc>
+</body>
+</html>

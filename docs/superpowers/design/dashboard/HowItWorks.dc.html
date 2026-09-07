@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #0b0e13; color: #eef2f6; font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif; font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
+    a { color: #35c9d9; text-decoration: none; } a:hover { color: #7fe0eb; }
+    .num { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .display { font-family: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif; }
+    .hdr { height: 56px; display: flex; align-items: center; gap: 18px; padding: 0 24px; border-bottom: 1px solid #1f2733; background: #0f131a; }
+    .brand { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.14em; font-size: 12px; color: #eef2f6; }
+    .tabs { display: flex; gap: 2px; }
+    .tab { padding: 7px 12px; border-radius: 6px; color: #aab4c0; font-weight: 500; }
+    .tab.on { background: #1a212b; color: #eef2f6; }
+    .tab.legacy { color: #7c8794; font-size: 12px; }
+    .spacer { flex: 1; }
+    .status { display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.08em; font-size: 13px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #2bc257; box-shadow: 0 0 0 3px rgba(43,194,87,0.18); }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #35c9d9; color: #35c9d9; }
+    .pill.muted { border-color: #2a3441; color: #7c8794; }
+    .meta { color: #7c8794; font-size: 12px; }
+    .card { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 14px 16px; }
+    .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c8794; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .card h3 .tag { font-size: 10px; letter-spacing: 0.06em; color: #35c9d9; border: 1px solid #35c9d9; border-radius: 4px; padding: 1px 5px; }
+    .muted { color: #7c8794; } .sec { color: #aab4c0; }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .tile { background: #0f131a; border: 1px solid #1f2733; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .tile .lbl { font-size: 11px; color: #7c8794; }
+    .tile .val { font-size: 20px; font-weight: 600; color: #eef2f6; }
+    .tile .val small { font-size: 11px; font-weight: 500; color: #7c8794; margin-left: 4px; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; font-size: 11px; color: #7c8794; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #1f2733; letter-spacing: 0.04em; }
+    td { padding: 7px 8px; border-bottom: 1px solid #171d26; vertical-align: middle; }
+    td.r, th.r { text-align: right; }
+    .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+    .track { position: relative; height: 6px; border-radius: 3px; background: #232b36; overflow: hidden; }
+    .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #35c9d9; border-radius: 3px; }
+    .fill.warm { background: #f5a524; }
+    .n { font-size: 11px; color: #7c8794; }
+    .n b { color: #aab4c0; font-weight: 500; }
+    .grey { color: #5b6672; }
+    .flag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid #3b4653; color: #aab4c0; margin-left: 6px; }
+    .ok { color: #2bc257; } .warn { color: #fab219; } .bad { color: #e05252; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+    .badge.ok { background: rgba(43,194,87,0.14); color: #2bc257; }
+    .badge.warn { background: rgba(250,178,25,0.14); color: #fab219; }
+    .badge.bad { background: rgba(224,82,82,0.16); color: #e05252; }
+    .badge.dim { background: #1a212b; color: #7c8794; }
+    .gamecard { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 12px 14px; position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+    .gamecard .stripe { position: absolute; left: 0; right: 0; top: 0; height: 4px; }
+    .teams { display: flex; justify-content: space-between; align-items: baseline; }
+    .team { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; }
+    .score { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 500; }
+    .markers { display: flex; gap: 4px; }
+    .mk { width: 10px; height: 10px; border-radius: 2px; }
+    .live { color: #f5a524; font-weight: 600; font-size: 11px; letter-spacing: 0.08em; }
+    .lead { font-size: 14.5px; line-height: 1.5; color: #eef2f6; margin: 0 0 12px; max-width: 72ch; text-wrap: pretty; }
+    .lead b { font-weight: 600; }
+    .lead .soft { color: #aab4c0; }
+    .plain { font-size: 13px; font-weight: 600; color: #eef2f6; text-transform: none; letter-spacing: 0; }
+    .tech { font-size: 11px; color: #7c8794; font-family: 'IBM Plex Mono', monospace; text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .tabbar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; display: flex; border-top: 1px solid #1f2733; background: #0f131a; }
+    .tabbar div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: #7c8794; }
+    .tabbar div.on { color: #eef2f6; }
+    .tabbar svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</helmet>
+<div style="width: 1440px; min-height: 1180px; background: #0b0e13; position: relative; overflow: hidden;">
+<div class="hdr">
+  <div class="brand">HARNESS</div>
+  <div class="tabs"><div class="tab">Pulse</div><div class="tab">Floor</div><div class="tab">Study</div><div class="tab">Gate</div><div class="tab legacy">How it works</div><div class="tab legacy">Legacy panel</div></div>
+  <div class="spacer"></div>
+  <div class="status"><span class="dot" style="background: #2bc257; box-shadow: 0 0 0 3px #2bc25730;"></span>FINE</div>
+  <span class="pill">PAPER</span>
+  <span class="pill muted">SAMPLE VALUES</span>
+  <span class="meta num">a0c0f4c</span>
+  <span class="meta">snapshots <span class="num">12 s</span></span>
+</div>
+<div style="padding: 20px 24px 24px; display:flex; flex-direction:column; gap:16px">
+  <div>
+    <div class="display" style="font-size:30px; font-weight:700; letter-spacing:-0.01em">How this system works</div>
+    <div class="lead" style="max-width:90ch; margin-top:8px">A research harness that records sports betting prices, compares Kalshi’s prices with the sharp sportsbooks’ fair prices, places <b>simulated</b> bets, and grades itself honestly every week. Nothing here trades for real. The point of the first three weeks is a dataset and an honest answer to one question: does the strategy get better prices than the market’s close?</div>
+  </div>
+  <div class="card">
+    <h3><span class="plain">Eight steps, every few minutes</span> <span class="tech">recorder · matcher · pricing · strategy · executor · settlement · report</span></h3>
+    <div class="grid4"><div class="tile" style="gap:6px; min-height:150px"><div class="row" style="gap:8px"><span class="num" style="color:#35c9d9; font-size:12px">01</span><b class="display" style="font-size:15px">Record</b></div><div class="sec" style="font-size:12.5px; line-height:1.45">Every few minutes the harness saves sportsbook odds from The Odds API and every change to Kalshi’s order book, raw, nothing thrown away.</div></div><div class="tile" style="gap:6px; min-height:150px"><div class="row" style="gap:8px"><span class="num" style="color:#35c9d9; font-size:12px">02</span><b class="display" style="font-size:15px">Match</b></div><div class="sec" style="font-size:12.5px; line-height:1.45">It works out which Kalshi market is which game and which side, using team names and aliases.</div></div><div class="tile" style="gap:6px; min-height:150px"><div class="row" style="gap:8px"><span class="num" style="color:#35c9d9; font-size:12px">03</span><b class="display" style="font-size:15px">Price</b></div><div class="sec" style="font-size:12.5px; line-height:1.45">From the sharp books’ odds it computes a fair probability for each market, and notes how old that price is.</div></div><div class="tile" style="gap:6px; min-height:150px"><div class="row" style="gap:8px"><span class="num" style="color:#35c9d9; font-size:12px">04</span><b class="display" style="font-size:15px">Decide</b></div><div class="sec" style="font-size:12.5px; line-height:1.45">Each strategy variant compares Kalshi’s price with the fair price. A big enough gap is a candidate; every no is recorded with its reason.</div></div><div class="tile" style="gap:6px; min-height:150px"><div class="row" style="gap:8px"><span class="num" style="color:#35c9d9; font-size:12px">05</span><b class="display" style="font-size:15px">Simulated order</b></div><div class="sec" style="font-size:12.5px; line-height:1.45">Candidates become simulated orders resting on the recorded order book at the price the strategy wants. No order ever reaches Kalshi.</div></div><div class="tile" style="gap:6px; min-height:150px"><div class="row" style="gap:8px"><span class="num" style="color:#35c9d9; font-size:12px">06</span><b class="display" style="font-size:15px">Fill from the tape</b></div><div class="sec" style="font-size:12.5px; line-height:1.45">An order fills only when a real trade printed at our price after everyone ahead of us in line was served.</div></div><div class="tile" style="gap:6px; min-height:150px"><div class="row" style="gap:8px"><span class="num" style="color:#35c9d9; font-size:12px">07</span><b class="display" style="font-size:15px">Settle</b></div><div class="sec" style="font-size:12.5px; line-height:1.45">Games end. Scores from ESPN, cross-checked against Kalshi, pay the simulated positions.</div></div><div class="tile" style="gap:6px; min-height:150px"><div class="row" style="gap:8px"><span class="num" style="color:#35c9d9; font-size:12px">08</span><b class="display" style="font-size:15px">Judge</b></div><div class="sec" style="font-size:12.5px; line-height:1.45">Every week: were our prices better than the closing price, by how much, on how many games, and does it pass the twelve tests?</div></div></div>
+  </div>
+  <div class="card">
+    <h3><span class="plain">Three questions, four pages</span> <span class="tech"></span></h3>
+    <div class="grid4"><div class="tile" style="gap:4px"><b class="display" style="font-size:15px">Pulse</b><div style="font-size:13px; font-weight:600">Is it alive and honest?</div><div class="n" style="font-size:12px">A daily 30-second glance. One word, red only for a named reason.</div></div><div class="tile" style="gap:4px"><b class="display" style="font-size:15px">Floor</b><div style="font-size:13px; font-weight:600">What is it doing right now?</div><div class="n" style="font-size:12px">Game day. Games, orders waiting in line, fills as they happen, what it passed on.</div></div><div class="tile" style="gap:4px"><b class="display" style="font-size:15px">Study</b><div style="font-size:13px; font-weight:600">Is the strategy any good?</div><div class="n" style="font-size:12px">The Monday hour. Every claim with its sample size and honest range.</div></div><div class="tile" style="gap:4px"><b class="display" style="font-size:15px">Gate</b><div style="font-size:13px; font-weight:600">Should this ever trade for real?</div><div class="n" style="font-size:12px">The twelve tests, their definitions, and the history. It never decides.</div></div></div>
+  </div>
+  <div class="card">
+    <h3><span class="plain">Words you will see</span> <span class="tech">glossary.json · tap any dotted term on a page</span></h3>
+    <div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>Simulated, no money at risk</b><span class="tech">paper</span><span class="sec" style="font-size:12.5px">Every order and dollar on these pages is a simulation over recorded data. Going live is a separate decision by the operator, outside this system.</span></div><div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>Better than the closing price?</b><span class="tech">CLV, closing line value</span><span class="sec" style="font-size:12.5px">The gap between the price we got and the market’s final price before kickoff. Beating the close consistently is the best early evidence of real edge.</span></div><div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>Honest range</b><span class="tech">cluster-robust 90 % interval</span><span class="sec" style="font-size:12.5px">Where the true number probably lies given how few games we have seen. Wide range, weak claim.</span></div><div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>Games, not bets</b><span class="tech">n_g · n_clusters</span><span class="sec" style="font-size:12.5px">Bets in the same game win or lose together, so we count games. Fewer than 10 is greyed out; fewer than 30 is flagged.</span></div><div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>Orders ahead of ours</b><span class="tech">queue_remaining</span><span class="sec" style="font-size:12.5px">How many other people’s orders sit at our price before ours. Ours fills only after they are served.</span></div><div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>Filled from the recorded order book</b><span class="tech">queue_model</span><span class="sec" style="font-size:12.5px">A simulated order fills only when a real trade printed at our price after everyone ahead of us in line was served. No guessing, no assuming we were first.</span></div><div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>Passed on</b><span class="tech">skip, with a reason</span><span class="sec" style="font-size:12.5px">The strategy wanted to bet but the executor declined: price gone, too close to kickoff, untrustworthy book, bankroll cap. Every pass is recorded.</span></div><div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>The stop button</b><span class="tech">kill switch</span><span class="sec" style="font-size:12.5px">Cancels every open simulated order and places no new ones until switched off. Shown, never operated, from these pages.</span></div><div style="display:grid; grid-template-columns: 240px 170px 1fr; gap:12px; padding:8px 0; border-bottom:1px solid #171d26"><b>Still being counted</b><span class="tech">provisional</span><span class="sec" style="font-size:12.5px">This week’s numbers are recomputed hourly from the same code as the final report and will change until Monday.</span></div>
+  </div>
+  <div class="card" style="border-color:#35c9d9">
+    <h3 style="color:#35c9d9">Rules these pages follow</h3>
+    <div class="sec" style="display:flex; flex-direction:column; gap:6px; font-size:13px">
+      <div>No number is shown without how many games it rests on and its honest range.</div>
+      <div>Every sentence is written from the stored numbers by fixed rules, never by a model guessing.</div>
+      <div>Nothing on any page can place, cancel or change a bet. The pages only display.</div>
+      <div>The tests for going live were written before any data existed and cannot be changed from here.</div>
+    </div>
+  </div>
+</div>
+
+</div>
+</x-dc>
+</body>
+</html>

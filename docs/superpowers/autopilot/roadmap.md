@@ -257,8 +257,9 @@ reported "not collected".
    `app-serve` with `SNAPSHOT_STATEMENT_TIMEOUT_MS = 2000`, §5 front end (static, no build step, vendored
    uPlot, no CDN or font download, 300 KB asset budget, light and dark, 360 px to 2560 px), §6 budgets, §8
    tests. No snapshot builder reads `orderbook_events`, `venue_trades` or `raw_responses`.
-2. Visual direction comes from the design canvas the user refines in Claude Design on or after
-   2026-09-14; the implementer builds from the canvas and the spec, and the reviewer checks the §1.1
+2. Visual direction is fixed by the approved design canvas (sources in `docs/superpowers/design/dashboard/`,
+   live at https://claude.ai/code/artifact/78f3e81e-bae8-4d69-aa30-2b6697e7dd3b, refinable after week 1);
+   the implementer builds from the canvas and the spec, and the reviewer checks the §1.1
    honesty rules (PAPER badge everywhere, no estimate without n and interval, thresholds imported from code).
 3. Table t12 (declined candidates with counterfactual CLV) is additive to the report and is not a gate
    input (R1 untouched).

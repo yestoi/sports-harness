@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #0b0e13; color: #eef2f6; font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif; font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
+    a { color: #35c9d9; text-decoration: none; } a:hover { color: #7fe0eb; }
+    .num { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .display { font-family: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif; }
+    .hdr { height: 56px; display: flex; align-items: center; gap: 18px; padding: 0 24px; border-bottom: 1px solid #1f2733; background: #0f131a; }
+    .brand { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.14em; font-size: 12px; color: #eef2f6; }
+    .tabs { display: flex; gap: 2px; }
+    .tab { padding: 7px 12px; border-radius: 6px; color: #aab4c0; font-weight: 500; }
+    .tab.on { background: #1a212b; color: #eef2f6; }
+    .tab.legacy { color: #7c8794; font-size: 12px; }
+    .spacer { flex: 1; }
+    .status { display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.08em; font-size: 13px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #2bc257; box-shadow: 0 0 0 3px rgba(43,194,87,0.18); }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #35c9d9; color: #35c9d9; }
+    .pill.muted { border-color: #2a3441; color: #7c8794; }
+    .meta { color: #7c8794; font-size: 12px; }
+    .card { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 14px 16px; }
+    .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c8794; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .card h3 .tag { font-size: 10px; letter-spacing: 0.06em; color: #35c9d9; border: 1px solid #35c9d9; border-radius: 4px; padding: 1px 5px; }
+    .muted { color: #7c8794; } .sec { color: #aab4c0; }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .tile { background: #0f131a; border: 1px solid #1f2733; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .tile .lbl { font-size: 11px; color: #7c8794; }
+    .tile .val { font-size: 20px; font-weight: 600; color: #eef2f6; }
+    .tile .val small { font-size: 11px; font-weight: 500; color: #7c8794; margin-left: 4px; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; font-size: 11px; color: #7c8794; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #1f2733; letter-spacing: 0.04em; }
+    td { padding: 7px 8px; border-bottom: 1px solid #171d26; vertical-align: middle; }
+    td.r, th.r { text-align: right; }
+    .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+    .track { position: relative; height: 6px; border-radius: 3px; background: #232b36; overflow: hidden; }
+    .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #35c9d9; border-radius: 3px; }
+    .fill.warm { background: #f5a524; }
+    .n { font-size: 11px; color: #7c8794; }
+    .n b { color: #aab4c0; font-weight: 500; }
+    .grey { color: #5b6672; }
+    .flag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid #3b4653; color: #aab4c0; margin-left: 6px; }
+    .ok { color: #2bc257; } .warn { color: #fab219; } .bad { color: #e05252; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+    .badge.ok { background: rgba(43,194,87,0.14); color: #2bc257; }
+    .badge.warn { background: rgba(250,178,25,0.14); color: #fab219; }
+    .badge.bad { background: rgba(224,82,82,0.16); color: #e05252; }
+    .badge.dim { background: #1a212b; color: #7c8794; }
+    .gamecard { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 12px 14px; position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+    .gamecard .stripe { position: absolute; left: 0; right: 0; top: 0; height: 4px; }
+    .teams { display: flex; justify-content: space-between; align-items: baseline; }
+    .team { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; }
+    .score { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 500; }
+    .markers { display: flex; gap: 4px; }
+    .mk { width: 10px; height: 10px; border-radius: 2px; }
+    .live { color: #f5a524; font-weight: 600; font-size: 11px; letter-spacing: 0.08em; }
+    .lead { font-size: 14.5px; line-height: 1.5; color: #eef2f6; margin: 0 0 12px; max-width: 72ch; text-wrap: pretty; }
+    .lead b { font-weight: 600; }
+    .lead .soft { color: #aab4c0; }
+    .plain { font-size: 13px; font-weight: 600; color: #eef2f6; text-transform: none; letter-spacing: 0; }
+    .tech { font-size: 11px; color: #7c8794; font-family: 'IBM Plex Mono', monospace; text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .tabbar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; display: flex; border-top: 1px solid #1f2733; background: #0f131a; }
+    .tabbar div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: #7c8794; }
+    .tabbar div.on { color: #eef2f6; }
+    .tabbar svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</helmet>
+<div style="width: 390px; min-height: 1130px; background: #0b0e13; position: relative; overflow: hidden;">
+
+<div class="hdr" style="padding: 0 16px; gap: 10px;"><div class="brand">HARNESS</div><div class="spacer"></div><div class="status" style="font-size:12px"><span class="dot"></span>FINE</div><span class="pill">PAPER</span></div>
+<div style="padding: 14px 16px 90px; display:flex; flex-direction:column; gap:12px;">
+  <div class="row" style="justify-content:space-between"><span class="display" style="font-size:20px; font-weight:700">Floor</span><span class="n">Sat 09-12 · <span class="num">15:44 CT</span> · 15 s</span></div>
+  <div class="gamecard">
+  <div class="stripe" style="background: linear-gradient(90deg, #461D7C 0 50%, #0021A5 50% 100%);"></div>
+  <div class="row" style="justify-content: space-between;"><span class="live" style="font-size:11px; letter-spacing:0.08em; font-weight:600;">LIVE</span><span class="muted num" style="font-size:11px;">Q3 · 07:42 · ESPN 2 min</span></div>
+  <div class="teams"><span class="team">LSU <span class="score">17</span></span><span class="team"><span class="score">13</span> FLA</span></div>
+  <div class="row" style="justify-content: space-between;"><span class="n">our open orders and positions</span><span class="markers"><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#199e70"></span></span></div>
+</div>
+  <div class="gamecard">
+  <div class="stripe" style="background: linear-gradient(90deg, #14213D 0 50%, #BA0C2F 50% 100%);"></div>
+  <div class="row" style="justify-content: space-between;"><span class="live" style="font-size:11px; letter-spacing:0.08em; font-weight:600;">LIVE</span><span class="muted num" style="font-size:11px;">Q2 · 01:15 · ESPN 2 min</span></div>
+  <div class="teams"><span class="team">MISS <span class="score">7</span></span><span class="team"><span class="score">10</span> UGA</span></div>
+  <div class="row" style="justify-content: space-between;"><span class="n">our open orders and positions</span><span class="markers"><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#d95926"></span></span></div>
+</div>
+  <div class="gamecard">
+  <div class="stripe" style="background: linear-gradient(90deg, #9E1B32 0 50%, #C5050C 50% 100%);"></div>
+  <div class="row" style="justify-content: space-between;"><span class="muted" style="font-size:11px; letter-spacing:0.08em; font-weight:600;">KICKOFF IN</span><span class="muted num" style="font-size:11px;">1 h 48 m</span></div>
+  <div class="teams"><span class="team">ALA</span><span class="muted">at</span><span class="team">WIS</span></div>
+  <div class="row" style="justify-content: space-between;"><span class="n">our open orders and positions</span><span class="markers"><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#3987e5"></span><span class="mk" style="background:#199e70"></span><span class="mk" style="background:#d95926"></span></span></div>
+</div>
+  <div class="card" style="padding:12px 12px">
+    <h3><span class="plain">Orders waiting to fill</span> <span class="tech">5 · simulated</span></h3>
+    <div class="lead" style="font-size:13px">The bar shows how many orders are ahead of ours at our price.</div>
+    <div style="display:flex; flex-direction:column; gap:8px"><div class="tile" style="gap:5px">
+  <div class="row" style="justify-content:space-between"><span><span class="sw" style="background:#3987e5"></span><b>ALA @ WIS</b></span><span class="n num">41 m</span></div>
+  <div class="n">Alabama to win</div>
+  <div class="row" style="gap:8px"><span class="num">0.71</span><span class="n">fair <b class="num">0.762</b></span><div class="track" style="flex:1"><div class="fill" style="width:73%"></div></div><span class="n num">118/430</span></div>
+</div><div class="tile" style="gap:5px">
+  <div class="row" style="justify-content:space-between"><span><span class="sw" style="background:#199e70"></span><b>ALA @ WIS</b></span><span class="n num">12 m</span></div>
+  <div class="n">Wisconsin +7</div>
+  <div class="row" style="gap:8px"><span class="num">0.44</span><span class="n">fair <b class="num">0.481</b></span><div class="track" style="flex:1"><div class="fill" style="width:15%"></div></div><span class="n num">260/305</span></div>
+</div><div class="tile" style="gap:5px">
+  <div class="row" style="justify-content:space-between"><span><span class="sw" style="background:#199e70"></span><b>ORE @ OKST</b></span><span class="n num">8 m</span></div>
+  <div class="n">Over 55 points</div>
+  <div class="row" style="gap:8px"><span class="num">0.52</span><span class="n">fair <b class="num">0.559</b></span><div class="track" style="flex:1"><div class="fill" style="width:3%"></div></div><span class="n num">505/520</span></div>
+</div></div>
+    <div class="n" style="margin-top:8px; text-align:center">2 more</div>
+  </div>
+  <div class="card" style="padding:12px 12px">
+    <h3><span class="plain">Filled today</span> <span class="tech">9 · simulated</span></h3>
+    <div class="row" style="justify-content:space-between; padding:7px 0; border-bottom:1px solid #171d26"><span><span class="sw" style="background:#3987e5"></span>LSU vs FLA <span class="n num">LSU to win</span></span><span class="num">0.63 × 40</span></div><div class="row" style="justify-content:space-between; padding:7px 0; border-bottom:1px solid #171d26"><span><span class="sw" style="background:#199e70"></span>MISS @ UGA <span class="n num">Georgia −3 to fail</span></span><span class="num">0.47 × 55</span></div><div class="row" style="justify-content:space-between; padding:7px 0; border-bottom:1px solid #171d26"><span><span class="sw" style="background:#3987e5"></span>MISS @ UGA <span class="n num">Over 51</span></span><span class="num">0.55 × 36</span></div>
+  </div>
+  <div class="card" style="padding:12px 12px">
+    <h3><span class="plain">Last 6 hours</span> <span class="tech">funnel</span></h3>
+    <div class="lead" style="font-size:13px">Found 41 worth a bet, placed 27, 9 filled, passed on 14.</div>
+    <div class="row" style="justify-content:space-between" ><span class="n">candidates <b class="num">41</b></span><span class="n">orders <b class="num">27</b></span><span class="n">fills <b class="num">9</b></span><span class="n bad">skipped <b class="num">14</b></span></div>
+  </div>
+</div>
+<div class="tabbar">
+  <div><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Pulse</div>
+  <div class="on"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></svg>Floor</div>
+  <div><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Study</div>
+  <div><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>Gate</div>
+</div>
+
+</div>
+</x-dc>
+</body>
+</html>
