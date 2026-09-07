@@ -89,6 +89,11 @@ class KalshiPublic:
 
     def fetch_markets_all(self, series_ticker: str, max_pages: int = 20, status: str = "open",
                           min_settled_ts: int | None = None) -> list[FetchResult]:
+        """Every page of `GET /markets` for one series at one `status`.
+
+        `min_settled_ts` (Unix seconds) is the only timestamp filter Kalshi accepts alongside
+        `status="settled"`; it is meaningless for `status="open"`, so callers leave it None there.
+        """
         pages: list[FetchResult] = []
         cursor = ""
         for _ in range(max_pages):
