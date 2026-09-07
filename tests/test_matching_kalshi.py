@@ -197,3 +197,33 @@ def test_match_event_unambiguous_title_never_consults_ticker_code(db_session):
     em = match_event(db_session, "nfl", {"event_ticker": "KXNFLGAME-26SEP14SFLAR",
                                           "title": "Green Bay vs Minnesota"}, date(2026, 9, 14))
     assert em.game_id == g.id and em.reason == "pair+date exact"
+
+
+def test_match_event_code_resolution_requires_a_unique_split(db_session):
+    # I9 fix round 1: if the ticker's code string admits more than one valid partition
+    # into two known codes, that's a new ambiguity, not a resolution -- the code path
+    # must not silently pick one. "ABCDE" splits both as "AB"|"CDE" and "ABC"|"DE"; here
+    # both "AB" and "ABC" resolve to the same known team (Alpha, so the already-name-
+    # resolved left side is consistent either way) but "CDE" and "DE" resolve to two
+    # DIFFERENT teams, so the right side (bare, unresolved by name) has two conflicting
+    # candidates. A pre-fix implementation would return the first split's game at
+    # confidence 1.00; this must instead fall back to the pre-code-path "unresolved"
+    # result and learn nothing.
+    from harness.matching.teams import learn_alias, resolve_team
+
+    learn_alias(db_session, "nfl", "kalshi_name", "Alpha", 901)
+    learn_alias(db_session, "nfl", "kalshi_code", "AB", 901)
+    learn_alias(db_session, "nfl", "kalshi_code", "ABC", 901)
+    learn_alias(db_session, "nfl", "kalshi_code", "CDE", 902)
+    learn_alias(db_session, "nfl", "kalshi_code", "DE", 903)
+    kick = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
+    # The trap: a pre-fix implementation tries the "AB"|"CDE" split first and would
+    # confidently return this game.
+    trap_game = Game(sport="nfl", home_team_id=901, away_team_id=902, kickoff_utc=kick)
+    db_session.add(trap_game)
+    db_session.flush()
+    em = match_event(db_session, "nfl", {"event_ticker": "KXNFLGAME-26SEP13ABCDE",
+                                          "title": "Alpha vs Bravo"}, date(2026, 9, 13))
+    assert em.game_id is None
+    assert em.reason == "unresolved: Bravo"
+    assert resolve_team(db_session, "nfl", "Bravo") == (None, "")

@@ -113,14 +113,19 @@ def _resolve_by_code(session: Session, sport: str, ticker: str, left: str, right
                       lt: int | None, rt: int | None) -> tuple[int | None, int | None, bool, bool] | None:
     """Try to resolve whichever of `lt`/`rt` is still None via the event ticker's code
     segment. The codes are ordinarily concatenated in title order, but a side that
-    already resolved by name pins its own code first; the split is only accepted when
-    every side agrees.
+    already resolved by name pins its own code first; a split+ordering is only a
+    candidate when every side agrees. Every split point (and both orderings of each) is
+    tried and collected; the code path only succeeds when exactly one distinct team-pair
+    assignment survives -- if the code string happens to admit more than one valid
+    partition (or none), that's not a resolution, it's a new ambiguity, so this returns
+    None and match_event falls back to its pre-code-path result.
     """
     codes = codes_from_event_ticker(ticker)
     if not codes:
         return None
     l_cands = None if lt is not None else ambiguous_candidates(session, sport, left)
     r_cands = None if rt is not None else ambiguous_candidates(session, sport, right)
+    results: dict[tuple[int, int], tuple[int, int, bool, bool]] = {}
     for code_a, code_b in _code_splits(codes):
         ta, _ = resolve_team(session, sport, code_a, sources=CODE_SOURCES)
         tb, _ = resolve_team(session, sport, code_b, sources=CODE_SOURCES)
@@ -134,8 +139,10 @@ def _resolve_by_code(session: Session, sport: str, ticker: str, left: str, right
             new_lt, l_learn = (lt, False) if lt is not None else _accept_by_code(cl, l_cands)
             new_rt, r_learn = (rt, False) if rt is not None else _accept_by_code(cr, r_cands)
             if new_lt is not None and new_rt is not None:
-                return new_lt, new_rt, l_learn, r_learn
-    return None
+                results[(new_lt, new_rt)] = (new_lt, new_rt, l_learn, r_learn)
+    if len(results) != 1:
+        return None
+    return next(iter(results.values()))
 
 
 def match_event(session: Session, sport: str, event: dict, event_date: date) -> EventMatch:
