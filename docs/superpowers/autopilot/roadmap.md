@@ -39,6 +39,7 @@ User decisions (Trey), recorded verbatim. Only a dated user decision changes the
 | U3 Storage | Partition `orderbook_events` and `venue_trades` now as phase 3 Task 2b (metadata-only `ATTACH PARTITION`). The harness's ceiling is 2 TB of the 3.5 TB free on `/volume1`. Archiving or dropping sealed partitions happens only on the user's later explicit yes: the loop may propose, never execute (gate). |
 | U4 Veto spend | `veto_daily_usd_cap` = $25, `veto_weekly_usd_cap` = $150, enforced in code from the usage fields; over budget the veto and shadow go dormant for the day and every skipped call is labelled `veto_skipped_budget`. The Sonnet shadow runs on every call. The key must live in a capped Console workspace (user action). |
 | U5 Gate variant | From amendment 3 onward the go-live gate is judged on the `sharp_two_sided` variant's `gate_reports` row (`gate_variant = true`); the pre-registered YES-only primary's row is stored and reported beside it every week. `Settings.gate_variant` defaults to the primary and is flipped by phase 3 Task 4b's deploy; Amendment 3 records the first switched evaluation date. Decided 2026-09-07 before any two-sided data exists. |
+| U7 GitHub remote | Decided 2026-09-07 evening: a **private** GitHub repository is the remote `origin`, added by the user as an off-site backup. R5 is amended: the loop **pushes** `main` and the current phase branch (`git push origin main <phase-branch>`) at the same moments it writes the bundle (after every phase and every Monday), and the bundle continues. The loop never pulls, never rebases onto the remote, never opens pull requests, never pushes task worktree branches, and the NAS still deploys from the local `main`. A failed push is journaled, never retried in a loop, and never blocks a unit. |
 | U6 Dashboard | Decided 2026-09-07 (design session, spec `docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md`). Architecture: compute once, render in the browser: jobs write pre-aggregated snapshots, `app-serve` serves them by primary key, a static client renders four surfaces (Pulse, Floor, Study, Gate) under `/ui/`; the legacy page at `/` and the `/api/summary` contract are frozen. Telemetry tables that cannot be backfilled land in phase 3 as **Task 12b** (`metric_samples`, `operator_events`, `order_watch_samples`, `equity_snapshots`, `game_score_events`, `check_results`, `report_runs`/`report_cells`); the front end is **phase 4.5**, planned after phase 4, absorbing phase 5(g). Mobile and desktop both in scope. Visual direction comes from a Claude Design canvas, refined on or after 2026-09-14. |
 
 Controller rulings this file governs. Each is reversible; the review states the cost if wrong.
@@ -314,7 +315,7 @@ actual contract count is closed by the centicent fee fix (F11), which makes the 
 - Create the Kalshi demo account at demo.kalshi.co and add mock funds with a test card.
 - Move the Anthropic key into a new Console workspace with a monthly spend limit and a threshold alert
   before dropping the file into `secrets/` (F70).
-- Keep a Time Machine or equivalent copy of the Mac (R5); there is no git remote.
+- Keep a Time Machine or equivalent copy of the Mac (R5). The private GitHub remote (U7) is the second copy.
 - Copy `secrets/backup_age_key` somewhere safe once the loop creates it, and say so.
 - The legal decision before any live trading.
 
