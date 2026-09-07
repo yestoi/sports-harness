@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     kalshi_private_key_file: Path = Path("/run/secrets/kalshi_private_key.pem")
     kalshi_ws_url: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     ws_max_tickers: int = 500
-    ws_lookahead_hours: int = 24
+    ws_lookahead_hours: int = 72  # F8: phase 3 places paper orders days out, so tape the book that early
+    ws_lookback_hours: int = 8  # F8: post-kickoff prints still feed settlement and markouts
     ws_stale_s: int = 180  # force a ws reconnect after this much silence on the socket
     espn_base_url: str = "https://site.api.espn.com/apis/site/v2/sports/football"
     tick_budget_s: int = 100

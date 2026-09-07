@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from harness.db.models import Game, OrderbookEvent, VenueMarket, VenueQuote, VenueTrade
+from harness.db.models import Game, OrderbookEvent, Signal, VenueMarket, VenueQuote, VenueTrade
 from harness.feeds.http import FetchError
 from harness.recorder.ws_sink import WsSink
 from harness.venues.kalshi import ws as ws_module
@@ -142,7 +142,8 @@ class _FakeSettings:
     kalshi_ws_url = "wss://fake.example/ws"
     kalshi_base_url = "https://k"
     ws_max_tickers = 10
-    ws_lookahead_hours = 24
+    ws_lookahead_hours = 72
+    ws_lookback_hours = 8
     ws_stale_s = 180
 
     def kalshi_key_id(self) -> str:
@@ -848,3 +849,81 @@ def test_third_gap_inside_five_minutes_falls_through_to_a_reconnect(db_session, 
     # The third gap raised through to the backoff path, which opened one more connection.
     assert len(sockets) == 2
     assert db_session.query(OrderbookEvent).filter_by(kind="gap").count() == 3
+
+
+# --- hotfix F8/R10: the subscription window and its priority ---------------------------
+
+def _signal(session, vmid: int, created_at, decision: str = "candidate", replay: bool = False) -> None:
+    session.add(Signal(run_id=1, variant_id="v1", gap_snapshot_id=1, venue_market_id=vmid, side="yes",
+                       decision=decision, labels={}, replay=replay, created_at=created_at))
+    session.flush()
+
+
+def _quote(session, vmid: int, volume: str, at) -> None:
+    session.add(VenueQuote(raw_id=vmid * 1000 + int(at.timestamp()) % 1000, run_id=1, venue_market_id=vmid,
+                           volume_24h=Decimal(volume), fetched_at=at))
+    session.flush()
+
+
+def test_select_ws_tickers_covers_three_days_ahead_and_eight_hours_back(db_session):
+    """F8: paper orders in phase 3 are placed days before kickoff, so a 24 h lookahead taped
+    nothing for the book the order was priced against; post-kickoff prints matter to
+    settlement and markouts for several hours after the 4 h the window used to allow."""
+    far = Game(sport="nfl", home_team_id=19, away_team_id=14, kickoff_utc=NOW + timedelta(hours=60))
+    past = Game(sport="nfl", home_team_id=20, away_team_id=15, kickoff_utc=NOW - timedelta(hours=6))
+    beyond = Game(sport="nfl", home_team_id=21, away_team_id=16, kickoff_utc=NOW + timedelta(hours=80))
+    db_session.add_all([far, past, beyond])
+    db_session.flush()
+    far_id = _market(db_session, "K-FAR", far.id, NOW)
+    past_id = _market(db_session, "K-PAST", past.id, NOW)
+    _market(db_session, "K-BEYOND", beyond.id, NOW)
+    _quote(db_session, far_id, "900.00", NOW)
+    _quote(db_session, past_id, "10.00", NOW)
+
+    assert select_ws_tickers(db_session, NOW, cap=10) == ["K-FAR", "K-PAST"]
+    assert select_ws_tickers(db_session, NOW, cap=1) == ["K-FAR"]
+
+
+def test_select_ws_tickers_puts_a_recent_candidate_ahead_of_raw_volume(db_session):
+    """R10: the cap is 500 tickers and the busiest markets are not the ones a variant is about
+    to trade. A market with a fresh `candidate` signal outranks a quieter book's volume order,
+    and the cap applies after that ordering."""
+    g = Game(sport="nfl", home_team_id=19, away_team_id=14, kickoff_utc=NOW + timedelta(hours=3))
+    db_session.add(g)
+    db_session.flush()
+    busy = _market(db_session, "K-BUSY", g.id, NOW)
+    signalled = _market(db_session, "K-SIGNALLED", g.id, NOW)
+    stale = _market(db_session, "K-STALE-SIGNAL", g.id, NOW)
+    _quote(db_session, busy, "9000.00", NOW)
+    _quote(db_session, signalled, "5.00", NOW)
+    _quote(db_session, stale, "50.00", NOW)
+    _signal(db_session, signalled, NOW - timedelta(hours=1))
+    # Older than the 6 h priority window, so it ranks on volume like any other market.
+    _signal(db_session, stale, NOW - timedelta(hours=7))
+
+    assert select_ws_tickers(db_session, NOW, cap=10) == ["K-SIGNALLED", "K-BUSY", "K-STALE-SIGNAL"]
+    assert select_ws_tickers(db_session, NOW, cap=1) == ["K-SIGNALLED"]
+
+
+def test_select_ws_tickers_ignores_replayed_and_rejected_signals(db_session):
+    """Replay signals are backtest output, and a rejected one is a market the variant passed
+    on; neither is a reason to spend one of the 500 subscription slots."""
+    g = Game(sport="nfl", home_team_id=19, away_team_id=14, kickoff_utc=NOW + timedelta(hours=3))
+    db_session.add(g)
+    db_session.flush()
+    busy = _market(db_session, "K-BUSY", g.id, NOW)
+    replayed = _market(db_session, "K-REPLAYED", g.id, NOW)
+    rejected = _market(db_session, "K-REJECTED", g.id, NOW)
+    _quote(db_session, busy, "9000.00", NOW)
+    _quote(db_session, replayed, "5.00", NOW)
+    _quote(db_session, rejected, "1.00", NOW)
+    _signal(db_session, replayed, NOW - timedelta(hours=1), replay=True)
+    _signal(db_session, rejected, NOW - timedelta(hours=1), decision="rejected")
+
+    assert select_ws_tickers(db_session, NOW, cap=10) == ["K-BUSY", "K-REPLAYED", "K-REJECTED"]
+
+
+def test_settings_ws_window_defaults(env_settings):
+    assert env_settings.ws_lookahead_hours == 72
+    assert env_settings.ws_lookback_hours == 8
+    assert env_settings.ws_max_tickers == 500

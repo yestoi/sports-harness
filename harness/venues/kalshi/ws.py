@@ -11,7 +11,7 @@ from sqlalchemy import select, true
 from sqlalchemy.orm import Session, sessionmaker
 
 from harness.config.settings import Settings
-from harness.db.models import Game, VenueMarket, VenueQuote
+from harness.db.models import Game, Signal, VenueMarket, VenueQuote
 from harness.feeds.http import HttpClient
 from harness.venues.kalshi.auth import sign_request
 from harness.venues.kalshi.clock import server_time_offset_ms
@@ -44,15 +44,26 @@ def diff_subscriptions(current: list[str], wanted: list[str]) -> tuple[list[str]
     return sorted(w - c), sorted(c - w)
 
 
-def select_ws_tickers(session: Session, now: datetime, cap: int, lookahead_hours: int = 24) -> list[str]:
-    lo, hi = now - timedelta(hours=4), now + timedelta(hours=lookahead_hours)
+def select_ws_tickers(session: Session, now: datetime, cap: int, lookahead_hours: int = 72,
+                      lookback_hours: int = 8) -> list[str]:
+    lo, hi = now - timedelta(hours=lookback_hours), now + timedelta(hours=lookahead_hours)
+    # R10: a market a variant just called is worth a subscription slot more than whichever
+    # book happens to be busiest, so flag it and order the flag ahead of volume. Replay
+    # signals are backtest output and a rejection is a market the variant passed on, so
+    # neither counts. Phase 3's executor adds its open paper orders to this same priority.
+    has_candidate = (
+        select(Signal.id)
+        .where(Signal.venue_market_id == VenueMarket.id, Signal.decision == "candidate",
+               Signal.replay.is_(False), Signal.created_at >= now - timedelta(hours=6))
+        .exists()
+    )
     # Compute the (small) candidate set first -- markets whose game falls in the window and
     # that are matched -- then pull each candidate's own latest quote via a LATERAL join that
     # rides ix_quotes_market_fetched (venue_market_id, fetched_at). This avoids aggregating
     # over all of venue_quotes (which grows ~1M rows/day) on every call.
     candidates = (
         select(VenueMarket.id.label("vmid"), VenueMarket.ticker.label("ticker"),
-               VenueMarket.last_seen_at.label("last_seen_at"))
+               VenueMarket.last_seen_at.label("last_seen_at"), has_candidate.label("has_candidate"))
         .join(Game, Game.id == VenueMarket.game_id)
         .where(VenueMarket.match_status.in_(("matched", "fuzzy", "manual")), Game.kickoff_utc >= lo, Game.kickoff_utc <= hi)
         .subquery("candidates")
@@ -71,7 +82,8 @@ def select_ws_tickers(session: Session, now: datetime, cap: int, lookahead_hours
         select(candidates.c.ticker)
         .select_from(candidates)
         .outerjoin(latest_quote, true())
-        .order_by(latest_quote.c.v24.desc().nullslast(), candidates.c.last_seen_at.desc())
+        .order_by(candidates.c.has_candidate.desc(), latest_quote.c.v24.desc().nullslast(),
+                  candidates.c.last_seen_at.desc())
     ).scalars().all()
     return list(rows)[:cap]
 
@@ -239,7 +251,8 @@ class WsRecorder:
                 raise _Reconnect(f"subscription rejected: {json.dumps(error_msg)[:200] if error_msg else 'no ack'}")
             if time.monotonic() - last_plan >= 300:
                 with self.factory() as session:
-                    wanted = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers, self.s.ws_lookahead_hours)
+                    wanted = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers,
+                                               self.s.ws_lookahead_hours, self.s.ws_lookback_hours)
                 self._resubscribe(ws, wanted, msg_id)
                 msg_id, last_plan = msg_id + 1, time.monotonic()
 
@@ -249,7 +262,8 @@ class WsRecorder:
         while not self._stop:
             try:
                 with self.factory() as session:
-                    tickers = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers, self.s.ws_lookahead_hours)
+                    tickers = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers,
+                                                self.s.ws_lookahead_hours, self.s.ws_lookback_hours)
                 ws = self._connect()
                 self._sids, self._current = [], []
                 self._last_recovery, self._recoveries = {}, {}
