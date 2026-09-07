@@ -555,7 +555,9 @@ def test_sink_exception_writes_a_mark_for_the_rows_it_discards(db_session, monke
     assert sink.errors == 1
 
     marks = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
-    assert [(m.ticker, m.sid, m.seq, m.ts) for m in marks] == [("", 21, 5, NOW), ("", 22, 5, NOW)]
+    # Sid 21's row carries sid 21's own last seq; only the failing subscription's row carries
+    # the failing message's seq, so each mark reads against the stream it belongs to.
+    assert [(m.ticker, m.sid, m.seq, m.ts) for m in marks] == [("", 21, 2, NOW), ("", 22, 5, NOW)]
     assert all(m.raw == {"discarded": 2, "exposed_by": "sink_exception", "kind": "trade",
                          "ticker": "K-T", "sids": [21, 22]} for m in marks)
     # The rollback took the two pending deltas with it, and the marks are committed on their own.
@@ -645,8 +647,10 @@ def test_sink_exception_marks_every_subscription_in_the_discarded_batch(db_sessi
     assert sink.errors == 1
 
     marks = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
-    assert [m.sid for m in marks] == [21, 22, 23]
-    assert all(m.ticker == "" and m.seq == 5 and m.ts == NOW for m in marks)
+    # Sid 21 last saw seq 2 and sid 23 seq 1, and each mark carries its own subscription's
+    # seq. Only sid 22's row, the one whose message failed, carries that message's seq 5.
+    assert [(m.sid, m.seq) for m in marks] == [(21, 2), (22, 5), (23, 1)]
+    assert all(m.ticker == "" and m.ts == NOW for m in marks)
     assert all(m.raw == {"discarded": 3, "exposed_by": "sink_exception", "kind": "trade",
                          "ticker": "K-T", "sids": [21, 22, 23]} for m in marks)
     assert db_session.query(OrderbookEvent).filter_by(kind="delta").count() == 0
@@ -657,3 +661,88 @@ def test_sink_exception_marks_every_subscription_in_the_discarded_batch(db_sessi
     sink.flush()
     kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
     assert kinds == ["gap", "gap", "gap", "delta"]
+
+
+def _boom(*_a, **_kw):
+    raise RuntimeError("boom")
+
+
+def _sidless_trade(trade_id: str) -> dict:
+    """A frame that carries no `sid` at all, the way a malformed or unrouted one does."""
+    return {"type": "trade",
+            "msg": {"trade_id": trade_id, "market_ticker": "K-T", "yes_price_dollars": "0.3600",
+                    "count_fp": "1.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": 1789234000000}}
+
+
+def test_sink_exception_falls_back_to_sid_zero_only_when_nothing_else_is_at_risk(db_session, monkeypatch):
+    """Phase 3 reserves `sid = 0` for REST anchors and dirties a book on
+    `gap.sid = anchor.sid and gap.id > anchor.id`, so one mark at sid 0 would dirty every
+    REST-anchored book for the rest of the tape. A failing frame with no sid of its own must
+    therefore name the subscriptions that actually had rows in the batch, and fall back to
+    sid 0 only when the batch was empty and there is nothing else to name."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+
+    assert sink.handle(_delta(21, 1, "K-A"), NOW) == "orderbook_delta"
+    monkeypatch.setattr(sink._session, "execute", _boom)
+    assert sink.handle(_sidless_trade("t-nosid"), NOW) is None
+
+    marks = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
+    assert [m.sid for m in marks] == [21]
+    assert marks[0].raw["sids"] == [21] and marks[0].raw["discarded"] == 1
+
+    # Same frame, but nothing was pending: now sid 0 is the only thing left to name, and the
+    # loss still has to be recorded somewhere.
+    empty = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+    monkeypatch.setattr(empty._session, "execute", _boom)
+    assert empty.handle(_sidless_trade("t-nosid-2"), NOW) is None
+
+    zero = db_session.query(OrderbookEvent).filter_by(kind="gap", sid=0).one()
+    assert zero.raw["sids"] == [0] and zero.raw["discarded"] == 0
+
+
+def test_sink_exception_mark_skips_a_subscription_whose_rows_never_landed(db_session, monkeypatch):
+    """A subscription is only at risk if the batch is actually holding a row for it. A trade
+    that `on_conflict_do_nothing` deduplicated, and one dropped for a missing taker side, add
+    nothing to the batch, so marking their subscriptions would dirty books that lost nothing."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+
+    base = {"market_ticker": "K-T", "yes_price_dollars": "0.3600", "count_fp": "1.00",
+            "is_block_trade": False, "ts_ms": 1789234000000}
+    dup = {"type": "trade", "sid": 24, "seq": 1, "msg": {**base, "trade_id": "t-dup", "taker_side": "yes"}}
+    assert sink.handle(dup, NOW) == "trade"
+    sink.flush()  # commits the first copy and empties the batch
+    assert sink.handle(dup, NOW) == "trade"  # ON CONFLICT DO NOTHING: nothing pending for sid 24
+    sideless = {"type": "trade", "sid": 26, "seq": 1, "msg": {**base, "trade_id": "t-noside-2"}}
+    assert sink.handle(sideless, NOW) == "trade"  # dropped for a missing taker side
+    assert sink.handle(_delta(21, 1, "K-A"), NOW) == "orderbook_delta"
+
+    monkeypatch.setattr(sink._session, "execute", _boom)
+    failing = {"type": "trade", "sid": 25, "seq": 7, "msg": {**base, "trade_id": "t-fail", "taker_side": "yes"}}
+    assert sink.handle(failing, NOW) is None
+
+    marks = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
+    assert [m.sid for m in marks] == [21, 25]
+    assert all(m.raw["sids"] == [21, 25] and m.raw["discarded"] == 1 for m in marks)
+
+
+def test_sink_exception_mark_survives_a_frame_whose_sid_cannot_be_ordered(db_session, monkeypatch, caplog):
+    """The mark's own bookkeeping has to run inside the guard. A frame whose `sid` is a string
+    leaves the batch's sid set unorderable, and sorting it outside the guard would raise from
+    inside the `except` handler and escape `handle` -- the crash the guard exists to prevent."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+
+    assert sink.handle(_delta(21, 1, "K-A"), NOW) == "orderbook_delta"
+    assert sink.handle(_delta("s-2", 1, "K-B"), NOW) == "orderbook_delta"
+
+    monkeypatch.setattr(sink._session, "execute", _boom)
+    trade = {"type": "trade", "sid": 22, "seq": 5,
+             "msg": {"trade_id": "t-unorderable", "market_ticker": "K-T", "yes_price_dollars": "0.3600",
+                     "count_fp": "1.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": 1789234000000}}
+    with caplog.at_level("ERROR", logger="harness.recorder.ws_sink"):
+        assert sink.handle(trade, NOW) is None  # must not raise
+    assert sink.errors == 1
+    assert any("could not write the exception mark" in r.getMessage() for r in caplog.records)
+    assert db_session.query(OrderbookEvent).count() == 0

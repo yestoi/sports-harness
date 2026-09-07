@@ -11,10 +11,6 @@ from harness.normalize.kalshi import taker_side_of
 
 log = logging.getLogger(__name__)
 
-# The frame types that leave rows in the batch. A `subscribed` ack carries a sid too, but it
-# writes nothing, so it must not put that sid at risk in the exception mark below.
-_BATCHED_KINDS = ("trade", "orderbook_snapshot", "orderbook_delta")
-
 
 def _dec(v):
     try:
@@ -39,8 +35,10 @@ class WsSink:
         self._commit_every, self._interval = commit_every, commit_interval_s
         self._last_seq: dict[int, int] = {}
         # Which subscriptions have rows in the batch right now. `_pending` is one count for the
-        # whole batch, but the batch spans every sid seen since the last commit and a rollback
-        # discards all of them, so the exception mark needs the set as well as the count.
+        # whole batch, but the batch spans every sid that landed a row since the last commit and
+        # a rollback discards all of them, so the exception mark needs the set as well as the
+        # count. It is filled next to each `_pending` increment, never at the top of `handle`: a
+        # frame that is dropped or deduplicated leaves nothing at risk on its subscription.
         self._pending_sids: set[int] = set()
         self.errors = 0
         self.missing_side = 0
@@ -74,6 +72,7 @@ class WsSink:
             self._session.add(OrderbookEvent(ticker="", ts=ts, sid=sid, seq=seq, kind="gap",
                                              raw={"sid": sid, "expected": last + 1, "got": seq, "exposed_by": ticker or None}))
             self._pending += 1
+            self._pending_sids.add(sid)
         self._last_seq[sid] = seq
 
     def handle(self, msg: dict, received_at: datetime) -> str | None:
@@ -81,8 +80,6 @@ class WsSink:
         sid, seq = msg.get("sid"), msg.get("seq")
         ticker = body.get("market_ticker", "")
         try:
-            if kind in _BATCHED_KINDS and sid is not None:
-                self._pending_sids.add(sid)
             if kind == "trade":
                 price, count = _dec(body.get("yes_price_dollars")), _dec(body.get("count_fp"))
                 side, outcome, book = taker_side_of(body)
@@ -102,7 +99,10 @@ class WsSink:
                                                      is_block=bool(body.get("is_block_trade")), source="ws", raw_id=None
                                                      ).on_conflict_do_nothing().returning(VenueTrade.trade_id)
                     # psycopg3 reports rowcount -1 for ON CONFLICT DO NOTHING; count returned rows instead (Task 6 ruling)
-                    self._pending += len(self._session.execute(stmt).fetchall())
+                    landed = len(self._session.execute(stmt).fetchall())
+                    self._pending += landed
+                    if landed and sid is not None:
+                        self._pending_sids.add(sid)
             elif kind == "orderbook_snapshot":
                 if sid is not None and seq is not None:
                     # Assigning `_last_seq[sid]` here erased any gap that coincided with a
@@ -114,6 +114,8 @@ class WsSink:
                     self._check_seq(sid, seq, ticker, received_at)
                 self._session.add(OrderbookEvent(ticker=ticker, ts=received_at, sid=sid or 0, seq=seq or 0, kind="snapshot", raw=body))
                 self._pending += 1
+                if sid is not None:
+                    self._pending_sids.add(sid)
             elif kind == "orderbook_delta":
                 ts = _ts(body.get("ts_ms"), received_at)
                 if sid is not None and seq is not None:
@@ -121,6 +123,8 @@ class WsSink:
                 self._session.add(OrderbookEvent(ticker=ticker, ts=ts, sid=sid or 0, seq=seq or 0, kind="delta", side=body.get("side"),
                                                  price=_dec(body.get("price_dollars")), delta=_dec(body.get("delta_fp")), raw=body))
                 self._pending += 1
+                if sid is not None:
+                    self._pending_sids.add(sid)
             else:
                 return None
         except Exception:
@@ -135,17 +139,29 @@ class WsSink:
             # that loses deltas without a row of its own keeps serving a book that is a lie.
             # The failing sid goes in too, even with nothing pending -- its message is lost.
             discarded = self._pending
-            sids = sorted(self._pending_sids | {sid or 0})
+            pending = set(self._pending_sids)
             self._session.rollback()
             self._pending = 0
             self._pending_sids.clear()
             self._last_commit = time.monotonic()
             self.errors += 1
             try:
+                # Everything that can raise on a malformed frame belongs inside this guard: a
+                # `sid` that is a string leaves the set unorderable, and sorting it out here
+                # would throw from inside an `except` and take the recorder down with it.
+                # Sid 0 is phase 3's REST anchor, so a mark parked there dirties every
+                # REST-anchored book for the rest of the tape. A frame with no sid of its own
+                # is therefore folded into the subscriptions that were holding rows, and 0 is
+                # used only when the batch was empty and there is nothing else to name.
+                failing = sid if sid is not None else 0
+                sids = sorted(pending | ({sid} if sid is not None else set())) or [0]
                 raw = {"discarded": discarded, "exposed_by": "sink_exception", "kind": kind,
                        "ticker": ticker, "sids": sids}
                 for marked in sids:
-                    self._session.add(OrderbookEvent(ticker="", ts=received_at, sid=marked, seq=seq or 0,
+                    # Only the failing frame's own subscription carries that frame's seq. The
+                    # others carry their own last seq, so each mark reads against its stream.
+                    marked_seq = (seq or 0) if marked == failing else self._last_seq.get(marked, 0)
+                    self._session.add(OrderbookEvent(ticker="", ts=received_at, sid=marked, seq=marked_seq,
                                                      kind="gap", raw=dict(raw)))
                 self._session.commit()
             except Exception:
