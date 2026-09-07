@@ -275,3 +275,29 @@ Times are America/Chicago.
 - Rulings: (1) The implementer's threading of `credits_budget` through `harness/dashboard/app.py` and the extended key assertion in `tests/test_dashboard.py` are accepted: the brief's item 3 names the dashboard as a caller and the suite must stay pristine - cost if wrong: none. (2) verify.md's "Odds credits per day 500-3,000" band was written for the 100k tier; under U1 the loop expects roughly 5,000 a day on a weekday and up to 60,000 on a Saturday, journals the excursion as U1-attributable, and does not treat it as an integrity anomaly; the band's amendment is the user's (flagged in the stopped report) or phase 3's last task - cost if wrong: a key leak hides behind the cadence once; the 20 % floor (1,000,000) still catches a leak within days. (3) verify.md's credits floor is read as 1,000,000 from this deploy on, as the contract's own text says "after the U1 upgrade" - cost if wrong: none.
 - Carried forward: none (Carried fixes item 10 removed)
 - Next: deploy (`main`, seventh of the day), verify the credits row, then **stopped** at the user's request (entry 23)
+
+## 22. deploy+verify - main 1bd1a26 (carried fix 10, U1) - 2026-09-07 14:20 CT
+- Orient: rule 1 continuation (the hotfix unit's deploy step); rule 2 true (`/healthz` build 8504871, code diff to `main` non-empty)
+- Branch / commits: `main` 8504871..1bd1a26 (d8b04a0 skill ceilings; c91018e, fb1a7f8 code; 1bd1a26 docs)
+- Result: done; verification **PASS** on every row the change names
+- Dispatches: 0
+- Tests: 293 passed, pristine (entry 21)
+- Review: n/a
+- Deploy: 1bd1a26 at 14:20 CT via `make deploy-nas` (full: `tick.py` is not on the app-only list, but `deploy-nas-app` does not exist before `app-exec` anyway), foreground; preconditions: `main`, clean tree, game window 0/0/0 at 19:19Z, seventh deploy of the day (ceiling 15); containers Up, `app-serve` healthy; stamp verified on `/healthz` (`"build":"1bd1a26"`, `"credits_budget":5000000`, `"credits_low":false`); `app-ws` reconnected at 19:20:56Z
+- Verification (the rows the change names, 14:37 CT): Runs since the restart: 2123 (19:30:26Z), 2128 (19:32:56Z), 2133 (19:35:26Z) all `ok`, 2 credits each (the alternates fetch for the one event inside 36 h, FSU vs SMU, now every 120 s on the heartbeat as U1 specifies), `skipped_alternates` 0, one alternates page per run; 2137 `running` at 19:37:26Z; the featured fetch keeps its 15-minute cadence. Credits row on the new floor (1,000,000): `odds_remaining` 4,999,964 at 19:35Z, numeric, decreasing 2 per alternates run; 36 credits in the last hour; `credits_low` false on `/healthz` PASS. Tape continuity: 0 gap rows in the 2 h window PASS. WS 7862 deltas in the last 10 min PASS. Signals 656 candidates and 24,982 rejected in the last 20 min PASS. ERROR lines 0 on app-run, app-serve, app-ws in the 16 min since the restart PASS; degraded sections 0 PASS; `taker_side_missing` invariant 0 PASS; DB size 9888 MB PASS.
+- Rulings: (1) The credits-per-day band excursion that U1's cadence produces is journaled as U1-attributable and is not an integrity anomaly (entry 21 ruling 2) - cost if wrong: a key leak hides behind the cadence once; the 20 % floor still catches it within days.
+- Carried forward: none
+- Next: stopped (entry 23)
+
+## 23. stopped - user request: skill and loop edits - 2026-09-07 14:40 CT
+- Orient: n/a (user instruction in chat at 14:07 CT: "I need to make edits to our skill file and loop setup. Whenever there is a safe stopping point, lets stop."; the safe point chosen was the end of the running unit: fix 10 reviewed, merged, deployed and verified)
+- Branch / commits: `main` at the commit of this entry; tree clean; no branch open; every agent idle
+- Result: gated: user request (not a gate of the loop's own; the loop resumes on the next `/autopilot` and re-reads every state file, including whatever the user edits)
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Rulings: (1) The R6 drill entry 18 stands; the restart after the user's edits is the drill's second half if the fresh session orients to the expected unit (hotfix carried fix 12, or idle inside a game window) with no re-dispatch and no duplicate entry; a fresh session in the FSU-SMU window (18:15-22:30 CT) orients to idle with a wakeup for the window's end - cost if wrong: the drill is repeated once. (2) Nothing is dispatched after this entry; the fix-12 brief and the rest are on disk under `.superpowers/sdd/` (git-ignored) and named in the report - cost if wrong: none.
+- Carried forward: none (Carried fixes: 12, 11, 4, 5, 6, 7, 8, 9)
+- Next: none until `/autopilot` runs again; then hotfix carried fix 12 (outside the game window). Report: `docs/superpowers/autopilot/reports/2026-09-07-stopped.md`
