@@ -1,0 +1,426 @@
+[0;32m[DEPLOY][0m Pushing to trey@192.168.12.228:/volume1/docker/sports-harness
+[0;32m[DEPLOY][0m build 358c808 2026-09-07T21:23:27Z
+[0;32m[DEPLOY][0m Building image and starting postgres...
+#0 building with "default" instance using docker driver
+
+#1 [app-ws internal] load build definition from Dockerfile
+#1 transferring dockerfile: 54B 0.0s
+#1 transferring dockerfile: 646B 0.1s done
+#1 DONE 0.5s
+
+#2 [app-serve internal] load build definition from Dockerfile
+#2 transferring dockerfile: 646B 0.1s done
+#2 DONE 0.4s
+
+#3 [app-run internal] load build definition from Dockerfile
+#3 transferring dockerfile: 646B 0.1s done
+#3 DONE 0.5s
+
+#4 [app-serve internal] load metadata for docker.io/library/python:3.12-slim
+#4 DONE 1.2s
+
+#5 [app-ws internal] load .dockerignore
+#5 transferring context: 101B done
+#5 DONE 0.1s
+
+#6 [app-run internal] load .dockerignore
+#6 transferring context: 101B 0.0s done
+#6 DONE 0.1s
+
+#7 [app-serve internal] load .dockerignore
+#7 transferring context: 101B 0.0s done
+#7 DONE 0.1s
+
+#8 [app-ws internal] load build context
+#8 DONE 0.0s
+
+#9 [app-run 1/7] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+#9 DONE 0.0s
+
+#9 [app-serve 1/7] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+#9 DONE 0.0s
+
+#8 [app-ws internal] load build context
+#8 transferring context: 79.32kB 0.1s done
+#8 DONE 0.2s
+
+#10 [app-run internal] load build context
+#10 transferring context: 79.32kB 0.1s done
+#10 DONE 0.2s
+
+#11 [app-serve internal] load build context
+#11 transferring context: 79.32kB 0.1s done
+#11 DONE 0.2s
+
+#12 [app-ws 4/7] COPY pyproject.toml ./
+#12 CACHED
+
+#13 [app-ws 2/7] RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+#13 CACHED
+
+#14 [app-ws 3/7] WORKDIR /app
+#14 CACHED
+
+#15 [app-run 5/7] COPY constraints.txt ./
+#15 CACHED
+
+#16 [app-run 6/7] COPY harness ./harness
+#16 DONE 0.5s
+
+#17 [app-run 7/7] RUN pip install -c constraints.txt .
+#17 5.353 Processing /app
+#17 5.382   Installing build dependencies: started
+#17 7.080   Installing build dependencies: finished with status 'done'
+#17 7.081   Getting requirements to build wheel: started
+#17 7.407   Getting requirements to build wheel: finished with status 'done'
+#17 7.408   Preparing metadata (pyproject.toml): started
+#17 7.566   Preparing metadata (pyproject.toml): finished with status 'done'
+#17 7.750 Collecting httpx>=0.27 (from harness==0.0.1)
+#17 7.865   Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+#17 8.221 Collecting sqlalchemy>=2.0 (from harness==0.0.1)
+#17 8.264   Downloading sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (9.6 kB)
+#17 8.329 Collecting psycopg>=3.1 (from psycopg[binary]>=3.1->harness==0.0.1)
+#17 8.376   Downloading psycopg-3.3.5-py3-none-any.whl.metadata (4.3 kB)
+#17 8.509 Collecting pydantic>=2.7 (from harness==0.0.1)
+#17 8.546   Downloading pydantic-2.13.5-py3-none-any.whl.metadata (110 kB)
+#17 8.673 Collecting pydantic-settings>=2.3 (from harness==0.0.1)
+#17 8.705   Downloading pydantic_settings-2.15.0-py3-none-any.whl.metadata (3.9 kB)
+#17 8.774 Collecting apscheduler<4,>=3.10 (from harness==0.0.1)
+#17 8.821   Downloading apscheduler-3.11.3-py3-none-any.whl.metadata (6.5 kB)
+#17 8.917 Collecting fastapi>=0.111 (from harness==0.0.1)
+#17 8.954   Downloading fastapi-0.141.1-py3-none-any.whl.metadata (27 kB)
+#17 9.015 Collecting uvicorn>=0.30 (from harness==0.0.1)
+#17 9.055   Downloading uvicorn-0.52.4-py3-none-any.whl.metadata (6.6 kB)
+#17 9.113 Collecting python-json-logger>=2.0 (from harness==0.0.1)
+#17 9.165   Downloading python_json_logger-4.2.0-py3-none-any.whl.metadata (2.9 kB)
+#17 9.235 Collecting typer>=0.12 (from harness==0.0.1)
+#17 9.275   Downloading typer-0.27.2-py3-none-any.whl.metadata (16 kB)
+#17 9.350 Collecting pyyaml>=6 (from harness==0.0.1)
+#17 9.385   Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+#17 9.593 Collecting cryptography>=42 (from harness==0.0.1)
+#17 9.625   Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl.metadata (4.3 kB)
+#17 9.682 Collecting websocket-client>=1.8 (from harness==0.0.1)
+#17 9.714   Downloading websocket_client-1.9.2-py3-none-any.whl.metadata (8.3 kB)
+#17 9.761 Collecting jinja2>=3.1 (from harness==0.0.1)
+#17 9.795   Downloading jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+#17 9.839 Collecting python-multipart (from harness==0.0.1)
+#17 9.880   Downloading python_multipart-0.0.32-py3-none-any.whl.metadata (2.1 kB)
+#17 9.930 Collecting tzlocal>=3.0 (from apscheduler<4,>=3.10->harness==0.0.1)
+#17 9.970   Downloading tzlocal-5.4.4-py3-none-any.whl.metadata (7.7 kB)
+#17 10.12 Collecting cffi>=2.0.0 (from cryptography>=42->harness==0.0.1)
+#17 10.16   Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.5 kB)
+#17 10.23 Collecting starlette>=0.46.0 (from fastapi>=0.111->harness==0.0.1)
+#17 10.28   Downloading starlette-1.6.0-py3-none-any.whl.metadata (6.4 kB)
+#17 10.36 Collecting typing-extensions>=4.8.0 (from fastapi>=0.111->harness==0.0.1)
+#17 10.40   Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+#17 10.44 Collecting typing-inspection>=0.4.2 (from fastapi>=0.111->harness==0.0.1)
+#17 10.47   Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+#17 10.53 Collecting annotated-doc>=0.0.2 (from fastapi>=0.111->harness==0.0.1)
+#17 10.56   Downloading annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+#17 10.64 Collecting anyio (from httpx>=0.27->harness==0.0.1)
+#17 10.68   Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+#17 10.74 Collecting certifi (from httpx>=0.27->harness==0.0.1)
+#17 10.78   Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+#17 10.85 Collecting httpcore==1.* (from httpx>=0.27->harness==0.0.1)
+#17 10.89   Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+#17 10.95 Collecting idna (from httpx>=0.27->harness==0.0.1)
+#17 10.99   Downloading idna-3.19-py3-none-any.whl.metadata (9.2 kB)
+#17 11.04 Collecting h11>=0.16 (from httpcore==1.*->httpx>=0.27->harness==0.0.1)
+#17 11.07   Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+#17 11.16 Collecting MarkupSafe>=2.0 (from jinja2>=3.1->harness==0.0.1)
+#17 11.20   Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)
+#17 11.36 Collecting psycopg-binary==3.3.5 (from psycopg[binary]>=3.1->harness==0.0.1)
+#17 11.40   Downloading psycopg_binary-3.3.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.7 kB)
+#17 11.45 Collecting annotated-types>=0.6.0 (from pydantic>=2.7->harness==0.0.1)
+#17 11.49   Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+#17 12.20 Collecting pydantic-core==2.46.5 (from pydantic>=2.7->harness==0.0.1)
+#17 12.26   Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+#17 12.33 Collecting python-dotenv>=0.21.0 (from pydantic-settings>=2.3->harness==0.0.1)
+#17 12.37   Downloading python_dotenv-1.2.3-py3-none-any.whl.metadata (29 kB)
+#17 12.55 Collecting greenlet>=1 (from sqlalchemy>=2.0->harness==0.0.1)
+#17 12.59   Downloading greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (3.8 kB)
+#17 12.64 Collecting shellingham>=1.3.0 (from typer>=0.12->harness==0.0.1)
+#17 12.67   Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+#17 12.76 Collecting rich>=13.8.0 (from typer>=0.12->harness==0.0.1)
+#17 12.80   Downloading rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+#17 12.86 Collecting click>=7.0 (from uvicorn>=0.30->harness==0.0.1)
+#17 12.90   Downloading click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+#17 12.96 Collecting pycparser (from cffi>=2.0.0->cryptography>=42->harness==0.0.1)
+#17 13.00   Downloading pycparser-3.0-py3-none-any.whl.metadata (8.2 kB)
+#17 13.08 Collecting markdown-it-py>=2.2.0 (from rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#17 13.11   Downloading markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+#17 13.18 Collecting pygments<3.0.0,>=2.13.0 (from rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#17 13.21   Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+#17 13.28 Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#17 13.33   Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+#17 13.38 Downloading apscheduler-3.11.3-py3-none-any.whl (66 kB)
+#17 13.43 Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl (4.7 MB)
+#17 13.73    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.7/4.7 MB 18.5 MB/s eta 0:00:00
+#17 13.76 Downloading fastapi-0.141.1-py3-none-any.whl (131 kB)
+#17 13.80 Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+#17 13.84 Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+#17 13.89 Downloading jinja2-3.1.6-py3-none-any.whl (134 kB)
+#17 13.93 Downloading psycopg-3.3.5-py3-none-any.whl (213 kB)
+#17 13.97 Downloading psycopg_binary-3.3.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (5.2 MB)
+#17 14.19    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 24.5 MB/s eta 0:00:00
+#17 14.22 Downloading pydantic-2.13.5-py3-none-any.whl (472 kB)
+#17 14.27 Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+#17 14.35    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 25.5 MB/s eta 0:00:00
+#17 14.39 Downloading pydantic_settings-2.15.0-py3-none-any.whl (69 kB)
+#17 14.43 Downloading python_json_logger-4.2.0-py3-none-any.whl (14 kB)
+#17 14.47 Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+#17 14.50    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 35.0 MB/s eta 0:00:00
+#17 14.54 Downloading sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (3.4 MB)
+#17 14.65    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 29.5 MB/s eta 0:00:00
+#17 14.70 Downloading typer-0.27.2-py3-none-any.whl (123 kB)
+#17 14.73 Downloading uvicorn-0.52.4-py3-none-any.whl (79 kB)
+#17 14.77 Downloading websocket_client-1.9.2-py3-none-any.whl (95 kB)
+#17 14.82 Downloading python_multipart-0.0.32-py3-none-any.whl (30 kB)
+#17 14.86 Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+#17 14.89 Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+#17 14.94 Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)
+#17 14.98 Downloading click-8.5.0-py3-none-any.whl (125 kB)
+#17 15.03 Downloading greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (621 kB)
+#17 15.05    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 621.4/621.4 kB 54.1 MB/s eta 0:00:00
+#17 15.08 Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+#17 15.12 Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)
+#17 15.15 Downloading python_dotenv-1.2.3-py3-none-any.whl (22 kB)
+#17 15.20 Downloading rich-15.0.0-py3-none-any.whl (310 kB)
+#17 15.25 Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+#17 15.29 Downloading starlette-1.6.0-py3-none-any.whl (75 kB)
+#17 15.32 Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+#17 15.37 Downloading idna-3.19-py3-none-any.whl (68 kB)
+#17 15.41 Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+#17 15.44 Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+#17 15.49 Downloading tzlocal-5.4.4-py3-none-any.whl (18 kB)
+#17 15.53 Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+#17 15.57 Downloading markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+#17 15.62 Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+#17 15.66    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 52.2 MB/s eta 0:00:00
+#17 15.70 Downloading pycparser-3.0-py3-none-any.whl (48 kB)
+#17 15.73 Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+#17 15.79 Building wheels for collected packages: harness
+#17 15.79   Building wheel for harness (pyproject.toml): started
+#17 16.04   Building wheel for harness (pyproject.toml): finished with status 'done'
+#17 16.04   Created wheel for harness: filename=harness-0.0.1-py3-none-any.whl size=93529 sha256=bc119db5344002efed4c1dfc6e410e5d21e69ba5873903decad340d20bc4f939
+#17 16.04   Stored in directory: /tmp/pip-ephem-wheel-cache-912lx0eg/wheels/54/1b/b7/aa63e25c8f14f4f2ae7b04e6097bdecb770e455c5c1ee0a600
+#17 16.04 Successfully built harness
+#17 16.09 Installing collected packages: websocket-client, tzlocal, typing-extensions, shellingham, pyyaml, python-multipart, python-json-logger, python-dotenv, pygments, pycparser, psycopg-binary, mdurl, MarkupSafe, idna, h11, greenlet, click, certifi, annotated-types, annotated-doc, uvicorn, typing-inspection, sqlalchemy, pydantic-core, psycopg, markdown-it-py, jinja2, httpcore, cffi, apscheduler, anyio, starlette, rich, pydantic, httpx, cryptography, typer, pydantic-settings, fastapi, harness
+#17 19.97 Successfully installed MarkupSafe-3.0.3 annotated-doc-0.0.5 annotated-types-0.8.0 anyio-4.15.1 apscheduler-3.11.3 certifi-2026.7.22 cffi-2.1.1 click-8.5.0 cryptography-50.0.1 fastapi-0.141.1 greenlet-3.5.5 h11-0.16.0 harness-0.0.1 httpcore-1.0.9 httpx-0.28.1 idna-3.19 jinja2-3.1.6 markdown-it-py-4.2.0 mdurl-0.1.2 psycopg-3.3.5 psycopg-binary-3.3.5 pycparser-3.0 pydantic-2.13.5 pydantic-core-2.46.5 pydantic-settings-2.15.0 pygments-2.21.0 python-dotenv-1.2.3 python-json-logger-4.2.0 python-multipart-0.0.32 pyyaml-6.0.3 rich-15.0.0 shellingham-1.5.4 sqlalchemy-2.0.52 starlette-1.6.0 typer-0.27.2 typing-extensions-4.16.0 typing-inspection-0.4.4 tzlocal-5.4.4 uvicorn-0.52.4 websocket-client-1.9.2
+#17 19.97 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#17 20.18 
+#17 20.18 [notice] A new release of pip is available: 25.0.1 -> 26.2.1
+#17 20.18 [notice] To update, run: pip install --upgrade pip
+#17 DONE 22.0s
+
+#18 [app-ws] exporting to image
+#18 exporting layers
+#18 exporting layers 1.9s done
+#18 writing image sha256:79b3b3695dc63f0c2015352cabc7d383f29b2e4cb8af936b3ef05e6492b62225 0.0s done
+#18 naming to docker.io/library/sports-harness-app-ws 0.1s done
+#18 ...
+
+#19 [app-run] exporting to image
+#19 exporting layers 2.0s done
+#19 writing image sha256:e025dac27b3e861d59ab45c2c3024a08f43d0ab28562a3901fd3f27ef3142a16 done
+#19 naming to docker.io/library/sports-harness-app-run 0.1s done
+#19 DONE 2.3s
+
+#20 [app-serve] exporting to image
+#20 exporting layers 2.0s done
+#20 writing image sha256:1818712fb6ffecd84bba5085f065adeb71c990600b618e123e90ca68a9882455 0.0s done
+#20 naming to docker.io/library/sports-harness-app-serve 0.1s done
+#20 DONE 2.3s
+
+#18 [app-ws] exporting to image
+#18 DONE 2.4s
+ Container sports-harness-postgres-1  Running
+[0;32m[DEPLOY][0m Schema + teams (idempotent; required after every upgrade)...
+ Container sports-harness-postgres-1  Running
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969 in    │
+│ _exec_single_context                                                         │
+│                                                                              │
+│   1966 │   │   │   │   │   │   │   evt_handled = True                        │
+│   1967 │   │   │   │   │   │   │   break                                     │
+│   1968 │   │   │   │   if not evt_handled:                                   │
+│ ❱ 1969 │   │   │   │   │   self.dialect.do_execute(                          │
+│   1970 │   │   │   │   │   │   cursor, str_statement, effective_parameters,  │
+│        context                                                               │
+│   1971 │   │   │   │   │   )                                                 │
+│   1972                                                                       │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952 in  │
+│ do_execute                                                                   │
+│                                                                              │
+│    949 │   │   cursor.executemany(statement, parameters)                     │
+│    950 │                                                                     │
+│    951 │   def do_execute(self, cursor, statement, parameters,               │
+│        context=None):                                                        │
+│ ❱  952 │   │   cursor.execute(statement, parameters)                         │
+│    953 │                                                                     │
+│    954 │   def do_execute_no_params(self, cursor, statement, context=None):  │
+│    955 │   │   cursor.execute(statement)                                     │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117 in execute     │
+│                                                                              │
+│   114 │   │   │   │   │   self._execute_gen(query, params, prepare=prepare,  │
+│       binary=binary)                                                         │
+│   115 │   │   │   │   )                                                      │
+│   116 │   │   except e._NO_TRACEBACK as ex:                                  │
+│ ❱ 117 │   │   │   raise ex.with_traceback(None)                              │
+│   118 │   │   return self                                                    │
+│   119 │                                                                      │
+│   120 │   def executemany(                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+DeadlockDetected: deadlock detected
+DETAIL:  Process 64909 waits for ShareLock on relation 16483 of database 16384; 
+blocked by process 62536.
+Process 62536 waits for RowExclusiveLock on relation 16476 of database 16384; 
+blocked by process 64909.
+HINT:  See server log for query details.
+
+The above exception was the direct cause of the following exception:
+
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /usr/local/lib/python3.12/site-packages/harness/cli.py:44 in init_db         │
+│                                                                              │
+│    41 def init_db() -> None:                                                 │
+│    42 │   configure_logging()                                                │
+│    43 │   s = get_settings()                                                 │
+│ ❱  44 │   create_schema(make_engine(s.database_url))                         │
+│    45 │   log.info("schema created")                                         │
+│    46                                                                        │
+│    47                                                                        │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/harness/db/schema.py:61 in           │
+│ create_schema                                                                │
+│                                                                              │
+│   58 │   │   conn.execute(text("create index if not exists                   │
+│      ix_raw_fetched_brin on raw_responses using brin (fetched_at)"))         │
+│   59 │   │   conn.execute(text("create index if not exists ix_raw_run on     │
+│      raw_responses (run_id)"))                                               │
+│   60 │   │   # Append-only, time-ordered tables: BRIN makes "last hour"      │
+│      scans cheap without a big btree.                                        │
+│ ❱ 61 │   │   conn.execute(text("create index if not exists ix_obe_ts_brin on │
+│      orderbook_events using brin (ts)"))                                     │
+│   62 │   │   conn.execute(text("create index if not exists ix_trades_ts_brin │
+│      on venue_trades using brin (ts)"))                                      │
+│   63 │   │   conn.execute(text(                                              │
+│   64 │   │   │   "create unique index if not exists uq_odds_snapshot_row on  │
+│      odds_snapshots "                                                        │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1421 in    │
+│ execute                                                                      │
+│                                                                              │
+│   1418 │   │   except AttributeError as err:                                 │
+│   1419 │   │   │   raise exc.ObjectNotExecutableError(statement) from err    │
+│   1420 │   │   else:                                                         │
+│ ❱ 1421 │   │   │   return meth(                                              │
+│   1422 │   │   │   │   self,                                                 │
+│   1423 │   │   │   │   distilled_parameters,                                 │
+│   1424 │   │   │   │   execution_options or NO_OPTIONS,                      │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/sql/elements.py:526 in    │
+│ _execute_on_connection                                                       │
+│                                                                              │
+│    523 │   │   if self.supports_execution:                                   │
+│    524 │   │   │   if TYPE_CHECKING:                                         │
+│    525 │   │   │   │   assert isinstance(self, Executable)                   │
+│ ❱  526 │   │   │   return connection._execute_clauseelement(                 │
+│    527 │   │   │   │   self, distilled_params, execution_options             │
+│    528 │   │   │   )                                                         │
+│    529 │   │   else:                                                         │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1643 in    │
+│ _execute_clauseelement                                                       │
+│                                                                              │
+│   1640 │   │   │   schema_translate_map=schema_translate_map,                │
+│   1641 │   │   │   linting=self.dialect.compiler_linting |                   │
+│        compiler.WARN_LINTING,                                                │
+│   1642 │   │   )                                                             │
+│ ❱ 1643 │   │   ret = self._execute_context(                                  │
+│   1644 │   │   │   dialect,                                                  │
+│   1645 │   │   │   dialect.execution_ctx_cls._init_compiled,                 │
+│   1646 │   │   │   compiled_sql,                                             │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1848 in    │
+│ _execute_context                                                             │
+│                                                                              │
+│   1845 │   │   if context.execute_style is ExecuteStyle.INSERTMANYVALUES:    │
+│   1846 │   │   │   return self._exec_insertmany_context(dialect, context)    │
+│   1847 │   │   else:                                                         │
+│ ❱ 1848 │   │   │   return self._exec_single_context(                         │
+│   1849 │   │   │   │   dialect, context, statement, parameters               │
+│   1850 │   │   │   )                                                         │
+│   1851                                                                       │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1988 in    │
+│ _exec_single_context                                                         │
+│                                                                              │
+│   1985 │   │   │   result = context._setup_result_proxy()                    │
+│   1986 │   │                                                                 │
+│   1987 │   │   except BaseException as e:                                    │
+│ ❱ 1988 │   │   │   self._handle_dbapi_exception(                             │
+│   1989 │   │   │   │   e, str_statement, effective_parameters, cursor,       │
+│        context                                                               │
+│   1990 │   │   │   )                                                         │
+│   1991                                                                       │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:2365 in    │
+│ _handle_dbapi_exception                                                      │
+│                                                                              │
+│   2362 │   │   │   │   raise newraise.with_traceback(exc_info[2]) from e     │
+│   2363 │   │   │   elif should_wrap:                                         │
+│   2364 │   │   │   │   assert sqlalchemy_exception is not None               │
+│ ❱ 2365 │   │   │   │   raise                                                 │
+│        sqlalchemy_exception.with_traceback(exc_info[2]) from e               │
+│   2366 │   │   │   else:                                                     │
+│   2367 │   │   │   │   assert exc_info[1] is not None                        │
+│   2368 │   │   │   │   raise exc_info[1].with_traceback(exc_info[2])         │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969 in    │
+│ _exec_single_context                                                         │
+│                                                                              │
+│   1966 │   │   │   │   │   │   │   evt_handled = True                        │
+│   1967 │   │   │   │   │   │   │   break                                     │
+│   1968 │   │   │   │   if not evt_handled:                                   │
+│ ❱ 1969 │   │   │   │   │   self.dialect.do_execute(                          │
+│   1970 │   │   │   │   │   │   cursor, str_statement, effective_parameters,  │
+│        context                                                               │
+│   1971 │   │   │   │   │   )                                                 │
+│   1972                                                                       │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952 in  │
+│ do_execute                                                                   │
+│                                                                              │
+│    949 │   │   cursor.executemany(statement, parameters)                     │
+│    950 │                                                                     │
+│    951 │   def do_execute(self, cursor, statement, parameters,               │
+│        context=None):                                                        │
+│ ❱  952 │   │   cursor.execute(statement, parameters)                         │
+│    953 │                                                                     │
+│    954 │   def do_execute_no_params(self, cursor, statement, context=None):  │
+│    955 │   │   cursor.execute(statement)                                     │
+│                                                                              │
+│ /usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117 in execute     │
+│                                                                              │
+│   114 │   │   │   │   │   self._execute_gen(query, params, prepare=prepare,  │
+│       binary=binary)                                                         │
+│   115 │   │   │   │   )                                                      │
+│   116 │   │   except e._NO_TRACEBACK as ex:                                  │
+│ ❱ 117 │   │   │   raise ex.with_traceback(None)                              │
+│   118 │   │   return self                                                    │
+│   119 │                                                                      │
+│   120 │   def executemany(                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+OperationalError: (psycopg.errors.DeadlockDetected) deadlock detected
+DETAIL:  Process 64909 waits for ShareLock on relation 16483 of database 16384; 
+blocked by process 62536.
+Process 62536 waits for RowExclusiveLock on relation 16476 of database 16384; 
+blocked by process 64909.
+HINT:  See server log for query details.
+[SQL: create index if not exists ix_obe_ts_brin on orderbook_events using brin 
+(ts)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+make: *** [deploy-nas] Error 1
