@@ -234,3 +234,17 @@ Times are America/Chicago.
 - Rulings: (1) The drill runs now rather than at the 00:01 CT boundary because the user is more likely awake to restart in the afternoon; a restart before 00:01 CT loses nothing (the next work is the 00:01 CT hotfix batch) - cost if wrong: the Tuesday quiet-window batch slips to whenever the restart happens. (2) No wakeup is armed: the pass ends with this commit and the fresh session decides from the clock (skill: after a restart assume no wakeup).
 - Carried forward: none
 - Next: **drill: expecting idle** (with a wakeup for 00:01 CT, then hotfix carried fix 11) if the restart lands before 00:01 CT on 2026-09-08; **hotfix carried fix 11** if it lands after. Report: `docs/superpowers/autopilot/reports/2026-09-07-drill.md`.
+
+## 19. decision - Odds tier confirmed; NFL bare-city fix pulled forward - 2026-09-07 13:29 CT
+- Orient: n/a (user decision in chat, before the drill restart)
+- Branch / commits: `main` (docs only)
+- Result: done
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Decision (user, verbatim, 13:29 CT): "Odds tier confirmed, and pull the NFL bare-city fix forward"
+- Rulings: (1) "Odds tier confirmed" is the U1 confirmation the roadmap's Carried fixes item 10 waits for: the loop flips `odds_monthly_credits` 100000 -> 5000000 and the alternates cadence 900 s -> 120 s inside 36 h of kickoff (featured cadence unchanged; the 80 % alarm and the verify.md credits floor of 1,000,000 follow the tier) as a hotfix unit; the unit's verification includes the next odds tick's `odds_remaining` reading near the new quota - cost if wrong: the flip lands on the old tier and the 80 % alarm fires early, reversible by reverting the settings commit. (2) "pull the NFL bare-city fix forward" moves roadmap phase 6 item 5 (I9 bare-city aliases: `Los Angeles` and `New York` each name two teams; 178 unmatched NFL markets, 23 %) into a hotfix unit before phase 3, added to Carried fixes as item 12; the phase 6 list is the user's text and is left for the user to edit - cost if wrong: one hotfix unit of matching code before phase 3. (3) Daily ceilings stand, so the batch order becomes: Tue 2026-09-08 from 00:01 CT items 10, 12, 11, 4; Wed 2026-09-09 items 5, 6, 7, 8; Thu 2026-09-10 item 9 in the quiet window, then phase 3 (deploy after Thursday's NFL window, i.e. Friday morning at the latest, in time for the Sunday slate) - cost if wrong: phase 3's paper orders start a day later than the previous schedule.
+- Carried forward: Carried fixes item 12 (bare-city matching); item 10 unblocked
+- Next: the pending drill restart (entry 18 stands): expecting **idle** before 00:01 CT, **hotfix carried fix 10** after
