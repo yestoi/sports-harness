@@ -451,3 +451,17 @@ Times are America/Chicago.
 - Rulings: (1) The deploy-with-writers-stopped procedure stands for every deploy until carried fix 13 ships in Task 2 (entry 33 ruling 3).
 - Carried forward: none new (13 open, ships with Task 2; 6 deferred to the 16:45 CT check; 9 merges before Task 2b)
 - Next: Task 2 review when its implementer reports; fix-6 hourly check at the next boundary after 16:42 CT
+
+## 35. phase - phase 3 progress: Tasks 2 and 4b merged, 2b and 3 in review - 2026-09-07 17:19 CT
+- Orient: rule 5 continuation (entry 32)
+- Branch / commits: `phase3-paper-execution` 659ba67..dcfc7cb (compose fix 9 59a6737; Task 2 b3f834f; Task 4b dcfc7cb; docs)
+- Result: in progress (17 tasks: 1, 2, 4b complete; 2b, 3 under review; 3b, 4, 5-14 queued)
+- Dispatches: 15 so far in the phase (impl 6, review 6, re-review 3)
+- Tests: 383 on the phase branch at Task 4b's base, pristine
+- Review: Task 2 one fix round (replay filter on order_episodes, init-db batch timeout, five minors); Task 4b clean with one plan-mandated Important parked; Task 3 fix round 1 in re-review; Task 2b in review
+- Deploy: none since 659ba67
+- Verification: n/a
+- Rulings (all in the ledger): (1) Task 2's reviewer on opus (schema underpins every task). (2) order_episodes filters replay rows (spec's non-replay rule over the plan's view text). (3) Task 2b's migration must drop the renamed legacy primary key before ATTACH PARTITION (the plan's rename step was defective: Postgres refuses two primary keys); accepted as part of the U3 migration on the condition that a concurrently built unique index on the legacy key columns precedes the drop; addendum D15 already anticipated the PK change to (id, ts) and asks for the user's objection window before Step 5: the user was notified at 17:20 CT; the live run is the 01:00-08:00 CT quiet window; reversal: do not run `partition-bulk-tables` (the code path is inert until invoked). (4) Task 3's REST-anchored books get a separate gap-check id and a "clean snapshot" reload trigger; a backwards delta timestamp dirties a REST book (the brief's no-seq-check rule stands). (5) Task 4b: MAX_SECONDARY 6 and `sharp_two_sided.yaml` (id 5632da729fa7) authorized by U2; the six frozen ids re-verified from disk; the two-dedupe-key economic position (NO on A equals YES on B) is parked as plan-mandated and goes into Amendment 3's text. (6) A forced tick fetches every family by design; runs 2251 and 2322 are not evidence for fix 6 (entry 27 corrected); judge after 17:45 CT.
+- Anomalies: none new
+- Carried forward: none (13 ships with Task 2, already merged on the branch: create_schema is autocommit per statement with lock_timeout and a retry; deploys still stop the writers first until it lands on the NAS)
+- Next: Task 2b and 3 merges, then Task 3b (sonnet) and Task 4 (opus); fix-6 check at 17:43 CT; game-window observation 19:15 CT; Task 2b deploy plus `partition-bulk-tables` in the quiet window
