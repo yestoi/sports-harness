@@ -179,7 +179,7 @@ Power method per book per market (find k with Σ pᵢᵏ = 1); proportional fall
 - Weighted mean in log-odds space: Pinnacle 0.65, BOL family 0.35. Pinnacle absent ⇒ `no_sharp` (recorded in the gap dataset, never traded).
 - Exact half-point threshold must be quoted by both sharp groups for `fair_source=direct`. Interpolated values (`fair_source=interpolated`) are stored for the gap dataset only.
 - `disagreement` = population std of book fair probabilities. `edge_min = clamp(0.02 + 1.5·disagreement, 0.02, 0.06)`.
-- `staleness_s` = now − newest book `last_update`; fair values older than 90s are not tradeable.
+- `staleness_s` = now − newest book `last_update`; fair values older than 180 s are labelled `stale` and are not tradeable (amended 2026-09-07 from 90 s: featured lines are polled at a ≥120 s cadence, so 90 s would label every row stale).
 
 ### 6.3 Target price
 - `AS` = trailing measured 30-minute markout on filled orders by (sport, price bucket, side), seeded at 0.01 until 50 fills exist in the bucket.
