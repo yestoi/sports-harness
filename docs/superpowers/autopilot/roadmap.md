@@ -53,6 +53,13 @@ file exists at deploy time (the Kalshi WebSocket recorder pattern).
 No key is needed for NWS forecasts, futures snapshots, the parlay CLI, or the RFQ
 listener (production key; it idles on 403).
 
+A Claude subscription OAuth token (`claude setup-token`, `CLAUDE_CODE_OAUTH_TOKEN`)
+authenticates only Claude Code and its wrappers (the CLI in `-p` mode, the Agent SDK,
+GitHub Actions). It is not a credential for the harness's own API client, so the research
+layer needs a Console API key with pay-as-you-go billing (verified against the Claude Code
+authentication and Agent SDK docs on 2026-09-07). Do not route the per-candidate veto
+through `claude -p`: it would draw on the same subscription rate limits the autopilot runs on.
+
 ## Pre-loaded decisions
 
 The brainstorm for each phase treats these as the user's answers. Anything not listed is
@@ -100,7 +107,7 @@ hourly, User-Agent `sports-harness/1 (self-hosted research harness)`; (c) parlay
 §8.1 with `parlay.yaml`: weekly budget **$50** (user), smart card $25, lottery card $5, at
 most three lottery cards, legs from moneyline/spread/total at DraftKings prices already in
 the feed, LSU or Saints anchor, rationale from a template unless the Anthropic key exists;
-(d) shadow veto per §7.1, model `claude-sonnet-5`, strict JSON via a tool schema, 30-minute
+(d) shadow veto per §7.1, model `claude-opus-5` (the current API default; `claude-sonnet-5` only if the user chooses lower cost), strict JSON via a tool schema, 30-minute
 cache, tokens and cost into `research_notes`, veto-rate alert, dormant without the key;
 (e) weekly report annotator, `claude-opus-5`, five bullets that cite table cells only,
 dormant without the key; (f) RFQ listener per §8.2 on the production key, paper quotes
