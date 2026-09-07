@@ -11,7 +11,9 @@ NCAAF = json.loads((FIXD / "espn_teams_ncaaf.json").read_text())
 
 
 def test_seed_and_resolve_exact(db_session):
-    assert seed_teams_from_espn(db_session, "nfl", NFL) == 6
+    # NFL fixture carries 8 teams: the original 6 plus the Jets (20) and Chargers (24),
+    # added 2026-09-07 to cover the "Los Angeles"/"New York" colliding-city-alias fix.
+    assert seed_teams_from_espn(db_session, "nfl", NFL) == 8
     assert seed_teams_from_espn(db_session, "ncaaf", NCAAF) == 8
     tid, src = resolve_team(db_session, "nfl", "New York Giants")
     assert tid == 19 and src == "espn_display"
@@ -117,3 +119,24 @@ def test_shipped_manual_aliases_cover_2026_09_07_match_report(db_session):
     )
     for raw_name, team_id in odds_api:
         assert resolve_team(db_session, "ncaaf", raw_name) == (team_id, "manual:odds_api"), raw_name
+
+
+def test_shipped_kalshi_code_aliases_resolve_espn_abbreviation_exceptions(db_session):
+    # I9: Kalshi's NFL event-ticker codes mostly equal ESPN abbreviations, except
+    # Jacksonville (Kalshi JAC, ESPN JAX) and Washington (Kalshi WAS, ESPN WSH).
+    shipped = Path(__file__).parent.parent / "harness" / "matching" / "aliases_manual.yaml"
+    load_manual_aliases(db_session, shipped)
+    for code, team_id in (("JAC", 30), ("WAS", 28)):
+        assert resolve_team(db_session, "nfl", code, sources=("kalshi_code", "espn_abbr")) == (team_id, "manual:kalshi_code"), code
+
+
+def test_ambiguous_candidates_reads_colliding_team_fields(db_session):
+    # Once two teams collide on a normalized alias key, the TeamAlias row itself only
+    # remembers the AMBIGUOUS_TEAM_ID sentinel -- ambiguous_candidates goes back to the
+    # Team rows to recover who actually collided.
+    from harness.matching.teams import ambiguous_candidates
+
+    seed_teams_from_espn(db_session, "ncaaf", TROY)
+    assert sorted(ambiguous_candidates(db_session, "ncaaf", "Troy")) == [2653, 3237]
+    assert ambiguous_candidates(db_session, "ncaaf", "Troy Trojans") == []  # not ambiguous
+    assert ambiguous_candidates(db_session, "ncaaf", "Nowhere") == []  # genuinely unresolved

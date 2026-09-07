@@ -82,6 +82,25 @@ def resolve_team(session: Session, sport: str, raw_name: str, sources: tuple[str
     return None, ""
 
 
+def ambiguous_candidates(session: Session, sport: str, raw_name: str) -> list[int]:
+    """Team ids that could plausibly be `raw_name` when its normalized key maps to the
+    AMBIGUOUS_TEAM_ID sentinel (a colliding ESPN alias, e.g. "Los Angeles" for both the
+    Rams and the Chargers). The TeamAlias row for a collision only remembers the sentinel,
+    not who collided, so this reads back from the seeded Team rows instead: any team in
+    `sport` whose display name, location, or short display name normalizes to the same
+    key. Returns [] when there's no real collision (0 matches: a genuine miss; exactly 1
+    match: not ambiguous -- resolve_team would already have found it) -- resolve_team's
+    own contract (None on either ambiguity or a miss) is unchanged.
+    """
+    key = normalize_name(raw_name)
+    if not key:
+        return []
+    teams = session.execute(select(Team).where(Team.sport == sport)).scalars().all()
+    hits = [t.id for t in teams
+            if key in {normalize_name(t.display_name), normalize_name(t.location), normalize_name(t.short_display_name)}]
+    return sorted(hits) if len(hits) > 1 else []
+
+
 def resolve_fuzzy(session: Session, sport: str, raw_name: str) -> tuple[int | None, float]:
     key = normalize_name(raw_name)
     rows = session.execute(select(TeamAlias).where(TeamAlias.sport == sport, TeamAlias.team_id != AMBIGUOUS_TEAM_ID,

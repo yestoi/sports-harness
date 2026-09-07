@@ -1396,6 +1396,34 @@
       },
       {
        "team": {
+        "abbreviation": "NYJ",
+        "displayName": "New York Jets",
+        "id": "20",
+        "isActive": true,
+        "location": "New York",
+        "name": "Jets",
+        "nickname": "Jets",
+        "shortDisplayName": "Jets",
+        "slug": "new-york-jets",
+        "uid": "s:20~l:28~t:20"
+       }
+      },
+      {
+       "team": {
+        "abbreviation": "LAC",
+        "displayName": "Los Angeles Chargers",
+        "id": "24",
+        "isActive": true,
+        "location": "Los Angeles",
+        "name": "Chargers",
+        "nickname": "Chargers",
+        "shortDisplayName": "Chargers",
+        "slug": "los-angeles-chargers",
+        "uid": "s:20~l:28~t:24"
+       }
+      },
+      {
+       "team": {
         "abbreviation": "SEA",
         "alternateColor": "69be28",
         "color": "002a5c",

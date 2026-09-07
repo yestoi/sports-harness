@@ -8,11 +8,13 @@ from sqlalchemy.orm import Session
 from harness.db.models import Game, Team
 from harness.matching.games import find_game_by_pair
 from harness.matching.names import normalize_name
-from harness.matching.teams import learn_alias, resolve_fuzzy, resolve_team
+from harness.matching.teams import ambiguous_candidates, learn_alias, resolve_fuzzy, resolve_team
 
 KALSHI_SOURCES = ("kalshi_name", "espn_display", "espn_abbr_name", "espn_location", "espn_short")
+CODE_SOURCES = ("kalshi_code", "espn_abbr")
 _VS = re.compile(r"\s+(?:vs\.?|@)\s+")
 _SPREAD_TITLE = re.compile(r"^(?P<team>.+?) wins by over (?P<pts>\d+(?:\.5)?) points\??$", re.I)
+_TICKER_CODES = re.compile(r"^[A-Z0-9]+-\d{2}[A-Z]{3}\d{2}([A-Z]+)$")
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,64 @@ def _resolve(session: Session, sport: str, name: str) -> tuple[int | None, bool,
     return tid, False, ratio
 
 
+def codes_from_event_ticker(event_ticker: str) -> str | None:
+    """The team-code segment of a Kalshi event ticker, e.g. "SFLAR" from
+    "KXNFLSPREAD-26SEP10SFLAR" (the part after the "SERIES-DDMMMYY" date). None when the
+    ticker isn't shaped that way.
+    """
+    m = _TICKER_CODES.match(event_ticker or "")
+    return m.group(1) if m else None
+
+
+def _code_splits(codes: str):
+    """Every way to split `codes` into two known-length (2-4 char) chunks, in order."""
+    for i in range(2, 5):
+        j = len(codes) - i
+        if 2 <= j <= 4:
+            yield codes[:i], codes[i:]
+
+
+def _accept_by_code(team_id: int | None, candidates: list[int]) -> tuple[int | None, bool]:
+    """Whether a code-resolved `team_id` is acceptable for a side, and whether it's then
+    safe to learn a kalshi_name alias for that side's raw name (never for a name that
+    collided -- a bare city -- only for a name that was a genuine, non-colliding miss).
+    """
+    if team_id is None:
+        return None, False
+    if candidates:
+        return (team_id, False) if team_id in candidates else (None, False)
+    return team_id, True
+
+
+def _resolve_by_code(session: Session, sport: str, ticker: str, left: str, right: str,
+                      lt: int | None, rt: int | None) -> tuple[int | None, int | None, bool, bool] | None:
+    """Try to resolve whichever of `lt`/`rt` is still None via the event ticker's code
+    segment. The codes are ordinarily concatenated in title order, but a side that
+    already resolved by name pins its own code first; the split is only accepted when
+    every side agrees.
+    """
+    codes = codes_from_event_ticker(ticker)
+    if not codes:
+        return None
+    l_cands = None if lt is not None else ambiguous_candidates(session, sport, left)
+    r_cands = None if rt is not None else ambiguous_candidates(session, sport, right)
+    for code_a, code_b in _code_splits(codes):
+        ta, _ = resolve_team(session, sport, code_a, sources=CODE_SOURCES)
+        tb, _ = resolve_team(session, sport, code_b, sources=CODE_SOURCES)
+        if ta is None or tb is None or ta == tb:
+            continue
+        for cl, cr in ((ta, tb), (tb, ta)):
+            if lt is not None and cl != lt:
+                continue
+            if rt is not None and cr != rt:
+                continue
+            new_lt, l_learn = (lt, False) if lt is not None else _accept_by_code(cl, l_cands)
+            new_rt, r_learn = (rt, False) if rt is not None else _accept_by_code(cr, r_cands)
+            if new_lt is not None and new_rt is not None:
+                return new_lt, new_rt, l_learn, r_learn
+    return None
+
+
 def match_event(session: Session, sport: str, event: dict, event_date: date) -> EventMatch:
     parsed = parse_event_title(event.get("title") or "")
     if parsed is None:
@@ -85,6 +145,16 @@ def match_event(session: Session, sport: str, event: dict, event_date: date) -> 
     left, right = parsed
     lt, l_exact, lr = _resolve(session, sport, left)
     rt, r_exact, rr = _resolve(session, sport, right)
+    l_learn, r_learn, used_code = l_exact, r_exact, False
+    if lt is None or rt is None:
+        res = _resolve_by_code(session, sport, event.get("event_ticker") or "", left, right, lt, rt)
+        if res is not None:
+            new_lt, new_rt, l_learn_code, r_learn_code = res
+            if lt is None:
+                lt, l_learn = new_lt, l_learn_code
+            if rt is None:
+                rt, r_learn = new_rt, r_learn_code
+            used_code = True
     if lt is None or rt is None:
         missing = left if lt is None else right
         return EventMatch(None, Decimal("0"), f"unresolved: {missing}", lt, rt)
@@ -93,6 +163,12 @@ def match_event(session: Session, sport: str, event: dict, event_date: date) -> 
         reason = f"ambiguous: {len(cands)} games" if cands else "no game for pair"
         return EventMatch(None, Decimal("0"), reason, lt, rt)
     game = cands[0]
+    if used_code:
+        if l_learn:
+            learn_alias(session, sport, "kalshi_name", left, lt)
+        if r_learn:
+            learn_alias(session, sport, "kalshi_name", right, rt)
+        return EventMatch(game.id, Decimal("1.00"), "pair+date exact (code)", lt, rt)
     if l_exact and r_exact:
         learn_alias(session, sport, "kalshi_name", left, lt)
         learn_alias(session, sport, "kalshi_name", right, rt)

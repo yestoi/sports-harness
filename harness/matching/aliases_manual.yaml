@@ -11,6 +11,19 @@ nfl:
     "New York G": 19                   # ESPN: New York Giants
     "JAC Jaguars": 30                  # Kalshi abbreviates Jacksonville JAC, ESPN JAX
     "WAS Commanders": 28               # Kalshi abbreviates Washington WAS, ESPN WSH
+  # I9 (2026-09-07 match-report gap): event-ticker team codes, keyed for
+  # harness/matching/kalshi.py::codes_from_event_ticker. Most codes equal the ESPN
+  # abbreviation already seeded under espn_abbr; JAC/WAS are the two known exceptions.
+  # LAR/LAC/NYG/NYJ are listed explicitly too even though they already equal ESPN's
+  # abbreviation, so the colliding "Los Angeles"/"New York" bare-city cases never
+  # depend on the seed being present.
+  kalshi_code:
+    "JAC": 30                          # ESPN: Jacksonville Jaguars (ESPN abbr JAX)
+    "WAS": 28                          # ESPN: Washington Commanders (ESPN abbr WSH)
+    "LAR": 14                          # ESPN: Los Angeles Rams
+    "LAC": 24                          # ESPN: Los Angeles Chargers
+    "NYG": 19                          # ESPN: New York Giants
+    "NYJ": 20                          # ESPN: New York Jets
 ncaaf:
   kalshi_name:
     "Appalachian St.": 2026            # ESPN: App State Mountaineers

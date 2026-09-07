@@ -29,6 +29,27 @@ NCAAF = json.loads((FIXD / "espn_teams_ncaaf.json").read_text())
 NFL = json.loads((FIXD / "espn_teams_nfl.json").read_text())
 
 
+def _espn_body(*teams: dict) -> dict:
+    return {"sports": [{"leagues": [{"teams": [{"team": t} for t in teams]}]}]}
+
+
+# Teams the shipped NFL fixture doesn't carry, needed by the ticker-code matching tests
+# below (match-report 2026-09-07, gap: colliding "Los Angeles"/"New York" city aliases).
+# The fixture already has the Rams (14), Chargers (24), Giants (19) and Jets (20).
+EXTRA_NFL = _espn_body(
+    {"id": "25", "displayName": "San Francisco 49ers", "location": "San Francisco", "name": "49ers",
+     "abbreviation": "SF", "shortDisplayName": "49ers", "slug": "san-francisco-49ers"},
+    {"id": "6", "displayName": "Dallas Cowboys", "location": "Dallas", "name": "Cowboys",
+     "abbreviation": "DAL", "shortDisplayName": "Cowboys", "slug": "dallas-cowboys"},
+    {"id": "23", "displayName": "Pittsburgh Steelers", "location": "Pittsburgh", "name": "Steelers",
+     "abbreviation": "PIT", "shortDisplayName": "Steelers", "slug": "pittsburgh-steelers"},
+    {"id": "9", "displayName": "Green Bay Packers", "location": "Green Bay", "name": "Packers",
+     "abbreviation": "GB", "shortDisplayName": "Packers", "slug": "green-bay-packers"},
+    {"id": "16", "displayName": "Minnesota Vikings", "location": "Minnesota", "name": "Vikings",
+     "abbreviation": "MIN", "shortDisplayName": "Vikings", "slug": "minnesota-vikings"},
+)
+
+
 def test_parse_event_title():
     assert parse_event_title("Alabama St. vs Troy") == ("Alabama St.", "Troy")
     assert parse_event_title("NY Giants vs LA Rams") == ("NY Giants", "LA Rams")
@@ -100,3 +121,79 @@ def test_side_team_id_for_uses_game_teams_only(db_session):
     assert side_team_id_for(db_session, "nfl", mc3, g2) == 19  # "new yo" prefixes only the Giants
     mc4 = classify_market({"event_ticker": "KXNFLGAME-26SEP21NYGNE", "ticker": "z", "yes_sub_title": "New En", "title": "New En wins"})
     assert side_team_id_for(db_session, "nfl", mc4, g2) == 17
+
+
+def test_match_event_resolves_colliding_city_via_ticker_code(db_session):
+    # I9 (2026-09-07 match-report gap): "Los Angeles" is the ESPN location of both the
+    # Rams (14) and the Chargers (24), so it resolves to nothing on its own. The event
+    # ticker's code segment ("SFLAR") carries the answer; a Chargers game on the same
+    # date makes the pair genuinely ambiguous without it.
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    seed_teams_from_espn(db_session, "nfl", EXTRA_NFL)
+    kick = datetime(2026, 9, 10, 20, 0, tzinfo=timezone.utc)
+    rams_game = Game(sport="nfl", home_team_id=25, away_team_id=14, kickoff_utc=kick)
+    chargers_game = Game(sport="nfl", home_team_id=25, away_team_id=24, kickoff_utc=kick)
+    db_session.add_all([rams_game, chargers_game])
+    db_session.flush()
+    em = match_event(db_session, "nfl", {"event_ticker": "KXNFLSPREAD-26SEP10SFLAR",
+                                          "title": "San Francisco vs Los Angeles: Spread"}, date(2026, 9, 10))
+    assert em.game_id == rams_game.id
+    assert em.confidence == Decimal("1.00")
+    assert em.reason == "pair+date exact (code)"
+
+
+def test_match_event_resolves_colliding_city_via_ticker_code_multiple_events(db_session):
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    seed_teams_from_espn(db_session, "nfl", EXTRA_NFL)
+    kick = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
+    cowboys_giants = Game(sport="nfl", home_team_id=19, away_team_id=6, kickoff_utc=kick)
+    steelers_jets = Game(sport="nfl", home_team_id=20, away_team_id=23, kickoff_utc=kick)
+    db_session.add_all([cowboys_giants, steelers_jets])
+    db_session.flush()
+    em = match_event(db_session, "nfl", {"event_ticker": "KXNFLGAME-26SEP13DALNYG",
+                                          "title": "Dallas vs New York"}, date(2026, 9, 13))
+    assert em.game_id == cowboys_giants.id and em.reason == "pair+date exact (code)"
+    em2 = match_event(db_session, "nfl", {"event_ticker": "KXNFLGAME-26SEP13PITNYJ",
+                                           "title": "Pittsburgh vs New York"}, date(2026, 9, 13))
+    assert em2.game_id == steelers_jets.id and em2.reason == "pair+date exact (code)"
+
+
+def test_match_event_code_resolution_survives_title_code_order_mismatch(db_session):
+    # Title order and ticker-code order disagree here; the side that already resolved by
+    # name ("San Francisco") pins its own code, and the bare city takes what's left.
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    seed_teams_from_espn(db_session, "nfl", EXTRA_NFL)
+    kick = datetime(2026, 9, 10, 20, 0, tzinfo=timezone.utc)
+    rams_game = Game(sport="nfl", home_team_id=25, away_team_id=14, kickoff_utc=kick)
+    chargers_game = Game(sport="nfl", home_team_id=25, away_team_id=24, kickoff_utc=kick)
+    db_session.add_all([rams_game, chargers_game])
+    db_session.flush()
+    em = match_event(db_session, "nfl", {"event_ticker": "KXNFLSPREAD-26SEP10SFLAR",
+                                          "title": "Los Angeles vs San Francisco: Spread"}, date(2026, 9, 10))
+    assert em.game_id == rams_game.id
+    assert em.reason == "pair+date exact (code)"
+
+
+def test_match_event_unknown_code_stays_unresolved(db_session):
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    seed_teams_from_espn(db_session, "nfl", EXTRA_NFL)
+    kick = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
+    db_session.add(Game(sport="nfl", home_team_id=19, away_team_id=6, kickoff_utc=kick))
+    db_session.flush()
+    em = match_event(db_session, "nfl", {"event_ticker": "KXNFLGAME-26SEP13DALXYZ",
+                                          "title": "Dallas vs New York"}, date(2026, 9, 13))
+    assert em.game_id is None and em.reason == "unresolved: New York"
+
+
+def test_match_event_unambiguous_title_never_consults_ticker_code(db_session):
+    # Green Bay and Minnesota both resolve cleanly by name; even a ticker whose code
+    # segment is garbage (or would resolve to the wrong teams) must not be consulted.
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    seed_teams_from_espn(db_session, "nfl", EXTRA_NFL)
+    kick = datetime(2026, 9, 14, 17, 0, tzinfo=timezone.utc)
+    g = Game(sport="nfl", home_team_id=9, away_team_id=16, kickoff_utc=kick)
+    db_session.add(g)
+    db_session.flush()
+    em = match_event(db_session, "nfl", {"event_ticker": "KXNFLGAME-26SEP14SFLAR",
+                                          "title": "Green Bay vs Minnesota"}, date(2026, 9, 14))
+    assert em.game_id == g.id and em.reason == "pair+date exact"
