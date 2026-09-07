@@ -103,14 +103,32 @@ the SDD breaker leaving a load-bearing finding unresolved; a deploy failure inli
 debugging cannot resolve; three hotfix rounds without a passing verification; Odds API
 credits exhausted (401). Everything else is a recorded ruling.
 
-### 3.7 Authorizations (2026-09-07 00:45 CT)
+### 3.7 Authorizations (2026-09-07 00:45 CT, extended ~07:40 CT)
 
 - Merge to `main` (fast-forward after a pristine full suite) and `make deploy-nas`
   without asking: **yes**.
 - Exercise the kill switch during verification: **no** (observe only).
-- Draft the phase 4 design and plan after phase 3: **no** — after phase 3 is verified
-  the loop reports and stops.
-- Continue into credential-free phase 5 items if phase 4 is blocked: **no**.
+- Brainstorm, plan, and execute phases 4, 5, and 6 without waiting: **yes** (second
+  round; supersedes the first round's "draft phase 4: no"). Decisions come from the
+  roadmap's pre-loaded tables or the model's judgment and are recorded in each
+  addendum's "Decisions taken on the user's behalf".
+- Secrets the phases need are listed in the roadmap; the user provisions them when
+  convenient and the loop never blocks on them (features ship conditional on the file).
+- Novig is dropped as a venue (not usable in Louisiana per the user); the Odds API
+  `novig` column stays as a recorded benchmark feed.
+- Operator mode after the last phase (weekly report, alias passes, post-game
+  verification, daily watch, hotfixes): **yes**. Parlay fun budget: $50 per week.
+- Live trading, bankroll, the legal decision, real money, destructive NAS actions:
+  **never** autonomous.
+
+### 3.9 plan-next and operator mode (added ~07:40 CT)
+
+`plan-next` runs the brainstorming skill without questions: the roadmap's pre-loaded
+decisions stand in for the user's answers, the rest are the model's, and every one is
+written into the addendum. One adversarial design review (opus) precedes the plan. The
+plan's last task extends the verification contract with the phase's checks. After the
+last phase the loop follows the roadmap's operator calendar, scheduling its own wakeups
+between duties.
 
 ### 3.8 Resilience
 

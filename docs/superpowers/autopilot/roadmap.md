@@ -6,7 +6,8 @@ CFTC-regulated exchanges; live trading only after an explicit gate and the user'
 separate legal decision.
 
 Spec: `docs/superpowers/specs/2026-09-06-sportsbook-harness-design.md` (v2) plus the
-phase addenda under `docs/superpowers/specs/`.
+phase addenda under `docs/superpowers/specs/`. Where an addendum and the v2 spec differ,
+the addendum wins for its phase and lists every difference in its §0.
 
 ## Phases (spec §15)
 
@@ -16,40 +17,138 @@ phase addenda under `docs/superpowers/specs/`.
 | 1 Normalize and match | done 2026-09-06, deployed | `docs/superpowers/plans/2026-09-06-phase1-normalize-match.md` | — |
 | 2 Pricing and signals | done 2026-09-07, deployed (hotfix `3224d0a`) | `docs/superpowers/plans/2026-09-07-phase2-pricing-signals.md` | — |
 | 3 Paper execution, settlement, benchmarks, CLV | **planned** | `docs/superpowers/plans/2026-09-07-phase3-paper-execution.md` | none |
-| 4 Kalshi authenticated adapter (still paper) | not planned | — | user: Kalshi demo API key; user: brainstorm the addendum (drafting not authorized) |
-| 5 Shadow veto, RFQ listener, futures snapshots, parlay CLI, NWS, Novig adapter, overview chart | not planned | — | user: Anthropic API key, Novig credentials, Kalshi RFQ access; drafting not authorized |
+| 4 Kalshi authenticated adapter (still paper), risk gate, backups, Alembic | not planned | — (plan-next) | none; the demo smoke runs only when `secrets/kalshi_demo_*` exist |
+| 5 Research layer and hypotheses: futures snapshots, NWS, parlay CLI, shadow veto, report annotator, RFQ listener, overview page | not planned | — (plan-next) | none; veto and annotator run only when `secrets/anthropic_api_key` exists |
+| 6 Deferred items from the phase 2–3 reviews | not planned | — (plan-next) | none |
+| Operator mode | after phase 6, and calendar duties throughout | — | — |
 | Go-live gate | — | — | user's legal decision + a stored passing gate report; never autonomous |
 
-## Standing authorizations (user, 2026-09-07 00:45 CT)
+## Standing authorizations (user, 2026-09-07; second round ~07:40 CT)
 
 | Action | Authorized |
 |---|---|
 | Fast-forward merge to `main` after a pristine full suite | **yes** |
 | `make deploy-nas` (restarts the NAS containers) | **yes** |
 | Exercise the kill switch during verification | **no** — observe the badge only |
-| Draft the phase 4 design addendum and plan | **no** — after phase 3 is verified: report and stop |
-| Continue into credential-free phase 5 items | **no** |
+| Brainstorm, plan, and execute phases 4, 5, 6 without waiting | **yes** — decisions from the tables below or the model's judgment, each recorded in the addendum's "Decisions taken on the user's behalf" |
+| Operator mode after the last phase (weekly report, alias passes, post-game verification, daily watch, hotfixes) | **yes** |
+| Anything touching live trading, bankroll, the legal decision, real money, or destructive NAS actions | **never** — gate |
 
-Mid-phase deploys that a committed plan explicitly instructs (phase 3 Task 1 Step 5) are
-covered by the deploy authorization.
+Mid-phase deploys that a committed plan instructs are covered by the deploy authorization.
 
-## Deferred items (recorded in earlier reviews; need the user's OK to schedule)
+## Secrets (provision when convenient; the loop never blocks on them)
 
-- NO-side signals (only YES bids are evaluated).
-- Key-number mass adjustment at 3 and 7 in the margin model (spec §6.3 vs code).
-- 100-contract fee basis for gap metrics (per-contract fee overstated on small orders).
-- Duplicate quote rows per market per run are dropped arbitrarily.
-- Taker-imbalance and shadow-veto labels (need the trade tape and the Claude client).
-- Dedicated normalizer process (currently inside the tick).
-- Orderbook compaction / partitioning — only if the 1 TB budget line is crossed (addendum §0.6).
-- I9 bare-city aliases; RFQ listener (phase 5).
+Same handling as the existing files: `secrets/`, mode 600, no trailing newline
+(`printf '%s' "<value>" > secrets/<name>`), never pasted in chat or committed. Each
+feature is coded and tested against recorded shapes; its live path switches on when the
+file exists at deploy time (the Kalshi WebSocket recorder pattern).
 
-## User-side TODOs (not the loop's)
+| File | For | How |
+|---|---|---|
+| `secrets/kalshi_demo_key_id`, `secrets/kalshi_demo_private_key.pem` | phase 4 demo smoke (`harness kalshi-smoke --env demo`): place, amend, cancel, group cancel, expiry, fills, positions, balance on play money | separate demo account at Kalshi's demo environment → settings → API keys; download the PEM once |
+| `secrets/anthropic_api_key` | phase 5 shadow veto and the five report bullets | Anthropic console → API keys |
+| `secrets/backup_age_key` | phase 4 encrypted backups — generated **by the loop** on the Mac; copy it somewhere safe (a backup no one can decrypt is not a backup) | nothing to do until the loop tells you it exists |
+| Novig credentials | **dropped** (user 2026-09-07: not usable in Louisiana) | — |
 
-- Week 1 alias pass after the Sept 13–14 games (`docs/runbooks/phase1-match-report.md`).
-- Request Novig API credentials; create a Kalshi demo API key for phase 4.
+No key is needed for NWS forecasts, futures snapshots, the parlay CLI, or the RFQ
+listener (production key; it idles on 403).
+
+## Pre-loaded decisions
+
+The brainstorm for each phase treats these as the user's answers. Anything not listed is
+the model's call, written into the addendum with rationale, cost if wrong, and how to
+reverse it.
+
+### Phase 4 — Kalshi authenticated adapter (paper), risk gate, backups, Alembic (spec §15.4, §5.2, §9.1–9.4, §14)
+
+1. `Settings.kalshi_env ∈ {demo, prod}` with per-environment secret files; demo host and
+   any demo-specific behaviour verified against current Kalshi docs (ctx7) at plan time.
+2. `KalshiAuthed` implements the §5.2 protocol on top of the existing RSA-PSS signing:
+   `post_only=true`, `order_group_id` on every order, `expiration_time`,
+   `cancel_order_on_pause=true`, `self_trade_prevention_type=maker`; encode/decode
+   round-trip tests for YES and NO; fee model read from `GET /series` and asserted.
+3. Live guard: constructing the adapter in `prod` with write methods enabled requires all
+   of `LIVE_TRADING=1`, `mode: live`, a stored passing gate report, and
+   `secrets/legal_decision` (the user's dated statement). None exists; tests assert the
+   refusal. Nothing in phase 4 sends an order to production.
+4. Demo smoke: `harness kalshi-smoke --env demo` (tiny post-only order far from the
+   market → amend → cancel → group cancel → expiry → read fills/positions/balance) is a
+   runbook step; the verify unit runs it itself when the demo secrets exist (play money).
+5. Startup reconciliation, 60 messages/min budget, three-reject freeze (15 min), echo
+   check, `venue_status` and the outage rules: per spec, unchanged.
+6. Drawdown stop on equity (−20 % over 7 days): paper equity = paper bankroll + ledger;
+   paper mode raises a dashboard alert and labels signals; live mode trips the kill switch.
+7. Backups: nightly 03:30 CT dump of every table except the five bulk tables
+   (`raw_responses`, `orderbook_events`, `venue_trades`, `venue_quotes`,
+   `odds_snapshots`); weekly full dump Sunday 04:00 CT; encrypted with `age` to the
+   committed public key `deploy/backup_age.pub`; keypair generated once on the Mac into
+   `secrets/backup_age_key` (never pushed); written to
+   `/volume1/docker/sports-harness/backups/`; retention 30 nightly, 8 weekly; `ledger` and
+   `gate_reports` CSV exports kept forever. Mechanism (a compose job on the postgres image
+   vs. an in-app job) decided at plan time; no secret ever enters a dump path.
+8. Alembic baseline generated from the current models; `init-db` becomes
+   `create_all` for empty databases plus `alembic upgrade head`; the NAS database is
+   stamped at the baseline during the phase 4 deploy.
+
+### Phase 5 — research layer and hypotheses (spec §7, §8, §15.5; Novig removed)
+
+Order, each independent: (a) futures and ladder weekly snapshots for H7, Tuesdays
+09:00 CT, discovered by Kalshi football series prefix, raw plus normalized; (b) NWS
+forecast snapshots for H6: a stadium YAML (NFL and FBS, lat/lon, roof) built by the model
+from public sources, `api.weather.gov` gridpoint forecasts for outdoor games inside 72 h,
+hourly, User-Agent `sports-harness/1 (self-hosted research harness)`; (c) parlay CLI per
+§8.1 with `parlay.yaml`: weekly budget **$50** (user), smart card $25, lottery card $5, at
+most three lottery cards, legs from moneyline/spread/total at DraftKings prices already in
+the feed, LSU or Saints anchor, rationale from a template unless the Anthropic key exists;
+(d) shadow veto per §7.1, model `claude-sonnet-5`, strict JSON via a tool schema, 30-minute
+cache, tokens and cost into `research_notes`, veto-rate alert, dormant without the key;
+(e) weekly report annotator, `claude-opus-5`, five bullets that cite table cells only,
+dormant without the key; (f) RFQ listener per §8.2 on the production key, paper quotes
+only, idles with a `venue_status` note on 403; (g) overview page: dashboard page 2,
+server-rendered SVG, no JS, bounded queries (equity, CLV by week, fills).
+
+Variants: when the veto ships, register `no_veto` as a secondary with a dated
+pre-registration amendment (spec §6.7 makes it mandatory; the shadow veto never changes
+decisions, so `no_veto` equals the primary until enforcement).
+
+Novig: no adapter, no credentials, no live path (user, 2026-09-07). The `novig` bookmaker
+column from the Odds API stays as a read-only benchmark feed already being recorded; H8
+is measured from that feed or reported "not collected".
+
+### Phase 6 — deferred items (from the phase 2 and 3 reviews)
+
+1. NO-side signals: evaluate buying NO (selling YES) symmetrically; executor places NO
+   bids; pre-registration amendment.
+2. Key-number adjustment at 3 and 7 in the NFL margin model: point masses from published
+   margin frequencies, sources cited in the addendum; CFB unchanged unless the data says
+   otherwise.
+3. Edge priced at the order's actual contract count instead of the 100-contract fee
+   reference.
+4. Duplicate quote rows per market per run: deterministic latest-`fetched_at` pick plus
+   a run note.
+5. Taker-imbalance label from the last five minutes of prints by size bucket.
+6. Dedicated normalizer process only if `budget_exhausted` appears on ≥ 10 % of game-day
+   ticks (measure first).
+7. I9 bare-city aliases and the alias-pass automation (also an operator duty).
+8. Orderbook compaction only if the database passes 800 GB.
+
+## Operator calendar (America/Chicago)
+
+| When | Duty |
+|---|---|
+| Monday 09:00 | `harness report --week N` and `harness gate` on the NAS; commit `docs/reports/2026-wNN.md`; one-line push |
+| Monday 09:30, and the morning after a Thursday or Friday game | alias pass: `harness match-report` on the NAS → additions to `harness/matching/aliases_manual.yaml` on a `fix-aliases-<date>` branch (implementer + reviewer) → merge → deploy → confirm the match rate rose |
+| Morning after every game day | verify unit (full contract) → hotfix loop |
+| Daily 09:00 | credits remaining, database size vs budget, executor heartbeat, error lines, kill-switch state → one journal line; anomalies → carried fixes |
+| Tuesday 09:30 (once phase 5a ships) | confirm the futures snapshot job ran |
+| Mid-October (user) | go-live gate review with the legal decision — the loop prepares the gate report and the numbers, never the decision |
+
+## User-side TODOs
+
+- Provision the secrets above when convenient.
 - Odds API tier decision (100k credits/month by choice; ~1,000/day observed).
 - The legal decision before any live trading.
+- Copy `secrets/backup_age_key` somewhere safe once the loop creates it.
 
 ## Carried fixes
 

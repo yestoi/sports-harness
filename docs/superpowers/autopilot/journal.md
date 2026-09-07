@@ -25,3 +25,14 @@ Times are America/Chicago.
 - Anomalies: the WebSocket "Last event" value wraps inside its stat box at a 1232 px viewport (cosmetic; candidate for Task 12's dashboard pass)
 - Carried forward: none (the deferred verification item is recorded above)
 - Next: **phase** — phase 3 (`docs/superpowers/plans/2026-09-07-phase3-paper-execution.md`) in a fresh session, per the user; the SDD workspace at `.superpowers/sdd/2026-09-07-phase3-paper-execution/` already holds the pre-flight scan, its rulings, and the 14 briefs
+
+## 3. decisions — second authorization round, pre-loaded phases 4–6 — 2026-09-07 07:45 CT
+- Branch / commits: `main` (docs only)
+- Result: done
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Rulings: recorded in `roadmap.md` — §Pre-loaded decisions (phases 4, 5, 6), §Secrets, §Operator calendar. User decisions this round: brainstorm, plan, and execute phases 4–6 without waiting = yes; operator mode after the last phase = yes; Novig dropped as a venue (not usable in Louisiana; the Odds API `novig` column stays as a recorded benchmark feed); parlay fun budget $50/week; secrets are provisioned by the user when convenient and the loop never blocks on them (features ship conditional on the file). Skill gained the `plan-next` and `operate` units and the matching orient rules.
+- Carried forward: none
+- Next: **phase** — phase 3 in a fresh session (`/autopilot`), then `plan-next` for phase 4
