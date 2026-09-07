@@ -64,6 +64,7 @@ def gap_row(**over) -> GapRow:
         fair_p=Decimal("0.5500"),
         fair_source="direct",
         disagreement=Decimal("0.0100"),
+        n_groups=2,
         staleness_s=12,
         prev_fair_p=None,
         prev_fair_ts=None,
@@ -194,7 +195,9 @@ def test_sport_scope_ttk_spread_and_volume_labels():
     (thin,) = run_strategy([gap_row(volume_24h=10)], v, NOW)
     assert thin.labels["volume"] is False and thin.rejection_reason == "volume"
 
-    (no_disagreement,) = run_strategy([gap_row(disagreement=None)], v, NOW)
+    # a Pinnacle-only fair (n_groups=1) has nothing to measure disagreement against, so it is
+    # not "perfect agreement" -- it fails disagreement_ok regardless of the disagreement value.
+    (no_disagreement,) = run_strategy([gap_row(disagreement=None, n_groups=1)], v, NOW)
     assert no_disagreement.labels["disagreement_ok"] is False
     assert no_disagreement.rejection_reason == "disagreement_ok"
 
@@ -421,9 +424,40 @@ def test_the_per_bet_cap_clamps_a_large_kelly_stake():
     cap = Decimal(str(v.config["per_bet_cap"])) * Decimal(str(v.config["bankroll"]))
     uncapped = expected_pricing(Decimal("0.7900"), Decimal("0.0100"), dict(v.config, per_bet_cap=1))
     assert uncapped["stake"] > cap
+    # the recorded stake is still clamped to the cap...
     assert sig.stake == cap.quantize(CENT)
-    assert sig.labels["cap_per_bet"] is True
+    # ...but the label is honest about the clamp having bitten: it is measured against the
+    # uncapped Kelly stake, not the (already-clamped) recorded stake, so it can be False.
+    assert sig.labels["cap_per_bet"] is False
+    # sharp_direct has apply_caps: false, so the False cap label is recorded but not enforced.
     assert sig.decision == "candidate"
+
+
+def test_the_per_bet_cap_rejects_when_the_variant_enforces_it():
+    v = variant("constrained")
+    assert v.config["apply_caps"] is True
+    row = gap_row(fair_p=Decimal("0.7900"), venue_mid=Decimal("0.7900"),
+                  best_bid=Decimal("0.7800"), best_ask=Decimal("0.8000"))
+    (sig,) = run_strategy([row], v, NOW)
+    cap = Decimal(str(v.config["per_bet_cap"])) * Decimal(str(v.config["bankroll"]))
+    assert sig.stake == cap.quantize(CENT)
+    assert sig.labels["cap_per_bet"] is False
+    assert sig.decision == "rejected"
+    assert sig.rejection_reason == "cap_per_bet"
+
+
+def test_a_single_group_fair_uses_the_edge_ceiling_not_the_floor():
+    """A Pinnacle-only fair (n_groups < 2) must price against the strictest edge threshold,
+    not the loosest one that a measured (near-zero) disagreement would otherwise imply."""
+    v = variant("sharp_direct")
+    (sig,) = run_strategy([gap_row(n_groups=1, disagreement=None)], v, NOW)
+    assert sig.edge_min == Decimal(str(v.config["edge_ceiling"]))
+    assert sig.labels["disagreement_ok"] is False
+    assert sig.rejection_reason == "disagreement_ok"
+
+    (zero_groups,) = run_strategy([gap_row(n_groups=0, disagreement=None)], v, NOW)
+    assert zero_groups.edge_min == Decimal(str(v.config["edge_ceiling"]))
+    assert zero_groups.labels["disagreement_ok"] is False
 
 
 def test_the_same_side_position_keeps_the_highest_edge_seen():

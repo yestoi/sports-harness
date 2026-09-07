@@ -64,6 +64,11 @@ class GapRow:
     fair_p: Decimal | None
     fair_source: str | None
     disagreement: Decimal | None
+    #: How many independent book groups fed the fair value's consensus (spec §9.6). A
+    #: Pinnacle-only fair has n_groups == 1 (or 0 with no fair at all) and is measured
+    #: against nothing, so `disagreement_ok` requires at least 2 rather than trusting
+    #: `disagreement`, which `consensus()` sets to 0.0000 -- not None -- for a single group.
+    n_groups: int
     staleness_s: int | None
     prev_fair_p: Decimal | None
     prev_fair_ts: datetime | None
@@ -141,6 +146,9 @@ class _Draft:
     fee_at_target: Decimal | None = None
     edge: Decimal | None = None
     stake: Decimal | None = None
+    #: The Kelly stake before the per-bet cap clamps it; `cap_per_bet` is labelled against
+    #: this, not against `stake`, which is already clamped and so would always pass.
+    uncapped_stake: Decimal | None = None
     contracts: int | None = None
 
 
@@ -170,7 +178,10 @@ def _filters(row: GapRow, cfg: dict) -> dict[str, bool]:
         ),
         "volume": row.volume_24h is not None and row.volume_24h >= cfg["min_volume_24h"],
         "velocity": velocity,
-        "disagreement_ok": row.disagreement is not None,
+        # A single book group (Pinnacle-only, no corroborating group) has nothing to measure
+        # disagreement against; `consensus()` still writes disagreement=0.0000 for it, which
+        # would otherwise look like perfect agreement rather than no signal at all.
+        "disagreement_ok": row.n_groups >= 2,
     }
 
 
@@ -178,8 +189,13 @@ def _price_and_size(row: GapRow, cfg: dict, fee_model: FeeModel, labels: dict[st
     """Spec §6.3 target price and §6.5 sizing. Only runs when the row has a fair value."""
     fair = row.fair_p
     edge_floor, edge_ceiling = _dec(cfg["edge_floor"]), _dec(cfg["edge_ceiling"])
-    disagreement = row.disagreement if row.disagreement is not None else ZERO
-    edge_min = _q4(clamp(edge_floor + _dec(cfg["disagreement_mult"]) * disagreement, edge_floor, edge_ceiling))
+    if row.n_groups < 2:
+        # No corroborating book: require the strictest (ceiling) edge rather than letting an
+        # unmeasured disagreement of 0 default to the loosest (floor) threshold.
+        edge_min = _q4(edge_ceiling)
+    else:
+        disagreement = row.disagreement if row.disagreement is not None else ZERO
+        edge_min = _q4(clamp(edge_floor + _dec(cfg["disagreement_mult"]) * disagreement, edge_floor, edge_ceiling))
     as_estimate = _dec(cfg["as_seed"])
 
     p0 = fair - edge_min - as_estimate
@@ -193,9 +209,10 @@ def _price_and_size(row: GapRow, cfg: dict, fee_model: FeeModel, labels: dict[st
     p_cond = fair - as_estimate
     cost = price_target + fee_at_target
     f_star = (p_cond - cost) / (ONE - cost) if cost < ONE else ZERO
+    uncapped_stake = ZERO
     if f_star > 0:
-        stake = max(_dec(cfg["floor_stake"]), _dec(cfg["kelly_fraction"]) * f_star * bankroll)
-        stake = min(stake, per_bet_cap)
+        uncapped_stake = max(_dec(cfg["floor_stake"]), _dec(cfg["kelly_fraction"]) * f_star * bankroll)
+        stake = min(uncapped_stake, per_bet_cap)
     else:
         stake = ZERO
     stake = stake.quantize(CENT, rounding=ROUND_DOWN)
@@ -211,6 +228,7 @@ def _price_and_size(row: GapRow, cfg: dict, fee_model: FeeModel, labels: dict[st
         fee_at_target=_q4(fee_at_target),
         edge=edge,
         stake=stake,
+        uncapped_stake=uncapped_stake,
         contracts=contracts,
     )
 
@@ -225,13 +243,17 @@ def _apply_caps(draft: _Draft, cfg: dict, state: StrategyState) -> None:
     row, labels = draft.row, draft.labels
     bankroll = _dec(cfg["bankroll"])
     stake = draft.stake if draft.stake is not None else ZERO
+    uncapped_stake = draft.uncapped_stake if draft.uncapped_stake is not None else ZERO
 
     key = _dedupe_key(row)
     held = state.positions.get(key) if key is not None else None
     dedupe_ok = held is None or (draft.edge is not None and draft.edge > held)
 
     game_held = state.game_exposure.get(row.game_id, ZERO) if row.game_id is not None else ZERO
-    labels["cap_per_bet"] = stake <= _dec(cfg["per_bet_cap"]) * bankroll
+    # Labelled against the uncapped Kelly stake, not the recorded `stake` -- that one is
+    # already clamped to this same ceiling, so comparing it back would always pass (spec §9.6
+    # wants the caps' cost measured, not hidden by the clamp they themselves impose).
+    labels["cap_per_bet"] = uncapped_stake <= _dec(cfg["per_bet_cap"]) * bankroll
     labels["cap_per_game"] = dedupe_ok and game_held + stake <= _dec(cfg["per_game_cap"]) * bankroll
     labels["cap_daily"] = state.daily_exposure + stake <= _dec(cfg["daily_cap"]) * bankroll
     labels["max_open"] = state.open_orders + 1 <= cfg["max_open"]

@@ -43,6 +43,7 @@ def _load_gap_rows(session: Session, run_id: int) -> list[GapRow]:
             fair_p=snap.fair_p,
             fair_source=snap.fair_source,
             disagreement=snap.disagreement,
+            n_groups=snap.n_groups,
             staleness_s=snap.staleness_s,
             prev_fair_p=snap.prev_fair_p,
             prev_fair_ts=snap.prev_fair_ts,
@@ -113,6 +114,8 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         "gaps": 0,
         "signals": {},
         "budget_exhausted": False,
+        "variants_run": [],
+        "variants_skipped": [],
     }
 
     # Stage 1 always runs, even with no budget left, so fair values keep advancing every tick.
@@ -138,9 +141,16 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
 
     rows = _load_gap_rows(session, run_id)
 
-    for variant in variants:
+    # A busy tick that runs out of budget mid-loop always drops the same tail of the
+    # (name-sorted) variant list, so cross-variant comparisons would rest on non-random
+    # missingness. Rotate the starting point by run_id so the drop is spread evenly instead.
+    start = run_id % len(variants)
+    ordered = variants[start:] + variants[:start]
+
+    for i, variant in enumerate(ordered):
         if not ok():
             result["budget_exhausted"] = True
+            result["variants_skipped"] = [v.name for v in ordered[i:]]
             break
         signals = run_strategy(rows, variant, now)
         candidate = sum(1 for s in signals if s.decision == "candidate")
@@ -148,5 +158,6 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         _insert_signals(session, run_id, variant, now, signals)
         session.commit()
         result["signals"][variant.name] = {"candidate": candidate, "rejected": rejected}
+        result["variants_run"].append(variant.name)
 
     return result

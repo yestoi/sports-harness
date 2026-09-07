@@ -1,3 +1,4 @@
+import itertools
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -5,6 +6,7 @@ from pathlib import Path
 
 from harness.db.models import Game, OddsSnapshot, Run, Signal, VenueMarket, VenueQuote
 from harness.matching.teams import seed_teams_from_espn
+from harness.strategy import pipeline as pipeline_module
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
 
@@ -12,6 +14,7 @@ FIXD = Path(__file__).parent / "fixtures"
 NFL = json.loads((FIXD / "espn_teams_nfl.json").read_text())
 ROWS = json.loads((FIXD / "odds_lines_game.json").read_text())
 VARIANTS_DIR = FIXD / "variants"
+ROTATION_VARIANTS_DIR = FIXD / "variants_rotation"
 
 HOME, AWAY = 14, 19  # Rams, Giants
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
@@ -145,4 +148,40 @@ def test_price_and_signal_stops_when_budget_is_spent(env_settings, db_session):
     assert result["fair_derived"] == 2
     assert result["gaps"] == 0
     assert result["signals"] == {}
+    assert result["variants_run"] == []
     assert db_session.query(Signal).filter_by(run_id=run.id).count() == 0
+
+
+# --- final fix wave: variant rotation under budget ----------------------------
+
+def test_variant_order_rotates_by_run_id_and_the_skip_is_recorded(env_settings, db_session, monkeypatch):
+    """A budget that only allows one variant must not always drop the same (alphabetically
+    later) one: which variant runs first should depend on run_id, and which variants were
+    skipped must be visible in the result rather than silently missing."""
+    variants = load_variants(ROTATION_VARIANTS_DIR)
+    register_variants(db_session, variants, NOW, prune=True)
+    assert [v.name for v in variants] == ["tiny", "tiny2"]  # sorted; active_variants matches
+
+    # A deterministic fake clock: the Nth call to time.monotonic() returns N. price_and_signal
+    # calls it once to set the deadline, then once per ok() check (after fair values, after
+    # gaps, then once per variant before scoring). budget_s=4 keeps the first three checks
+    # (t=1,2,3) inside the deadline (0+4) and expires on the second variant's check (t=4).
+    counter = itertools.count()
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(counter))
+
+    result_run1 = price_and_signal(db_session, 1001, NOW, env_settings, budget_s=4)
+    assert result_run1["budget_exhausted"] is True
+    assert len(result_run1["variants_run"]) == 1
+    assert result_run1["variants_skipped"] == [
+        v for v in ("tiny", "tiny2") if v not in result_run1["variants_run"]
+    ]
+
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(counter))
+    result_run2 = price_and_signal(db_session, 1002, NOW, env_settings, budget_s=4)
+    assert result_run2["budget_exhausted"] is True
+    assert len(result_run2["variants_run"]) == 1
+
+    # 1001 % 2 == 1 (starts at tiny2), 1002 % 2 == 0 (starts at tiny): different first variant.
+    assert result_run1["variants_run"] != result_run2["variants_run"]
+    assert result_run1["variants_run"] == ["tiny2"]
+    assert result_run2["variants_run"] == ["tiny"]
