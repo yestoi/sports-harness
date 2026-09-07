@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from harness.dashboard.app import create_dashboard
-from harness.db.models import KillSwitch
+from harness.db.models import KillSwitch, StrategyVariant
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
 from tests.test_pipeline import NOW, VARIANTS_DIR, _seed
@@ -136,6 +136,32 @@ def test_unkill_missing_token_file_is_403(db_session, env_settings, tmp_path):
 
     row = db_session.get(KillSwitch, 1)
     assert row.active is True
+
+
+def test_page_and_summary_survive_two_active_primary_variants(db_session, env_settings, tmp_path):
+    """Two active primary rows should never happen (load_variants enforces at most one at
+    load time), but a hand-edited row or a registration race could still produce it. The
+    dashboard must degrade to a deterministic choice instead of 500ing."""
+    _seed_full(db_session, env_settings)
+    duplicate_primary = next(v for v in load_variants(VARIANTS_DIR) if v.tier == "primary")
+    db_session.add(StrategyVariant(
+        variant_id="dup000000001",
+        name="tiny_dup_primary",
+        tier="primary",
+        config_json=duplicate_primary.config,
+        registered_at=NOW,
+        active=True,
+    ))
+    db_session.commit()
+
+    settings = _dashboard_settings(env_settings, tmp_path)
+    client = _client(db_session, settings)
+
+    page = client.get("/")
+    assert page.status_code == 200
+
+    summary = client.get("/api/summary")
+    assert summary.status_code == 200
 
 
 def test_healthz_keys_unchanged(db_session, env_settings, tmp_path):

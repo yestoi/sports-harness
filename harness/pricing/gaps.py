@@ -49,6 +49,7 @@ def build_gap_snapshots(
     now: datetime,
     tz: str,
     fee_model: FeeModel = KALSHI_FOOTBALL,
+    errored_game_ids: frozenset[int] = frozenset(),
 ) -> int:
     tzinfo = ZoneInfo(tz)
     popularity = load_popularity()
@@ -116,6 +117,15 @@ def build_gap_snapshots(
 
         fair_p = fair.fair_p if fair is not None else None
 
+        no_fair_reason = None
+        if fair_p is None:
+            if shape is None:
+                no_fair_reason = "unmapped_market_type"
+            elif game.id in errored_game_ids:
+                no_fair_reason = "pricing_error"
+            else:
+                no_fair_reason = "no_sharp_line"
+
         gap_mid = gap_taker_net = gap_maker_net = None
         if fair_p is not None:
             if mid is not None:
@@ -160,6 +170,7 @@ def build_gap_snapshots(
                 fair_value_id=fair.id if fair is not None else None,
                 fair_source=fair.fair_source if fair is not None else None,
                 fair_p=fair_p,
+                no_fair_reason=no_fair_reason,
                 prev_fair_p=prev_fair.fair_p if prev_fair is not None else None,
                 prev_fair_ts=prev_fair.created_at if prev_fair is not None else None,
                 venue_mid=mid,

@@ -221,6 +221,11 @@ class MarketGapSnapshot(Base):
     fair_value_id: Mapped[int | None] = mapped_column(BigInteger)
     fair_source: Mapped[str | None] = mapped_column(String(8))
     fair_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    #: Why this market has no fair value, when it doesn't: "unmapped_market_type" (the venue
+    #: market's shape isn't moneyline/spread/total), "no_sharp_line" (no Pinnacle-backed line
+    #: to price it from), or "pricing_error" (the game's whole fair computation raised and
+    #: rolled back). NULL whenever fair_p is populated. Spec §9.6.
+    no_fair_reason: Mapped[str | None] = mapped_column(String(32))
     prev_fair_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
     prev_fair_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     venue_mid: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))

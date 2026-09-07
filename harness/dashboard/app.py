@@ -142,9 +142,16 @@ def _match_report(session: Session, now: datetime) -> dict:
 
 
 def _primary_signals(session: Session, now: datetime) -> list[dict]:
+    # `load_variants` enforces at most one active primary at load time, but nothing stops two
+    # from existing in the table at once (e.g. a hand-edited row, or a registration race), and
+    # `scalar_one_or_none()` would 500 the whole dashboard the moment that happens. Picking the
+    # lowest variant_id keeps the page rendering with a deterministic choice instead.
     primary = session.execute(
-        select(StrategyVariant).where(StrategyVariant.active.is_(True), StrategyVariant.tier == "primary")
-    ).scalar_one_or_none()
+        select(StrategyVariant)
+        .where(StrategyVariant.active.is_(True), StrategyVariant.tier == "primary")
+        .order_by(StrategyVariant.variant_id)
+        .limit(1)
+    ).scalars().first()
     if primary is None:
         return []
 

@@ -160,6 +160,13 @@ def test_build_gap_snapshots(db_session):
     assert no_fair_row.gap_taker_net is None
     assert no_fair_row.gap_maker_net is None
     assert no_fair_row.venue_mid == Decimal("0.51")  # quote data is still recorded
+    # market_type "draw" isn't moneyline/spread/total, so no shape (and no reason to look
+    # for a fair value at all) exists for it.
+    assert no_fair_row.no_fair_reason == "unmapped_market_type"
+
+    for row in rows:
+        if row is not no_fair_row:
+            assert row.no_fair_reason is None
 
     # idempotent: second call for the same run inserts nothing new.
     n2 = build_gap_snapshots(db_session, run.id, NOW, TZ, fee_model=KALSHI_FOOTBALL)
@@ -191,3 +198,82 @@ def test_prev_fair_from_earlier_run(db_session):
     row2 = db_session.query(MarketGapSnapshot).filter_by(run_id=run2.id, venue_market_id=ml_home_market.id).one()
     assert row2.prev_fair_p == fair1
     assert row2.prev_fair_ts is not None
+
+
+# --- final fix wave: no_fair_reason -----------------------------------------
+
+def test_no_fair_reason_is_no_sharp_line_when_there_is_no_pinnacle_backed_line(db_session):
+    """A matched, recognized shape (moneyline here) with quotes from a book that isn't in the
+    sharp group, and no spreads data to build a margin model from, has nowhere to derive a
+    fair value from at all -- not because its market type is unmapped."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    game = Game(sport="nfl", home_team_id=HOME, away_team_id=AWAY, kickoff_utc=NOW + timedelta(days=2))
+    db_session.add(game)
+    db_session.flush()
+    run = Run(started_at=NOW, status="running")
+    db_session.add(run)
+    db_session.flush()
+
+    fetched_at = NOW - timedelta(minutes=2)
+    book_last_update = NOW - timedelta(minutes=3)
+    # draftkings is not in SHARP_BOOKS, and no pinnacle/betonlineag/lowvig data exists at all,
+    # for this or any other market -- so direct_fair can never find a Pinnacle-backed pair,
+    # and _build_model has no spreads data to derive one from either.
+    db_session.add_all([
+        OddsSnapshot(raw_id=1, run_id=run.id, book="draftkings", game_id=game.id, market_type="h2h",
+                     outcome_team_id=HOME, outcome_side=None, point=None,
+                     price_decimal=Decimal("1.50"), book_last_update=book_last_update, fetched_at=fetched_at),
+        OddsSnapshot(raw_id=2, run_id=run.id, book="draftkings", game_id=game.id, market_type="h2h",
+                     outcome_team_id=AWAY, outcome_side=None, point=None,
+                     price_decimal=Decimal("2.80"), book_last_update=book_last_update, fetched_at=fetched_at),
+    ])
+    market = _vm(game.id, 900, "moneyline", side_team_id=HOME)
+    db_session.add(market)
+    db_session.flush()
+    db_session.commit()
+
+    counts = compute_fair_values(db_session, run.id, NOW)
+    assert counts.direct == 0
+    assert counts.derived == 0
+    assert counts.no_sharp == 1
+    assert counts.errored_game_ids == frozenset()
+
+    _add_quotes(db_session, run.id, [market], raw_id_start=9000, fetched_at=NOW)
+    build_gap_snapshots(db_session, run.id, NOW, TZ, errored_game_ids=counts.errored_game_ids)
+
+    row = db_session.query(MarketGapSnapshot).filter_by(run_id=run.id, venue_market_id=market.id).one()
+    assert row.fair_p is None
+    assert row.no_fair_reason == "no_sharp_line"
+
+
+def test_no_fair_reason_is_pricing_error_when_the_game_raised(db_session, monkeypatch):
+    """A game whose fair-value computation raised and was rolled back has no FairValue rows
+    at all for this run; its gap rows must say so was a pricing error, not a missing line."""
+    from harness.pricing.margin_model import MarginModel
+
+    game, run, markets = _seed(db_session)
+
+    def flaky(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(MarginModel, "from_main_lines", classmethod(flaky))
+
+    counts = compute_fair_values(db_session, run.id, NOW)
+    assert counts.direct == 0
+    assert counts.derived == 0
+    assert counts.errors == 1
+    assert counts.errored_game_ids == frozenset({game.id})
+
+    _add_quotes(db_session, run.id, markets, raw_id_start=9100, fetched_at=NOW)
+    build_gap_snapshots(db_session, run.id, NOW, TZ, errored_game_ids=counts.errored_game_ids)
+
+    rows = db_session.query(MarketGapSnapshot).filter_by(run_id=run.id).all()
+    ml_home_market = next(m for m in markets if m.ticker == "KXNFL-G-1")
+    ml_home_row = next(r for r in rows if r.venue_market_id == ml_home_market.id)
+    assert ml_home_row.fair_p is None
+    assert ml_home_row.no_fair_reason == "pricing_error"
+
+    # the unmapped-market-type row keeps its own reason even when the whole game errored.
+    draw_market = next(m for m in markets if m.ticker == "KXNFL-G-8")
+    draw_row = next(r for r in rows if r.venue_market_id == draw_market.id)
+    assert draw_row.no_fair_reason == "unmapped_market_type"

@@ -129,7 +129,9 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         result["budget_exhausted"] = True
         return result
 
-    result["gaps"] = build_gap_snapshots(session, run_id, now, tz=settings.tz_local)
+    result["gaps"] = build_gap_snapshots(
+        session, run_id, now, tz=settings.tz_local, errored_game_ids=fair_counts.errored_game_ids
+    )
 
     if not ok():
         result["budget_exhausted"] = True

@@ -1,6 +1,6 @@
 import logging
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -25,6 +25,10 @@ class FairCounts:
     no_sharp: int = 0
     games: int = 0
     errors: int = 0
+    #: game_ids whose fair-value computation raised and was rolled back this run -- so
+    #: `build_gap_snapshots` can label their gap rows `no_fair_reason="pricing_error"`
+    #: rather than lumping them in with games that simply had no sharp line to price from.
+    errored_game_ids: frozenset[int] = field(default_factory=frozenset)
 
 
 def _candidate_games(session: Session, now: datetime, game_ids: list[int] | None) -> list[Game]:
@@ -254,6 +258,7 @@ def compute_fair_values(
 ) -> FairCounts:
     games = _candidate_games(session, now, game_ids)
     direct_n = derived_n = no_sharp_n = error_n = 0
+    errored_game_ids: set[int] = set()
 
     for game in games:
         try:
@@ -265,6 +270,8 @@ def compute_fair_values(
         except Exception:
             log.exception("fair value computation failed for game_id=%s", game.id)
             error_n += 1
+            errored_game_ids.add(game.id)
 
     session.commit()
-    return FairCounts(direct=direct_n, derived=derived_n, no_sharp=no_sharp_n, games=len(games), errors=error_n)
+    return FairCounts(direct=direct_n, derived=derived_n, no_sharp=no_sharp_n, games=len(games), errors=error_n,
+                       errored_game_ids=frozenset(errored_game_ids))
