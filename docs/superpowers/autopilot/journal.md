@@ -221,3 +221,16 @@ Times are America/Chicago.
 - Rulings: (1) Item 2's FAIL is the open carried fix 11, not a new carry, and the "same failed item twice running" gate applies to a hotfix's re-verification failing twice, not to a carried item awaiting its turn - cost if wrong: one more `None` reading on the page. (2) Carried fix 11 moves to the front of the next day's batch (before item 4) so the item does not fail a third verification - cost if wrong: item 4 lands one unit later. (3) The candidates cross-check is judged at the page's instant with in-flight ticks excluded; the contract's 5 % tolerance assumes a quiescent instant, and phase 3's last task may word it so - cost if wrong: a real 5 % dashboard drift hides behind an in-flight tick once. (4) The daily ceilings are reached (4 hotfix units, 6 deploys); carried fixes 11, 4, 5, 6 run from 00:01 CT on 2026-09-08 (four units), 7, 8, 9 on 2026-09-09 from 00:01 CT (9 inside the 01:00-08:00 quiet window), then phase 3 - cost if wrong: phase 3 starts a day later than an unceilinged loop would. (5) plan-next for a phase is gated by the previous phase's `done` status: the addendum needs the shipped schema and the review findings of the phase before it (phase 4's Alembic baseline covers phase 3's tables), so Orient rule 6 does not fire for phase 4 tonight - cost if wrong: an evening of idle time that could have drafted a design that phase 3 would then invalidate.
 - Carried forward: none new (item 11 reordered)
 - Next: drill (R6) at this idle boundary, then idle until 00:01 CT (hotfix carried fix 11)
+
+## 18. drill - resume drill before 2026-09-12 (R6) - 2026-09-07 13:38 CT
+- Orient: rule 4 - the calendar's "once before 2026-09-12" duty, taken at the first idle unit boundary with no agent running (every dispatched agent is idle; the daily ceilings of 4 hotfix units and 6 deploys are reached; no verify, deploy, operate or phase unit is due before 00:01 CT)
+- Branch / commits: `main` at the commit of this entry; tree clean
+- Result: done (the drill's second half is judged by the fresh session)
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Rulings: (1) The drill runs now rather than at the 00:01 CT boundary because the user is more likely awake to restart in the afternoon; a restart before 00:01 CT loses nothing (the next work is the 00:01 CT hotfix batch) - cost if wrong: the Tuesday quiet-window batch slips to whenever the restart happens. (2) No wakeup is armed: the pass ends with this commit and the fresh session decides from the clock (skill: after a restart assume no wakeup).
+- Carried forward: none
+- Next: **drill: expecting idle** (with a wakeup for 00:01 CT, then hotfix carried fix 11) if the restart lands before 00:01 CT on 2026-09-08; **hotfix carried fix 11** if it lands after. Report: `docs/superpowers/autopilot/reports/2026-09-07-drill.md`.
