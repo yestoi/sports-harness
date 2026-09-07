@@ -37,8 +37,20 @@ def _ts(v) -> datetime | None:
 
 
 def _side(v) -> str | None:
+    """An outcome side: the documented domain of `taker_outcome_side` and legacy `taker_side`."""
     s = v.strip().lower() if isinstance(v, str) else ""
     return s if s in ("yes", "no") else None
+
+
+def _book_side(v) -> str | None:
+    """A book side: the documented domain of `taker_book_side`, which is bid|ask, not yes|no.
+
+    Kalshi quotes an event market from the YES leg only, so `bid` means buy YES and `ask` means
+    sell YES. Filtering this field through the outcome-side domain would store NULL for every
+    real print.
+    """
+    s = v.strip().lower() if isinstance(v, str) else ""
+    return s if s in ("bid", "ask") else None
 
 
 def taker_side_of(d: dict) -> tuple[str | None, str | None, str | None]:
@@ -48,10 +60,11 @@ def taker_side_of(d: dict) -> tuple[str | None, str | None, str | None]:
     `taker_outcome_side`/`taker_book_side`, so the canonical side is `taker_outcome_side or
     taker_side`. A canonical `None` means the print carries no usable side: callers drop it rather
     than defaulting to "yes", which would record every print as a YES taker on the day Kalshi
-    finally removes the field.
+    finally removes the field. The book side is recorded alongside but never feeds the canonical
+    side: it lives in a different domain.
     """
-    outcome, book = _side(d.get("taker_outcome_side")), _side(d.get("taker_book_side"))
-    return outcome or _side(d.get("taker_side")), outcome, book
+    outcome = _side(d.get("taker_outcome_side"))
+    return outcome or _side(d.get("taker_side")), outcome, _book_side(d.get("taker_book_side"))
 
 
 def upsert_venue_markets(session: Session, sport: str, markets: list[dict], events_by_ticker: dict[str, dict],

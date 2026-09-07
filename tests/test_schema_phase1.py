@@ -38,18 +38,31 @@ def test_odds_snapshot_unique_index_treats_nulls_as_equal(db_session):
         db_session.flush()
 
 
+def _venue_trade_columns(session) -> dict[str, tuple]:
+    return {c: (dt, n, ln) for c, dt, n, ln in session.execute(text(
+        "select column_name, data_type, is_nullable, character_maximum_length "
+        "from information_schema.columns where table_name = 'venue_trades'")).all()}
+
+
 def test_venue_trades_carries_taker_outcome_and_book_side_idempotently(db_session):
     # F5: Kalshi deprecated `taker_side` on trades in favour of `taker_outcome_side` and
-    # `taker_book_side`. Both are additive nullable columns, so create_schema must add them to an
-    # existing venue_trades and stay idempotent when the next boot runs it again.
+    # `taker_book_side`. Both are additive nullable columns, so create_schema must add them to a
+    # venue_trades that predates them and stay idempotent when the next boot runs it again.
+    # create_all never alters an existing table, so only the ADD COLUMN statements can do it.
     from harness.db.schema import create_schema
 
-    create_schema(db_session.get_bind())  # second run over the fixture's schema
-    cols = dict(db_session.execute(text(
-        "select column_name, is_nullable from information_schema.columns where table_name = 'venue_trades'")).all())
-    assert cols.get("taker_outcome_side") == "YES" and cols.get("taker_book_side") == "YES", sorted(cols)
-    assert cols["taker_side"] == "NO"  # the canonical side stays required
+    # stand in for the deployed database, which has the table but not the column
+    db_session.execute(text("alter table venue_trades drop column taker_outcome_side"))
+    db_session.commit()  # release the lock before create_schema opens its own connection
+    assert "taker_outcome_side" not in _venue_trade_columns(db_session)
+
+    create_schema(db_session.get_bind())
+    create_schema(db_session.get_bind())  # the boot after that one runs it again
+    cols = _venue_trade_columns(db_session)
+    assert cols.get("taker_outcome_side") == ("character varying", "YES", 4), sorted(cols)
+    assert cols.get("taker_book_side") == ("character varying", "YES", 4), sorted(cols)
+    assert cols["taker_side"][1] == "NO"  # the canonical side stays required
     db_session.add(VenueTrade(venue="kalshi", trade_id="t-cols", ticker="T", ts=NOW, yes_price=Decimal("0.2300"),
                               count=Decimal("5.00"), taker_side="no", taker_outcome_side="no",
-                              taker_book_side="yes", is_block=False, source="ws", raw_id=None))
+                              taker_book_side="ask", is_block=False, source="ws", raw_id=None))
     db_session.flush()

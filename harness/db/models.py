@@ -166,8 +166,8 @@ class VenueTrade(Base):
     yes_price: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     count: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     taker_side: Mapped[str] = mapped_column(String(4), nullable=False)  # canonical: taker_outcome_side or the deprecated taker_side
-    taker_outcome_side: Mapped[str | None] = mapped_column(String(4))
-    taker_book_side: Mapped[str | None] = mapped_column(String(4))
+    taker_outcome_side: Mapped[str | None] = mapped_column(String(4))  # yes|no
+    taker_book_side: Mapped[str | None] = mapped_column(String(4))  # bid|ask, quoted from the YES leg
     is_block: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     source: Mapped[str] = mapped_column(String(4), nullable=False)
     raw_id: Mapped[int | None] = mapped_column(BigInteger)

@@ -416,12 +416,18 @@ def test_sink_trade_uses_new_taker_side_fields_and_drops_a_sideless_print(db_ses
     base = {"market_ticker": "K1", "yes_price_dollars": "0.3600", "no_price_dollars": "0.6400",
             "count_fp": "12.00", "is_block_trade": False, "ts_ms": 1789234000000}
     new_only = {"type": "trade", "sid": 1, "seq": 1,
-                "msg": {**base, "trade_id": "t-new", "taker_outcome_side": "no", "taker_book_side": "yes"}}
+                "msg": {**base, "trade_id": "t-new", "taker_outcome_side": "no", "taker_book_side": "ask"}}
     assert sink.handle(new_only, NOW) == "trade"
     t = db_session.query(VenueTrade).filter_by(trade_id="t-new").one()
-    assert (t.taker_side, t.taker_outcome_side, t.taker_book_side) == ("no", "no", "yes")
+    assert (t.taker_side, t.taker_outcome_side, t.taker_book_side) == ("no", "no", "ask")
 
-    sideless = {"type": "trade", "sid": 1, "seq": 2, "msg": {**base, "trade_id": "t-noside"}}
+    legacy = {"type": "trade", "sid": 1, "seq": 2,
+              "msg": {**base, "trade_id": "t-legacy", "taker_side": "yes"}}
+    assert sink.handle(legacy, NOW) == "trade"
+    t = db_session.query(VenueTrade).filter_by(trade_id="t-legacy").one()
+    assert (t.taker_side, t.taker_outcome_side, t.taker_book_side) == ("yes", None, None)
+
+    sideless = {"type": "trade", "sid": 1, "seq": 3, "msg": {**base, "trade_id": "t-noside"}}
     with caplog.at_level("WARNING", logger="harness.recorder.ws_sink"):
         assert sink.handle(sideless, NOW) == "trade"
     assert db_session.query(VenueTrade).filter_by(trade_id="t-noside").count() == 0

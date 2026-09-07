@@ -96,7 +96,7 @@ def test_insert_trades_prefers_taker_outcome_side_and_drops_a_sideless_print(db_
     # The canonical side is `taker_outcome_side or taker_side`; a print carrying neither is dropped
     # and counted, never defaulted to "yes" (which would poison the phase 3 fill model).
     body = {"cursor": "", "trades": [
-        _print("new-only", taker_outcome_side="no", taker_book_side="yes"),
+        _print("new-only", taker_outcome_side="no", taker_book_side="ask"),
         _print("legacy-only", taker_side="yes"),
         _print("no-side-at-all"),
     ]}
@@ -105,7 +105,7 @@ def test_insert_trades_prefers_taker_outcome_side_and_drops_a_sideless_print(db_
         assert insert_trades(db_session, body, raw_id=7, ctx=ctx) == 2
     rows = {t.trade_id: t for t in db_session.query(VenueTrade).all()}
     assert set(rows) == {"new-only", "legacy-only"}
-    assert (rows["new-only"].taker_side, rows["new-only"].taker_outcome_side, rows["new-only"].taker_book_side) == ("no", "no", "yes")
+    assert (rows["new-only"].taker_side, rows["new-only"].taker_outcome_side, rows["new-only"].taker_book_side) == ("no", "no", "ask")
     assert (rows["legacy-only"].taker_side, rows["legacy-only"].taker_outcome_side, rows["legacy-only"].taker_book_side) == ("yes", None, None)
     assert ctx["taker_side_missing"] == 1
     # one WARNING for the raw response, not one per dropped print
@@ -114,18 +114,24 @@ def test_insert_trades_prefers_taker_outcome_side_and_drops_a_sideless_print(db_
 
 
 def test_insert_trades_lowercases_sides_and_treats_junk_as_absent(db_session):
-    # Values are normalised to lower-case yes/no; anything else counts as absent, so a print whose
-    # only side is unrecognised is dropped rather than stored verbatim in a varchar(4).
+    # Values are normalised to lower case; anything outside a field's documented domain counts as
+    # absent, so a print whose only side is unrecognised is dropped rather than stored verbatim in
+    # a varchar(4). The two domains differ: taker_outcome_side is yes|no, taker_book_side is
+    # bid|ask ("bid means buy YES, ask means sell YES"), so one filter cannot serve both.
     body = {"cursor": "", "trades": [
-        _print("upper", taker_outcome_side="NO", taker_book_side="YES"),
+        _print("upper", taker_outcome_side="NO", taker_book_side="ASK"),
         _print("junk", taker_outcome_side="maybe", taker_side="unknown"),
         _print("junk-outcome-legacy-ok", taker_outcome_side="", taker_side="No"),
+        _print("book-out-of-domain", taker_outcome_side="yes", taker_book_side="yes"),
     ]}
     ctx: dict = {}
-    assert insert_trades(db_session, body, raw_id=8, ctx=ctx) == 2
+    assert insert_trades(db_session, body, raw_id=8, ctx=ctx) == 3
     rows = {t.trade_id: t for t in db_session.query(VenueTrade).all()}
-    assert (rows["upper"].taker_side, rows["upper"].taker_outcome_side, rows["upper"].taker_book_side) == ("no", "no", "yes")
+    assert (rows["upper"].taker_side, rows["upper"].taker_outcome_side, rows["upper"].taker_book_side) == ("no", "no", "ask")
     assert rows["junk-outcome-legacy-ok"].taker_side == "no" and rows["junk-outcome-legacy-ok"].taker_outcome_side is None
+    # a yes/no book side is not a book side: it is recorded as absent, the outcome side still stands
+    b = rows["book-out-of-domain"]
+    assert (b.taker_side, b.taker_outcome_side, b.taker_book_side) == ("yes", "yes", None)
     assert "junk" not in rows and ctx["taker_side_missing"] == 1
 
 
