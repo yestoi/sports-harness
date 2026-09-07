@@ -288,7 +288,7 @@ def test_positions_view_sums_queue_model_fills_of_live_orders(db_session):
     rows = db_session.execute(text(
         "select variant_id, ticker, side, open_contracts, avg_price from positions")).all()
     assert [tuple(r) for r in rows] == [
-        ("sharp_direct", "T", "yes", Decimal("40.00"), Decimal("0.47500000000000000000")),
+        ("sharp_direct", "T", "yes", Decimal("40.00"), Decimal("0.475")),
     ]
 
 
@@ -329,7 +329,8 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     ddl = [(s, autocommit, txn) for s, autocommit, txn in seen
            if s.startswith(("alter table", "create index", "create unique index",
                             "create or replace view", "update venue_markets"))]
-    assert len(ddl) > 20, len(ddl)
+    # 17 column ALTERs + 18 indexes + 3 views + 1 match_key backfill + 4 tape statements.
+    assert len(ddl) == 43, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.
@@ -489,6 +490,37 @@ def test_order_episodes_follows_a_reprice_chain(db_session):
         (first.id, "sharp_direct", 1, "yes", first.id, third.id, 3),
         (fourth.id, "sharp_direct", 1, "yes", fourth.id, fourth.id, 1),
     ]
+
+
+def test_order_episodes_excludes_replay_orders(db_session):
+    """A replay run re-simulates a market the live executor is working (uq_open_order exempts
+    it), so a replay order on the same key must neither join a live episode nor start one."""
+    live = _order(db_session, placed_at=NOW, status="cancelled", cancel_reason="reprice",
+                  cancelled_at=NOW + timedelta(minutes=1))
+    replayed = _order(db_session, placed_at=NOW + timedelta(minutes=1), replay=True,
+                      status="cancelled", cancel_reason="reprice",
+                      cancelled_at=NOW + timedelta(minutes=2))
+    successor = _order(db_session, placed_at=NOW + timedelta(minutes=2))
+    db_session.flush()
+
+    rows = db_session.execute(text(
+        "select episode_id, first_order_id, last_order_id, n_orders from order_episodes")).all()
+    # The live pair is one episode; the replay order neither splices in nor appears alone.
+    assert [tuple(r) for r in rows] == [(live.id, live.id, successor.id, 2)]
+    assert replayed.id not in {r.episode_id for r in rows}
+
+
+def test_model_index_loop_never_touches_the_tape_tables(db_session):
+    """Task 2b builds the orderbook_events and venue_trades indexes CONCURRENTLY. A
+    non-concurrent CREATE INDEX from this loop would lock the WebSocket sink out of a populated
+    table for the whole build."""
+    from harness.db import schema as schema_module
+
+    tables = {index.table.name for index in schema_module._model_indexes()}
+    assert tables and not tables & set(schema_module.TAPE_TABLES), sorted(tables)
+    # The skip is real: both tape tables do carry model indexes that the loop leaves alone.
+    declared = {t.name for t in Base.metadata.sorted_tables if t.indexes}
+    assert set(schema_module.TAPE_TABLES) <= declared
 
 
 def test_fixture_truncates_between_tests_a(db_session):

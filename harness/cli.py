@@ -10,7 +10,7 @@ import typer
 import uvicorn
 
 from harness.config.settings import Settings, get_settings
-from harness.db.engine import make_engine, make_session_factory
+from harness.db.engine import BATCH_STATEMENT_TIMEOUT_MS, make_engine, make_session_factory
 from harness.db.schema import create_schema
 from harness.logging_setup import configure_logging
 
@@ -41,7 +41,9 @@ def _print_variants(rows) -> None:
 def init_db() -> None:
     configure_logging()
     s = get_settings()
-    create_schema(make_engine(s.database_url))
+    # create_schema's DDL can legitimately outrun the 30 s default, and query_canceled is in its
+    # retry set, so a slow statement would be cancelled twice instead of finishing.
+    create_schema(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))
     log.info("schema created")
 
 

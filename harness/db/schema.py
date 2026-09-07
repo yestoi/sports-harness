@@ -1,7 +1,8 @@
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Connection, Engine, text
+from sqlalchemy import Connection, Engine, Index, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -159,6 +160,8 @@ join orders o on o.id = c.order_id
 #: scoring counts episodes, not orders. An order joins its predecessor's episode when that
 #: predecessor on the same (variant, market, side) was cancelled for 'reprice' no later than
 #: this order was placed; otherwise it opens an episode named by its own id.
+#: Replay orders are excluded, like they are from `positions`: a replay run re-simulates a
+#: market the live executor is working, and its orders must not splice into a live episode.
 _ORDER_EPISODES_VIEW = """
 create or replace view order_episodes as
 with recursive ordered as (
@@ -171,6 +174,7 @@ with recursive ordered as (
            lag(o.cancel_reason) over w as prev_cancel_reason,
            lag(o.cancelled_at) over w as prev_cancelled_at
     from orders o
+    where o.replay = false
     window w as (partition by o.variant_id, o.venue_market_id, o.side order by o.placed_at, o.id)
 ),
 linked as (
@@ -225,42 +229,46 @@ def _is_lock_failure(exc: BaseException) -> bool:
     return getattr(getattr(exc, "orig", None), "sqlstate", None) in LOCK_SQLSTATES
 
 
-def _execute_ddl(conn: Connection, statement: str) -> None:
-    """Run one DDL statement, retrying once if another session held the lock.
+def _retry_once(conn: Connection, run: Callable[[], None], label: str) -> None:
+    """Run one DDL step, retrying it once if another session held the lock.
 
-    The connection is in autocommit, so the statement's locks are taken and released within the
-    statement itself. Without that, `init-db` deadlocked against the WebSocket sink: the ALTERs
-    on venue_trades hold an AccessExclusiveLock until commit, the later CREATE INDEX on
+    The connection is in autocommit, so each step's locks are taken and released within the step
+    itself. Without that, `init-db` deadlocked against the WebSocket sink: the ALTERs on
+    venue_trades hold an AccessExclusiveLock until commit, the later CREATE INDEX on
     orderbook_events waits for a ShareLock behind the sink's open insert batch, and the sink's
     next insert into venue_trades waits on init-db.
     """
     try:
-        conn.execute(text(statement))
+        run()
         return
     except DBAPIError as exc:
         if not _is_lock_failure(exc):
             raise
-        log.warning("ddl lock contention, retrying once: %s", " ".join(statement.split())[:80])
+        log.warning("ddl lock contention, retrying once: %s", label)
     conn.rollback()
-    conn.execute(text(statement))
+    run()
 
 
-def _model_index_ddl(conn: Connection, tape: bool) -> None:
-    """F47: create_all only builds indexes for tables it creates, so a database that predates a
-    model index never gets it. Walk every model index instead, tape tables separately so their
-    DDL still runs last."""
-    for table in Base.metadata.sorted_tables:
-        if (table.name in TAPE_TABLES) != tape:
-            continue
-        for index in table.indexes:
-            try:
-                index.create(conn, checkfirst=True)
-            except DBAPIError as exc:
-                if not _is_lock_failure(exc):
-                    raise
-                log.warning("ddl lock contention, retrying once: index %s", index.name)
-                conn.rollback()
-                index.create(conn, checkfirst=True)
+def _execute_ddl(conn: Connection, statement: str) -> None:
+    _retry_once(conn, lambda: conn.execute(text(statement)), " ".join(statement.split())[:80])
+
+
+def _model_indexes() -> list[Index]:
+    """The model indexes create_schema builds (F47): create_all only builds indexes for tables it
+    creates, so a database that predates a model index never gets it.
+
+    The tape tables are excluded. Their indexes are Task 2b's and must be built CONCURRENTLY:
+    a non-concurrent CREATE INDEX on a populated orderbook_events or venue_trades locks out the
+    WebSocket sink for as long as the build takes.
+    """
+    return [index for table in Base.metadata.sorted_tables if table.name not in TAPE_TABLES
+            for index in table.indexes]
+
+
+def _model_index_ddl(conn: Connection) -> None:
+    for index in _model_indexes():
+        _retry_once(conn, lambda index=index: index.create(conn, checkfirst=True),
+                    f"index {index.name}")
 
 
 def create_schema(engine: Engine) -> None:
@@ -276,8 +284,7 @@ def create_schema(engine: Engine) -> None:
         conn.execute(text(f"set lock_timeout = '{DDL_LOCK_TIMEOUT}'"))
         for statement in _COLUMN_DDL + _INDEX_DDL + _VIEW_DDL + _BACKFILL_DDL:
             _execute_ddl(conn, statement)
-        _model_index_ddl(conn, tape=False)
-        _model_index_ddl(conn, tape=True)
+        _model_index_ddl(conn)
         for statement in _TAPE_DDL:
             _execute_ddl(conn, statement)
 

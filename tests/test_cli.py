@@ -102,3 +102,23 @@ def test_price_once_without_run_id_uses_wall_clock_for_the_latest_run(monkeypatc
     assert result.exit_code == 0, result.output
     assert captured["run_id"] == latest.id
     assert captured["now"] == fixed_wall_clock
+
+
+def test_init_db_runs_its_ddl_under_the_batch_statement_timeout(monkeypatch, cli_settings, db_session):
+    """create_schema's DDL can legitimately outrun the 30 s default engine timeout, and
+    query_canceled (57014) is in its retry set, so a slow statement under the default would be
+    cancelled, retried and cancelled again rather than finishing."""
+    from harness.db import engine as engine_module
+    from harness.db.engine import BATCH_STATEMENT_TIMEOUT_MS
+
+    seen: list[int] = []
+    real_make_engine = engine_module.make_engine
+
+    def spy(url, statement_timeout_ms=30000):
+        seen.append(statement_timeout_ms)
+        return real_make_engine(url, statement_timeout_ms)
+
+    monkeypatch.setattr("harness.cli.make_engine", spy)
+    result = runner.invoke(app, ["init-db"])
+    assert result.exit_code == 0, result.output
+    assert seen == [BATCH_STATEMENT_TIMEOUT_MS]

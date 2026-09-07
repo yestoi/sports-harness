@@ -23,22 +23,19 @@ def _schema():
     url = os.environ.get("DATABASE_URL_TEST")
     if not url:
         pytest.skip("DATABASE_URL_TEST not set")
-    from harness.db import schema as schema_module
+    from sqlalchemy.orm import sessionmaker
+
     from harness.db.engine import make_engine
-    from harness.db.schema import create_schema, drop_schema
+    from harness.db.schema import create_schema, drop_schema, ensure_partitions
 
     engine = make_engine(url)
     drop_schema(engine)
     create_schema(engine)
-    # Task 2b turns ensure_partitions into the three-table version (raw_responses,
-    # orderbook_events, venue_trades); it exists today for raw_responses only. Called through
-    # getattr so Task 2b can widen it without touching this fixture.
-    ensure_partitions = getattr(schema_module, "ensure_partitions", None)
-    if ensure_partitions is not None:
-        from sqlalchemy.orm import sessionmaker
-
-        with sessionmaker(bind=engine)() as session:
-            ensure_partitions(session, datetime.now(timezone.utc))
+    # Task 2b widens ensure_partitions to the three partitioned tables (raw_responses,
+    # orderbook_events, venue_trades); today it covers raw_responses only. The signature it
+    # grows is a keyword argument, so this call needs no change then.
+    with sessionmaker(bind=engine)() as session:
+        ensure_partitions(session, datetime.now(timezone.utc))
     yield engine
     engine.dispose()
 
