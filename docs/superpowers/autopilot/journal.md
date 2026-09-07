@@ -409,3 +409,17 @@ Times are America/Chicago.
 - Rulings: (1) The phase 3 branch is created now; R19's "carried fixes before the phase 3 branch" is set aside for fix 9 by this decision (the user's text, the user's call). Fix 9 stays on its reviewed branch and still deploys inside 01:00-08:00 CT as its own hotfix unit; it is never merged into `main` before then, so no mid-phase deploy carries it into a game window. Fix 6's hourly check (16:45 CT) is folded into the phase's next task boundary - cost if wrong: none beyond the ordering the user chose. (2) The compose worktree stays alive through the phase (one of the three implementer slots is not consumed by it; it has no running agent).
 - Carried forward: none
 - Next: phase 3 (Unit: phase)
+
+## 32. phase start - phase 3 paper execution - 2026-09-07 15:57 CT
+- Orient: rule 5 after the user's decision (entry 31) - roadmap phase 3 status `planned`, gate none
+- Branch / commits: `phase3-paper-execution` from `main` ef44385; plan `docs/superpowers/plans/2026-09-07-phase3-paper-execution.md` (revision 2), spec addendum `docs/superpowers/specs/2026-09-07-phase3-paper-execution-design.md`; SDD workspace `.superpowers/sdd/2026-09-07-phase3-paper-execution/` (ledger `progress.md`)
+- Result: started; 17 tasks (1, 2, 2b, 3, 3b, 4, 4b, 5-14); three mid-phase deploys (after T1; after T2b in the quiet window, U3; after T4b before 2026-09-16)
+- Dispatches: 1 so far (T1 implementer, sonnet)
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Wave map: W1 T1; W2 T2; W3 T2b+T3+T4b; W4 T3b, T4, T5; W5 T6, T7, T8, T9; W6 T10+T12, T11, T13, T14 (ledger has the file-sharing table)
+- Rulings (pre-flight, exhaustive in the ledger): (1) T1 creates the cadence settings at U1's values (near 120, far 120, window 36, monthly 5,000,000) and keeps `odds_alternates_interval_s` until T3b wires the new names; the plan's pre-flip numbers are stale. (2) Carried fix 9's compose branch merges into the phase branch right before T2b so the Postgres restart rides only the quiet-window deploy. (3) Shipped hotfix names win over the plan's T3b names (map in the ledger); T3b's scope is the unshipped items plus the unconditional subscription priority. (4) T4b's `MAX_SECONDARY = 6` and the new `sharp_two_sided.yaml` are authorized by U2 and the roadmap's phase 3 row (Amendment 3); the six frozen ids are untouched; listed under "Decisions you may want to reverse" in the phase report. (5) T3 is ready after T2 (its dependency on T2b's indexes is performance only; the review checks query shapes). (6) The 16:45 CT fix-6 check and the 19:15 CT game-window observation fold into task boundaries.
+- Carried forward: none
+- Next: T1 review, then the T1 mid-phase deploy if a window is open (before 18:10 CT or after 22:30 CT)
