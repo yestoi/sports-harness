@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from harness.pricing.consensus import BookFair, consensus
 
@@ -21,3 +21,9 @@ def test_consensus_weights_and_disagreement():
 def test_consensus_pinnacle_only():
     c = consensus([BookFair("pinnacle", Decimal("0.60"), T)])
     assert c.fair_p == Decimal("0.6000") and c.disagreement == Decimal("0.0000") and c.n_groups == 1
+
+
+def test_newest_ts_ignores_non_sharp_books():
+    later = T + timedelta(minutes=30)
+    c = consensus([BookFair("pinnacle", Decimal("0.60"), T), BookFair("draftkings", Decimal("0.58"), later)])
+    assert c.newest_ts == T

@@ -1,0 +1,272 @@
+[
+  {
+    "book": "pinnacle",
+    "market_type": "h2h",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 1.6026,
+    "book_last_update": "2026-09-09T22:57:57+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "pinnacle",
+    "market_type": "h2h",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 2.4038,
+    "book_last_update": "2026-09-09T22:57:57+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "betonlineag",
+    "market_type": "h2h",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 1.5817,
+    "book_last_update": "2026-09-09T22:57:48+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "betonlineag",
+    "market_type": "h2h",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 2.4226,
+    "book_last_update": "2026-09-09T22:57:48+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "lowvig",
+    "market_type": "h2h",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 1.6079,
+    "book_last_update": "2026-09-09T22:57:28+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "lowvig",
+    "market_type": "h2h",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 2.3919,
+    "book_last_update": "2026-09-09T22:57:28+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "draftkings",
+    "market_type": "h2h",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 1.534,
+    "book_last_update": "2026-09-09T22:57:45+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "draftkings",
+    "market_type": "h2h",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 2.4504,
+    "book_last_update": "2026-09-09T22:57:45+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "lowvig",
+    "market_type": "h2h",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": null,
+    "price_decimal": 1.55,
+    "book_last_update": "2026-09-09T22:19:28+00:00",
+    "fetched_at": "2026-09-09T22:20:00+00:00"
+  },
+  {
+    "book": "pinnacle",
+    "market_type": "spreads",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": -3.5,
+    "price_decimal": 1.9425,
+    "book_last_update": "2026-09-09T22:57:57+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "pinnacle",
+    "market_type": "spreads",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": 3.5,
+    "price_decimal": 1.904,
+    "book_last_update": "2026-09-09T22:57:57+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "betonlineag",
+    "market_type": "spreads",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": -3.5,
+    "price_decimal": 1.9139,
+    "book_last_update": "2026-09-09T22:57:48+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "betonlineag",
+    "market_type": "spreads",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": 3.5,
+    "price_decimal": 1.9139,
+    "book_last_update": "2026-09-09T22:57:48+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "lowvig",
+    "market_type": "spreads",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": -3.5,
+    "price_decimal": 1.9543,
+    "book_last_update": "2026-09-09T22:57:28+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "lowvig",
+    "market_type": "spreads",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": 3.5,
+    "price_decimal": 1.8928,
+    "book_last_update": "2026-09-09T22:57:28+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "draftkings",
+    "market_type": "spreads",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": -3.5,
+    "price_decimal": 1.8681,
+    "book_last_update": "2026-09-09T22:57:45+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "draftkings",
+    "market_type": "spreads",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": 3.5,
+    "price_decimal": 1.9059,
+    "book_last_update": "2026-09-09T22:57:45+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "pinnacle",
+    "market_type": "alternate_spreads",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": -6.5,
+    "price_decimal": 2.4038,
+    "book_last_update": "2026-09-09T22:57:57+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "pinnacle",
+    "market_type": "alternate_spreads",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": 6.5,
+    "price_decimal": 1.6026,
+    "book_last_update": "2026-09-09T22:57:57+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "betonlineag",
+    "market_type": "alternate_spreads",
+    "outcome_team_id": 14,
+    "outcome_side": null,
+    "point": -6.5,
+    "price_decimal": 2.334,
+    "book_last_update": "2026-09-09T22:57:48+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "betonlineag",
+    "market_type": "alternate_spreads",
+    "outcome_team_id": 19,
+    "outcome_side": null,
+    "point": 6.5,
+    "price_decimal": 1.6219,
+    "book_last_update": "2026-09-09T22:57:48+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "pinnacle",
+    "market_type": "totals",
+    "outcome_team_id": null,
+    "outcome_side": "over",
+    "point": 44.5,
+    "price_decimal": 1.9231,
+    "book_last_update": "2026-09-09T22:57:57+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "pinnacle",
+    "market_type": "totals",
+    "outcome_team_id": null,
+    "outcome_side": "under",
+    "point": 44.5,
+    "price_decimal": 1.9231,
+    "book_last_update": "2026-09-09T22:57:57+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "betonlineag",
+    "market_type": "totals",
+    "outcome_team_id": null,
+    "outcome_side": "over",
+    "point": 44.5,
+    "price_decimal": 1.8949,
+    "book_last_update": "2026-09-09T22:57:48+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "betonlineag",
+    "market_type": "totals",
+    "outcome_team_id": null,
+    "outcome_side": "under",
+    "point": 44.5,
+    "price_decimal": 1.9332,
+    "book_last_update": "2026-09-09T22:57:48+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "lowvig",
+    "market_type": "totals",
+    "outcome_team_id": null,
+    "outcome_side": "over",
+    "point": 44.5,
+    "price_decimal": 1.9308,
+    "book_last_update": "2026-09-09T22:57:28+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  },
+  {
+    "book": "lowvig",
+    "market_type": "totals",
+    "outcome_team_id": null,
+    "outcome_side": "under",
+    "point": 44.5,
+    "price_decimal": 1.9154,
+    "book_last_update": "2026-09-09T22:57:28+00:00",
+    "fetched_at": "2026-09-09T22:58:00+00:00"
+  }
+]

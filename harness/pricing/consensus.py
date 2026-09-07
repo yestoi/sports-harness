@@ -33,10 +33,12 @@ def consensus(fairs: list[BookFair], require: str = "pinnacle") -> Consensus | N
     by_group: dict[str, list[Decimal]] = {}
     newest: datetime | None = None
     for bf in fairs:
+        in_group = False
         for g, members in GROUPS.items():
             if bf.book in members:
                 by_group.setdefault(g, []).append(bf.fair_p)
-        if bf.last_update and (newest is None or bf.last_update > newest):
+                in_group = True
+        if in_group and bf.last_update and (newest is None or bf.last_update > newest):
             newest = bf.last_update
     if require not in by_group:
         return None
