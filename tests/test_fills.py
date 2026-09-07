@@ -43,11 +43,11 @@ def tdelta(secs, side, price, delta, event_id=None, seq=None) -> TapeDelta:
                      delta=Decimal(str(delta)), sid=2, seq=seq)
 
 
-def book(yes=None, no=None, as_of=T0, source="ws", event_id=900) -> BookState:
+def book(yes=None, no=None, as_of=T0, source="ws", event_id=900, last_event_id=None) -> BookState:
     return BookState(ticker="K1", yes_bids={Decimal(k): Decimal(v) for k, v in (yes or {}).items()},
                      no_bids={Decimal(k): Decimal(v) for k, v in (no or {}).items()},
                      sid=2, seq=5, as_of=as_of, source=source, anchor_id=event_id,
-                     last_event_id=event_id)
+                     last_event_id=event_id if last_event_id is None else last_event_id)
 
 
 def run(o, prints=(), deltas=(), bk=None, state=None, fill_method="queue_model",
@@ -226,13 +226,46 @@ def test_cross_recorded_once_and_not_in_fills():
 
 def test_initial_crossing_book_sets_crossed():
     o = order(queue="0", contracts="10")
-    bk = book(no={"0.72": "40"}, as_of=at(-5), event_id=900)   # best_ask(yes) = 0.28 <= 0.30
+    # best_ask(yes) = 0.28 <= 0.30. The anchor is row 900 and the book has since been advanced
+    # to row 955; the cross is stamped with the anchor, which does not move between loops.
+    bk = book(no={"0.72": "40"}, as_of=at(-5), event_id=900, last_event_id=955)
     res = run(o, bk=bk)
     assert res.crossed is True
     assert res.cross.contracts == Decimal("10.00")
     assert res.cross.filled_at == at(-5)
     assert res.cross.source_event_id == 900
+    assert res.state.crossed is True
     assert res.fills == []
+
+
+def test_initial_cross_is_emitted_once_across_calls():
+    o = order(queue="0", contracts="10")
+    first = run(o, bk=book(no={"0.72": "40"}, as_of=at(-5), event_id=900, last_event_id=955))
+    assert first.cross.source_event_id == 900
+    # The next loop hands over the same anchor advanced further along the tape. Re-emitting
+    # here would write a second worst-case fill for one crossing under a new event id.
+    later = book(no={"0.72": "40"}, as_of=at(20), event_id=900, last_event_id=1200)
+    second = run(o, bk=later, state=first.state)
+    assert second.cross is None
+    assert second.crossed is True
+    assert second.fills == []
+
+
+def test_cross_from_a_delta_is_emitted_once_across_calls():
+    o = order(queue="0", contracts="10")
+    bk = book(yes={"0.29": "100"}, no={"0.68": "50"})
+    first = run(o, bk=bk, deltas=[
+        tdelta(1, "no", "0.60", "20", event_id=5),    # best_ask(yes) still 0.32
+        tdelta(2, "no", "0.70", "20", event_id=7),    # best_ask(yes) = 0.30: crosses
+        tdelta(3, "no", "0.71", "5", event_id=9),     # still crossed
+    ])
+    assert first.cross.source_event_id == 7
+    assert first.state.crossed is True
+    advanced = book(yes={"0.29": "100"}, no={"0.68": "50", "0.70": "20", "0.71": "5"})
+    second = run(o, bk=advanced, state=first.state,
+                 deltas=[tdelta(4, "no", "0.72", "5", event_id=11)])
+    assert second.cross is None
+    assert second.crossed is True
 
 
 def test_cross_size_is_what_is_left_unfilled():
@@ -291,6 +324,75 @@ def test_deltas_at_or_before_the_cursor_ignored():
     assert res.state.cursor_event_id == 1003
 
 
+def test_cursor_is_the_highest_event_id_seen():
+    o = order(queue="5")
+    # `event_id` is the recorder's insertion order and the venue's `ts` need not agree with it,
+    # so the cursor has to be the high-water mark rather than whatever came last in `ts` order.
+    res = run(o, deltas=[tdelta(1, "yes", "0.30", "-1", event_id=1009),
+                         tdelta(2, "yes", "0.30", "-1", event_id=1004)])
+    assert res.state.queue_remaining == Decimal("3.00")
+    assert res.state.cursor_event_id == 1009
+
+
+# --- print watermark ---------------------------------------------------------
+
+
+def test_refeeding_the_same_prints_changes_nothing():
+    # The executor has no print cursor: every loop rescans from `placed_at - 60 s` (§1), so the
+    # same trade arrives again and again and must not be applied twice.
+    o = order(queue="5", contracts="10")
+    prints = [tprint(1, "0.30", "3"), tprint(2, "0.28", "3")]
+    first = run(o, prints=prints)
+    assert [f.contracts for f in first.fills] == [Decimal("3.00")]
+    again = run(o, prints=prints, state=first.state)
+    assert again.fills == []
+    assert again.state == first.state
+
+
+def test_two_prints_at_one_timestamp_both_apply_once():
+    o = order(queue="0", contracts="10")
+    a = tprint(1, "0.30", "2", trade_id="a")
+    b = tprint(1, "0.30", "3", trade_id="b")
+    first = run(o, prints=[a])
+    assert first.state.last_print_ts == at(1)
+    assert first.state.last_print_ids == ("a",)
+    second = run(o, prints=[a, b], state=first.state)
+    assert [f.contracts for f in second.fills] == [Decimal("3.00")]
+    assert second.state.last_print_ids == ("a", "b")
+    assert second.state.filled_contracts == Decimal("5.00")
+    assert run(o, prints=[a, b], state=second.state).fills == []
+
+
+def test_the_watermark_ids_reset_when_the_timestamp_moves_on():
+    o = order(queue="0", contracts="10")
+    res = run(o, prints=[tprint(1, "0.30", "1", trade_id="a"),
+                         tprint(2, "0.30", "1", trade_id="b"),
+                         tprint(2, "0.30", "1", trade_id="c")])
+    assert res.state.last_print_ts == at(2)
+    assert res.state.last_print_ids == ("b", "c")
+
+
+def test_a_print_behind_the_watermark_is_skipped_deliberately():
+    # A REST backfill can land after a WS print with an earlier `ts`. Its delta has already
+    # moved the queue, so replaying it would double count; skipping it forgoes at most a fill
+    # at the front of the queue, which is the conservative direction.
+    o = order(queue="0", contracts="10")
+    first = run(o, prints=[tprint(5, "0.30", "2")])
+    late = run(o, state=first.state,
+               prints=[tprint(3, "0.30", "4", trade_id="late", source="rest")])
+    assert late.fills == []
+    assert late.state.traded_at_price == first.state.traded_at_price
+    assert late.state.filled_contracts == first.state.filled_contracts
+
+
+def test_a_print_that_never_hit_us_still_moves_the_watermark():
+    # A print we ignored still moves the watermark, so a later loop cannot replay it either.
+    o = order(queue="0", contracts="10")
+    first = run(o, prints=[tprint(1, "0.30", "4", taker_side="yes")])
+    assert first.state.last_print_ids == ("t1",)
+    assert run(o, prints=[tprint(1, "0.30", "4", taker_side="yes")], state=first.state).fills == []
+
+
 def test_no_queue_means_no_fills_and_no_cursor_advance():
     o = order(queue=None)
     state = SimState.initial(o)
@@ -304,6 +406,9 @@ def test_no_queue_means_no_fills_and_no_cursor_advance():
     assert res.state.queue_remaining is None
     assert res.state.cursor_event_id is None
     assert res.state.filled_contracts == Decimal("0.00")
+    assert (res.state.last_print_ts, res.state.last_print_ids) == (None, ())
+    assert res.state.crossed is False
+    assert res.state == state
 
 
 def test_fee_is_centicent_per_fill():
@@ -380,6 +485,40 @@ def test_chunking_invariance():
     # The tape has to actually do something for the equality to mean anything.
     assert len(whole.fills) >= 3 and first.fills and second.fills
     assert whole.state.filled_contracts > Decimal("0")
+
+
+def test_chunking_invariance_with_a_book():
+    """The same equality with the book half of the walk live: a cross lands in the second
+    chunk, so the split has to agree about the crossing event as well as the fills."""
+    o = order(queue="4", contracts="10")
+    prints = [tprint(1, "0.30", "6"), tprint(6, "0.30", "2"), tprint(9, "0.28", "1")]
+    deltas = [tdelta(2, "yes", "0.30", "-3", event_id=1002),
+              tdelta(5, "no", "0.69", "20", event_id=1005),
+              tdelta(7, "no", "0.70", "15", event_id=1007),   # best_ask(yes) = 0.30: crosses
+              tdelta(8, "no", "0.71", "5", event_id=1008)]
+    split = at(5)
+
+    def fresh():
+        return book(yes={"0.29": "100"}, no={"0.68": "50"})
+
+    whole = run(o, prints=prints, deltas=deltas, bk=fresh())
+    # Between chunks the caller advances its own book, which is what `advance_book` does.
+    carried = fresh()
+    for d in (d for d in deltas if d.ts <= split):
+        carried.apply_delta(d.side, d.price, d.delta, None, d.ts, d.event_id)
+    first = run(o, bk=fresh(), deadline=split,
+                prints=[p for p in prints if p.ts <= split],
+                deltas=[d for d in deltas if d.ts <= split])
+    second = run(o, bk=carried, state=first.state,
+                 prints=[p for p in prints if p.ts > split],
+                 deltas=[d for d in deltas if d.ts > split])
+    assert first.fills + second.fills == whole.fills
+    assert second.state == whole.state
+    assert (first.cross, first.crossed) == (None, False)
+    assert second.cross == whole.cross
+    assert whole.cross.source_event_id == 1007
+    assert whole.cross.contracts == Decimal("6.00")
+    assert len(whole.fills) == 3 and first.fills and second.fills
 
 
 def test_deterministic():

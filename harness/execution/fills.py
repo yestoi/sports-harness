@@ -23,13 +23,22 @@ P&L, positions and CLV.
 Everything here is a pure function of its arguments. `simulate_fills` walks a `book.copy()`,
 returns a new `SimState` and mutates nothing it was given, so the same tape replayed in one
 call or in twenty chunks produces the same fills (`test_chunking_invariance`).
+
+Chunking is not enough on its own, because neither stream arrives once. The executor keeps no
+print cursor and rescans prints from `placed_at - 60 s` every loop (§1), and a book that has
+crossed our price stays crossed on every later loop, so the state carries a print watermark
+(`last_print_ts`, `last_print_ids`) and a `crossed` flag and both re-feeds are absorbed. One
+consequence is deliberate: a REST print that lands late carrying a `ts` earlier than the
+watermark is skipped rather than applied. Its delta has already moved the queue, so applying
+it would double count; the only thing given up is a fill at the very front of the queue, and
+being wrong in that direction is the conservative one.
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from harness.execution.book import FOUR, ONE, QTY, SIDES, ZERO, BookState, opp
+from harness.execution.book import FOUR, QTY, SIDES, ZERO, BookState, opp, side_p
 from harness.pricing.fees import KALSHI_FOOTBALL, FeeModel, fee_for_order
 
 #: Deltas are folded in before prints at the same instant. The venue publishes the book
@@ -115,18 +124,30 @@ class SimState:
 
     The watched track stores it in `queue_remaining` / `traded_at_price` /
     `filled_contracts` / `tape_cursor_event_id`; the no-watcher track in the `nw_*` columns.
+
+    `crossed` and the print watermark are state, not per-call facts, because both of the
+    tape's two streams can be re-fed. `crossed` makes the worst-case fill once per order even
+    though the book keeps crossing on every later loop, and `last_print_ts` / `last_print_ids`
+    make a print idempotent even though the executor keeps no print cursor and rescans from
+    `placed_at - 60 s` every loop (§1). The ids are only those applied at exactly
+    `last_print_ts`, which is all that is needed to separate a re-fed trade from a second
+    trade stamped the same millisecond.
     """
 
     queue_remaining: Decimal | None
     traded_at_price: Decimal
     filled_contracts: Decimal
     cursor_event_id: int | None
+    crossed: bool = False
+    last_print_ts: datetime | None = None
+    last_print_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.queue_remaining is not None:
             self.queue_remaining = _q(self.queue_remaining)
         self.traded_at_price = _q(self.traded_at_price)
         self.filled_contracts = _q(self.filled_contracts)
+        self.last_print_ids = tuple(self.last_print_ids)
 
     @classmethod
     def initial(cls, order: PaperOrder) -> "SimState":
@@ -135,7 +156,27 @@ class SimState:
 
     def _copy(self) -> "SimState":
         return SimState(self.queue_remaining, self.traded_at_price, self.filled_contracts,
-                        self.cursor_event_id)
+                        self.cursor_event_id, self.crossed, self.last_print_ts,
+                        self.last_print_ids)
+
+    def _seen_print(self, tape_print: "TapePrint") -> bool:
+        """Whether this print is already folded in, by the watermark rather than by a cursor.
+
+        Behind the watermark means behind it in venue time, so a late REST backfill stamped
+        earlier than a print already applied reads as seen and is skipped (module docstring).
+        """
+        if self.last_print_ts is None:
+            return False
+        if tape_print.ts < self.last_print_ts:
+            return True
+        return tape_print.ts == self.last_print_ts and tape_print.trade_id in self.last_print_ids
+
+    def _mark_print(self, tape_print: "TapePrint") -> None:
+        if self.last_print_ts is not None and tape_print.ts == self.last_print_ts:
+            self.last_print_ids = self.last_print_ids + (tape_print.trade_id,)
+        else:
+            self.last_print_ts = tape_print.ts
+            self.last_print_ids = (tape_print.trade_id,)
 
 
 @dataclass(frozen=True)
@@ -174,10 +215,11 @@ class FillResult:
 
 
 def price_on_side(tape_print: TapePrint, side: str) -> Decimal:
-    """The print's price expressed on `side`: the YES price for YES, its complement for NO."""
-    if side not in SIDES:
-        raise ValueError(f"unknown side {side!r}")
-    return tape_print.yes_price if side == "yes" else _p(ONE - tape_print.yes_price)
+    """The print's price expressed on `side`: the YES price for YES, its complement for NO.
+
+    The print is quoted in YES space, which is exactly what `side_p` converts (§0.11).
+    """
+    return side_p(tape_print.yes_price, side)
 
 
 def hits(tape_print: TapePrint, side: str) -> bool:
@@ -319,17 +361,18 @@ def simulate_fills(order: PaperOrder, state: SimState, book: BookState | None, p
     working = book.copy() if book is not None else None
     fills: list[SimFill] = []
     cross: SimFill | None = None
-    crossed = False
-    if working is not None and _crosses(working, order):
-        # Already crossed before a single new event: the book we were handed is itself the
-        # observation, so the cross is stamped with its own position on the tape.
-        crossed = True
-        cross = _cross_fill(order, out, working, working.as_of, working.last_event_id, fee_model)
+    if working is not None and not out.crossed and _crosses(working, order):
+        # Already crossed before a single new event. The book we were handed is itself the
+        # observation, so the cross is stamped with the book's `anchor_id`: `last_event_id`
+        # advances every loop and would give one crossing a fresh id each time.
+        out.crossed = True
+        cross = _cross_fill(order, out, working, working.as_of, working.anchor_id, fee_model)
 
     for _ts, kind, _i, event in _merge_events(prints, deltas, order.placed_at, deadline,
                                               state.cursor_event_id):
         if kind == _DELTA:
-            out.cursor_event_id = event.event_id
+            out.cursor_event_id = (event.event_id if out.cursor_event_id is None
+                                   else max(out.cursor_event_id, event.event_id))
             _apply_queue_delta(order, out, event)
             if working is not None:
                 # A REST anchor has no sequence of its own to continue, exactly as in
@@ -337,12 +380,15 @@ def simulate_fills(order: PaperOrder, state: SimState, book: BookState | None, p
                 seq = event.seq if working.source == "ws" else None
                 working.apply_delta(event.side, event.price, event.delta, seq, event.ts,
                                     event.event_id)
-                if not crossed and _crosses(working, order):
-                    crossed = True
+                if not out.crossed and _crosses(working, order):
+                    out.crossed = True
                     cross = _cross_fill(order, out, working, event.ts, event.event_id, fee_model)
-        else:
+        elif not out._seen_print(event):
             fill = _apply_print(order, out, event, fill_method, fee_model)
+            out._mark_print(event)
             if fill is not None:
                 fills.append(fill)
 
-    return FillResult(fills=fills, state=out, cross=cross, crossed=crossed)
+    # `crossed` is the order's worst-case flag, so it stays true once observed even on a later
+    # call whose book no longer crosses; `cross` is the fill, emitted only the first time.
+    return FillResult(fills=fills, state=out, cross=cross, crossed=out.crossed)
