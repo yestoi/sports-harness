@@ -114,10 +114,26 @@ class WsSink:
                 return None
         except Exception:
             log.exception("ws sink failed on %s %s", kind, ticker)
+            # The rollback throws away every row the batch was holding -- up to `commit_every`
+            # of them -- and the log line is not on the tape, so analysis would read the hole as
+            # a quiet stretch of market. Mark it: one `gap` row under the same whole-subscription
+            # `ticker = ""` sentinel `_check_seq` uses, carrying the discarded count and the
+            # message that failed. `exposed_by = "sink_exception"` is what tells the two apart.
+            discarded = self._pending
             self._session.rollback()
             self._pending = 0
             self._last_commit = time.monotonic()
             self.errors += 1
+            try:
+                self._session.add(OrderbookEvent(ticker="", ts=received_at, sid=sid or 0, seq=seq or 0, kind="gap",
+                                                 raw={"discarded": discarded, "exposed_by": "sink_exception",
+                                                      "kind": kind, "ticker": ticker}))
+                self._session.commit()
+            except Exception:
+                # Whatever broke the message may be the database itself. Losing the mark is bad;
+                # letting one failed message kill the recorder that is still taping is worse.
+                log.exception("ws sink could not write the exception mark")
+                self._session.rollback()
             return None
         self._maybe_commit()
         return kind
