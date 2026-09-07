@@ -86,6 +86,10 @@ class WsRecorder:
         self._sids: list[int] = []
         self._current: list[str] = []
         self._backoff = 1.0
+        # Gap recovery bookkeeping, per sid: when the last resubscribe went out (the 60 s rate
+        # limit) and when the recent ones did (the 300 s fall-through to a reconnect).
+        self._last_recovery: dict[int, float] = {}
+        self._recoveries: dict[int, list[float]] = {}
 
     def _headers(self) -> list[str]:
         ts_ms = int(self.clock().timestamp() * 1000) + self._offset_ms
@@ -160,6 +164,31 @@ class WsRecorder:
         if sent:
             self._current = list(wanted)
 
+    def _recover_gap(self, ws, sid: int, msg_id: int) -> int:
+        """A gap leaves every ticker on `sid` with an unknown book until something forces a
+        fresh `orderbook_snapshot`, and Kalshi only re-sends one when a market is (re)added to
+        a subscription. So delete and re-add the sid's markets. Returns the next free msg id."""
+        now = time.monotonic()
+        last = self._last_recovery.get(sid)
+        if last is not None and now - last < 60:
+            log.info("gap on sid %s inside the 60 s recovery window; ignored", sid)
+            return msg_id
+        recent = [t for t in self._recoveries.get(sid, []) if now - t < 300]
+        self._recoveries[sid] = recent
+        if len(recent) >= 2:
+            # Two resubscribes inside five minutes did not stop the gaps, so the subscription
+            # itself is sick and a third would only keep the recorder on a broken socket.
+            raise _Reconnect(f"gap recovery failed twice on sid {sid}")
+        for action in ("delete_markets", "add_markets"):
+            ws.send(json.dumps({"id": msg_id, "cmd": "update_subscription",
+                                "params": {"sids": [sid], "market_tickers": self._current, "action": action}}))
+            msg_id += 1
+        self._last_recovery[sid] = now
+        recent.append(now)
+        self.sink.clear_sequence(sid)
+        log.warning("gap on sid %s: resubscribed %d tickers for fresh snapshots", sid, len(self._current))
+        return msg_id
+
     def stop(self, *_):
         self._stop = True
 
@@ -202,6 +231,10 @@ class WsRecorder:
                 # backoff any earlier (e.g. right after sending the subscribe frame) means a
                 # persistently rejected subscription reconnects at the minimum interval forever.
                 self._backoff = 1.0
+                # The sink records which subscriptions lost events; only the recorder holds the
+                # socket that can ask for a replacement snapshot, so drain the set here.
+                while self.sink.gap_sids:
+                    msg_id = self._recover_gap(ws, self.sink.gap_sids.pop(), msg_id)
             if should_reconnect(len(self._sids), time.monotonic() - subscribed_at, error_msg):
                 raise _Reconnect(f"subscription rejected: {json.dumps(error_msg)[:200] if error_msg else 'no ack'}")
             if time.monotonic() - last_plan >= 300:
@@ -219,6 +252,7 @@ class WsRecorder:
                     tickers = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers, self.s.ws_lookahead_hours)
                 ws = self._connect()
                 self._sids, self._current = [], []
+                self._last_recovery, self._recoveries = {}, {}
                 try:
                     # Each new subscription restarts seq numbering at the venue, so any
                     # sequence numbers remembered from a prior connection must be dropped

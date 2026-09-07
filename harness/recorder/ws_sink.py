@@ -40,6 +40,10 @@ class WsSink:
         # count. It is filled next to each `_pending` increment, never at the top of `handle`: a
         # frame that is dropped or deduplicated leaves nothing at risk on its subscription.
         self._pending_sids: set[int] = set()
+        # Subscriptions that lost events since the recorder last looked. The sink cannot fix a
+        # gap -- only a resubscribe makes the venue re-send a snapshot -- so it records which
+        # sid needs one and lets `WsRecorder` drain the set after every message.
+        self.gap_sids: set[int] = set()
         self.errors = 0
         self.missing_side = 0
 
@@ -53,6 +57,12 @@ class WsSink:
                 self.errors += 1
             self._pending, self._last_commit = 0, time.monotonic()
             self._pending_sids.clear()
+
+    def clear_sequence(self, sid: int) -> None:
+        """Forget one subscription's remembered seq. The recorder calls this after a gap
+        recovery: the venue restarts the sid's numbering when its markets are re-added, so the
+        old seq would make the very first frame of the fresh snapshot look like another gap."""
+        self._last_seq.pop(sid, None)
 
     def reset_sequences(self) -> None:
         """Forget remembered seq numbers so a fresh subscription's restart-at-1 doesn't
@@ -73,6 +83,7 @@ class WsSink:
                                              raw={"sid": sid, "expected": last + 1, "got": seq, "exposed_by": ticker or None}))
             self._pending += 1
             self._pending_sids.add(sid)
+            self.gap_sids.add(sid)
         self._last_seq[sid] = seq
 
     def handle(self, msg: dict, received_at: datetime) -> str | None:

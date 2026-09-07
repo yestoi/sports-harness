@@ -124,9 +124,10 @@ def test_select_ws_tickers_includes_market_with_no_quotes_sorted_last(db_session
 class _FakeWs:
     def __init__(self, messages):
         self._messages = list(messages)
+        self.sent: list[str] = []
 
-    def send(self, *_a, **_kw):
-        pass
+    def send(self, payload=None, *_a, **_kw):
+        self.sent.append(payload)
 
     def recv(self):
         if self._messages:
@@ -157,6 +158,7 @@ class _FakeSink:
         self.closed = False
         self.reset_count = 0
         self.flushes = 0
+        self.gap_sids: set[int] = set()
 
     def handle(self, msg, received_at):
         self._on_handle(msg, received_at)
@@ -738,3 +740,111 @@ def test_sink_exception_mark_survives_a_frame_whose_sid_cannot_be_ordered(db_ses
     assert sink.errors == 1
     assert any("could not write the exception mark" in r.getMessage() for r in caplog.records)
     assert db_session.query(OrderbookEvent).count() == 0
+
+
+# --- hotfix F7: a sequence gap must force a fresh snapshot on that subscription ---------
+
+class _ScriptedWs(_FakeWs):
+    """Plays a script of frames, advancing a fake monotonic clock at the float entries, then
+    drops the connection. Records every frame the recorder sends."""
+
+    def __init__(self, script, clock=None):
+        super().__init__([])
+        self._script = list(script)
+        self._clock = clock
+
+    def recv(self):
+        while self._script and isinstance(self._script[0], float):
+            self._clock["t"] += self._script.pop(0)
+        if self._script:
+            return self._script.pop(0)
+        raise websocket.WebSocketConnectionClosedException("socket is already closed.")
+
+
+def _subscription_frames(ws) -> list[dict]:
+    return [json.loads(f) for f in ws.sent if json.loads(f).get("cmd") == "update_subscription"]
+
+
+def test_sequence_gap_resubscribes_the_sid_once_inside_the_recovery_window(db_session, monkeypatch):
+    """F7: the sink saw gaps and nobody acted. After a gap every ticker on that sid has an
+    unknown book until the next reconnect, so the recorder re-adds the sid's markets to force
+    Kalshi to re-send `orderbook_snapshot` -- at most once per sid per 60 s."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: ["K-A", "K-B"])
+
+    script = [json.dumps({"type": "subscribed", "msg": {"sid": 7}})]
+    script += [json.dumps(_delta(7, seq, "K-A")) for seq in (1, 2, 5, 6, 9)]
+    sockets: list[_ScriptedWs] = []
+
+    def ws_factory(url, header, timeout):
+        sockets.append(_ScriptedWs(script if not sockets else []))
+        return sockets[-1]
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+    monkeypatch.setattr(time, "sleep", lambda _s: recorder.stop())
+
+    # The recovery drops the sid's remembered seq so the fresh snapshot is not judged against
+    # the pre-gap sequence. That is only observable while the recovery is running.
+    cleared: list[tuple[int, dict]] = []
+    original_clear = sink.clear_sequence
+
+    def spy(sid):
+        original_clear(sid)
+        cleared.append((sid, dict(sink._last_seq)))
+
+    sink.clear_sequence = spy
+    recorder.run_forever()
+
+    frames = _subscription_frames(sockets[0])
+    assert [f["params"]["action"] for f in frames] == ["delete_markets", "add_markets"]
+    assert all(f["params"]["sids"] == [7] and f["params"]["market_tickers"] == ["K-A", "K-B"] for f in frames)
+    assert cleared == [(7, {})]
+    # Both gaps are still on the tape: recovering from one does not hide that it happened.
+    gaps = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
+    assert [(g.sid, g.raw["expected"], g.raw["got"]) for g in gaps] == [(7, 3, 5), (7, 7, 9)]
+
+
+def test_third_gap_inside_five_minutes_falls_through_to_a_reconnect(db_session, monkeypatch):
+    """Two resubscribes that did not stop the gaps mean the subscription itself is sick, so the
+    third gap inside 300 s gives up and takes the shared backoff path instead of resubscribing
+    for ever."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: ["K-A"])
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+
+    script = [json.dumps({"type": "subscribed", "msg": {"sid": 7}}),
+              json.dumps(_delta(7, 1, "K-A")), json.dumps(_delta(7, 4, "K-A")),   # gap 1 -> recovery 1
+              61.0, json.dumps(_delta(7, 5, "K-A")), json.dumps(_delta(7, 8, "K-A")),   # gap 2 -> recovery 2
+              61.0, json.dumps(_delta(7, 9, "K-A")), json.dumps(_delta(7, 12, "K-A"))]  # gap 3 -> reconnect
+    sockets: list[_ScriptedWs] = []
+
+    def ws_factory(url, header, timeout):
+        sockets.append(_ScriptedWs(script if not sockets else [], clock))
+        return sockets[-1]
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+    # Stop on the second backoff sleep, so the reconnect the third gap asked for actually runs.
+    sleeps: list[float] = []
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        if len(sleeps) >= 2:
+            recorder.stop()
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    recorder.run_forever()
+
+    frames = _subscription_frames(sockets[0])
+    assert [f["params"]["action"] for f in frames] == ["delete_markets", "add_markets", "delete_markets", "add_markets"]
+    # The third gap raised through to the backoff path, which opened one more connection.
+    assert len(sockets) == 2
+    assert db_session.query(OrderbookEvent).filter_by(kind="gap").count() == 3
