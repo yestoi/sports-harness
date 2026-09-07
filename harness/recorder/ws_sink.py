@@ -11,6 +11,10 @@ from harness.normalize.kalshi import taker_side_of
 
 log = logging.getLogger(__name__)
 
+# The frame types that leave rows in the batch. A `subscribed` ack carries a sid too, but it
+# writes nothing, so it must not put that sid at risk in the exception mark below.
+_BATCHED_KINDS = ("trade", "orderbook_snapshot", "orderbook_delta")
+
 
 def _dec(v):
     try:
@@ -34,6 +38,10 @@ class WsSink:
         self._last_commit = time.monotonic()
         self._commit_every, self._interval = commit_every, commit_interval_s
         self._last_seq: dict[int, int] = {}
+        # Which subscriptions have rows in the batch right now. `_pending` is one count for the
+        # whole batch, but the batch spans every sid seen since the last commit and a rollback
+        # discards all of them, so the exception mark needs the set as well as the count.
+        self._pending_sids: set[int] = set()
         self.errors = 0
         self.missing_side = 0
 
@@ -46,6 +54,7 @@ class WsSink:
                 self._session.rollback()
                 self.errors += 1
             self._pending, self._last_commit = 0, time.monotonic()
+            self._pending_sids.clear()
 
     def reset_sequences(self) -> None:
         """Forget remembered seq numbers so a fresh subscription's restart-at-1 doesn't
@@ -72,6 +81,8 @@ class WsSink:
         sid, seq = msg.get("sid"), msg.get("seq")
         ticker = body.get("market_ticker", "")
         try:
+            if kind in _BATCHED_KINDS and sid is not None:
+                self._pending_sids.add(sid)
             if kind == "trade":
                 price, count = _dec(body.get("yes_price_dollars")), _dec(body.get("count_fp"))
                 side, outcome, book = taker_side_of(body)
@@ -116,18 +127,26 @@ class WsSink:
             log.exception("ws sink failed on %s %s", kind, ticker)
             # The rollback throws away every row the batch was holding -- up to `commit_every`
             # of them -- and the log line is not on the tape, so analysis would read the hole as
-            # a quiet stretch of market. Mark it: one `gap` row under the same whole-subscription
+            # a quiet stretch of market. Mark it: `gap` rows under the same whole-subscription
             # `ticker = ""` sentinel `_check_seq` uses, carrying the discarded count and the
             # message that failed. `exposed_by = "sink_exception"` is what tells the two apart.
+            # One row per sid in the batch, not just the failing message's: phase 3's book
+            # loader dirties a book on `gap.sid = anchor.sid and gap.id > anchor.id`, so a sid
+            # that loses deltas without a row of its own keeps serving a book that is a lie.
+            # The failing sid goes in too, even with nothing pending -- its message is lost.
             discarded = self._pending
+            sids = sorted(self._pending_sids | {sid or 0})
             self._session.rollback()
             self._pending = 0
+            self._pending_sids.clear()
             self._last_commit = time.monotonic()
             self.errors += 1
             try:
-                self._session.add(OrderbookEvent(ticker="", ts=received_at, sid=sid or 0, seq=seq or 0, kind="gap",
-                                                 raw={"discarded": discarded, "exposed_by": "sink_exception",
-                                                      "kind": kind, "ticker": ticker}))
+                raw = {"discarded": discarded, "exposed_by": "sink_exception", "kind": kind,
+                       "ticker": ticker, "sids": sids}
+                for marked in sids:
+                    self._session.add(OrderbookEvent(ticker="", ts=received_at, sid=marked, seq=seq or 0,
+                                                     kind="gap", raw=dict(raw)))
                 self._session.commit()
             except Exception:
                 # Whatever broke the message may be the database itself. Losing the mark is bad;

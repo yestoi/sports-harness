@@ -522,9 +522,9 @@ def test_sink_exception_writes_a_mark_for_the_rows_it_discards(db_session, monke
     """F51: `handle`'s `except` branch rolls the session back and zeroes `_pending`, so up to
     `commit_every` rows that the batch was holding vanish with only a log line as the record.
     Analysis reading the tape saw an unexplained hole. The branch now writes one `gap` row
-    under the whole-subscription `ticker = ""` sentinel, carrying the discarded count and the
-    failing message's own sid/seq/kind/ticker, and it commits that mark in its own
-    transaction so the loss survives whatever happens to the batch next."""
+    under the whole-subscription `ticker = ""` sentinel for each subscription in the batch,
+    carrying the discarded count and the failing message's own seq/kind/ticker, and it commits
+    those marks in their own transaction so the loss survives whatever happens next."""
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     # Big batch and a long interval, so the two good deltas are still pending when the third
     # message blows up -- that is the batch the rollback throws away.
@@ -546,26 +546,27 @@ def test_sink_exception_writes_a_mark_for_the_rows_it_discards(db_session, monke
     assert db_session.query(OrderbookEvent).count() == 0  # still pending, nothing committed
 
     # A trade is the only branch that reaches `session.execute`, so it is what the flaky
-    # patch can break. Its sid/seq differ from the pending deltas' on purpose: the mark
-    # records the message that failed, not the rows that were lost.
+    # patch can break. The seq and ticker on the marks come from this message; the sids come
+    # from the batch, which is why sid 22 and the deltas' sid 21 both get a row.
     trade = {"type": "trade", "sid": 22, "seq": 5,
              "msg": {"trade_id": "t-boom", "market_ticker": "K-T", "yes_price_dollars": "0.3600",
                      "count_fp": "1.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": 1789234000000}}
     assert sink.handle(trade, NOW) is None
     assert sink.errors == 1
 
-    mark = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
-    assert (mark.ticker, mark.sid, mark.seq, mark.ts) == ("", 22, 5, NOW)
-    assert mark.raw == {"discarded": 2, "exposed_by": "sink_exception", "kind": "trade", "ticker": "K-T"}
-    # The rollback took the two pending deltas with it, and the mark is committed on its own.
+    marks = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
+    assert [(m.ticker, m.sid, m.seq, m.ts) for m in marks] == [("", 21, 5, NOW), ("", 22, 5, NOW)]
+    assert all(m.raw == {"discarded": 2, "exposed_by": "sink_exception", "kind": "trade",
+                         "ticker": "K-T", "sids": [21, 22]} for m in marks)
+    # The rollback took the two pending deltas with it, and the marks are committed on their own.
     assert db_session.query(OrderbookEvent).filter_by(kind="delta").count() == 0
     assert db_session.query(VenueTrade).filter_by(trade_id="t-boom").count() == 0
 
-    # The sink keeps working: seq 3 follows the remembered seq 2, so no second gap row.
+    # The sink keeps working: seq 3 follows the remembered seq 2, so no gap row of its own.
     assert sink.handle(_delta(21, 3, "K-A"), NOW) == "orderbook_delta"
     sink.flush()
     kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
-    assert kinds == ["gap", "delta"]
+    assert kinds == ["gap", "gap", "delta"]
 
 
 def test_sink_exception_mark_that_cannot_be_written_does_not_crash_the_recorder(db_session, monkeypatch, caplog):
@@ -608,3 +609,51 @@ def test_sink_exception_mark_that_cannot_be_written_does_not_crash_the_recorder(
     assert sink.handle(_delta(31, 2, "K-A"), NOW) == "orderbook_delta"
     sink.flush()
     assert [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()] == ["delta"]
+
+
+def test_sink_exception_marks_every_subscription_in_the_discarded_batch(db_session, monkeypatch):
+    """One batch spans every subscription the sink has seen since its last commit, so the
+    rollback takes rows from all of them. Phase 3's book loader dirties a book on
+    `gap.sid = anchor.sid and gap.id > anchor.id`, so a mark filed only under the failing
+    message's sid would leave the other subscriptions' books looking clean while their
+    deltas were in fact thrown away. Every sid in the batch gets its own mark row, the
+    failing message's included even when it had nothing pending, and `raw.sids` carries the
+    whole set so a reader sees the shape of the loss from any one row."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+
+    real_execute = sink._session.execute
+    calls = {"n": 0}
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return real_execute(*a, **kw)
+
+    monkeypatch.setattr(sink._session, "execute", flaky)
+
+    for seq in (1, 2):
+        assert sink.handle(_delta(21, seq, "K-A"), NOW) == "orderbook_delta"
+    assert sink.handle(_delta(23, 1, "K-C"), NOW) == "orderbook_delta"
+
+    # Sid 22 had nothing pending: it is the subscription whose message failed.
+    trade = {"type": "trade", "sid": 22, "seq": 5,
+             "msg": {"trade_id": "t-fanout", "market_ticker": "K-T", "yes_price_dollars": "0.3600",
+                     "count_fp": "1.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": 1789234000000}}
+    assert sink.handle(trade, NOW) is None
+    assert sink.errors == 1
+
+    marks = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
+    assert [m.sid for m in marks] == [21, 22, 23]
+    assert all(m.ticker == "" and m.seq == 5 and m.ts == NOW for m in marks)
+    assert all(m.raw == {"discarded": 3, "exposed_by": "sink_exception", "kind": "trade",
+                         "ticker": "K-T", "sids": [21, 22, 23]} for m in marks)
+    assert db_session.query(OrderbookEvent).filter_by(kind="delta").count() == 0
+
+    # The batch is empty again, so the next failure cannot re-mark these subscriptions.
+    assert sink._pending_sids == set()
+    assert sink.handle(_delta(21, 3, "K-A"), NOW) == "orderbook_delta"
+    sink.flush()
+    kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
+    assert kinds == ["gap", "gap", "gap", "delta"]
