@@ -492,3 +492,16 @@ Times are America/Chicago.
 - Rulings: (1) The stopping point is the next task boundary: no new dispatch from now; the loop waits for the two in-flight implementers (Task 3b sonnet, Task 5 opus) to report so their commits are on their branches, then journals `stopped` with the exact resume position and ends the pass; if either has not reported by 18:30 CT the loop stops anyway and the ledger's resume rule 2a (a dirty worktree is the dead implementer's partial work; re-dispatch with "keep what passes its tests, commit") covers it - cost if wrong: one re-dispatched task. (2) The Task 2b quiet-window deploy (01:00-08:00 CT) with `partition-bulk-tables` and the writers stopped is the fresh session's first deploy unit once its Orient reaches it; nothing deploys before the restart.
 - Carried forward: none
 - Next: stopped (entry 38) once the reports land
+
+## 38. stopped - safe point for a fresh session (user request, entry 37) - 2026-09-07 18:19 CT
+- Orient: n/a (entry 37 ruling 1: both in-flight implementers have reported; no review dispatched)
+- Branch / commits: `phase3-paper-execution` at ff72562 (ef44385..ff72562: compose fix 9, Tasks 2, 2b, 3, 4, 4b, docs); task branches `phase3-t3b-recorder` 657a5f7 (Task 3b, DONE, 429 tests) and `phase3-t5-plan` 67455a1 (Task 5, DONE, 520 tests) with their worktrees kept; `main` at 659ba67 = the NAS build
+- Result: gated: user request (not a gate of the loop's own; the fresh session re-reads every state file)
+- Dispatches: this session 40 (day total 63)
+- Tests: 462 on the phase branch (Task 4 merge); 429 and 520 on the two task branches
+- Review: Task 3b and Task 5 reviews NOT dispatched (entry 37); packages `task-3b-review-ae1e86c..657a5f7.diff` and `task-5-review-070a237..67455a1.diff` are in the SDD workspace
+- Deploy: none since 659ba67 (16:26 CT)
+- Verification: live at 18:17 CT: `/healthz` ok on 659ba67, credits 4,999,492 (1,218 used today), `/volume1` 3.5 T free (31 %), memory available 1180 MB, database 11 GB, no game in progress yet (FSU-SMU 18:30 CT; window 18:15-22:30 CT)
+- Rulings: (1) Carried fixes 9 and 13 are phase-bound (roadmap rows say so): the fresh session's Orient rule 1 does not open a hotfix unit for them; they close with the Task 2b quiet-window deploy's verify. (2) The 19:15 CT game-window observation is dropped; the morning-after full verify (walker) covers the first game under the widened subscription and the gap recovery. (3) The user's objection window on the Task 2b primary-key drop (entry 35 ruling 3) stays open until the fresh session runs the quiet-window deploy; silence is consent per addendum D15.
+- Carried forward: none
+- Next: fresh session per Kickoff; Orient rule 5 resumes the phase from the ledger: dispatch the Task 3b and Task 5 reviewers (opus), fix rounds, merges, then Task 6 (opus), Tasks 7-9 serial, 10+12 parallel, 11, 13, 14; the Task 2b quiet-window deploy (writers stopped, `partition-bulk-tables`, recovery notes in `task-2b-live-run-recovery.md`) at the first 01:00-08:00 CT boundary; the Task 4b deploy (replay first, Amendment 3, `gate_variant` flip) before 2026-09-16. Report: `docs/superpowers/autopilot/reports/2026-09-07-stopped-1820.md`
