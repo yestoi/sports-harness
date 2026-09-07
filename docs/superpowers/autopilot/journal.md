@@ -248,3 +248,17 @@ Times are America/Chicago.
 - Rulings: (1) "Odds tier confirmed" is the U1 confirmation the roadmap's Carried fixes item 10 waits for: the loop flips `odds_monthly_credits` 100000 -> 5000000 and the alternates cadence 900 s -> 120 s inside 36 h of kickoff (featured cadence unchanged; the 80 % alarm and the verify.md credits floor of 1,000,000 follow the tier) as a hotfix unit; the unit's verification includes the next odds tick's `odds_remaining` reading near the new quota - cost if wrong: the flip lands on the old tier and the 80 % alarm fires early, reversible by reverting the settings commit. (2) "pull the NFL bare-city fix forward" moves roadmap phase 6 item 5 (I9 bare-city aliases: `Los Angeles` and `New York` each name two teams; 178 unmatched NFL markets, 23 %) into a hotfix unit before phase 3, added to Carried fixes as item 12; the phase 6 list is the user's text and is left for the user to edit - cost if wrong: one hotfix unit of matching code before phase 3. (3) Daily ceilings stand, so the batch order becomes: Tue 2026-09-08 from 00:01 CT items 10, 12, 11, 4; Wed 2026-09-09 items 5, 6, 7, 8; Thu 2026-09-10 item 9 in the quiet window, then phase 3 (deploy after Thursday's NFL window, i.e. Friday morning at the latest, in time for the Sunday slate) - cost if wrong: phase 3's paper orders start a day later than the previous schedule.
 - Carried forward: Carried fixes item 12 (bare-city matching); item 10 unblocked
 - Next: the pending drill restart (entry 18 stands): expecting **idle** before 00:01 CT, **hotfix carried fix 10** after
+
+## 20. decision - ceilings raised; proceed in this session - 2026-09-07 13:52 CT
+- Orient: n/a (user decision in chat)
+- Branch / commits: `main` (skill and docs)
+- Result: done
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Decision (user, verbatim, 13:52 CT): "Raise the hotfix cap to 10 and deploys to 15, then proceed". Earlier in the same exchange (13:47 CT): "Ok, I upgraded to the 5M plan. I would like to to get the system fully developed before the first game today. What is left to get done?" and the controller's answer that phase 3 cannot land before tonight's 18:15 CT window and that the ceilings were the binding constraint.
+- Rulings: (1) The Ceilings row "Per calendar day" in `.claude/skills/autopilot/SKILL.md` is edited from "4 hotfix units, 6 deploys" to "10 hotfix units, 15 deploys" by the controller at the user's explicit instruction; the loop's ban on editing the skill guards against self-authorisation, and a verbatim user instruction to make one named edit is the user's authority exercised through the controller, recorded here - cost if wrong: none the user did not choose; the reversal is the same one-line edit. (2) "then proceed": work continues in this session; the R6 resume drill (entry 18) is deferred to the next boundary at which no deploy is possible, the 18:15 CT game window, and is re-notified then - cost if wrong: if the user does not restart before bed, the post-game and quiet-window units slip to the morning. (3) Today's remaining plan, in order, subject to the 18:15 CT window: carried fixes 10 (only once the API shows the 5M quota), 12, 11, 8, 4, 5, 6, 7; 9 in the 01:00-08:00 CT quiet window; then phase 3 - cost if wrong: none beyond wall clock.
+- Carried forward: none
+- Next: hotfix carried fix 10 or 12 (the 13:50 CT tick's `odds_remaining` decides which runs first)

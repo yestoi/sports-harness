@@ -292,7 +292,7 @@ Between duties: a wakeup for the next calendar event, `reason` naming it. Duties
 |---|---|
 | Dispatches | per unit: phase 60, plan-next 6, hotfix 10, verify 3, operate 8; per calendar day (CT): 120 |
 | Wall-clock per unit | phase 20 h, plan-next 4 h, hotfix 3 h, deploy 30 min, verify 90 min, operate duty 2 h |
-| Per calendar day | 4 hotfix units, 6 deploys |
+| Per calendar day | 10 hotfix units, 15 deploys |
 | Per-dispatch timeout (no report) | implementer 90 min, reviewer 30 min, walker 20 min; then `SendMessage` "report now"; 10 more minutes: mark it failed, journal, re-dispatch once fresh one tier up; a second timeout on the same task is a gate |
 | Re-dispatches of one task | 3 (BLOCKED, NEEDS_CONTEXT and timeouts combined) |
 
