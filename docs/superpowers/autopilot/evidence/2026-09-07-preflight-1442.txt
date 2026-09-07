@@ -1,0 +1,56 @@
+
+== clock
+2026-09-07 14:42:45 CDT
+2026-09-07T19:42:45Z (mac utc)
+
+== git
+main
+dirty files:        1
+cf169ed docs: autopilot journal - decision: loop process revised (entry 24); state.md
+5cdd3bf docs: autopilot journal - deploy 1bd1a26 verified (U1 live); stopped at the user's request for skill edits
+ef3fa74 autopilot: batch by area, parallel worktrees, deterministic verify, failure ceilings (user decision 2026-09-07 14:38 CT)
+
+== mac
+ sleep                1 (sleep prevented by sharingd, runningboardd, caffeinate, powerd)
+48407 caffeinate -i -t 300
+
+== test db
+harness-pg-test Up 27 hours
+pytest processes: 0
+
+== secrets
+-rw------- anthropic_api_key
+-rw------- dashboard_token
+-rw------- kalshi_demo_key_id
+-rw------- kalshi_demo_private_key.pem
+-rw------- kalshi_key_id
+-rw------- kalshi_private_key.pem
+-rw------- odds_api_key
+.env.nas present
+
+== paper posture
+paper posture intact
+
+== tunnel
+localhost:8180 -> 200
+
+== nas
+2026-09-07T19:42:46Z (nas utc)
+sports-harness-app-run-1 Up 21 minutes
+sports-harness-app-serve-1 Up 21 minutes (healthy)
+sports-harness-app-ws-1 Up 21 minutes
+sports-harness-postgres-1 Up 20 hours (healthy)
+{"status":"ok","last_run_at":"2026-09-07T19:42:26.621816+00:00","last_status":"skipped","seconds_since":20,"credits_remaining":null,"credits_budget":5000000,"credits_low":false,"build":"1bd1a26"}
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.4T  3.5T  69% /volume1
+mem available MB: 1514
+
+== deployed 1bd1a26 vs main cf169ed
+ scripts/worktree.sh       |  19 +++++++
+ tests/test_tick.py        |  27 ++++++++++
+ 10 files changed, 276 insertions(+), 12 deletions(-)
+
+== game window (in_progress | kickoff -4h..+15m | nfl kickoff 60-100m) and tick ages
+0 | 0 | 0
+last real tick | 2143 | ok | 81
+last heartbeat | 2145 | skipped | 21
+ws last event age s | 1
