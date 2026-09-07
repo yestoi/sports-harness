@@ -395,3 +395,17 @@ Times are America/Chicago.
 - Rulings: none
 - Carried forward: none
 - Next: idle; wakeup 16:45 CT (fix-6 hourly check)
+
+## 31. decision - phase 3 starts now, not after the quiet window - 2026-09-07 15:54 CT
+- Orient: n/a (user decision in chat)
+- Branch / commits: `main` (docs only)
+- Result: done
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Decision (user, verbatim, 2026-09-07 15:54 CT): "Start phase 3 now instead of waiting for the quiet window"
+- Rulings: (1) The phase 3 branch is created now; R19's "carried fixes before the phase 3 branch" is set aside for fix 9 by this decision (the user's text, the user's call). Fix 9 stays on its reviewed branch and still deploys inside 01:00-08:00 CT as its own hotfix unit; it is never merged into `main` before then, so no mid-phase deploy carries it into a game window. Fix 6's hourly check (16:45 CT) is folded into the phase's next task boundary - cost if wrong: none beyond the ordering the user chose. (2) The compose worktree stays alive through the phase (one of the three implementer slots is not consumed by it; it has no running agent).
+- Carried forward: none
+- Next: phase 3 (Unit: phase)
