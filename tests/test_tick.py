@@ -231,6 +231,10 @@ def test_partial_kalshi_pagination_is_an_error_and_not_marked_fetched(env_settin
     assert run.status == "error"
     assert "partial pagination" in json.dumps(run.notes["errors"])
     assert get_source_state(db_session, "kalshi_markets:KXNFLGAME") is None
+    # The settled fetch paginates the same way, so its own hourly guard must stay unset too;
+    # without this the row count below is the only evidence it ran, and that cannot tell the
+    # two /markets families apart.
+    assert get_source_state(db_session, "kalshi_settled:KXNFLGAME") is None
     # 2 pages (first 200, cursor page 500) each for the open and the settled fetch, x6 series.
     assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 24
 
