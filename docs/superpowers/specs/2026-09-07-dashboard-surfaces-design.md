@@ -466,7 +466,34 @@ Lands with phase 4.5, not Task 12b.
   NAS is viewed over a tunnel and the page must work with no internet. Asset budget: 300 KB uncompressed.
 - Responsive from 360 px to 2560 px. Pulse and Floor are laid out phone-first; Study and Gate are
   desktop-first and remain readable on a phone by stacking. Tables scroll inside their own container.
-- Light and dark, following the OS, with a manual toggle stored in `localStorage`.
+- Light and dark, following the OS, with a manual toggle in the header stored in `localStorage` (user
+  decision 2026-09-07 late evening: the owner reads dark; family members will read light). The two are
+  one token set with two values each, never two stylesheets:
+
+  | Token | Dark | Light |
+  |---|---|---|
+  | page ground | `#0b0e13` | `#f4f3ef` |
+  | header, tile | `#0f131a` | `#fbfaf7` |
+  | card | `#131820` | `#ffffff` |
+  | raised (active tab, dim badge) | `#1a212b` | `#ebe9e3` |
+  | border | `#1f2733` | `#e2dfd6` |
+  | row rule | `#171d26` | `#ecebe6` |
+  | track, gridline | `#232b36` | `#dedbd2` |
+  | ink | `#eef2f6` | `#17191d` |
+  | secondary ink | `#aab4c0` | `#4a525c` |
+  | muted ink | `#7c8794` | `#6b7480` |
+  | accent | `#35c9d9` | `#0f8e9c` |
+  | good, warning, bad | `#2bc257`, `#fab219`, `#e05252` | `#168a3a`, `#b7780f`, `#c23b3b` |
+  | fun accent (Ticket) | `#f5a524` | `#b7780f` |
+  | variants, seven slots in fixed order | `#3987e5 #d95926 #199e70 #c98500 #d55181 #008300 #9085e9` | `#2a78d6 #eb6834 #1baf7a #eda100 #e87ba4 #008300 #4a3aa7` |
+  | Ticket slip paper, ink, muted | `#2b2517`, `#f1e6cf`, `#b9ad95` (night paper) | `#f4ead6`, `#1b1a17`, `#6b6255` (cream) |
+  | Ticket HIT, MISS | `#4fc46f`, `#ef5a6e` | `#1f8a3b`, `#c8102e` |
+
+  Both variant palettes pass the dataviz validator on their surfaces (adjacent-pair CVD and normal-vision
+  floors). On white, three light slots sit under 3:1 contrast, so the relief rule applies: every series
+  is always named beside its mark, never identified by colour alone (already the case everywhere). The
+  Ticket slip is dark warm paper in dark mode, so it reads as a ticket without glaring, and cream in
+  light mode; status colours on the slip are stepped for the paper they sit on.
 - Visual direction is decided: "mission control with game-day energy", fixed by the design canvas
   (https://claude.ai/code/artifact/78f3e81e-bae8-4d69-aa30-2b6697e7dd3b; artboard sources under
   `docs/superpowers/design/dashboard/`), approved 2026-09-07 and refinable after week 1 data exists;

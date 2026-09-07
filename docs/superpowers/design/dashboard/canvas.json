@@ -63,6 +63,30 @@
    "w": 1440,
    "h": 1180,
    "title": "Ticket \u00b7 desktop"
+  },
+  {
+   "file": "PulseLight.dc.html",
+   "x": 0,
+   "y": 5620,
+   "w": 390,
+   "h": 1260,
+   "title": "Pulse \u00b7 light"
+  },
+  {
+   "file": "MainLight.dc.html",
+   "x": 480,
+   "y": 5620,
+   "w": 1440,
+   "h": 1240,
+   "title": "Floor \u00b7 light"
+  },
+  {
+   "file": "TicketLight.dc.html",
+   "x": 2010,
+   "y": 5620,
+   "w": 390,
+   "h": 2040,
+   "title": "Ticket \u00b7 light"
   }
  ],
  "annotations": [
@@ -107,6 +131,13 @@
    "y": 3220,
    "w": 700,
    "text": "TICKET. The fun parlays: REAL money, $50 a week, placed by hand at DraftKings. The one loud page. Legs as lamps, stamps, a payout that dims as legs fall, and the sharp books' live chance of cashing beside what DraftKings pays as if. Never on a page with paper numbers."
+  },
+  {
+   "id": "light",
+   "x": 0,
+   "y": 5520,
+   "w": 760,
+   "text": "LIGHT MODE. Same layout, same tokens swapped: warm off-white ground, white cards, darker accent for contrast, the light column of the chart palette (validated on white), the ticket back on cream paper. Follows the OS; the moon in the header toggles it."
   },
   {
    "id": "gate-job",
