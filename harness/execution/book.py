@@ -81,10 +81,17 @@ _NEWEST_REST_SNAPSHOT = text(
 _GAP_AFTER = text(
     "select 1 from orderbook_events where kind = 'gap' and sid = :sid and id > :anchor_id limit 1"
 )
-_SNAPSHOT_AFTER = text(
-    "select 1 from orderbook_events "
-    "where ticker = :t and kind = 'snapshot' and id > :anchor_id limit 1"
+# A re-anchor target has to be a snapshot that is itself clean: re-anchoring onto a snapshot
+# that was already followed by a gap on its own sid would clear `dirty` while the ladders stay
+# wrong, and `advance_book` would reload on every call for the rest of the tape.
+_CLEAN_SNAPSHOT_AFTER = text(
+    "select 1 from orderbook_events s "
+    "where s.ticker = :t and s.kind = 'snapshot' and s.id > :anchor_id "
+    "and not exists (select 1 from orderbook_events g "
+    "                where g.kind = 'gap' and g.sid = s.sid and g.id > s.id) limit 1"
 )
+# The tape position a REST ladder was fetched at: the id its gap check compares against.
+_MAX_EVENT_ID_AT = text("select max(id) from orderbook_events where ts <= :fetched_at")
 _NEWEST_EVENT_TS = text(
     "select max(ts) from orderbook_events where ticker = :t and ts <= :instant"
 )
@@ -135,8 +142,14 @@ class BookState:
     `sid`/`seq` are the WebSocket subscription id and sequence number of the anchor,
     advanced by each delta; a REST anchor has no sequence to continue and carries
     `sid = 0, seq = 0`. `anchor_id` is the `orderbook_events.id` of the snapshot row the
-    ladders came from (0 for a REST anchor) and is what the gap check compares against;
-    `last_event_id` is the cursor -- the newest tape row already folded in.
+    ladders came from (0 for a REST anchor); `last_event_id` is the cursor -- the newest tape
+    row already folded in.
+
+    `gap_check_id` is what the gap test compares against, and it is deliberately not
+    `anchor_id`. A REST anchor is not an `orderbook_events` row at all, so its `anchor_id` is 0
+    and every gap row on sid 0 would be "after" it forever; its `gap_check_id` is instead the
+    tape's position when the ladder was fetched. For a WS anchor the two are the same row, so
+    it defaults to `anchor_id` and callers building a book by hand need not think about it.
     """
 
     ticker: str
@@ -149,6 +162,11 @@ class BookState:
     anchor_id: int
     last_event_id: int
     dirty: bool = False
+    gap_check_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.gap_check_id is None:
+            self.gap_check_id = self.anchor_id
 
     @classmethod
     def from_levels(cls, ticker: str, yes_levels, no_levels, sid: int, seq: int,
@@ -189,7 +207,7 @@ class BookState:
         sequence of its own to continue.
         """
         if seq is not None:
-            if self.seq is not None and int(seq) != self.seq + 1:
+            if int(seq) != self.seq + 1:
                 self.dirty = True
             self.seq = int(seq)
         book = self._book(side)
@@ -226,7 +244,8 @@ class BookState:
         """An independent book: mutating the copy never touches the original's ladders."""
         return BookState(ticker=self.ticker, yes_bids=dict(self.yes_bids), no_bids=dict(self.no_bids),
                          sid=self.sid, seq=self.seq, as_of=self.as_of, source=self.source,
-                         anchor_id=self.anchor_id, last_event_id=self.last_event_id, dirty=self.dirty)
+                         anchor_id=self.anchor_id, last_event_id=self.last_event_id,
+                         dirty=self.dirty, gap_check_id=self.gap_check_id)
 
 
 def _apply_rows(book: BookState, rows, check_seq: bool) -> None:
@@ -236,19 +255,34 @@ def _apply_rows(book: BookState, rows, check_seq: bool) -> None:
     cannot be applied, so the book goes dirty and the scan continues: one bad row must not
     raise out of the executor loop, and a dirty book already blocks every decision that
     would depend on the missing update.
+
+    `check_seq` is false for a REST anchor, which has no sequence of its own to continue.
+    That leaves it with no way to notice a lost frame, so it watches the venue clock instead:
+    the next scan's `ts` floor is `as_of - DELTA_LOOKBACK`, so a row stamped further back than
+    the book has already reached is exactly the row a later scan would drop. It is applied and
+    the book says it is no longer trustworthy.
     """
     for row in rows:
+        if not check_seq and row.ts < book.as_of:
+            log.warning("delta ts behind the book id=%s ticker=%s ts=%s as_of=%s",
+                        row.id, book.ticker, row.ts, book.as_of)
+            book.dirty = True
         if row.side is None or row.price is None or row.delta is None:
             log.warning("unusable delta row id=%s ticker=%s", row.id, book.ticker)
             book.dirty = True
             book.last_event_id = int(row.id)
+            # The row is unusable but its sequence is sound, so the next row's seq check has
+            # something contiguous to follow instead of reporting a second, phantom gap.
+            if check_seq and row.seq is not None:
+                book.seq = int(row.seq)
             continue
         book.apply_delta(row.side, row.price, row.delta, row.seq if check_seq else None,
                          row.ts, row.id)
 
 
-def _gapped(session, sid: int, anchor_id: int) -> bool:
-    return session.execute(_GAP_AFTER, {"sid": sid, "anchor_id": anchor_id}).first() is not None
+def _gapped(session, book: BookState) -> bool:
+    return session.execute(_GAP_AFTER,
+                           {"sid": book.sid, "anchor_id": book.gap_check_id}).first() is not None
 
 
 def load_book(session, ticker: str, now: datetime) -> BookState | None:
@@ -271,15 +305,19 @@ def load_book(session, ticker: str, now: datetime) -> BookState | None:
         lower = ws.ts - DELTA_LOOKBACK
     else:
         # A REST anchor has no subscription of its own, so it takes sid 0 and its gap check
-        # asks about sid 0. That is deliberate on both sides: `ws_sink` parks an
-        # unattributable exception mark on sid 0 only when it has no real sid to name, and
-        # calls that out as the mark that dirties every REST-anchored book.
+        # asks about sid 0 -- where `ws_sink` parks an exception mark it cannot attribute to a
+        # real subscription. Those marks are rare but permanent, so the check is dated: the
+        # gap-check id is the tape's head when the ladder was fetched, and only a mark after
+        # that says anything about this ladder. The delta cursor is untouched by this and
+        # still starts from 0, because a REST anchor selects its deltas by `ts >= fetched_at`.
         book = BookState.from_levels(ticker, rest.yes_bids, rest.no_bids, sid=0, seq=0,
                                      as_of=rest.fetched_at, source="rest", anchor_id=0)
+        book.gap_check_id = session.execute(
+            _MAX_EVENT_ID_AT, {"fetched_at": rest.fetched_at}).scalar() or 0
         lower = rest.fetched_at
     rows = session.execute(_DELTAS_BY_ID, {"t": ticker, "cursor": book.anchor_id, "lower": lower}).all()
     _apply_rows(book, rows, check_seq=use_ws)
-    if _gapped(session, book.sid, book.anchor_id):
+    if _gapped(session, book):
         book.dirty = True
     return book
 
@@ -289,7 +327,7 @@ def advance_book(session, book: BookState, now: datetime) -> BookState:
 
     The argument is never mutated: the executor keeps one book per ticker across loops and
     a half-applied book on an exception would be worse than a stale one. A gap on the
-    anchor's sid dirties the result, and a dirty book re-anchors as soon as a snapshot
+    anchor's sid dirties the result, and a dirty book re-anchors as soon as a clean snapshot
     newer than its anchor exists (that snapshot is what a resubscribe forces, §0.12).
     """
     out = book.copy()
@@ -297,10 +335,10 @@ def advance_book(session, book: BookState, now: datetime) -> BookState:
     rows = session.execute(_DELTAS_BY_ID,
                            {"t": out.ticker, "cursor": out.last_event_id, "lower": lower}).all()
     _apply_rows(out, rows, check_seq=out.source == "ws")
-    if _gapped(session, out.sid, out.anchor_id):
+    if _gapped(session, out):
         out.dirty = True
-    if out.dirty and session.execute(_SNAPSHOT_AFTER,
-                                     {"t": out.ticker, "anchor_id": out.anchor_id}).first() is not None:
+    if out.dirty and session.execute(_CLEAN_SNAPSHOT_AFTER,
+                                     {"t": out.ticker, "anchor_id": out.gap_check_id}).first() is not None:
         reloaded = load_book(session, out.ticker, now)
         if reloaded is not None:
             return reloaded
@@ -334,5 +372,10 @@ def book_at(session, ticker: str, instant: datetime) -> BookState | None:
 
 
 def book_age_s(book: BookState, now: datetime) -> int:
-    """Whole seconds between the book's newest applied row and `now`."""
-    return int((now - book.as_of).total_seconds())
+    """Whole seconds between the book's newest applied row and `now`, never negative.
+
+    A delta carries the venue's clock, which can sit ahead of ours, so `as_of` can be in the
+    future. Callers compare this against age ceilings (`exec_book_max_age_s`) and store it on
+    an order, so a negative age would read as an impossibly fresh book; the floor is 0.
+    """
+    return max(0, int((now - book.as_of).total_seconds()))

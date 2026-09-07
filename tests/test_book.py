@@ -140,8 +140,8 @@ def _delta(session, ticker, ts, side, price, delta, sid=2, seq=2):
     return row
 
 
-def _gap(session, sid, exposed_by):
-    row = OrderbookEvent(ticker="", ts=NOW, sid=sid, seq=9, kind="gap",
+def _gap(session, sid, exposed_by, ts=NOW):
+    row = OrderbookEvent(ticker="", ts=ts, sid=sid, seq=9, kind="gap",
                          raw={"sid": sid, "expected": 2, "got": 9, "exposed_by": exposed_by})
     session.add(row)
     session.flush()
@@ -192,6 +192,15 @@ def test_load_book_applies_deltas_after_each_anchor(db_session):
     assert book.last_event_id == d2.id
     # A REST anchor has no seq to continue, so an out-of-order seq must not dirty it.
     assert book.dirty is False
+
+    # The same book advances on the REST branch: no seq to continue, cursor by id.
+    d3 = _delta(db_session, "A", NOW - timedelta(seconds=15), "yes", "0.2000", "-500.00", sid=0, seq=99)
+    out = advance_book(db_session, book, NOW)
+    assert out.source == "rest"
+    assert out.yes_bids == {}
+    assert out.last_event_id == d3.id
+    assert out.dirty is False
+    assert book.last_event_id == d2.id  # the caller's book is untouched
 
 
 def test_load_book_none_without_sources(db_session):
@@ -266,13 +275,92 @@ def test_book_at_excludes_later_rows_and_returns_none_when_stale(db_session):
 
 def test_a_malformed_delta_row_dirties_instead_of_raising(db_session):
     _ws_snapshot(db_session, "A", NOW - timedelta(seconds=5), sid=2, seq=1)
+    _delta(db_session, "A", NOW, "yes", "0.3500", "-4.00", sid=2, seq=2)
     # The venue frame carried no side, so the recorder taped NULLs. The book cannot be
-    # advanced past it, but one bad row must not take the executor loop down.
-    db_session.add(OrderbookEvent(ticker="A", ts=NOW, sid=2, seq=2, kind="delta",
+    # advanced past it, but one bad row must not take the executor loop down. It comes last
+    # here, so the sequence it carried is the only thing that can advance `seq`.
+    db_session.add(OrderbookEvent(ticker="A", ts=NOW, sid=2, seq=3, kind="delta",
                                   side=None, price=None, delta=None, raw={"market_ticker": "A"}))
     db_session.flush()
-    _delta(db_session, "A", NOW, "yes", "0.3500", "-4.00", sid=2, seq=3)
 
     book = load_book(db_session, "A", NOW)
     assert book.dirty is True
     assert book.yes_bids == {Decimal("0.3500"): Decimal("6.00")}  # the sound row still applied
+    assert book.seq == 3  # the unusable row still advanced the sequence it carried
+
+
+def test_rest_anchor_ignores_sid_zero_gaps_older_than_its_tape_position(db_session):
+    vm = _market(db_session, "A")
+    # An unattributable sink exception mark parked on sid 0 before the REST fetch. It says
+    # nothing about a ladder fetched afterwards, so the book must load clean -- otherwise one
+    # such row would dirty every REST-anchored book for the rest of the tape.
+    _gap(db_session, sid=0, exposed_by="sink_exception", ts=NOW - timedelta(seconds=60))
+    _rest_snapshot(db_session, vm, NOW - timedelta(seconds=10), raw_id=1)
+
+    book = load_book(db_session, "A", NOW)
+    assert book.source == "rest"
+    assert book.dirty is False
+    assert book.anchor_id == 0  # the delta cursor still starts from the beginning
+
+
+def test_rest_anchor_dirties_on_a_sid_zero_gap_after_its_tape_position(db_session):
+    vm = _market(db_session, "A")
+    _rest_snapshot(db_session, vm, NOW - timedelta(seconds=60), raw_id=1)
+    _gap(db_session, sid=0, exposed_by="sink_exception", ts=NOW - timedelta(seconds=10))
+
+    book = load_book(db_session, "A", NOW)
+    assert book.source == "rest"
+    assert book.dirty is True
+
+
+def test_rest_anchor_dirties_on_a_backwards_delta_ts(db_session):
+    vm = _market(db_session, "A")
+    _rest_snapshot(db_session, vm, NOW - timedelta(seconds=30), raw_id=1)
+    _delta(db_session, "A", NOW - timedelta(seconds=10), "yes", "0.2000", "-1.00", sid=3, seq=5)
+    # Taped after, but stamped with an earlier venue clock. The scan's `ts` floor moves
+    # forward with `as_of`, so the next scan would miss anything this far back: a REST anchor
+    # has no seq to catch it, so the book says so instead of reading clean.
+    _delta(db_session, "A", NOW - timedelta(seconds=25), "yes", "0.2000", "-1.00", sid=3, seq=6)
+
+    book = load_book(db_session, "A", NOW)
+    assert book.dirty is True
+    assert book.yes_bids[Decimal("0.2000")] == Decimal("499.98")  # both rows still applied
+
+
+def test_ws_anchor_backwards_delta_ts_is_governed_by_seq(db_session):
+    _ws_snapshot(db_session, "A", NOW - timedelta(seconds=30), sid=2, seq=1)
+    _delta(db_session, "A", NOW - timedelta(seconds=10), "yes", "0.3500", "-1.00", sid=2, seq=2)
+    _delta(db_session, "A", NOW - timedelta(seconds=25), "yes", "0.3500", "-1.00", sid=2, seq=3)
+
+    book = load_book(db_session, "A", NOW)
+    assert book.source == "ws"
+    assert book.dirty is False  # contiguous seq: the venue clock going backwards is not a gap
+    assert book.yes_bids[Decimal("0.3500")] == Decimal("8.00")
+
+
+def test_advance_book_does_not_reload_onto_a_gapped_snapshot(db_session):
+    snap = _ws_snapshot(db_session, "A", NOW - timedelta(seconds=10), sid=2, seq=1)
+    book = load_book(db_session, "A", NOW)
+    _gap(db_session, sid=2, exposed_by="A")
+    dirty = advance_book(db_session, book, NOW)
+    assert dirty.dirty is True
+
+    # The only newer snapshot is itself gapped, so it is no place to re-anchor.
+    _ws_snapshot(db_session, "A", NOW + timedelta(seconds=1), sid=5, seq=1, yes=(("0.31", "2.00"),))
+    _gap(db_session, sid=5, exposed_by="A")
+    still = advance_book(db_session, dirty, NOW)
+    assert still.dirty is True
+    assert still.anchor_id == snap.id
+
+    clean = _ws_snapshot(db_session, "A", NOW + timedelta(seconds=2), sid=6, seq=1, yes=(("0.29", "3.00"),))
+    out = advance_book(db_session, still, NOW)
+    assert out.dirty is False
+    assert out.anchor_id == clean.id
+    assert out.yes_bids == {Decimal("0.2900"): Decimal("3.00")}
+
+
+def test_book_age_s_never_negative():
+    b = BookState.from_levels("A", [], [], sid=2, seq=1, as_of=NOW + timedelta(seconds=3),
+                              source="ws", anchor_id=1)
+    assert book_age_s(b, NOW) == 0
+    assert book_age_s(b, NOW + timedelta(seconds=9)) == 6
