@@ -8,14 +8,62 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from harness.config.settings import Settings
 from harness.db.models import FairValue, Game, VenueMarket
-from harness.pricing.direct import direct_fair
-from harness.pricing.lines import latest_book_lines, ml_pair, spread_pair, total_pair
+from harness.pricing import PRICING_VERSION
+from harness.pricing.direct import SHARP_BOOKS, direct_fair
+from harness.pricing.lines import Line, feed_kind, latest_book_lines, ml_pair, spread_pair, total_pair
 from harness.pricing.margin_model import MarginModel, model_json, p_margin_over, p_moneyline, p_total_over
 
 log = logging.getLogger(__name__)
 
 MATCHED_STATUSES = ("matched", "fuzzy", "manual")
+
+#: Featured-market lines refresh every tick; the allowance is that cadence (a fixed 120s,
+#: independent of the actual tick interval) plus the tick's own compute budget (spec F11).
+FEATURED_CADENCE_S = 120
+#: Below this many minutes to kickoff, alternates are on the "near" cadence; at or beyond it,
+#: the (slower) "far" cadence applies.
+ALT_NEAR_CUTOFF_MIN = 180
+
+
+def stale_allowance_s(feed: str, ttk_minutes: float | None, s: Settings) -> int:
+    """How old a fair value keyed to `feed` may be before `not_stale` rejects it, given how
+    far out the game is. Independent of `Settings.stale_s` -- `not_stale` takes the looser
+    of the two (spec F11)."""
+    if feed == "featured":
+        return FEATURED_CADENCE_S + s.tick_budget_s
+    interval = (
+        s.odds_alt_interval_near_s if ttk_minutes is not None and ttk_minutes <= ALT_NEAR_CUTOFF_MIN
+        else s.odds_alt_interval_far_s
+    )
+    return interval + s.tick_budget_s
+
+
+def _feed_info(pairs: dict, newest_ts, now: datetime) -> tuple[str | None, int | None]:
+    """The kind and lag of the group-member line whose `last_update == newest_ts` -- the same
+    line `direct_fair`/`consensus` used to set a fair value's `newest_book_ts` (spec F11).
+    A tie between a featured and an alternate line at the same `last_update` resolves to
+    "alternate", since that is the fresher-by-cadence feed whose allowance the row needs."""
+    if newest_ts is None:
+        return None, None
+    candidates: list[Line] = []
+    for book in SHARP_BOOKS:
+        if book not in pairs:
+            continue
+        for line in pairs[book]:
+            if line.last_update == newest_ts:
+                candidates.append(line)
+    if not candidates:
+        return None, None
+    alternates = [line for line in candidates if feed_kind(line) == "alternate"]
+    chosen = alternates[0] if alternates else candidates[0]
+    kind = "alternate" if alternates else "featured"
+    return kind, int((now - chosen.fetched_at).total_seconds())
+
+
+def _ttk_minutes(game: Game, now: datetime) -> float:
+    return (game.kickoff_utc - now).total_seconds() / 60
 
 
 @dataclass(frozen=True)
@@ -128,7 +176,9 @@ def _build_model(sport: str, home_id: int, away_id: int, lines, now: datetime) -
     return MarginModel.from_main_lines(sport, home_point, p_home_cover, total_line, p_over)
 
 
-def _process_game(session: Session, game: Game, run_id: int, now: datetime, lookback_s: int) -> tuple[int, int, int]:
+def _process_game(
+    session: Session, game: Game, run_id: int, now: datetime, lookback_s: int, settings: Settings,
+) -> tuple[int, int, int]:
     """Compute and insert fair values for one game. Returns (direct, derived, no_sharp) counts."""
     markets = list(
         session.execute(
@@ -147,6 +197,7 @@ def _process_game(session: Session, game: Game, run_id: int, now: datetime, look
 
     lines = latest_book_lines(session, game.id, now, lookback_s)
     home_id, away_id = game.home_team_id, game.away_team_id
+    ttk_minutes = _ttk_minutes(game, now)
 
     direct_n = 0
     direct_results: dict[tuple, tuple] = {}
@@ -167,6 +218,8 @@ def _process_game(session: Session, game: Game, run_id: int, now: datetime, look
 
         consensus, _ = result
         newest_ts = consensus.newest_ts
+        kind, lag = _feed_info(pairs, newest_ts, now)
+        allowance = stale_allowance_s(kind, ttk_minutes, settings) if kind is not None else None
         n = _insert_fair_value(
             session,
             run_id=run_id,
@@ -181,6 +234,10 @@ def _process_game(session: Session, game: Game, run_id: int, now: datetime, look
             disagreement=consensus.disagreement,
             newest_book_ts=newest_ts,
             staleness_s=_staleness_s(now, newest_ts),
+            feed_kind=kind,
+            feed_lag_s=lag,
+            stale_allowance_s=allowance,
+            pricing_version=PRICING_VERSION,
             model_json=None,
             created_at=now,
         )
@@ -204,6 +261,8 @@ def _process_game(session: Session, game: Game, run_id: int, now: datetime, look
     if main_spread_result is None:
         return direct_n, 0, len(remaining)
     main_consensus, _ = main_spread_result
+    main_kind, main_lag = _feed_info(main_spread_pairs, main_consensus.newest_ts, now)
+    main_allowance = stale_allowance_s(main_kind, ttk_minutes, settings) if main_kind is not None else None
 
     derived_n = no_sharp_n = 0
     for shape in remaining:
@@ -241,6 +300,10 @@ def _process_game(session: Session, game: Game, run_id: int, now: datetime, look
             disagreement=main_consensus.disagreement,
             newest_book_ts=main_consensus.newest_ts,
             staleness_s=_staleness_s(now, main_consensus.newest_ts),
+            feed_kind=main_kind,
+            feed_lag_s=main_lag,
+            stale_allowance_s=main_allowance,
+            pricing_version=PRICING_VERSION,
             model_json=mj,
             created_at=now,
         )
@@ -253,6 +316,7 @@ def compute_fair_values(
     session: Session,
     run_id: int,
     now: datetime,
+    settings: Settings,
     lookback_s: int = 1200,
     game_ids: list[int] | None = None,
 ) -> FairCounts:
@@ -263,7 +327,7 @@ def compute_fair_values(
     for game in games:
         try:
             with session.begin_nested():
-                d, der, ns = _process_game(session, game, run_id, now, lookback_s)
+                d, der, ns = _process_game(session, game, run_id, now, lookback_s, settings)
             direct_n += d
             derived_n += der
             no_sharp_n += ns

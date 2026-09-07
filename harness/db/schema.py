@@ -45,6 +45,15 @@ def create_schema(engine: Engine) -> None:
         conn.execute(text("alter table market_gap_snapshots add column if not exists no_fair_reason varchar(32)"))
         conn.execute(text("alter table venue_trades add column if not exists taker_outcome_side varchar(4)"))
         conn.execute(text("alter table venue_trades add column if not exists taker_book_side varchar(4)"))
+        # F11: staleness amendment -- feed kind, feed lag, the stale allowance it implies, and
+        # the pricing version each fair value was computed under.
+        conn.execute(text("alter table fair_values add column if not exists feed_kind varchar(9)"))
+        conn.execute(text("alter table fair_values add column if not exists feed_lag_s integer"))
+        conn.execute(text("alter table fair_values add column if not exists stale_allowance_s integer"))
+        conn.execute(text("alter table fair_values add column if not exists pricing_version varchar(16)"))
+        conn.execute(text("alter table market_gap_snapshots add column if not exists feed_kind varchar(9)"))
+        conn.execute(text("alter table market_gap_snapshots add column if not exists feed_lag_s integer"))
+        conn.execute(text("alter table market_gap_snapshots add column if not exists stale_allowance_s integer"))
         conn.execute(text("create index if not exists ix_raw_source_fetched on raw_responses (source, fetched_at)"))
         conn.execute(text("create index if not exists ix_raw_fetched_brin on raw_responses using brin (fetched_at)"))
         conn.execute(text("create index if not exists ix_raw_run on raw_responses (run_id)"))

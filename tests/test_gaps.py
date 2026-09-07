@@ -105,9 +105,9 @@ def _add_quotes(db_session, run_id, markets, raw_id_start, fetched_at):
     db_session.commit()
 
 
-def test_build_gap_snapshots(db_session):
+def test_build_gap_snapshots(db_session, env_settings):
     game, run, markets = _seed(db_session)
-    counts = compute_fair_values(db_session, run.id, NOW)
+    counts = compute_fair_values(db_session, run.id, NOW, env_settings)
     assert counts.direct == 5
     assert counts.derived == 2
 
@@ -174,9 +174,9 @@ def test_build_gap_snapshots(db_session):
     assert db_session.query(MarketGapSnapshot).filter_by(run_id=run.id).count() == 8
 
 
-def test_prev_fair_from_earlier_run(db_session):
+def test_prev_fair_from_earlier_run(db_session, env_settings):
     game, run1, markets = _seed(db_session)
-    compute_fair_values(db_session, run1.id, NOW)
+    compute_fair_values(db_session, run1.id, NOW, env_settings)
     _add_quotes(db_session, run1.id, markets, raw_id_start=1000, fetched_at=NOW)
     build_gap_snapshots(db_session, run1.id, NOW, TZ)
 
@@ -191,7 +191,7 @@ def test_prev_fair_from_earlier_run(db_session):
     db_session.flush()
     db_session.commit()
 
-    compute_fair_values(db_session, run2.id, now2)
+    compute_fair_values(db_session, run2.id, now2, env_settings)
     _add_quotes(db_session, run2.id, markets, raw_id_start=2000, fetched_at=now2)
     build_gap_snapshots(db_session, run2.id, now2, TZ)
 
@@ -202,7 +202,7 @@ def test_prev_fair_from_earlier_run(db_session):
 
 # --- final fix wave: no_fair_reason -----------------------------------------
 
-def test_no_fair_reason_is_no_sharp_line_when_there_is_no_pinnacle_backed_line(db_session):
+def test_no_fair_reason_is_no_sharp_line_when_there_is_no_pinnacle_backed_line(db_session, env_settings):
     """A matched, recognized shape (moneyline here) with quotes from a book that isn't in the
     sharp group, and no spreads data to build a margin model from, has nowhere to derive a
     fair value from at all -- not because its market type is unmapped."""
@@ -232,7 +232,7 @@ def test_no_fair_reason_is_no_sharp_line_when_there_is_no_pinnacle_backed_line(d
     db_session.flush()
     db_session.commit()
 
-    counts = compute_fair_values(db_session, run.id, NOW)
+    counts = compute_fair_values(db_session, run.id, NOW, env_settings)
     assert counts.direct == 0
     assert counts.derived == 0
     assert counts.no_sharp == 1
@@ -246,7 +246,7 @@ def test_no_fair_reason_is_no_sharp_line_when_there_is_no_pinnacle_backed_line(d
     assert row.no_fair_reason == "no_sharp_line"
 
 
-def test_no_fair_reason_is_pricing_error_when_the_game_raised(db_session, monkeypatch):
+def test_no_fair_reason_is_pricing_error_when_the_game_raised(db_session, monkeypatch, env_settings):
     """A game whose fair-value computation raised and was rolled back has no FairValue rows
     at all for this run; its gap rows must say so was a pricing error, not a missing line."""
     from harness.pricing.margin_model import MarginModel
@@ -258,7 +258,7 @@ def test_no_fair_reason_is_pricing_error_when_the_game_raised(db_session, monkey
 
     monkeypatch.setattr(MarginModel, "from_main_lines", classmethod(flaky))
 
-    counts = compute_fair_values(db_session, run.id, NOW)
+    counts = compute_fair_values(db_session, run.id, NOW, env_settings)
     assert counts.direct == 0
     assert counts.derived == 0
     assert counts.errors == 1
@@ -277,3 +277,30 @@ def test_no_fair_reason_is_pricing_error_when_the_game_raised(db_session, monkey
     draw_market = next(m for m in markets if m.ticker == "KXNFL-G-8")
     draw_row = next(r for r in rows if r.venue_market_id == draw_market.id)
     assert draw_row.no_fair_reason == "unmapped_market_type"
+
+
+def test_gap_copies_feed_columns(db_session, env_settings):
+    """F11: `feed_kind`, `feed_lag_s`, and `stale_allowance_s` are copied from the fair value
+    a gap snapshot is keyed to, and stay NULL when there is no fair value to copy from."""
+    game, run, markets = _seed(db_session)
+    compute_fair_values(db_session, run.id, NOW, env_settings)
+    _add_quotes(db_session, run.id, markets, raw_id_start=1000, fetched_at=NOW)
+    build_gap_snapshots(db_session, run.id, NOW, TZ, fee_model=KALSHI_FOOTBALL)
+
+    ml_home_market = next(m for m in markets if m.ticker == "KXNFL-G-1")
+    row = db_session.query(MarketGapSnapshot).filter_by(run_id=run.id, venue_market_id=ml_home_market.id).one()
+    fair = db_session.query(FairValue).filter_by(
+        run_id=run.id, game_id=game.id, market_type="moneyline", outcome_team_id=HOME, fair_source="direct",
+    ).one()
+    assert fair.feed_kind is not None
+    assert row.feed_kind == fair.feed_kind
+    assert row.feed_lag_s == fair.feed_lag_s
+    assert row.stale_allowance_s == fair.stale_allowance_s
+
+    no_fair_market = next(m for m in markets if m.ticker == "KXNFL-G-8")
+    no_fair_row = db_session.query(MarketGapSnapshot).filter_by(
+        run_id=run.id, venue_market_id=no_fair_market.id
+    ).one()
+    assert no_fair_row.feed_kind is None
+    assert no_fair_row.feed_lag_s is None
+    assert no_fair_row.stale_allowance_s is None

@@ -28,6 +28,12 @@ class Line:
     fetched_at: datetime
 
 
+def feed_kind(line: Line) -> str:
+    """"alternate" for a line quoted on one of the `alternate_*` Odds API markets (fetched on
+    the alternates cadence), "featured" for the main-line market (fetched every tick)."""
+    return "alternate" if line.key.market_type.startswith("alternate_") else "featured"
+
+
 def latest_book_lines(session: Session, game_id: int, now: datetime, lookback_s: int = 1200) -> dict[LineKey, Line]:
     since = now - timedelta(seconds=lookback_s)
     cols = (

@@ -152,6 +152,22 @@ def test_missing_staleness_is_rejected():
     assert sig.labels["not_stale"] is False
 
 
+def test_not_stale_uses_allowance():
+    """F11: `not_stale` takes the looser of the variant's flat `stale_s` and the row's
+    feed-cadence `stale_allowance_s`; a missing allowance falls back to `stale_s` alone."""
+    v = variant("sharp_direct")
+    assert v.config["stale_s"] == 180
+
+    (loose,) = run_strategy([gap_row(staleness_s=910, stale_allowance_s=1000)], v, NOW)
+    assert loose.labels["not_stale"] is True
+
+    (tight,) = run_strategy([gap_row(staleness_s=910, stale_allowance_s=220)], v, NOW)
+    assert tight.labels["not_stale"] is False
+
+    (no_allowance,) = run_strategy([gap_row(staleness_s=910, stale_allowance_s=None)], v, NOW)
+    assert no_allowance.labels["not_stale"] is False
+
+
 # --- (d) price band ---------------------------------------------------------
 
 def test_price_band_rejects_a_cheap_contract_that_the_wide_band_variant_takes():
@@ -469,9 +485,9 @@ def test_the_same_side_position_keeps_the_highest_edge_seen():
     signals = run_strategy([high, low], variant("sharp_direct"), NOW, state=state)
     # apply_caps is off, so both are candidates and both write to the position
     assert all(s.decision == "candidate" for s in signals)
-    assert state.positions[(7, 42)] == Decimal("0.0546")
+    assert state.positions[(7, 42)] == Decimal("0.0547")
 
-    later = StrategyState(positions={(7, 42): Decimal("0.0546")})
+    later = StrategyState(positions={(7, 42): Decimal("0.0547")})
     middling = gap_row(venue_market_id=3, gap_snapshot_id=3, fair_p=Decimal("0.5550"))
     (sig,) = run_strategy([middling], variant("constrained"), NOW, state=later)
     assert sig.edge == Decimal("0.0506")

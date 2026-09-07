@@ -81,6 +81,12 @@ class GapRow:
     open_interest: int | None
     venue_mid: Decimal | None
     match_status: str = "matched"
+    #: The staleness budget implied by this row's feed cadence (spec F11); `not_stale` takes
+    #: whichever of this and the variant's `stale_s` is looser. None when the row has no fair
+    #: value to key a feed off of, in which case `not_stale` falls back to `stale_s` alone.
+    stale_allowance_s: int | None = None
+    #: "featured" or "alternate" -- which Odds API feed produced the fair value's newest line.
+    feed_kind: str | None = None
 
 
 @dataclass
@@ -167,7 +173,9 @@ def _filters(row: GapRow, cfg: dict) -> dict[str, bool]:
         "source_allowed": row.fair_source in cfg["sources_allowed"],
         "sport_allowed": row.sport in cfg["sports"],
         "match_confidence": row.match_status in CONFIDENT_MATCHES,
-        "not_stale": row.staleness_s is not None and row.staleness_s <= cfg["stale_s"],
+        "not_stale": (
+            row.staleness_s is not None and row.staleness_s <= max(cfg["stale_s"], row.stale_allowance_s or 0)
+        ),
         "price_band": reference is not None and band_lo <= reference <= band_hi,
         "ttk": row.ttk_minutes is not None and row.ttk_minutes > cfg["min_ttk_min"],
         "spread": (

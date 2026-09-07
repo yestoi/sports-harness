@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     build_time: str | None = None
     odds_monthly_credits: int = 5_000_000  # U1 2026-09-07: Odds API tier upgrade (was 100_000)
     odds_alternates_interval_s: int = 120  # U1 2026-09-07: alternates cadence inside 36h of kickoff (was 900)
+    odds_alt_interval_near_s: int = 120  # U1 value: alternates cadence inside odds_alt_window_h of kickoff
+    odds_alt_interval_far_s: int = 120  # U1 value: alternates cadence beyond odds_alt_window_h of kickoff
+    odds_alt_window_h: int = 36  # U1 value: the near/far cutoff for odds_alt_interval_*_s
 
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()

@@ -210,6 +210,15 @@ class FairValue(Base):
     disagreement: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
     newest_book_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     staleness_s: Mapped[int | None] = mapped_column(Integer)
+    #: "featured" or "alternate" -- which Odds API feed produced the group-member line that
+    #: set `newest_book_ts` (spec F11). NULL when no sharp book had a `last_update` to key off.
+    feed_kind: Mapped[str | None] = mapped_column(String(9))
+    #: Seconds between `now` and that line's `fetched_at` -- how old the winning feed poll was.
+    feed_lag_s: Mapped[int | None] = mapped_column(Integer)
+    #: The staleness budget `not_stale` compares against for this row, from `stale_allowance_s()`.
+    stale_allowance_s: Mapped[int | None] = mapped_column(Integer)
+    #: harness.pricing.PRICING_VERSION at the time this row was computed.
+    pricing_version: Mapped[str | None] = mapped_column(String(16))
     model_json: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (Index("ix_fair_game_type_created", "game_id", "market_type", "created_at"),)
@@ -238,6 +247,10 @@ class MarketGapSnapshot(Base):
     n_groups: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     disagreement: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
     staleness_s: Mapped[int | None] = mapped_column(Integer)
+    #: Copied from the fair value this snapshot is keyed to (spec F11); NULL when there is none.
+    feed_kind: Mapped[str | None] = mapped_column(String(9))
+    feed_lag_s: Mapped[int | None] = mapped_column(Integer)
+    stale_allowance_s: Mapped[int | None] = mapped_column(Integer)
     gap_mid: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
     gap_taker_net: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
     gap_maker_net: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))

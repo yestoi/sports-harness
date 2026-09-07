@@ -74,6 +74,45 @@ def test_create_schema_adds_no_fair_reason_to_an_existing_table(db_session):
     assert has_column()
 
 
+def test_create_schema_adds_feed_columns(db_session):
+    """The F11 staleness-amendment columns must be addable to a database that predates them,
+    the same way `no_fair_reason` is (see the test above)."""
+    engine = db_session.get_bind()
+    fair_cols = ("feed_kind", "feed_lag_s", "stale_allowance_s", "pricing_version")
+    gap_cols = ("feed_kind", "feed_lag_s", "stale_allowance_s")
+
+    def present(table: str, cols: tuple[str, ...]) -> set[str]:
+        return set(db_session.execute(text(
+            "select column_name from information_schema.columns "
+            "where table_name = :t and column_name = any(:cols)"
+        ), {"t": table, "cols": list(cols)}).scalars().all())
+
+    assert present("fair_values", fair_cols) == set(fair_cols)
+    assert present("market_gap_snapshots", gap_cols) == set(gap_cols)
+
+    db_session.execute(text(
+        "alter table fair_values drop column feed_kind, drop column feed_lag_s, "
+        "drop column stale_allowance_s, drop column pricing_version"
+    ))
+    db_session.execute(text(
+        "alter table market_gap_snapshots drop column feed_kind, drop column feed_lag_s, "
+        "drop column stale_allowance_s"
+    ))
+    db_session.commit()
+    assert present("fair_values", fair_cols) == set()
+    assert present("market_gap_snapshots", gap_cols) == set()
+
+    create_schema(engine)
+    db_session.commit()
+    assert present("fair_values", fair_cols) == set(fair_cols)
+    assert present("market_gap_snapshots", gap_cols) == set(gap_cols)
+
+    # idempotent: rerunning again against tables that already have the columns is a no-op.
+    create_schema(engine)
+    assert present("fair_values", fair_cols) == set(fair_cols)
+    assert present("market_gap_snapshots", gap_cols) == set(gap_cols)
+
+
 def test_create_schema_adds_brin_time_indexes(db_session):
     """Dashboard 'last hour' counts on the append-only event/trade tables must not seq-scan."""
     names = {r[0] for r in db_session.execute(text(

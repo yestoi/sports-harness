@@ -62,6 +62,8 @@ def _load_gap_rows(session: Session, run_id: int) -> list[GapRow]:
             open_interest=snap.open_interest,
             venue_mid=snap.venue_mid,
             match_status=market.match_status,
+            stale_allowance_s=snap.stale_allowance_s,
+            feed_kind=snap.feed_kind,
         ))
     return rows
 
@@ -137,7 +139,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     }
 
     # Stage 1 always runs, even with no budget left, so fair values keep advancing every tick.
-    fair_counts = compute_fair_values(session, run_id, now)
+    fair_counts = compute_fair_values(session, run_id, now, settings)
     result["fair_direct"] = fair_counts.direct
     result["fair_derived"] = fair_counts.derived
     result["no_sharp"] = fair_counts.no_sharp
