@@ -115,3 +115,16 @@ Times are America/Chicago.
 - Rulings: (1) one hotfix unit covers A2 and A3 - both scored by the same verify pass, disjoint files - cost if wrong: a larger review diff. (2) Implementer deviations accepted: `signals` has no foreign keys so the 3200-row test uses synthetic parent ids; the A3 test pins a large `commit_interval_s` so RED is not wall-clock dependent - cost if wrong: none. (3) The reviewer's Important is fixed in round 1, not parked - three lines, same file, same defect class - cost if wrong: ten minutes. (4) The implementer's measured flush counts (3 and 8) replace the reviewer's estimate (3 and 3) because it proved the assertion discriminates - cost if wrong: a brittle test. (5) Minors 3-5 need no action - cost if wrong: cosmetic.
 - Carried forward: none (Carried fixes item 0 removed; items 1-9 and 11 remain, 10 waits on U1)
 - Next: deploy (`main` at the journal commit), then verify, then operate (alias pass)
+
+## 10. deploy - main e87f714 (hotfix fix-tick-failures) - 2026-09-07 11:45 CT
+- Orient: rule 1 continuation (the hotfix unit's deploy step); rule 2 also true (`/healthz` build b5ce52b, code diff to `main` non-empty)
+- Branch / commits: `main` b5ce52b..e87f714 (a9dd2b9, 2601e75, 6eb0b1f code; b4a5a3e, e87f714 docs)
+- Result: done
+- Dispatches: 0
+- Tests: 269 passed, pristine (entry 9)
+- Review: n/a
+- Deploy: e87f714 at 11:45 CT via `make deploy-nas` (full: the diff touches `ws_sink.py` and `ws.py`; `deploy-nas-app` does not apply before `app-exec` exists); preconditions: `main`, clean tree, game window closed (0/0/0 at 16:20Z; FSU vs SMU kicks off 18:30 CT), third deploy of the day (ceiling 6); image build cached, containers Up within 10 s, `app-serve` healthy by 11:50 CT; stamp verified on `/healthz` (`"build":"e87f714"`); `app-ws` reconnected at 16:45:58Z; gap rows in the 2 h window after the restart: 0; 50 snapshots and 4996 deltas in the 10 min after
+- Verification: re-verify of the failed rows at 11:50 CT (16:49Z): **ERROR lines PASS** (0 on app-run, app-serve, app-ws in the 6 min since the restart, covering the 16:48Z real tick); **Signals PASS**: run 1826 at 16:48:27Z `ok`, credits 8, pricing notes carry per-variant counts, 407 candidates and 24,301 rejected in the last 20 min, primary f259ca109084 53 candidates (band 1-500 per real tick); degraded sections 0; one `idle in transaction` session aged 0.9 s (a tick mid-commit, not the leak). Layer 1 PASS. The other rows were scored PASS in entry 8 and nothing in this deploy touches them; the Chrome walkthrough is not repeated for a re-verify of two rows (verify.md: "re-verify only the failed items or the rows the finding names").
+- Rulings: (1) The hotfix unit's re-verification is the deterministic Layer 2 pass above, no walker - cost if wrong: a rendering fault in the signals table stays unseen until the next full verify (the post-game verify tomorrow morning at the latest).
+- Carried forward: none
+- Next: operate (alias pass, in progress), then hotfix carried fix 1 (F5)
