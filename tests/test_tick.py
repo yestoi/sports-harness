@@ -206,13 +206,14 @@ def test_settled_rows_normalize_without_errors(env_settings, db_session):
     run = rec.maybe_tick()
     assert len(_settled_rows(db_session, run.id)) == 6
     assert run.notes["normalize_errors"] == []
-    # Review round 1: the kalshi_markets family now skips settled-status pages (they stay raw
-    # for phase 3), so only the 6 open pages are normalised, not all 12 raw /markets rows.
-    assert run.notes["normalized"].get("kalshi_markets", 0) == 6
+    # Review round 1 addendum: _handle skips settled-status pages internally (they stay raw for
+    # phase 3), but each row still passes through _drain_batch and counts as processed, so the
+    # watermark advances over all 12 raw /markets rows, not just the 6 open ones.
+    assert run.notes["normalized"].get("kalshi_markets", 0) == 12
     # The single https://k/markets mock answers every series' open fetch with the same KM
     # fixture (2 valid markets; "WEIRD" fails classify_market), so 6 open raw rows each add a
-    # venue_quotes row per market (unique on (raw_id, venue_market_id)); none of the 6 settled
-    # raw rows contribute any.
+    # venue_quotes row per market (unique on (raw_id, venue_market_id)); the 6 settled raw rows
+    # are counted as processed but contribute none.
     assert db_session.query(VenueQuote).count() == 12
 
 
