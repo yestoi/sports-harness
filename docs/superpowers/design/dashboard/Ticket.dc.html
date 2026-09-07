@@ -1,0 +1,199 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #0b0e13; color: #eef2f6; font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif; font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
+    a { color: #35c9d9; text-decoration: none; } a:hover { color: #7fe0eb; }
+    .num { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .display { font-family: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif; }
+    .hdr { height: 56px; display: flex; align-items: center; gap: 18px; padding: 0 24px; border-bottom: 1px solid #1f2733; background: #0f131a; }
+    .brand { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.14em; font-size: 12px; color: #eef2f6; }
+    .tabs { display: flex; gap: 2px; }
+    .tab { padding: 7px 12px; border-radius: 6px; color: #aab4c0; font-weight: 500; }
+    .tab.on { background: #1a212b; color: #eef2f6; }
+    .tab.legacy { color: #7c8794; font-size: 12px; }
+    .spacer { flex: 1; }
+    .status { display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.08em; font-size: 13px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #2bc257; box-shadow: 0 0 0 3px rgba(43,194,87,0.18); }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #35c9d9; color: #35c9d9; }
+    .pill.muted { border-color: #2a3441; color: #7c8794; }
+    .meta { color: #7c8794; font-size: 12px; }
+    .card { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 14px 16px; }
+    .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c8794; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .card h3 .tag { font-size: 10px; letter-spacing: 0.06em; color: #35c9d9; border: 1px solid #35c9d9; border-radius: 4px; padding: 1px 5px; }
+    .muted { color: #7c8794; } .sec { color: #aab4c0; }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .tile { background: #0f131a; border: 1px solid #1f2733; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .tile .lbl { font-size: 11px; color: #7c8794; }
+    .tile .val { font-size: 20px; font-weight: 600; color: #eef2f6; }
+    .tile .val small { font-size: 11px; font-weight: 500; color: #7c8794; margin-left: 4px; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; font-size: 11px; color: #7c8794; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #1f2733; letter-spacing: 0.04em; }
+    td { padding: 7px 8px; border-bottom: 1px solid #171d26; vertical-align: middle; }
+    td.r, th.r { text-align: right; }
+    .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+    .track { position: relative; height: 6px; border-radius: 3px; background: #232b36; overflow: hidden; }
+    .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #35c9d9; border-radius: 3px; }
+    .fill.warm { background: #f5a524; }
+    .n { font-size: 11px; color: #7c8794; }
+    .n b { color: #aab4c0; font-weight: 500; }
+    .grey { color: #5b6672; }
+    .flag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid #3b4653; color: #aab4c0; margin-left: 6px; }
+    .ok { color: #2bc257; } .warn { color: #fab219; } .bad { color: #e05252; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+    .badge.ok { background: rgba(43,194,87,0.14); color: #2bc257; }
+    .badge.warn { background: rgba(250,178,25,0.14); color: #fab219; }
+    .badge.bad { background: rgba(224,82,82,0.16); color: #e05252; }
+    .badge.dim { background: #1a212b; color: #7c8794; }
+    .gamecard { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 12px 14px; position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+    .gamecard .stripe { position: absolute; left: 0; right: 0; top: 0; height: 4px; }
+    .teams { display: flex; justify-content: space-between; align-items: baseline; }
+    .team { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; }
+    .score { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 500; }
+    .markers { display: flex; gap: 4px; }
+    .mk { width: 10px; height: 10px; border-radius: 2px; }
+    .live { color: #f5a524; font-weight: 600; font-size: 11px; letter-spacing: 0.08em; }
+    .lead { font-size: 14.5px; line-height: 1.5; color: #eef2f6; margin: 0 0 12px; max-width: 72ch; text-wrap: pretty; }
+    .lead b { font-weight: 600; }
+    .lead .soft { color: #aab4c0; }
+    .plain { font-size: 13px; font-weight: 600; color: #eef2f6; text-transform: none; letter-spacing: 0; }
+    .tech { font-size: 11px; color: #7c8794; font-family: 'IBM Plex Mono', monospace; text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .tabbar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; display: flex; border-top: 1px solid #1f2733; background: #0f131a; }
+    .tabbar div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: #7c8794; }
+    .tabbar div.on { color: #eef2f6; }
+    .tabbar svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+    .slip { background: #f4ead6; color: #1b1a17; border-radius: 6px; position: relative; padding: 18px 18px 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.45); overflow: hidden; }
+    .slip::before, .slip::after { content: ""; position: absolute; left: 0; right: 0; height: 10px;
+            background: radial-gradient(circle at 5px 5px, #0b0e13 5px, transparent 5.5px) 0 0 / 14px 10px repeat-x; }
+    .slip::before { top: -4px; } .slip::after { bottom: -4px; transform: rotate(180deg); }
+    .slip .kind { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.12em; font-size: 11px; color: #6b6255; }
+    .slip .pay { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 48px; letter-spacing: -0.03em; line-height: 1; color: #1b1a17; }
+    .slip .pay small { font-size: 16px; letter-spacing: 0; color: #6b6255; font-weight: 500; }
+    .slip .pay.dim { color: #a59c8c; text-decoration: line-through; text-decoration-thickness: 4px; text-decoration-color: #c8102e; }
+    .slip .sub { font-size: 12px; color: #6b6255; }
+    .leg { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start; padding: 12px 0; border-top: 1px dashed #cfc3ab; position: relative; }
+    .leg .lamp { width: 14px; height: 14px; border-radius: 50%; margin-top: 3px; background: #cfc6b3; box-shadow: inset 0 0 0 2px #e9dfc8; }
+    .leg .lamp.alive { background: #f5a524; box-shadow: 0 0 0 4px rgba(245,165,36,0.28), 0 0 14px rgba(245,165,36,0.7); }
+    .leg .lamp.hit { background: #1f8a3b; box-shadow: 0 0 0 3px rgba(31,138,59,0.25); }
+    .leg .lamp.miss { background: #c8102e; box-shadow: 0 0 0 3px rgba(200,16,46,0.22); }
+    .leg .what { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 16px; }
+    .leg .odds { font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #1b1a17; text-align: right; }
+    .leg .line { font-size: 12px; color: #4b443a; margin-top: 2px; }
+    .leg .says { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #6b6255; margin-top: 5px; }
+    .leg .bar { width: 90px; height: 5px; border-radius: 3px; background: #e2d8c1; overflow: hidden; }
+    .leg .bar div { height: 100%; background: #1b1a17; border-radius: 3px; }
+    .leg.miss .what { color: #8a8073; text-decoration: line-through; text-decoration-color: #c8102e; }
+    .leg.miss { background: repeating-linear-gradient(135deg, transparent 0 8px, rgba(200,16,46,0.06) 8px 9px); }
+    .stamp { position: absolute; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.16em; border: 3px solid; border-radius: 6px; padding: 2px 10px; font-size: 13px; transform: rotate(-8deg); opacity: 0.9; background: rgba(244,234,214,0.6); }
+    .stamp.hit { color: #1f8a3b; border-color: #1f8a3b; } .stamp.miss { color: #c8102e; border-color: #c8102e; }
+    .stamp.big { font-size: 34px; padding: 6px 18px; border-width: 5px; transform: rotate(-14deg); left: 50%; top: 42%; translate: -50% -50%; letter-spacing: 0.22em; }
+    .tear { position: absolute; right: 0; top: 0; bottom: 0; width: 26px; background: radial-gradient(circle at 26px 6px, #0b0e13 7px, transparent 7.5px) 0 0 / 26px 14px repeat-y; }
+    .foot { border-top: 2px solid #1b1a17; margin-top: 8px; padding-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #4b443a; }
+    .foot b { font-family: 'IBM Plex Mono', monospace; color: #1b1a17; }
+    .funbadge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; border: 1px solid #f5a524; color: #f5a524; }
+    .mini { background: #f4ead6; color: #1b1a17; border-radius: 4px; padding: 8px 10px; position: relative; overflow: hidden; min-height: 78px; display: flex; flex-direction: column; gap: 3px; }
+    .mini .k { font-size: 10px; letter-spacing: 0.1em; color: #6b6255; font-weight: 700; }
+    .mini .p { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 18px; }
+    .mini .stamp { right: 6px; top: 6px; font-size: 10px; padding: 1px 6px; border-width: 2px; }
+    .mini.live { outline: 2px solid #f5a524; outline-offset: 2px; }
+</style>
+</helmet>
+<div style="width: 390px; min-height: 1560px; background: #0b0e13; position: relative; overflow: hidden;">
+<div class="hdr" style="padding: 0 16px; gap: 10px;"><div class="brand">HARNESS</div><div class="spacer"></div><span class="funbadge">FUN MONEY · $50/WK</span><span class="pill muted">SAMPLE</span></div>
+<div style="padding: 16px 14px 90px; display:flex; flex-direction:column; gap:14px;">
+  <div>
+    <div class="display" style="font-size:30px; font-weight:700; letter-spacing:-0.02em; color:#f5a524">One leg from glory.</div>
+    <div class="lead" style="margin-top:6px">Two legs are alive and winning, two kick off tonight. Georgia needs one more point of margin. Real money, <b>$30</b> of this week’s $50, placed by hand at DraftKings on Friday.</div>
+  </div>
+  <div class="slip">
+  <div class="row" style="justify-content:space-between; align-items:flex-start">
+    <div><div class="kind">SMART CARD · SAT 09-12</div><div class="pay"><small>$25 →</small> $412</div></div>
+    <div style="text-align:right"><div class="kind">LEGS</div><div class="display" style="font-size:22px; font-weight:700">4 to go</div></div>
+  </div>
+  
+  <div style="margin-top:10px"><div class="leg">
+  <span class="lamp alive"></span>
+  <div><div class="what">LSU to win</div><div class="line">LSU 17, Florida 13 · 3rd quarter, 7:42 · any win does it</div><div class="says">sharps say <span class="bar"><div style="width:78%"></div></span><span class="num">78 %</span></div></div>
+  <div class="odds">−165</div>
+</div><div class="leg">
+  <span class="lamp alive"></span>
+  <div><div class="what">Georgia by 4 or more</div><div class="line">Georgia 10, Ole Miss 7 · 2nd quarter, 1:15 · needs 1 more point of margin</div><div class="says">sharps say <span class="bar"><div style="width:61%"></div></span><span class="num">61 %</span></div></div>
+  <div class="odds">−110</div>
+</div><div class="leg">
+  <span class="lamp"></span>
+  <div><div class="what">Alabama by 8 or more</div><div class="line">kicks off in 1 h 48 m · 6:30 pm</div><div class="says">sharps say <span class="bar"><div style="width:66%"></div></span><span class="num">66 %</span></div></div>
+  <div class="odds">−110</div>
+</div><div class="leg">
+  <span class="lamp"></span>
+  <div><div class="what">Over 55 points, Oregon at Oklahoma State</div><div class="line">kicks off in 3 h 12 m · 7:54 pm</div><div class="says">sharps say <span class="bar"><div style="width:52%"></div></span><span class="num">52 %</span></div></div>
+  <div class="odds">−108</div>
+</div></div>
+  <div class="foot"><span>all four hit: <b>sharps 16 %</b> · DraftKings pays as if <b>6 %</b></span><span>hold <b>10 pts</b></span></div>
+</div>
+  <div class="slip"><span class="stamp big miss">BUSTED</span>
+  <div class="row" style="justify-content:space-between; align-items:flex-start">
+    <div><div class="kind">LOTTERY CARD · SAT 09-12</div><div class="pay dim"><small>$5 →</small> $1,240</div></div>
+    <div style="text-align:right"><div class="kind">LEGS</div><div class="display" style="font-size:22px; font-weight:700">busted</div></div>
+  </div>
+  <div class="sub" style="margin-top:6px; font-style:italic">Six legs, correlated on purpose: a Saints win and a home-dog cover both ride the same script.</div>
+  <div style="margin-top:10px"><div class="leg"><span class="stamp hit" style="right:70px; top:10px">HIT</span>
+  <span class="lamp hit"></span>
+  <div><div class="what">Saints to win</div><div class="line">Final · Saints 27, Falcons 20</div><div class="says">sharps say <span class="num">—</span></div></div>
+  <div class="odds">+120</div>
+</div><div class="leg miss"><span class="stamp miss" style="right:70px; top:10px">MISS</span><span class="tear"></span>
+  <span class="lamp miss"></span>
+  <div><div class="what">Ole Miss +3</div><div class="line">Final · Georgia 24, Ole Miss 17 · lost by 7</div><div class="says">sharps say <span class="num">—</span></div></div>
+  <div class="odds">−105</div>
+</div><div class="leg">
+  <span class="lamp"></span>
+  <div><div class="what">Alabama to win</div><div class="line">kicks off in 1 h 48 m</div><div class="says">sharps say <span class="num">—</span></div></div>
+  <div class="odds">−320</div>
+</div><div class="leg">
+  <span class="lamp"></span>
+  <div><div class="what">Under 48, Alabama at Wisconsin</div><div class="line">kicks off in 1 h 48 m</div><div class="says">sharps say <span class="num">—</span></div></div>
+  <div class="odds">−110</div>
+</div><div class="leg">
+  <span class="lamp"></span>
+  <div><div class="what">Oregon to win</div><div class="line">kicks off in 3 h 12 m</div><div class="says">sharps say <span class="num">—</span></div></div>
+  <div class="odds">−200</div>
+</div><div class="leg">
+  <span class="lamp"></span>
+  <div><div class="what">Oklahoma State +9</div><div class="line">kicks off in 3 h 12 m</div><div class="says">sharps say <span class="num">—</span></div></div>
+  <div class="odds">−110</div>
+</div></div>
+  <div class="foot"><span>DraftKings will quote lower than this; enter the slip and compare</span><span>hold <b>—</b></span></div>
+</div>
+  <div class="card" style="padding:12px 12px">
+    <h3><span class="plain">This season</span> <span class="tech">parlay_ledger</span></h3>
+    <div class="lead" style="font-size:13px">Four weeks in: <b>$100</b> staked, <b>$143</b> back, up <b>$43</b>. Best hit was week 35. Two busts in a row before this one.</div>
+    <div class="grid2" style="gap:8px"><div class="mini"><span class="stamp miss">BUSTED</span><div class="k">W34 · SMART</div><div class="p">$25 → $310</div></div><div class="mini"><span class="stamp hit">CASHED</span><div class="k">W35 · SMART</div><div class="p">$25 → $143</div></div><div class="mini"><span class="stamp miss">BUSTED</span><div class="k">W36 · SMART</div><div class="p">$25 → $268</div></div><div class="mini live"><span class="stamp" style="right:6px; top:6px; font-size:10px; padding:1px 6px; border-width:2px; color:#b7780f; border-color:#f5a524">LIVE</span><div class="k">W37 · SMART</div><div class="p">$25 → $412</div></div></div>
+  </div>
+  <div class="card" style="padding:12px 12px">
+    <h3><span class="plain">How the cards are built</span> <span class="tech">parlay.yaml</span></h3>
+    <div class="sec" style="font-size:12.5px">The smart card is 3 or 4 legs from different games with an LSU or Saints leg, picked from the best-priced bets DraftKings is offering against the sharp books. The lottery card is 6 to 8 legs on games you will watch, small stake, long shot. Friday for college, Saturday evening for the NFL. $50 a week, never more.</div>
+  </div>
+</div>
+<div class="tabbar">
+  <div><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Pulse</div>
+  <div><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></svg>Floor</div>
+  <div><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Study</div>
+  <div><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>Gate</div>
+  <div class="on" style="color:#f5a524"><svg viewBox="0 0 24 24"><path d="M4 7h16v4a2 2 0 0 0 0 4v4H4v-4a2 2 0 0 0 0-4z"/><path d="M9 7v13" stroke-dasharray="2 2"/></svg>Ticket</div>
+</div>
+
+</div>
+</x-dc>
+</body>
+</html>

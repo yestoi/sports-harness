@@ -47,6 +47,22 @@
    "w": 1440,
    "h": 1180,
    "title": "How it works"
+  },
+  {
+   "file": "Ticket.dc.html",
+   "x": 1530,
+   "y": 3320,
+   "w": 390,
+   "h": 1560,
+   "title": "Ticket \u00b7 phone"
+  },
+  {
+   "file": "TicketDesktop.dc.html",
+   "x": 2000,
+   "y": 3320,
+   "w": 1440,
+   "h": 1180,
+   "title": "Ticket \u00b7 desktop"
   }
  ],
  "annotations": [
@@ -84,6 +100,13 @@
    "y": 3220,
    "w": 700,
    "text": "LEARNABLE LAYER (added at the user\u2019s request). Every section opens with plain sentences written server-side from the snapshot; labels are plain first, technical second; dotted terms open a two-line definition; this page explains the pipeline once."
+  },
+  {
+   "id": "ticket-job",
+   "x": 1530,
+   "y": 3220,
+   "w": 700,
+   "text": "TICKET. The fun parlays: REAL money, $50 a week, placed by hand at DraftKings. The one loud page. Legs as lamps, stamps, a payout that dims as legs fall, and the sharp books' live chance of cashing beside what DraftKings pays as if. Never on a page with paper numbers."
   },
   {
    "id": "gate-job",
