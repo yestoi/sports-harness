@@ -64,6 +64,7 @@ def _load_gap_rows(session: Session, run_id: int) -> list[GapRow]:
             match_status=market.match_status,
             stale_allowance_s=snap.stale_allowance_s,
             feed_kind=snap.feed_kind,
+            price_ranges=market.price_ranges,
         ))
     return rows
 

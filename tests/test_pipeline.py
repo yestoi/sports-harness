@@ -1,15 +1,23 @@
 import itertools
 import json
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+import yaml
+
 from harness.db.models import Game, OddsSnapshot, Run, Signal, VenueMarket, VenueQuote
 from harness.matching.teams import seed_teams_from_espn
 from harness.strategy import pipeline as pipeline_module
-from harness.strategy.pipeline import _insert_signals, price_and_signal
-from harness.strategy.variants import Variant, load_variants, register_variants
+from harness.strategy.pipeline import _insert_signals, _load_gap_rows, price_and_signal
+from harness.strategy.variants import (
+    Variant,
+    load_variants,
+    register_variants,
+    variant_from_config,
+)
 
 FIXD = Path(__file__).parent / "fixtures"
 NFL = json.loads((FIXD / "espn_teams_nfl.json").read_text())
@@ -134,6 +142,39 @@ def test_price_and_signal_end_to_end(env_settings, db_session):
     result2 = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
     assert result2["gaps"] == 0
     assert db_session.query(Signal).filter_by(run_id=run.id).count() == 9
+
+
+GRID = [{"start": "0.0000", "end": "1.0000", "step": "0.0001"}]
+
+
+def test_pipeline_persists_no_side_signals(env_settings, db_session):
+    game, run, markets = _seed(db_session)
+    markets[0].price_ranges = GRID
+    db_session.commit()
+
+    config = dict(yaml.safe_load((VARIANTS_DIR / "tiny.yaml").read_text()),
+                  name="tiny_two_sided", sides=["yes", "no"])
+    register_variants(db_session, [variant_from_config(config)], NOW, prune=True)
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
+    assert result["gaps"] == 9
+    counts = result["signals"]["tiny_two_sided"]
+    assert counts["candidate"] + counts["rejected"] == 18  # 9 gap snapshots, both sides
+
+    # `_load_gap_rows` carries the venue's price grid through to the strategy
+    rows = {r.venue_market_id: r for r in _load_gap_rows(db_session, run.id)}
+    assert rows[markets[0].id].price_ranges == GRID
+    assert rows[markets[1].id].price_ranges is None
+
+    signals = db_session.query(Signal).filter_by(run_id=run.id).all()
+    assert len(signals) == 18
+    assert {s.side for s in signals} == {"yes", "no"}
+    # uq_signal_key holds both sides of the same market in the same run
+    assert set(Counter(s.venue_market_id for s in signals).values()) == {2}
+
+    # idempotent: re-running the same run inserts nothing new on either side
+    price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
+    assert db_session.query(Signal).filter_by(run_id=run.id).count() == 18
 
 
 def test_price_and_signal_stops_when_budget_is_spent(env_settings, db_session):

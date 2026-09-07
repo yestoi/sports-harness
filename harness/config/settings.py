@@ -47,8 +47,10 @@ class Settings(BaseSettings):
 
     # --- phase 3: paper executor -------------------------------------------------------
     exec_period_s: int = 15
-    #: Variants the executor places paper orders for (D10). Task 4b appends "sharp_two_sided".
-    exec_variants: list[str] = Field(default_factory=lambda: ["sharp_direct", "constrained"])
+    #: Variants the executor places paper orders for (D10). "sharp_two_sided" only starts
+    #: producing intents once pre-registration amendment 3 registers it (U2).
+    exec_variants: list[str] = Field(
+        default_factory=lambda: ["sharp_direct", "constrained", "sharp_two_sided"])
     #: Cancel a resting order when the venue's own quote has moved this far against it.
     exec_cancel_venue_move_pts: Decimal = Decimal("0.02")
     #: Reprice a resting order when fair value has moved at least this far.

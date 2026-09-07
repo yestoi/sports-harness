@@ -5,6 +5,7 @@ covers every key including `name` and `tier`, so any edit -- a rename included -
 a new id and the signals recorded under the old id keep meaning exactly what they meant.
 """
 
+import copy
 import hashlib
 import json
 from dataclasses import dataclass
@@ -43,11 +44,20 @@ REQUIRED_KEYS: frozenset[str] = frozenset({
     "apply_caps",
 })
 
+#: Keys a config may omit. They are filled in *after* `variant_id_for` hashes the config as
+#: written (spec §0.11), so adding one here leaves every already-registered id alone: the six
+#: phase 2 ids keep meaning what they meant, and a YAML that spells a key out gets a new id.
+OPTIONAL_KEYS: dict[str, object] = {"sides": ["yes"], "veto": "shadow", "margin_model": "normal_v1"}
+
+#: The order sides may be taken on. A variant naming both prices each contract twice, once in
+#: each side's probability space (spec §0.11, §6.3).
+SIDES = ("yes", "no")
+
 TIERS = ("primary", "secondary", "replay")
 #: Tiers that make up the live set the pipeline scores every tick; `replay` is out-of-band.
 LIVE_TIERS = ("primary", "secondary")
 MAX_PRIMARY = 1
-MAX_SECONDARY = 5
+MAX_SECONDARY = 6  # raised from 5 by user decision U2 for `sharp_two_sided`
 
 #: `strategy_variants.name` is String(64) and unique, so a retired row is renamed to
 #: `<name truncated>#<variant_id>`; a live name may never contain the separator.
@@ -77,6 +87,11 @@ def variant_id_for(config: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
+def with_defaults(config: dict) -> dict:
+    """`config` with every omitted optional key filled in. Never call this before hashing."""
+    return {**copy.deepcopy(OPTIONAL_KEYS), **config}
+
+
 def _validate(config: object, source: str) -> dict:
     if not isinstance(config, dict):
         raise ValueError(f"{source}: variant config must be a mapping, got {type(config).__name__}")
@@ -84,9 +99,13 @@ def _validate(config: object, source: str) -> dict:
     missing = REQUIRED_KEYS - keys
     if missing:
         raise ValueError(f"{source}: missing variant keys {sorted(missing)}")
-    unknown = keys - REQUIRED_KEYS
+    unknown = keys - REQUIRED_KEYS - OPTIONAL_KEYS.keys()
     if unknown:
         raise ValueError(f"{source}: unknown variant keys {sorted(unknown)}")
+    if "sides" in config:
+        sides = config["sides"]
+        if not isinstance(sides, list) or not sides or any(s not in SIDES for s in sides):
+            raise ValueError(f"{source}: sides must be a non-empty list drawn from {SIDES}, got {sides!r}")
     if config["tier"] not in TIERS:
         raise ValueError(f"{source}: tier must be one of {TIERS}, got {config['tier']!r}")
     name = config["name"]
@@ -100,11 +119,12 @@ def _validate(config: object, source: str) -> dict:
 
 
 def variant_from_config(config: dict, source: str = "<config>") -> Variant:
+    """Hash `config` exactly as written, then hand the strategy the defaulted copy."""
     _validate(config, source)
     return Variant(
         name=config["name"],
         tier=config["tier"],
-        config=config,
+        config=with_defaults(config),
         variant_id=variant_id_for(config),
     )
 

@@ -43,7 +43,7 @@ def test_settings_phase3_defaults(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db")
     s = Settings()
     assert s.exec_period_s == 15
-    assert s.exec_variants == ["sharp_direct", "constrained"]  # Task 4b appends sharp_two_sided
+    assert s.exec_variants == ["sharp_direct", "constrained", "sharp_two_sided"]  # D10
     assert s.exec_cancel_venue_move_pts == Decimal("0.02")
     assert s.exec_reprice_fair_move_pts == Decimal("0.01")
     assert s.exec_kickoff_cutoff_min == 10

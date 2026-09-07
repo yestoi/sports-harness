@@ -6,11 +6,14 @@ import yaml
 
 from harness.db.models import ConfigHistory, StrategyVariant
 from harness.strategy.variants import (
+    OPTIONAL_KEYS,
     REQUIRED_KEYS,
     active_variants,
     load_variants,
     register_variants,
+    variant_from_config,
     variant_id_for,
+    with_defaults,
 )
 
 NOW = datetime(2026, 9, 7, 18, 0, tzinfo=timezone.utc)
@@ -48,8 +51,9 @@ def test_load_variants_reads_the_fixture_dir():
     assert [v.name for v in variants] == ["tiny"]
     v = variants[0]
     assert v.tier == "primary"
-    assert set(v.config) == set(REQUIRED_KEYS)
-    assert v.variant_id == variant_id_for(v.config)
+    assert set(v.config) == set(REQUIRED_KEYS) | set(OPTIONAL_KEYS)
+    # the id is of the YAML as written, never of the defaulted config the strategy reads
+    assert v.variant_id == variant_id_for(_tiny_config())
 
 
 def test_load_variants_rejects_an_unknown_key():
@@ -72,9 +76,9 @@ def test_load_variants_rejects_two_primaries(tmp_path):
         load_variants(tmp_path)
 
 
-def test_load_variants_rejects_six_secondaries(tmp_path):
+def test_load_variants_rejects_seven_secondaries(tmp_path):
     _write(tmp_path, "p", dict(_tiny_config(), name="p", tier="primary"))
-    for i in range(6):
+    for i in range(7):
         _write(tmp_path, f"s{i}", dict(_tiny_config(), name=f"s{i}", tier="secondary"))
     with pytest.raises(ValueError, match="secondar"):
         load_variants(tmp_path)
@@ -93,17 +97,76 @@ def test_load_variants_rejects_a_duplicate_name(tmp_path):
         load_variants(tmp_path)
 
 
-def test_shipped_variants_are_one_primary_and_five_secondaries():
+def test_shipped_variants_are_one_primary_and_six_secondaries():
     variants = load_variants(SHIPPED)
-    assert len(variants) == 6
+    assert len(variants) == 7
     assert [v.name for v in variants if v.tier == "primary"] == ["sharp_direct"]
     assert sorted(v.name for v in variants if v.tier == "secondary") == [
-        "constrained", "nfl_only", "no_velocity", "sharp_plus_derived", "wide_band",
+        "constrained", "nfl_only", "no_velocity", "sharp_plus_derived",
+        "sharp_two_sided", "wide_band",
     ]
-    assert len({v.variant_id for v in variants}) == 6
+    assert len({v.variant_id for v in variants}) == 7
     primary = next(v for v in variants if v.tier == "primary")
     assert primary.config["sources_allowed"] == ["direct"]
     assert primary.config["apply_caps"] is False
+
+    two_sided = next(v for v in variants if v.name == "sharp_two_sided")
+    assert two_sided.config["sides"] == ["yes", "no"]
+    # only the three registry keys separate it from the primary it copies
+    assert {k: v for k, v in two_sided.config.items() if primary.config.get(k) != v} == {
+        "name": "sharp_two_sided", "tier": "secondary", "sides": ["yes", "no"],
+    }
+
+
+#: The six ids in the phase 2 pre-registration record. `sides` is applied after hashing
+#: precisely so these stay put; amendment 3 adds `sharp_two_sided` as a seventh id.
+RECORDED_IDS = {
+    "constrained": "ff363c8ac08d",
+    "nfl_only": "e549e693e117",
+    "no_velocity": "64ba3ef09642",
+    "sharp_direct": "f259ca109084",
+    "sharp_plus_derived": "49af716f8708",
+    "wide_band": "c2bc45377328",
+}
+
+
+def test_six_committed_yamls_hash_to_the_recorded_ids():
+    on_disk = {name: variant_id_for(yaml.safe_load((SHIPPED / f"{name}.yaml").read_text()))
+               for name in RECORDED_IDS}
+    assert on_disk == RECORDED_IDS
+    loaded = {v.name: v.variant_id for v in load_variants(SHIPPED) if v.name in RECORDED_IDS}
+    assert loaded == RECORDED_IDS
+
+
+def test_with_defaults_adds_sides_without_changing_the_id():
+    config = _tiny_config()
+    before = variant_id_for(config)
+    v = variant_from_config(config)
+
+    assert v.variant_id == before
+    assert v.config["sides"] == ["yes"]
+    assert config == _tiny_config()  # with_defaults never mutates its input
+    # the defaults really are a fresh copy per call, not one shared mutable list
+    v.config["sides"].append("no")
+    assert OPTIONAL_KEYS["sides"] == ["yes"]
+    assert with_defaults(_tiny_config())["sides"] == ["yes"]
+    # and hashing *after* the defaults would have moved every recorded id
+    assert variant_id_for(with_defaults(_tiny_config())) != before
+
+
+def test_a_sides_key_changes_the_id():
+    config = dict(_tiny_config(), sides=["yes", "no"])
+    assert variant_id_for(config) != variant_id_for(_tiny_config())
+    v = variant_from_config(config)
+    assert v.variant_id == variant_id_for(config)
+    assert v.config["sides"] == ["yes", "no"]
+
+
+@pytest.mark.parametrize("sides", [[], "yes", ["yes", "maybe"], ["over"], None, ["yes", 1]])
+def test_validate_rejects_bad_sides(tmp_path, sides):
+    _write(tmp_path, "a", dict(_tiny_config(), sides=sides))
+    with pytest.raises(ValueError, match="sides"):
+        load_variants(tmp_path)
 
 
 def test_register_variants_inserts_then_reports_unchanged(db_session):

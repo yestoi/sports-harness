@@ -1,16 +1,26 @@
-from dataclasses import replace
+import hashlib
+from dataclasses import astuple, replace
 from datetime import datetime, timezone
-from decimal import ROUND_FLOOR, Decimal
+from decimal import ROUND_DOWN, ROUND_FLOOR, Decimal
 from pathlib import Path
 
 import pytest
 
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
-from harness.strategy.run import LABEL_ORDER, GapRow, StrategyState, run_strategy
+from harness.strategy.run import (
+    LABEL_ORDER,
+    GapRow,
+    StrategyState,
+    floor_cents,
+    run_strategy,
+    sides_for,
+    snap_to_grid,
+)
 from harness.strategy.variants import load_variants
 
 NOW = datetime(2026, 9, 7, 18, 0, tzinfo=timezone.utc)
 SHIPPED = Path(__file__).parent.parent / "harness" / "variants"
+FIXTURES = Path(__file__).parent / "fixtures" / "variants"
 CENT = Decimal("0.01")
 FOUR = Decimal("0.0001")
 
@@ -332,7 +342,7 @@ def test_state_accumulates_only_for_candidates():
     assert state.open_orders == 2
     assert state.daily_exposure == sum(s.stake for s in taken)
     assert set(state.game_exposure) == {7, 8}
-    assert set(state.positions) == {(7, 42), (8, 43)}
+    assert set(state.positions) == {(7, 42, "yes"), (8, 43, "yes")}
 
 
 def test_caps_admit_the_highest_edge_row_first():
@@ -485,11 +495,159 @@ def test_the_same_side_position_keeps_the_highest_edge_seen():
     signals = run_strategy([high, low], variant("sharp_direct"), NOW, state=state)
     # apply_caps is off, so both are candidates and both write to the position
     assert all(s.decision == "candidate" for s in signals)
-    assert state.positions[(7, 42)] == Decimal("0.0547")
+    assert state.positions[(7, 42, "yes")] == Decimal("0.0547")
 
-    later = StrategyState(positions={(7, 42): Decimal("0.0547")})
+    later = StrategyState(positions={(7, 42, "yes"): Decimal("0.0547")})
     middling = gap_row(venue_market_id=3, gap_snapshot_id=3, fair_p=Decimal("0.5550"))
     (sig,) = run_strategy([middling], variant("constrained"), NOW, state=later)
     assert sig.edge == Decimal("0.0506")
     assert sig.labels["cap_per_game"] is False
     assert sig.rejection_reason == "cap_per_game"
+
+
+# --- (f) the NO side, the price grid and the YES-only golden -----------------
+
+def test_snap_to_grid_linear_cent_and_two_band():
+    linear_cent = [{"start": "0.0000", "end": "1.0000", "step": "0.0100"}]
+    assert snap_to_grid(Decimal("0.3499"), linear_cent) == Decimal("0.3400")
+    assert snap_to_grid(Decimal("0.3500"), linear_cent) == Decimal("0.3500")
+    # one tick is the floor on a grid too, exactly as `floor_cents` floors at a cent
+    assert snap_to_grid(Decimal("0.0050"), linear_cent) == Decimal("0.0100")
+
+    # no grid recorded for the market yet -> the whole-cent fallback
+    for missing in (None, []):
+        assert snap_to_grid(Decimal("0.3499"), missing) == floor_cents(Decimal("0.3499"))
+        assert snap_to_grid(Decimal("0.0050"), missing) == floor_cents(Decimal("0.0050"))
+
+    two_band = [
+        {"start": "0.0000", "end": "0.1000", "step": "0.0001"},
+        {"start": "0.1000", "end": "1.0000", "step": "0.0100"},
+    ]
+    assert snap_to_grid(Decimal("0.0567"), two_band) == Decimal("0.0567")
+    assert snap_to_grid(Decimal("0.09995"), two_band) == Decimal("0.0999")
+    assert snap_to_grid(Decimal("0.3499"), two_band) == Decimal("0.3400")
+    assert snap_to_grid(Decimal("0.1000"), two_band) == Decimal("0.1000")
+    # a price outside every band is snapped by the fallback rather than off a guessed tick
+    assert snap_to_grid(Decimal("1.5000"), two_band) == floor_cents(Decimal("1.5000"))
+
+
+def test_price_target_uses_the_market_grid():
+    v = variant("sharp_direct")
+    fine = [{"start": "0.0000", "end": "1.0000", "step": "0.0001"}]
+    (coarse_sig,) = run_strategy([gap_row()], v, NOW)
+    (fine_sig,) = run_strategy([gap_row(price_ranges=fine)], v, NOW)
+
+    assert coarse_sig.price_target == floor_cents(coarse_sig.price_target)
+    assert fine_sig.price_target > coarse_sig.price_target
+    assert fine_sig.price_target < coarse_sig.price_target + Decimal("0.0100")
+    # the tighter target is priced consistently: the fee and edge follow it
+    assert fine_sig.fee_at_target == maker_fee(fine_sig.price_target).quantize(FOUR)
+    assert fine_sig.edge == (
+        fine_sig.fair_p - fine_sig.price_target - fine_sig.fee_at_target
+    ).quantize(FOUR)
+
+
+def test_no_side_signal_math():
+    v = variant("sharp_two_sided")
+    assert v.config["sides"] == ["yes", "no"]
+    row = gap_row(fair_p=Decimal("0.6000"), best_bid=Decimal("0.5500"),
+                  best_ask=Decimal("0.5800"), venue_mid=Decimal("0.5650"))
+    signals = {s.side: s for s in run_strategy([row], v, NOW)}
+    assert set(signals) == {"yes", "no"}
+
+    no = signals["no"]
+    assert no.fair_p == Decimal("0.4000")
+    assert no.venue_best_bid == Decimal("0.4200")
+    assert no.venue_best_ask == Decimal("0.4500")
+
+    want = expected_pricing(Decimal("0.4000"), Decimal("0.0100"), v.config)
+    assert no.edge_min == want["edge_min"]
+    assert no.price_target == want["price_target"]
+    assert no.fee_at_target == want["fee_at_target"]
+    assert no.edge == want["edge"]
+    assert no.stake == want["stake"].quantize(CENT, rounding=ROUND_DOWN)
+    assert no.contracts == want["contracts"]
+    assert no.labels["edge"] is True
+    assert no.decision == "candidate"
+    # the YES side of the same row prices off the unflipped numbers
+    assert signals["yes"].fair_p == Decimal("0.6000")
+    assert signals["yes"].edge == expected_pricing(
+        Decimal("0.6000"), Decimal("0.0100"), v.config)["edge"]
+
+    # `price_band` reads 1 - venue_mid = 0.4350 on the NO side, not the YES mid of 0.5650
+    narrow = replace(v, config={**v.config, "price_band": [0.40, 0.50]})
+    banded = {s.side: s for s in run_strategy([row], narrow, NOW)}
+    assert banded["no"].labels["price_band"] is True
+    assert banded["yes"].labels["price_band"] is False
+    assert banded["yes"].rejection_reason == "price_band"
+
+
+def test_one_signal_per_side():
+    v = variant("sharp_two_sided")
+    rows = [
+        gap_row(venue_market_id=1, gap_snapshot_id=1),
+        gap_row(venue_market_id=2, gap_snapshot_id=2, market_type="total",
+                side_team_id=None, threshold=Decimal("44.5")),
+        gap_row(venue_market_id=3, gap_snapshot_id=3, fair_p=None, fair_source=None),
+    ]
+    signals = run_strategy(rows, v, NOW)
+    assert [(s.venue_market_id, s.side) for s in signals] == [
+        (1, "yes"), (1, "no"), (2, "yes"), (2, "no"), (3, "yes"), (3, "no"),
+    ]
+    # a row with no fair is still labelled once per side
+    assert [s.rejection_reason for s in signals[4:]] == ["has_fair", "has_fair"]
+
+    # a YES-only variant is untouched: one signal per row
+    yes_only = run_strategy(rows, variant("sharp_direct"), NOW)
+    assert [(s.venue_market_id, s.side) for s in yes_only] == [
+        (1, "yes"), (2, "yes"), (3, "yes")]
+
+    # the two sides of one team are separate positions, so both can be held
+    state = StrategyState()
+    run_strategy([rows[0]], v, NOW, state=state)
+    assert set(state.positions) == {(7, 42, "yes"), (7, 42, "no")}
+
+
+def _golden_rows() -> list[GapRow]:
+    """A fixed spread of rows -- taken, rejected, and unpriceable -- for the golden below."""
+    return [
+        gap_row(venue_market_id=1, gap_snapshot_id=1),
+        gap_row(venue_market_id=2, gap_snapshot_id=2, sport="ncaaf",
+                best_bid=Decimal("0.4000"), best_ask=Decimal("0.5200"), venue_mid=Decimal("0.4600")),
+        gap_row(venue_market_id=3, gap_snapshot_id=3, fair_source="derived",
+                disagreement=Decimal("0.0400"), n_groups=3),
+        gap_row(venue_market_id=4, gap_snapshot_id=4, market_type="total",
+                side_team_id=None, threshold=Decimal("44.5")),
+        gap_row(venue_market_id=5, gap_snapshot_id=5, fair_p=None, fair_source=None,
+                disagreement=None, n_groups=0),
+        gap_row(venue_market_id=6, gap_snapshot_id=6, game_id=8, side_team_id=43,
+                fair_p=Decimal("0.7300"), best_bid=Decimal("0.6900"),
+                best_ask=Decimal("0.7100"), venue_mid=Decimal("0.7000")),
+        gap_row(venue_market_id=7, gap_snapshot_id=7, staleness_s=910, stale_allowance_s=1000),
+        gap_row(venue_market_id=8, gap_snapshot_id=8, match_status="fuzzy"),
+        gap_row(venue_market_id=9, gap_snapshot_id=9, prev_fair_p=Decimal("0.5100"), prev_fair_ts=NOW),
+        gap_row(venue_market_id=10, gap_snapshot_id=10, fair_p=Decimal("0.1500"),
+                best_bid=Decimal("0.1200"), best_ask=Decimal("0.1400"), venue_mid=Decimal("0.1300")),
+    ]
+
+
+#: sha256 over every YES-only variant's signals for `_golden_rows()`, recorded from the
+#: strategy as it stood before the `sides` key existed. The six shipped ids are
+#: pre-registered, so a change here is a pre-registration amendment, not a test fix.
+YES_ONLY_DIGEST = "9c40d9a5a9de0d61024117171ee3d958701f4089d47252c249ba56bfd1fedfa6"
+
+
+def test_yes_only_variants_unchanged():
+    """The optional `sides` key must not move one number on a variant that reads `[yes]`."""
+    names, digest = [], hashlib.sha256()
+    for v in sorted(load_variants(SHIPPED) + load_variants(FIXTURES), key=lambda v: v.name):
+        if sides_for(v.config) != ["yes"]:
+            continue
+        names.append(v.name)
+        signals = run_strategy(_golden_rows(), v, NOW, state=StrategyState())
+        assert [s.side for s in signals] == ["yes"] * len(_golden_rows())
+        digest.update(repr((v.name, [astuple(s) for s in signals])).encode())
+
+    assert names == ["constrained", "nfl_only", "no_velocity", "sharp_direct",
+                     "sharp_plus_derived", "tiny", "wide_band"]
+    assert digest.hexdigest() == YES_ONLY_DIGEST
