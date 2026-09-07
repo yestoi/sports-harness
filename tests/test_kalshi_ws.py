@@ -571,46 +571,38 @@ def test_sink_exception_writes_a_mark_for_the_rows_it_discards(db_session, monke
     assert kinds == ["gap", "gap", "delta"]
 
 
-def test_sink_exception_mark_that_cannot_be_written_does_not_crash_the_recorder(db_session, monkeypatch, caplog):
+def test_sink_exception_mark_that_the_database_refuses_does_not_crash_the_recorder(db_session, monkeypatch, caplog):
     """The thing that broke the message is often the database itself, in which case the mark's
-    own insert fails too. Losing the mark is bad; letting one failed message take down a
-    recorder that is still taping is worse, so the mark's insert is guarded and the sink
-    returns as it always did."""
+    own insert fails too. The failure here is a real one: a seq past what the bigint column
+    holds, so Postgres refuses the mark row at flush time and SQLAlchemy deactivates the
+    session's transaction, the state a live failure leaves behind, where every later statement
+    raises until someone rolls back. That rollback inside the guard is what lets the sink carry
+    on. Losing the mark is bad; letting one failed message take down a recorder that is still
+    taping is worse."""
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
 
-    real_execute, real_commit = sink._session.execute, sink._session.commit
-    calls = {"execute": 0, "commit": 0}
+    # Sid 31's last seq is past the ceiling of the `seq` column, so the mark row this
+    # subscription earns is one the database will not take.
+    assert sink.handle(_delta(31, 2 ** 70, "K-A"), NOW) == "orderbook_delta"
 
-    def flaky_execute(*a, **kw):
-        calls["execute"] += 1
-        if calls["execute"] == 1:
-            raise RuntimeError("boom")
-        return real_execute(*a, **kw)
-
-    def flaky_commit(*a, **kw):
-        calls["commit"] += 1
-        if calls["commit"] == 1:  # the mark's own commit, the first this sink attempts
-            raise RuntimeError("database is gone")
-        return real_commit(*a, **kw)
-
-    monkeypatch.setattr(sink._session, "execute", flaky_execute)
-    monkeypatch.setattr(sink._session, "commit", flaky_commit)
-
-    assert sink.handle(_delta(31, 1, "K-A"), NOW) == "orderbook_delta"
-    trade = {"type": "trade", "sid": 31, "seq": 2,
+    monkeypatch.setattr(sink._session, "execute", _boom)
+    trade = {"type": "trade", "sid": 32, "seq": 5,
              "msg": {"trade_id": "t-nomark", "market_ticker": "K-T", "yes_price_dollars": "0.3600",
                      "count_fp": "1.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": 1789234000000}}
     with caplog.at_level("ERROR", logger="harness.recorder.ws_sink"):
-        assert sink.handle(trade, NOW) is None
+        assert sink.handle(trade, NOW) is None  # must not raise
     assert sink.errors == 1  # the failed mark is not a second error against the message
     assert any("could not write the exception mark" in r.getMessage() for r in caplog.records)
+    # Both mark rows go in one flush, so the row sid 32 could have taken is lost with sid 31's.
     assert db_session.query(OrderbookEvent).count() == 0
 
-    # The sink is still usable: the rolled-back mark did not poison the session.
-    assert sink.handle(_delta(31, 2, "K-A"), NOW) == "orderbook_delta"
+    # The sink is still usable: the guard's rollback cleared the failed transaction, so this
+    # delta commits instead of raising PendingRollbackError on a session nobody reset.
+    assert sink.handle(_delta(33, 1, "K-B"), NOW) == "orderbook_delta"
     sink.flush()
     assert [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()] == ["delta"]
+    assert sink.errors == 1  # and the commit that followed did not fail either
 
 
 def test_sink_exception_marks_every_subscription_in_the_discarded_batch(db_session, monkeypatch):
