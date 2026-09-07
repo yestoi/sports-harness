@@ -82,7 +82,7 @@ def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
         if m:
             insert_orderbook(session, m.group(1), body, r.id, r.fetched_at)
     elif family == "kalshi_trades":
-        insert_trades(session, body, r.id)
+        insert_trades(session, body, r.id, ctx)
 
 
 def _watermark(session: Session, family: str) -> NormalizeState:

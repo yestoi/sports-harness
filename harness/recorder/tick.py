@@ -352,6 +352,7 @@ class Recorder:
                                     "unresolved_teams": sorted(set(ctx.get("unresolved_teams", [])))[:50],
                                     "normalize_errors": ctx.get("normalize_errors", []),
                                     "odds_dropped": ctx.get("odds_dropped", {}),
+                                    "taker_side_missing": ctx.get("taker_side_missing", 0),
                                     "pricing": ctx.get("pricing", {})},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],

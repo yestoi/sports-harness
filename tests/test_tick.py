@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
 
-from harness.db.models import RawResponse, Run, TradeWatermark
+from harness.db.models import RawResponse, Run, TradeWatermark, VenueTrade
 from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
@@ -377,6 +377,36 @@ def test_tick_runs_normalizer_and_reports_counts(env_settings, db_session):
     rec, _ = _recorder(env_settings, db_session)
     run = rec.maybe_tick()
     assert "normalized" in run.notes and isinstance(run.notes["normalized"], dict)
+    # F5: every run row carries the drop counter, 0 when nothing was dropped, so the
+    # verification contract's runs.notes->>'taker_side_missing' invariant is never null.
+    assert run.notes["taker_side_missing"] == 0
+
+
+@respx.mock
+def test_tick_counts_prints_dropped_for_a_missing_taker_side(env_settings, db_session):
+    # F5 end to end: a print with no usable taker side is dropped by the normalizer and the
+    # count reaches runs.notes through the tick's ctx.
+    respx.get("https://e/nfl/scoreboard").mock(return_value=httpx.Response(200, json=ESPN))
+    respx.get("https://e/college-football/scoreboard").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(
+        return_value=httpx.Response(200, json=ODDS, headers={"x-requests-last": "3", "x-requests-remaining": "100"}))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(
+        return_value=httpx.Response(200, json={}, headers={"x-requests-last": "2", "x-requests-remaining": "98"}))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    trade = {"trade_id": "t-noside", "ticker": "KXNFLGAME-26SEP21NYGLAR-NYG",
+             "created_time": "2026-09-09T22:59:00Z", "yes_price_dollars": "0.2300",
+             "count_fp": "5.00", "is_block_trade": False}
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"cursor": "", "trades": [trade]}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={"orderbook_fp": {}}))
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    # every /markets/trades response this tick carried exactly one sideless print
+    pages = db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets/trades").count()
+    assert pages > 0
+    assert run.notes["taker_side_missing"] == pages, run.notes
+    assert db_session.query(func.count()).select_from(VenueTrade).scalar() == 0
 
 
 @respx.mock

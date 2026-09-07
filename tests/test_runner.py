@@ -150,3 +150,21 @@ def test_normalize_new_stops_at_deadline_and_resumes(db_session):
             break
     assert total == 6
     assert db_session.get(NormalizeState, "kalshi_trades").last_raw_id == ids[-1]
+
+
+def test_normalize_counts_sideless_prints_into_ctx(db_session):
+    # F5: the drop counter has to reach runs.notes, so _handle must hand insert_trades the
+    # runner's ctx. Two raw responses so the per-response accumulation is visible.
+    ensure_partitions(db_session, NOW)
+    run = Run(started_at=NOW, status="ok")
+    db_session.add(run)
+    db_session.flush()
+    good, bad = _trade("keep-1"), _trade("drop-1")
+    bad["trades"][0].pop("taker_side")
+    bad["trades"].append({**bad["trades"][0], "trade_id": "drop-2"})
+    _raw(db_session, run.id, "kalshi", "/markets/trades", {"ticker": "K1"}, good)
+    _raw(db_session, run.id, "kalshi", "/markets/trades", {"ticker": "K1"}, bad)
+    ctx: dict = {}
+    assert normalize_new(db_session, ctx=ctx)["kalshi_trades"] == 2
+    assert {t.trade_id for t in db_session.query(VenueTrade).all()} == {"keep-1"}
+    assert ctx["taker_side_missing"] == 2

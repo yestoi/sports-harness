@@ -81,3 +81,55 @@ def test_upsert_venue_markets_preloads_existing_rows_in_one_query(db_session):
     # unchanged matching/results semantics for this page (2 from KM matched/unmatched as before,
     # plus 3 new unmatched markets with no recorded event title)
     assert res.new == 5 and res.matched == 1 and res.unmatched == 4
+
+
+TRADE_BASE = {"ticker": "KXNFLGAME-26SEP21NYGLAR-NYG", "created_time": "2026-09-09T22:58:00Z",
+              "count_fp": "5.00", "yes_price_dollars": "0.2300", "is_block_trade": False}
+
+
+def _print(trade_id: str, **sides) -> dict:
+    return {**TRADE_BASE, "trade_id": trade_id, **sides}
+
+
+def test_insert_trades_prefers_taker_outcome_side_and_drops_a_sideless_print(db_session, caplog):
+    # F5: Kalshi's `taker_side` is deprecated in favour of `taker_outcome_side`/`taker_book_side`.
+    # The canonical side is `taker_outcome_side or taker_side`; a print carrying neither is dropped
+    # and counted, never defaulted to "yes" (which would poison the phase 3 fill model).
+    body = {"cursor": "", "trades": [
+        _print("new-only", taker_outcome_side="no", taker_book_side="yes"),
+        _print("legacy-only", taker_side="yes"),
+        _print("no-side-at-all"),
+    ]}
+    ctx: dict = {}
+    with caplog.at_level("WARNING", logger="harness.normalize.kalshi"):
+        assert insert_trades(db_session, body, raw_id=7, ctx=ctx) == 2
+    rows = {t.trade_id: t for t in db_session.query(VenueTrade).all()}
+    assert set(rows) == {"new-only", "legacy-only"}
+    assert (rows["new-only"].taker_side, rows["new-only"].taker_outcome_side, rows["new-only"].taker_book_side) == ("no", "no", "yes")
+    assert (rows["legacy-only"].taker_side, rows["legacy-only"].taker_outcome_side, rows["legacy-only"].taker_book_side) == ("yes", None, None)
+    assert ctx["taker_side_missing"] == 1
+    # one WARNING for the raw response, not one per dropped print
+    dropped = [r for r in caplog.records if "taker side missing" in r.getMessage()]
+    assert len(dropped) == 1 and "raw_id=7" in dropped[0].getMessage()
+
+
+def test_insert_trades_lowercases_sides_and_treats_junk_as_absent(db_session):
+    # Values are normalised to lower-case yes/no; anything else counts as absent, so a print whose
+    # only side is unrecognised is dropped rather than stored verbatim in a varchar(4).
+    body = {"cursor": "", "trades": [
+        _print("upper", taker_outcome_side="NO", taker_book_side="YES"),
+        _print("junk", taker_outcome_side="maybe", taker_side="unknown"),
+        _print("junk-outcome-legacy-ok", taker_outcome_side="", taker_side="No"),
+    ]}
+    ctx: dict = {}
+    assert insert_trades(db_session, body, raw_id=8, ctx=ctx) == 2
+    rows = {t.trade_id: t for t in db_session.query(VenueTrade).all()}
+    assert (rows["upper"].taker_side, rows["upper"].taker_outcome_side, rows["upper"].taker_book_side) == ("no", "no", "yes")
+    assert rows["junk-outcome-legacy-ok"].taker_side == "no" and rows["junk-outcome-legacy-ok"].taker_outcome_side is None
+    assert "junk" not in rows and ctx["taker_side_missing"] == 1
+
+
+def test_insert_trades_without_ctx_still_drops_the_sideless_print(db_session):
+    # ctx is optional: reprocess() and ad-hoc callers pass none and must not crash.
+    assert insert_trades(db_session, {"trades": [_print("no-side")]}, raw_id=9) == 0
+    assert db_session.query(VenueTrade).count() == 0

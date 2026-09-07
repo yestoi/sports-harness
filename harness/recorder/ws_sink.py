@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import OrderbookEvent, VenueTrade
+from harness.normalize.kalshi import taker_side_of
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class WsSink:
         self._commit_every, self._interval = commit_every, commit_interval_s
         self._last_seq: dict[int, int] = {}
         self.errors = 0
+        self.missing_side = 0
 
     def _maybe_commit(self, force: bool = False) -> None:
         if force or self._pending >= self._commit_every or time.monotonic() - self._last_commit >= self._interval:
@@ -65,16 +67,24 @@ class WsSink:
         try:
             if kind == "trade":
                 price, count = _dec(body.get("yes_price_dollars")), _dec(body.get("count_fp"))
-                if body.get("trade_id") and ticker and price is not None and count is not None:
+                side, outcome, book = taker_side_of(body)
+                if not (body.get("trade_id") and ticker and price is not None and count is not None):
+                    log.warning("ws trade dropped: missing fields %s",
+                                sorted(k for k in ("trade_id", "market_ticker", "yes_price_dollars", "count_fp") if not body.get(k)))
+                elif side is None:
+                    # Kalshi's `taker_side` is deprecated; defaulting a missing side to "yes" would
+                    # record every print as a YES taker. This process writes no runs row, so the
+                    # counter and this line are the only record of the drop.
+                    log.warning("ws trade dropped: taker side missing %s", ticker)
+                    self.missing_side += 1
+                else:
                     stmt = insert(VenueTrade).values(venue="kalshi", trade_id=body["trade_id"], ticker=ticker, ts=_ts(body.get("ts_ms"), received_at),
-                                                     yes_price=price, count=count, taker_side=body.get("taker_side") or "yes",
+                                                     yes_price=price, count=count, taker_side=side,
+                                                     taker_outcome_side=outcome, taker_book_side=book,
                                                      is_block=bool(body.get("is_block_trade")), source="ws", raw_id=None
                                                      ).on_conflict_do_nothing().returning(VenueTrade.trade_id)
                     # psycopg3 reports rowcount -1 for ON CONFLICT DO NOTHING; count returned rows instead (Task 6 ruling)
                     self._pending += len(self._session.execute(stmt).fetchall())
-                else:
-                    log.warning("ws trade dropped: missing fields %s",
-                                sorted(k for k in ("trade_id", "market_ticker", "yes_price_dollars", "count_fp") if not body.get(k)))
             elif kind == "orderbook_snapshot":
                 if sid is not None and seq is not None:
                     self._last_seq[sid] = seq

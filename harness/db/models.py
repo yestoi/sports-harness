@@ -165,7 +165,9 @@ class VenueTrade(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     yes_price: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     count: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    taker_side: Mapped[str] = mapped_column(String(4), nullable=False)
+    taker_side: Mapped[str] = mapped_column(String(4), nullable=False)  # canonical: taker_outcome_side or the deprecated taker_side
+    taker_outcome_side: Mapped[str | None] = mapped_column(String(4))
+    taker_book_side: Mapped[str | None] = mapped_column(String(4))
     is_block: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     source: Mapped[str] = mapped_column(String(4), nullable=False)
     raw_id: Mapped[int | None] = mapped_column(BigInteger)

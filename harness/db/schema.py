@@ -43,6 +43,8 @@ def create_schema(engine: Engine) -> None:
     with engine.begin() as conn:
         # Columns added after a table first shipped; create_all never alters existing tables.
         conn.execute(text("alter table market_gap_snapshots add column if not exists no_fair_reason varchar(32)"))
+        conn.execute(text("alter table venue_trades add column if not exists taker_outcome_side varchar(4)"))
+        conn.execute(text("alter table venue_trades add column if not exists taker_book_side varchar(4)"))
         conn.execute(text("create index if not exists ix_raw_source_fetched on raw_responses (source, fetched_at)"))
         conn.execute(text("create index if not exists ix_raw_fetched_brin on raw_responses using brin (fetched_at)"))
         conn.execute(text("create index if not exists ix_raw_run on raw_responses (run_id)"))

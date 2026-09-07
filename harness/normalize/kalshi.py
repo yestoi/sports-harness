@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -8,6 +9,8 @@ from sqlalchemy.orm import Session
 from harness.db.models import Game, OrderbookSnapshot, VenueMarket, VenueQuote, VenueTrade
 from harness.matching.kalshi import classify_market, match_event, side_team_id_for
 from harness.venues.kalshi.public import event_date_from_ticker
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,6 +34,24 @@ def _ts(v) -> datetime | None:
         return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(timezone.utc)
     except (ValueError, TypeError):
         return None
+
+
+def _side(v) -> str | None:
+    s = v.strip().lower() if isinstance(v, str) else ""
+    return s if s in ("yes", "no") else None
+
+
+def taker_side_of(d: dict) -> tuple[str | None, str | None, str | None]:
+    """(canonical, outcome, book) taker sides for one print.
+
+    Kalshi deprecated `taker_side` on trades (removable since 2026-05-14) in favour of
+    `taker_outcome_side`/`taker_book_side`, so the canonical side is `taker_outcome_side or
+    taker_side`. A canonical `None` means the print carries no usable side: callers drop it rather
+    than defaulting to "yes", which would record every print as a YES taker on the day Kalshi
+    finally removes the field.
+    """
+    outcome, book = _side(d.get("taker_outcome_side")), _side(d.get("taker_book_side"))
+    return outcome or _side(d.get("taker_side")), outcome, book
 
 
 def upsert_venue_markets(session: Session, sport: str, markets: list[dict], events_by_ticker: dict[str, dict],
@@ -119,14 +140,24 @@ def insert_orderbook(session: Session, ticker: str, body: dict, raw_id: int, fet
     return len(session.execute(stmt).fetchall()) == 1
 
 
-def insert_trades(session: Session, body: dict, raw_id: int) -> int:
-    n = 0
+def insert_trades(session: Session, body: dict, raw_id: int, ctx: dict | None = None) -> int:
+    n, dropped = 0, 0
     for t in (body or {}).get("trades", []) if isinstance(body, dict) else []:
         ts, price, count = _ts(t.get("created_time")), _dec(t.get("yes_price_dollars")), _dec(t.get("count_fp"))
         if not t.get("trade_id") or not t.get("ticker") or ts is None or price is None or count is None:
             continue
+        side, outcome, book = taker_side_of(t)
+        if side is None:
+            dropped += 1
+            continue
         stmt = insert(VenueTrade).values(venue="kalshi", trade_id=t["trade_id"], ticker=t["ticker"], ts=ts, yes_price=price,
-                                         count=count, taker_side=t.get("taker_side") or "yes", is_block=bool(t.get("is_block_trade")),
+                                         count=count, taker_side=side, taker_outcome_side=outcome, taker_book_side=book,
+                                         is_block=bool(t.get("is_block_trade")),
                                          source="rest", raw_id=raw_id).on_conflict_do_nothing().returning(VenueTrade.trade_id)
         n += len(session.execute(stmt).fetchall())
+    if dropped:
+        # One line per raw response, not per print: a page carries up to 1,000 trades.
+        log.warning("kalshi trades: %d prints dropped, taker side missing (raw_id=%s)", dropped, raw_id)
+        if ctx is not None:
+            ctx["taker_side_missing"] = ctx.setdefault("taker_side_missing", 0) + dropped
     return n

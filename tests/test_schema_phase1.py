@@ -36,3 +36,20 @@ def test_odds_snapshot_unique_index_treats_nulls_as_equal(db_session):
     db_session.add(OddsSnapshot(**row))
     with pytest.raises(IntegrityError):
         db_session.flush()
+
+
+def test_venue_trades_carries_taker_outcome_and_book_side_idempotently(db_session):
+    # F5: Kalshi deprecated `taker_side` on trades in favour of `taker_outcome_side` and
+    # `taker_book_side`. Both are additive nullable columns, so create_schema must add them to an
+    # existing venue_trades and stay idempotent when the next boot runs it again.
+    from harness.db.schema import create_schema
+
+    create_schema(db_session.get_bind())  # second run over the fixture's schema
+    cols = dict(db_session.execute(text(
+        "select column_name, is_nullable from information_schema.columns where table_name = 'venue_trades'")).all())
+    assert cols.get("taker_outcome_side") == "YES" and cols.get("taker_book_side") == "YES", sorted(cols)
+    assert cols["taker_side"] == "NO"  # the canonical side stays required
+    db_session.add(VenueTrade(venue="kalshi", trade_id="t-cols", ticker="T", ts=NOW, yes_price=Decimal("0.2300"),
+                              count=Decimal("5.00"), taker_side="no", taker_outcome_side="no",
+                              taker_book_side="yes", is_block=False, source="ws", raw_id=None))
+    db_session.flush()

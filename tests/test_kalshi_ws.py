@@ -404,3 +404,26 @@ def test_recv_timeout_flushes_the_sink_before_the_socket_is_declared_stale(db_se
     recorder.run_forever()
 
     assert seen["count"] == 1
+
+
+def test_sink_trade_uses_new_taker_side_fields_and_drops_a_sideless_print(db_session, caplog):
+    # F5: the WebSocket writer follows the same rule as the REST normalizer. Kalshi's deprecated
+    # `taker_side` may vanish from the feed at any time; defaulting to "yes" would mark every print
+    # a YES taker. The ws process writes no runs row, so a counter and a log line are its record.
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    assert sink.missing_side == 0
+    base = {"market_ticker": "K1", "yes_price_dollars": "0.3600", "no_price_dollars": "0.6400",
+            "count_fp": "12.00", "is_block_trade": False, "ts_ms": 1789234000000}
+    new_only = {"type": "trade", "sid": 1, "seq": 1,
+                "msg": {**base, "trade_id": "t-new", "taker_outcome_side": "no", "taker_book_side": "yes"}}
+    assert sink.handle(new_only, NOW) == "trade"
+    t = db_session.query(VenueTrade).filter_by(trade_id="t-new").one()
+    assert (t.taker_side, t.taker_outcome_side, t.taker_book_side) == ("no", "no", "yes")
+
+    sideless = {"type": "trade", "sid": 1, "seq": 2, "msg": {**base, "trade_id": "t-noside"}}
+    with caplog.at_level("WARNING", logger="harness.recorder.ws_sink"):
+        assert sink.handle(sideless, NOW) == "trade"
+    assert db_session.query(VenueTrade).filter_by(trade_id="t-noside").count() == 0
+    assert sink.missing_side == 1 and sink.errors == 0
+    assert any("taker side missing" in r.getMessage() and "K1" in r.getMessage() for r in caplog.records)
