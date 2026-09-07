@@ -44,6 +44,24 @@ def test_fetch_markets_all_follows_cursor():
 
 
 @respx.mock
+def test_fetch_markets_all_settled_status_and_min_settled_ts():
+    route = respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+    c = KalshiPublic(HttpClient(1, sleep=lambda s: None), "https://k", sleep_s=0, sleep=lambda s: None)
+    c.fetch_markets_all("KXNFLGAME", status="settled", min_settled_ts=1700000000)
+    assert dict(route.calls[0].request.url.params) == {
+        "series_ticker": "KXNFLGAME", "status": "settled", "limit": "1000", "min_settled_ts": "1700000000"}
+
+
+@respx.mock
+def test_fetch_markets_all_default_status_open_sends_no_timestamp():
+    route = respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+    c = KalshiPublic(HttpClient(1, sleep=lambda s: None), "https://k", sleep_s=0, sleep=lambda s: None)
+    c.fetch_markets_all("KXNFLGAME")
+    assert dict(route.calls[0].request.url.params) == {
+        "series_ticker": "KXNFLGAME", "status": "open", "limit": "1000"}
+
+
+@respx.mock
 def test_fetch_orderbook_and_trades_params():
     ob = respx.get("https://k/markets/T1/orderbook").mock(return_value=httpx.Response(200, json={"orderbook_fp": {}}))
     tr = respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))

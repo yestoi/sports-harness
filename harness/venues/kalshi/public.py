@@ -87,11 +87,14 @@ class KalshiPublic:
         if self._sleep_s:
             self._sleep(self._sleep_s)
 
-    def fetch_markets_all(self, series_ticker: str, max_pages: int = 20) -> list[FetchResult]:
+    def fetch_markets_all(self, series_ticker: str, max_pages: int = 20, status: str = "open",
+                          min_settled_ts: int | None = None) -> list[FetchResult]:
         pages: list[FetchResult] = []
         cursor = ""
         for _ in range(max_pages):
-            params = {"series_ticker": series_ticker, "status": "open", "limit": "1000"}
+            params = {"series_ticker": series_ticker, "status": status, "limit": "1000"}
+            if min_settled_ts is not None:
+                params["min_settled_ts"] = str(min_settled_ts)
             if cursor:
                 params["cursor"] = cursor
             r = self._http.get(f"{self._base}/markets", params=params, redact_params=())

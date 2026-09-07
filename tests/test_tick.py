@@ -99,7 +99,8 @@ def test_source_failure_is_isolated(env_settings, db_session):
     rec, _ = _recorder(env_settings, db_session)
     run = rec.maybe_tick()
     assert run.status == "error" and "espn:nfl" in json.dumps(run.notes["errors"])
-    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 6
+    # 1 open-status page + 1 settled-status page per series across the 6 football series.
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 12
 
 
 @respx.mock
@@ -129,7 +130,8 @@ def test_non_http_exception_in_one_source_does_not_abort_tick(env_settings, db_s
     rec, _ = _recorder(env_settings, db_session)
     run = rec.maybe_tick()
     assert run.status == "error" and "espn:nfl" in json.dumps(run.notes["errors"])
-    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 6
+    # 1 open-status page + 1 settled-status page per series across the 6 football series.
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 12
     assert db_session.query(RawResponse).filter_by(run_id=run.id, source="odds_api").count() == 2
 
 
@@ -146,6 +148,65 @@ def test_tick_records_kalshi_events(env_settings, db_session):
     clock["now"] = NOW + timedelta(seconds=60)
     rec.maybe_tick()
     assert ev.call_count == 6  # 15-minute interval, not due
+
+
+def _settled_rows(db_session, run_id=None):
+    q = db_session.query(RawResponse).filter_by(source="kalshi", endpoint="/markets")
+    if run_id is not None:
+        q = q.filter_by(run_id=run_id)
+    return [r for r in q.all() if (r.params or {}).get("status") == "settled"]
+
+
+@respx.mock
+def test_tick_records_kalshi_settled(env_settings, db_session):
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    mkt = respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
+
+    rec, clock = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+
+    rows = _settled_rows(db_session, run.id)
+    assert len(rows) == 6
+    for r in rows:
+        assert r.params["status"] == "settled"
+
+    expected_min_ts = str(int((NOW - timedelta(days=8)).timestamp()))
+    settled_calls = [c for c in mkt.calls if dict(c.request.url.params).get("status") == "settled"]
+    assert len(settled_calls) == 6
+    for c in settled_calls:
+        assert dict(c.request.url.params)["min_settled_ts"] == expected_min_ts
+
+    # 15 minutes later: inside the hour, kalshi_settled:<series> is not due again.
+    clock["now"] = NOW + timedelta(minutes=15)
+    second = rec.maybe_tick()
+    assert _settled_rows(db_session, second.id) == []
+
+    # 61 minutes after the first tick: the hourly interval has elapsed, so it fires again.
+    clock["now"] = NOW + timedelta(minutes=61)
+    third = rec.maybe_tick()
+    assert len(_settled_rows(db_session, third.id)) == 6
+
+
+@respx.mock
+def test_settled_rows_normalize_without_errors(env_settings, db_session):
+    # F10(b)/R11 item 3: a settled /markets row must not choke the kalshi_markets normalizer.
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json=ESPN))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(
+        return_value=httpx.Response(200, json=ODDS, headers={"x-requests-last": "3", "x-requests-remaining": "100"}))
+    respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(
+        return_value=httpx.Response(200, json={}, headers={"x-requests-last": "2", "x-requests-remaining": "98"}))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={"orderbook_fp": {}}))
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert len(_settled_rows(db_session, run.id)) == 6
+    assert run.notes["normalize_errors"] == []
+    assert run.notes["normalized"].get("kalshi_markets", 0) == 12  # 6 open pages + 6 settled pages
 
 
 @respx.mock
@@ -166,7 +227,8 @@ def test_partial_kalshi_pagination_is_an_error_and_not_marked_fetched(env_settin
     assert run.status == "error"
     assert "partial pagination" in json.dumps(run.notes["errors"])
     assert get_source_state(db_session, "kalshi_markets:KXNFLGAME") is None
-    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 12
+    # 2 pages (first 200, cursor page 500) each for the open and the settled fetch, x6 series.
+    assert db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi", endpoint="/markets").count() == 24
 
 
 @respx.mock
