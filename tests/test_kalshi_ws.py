@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from harness.db.models import Game, OrderbookEvent, VenueMarket, VenueQuote, VenueTrade
+from harness.feeds.http import FetchError
 from harness.recorder.ws_sink import WsSink
 from harness.venues.kalshi import ws as ws_module
 from harness.venues.kalshi.ws import WsRecorder, diff_subscriptions, is_stale, select_ws_tickers, should_reconnect
@@ -279,3 +280,17 @@ def test_connect_retries_once_on_401_using_date_header_offset(monkeypatch):
     assert ws == "CONNECTED"
     assert calls == ["wss://fake.example/ws", "wss://fake.example/ws"]
     assert abs(recorder._offset_ms - 480000) <= 2000
+
+
+def test_refresh_offset_keeps_previous_value_on_fetch_error():
+    class _RaisingHttp:
+        def get(self, *_a, **_kw):
+            raise FetchError("boom: connection refused")
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None,
+                          ws_factory=lambda *a, **kw: None, clock=lambda: NOW, http=_RaisingHttp())
+    recorder._offset_ms = 12345
+
+    recorder._refresh_offset()  # must not raise
+
+    assert recorder._offset_ms == 12345

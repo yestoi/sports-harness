@@ -95,7 +95,11 @@ class WsRecorder:
     def _refresh_offset(self) -> None:
         if self.http is None:
             return
-        offset = server_time_offset_ms(self.http, self.s.kalshi_base_url)
+        try:
+            offset = server_time_offset_ms(self.http, self.s.kalshi_base_url)
+        except Exception as e:  # noqa: BLE001
+            log.warning("kalshi clock offset refresh failed: %r; keeping %d ms", e, self._offset_ms)
+            return
         if offset is not None:
             self._offset_ms = offset
 
