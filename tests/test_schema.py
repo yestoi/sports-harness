@@ -67,8 +67,8 @@ def test_create_schema_creates_the_obe_indexes_on_a_partitioned_table(db_session
     """The phase 3 book loader reads the newest snapshot per ticker (`ix_obe_snapshot`), applies
     deltas by id (`ix_obe_ticker_id`) and looks for a later gap on the anchor's sid (`ix_obe_gap`);
     the REST trade writer dedupes through `ix_trades_venue_trade_id`. Once the tape tables are
-    partitioned, create_schema builds all four -- a partitioned parent's CREATE INDEX is
-    metadata-only and cascades to the partitions."""
+    partitioned, create_schema builds all four; the build recurses into each partition, which is
+    why it is guarded on a live unpartitioned table and idempotent everywhere else."""
     engine = db_session.get_bind()
     wanted = {"ix_obe_snapshot", "ix_obe_ticker_id", "ix_obe_gap", "ix_trades_venue_trade_id"}
     for name in sorted(wanted):

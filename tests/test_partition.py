@@ -21,6 +21,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
+from harness.db import partition as partition_mod
 from harness.db.models import Base, VenueTrade
 from harness.db.partition import partition_bulk_tables
 from harness.db.schema import TAPE_TABLES, create_schema, ensure_partitions, tape_index_ddl
@@ -140,6 +141,71 @@ def test_partition_bulk_tables_attaches_legacy_rows_and_continues_ids(legacy_tap
 
     # Idempotent: a table already in pg_partitioned_table is skipped.
     assert partition_bulk_tables(engine, NOW) == []
+
+
+def test_a_row_written_before_the_attach_does_not_reuse_a_legacy_id(legacy_tape_tables, monkeypatch):
+    """Step (2) commits and the writers resume against the parent while the validate and the
+    attach are still running. `create` gave the parent a fresh BIGSERIAL starting at 1, so unless
+    the sequence is advanced inside that same transaction, every row written in this window takes
+    an id that already exists on the legacy tape -- silently, because the key is `(id, ts)` -- and
+    phase 3's book loader orders deltas by id."""
+    engine = legacy_tape_tables
+    _seed_legacy(engine)
+
+    written: dict[str, int] = {}
+    real_validate = partition_mod._validate_legacy_check
+
+    def validate_and_write(eng, legacy):
+        real_validate(eng, legacy)
+        if legacy == "orderbook_events_legacy":
+            with eng.begin() as conn:
+                written["id"] = conn.execute(text(
+                    "insert into orderbook_events (ticker, ts, sid, seq, kind, raw) "
+                    "values ('K9', :ts, 1, 99, 'delta', '{}'::jsonb) returning id"),
+                    {"ts": NOW}).scalar_one()
+
+    monkeypatch.setattr(partition_mod, "_validate_legacy_check", validate_and_write)
+    partition_bulk_tables(engine, NOW)
+
+    assert written["id"] == 4
+    with engine.connect() as conn:
+        ids = conn.execute(text("select id from orderbook_events order by id")).scalars().all()
+    assert ids == [1, 2, 3, 4]
+
+
+def test_the_attach_reuses_the_key_index_built_concurrently(legacy_tape_tables):
+    """ATTACH PARTITION gives the partition a primary key matching the parent's, and would build
+    one over the whole heap under an exclusive lock. Step (1) builds that key CONCURRENTLY and
+    step (4) promotes it, so the attach finds it and adds no index of its own."""
+    engine = legacy_tape_tables
+    _seed_legacy(engine)
+    partition_bulk_tables(engine, NOW)
+
+    with engine.connect() as conn:
+        rows = dict(conn.execute(text(
+            "select indexname, indexdef from pg_indexes "
+            "where schemaname = 'public' and tablename = 'orderbook_events_legacy'")).all())
+    # Exactly the indexes the migration renamed or promoted: nothing auto-named by the attach.
+    assert set(rows) == {"orderbook_events_pkey_legacy", "ix_obe_ticker_ts_legacy",
+                         "ix_obe_ts_brin_legacy", "ix_obe_snapshot_legacy",
+                         "ix_obe_ticker_id_legacy", "ix_obe_gap_legacy"}
+    # The legacy key covers the parent's key columns, not the old `(id)` alone.
+    assert "UNIQUE INDEX" in rows["orderbook_events_pkey_legacy"]
+    assert rows["orderbook_events_pkey_legacy"].endswith("(id, ts)")
+
+
+def test_partition_bulk_tables_leaves_both_weeks_in_place(legacy_tape_tables):
+    """The migration creates only the partial cutover week. The recorder's tick would fill the
+    rest in, but not until its next run, so the migration finishes the job itself."""
+    engine = legacy_tape_tables
+    _seed_legacy(engine)
+    partition_bulk_tables(engine, NOW)
+
+    with engine.connect() as conn:
+        names = set(conn.execute(text(
+            "select relname from pg_class where relname like '%\\_y2026w3%'")).scalars())
+    for table in TAPE_TABLES:
+        assert {f"{table}_y2026w37", f"{table}_y2026w38"} <= names, (table, sorted(names))
 
 
 def test_partition_bulk_tables_builds_the_new_indexes_on_the_parent(legacy_tape_tables):

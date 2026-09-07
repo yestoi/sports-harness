@@ -287,10 +287,12 @@ def _takes_new_indexes(conn: Connection, table: str) -> bool:
 
     A non-concurrent CREATE INDEX on a populated tape table holds a ShareLock for the whole build,
     which locks the WebSocket sink out of the table -- and `init-db` runs on every deploy, with the
-    sink writing. So create_schema builds these only when the build is free: on a partitioned
-    parent (metadata-only, and each future partition inherits the index at creation) or on a table
-    that is still empty. On the live pre-migration table the one-off `partition-bulk-tables`
-    builds them CONCURRENTLY instead.
+    sink writing. So create_schema builds these only where the build cannot hurt: on a table that
+    is still empty, or on a partitioned parent, where the migration has already built them (with
+    the parent holding nothing but the empty cutover week) and `if not exists` makes the statement
+    a no-op. A CREATE INDEX on a parent is not metadata-only -- it recurses into every partition
+    and takes a ShareLock on each -- so what keeps this harmless is the `if not exists`, not the
+    partitioning. On the live pre-migration table `partition-bulk-tables` builds them CONCURRENTLY.
     """
     if is_partitioned(conn, table):
         return True
