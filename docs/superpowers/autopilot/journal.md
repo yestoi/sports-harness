@@ -465,3 +465,16 @@ Times are America/Chicago.
 - Anomalies: none new
 - Carried forward: none (13 ships with Task 2, already merged on the branch: create_schema is autocommit per statement with lock_timeout and a retry; deploys still stop the writers first until it lands on the NAS)
 - Next: Task 2b and 3 merges, then Task 3b (sonnet) and Task 4 (opus); fix-6 check at 17:43 CT; game-window observation 19:15 CT; Task 2b deploy plus `partition-bulk-tables` in the quiet window
+
+## 36. verify - carried fix 6 hourly check (deferred from entry 28) - 2026-09-07 17:39 CT
+- Orient: rule 3 - a deferred item's judge-after time (17:45 CT, corrected in state.md from the forced-tick semantics) has passed; folded into the phase's task boundary
+- Branch / commits: n/a
+- Result: done; **PASS**
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: PASS. `source_state` for every `kalshi_settled:<series>` key moved from 21:28:01Z (the forced tick 2322) to 22:28:49Z; exactly one non-forced run, 2417 at 22:28:49Z, stored the settled pages (10 raw rows across the six series) and the eleven real ticks around it (2405-2434) stored none; 0 errors on those runs. The once-per-hour rule holds on the recorder's own cadence.
+- Rulings: (1) Carried fix 6 removed from the roadmap. (2) Entry 27 ruling 1's cause is corrected by entry 35 ruling 6: a forced tick fetches every family by design (tick.py line 56); the forced-tick double fetch after a deploy is expected and costs no credits (Kalshi is unmetered).
+- Carried forward: none (open: 9 with Task 2b's quiet-window deploy; 13 shipped in Task 2 on the branch, removed when its deploy's verify passes)
+- Next: phase 3 continues (Task 4 fix round, Task 3b implementing); game-window observation 19:15 CT; the FSU-SMU window 18:15-22:30 CT blocks deploys
