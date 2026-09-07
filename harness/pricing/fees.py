@@ -20,17 +20,29 @@ def ceil_to_centicent(x: Decimal) -> Decimal:
 class FeeModel:
     maker_rate: Decimal
     taker_rate: Decimal
-    multiplier: int = 1
+    #: Kalshi's per-series fee multiplier. Decimal, not int (F45/R21): a series priced at half
+    #: fees carries 0.5, and an int() cast turned that into 0 and made the series look free.
+    multiplier: Decimal = Decimal(1)
 
 
-KALSHI_FOOTBALL = FeeModel(Decimal("0.0175"), Decimal("0.07"), 1)
+KALSHI_FOOTBALL = FeeModel(Decimal("0.0175"), Decimal("0.07"), Decimal(1))
 
 
-def fee_model_for(fee_type: str | None, multiplier: int | None) -> FeeModel:
-    m = int(multiplier or 1)
+def fee_model_for(fee_type: str | None, multiplier: Decimal | str | int | None) -> FeeModel:
+    """The fee model for a market's recorded (fee_type, fee_multiplier).
+
+    An unrecognised fee_type raises rather than falling through to the maker-fee model: an
+    unpriced shape would otherwise be scored at football rates and the error would only show up
+    in the realised P&L (D14).
+    """
+    m = Decimal(str(multiplier or 1))
+    if fee_type is None:
+        return KALSHI_FOOTBALL
     if fee_type == "quadratic":
         return FeeModel(Decimal("0"), Decimal("0.07"), m)
-    return FeeModel(Decimal("0.0175"), Decimal("0.07"), m)
+    if fee_type == "quadratic_with_maker_fees":
+        return FeeModel(Decimal("0.0175"), Decimal("0.07"), m)
+    raise ValueError(f"unsupported fee_type {fee_type!r}")
 
 
 def fee_for_order(model: FeeModel, role: str, p: Decimal, contracts: Decimal | int) -> Decimal:

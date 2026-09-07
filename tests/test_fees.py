@@ -1,4 +1,7 @@
 from decimal import Decimal
+
+import pytest
+
 from harness.pricing.fees import (
     KALSHI_FOOTBALL, ceil_to_cent, ceil_to_centicent, cost, fee_for_order, fee_model_for, fee_per_contract,
 )
@@ -39,3 +42,23 @@ def test_fee_model_for():
 
 def test_cost():
     assert cost(KALSHI_FOOTBALL, "taker", Decimal("0.35"), 20) == Decimal("0.35") + fee_per_contract(KALSHI_FOOTBALL, "taker", Decimal("0.35"), 20)
+
+
+def test_fee_model_for_decimal_multiplier():
+    """R21/F45: Kalshi's fee multiplier is a decimal, so an int() cast turned 0.5 into 0 and
+    made a half-fee series look free."""
+    half = fee_model_for("quadratic_with_maker_fees", Decimal("0.5"))
+    assert half.multiplier == Decimal("0.5")
+    assert half.maker_rate == KALSHI_FOOTBALL.maker_rate
+    full_fee = fee_for_order(KALSHI_FOOTBALL, "maker", Decimal("0.50"), 100)
+    # 0.4375 / 2 = 0.21875, ceiled to the centicent Kalshi charges in.
+    assert fee_for_order(half, "maker", Decimal("0.50"), 100) == ceil_to_centicent(full_fee / 2)
+    assert fee_for_order(half, "maker", Decimal("0.50"), 100) == Decimal("0.2188")
+    assert fee_model_for("quadratic", "0.5").multiplier == Decimal("0.5")
+
+
+def test_fee_model_for_flat_and_unknown_raise():
+    for fee_type in ("flat", "linear", ""):
+        with pytest.raises(ValueError) as exc:
+            fee_model_for(fee_type, 1)
+        assert repr(fee_type) in str(exc.value)

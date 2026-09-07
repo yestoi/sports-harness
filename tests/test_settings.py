@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 
 from harness.config.settings import Settings
@@ -36,3 +37,21 @@ def test_settings_build_stamp_defaults_when_unset(monkeypatch):
     s = Settings()
     assert s.build_sha == "dev"
     assert s.build_time is None
+
+
+def test_settings_phase3_defaults(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db")
+    s = Settings()
+    assert s.exec_period_s == 15
+    assert s.exec_variants == ["sharp_direct", "constrained"]  # Task 4b appends sharp_two_sided
+    assert s.exec_cancel_venue_move_pts == Decimal("0.02")
+    assert s.exec_reprice_fair_move_pts == Decimal("0.01")
+    assert s.exec_kickoff_cutoff_min == 10
+    assert s.exec_max_open_orders == 150
+    assert s.exec_intent_ttl_s == 900
+    assert s.exec_book_max_age_s == 120
+    assert s.settle_period_s == 3600
+    assert s.settle_budget_s == 600
+    assert s.gap_outcomes_batch == 50_000
+    assert s.db_budget_gb == 2000  # D9: 2 TB ceiling from U3
+    assert s.gate_variant == "sharp_direct"  # U5/D1; the Task 4b deploy flips it

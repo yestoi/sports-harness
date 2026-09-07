@@ -1,6 +1,8 @@
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +44,28 @@ class Settings(BaseSettings):
     # odds_alt_window_h, alternates are not fetched at all.
     odds_alt_interval_far_s: int = 120
     odds_alt_window_h: int = 36  # U1 value: alternates stop being fetched beyond this many hours to kickoff
+
+    # --- phase 3: paper executor -------------------------------------------------------
+    exec_period_s: int = 15
+    #: Variants the executor places paper orders for (D10). Task 4b appends "sharp_two_sided".
+    exec_variants: list[str] = Field(default_factory=lambda: ["sharp_direct", "constrained"])
+    #: Cancel a resting order when the venue's own quote has moved this far against it.
+    exec_cancel_venue_move_pts: Decimal = Decimal("0.02")
+    #: Reprice a resting order when fair value has moved at least this far.
+    exec_reprice_fair_move_pts: Decimal = Decimal("0.01")
+    exec_kickoff_cutoff_min: int = 10  # R8: stop placing this close to kickoff
+    exec_max_open_orders: int = 150  # D10: shared across the executed variants
+    exec_intent_ttl_s: int = 900
+    exec_book_max_age_s: int = 120
+
+    # --- phase 3: settlement, benchmarks, storage ---------------------------------------
+    settle_period_s: int = 3600
+    settle_budget_s: int = 600
+    gap_outcomes_batch: int = 50_000
+    db_budget_gb: int = 2000  # D9: the 2 TB ceiling from U3; the dashboard turns red at 80 %
+    #: U5/D1: the one variant the phase gate is judged on. The Task 4b deploy flips it to
+    #: "sharp_two_sided"; falls back to the active primary when the named variant is unregistered.
+    gate_variant: str = "sharp_direct"
 
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()
