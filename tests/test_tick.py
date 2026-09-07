@@ -510,3 +510,30 @@ def test_pricing_clock_is_read_after_the_fetches_not_at_tick_start(env_settings,
     latest_fetch = db_session.query(func.max(RawResponse.fetched_at)).filter(RawResponse.run_id == run.id).scalar()
     assert latest_fetch > run.started_at
     assert seen["now"] >= latest_fetch, (seen, latest_fetch, run.started_at)
+
+
+@respx.mock
+def test_forced_tick_fetches_inside_the_interval(env_settings, db_session):
+    # A deploy verification needs a real tick now, not at the next cadence slot: force=True ignores
+    # every per-source interval, while the default still yields a skipped heartbeat.
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": [], "trades": []}))
+    rec, clock = _recorder(env_settings, db_session)
+    first = rec.maybe_tick()
+    clock["now"] = NOW + timedelta(seconds=30)
+    forced = rec.maybe_tick(force=True)
+    clock["now"] = NOW + timedelta(seconds=60)
+    plain = rec.maybe_tick()
+    assert first.status == "ok"
+    assert forced.status == "ok"
+    assert db_session.query(RawResponse).filter_by(run_id=forced.id).count() > 0
+    assert plain.status == "skipped"
+
+
+def test_forced_tick_never_overrides_the_quiet_window(env_settings, db_session):
+    # interval=None is the planner's quiet-window signal; force must not turn it into a paid fetch.
+    rec, _ = _recorder(env_settings, db_session)
+    rec._force = True
+    assert rec._due(None, NOW, None) is False
+    assert rec._due(NOW, NOW, 900) is True
+    rec._force = False
+    assert rec._due(NOW, NOW, 900) is False

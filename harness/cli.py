@@ -46,11 +46,11 @@ def init_db() -> None:
 
 
 @app.command("tick-once")
-def tick_once() -> None:
+def tick_once(force: bool = typer.Option(False, "--force", help="Fetch every source now, ignoring cadence")) -> None:
     configure_logging()
     from harness.scheduler import build_recorder
 
-    run = build_recorder(get_settings()).maybe_tick()
+    run = build_recorder(get_settings()).maybe_tick(force=force)
     log.info("run %s status=%s n=%s credits=%s", run.id, run.status, run.n_requests, run.credits_used)
 
 

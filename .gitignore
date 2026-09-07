@@ -1,7 +1,7 @@
 .superpowers/
 __pycache__/
 *.pyc
-.venv/
+.venv
 .env
 secrets/*
 !secrets/.gitkeep

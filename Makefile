@@ -1,5 +1,5 @@
 # Sportsbook harness — deploy targets (mirrors ~/dev/nas-media-stack conventions)
-.PHONY: deploy-nas deploy-nas-app init-nas ssh-nas logs-nas status-nas tunnel-nas stop-mac test help
+.PHONY: deploy-nas deploy-nas-app init-nas ssh-nas logs-nas status-nas tunnel-nas stop-mac test preflight verify-summary worktree worktree-rm help
 
 NAS_IP    ?= $(shell grep '^NAS_IP=' .env.nas 2>/dev/null | cut -d= -f2)
 NAS_USER  ?= $(shell grep '^NAS_USER=' .env.nas 2>/dev/null | cut -d= -f2)
@@ -89,8 +89,27 @@ tunnel-nas: ## Forward the NAS health endpoint to http://localhost:$(SERVE_PORT)
 stop-mac: ## Stop the stopgap recorder on this Mac (avoid double credit spend once the NAS is live)
 	@docker compose down
 
-test: ## Run the test suite (needs DATABASE_URL_TEST)
-	@.venv/bin/pytest -q
-
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-12s %s\n", $$1, $$2}'
+
+# ---- autopilot helpers (added 2026-09-07) ----
+# The test DB is per branch so implementers in worktrees never share a schema; scripts/testdb.py creates it.
+# PYTHONPATH=. makes pytest import the checkout it runs in (the editable install would otherwise resolve
+# `harness` to the main checkout from inside a worktree).
+VENV    ?= $(if $(wildcard .venv/bin/pytest),.venv,$(HOME)/dev/sports/.venv)
+TEST_DB ?= harness_test_$(shell git branch --show-current | tr -c 'a-z0-9\n' '_' | tr -d '\n')
+
+test: ## Full suite against a per-branch test DB on localhost:5433 (created if missing)
+	@URL=$$($(VENV)/bin/python scripts/testdb.py $(TEST_DB)) && DATABASE_URL_TEST=$$URL PYTHONPATH=. $(VENV)/bin/pytest -q
+
+preflight: ## Session preflight: clock, git, Mac, test DB, secrets, posture, tunnel, NAS, stamp, game window
+	@scripts/preflight.sh
+
+verify-summary: ## Deterministic Layer 3: /api/summary versus SQL (DEPLOY_SHA=<sha>)
+	@$(VENV)/bin/python scripts/verify_summary.py $(DEPLOY_SHA)
+
+worktree: ## Implementer worktree: make worktree BR=<branch> [BASE=main]; prints the path
+	@scripts/worktree.sh add $(BR) $(or $(BASE),main)
+
+worktree-rm: ## Remove an implementer worktree: make worktree-rm BR=<branch>
+	@scripts/worktree.sh rm $(BR)

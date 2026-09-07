@@ -38,6 +38,7 @@ harness = ["matching/*.yaml", "pricing/*.yaml", "variants/*.yaml", "dashboard/te
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
 filterwarnings = [
   "ignore::DeprecationWarning:starlette.*",

@@ -1,7 +1,8 @@
 # Deploy verification contract
 
-Runs after every deploy. Four layers, in order: freshness, live data over ssh, invariants and
-bands, pixels through Chrome. The controller judges; walker prose is advisory.
+Runs after every deploy. Layers, in order: freshness, live data over ssh, invariants and bands, the
+deterministic summary check, and pixels through Chrome when the Layer 3b cadence rule says so. The
+controller judges; walker prose is advisory.
 
 ## Preconditions
 
@@ -52,7 +53,7 @@ select status, count(*) from runs where started_at > now() - interval '3 hours' 
 select id, started_at, status from runs order by id desc limit 1;
 select decision, count(*) from signals where replay=false and created_at > now() - interval '3 hours' group by 1;
 select kind, count(*) from orderbook_events where ts > now() - interval '2 hours' group by 1;
-select now() - max(ts) as ws_last_event_age from orderbook_events where ts > now() - interval '24 hours';
+select now() - ts as ws_last_event_age from orderbook_events order by id desc limit 1;  -- by id: max(ts) scanned 19M rows (120 s on 2026-09-07)
 select relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze from pg_stat_user_tables order by n_dead_tup desc limit 5;
 select count(*), pg_size_pretty(sum(size)) from pg_ls_waldir();
 select pg_size_pretty(pg_database_size('harness'));
@@ -73,7 +74,7 @@ rule below.
 |---|---|---|
 | Containers | all `Up`; `app-serve` `(healthy)`; `app-exec` present after phase 3 | existing |
 | `/healthz` | 200 with `status: ok`; during quiet hours `last_status` is `skipped`, still 200 | existing |
-| Runs | a `skipped` row inside the last 2 minutes (the heartbeat), **and** a non-skipped row inside the cadence window for the time of day (15 min weekdays, 5 min weekends, 2 min in a game window). Of the last 5 real ticks at most 1 is `error`, and none repeats the same error key. | existing |
+| Runs | a `skipped` row inside the last 2 minutes (the heartbeat), **and** a non-skipped row inside the cadence window for the time of day (15 min weekdays, 5 min weekends, 2 min in a game window); after a deploy the forced tick (`tick-once --force`, skill deploy step 6) is that row. Of the last 5 real ticks at most 1 is `error`, and none repeats the same error key. | existing |
 | ERROR lines | 0 for every service in the last 10 minutes, **except** a line whose message is one of `espn failed`, `odds featured failed`, `odds alternates failed`, `kalshi markets failed`, `kalshi events failed`, `kalshi trades failed`, `kalshi orderbook failed` carrying an http 5xx, 429, timeout or connection error, when the next real tick is `ok`. Those are journaled as anomalies with their count. Any other ERROR line, or the same upstream error in two consecutive real ticks, is a FAIL. | existing |
 | Tape continuity | `gap` rows in the last 2 hours = 0. A non-zero count names the deploy or the socket; journal the sids. | existing |
 | WS last event age | under 60 minutes outside quiet hours | existing |
@@ -185,7 +186,28 @@ good" is out of band. Out of band is an integrity anomaly, never a headline.
 An item that cannot be judged in the current window is **deferred**, not failed: journal it with
 the wakeup time (first weekday pricing run: 08:10 CT).
 
-## Layer 3: Chrome walkthrough (read-only)
+## Layer 3: deterministic summary check (every verify)
+
+`make verify-summary DEPLOY_SHA=<sha>` (`scripts/verify_summary.py`) fetches `/api/summary` and the page over ssh
+and compares them with SQL run in the same seconds. SQL runs first, so an in-flight tick can only make the page
+newer; an out-of-band candidate count is measured again once after 20 s before it scores FAIL. Output goes to
+`docs/superpowers/autopilot/evidence/<date>-<unit>-<HHMM>-summary.txt` (`--evidence`).
+
+| Check | Tolerance |
+|---|---|
+| `build.sha` vs `DEPLOY_SHA` | exact |
+| Sections | no section carries an `error` key (the `_section` wrapper's degraded marker) |
+| Page time | `/` and `/api/summary` each under 10 s |
+| `health.run_id` vs `select id from runs order by started_at desc limit 1` | within 10 |
+| `websocket.last_event_at` age vs the by-id SQL age | within 120 s |
+| `funnel.signals_by_variant[*].candidate` (24 h) vs SQL per active variant | within 5 % or 20 rows |
+| `kill_switch.active` | false |
+| `health.credits_remaining` | numeric |
+| `data_quality` | a dict without `error` (empty is allowed in quiet hours) |
+
+Any FAIL is a dashboard FAIL and triggers the Chrome walkthrough below for the failed item's section.
+
+## Layer 3b: Chrome walkthrough (read-only; runs on the day's first verify, on a deploy whose diff touches `harness/dashboard/`, or on a Layer 3 FAIL)
 
 Cross-checks the controller fills from the screenshots and the Layer 2 numbers. A mismatch is a
 FAIL of the dashboard, not of the data.
@@ -252,12 +274,12 @@ Checklist (current dashboard; items 10 to 16 apply once phase 3 is deployed):
 
 Evidence. The controller copies each returned path into
 `docs/superpowers/autopilot/evidence/` with `cp -n` (never overwrite a re-run) as
-`<date>-<unit>-<HHMM>-<nn>-<slug>.jpg`. The controller's own read of each screenshot is one
-journal line per item, for example `item 6: PASS, 42 primary rows, newest 07:14`.
+`<date>-<unit>-<HHMM>-<nn>-<slug>.jpg`. The controller reads the screenshot of every FAIL item and one PASS item
+with the Read tool and re-scores those; each read is one journal line, for example `item 6: PASS, 42 primary rows, newest 07:14`.
 
 ## Verdict rules
 
-- The controller reads every screenshot with the Read tool and re-scores each item.
+- The deterministic checks (Layers 1, 2, 2b and `make verify-summary`) decide; the controller re-scores the walker's FAIL items and one PASS item from their screenshots.
 - An agent verdict never overrides a deterministic check, and a FAIL from a deterministic
   check never needs an agent's agreement.
 - A transient (the named upstream errors above, passing on the next real tick) is journaled,

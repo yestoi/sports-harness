@@ -45,7 +45,7 @@ Controller rulings this file governs. Each is reversible; the review states the 
 |---|---|
 | R1 | Gate criteria, thresholds, benchmark and BH families, cell grids, success thresholds and confirmation cut-offs are invariants. The loop never amends them; only a dated user decision does. |
 | R2 | `no_veto` is not registered while the veto is shadow-only, because it equals the primary. H9 is measured within the primary by decision label. A live `no_veto` is a user gate and would replace a secondary by dated amendment. |
-| R3 | Stop notifications use `PushNotification`, a macOS notification (`osascript -e 'display notification "…" with title "autopilot"'`), and the report file. No email, no SMS. Preflight sends one test notification on each channel and journals the result. |
+| R3 | Stop notifications use `PushNotification`, a macOS notification (`osascript -e 'display notification "…" with title "autopilot"'`), and the report file. No email, no SMS. The first preflight of each calendar day sends one test notification on each channel and journals the result. |
 | R4 | Deploy window: no deploy while any matched game is `in_progress`, within 4 h after any kickoff, within 15 min before any kickoff, or 60 to 100 min before an NFL kickoff. Exceptions: only "recorder down", "executor down", "app-serve unhealthy", journaled with the games affected. |
 | R5 | No git remote (a gate). After every phase and every Monday the loop writes `git bundle create` and copies it to `/volume1/docker/sports-harness/repo-backup/` over scp. The user keeps a Time Machine or equivalent copy of the Mac. |
 | R6 | One resume drill before 2026-09-12, journaled as `drill`. |
@@ -73,8 +73,8 @@ Mid-phase deploys that a committed plan instructs are covered by the deploy auth
 ## Files and sections the loop may edit
 
 The loop edits `roadmap.md` only in the Phases table's Status column, Carried fixes, and User-side TODOs; it
-appends to `journal.md`, `evidence/`, `reports/`, and `docs/reports/`; it edits `verify.md` only through a
-plan's last task. Standing authorizations, Decisions, Secrets, Pre-loaded decisions, the Operator calendar,
+rewrites `state.md`; it appends to `journal.md`, `evidence/` (screenshots and the `-layer2.txt`, `-summary.txt`,
+`-preflight.txt` outputs), `reports/`, and `docs/reports/`; it edits `verify.md` only through a plan's last task. Standing authorizations, Decisions, Secrets, Pre-loaded decisions, the Operator calendar,
 and the section below are the user's text. The loop never edits them, not even to "record" a decision.
 Decisions go in the journal, and a decision that would change these sections is a gate.
 `.claude/skills/autopilot/SKILL.md` and the v2 spec are never edited by the loop.

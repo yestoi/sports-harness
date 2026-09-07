@@ -53,6 +53,8 @@ class Recorder:
         self.clock, self.monotonic = clock, monotonic
         # I7: last known-good body per (source, endpoint); avoids re-reading multi-MB JSONB every tick.
         self._last_good: dict[tuple[str, str], dict | list] = {}
+        # A forced tick (deploy verification) ignores every per-source interval for that one tick.
+        self._force = False
 
     # ---- helpers -------------------------------------------------------------------
     def _latest_body_from_db(self, session: Session, source: str, endpoint: str) -> dict | list | None:
@@ -82,7 +84,7 @@ class Recorder:
             key = f"espn:{sport}"
             try:
                 body = None
-                if is_due(store.get_source_state(session, key), now, 900):
+                if self._due(store.get_source_state(session, key), now, 900):
                     r = self.espn.fetch_scoreboard(sport)  # type: ignore[arg-type]
                     store.store_raw(session, run.id, "espn", _ESPN_PATH[sport], {}, r)
                     ctx["n"] += 1
@@ -111,7 +113,7 @@ class Recorder:
                 interval = interval_for(sport, now, kickoffs, self.s.tz_local)
                 endpoint = f"/sports/{sport_key}/odds"
                 body = None
-                if is_due(store.get_source_state(session, key), now, interval):
+                if self._due(store.get_source_state(session, key), now, interval):
                     r = self.odds.fetch_featured(sport_key)
                     store.store_raw(session, run.id, "odds_api", endpoint, {"markets": "featured"}, r)
                     ctx["n"] += 1
@@ -133,6 +135,8 @@ class Recorder:
                 events = parse_event_ids_and_times(body)
                 last_alt = {eid: ts for eid, _ in events
                             if (ts := store.get_source_state(session, f"odds_alt:{eid}")) is not None}
+                # Alternates are deliberately not forced: one per in-window event would multiply the
+                # credit cost of a deploy check; the featured fetch above already proves the pipeline.
                 for eid in alternates_due(now, events, last_alt, self.s.odds_alternates_interval_s):
                     if budget.remaining_s() < alt_floor:
                         ctx["skipped_alternates"] += 1
@@ -165,7 +169,7 @@ class Recorder:
             try:
                 interval = interval_for(_SERIES_SPORT[series], now, kickoffs, self.s.tz_local)
                 pages: list = []
-                if is_due(store.get_source_state(session, key), now, interval):
+                if self._due(store.get_source_state(session, key), now, interval):
                     for r in self.kalshi.fetch_markets_all(series):
                         store.store_raw(session, run.id, "kalshi", "/markets", {"series_ticker": series}, r)
                         ctx["n"] += 1
@@ -189,7 +193,7 @@ class Recorder:
             key = f"kalshi_events:{series}"
             try:
                 pages: list = []
-                if is_due(store.get_source_state(session, key), now, 900):
+                if self._due(store.get_source_state(session, key), now, 900):
                     for r in self.kalshi.fetch_events_all(series):
                         store.store_raw(session, run.id, "kalshi", "/events", {"series_ticker": series}, r)
                         ctx["n"] += 1
@@ -282,7 +286,15 @@ class Recorder:
                 ctx["errors"].append({f"kalshi_orderbook:{ticker}": repr(e)})
 
     # ---- entry point -----------------------------------------------------------------
-    def maybe_tick(self) -> Run:
+    def _due(self, last: datetime | None, now: datetime, interval: int | None) -> bool:
+        # interval=None is the cadence planner's quiet-window "do not fetch": a forced tick never
+        # overrides it (no paid calls at 03:00 for a deploy check).
+        if interval is None:
+            return False
+        return True if self._force else is_due(last, now, interval)
+
+    def maybe_tick(self, force: bool = False) -> Run:
+        self._force = force
         now = self.clock()
         budget = _Budget(self.s.tick_budget_s, self.monotonic)
         ctx: dict = {"n": 0, "credits": 0, "remaining": None, "errors": [], "warnings": [], "fetched": False,
