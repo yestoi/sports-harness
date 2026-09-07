@@ -1,0 +1,29 @@
+# Popularity tiers for gap-snapshot signals: {sport: {espn_team_id: tier}}. Tier 3 = marquee
+# fan-following programs (LSU, Saints), tier 2 = other marquee programs, tier 1 = notable/playoff
+# teams, 0 (absent) = everyone else. Used to bucket signals by expected soft-book/public flow.
+ncaaf:
+  99: 3      # LSU
+  333: 2
+  2390: 2
+  61: 2
+  2633: 2
+  130: 2
+  194: 2
+  2483: 1
+  2306: 1
+  251: 1
+  87: 1
+  2116: 1
+  25: 1
+nfl:
+  18: 3      # New Orleans Saints
+  12: 2
+  21: 2
+  8: 2
+  25: 2
+  33: 2
+  34: 1
+  2: 1
+  16: 1
+  9: 1
+  14: 2     # Los Angeles Rams -- added for tests/test_gaps.py coverage (home team in fixture)
