@@ -8,6 +8,8 @@ _PATTERNS = [
     (re.compile(r"(apiKey|api_key)=([^&\s]+)", re.I), r"\1=[REDACTED]"),
     (re.compile(r"(Authorization:\s*)(\S+\s+)?(\S+)", re.I), r"\1[REDACTED]"),
     (re.compile(r"([A-Z\-]*(?:SIGNATURE|ACCESS-KEY)[A-Z\-]*:\s*)(\S+)", re.I), r"\1[REDACTED]"),
+    (re.compile(r"sk-ant-[A-Za-z0-9_\-]+"), "[REDACTED]"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"), "[REDACTED PEM]"),
 ]
 
 
