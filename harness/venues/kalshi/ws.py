@@ -3,6 +3,7 @@ import logging
 import signal
 import time
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Callable
 
 import websocket
@@ -11,7 +12,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from harness.config.settings import Settings
 from harness.db.models import Game, VenueMarket, VenueQuote
+from harness.feeds.http import HttpClient
 from harness.venues.kalshi.auth import sign_request
+from harness.venues.kalshi.clock import server_time_offset_ms
 
 log = logging.getLogger(__name__)
 CHANNELS = ["trade", "orderbook_delta"]
@@ -75,25 +78,61 @@ def select_ws_tickers(session: Session, now: datetime, cap: int, lookahead_hours
 
 class WsRecorder:
     def __init__(self, settings: Settings, session_factory: sessionmaker, sink, ws_factory: Callable = websocket.create_connection,
-                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
+                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), http: HttpClient | None = None):
         self.s, self.factory, self.sink, self.ws_factory, self.clock = settings, session_factory, sink, ws_factory, clock
+        self.http = http
+        self._offset_ms = 0
         self._stop = False
         self._sids: list[int] = []
         self._current: list[str] = []
         self._backoff = 1.0
 
     def _headers(self) -> list[str]:
-        ts_ms = int(self.clock().timestamp() * 1000)
+        ts_ms = int(self.clock().timestamp() * 1000) + self._offset_ms
         h = sign_request(self.s.kalshi_key_id(), self.s.kalshi_private_key_pem(), "GET", "/trade-api/ws/v2", ts_ms)
         return [f"{k}: {v}" for k, v in h.items()]
 
+    def _refresh_offset(self) -> None:
+        if self.http is None:
+            return
+        offset = server_time_offset_ms(self.http, self.s.kalshi_base_url)
+        if offset is not None:
+            self._offset_ms = offset
+
+    def _offset_from_response_date(self, resp_headers: dict | None) -> int | None:
+        if not resp_headers:
+            return None
+        date_header = resp_headers.get("date") or resp_headers.get("Date")
+        if not date_header:
+            return None
+        try:
+            server_dt = parsedate_to_datetime(date_header)
+        except (TypeError, ValueError):
+            return None
+        if server_dt.tzinfo is None:
+            server_dt = server_dt.replace(tzinfo=timezone.utc)
+        return int((server_dt - self.clock()).total_seconds() * 1000)
+
     def _connect(self):
+        self._refresh_offset()
         for url in (self.s.kalshi_ws_url, FALLBACK_URL):
             try:
                 ws = self.ws_factory(url, header=self._headers(), timeout=RECV_TIMEOUT_S)
                 log.info("ws connected %s", url)
                 return ws
             except websocket.WebSocketBadStatusException as e:
+                if e.status_code == 401:
+                    offset = self._offset_from_response_date(getattr(e, "resp_headers", None))
+                    if offset is not None:
+                        log.info("kalshi 401; retrying %s with server-derived offset %d ms", url, offset)
+                        self._offset_ms = offset
+                        try:
+                            ws = self.ws_factory(url, header=self._headers(), timeout=RECV_TIMEOUT_S)
+                            log.info("ws connected %s", url)
+                            return ws
+                        except websocket.WebSocketBadStatusException as e2:
+                            log.warning("ws handshake failed %s: %s", url, e2)
+                            continue
                 log.warning("ws handshake failed %s: %s", url, e)
         raise RuntimeError("ws connect failed on all urls")
 

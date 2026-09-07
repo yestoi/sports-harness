@@ -3,6 +3,9 @@ import json
 import time
 
 import websocket
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from email.utils import format_datetime
 from sqlalchemy.orm import sessionmaker
 
 from datetime import datetime, timedelta, timezone
@@ -14,6 +17,9 @@ from harness.venues.kalshi import ws as ws_module
 from harness.venues.kalshi.ws import WsRecorder, diff_subscriptions, is_stale, select_ws_tickers, should_reconnect
 
 NOW = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
+
+_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_PEM = _KEY.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
 
 
 def test_sink_trade_and_delta_and_gap(db_session):
@@ -132,9 +138,16 @@ class _FakeWs:
 
 class _FakeSettings:
     kalshi_ws_url = "wss://fake.example/ws"
+    kalshi_base_url = "https://k"
     ws_max_tickers = 10
     ws_lookahead_hours = 24
     ws_stale_s = 180
+
+    def kalshi_key_id(self) -> str:
+        return "kid-123"
+
+    def kalshi_private_key_pem(self) -> bytes:
+        return _PEM
 
 
 class _FakeSink:
@@ -236,3 +249,33 @@ def test_ws_sink_reset_sequences_avoids_synthetic_gap_on_reconnect(db_session):
     sink.handle(delta, NOW)
     kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
     assert kinds == ["snapshot", "delta"]
+
+
+def test_headers_signs_with_clock_plus_offset():
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None,
+                          ws_factory=lambda *a, **kw: None, clock=lambda: NOW)
+    recorder._offset_ms = 480000
+    fixed_ms = int(NOW.timestamp() * 1000)
+    headers = recorder._headers()
+    ts_header = next(h for h in headers if h.startswith("KALSHI-ACCESS-TIMESTAMP"))
+    assert ts_header.split(": ", 1)[1] == str(fixed_ms + 480000)
+
+
+def test_connect_retries_once_on_401_using_date_header_offset(monkeypatch):
+    server_date = format_datetime(NOW + timedelta(seconds=480), usegmt=True)
+    calls = []
+
+    def ws_factory(url, header, timeout):
+        calls.append(url)
+        if len(calls) == 1:
+            raise websocket.WebSocketBadStatusException(
+                "Handshake status 401 Unauthorized", 401, resp_headers={"date": server_date})
+        return "CONNECTED"
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None,
+                          ws_factory=ws_factory, clock=lambda: NOW)
+    ws = recorder._connect()
+
+    assert ws == "CONNECTED"
+    assert calls == ["wss://fake.example/ws", "wss://fake.example/ws"]
+    assert abs(recorder._offset_ms - 480000) <= 2000

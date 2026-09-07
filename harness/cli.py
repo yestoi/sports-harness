@@ -111,11 +111,12 @@ def ws_record() -> None:
     if not s.has_kalshi_credentials():
         log.info("kalshi credentials absent; ws recorder disabled")
         return
+    from harness.feeds.http import HttpClient
     from harness.recorder.ws_sink import WsSink
     from harness.venues.kalshi.ws import WsRecorder
 
     factory = make_session_factory(make_engine(s.database_url))
-    WsRecorder(s, factory, WsSink(factory)).run_forever()
+    WsRecorder(s, factory, WsSink(factory), http=HttpClient(s.http_timeout_s)).run_forever()
 
 
 @app.command("match-report")

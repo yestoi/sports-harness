@@ -49,6 +49,17 @@ SIGTERM. Recorder exited cleanly with no errors logged and flushed pending write
 410 `ws`-sourced (alongside 10184 pre-existing `rest`-sourced rows). See
 `.superpowers/sdd/2026-09-06-phase1-normalize-match/task-10-report.md` for full detail.
 
+## Clock accuracy
+
+The NAS must run NTP (UGOS Control Panel → Time). Kalshi rejects a WebSocket handshake whose
+`KALSHI-ACCESS-TIMESTAMP` signature is more than a few minutes off its own clock, and every
+recorded `fetched_at` inherits whatever skew the host clock has, silently shifting timestamps in
+the database. The recorder now compensates the handshake signature: it reads Kalshi's public
+`/exchange/status` endpoint before connecting (and, if a connection attempt gets a 401, from that
+response's own `Date` header) to compute the server/local clock offset and adds it to the signed
+timestamp. This keeps the WebSocket connecting on a skewed host, but it does not and cannot fix
+the skew in already-recorded timestamps — NTP on the NAS is still required for accurate data.
+
 ## Known external quirks
 
 - ESPN's scoreboard API sits behind Akamai and returns HTTP 403 for custom or browser-like User-Agent strings while accepting httpx's default `python-httpx/x.y`. The HTTP client therefore sends no custom User-Agent. If ESPN rows show `http 403` in `runs.notes.errors`, check this first.
