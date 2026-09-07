@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from typer.testing import CliRunner
@@ -27,10 +27,12 @@ def cli_settings(monkeypatch, db_session):
     get_settings.cache_clear()
 
 
-def test_price_once_with_run_id_uses_that_runs_started_at_not_wall_clock(monkeypatch, cli_settings, db_session):
+def test_price_once_with_run_id_uses_that_runs_finished_at_not_wall_clock(monkeypatch, cli_settings, db_session):
     started_at = datetime(2026, 9, 1, 13, 0, tzinfo=timezone.utc)
-    run = Run(started_at=started_at, status="running")
-    db_session.add(run)
+    finished_at = started_at + timedelta(seconds=40)
+    run = Run(started_at=started_at, finished_at=finished_at, status="ok")
+    unfinished = Run(started_at=started_at, status="running")
+    db_session.add_all([run, unfinished])
     db_session.commit()
 
     captured = {}
@@ -45,10 +47,17 @@ def test_price_once_with_run_id_uses_that_runs_started_at_not_wall_clock(monkeyp
     monkeypatch.setattr("harness.strategy.pipeline.price_and_signal", fake_price_and_signal)
 
     result = runner.invoke(app, ["price-once", "--run-id", str(run.id)])
-
     assert result.exit_code == 0, result.output
     assert captured["run_id"] == run.id
-    assert captured["now"] == started_at
+    # The run's own odds are fetched after started_at; finished_at bounds everything it recorded.
+    assert captured["now"] == finished_at
+
+    result = runner.invoke(app, ["price-once", "--run-id", str(unfinished.id)])
+    assert result.exit_code == 0, result.output
+    from harness.config.settings import Settings
+
+    budget = Settings.model_fields["tick_budget_s"].default
+    assert captured["now"] == started_at + timedelta(seconds=budget)
 
 
 def test_price_once_with_unknown_run_id_errors_without_pricing(monkeypatch, cli_settings):

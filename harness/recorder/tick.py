@@ -321,8 +321,13 @@ class Recorder:
             if summaries:
                 # Only price when this tick actually refreshed Kalshi markets, so gap snapshots
                 # are computed against fresh quotes rather than stale ones from a skipped tick.
+                # Price with the clock read *now*, not the tick's start time: the odds fetched a
+                # few seconds into this tick carry fetched_at > run.started_at, and the book-line
+                # loader's upper bound would otherwise fall back to the previous fetch (2-5 min old),
+                # labelling every fair value stale.
+                pricing_now = self.clock()
                 try:
-                    ctx["pricing"] = price_and_signal(session, run.id, now, self.s, self.s.price_budget_s)
+                    ctx["pricing"] = price_and_signal(session, run.id, pricing_now, self.s, self.s.price_budget_s)
                 except Exception as e:  # noqa: BLE001
                     log.exception("pricing failed")
                     session.rollback()

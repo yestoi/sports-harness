@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from sqlalchemy import func
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
@@ -440,3 +441,42 @@ def test_pricing_failure_is_isolated_and_degrades_the_run(env_settings, db_sessi
     assert run.status == "degraded", run.notes
     assert any("pricing" in w for w in run.notes["warnings"]), run.notes
     assert run.finished_at is not None
+
+
+@respx.mock
+def test_pricing_clock_is_read_after_the_fetches_not_at_tick_start(env_settings, db_session, monkeypatch):
+    """Regression: with `now` captured at tick start, the book-line loader's `fetched_at <= now`
+    bound excluded the odds fetched seconds later in the same tick and priced against the
+    previous fetch, labelling every fair value stale."""
+    import harness.recorder.tick as tick_mod
+    from harness.db.models import RawResponse
+
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={}))
+
+    seen = {}
+
+    def capture(session, run_id, now, settings, budget_s):
+        seen["now"] = now
+        return {"gaps": 0}
+
+    monkeypatch.setattr(tick_mod, "price_and_signal", capture)
+    rec, clock = _recorder(env_settings, db_session)
+    # A ticking clock: every read (tick start, each HTTP fetch, pricing) is one second later.
+    t = {"i": 0}
+
+    def ticking():
+        t["i"] += 1
+        return NOW + timedelta(seconds=t["i"])
+
+    rec.clock = ticking
+    rec.odds._http._clock = ticking
+    run = rec.maybe_tick()
+
+    latest_fetch = db_session.query(func.max(RawResponse.fetched_at)).filter(RawResponse.run_id == run.id).scalar()
+    assert latest_fetch > run.started_at
+    assert seen["now"] >= latest_fetch, (seen, latest_fetch, run.started_at)

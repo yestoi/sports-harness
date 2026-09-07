@@ -35,3 +35,13 @@ wide_band               secondary   c2bc45377328  True
 ## Reporting rules (from spec §6.7)
 
 Weeks 1–2 explore; week 3 confirms only what was selected in week 2. Benjamini–Hochberg at 10% across cells, empirical-Bayes shrinkage of cell means toward the grand mean, cells with n < 30 greyed.
+
+## Amendment 2026-09-07 (measurement fix, variant ids unchanged)
+
+The first hours of live pricing produced zero candidates: every direct fair value was labelled
+`not_stale = false` with staleness 138-353 s while the books were a median 12 s old at fetch.
+Cause: the tick priced with its start-time clock, and the book-line loader's `fetched_at <= now`
+bound excluded the odds fetched seconds later in the same tick, so pricing used the previous
+fetch (2-5 min old). Fixed on main the same day by reading the clock at pricing time. No variant
+config changed, so the six ids above stand; signals before the fix carry the wrong label and
+must be excluded from Week 1 reporting (or re-scored with `harness replay`).

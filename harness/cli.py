@@ -148,13 +148,13 @@ def variants_list() -> None:
 @app.command("price-once")
 def price_once(run_id: int = typer.Option(None, "--run-id")) -> None:
     """Price and signal one run. With `--run-id`, `now` is pinned to that run's own
-    `started_at` -- not wall-clock time -- so a backfill against an old run can never see
-    books, games, or gap history that postdate it. Without `--run-id`, the latest run is
+    `finished_at` -- not wall-clock time -- so a backfill against an old run sees exactly the
+    books it fetched and nothing that postdates it. Without `--run-id`, the latest run is
     picked (as today) and `now` is wall-clock time, since that run is effectively live.
     """
     configure_logging()
     from harness.db.models import Run
-    from harness.strategy.pipeline import price_and_signal
+    from harness.strategy.pipeline import price_and_signal, pricing_clock_for_run
 
     s = get_settings()
     factory = make_session_factory(make_engine(s.database_url))
@@ -171,7 +171,7 @@ def price_once(run_id: int = typer.Option(None, "--run-id")) -> None:
                 log.error("run %s not found", run_id)
                 raise typer.Exit(1)
             rid = run_id
-            now = run.started_at
+            now = pricing_clock_for_run(run, s.tick_budget_s)
         result = price_and_signal(session, rid, now, s, s.price_budget_s)
     print(f"run_id={rid} {result}")
 

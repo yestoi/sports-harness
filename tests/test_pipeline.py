@@ -185,3 +185,16 @@ def test_variant_order_rotates_by_run_id_and_the_skip_is_recorded(env_settings, 
     assert result_run1["variants_run"] != result_run2["variants_run"]
     assert result_run1["variants_run"] == ["tiny2"]
     assert result_run2["variants_run"] == ["tiny"]
+
+
+def test_pricing_clock_for_run_uses_finished_at_then_start_plus_budget():
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from harness.strategy.pipeline import pricing_clock_for_run
+
+    start = NOW
+    done = SimpleNamespace(started_at=start, finished_at=start + timedelta(seconds=37))
+    assert pricing_clock_for_run(done, 100) == start + timedelta(seconds=37)
+    unfinished = SimpleNamespace(started_at=start, finished_at=None)
+    assert pricing_clock_for_run(unfinished, 100) == start + timedelta(seconds=100)

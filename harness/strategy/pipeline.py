@@ -8,7 +8,7 @@ stages and between variants; when it is spent, remaining work is skipped and the
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -99,6 +99,15 @@ def _insert_signals(
     )
     return len(session.execute(stmt).fetchall())
 
+
+
+def pricing_clock_for_run(run, tick_budget_s: float) -> datetime:
+    """The `now` to price a stored run with. A run's odds are fetched *after* `started_at`, so
+    pricing at `started_at` would exclude its own books; `finished_at` bounds everything the run
+    recorded. A run that never finished falls back to its start plus the tick budget."""
+    if run.finished_at is not None:
+        return run.finished_at
+    return run.started_at + timedelta(seconds=tick_budget_s)
 
 def price_and_signal(session: Session, run_id: int, now: datetime, settings: Settings, budget_s: float) -> dict:
     deadline = time.monotonic() + budget_s
