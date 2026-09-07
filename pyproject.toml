@@ -32,7 +32,7 @@ harness = "harness.cli:app"
 include = ["harness*"]
 
 [tool.setuptools.package-data]
-harness = ["matching/*.yaml", "pricing/*.yaml"]
+harness = ["matching/*.yaml", "pricing/*.yaml", "variants/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

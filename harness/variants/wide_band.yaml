@@ -1,0 +1,23 @@
+# Trade the tails as well as the 20-80c core.
+name: wide_band
+tier: secondary
+sports: [nfl, ncaaf]
+sources_allowed: [direct]
+edge_floor: 0.02
+edge_ceiling: 0.06
+disagreement_mult: 1.5
+as_seed: 0.01
+price_band: [0.15, 0.85]
+min_ttk_min: 20
+max_spread_c: {nfl: 8, ncaaf: 20}
+min_volume_24h: 50
+velocity_max_pts: 0.02
+stale_s: 180
+kelly_fraction: 0.25
+bankroll: 3000
+per_bet_cap: 0.03
+per_game_cap: 0.05
+daily_cap: 0.15
+max_open: 25
+floor_stake: 10
+apply_caps: false
