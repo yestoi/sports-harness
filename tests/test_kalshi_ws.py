@@ -803,6 +803,9 @@ def test_sequence_gap_resubscribes_the_sid_once_inside_the_recovery_window(db_se
     frames = _subscription_frames(sockets[0])
     assert [f["params"]["action"] for f in frames] == ["delete_markets", "add_markets"]
     assert all(f["params"]["sids"] == [7] and f["params"]["market_tickers"] == ["K-A", "K-B"] for f in frames)
+    # One id per frame: two `update_subscription` commands sharing an id leave the venue's
+    # acks and errors uncorrelatable, so the recorder could not tell which frame failed.
+    assert [f["id"] for f in frames] == [2, 3]
     assert cleared == [(7, {})]
     # Both gaps are still on the tape: recovering from one does not hide that it happened.
     gaps = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
@@ -847,6 +850,7 @@ def test_third_gap_inside_five_minutes_falls_through_to_a_reconnect(db_session, 
 
     frames = _subscription_frames(sockets[0])
     assert [f["params"]["action"] for f in frames] == ["delete_markets", "add_markets", "delete_markets", "add_markets"]
+    assert [f["id"] for f in frames] == [2, 3, 4, 5]  # every frame carries its own id
     # The third gap raised through to the backoff path, which opened one more connection.
     assert len(sockets) == 2
     assert db_session.query(OrderbookEvent).filter_by(kind="gap").count() == 3
