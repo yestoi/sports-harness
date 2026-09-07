@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import text
 
-from harness.db.schema import ensure_partitions, week_bounds
+from harness.db.schema import create_schema, ensure_partitions, week_bounds
 
 
 def test_week_bounds_monday_to_monday_utc():
@@ -44,3 +44,31 @@ def test_raw_insert_roundtrip(db_session):
     db_session.flush()
     got = db_session.get(RawResponse, (row.id, row.fetched_at))
     assert got.body == {"markets": []}
+
+
+def test_create_schema_adds_no_fair_reason_to_an_existing_table(db_session):
+    """`init-db` (the only schema entrypoint; no migrations framework) must be safe to rerun
+    against a database that predates the no_fair_reason column -- e.g. the NAS deployment,
+    which already has `market_gap_snapshots` without it. `create_all` alone would not add the
+    column to an existing table, so `create_schema` also runs an idempotent `ALTER TABLE`."""
+    engine = db_session.get_bind()
+
+    def has_column() -> bool:
+        return db_session.execute(text(
+            "select 1 from information_schema.columns "
+            "where table_name = 'market_gap_snapshots' and column_name = 'no_fair_reason'"
+        )).first() is not None
+
+    assert has_column()  # the db_session fixture already ran create_schema once
+
+    db_session.execute(text("alter table market_gap_snapshots drop column no_fair_reason"))
+    db_session.commit()
+    assert not has_column()
+
+    create_schema(engine)
+    db_session.commit()
+    assert has_column()
+
+    # idempotent: rerunning again against a table that already has the column is a no-op.
+    create_schema(engine)
+    assert has_column()
