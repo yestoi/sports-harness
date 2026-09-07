@@ -265,6 +265,9 @@ reported "not collected".
 4. `verify.md` gains: `/ui/` loads at 390 px and 1440 px through Chrome, `/api/snap` lists every name with
    age under twice its cadence, the legacy page and `/api/summary` unchanged.
 5. Phase 4 item 6 (drawdown alert) becomes a Pulse rule; item 7 (`venue_requests`) becomes a Floor tile.
+6. The learnable layer (spec §1.2, user 2026-09-07 evening): server-written sentences per section, two-level
+   labels, `glossary.json`, the How-it-works page, and plain phrases for every reason code. The reviewer
+   checks every technical term on a surface has a glossary entry and every reason code has a phrase.
 
 ### Phase 6: deferred items (from the phase 2 and 3 reviews)
 

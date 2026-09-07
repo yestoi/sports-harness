@@ -57,6 +57,62 @@ away. On a phone the tabs sit at the bottom.
   harness.
 - Nothing on any surface acts. The `/kill` and `/unkill` forms stay on the legacy page only.
 
+### 1.2 Learnable by anyone (user decision, 2026-09-07 evening)
+
+The surfaces must make sense to someone who has never seen the system, without losing any insight the
+operator needs. Audience: the operator plus anyone they show it to, so the plain layer is always on and
+the technical names stay visible in small type for cross-reference with the reports.
+
+- **Sentence first, evidence second.** Every section opens with one to three plain-English sentences
+  written by fixed templates in the snapshot builder (§4), never in the browser. The chart or table under
+  the sentence is its evidence. Templates are pure functions over the payload with unit tests; the
+  sentence carries the same numbers the evidence shows, never a different rounding.
+- **Two-level labels.** The primary label is a plain question or phrase; the technical name sits beside
+  or beneath it in small muted type (`Better than the closing price? · CLV vs pinnacle_t5`). Kalshi tickers
+  are rendered as `Alabama to win`, `Wisconsin +7`, `Over 55`, with the ticker string secondary.
+- **Uncertainty in words.** Sample sizes are translated by one function shared by every template,
+  bound to the report's own flags: below 10 game clusters "too few games to say anything" and no estimate
+  is stated in the sentence; 10 to 29 "enough to notice, not enough to trust"; 30 or more "enough to
+  take seriously". The interval is called the "honest range" and always stated beside an estimate.
+  Clusters are explained once per surface as "games, not bets: bets in the same game rise and fall
+  together".
+- **Tap definitions.** Every remaining technical term carries a definition of two lines (what it is,
+  why it matters here) from a static `glossary.json` in the front end, opened by tap or hover on the
+  term. One entry per row of the vocabulary table below; the reviewer checks that no term on a surface
+  lacks one.
+- **How it works.** A static page under `/ui/#how`, linked from the header on every surface: the
+  pipeline as a diagram of eight steps (record, match, price, decide, paper order, fill from the
+  recorded tape, settle, judge) each with one sentence; the three jobs and which surface answers each;
+  what paper means; the honesty rules in plain words; the full glossary.
+- **Reason codes in plain words.** Skip, cancel and rejection reasons are shown as phrases with the code
+  secondary, from the vocabulary table. A reason not in the table is shown as its code and logged as a
+  gap for the next plan.
+
+**Vocabulary (plain phrase, then the technical name it stands for; the glossary entry expands each):**
+
+| Plain | Technical |
+|---|---|
+| simulated, no money at risk | paper |
+| the sharp books' fair price; age of the fair price | fair value; `staleness_s` |
+| better than the closing price? | CLV (closing line value) |
+| Pinnacle's price 5 min before kickoff; the consensus closing price; Kalshi's last trade before kickoff; the final result | `pinnacle_t5`; `consensus_close`; `kalshi_last_trade_pre_kick`; `result` |
+| did the price move our way after the fill? | markout |
+| wanted to bet | intent |
+| passed on | skip |
+| the price we wanted was already gone; too close to kickoff; the order book could not be trusted; our fair price was too old; already at the open-order limit; hit a bankroll cap; could not tell which game this market was; not enough edge | `post_only_reject`; `kickoff`; `book_dirty`; `fair_stale`; `exec_capacity`; `cap_*`; `unmatched`; `edge_below_min` |
+| the market moved against us; moved our order to a new price; the edge shrank; the signal went away; the stop button was on; kickoff arrived | cancel reasons `venue_move`; `reprice`; `edge_decay`; `signal_rejected`; `kill_switch`; expiry |
+| orders ahead of ours at this price | `queue_ahead_at_place`, `queue_remaining` |
+| filled from the recorded order book; would have filled without our watcher; the market crossed our price | `queue_model`; `no_watcher`; `snapshot_cross` |
+| a real trade printed at our price | `has_print` |
+| games, not bets | `n_clusters` |
+| honest range | cluster-robust 90 % interval |
+| strategy variant; the one being judged; the pre-registered original | variant; gate variant; primary |
+| the stop button: no new orders, cancel everything | kill switch |
+| the live list of everyone's orders on Kalshi, recorded | order book, tape |
+| this page's data, computed N s ago | dashboard snapshot |
+| a week still being counted | `provisional` |
+| the twelve tests for going live | gate criteria |
+
 ## 2. Surfaces
 
 Each surface lists: the job, the layout in reading order, every metric with its source table, the rule
@@ -320,6 +376,7 @@ Lands with phase 4.5, not Task 12b.
 - `GET /api/snap/{name}` returns the payload with `generated_at`, `elapsed_ms`, `cadence_s` and an ETag;
   `GET /api/snap` lists names and ages. Unknown name is 404. The front end polls with `If-None-Match`.
 - `GET /ui/` and `/ui/*` serve static files from `harness/dashboard/static/`. Root `/` is unchanged.
+- Every payload carries `sentences`: a mapping from section id to the list of plain-English sentences of §1.2, built by `harness/dashboard/sentences.py` (pure functions, one per section, sharing `confidence_phrase(n_clusters)` and `reason_phrase(code)`), and `readings` for per-row plain text where a surface shows one (Gate criteria, Study declined reasons). The front end renders sentences verbatim and never composes its own.
 - The build sha and `now` go into every payload; the UI shows staleness relative to its own clock and
   flags a snapshot older than twice its cadence (`WATCH`) or three times (`BROKEN`), which is also how
   the UI detects a dead `app-serve` job.
@@ -338,6 +395,7 @@ Lands with phase 4.5, not Task 12b.
   surfaces, metrics and rules, not the typography or palette. Two fixed points: the `PAPER` badge is the
   same colour on every surface, and the interval mark with its cluster count is a single reusable
   component used everywhere an estimate appears.
+- The front end ships `glossary.json` and the How-it-works page (§1.2); a term with a glossary entry is rendered with a dotted underline and opens its definition on tap or hover. The header on every surface links to How it works.
 - Reduced motion is honoured. Animation is limited to the queue bars, the fills stream and status
   transitions.
 
@@ -376,6 +434,7 @@ Lands with phase 4.5, not Task 12b.
   `text`; a second run appends a second `report_runs` row and leaves the first untouched.
 - Checks registry test: every registered check has a statement timeout and none references the tape
   tables (a static assertion over the SQL strings).
+- Phase 4.5: every sentence template has a unit test on a fixture payload, including the three `confidence_phrase` bands and the rule that a greyed cell yields a sentence with no estimate; a test that every technical term appearing in the surfaces' label tables has a `glossary.json` entry; a test that every skip, cancel and rejection code the executor and strategy can emit has a `reason_phrase`.
 - Phase 4.5: each snapshot builder has a test with a seeded database asserting bounded queries (the
   test engine's statement timeout at 2000 ms and an assertion that no SQL text names the three bulk
   tables), a payload schema test, an ETag test, and a Chrome pass in `verify.md` for `/ui/` at 390 px and
@@ -402,3 +461,6 @@ tunnel. Any write path other than the frozen kill pair.
 5. Live scores are recorded as change events from the existing ESPN poll rather than adding a faster
    scoreboard cadence. Cost: clock resolution equals the tick interval, labelled as such.
 6. Vendored uPlot rather than hand-drawn time series or a framework. Cost: one pinned 45 KB file.
+7. Sentences are written server-side by templates, not by a model and not in the browser, so the plain layer
+   is deterministic, testable and cannot drift from the evidence. Cost: templates must be extended when a
+   new section or reason code appears; the tests in §8 catch a missing one.
