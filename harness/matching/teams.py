@@ -91,6 +91,12 @@ def ambiguous_candidates(session: Session, sport: str, raw_name: str) -> list[in
     key. Returns [] when there's no real collision (0 matches: a genuine miss; exactly 1
     match: not ambiguous -- resolve_team would already have found it) -- resolve_team's
     own contract (None on either ambiguity or a miss) is unchanged.
+
+    Only these three fields are checked, not `abbreviation` or the composite espn_abbr_name/
+    espn_slug sources: every real collision seen so far (colliding NFL cities, NCAAF D-II/D-III
+    namesakes) is a display-name/location/short-name match, and callers here only ever pass a
+    name parsed from a title (never a bare abbreviation), so this is safe for that. A future
+    caller checking a raw abbreviation for ambiguity would need a different implementation.
     """
     key = normalize_name(raw_name)
     if not key:
