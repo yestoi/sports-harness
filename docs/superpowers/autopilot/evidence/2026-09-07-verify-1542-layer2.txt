@@ -1,0 +1,167 @@
+== layer 2 Mon Sep  7 15:42:55 CDT 2026 deploy e370d45 at 15:40 CT
+-- runs (non-skipped, last 5)
+2252 | 2026-09-07 20:42:12.642179+00 | ok | 2 | 4999858 | []
+2251 | 2026-09-07 20:41:15.609201+00 | ok | 6 | 4999860 | []
+2250 | 2026-09-07 20:41:12.642474+00 | ok | 0 |  | []
+2249 | 2026-09-07 20:39:26.62101+00 | ok | 8 | 4999866 | []
+2245 | 2026-09-07 20:36:56.621686+00 | ok | 5 | 4999874 | []
+-- runs by status, 3h
+skipped | 268
+ok | 62
+-- newest run
+2253 | 2026-09-07 20:42:42.642879+00 | skipped
+-- signals 3h
+candidate | 8846
+rejected | 362358
+-- orderbook_events by kind, 2h
+snapshot | 196
+delta | 96110
+-- ws last event age
+00:00:01.381615
+-- gap rows since the deploy (20:40Z)
+0 |  | 
+-- snapshots since the restart and recorder_offset_ms presence
+0 | 0 |  | 
+-- one snapshot raw offset sample
+-- settled raw rows (fix 6)
+2251 | 10 | 2026-09-07 20:41:20.073465+00
+2250 | 10 | 2026-09-07 20:41:13.277379+00
+-- source_state kalshi_settled
+kalshi_settled:KXNCAAFGAME | 2026-09-07 20:41:15.609201+00
+kalshi_settled:KXNCAAFSPREAD | 2026-09-07 20:41:15.609201+00
+kalshi_settled:KXNCAAFTOTAL | 2026-09-07 20:41:15.609201+00
+kalshi_settled:KXNFLGAME | 2026-09-07 20:41:15.609201+00
+kalshi_settled:KXNFLSPREAD | 2026-09-07 20:41:15.609201+00
+kalshi_settled:KXNFLTOTAL | 2026-09-07 20:41:15.609201+00
+-- forced tick run notes
+2251 | ok | 6 | {"espn": 0, "kalshi_events": 0, "kalshi_trades": 0, "odds_featured": 2, "kalshi_markets": 28, "odds_alternates": 0, "kalshi_orderbook": 0} | []
+-- pg stats
+runs | 2253 | 173 | 2026-09-07 11:34:31.470155+00 | 2026-09-07 20:14:39.842585+00
+trade_watermarks | 2079 | 131 | 2026-09-07 15:18:36.574786+00 | 2026-09-07 20:40:40.201052+00
+games | 453 | 70 |  | 2026-09-07 00:16:15.862154+00
+team_aliases | 5392 | 38 | 2026-09-07 20:40:40.24048+00 | 2026-09-07 20:40:40.262024+00
+venue_trades | 565039 | 31 | 2026-09-07 03:29:24.045489+00 | 2026-09-07 19:38:41.913825+00
+-- wal
+12 | 192 MB
+-- db size
+10103 MB
+-- NFL unmatched reasons (fix 12)
+-- NFL matched vs total in play
+ERROR:  column "sport" does not exist
+LINE 1: ...t match_reason, count(*) from venue_markets where sport='nfl...
+                                                             ^
+ERROR:  column "sport" does not exist
+LINE 1: ...t match_status, count(*) from venue_markets where sport='nfl...
+                                                             ^
+== status-nas
+NAME                         STATUS
+sports-harness-app-run-1     Up 2 minutes
+sports-harness-app-serve-1   Up 2 minutes (healthy)
+sports-harness-app-ws-1      Up 2 minutes
+sports-harness-postgres-1    Up 21 hours (healthy)
+
+{"status":"ok","last_run_at":"2026-09-07T20:42:42.642879+00:00","last_status":"skipped","seconds_since":21,"credits_remaining":4999858,"credits_budget":5000000,"credits_low":false,"build":"e370d45"} [200]
+== disk/mem
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.4T  3.5T  69% /volume1
+               total        used        free      shared  buff/cache   available
+Mem:            7717        6083         328         260        2337        1634
+Swap:           9999        4332        5667
+== degraded sections (10m)
+0
+== ERROR lines (10m)
+== app-run
+== app-serve
+== app-ws
+== app-exec
+== app-ws log since restart (subscribe, gap, error frames)
+== healthz
+{"status":"ok","last_run_at":"2026-09-07T20:42:42.642879+00:00","last_status":"skipped","seconds_since":24,"credits_remaining":4999858,"credits_budget":5000000,"credits_low":false,"build":"e370d45"}
+== layer 2 addendum Mon Sep  7 15:43:41 CDT 2026
+-- snapshots since the restart (kind=snapshot) and recorder_offset_ms presence
+96 | 96 | 2026-09-07 20:40:47.884753+00 | 2026-09-07 20:40:48.051395+00
+-- offset sample
+-542 | 2026-09-07 20:40:48.051395+00
+-542 | 2026-09-07 20:40:48.051025+00
+-- gap/snapshot ratio today
+== app-ws log tail since restart
+[2K{"asctime": "2026-09-07 20:40:47,809", "levelname": "INFO", "name": "harness.venues.kalshi.ws", "message": "ws connected wss://api.elections.kalshi.com/trade-api/ws/v2"}
+[2K{"asctime": "2026-09-07 20:46:18,820", "levelname": "WARNING", "name": "harness.venues.kalshi.ws", "message": "ws loop error: OperationalError('(psycopg.errors.QueryCanceled) canceling statement due to statement timeout'); reconnecting in 1s"}
+[2K{"asctime": "2026-09-07 20:46:36,133", "levelname": "INFO", "name": "harness.venues.kalshi.ws", "message": "ws connected wss://api.elections.kalshi.com/trade-api/ws/v2"}
+== match-report
+delta | 19568409
+snapshot | 1363
+-- invariants (must be 0)
+0
+0
+-- credits used today and last 24h
+860
+-- venue_markets columns
+id
+venue
+ticker
+event_ticker
+series_ticker
+game_id
+market_type
+threshold
+side_team_id
+side
+kalshi_team_uuid
+close_time
+match_confidence
+match_status
+match_reason
+first_seen_raw_id
+last_seen_at
+-- settled raw rows per run (last 6 runs with any)
+2251 | 10
+2250 | 10
+-- unmatched reasons, all sports, in play 24h
+matched | pair+date exact | 4373
+unmatched | no game for pair | 341
+matched | pair+date exact (code) | 178
+unmatched | unresolved: UT Rio Grande Valley | 4
+unmatched | unresolved: Chicago St. | 2
+ Container sports-harness-postgres-1  Running
+== nfl: venue markets 772
+  matched       772  100.0%
+  fuzzy           0    0.0%
+  manual          0    0.0%
+  unmatched       0    0.0%
+  games without ESPN link: 256
+== ncaaf: venue markets 4126
+  matched      3779   91.6%
+  fuzzy           0    0.0%
+  manual          0    0.0%
+  unmatched     347    8.4%
+     341  no game for pair                                              e.g. KXNCAAFGAME-26SEP06SCSTFAMU-FAMU
+       4  unresolved: UT Rio Grande Valley                              e.g. KXNCAAFGAME-26SEP12UTRGVNICH-NICH
+       2  unresolved: Chicago St.                                       e.g. KXNCAAFGAME-26SEP19CHSBUT-BUT
+  games without ESPN link: 83
+unresolved Odds API names (7d): ['Grambling State Tigers', 'Southern University Jaguars', 'UMass Minutemen']
+ambiguous aliases: 11 (first 10: ['ncaaf/espn_abbr_name/rsvt lakers', 'ncaaf/espn_abbr/osu', 'ncaaf/espn_abbr/rsvt', 'ncaaf/espn_display/roosevelt lakers', 'ncaaf/espn_location/charlotte', 'ncaaf/espn_location/roosevelt', 'ncaaf/espn_location/troy', 'ncaaf/espn_short/roosevelt', 'ncaaf/espn_slug/roosevelt lakers', 'nfl/espn_location/los angeles'])
+== post-reconnect check Mon Sep  7 15:47:43 CDT 2026
+-- last 200k events by id: kinds, gap rows, snapshots with offset (id-bounded, cheap)
+delta | 199407 | 0 | 2026-09-07 15:26:09.973+00 | 2026-09-07 20:47:41.772+00
+snapshot | 592 | 192 | 2026-09-07 16:13:22.65998+00 | 2026-09-07 20:46:36.305671+00
+-- offset sample
+-844 | 2026-09-07 20:46:36.305671+00
+-844 | 2026-09-07 20:46:36.305391+00
+-- newest runs
+2260 | 2026-09-07 20:47:42.642229+00 | ok | 2 | 4999848
+2259 | 2026-09-07 20:47:12.642721+00 | skipped | 0 | 
+2258 | 2026-09-07 20:46:42.64218+00 | skipped | 0 | 
+2257 | 2026-09-07 20:45:42.642959+00 | ok | 3 | 4999850
+[2K{"asctime": "2026-09-07 20:46:18,820", "levelname": "WARNING", "name": "harness.venues.kalshi.ws", "message": "ws loop error: OperationalError('(psycopg.errors.QueryCanceled) canceling statement due to statement timeout'); reconnecting 
+== subscription width (fix 5) Mon Sep  7 15:48:32 CDT 2026
+-- snapshot bursts per connect (distinct tickers), recent 400k events by id
+2026-09-07 20:46:00+00 | 96 | 96
+2026-09-07 20:40:00+00 | 96 | 96
+2026-09-07 19:20:00+00 | 50 | 50
+2026-09-07 18:45:00+00 | 50 | 50
+2026-09-07 18:19:00+00 | 50 | 50
+2026-09-07 17:43:00+00 | 50 | 50
+2026-09-07 17:18:00+00 | 50 | 50
+2026-09-07 16:45:00+00 | 50 | 50
+-- matched markets with games kicking off in the next 72h vs 24h
+50 | 96

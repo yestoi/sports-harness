@@ -342,3 +342,56 @@ Times are America/Chicago.
 - Anomalies: (a) reviewer and implementer running suites on one worktree database at the same time produced deadlocks and drop/create errors twice (health, recorder); the controller now sequences them (no fix round while a review runs on the branch). (b) two controller merges ran inside a worktree cwd and merged nothing until redone from the main checkout; no damage. (c) this venv's pytest 9.1.1 prints no summary line under the repo's `-q` addopts; counts come from dots or `--collect-only`.
 - Carried forward: none added; 12, 11, 4, 5, 6, 7, 8 stay open until the wave-1 verify rows pass; 9 waits for the quiet window
 - Next: deploy `main` dfca429 via `make deploy-nas` (ws_sink.py, ws.py changed; game window 0/0/0 at 15:25 CT), then verify
+
+## 27. deploy - main e370d45 (hotfix wave 1: carried fixes 12, 11, 4, 5, 6, 7, 8) - 2026-09-07 15:40 CT
+- Orient: rule 2 - `/healthz` build 1bd1a26, `git diff --stat 1bd1a26..main -- . ':!docs' ':!*.md'` non-empty (the loop revision, `tick-once --force`, five merged batches)
+- Branch / commits: `main` 1bd1a26..e370d45 (code dfca429; e370d45 docs)
+- Result: done
+- Dispatches: 0
+- Tests: 327 passed on `main`, pristine (entry 26)
+- Review: n/a
+- Deploy: e370d45 at 15:39:37-15:40:41 CT via `make deploy-nas` (full: `ws_sink.py` and `ws.py` changed; `deploy-nas-app` does not exist before `app-exec`), foreground, exit 0, no seed-teams warning (log: `evidence/2026-09-07-deploy-1539-e370d45.log`); preconditions: `main`, clean tree, game window 0/0/0 at 15:39 CT, first deploy of this session (eighth of the day); containers Up, `app-serve` healthy within 2 min; stamp verified on `/healthz` (`"build":"e370d45"`); `app-ws` reconnected at 20:40:47Z, 96 fresh snapshots, gap rows 0; forced tick run 2251 at 15:41 CT: ok, n=115, 6 credits, 0 errors
+- Verification: entry 28
+- Rulings: (1) The forced tick overlapped the recorder container's own first tick after the restart (run 2250 at 20:41:12Z), so both fetched the hourly settled pages (10 raw rows each) before either had written `source_state`; a controller-timing artefact of running `tick-once --force` inside the first minute after a restart, 12 extra Kalshi requests, no credits - cost if wrong: none; future forced ticks wait for the first heartbeat after a restart.
+- Carried forward: none
+- Next: verify (entry 28)
+
+## 28. verify - deploy e370d45 (wave 1) - 2026-09-07 15:50 CT
+- Orient: rule 3 - no `verify` entry since the `deploy` entry 27
+- Branch / commits: n/a
+- Result: done; **PASS** on every judged row; two items deferred
+- Dispatches: 0 (no walker: `verify-summary` PASS 9/9, no dashboard diff, the day's first verify ran at 11:25 CT)
+- Tests: n/a
+- Review: n/a
+- Deploy: e370d45 (entry 27)
+- Verification: PASS (evidence: `evidence/2026-09-07-verify-1542-layer2.txt`, `evidence/2026-09-07-verify-1550-summary.txt`). Layer 1 stamp e370d45. Layer 2: runs ok on cadence with 0 errors, heartbeat 21 s; ERROR lines 0 on every service (10 min); degraded sections 0; tape continuity gap rows 0 since the deploy and 0 in the last 200k events; WS last event age 1 s; Postgres no table over the dead-tuple rule, WAL 192 MB; disk 31 % free (3.5 T; above 30 %, the 25 % gate is 0.7 T away); memory available 1634 MB; credits numeric and decreasing on real ticks only, 4,999,848, 860 used today (inside the 500-3,000 band even under U1 on a weekday); DB size 10,103 MB. Layer 2b invariants: `fair_values.staleness_s < 0` = 0, `taker_side_missing` = 0; gap/snapshot ratio today 0 %. Layer 3 `verify-summary` PASS 9/9 (build, sections, page time 0.6 s, run id, WS age, candidates per variant, kill switch false, credits numeric, data_quality). Rows the fixes name: fix 11 `/healthz` and the summary read 4,999,858 while the newest run was a `skipped` heartbeat PASS (the item-2 FAIL open since 11:25 CT clears); fix 12 `match-report`: NFL 772 markets 100 % matched, 178 rows with reason `pair+date exact (code)` (exactly the former unmatched count), 0 unmatched PASS; fix 7 every snapshot since the restart carries `recorder_offset_ms` (-542 ms on the 20:40Z connect, -844 ms on the 20:46Z connect) PASS; fix 5 the subscription grew from 50 to 96 tickers, equal to the matched markets kicking off inside [-8 h, +72 h] versus 50 inside 24 h PASS; fix 6 settled pages stored (10 raw rows per fetch across the six series, `source_state` keys set, run 2251 `normalize_errors` none) PASS on presence; fix 8 no live row (covering tests, invariant 4 untouched) PASS by test; fix 4 no live gap has occurred, the reconnect path produced fresh snapshots and 0 gap rows PASS on the covering test. Deferred: fix 6 "once per hour" (judge after 16:45 CT: exactly one run fetches settled in the 21:41Z hour); fix 4's live recovery is read from the `app-ws` log when the first `gap` row appears (a standing watch, not a FAIL).
+- Anomalies: (1) `app-ws` logged one WARNING at 20:46:18Z, `ws loop error: OperationalError(QueryCanceled: statement timeout); reconnecting in 1s`, reconnected at 20:46:36Z with 96 fresh snapshots and 0 gap rows. The controller's own Layer 2 addendum query was scanning the whole day's `orderbook_events` (19.6 M deltas) at that moment, which starved the sink's insert past its statement timeout. Self-inflicted: verification queries on `orderbook_events` are id-bounded from now on (the `max(id) - N` form), never a day scan; the gap/snapshot band is judged from the id-bounded window. Not carried (no code defect); the 18 s tape hole is inside the WS's own reconnect budget. (2) The forced tick overlapped the container's first tick (entry 27 ruling 1).
+- Rulings: (1) Carried fixes 12, 11, 4, 5, 7, 8 removed from the roadmap (rows passed); 6 stays until the once-per-hour check at 16:45 CT; 9 stays until the quiet-window deploy. (2) The credits-per-day band excursion rule of entry 21 stands; today's 860 is inside the band anyway.
+- Carried forward: none
+- Next: operate (daily line, entry 30), then idle; wakeup 16:45 CT for the fix-6 hourly check; 19:15 CT for a game-window observation (first live game under the widened subscription and the gap recovery); 01:05 CT for the compose deploy (fix 9) and then phase 3 (entry 20 ruling 3: "9 in the quiet window, then phase 3"; R19 puts every carried fix before the phase 3 branch)
+
+## 29. drill - resume drill second half (R6) - 2026-09-07 15:52 CT
+- Orient: n/a (judged by this session per entry 23 ruling 1)
+- Branch / commits: n/a
+- Result: done. This fresh session (Kickoff: `/effort high`, `/autopilot`) read state.md and the journal's last entries, ran `make preflight`, and oriented to **hotfix carried fix 12** in the first wave with no re-dispatch of any earlier agent and no duplicate journal entry (entry 25 is new; entries 22-24 were not re-recorded). That is the expected unit named in entry 23 ruling 1 (fix 12, outside a game window).
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Rulings: (1) The R6 drill is complete (first half entry 18 at 13:38 CT, second half here); the calendar row "Once, before 2026-09-12" is satisfied; the mid-phase drill "once more mid-phase between two tasks" (skill Unit: operate) remains for phase 3 - cost if wrong: one more restart during phase 3.
+- Carried forward: none
+- Next: entry 30
+
+## 30. operate - daily watch (Monday 2026-09-07, written at the wave-1 boundary) - 2026-09-07 15:52 CT
+- Orient: rule 4 - Daily 09:00 CT line not yet journaled today (the morning's entries covered the alias pass, the bundle at 11:23 CT and the weekly-report n/a ruling)
+- Branch / commits: n/a
+- Result: done
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: `/volume1` 69 % used, 3.5 T free (31 %; gate below 25 %); `free -m` available 1634 MB (R17; 328 MB free, swap 4.3 G used of 10 G, unchanged pattern); database 10,103 MB (about 2.7 GB/day at the current tape rate; the 2 TB ceiling of U3 is years away, the 800 GB verify bound about 290 days; partitioning lands with phase 3 Task 2b); Odds credits 4,999,848 remaining, 860 used today (band 500-3,000; U1 raises Saturdays); Anthropic spend n/a before phase 5; executor heartbeat n/a before phase 3; ERROR messages none in the last 10 min on any service (the one WARNING is entry 28 anomaly 1); kill switch observed inactive; `secrets/backup_age_key` does not exist yet (no nag)
+- Rulings: none
+- Carried forward: none
+- Next: idle; wakeup 16:45 CT (fix-6 hourly check)

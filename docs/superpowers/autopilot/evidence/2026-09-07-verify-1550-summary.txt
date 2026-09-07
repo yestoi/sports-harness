@@ -1,0 +1,1841 @@
+# verify_summary 2026-09-07T20:47:43.800350+00:00 deploy e370d45
+PASS build: page e370d45 vs deploy e370d45
+PASS sections: no section errors
+PASS page_time: / 0.6s, /api/summary 0.6s
+PASS run_id: page 2259 vs sql 2259
+PASS ws_last_event: page age 4s vs sql 2s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4999850
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+
+# /api/summary
+{
+ "now": "2026-09-07T20:47:42.405609+00:00",
+ "build": {
+  "sha": "e370d45",
+  "time": "2026-09-07T20:39:37Z"
+ },
+ "health": {
+  "status": "ok",
+  "last_run_at": "2026-09-07T20:47:12.642721+00:00",
+  "last_status": "skipped",
+  "seconds_since": 29,
+  "credits_remaining": 4999850,
+  "credits_budget": 5000000,
+  "credits_low": false,
+  "run_id": 2259
+ },
+ "kill_switch": {
+  "active": false,
+  "reason": "",
+  "set_at": null
+ },
+ "funnel": {
+  "sources": {
+   "odds_api": 315,
+   "kalshi": 23583,
+   "espn": 162
+  },
+  "markets_by_sport": {
+   "nfl": {
+    "matched": 772
+   },
+   "ncaaf": {
+    "unmatched": 347,
+    "matched": 3779
+   }
+  },
+  "fair_by_source": {
+   "derived": 151166,
+   "direct": 11220
+  },
+  "gaps": 204549,
+  "signals_by_variant": {
+   "constrained": {
+    "tier": "secondary",
+    "candidate": 201,
+    "rejected": 117794
+   },
+   "nfl_only": {
+    "tier": "secondary",
+    "candidate": 609,
+    "rejected": 130383
+   },
+   "no_velocity": {
+    "tier": "secondary",
+    "candidate": 1764,
+    "rejected": 127652
+   },
+   "sharp_direct": {
+    "tier": "primary",
+    "candidate": 1571,
+    "rejected": 119299
+   },
+   "sharp_plus_derived": {
+    "tier": "secondary",
+    "candidate": 5571,
+    "rejected": 123306
+   },
+   "wide_band": {
+    "tier": "secondary",
+    "candidate": 1863,
+    "rejected": 122741
+   }
+  }
+ },
+ "match_report": {
+  "nfl": {
+   "total": 772,
+   "matched_pct": 100.0,
+   "counts": {
+    "matched": 772
+   },
+   "top_unmatched_reasons": []
+  },
+  "ncaaf": {
+   "total": 4126,
+   "matched_pct": 91.58991759573436,
+   "counts": {
+    "unmatched": 347,
+    "matched": 3779
+   },
+   "top_unmatched_reasons": [
+    {
+     "reason": "no game for pair",
+     "count": 341
+    },
+    {
+     "reason": "unresolved: UT Rio Grande Valley",
+     "count": 4
+    },
+    {
+     "reason": "unresolved: Chicago St.",
+     "count": 2
+    }
+   ]
+  }
+ },
+ "signals": [
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-33",
+   "fair": 0.9109,
+   "fair_source": "derived",
+   "bid": 0.9,
+   "ask": 0.91,
+   "target": 0.83,
+   "edge": 0.0784,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-36",
+   "fair": 0.8677,
+   "fair_source": "derived",
+   "bid": 0.85,
+   "ask": 0.88,
+   "target": 0.79,
+   "edge": 0.0747,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-39",
+   "fair": 0.8118,
+   "fair_source": "derived",
+   "bid": 0.78,
+   "ask": 0.8,
+   "target": 0.73,
+   "edge": 0.0783,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-42",
+   "fair": 0.7434,
+   "fair_source": "derived",
+   "bid": 0.71,
+   "ask": 0.74,
+   "target": 0.66,
+   "edge": 0.0794,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-45",
+   "fair": 0.6639,
+   "fair_source": "derived",
+   "bid": 0.63,
+   "ask": 0.67,
+   "target": 0.58,
+   "edge": 0.0796,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-48",
+   "fair": 0.5762,
+   "fair_source": "derived",
+   "bid": 0.57,
+   "ask": 0.59,
+   "target": 0.5,
+   "edge": 0.0718,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-51",
+   "fair": 0.4847,
+   "fair_source": "derived",
+   "bid": 0.49,
+   "ask": 0.5,
+   "target": 0.41,
+   "edge": 0.0704,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-52",
+   "fair": 0.4541,
+   "fair_source": "derived",
+   "bid": 0.44,
+   "ask": 0.45,
+   "target": 0.37,
+   "edge": 0.08,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-53",
+   "fair": 0.4238,
+   "fair_source": "derived",
+   "bid": 0.41,
+   "ask": 0.44,
+   "target": 0.34,
+   "edge": 0.0798,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-54",
+   "fair": 0.3939,
+   "fair_source": "derived",
+   "bid": 0.39,
+   "ask": 0.42,
+   "target": 0.32,
+   "edge": 0.07,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-55",
+   "fair": 0.3646,
+   "fair_source": "derived",
+   "bid": 0.37,
+   "ask": 0.4,
+   "target": 0.29,
+   "edge": 0.0709,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-56",
+   "fair": 0.3361,
+   "fair_source": "derived",
+   "bid": 0.33,
+   "ask": 0.35,
+   "target": 0.26,
+   "edge": 0.0727,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-57",
+   "fair": 0.3085,
+   "fair_source": "derived",
+   "bid": 0.31,
+   "ask": 0.32,
+   "target": 0.23,
+   "edge": 0.0754,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-60",
+   "fair": 0.2325,
+   "fair_source": "derived",
+   "bid": 0.23,
+   "ask": 0.27,
+   "target": 0.16,
+   "edge": 0.0701,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-63",
+   "fair": 0.1681,
+   "fair_source": "derived",
+   "bid": 0.21,
+   "ask": 0.22,
+   "target": 0.09,
+   "edge": 0.0766,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-66",
+   "fair": 0.1166,
+   "fair_source": "derived",
+   "bid": 0.16,
+   "ask": 0.17,
+   "target": 0.04,
+   "edge": 0.0759,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-69",
+   "fair": 0.0774,
+   "fair_source": "derived",
+   "bid": 0.08,
+   "ask": 0.12,
+   "target": 0.01,
+   "edge": 0.0672,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-72",
+   "fair": 0.0491,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.08,
+   "target": 0.01,
+   "edge": 0.0389,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "MIZ @ KU",
+   "contract": "KXNCAAFTOTAL-26SEP11MIZZKU-75",
+   "fair": 0.0297,
+   "fair_source": "derived",
+   "bid": 0.08,
+   "ask": 0.1,
+   "target": 0.01,
+   "edge": 0.0195,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NE @ SEA",
+   "contract": "KXNFLTOTAL-26SEP09NESEA-60",
+   "fair": 0.0654,
+   "fair_source": "derived",
+   "bid": 0.13,
+   "ask": 0.14,
+   "target": 0.03,
+   "edge": 0.0348,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NE @ SEA",
+   "contract": "KXNFLTOTAL-26SEP09NESEA-63",
+   "fair": 0.035,
+   "fair_source": "derived",
+   "bid": 0.09,
+   "ask": 0.1,
+   "target": 0.01,
+   "edge": 0.0248,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-AFA6",
+   "fair": 0.3115,
+   "fair_source": "derived",
+   "bid": 0.22,
+   "ask": 0.29,
+   "target": 0.27,
+   "edge": 0.038,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-AFA7",
+   "fair": 0.291,
+   "fair_source": "derived",
+   "bid": 0.2,
+   "ask": 0.27,
+   "target": 0.25,
+   "edge": 0.0377,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-AFA8",
+   "fair": 0.2711,
+   "fair_source": "derived",
+   "bid": 0.15,
+   "ask": 0.23,
+   "target": 0.23,
+   "edge": 0.038,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU10",
+   "fair": 0.348,
+   "fair_source": "derived",
+   "bid": 0.26,
+   "ask": 0.33,
+   "target": 0.31,
+   "edge": 0.0342,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU11",
+   "fair": 0.3266,
+   "fair_source": "derived",
+   "bid": 0.23,
+   "ask": 0.29,
+   "target": 0.28,
+   "edge": 0.043,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU12",
+   "fair": 0.3056,
+   "fair_source": "derived",
+   "bid": 0.21,
+   "ask": 0.27,
+   "target": 0.26,
+   "edge": 0.0422,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU14",
+   "fair": 0.2657,
+   "fair_source": "derived",
+   "bid": 0.18,
+   "ask": 0.24,
+   "target": 0.22,
+   "edge": 0.0426,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU15",
+   "fair": 0.2468,
+   "fair_source": "derived",
+   "bid": 0.14,
+   "ask": 0.21,
+   "target": 0.2,
+   "edge": 0.044,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU17",
+   "fair": 0.2112,
+   "fair_source": "derived",
+   "bid": 0.12,
+   "ask": 0.19,
+   "target": 0.17,
+   "edge": 0.0387,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU18",
+   "fair": 0.1946,
+   "fair_source": "derived",
+   "bid": 0.1,
+   "ask": 0.16,
+   "target": 0.15,
+   "edge": 0.0423,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU2",
+   "fair": 0.5319,
+   "fair_source": "derived",
+   "bid": 0.55,
+   "ask": 0.58,
+   "target": 0.49,
+   "edge": 0.0375,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU21",
+   "fair": 0.1497,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.13,
+   "target": 0.11,
+   "edge": 0.0379,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU22",
+   "fair": 0.1364,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.11,
+   "target": 0.1,
+   "edge": 0.0348,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU24",
+   "fair": 0.1123,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.1,
+   "target": 0.07,
+   "edge": 0.0411,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU25",
+   "fair": 0.1015,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.09,
+   "target": 0.06,
+   "edge": 0.0405,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU28",
+   "fair": 0.0736,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.4,
+   "target": 0.03,
+   "edge": 0.043,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU3",
+   "fair": 0.5084,
+   "fair_source": "derived",
+   "bid": 0.52,
+   "ask": 0.57,
+   "target": 0.46,
+   "edge": 0.044,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU4",
+   "fair": 0.485,
+   "fair_source": "derived",
+   "bid": 0.44,
+   "ask": 0.46,
+   "target": 0.44,
+   "edge": 0.0406,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU5",
+   "fair": 0.4616,
+   "fair_source": "derived",
+   "bid": 0.41,
+   "ask": 0.44,
+   "target": 0.42,
+   "edge": 0.0373,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU6",
+   "fair": 0.4383,
+   "fair_source": "derived",
+   "bid": 0.41,
+   "ask": 0.42,
+   "target": 0.39,
+   "edge": 0.0441,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU7",
+   "fair": 0.4152,
+   "fair_source": "derived",
+   "bid": 0.38,
+   "ask": 0.41,
+   "target": 0.37,
+   "edge": 0.0411,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "NDSU @ AF",
+   "contract": "KXNCAAFSPREAD-26SEP12NDSUAFA-NDSU8",
+   "fair": 0.3924,
+   "fair_source": "derived",
+   "bid": 0.29,
+   "ask": 0.36,
+   "target": 0.35,
+   "edge": 0.0384,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES10",
+   "fair": 0.6999,
+   "fair_source": "derived",
+   "bid": 0.67,
+   "ask": 0.74,
+   "target": 0.64,
+   "edge": 0.0558,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES11",
+   "fair": 0.6792,
+   "fair_source": "derived",
+   "bid": 0.64,
+   "ask": 0.71,
+   "target": 0.62,
+   "edge": 0.055,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES12",
+   "fair": 0.6578,
+   "fair_source": "derived",
+   "bid": 0.62,
+   "ask": 0.7,
+   "target": 0.6,
+   "edge": 0.0536,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES14",
+   "fair": 0.6137,
+   "fair_source": "derived",
+   "bid": 0.59,
+   "ask": 0.65,
+   "target": 0.56,
+   "edge": 0.0493,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES15",
+   "fair": 0.591,
+   "fair_source": "derived",
+   "bid": 0.54,
+   "ask": 0.6,
+   "target": 0.54,
+   "edge": 0.0466,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES17",
+   "fair": 0.5447,
+   "fair_source": "derived",
+   "bid": 0.54,
+   "ask": 0.56,
+   "target": 0.49,
+   "edge": 0.0503,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES18",
+   "fair": 0.5214,
+   "fair_source": "derived",
+   "bid": 0.51,
+   "ask": 0.53,
+   "target": 0.47,
+   "edge": 0.047,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES19",
+   "fair": 0.4979,
+   "fair_source": "direct",
+   "bid": 0.5,
+   "ask": 0.51,
+   "target": 0.44,
+   "edge": 0.0535,
+   "decision": "candidate",
+   "reason": null
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES2",
+   "fair": 0.8401,
+   "fair_source": "derived",
+   "bid": 0.84,
+   "ask": 0.91,
+   "target": 0.79,
+   "edge": 0.0471,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES21",
+   "fair": 0.4511,
+   "fair_source": "derived",
+   "bid": 0.42,
+   "ask": 0.46,
+   "target": 0.4,
+   "edge": 0.0469,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES22",
+   "fair": 0.4279,
+   "fair_source": "derived",
+   "bid": 0.37,
+   "ask": 0.44,
+   "target": 0.37,
+   "edge": 0.0538,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES24",
+   "fair": 0.3823,
+   "fair_source": "derived",
+   "bid": 0.33,
+   "ask": 0.4,
+   "target": 0.33,
+   "edge": 0.0484,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES25",
+   "fair": 0.3601,
+   "fair_source": "derived",
+   "bid": 0.29,
+   "ask": 0.36,
+   "target": 0.31,
+   "edge": 0.0463,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES28",
+   "fair": 0.2964,
+   "fair_source": "derived",
+   "bid": 0.24,
+   "ask": 0.3,
+   "target": 0.24,
+   "edge": 0.0532,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES3",
+   "fair": 0.8253,
+   "fair_source": "derived",
+   "bid": 0.83,
+   "ask": 0.9,
+   "target": 0.77,
+   "edge": 0.0522,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES31",
+   "fair": 0.2385,
+   "fair_source": "derived",
+   "bid": 0.18,
+   "ask": 0.23,
+   "target": 0.18,
+   "edge": 0.0559,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES34",
+   "fair": 0.1874,
+   "fair_source": "derived",
+   "bid": 0.12,
+   "ask": 0.18,
+   "target": 0.13,
+   "edge": 0.0554,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES36",
+   "fair": 0.1574,
+   "fair_source": "derived",
+   "bid": 0.08,
+   "ask": 0.14,
+   "target": 0.1,
+   "edge": 0.0558,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES39",
+   "fair": 0.1187,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.11,
+   "target": 0.07,
+   "edge": 0.0475,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES4",
+   "fair": 0.8098,
+   "fair_source": "derived",
+   "bid": 0.79,
+   "ask": 0.86,
+   "target": 0.76,
+   "edge": 0.0466,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES5",
+   "fair": 0.7934,
+   "fair_source": "derived",
+   "bid": 0.77,
+   "ask": 0.84,
+   "target": 0.74,
+   "edge": 0.05,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES6",
+   "fair": 0.7762,
+   "fair_source": "derived",
+   "bid": 0.76,
+   "ask": 0.84,
+   "target": 0.72,
+   "edge": 0.0526,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES7",
+   "fair": 0.7582,
+   "fair_source": "derived",
+   "bid": 0.74,
+   "ask": 0.82,
+   "target": 0.7,
+   "edge": 0.0545,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-FRES8",
+   "fair": 0.7395,
+   "fair_source": "derived",
+   "bid": 0.69,
+   "ask": 0.76,
+   "target": 0.68,
+   "edge": 0.0556,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-SAC2",
+   "fair": 0.1208,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.14,
+   "target": 0.07,
+   "edge": 0.0496,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-SAC3",
+   "fair": 0.1093,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.14,
+   "target": 0.06,
+   "edge": 0.0483,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "SAC @ FRES",
+   "contract": "KXNCAAFSPREAD-26SEP12SACFRES-SAC4",
+   "fair": 0.0987,
+   "fair_source": "derived",
+   "bid": 0.07,
+   "ask": 0.12,
+   "target": 0.05,
+   "edge": 0.0478,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC10",
+   "fair": 0.897,
+   "fair_source": "derived",
+   "bid": 0.88,
+   "ask": 0.93,
+   "target": 0.82,
+   "edge": 0.0744,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC11",
+   "fair": 0.8861,
+   "fair_source": "derived",
+   "bid": 0.87,
+   "ask": 0.93,
+   "target": 0.81,
+   "edge": 0.0734,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC12",
+   "fair": 0.8743,
+   "fair_source": "derived",
+   "bid": 0.86,
+   "ask": 0.92,
+   "target": 0.8,
+   "edge": 0.0715,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC14",
+   "fair": 0.8484,
+   "fair_source": "derived",
+   "bid": 0.85,
+   "ask": 0.91,
+   "target": 0.77,
+   "edge": 0.0753,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC15",
+   "fair": 0.8341,
+   "fair_source": "derived",
+   "bid": 0.82,
+   "ask": 0.88,
+   "target": 0.76,
+   "edge": 0.0709,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC17",
+   "fair": 0.8032,
+   "fair_source": "derived",
+   "bid": 0.8,
+   "ask": 0.86,
+   "target": 0.72,
+   "edge": 0.0796,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC18",
+   "fair": 0.7864,
+   "fair_source": "derived",
+   "bid": 0.78,
+   "ask": 0.84,
+   "target": 0.71,
+   "edge": 0.0727,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC21",
+   "fair": 0.7316,
+   "fair_source": "derived",
+   "bid": 0.74,
+   "ask": 0.8,
+   "target": 0.65,
+   "edge": 0.0776,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC22",
+   "fair": 0.7119,
+   "fair_source": "derived",
+   "bid": 0.7,
+   "ask": 0.76,
+   "target": 0.63,
+   "edge": 0.0778,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC24",
+   "fair": 0.6705,
+   "fair_source": "derived",
+   "bid": 0.67,
+   "ask": 0.71,
+   "target": 0.59,
+   "edge": 0.0762,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC25",
+   "fair": 0.6489,
+   "fair_source": "derived",
+   "bid": 0.64,
+   "ask": 0.7,
+   "target": 0.57,
+   "edge": 0.0746,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC28",
+   "fair": 0.5816,
+   "fair_source": "derived",
+   "bid": 0.57,
+   "ask": 0.64,
+   "target": 0.5,
+   "edge": 0.0772,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC29",
+   "fair": 0.5585,
+   "fair_source": "derived",
+   "bid": 0.54,
+   "ask": 0.55,
+   "target": 0.48,
+   "edge": 0.0741,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC31",
+   "fair": 0.5117,
+   "fair_source": "derived",
+   "bid": 0.48,
+   "ask": 0.51,
+   "target": 0.43,
+   "edge": 0.0774,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC34",
+   "fair": 0.4415,
+   "fair_source": "derived",
+   "bid": 0.4,
+   "ask": 0.45,
+   "target": 0.36,
+   "edge": 0.0774,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC36",
+   "fair": 0.3956,
+   "fair_source": "derived",
+   "bid": 0.33,
+   "ask": 0.38,
+   "target": 0.32,
+   "edge": 0.0717,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC39",
+   "fair": 0.3295,
+   "fair_source": "derived",
+   "bid": 0.26,
+   "ask": 0.31,
+   "target": 0.25,
+   "edge": 0.0762,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC42",
+   "fair": 0.2684,
+   "fair_source": "derived",
+   "bid": 0.19,
+   "ask": 0.26,
+   "target": 0.19,
+   "edge": 0.0757,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "UL @ USC",
+   "contract": "KXNCAAFSPREAD-26SEP12ULLUSC-USC46",
+   "fair": 0.1968,
+   "fair_source": "derived",
+   "bid": 0.1,
+   "ask": 0.18,
+   "target": 0.12,
+   "edge": 0.0749,
+   "decision": "rejected",
+   "reason": "source_allowed"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "WEB @ COLO",
+   "contract": "KXNCAAFSPREAD-26SEP12WEBCOLO-COLO22",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.7,
+   "ask": 0.88,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "WEB @ COLO",
+   "contract": "KXNCAAFSPREAD-26SEP12WEBCOLO-COLO21",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.73,
+   "ask": 0.88,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "WEB @ COLO",
+   "contract": "KXNCAAFSPREAD-26SEP12WEBCOLO-COLO18",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.77,
+   "ask": 0.88,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "WEB @ COLO",
+   "contract": "KXNCAAFSPREAD-26SEP12WEBCOLO-COLO17",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.79,
+   "ask": 0.88,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "WEB @ COLO",
+   "contract": "KXNCAAFSPREAD-26SEP12WEBCOLO-COLO15",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.8,
+   "ask": 0.88,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "WEB @ COLO",
+   "contract": "KXNCAAFSPREAD-26SEP12WEBCOLO-COLO14",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.82,
+   "ask": 0.88,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "HC @ M-OH",
+   "contract": "KXNCAAFSPREAD-26SEP12HCMOH-MOH55",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.08,
+   "ask": 0.87,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "HC @ M-OH",
+   "contract": "KXNCAAFSPREAD-26SEP12HCMOH-MOH52",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.08,
+   "ask": 0.87,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "HC @ M-OH",
+   "contract": "KXNCAAFSPREAD-26SEP12HCMOH-MOH49",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.08,
+   "ask": 0.87,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "HC @ M-OH",
+   "contract": "KXNCAAFSPREAD-26SEP12HCMOH-MOH46",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.08,
+   "ask": 0.87,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  },
+  {
+   "time": "2026-09-07T20:41:55.230510+00:00",
+   "variant": "sharp_direct",
+   "game": "HC @ M-OH",
+   "contract": "KXNCAAFSPREAD-26SEP12HCMOH-MOH42",
+   "fair": null,
+   "fair_source": null,
+   "bid": 0.08,
+   "ask": 0.87,
+   "target": null,
+   "edge": null,
+   "decision": "rejected",
+   "reason": "has_fair"
+  }
+ ],
+ "unmatched_markets": [
+  {
+   "ticker": "KXNCAAFGAME-26SEP06SCSTFAMU-FAMU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 2292074.01
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP06SCSTFAMU-SCST",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 702759.06
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST20",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 297106.75
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-53",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 225534.14
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-57",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 155750.52
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-61",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 69241.9
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST32",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 67443.19
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST28",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 66064.76
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-49",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 61116.57
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST16",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 54657.05
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-65",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 53467.55
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST24",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 53144.56
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP11RICHNCST-RICH",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 44384.72
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-45",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 41561.02
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19LSUMISS-LSU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 35541.54
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST36",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 28919.55
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19LSUMISS-MISS",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 24514.0
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST8",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 24360.18
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP12UTMWVU-WVU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 20997.0
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST12",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 15896.03
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19KENTOSU-KENT",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 15451.09
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST4",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 15273.37
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST40",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 14104.75
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-77",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 12107.97
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-37",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 11203.06
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-69",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 11147.34
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST44",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 10042.24
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-FAMU2",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 8456.07
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19KENTOSU-OSU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 7526.79
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP12WIUWIS-WIU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 6090.33
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-73",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 6038.02
+  },
+  {
+   "ticker": "KXNCAAFTOTAL-26SEP06SCSTFAMU-41",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 5857.02
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP12UTMWVU-UTM",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 4424.86
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-FAMU5",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 4410.96
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19WAGCAL-WAG",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 3032.12
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP11RICHNCST-NCST",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 2747.83
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19MSUND-MSU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 2291.28
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19UTSATEX-TEX",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 2204.63
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19EWUWASH-EWU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 2033.77
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP18PRSTORE-PRST",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 1607.54
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP12UCDSMU-UCD",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 1296.77
+  },
+  {
+   "ticker": "KXNCAAFSPREAD-26SEP06SCSTFAMU-SCST48",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 1166.38
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19WKUIND-WKU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 1033.42
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP12UTUMONT-UTU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 959.46
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19MSUND-ND",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 854.84
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19EMUWIS-WIS",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 790.1
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19PREWCU-WCU",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 741.0
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP19UTEPMICH-UTEP",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 604.71
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP12STETCOOK-COOK",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 568.89
+  },
+  {
+   "ticker": "KXNCAAFGAME-26SEP12NHCSDST-NHC",
+   "match_status": "unmatched",
+   "match_reason": "no game for pair",
+   "volume_24h": 562.87
+  }
+ ],
+ "websocket": {
+  "orderbook_events_5m": 3191,
+  "ws_trades_1h": 5881,
+  "last_event_at": "2026-09-07T20:47:40.146000+00:00"
+ },
+ "data_quality": {
+  "staleness_median_s": {
+   "draftkings": 37.473771,
+   "fanduel": 21.127874,
+   "lowvig": 37.987297,
+   "betonlineag": 38.933246,
+   "kalshi": 19.336986,
+   "pinnacle": 23.336986,
+   "novig": 29.933246
+  },
+  "trade_gaps_24h": 0,
+  "trade_gaps_sample": []
+ }
+}
