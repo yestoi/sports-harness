@@ -17,9 +17,10 @@ section F holds the binding decisions and rulings.
 | 0 Recorder | done 2026-09-06, deployed | `docs/superpowers/plans/2026-09-06-phase0-recorder.md` | n/a |
 | 1 Normalize and match | done 2026-09-06, deployed | `docs/superpowers/plans/2026-09-06-phase1-normalize-match.md` | n/a |
 | 2 Pricing and signals | done 2026-09-07, deployed (hotfix `3224d0a`) | `docs/superpowers/plans/2026-09-07-phase2-pricing-signals.md` | n/a |
-| 3 Paper execution, settlement, benchmarks, CLV | **planned**, revised by the 2026-09-07 review; gains **Task 2b partitioning (U3, pre-authorized)** and **Task 4b NO-side (U2)** | `docs/superpowers/plans/2026-09-07-phase3-paper-execution.md` | none |
+| 3 Paper execution, settlement, benchmarks, CLV | **planned**, revised by the 2026-09-07 review; gains **Task 2b partitioning (U3, pre-authorized)**, **Task 4b NO-side (U2)** and **Task 12b telemetry (U6)** | `docs/superpowers/plans/2026-09-07-phase3-paper-execution.md` | none |
 | 4 Kalshi authenticated adapter (still paper), risk gate, backups, Alembic | not planned | plan-next | none; the demo smoke runs only when `secrets/kalshi_demo_*` exist |
-| 5 Research layer and hypotheses: futures snapshots, NWS, parlay CLI, shadow veto, report annotator, RFQ listener, overview page | not planned | plan-next | none; veto and annotator run only when `secrets/anthropic_api_key` exists |
+| 4.5 Dashboard surfaces: Pulse, Floor, Study, Gate (snapshot layer, `/ui/`, table t12; absorbs phase 5(g)) | not planned | plan-next from `docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md` and its design canvas | none |
+| 5 Research layer and hypotheses: futures snapshots, NWS, parlay CLI, shadow veto, report annotator, RFQ listener (overview page moved to 4.5) | not planned | plan-next | none; veto and annotator run only when `secrets/anthropic_api_key` exists |
 | 6 Deferred items from the phase 2 and 3 reviews | not planned | plan-next | none |
 | Operator mode | after phase 6, and calendar duties throughout | n/a | n/a |
 | Go-live gate | n/a | n/a | user's legal decision plus a stored passing gate report; never autonomous |
@@ -38,6 +39,7 @@ User decisions (Trey), recorded verbatim. Only a dated user decision changes the
 | U3 Storage | Partition `orderbook_events` and `venue_trades` now as phase 3 Task 2b (metadata-only `ATTACH PARTITION`). The harness's ceiling is 2 TB of the 3.5 TB free on `/volume1`. Archiving or dropping sealed partitions happens only on the user's later explicit yes: the loop may propose, never execute (gate). |
 | U4 Veto spend | `veto_daily_usd_cap` = $25, `veto_weekly_usd_cap` = $150, enforced in code from the usage fields; over budget the veto and shadow go dormant for the day and every skipped call is labelled `veto_skipped_budget`. The Sonnet shadow runs on every call. The key must live in a capped Console workspace (user action). |
 | U5 Gate variant | From amendment 3 onward the go-live gate is judged on the `sharp_two_sided` variant's `gate_reports` row (`gate_variant = true`); the pre-registered YES-only primary's row is stored and reported beside it every week. `Settings.gate_variant` defaults to the primary and is flipped by phase 3 Task 4b's deploy; Amendment 3 records the first switched evaluation date. Decided 2026-09-07 before any two-sided data exists. |
+| U6 Dashboard | Decided 2026-09-07 (design session, spec `docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md`). Architecture: compute once, render in the browser: jobs write pre-aggregated snapshots, `app-serve` serves them by primary key, a static client renders four surfaces (Pulse, Floor, Study, Gate) under `/ui/`; the legacy page at `/` and the `/api/summary` contract are frozen. Telemetry tables that cannot be backfilled land in phase 3 as **Task 12b** (`metric_samples`, `operator_events`, `order_watch_samples`, `equity_snapshots`, `game_score_events`, `check_results`, `report_runs`/`report_cells`); the front end is **phase 4.5**, planned after phase 4, absorbing phase 5(g). Mobile and desktop both in scope. Visual direction comes from a Claude Design canvas, refined on or after 2026-09-14. |
 
 Controller rulings this file governs. Each is reversible; the review states the cost if wrong.
 
@@ -236,8 +238,8 @@ written into the addendum with rationale, cost if wrong, and how to reverse it.
   `venue_status.reason` (F71). Combo fee rule (F72): subtract a maker fee only when the combo is **not**
   NFL-only-independent, meaning all component events are `KXNFL*` and distinct; record the branch taken on
   `rfq_quotes` so grading can be re-run either way.
-- **(g)** Overview page: dashboard page 2, server-rendered SVG, no JS, bounded queries (equity, CLV by week,
-  fills).
+- **(g)** Overview page: **moved to phase 4.5 by U6** (Study surface draws equity, CLV by week and fills from
+  `equity_snapshots` and `report_cells`). Nothing to build here.
 
 Text handling (F60): RFQ free text is stored but never rendered raw (a 120-character quoted cell) and never
 placed in a prompt. The veto `reason` is capped at 300 characters with control characters and markup
@@ -248,6 +250,21 @@ block) ship before the Anthropic client exists (F55).
 Novig: no adapter, no credentials, no live path (user, 2026-09-07). The `novig` bookmaker column from the
 Odds API stays as a read-only benchmark feed already being recorded; H8 is measured from that feed or
 reported "not collected".
+
+### Phase 4.5: Dashboard surfaces (U6; spec `docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md`)
+
+1. The spec is the brief: §2 surfaces and their "never shown" lists, §3.8 and §4 snapshot layer inside
+   `app-serve` with `SNAPSHOT_STATEMENT_TIMEOUT_MS = 2000`, §5 front end (static, no build step, vendored
+   uPlot, no CDN or font download, 300 KB asset budget, light and dark, 360 px to 2560 px), §6 budgets, §8
+   tests. No snapshot builder reads `orderbook_events`, `venue_trades` or `raw_responses`.
+2. Visual direction comes from the design canvas the user refines in Claude Design on or after
+   2026-09-14; the implementer builds from the canvas and the spec, and the reviewer checks the §1.1
+   honesty rules (PAPER badge everywhere, no estimate without n and interval, thresholds imported from code).
+3. Table t12 (declined candidates with counterfactual CLV) is additive to the report and is not a gate
+   input (R1 untouched).
+4. `verify.md` gains: `/ui/` loads at 390 px and 1440 px through Chrome, `/api/snap` lists every name with
+   age under twice its cadence, the legacy page and `/api/summary` unchanged.
+5. Phase 4 item 6 (drawdown alert) becomes a Pulse rule; item 7 (`venue_requests`) becomes a Floor tile.
 
 ### Phase 6: deferred items (from the phase 2 and 3 reviews)
 
