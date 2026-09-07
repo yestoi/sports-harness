@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harness Dashboard</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         margin: 0; padding: 1.5rem; background: #f6f7f9; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+  h2 { font-size: 1.05rem; margin: 0 0 0.5rem; border-bottom: 1px solid #ddd; padding-bottom: 0.25rem; }
+  section { background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 1rem;
+            margin-bottom: 1rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.25rem 0.6rem; border-bottom: 1px solid #eee; white-space: nowrap; }
+  th { color: #555; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; }
+  .stat { background: #fafafa; border: 1px solid #eee; border-radius: 4px; padding: 0.5rem 0.75rem; }
+  .stat .label { font-size: 0.72rem; color: #777; text-transform: uppercase; letter-spacing: 0.03em; }
+  .stat .value { font-size: 1.2rem; font-weight: 600; }
+  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.78rem;
+           font-weight: 700; letter-spacing: 0.03em; }
+  .badge.ok { background: #dff6e0; color: #1c7a2e; }
+  .badge.bad { background: #fbe0e0; color: #a11616; }
+  .badge.warn { background: #fff3cd; color: #8a6400; }
+  form.inline { display: inline-flex; gap: 0.4rem; align-items: center; margin: 0.25rem 0; }
+  input[type=text], input[type=password] { padding: 0.3rem 0.4rem; border: 1px solid #ccc; border-radius: 4px; }
+  button { padding: 0.35rem 0.8rem; border-radius: 4px; border: 1px solid #ccc; background: #fff;
+           cursor: pointer; }
+  button.danger { background: #c0392b; color: #fff; border-color: #a93226; }
+  .muted { color: #777; font-size: 0.8rem; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>Harness Dashboard</h1>
+<p class="muted">Generated {{ summary.now }}</p>
+
+<section>
+  <h2>Health</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">Last run</div>
+      <div class="value">#{{ summary.health.run_id if summary.health.run_id is not none else "-" }}</div></div>
+    <div class="stat"><div class="label">Status</div>
+      <div class="value">
+        <span class="badge {{ 'ok' if summary.health.status == 'ok' else 'bad' }}">{{ summary.health.status }}</span>
+      </div></div>
+    <div class="stat"><div class="label">Last run status</div><div class="value">{{ summary.health.last_status }}</div></div>
+    <div class="stat"><div class="label">Seconds since</div><div class="value">{{ summary.health.seconds_since }}</div></div>
+    <div class="stat"><div class="label">Credits remaining</div><div class="value">{{ summary.health.credits_remaining }}</div></div>
+    <div class="stat"><div class="label">Kill switch</div>
+      <div class="value">
+        {% if summary.kill_switch.active %}
+          <span class="badge bad">ACTIVE</span>
+        {% else %}
+          <span class="badge ok">off</span>
+        {% endif %}
+      </div></div>
+  </div>
+  {% if summary.kill_switch.active %}
+    <p class="muted">Reason: {{ summary.kill_switch.reason }} (set {{ summary.kill_switch.set_at }})</p>
+  {% endif %}
+  <form class="inline" method="post" action="/kill">
+    <input type="text" name="reason" placeholder="reason" required>
+    <button class="danger" type="submit">Kill</button>
+  </form>
+  <form class="inline" method="post" action="/unkill">
+    <input type="password" name="token" placeholder="dashboard token" required>
+    <button type="submit">Unkill</button>
+  </form>
+</section>
+
+<section>
+  <h2>Funnel (last 24h)</h2>
+  <div class="grid">
+    <div>
+      <h3>Raw rows by source</h3>
+      <table>
+        <tr><th>source</th><th>count</th></tr>
+        {% for source, n in summary.funnel.sources.items() %}
+        <tr><td>{{ source }}</td><td>{{ n }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+    <div>
+      <h3>Markets by sport</h3>
+      <table>
+        <tr><th>sport</th><th>status</th><th>count</th></tr>
+        {% for sport, counts in summary.funnel.markets_by_sport.items() %}
+          {% for status, n in counts.items() %}
+          <tr><td>{{ sport }}</td><td>{{ status }}</td><td>{{ n }}</td></tr>
+          {% endfor %}
+        {% endfor %}
+      </table>
+    </div>
+    <div>
+      <h3>Fair values by source</h3>
+      <table>
+        <tr><th>fair_source</th><th>count</th></tr>
+        {% for source, n in summary.funnel.fair_by_source.items() %}
+        <tr><td>{{ source }}</td><td>{{ n }}</td></tr>
+        {% endfor %}
+      </table>
+      <p class="muted">Gap snapshots: {{ summary.funnel.gaps }}</p>
+    </div>
+  </div>
+  <h3>Signals per active variant</h3>
+  <table>
+    <tr><th>variant</th><th>tier</th><th>candidate</th><th>rejected</th></tr>
+    {% for name, v in summary.funnel.signals_by_variant.items() %}
+    <tr><td>{{ name }}</td><td>{{ v.tier }}</td><td>{{ v.candidate }}</td><td>{{ v.rejected }}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+<section>
+  <h2>Match report (last 24h)</h2>
+  {% for sport, r in summary.match_report.items() %}
+  <h3>{{ sport }} &mdash; {{ r.total }} markets
+    {% if r.matched_pct is not none %}({{ "%.1f"|format(r.matched_pct) }}% matched){% endif %}</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>reason</th><th>count</th></tr>
+    {% for row in r.top_unmatched_reasons %}
+    <tr><td>{{ row.reason }}</td><td>{{ row.count }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endfor %}
+</section>
+
+<section>
+  <h2>Last {{ summary.signals|length }} signals (primary variant)</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>time</th><th>variant</th><th>game</th><th>contract</th><th>fair</th><th>source</th>
+        <th>bid</th><th>ask</th><th>target</th><th>edge</th><th>decision</th><th>reason</th></tr>
+    {% for s in summary.signals %}
+    <tr>
+      <td>{{ s.time }}</td><td>{{ s.variant }}</td><td>{{ s.game or "-" }}</td><td>{{ s.contract }}</td>
+      <td>{{ s.fair }}</td><td>{{ s.fair_source }}</td><td>{{ s.bid }}</td><td>{{ s.ask }}</td>
+      <td>{{ s.target }}</td><td>{{ s.edge }}</td><td>{{ s.decision }}</td><td>{{ s.reason or "" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>Unmatched markets (top {{ summary.unmatched_markets|length }} by volume)</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>ticker</th><th>match_status</th><th>reason</th><th>volume_24h</th></tr>
+    {% for m in summary.unmatched_markets %}
+    <tr><td>{{ m.ticker }}</td><td>{{ m.match_status }}</td><td>{{ m.match_reason }}</td><td>{{ m.volume_24h }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>WebSocket (last 1h)</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">Orderbook events</div><div class="value">{{ summary.websocket.orderbook_events_1h }}</div></div>
+    <div class="stat"><div class="label">WS trades</div><div class="value">{{ summary.websocket.ws_trades_1h }}</div></div>
+    <div class="stat"><div class="label">Last event</div><div class="value">{{ summary.websocket.last_event_at or "-" }}</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>Data quality</h2>
+  <h3>Feed staleness by book (median, last 1h)</h3>
+  <table>
+    <tr><th>book</th><th>median seconds</th></tr>
+    {% for book, s in summary.data_quality.staleness_median_s.items() %}
+    <tr><td>{{ book }}</td><td>{{ "%.1f"|format(s) }}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="muted">Trade gaps recorded in run notes (last 24h): {{ summary.data_quality.trade_gaps_24h }}</p>
+</section>
+
+</body>
+</html>

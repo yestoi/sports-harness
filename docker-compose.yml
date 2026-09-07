@@ -36,8 +36,10 @@ services:
     env_file: .env
     environment:
       ODDS_API_KEY_FILE: /run/secrets/odds_api_key
+      DASHBOARD_TOKEN_FILE: /run/secrets/dashboard_token
     volumes:
       - ./secrets/odds_api_key:/run/secrets/odds_api_key:ro
+      - ./secrets/dashboard_token:/run/secrets/dashboard_token:ro
     ports:
       - "127.0.0.1:${SERVE_PORT:-8080}:8080"
     depends_on:

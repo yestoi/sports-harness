@@ -15,6 +15,7 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 		| ssh $(NAS_USER)@$(NAS_IP) 'tar xf - -C $(NAS_STACK)'
 	@scp -O deploy/nas.env $(NAS_USER)@$(NAS_IP):$(NAS_STACK)/.env
 	@scp -O secrets/odds_api_key secrets/kalshi_key_id secrets/kalshi_private_key.pem $(NAS_USER)@$(NAS_IP):$(NAS_STACK)/secrets/
+	@ssh $(NAS_USER)@$(NAS_IP) 'test -f $(NAS_STACK)/secrets/dashboard_token || openssl rand -hex 32 > $(NAS_STACK)/secrets/dashboard_token'
 	@ssh $(NAS_USER)@$(NAS_IP) 'chmod 600 $(NAS_STACK)/secrets/*'
 	@printf "$(GREEN)[DEPLOY]$(NC) Building image and starting postgres...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build && docker compose up -d postgres'

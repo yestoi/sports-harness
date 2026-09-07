@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     def has_kalshi_credentials(self) -> bool:
         return self.kalshi_key_id_file.exists() and self.kalshi_private_key_file.exists()
 
+    def dashboard_token(self) -> str:
+        return self.dashboard_token_file.read_text().strip()
+
 
 @lru_cache
 def get_settings() -> Settings:

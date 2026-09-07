@@ -79,11 +79,11 @@ def run() -> None:
 @app.command("serve")
 def serve(port: int = 8080, host: str = "0.0.0.0") -> None:
     configure_logging()
-    from harness.health import create_app
+    from harness.dashboard.app import create_dashboard
 
     s = get_settings()
     factory = make_session_factory(make_engine(s.database_url))
-    uvicorn.run(create_app(factory), host=host, port=port, log_config=None)
+    uvicorn.run(create_dashboard(factory, s), host=host, port=port, log_config=None)
 
 
 @app.command("seed-teams")

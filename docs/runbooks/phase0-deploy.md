@@ -82,4 +82,26 @@ Symptom of skipping this: `relation "teams" does not exist` in logs, `app-ws` re
 
 `make deploy-nas` mirrors the media-stack workflow: it pushes the source tree, `deploy/nas.env` (as `.env`), and the three secret files over SSH into `NAS_STACK_DIR`, builds the image on the NAS, runs `init-db`, `seed-teams`, and `variants register`, and starts the stack. Targets: `make status-nas`, `make logs-nas`, `make ssh-nas`, `make tunnel-nas`, and `make stop-mac` to stop the Mac stopgap once the NAS is green. Connection values live in `.env.nas` (git-ignored; see `.env.nas.example`).
 
+## Dashboard
+
+`app-serve` now runs the one-page operator dashboard (health, funnel, match report, recent
+signals, unmatched markets, WebSocket activity, data quality, and a kill switch) instead of a
+bare health endpoint; `/healthz` behaves exactly as before.
+
+- **URL**: with `make tunnel-nas` running, open `http://localhost:$(SERVE_PORT)/` (the same
+  tunnel that forwards `/healthz`; `SERVE_PORT` is `8180` per `deploy/nas.env`).
+- **Reading the dashboard token**: `make deploy-nas` generates `secrets/dashboard_token` on the
+  NAS itself the first time it runs (32 random bytes via `openssl rand -hex 32`) and never
+  overwrites an existing one; it is never copied from this machine and is never printed to the
+  deploy log. To read it: `make ssh-nas`, then `cat secrets/dashboard_token`.
+- **Kill switch**: the page has a Kill button (posts a `reason`, no auth — anyone who can reach
+  the dashboard can pause trading) and an Unkill button that requires the token. Equivalent
+  curl commands from the NAS (or over the tunnel):
+  ```bash
+  curl -X POST http://127.0.0.1:$(SERVE_PORT)/kill -d 'reason=manual pause'
+  curl -X POST http://127.0.0.1:$(SERVE_PORT)/unkill -H "X-Dashboard-Token: $(cat secrets/dashboard_token)"
+  ```
+  `/unkill` returns 403 if the token is missing, wrong, or the token file itself is absent
+  (fails closed rather than allowing an unauthenticated unkill).
+
 NAS specifics baked into `deploy/nas.env`: the app containers run as the NAS user (`APP_UID=1000`, `APP_GID=10`) so the 0600 secret files are readable without `chown`/`sudo`, and the health endpoint is published on `SERVE_PORT=8180` because 8080 is taken by SABnzbd. Docker on the NAS is 26.1 with Compose v2.26.
