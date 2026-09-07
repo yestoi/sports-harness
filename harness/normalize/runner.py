@@ -94,8 +94,13 @@ def _watermark(session: Session, family: str) -> NormalizeState:
     return state
 
 
-def _drain_batch(session: Session, family: str, batch: int, ctx: dict) -> tuple[int, int, bool]:
-    """Process one batch of a family. Returns (normalized, fetched, committed)."""
+def _drain_batch(session: Session, family: str, batch: int, ctx: dict,
+                 deadline: float | None = None) -> tuple[int, int, bool]:
+    """Process one batch of a family. Returns (normalized, fetched, committed).
+
+    Stops early (after at least one row) once ``deadline`` (a ``time.monotonic()`` value) passes,
+    committing progress through the last processed row so the next call resumes there.
+    """
     state = _watermark(session, family)
     last_committed = state.last_raw_id
     rows = session.execute(select(RawResponse).where(_family_filter(family), RawResponse.http_status == 200,
@@ -103,8 +108,11 @@ def _drain_batch(session: Session, family: str, batch: int, ctx: dict) -> tuple[
                            .order_by(RawResponse.id).limit(batch)).scalars().all()
     if not rows:
         return 0, 0, True
-    n, last_id = 0, last_committed
+    n, last_id, processed = 0, last_committed, 0
     for r in rows:
+        if deadline is not None and processed > 0 and time.monotonic() >= deadline:
+            break
+        processed += 1
         try:
             # One savepoint per row: a database error aborts only this row, leaving the rest
             # of the batch (and the watermark) intact.
@@ -126,8 +134,8 @@ def _drain_batch(session: Session, family: str, batch: int, ctx: dict) -> tuple[
         # The rollback restored the watermark to the last successfully committed row.
         _watermark(session, family).last_raw_id = last_committed
         session.commit()
-        return 0, len(rows), False
-    return n, len(rows), True
+        return 0, processed, False
+    return n, processed, True
 
 
 def normalize_new(session: Session, batch: int = 500, ctx: dict | None = None,
@@ -138,14 +146,17 @@ def normalize_new(session: Session, batch: int = 500, ctx: dict | None = None,
     counts: dict[str, int] = {}
     deadline = time.monotonic() + time_budget_s
     for family in FAMILIES:
-        n = 0
+        n, first = 0, True
         while True:
-            done, fetched, committed = _drain_batch(session, family, batch, ctx)
+            # Every family gets at least one (deadline-aware) batch per call so no family starves;
+            # after that, stop as soon as the budget is spent and resume next tick.
+            if not first and time.monotonic() >= deadline:
+                log.warning("normalize %s: time budget %.0fs reached; resuming next tick", family, time_budget_s)
+                break
+            done, fetched, committed = _drain_batch(session, family, batch, ctx, deadline=deadline)
+            first = False
             n += done
             if not committed or fetched < batch:
-                break
-            if time.monotonic() >= deadline:
-                log.warning("normalize %s: time budget %.0fs reached with a full batch pending", family, time_budget_s)
                 break
         counts[family] = n
     return counts

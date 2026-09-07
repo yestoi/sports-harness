@@ -126,3 +126,27 @@ def test_normalize_drains_multiple_batches_in_one_call(db_session):
     db_session.flush()
     counts = normalize_new(db_session, batch=500)
     assert counts["kalshi_events"] == 1200
+
+
+def test_normalize_new_stops_at_deadline_and_resumes(db_session):
+    """A zero time budget processes at least one row per family, commits the watermark through the
+    last processed row, and the next call continues from there."""
+    ensure_partitions(db_session, NOW)
+    run = Run(started_at=NOW, status="ok")
+    db_session.add(run)
+    db_session.flush()
+    ids = [_raw(db_session, run.id, "kalshi", "/markets/trades", {"ticker": f"T{i}", "min_ts": "x"},
+                {"trades": []}) for i in range(6)]
+    db_session.commit()
+    first = normalize_new(db_session, batch=500, time_budget_s=0)
+    assert 1 <= first["kalshi_trades"] < 6
+    st = db_session.get(NormalizeState, "kalshi_trades")
+    assert st.last_raw_id == ids[first["kalshi_trades"] - 1]
+    total = first["kalshi_trades"]
+    for _ in range(10):
+        more = normalize_new(db_session, batch=500, time_budget_s=30)
+        total += more["kalshi_trades"]
+        if more["kalshi_trades"] == 0:
+            break
+    assert total == 6
+    assert db_session.get(NormalizeState, "kalshi_trades").last_raw_id == ids[-1]
