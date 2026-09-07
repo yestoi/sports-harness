@@ -9,7 +9,7 @@ from harness.recorder.store import finish_run, start_run
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
 
 
-def test_healthz_reports_last_run(db_session):
+def test_healthz_reports_last_run(env_settings, db_session):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     run = start_run(db_session, NOW - timedelta(minutes=2))
     finish_run(db_session, run, "ok", n_requests=3, odds_remaining=4000, finished_at=NOW - timedelta(minutes=2))
@@ -21,7 +21,7 @@ def test_healthz_reports_last_run(db_session):
     assert 119 <= body["seconds_since"] <= 121
 
 
-def test_healthz_stale_is_503(db_session):
+def test_healthz_stale_is_503(env_settings, db_session):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     run = start_run(db_session, NOW - timedelta(minutes=30))
     finish_run(db_session, run, "ok", finished_at=NOW - timedelta(minutes=30))
@@ -29,7 +29,7 @@ def test_healthz_stale_is_503(db_session):
     assert client.get("/healthz").status_code == 503
 
 
-def test_healthz_degraded_run_is_green_but_visible(db_session):
+def test_healthz_degraded_run_is_green_but_visible(env_settings, db_session):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     run = start_run(db_session, NOW - timedelta(minutes=2))
     finish_run(db_session, run, "degraded", finished_at=NOW - timedelta(minutes=2))
@@ -39,7 +39,7 @@ def test_healthz_degraded_run_is_green_but_visible(db_session):
     assert r.json()["status"] == "ok" and r.json()["last_status"] == "degraded"
 
 
-def test_healthz_error_run_is_503(db_session):
+def test_healthz_error_run_is_503(env_settings, db_session):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     run = start_run(db_session, NOW - timedelta(minutes=2))
     finish_run(db_session, run, "error", finished_at=NOW - timedelta(minutes=2))
