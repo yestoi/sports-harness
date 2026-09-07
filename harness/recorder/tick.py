@@ -209,6 +209,16 @@ class Recorder:
                 ctx["errors"].append({key: repr(e)})
 
     def _kalshi_settled(self, session: Session, run: Run, now: datetime, ctx: dict) -> None:
+        """Record each football series' recently settled markets so phase 3 can grade paper
+        positions against the venue's own `result`.
+
+        Hourly, not per tick: a settled market's `result` never changes, so one fetch an hour is
+        enough to catch every settlement. The 8-day `min_settled_ts` window covers a full football
+        week plus a day of slack for a recorder outage, and stays clear of the historical cutoff
+        below which markets only exist on `GET /historical/markets`. Like `_kalshi_events`, the
+        interval is a constant rather than `interval_for`, so this also runs during the cadence
+        planner's quiet window; the Kalshi public API costs no Odds API credits.
+        """
         for series in FOOTBALL_SERIES:
             key = f"kalshi_settled:{series}"
             try:
