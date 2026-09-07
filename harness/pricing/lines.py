@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from harness.db.models import OddsSnapshot
 
 SPREAD_MARKETS = ("spreads", "alternate_spreads")
+TOTAL_MARKETS = ("totals", "alternate_totals")
 
 
 @dataclass(frozen=True)
@@ -53,10 +54,13 @@ def _books(lines: dict[LineKey, Line]) -> set[str]:
     return {k.book for k in lines}
 
 
-def spread_pair(lines: dict[LineKey, Line], team_id: int, opp_id: int, threshold: Decimal) -> dict[str, tuple[Line, Line]]:
+def spread_pair(
+    lines: dict[LineKey, Line], team_id: int, opp_id: int, threshold: Decimal,
+    markets: tuple[str, ...] = SPREAD_MARKETS,
+) -> dict[str, tuple[Line, Line]]:
     pairs: dict[str, tuple[Line, Line]] = {}
     for book in _books(lines):
-        for market in SPREAD_MARKETS:
+        for market in markets:
             team_key = LineKey(book, market, team_id, None, -threshold)
             opp_key = LineKey(book, market, opp_id, None, threshold)
             if team_key in lines and opp_key in lines:
@@ -65,13 +69,17 @@ def spread_pair(lines: dict[LineKey, Line], team_id: int, opp_id: int, threshold
     return pairs
 
 
-def total_pair(lines: dict[LineKey, Line], threshold: Decimal) -> dict[str, tuple[Line, Line]]:
+def total_pair(
+    lines: dict[LineKey, Line], threshold: Decimal, markets: tuple[str, ...] = TOTAL_MARKETS,
+) -> dict[str, tuple[Line, Line]]:
     pairs: dict[str, tuple[Line, Line]] = {}
     for book in _books(lines):
-        over_key = LineKey(book, "totals", None, "over", threshold)
-        under_key = LineKey(book, "totals", None, "under", threshold)
-        if over_key in lines and under_key in lines:
-            pairs[book] = (lines[over_key], lines[under_key])
+        for market in markets:
+            over_key = LineKey(book, market, None, "over", threshold)
+            under_key = LineKey(book, market, None, "under", threshold)
+            if over_key in lines and under_key in lines:
+                pairs[book] = (lines[over_key], lines[under_key])
+                break
     return pairs
 
 

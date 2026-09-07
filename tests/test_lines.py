@@ -72,6 +72,17 @@ def test_spread_pair_at_main_and_alternate_thresholds(db_session):
     assert set(alt.keys()) == {"pinnacle", "betonlineag"}
 
 
+def test_spread_pair_markets_restricted_to_spreads_excludes_alternate(db_session):
+    _insert_fixture(db_session)
+    lines = latest_book_lines(db_session, GAME_ID, NOW, lookback_s=1200)
+    # 6.5 only exists as an alternate_spreads line; restricting to ("spreads",) must find nothing.
+    alt_only = spread_pair(lines, HOME, AWAY, Decimal("6.5"), markets=("spreads",))
+    assert alt_only == {}
+    # 3.5 exists as a real spreads line; restricting still finds it.
+    main_only = spread_pair(lines, HOME, AWAY, Decimal("3.5"), markets=("spreads",))
+    assert set(main_only.keys()) == {"pinnacle", "betonlineag", "lowvig", "draftkings"}
+
+
 def test_total_pair_at_44_5(db_session):
     _insert_fixture(db_session)
     lines = latest_book_lines(db_session, GAME_ID, NOW, lookback_s=1200)
@@ -80,6 +91,29 @@ def test_total_pair_at_44_5(db_session):
     for over_line, under_line in pairs.values():
         assert over_line.key.outcome_side == "over"
         assert under_line.key.outcome_side == "under"
+
+
+def test_total_pair_falls_back_to_alternate_totals_by_default(db_session):
+    _insert_fixture(db_session)
+    extra_fetched_at = NOW - timedelta(minutes=2)
+    db_session.add_all([
+        OddsSnapshot(raw_id=9001, run_id=1, book="pinnacle", game_id=GAME_ID, market_type="alternate_totals",
+                     outcome_team_id=None, outcome_side="over", point=Decimal("47.5"),
+                     price_decimal=Decimal("1.95"), book_last_update=extra_fetched_at, fetched_at=extra_fetched_at),
+        OddsSnapshot(raw_id=9002, run_id=1, book="pinnacle", game_id=GAME_ID, market_type="alternate_totals",
+                     outcome_team_id=None, outcome_side="under", point=Decimal("47.5"),
+                     price_decimal=Decimal("1.90"), book_last_update=extra_fetched_at, fetched_at=extra_fetched_at),
+    ])
+    db_session.flush()
+    lines = latest_book_lines(db_session, GAME_ID, NOW, lookback_s=1200)
+
+    # default markets fall back to alternate_totals
+    pairs = total_pair(lines, Decimal("47.5"))
+    assert set(pairs.keys()) == {"pinnacle"}
+
+    # restricting to ("totals",) must not find the alternate
+    restricted = total_pair(lines, Decimal("47.5"), markets=("totals",))
+    assert restricted == {}
 
 
 def test_ml_pair_all_four_books(db_session):
