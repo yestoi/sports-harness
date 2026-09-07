@@ -34,15 +34,17 @@ October read.
 | **Floor** | B: what is it doing right now | game day, watched | desktop second monitor; phone on Saturdays | 15 s in a game window, 60 s otherwise |
 | **Study** | C: is the strategy any good | Monday, an hour | desktop | 10 min; week-to-date cells hourly |
 | **Gate** | C, decisive | once in October, and every Monday as a rehearsal | desktop | on each `gate_reports` insert |
+| **Ticket** | the fun parlays (real money, $50/week, placed by hand) | Friday and Saturday evenings, then during games | phone | 15 s in a game window, 60 s otherwise |
 
-Navigation: one fixed header on every surface with four tabs, the Pulse status word (§2.1), a `PAPER`
+Navigation: one fixed header on every surface with five tabs (Ticket last, styled warm so it reads as the fun one), the Pulse status word (§2.1), a `PAPER`
 badge, the build sha, and the age of the oldest snapshot on the current surface. The header never scrolls
 away. On a phone the tabs sit at the bottom.
 
 ### 1.1 Honesty rules that apply to every surface
 
 - Every monetary or contract figure sits under the word **paper** in the same visual unit (badge, column
-  header, chart title). No surface has a view where the word is absent.
+  header, chart title). No surface has a view where the word is absent. The one exception is Ticket (§2.5), where every figure is real fun money and
+  the badge says so; paper and fun money never appear on the same surface.
 - No estimate is drawn without `n_obs`, `n_clusters` and its interval. Below 10 game clusters the mark is
   grey and labelled; below 30 it carries a flag. This is the report's own rule and the UI reads the flags
   from the stored cell rather than re-deriving them.
@@ -250,6 +252,50 @@ only; live trading is a separate legal decision; the loop never decides.
 **Never shown here.** A projection. A recomputed criterion. Any variant under a name other than its
 registered one. A button.
 
+### 2.5 Ticket (user decision, 2026-09-07 evening)
+
+**Job.** Make watching the week's fun parlays a joy, and keep the fun money visibly separate from the
+research. This is the one surface that shows **real money**: the owner's $50-a-week fun budget (roadmap
+phase 5c, v2 spec §8.1), placed by hand at DraftKings. Phone-first: it is opened at a bar on a Saturday.
+
+**Concept: the ticket.** A physical betting slip on the dark ground: warm paper, perforated edges, ink
+type. Legs run down the slip as a chain of lamps: grey while pending, gold and pulsing while alive, green
+with a HIT stamp, red and torn when missed. The potential payout sits at the top in the largest type on
+any surface and dims as legs fall. A diagonal CASHED or BUSTED stamp ends the card. Motion is allowed
+here and nowhere else in this quantity: a lamp lighting, a stamp landing, a short burst when a leg hits.
+
+**Layout.** (1) **Live tickets**: the smart card first, lottery cards after. Each: kind, stake, potential
+payout, legs remaining; then the legs, each with its lamp, a plain description ("LSU to win", "Alabama by
+more than 7", "Over 55 points"), the DraftKings odds, the live score with **what still needs to happen**
+("Georgia leads by 3, needs 4 or more"), and **"sharps say NN %"**: the sharp books' live probability for
+that leg, updating during the game, with a small history bar. The card footer states the chance every leg
+hits per the sharp books beside what DraftKings pays as if, and the hold between them. (2) **Season
+strip**: every past ticket as a thumbnail with its stamp; staked, returned, net against the budget; best
+hit; the current streak. (3) **Between cards**: when nothing is live, when the next card is built (Friday
+for college, Saturday evening for the NFL), the anchor rule (an LSU or Saints leg), and the budget left
+this week.
+
+**Sentences** (§1.2 templates, in a fan's voice, still deterministic): "One leg from glory." "Alabama
+needs to win by 8 or more; they lead by 10 with six minutes left." "Ouch. Georgia let it slip." The
+"needs to happen" text is a pure function of the leg's market, line and the current score, never a guess.
+
+**Metrics and sources.**
+
+| Metric | Source |
+|---|---|
+| cards, legs, stake, estimated payout, true-probability estimate, hold, rationale | `parlay_cards`, `parlay_legs` (§3.9) |
+| placed or not, actual DraftKings odds, payout and stake | `parlay_placements` |
+| live score, period, clock; what still needs to happen | `game_score_events`, `games`, `needs(leg, score)` |
+| leg status (pending, alive, hit, miss), card status | `parlay_legs.status`, `parlay_cards.status` (settlement stage `parlay_grade`) |
+| sharps say NN % per leg, with history | `parlay_leg_probs` (written by the recorder tick from the sharp consensus while a card is live) |
+| season strip, staked, returned, net, best hit, streak | `parlay_ledger`, `parlay_cards` |
+
+**Never shown here.** Any paper number, any research variant, any CLV. No DraftKings account state.
+No "place" button: placement is by hand and is confirmed through the CLI (`harness parlay placed`). The
+header badge on this surface reads `FUN MONEY · $50/WEEK · PLACED BY HAND` in place of `PAPER`, and the
+How-it-works page says in one paragraph that this page and the research never mix. The lottery card's
+correlation note from §8.1 ("DraftKings will quote lower than this") is shown as written.
+
 ## 3. Telemetry tables (additive; every timestamp `timestamptz`)
 
 Volumes assume a game day. None of these tables is ever scanned by the tape writers or read by a page
@@ -361,13 +407,44 @@ Lands with phase 4.5, not Task 12b.
 
 `name String(32) PK`, `generated_at`, `elapsed_ms int`, `payload JSONB`, `error String(80) null`.
 
+### 3.9 Parlay tables (phase 4.5 creates them and the Ticket surface; phase 5c writes them)
+
+- `parlay_cards`: `id serial PK`, `year smallint`, `week smallint`, `sport String(5)`, `kind String(8)` in
+  {smart, lottery}, `built_at`, `stake Numeric(8,2)`, `dk_payout_est Numeric(10,2)`, `true_prob_est
+  Numeric(8,6)`, `hold_est Numeric(6,4)`, `rationale String(600)` (F50-sanitized; a model wrote it only
+  when the Anthropic key exists, and the row says which), `anchor_leg_id int null`, `status String(8)` in
+  {proposed, placed, alive, cashed, busted, void}, `correlated bool` (lottery cards). Index `(year, week)`.
+- `parlay_legs`: `id serial PK`, `card_id int`, `seq smallint`, `game_id int`, `market_type String(6)` in
+  {ml, spread, total}, `side_team_id int null`, `side String(5) null` in {over, under}, `threshold
+  Numeric(5,1) null`, `dk_american int`, `dk_decimal Numeric(8,4)`, `plain_text String(80)`,
+  `odds_snapshot_id bigint null` (the DraftKings row the price came from), `status String(8)` in
+  {pending, alive, hit, miss, void}, `graded_at null`. Index `(card_id, seq)`.
+- `parlay_placements`: `card_id int PK`, `placed_at`, `stake_actual Numeric(8,2)`, `dk_payout_actual
+  Numeric(10,2)`, `dk_odds_actual int null`, `note String(200)`. Written by `harness parlay placed --card
+  ID --stake --payout [--odds] [--note]`; a card without a row is shown as "not placed" and never enters
+  the ledger.
+- `parlay_ledger`: `id serial PK`, `ts`, `card_id int`, `kind String(6)` in {stake, return, void},
+  `amount Numeric(10,2)`, `year smallint`, `week smallint`. Stake on placement, return on `cashed`, the
+  stake back on `void`.
+- `parlay_leg_probs`: `leg_id int`, `ts`, `sharp_p Numeric(6,4)`, `book_p Numeric(6,4) null` (the
+  DraftKings live implied probability when present in the feed). PK `(leg_id, ts)`. Written once per
+  recorder tick for every leg of a card whose status is placed or alive and whose game is inside the
+  in-progress window, from the same consensus the pricing path uses for that market. Bound: a few
+  hundred rows per leg per game.
+- Settlement stage `parlay_grade` (phase 5c, registered after `settle`): grades a leg from
+  `settlements` with the same `resolve_market` rules as Kalshi contracts (a push on a whole-number line
+  is `void`), moves a card to `cashed` when every leg is `hit`, to `busted` on the first `miss`, writes
+  the ledger, and appends `operator_events(kind = parlay_settled)`.
+- `needs(leg, score) -> str` in `harness/parlay/needs.py`: a pure function tested on every market type
+  and both sides ("needs 4 or more", "needs 12 more points", "any win does it", "already done").
+
 ## 4. Snapshot layer (phase 4.5)
 
 - A `SnapshotJob` runs inside `app-serve` on APScheduler (`max_instances = 1`, `coalesce = True`), one
   job per snapshot name with its own cadence: `pulse` 30 s, `floor` 15 s inside a game window (the R4
   definition) and 60 s outside, `study:<year>-<week>` 10 min for the current week and once on demand
   for closed weeks (cached until a newer `report_runs` row exists), `gate` 60 s (cheap; changes only when
-  a row is inserted). Each builder runs on its own session from an engine with
+  a row is inserted). `ticket` 15 s inside a game window when a card is placed or alive, 60 s otherwise. Each builder runs on its own session from an engine with
   `SNAPSHOT_STATEMENT_TIMEOUT_MS = 2000`, strictly below the sink's timeout, and writes its row with
   `elapsed_ms`; an exception writes `error` and leaves the previous `payload` in place. Builders reuse
   `_section` semantics: one failing section of a snapshot does not empty the others.
@@ -423,6 +500,8 @@ Lands with phase 4.5, not Task 12b.
   four surfaces, table t12, the design canvas implemented, and a `verify.md` extension that loads `/ui/`
   and each snapshot and checks ages. Planned by the autopilot after phase 4 from this spec and the canvas.
   Absorbs phase 5(g).
+- **Ticket** ships in phase 4.5 with the parlay tables (§3.9) empty; it shows the between-cards state until
+  phase 5c writes the first card. Phase 5c gains the writers named in §3.9.
 - Phase 4 item 6's drawdown alert and item 7's `venue_requests` table get a Pulse rule and a Floor tile
   respectively when phase 4.5 is planned; they need no change to phase 4.
 
@@ -436,6 +515,10 @@ Lands with phase 4.5, not Task 12b.
   `text`; a second run appends a second `report_runs` row and leaves the first untouched.
 - Checks registry test: every registered check has a statement timeout and none references the tape
   tables (a static assertion over the SQL strings).
+- Phase 4.5: `needs(leg, score)` is tested on every market type, both sides, a push and a finished game;
+  the Ticket snapshot builder is tested with no cards, a placed card before kickoff, a live card with one
+  missed leg (status `busted`, payout dimmed), and a cashed card; the ledger never contains a card without a
+  placement row.
 - Phase 4.5: every sentence template has a unit test on a fixture payload, including the three `confidence_phrase` bands and the rule that a greyed cell yields a sentence with no estimate; a test that every technical term appearing in the surfaces' label tables has a `glossary.json` entry; a test that every skip, cancel and rejection code the executor and strategy can emit has a `reason_phrase`.
 - Phase 4.5: each snapshot builder has a test with a seeded database asserting bounded queries (the
   test engine's statement timeout at 2000 ms and an assertion that no SQL text names the three bulk
@@ -463,6 +546,8 @@ tunnel. Any write path other than the frozen kill pair.
 5. Live scores are recorded as change events from the existing ESPN poll rather than adding a faster
    scoreboard cadence. Cost: clock resolution equals the tick interval, labelled as such.
 6. Vendored uPlot rather than hand-drawn time series or a framework. Cost: one pinned 45 KB file.
+8. The Ticket surface breaks the calm of the other four on purpose, and keeps real money on its own page
+   with its own badge so that fun and research never share a screen. Cost if wrong: one more tab.
 7. Sentences are written server-side by templates, not by a model and not in the browser, so the plain layer
    is deterministic, testable and cannot drift from the evidence. Cost: templates must be extended when a
    new section or reason code appears; the tests in §8 catch a missing one.

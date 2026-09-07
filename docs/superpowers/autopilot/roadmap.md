@@ -209,7 +209,9 @@ written into the addendum with rationale, cost if wrong, and how to reverse it.
 - **(b)** NWS forecast snapshots for H6: a stadium YAML (NFL and FBS, lat/lon, roof) built by the model from
   public sources, `api.weather.gov` gridpoint forecasts for outdoor games inside 72 h, hourly, User-Agent
   `sports-harness/1 (self-hosted research harness)`.
-- **(c)** Parlay CLI per §8.1 with `parlay.yaml`: weekly budget **$50** (user), smart card $25, lottery card
+- **(c)** Parlay CLI per §8.1 with `parlay.yaml`, writing the dashboard's parlay tables (dashboard spec §3.9:
+  `parlay_cards`, `parlay_legs`, `harness parlay placed` into `parlay_placements`, the `parlay_grade` settlement
+  stage, `parlay_leg_probs` from the recorder tick while a card is live): weekly budget **$50** (user), smart card $25, lottery card
   $5, at most three lottery cards, legs from moneyline/spread/total at DraftKings prices already in the
   feed, LSU or Saints anchor, rationale from a template unless the Anthropic key exists.
 - **(d)** Shadow veto per §7.1: week 1 on `claude-opus-5` at default effort with adaptive thinking,
@@ -267,6 +269,9 @@ reported "not collected".
 4. `verify.md` gains: `/ui/` loads at 390 px and 1440 px through Chrome, `/api/snap` lists every name with
    age under twice its cadence, the legacy page and `/api/summary` unchanged.
 5. Phase 4 item 6 (drawdown alert) becomes a Pulse rule; item 7 (`venue_requests`) becomes a Floor tile.
+7. The **Ticket** surface (spec §2.5, user 2026-09-07 evening): the fun-parlay page, phone-first, the
+   ticket concept, live "sharps say" probabilities per leg; creates the parlay tables of spec §3.9 (empty until
+   phase 5c) and reads them. Real money, its own badge, never on a page with paper numbers.
 6. The learnable layer (spec §1.2, user 2026-09-07 evening): server-written sentences per section, two-level
    labels, `glossary.json`, the How-it-works page, and plain phrases for every reason code. The reviewer
    checks every technical term on a surface has a glossary entry and every reason code has a phrase.
