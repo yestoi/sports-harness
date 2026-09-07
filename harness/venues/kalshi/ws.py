@@ -274,8 +274,12 @@ class WsRecorder:
                 try:
                     # Each new subscription restarts seq numbering at the venue, so any
                     # sequence numbers remembered from a prior connection must be dropped
-                    # first or the next delta looks like a gap.
+                    # first or the next delta looks like a gap. A gap the previous socket
+                    # never got to recover from is carried-over state of the same kind: its
+                    # sid belongs to a subscription that no longer exists, so resubscribing
+                    # it here would name a dead sid to the venue.
                     self.sink.reset_sequences()
+                    self.sink.gap_sids.clear()
                     self._subscribe(ws, tickers)
                     self._recv_loop(ws)
                 finally:

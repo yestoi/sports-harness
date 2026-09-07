@@ -161,12 +161,16 @@ class _FakeSink:
         self.flushes = 0
         self.gap_sids: set[int] = set()
         self.offset_ms = 0
+        self.cleared: list[int] = []
 
     def handle(self, msg, received_at):
         self._on_handle(msg, received_at)
 
     def reset_sequences(self):
         self.reset_count += 1
+
+    def clear_sequence(self, sid):
+        self.cleared.append(sid)
 
     def flush(self):
         self.flushes += 1
@@ -997,3 +1001,43 @@ def test_run_forever_hands_each_connections_offset_to_the_sink(monkeypatch):
 
     assert abs(recorder._offset_ms - 480000) <= 2000
     assert seen["offset"] == recorder._offset_ms
+
+
+def test_a_stale_gap_sid_does_not_survive_into_the_next_connection(monkeypatch):
+    """`gap_sids` is drained after every message, so it is normally empty by the time a
+    connection ends -- unless a recovery raised `_Reconnect` while another sid was still in
+    the set. That leftover names a subscription of the dead socket, and the venue would be
+    sent a resubscribe for a sid it no longer has. The new connection starts the set empty,
+    next to the sequence reset that clears the same kind of carried-over state."""
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: ["K-A"])
+
+    subscribed = json.dumps({"type": "subscribed", "msg": {"sid": 5}})
+    delta = json.dumps(_delta(5, 1, "K-A"))
+    observed: dict[str, set[int]] = {}
+    sockets: list[_FakeWs] = []
+
+    class _ObservingWs(_ClosingWs):
+        def recv(self):
+            # The subscribe frame has gone out, so run_forever's connect step is complete.
+            observed.setdefault("at_first_recv", set(sink.gap_sids))
+            return super().recv()
+
+    def ws_factory(url, header, timeout):
+        sockets.append(_ObservingWs([subscribed, delta]))
+        return sockets[-1]
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None,
+                          ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+    monkeypatch.setattr(time, "sleep", lambda _s: recorder.stop())
+
+    sink = _FakeSink(lambda _msg, _ts: None)
+    # A sid left over from the previous socket, the way a recovery that raised would leave it.
+    sink.gap_sids = {99}
+    recorder.sink = sink
+    recorder.run_forever()
+
+    assert observed["at_first_recv"] == set()
+    assert sink.gap_sids == set()
+    assert not [f for f in _subscription_frames(sockets[0]) if 99 in f["params"]["sids"]]
+    assert sink.cleared == []
