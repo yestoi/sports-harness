@@ -108,6 +108,11 @@ def test_compute_fair_values_direct_and_derived(db_session, env_settings):
         assert row.fair_source == "derived"
         assert row.model_json is not None
         assert abs(row.model_json["mu"] - 3.5) <= 0.5
+        # derived rows inherit the main-line (3.5) spread's feed info, same as they already
+        # inherit its n_groups/disagreement/newest_book_ts.
+        assert row.feed_kind == spread_35.feed_kind
+        assert row.feed_lag_s == spread_35.feed_lag_s
+        assert row.stale_allowance_s == spread_35.stale_allowance_s
 
     # idempotent: second call at the same run inserts nothing new (candidate game count is unaffected)
     counts2 = compute_fair_values(db_session, run.id, NOW, env_settings)
@@ -290,6 +295,8 @@ def test_stale_allowance_table(env_settings, monkeypatch):
 
     monkeypatch.setattr(env_settings, "odds_alt_interval_far_s", 900)
     assert stale_allowance_s("alternate", 600, env_settings) == 1000
+    # the near branch is untouched by the far monkeypatch
+    assert stale_allowance_s("alternate", 120, env_settings) == 220
 
 
 def test_direct_fair_records_feed_kind_and_lag(db_session, env_settings):
