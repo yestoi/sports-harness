@@ -433,3 +433,67 @@ def test_sink_trade_uses_new_taker_side_fields_and_drops_a_sideless_print(db_ses
     assert db_session.query(VenueTrade).filter_by(trade_id="t-noside").count() == 0
     assert sink.missing_side == 1 and sink.errors == 0
     assert any("taker side missing" in r.getMessage() and "K1" in r.getMessage() for r in caplog.records)
+
+
+# --- hotfix F6: a gap belongs to the subscription, not to the ticker that exposed it ---
+
+def _delta(sid: int, seq: int, ticker: str) -> dict:
+    return {"type": "orderbook_delta", "sid": sid, "seq": seq,
+            "msg": {"market_ticker": ticker, "price_dollars": "0.3500", "delta_fp": "1.00",
+                    "side": "yes", "ts_ms": 1789234001000}}
+
+
+def _snapshot(sid: int, seq: int, ticker: str) -> dict:
+    return {"type": "orderbook_snapshot", "sid": sid, "seq": seq,
+            "msg": {"market_ticker": ticker, "yes_dollars_fp": [["0.35", "10.00"]], "no_dollars_fp": []}}
+
+
+def test_gap_row_is_keyed_to_the_subscription_not_the_exposing_ticker(db_session, caplog):
+    """F6: `seq` counts per `sid`, and one `sid` carries up to 500 tickers. Writing the gap
+    row under whichever ticker happened to expose it hides that every ticker on that
+    subscription lost events, so the row goes in under the `ticker = ""` sentinel with the
+    exposing ticker kept in `raw`."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    with caplog.at_level("WARNING", logger="harness.recorder.ws_sink"):
+        for seq, ticker in ((1, "K-A"), (2, "K-A"), (4, "K-B")):
+            assert sink.handle(_delta(7, seq, ticker), NOW) == "orderbook_delta"
+
+    gaps = db_session.query(OrderbookEvent).filter_by(kind="gap").all()
+    assert len(gaps) == 1
+    (gap,) = gaps
+    assert (gap.ticker, gap.sid, gap.seq) == ("", 7, 4)
+    assert gap.raw == {"sid": 7, "expected": 3, "got": 4, "exposed_by": "K-B"}
+    # The WARNING is the only signal a human sees live, so it names the exposing ticker too.
+    assert any("seq gap" in r.getMessage() and "K-B" in r.getMessage() for r in caplog.records)
+
+
+def test_out_of_sequence_snapshot_writes_a_gap_row_and_then_records_its_seq(db_session):
+    """The snapshot branch used to assign `_last_seq[sid]` directly, so a gap that coincided
+    with a snapshot was erased without a row. It goes through `_check_seq` instead."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(9, 1, "K-A"), NOW) == "orderbook_delta"
+    assert sink.handle(_snapshot(9, 3, "K-A"), NOW) == "orderbook_snapshot"
+    assert sink.handle(_delta(9, 4, "K-A"), NOW) == "orderbook_delta"
+
+    kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
+    assert kinds == ["delta", "gap", "snapshot", "delta"]
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.ticker, gap.sid, gap.seq) == ("", 9, 3)
+    assert gap.raw == {"sid": 9, "expected": 2, "got": 3, "exposed_by": "K-A"}
+
+
+def test_first_snapshot_on_a_fresh_sid_writes_no_gap(db_session):
+    """The normal post-subscribe case: the first message on a `sid` has nothing to follow, so
+    routing snapshots through `_check_seq` must not manufacture a gap out of its seq."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_snapshot(11, 42, "K-A"), NOW) == "orderbook_snapshot"
+    assert sink.handle(_delta(11, 43, "K-A"), NOW) == "orderbook_delta"
+
+    kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
+    assert kinds == ["snapshot", "delta"]
