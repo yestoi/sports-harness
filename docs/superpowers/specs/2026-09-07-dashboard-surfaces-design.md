@@ -484,7 +484,7 @@ Lands with phase 4.5, not Task 12b.
   | muted ink | `#7c8794` | `#6b7480` |
   | accent | `#35c9d9` | `#0f8e9c` |
   | good, warning, bad | `#2bc257`, `#fab219`, `#e05252` | `#168a3a`, `#b7780f`, `#c23b3b` |
-  | fun accent (Ticket) | `#f5a524` | `#b7780f` |
+  | fun accent (Ticket) | `#f5a524` | `#8a5a08` (the warning amber is too faint as text on cream) |
   | variants, seven slots in fixed order | `#3987e5 #d95926 #199e70 #c98500 #d55181 #008300 #9085e9` | `#2a78d6 #eb6834 #1baf7a #eda100 #e87ba4 #008300 #4a3aa7` |
   | Ticket slip paper, ink, muted | `#2b2517`, `#f1e6cf`, `#b9ad95` (night paper) | `#f4ead6`, `#1b1a17`, `#6b6255` (cream) |
   | Ticket HIT, MISS | `#4fc46f`, `#ef5a6e` | `#1f8a3b`, `#c8102e` |
