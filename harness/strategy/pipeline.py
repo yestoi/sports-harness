@@ -21,6 +21,12 @@ from harness.pricing.gaps import build_gap_snapshots
 from harness.strategy.run import GapRow, run_strategy
 from harness.strategy.variants import Variant, active_variants
 
+#: Rows per INSERT statement in `_insert_signals`. A signal binds 21 parameters, and
+#: psycopg refuses a statement with more than 65535 of them, so a single multi-VALUES
+#: insert dies above 3120 signals -- which a variant clears every tick now that there
+#: are thousands of matched venue markets. 1000 rows is 21,000 parameters a statement.
+SIGNAL_INSERT_CHUNK = 1000
+
 
 def _load_gap_rows(session: Session, run_id: int) -> list[GapRow]:
     stmt = (
@@ -91,13 +97,16 @@ def _insert_signals(
         )
         for s in signals
     ]
-    stmt = (
-        insert(Signal)
-        .values(values)
-        .on_conflict_do_nothing(index_elements=["run_id", "variant_id", "venue_market_id", "side", "replay"])
-        .returning(Signal.id)
-    )
-    return len(session.execute(stmt).fetchall())
+    inserted = 0
+    for start in range(0, len(values), SIGNAL_INSERT_CHUNK):
+        stmt = (
+            insert(Signal)
+            .values(values[start:start + SIGNAL_INSERT_CHUNK])
+            .on_conflict_do_nothing(index_elements=["run_id", "variant_id", "venue_market_id", "side", "replay"])
+            .returning(Signal.id)
+        )
+        inserted += len(session.execute(stmt).fetchall())
+    return inserted
 
 
 

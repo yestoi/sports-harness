@@ -3,12 +3,13 @@ import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from harness.db.models import Game, OddsSnapshot, Run, Signal, VenueMarket, VenueQuote
 from harness.matching.teams import seed_teams_from_espn
 from harness.strategy import pipeline as pipeline_module
-from harness.strategy.pipeline import price_and_signal
-from harness.strategy.variants import load_variants, register_variants
+from harness.strategy.pipeline import _insert_signals, price_and_signal
+from harness.strategy.variants import Variant, load_variants, register_variants
 
 FIXD = Path(__file__).parent / "fixtures"
 NFL = json.loads((FIXD / "espn_teams_nfl.json").read_text())
@@ -198,3 +199,58 @@ def test_pricing_clock_for_run_uses_finished_at_then_start_plus_budget():
     assert pricing_clock_for_run(done, 100) == start + timedelta(seconds=37)
     unfinished = SimpleNamespace(started_at=start, finished_at=None)
     assert pricing_clock_for_run(unfinished, 100) == start + timedelta(seconds=100)
+
+
+# --- hotfix A2: the signals insert must survive more rows than psycopg can bind ---------
+
+def _bulk_signal(i: int) -> SimpleNamespace:
+    """The lightweight shape `price_and_signal` hands `_insert_signals` (see `run_strategy`)."""
+    return SimpleNamespace(
+        gap_snapshot_id=1,
+        venue_market_id=i + 1,
+        side="yes",
+        fair_p=Decimal("0.5000"),
+        fair_source="direct",
+        venue_best_bid=Decimal("0.4900"),
+        venue_best_ask=Decimal("0.5100"),
+        price_target=Decimal("0.5100"),
+        fee_at_target=Decimal("0.0100"),
+        as_estimate=Decimal("0.0000"),
+        edge=Decimal("0.0100"),
+        edge_min=Decimal("0.0050"),
+        stake=Decimal("1.00"),
+        contracts=2,
+        decision="rejected",
+        rejection_reason="edge_floor",
+        labels={"i": i},
+    )
+
+
+def test_insert_signals_survives_more_rows_than_psycopg_can_bind(db_session):
+    """A2: one INSERT ... VALUES per signal binds 21 parameters a row, so a single statement
+    dies above 3120 rows ("number of parameters must be between 0 and 65535"). With 4218
+    matched venue markets a variant clears that every tick, so the insert must be chunked.
+    (`signals` declares no foreign keys, so only the run row needs to be real.)"""
+    run = Run(started_at=NOW, status="running")
+    db_session.add(run)
+    db_session.flush()
+    variant = Variant(name="bulk", tier="primary", config={}, variant_id="0123456789ab")
+
+    inserted = _insert_signals(db_session, run.id, variant, NOW, [_bulk_signal(i) for i in range(3200)])
+
+    assert inserted == 3200
+    assert db_session.query(Signal).filter_by(run_id=run.id).count() == 3200
+
+
+def test_insert_signals_inserts_every_chunk_including_the_short_last_one(db_session, monkeypatch):
+    """The loop boundary itself: 5 rows in chunks of 2 is three statements, and all 5 land."""
+    monkeypatch.setattr(pipeline_module, "SIGNAL_INSERT_CHUNK", 2)
+    run = Run(started_at=NOW, status="running")
+    db_session.add(run)
+    db_session.flush()
+    variant = Variant(name="bulk2", tier="primary", config={}, variant_id="ba9876543210")
+
+    inserted = _insert_signals(db_session, run.id, variant, NOW, [_bulk_signal(i) for i in range(5)])
+
+    assert inserted == 5
+    assert db_session.query(Signal).filter_by(run_id=run.id).count() == 5
