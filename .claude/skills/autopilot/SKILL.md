@@ -21,6 +21,21 @@ summarized at any moment; the files are the only truth, so read them first, ever
 Also run: `git status --short`, `git log --oneline -15`, `git branch --show-current`,
 `make status-nas`. Trust the journal, the ledger, and `git log` over memory.
 
+## Kickoff (a fresh session, the way the user starts it)
+
+```
+cd ~/dev/sports && claude --dangerously-skip-permissions
+/effort            # max
+/autopilot
+```
+
+Then read the state files, run preflight, choose the unit, go. Phase 3's SDD workspace
+(`.superpowers/sdd/2026-09-07-phase3-paper-execution/`) already holds the ledger with
+the pre-flight scan, its rulings, and the 14 task briefs; the SDD skill resumes from
+that ledger. A tunnel left running by an earlier session (`pgrep -f "ssh -N -L 8180"`)
+is reused, not duplicated. Announce the plan of the day in one short message, then do
+not wait for a reply.
+
 ## Preflight (once per session; journal the result as a `preflight` entry)
 
 1. Mac awake: `pmset -g | grep -E "^\s*sleep"` shows sleep prevented, else run
