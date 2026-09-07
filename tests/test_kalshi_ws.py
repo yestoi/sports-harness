@@ -497,3 +497,20 @@ def test_first_snapshot_on_a_fresh_sid_writes_no_gap(db_session):
 
     kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
     assert kinds == ["snapshot", "delta"]
+
+
+def test_gap_exposed_by_a_message_with_no_ticker_stores_none_not_the_sentinel(db_session):
+    """`ticker = ""` is the gap row's whole-subscription sentinel, so a malformed message
+    whose `market_ticker` is missing must record `exposed_by` as null rather than an empty
+    string that reads as "the whole subscription exposed it"."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(13, 1, "K-A"), NOW) == "orderbook_delta"
+    nameless = _delta(13, 3, "K-A")
+    del nameless["msg"]["market_ticker"]
+    assert sink.handle(nameless, NOW) == "orderbook_delta"
+
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert gap.ticker == ""
+    assert gap.raw == {"sid": 13, "expected": 2, "got": 3, "exposed_by": None}

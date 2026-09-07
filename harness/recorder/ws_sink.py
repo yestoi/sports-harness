@@ -56,13 +56,14 @@ class WsSink:
         """`seq` counts per subscription, and one `sid` carries up to 500 tickers, so a gap
         invalidates every ticker on that sid -- not just the one whose message exposed it.
         The row therefore goes in under `ticker = ""` (the whole-subscription sentinel) with
-        the exposing ticker kept in `raw`. A first message on an unseen sid has nothing to
-        follow, so it records its seq and writes no gap."""
+        the exposing ticker kept in `raw` (null, never "", when the message carried no
+        ticker at all, so a malformed frame is not read as the sentinel). A first message on
+        an unseen sid has nothing to follow, so it records its seq and writes no gap."""
         last = self._last_seq.get(sid)
         if last is not None and seq != last + 1:
             log.warning("seq gap sid=%s expected=%s got=%s exposed_by=%s", sid, last + 1, seq, ticker)
             self._session.add(OrderbookEvent(ticker="", ts=ts, sid=sid, seq=seq, kind="gap",
-                                             raw={"sid": sid, "expected": last + 1, "got": seq, "exposed_by": ticker}))
+                                             raw={"sid": sid, "expected": last + 1, "got": seq, "exposed_by": ticker or None}))
             self._pending += 1
         self._last_seq[sid] = seq
 
@@ -95,6 +96,10 @@ class WsSink:
                 if sid is not None and seq is not None:
                     # Assigning `_last_seq[sid]` here erased any gap that coincided with a
                     # snapshot; `_check_seq` records the same seq and writes the row first.
+                    # The ordering is load-bearing: phase 3's book loader dirties a book on
+                    # `gap.sid = anchor.sid and gap.id > anchor.id`, so the gap must take the
+                    # lower id and leave the snapshot that refreshes the book clean. Swapping
+                    # these two `session.add` calls would break that silently.
                     self._check_seq(sid, seq, ticker, received_at)
                 self._session.add(OrderbookEvent(ticker=ticker, ts=received_at, sid=sid or 0, seq=seq or 0, kind="snapshot", raw=body))
                 self._pending += 1
