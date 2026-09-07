@@ -33,7 +33,7 @@
 </head>
 <body>
 <h1>Harness Dashboard</h1>
-<p class="muted">Generated {{ summary.now }}</p>
+<p class="muted">Generated {{ summary.now }} &middot; build {{ summary.build.sha }}{% if summary.build.time %} &middot; deployed {{ summary.build.time }}{% endif %}</p>
 
 <section>
   <h2>Health</h2>

@@ -277,9 +277,13 @@ def _section(session: Session, name: str, fn: Callable[[], dict]) -> dict:
         return {"error": type(e).__name__}
 
 
-def build_summary(session: Session, session_factory: sessionmaker, now: datetime) -> dict:
+def build_summary(session: Session, session_factory: sessionmaker, now: datetime,
+                   build: dict | None = None) -> dict:
+    if build is None:
+        build = {"sha": "dev", "time": None}
     return {
         "now": _iso(now),
+        "build": build,
         "health": _section(session, "health", lambda: _health(session, session_factory, now)),
         "kill_switch": _section(session, "kill_switch", lambda: _kill_switch(session)),
         "funnel": _section(session, "funnel", lambda: _funnel(session, now)),
@@ -295,24 +299,25 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
                      clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> FastAPI:
     app = FastAPI(title="harness-dashboard")
     templates = Jinja2Templates(directory=str(_templates_dir()))
+    build = {"sha": settings.build_sha, "time": settings.build_time}
 
     @app.get("/healthz")
     def healthz(response: Response) -> dict:
         body, code = compute_health(session_factory, clock())
         response.status_code = code
-        return body
+        return {**body, "build": settings.build_sha}
 
     @app.get("/api/summary")
     def api_summary() -> dict:
         now = clock()
         with session_factory() as s:
-            return build_summary(s, session_factory, now)
+            return build_summary(s, session_factory, now, build=build)
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         now = clock()
         with session_factory() as s:
-            summary = build_summary(s, session_factory, now)
+            summary = build_summary(s, session_factory, now, build=build)
         return templates.TemplateResponse(request, "index.html", {"summary": summary})
 
     @app.post("/kill")

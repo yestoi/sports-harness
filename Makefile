@@ -8,12 +8,20 @@ SERVE_PORT ?= $(shell grep '^SERVE_PORT=' deploy/nas.env 2>/dev/null | cut -d= -
 GREEN := \033[0;32m
 NC    := \033[0m
 
+# Computed once per make invocation (parse time), same convention as NAS_IP etc. above.
+BUILD_SHA  := $(shell git rev-parse --short HEAD)$(if $(shell git status --porcelain),-dirty,)
+BUILD_TIME := $(shell date -u +%FT%TZ)
+
 deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate; seed; start
 	@printf "$(GREEN)[DEPLOY]$(NC) Pushing to $(NAS_USER)@$(NAS_IP):$(NAS_STACK)\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'mkdir -p $(NAS_STACK)/secrets $(NAS_STACK)/pgdata'
 	@tar cf - --exclude='__pycache__' pyproject.toml Dockerfile .dockerignore docker-compose.yml harness docs/runbooks \
 		| ssh $(NAS_USER)@$(NAS_IP) 'tar xf - -C $(NAS_STACK)'
-	@scp -O deploy/nas.env $(NAS_USER)@$(NAS_IP):$(NAS_STACK)/.env
+	@mkdir -p build
+	@cp deploy/nas.env build/nas.env
+	@printf 'BUILD_SHA=%s\nBUILD_TIME=%s\n' "$(BUILD_SHA)" "$(BUILD_TIME)" >> build/nas.env
+	@printf "$(GREEN)[DEPLOY]$(NC) build $(BUILD_SHA) $(BUILD_TIME)\n"
+	@scp -O build/nas.env $(NAS_USER)@$(NAS_IP):$(NAS_STACK)/.env
 	@scp -O secrets/odds_api_key secrets/kalshi_key_id secrets/kalshi_private_key.pem $(NAS_USER)@$(NAS_IP):$(NAS_STACK)/secrets/
 	@ssh $(NAS_USER)@$(NAS_IP) 'test -f $(NAS_STACK)/secrets/dashboard_token || openssl rand -hex 32 > $(NAS_STACK)/secrets/dashboard_token'
 	@ssh $(NAS_USER)@$(NAS_IP) 'chmod 600 $(NAS_STACK)/secrets/*'

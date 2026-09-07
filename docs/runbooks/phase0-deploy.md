@@ -88,6 +88,11 @@ Symptom of skipping this: `relation "teams" does not exist` in logs, `app-ws` re
 signals, unmatched markets, WebSocket activity, data quality, and a kill switch) instead of a
 bare health endpoint; `/healthz` behaves exactly as before.
 
+The dashboard header shows `build <sha>` and `/healthz` returns a `build` field with the same
+value. `make deploy-nas` stamps the pushed `.env` with the commit it deployed, with `-dirty`
+appended when the working tree had uncommitted changes at deploy time; `dev` means the
+container was started without a stamp.
+
 - **URL**: with `make tunnel-nas` running, open `http://localhost:$(SERVE_PORT)/` (the same
   tunnel that forwards `/healthz`; `SERVE_PORT` is `8180` per `deploy/nas.env`).
 - **Reading the dashboard token**: `make deploy-nas` generates `secrets/dashboard_token` on the

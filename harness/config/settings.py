@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     variants_dir: Path | None = None
     price_budget_s: int = 20
     dashboard_token_file: Path = Path("/run/secrets/dashboard_token")
+    build_sha: str = "dev"
+    build_time: str | None = None
 
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()

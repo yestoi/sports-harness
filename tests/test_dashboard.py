@@ -164,6 +164,39 @@ def test_page_and_summary_survive_two_active_primary_variants(db_session, env_se
     assert summary.status_code == 200
 
 
+def test_build_stamp_renders_from_settings(db_session, env_settings, tmp_path):
+    _seed_full(db_session, env_settings)
+    settings = _dashboard_settings(env_settings, tmp_path).model_copy(
+        update={"build_sha": "abc1234", "build_time": "2026-09-07T06:00:00Z"}
+    )
+    client = _client(db_session, settings)
+
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "build abc1234" in page.text
+    assert "deployed 2026-09-07T06:00:00Z" in page.text
+
+    summary = client.get("/api/summary").json()
+    assert summary["build"]["sha"] == "abc1234"
+
+    healthz = client.get("/healthz").json()
+    assert healthz["build"] == "abc1234"
+
+
+def test_build_stamp_defaults_to_dev(db_session, env_settings, tmp_path):
+    _seed_full(db_session, env_settings)
+    settings = _dashboard_settings(env_settings, tmp_path)
+    client = _client(db_session, settings)
+
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "build dev" in page.text
+    assert "deployed" not in page.text
+
+    healthz = client.get("/healthz").json()
+    assert healthz["build"] == "dev"
+
+
 def test_healthz_keys_unchanged(db_session, env_settings, tmp_path):
     from harness.recorder.store import finish_run, start_run
 
@@ -177,8 +210,9 @@ def test_healthz_keys_unchanged(db_session, env_settings, tmp_path):
     r = client.get("/healthz")
     assert r.status_code == 200
     body = r.json()
-    assert set(body.keys()) == {"status", "last_run_at", "last_status", "seconds_since", "credits_remaining"}
+    assert set(body.keys()) == {"status", "last_run_at", "last_status", "seconds_since", "credits_remaining", "build"}
     assert body["status"] == "ok" and body["last_status"] == "ok" and body["credits_remaining"] == 4000
+    assert body["build"] == "dev"
 
 
 def test_a_failing_section_does_not_take_the_page_down(monkeypatch, db_session, env_settings, tmp_path):
