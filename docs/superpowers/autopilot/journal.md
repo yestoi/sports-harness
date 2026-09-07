@@ -128,3 +128,16 @@ Times are America/Chicago.
 - Rulings: (1) The hotfix unit's re-verification is the deterministic Layer 2 pass above, no walker - cost if wrong: a rendering fault in the signals table stays unseen until the next full verify (the post-game verify tomorrow morning at the latest).
 - Carried forward: none
 - Next: operate (alias pass, in progress), then hotfix carried fix 1 (F5)
+
+## 11. operate - alias pass 2026-09-07 - 2026-09-07 11:55 CT
+- Orient: rule 4 - Monday 09:30 CT duty, run at the first unit boundary after the deploy, verify and hotfix units (2 h 25 min overdue at start); Monday 09:00 weekly report n/a before phase 3 (`harness report`/`gate` do not exist; entry 6 ruling 2); Monday 09:45 replay-vs-live n/a before phase 3; Monday repo bundle done at 11:23 CT (`/tmp/sports-2026-09-07.bundle`, 1.5 MB, verified, copied to `/volume1/docker/sports-harness/repo-backup/`)
+- Branch / commits: `fix-aliases-2026-09-07` e87f714..fd7b5f8 (ac26462 eleven aliases; fd7b5f8 journal entry 10), fast-forward merged to `main`, branch deleted
+- Result: done
+- Dispatches: 2 (implementer `sonnet`, reviewer `sonnet`)
+- Tests: 270 passed, pristine (controller's full run on fd7b5f8)
+- Review: APPROVED, 1 Minor ledgered (`LIU` normalises to a generic three-letter key; manual sources win and the name was unmatched before, so nothing regresses)
+- Deploy: none in this unit; the aliases ride the next hotfix deploy of `main` (deploy ceiling 6 per day, 3 used), and the match-rate confirmation runs at that deploy's verification (expected: ncaaf above 87.8 % and the eleven names gone from `harness match-report`)
+- Verification: not run (see Deploy)
+- Rulings: (1) Duties run at the first unit boundary after a reproduced-failure hotfix; the review-batch hotfixes (roadmap items 1-9) do not pre-empt a due duty because they are planned work, a reproduced FAIL does - cost if wrong: a review hotfix lands an hour later. (2) NFL bare cities `Los Angeles` (90 markets) and `New York` (88) are not alias entries: each names two teams and needs ticker-code disambiguation (phase 6 item 5); reported to the user as a candidate to pull forward since Rams/Chargers and Giants/Jets spread markets stay unmatched through week 1 - cost if wrong: 23 % of NFL markets unmatched for the experiment's first week. (3) `UT Rio Grande Valley` and `Chicago St.` have no ESPN team row; no alias - cost if wrong: six markets. (4) The alias deploy rides the next hotfix deploy - cost if wrong: the match rate is confirmed about an hour later.
+- Carried forward: none
+- Next: hotfix carried fix 1 (F5, `fix-taker-side`), then deploy (carrying the aliases), then verify
