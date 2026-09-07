@@ -3,7 +3,7 @@
 1. Copy the repo to the NAS (git clone or rsync). Confirm `docker compose version` works and note `uname -m` (x86_64 or aarch64; python:3.12-slim is multi-arch).
 2. `cp .env.example .env` and keep the Postgres URL as-is.
 3. `mkdir -p secrets && printf '%s' "<ODDS_API_KEY>" > secrets/odds_api_key && chmod 600 secrets/odds_api_key`. The key file must contain only the key with no trailing newline, which is why `printf '%s'` is used above instead of `echo`.
-   Then `sudo chown 65534:65534 secrets/odds_api_key`: the container runs as uid 65534 (`nobody`) and a Linux bind mount does no uid remapping, so a file owned by your login user is unreadable inside the container.
+   No `chown` is needed: `deploy/nas.env` runs the app containers as `APP_UID=1000`/`APP_GID=10`, the NAS login user, which already owns these files. `chmod 600` is sufficient. (The `65534`/`nobody` advice applies only to a stack started without `deploy/nas.env`.)
    **Warning:** if `secrets/odds_api_key` does not exist when compose starts, Docker creates a *directory* at that path and the app fails on every tick. Delete the directory (`sudo rm -rf secrets/odds_api_key`) and recreate the file with the commands above.
 4. `docker compose build && docker compose up -d postgres && docker compose run --rm app-run init-db`.
 5. `docker compose run --rm app-run tick-once` and read the JSON log line `tick ok n=... credits=...`.
@@ -26,8 +26,10 @@ orderbook messages. It never places or cancels orders. It is conditional on a Ka
 1. Create a Kalshi API key: Kalshi account → Settings → API keys → generate a new key. Download
    the private key file immediately (Kalshi shows it once).
 2. Store the key id (no trailing newline) as `secrets/kalshi_key_id` and the private key as
-   `secrets/kalshi_private_key.pem`, then `chmod 600` both and `chown 65534:65534` both (same
-   uid-remapping reason as `secrets/odds_api_key` above).
+   `secrets/kalshi_private_key.pem`, then `chmod 600` both. No `chown` is needed: `deploy/nas.env`
+   runs the app containers as `APP_UID=1000`/`APP_GID=10`, the NAS login user, which already owns
+   these files. (The `65534`/`nobody` advice applies only to a stack started without
+   `deploy/nas.env`.)
 3. **Both files must exist as files (not directories) before `docker compose up`.** As with
    `secrets/odds_api_key`, if a secret path does not exist when compose starts, Docker creates a
    directory there instead, and the service exits idle with `kalshi credentials absent; ws
@@ -82,6 +84,25 @@ Symptom of skipping this: `relation "teams" does not exist` in logs, `app-ws` re
 
 `make deploy-nas` mirrors the media-stack workflow: it pushes the source tree, `deploy/nas.env` (as `.env`), and the three secret files over SSH into `NAS_STACK_DIR`, builds the image on the NAS, runs `init-db`, `seed-teams`, and `variants register`, and starts the stack. Targets: `make status-nas`, `make logs-nas`, `make ssh-nas`, `make tunnel-nas`, and `make stop-mac` to stop the Mac stopgap once the NAS is green. Connection values live in `.env.nas` (git-ignored; see `.env.nas.example`).
 
+**A dirty tree does not deploy.** `deploy-nas` and `deploy-nas-app` both refuse to run, before anything is pushed, when `git status --porcelain` is non-empty: `refusing to deploy a dirty tree; commit first (or ALLOW_DIRTY=1)`. Commit first. The escape hatch `ALLOW_DIRTY=1 make deploy-nas` exists for a genuine emergency and produces a `-dirty` build stamp, which means the data recorded from that build is attributed to a commit that does not contain the code that produced it — say so in the journal if you ever use it.
+
+**`make deploy-nas-app`** pushes the same tree, env, and secrets, runs the same `init-db` / `seed-teams` / `variants register` steps, then rebuilds and restarts only `app-run`, `app-serve`, and `app-exec` with `--no-deps`. `app-ws` keeps its WebSocket open, so the tape loses nothing: a full `deploy-nas` restarts the recorder, and the reconnect resets Kalshi's sequence numbers, so the hole it leaves is not even marked by a `gap` row. Use `deploy-nas-app` for any deploy whose diff since the deployed sha touches none of `harness/recorder/ws_sink.py`, `harness/venues/kalshi/ws.py`, `harness/db/models.py`, `docker-compose.yml`, `Dockerfile`, `pyproject.toml`, `constraints.txt`; use the full `deploy-nas` when it touches any of them. The target refuses to run until `app-exec` exists in `docker-compose.yml` (it arrives with phase 3) rather than silently restarting two services out of three.
+
+**A transient `seed-teams` failure no longer aborts the deploy.** ESPN answers 403 often enough that a chained `&&` would leave the old image running with `init-db` already applied; the step now prints `[DEPLOY] WARNING: seed-teams failed; teams unchanged` and the deploy continues. Read the deploy output for that line and re-run `docker compose run --rm app-run seed-teams` when it appears.
+
+**Optional secrets** (`kalshi_demo_key_id`, `kalshi_demo_private_key.pem`, `anthropic_api_key`) are pushed only when the file exists on the Mac, so a missing one does not fail the deploy. `secrets/backup_age_key` is the age *private* key and is never pushed to the NAS; only the public key belongs there, so a NAS compromise cannot decrypt the backups it holds.
+
+## Rolling back a deploy
+
+```bash
+git checkout <previous sha>
+make deploy-nas          # or deploy-nas-app, by the same file-list rule as above
+```
+
+This works because the schema is additive: `init-db` only creates tables and adds nullable columns, so an older image finds every column it expects and simply ignores the newer ones. `init-db` re-runs harmlessly at any sha. Confirm which build is actually live from the `build` field on `/healthz` (or the dashboard header) rather than from what you believe you deployed.
+
+The property that makes this safe is a constraint, not a coincidence: **every migration stays additive.** A migration that drops or renames a column or table is not rollback-safe, because the older image is then missing data the newer one moved. When phase 4 introduces Alembic, a revision containing `DROP` or a rename is a gate for the user, not a decision the loop makes on its own, and the rollback for one is a restore from the pre-migration dump rather than a redeploy.
+
 ## Dashboard
 
 `app-serve` now runs the one-page operator dashboard (health, funnel, match report, recent
@@ -95,10 +116,16 @@ container was started without a stamp.
 
 - **URL**: with `make tunnel-nas` running, open `http://localhost:$(SERVE_PORT)/` (the same
   tunnel that forwards `/healthz`; `SERVE_PORT` is `8180` per `deploy/nas.env`).
+- **Not on the LAN**: the `127.0.0.1:` prefix on the published port in `docker-compose.yml` is
+  what keeps the dashboard off the LAN; do not remove it, and do not run the stack with
+  `network_mode: host`. `harness serve` binds `0.0.0.0` inside the container, which is only
+  safe because of that prefix, and the Kill button takes no authentication.
 - **Reading the dashboard token**: `make deploy-nas` generates `secrets/dashboard_token` on the
   NAS itself the first time it runs (32 random bytes via `openssl rand -hex 32`) and never
   overwrites an existing one; it is never copied from this machine and is never printed to the
-  deploy log. To read it: `make ssh-nas`, then `cat secrets/dashboard_token`.
+  deploy log. To read it: `make ssh-nas`, then `cat secrets/dashboard_token`. The
+  `secrets/dashboard_token` on this Mac is a different value, used only for local runs; it is
+  not the NAS token and will not unkill the NAS.
 - **Kill switch**: the page has a Kill button (posts a `reason`, no auth — anyone who can reach
   the dashboard can pause trading) and an Unkill button that requires the token. Equivalent
   curl commands from the NAS (or over the tunnel):
