@@ -191,3 +191,112 @@ class NormalizeState(Base):
     __tablename__ = "normalize_state"
     family: Mapped[str] = mapped_column(String(32), primary_key=True)
     last_raw_id: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+
+
+class FairValue(Base):
+    __tablename__ = "fair_values"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    game_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    market_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    outcome_team_id: Mapped[int | None] = mapped_column(Integer)
+    outcome_side: Mapped[str | None] = mapped_column(String(8))
+    threshold: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))
+    fair_p: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+    fair_source: Mapped[str] = mapped_column(String(8), nullable=False)
+    n_groups: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    disagreement: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    newest_book_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    staleness_s: Mapped[int | None] = mapped_column(Integer)
+    model_json: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (Index("ix_fair_game_type_created", "game_id", "market_type", "created_at"),)
+
+
+class MarketGapSnapshot(Base):
+    __tablename__ = "market_gap_snapshots"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    fair_value_id: Mapped[int | None] = mapped_column(BigInteger)
+    fair_source: Mapped[str | None] = mapped_column(String(8))
+    fair_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    prev_fair_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    prev_fair_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    venue_mid: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    best_bid: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    best_ask: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    bid_size: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    ask_size: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    n_groups: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    disagreement: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    staleness_s: Mapped[int | None] = mapped_column(Integer)
+    gap_mid: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    gap_taker_net: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    gap_maker_net: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    ttk_minutes: Mapped[int | None] = mapped_column(Integer)
+    dow: Mapped[int] = mapped_column(Integer, nullable=False)
+    hour_ct: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_bucket: Mapped[int | None] = mapped_column(Integer)
+    volume_24h: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    open_interest: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    soft_minus_sharp: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    home_popularity_tier: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    away_popularity_tier: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (UniqueConstraint("run_id", "venue_market_id", name="uq_gap_run_market"),
+                      Index("ix_gap_market_created", "venue_market_id", "created_at"))
+
+
+class StrategyVariant(Base):
+    __tablename__ = "strategy_variants"
+    variant_id: Mapped[str] = mapped_column(String(12), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    config_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class Signal(Base):
+    __tablename__ = "signals"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    variant_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    gap_snapshot_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    side: Mapped[str] = mapped_column(String(4), default="yes", nullable=False)
+    fair_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    fair_source: Mapped[str | None] = mapped_column(String(8))
+    venue_best_bid: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    venue_best_ask: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    price_target: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    fee_at_target: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    as_estimate: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    edge: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    edge_min: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    stake: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    contracts: Mapped[int | None] = mapped_column(Integer)
+    decision: Mapped[str] = mapped_column(String(12), nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(String(48))
+    labels: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (UniqueConstraint("run_id", "variant_id", "venue_market_id", "side", "replay", name="uq_signal_key"),
+                      Index("ix_signal_variant_created", "variant_id", "created_at"),
+                      Index("ix_signal_market_created", "venue_market_id", "created_at"))
+
+
+class KillSwitch(Base):
+    __tablename__ = "kill_switch"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    set_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ConfigHistory(Base):
+    __tablename__ = "config_history"
+    config_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    config_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

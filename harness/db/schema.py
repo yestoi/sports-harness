@@ -47,6 +47,9 @@ def create_schema(engine: Engine) -> None:
         conn.execute(text(
             "create unique index if not exists uq_odds_snapshot_row on odds_snapshots "
             "(raw_id, book, market_type, coalesce(outcome_team_id, -1), coalesce(outcome_side, ''), coalesce(point, 0))"))
+        conn.execute(text(
+            "create unique index if not exists uq_fair_value_row on fair_values "
+            "(run_id, game_id, market_type, coalesce(outcome_team_id,-1), coalesce(outcome_side,''), coalesce(threshold,0), fair_source)"))
 
 
 def drop_schema(engine: Engine) -> None:
@@ -55,4 +58,5 @@ def drop_schema(engine: Engine) -> None:
         conn.execute(text(
             "drop table if exists runs, trade_watermarks, source_state, teams, team_aliases, games, "
             "odds_snapshots, venue_markets, venue_quotes, orderbook_snapshots, venue_trades, "
-            "orderbook_events, normalize_state cascade"))
+            "orderbook_events, normalize_state, fair_values, market_gap_snapshots, strategy_variants, "
+            "signals, kill_switch, config_history cascade"))
