@@ -1,0 +1,123 @@
+[0;32m[DEPLOY][0m Pushing to trey@192.168.12.228:/volume1/docker/sports-harness
+[0;32m[DEPLOY][0m build 659ba67 2026-09-07T21:26:24Z
+[0;32m[DEPLOY][0m Building image and starting postgres...
+#0 building with "default" instance using docker driver
+
+#1 [app-ws internal] load build definition from Dockerfile
+#1 transferring dockerfile: 646B done
+#1 DONE 0.0s
+
+#2 [app-run internal] load build definition from Dockerfile
+#2 transferring dockerfile: 646B done
+#2 DONE 0.0s
+
+#3 [app-serve internal] load build definition from Dockerfile
+#3 transferring dockerfile: 646B done
+#3 DONE 0.0s
+
+#4 [app-run internal] load metadata for docker.io/library/python:3.12-slim
+#4 DONE 0.5s
+
+#5 [app-serve internal] load .dockerignore
+#5 transferring context: 101B done
+#5 DONE 0.0s
+
+#6 [app-run 1/7] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+#6 DONE 0.0s
+
+#7 [app-run internal] load .dockerignore
+#7 transferring context: 101B done
+#7 DONE 0.0s
+
+#8 [app-ws internal] load .dockerignore
+#8 transferring context: 101B done
+#8 DONE 0.0s
+
+#9 [app-serve internal] load build context
+#9 transferring context: 5.28kB done
+#9 DONE 0.1s
+
+#6 [app-ws 1/7] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+#6 DONE 0.0s
+
+#10 [app-run internal] load build context
+#10 transferring context: 5.28kB done
+#10 DONE 0.1s
+
+#11 [app-ws internal] load build context
+#11 transferring context: 5.28kB done
+#11 DONE 0.1s
+
+#12 [app-run] exporting to image
+#12 exporting layers done
+#12 writing image sha256:e025dac27b3e861d59ab45c2c3024a08f43d0ab28562a3901fd3f27ef3142a16 done
+#12 naming to docker.io/library/sports-harness-app-run 0.0s done
+#12 DONE 0.0s
+
+#13 [app-serve 4/7] COPY pyproject.toml ./
+#13 CACHED
+
+#14 [app-serve 5/7] COPY constraints.txt ./
+#14 CACHED
+
+#15 [app-serve 3/7] WORKDIR /app
+#15 CACHED
+
+#16 [app-serve 6/7] COPY harness ./harness
+#16 CACHED
+
+#17 [app-serve 2/7] RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+#17 CACHED
+
+#18 [app-run 7/7] RUN pip install -c constraints.txt .
+#18 CACHED
+
+#19 [app-serve] exporting to image
+#19 exporting layers done
+#19 writing image sha256:1818712fb6ffecd84bba5085f065adeb71c990600b618e123e90ca68a9882455 done
+#19 naming to docker.io/library/sports-harness-app-serve done
+#19 DONE 0.0s
+
+#20 [app-ws] exporting to image
+#20 exporting layers done
+#20 writing image sha256:79b3b3695dc63f0c2015352cabc7d383f29b2e4cb8af936b3ef05e6492b62225 done
+#20 naming to docker.io/library/sports-harness-app-ws 0.0s done
+#20 DONE 0.1s
+ Container sports-harness-postgres-1  Running
+[0;32m[DEPLOY][0m Schema + teams (idempotent; required after every upgrade)...
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-07 21:26:32,879", "levelname": "INFO", "name": "harness", "message": "schema created"}
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-07 21:26:36,636", "levelname": "INFO", "name": "harness", "message": "seeded 32 teams from https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams?limit=100"}
+{"asctime": "2026-09-07 21:26:42,482", "levelname": "INFO", "name": "harness", "message": "seeded 761 teams from https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=1000&groups=80"}
+{"asctime": "2026-09-07 21:26:42,527", "levelname": "INFO", "name": "harness", "message": "manual aliases loaded: 28"}
+ Container sports-harness-postgres-1  Running
+added=0 unchanged=6 deactivated=0
+name                    tier        variant_id    active
+constrained             secondary   ff363c8ac08d  True
+nfl_only                secondary   e549e693e117  True
+no_velocity             secondary   64ba3ef09642  True
+sharp_direct            primary     f259ca109084  True
+sharp_plus_derived      secondary   49af716f8708  True
+wide_band               secondary   c2bc45377328  True
+[0;32m[DEPLOY][0m Starting services...
+ Container sports-harness-postgres-1  Running
+ Container sports-harness-app-ws-1  Recreate
+ Container sports-harness-app-serve-1  Recreate
+ Container sports-harness-app-run-1  Recreate
+ Container sports-harness-app-ws-1  Recreated
+ Container sports-harness-app-run-1  Recreated
+ Container sports-harness-app-serve-1  Recreated
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-app-ws-1  Starting
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-app-serve-1  Starting
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-app-run-1  Starting
+ Container sports-harness-app-ws-1  Started
+ Container sports-harness-app-run-1  Started
+ Container sports-harness-app-serve-1  Started
+[0;32m[DEPLOY][0m Done. Run: make status-nas

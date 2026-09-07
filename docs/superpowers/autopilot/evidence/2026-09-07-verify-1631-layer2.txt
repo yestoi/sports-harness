@@ -1,0 +1,19 @@
+== layer 2 light Mon Sep  7 16:29:42 CDT 2026 deploy 659ba67 at 16:26:48 CT (writers stopped 16:26:00-16:26:48)
+-- recent events by kind (id-bounded 200k), gap rows, snapshots with offset
+delta | 199411 | 0 | 2026-09-07 16:34:38.913+00 | 2026-09-07 21:29:42.635+00
+snapshot | 588 | 288 | 2026-09-07 16:45:58.673906+00 | 2026-09-07 21:26:50.705596+00
+-- ws last event age
+00:00:02.006178
+-- heartbeat
+2325 | 2026-09-07 21:29:19.295199+00 | ok
+-- fair_values rows with null feed_kind on run 2322 (anomaly check)
+direct | 7
+-- invariants
+0
+0
+== degraded sections (10m)
+0
+== ERROR lines (10m)
+== app-run
+== app-serve
+== app-ws
