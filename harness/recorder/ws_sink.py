@@ -27,8 +27,12 @@ def _ts(ms, fallback: datetime) -> datetime:
 
 
 class WsSink:
-    def __init__(self, session_factory: sessionmaker, commit_every: int = 100, commit_interval_s: float = 2.0):
+    def __init__(self, session_factory: sessionmaker, commit_every: int = 100, commit_interval_s: float = 2.0,
+                 offset_ms: int = 0):
         self._factory = session_factory
+        # The recorder's clock offset to Kalshi's server, refreshed at every connect and
+        # written onto every snapshot row (see `handle`). Public: the recorder assigns it.
+        self.offset_ms = offset_ms
         self._session = session_factory()
         self._pending = 0
         self._last_commit = time.monotonic()
@@ -123,7 +127,11 @@ class WsSink:
                     # lower id and leave the snapshot that refreshes the book clean. Swapping
                     # these two `session.add` calls would break that silently.
                     self._check_seq(sid, seq, ticker, received_at)
-                self._session.add(OrderbookEvent(ticker=ticker, ts=received_at, sid=sid or 0, seq=seq or 0, kind="snapshot", raw=body))
+                # F58: a snapshot is stamped with the recorder's local clock (deltas carry the
+                # venue's own `ts_ms`), so the offset to Kalshi's server goes on the row -- the
+                # only way that stamp can be corrected afterwards. Copy, never mutate the frame.
+                self._session.add(OrderbookEvent(ticker=ticker, ts=received_at, sid=sid or 0, seq=seq or 0, kind="snapshot",
+                                                 raw={**body, "recorder_offset_ms": self.offset_ms}))
                 self._pending += 1
                 if sid is not None:
                     self._pending_sids.add(sid)

@@ -160,6 +160,7 @@ class _FakeSink:
         self.reset_count = 0
         self.flushes = 0
         self.gap_sids: set[int] = set()
+        self.offset_ms = 0
 
     def handle(self, msg, received_at):
         self._on_handle(msg, received_at)
@@ -927,3 +928,68 @@ def test_settings_ws_window_defaults(env_settings):
     assert env_settings.ws_lookahead_hours == 72
     assert env_settings.ws_lookback_hours == 8
     assert env_settings.ws_max_tickers == 500
+
+
+# --- hotfix F58: a snapshot's local timestamp needs the clock offset beside it ----------
+
+def test_snapshot_row_records_the_recorder_clock_offset(db_session):
+    """F58: deltas carry the venue's own `ts_ms`, but a snapshot is stamped with the
+    recorder's local clock. Without the offset to Kalshi's server on the row, that stamp
+    cannot be corrected afterwards, and phase 3 anchors books on snapshots."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1, offset_ms=-219)
+
+    snap = _snapshot(3, 1, "K1")
+    assert sink.handle(snap, NOW) == "orderbook_snapshot"
+    assert sink.handle(_delta(3, 2, "K1"), NOW) == "orderbook_delta"
+
+    rows = {e.kind: e for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()}
+    assert rows["snapshot"].raw["recorder_offset_ms"] == -219
+    assert {k: v for k, v in rows["snapshot"].raw.items() if k != "recorder_offset_ms"} == snap["msg"]
+    # The message itself must not have been mutated on the way through.
+    assert "recorder_offset_ms" not in snap["msg"]
+    assert "recorder_offset_ms" not in rows["delta"].raw
+
+
+def test_snapshot_offset_defaults_to_zero(db_session):
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    assert sink.offset_ms == 0
+    sink.handle(_snapshot(3, 1, "K1"), NOW)
+    assert db_session.query(OrderbookEvent).one().raw["recorder_offset_ms"] == 0
+
+
+def test_run_forever_hands_each_connections_offset_to_the_sink(monkeypatch):
+    """The offset is only known once `_connect` has run (it refreshes at every connect, and a
+    401's `Date` header revises it), so the sink has to be told after the connect, not at
+    construction time."""
+    server_date = format_datetime(NOW + timedelta(seconds=480), usegmt=True)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: [])
+    calls = []
+
+    def ws_factory(url, header, timeout):
+        calls.append(url)
+        if len(calls) == 1:
+            raise websocket.WebSocketBadStatusException(
+                "Handshake status 401 Unauthorized", 401, resp_headers={"date": server_date})
+        return _FakeWs([])
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None,
+                          ws_factory=ws_factory, clock=lambda: NOW)
+    seen = {"offset": None}
+
+    def on_handle(_msg, _ts):
+        pass
+
+    sink = _FakeSink(on_handle)
+    recorder.sink = sink
+
+    def fake_sleep(_s):
+        seen["offset"] = sink.offset_ms
+        recorder.stop()
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    recorder.run_forever()
+
+    assert abs(recorder._offset_ms - 480000) <= 2000
+    assert seen["offset"] == recorder._offset_ms

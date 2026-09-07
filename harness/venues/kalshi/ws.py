@@ -265,6 +265,10 @@ class WsRecorder:
                     tickers = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers,
                                                 self.s.ws_lookahead_hours, self.s.ws_lookback_hours)
                 ws = self._connect()
+                # `_connect` refreshes the offset (and a 401's Date header revises it), so the
+                # sink can only learn this connection's offset once the connect has returned.
+                if self.sink is not None:
+                    self.sink.offset_ms = self._offset_ms
                 self._sids, self._current = [], []
                 self._last_recovery, self._recoveries = {}, {}
                 try:
