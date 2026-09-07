@@ -207,6 +207,10 @@ def test_settled_rows_normalize_without_errors(env_settings, db_session):
     assert len(_settled_rows(db_session, run.id)) == 6
     assert run.notes["normalize_errors"] == []
     assert run.notes["normalized"].get("kalshi_markets", 0) == 12  # 6 open pages + 6 settled pages
+    # The one https://k/markets route answers both the open and the settled fetch with the same
+    # KM fixture, so every ticker in it is normalised twice in this run, under two raw_ids.
+    # uq_quote_raw_market is (raw_id, venue_market_id), so both rows land: this test's markets
+    # each hold two venue_quotes for the single run.
 
 
 @respx.mock
