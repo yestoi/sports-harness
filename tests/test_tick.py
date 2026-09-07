@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
 
-from harness.db.models import RawResponse, Run, TradeWatermark, VenueTrade
+from harness.db.models import RawResponse, Run, TradeWatermark, VenueQuote, VenueTrade
 from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
@@ -206,11 +206,14 @@ def test_settled_rows_normalize_without_errors(env_settings, db_session):
     run = rec.maybe_tick()
     assert len(_settled_rows(db_session, run.id)) == 6
     assert run.notes["normalize_errors"] == []
-    assert run.notes["normalized"].get("kalshi_markets", 0) == 12  # 6 open pages + 6 settled pages
-    # The one https://k/markets route answers both the open and the settled fetch with the same
-    # KM fixture, so every ticker in it is normalised twice in this run, under two raw_ids.
-    # uq_quote_raw_market is (raw_id, venue_market_id), so both rows land: this test's markets
-    # each hold two venue_quotes for the single run.
+    # Review round 1: the kalshi_markets family now skips settled-status pages (they stay raw
+    # for phase 3), so only the 6 open pages are normalised, not all 12 raw /markets rows.
+    assert run.notes["normalized"].get("kalshi_markets", 0) == 6
+    # The single https://k/markets mock answers every series' open fetch with the same KM
+    # fixture (2 valid markets; "WEIRD" fails classify_market), so 6 open raw rows each add a
+    # venue_quotes row per market (unique on (raw_id, venue_market_id)); none of the 6 settled
+    # raw rows contribute any.
+    assert db_session.query(VenueQuote).count() == 12
 
 
 @respx.mock

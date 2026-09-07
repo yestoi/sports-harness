@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -63,6 +63,46 @@ def test_normalize_new_is_incremental_and_ordered(db_session):
     assert sum(again.values()) == 0
     st = {s.family: s.last_raw_id for s in db_session.query(NormalizeState).all()}
     assert st["kalshi_trades"] > 0
+
+
+def test_settled_markets_rows_are_skipped_by_the_kalshi_markets_family(db_session):
+    # Review round 1, findings 1+2: an hourly settled /markets fetch (up to 8 days of history)
+    # must not touch an already-known venue_markets row's last_seen_at/match_reason, nor add a
+    # venue_quotes row, because the dashboard's "in play" views key off last_seen_at and
+    # build_gap_snapshots keys off venue_quotes.run_id -- both would otherwise be flooded by
+    # settled markets. An open-status row for the same ticker must still update both.
+    ensure_partitions(db_session, NOW)
+    run = Run(started_at=NOW, status="ok")
+    db_session.add(run)
+    db_session.flush()
+    old_seen = NOW - timedelta(days=3)
+    vm = VenueMarket(venue="kalshi", ticker="KXNFLGAME-26SEP21NYGLAR-NYG", event_ticker="KXNFLGAME-26SEP21NYGLAR",
+                     series_ticker="KXNFLGAME", market_type="moneyline", side=None,
+                     match_confidence=Decimal("0"), match_status="unmatched", match_reason="OLD_REASON_SENTINEL",
+                     first_seen_raw_id=1, last_seen_at=old_seen, game_id=None)
+    db_session.add(vm)
+    db_session.flush()
+    quotes_before = db_session.query(VenueQuote).count()
+    body = {"cursor": "", "markets": [{"ticker": "KXNFLGAME-26SEP21NYGLAR-NYG", "event_ticker": "KXNFLGAME-26SEP21NYGLAR",
+                                       "yes_bid_dollars": "0.5000", "yes_ask_dollars": "0.5100", "volume_fp": "10.00"}]}
+
+    settled_ts = NOW
+    _raw(db_session, run.id, "kalshi", "/markets", {"series_ticker": "KXNFLGAME", "status": "settled"}, body, ts=settled_ts)
+    normalize_new(db_session)
+
+    db_session.refresh(vm)
+    assert vm.last_seen_at == old_seen
+    assert vm.match_reason == "OLD_REASON_SENTINEL"
+    assert db_session.query(VenueQuote).count() == quotes_before
+
+    open_ts = NOW + timedelta(minutes=1)
+    _raw(db_session, run.id, "kalshi", "/markets", {"series_ticker": "KXNFLGAME"}, body, ts=open_ts)
+    normalize_new(db_session)
+
+    db_session.refresh(vm)
+    assert vm.last_seen_at == open_ts
+    assert vm.match_reason == "no event title recorded"
+    assert db_session.query(VenueQuote).count() == quotes_before + 1
 
 
 def test_reprocess_truncate_rebuilds_same_counts(db_session):

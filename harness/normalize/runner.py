@@ -41,7 +41,16 @@ def _family_filter(family: str):
         "odds_featured": (src == "odds_api") & ep.like("/sports/%/odds") & ~ep.like("/sports/%/events/%"),
         "odds_alternates": (src == "odds_api") & ep.like("/sports/%/events/%/odds"),
         "kalshi_events": (src == "kalshi") & (ep == "/events"),
-        "kalshi_markets": (src == "kalshi") & (ep == "/markets"),
+        # A settled-status page (Recorder._kalshi_settled, F10(b)/R11) stays in raw_responses for
+        # phase 3's settlement task to read directly, but must not reach upsert_venue_markets /
+        # insert_venue_quotes: it would bump last_seen_at and re-derive match_reason for markets
+        # that settled days ago (flooding the dashboard's "in play" views, keyed on last_seen_at)
+        # and would add a venue_quotes row that build_gap_snapshots would price as if live.
+        # RawResponse.params is NOT NULL JSONB; is_distinct_from (not !=) so a row with no
+        # "status" key at all -- every params->>'status' IS NULL row, i.e. every existing caller
+        # -- still matches, since NULL != 'settled' is NULL/false in SQL, not true.
+        "kalshi_markets": ((src == "kalshi") & (ep == "/markets")
+                          & RawResponse.params["status"].astext.is_distinct_from("settled")),
         "kalshi_orderbook": (src == "kalshi") & ep.like("/markets/%/orderbook"),
         "kalshi_trades": (src == "kalshi") & (ep == "/markets/trades"),
     }[family]
