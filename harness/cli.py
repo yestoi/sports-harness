@@ -1,17 +1,39 @@
+import contextlib
+import importlib.resources
 import logging
 import signal
 import time
+from datetime import datetime, timezone
 
 import typer
 import uvicorn
 
-from harness.config.settings import get_settings
+from harness.config.settings import Settings, get_settings
 from harness.db.engine import make_engine, make_session_factory
 from harness.db.schema import create_schema
 from harness.logging_setup import configure_logging
 
 app = typer.Typer(no_args_is_help=True)
+variants_app = typer.Typer(no_args_is_help=True)
+app.add_typer(variants_app, name="variants")
 log = logging.getLogger("harness")
+
+
+def _variants_source(s: Settings):
+    """A context manager yielding a filesystem `Path` to load variant YAMLs from.
+
+    `s.variants_dir` wins when set (an operator override); otherwise the packaged
+    `harness/variants` directory is materialized (works even from a zipped install).
+    """
+    if s.variants_dir is not None:
+        return contextlib.nullcontext(s.variants_dir)
+    return importlib.resources.as_file(importlib.resources.files("harness.variants"))
+
+
+def _print_variants(rows) -> None:
+    print(f"{'name':<24}{'tier':<12}{'variant_id':<14}{'active'}")
+    for v in rows:
+        print(f"{v.name:<24}{v.tier:<12}{v.variant_id:<14}{True}")
 
 
 @app.command("init-db")
@@ -92,6 +114,53 @@ def seed_teams() -> None:
             n = load_manual_aliases(session, aliases_path)
         session.commit()
         log.info("manual aliases loaded: %d", n)
+
+
+@variants_app.command("register")
+def variants_register() -> None:
+    configure_logging()
+    from harness.strategy.variants import active_variants, load_variants, register_variants
+
+    s = get_settings()
+    with _variants_source(s) as directory:
+        variants = load_variants(directory)
+        factory = make_session_factory(make_engine(s.database_url))
+        with factory() as session:
+            result = register_variants(session, variants, datetime.now(timezone.utc), prune=True)
+            rows = active_variants(session)
+    print(f"added={result.added} unchanged={result.unchanged} deactivated={result.deactivated}")
+    _print_variants(rows)
+
+
+@variants_app.command("list")
+def variants_list() -> None:
+    configure_logging()
+    from harness.strategy.variants import active_variants
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    with factory() as session:
+        rows = active_variants(session)
+    _print_variants(rows)
+
+
+@app.command("price-once")
+def price_once(run_id: int = typer.Option(None, "--run-id")) -> None:
+    configure_logging()
+    from harness.db.models import Run
+    from harness.strategy.pipeline import price_and_signal
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    with factory() as session:
+        rid = run_id
+        if rid is None:
+            rid = session.query(Run.id).order_by(Run.id.desc()).limit(1).scalar()
+            if rid is None:
+                log.error("no runs found")
+                raise typer.Exit(1)
+        result = price_and_signal(session, rid, datetime.now(timezone.utc), s, s.price_budget_s)
+    print(f"run_id={rid} {result}")
 
 
 @app.command("reprocess")

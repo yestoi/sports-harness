@@ -72,6 +72,7 @@ After pulling a new version, always run the schema step again before starting th
 docker compose build
 docker compose run --rm app-run init-db
 docker compose run --rm app-run seed-teams   # phase 1+: teams and aliases (safe to repeat)
+docker compose run --rm app-run variants register   # phase 2+: registers harness/variants/*.yaml (safe to repeat)
 docker compose up -d
 ```
 
@@ -79,6 +80,6 @@ Symptom of skipping this: `relation "teams" does not exist` in logs, `app-ws` re
 
 ## Deploying with the Makefile (UGREEN NAS)
 
-`make deploy-nas` mirrors the media-stack workflow: it pushes the source tree, `deploy/nas.env` (as `.env`), and the three secret files over SSH into `NAS_STACK_DIR`, builds the image on the NAS, runs `init-db` and `seed-teams`, and starts the stack. Targets: `make status-nas`, `make logs-nas`, `make ssh-nas`, `make tunnel-nas`, and `make stop-mac` to stop the Mac stopgap once the NAS is green. Connection values live in `.env.nas` (git-ignored; see `.env.nas.example`).
+`make deploy-nas` mirrors the media-stack workflow: it pushes the source tree, `deploy/nas.env` (as `.env`), and the three secret files over SSH into `NAS_STACK_DIR`, builds the image on the NAS, runs `init-db`, `seed-teams`, and `variants register`, and starts the stack. Targets: `make status-nas`, `make logs-nas`, `make ssh-nas`, `make tunnel-nas`, and `make stop-mac` to stop the Mac stopgap once the NAS is green. Connection values live in `.env.nas` (git-ignored; see `.env.nas.example`).
 
 NAS specifics baked into `deploy/nas.env`: the app containers run as the NAS user (`APP_UID=1000`, `APP_GID=10`) so the 0600 secret files are readable without `chown`/`sudo`, and the health endpoint is published on `SERVE_PORT=8180` because 8080 is taken by SABnzbd. Docker on the NAS is 26.1 with Compose v2.26.

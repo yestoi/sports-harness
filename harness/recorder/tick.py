@@ -16,6 +16,7 @@ from harness.normalize.runner import normalize_new
 from harness.recorder import store
 from harness.recorder.cadence import (SPORTS, alternates_due, interval_for, is_due, select_ladders,
                                       select_trade_tickers)
+from harness.strategy.pipeline import price_and_signal
 from harness.venues.kalshi.public import FOOTBALL_SERIES, KalshiPublic, MarketSummary, parse_market_summaries
 
 log = logging.getLogger(__name__)
@@ -289,6 +290,7 @@ class Recorder:
         with self.session_factory() as session:
             ensure_partitions(session, now)
             run = store.start_run(session, now)
+            summaries: list[MarketSummary] = []
             try:
                 kickoffs = self._espn(session, run, now, ctx)
                 self._checkpoint(session, run)
@@ -316,6 +318,15 @@ class Recorder:
                 # per-source checkpoints, so nothing is lost.
                 session.rollback()
                 ctx["warnings"].append({"normalize": repr(e)})
+            if summaries:
+                # Only price when this tick actually refreshed Kalshi markets, so gap snapshots
+                # are computed against fresh quotes rather than stale ones from a skipped tick.
+                try:
+                    ctx["pricing"] = price_and_signal(session, run.id, now, self.s, self.s.price_budget_s)
+                except Exception as e:  # noqa: BLE001
+                    log.exception("pricing failed")
+                    session.rollback()
+                    ctx["warnings"].append({"pricing": repr(e)})
             exhausted = (ctx["skipped_trades"] > 0 or ctx["skipped_ladders"] > 0
                          or ctx["skipped_alternates"] > 0)
             if ctx["errors"]:
@@ -335,7 +346,8 @@ class Recorder:
                                     "normalized": ctx.get("normalized", {}),
                                     "unresolved_teams": sorted(set(ctx.get("unresolved_teams", [])))[:50],
                                     "normalize_errors": ctx.get("normalize_errors", []),
-                                    "odds_dropped": ctx.get("odds_dropped", {})},
+                                    "odds_dropped": ctx.get("odds_dropped", {}),
+                                    "pricing": ctx.get("pricing", {})},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
                      len(ctx["errors"]), len(ctx["warnings"]))

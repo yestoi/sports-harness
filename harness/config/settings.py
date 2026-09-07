@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     kalshi_sleep_s: float = 0.05
     heartbeat_s: int = 30
     tz_local: str = "America/Chicago"
+    variants_dir: Path | None = None
+    price_budget_s: int = 20
+    dashboard_token_file: Path = Path("/run/secrets/dashboard_token")
 
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()

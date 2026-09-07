@@ -19,7 +19,7 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 	@printf "$(GREEN)[DEPLOY]$(NC) Building image and starting postgres...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build && docker compose up -d postgres'
 	@printf "$(GREEN)[DEPLOY]$(NC) Schema + teams (idempotent; required after every upgrade)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run init-db && docker compose run --rm app-run seed-teams'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run init-db && docker compose run --rm app-run seed-teams && docker compose run --rm app-run variants register'
 	@printf "$(GREEN)[DEPLOY]$(NC) Starting services...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose up -d'
 	@printf "$(GREEN)[DEPLOY]$(NC) Done. Run: make status-nas\n"

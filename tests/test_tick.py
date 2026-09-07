@@ -400,3 +400,43 @@ def test_normalize_failure_rolls_back_and_finishes_degraded(env_settings, db_ses
     assert run.status == "degraded", run.notes
     assert any("normalize" in w for w in run.notes["warnings"]), run.notes
     assert run.finished_at is not None
+
+
+@respx.mock
+def test_tick_prices_and_signals_when_kalshi_markets_refreshed(env_settings, db_session):
+    # Pricing only runs once Kalshi markets have actually refreshed this tick (summaries
+    # non-empty), so gap snapshots are computed against fresh quotes.
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={}))
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+
+    assert "pricing" in run.notes, run.notes
+    assert run.notes["pricing"]["gaps"] >= 0
+
+
+@respx.mock
+def test_pricing_failure_is_isolated_and_degrades_the_run(env_settings, db_session, monkeypatch):
+    import harness.recorder.tick as tick_mod
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={}))
+
+    def boom(*a, **kw):
+        raise RuntimeError("pricing exploded")
+
+    monkeypatch.setattr(tick_mod, "price_and_signal", boom)
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+
+    assert run.status == "degraded", run.notes
+    assert any("pricing" in w for w in run.notes["warnings"]), run.notes
+    assert run.finished_at is not None
