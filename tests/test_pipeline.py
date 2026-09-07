@@ -190,7 +190,6 @@ def test_variant_order_rotates_by_run_id_and_the_skip_is_recorded(env_settings, 
 
 def test_pricing_clock_for_run_uses_finished_at_then_start_plus_budget():
     from datetime import timedelta
-    from types import SimpleNamespace
 
     from harness.strategy.pipeline import pricing_clock_for_run
 

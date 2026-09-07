@@ -199,10 +199,13 @@ def test_backoff_reset_deferred_until_first_data_message(monkeypatch):
     def on_handle(_msg, _ts):
         recorder.stop()
 
-    recorder.sink = _FakeSink(on_handle)
+    sink = _FakeSink(on_handle)
+    recorder.sink = sink
     recorder.run_forever()
 
     assert sleeps == [1.0, 2.0]
+    # Three connections, three disconnects, and every disconnect flushes the pending batch.
+    assert sink.flushes == 3
 
 
 def test_backoff_resets_after_data_then_doubles_again_from_one(monkeypatch):
@@ -231,7 +234,8 @@ def test_backoff_resets_after_data_then_doubles_again_from_one(monkeypatch):
     def on_handle(_msg, _ts):
         state["got_data"] = True
 
-    recorder.sink = _FakeSink(on_handle)
+    sink = _FakeSink(on_handle)
+    recorder.sink = sink
 
     def fake_sleep(s):
         sleeps.append(s)
@@ -242,6 +246,10 @@ def test_backoff_resets_after_data_then_doubles_again_from_one(monkeypatch):
     recorder.run_forever()
 
     assert sleeps[:3] == [1.0, 2.0, 1.0]
+    # The two rejected connections flush once each on disconnect. The third stays open and
+    # goes silent, so it flushes on each of the five recv timeouts that precede is_stale
+    # tripping at ws_stale_s (6 x 30 s), and once more on the disconnect itself.
+    assert sink.flushes == 8
 
 
 def test_ws_sink_reset_sequences_avoids_synthetic_gap_on_reconnect(db_session):
@@ -341,6 +349,58 @@ def test_run_forever_flushes_the_sink_when_the_socket_drops(db_session, monkeypa
         recorder.stop()
 
     monkeypatch.setattr(time, "sleep", fake_sleep)
+    recorder.run_forever()
+
+    assert seen["count"] == 1
+
+
+class _TimeoutThenClosingWs(_FakeWs):
+    """Delivers its messages, goes silent for one recv timeout, then drops the connection."""
+
+    def __init__(self, messages, on_timeout_survived):
+        super().__init__(messages)
+        self._on_timeout_survived = on_timeout_survived
+        self._timed_out = False
+
+    def recv(self):
+        if self._messages:
+            return self._messages.pop(0)
+        if not self._timed_out:
+            self._timed_out = True
+            raise websocket.WebSocketTimeoutException()
+        # Being back in recv means the timeout branch has finished. run_forever's own flush
+        # runs only in the finally below, so whatever is committed now was committed there.
+        self._on_timeout_survived()
+        raise websocket.WebSocketConnectionClosedException("socket is already closed.")
+
+
+def test_recv_timeout_flushes_the_sink_before_the_socket_is_declared_stale(db_session, monkeypatch):
+    """A socket that stays open but silent only reconnects once `is_stale` trips at
+    ws_stale_s (180 s), while the REST normalizer's statement timeout is 30 s. So a batch
+    pending when the venue goes quiet has to be committed on each recv timeout as well, not
+    only when the connection actually drops."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    # Big batch and a long interval, so only an explicit flush can commit this trade.
+    sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: [])
+
+    subscribed = json.dumps({"type": "subscribed", "msg": {"sid": 1}})
+    trade = json.dumps({"type": "trade", "sid": 1, "seq": 1, "msg": {
+        "trade_id": "t-silent", "market_ticker": "K1", "yes_price_dollars": "0.4200",
+        "count_fp": "7.00", "taker_side": "no", "is_block_trade": False, "ts_ms": 1789234000000}})
+
+    seen = {"count": None}
+
+    def record():
+        with factory() as other:
+            seen["count"] = other.query(VenueTrade).filter_by(trade_id="t-silent").count()
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=lambda url, header, timeout: _TimeoutThenClosingWs([subscribed, trade], record),
+                          clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+    monkeypatch.setattr(time, "sleep", lambda _s: recorder.stop())
+
     recorder.run_forever()
 
     assert seen["count"] == 1

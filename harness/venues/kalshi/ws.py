@@ -176,6 +176,14 @@ class WsRecorder:
                     raise _Reconnect(f"no subscription ack within {SUBSCRIBE_ACK_TIMEOUT_S:.0f}s") from None
                 if is_stale(timeouts, RECV_TIMEOUT_S, self.s.ws_stale_s):
                     raise _Reconnect(f"no message for {timeouts * RECV_TIMEOUT_S:.0f}s") from None
+                # A socket that is alive but silent reaches the reconnect above only after
+                # ws_stale_s (180 s), while the REST normalizer's statement timeout is 30 s.
+                # Commit here too, so silence costs at most one recv timeout of held locks.
+                if self.sink is not None:
+                    try:
+                        self.sink.flush()
+                    except Exception:  # noqa: BLE001
+                        log.exception("ws sink flush failed")
                 continue
             if not raw:
                 return
