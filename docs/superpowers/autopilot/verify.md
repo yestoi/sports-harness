@@ -96,7 +96,11 @@ as <date>-<unit>-<nn>-<slug>.png (use save_to_disk and record the returned path)
 Checklist:
 <numbered checklist below>
 Per item: scroll the section into view, screenshot, record PASS or FAIL with one sentence
-of what you saw. FAIL anything that needs squinting: an "unavailable" or error string in
+of what you saw. The signals and unmatched tables are wider than the viewport and sit in
+an overflow-x wrapper by design; read their clipped columns with get_page_text instead of
+failing them, and move the cursor to the page margin before scrolling past them. Screenshots
+are written to a temp directory the tool chooses; report every returned path — the
+controller copies them into the evidence directory. FAIL anything that needs squinting: an "unavailable" or error string in
 a section, an empty table where the contract expects rows, a stale time, broken layout.
 Close your tab when done. Your final message is machine-read. Return exactly:
 ## Verdict: PASSED | FAILED | FRESHNESS-FAILED
@@ -115,7 +119,10 @@ Checklist (current dashboard; items 10–14 apply once phase 3 is deployed):
 6. Signals table renders rows for the primary variant (time, contract, fair, decision).
 7. Unmatched markets table renders (rows optional).
 8. WebSocket: `Last event` within 60 minutes; counts are numbers.
-9. Data quality: staleness medians per book listed.
+9. Data quality: staleness medians per book listed (at least `pinnacle`). This table uses a
+   one-hour window of odds fetches, so it is empty during quiet hours and for up to an hour
+   after them: in that window the item is **deferred** to the first verification after a
+   real tick, never scored FAIL.
 10. Executor block in Health: heartbeat age under 60 s, rendered green.
 11. Open paper orders and today's fills tables render (rows per the time-of-day table).
 12. Paper P&L per exec variant and open exposure render with numbers.

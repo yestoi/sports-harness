@@ -58,7 +58,7 @@ else is a gate.
 Pick the first that applies:
 
 1. **hotfix** — `roadmap.md` Carried fixes is non-empty, or the last journal entry ends in `FAIL`.
-2. **verify** — the last journal entry records a deploy without a verification, or a scheduled wakeup is due.
+2. **verify** — the last journal entry records a deploy without a verification, a scheduled wakeup is due, or the last `verify` entry lists a deferred item whose judge-after time has passed (fold it into the next verification pass rather than running one just for it, unless nothing else is pending).
 3. **phase** — the first roadmap phase with status `planned` (a committed plan) and no unmet gate.
 4. **plan-next** — only if the roadmap authorizes drafting the next phase. If not, the loop is finished: write the report, notify, stop.
 
