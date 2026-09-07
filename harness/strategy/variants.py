@@ -44,6 +44,8 @@ REQUIRED_KEYS: frozenset[str] = frozenset({
 })
 
 TIERS = ("primary", "secondary", "replay")
+#: Tiers that make up the live set the pipeline scores every tick; `replay` is out-of-band.
+LIVE_TIERS = ("primary", "secondary")
 MAX_PRIMARY = 1
 MAX_SECONDARY = 5
 
@@ -136,13 +138,22 @@ def _retired_name(name: str, variant_id: str) -> str:
     return f"{name[:NAME_STEM_MAX]}{RETIRED_SEPARATOR}{variant_id}"
 
 
-def register_variants(session: Session, variants: list[Variant], now: datetime) -> RegisterResult:
+def register_variants(
+    session: Session,
+    variants: list[Variant],
+    now: datetime,
+    prune: bool = True,
+) -> RegisterResult:
     """Make `variants` the active registry rows, recording every config ever seen.
 
     A name whose config changed keeps its old row (renamed and `active=False`) so historic
-    signals still resolve; the new config gets a fresh row. An active row whose name is no
-    longer supplied is deactivated too, so deleting a YAML takes the variant out of the
-    live set instead of leaving the pipeline scoring it forever.
+    signals still resolve; the new config gets a fresh row.
+
+    With `prune` (the default), an active `primary`/`secondary` row whose name is not in
+    `variants` is deactivated as well, so deleting a YAML takes the variant out of the live
+    set instead of leaving the pipeline scoring it forever. `replay` rows are never pruned:
+    they are registered one at a time by `harness replay` and have nothing to do with the
+    live set. Callers registering a single variant -- replay included -- pass `prune=False`.
     """
     added = unchanged = deactivated = 0
 
@@ -183,14 +194,17 @@ def register_variants(session: Session, variants: list[Variant], now: datetime) 
             .on_conflict_do_nothing(index_elements=["config_hash"])
         )
 
-    supplied = {v.name for v in variants}
-    dropped = session.execute(
-        select(StrategyVariant).where(StrategyVariant.active.is_(True))
-    ).scalars().all()
-    for row in dropped:
-        if row.name not in supplied:
-            row.active = False
-            deactivated += 1
+    if prune:
+        supplied = {v.name for v in variants}
+        live = session.execute(
+            select(StrategyVariant)
+            .where(StrategyVariant.active.is_(True))
+            .where(StrategyVariant.tier.in_(LIVE_TIERS))
+        ).scalars().all()
+        for row in live:
+            if row.name not in supplied:
+                row.active = False
+                deactivated += 1
 
     session.commit()
     return RegisterResult(added=added, unchanged=unchanged, deactivated=deactivated)

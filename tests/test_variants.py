@@ -238,3 +238,44 @@ def test_load_variants_rejects_a_hash_in_the_name(tmp_path):
     _write(tmp_path, "a", dict(_tiny_config(), name="retired#deadbeef"))
     with pytest.raises(ValueError, match="#"):
         load_variants(tmp_path)
+
+
+# --- review round 2 ---------------------------------------------------------
+
+def _replay_variant(name: str = "replay_wide"):
+    from harness.strategy.variants import variant_from_config
+
+    return variant_from_config(dict(_tiny_config(), name=name, tier="replay", price_band=[0.10, 0.90]))
+
+
+def _register_live_set(db_session, tmp_path):
+    _write(tmp_path, "primary", dict(_tiny_config(), name="primary", tier="primary"))
+    _write(tmp_path, "secondary", dict(_tiny_config(), name="secondary", tier="secondary"))
+    register_variants(db_session, load_variants(tmp_path), NOW)
+
+
+def test_registering_a_replay_variant_without_pruning_leaves_the_live_set_alone(db_session, tmp_path):
+    _register_live_set(db_session, tmp_path)
+    result = register_variants(db_session, [_replay_variant()], NOW, prune=False)
+    assert (result.added, result.deactivated) == (1, 0)
+    assert sorted(v.name for v in active_variants(db_session)) == ["primary", "replay_wide", "secondary"]
+
+
+def test_pruning_never_touches_a_replay_tier_row(db_session, tmp_path):
+    _register_live_set(db_session, tmp_path)
+    register_variants(db_session, [_replay_variant()], NOW, prune=False)
+
+    (tmp_path / "secondary.yaml").unlink()
+    result = register_variants(db_session, load_variants(tmp_path), NOW)
+    assert result.deactivated == 1
+
+    live = {v.name for v in active_variants(db_session)}
+    assert live == {"primary", "replay_wide"}
+    assert db_session.query(StrategyVariant).filter_by(name="secondary").one().active is False
+
+
+def test_pruning_is_on_by_default(db_session, tmp_path):
+    _register_live_set(db_session, tmp_path)
+    (tmp_path / "secondary.yaml").unlink()
+    register_variants(db_session, load_variants(tmp_path), NOW)
+    assert [v.name for v in active_variants(db_session)] == ["primary"]
