@@ -17,8 +17,19 @@ Every other hypothesis is evaluated after the fact with `harness replay --file`,
 
 ## Provenance
 
-- Source commit of the YAML files: 225976f (branch phase2-pricing-signals, 2026-09-07)
-- Registered on the NAS (`docker compose run --rm app-run variants list`): (fill: date, paste table)
+- Source commit of the YAML files: 8d5feea (main, 2026-09-07; YAML files unchanged since 225976f)
+- Registered on the NAS: 2026-09-07 ~04:00 UTC, `make deploy-nas` output (main @ 8d5feea):
+
+```
+name                    tier        variant_id    active
+constrained             secondary   ff363c8ac08d  True
+nfl_only                secondary   e549e693e117  True
+no_velocity             secondary   64ba3ef09642  True
+sharp_direct            primary     f259ca109084  True
+sharp_plus_derived      secondary   49af716f8708  True
+wide_band               secondary   c2bc45377328  True
+```
+
 - Ids first computed on the dev database at commit acecbfa on 2026-09-07; the NAS table must match exactly.
 
 ## Reporting rules (from spec §6.7)
