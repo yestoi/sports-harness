@@ -183,6 +183,20 @@ def match_event(session: Session, sport: str, event: dict, event_date: date) -> 
     return EventMatch(game.id, Decimal("0.80"), f"pair+date fuzzy({min(lr, rr):.2f})", lt, rt)
 
 
+def compose_match_key(game_id: int | None, market_type: str, side_team_id: int | None,
+                      side: str | None, threshold: Decimal | None) -> str:
+    """The matched shape as one string (Task 2's `venue_markets.match_key`), rendered exactly
+    like `create_schema`'s one-off backfill renders `threshold::text` on a `numeric(6,1)`
+    column: an integral value keeps its trailing zero (`3` -> `"3.0"`), not bare `"3"`.
+
+    Both paths must agree byte-for-byte -- a Python-composed key that diverges from the
+    backfilled one for the same market would make every open order on that market compare
+    unequal to its own venue_market's key and read as unmatched (Task 3b's controller ruling).
+    """
+    t = "" if threshold is None else str(threshold.quantize(Decimal("0.1")))
+    return f"{game_id}:{market_type}:{'' if side_team_id is None else side_team_id}:{side or ''}:{t}"
+
+
 def side_team_id_for(session: Session, sport: str, mc: MarketClass, game: Game) -> int | None:
     if mc.side_kind != "team":
         return None

@@ -35,10 +35,8 @@ class Settings(BaseSettings):
     build_sha: str = "dev"
     build_time: str | None = None
     odds_monthly_credits: int = 5_000_000  # U1 2026-09-07: Odds API tier upgrade (was 100_000)
-    odds_alternates_interval_s: int = 120  # U1 2026-09-07: alternates cadence inside 36h of kickoff (was 900)
-    # alternates cadence inside 180 min of kickoff (U1 value); still not wired to the
-    # recorder's fetch loop, which uses odds_alternates_interval_s until Task 3b rewires
-    # alternates_due to these three settings.
+    # alternates cadence inside 180 min of kickoff (U1 value); Task 3b wires this into
+    # alternates_due, replacing the old flat odds_alternates_interval_s setting.
     odds_alt_interval_near_s: int = 120
     # alternates cadence from 180 min out to odds_alt_window_h of kickoff (U1 value); beyond
     # odds_alt_window_h, alternates are not fetched at all.

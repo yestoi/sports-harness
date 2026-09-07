@@ -15,10 +15,17 @@ def test_settings_reads_key_from_file(tmp_path: Path, monkeypatch):
     assert s.odds_api_bookmakers.startswith("pinnacle")
     assert s.kalshi_base_url == "https://api.elections.kalshi.com/trade-api/v2"
     assert s.odds_monthly_credits == 5_000_000  # U1 2026-09-07
-    assert s.odds_alternates_interval_s == 120  # U1 2026-09-07
     assert s.odds_alt_interval_near_s == 120  # U1 value (F11)
     assert s.odds_alt_interval_far_s == 120  # U1 value (F11)
     assert s.odds_alt_window_h == 36  # U1 value (F11)
+
+
+def test_odds_alternates_interval_s_setting_is_gone(tmp_path: Path, monkeypatch):
+    # Task 3b: alternates_due is rewired to the near/far/window settings, so the flat
+    # odds_alternates_interval_s setting (and every reader of it) is removed.
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db")
+    s = Settings()
+    assert not hasattr(s, "odds_alternates_interval_s")
 
 
 def test_settings_build_stamp_from_env(monkeypatch):

@@ -9,16 +9,19 @@ from sqlalchemy.orm import Session
 from harness.db.models import NormalizeState, RawResponse
 from harness.matching.games import upsert_games_from_odds
 from harness.normalize.espn import link_espn_scoreboard
-from harness.normalize.kalshi import insert_orderbook, insert_trades, insert_venue_quotes, upsert_venue_markets
+from harness.normalize.kalshi import (apply_series_fee, insert_orderbook, insert_trades, insert_venue_quotes,
+                                      upsert_venue_markets)
 from harness.normalize.odds import parse_odds_body, upsert_odds_rows
 
 log = logging.getLogger(__name__)
-FAMILIES = ("espn", "odds_featured", "odds_alternates", "kalshi_events", "kalshi_markets", "kalshi_orderbook", "kalshi_trades")
+FAMILIES = ("espn", "odds_featured", "odds_alternates", "kalshi_events", "kalshi_markets", "kalshi_orderbook",
+           "kalshi_trades", "kalshi_series")
 # Tables rebuildable in full from raw_responses. venue_trades is deliberately absent: it also
 # holds source='ws' rows that exist nowhere in raw_responses, so it is pruned by source instead.
 NORMALIZED_TABLES = ("odds_snapshots", "venue_quotes", "orderbook_snapshots", "venue_markets", "games")
 _EVENTS: dict[str, dict] = {}  # event_ticker -> event, refreshed from raw /events bodies
 _OB_RE = re.compile(r"^/markets/([^/]+)/orderbook$")
+_SERIES_RE = re.compile(r"^/series/([^/]+)$")
 
 
 def _sport_from_endpoint(endpoint: str, params: dict) -> str | None:
@@ -44,6 +47,7 @@ def _family_filter(family: str):
         "kalshi_markets": (src == "kalshi") & (ep == "/markets"),
         "kalshi_orderbook": (src == "kalshi") & ep.like("/markets/%/orderbook"),
         "kalshi_trades": (src == "kalshi") & (ep == "/markets/trades"),
+        "kalshi_series": (src == "kalshi") & ep.like("/series/%"),
     }[family]
 
 
@@ -82,7 +86,7 @@ def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
             # and would add a venue_quotes row that build_gap_snapshots would price as if live.
             return
         markets = (body or {}).get("markets", []) if isinstance(body, dict) else []
-        upsert_venue_markets(session, sport, markets, _EVENTS, r.id, r.fetched_at)
+        upsert_venue_markets(session, sport, markets, _EVENTS, r.id, r.fetched_at, ctx)
         insert_venue_quotes(session, markets, r.id, r.run_id, r.fetched_at)
     elif family == "kalshi_orderbook":
         m = _OB_RE.match(r.endpoint)
@@ -90,6 +94,10 @@ def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
             insert_orderbook(session, m.group(1), body, r.id, r.fetched_at)
     elif family == "kalshi_trades":
         insert_trades(session, body, r.id, ctx)
+    elif family == "kalshi_series":
+        m = _SERIES_RE.match(r.endpoint)
+        if m:
+            apply_series_fee(session, m.group(1), body)
 
 
 def _watermark(session: Session, family: str) -> NormalizeState:

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
 
-from harness.db.models import RawResponse, Run, TradeWatermark, VenueQuote, VenueTrade
+from harness.db.models import RawResponse, Run, TradeWatermark, VenueMarket, VenueQuote, VenueTrade
 from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
@@ -51,6 +51,7 @@ def _recorder(env_settings, db_session, now=NOW, monotonic=time.monotonic):
 
 @respx.mock
 def test_first_tick_fetches_everything_and_records(env_settings, db_session):
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
     respx.get("https://e/nfl/scoreboard").mock(return_value=httpx.Response(200, json=ESPN))
     respx.get("https://e/college-football/scoreboard").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(
@@ -190,6 +191,40 @@ def test_tick_records_kalshi_settled(env_settings, db_session):
 
 
 @respx.mock
+def test_tick_fetches_kalshi_series_daily_and_writes_fees(env_settings, db_session):
+    # Task 3b item 3: GET /series/{series_ticker} fetched once a day per football series, and
+    # the normalizer writes its fee shape onto that series' venue_markets rows.
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    series = respx.get(url__regex=r"https://k/series/.*").mock(
+        return_value=httpx.Response(200, json={"series": {"fee_type": "quadratic", "fee_multiplier": "0.5"}}))
+
+    rec, clock = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+
+    assert series.call_count == 6
+    rows = db_session.query(RawResponse).filter_by(run_id=run.id, source="kalshi").all()
+    series_rows = [r for r in rows if r.endpoint.startswith("/series/")]
+    assert {r.endpoint for r in series_rows} == {f"/series/{s}" for s in
+                                                 ("KXNFLGAME", "KXNFLSPREAD", "KXNFLTOTAL",
+                                                  "KXNCAAFGAME", "KXNCAAFSPREAD", "KXNCAAFTOTAL")}
+    vm = db_session.query(VenueMarket).filter_by(series_ticker="KXNFLGAME").first()
+    assert vm is not None and vm.fee_type == "quadratic" and vm.fee_multiplier == Decimal("0.5000")
+
+    # 5 minutes later: inside the 24 h interval, kalshi_series:<series> is not due again.
+    clock["now"] = NOW + timedelta(minutes=5)
+    rec.maybe_tick()
+    assert series.call_count == 6
+
+    # A day later: due again.
+    clock["now"] = NOW + timedelta(hours=25)
+    rec.maybe_tick()
+    assert series.call_count == 12
+
+
+@respx.mock
 def test_settled_rows_normalize_without_errors(env_settings, db_session):
     # F10(b)/R11 item 3: a settled /markets row must not choke the kalshi_markets normalizer.
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json=ESPN))
@@ -281,6 +316,7 @@ def test_alternates_stop_once_the_sub_budget_is_spent(env_settings, db_session):
 @respx.mock
 def test_tick_commits_incrementally_before_finish_run(env_settings, db_session, monkeypatch):
     # I1/I8: raw responses must be durable before finish_run commits the run row.
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json=ESPN))
     respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(return_value=httpx.Response(200, json=ODDS))
     respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(return_value=httpx.Response(200, json={}))
@@ -318,6 +354,7 @@ def test_tick_commits_incrementally_before_finish_run(env_settings, db_session, 
 @respx.mock
 def test_non_2xx_trades_watermark_stops_the_refetch_loop(env_settings, db_session):
     # I2: a failed trades call still advances the volume watermark, leaving last_ts unchanged.
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
@@ -341,6 +378,7 @@ def test_non_2xx_trades_watermark_stops_the_refetch_loop(env_settings, db_sessio
 @respx.mock
 def test_trades_pagination_is_stored_page_by_page(env_settings, db_session):
     # I3: every trades page is stored and the watermark uses the newest stamp across pages.
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
@@ -367,6 +405,7 @@ def test_trades_pagination_is_stored_page_by_page(env_settings, db_session):
 def test_trade_gap_is_recorded_when_cursor_unexhausted(env_settings, db_session, monkeypatch):
     import harness.recorder.tick as tick_mod
     monkeypatch.setattr(tick_mod, "TRADES_MAX_PAGES", 2)
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
 
@@ -402,6 +441,7 @@ def test_trade_gap_is_recorded_when_cursor_unexhausted(env_settings, db_session,
 @respx.mock
 def test_secondary_non_2xx_is_degraded_and_healthz_stays_green(env_settings, db_session):
     # I4: only secondary-source non-2xx -> degraded, and /healthz is 200 with last_status degraded.
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/v4/sports/\w+/odds").mock(return_value=httpx.Response(200, json=ODDS))
     respx.get(url__regex=r"https://o/v4/sports/\w+/events/\w+/odds").mock(return_value=httpx.Response(404, json={}))
@@ -424,6 +464,7 @@ def test_secondary_non_2xx_is_degraded_and_healthz_stays_green(env_settings, db_
 @respx.mock
 def test_latest_body_is_served_from_the_in_process_cache(env_settings, db_session, monkeypatch):
     # I7: after a successful fetch the fallback body comes from memory, never from raw_responses.
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json={"cursor": "", "markets": []}))
@@ -528,6 +569,7 @@ def test_tick_prices_and_signals_when_kalshi_markets_refreshed(env_settings, db_
 @respx.mock
 def test_pricing_failure_is_isolated_and_degrades_the_run(env_settings, db_session, monkeypatch):
     import harness.recorder.tick as tick_mod
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
     respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
     respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
     respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))

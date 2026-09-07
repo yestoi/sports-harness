@@ -125,6 +125,19 @@ class KalshiPublic:
                 break
         return pages
 
+    def fetch_series(self, series_ticker: str) -> FetchResult:
+        """F45/R21: a series' fee shape (`fee_type`/`fee_multiplier`), fetched once a day per
+        football series (Recorder._kalshi_series) since it rarely changes."""
+        r = self._http.get(f"{self._base}/series/{series_ticker}", redact_params=())
+        self._pause()
+        return r
+
+    def fetch_market(self, ticker: str) -> FetchResult:
+        """A single market's current body. No caller yet (Task 7)."""
+        r = self._http.get(f"{self._base}/markets/{ticker}", redact_params=())
+        self._pause()
+        return r
+
     def fetch_orderbook(self, ticker: str) -> FetchResult:
         r = self._http.get(f"{self._base}/markets/{ticker}/orderbook", params={"depth": "20"}, redact_params=())
         self._pause()

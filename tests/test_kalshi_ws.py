@@ -1,6 +1,7 @@
 import contextlib
 import json
 import time
+import uuid
 
 import websocket
 from cryptography.hazmat.primitives import serialization
@@ -11,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from harness.db.models import Game, OrderbookEvent, Signal, VenueMarket, VenueQuote, VenueTrade
+from harness.db.models import Game, Order, OrderbookEvent, Signal, StrategyVariant, VenueMarket, VenueQuote, VenueTrade
 from harness.feeds.http import FetchError
 from harness.recorder.ws_sink import WsSink
 from harness.venues.kalshi import ws as ws_module
@@ -145,6 +146,7 @@ class _FakeSettings:
     ws_lookahead_hours = 72
     ws_lookback_hours = 8
     ws_stale_s = 180
+    exec_variants = ["sharp_direct", "constrained", "sharp_two_sided"]
 
     def kalshi_key_id(self) -> str:
         return "kid-123"
@@ -862,9 +864,24 @@ def test_third_gap_inside_five_minutes_falls_through_to_a_reconnect(db_session, 
 
 # --- hotfix F8/R10: the subscription window and its priority ---------------------------
 
-def _signal(session, vmid: int, created_at, decision: str = "candidate", replay: bool = False) -> None:
-    session.add(Signal(run_id=1, variant_id="v1", gap_snapshot_id=1, venue_market_id=vmid, side="yes",
+def _signal(session, vmid: int, created_at, decision: str = "candidate", replay: bool = False,
+           variant_id: str = "v1") -> None:
+    session.add(Signal(run_id=1, variant_id=variant_id, gap_snapshot_id=1, venue_market_id=vmid, side="yes",
                        decision=decision, labels={}, replay=replay, created_at=created_at))
+    session.flush()
+
+
+def _variant(session, variant_id: str) -> None:
+    """A minimal strategy_variants row -- select_ws_tickers resolves Settings.exec_variants
+    (names) to variant ids through this table; tests use the same string for both."""
+    session.add(StrategyVariant(variant_id=variant_id, name=variant_id, tier="primary", config_json={}, registered_at=NOW))
+    session.flush()
+
+
+def _order(session, vmid: int, ticker: str, status: str, replay: bool = False, variant_id: str = "v1") -> None:
+    session.add(Order(intent_id=uuid.uuid4(), variant_id=variant_id, venue="kalshi", client_order_id=f"co-{uuid.uuid4()}",
+                      ticker=ticker, venue_market_id=vmid, side="yes", prob=Decimal("0.50"), contracts=Decimal("10"),
+                      status=status, placed_at=NOW, replay=replay))
     session.flush()
 
 
@@ -894,9 +911,9 @@ def test_select_ws_tickers_covers_three_days_ahead_and_eight_hours_back(db_sessi
 
 
 def test_select_ws_tickers_puts_a_recent_candidate_ahead_of_raw_volume(db_session):
-    """R10: the cap is 500 tickers and the busiest markets are not the ones a variant is about
-    to trade. A market with a fresh `candidate` signal outranks a quieter book's volume order,
-    and the cap applies after that ordering."""
+    """Task 3b: the cap is 500 tickers and the busiest markets are not the ones a variant is
+    about to trade. A market with a fresh `candidate` signal from an exec variant outranks a
+    quieter book's volume order, and the cap applies after that ordering."""
     g = Game(sport="nfl", home_team_id=19, away_team_id=14, kickoff_utc=NOW + timedelta(hours=3))
     db_session.add(g)
     db_session.flush()
@@ -906,12 +923,13 @@ def test_select_ws_tickers_puts_a_recent_candidate_ahead_of_raw_volume(db_sessio
     _quote(db_session, busy, "9000.00", NOW)
     _quote(db_session, signalled, "5.00", NOW)
     _quote(db_session, stale, "50.00", NOW)
-    _signal(db_session, signalled, NOW - timedelta(hours=1))
-    # Older than the 6 h priority window, so it ranks on volume like any other market.
-    _signal(db_session, stale, NOW - timedelta(hours=7))
+    _variant(db_session, "v1")
+    _signal(db_session, signalled, NOW - timedelta(minutes=30), variant_id="v1")
+    # Older than the 1 h priority window, so it ranks on volume like any other market.
+    _signal(db_session, stale, NOW - timedelta(hours=2), variant_id="v1")
 
-    assert select_ws_tickers(db_session, NOW, cap=10) == ["K-SIGNALLED", "K-BUSY", "K-STALE-SIGNAL"]
-    assert select_ws_tickers(db_session, NOW, cap=1) == ["K-SIGNALLED"]
+    assert select_ws_tickers(db_session, NOW, cap=10, exec_variant_names=["v1"]) == ["K-SIGNALLED", "K-BUSY", "K-STALE-SIGNAL"]
+    assert select_ws_tickers(db_session, NOW, cap=1, exec_variant_names=["v1"]) == ["K-SIGNALLED"]
 
 
 def test_select_ws_tickers_ignores_replayed_and_rejected_signals(db_session):
@@ -926,10 +944,47 @@ def test_select_ws_tickers_ignores_replayed_and_rejected_signals(db_session):
     _quote(db_session, busy, "9000.00", NOW)
     _quote(db_session, replayed, "5.00", NOW)
     _quote(db_session, rejected, "1.00", NOW)
-    _signal(db_session, replayed, NOW - timedelta(hours=1), replay=True)
-    _signal(db_session, rejected, NOW - timedelta(hours=1), decision="rejected")
+    _variant(db_session, "v1")
+    _signal(db_session, replayed, NOW - timedelta(hours=1), replay=True, variant_id="v1")
+    _signal(db_session, rejected, NOW - timedelta(hours=1), decision="rejected", variant_id="v1")
 
-    assert select_ws_tickers(db_session, NOW, cap=10) == ["K-BUSY", "K-REPLAYED", "K-REJECTED"]
+    assert select_ws_tickers(db_session, NOW, cap=10, exec_variant_names=["v1"]) == ["K-BUSY", "K-REPLAYED", "K-REJECTED"]
+
+
+def test_select_ws_tickers_prefers_open_orders_and_exec_candidates(db_session):
+    """Task 3b item 5: replaces the shipped 6 h any-variant priority. An open, non-replay
+    paper order outranks raw volume with no time bound, and a `candidate` signal only counts
+    when it comes from a variant the executor is actually running (Settings.exec_variants,
+    resolved to variant ids) and is less than an hour old."""
+    g = Game(sport="nfl", home_team_id=19, away_team_id=14, kickoff_utc=NOW + timedelta(hours=3))
+    db_session.add(g)
+    db_session.flush()
+    busy = _market(db_session, "K-BUSY", g.id, NOW)
+    ordered = _market(db_session, "K-ORDERED", g.id, NOW)
+    candidate = _market(db_session, "K-CANDIDATE", g.id, NOW)
+    other_variant = _market(db_session, "K-OTHER-VARIANT", g.id, NOW)
+    filled = _market(db_session, "K-FILLED", g.id, NOW)
+    replay_order = _market(db_session, "K-REPLAY-ORDER", g.id, NOW)
+    _quote(db_session, busy, "9000.00", NOW)
+    _quote(db_session, ordered, "1.00", NOW)
+    _quote(db_session, candidate, "2.00", NOW)
+    _quote(db_session, other_variant, "800.00", NOW)
+    _quote(db_session, filled, "700.00", NOW)
+    _quote(db_session, replay_order, "600.00", NOW)
+    _variant(db_session, "v1")
+    _order(db_session, ordered, "K-ORDERED", status="open", variant_id="v1")
+    _signal(db_session, candidate, NOW - timedelta(minutes=30), variant_id="v1")
+    # A candidate from a variant the executor is not running doesn't count.
+    _signal(db_session, other_variant, NOW - timedelta(minutes=30), variant_id="v2")
+    # A closed order and a replay order don't count either -- an open order has no time bound,
+    # but it must be live and real.
+    _order(db_session, filled, "K-FILLED", status="filled", variant_id="v1")
+    _order(db_session, replay_order, "K-REPLAY-ORDER", status="open", replay=True, variant_id="v1")
+
+    out = select_ws_tickers(db_session, NOW, cap=10, exec_variant_names=["v1"])
+    # Priority group first, ordered by volume: K-CANDIDATE (2.00) then K-ORDERED (1.00). Then
+    # the rest by volume, none of them carrying a live order or an exec-variant candidate.
+    assert out == ["K-CANDIDATE", "K-ORDERED", "K-BUSY", "K-OTHER-VARIANT", "K-FILLED", "K-REPLAY-ORDER"]
 
 
 def test_settings_ws_window_defaults(env_settings):

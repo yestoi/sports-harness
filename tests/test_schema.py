@@ -496,6 +496,37 @@ def test_match_key_backfilled_by_create_schema(db_session):
     assert matched.match_key == "hand-written"
 
 
+def test_match_key_backfill_matches_matcher_composition_for_integral_and_half_point(db_session):
+    """Controller ruling (Task 3b item 2): the Python composer (`compose_match_key`) must
+    render `threshold` exactly as this SQL backfill renders `numeric(6,1)::text` -- an
+    integral value keeps its trailing zero (`3` -> `"3.0"`), not bare `"3"` -- or an
+    integral-threshold market's open order would compare unequal to its own venue_market's
+    key and get cancelled as unmatched the moment the two paths disagree."""
+    from harness.db.models import Game, VenueMarket
+    from harness.db.schema import create_schema
+    from harness.matching.kalshi import compose_match_key
+
+    game = Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=NOW)
+    db_session.add(game)
+    db_session.flush()
+    half = VenueMarket(venue="kalshi", ticker="T-HALF", event_ticker="E", series_ticker="S",
+                       game_id=game.id, market_type="spread", side_team_id=19, side=None,
+                       threshold=Decimal("6.5"), match_status="matched", first_seen_raw_id=1, last_seen_at=NOW)
+    whole = VenueMarket(venue="kalshi", ticker="T-WHOLE", event_ticker="E", series_ticker="S",
+                        game_id=game.id, market_type="spread", side_team_id=19, side=None,
+                        threshold=Decimal("3"), match_status="matched", first_seen_raw_id=1, last_seen_at=NOW)
+    db_session.add_all([half, whole])
+    db_session.commit()
+
+    create_schema(db_session.get_bind())
+    db_session.expire_all()
+
+    assert half.match_key == compose_match_key(game.id, "spread", 19, None, Decimal("6.5"))
+    assert whole.match_key == compose_match_key(game.id, "spread", 19, None, Decimal("3"))
+    assert whole.match_key.endswith(":3.0")
+    assert half.match_key.endswith(":6.5")
+
+
 def test_order_clv_table_and_clv_view(db_session):
     from harness.db.models import OrderClv
 

@@ -52,41 +52,69 @@ def test_is_due():
 
 
 def test_alternates_due():
-    # U1 (2026-09-07): the old 3-hour split is gone, so "near" and "far" (both inside 36h)
-    # share the same default interval and are equally due after 130s.
+    # Task 3b brings the near/far split back into the interface; today's settings keep
+    # odds_alt_interval_near_s and odds_alt_interval_far_s equal (both 120), so a near and a
+    # far event inside the window are equally due -- this test pins that equal-settings case.
     now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
     events = [("near", now + timedelta(hours=2)), ("far", now + timedelta(hours=20)), ("toofar", now + timedelta(hours=48))]
     last = {"near": now - timedelta(seconds=130), "far": now - timedelta(seconds=130)}
-    assert alternates_due(now, events, last) == ["near", "far"]
-    assert alternates_due(now, events, {}) == ["near", "far"]
+    assert alternates_due(now, events, last, near_s=120, far_s=120) == ["near", "far"]
+    assert alternates_due(now, events, {}, near_s=120, far_s=120) == ["near", "far"]
 
 
-def test_alternates_due_interval_is_configurable():
-    # U1 (2026-09-07): a 30h-out event is due 120s after its last fetch with the default
-    # interval, and only after 900s when interval_s=900 is passed explicitly.
+def test_alternates_due_near_and_far_intervals_are_independently_configurable():
     now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
     far = ("far", now + timedelta(hours=30))
-    assert alternates_due(now, [far], {"far": now - timedelta(seconds=119)}) == []
-    assert alternates_due(now, [far], {"far": now - timedelta(seconds=120)}) == ["far"]
-    assert alternates_due(now, [far], {"far": now - timedelta(seconds=899)}, interval_s=900) == []
-    assert alternates_due(now, [far], {"far": now - timedelta(seconds=900)}, interval_s=900) == ["far"]
+    assert alternates_due(now, [far], {"far": now - timedelta(seconds=119)}, near_s=120, far_s=120) == []
+    assert alternates_due(now, [far], {"far": now - timedelta(seconds=120)}, near_s=120, far_s=120) == ["far"]
+    assert alternates_due(now, [far], {"far": now - timedelta(seconds=899)}, near_s=999999, far_s=900) == []
+    assert alternates_due(now, [far], {"far": now - timedelta(seconds=900)}, near_s=999999, far_s=900) == ["far"]
+
+
+def test_alternates_due_default_far_interval_differs_from_near():
+    # The interface's own defaults (near_s=120, far_s=900) are the pre-U1 shape. Production
+    # settings currently pass 120/120 so the split is a no-op there, but the function itself
+    # still tells near and far apart when nothing overrides its defaults.
+    now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
+    far = ("far", now + timedelta(hours=20))
+    last = {"far": now - timedelta(seconds=200)}
+    assert alternates_due(now, [far], last) == []  # 200s < the default far_s of 900
+    assert alternates_due(now, [far], last, far_s=120) == ["far"]
+
+
+def test_alternates_due_near_boundary_is_180_minutes():
+    now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
+    edge_near = ("edge_near", now + timedelta(minutes=180))
+    edge_far = ("edge_far", now + timedelta(minutes=181))
+    last = {"edge_near": now - timedelta(seconds=200), "edge_far": now - timedelta(seconds=200)}
+    # 180 minutes out is still "near" (near_s=120 <= 200s elapsed => due); 181 minutes is
+    # "far" and a far_s of 999999 is nowhere near due.
+    assert alternates_due(now, [edge_near], last, near_s=120, far_s=999999) == ["edge_near"]
+    assert alternates_due(now, [edge_far], last, near_s=120, far_s=999999) == []
 
 
 def test_alternates_due_40h_out_is_never_due():
     now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
     toofar = ("toofar", now + timedelta(hours=40))
     assert alternates_due(now, [toofar], {}) == []
-    assert alternates_due(now, [toofar], {}, interval_s=900) == []
+    assert alternates_due(now, [toofar], {}, near_s=900, far_s=900, window_h=36) == []
 
 
-def test_alternates_due_near_kickoff_uses_the_same_interval_as_far_events():
-    # The 3-hour split disappears: a 2h-out event is due after 120s under the function's
-    # own default and under an explicit interval_s=120 (the value tick.py always passes).
+def test_alternates_due_window_h_is_configurable():
+    now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
+    out_of_default_window = ("x", now + timedelta(hours=40))
+    assert alternates_due(now, [out_of_default_window], {}, window_h=48) == ["x"]
+
+
+def test_alternates_due_uses_settings_cadence(env_settings):
+    # Task 3b item 9: alternates_due reads Task 1's odds_alt_interval_near_s/far_s/window_h
+    # settings; today they are 120/120/36 so this just proves the wiring, not a cadence change.
     now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
     near = ("near", now + timedelta(hours=2))
-    last = {"near": now - timedelta(seconds=120)}
-    assert alternates_due(now, [near], last) == ["near"]
-    assert alternates_due(now, [near], last, interval_s=120) == ["near"]
+    kwargs = dict(near_s=env_settings.odds_alt_interval_near_s, far_s=env_settings.odds_alt_interval_far_s,
+                 window_h=env_settings.odds_alt_window_h)
+    assert alternates_due(now, [near], {"near": now - timedelta(seconds=119)}, **kwargs) == []
+    assert alternates_due(now, [near], {"near": now - timedelta(seconds=120)}, **kwargs) == ["near"]
 
 
 def _ms(ticker, ev_date, bid, ask, vol):

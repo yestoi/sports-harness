@@ -6,8 +6,10 @@ from pathlib import Path
 from sqlalchemy import event
 
 from harness.db.models import Game, OrderbookSnapshot, VenueMarket, VenueQuote, VenueTrade
+from harness.matching.kalshi import compose_match_key
 from harness.matching.teams import seed_teams_from_espn
-from harness.normalize.kalshi import insert_orderbook, insert_trades, insert_venue_quotes, upsert_venue_markets
+from harness.normalize.kalshi import (apply_series_fee, insert_orderbook, insert_trades, insert_venue_quotes,
+                                      upsert_venue_markets)
 
 FIXD = Path(__file__).parent / "fixtures"
 KM = json.loads((FIXD / "kalshi_markets_page.json").read_text())["markets"]  # phase 0 fixture: NYG game + KC spread
@@ -30,6 +32,104 @@ def test_upsert_venue_markets_matches_and_classifies(db_session):
     assert "unresolved: Denver" in kc.match_reason
     res2 = upsert_venue_markets(db_session, "nfl", KM, EVENTS, raw_id=2, fetched_at=NOW)
     assert res2.new == 0
+
+
+def test_upsert_venue_markets_records_grid_fee_shard_expiration_and_match_key(db_session):
+    """Task 3b item 2 (F8/R10): the executor-facing metadata a Kalshi market carries, refreshed
+    on every fetch regardless of match outcome, plus `match_key` -- Task 2's matched shape,
+    composed the moment a market resolves to a game and left NULL while it doesn't."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=datetime(2026, 9, 21, 0, 20, tzinfo=timezone.utc)))
+    db_session.flush()
+    grid = [{"start": "0.0000", "end": "1.0000", "step": "0.0001"}]
+    markets = [
+        dict(KM[0], expected_expiration_time="2026-09-24T00:20:00Z", price_level_structure="linear_cent",
+             price_ranges=grid, exchange_index=2),
+        dict(KM[1], expected_expiration_time="2026-09-17T00:20:00Z", price_level_structure="linear_cent",
+             price_ranges=[], exchange_index=0),
+    ]
+    upsert_venue_markets(db_session, "nfl", markets, EVENTS, raw_id=1, fetched_at=NOW)
+
+    nyg = db_session.query(VenueMarket).filter_by(ticker="KXNFLGAME-26SEP21NYGLAR-NYG").one()
+    assert nyg.expected_expiration_time == datetime(2026, 9, 24, 0, 20, tzinfo=timezone.utc)
+    assert nyg.price_level_structure == "linear_cent"
+    assert nyg.price_ranges == grid
+    assert nyg.exchange_index == 2
+    assert nyg.match_status == "matched"
+    assert nyg.match_key == compose_match_key(nyg.game_id, "moneyline", nyg.side_team_id, nyg.side, nyg.threshold)
+    assert nyg.match_key == f"{nyg.game_id}:moneyline:19::"
+
+    kc = db_session.query(VenueMarket).filter_by(ticker="KXNFLSPREAD-26SEP14DENKC-KC7").one()
+    assert kc.match_status == "unmatched"
+    assert kc.match_key is None
+    assert kc.exchange_index == 0
+
+    # A metadata refresh on an already-matched market updates the grid/expiration/shard without
+    # re-running the matcher or clearing match_key.
+    refreshed = [dict(KM[0], expected_expiration_time="2026-09-25T00:20:00Z", price_level_structure="custom_grid",
+                      price_ranges=[], exchange_index=3)]
+    upsert_venue_markets(db_session, "nfl", refreshed, EVENTS, raw_id=2, fetched_at=NOW)
+    db_session.refresh(nyg)
+    assert nyg.expected_expiration_time == datetime(2026, 9, 25, 0, 20, tzinfo=timezone.utc)
+    assert nyg.price_level_structure == "custom_grid"
+    assert nyg.exchange_index == 3
+    assert nyg.match_key == f"{nyg.game_id}:moneyline:19::"
+
+
+def test_non_linear_cent_matched_market_is_counted_in_run_notes(db_session):
+    """F44: a matched market whose price grid isn't the football default is a pricing risk the
+    dashboard alarms on; the count is written into runs.notes every tick, not just once."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=datetime(2026, 9, 21, 0, 20, tzinfo=timezone.utc)))
+    db_session.flush()
+    custom = [dict(KM[0], price_level_structure="custom_grid")]
+
+    ctx = {}
+    upsert_venue_markets(db_session, "nfl", custom, EVENTS, raw_id=1, fetched_at=NOW, ctx=ctx)
+    assert ctx["non_linear_cent"] == 1
+
+    # Already matched: the second fetch skips re-matching but still counts the grid every tick.
+    ctx2 = {}
+    upsert_venue_markets(db_session, "nfl", custom, EVENTS, raw_id=2, fetched_at=NOW, ctx=ctx2)
+    assert ctx2["non_linear_cent"] == 1
+
+    # linear_cent never counts, and an unmatched market never counts either.
+    linear = [dict(KM[0], ticker="KXNFLGAME-26SEP21NYGLAR-OTHER", price_level_structure="linear_cent")]
+    ctx3 = {}
+    upsert_venue_markets(db_session, "nfl", linear, EVENTS, raw_id=3, fetched_at=NOW, ctx=ctx3)
+    assert ctx3.get("non_linear_cent", 0) == 0
+
+    ctx4 = {}
+    unmatched_custom = [dict(KM[1], price_level_structure="custom_grid")]
+    upsert_venue_markets(db_session, "nfl", unmatched_custom, EVENTS, raw_id=4, fetched_at=NOW, ctx=ctx4)
+    assert ctx4.get("non_linear_cent", 0) == 0
+
+    # ctx is optional: callers that don't care about the alarm never see a KeyError.
+    upsert_venue_markets(db_session, "nfl", custom, EVENTS, raw_id=5, fetched_at=NOW)
+
+
+def test_apply_series_fee_writes_fee_type_and_multiplier_by_series(db_session):
+    """Task 3b item 3: GET /series/{series_ticker}'s fee shape written onto every
+    venue_markets row already recorded for that series, and only that series."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=datetime(2026, 9, 21, 0, 20, tzinfo=timezone.utc)))
+    db_session.flush()
+    upsert_venue_markets(db_session, "nfl", KM, EVENTS, raw_id=1, fetched_at=NOW)
+    db_session.commit()
+
+    apply_series_fee(db_session, "KXNFLGAME", {"series": {"fee_type": "quadratic", "fee_multiplier": "0.5"}})
+    db_session.commit()
+
+    nyg = db_session.query(VenueMarket).filter_by(ticker="KXNFLGAME-26SEP21NYGLAR-NYG").one()
+    assert nyg.fee_type == "quadratic" and nyg.fee_multiplier == Decimal("0.5000")
+    kc = db_session.query(VenueMarket).filter_by(ticker="KXNFLSPREAD-26SEP14DENKC-KC7").one()
+    assert kc.fee_type is None and kc.fee_multiplier is None  # different series, untouched
+
+    # An empty/absent body is a no-op, not a write of NULLs over an already-recorded fee shape.
+    apply_series_fee(db_session, "KXNFLGAME", {})
+    db_session.commit()
+    db_session.refresh(nyg)
+    assert nyg.fee_type == "quadratic"
 
 
 def test_quotes_orderbook_trades_idempotent(db_session):

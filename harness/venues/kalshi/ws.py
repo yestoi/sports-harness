@@ -4,14 +4,14 @@ import signal
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Callable
+from typing import Callable, Sequence
 
 import websocket
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session, sessionmaker
 
 from harness.config.settings import Settings
-from harness.db.models import Game, Signal, VenueMarket, VenueQuote
+from harness.db.models import Game, Order, Signal, StrategyVariant, VenueMarket, VenueQuote
 from harness.feeds.http import HttpClient
 from harness.venues.kalshi.auth import sign_request
 from harness.venues.kalshi.clock import server_time_offset_ms
@@ -45,25 +45,39 @@ def diff_subscriptions(current: list[str], wanted: list[str]) -> tuple[list[str]
 
 
 def select_ws_tickers(session: Session, now: datetime, cap: int, lookahead_hours: int = 72,
-                      lookback_hours: int = 8) -> list[str]:
+                      lookback_hours: int = 8, exec_variant_names: Sequence[str] = ()) -> list[str]:
     lo, hi = now - timedelta(hours=lookback_hours), now + timedelta(hours=lookahead_hours)
-    # R10: a market a variant just called is worth a subscription slot more than whichever
-    # book happens to be busiest, so flag it and order the flag ahead of volume. Replay
-    # signals are backtest output and a rejection is a market the variant passed on, so
-    # neither counts. Phase 3's executor adds its open paper orders to this same priority.
+    # Task 3b: a market phase 3 already has a live paper order resting on is worth a
+    # subscription slot more than whichever book happens to be busiest, no matter how old the
+    # order is; a market an exec variant just called earns the same priority, but only for an
+    # hour and only when the variant is one the executor is actually running
+    # (`exec_variant_names` is Settings.exec_variants, resolved to variant ids here through the
+    # registered strategy_variants -- entirely inside this function, so a caller that mocks it
+    # out wholesale, as WsRecorder's own tests do, never touches strategy_variants at all).
+    # Replay orders/signals are backtest output and a rejection is a market the variant passed
+    # on, so neither counts. Replaces the shipped R10 hotfix's 6 h any-variant-signal priority.
+    has_open_order = (
+        select(Order.id)
+        .where(Order.venue_market_id == VenueMarket.id, Order.status.in_(("open", "partially_filled")),
+               Order.replay.is_(False))
+        .exists()
+    )
+    exec_variant_ids = select(StrategyVariant.variant_id).where(StrategyVariant.name.in_(exec_variant_names))
     has_candidate = (
         select(Signal.id)
         .where(Signal.venue_market_id == VenueMarket.id, Signal.decision == "candidate",
-               Signal.replay.is_(False), Signal.created_at >= now - timedelta(hours=6))
+               Signal.replay.is_(False), Signal.created_at >= now - timedelta(hours=1),
+               Signal.variant_id.in_(exec_variant_ids))
         .exists()
     )
+    has_priority = (has_open_order | has_candidate)
     # Compute the (small) candidate set first -- markets whose game falls in the window and
     # that are matched -- then pull each candidate's own latest quote via a LATERAL join that
     # rides ix_quotes_market_fetched (venue_market_id, fetched_at). This avoids aggregating
     # over all of venue_quotes (which grows ~1M rows/day) on every call.
     candidates = (
         select(VenueMarket.id.label("vmid"), VenueMarket.ticker.label("ticker"),
-               VenueMarket.last_seen_at.label("last_seen_at"), has_candidate.label("has_candidate"))
+               VenueMarket.last_seen_at.label("last_seen_at"), has_priority.label("has_priority"))
         .join(Game, Game.id == VenueMarket.game_id)
         .where(VenueMarket.match_status.in_(("matched", "fuzzy", "manual")), Game.kickoff_utc >= lo, Game.kickoff_utc <= hi)
         .subquery("candidates")
@@ -82,7 +96,7 @@ def select_ws_tickers(session: Session, now: datetime, cap: int, lookahead_hours
         select(candidates.c.ticker)
         .select_from(candidates)
         .outerjoin(latest_quote, true())
-        .order_by(candidates.c.has_candidate.desc(), latest_quote.c.v24.desc().nullslast(),
+        .order_by(candidates.c.has_priority.desc(), latest_quote.c.v24.desc().nullslast(),
                   candidates.c.last_seen_at.desc())
     ).scalars().all()
     return list(rows)[:cap]
@@ -252,7 +266,7 @@ class WsRecorder:
             if time.monotonic() - last_plan >= 300:
                 with self.factory() as session:
                     wanted = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers,
-                                               self.s.ws_lookahead_hours, self.s.ws_lookback_hours)
+                                               self.s.ws_lookahead_hours, self.s.ws_lookback_hours, self.s.exec_variants)
                 self._resubscribe(ws, wanted, msg_id)
                 msg_id, last_plan = msg_id + 1, time.monotonic()
 
@@ -263,7 +277,7 @@ class WsRecorder:
             try:
                 with self.factory() as session:
                     tickers = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers,
-                                                self.s.ws_lookahead_hours, self.s.ws_lookback_hours)
+                                                self.s.ws_lookahead_hours, self.s.ws_lookback_hours, self.s.exec_variants)
                 ws = self._connect()
                 # `_connect` refreshes the offset (and a 401's Date header revises it), so the
                 # sink can only learn this connection's offset once the connect has returned.

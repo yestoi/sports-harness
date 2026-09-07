@@ -104,6 +104,24 @@ def test_fetch_trades_stops_on_non_200():
     assert [p.status for p in pages] == [500]  # no second page is requested
 
 
+@respx.mock
+def test_fetch_market_and_series_paths():
+    # Task 3b items 3/4: GET /series/{series_ticker} (daily fee-shape fetch) and
+    # GET /markets/{ticker} (Task 7's per-market fetch; no caller here yet).
+    series_route = respx.get("https://k/series/KXNFLGAME").mock(
+        return_value=httpx.Response(200, json={"series": {"fee_type": "quadratic", "fee_multiplier": "0.5"}}))
+    market_route = respx.get("https://k/markets/KXNFLGAME-1").mock(
+        return_value=httpx.Response(200, json={"market": {"ticker": "KXNFLGAME-1"}}))
+    c = KalshiPublic(HttpClient(1, sleep=lambda s: None), "https://k", sleep_s=0, sleep=lambda s: None)
+
+    sr = c.fetch_series("KXNFLGAME")
+    mr = c.fetch_market("KXNFLGAME-1")
+
+    assert series_route.called and market_route.called
+    assert sr.status == 200 and sr.body["series"]["fee_type"] == "quadratic"
+    assert mr.status == 200 and mr.body["market"]["ticker"] == "KXNFLGAME-1"
+
+
 def test_football_series_constant():
     assert "KXNCAAFTOTAL" in FOOTBALL_SERIES and len(FOOTBALL_SERIES) == 6
 

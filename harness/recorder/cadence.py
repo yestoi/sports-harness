@@ -42,15 +42,18 @@ def is_due(last: datetime | None, now: datetime, interval: int | None) -> bool:
 
 
 def alternates_due(now: datetime, events: list[tuple[str, datetime]], last_alt: dict[str, datetime],
-                    interval_s: int = 120) -> list[str]:
-    # U1 (2026-09-07): every event inside 36h of kickoff shares one configurable interval;
-    # the old 120s-inside-3h / 900s-otherwise split is gone.
+                    near_s: int = 120, far_s: int = 900, window_h: int = 36) -> list[str]:
+    # Task 3b/U1: the near/far split lives in the interface again so a future settings change
+    # can revive it without touching this function; `near_s` applies inside 180 minutes of
+    # kickoff, `far_s` from there out to `window_h`, and nothing beyond the window is ever due.
+    # Settings.odds_alt_interval_near_s/far_s are both 120 today, so tick.py's wiring is a no-op.
     out: list[str] = []
     for event_id, commence in events:
         until = commence - now
-        if until < timedelta(0) or until > timedelta(hours=36):
+        if until < timedelta(0) or until > timedelta(hours=window_h):
             continue
-        if is_due(last_alt.get(event_id), now, interval_s):
+        interval = near_s if until <= timedelta(minutes=180) else far_s
+        if is_due(last_alt.get(event_id), now, interval):
             out.append(event_id)
     return out
 

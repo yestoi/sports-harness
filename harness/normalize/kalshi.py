@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import Game, OrderbookSnapshot, VenueMarket, VenueQuote, VenueTrade
-from harness.matching.kalshi import classify_market, match_event, side_team_id_for
+from harness.matching.kalshi import classify_market, compose_match_key, match_event, side_team_id_for
 from harness.venues.kalshi.public import event_date_from_ticker
 
 log = logging.getLogger(__name__)
@@ -79,8 +79,17 @@ def taker_side_of(d: dict) -> tuple[str | None, str | None, str | None]:
     return outcome or _side(d.get("taker_side")), outcome, _book_side(d.get("taker_book_side"))
 
 
+def _count_non_linear_cent(vm: VenueMarket, ctx: dict | None) -> None:
+    """F44: a matched market whose price grid isn't the football default is a pricing risk --
+    `snap_to_grid` falls back to whole cents for a market it has never seen a grid for, which
+    is silently wrong for anything finer or coarser. Counted every tick a matched market
+    carries a non-`linear_cent` shape, not just the tick it first matched."""
+    if ctx is not None and vm.price_level_structure not in (None, "linear_cent"):
+        ctx["non_linear_cent"] = ctx.get("non_linear_cent", 0) + 1
+
+
 def upsert_venue_markets(session: Session, sport: str, markets: list[dict], events_by_ticker: dict[str, dict],
-                         raw_id: int, fetched_at: datetime) -> MarketsResult:
+                         raw_id: int, fetched_at: datetime, ctx: dict | None = None) -> MarketsResult:
     res = MarketsResult()
     tickers = [t for m in markets if (t := m.get("ticker"))]
     existing = {vm.ticker: vm for vm in
@@ -101,8 +110,22 @@ def upsert_venue_markets(session: Session, sport: str, markets: list[dict], even
             res.new += 1
         vm.last_seen_at = fetched_at
         vm.close_time = _ts(m.get("close_time")) or vm.close_time
+        # F8/R10: Kalshi market metadata the executor needs and phase 2's recorder did not
+        # keep. Refreshed every fetch, matched or not: a market's price grid, expiration and
+        # exchange shard don't depend on which game (if any) it resolves to.
+        vm.expected_expiration_time = _ts(m.get("expected_expiration_time")) or vm.expected_expiration_time
+        vm.price_level_structure = m.get("price_level_structure") or vm.price_level_structure
+        if m.get("price_ranges") is not None:
+            vm.price_ranges = m.get("price_ranges")
+        if (idx := m.get("exchange_index")) is not None:
+            vm.exchange_index = int(idx)
         if vm.match_status in ("matched", "manual") and vm.game_id is not None:
+            _count_non_linear_cent(vm, ctx)
             continue
+        # About to (re)try matching this market: whatever match_key it carried belongs to a
+        # match that no longer holds (or never held), so it goes NULL until a fresh match sets
+        # it again below.
+        vm.match_key = None
         event = events_by_ticker.get(et)
         if event is None:
             vm.match_reason = "no event title recorded"
@@ -128,12 +151,30 @@ def upsert_venue_markets(session: Session, sport: str, markets: list[dict], even
             continue
         vm.game_id, vm.side_team_id, vm.match_confidence = em.game_id, side_team, em.confidence
         vm.match_status = "matched" if em.confidence == Decimal("1.00") else "fuzzy"
+        vm.match_key = compose_match_key(vm.game_id, vm.market_type, vm.side_team_id, vm.side, vm.threshold)
+        _count_non_linear_cent(vm, ctx)
         if vm.match_status == "matched":
             res.matched += 1
         else:
             res.fuzzy += 1
     session.flush()
     return res
+
+
+def apply_series_fee(session: Session, series_ticker: str, body: dict | None) -> None:
+    """F45/R21: `GET /series/{series_ticker}`'s fee shape, written onto every venue_markets
+    row already recorded for that series (Recorder._kalshi_series fetches it daily). A market
+    that shows up between fetches picks up the shape at the series' next daily refresh, not
+    from this call. A body with neither field is a no-op, never a write of NULLs over a shape
+    an earlier fetch already recorded.
+    """
+    info = (body or {}).get("series") or {}
+    fee_type, raw_mult = info.get("fee_type"), info.get("fee_multiplier")
+    if fee_type is None and raw_mult is None:
+        return
+    fee_multiplier = _dec(raw_mult) if raw_mult is not None else None
+    session.query(VenueMarket).filter_by(series_ticker=series_ticker).update(
+        {"fee_type": fee_type, "fee_multiplier": fee_multiplier}, synchronize_session=False)
 
 
 def insert_venue_quotes(session: Session, markets: list[dict], raw_id: int, run_id: int, fetched_at: datetime) -> int:

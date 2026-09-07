@@ -137,7 +137,8 @@ class Recorder:
                             if (ts := store.get_source_state(session, f"odds_alt:{eid}")) is not None}
                 # Alternates are deliberately not forced: one per in-window event would multiply the
                 # credit cost of a deploy check; the featured fetch above already proves the pipeline.
-                for eid in alternates_due(now, events, last_alt, self.s.odds_alternates_interval_s):
+                for eid in alternates_due(now, events, last_alt, near_s=self.s.odds_alt_interval_near_s,
+                                          far_s=self.s.odds_alt_interval_far_s, window_h=self.s.odds_alt_window_h):
                     if budget.remaining_s() < alt_floor:
                         ctx["skipped_alternates"] += 1
                         continue
@@ -238,6 +239,26 @@ class Recorder:
                     ctx["fetched"] = True
             except Exception as e:  # noqa: BLE001
                 log.exception("kalshi settled failed")
+                ctx["errors"].append({key: repr(e)})
+
+    def _kalshi_series(self, session: Session, run: Run, now: datetime, ctx: dict) -> None:
+        """A series' fee shape (F45/R21) rarely changes, so one fetch per football series per
+        day is enough; the normalizer writes `fee_type`/`fee_multiplier` onto that series'
+        venue_markets rows from the stored body."""
+        for series in FOOTBALL_SERIES:
+            key = f"kalshi_series:{series}"
+            try:
+                if self._due(store.get_source_state(session, key), now, 86400):
+                    r = self.kalshi.fetch_series(series)
+                    store.store_raw(session, run.id, "kalshi", f"/series/{series}", {"series_ticker": series}, r)
+                    ctx["n"] += 1
+                    if r.status == 200:
+                        store.set_source_state(session, key, now)
+                    else:
+                        ctx["errors"].append({key: f"http {r.status}"})
+                    ctx["fetched"] = True
+            except Exception as e:  # noqa: BLE001
+                log.exception("kalshi series failed")
                 ctx["errors"].append({key: repr(e)})
 
     def _kalshi_trades_and_ladders(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff],
@@ -344,6 +365,7 @@ class Recorder:
                 self._checkpoint(session, run)
                 self._kalshi_events(session, run, now, ctx)
                 self._kalshi_settled(session, run, now, ctx)
+                self._kalshi_series(session, run, now, ctx)
                 self._checkpoint(session, run)
                 if summaries:
                     self._kalshi_trades_and_ladders(session, run, now, kickoffs, summaries, budget, ctx)
@@ -398,6 +420,7 @@ class Recorder:
                                     "normalize_errors": ctx.get("normalize_errors", []),
                                     "odds_dropped": ctx.get("odds_dropped", {}),
                                     "taker_side_missing": ctx.get("taker_side_missing", 0),
+                                    "non_linear_cent": ctx.get("non_linear_cent", 0),
                                     "pricing": ctx.get("pricing", {})},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
