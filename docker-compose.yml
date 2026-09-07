@@ -16,6 +16,7 @@ services:
 
   app-run:
     build: .
+    user: "${APP_UID:-65534}:${APP_GID:-65534}"
     command: ["run"]
     env_file: .env
     environment:
@@ -30,6 +31,7 @@ services:
 
   app-serve:
     build: .
+    user: "${APP_UID:-65534}:${APP_GID:-65534}"
     command: ["serve", "--port", "8080"]
     env_file: .env
     environment:
@@ -37,7 +39,7 @@ services:
     volumes:
       - ./secrets/odds_api_key:/run/secrets/odds_api_key:ro
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${SERVE_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +55,7 @@ services:
 
   app-ws:
     build: .
+    user: "${APP_UID:-65534}:${APP_GID:-65534}"
     command: ["ws-record"]
     env_file: .env
     environment:

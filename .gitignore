@@ -10,3 +10,4 @@ pgdata/
 *.egg-info/
 build/
 dist/
+.env.nas
