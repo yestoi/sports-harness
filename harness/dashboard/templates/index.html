@@ -76,7 +76,7 @@
       <h3>Raw rows by source</h3>
       <table>
         <tr><th>source</th><th>count</th></tr>
-        {% for source, n in summary.funnel.sources.items() %}
+        {% for source, n in (summary.funnel.sources or {}).items() %}
         <tr><td>{{ source }}</td><td>{{ n }}</td></tr>
         {% endfor %}
       </table>
@@ -85,7 +85,7 @@
       <h3>Markets by sport</h3>
       <table>
         <tr><th>sport</th><th>status</th><th>count</th></tr>
-        {% for sport, counts in summary.funnel.markets_by_sport.items() %}
+        {% for sport, counts in (summary.funnel.markets_by_sport or {}).items() %}
           {% for status, n in counts.items() %}
           <tr><td>{{ sport }}</td><td>{{ status }}</td><td>{{ n }}</td></tr>
           {% endfor %}
@@ -96,7 +96,7 @@
       <h3>Fair values by source</h3>
       <table>
         <tr><th>fair_source</th><th>count</th></tr>
-        {% for source, n in summary.funnel.fair_by_source.items() %}
+        {% for source, n in (summary.funnel.fair_by_source or {}).items() %}
         <tr><td>{{ source }}</td><td>{{ n }}</td></tr>
         {% endfor %}
       </table>
@@ -106,7 +106,7 @@
   <h3>Signals per active variant</h3>
   <table>
     <tr><th>variant</th><th>tier</th><th>candidate</th><th>rejected</th></tr>
-    {% for name, v in summary.funnel.signals_by_variant.items() %}
+    {% for name, v in (summary.funnel.signals_by_variant or {}).items() %}
     <tr><td>{{ name }}</td><td>{{ v.tier }}</td><td>{{ v.candidate }}</td><td>{{ v.rejected }}</td></tr>
     {% endfor %}
   </table>
@@ -114,7 +114,7 @@
 
 <section>
   <h2>Match report (last 24h)</h2>
-  {% for sport, r in summary.match_report.items() %}
+  {% for sport, r in summary.match_report.items() if sport != "error" %}
   <h3>{{ sport }} &mdash; {{ r.total }} markets
     {% if r.matched_pct is not none %}({{ "%.1f"|format(r.matched_pct) }}% matched){% endif %}</h3>
   <div class="scroll">
@@ -158,10 +158,10 @@
 </section>
 
 <section>
-  <h2>WebSocket (last 1h)</h2>
+  <h2>WebSocket</h2>{% if summary.websocket.error %}<p class="warn">unavailable: {{ summary.websocket.error }}</p>{% endif %}
   <div class="grid">
-    <div class="stat"><div class="label">Orderbook events</div><div class="value">{{ summary.websocket.orderbook_events_1h }}</div></div>
-    <div class="stat"><div class="label">WS trades</div><div class="value">{{ summary.websocket.ws_trades_1h }}</div></div>
+    <div class="stat"><div class="label">Orderbook events (5 min)</div><div class="value">{{ summary.websocket.orderbook_events_5m }}</div></div>
+    <div class="stat"><div class="label">WS trades (1h)</div><div class="value">{{ summary.websocket.ws_trades_1h }}</div></div>
     <div class="stat"><div class="label">Last event</div><div class="value">{{ summary.websocket.last_event_at or "-" }}</div></div>
   </div>
 </section>
@@ -171,7 +171,7 @@
   <h3>Feed staleness by book (median, last 1h)</h3>
   <table>
     <tr><th>book</th><th>median seconds</th></tr>
-    {% for book, s in summary.data_quality.staleness_median_s.items() %}
+    {% for book, s in (summary.data_quality.staleness_median_s or {}).items() %}
     <tr><td>{{ book }}</td><td>{{ "%.1f"|format(s) }}</td></tr>
     {% endfor %}
   </table>

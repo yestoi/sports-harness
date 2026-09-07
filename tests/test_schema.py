@@ -72,3 +72,10 @@ def test_create_schema_adds_no_fair_reason_to_an_existing_table(db_session):
     # idempotent: rerunning again against a table that already has the column is a no-op.
     create_schema(engine)
     assert has_column()
+
+
+def test_create_schema_adds_brin_time_indexes(db_session):
+    """Dashboard 'last hour' counts on the append-only event/trade tables must not seq-scan."""
+    names = {r[0] for r in db_session.execute(text(
+        "select indexname from pg_indexes where indexname in ('ix_obe_ts_brin', 'ix_trades_ts_brin')")).all()}
+    assert names == {"ix_obe_ts_brin", "ix_trades_ts_brin"}

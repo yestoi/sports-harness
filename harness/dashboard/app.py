@@ -7,6 +7,7 @@ into `harness.health.compute_health` rather than re-deriving the staleness/error
 """
 
 import hmac
+import logging
 import importlib.resources
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
@@ -17,15 +18,19 @@ from fastapi import FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from harness.config.settings import Settings
+
 from harness.db.models import (FairValue, Game, KillSwitch, MarketGapSnapshot, OddsSnapshot, OrderbookEvent,
                                 RawResponse, Run, Signal, StrategyVariant, Team, VenueMarket, VenueQuote, VenueTrade)
 from harness.health import compute_health
 
+log = logging.getLogger(__name__)
 WINDOW_24H = timedelta(hours=24)
 WINDOW_1H = timedelta(hours=1)
+WINDOW_5M = timedelta(minutes=5)
 SIGNALS_LIMIT = 100
 UNMATCHED_LIMIT = 50
 REASONS_LIMIT = 10
@@ -222,16 +227,19 @@ def _unmatched_markets(session: Session, now: datetime) -> list[dict]:
 
 
 def _websocket(session: Session, now: datetime) -> dict:
-    cutoff = now - WINDOW_1H
+    """Orderbook events arrive at up to ~4M/hour during live games, so the event count uses a
+    5-minute window (BRIN-indexed) and the last event is read by primary key, not by max(ts)."""
+    cutoff_5m = now - WINDOW_5M
+    cutoff_1h = now - WINDOW_1H
     ob_count = session.execute(
-        select(func.count()).select_from(OrderbookEvent).where(OrderbookEvent.ts >= cutoff)
+        select(func.count()).select_from(OrderbookEvent).where(OrderbookEvent.ts >= cutoff_5m)
     ).scalar_one()
-    last_ob = session.execute(select(func.max(OrderbookEvent.ts)).where(OrderbookEvent.ts >= cutoff)).scalar_one()
+    last_ob = session.execute(select(OrderbookEvent.ts).order_by(OrderbookEvent.id.desc()).limit(1)).scalar()
     trades_count = session.execute(
         select(func.count()).select_from(VenueTrade)
-        .where(VenueTrade.source == "ws", VenueTrade.ts >= cutoff)
+        .where(VenueTrade.source == "ws", VenueTrade.ts >= cutoff_1h)
     ).scalar_one()
-    return {"orderbook_events_1h": ob_count, "ws_trades_1h": trades_count, "last_event_at": _iso(last_ob)}
+    return {"orderbook_events_5m": ob_count, "ws_trades_1h": trades_count, "last_event_at": _iso(last_ob)}
 
 
 def _data_quality(session: Session, now: datetime) -> dict:
@@ -259,17 +267,27 @@ def _data_quality(session: Session, now: datetime) -> dict:
             "trade_gaps_sample": trade_gaps[:20]}
 
 
+def _section(session: Session, name: str, fn: Callable[[], dict]) -> dict:
+    """One slow or failing section (e.g. a statement timeout) must not take the whole page down."""
+    try:
+        return fn()
+    except SQLAlchemyError as e:  # noqa: BLE001
+        log.warning("dashboard section %s failed: %s", name, type(e).__name__)
+        session.rollback()
+        return {"error": type(e).__name__}
+
+
 def build_summary(session: Session, session_factory: sessionmaker, now: datetime) -> dict:
     return {
         "now": _iso(now),
-        "health": _health(session, session_factory, now),
-        "kill_switch": _kill_switch(session),
-        "funnel": _funnel(session, now),
-        "match_report": _match_report(session, now),
-        "signals": _primary_signals(session, now),
-        "unmatched_markets": _unmatched_markets(session, now),
-        "websocket": _websocket(session, now),
-        "data_quality": _data_quality(session, now),
+        "health": _section(session, "health", lambda: _health(session, session_factory, now)),
+        "kill_switch": _section(session, "kill_switch", lambda: _kill_switch(session)),
+        "funnel": _section(session, "funnel", lambda: _funnel(session, now)),
+        "match_report": _section(session, "match_report", lambda: _match_report(session, now)),
+        "signals": _section(session, "signals", lambda: _primary_signals(session, now)),
+        "unmatched_markets": _section(session, "unmatched_markets", lambda: _unmatched_markets(session, now)),
+        "websocket": _section(session, "websocket", lambda: _websocket(session, now)),
+        "data_quality": _section(session, "data_quality", lambda: _data_quality(session, now)),
     }
 
 

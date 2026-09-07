@@ -179,3 +179,27 @@ def test_healthz_keys_unchanged(db_session, env_settings, tmp_path):
     body = r.json()
     assert set(body.keys()) == {"status", "last_run_at", "last_status", "seconds_since", "credits_remaining"}
     assert body["status"] == "ok" and body["last_status"] == "ok" and body["credits_remaining"] == 4000
+
+
+def test_a_failing_section_does_not_take_the_page_down(monkeypatch, db_session, env_settings, tmp_path):
+    from sqlalchemy.exc import OperationalError
+
+    import harness.dashboard.app as dash
+
+    _seed_full(db_session, env_settings)
+
+    def boom(session, now):
+        raise OperationalError("select 1", {}, Exception("canceling statement due to statement timeout"))
+
+    monkeypatch.setattr(dash, "_websocket", boom)
+    monkeypatch.setattr(dash, "_data_quality", boom)
+    client = _client(db_session, _dashboard_settings(env_settings, tmp_path))
+
+    page = client.get("/")
+    assert page.status_code == 200
+    assert "unavailable: OperationalError" in page.text
+    summary = client.get("/api/summary").json()
+    assert summary["websocket"] == {"error": "OperationalError"}
+    assert summary["data_quality"] == {"error": "OperationalError"}
+    assert "error" not in summary["funnel"]
+    assert "tiny" in page.text  # the other sections still rendered after the rollback

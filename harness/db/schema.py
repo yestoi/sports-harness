@@ -46,6 +46,9 @@ def create_schema(engine: Engine) -> None:
         conn.execute(text("create index if not exists ix_raw_source_fetched on raw_responses (source, fetched_at)"))
         conn.execute(text("create index if not exists ix_raw_fetched_brin on raw_responses using brin (fetched_at)"))
         conn.execute(text("create index if not exists ix_raw_run on raw_responses (run_id)"))
+        # Append-only, time-ordered tables: BRIN makes "last hour" scans cheap without a big btree.
+        conn.execute(text("create index if not exists ix_obe_ts_brin on orderbook_events using brin (ts)"))
+        conn.execute(text("create index if not exists ix_trades_ts_brin on venue_trades using brin (ts)"))
         conn.execute(text(
             "create unique index if not exists uq_odds_snapshot_row on odds_snapshots "
             "(raw_id, book, market_type, coalesce(outcome_team_id, -1), coalesce(outcome_side, ''), coalesce(point, 0))"))
