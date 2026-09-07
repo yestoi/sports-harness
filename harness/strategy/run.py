@@ -24,6 +24,7 @@ LABEL_ORDER = [
     "has_fair",
     "source_allowed",
     "sport_allowed",
+    "match_confidence",
     "not_stale",
     "price_band",
     "ttk",
@@ -44,6 +45,9 @@ FILTER_LABELS = [label for label in LABEL_ORDER if label not in CAP_LABELS]
 # Same-side moneyline and spread on one game are a single position (spec §6.5); totals
 # are their own position, so they never take a dedupe key.
 SIDE_MARKETS = ("moneyline", "spread")
+
+# Spec 6.4 requires match confidence 1.0: an operator-confirmed match counts, a fuzzy one does not.
+CONFIDENT_MATCHES = ("matched", "manual")
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,7 @@ class GapRow:
     volume_24h: int | None
     open_interest: int | None
     venue_mid: Decimal | None
+    match_status: str = "matched"
 
 
 @dataclass
@@ -147,15 +152,16 @@ def _filters(row: GapRow, cfg: dict) -> dict[str, bool]:
 
     velocity = True
     if row.prev_fair_p is not None:
-        velocity = fair is not None and abs(fair - row.prev_fair_p) <= _dec(cfg["velocity_max_pts"])
+        velocity = fair is not None and abs(fair - row.prev_fair_p) < _dec(cfg["velocity_max_pts"])
 
     return {
         "has_fair": fair is not None,
         "source_allowed": row.fair_source in cfg["sources_allowed"],
         "sport_allowed": row.sport in cfg["sports"],
+        "match_confidence": row.match_status in CONFIDENT_MATCHES,
         "not_stale": row.staleness_s is not None and row.staleness_s <= cfg["stale_s"],
         "price_band": reference is not None and band_lo <= reference <= band_hi,
-        "ttk": row.ttk_minutes is not None and row.ttk_minutes >= cfg["min_ttk_min"],
+        "ttk": row.ttk_minutes is not None and row.ttk_minutes > cfg["min_ttk_min"],
         "spread": (
             max_spread is not None
             and row.best_bid is not None
@@ -283,7 +289,7 @@ def run_strategy(
                 state.game_exposure[draft.row.game_id] = state.game_exposure.get(draft.row.game_id, ZERO) + stake
             key = _dedupe_key(draft.row)
             if key is not None and draft.edge is not None:
-                state.positions[key] = draft.edge
+                state.positions[key] = max(draft.edge, state.positions.get(key, draft.edge))
 
         row = draft.row
         signals[i] = SignalRow(

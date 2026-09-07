@@ -368,3 +368,78 @@ def test_degenerate_inputs_do_not_raise(bad):
 def test_gap_row_is_a_plain_dataclass():
     row = gap_row()
     assert replace(row, venue_market_id=9).venue_market_id == 9
+
+
+# --- review round 1 ---------------------------------------------------------
+
+def test_label_order_has_seventeen_labels_with_match_confidence_after_the_sport():
+    assert len(LABEL_ORDER) == 17
+    assert LABEL_ORDER[LABEL_ORDER.index("sport_allowed") + 1] == "match_confidence"
+
+
+def test_a_fuzzy_match_is_rejected_but_a_manual_one_is_taken():
+    (fuzzy,) = run_strategy([gap_row(match_status="fuzzy")], variant("sharp_direct"), NOW)
+    assert fuzzy.labels["match_confidence"] is False
+    assert fuzzy.rejection_reason == "match_confidence"
+    assert fuzzy.decision == "rejected"
+
+    (manual,) = run_strategy([gap_row(match_status="manual")], variant("sharp_direct"), NOW)
+    assert manual.labels["match_confidence"] is True
+    assert manual.decision == "candidate"
+
+
+def test_the_ttk_and_velocity_thresholds_are_strict():
+    v = variant("sharp_direct")
+    # spec 6.4 reads "kickoff > 20 min" and "|d fair| < 2 pts", so the boundary fails
+    (exact_ttk,) = run_strategy([gap_row(ttk_minutes=v.config["min_ttk_min"])], v, NOW)
+    assert exact_ttk.labels["ttk"] is False
+    assert exact_ttk.rejection_reason == "ttk"
+    (over_ttk,) = run_strategy([gap_row(ttk_minutes=v.config["min_ttk_min"] + 1)], v, NOW)
+    assert over_ttk.labels["ttk"] is True
+
+    exact_move = Decimal("0.5500") - Decimal(str(v.config["velocity_max_pts"]))
+    (exact_velocity,) = run_strategy([gap_row(prev_fair_p=exact_move, prev_fair_ts=NOW)], v, NOW)
+    assert exact_velocity.labels["velocity"] is False
+    assert exact_velocity.rejection_reason == "velocity"
+
+
+def test_a_non_positive_kelly_fraction_sizes_to_nothing():
+    row = gap_row(fair_p=Decimal("0.0200"), venue_mid=Decimal("0.2100"),
+                  best_bid=Decimal("0.2000"), best_ask=Decimal("0.2200"))
+    (sig,) = run_strategy([row], variant("sharp_direct"), NOW)
+    assert sig.stake == Decimal("0.00")
+    assert sig.contracts == 0
+    assert sig.labels["min_contracts"] is False
+    assert sig.decision == "rejected"
+
+
+def test_the_per_bet_cap_clamps_a_large_kelly_stake():
+    v = variant("sharp_direct")
+    row = gap_row(fair_p=Decimal("0.7900"), venue_mid=Decimal("0.7900"),
+                  best_bid=Decimal("0.7800"), best_ask=Decimal("0.8000"))
+    (sig,) = run_strategy([row], v, NOW)
+    cap = Decimal(str(v.config["per_bet_cap"])) * Decimal(str(v.config["bankroll"]))
+    uncapped = expected_pricing(Decimal("0.7900"), Decimal("0.0100"), dict(v.config, per_bet_cap=1))
+    assert uncapped["stake"] > cap
+    assert sig.stake == cap.quantize(CENT)
+    assert sig.labels["cap_per_bet"] is True
+    assert sig.decision == "candidate"
+
+
+def test_the_same_side_position_keeps_the_highest_edge_seen():
+    state = StrategyState()
+    high = gap_row(venue_market_id=1, gap_snapshot_id=1, fair_p=Decimal("0.5990"),
+                   best_bid=Decimal("0.5000"), best_ask=Decimal("0.5600"),
+                   venue_mid=Decimal("0.5300"))
+    low = gap_row(venue_market_id=2, gap_snapshot_id=2, fair_p=Decimal("0.5500"))
+    signals = run_strategy([high, low], variant("sharp_direct"), NOW, state=state)
+    # apply_caps is off, so both are candidates and both write to the position
+    assert all(s.decision == "candidate" for s in signals)
+    assert state.positions[(7, 42)] == Decimal("0.0546")
+
+    later = StrategyState(positions={(7, 42): Decimal("0.0546")})
+    middling = gap_row(venue_market_id=3, gap_snapshot_id=3, fair_p=Decimal("0.5550"))
+    (sig,) = run_strategy([middling], variant("constrained"), NOW, state=later)
+    assert sig.edge == Decimal("0.0506")
+    assert sig.labels["cap_per_game"] is False
+    assert sig.rejection_reason == "cap_per_game"

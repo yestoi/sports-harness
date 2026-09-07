@@ -47,6 +47,13 @@ TIERS = ("primary", "secondary", "replay")
 MAX_PRIMARY = 1
 MAX_SECONDARY = 5
 
+#: `strategy_variants.name` is String(64) and unique, so a retired row is renamed to
+#: `<name truncated>#<variant_id>`; a live name may never contain the separator.
+NAME_MAX = 64
+RETIRED_SEPARATOR = "#"
+VARIANT_ID_LEN = 12
+NAME_STEM_MAX = NAME_MAX - len(RETIRED_SEPARATOR) - VARIANT_ID_LEN
+
 
 @dataclass(frozen=True)
 class Variant:
@@ -80,8 +87,13 @@ def _validate(config: object, source: str) -> dict:
         raise ValueError(f"{source}: unknown variant keys {sorted(unknown)}")
     if config["tier"] not in TIERS:
         raise ValueError(f"{source}: tier must be one of {TIERS}, got {config['tier']!r}")
-    if not isinstance(config["name"], str) or not config["name"]:
+    name = config["name"]
+    if not isinstance(name, str) or not name:
         raise ValueError(f"{source}: name must be a non-empty string")
+    if len(name) > NAME_MAX:
+        raise ValueError(f"{source}: name must be at most {NAME_MAX} characters, got {len(name)}")
+    if RETIRED_SEPARATOR in name:
+        raise ValueError(f"{source}: name must not contain {RETIRED_SEPARATOR!r}; it marks a retired row")
     return config
 
 
@@ -116,16 +128,21 @@ def load_variants(dir: Path) -> list[Variant]:
 
 
 def _retired_name(name: str, variant_id: str) -> str:
-    """`strategy_variants.name` is unique, so a superseded row has to give the name up."""
-    return f"{name}#{variant_id}"[:64]
+    """`strategy_variants.name` is unique, so a superseded row has to give the name up.
+
+    The stem is truncated rather than the whole string, so the `variant_id` -- the part that
+    makes the retired name unique -- always survives.
+    """
+    return f"{name[:NAME_STEM_MAX]}{RETIRED_SEPARATOR}{variant_id}"
 
 
 def register_variants(session: Session, variants: list[Variant], now: datetime) -> RegisterResult:
     """Make `variants` the active registry rows, recording every config ever seen.
 
     A name whose config changed keeps its old row (renamed and `active=False`) so historic
-    signals still resolve; the new config gets a fresh row. Registry rows for names that
-    are not in `variants` are left alone.
+    signals still resolve; the new config gets a fresh row. An active row whose name is no
+    longer supplied is deactivated too, so deleting a YAML takes the variant out of the
+    live set instead of leaving the pipeline scoring it forever.
     """
     added = unchanged = deactivated = 0
 
@@ -165,6 +182,15 @@ def register_variants(session: Session, variants: list[Variant], now: datetime) 
             .values(config_hash=variant.variant_id, config_json=variant.config, first_seen=now)
             .on_conflict_do_nothing(index_elements=["config_hash"])
         )
+
+    supplied = {v.name for v in variants}
+    dropped = session.execute(
+        select(StrategyVariant).where(StrategyVariant.active.is_(True))
+    ).scalars().all()
+    for row in dropped:
+        if row.name not in supplied:
+            row.active = False
+            deactivated += 1
 
     session.commit()
     return RegisterResult(added=added, unchanged=unchanged, deactivated=deactivated)

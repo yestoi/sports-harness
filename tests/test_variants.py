@@ -179,3 +179,62 @@ def test_reverting_to_an_earlier_config_reactivates_that_row(db_session, tmp_pat
     live = active_variants(db_session)
     assert [v.variant_id for v in live] == [original[0].variant_id]
     assert db_session.query(StrategyVariant).count() == 2
+
+
+# --- review round 1 ---------------------------------------------------------
+
+def test_register_variants_deactivates_a_name_that_is_no_longer_supplied(db_session, tmp_path):
+    _write(tmp_path, "keep", dict(_tiny_config(), name="keep", tier="primary"))
+    _write(tmp_path, "drop", dict(_tiny_config(), name="drop", tier="secondary"))
+    register_variants(db_session, load_variants(tmp_path), NOW)
+    assert len(active_variants(db_session)) == 2
+
+    (tmp_path / "drop.yaml").unlink()
+    result = register_variants(db_session, load_variants(tmp_path), NOW)
+    assert (result.added, result.unchanged, result.deactivated) == (0, 1, 1)
+
+    live = active_variants(db_session)
+    assert [v.name for v in live] == ["keep"]
+    dropped = db_session.query(StrategyVariant).filter_by(name="drop").one()
+    assert dropped.active is False
+
+
+def test_a_dropped_variant_is_deactivated_only_once(db_session, tmp_path):
+    _write(tmp_path, "keep", dict(_tiny_config(), name="keep", tier="primary"))
+    _write(tmp_path, "drop", dict(_tiny_config(), name="drop", tier="secondary"))
+    register_variants(db_session, load_variants(tmp_path), NOW)
+    (tmp_path / "drop.yaml").unlink()
+    register_variants(db_session, load_variants(tmp_path), NOW)
+    again = register_variants(db_session, load_variants(tmp_path), NOW)
+    assert again.deactivated == 0
+
+
+def test_a_name_at_the_column_limit_retires_without_a_collision(db_session, tmp_path):
+    long_name = "n" * 64
+    config = dict(_tiny_config(), name=long_name)
+    _write(tmp_path, "long", config)
+    old = load_variants(tmp_path)
+    register_variants(db_session, old, NOW)
+
+    _write(tmp_path, "long", dict(config, edge_floor=0.03))
+    new = load_variants(tmp_path)
+    register_variants(db_session, new, NOW)
+
+    rows = {r.variant_id: r for r in db_session.query(StrategyVariant).all()}
+    assert rows[new[0].variant_id].name == long_name
+    retired = rows[old[0].variant_id].name
+    assert len(retired) == 64
+    assert retired == f"{'n' * 51}#{old[0].variant_id}"
+    assert retired != long_name
+
+
+def test_load_variants_rejects_an_over_long_name(tmp_path):
+    _write(tmp_path, "a", dict(_tiny_config(), name="n" * 65))
+    with pytest.raises(ValueError, match="64"):
+        load_variants(tmp_path)
+
+
+def test_load_variants_rejects_a_hash_in_the_name(tmp_path):
+    _write(tmp_path, "a", dict(_tiny_config(), name="retired#deadbeef"))
+    with pytest.raises(ValueError, match="#"):
+        load_variants(tmp_path)
