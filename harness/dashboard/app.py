@@ -67,8 +67,8 @@ def _kill_switch(session: Session) -> dict:
     return {"active": row.active, "reason": row.reason, "set_at": _iso(row.set_at)}
 
 
-def _health(session: Session, session_factory: sessionmaker, now: datetime) -> dict:
-    body, _ = compute_health(session_factory, now)
+def _health(session: Session, session_factory: sessionmaker, now: datetime, credits_budget: int) -> dict:
+    body, _ = compute_health(session_factory, now, credits_budget)
     last_run_id = session.execute(select(Run.id).order_by(desc(Run.started_at)).limit(1)).scalar_one_or_none()
     return {**body, "run_id": last_run_id}
 
@@ -277,14 +277,14 @@ def _section(session: Session, name: str, fn: Callable[[], dict]) -> dict:
         return {"error": type(e).__name__}
 
 
-def build_summary(session: Session, session_factory: sessionmaker, now: datetime,
+def build_summary(session: Session, session_factory: sessionmaker, now: datetime, credits_budget: int,
                    build: dict | None = None) -> dict:
     if build is None:
         build = {"sha": "dev", "time": None}
     return {
         "now": _iso(now),
         "build": build,
-        "health": _section(session, "health", lambda: _health(session, session_factory, now)),
+        "health": _section(session, "health", lambda: _health(session, session_factory, now, credits_budget)),
         "kill_switch": _section(session, "kill_switch", lambda: _kill_switch(session)),
         "funnel": _section(session, "funnel", lambda: _funnel(session, now)),
         "match_report": _section(session, "match_report", lambda: _match_report(session, now)),
@@ -303,7 +303,7 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
 
     @app.get("/healthz")
     def healthz(response: Response) -> dict:
-        body, code = compute_health(session_factory, clock())
+        body, code = compute_health(session_factory, clock(), settings.odds_monthly_credits)
         response.status_code = code
         return {**body, "build": settings.build_sha}
 
@@ -311,13 +311,13 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
     def api_summary() -> dict:
         now = clock()
         with session_factory() as s:
-            return build_summary(s, session_factory, now, build=build)
+            return build_summary(s, session_factory, now, settings.odds_monthly_credits, build=build)
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         now = clock()
         with session_factory() as s:
-            summary = build_summary(s, session_factory, now, build=build)
+            summary = build_summary(s, session_factory, now, settings.odds_monthly_credits, build=build)
         return templates.TemplateResponse(request, "index.html", {"summary": summary})
 
     @app.post("/kill")

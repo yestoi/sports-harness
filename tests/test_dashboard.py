@@ -210,7 +210,9 @@ def test_healthz_keys_unchanged(db_session, env_settings, tmp_path):
     r = client.get("/healthz")
     assert r.status_code == 200
     body = r.json()
-    assert set(body.keys()) == {"status", "last_run_at", "last_status", "seconds_since", "credits_remaining", "build"}
+    # U1 (2026-09-07): compute_health now also reports credits_budget and credits_low.
+    assert set(body.keys()) == {"status", "last_run_at", "last_status", "seconds_since", "credits_remaining",
+                                 "credits_budget", "credits_low", "build"}
     assert body["status"] == "ok" and body["last_status"] == "ok" and body["credits_remaining"] == 4000
     assert body["build"] == "dev"
 

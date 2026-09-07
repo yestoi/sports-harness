@@ -52,11 +52,41 @@ def test_is_due():
 
 
 def test_alternates_due():
+    # U1 (2026-09-07): the old 3-hour split is gone, so "near" and "far" (both inside 36h)
+    # share the same default interval and are equally due after 130s.
     now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
     events = [("near", now + timedelta(hours=2)), ("far", now + timedelta(hours=20)), ("toofar", now + timedelta(hours=48))]
     last = {"near": now - timedelta(seconds=130), "far": now - timedelta(seconds=130)}
-    assert alternates_due(now, events, last) == ["near"]
+    assert alternates_due(now, events, last) == ["near", "far"]
     assert alternates_due(now, events, {}) == ["near", "far"]
+
+
+def test_alternates_due_interval_is_configurable():
+    # U1 (2026-09-07): a 30h-out event is due 120s after its last fetch with the default
+    # interval, and only after 900s when interval_s=900 is passed explicitly.
+    now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
+    far = ("far", now + timedelta(hours=30))
+    assert alternates_due(now, [far], {"far": now - timedelta(seconds=119)}) == []
+    assert alternates_due(now, [far], {"far": now - timedelta(seconds=120)}) == ["far"]
+    assert alternates_due(now, [far], {"far": now - timedelta(seconds=899)}, interval_s=900) == []
+    assert alternates_due(now, [far], {"far": now - timedelta(seconds=900)}, interval_s=900) == ["far"]
+
+
+def test_alternates_due_40h_out_is_never_due():
+    now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
+    toofar = ("toofar", now + timedelta(hours=40))
+    assert alternates_due(now, [toofar], {}) == []
+    assert alternates_due(now, [toofar], {}, interval_s=900) == []
+
+
+def test_alternates_due_near_kickoff_uses_the_same_interval_as_far_events():
+    # The 3-hour split disappears: a 2h-out event is due after 120s under the function's
+    # own default and under an explicit interval_s=120 (the value tick.py always passes).
+    now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
+    near = ("near", now + timedelta(hours=2))
+    last = {"near": now - timedelta(seconds=120)}
+    assert alternates_due(now, [near], last) == ["near"]
+    assert alternates_due(now, [near], last, interval_s=120) == ["near"]
 
 
 def _ms(ticker, ev_date, bid, ask, vol):

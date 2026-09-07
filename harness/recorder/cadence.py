@@ -41,14 +41,16 @@ def is_due(last: datetime | None, now: datetime, interval: int | None) -> bool:
     return (now - last).total_seconds() >= interval
 
 
-def alternates_due(now: datetime, events: list[tuple[str, datetime]], last_alt: dict[str, datetime]) -> list[str]:
+def alternates_due(now: datetime, events: list[tuple[str, datetime]], last_alt: dict[str, datetime],
+                    interval_s: int = 120) -> list[str]:
+    # U1 (2026-09-07): every event inside 36h of kickoff shares one configurable interval;
+    # the old 120s-inside-3h / 900s-otherwise split is gone.
     out: list[str] = []
     for event_id, commence in events:
         until = commence - now
         if until < timedelta(0) or until > timedelta(hours=36):
             continue
-        interval = 120 if until <= timedelta(hours=3) else 900
-        if is_due(last_alt.get(event_id), now, interval):
+        if is_due(last_alt.get(event_id), now, interval_s):
             out.append(event_id)
     return out
 

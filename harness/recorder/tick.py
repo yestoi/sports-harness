@@ -133,7 +133,7 @@ class Recorder:
                 events = parse_event_ids_and_times(body)
                 last_alt = {eid: ts for eid, _ in events
                             if (ts := store.get_source_state(session, f"odds_alt:{eid}")) is not None}
-                for eid in alternates_due(now, events, last_alt):
+                for eid in alternates_due(now, events, last_alt, self.s.odds_alternates_interval_s):
                     if budget.remaining_s() < alt_floor:
                         ctx["skipped_alternates"] += 1
                         continue

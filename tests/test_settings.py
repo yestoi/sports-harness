@@ -13,6 +13,8 @@ def test_settings_reads_key_from_file(tmp_path: Path, monkeypatch):
     assert s.tick_budget_s == 100
     assert s.odds_api_bookmakers.startswith("pinnacle")
     assert s.kalshi_base_url == "https://api.elections.kalshi.com/trade-api/v2"
+    assert s.odds_monthly_credits == 5_000_000  # U1 2026-09-07
+    assert s.odds_alternates_interval_s == 120  # U1 2026-09-07
 
 
 def test_settings_build_stamp_from_env(monkeypatch):

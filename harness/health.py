@@ -5,36 +5,47 @@ from fastapi import FastAPI, Response
 from sqlalchemy import desc
 from sqlalchemy.orm import sessionmaker
 
+from harness.config.settings import Settings
 from harness.db.models import Run
 
 STALE_AFTER_S = 20 * 60
+CREDITS_LOW_FRACTION = 0.2  # U1 2026-09-07: 80% budget alarm, i.e. low below 20% remaining
 
 
-def compute_health(session_factory: sessionmaker, now: datetime) -> tuple[dict, int]:
+def compute_health(session_factory: sessionmaker, now: datetime, credits_budget: int) -> tuple[dict, int]:
     """Shared by the `/healthz` route and the dashboard's Health section.
 
     Returns (body, status_code) so callers that need the HTTP status (e.g. the dashboard's
     own `/healthz`) and callers that only want the JSON body (the dashboard page) can each
     take what they need without recomputing the staleness/error logic themselves.
+
+    `credits_budget` (U1 2026-09-07) is the Odds API monthly-credit tier; callers pass it
+    (a `Settings` object's `odds_monthly_credits` is not accepted directly here so this stays
+    testable with a bare int) since this module has no settings object of its own.
     """
     with session_factory() as s:
         last = s.query(Run).order_by(desc(Run.started_at)).first()
     if last is None:
         return ({"status": "error", "last_run_at": None, "last_status": None, "seconds_since": None,
-                 "credits_remaining": None}, 503)
+                 "credits_remaining": None, "credits_budget": credits_budget, "credits_low": False}, 503)
     since = (now - last.started_at).total_seconds()
     status = "stale" if since > STALE_AFTER_S else ("error" if last.status == "error" else "ok")
     code = 200 if status == "ok" else 503
+    credits_remaining = last.odds_remaining
+    credits_low = credits_remaining is not None and credits_remaining < CREDITS_LOW_FRACTION * credits_budget
     return ({"status": status, "last_run_at": last.started_at.isoformat(), "last_status": last.status,
-             "seconds_since": int(since), "credits_remaining": last.odds_remaining}, code)
+             "seconds_since": int(since), "credits_remaining": credits_remaining,
+             "credits_budget": credits_budget, "credits_low": credits_low}, code)
 
 
 def create_app(session_factory: sessionmaker, clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> FastAPI:
     app = FastAPI(title="harness")
+    # U1 2026-09-07: no Settings object is threaded in here, so fall back to reading one.
+    credits_budget = Settings().odds_monthly_credits
 
     @app.get("/healthz")
     def healthz(response: Response) -> dict:
-        body, code = compute_health(session_factory, clock())
+        body, code = compute_health(session_factory, clock(), credits_budget)
         response.status_code = code
         return body
 

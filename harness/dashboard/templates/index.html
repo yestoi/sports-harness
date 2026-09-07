@@ -46,7 +46,8 @@
       </div></div>
     <div class="stat"><div class="label">Last run status</div><div class="value">{{ summary.health.last_status }}</div></div>
     <div class="stat"><div class="label">Seconds since</div><div class="value">{{ summary.health.seconds_since }}</div></div>
-    <div class="stat"><div class="label">Credits remaining</div><div class="value">{{ summary.health.credits_remaining }}</div></div>
+    <div class="stat"><div class="label">Credits remaining</div><div class="value">{{ summary.health.credits_remaining }}
+      {% if summary.health.credits_low %}<span class="badge bad">low</span>{% endif %}</div></div>
     <div class="stat"><div class="label">Kill switch</div>
       <div class="value">
         {% if summary.kill_switch.active %}

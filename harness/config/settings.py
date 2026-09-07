@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     dashboard_token_file: Path = Path("/run/secrets/dashboard_token")
     build_sha: str = "dev"
     build_time: str | None = None
+    odds_monthly_credits: int = 5_000_000  # U1 2026-09-07: Odds API tier upgrade (was 100_000)
+    odds_alternates_interval_s: int = 120  # U1 2026-09-07: alternates cadence inside 36h of kickoff (was 900)
 
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()
