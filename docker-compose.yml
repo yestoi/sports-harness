@@ -7,6 +7,30 @@ services:
       POSTGRES_DB: harness
     volumes:
       - ./pgdata:/var/lib/postgresql/data
+    # Tuned for the NAS (7 GB RAM shared with the media stack, 8 cores) ingesting up to 4M
+    # orderbook rows/hour; image defaults were checkpointing too rarely, forcing backend-driven
+    # dirty page flushes. Roadmap carried fix 9 (finding F19 tuning / R17).
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - autovacuum_vacuum_cost_limit=1000
+      - -c
+      - random_page_cost=1.1
+    shm_size: 512m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U harness -d harness"]
       interval: 10s
