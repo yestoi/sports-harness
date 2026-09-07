@@ -40,7 +40,7 @@ def latest_book_lines(session: Session, game_id: int, now: datetime, lookback_s:
     stmt = (
         select(OddsSnapshot)
         .distinct(*cols)
-        .where(OddsSnapshot.game_id == game_id, OddsSnapshot.fetched_at >= since)
+        .where(OddsSnapshot.game_id == game_id, OddsSnapshot.fetched_at >= since, OddsSnapshot.fetched_at <= now)
         .order_by(*cols, OddsSnapshot.fetched_at.desc())
     )
     result: dict[LineKey, Line] = {}

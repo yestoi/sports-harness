@@ -59,6 +59,37 @@ def test_tight_lookback_excludes_even_the_fresh_row(db_session):
     assert key not in lines
 
 
+def test_snapshot_fetched_after_now_is_excluded_even_within_lookback(db_session):
+    """A run priced with an old `now` (e.g. `harness price-once --run-id <old>`) must not see
+    books fetched after that run, even though they are within the lookback window looking
+    backward from wall-clock time."""
+    t0 = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    t0_plus_1h = t0 + timedelta(hours=1)
+    key = LineKey("lowvig", "h2h", HOME, None, None)
+
+    db_session.add_all([
+        OddsSnapshot(
+            raw_id=5001, run_id=1, book="lowvig", game_id=GAME_ID, market_type="h2h",
+            outcome_team_id=HOME, outcome_side=None, point=None,
+            price_decimal=Decimal("1.5000"), book_last_update=t0, fetched_at=t0,
+        ),
+        OddsSnapshot(
+            raw_id=5002, run_id=2, book="lowvig", game_id=GAME_ID, market_type="h2h",
+            outcome_team_id=HOME, outcome_side=None, point=None,
+            price_decimal=Decimal("1.9000"), book_last_update=t0_plus_1h, fetched_at=t0_plus_1h,
+        ),
+    ])
+    db_session.flush()
+
+    now = t0 + timedelta(minutes=30)
+    lines = latest_book_lines(db_session, GAME_ID, now, lookback_s=3600)
+
+    # both rows are within [now - lookback_s, now) looking backward from wall clock, but the
+    # t0+1h row is *after* `now` and must never be selected.
+    assert lines[key].price == Decimal("1.5000")
+    assert lines[key].fetched_at == t0
+
+
 def test_spread_pair_at_main_and_alternate_thresholds(db_session):
     _insert_fixture(db_session)
     lines = latest_book_lines(db_session, GAME_ID, NOW, lookback_s=1200)

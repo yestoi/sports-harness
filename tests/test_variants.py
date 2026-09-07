@@ -258,7 +258,12 @@ def test_registering_a_replay_variant_without_pruning_leaves_the_live_set_alone(
     _register_live_set(db_session, tmp_path)
     result = register_variants(db_session, [_replay_variant()], NOW, prune=False)
     assert (result.added, result.deactivated) == (1, 0)
-    assert sorted(v.name for v in active_variants(db_session)) == ["primary", "replay_wide", "secondary"]
+    # the replay-tier row is registered (active in the table) but never joins the live set
+    # that active_variants returns to the pipeline.
+    assert sorted(v.name for v in active_variants(db_session)) == ["primary", "secondary"]
+    replay_row = db_session.query(StrategyVariant).filter_by(name="replay_wide").one()
+    assert replay_row.active is True
+    assert replay_row.tier == "replay"
 
 
 def test_pruning_never_touches_a_replay_tier_row(db_session, tmp_path):
@@ -270,8 +275,9 @@ def test_pruning_never_touches_a_replay_tier_row(db_session, tmp_path):
     assert result.deactivated == 1
 
     live = {v.name for v in active_variants(db_session)}
-    assert live == {"primary", "replay_wide"}
+    assert live == {"primary"}
     assert db_session.query(StrategyVariant).filter_by(name="secondary").one().active is False
+    assert db_session.query(StrategyVariant).filter_by(name="replay_wide").one().active is True
 
 
 def test_pruning_is_on_by_default(db_session, tmp_path):

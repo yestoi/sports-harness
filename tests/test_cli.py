@@ -1,0 +1,95 @@
+import os
+from datetime import datetime, timezone
+
+import pytest
+from typer.testing import CliRunner
+
+from harness.cli import app
+from harness.config.settings import get_settings
+from harness.db.models import Run
+
+runner = CliRunner()
+
+
+@pytest.fixture
+def cli_settings(monkeypatch, db_session):
+    """Point `harness.cli`'s own engine at the same Postgres database `db_session` uses.
+
+    `price_once` builds its own engine/session from `get_settings()` rather than the test's
+    `db_session`, so committed rows are shared through the real database, not the ORM session.
+    """
+    url = os.environ.get("DATABASE_URL_TEST")
+    if not url:
+        pytest.skip("DATABASE_URL_TEST not set")
+    monkeypatch.setenv("DATABASE_URL", url)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def test_price_once_with_run_id_uses_that_runs_started_at_not_wall_clock(monkeypatch, cli_settings, db_session):
+    started_at = datetime(2026, 9, 1, 13, 0, tzinfo=timezone.utc)
+    run = Run(started_at=started_at, status="running")
+    db_session.add(run)
+    db_session.commit()
+
+    captured = {}
+
+    def fake_price_and_signal(session, run_id, now, settings, budget_s):
+        captured["now"] = now
+        captured["run_id"] = run_id
+        return {"fake": True}
+
+    # cli.py does `from harness.strategy.pipeline import price_and_signal` inside the command
+    # body, so the lookup happens against the pipeline module's namespace on every call.
+    monkeypatch.setattr("harness.strategy.pipeline.price_and_signal", fake_price_and_signal)
+
+    result = runner.invoke(app, ["price-once", "--run-id", str(run.id)])
+
+    assert result.exit_code == 0, result.output
+    assert captured["run_id"] == run.id
+    assert captured["now"] == started_at
+
+
+def test_price_once_with_unknown_run_id_errors_without_pricing(monkeypatch, cli_settings):
+    called = {"n": 0}
+
+    def fake_price_and_signal(*args, **kwargs):
+        called["n"] += 1
+        return {}
+
+    monkeypatch.setattr("harness.strategy.pipeline.price_and_signal", fake_price_and_signal)
+
+    result = runner.invoke(app, ["price-once", "--run-id", "999999999"])
+
+    assert result.exit_code == 1
+    assert called["n"] == 0
+
+
+def test_price_once_without_run_id_uses_wall_clock_for_the_latest_run(monkeypatch, cli_settings, db_session):
+    older = Run(started_at=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc), status="ok")
+    latest = Run(started_at=datetime(2026, 9, 1, 13, 0, tzinfo=timezone.utc), status="running")
+    db_session.add_all([older, latest])
+    db_session.commit()
+
+    captured = {}
+    fixed_wall_clock = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_wall_clock
+
+    def fake_price_and_signal(session, run_id, now, settings, budget_s):
+        captured["now"] = now
+        captured["run_id"] = run_id
+        return {}
+
+    monkeypatch.setattr("harness.strategy.pipeline.price_and_signal", fake_price_and_signal)
+    monkeypatch.setattr("harness.cli.datetime", FixedDatetime)
+
+    result = runner.invoke(app, ["price-once"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["run_id"] == latest.id
+    assert captured["now"] == fixed_wall_clock

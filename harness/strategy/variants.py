@@ -211,8 +211,16 @@ def register_variants(
 
 
 def active_variants(session: Session) -> list[Variant]:
+    """The live set the pipeline scores every tick: active `primary`/`secondary` rows only.
+
+    `replay` rows are active (so `harness replay --file` can reuse them across a range) but
+    are never part of the live set; `LIVE_TIERS` is the same tier list pruning is limited to.
+    """
     rows = session.execute(
-        select(StrategyVariant).where(StrategyVariant.active.is_(True)).order_by(StrategyVariant.name)
+        select(StrategyVariant)
+        .where(StrategyVariant.active.is_(True))
+        .where(StrategyVariant.tier.in_(LIVE_TIERS))
+        .order_by(StrategyVariant.name)
     ).scalars().all()
     return [
         Variant(name=r.name, tier=r.tier, config=r.config_json, variant_id=r.variant_id)
