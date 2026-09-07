@@ -91,3 +91,29 @@ def test_shipped_manual_aliases_cover_kalshi_nfl_title_conventions(db_session):
     load_manual_aliases(db_session, shipped)
     for raw_name, team_id in (("New York J", 20), ("New York G", 19), ("JAC Jaguars", 30), ("WAS Commanders", 28)):
         assert resolve_team(db_session, "nfl", raw_name) == (team_id, "manual:kalshi_name"), raw_name
+
+
+def test_shipped_manual_aliases_cover_2026_09_07_match_report(db_session):
+    # Monday alias pass (2026-09-07): unresolved names from the production match-report,
+    # each backed by a confirmed ESPN team row.
+    shipped = Path(__file__).parent.parent / "harness" / "matching" / "aliases_manual.yaml"
+    load_manual_aliases(db_session, shipped)
+    kalshi_name = (
+        ("Central Connecticut St.", 2115),
+        ("Grambling St.", 2755),
+        ("Southern University", 2582),
+        ("University at Albany", 399),
+        ("Southeastern Louisiana", 2545),
+        ("Tennessee-Martin", 2630),
+        ("Nicholls St.", 2447),
+        ("LIU", 2341),
+    )
+    for raw_name, team_id in kalshi_name:
+        assert resolve_team(db_session, "ncaaf", raw_name) == (team_id, "manual:kalshi_name"), raw_name
+    odds_api = (
+        ("Grambling State Tigers", 2755),
+        ("Southern University Jaguars", 2582),
+        ("UMass Minutemen", 113),
+    )
+    for raw_name, team_id in odds_api:
+        assert resolve_team(db_session, "ncaaf", raw_name) == (team_id, "manual:odds_api"), raw_name

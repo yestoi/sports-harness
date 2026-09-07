@@ -16,8 +16,19 @@ ncaaf:
     "Appalachian St.": 2026            # ESPN: App State Mountaineers
     "Louisiana-Monroe": 2433           # ESPN: UL Monroe Warhawks
     "Miami (FL)": 2390                 # ESPN: Miami Hurricanes (distinct from Miami (OH) RedHawks, id 193)
+    "Central Connecticut St.": 2115    # ESPN: Central Connecticut Blue Devils
+    "Grambling St.": 2755              # ESPN: Grambling Tigers
+    "Southern University": 2582        # ESPN: Southern Jaguars
+    "University at Albany": 399        # ESPN: UAlbany Great Danes
+    "Southeastern Louisiana": 2545     # ESPN: SE Louisiana Lions
+    "Tennessee-Martin": 2630           # ESPN: UT Martin Skyhawks
+    "Nicholls St.": 2447               # ESPN: Nicholls Colonels
+    "LIU": 2341                        # ESPN: Long Island University Sharks
   odds_api:
     "Appalachian State Mountaineers": 2026   # ESPN: App State Mountaineers
     "Hawaii Rainbow Warriors": 62                 # ESPN: Hawai'i Rainbow Warriors
     "Southern Mississippi Golden Eagles": 2572    # ESPN: Southern Miss Golden Eagles
     "Sam Houston State Bearkats": 2534            # ESPN: Sam Houston Bearkats
+    "Grambling State Tigers": 2755                # ESPN: Grambling Tigers
+    "Southern University Jaguars": 2582           # ESPN: Southern Jaguars
+    "UMass Minutemen": 113                        # ESPN: Massachusetts Minutemen
