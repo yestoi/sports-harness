@@ -107,8 +107,7 @@ hourly, User-Agent `sports-harness/1 (self-hosted research harness)`; (c) parlay
 §8.1 with `parlay.yaml`: weekly budget **$50** (user), smart card $25, lottery card $5, at
 most three lottery cards, legs from moneyline/spread/total at DraftKings prices already in
 the feed, LSU or Saints anchor, rationale from a template unless the Anthropic key exists;
-(d) shadow veto per §7.1, model `claude-opus-5` (the current API default; `claude-sonnet-5` only if the user chooses lower cost), strict JSON via a tool schema, 30-minute
-cache, tokens and cost into `research_notes`, veto-rate alert, dormant without the key;
+(d) shadow veto per §7.1 — **week 1 on `claude-opus-5`** at default effort with adaptive thinking, structured output (decision ∈ {proceed, reduce, veto}, confidence, reason, evidence ids), web search capped at three uses per call, the stable system prompt cached; a **paired `claude-sonnet-5` shadow** runs on the identical frozen prompt for every call and is recorded, never used. The harness precomputes the numeric features (line moves, disagreement, staleness, time to kickoff) and passes explicit timestamps; the prompt defaults to `proceed` and requires quoted evidence ids for any `reduce` or `veto`. `research_notes` stores, per call and per model: the frozen inputs, every retrieved snippet with URL and timestamp, tool calls, the output JSON, usage tokens, cost, latency, request id, and the joins to the candidate's later CLV and markouts. 30-minute cache, veto-rate alert, dormant without the key. The model swap is decided after week 1 by the study in the operator calendar, never by cost alone;
 (e) weekly report annotator, `claude-opus-5`, five bullets that cite table cells only,
 dormant without the key; (f) RFQ listener per §8.2 on the production key, paper quotes
 only, idles with a `venue_status` note on 403; (g) overview page: dashboard page 2,
@@ -148,6 +147,7 @@ is measured from that feed or reported "not collected".
 | Morning after every game day | verify unit (full contract) → hotfix loop |
 | Daily 09:00 | credits remaining, database size vs budget, executor heartbeat, error lines, kill-switch state → one journal line; anomalies → carried fixes |
 | Tuesday 09:30 (once phase 5a ships) | confirm the futures snapshot job ran |
+| Seven days after the veto goes live | veto model study on the frozen week-1 cases (stored inputs and snippets, no live search): Opus 5 at `medium` and `low`, Sonnet 5 at `high` and `medium`, three to five reps each; programmatic checks (valid JSON, every claim cites a stored snippet, veto rate in band, trap cases), a pairwise blind judge on `claude-fable-5-1` against the frozen Opus outputs, and the outcome table (CLV and 30-minute markout by decision, with CIs, reported not gated); present the score-versus-cost table and the disagreement cases for the user's spot-check; **the swap is the user's call** |
 | Mid-October (user) | go-live gate review with the legal decision — the loop prepares the gate report and the numbers, never the decision |
 
 ## User-side TODOs
