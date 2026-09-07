@@ -99,6 +99,12 @@ class WsSink:
         self._maybe_commit()
         return kind
 
+    def flush(self) -> None:
+        """Commit whatever the batch holds right now. The recorder calls this whenever the
+        socket drops, so a partial batch never sits in an open transaction across a reconnect
+        (its row locks would block the REST normalizer's unique-index probe on venue_trades)."""
+        self._maybe_commit(force=True)
+
     def close(self) -> None:
         self._maybe_commit(force=True)
         self._session.close()

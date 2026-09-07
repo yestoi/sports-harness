@@ -223,6 +223,15 @@ class WsRecorder:
                         ws.close()
                     except Exception:  # noqa: BLE001
                         log.debug("ws close failed", exc_info=True)
+                    # The sink batches, and only `handle` and `close` ever committed it. A
+                    # batch pending when the socket died would therefore stay in an open
+                    # transaction for the whole reconnect storm, holding row locks that block
+                    # the REST normalizer. Flush here, and never let it stop the reconnect.
+                    if self.sink is not None:
+                        try:
+                            self.sink.flush()
+                        except Exception:  # noqa: BLE001
+                            log.exception("ws sink flush failed")
             except Exception as e:  # noqa: BLE001
                 log.warning("ws loop error: %r; reconnecting in %.0fs", e, self._backoff)
                 time.sleep(self._backoff)

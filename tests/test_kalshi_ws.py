@@ -156,12 +156,16 @@ class _FakeSink:
         self._on_handle = on_handle
         self.closed = False
         self.reset_count = 0
+        self.flushes = 0
 
     def handle(self, msg, received_at):
         self._on_handle(msg, received_at)
 
     def reset_sequences(self):
         self.reset_count += 1
+
+    def flush(self):
+        self.flushes += 1
 
     def close(self):
         self.closed = True
@@ -294,3 +298,49 @@ def test_refresh_offset_keeps_previous_value_on_fetch_error():
     recorder._refresh_offset()  # must not raise
 
     assert recorder._offset_ms == 12345
+
+
+# --- hotfix A3: a dropped socket must not leave the sink's batch open ------------------
+
+class _ClosingWs(_FakeWs):
+    """Delivers its messages, then drops the connection the way a revoked key does."""
+
+    def recv(self):
+        if self._messages:
+            return self._messages.pop(0)
+        raise websocket.WebSocketConnectionClosedException("socket is already closed.")
+
+
+def test_run_forever_flushes_the_sink_when_the_socket_drops(db_session, monkeypatch):
+    """A3: `_maybe_commit` only ever ran from `handle` or from `close` at process exit, so a
+    batch pending when the socket died stayed in an open transaction for as long as the
+    reconnects kept failing. Its row locks then blocked the REST normalizer's unique-index
+    probe on `venue_trades` until the 30 s statement timeout cancelled it."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    # Big batch and a long interval, so only an explicit flush can commit this trade.
+    sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: [])
+
+    subscribed = json.dumps({"type": "subscribed", "msg": {"sid": 1}})
+    trade = json.dumps({"type": "trade", "sid": 1, "seq": 1, "msg": {
+        "trade_id": "t-drop", "market_ticker": "K1", "yes_price_dollars": "0.3600",
+        "count_fp": "12.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": 1789234000000}})
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=lambda url, header, timeout: _ClosingWs([subscribed, trade]),
+                          clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+
+    # `close()` at the very end of run_forever would commit regardless, so the count has to be
+    # taken while the recorder is between connections -- exactly where the row was stuck.
+    seen = {"count": None}
+
+    def fake_sleep(_s):
+        with factory() as other:
+            seen["count"] = other.query(VenueTrade).filter_by(trade_id="t-drop").count()
+        recorder.stop()
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    recorder.run_forever()
+
+    assert seen["count"] == 1
