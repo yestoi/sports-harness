@@ -31,9 +31,9 @@ def _schema():
     engine = make_engine(url)
     drop_schema(engine)
     create_schema(engine)
-    # Task 2b widens ensure_partitions to the three partitioned tables (raw_responses,
-    # orderbook_events, venue_trades); today it covers raw_responses only. The signature it
-    # grows is a keyword argument, so this call needs no change then.
+    # ensure_partitions covers all three partitioned tables (raw_responses, orderbook_events,
+    # venue_trades), so every db test can write to the tape without creating a partition first.
+    # It builds this week's and next week's, i.e. rows dated inside [Monday, Monday + 14d).
     with sessionmaker(bind=engine)() as session:
         ensure_partitions(session, datetime.now(timezone.utc))
     yield engine

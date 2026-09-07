@@ -8,7 +8,8 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 
 from harness.db.models import Base
-from harness.db.schema import create_schema, drop_schema, ensure_partitions, week_bounds
+from harness.db.schema import (PARTITIONED_TABLES, create_schema, drop_schema, ensure_partitions,
+                               week_bounds)
 
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
 
@@ -40,6 +41,46 @@ def test_ensure_partitions_creates_two_weeks(db_session):
         text("select inhrelid::regclass::text from pg_inherits where inhparent = 'raw_responses'::regclass")
     ).scalars().all()
     assert set(names) >= {"raw_responses_y2026w37", "raw_responses_y2026w38"}
+
+
+def test_ensure_partitions_creates_two_weeks_for_three_tables(db_session):
+    """Task 2b widens the weekly partitions to the two tape tables. Every partitioned table needs
+    this week's and next week's partition ahead of the writers, or an insert fails outright with
+    "no partition of relation ... found for row"."""
+    now = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
+    assert PARTITIONED_TABLES == ("raw_responses", "orderbook_events", "venue_trades")
+    expected = [f"{table}_y2026w{week}" for table in PARTITIONED_TABLES for week in ("37", "38")]
+    for name in expected:
+        db_session.execute(text(f"drop table if exists {name}"))
+    db_session.commit()
+
+    assert ensure_partitions(db_session, now) == expected
+    assert ensure_partitions(db_session, now) == []
+    for table in PARTITIONED_TABLES:
+        names = db_session.execute(text(
+            "select inhrelid::regclass::text from pg_inherits where inhparent = cast(:t as regclass)"),
+            {"t": table}).scalars().all()
+        assert {f"{table}_y2026w37", f"{table}_y2026w38"} <= set(names), (table, names)
+
+
+def test_create_schema_creates_the_obe_indexes_on_a_partitioned_table(db_session):
+    """The phase 3 book loader reads the newest snapshot per ticker (`ix_obe_snapshot`), applies
+    deltas by id (`ix_obe_ticker_id`) and looks for a later gap on the anchor's sid (`ix_obe_gap`);
+    the REST trade writer dedupes through `ix_trades_venue_trade_id`. Once the tape tables are
+    partitioned, create_schema builds all four -- a partitioned parent's CREATE INDEX is
+    metadata-only and cascades to the partitions."""
+    engine = db_session.get_bind()
+    wanted = {"ix_obe_snapshot", "ix_obe_ticker_id", "ix_obe_gap", "ix_trades_venue_trade_id"}
+    for name in sorted(wanted):
+        db_session.execute(text(f"drop index if exists {name}"))
+    db_session.commit()
+    assert not wanted & set(db_session.execute(text(
+        "select indexname from pg_indexes where schemaname='public'")).scalars())
+
+    create_schema(engine)
+
+    assert wanted <= set(db_session.execute(text(
+        "select indexname from pg_indexes where schemaname='public'")).scalars())
 
 
 def test_raw_insert_roundtrip(db_session):
@@ -329,8 +370,10 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     ddl = [(s, autocommit, txn) for s, autocommit, txn in seen
            if s.startswith(("alter table", "create index", "create unique index",
                             "create or replace view", "update venue_markets"))]
-    # 17 column ALTERs + 18 indexes + 3 views + 1 match_key backfill + 4 tape statements.
-    assert len(ddl) == 43, [s for s, _, _ in ddl]
+    # 17 column ALTERs + 18 indexes + 3 views + 1 match_key backfill + 4 tape statements + the
+    # 4 tape indexes Task 2b guards behind "partitioned, or still empty" (both tape tables are
+    # partitioned here, so all four run).
+    assert len(ddl) == 47, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.

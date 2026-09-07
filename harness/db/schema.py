@@ -24,6 +24,10 @@ LOCK_SQLSTATES = frozenset({"55P03", "57014", "40P01"})
 #: rest of init-db spends after that lock is taken, the smaller the window.
 TAPE_TABLES = ("orderbook_events", "venue_trades")
 
+#: Every table partitioned by range on a timestamp, in the order `ensure_partitions` walks them.
+#: `raw_responses` partitions on `fetched_at`, the two tape tables on `ts`.
+PARTITIONED_TABLES = ("raw_responses", "orderbook_events", "venue_trades")
+
 
 def week_bounds(now: datetime) -> tuple[datetime, datetime]:
     if now.tzinfo is None:
@@ -33,26 +37,48 @@ def week_bounds(now: datetime) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=7)
 
 
-def _partition_name(start: datetime) -> str:
+def _partition_name(table: str, start: datetime) -> str:
     iso = start.isocalendar()
-    return f"raw_responses_y{iso.year}w{iso.week:02d}"
+    return f"{table}_y{iso.year}w{iso.week:02d}"
 
 
-def ensure_partitions(session: Session, now: datetime) -> list[str]:
+def is_partitioned(executor, table: str) -> bool:
+    """Whether `table` is a partitioned parent. Takes a Session or a Connection."""
+    return executor.execute(text(
+        "select 1 from pg_partitioned_table p join pg_class c on c.oid = p.partrelid "
+        "where c.relname = :t"), {"t": table}).first() is not None
+
+
+def ensure_partitions(session: Session, now: datetime,
+                      tables: tuple[str, ...] = PARTITIONED_TABLES) -> list[str]:
+    """Create this week's and next week's `[week_start, week_end)` partition for each table.
+
+    Names that already exist are skipped, so the partial cutover-week partition the one-off
+    migration leaves behind (same name, a range starting mid-week) keeps its own bounds.
+
+    A table that is not a partitioned parent yet is skipped rather than raising. That is the state
+    of the tape tables between the deploy that ships this code and the one-off
+    `partition-bulk-tables` run, and the recorder's tick calls this every time it runs.
+    """
     created: list[str] = []
     start, _ = week_bounds(now)
-    for i in range(2):
-        s = start + timedelta(days=7 * i)
-        e = s + timedelta(days=7)
-        name = _partition_name(s)
-        exists = session.execute(text("select 1 from pg_class where relname = :n"), {"n": name}).first()
-        if exists:
+    for table in tables:
+        if not is_partitioned(session, table):
+            log.warning("%s is not partitioned yet, skipping its weekly partitions "
+                        "(run `harness partition-bulk-tables`)", table)
             continue
-        session.execute(text(
-            f"create table {name} partition of raw_responses "
-            f"for values from ('{s.isoformat()}') to ('{e.isoformat()}')"
-        ))
-        created.append(name)
+        for i in range(2):
+            s = start + timedelta(days=7 * i)
+            e = s + timedelta(days=7)
+            name = _partition_name(table, s)
+            exists = session.execute(text("select 1 from pg_class where relname = :n"), {"n": name}).first()
+            if exists:
+                continue
+            session.execute(text(
+                f"create table {name} partition of {table} "
+                f"for values from ('{s.isoformat()}') to ('{e.isoformat()}')"
+            ))
+            created.append(name)
     session.commit()
     return created
 
@@ -214,15 +240,63 @@ _BACKFILL_DDL = (
     "where match_key is null and game_id is not null",
 )
 
-#: Tape-table DDL, run last (see TAPE_TABLES). BRIN keeps "last hour" dashboard scans cheap on
-#: append-only, time-ordered tables without a large btree.
-_TAPE_DDL = (
-    "create index if not exists ix_obe_ts_brin on orderbook_events using brin (ts)",
-    "create index if not exists ix_trades_ts_brin on venue_trades using brin (ts)",
+#: BRIN keeps "last hour" dashboard scans cheap on append-only, time-ordered tables without a
+#: large btree, and is cheap enough to build on a live table (it stores one summary per block
+#: range, not one entry per row), so it is not behind `_takes_new_indexes`.
+_TAPE_BRIN_DDL = {
+    "orderbook_events": ("create index if not exists ix_obe_ts_brin on orderbook_events using brin (ts)",),
+    "venue_trades": ("create index if not exists ix_trades_ts_brin on venue_trades using brin (ts)",),
+}
+
+#: Tape-table DDL, run last (see TAPE_TABLES).
+_TAPE_DDL = _TAPE_BRIN_DDL["orderbook_events"] + _TAPE_BRIN_DDL["venue_trades"] + (
     # F5: Kalshi deprecated trades.taker_side in favour of these two.
     "alter table venue_trades add column if not exists taker_outcome_side varchar(4)",
     "alter table venue_trades add column if not exists taker_book_side varchar(4)",
 )
+
+#: (name, body) of the btree indexes Task 2b adds to the tape, per table. The phase 3 book loader
+#: reads the newest snapshot per ticker, applies deltas by id and looks for a later gap on the
+#: anchor's sid; the REST trade writer dedupes on `(venue, trade_id)`.
+#:
+#: Two spellings of each: `create_schema` builds `<name>` on the table itself, and the one-off
+#: partition migration builds `<name>_legacy` CONCURRENTLY on the live table before renaming it
+#: aside, so the attach finds a matching index instead of building one under an exclusive lock.
+TAPE_NEW_INDEXES: dict[str, tuple[tuple[str, str], ...]] = {
+    "orderbook_events": (
+        ("ix_obe_snapshot", "on orderbook_events (ticker, ts desc) where kind = 'snapshot'"),
+        ("ix_obe_ticker_id", "on orderbook_events (ticker, id)"),
+        ("ix_obe_gap", "on orderbook_events (sid, id) where kind = 'gap'"),
+    ),
+    "venue_trades": (
+        ("ix_trades_venue_trade_id", "on venue_trades (venue, trade_id)"),
+    ),
+}
+
+
+def tape_index_ddl(table: str) -> tuple[str, ...]:
+    """Every index statement one tape table needs, for a caller that has just created the table
+    itself (the partition migration's fresh parent). create_schema splits them instead: the BRIN
+    runs unconditionally, the btrees only under `_takes_new_indexes`."""
+    return _TAPE_BRIN_DDL[table] + tuple(f"create index if not exists {name} {body}"
+                                         for name, body in TAPE_NEW_INDEXES[table])
+
+
+def _takes_new_indexes(conn: Connection, table: str) -> bool:
+    """Whether `create_schema` may build TAPE_NEW_INDEXES[table] itself.
+
+    A non-concurrent CREATE INDEX on a populated tape table holds a ShareLock for the whole build,
+    which locks the WebSocket sink out of the table -- and `init-db` runs on every deploy, with the
+    sink writing. So create_schema builds these only when the build is free: on a partitioned
+    parent (metadata-only, and each future partition inherits the index at creation) or on a table
+    that is still empty. On the live pre-migration table the one-off `partition-bulk-tables`
+    builds them CONCURRENTLY instead.
+    """
+    if is_partitioned(conn, table):
+        return True
+    exists = conn.execute(text(
+        "select 1 from pg_class where relname = :t and relkind = 'r'"), {"t": table}).first()
+    return bool(exists) and conn.execute(text(f"select 1 from {table} limit 1")).first() is None
 
 
 def _is_lock_failure(exc: BaseException) -> bool:
@@ -287,6 +361,12 @@ def create_schema(engine: Engine) -> None:
         _model_index_ddl(conn)
         for statement in _TAPE_DDL:
             _execute_ddl(conn, statement)
+        for table in TAPE_TABLES:
+            if not _takes_new_indexes(conn, table):
+                log.info("skipping %s btree indexes: table is live and not partitioned yet", table)
+                continue
+            for name, body in TAPE_NEW_INDEXES[table]:
+                _execute_ddl(conn, f"create index if not exists {name} {body}")
 
 
 def drop_schema(engine: Engine) -> None:

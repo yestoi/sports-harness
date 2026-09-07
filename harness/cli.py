@@ -47,6 +47,20 @@ def init_db() -> None:
     log.info("schema created")
 
 
+@app.command("partition-bulk-tables")
+def partition_bulk_tables_cmd() -> None:
+    """One-off (F19): turn the live orderbook_events and venue_trades into weekly partitions."""
+    configure_logging()
+    s = get_settings()
+    from harness.db.partition import partition_bulk_tables
+
+    # Same reason as init-db, more so: validating the legacy CHECK and attaching the partition
+    # both scan the tape, which is far past the 30 s default statement timeout.
+    engine = make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS)
+    migrated = partition_bulk_tables(engine, datetime.now(timezone.utc))
+    log.info("partitioned: %s", ", ".join(migrated) if migrated else "nothing (already partitioned)")
+
+
 @app.command("tick-once")
 def tick_once(force: bool = typer.Option(False, "--force", help="Fetch every source now, ignoring cadence")) -> None:
     configure_logging()

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -34,6 +35,17 @@ def _ts(v) -> datetime | None:
         return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(timezone.utc)
     except (ValueError, TypeError):
         return None
+
+
+def truncate_ms(ts: datetime) -> datetime:
+    """Drop everything finer than a millisecond off a trade timestamp.
+
+    `venue_trades.ts` is part of the primary key now that the table is partitioned on it, so the
+    two writers have to agree on it exactly. Kalshi reports a trade's time to the millisecond on
+    both feeds (`ts_ms` over the WebSocket, `created_time` over REST); anything finer is the
+    recorder's own clock or a formatting artefact, and would split one print into two rows.
+    """
+    return ts.replace(microsecond=(ts.microsecond // 1000) * 1000)
 
 
 def _side(v) -> str | None:
@@ -153,21 +165,44 @@ def insert_orderbook(session: Session, ticker: str, body: dict, raw_id: int, fet
     return len(session.execute(stmt).fetchall()) == 1
 
 
+def _already_recorded(session: Session, trades: list[dict]) -> set[str]:
+    """The `trade_id`s of this page that the tape already holds, in one index lookup.
+
+    `ts` is part of the primary key now, so ON CONFLICT DO NOTHING no longer catches a print the
+    WebSocket recorded: Kalshi's REST `created_time` and its WebSocket `ts_ms` can disagree by a
+    millisecond for the same trade, and the two rows would then both stand and double the print's
+    volume. `ix_trades_venue_trade_id (venue, trade_id)` is the guard; the Layer 2b duplicate
+    count is the detector if one still slips through.
+    """
+    ids = [t["trade_id"] for t in trades if t.get("trade_id")]
+    if not ids:
+        return set()
+    return set(session.execute(select(VenueTrade.trade_id).where(
+        VenueTrade.venue == "kalshi", VenueTrade.trade_id.in_(ids))).scalars())
+
+
 def insert_trades(session: Session, body: dict, raw_id: int, ctx: dict | None = None) -> int:
     n, dropped = 0, 0
-    for t in (body or {}).get("trades", []) if isinstance(body, dict) else []:
+    trades = (body or {}).get("trades", []) if isinstance(body, dict) else []
+    recorded = _already_recorded(session, trades)
+    for t in trades:
         ts, price, count = _ts(t.get("created_time")), _dec(t.get("yes_price_dollars")), _dec(t.get("count_fp"))
         if not t.get("trade_id") or not t.get("ticker") or ts is None or price is None or count is None:
+            continue
+        if t["trade_id"] in recorded:
             continue
         side, outcome, book = taker_side_of(t)
         if side is None:
             dropped += 1
             continue
+        ts = truncate_ms(ts)
         stmt = insert(VenueTrade).values(venue="kalshi", trade_id=t["trade_id"], ticker=t["ticker"], ts=ts, yes_price=price,
                                          count=count, taker_side=side, taker_outcome_side=outcome, taker_book_side=book,
                                          is_block=bool(t.get("is_block_trade")),
                                          source="rest", raw_id=raw_id).on_conflict_do_nothing().returning(VenueTrade.trade_id)
         n += len(session.execute(stmt).fetchall())
+        # A page that repeats a trade_id with a different created_time would otherwise land twice.
+        recorded.add(t["trade_id"])
     if dropped:
         # One line per raw response, not per print: a page carries up to 1,000 trades.
         log.warning("kalshi trades: %d prints dropped, taker side missing (raw_id=%s)", dropped, raw_id)

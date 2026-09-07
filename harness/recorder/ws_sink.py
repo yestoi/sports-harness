@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import OrderbookEvent, VenueTrade
-from harness.normalize.kalshi import taker_side_of
+from harness.normalize.kalshi import taker_side_of, truncate_ms
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +108,12 @@ class WsSink:
                     log.warning("ws trade dropped: taker side missing %s", ticker)
                     self.missing_side += 1
                 else:
-                    stmt = insert(VenueTrade).values(venue="kalshi", trade_id=body["trade_id"], ticker=ticker, ts=_ts(body.get("ts_ms"), received_at),
+                    # `ts` is part of venue_trades' primary key now that the table is partitioned
+                    # on it, so it is truncated to the millisecond Kalshi reports: the REST writer
+                    # truncates the same way, and a sub-millisecond difference between the two
+                    # feeds would put the same print on the tape twice.
+                    stmt = insert(VenueTrade).values(venue="kalshi", trade_id=body["trade_id"], ticker=ticker,
+                                                     ts=truncate_ms(_ts(body.get("ts_ms"), received_at)),
                                                      yes_price=price, count=count, taker_side=side,
                                                      taker_outcome_side=outcome, taker_book_side=book,
                                                      is_block=bool(body.get("is_block_trade")), source="ws", raw_id=None

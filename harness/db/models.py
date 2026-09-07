@@ -181,11 +181,19 @@ class OrderbookSnapshot(Base):
 
 
 class VenueTrade(Base):
+    """Partitioned by range on ts (weekly), like the rest of the bulk tape (F19).
+
+    Postgres requires every unique key of a partitioned table to contain the partition key, so
+    `ts` joins the primary key. That weakens the key as a deduplicator -- the same print reaching
+    us from the WebSocket and from REST one millisecond apart would be two rows -- so both writers
+    truncate `ts` to milliseconds and the REST writer skips a `(venue, trade_id)` already on the
+    tape, through `ix_trades_venue_trade_id`.
+    """
     __tablename__ = "venue_trades"
     venue: Mapped[str] = mapped_column(String(16), primary_key=True)
     trade_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     ticker: Mapped[str] = mapped_column(String(64), nullable=False)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     yes_price: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     count: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     taker_side: Mapped[str] = mapped_column(String(4), nullable=False)  # canonical: taker_outcome_side or the deprecated taker_side
@@ -194,14 +202,19 @@ class VenueTrade(Base):
     is_block: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     source: Mapped[str] = mapped_column(String(4), nullable=False)
     raw_id: Mapped[int | None] = mapped_column(BigInteger)
-    __table_args__ = (Index("ix_trades_ticker_ts", "ticker", "ts"),)
+    __table_args__ = (Index("ix_trades_ticker_ts", "ticker", "ts"),
+                      {"postgresql_partition_by": "RANGE (ts)"})
 
 
 class OrderbookEvent(Base):
+    """Partitioned by range on ts (weekly): the largest table in the harness by two orders of
+    magnitude (up to 4M rows an hour at peak), so a season's tape only fits the NAS as partitions
+    that can be archived and dropped week by week (F19). `ts` joins the primary key because
+    Postgres requires the partition key in every unique key."""
     __tablename__ = "orderbook_events"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     ticker: Mapped[str] = mapped_column(String(64), nullable=False)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     sid: Mapped[int] = mapped_column(Integer, nullable=False)
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     kind: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -209,7 +222,8 @@ class OrderbookEvent(Base):
     price: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
     delta: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     raw: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    __table_args__ = (Index("ix_obe_ticker_ts", "ticker", "ts"),)
+    __table_args__ = (Index("ix_obe_ticker_ts", "ticker", "ts"),
+                      {"postgresql_partition_by": "RANGE (ts)"})
 
 
 class NormalizeState(Base):

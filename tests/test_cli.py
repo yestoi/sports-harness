@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import text
 from typer.testing import CliRunner
 
 from harness.cli import app
@@ -102,6 +103,30 @@ def test_price_once_without_run_id_uses_wall_clock_for_the_latest_run(monkeypatc
     assert result.exit_code == 0, result.output
     assert captured["run_id"] == latest.id
     assert captured["now"] == fixed_wall_clock
+
+
+def test_partition_bulk_tables_is_a_no_op_once_the_tape_is_partitioned(monkeypatch, cli_settings, db_session):
+    """The one-off migration is run by hand on the live database and must be safe to re-run: the
+    tape tables here are already partitioned, so it changes nothing. It builds its engine with the
+    batch statement timeout because validating the legacy CHECK and attaching the partition both
+    scan the tape, far past the 30 s default."""
+    from harness.db import engine as engine_module
+    from harness.db.engine import BATCH_STATEMENT_TIMEOUT_MS
+
+    seen: list[int] = []
+    real_make_engine = engine_module.make_engine
+
+    def spy(url, statement_timeout_ms=30000):
+        seen.append(statement_timeout_ms)
+        return real_make_engine(url, statement_timeout_ms)
+
+    monkeypatch.setattr("harness.cli.make_engine", spy)
+    result = runner.invoke(app, ["partition-bulk-tables"])
+    assert result.exit_code == 0, result.output
+    assert seen == [BATCH_STATEMENT_TIMEOUT_MS]
+    partitioned = set(db_session.execute(text(
+        "select relname from pg_partitioned_table join pg_class on oid = partrelid")).scalars())
+    assert {"raw_responses", "orderbook_events", "venue_trades"} <= partitioned
 
 
 def test_init_db_runs_its_ddl_under_the_batch_statement_timeout(monkeypatch, cli_settings, db_session):
