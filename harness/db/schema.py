@@ -119,6 +119,13 @@ _COLUMN_DDL = (
     "alter table orders add column if not exists nw_last_print_ts timestamptz",
     "alter table orders add column if not exists nw_last_print_ids jsonb",
     "alter table orders add column if not exists dirty_seconds integer not null default 0",
+    # Phase 4 §7: the risk gate's drawdown fields and the dormant live path's venue columns.
+    "alter table equity_snapshots add column if not exists peak_equity_7d numeric(12,2)",
+    "alter table equity_snapshots add column if not exists drawdown_pct numeric(6,4)",
+    "alter table equity_snapshots add column if not exists drawdown_stop boolean",
+    "alter table orders add column if not exists venue_order_id varchar(64)",
+    "alter table orders add column if not exists order_group_id varchar(64)",
+    "alter table orders add column if not exists exchange_index_at_place integer",
 )
 
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).
@@ -172,6 +179,8 @@ _INDEX_DDL = (
     "create index if not exists ix_game_score_events_game_ts on game_score_events (game_id, ts desc)",
     "create index if not exists ix_check_results_ts on check_results (ts desc)",
     "create index if not exists ix_report_runs_week on report_runs (year, week, generated_at desc)",
+    # Phase 4 §7: venue_requests is append-only and read by newest-first (outage/rate checks).
+    "create index if not exists ix_venue_requests_ts on venue_requests (ts desc)",
 )
 
 #: Carried fix 16. BRIN on `fair_values(created_at)` so the bounded staleness check

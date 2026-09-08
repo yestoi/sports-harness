@@ -420,8 +420,10 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # + 4 tape statements + the 4 tape indexes Task 2b guards behind "partitioned, or still
     # empty" (both tape tables are partitioned here, so all four run) + 5 telemetry indexes
     # (Task 12b: metric_samples, operator_events, game_score_events, check_results,
-    # report_runs).
-    assert len(ddl) == 62, [s for s, _, _ in ddl]
+    # report_runs) + 6 phase 4 column ALTERs (equity_snapshots: peak_equity_7d, drawdown_pct,
+    # drawdown_stop; orders: venue_order_id, order_group_id, exchange_index_at_place) + 1 phase
+    # 4 index (ix_venue_requests_ts) = 62 + 7.
+    assert len(ddl) == 69, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.
@@ -671,3 +673,75 @@ def test_fixture_truncates_between_tests_b(db_session):
     db_session.add(run)
     db_session.flush()
     assert run.id == 1
+
+
+def test_phase4_tables_exist(db_session):
+    for table in ("venue_requests", "venue_status", "backup_runs"):
+        assert db_session.execute(text(
+            "select 1 from pg_tables where tablename = :t"), {"t": table}).first()
+
+
+def test_phase4_columns_exist(db_session):
+    cols = lambda t: {r[0] for r in db_session.execute(text(
+        "select column_name from information_schema.columns where table_name = :t"), {"t": t})}
+    assert {"peak_equity_7d", "drawdown_pct", "drawdown_stop"} <= cols("equity_snapshots")
+    assert {"venue_order_id", "order_group_id", "exchange_index_at_place"} <= cols("orders")
+
+
+def test_venue_status_primary_key_is_venue_and_env(db_session):
+    from harness.db.models import VenueStatus
+
+    now = datetime.now(timezone.utc)
+    db_session.add_all([
+        VenueStatus(venue="kalshi", env="prod", status="ok", since=now, updated_at=now),
+        VenueStatus(venue="kalshi", env="demo", status="ok", since=now, updated_at=now)])
+    db_session.flush()          # two rows, one per env
+    db_session.add(VenueStatus(venue="kalshi", env="prod", status="frozen",
+                               since=now, updated_at=now))
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_venue_requests_index_exists(db_session):
+    assert db_session.execute(text(
+        "select 1 from pg_indexes where indexname = 'ix_venue_requests_ts'")).first()
+
+
+def test_backup_runs_accepts_a_drill_row(db_session):
+    from harness.db.models import BackupRun
+
+    now = datetime.now(timezone.utc)
+    db_session.add(BackupRun(kind="drill", status="ok", rows_match=True, build_sha="abc1234",
+                             started_at=now, finished_at=now,
+                             notes={"tables": 41, "decrypt_ok": True}))
+    db_session.flush()
+
+
+def test_backup_runs_build_sha_is_a_column_not_a_notes_key(db_session):
+    cols = {r[0] for r in db_session.execute(text(
+        "select column_name from information_schema.columns "
+        "where table_name = 'backup_runs'"))}
+    assert "build_sha" in cols
+
+
+def test_phase4_schema_is_idempotent(_schema):
+    create_schema(_schema)      # a second pass over an already-current database
+    create_schema(_schema)
+
+
+def test_drop_schema_still_covers_every_model(_schema):
+    drop_schema(_schema)
+    with _schema.connect() as conn:
+        present = {r[0] for r in conn.execute(text("select tablename from pg_tables"))}
+    assert not (set(Base.metadata.tables) & present)
+    create_schema(_schema)
+    # _schema is session-scoped: drop_schema took the tape/raw_responses partitions with it, and
+    # create_schema only rebuilds the partitioned parents, not their weekly children. Without
+    # this, every later test in the session that inserts a dated row into a partitioned table
+    # (test_schema_phase1.py, test_settle.py, ...) fails with "no partition of relation found
+    # for row" -- the same restoration test_drop_schema_covers_every_model above already does
+    # in its `finally` block.
+    from sqlalchemy.orm import sessionmaker
+
+    with sessionmaker(bind=_schema)() as session:
+        ensure_partitions(session, datetime.now(timezone.utc))

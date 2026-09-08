@@ -478,6 +478,12 @@ class Order(Base):
     dirty_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    #: The venue's own order id, its cancel group, and the shard the order was sent on. NULL for
+    #: paper: only KalshiGateway fills these, and it is dormant (§2.3, §7).
+    venue_order_id: Mapped[str | None] = mapped_column(String(64))
+    order_group_id: Mapped[str | None] = mapped_column(String(64))
+    exchange_index_at_place: Mapped[int | None] = mapped_column(Integer)
+
 
 class OrderEvent(Base):
     """Placement, cancellation and skip audit trail. A skip has no order, so order_id is NULL
@@ -763,6 +769,12 @@ class EquitySnapshot(Base):
     mtm_coverage: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
     n_open_positions: Mapped[int] = mapped_column(Integer, nullable=False)
     n_open_orders: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: §3 risk gate: the trailing-7-day peak of `cash`, the drawdown against it, and whether
+    #: the -20 % stop is tripped. Nullable: rows written before the gate shipped have none, and
+    #: the settler's snapshot computes them the same way the executor does.
+    peak_equity_7d: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    drawdown_stop: Mapped[bool | None] = mapped_column(Boolean)
 
 
 class GameScoreEvent(Base):
@@ -829,3 +841,52 @@ class ReportCell(Base):
     hi: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
     text: Mapped[str | None] = mapped_column(String(64))
     flags: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class VenueRequest(Base):
+    """One authenticated venue call, one row per attempt (addendum §1.1). Never headers, never
+    bodies (pre-loaded decision 7). The public read path is not recorded here: table 11 counts
+    authenticated traffic, and the recorder's reads are already in `raw_responses` (D5)."""
+    __tablename__ = "venue_requests"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    venue: Mapped[str] = mapped_column(String(16), nullable=False)
+    env: Mapped[str] = mapped_column(String(8), nullable=False)          # prod|demo
+    method: Mapped[str] = mapped_column(String(8), nullable=False)
+    path: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[int | None] = mapped_column(Integer)                  # NULL on a transport error
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer)
+
+
+class VenueStatus(Base):
+    """The §9.4 outage state per (venue, env). The outage counter runs only for env = 'prod':
+    a demo smoke's 401s never mark production (A-I3). `reason` is at most 120 characters of the
+    venue's own body, ASCII-escaped with newlines stripped, and is untrusted text everywhere it
+    is rendered."""
+    __tablename__ = "venue_status"
+    venue: Mapped[str] = mapped_column(String(16), primary_key=True)
+    env: Mapped[str] = mapped_column(String(8), primary_key=True)
+    status: Mapped[str] = mapped_column(String(12), nullable=False)      # ok|unavailable|frozen
+    reason: Mapped[str | None] = mapped_column(String(120))
+    since: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BackupRun(Base):
+    """One dump, encryption or drill (§4.3, §4.4). `rows_match` is the drill's comparison and
+    is NULL for every other kind."""
+    __tablename__ = "backup_runs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)        # nightly|weekly|partition|encrypt|drill
+    #: The image build the row was written under. `delete_verified_plaintexts` keys the release
+    #: rule on it, so it is a column, not a `notes` key. Same width as `runs.build_sha`.
+    build_sha: Mapped[str | None] = mapped_column(String(24))
+    path: Mapped[str | None] = mapped_column(String(256))
+    bytes: Mapped[int | None] = mapped_column(BigInteger)
+    plaintext_sha256: Mapped[str | None] = mapped_column(String(64))
+    ciphertext_sha256: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)      # ok|error|skipped
+    rows_match: Mapped[bool | None] = mapped_column(Boolean)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[dict | None] = mapped_column(JSONB)
