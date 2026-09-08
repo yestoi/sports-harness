@@ -76,6 +76,32 @@ def test_upsert_venue_markets_records_grid_fee_shard_expiration_and_match_key(db
     assert nyg.match_key == f"{nyg.game_id}:moneyline:19::"
 
 
+def test_fuzzy_match_key_survives_a_tick_with_no_event_cache_entry(db_session):
+    """Controller ruling (Task 3b fix round 1, Important 1): match_key is cleared only in the
+    branches that null game_id -- a key exists exactly when a game_id does. A fuzzy row re-runs
+    matching every tick (the early-continue only covers matched/manual), so a tick whose event
+    cache lacks this market's event ticker must not erase its key while game_id and
+    match_status stay put."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=datetime(2026, 9, 21, 0, 20, tzinfo=timezone.utc)))
+    db_session.flush()
+    upsert_venue_markets(db_session, "nfl", KM, EVENTS, raw_id=1, fetched_at=NOW)
+    nyg = db_session.query(VenueMarket).filter_by(ticker="KXNFLGAME-26SEP21NYGLAR-NYG").one()
+    assert nyg.match_status == "matched"
+    game_id, key = nyg.game_id, nyg.match_key
+    assert game_id is not None and key is not None
+    # Simulate a fuzzy match: this status re-runs the matcher on every tick, unlike matched/manual.
+    nyg.match_status = "fuzzy"
+    db_session.flush()
+
+    events_missing = {k: v for k, v in EVENTS.items() if k != "KXNFLGAME-26SEP21NYGLAR"}
+    upsert_venue_markets(db_session, "nfl", KM, events_missing, raw_id=2, fetched_at=NOW)
+    db_session.refresh(nyg)
+    assert nyg.game_id == game_id
+    assert nyg.match_status == "fuzzy"
+    assert nyg.match_key == key
+
+
 def test_non_linear_cent_matched_market_is_counted_in_run_notes(db_session):
     """F44: a matched market whose price grid isn't the football default is a pricing risk the
     dashboard alarms on; the count is written into runs.notes every tick, not just once."""
@@ -103,6 +129,16 @@ def test_non_linear_cent_matched_market_is_counted_in_run_notes(db_session):
     unmatched_custom = [dict(KM[1], price_level_structure="custom_grid")]
     upsert_venue_markets(db_session, "nfl", unmatched_custom, EVENTS, raw_id=4, fetched_at=NOW, ctx=ctx4)
     assert ctx4.get("non_linear_cent", 0) == 0
+
+    # Minor 1 (Task 3b fix round 1): a matched market with no price_level_structure at all
+    # (the field absent from the fetch, so None) counts too -- the brief says "not linear_cent",
+    # and the docstring's own rationale (snap_to_grid falls back to whole cents for a grid it
+    # has never seen) is exactly the None case.
+    ctx5 = {}
+    none_grid = [dict(KM[0], ticker="KXNFLGAME-26SEP21NYGLAR-NONEGRID")]
+    assert "price_level_structure" not in none_grid[0]
+    upsert_venue_markets(db_session, "nfl", none_grid, EVENTS, raw_id=6, fetched_at=NOW, ctx=ctx5)
+    assert ctx5["non_linear_cent"] == 1
 
     # ctx is optional: callers that don't care about the alarm never see a KeyError.
     upsert_venue_markets(db_session, "nfl", custom, EVENTS, raw_id=5, fetched_at=NOW)

@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
@@ -192,8 +192,11 @@ def compose_match_key(game_id: int | None, market_type: str, side_team_id: int |
     Both paths must agree byte-for-byte -- a Python-composed key that diverges from the
     backfilled one for the same market would make every open order on that market compare
     unequal to its own venue_market's key and read as unmatched (Task 3b's controller ruling).
+    `ROUND_HALF_UP` matches Postgres's `numeric(6,1)` rounding (half away from zero), not
+    Python `Decimal`'s default `ROUND_HALF_EVEN`, so a `6.45` renders `"6.5"` both ways
+    (Task 3b fix round 1, Minor 2).
     """
-    t = "" if threshold is None else str(threshold.quantize(Decimal("0.1")))
+    t = "" if threshold is None else str(threshold.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
     return f"{game_id}:{market_type}:{'' if side_team_id is None else side_team_id}:{side or ''}:{t}"
 
 

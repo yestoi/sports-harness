@@ -878,10 +878,11 @@ def _variant(session, variant_id: str) -> None:
     session.flush()
 
 
-def _order(session, vmid: int, ticker: str, status: str, replay: bool = False, variant_id: str = "v1") -> None:
+def _order(session, vmid: int, ticker: str, status: str, replay: bool = False, variant_id: str = "v1",
+          placed_at=NOW) -> None:
     session.add(Order(intent_id=uuid.uuid4(), variant_id=variant_id, venue="kalshi", client_order_id=f"co-{uuid.uuid4()}",
                       ticker=ticker, venue_market_id=vmid, side="yes", prob=Decimal("0.50"), contracts=Decimal("10"),
-                      status=status, placed_at=NOW, replay=replay))
+                      status=status, placed_at=placed_at, replay=replay))
     session.flush()
 
 
@@ -972,7 +973,9 @@ def test_select_ws_tickers_prefers_open_orders_and_exec_candidates(db_session):
     _quote(db_session, filled, "700.00", NOW)
     _quote(db_session, replay_order, "600.00", NOW)
     _variant(db_session, "v1")
-    _order(db_session, ordered, "K-ORDERED", status="open", variant_id="v1")
+    # Placed 5 days before NOW: an open order carries no time bound, unlike the 1 h candidate
+    # window below (Task 3b fix round 1, Minor 4 -- a same-tick placed_at would not pin this).
+    _order(db_session, ordered, "K-ORDERED", status="open", variant_id="v1", placed_at=NOW - timedelta(days=5))
     _signal(db_session, candidate, NOW - timedelta(minutes=30), variant_id="v1")
     # A candidate from a variant the executor is not running doesn't count.
     _signal(db_session, other_variant, NOW - timedelta(minutes=30), variant_id="v2")
@@ -985,6 +988,27 @@ def test_select_ws_tickers_prefers_open_orders_and_exec_candidates(db_session):
     # Priority group first, ordered by volume: K-CANDIDATE (2.00) then K-ORDERED (1.00). Then
     # the rest by volume, none of them carrying a live order or an exec-variant candidate.
     assert out == ["K-CANDIDATE", "K-ORDERED", "K-BUSY", "K-OTHER-VARIANT", "K-FILLED", "K-REPLAY-ORDER"]
+
+
+def test_select_ws_tickers_open_order_outside_the_window_is_selected_and_ranked_first(db_session):
+    """Task 3b fix round 1, Important 2: the brief's priority clause is "(any horizon)", not
+    "any horizon inside the kickoff window". A market carrying an open, non-replay order whose
+    game kicks off 10 days out (well beyond the 72 h lookahead default) must still be selected,
+    ranked ahead of an in-window market with no priority signal."""
+    far_game = Game(sport="nfl", home_team_id=19, away_team_id=14, kickoff_utc=NOW + timedelta(days=10))
+    near_game = Game(sport="nfl", home_team_id=20, away_team_id=15, kickoff_utc=NOW + timedelta(hours=3))
+    db_session.add_all([far_game, near_game])
+    db_session.flush()
+    far_ordered = _market(db_session, "K-FAR-ORDERED", far_game.id, NOW)
+    busy = _market(db_session, "K-BUSY", near_game.id, NOW)
+    _quote(db_session, far_ordered, "1.00", NOW)
+    _quote(db_session, busy, "9000.00", NOW)
+    _variant(db_session, "v1")
+    _order(db_session, far_ordered, "K-FAR-ORDERED", status="open", variant_id="v1", placed_at=NOW - timedelta(days=5))
+
+    out = select_ws_tickers(db_session, NOW, cap=10, exec_variant_names=["v1"])
+    assert out == ["K-FAR-ORDERED", "K-BUSY"]
+    assert select_ws_tickers(db_session, NOW, cap=1, exec_variant_names=["v1"]) == ["K-FAR-ORDERED"]
 
 
 def test_settings_ws_window_defaults(env_settings):

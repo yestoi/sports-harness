@@ -515,7 +515,15 @@ def test_match_key_backfill_matches_matcher_composition_for_integral_and_half_po
     whole = VenueMarket(venue="kalshi", ticker="T-WHOLE", event_ticker="E", series_ticker="S",
                         game_id=game.id, market_type="spread", side_team_id=19, side=None,
                         threshold=Decimal("3"), match_status="matched", first_seen_raw_id=1, last_seen_at=NOW)
-    db_session.add_all([half, whole])
+    # Task 3b fix round 1, Minor 2: numeric(6,1) rounds half away from zero, unlike Python
+    # Decimal's default ROUND_HALF_EVEN -- a threshold that lands exactly halfway between two
+    # tenths (6.45) is the case that would previously have diverged (Postgres "6.5", Python
+    # "6.4"). Football thresholds are always half-points in practice, but this pins the
+    # rounding mode itself rather than relying on the data shape to hide the bug.
+    midpoint = VenueMarket(venue="kalshi", ticker="T-MIDPOINT", event_ticker="E", series_ticker="S",
+                           game_id=game.id, market_type="spread", side_team_id=19, side=None,
+                           threshold=Decimal("6.45"), match_status="matched", first_seen_raw_id=1, last_seen_at=NOW)
+    db_session.add_all([half, whole, midpoint])
     db_session.commit()
 
     create_schema(db_session.get_bind())
@@ -525,6 +533,8 @@ def test_match_key_backfill_matches_matcher_composition_for_integral_and_half_po
     assert whole.match_key == compose_match_key(game.id, "spread", 19, None, Decimal("3"))
     assert whole.match_key.endswith(":3.0")
     assert half.match_key.endswith(":6.5")
+    assert midpoint.match_key.endswith(":6.5")
+    assert midpoint.match_key == compose_match_key(game.id, "spread", 19, None, Decimal("6.45"))
 
 
 def test_order_clv_table_and_clv_view(db_session):

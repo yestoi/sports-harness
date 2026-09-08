@@ -75,13 +75,22 @@ def select_ws_tickers(session: Session, now: datetime, cap: int, lookahead_hours
     # that are matched -- then pull each candidate's own latest quote via a LATERAL join that
     # rides ix_quotes_market_fetched (venue_market_id, fetched_at). This avoids aggregating
     # over all of venue_quotes (which grows ~1M rows/day) on every call.
-    candidates = (
+    windowed = (
         select(VenueMarket.id.label("vmid"), VenueMarket.ticker.label("ticker"),
                VenueMarket.last_seen_at.label("last_seen_at"), has_priority.label("has_priority"))
         .join(Game, Game.id == VenueMarket.game_id)
         .where(VenueMarket.match_status.in_(("matched", "fuzzy", "manual")), Game.kickoff_utc >= lo, Game.kickoff_utc <= hi)
-        .subquery("candidates")
     )
+    # Task 3b fix round 1, Important 2: the brief says a priority market joins the subscription
+    # set "(any horizon)", not only when its game happens to fall in the window above. Unioned
+    # (not unioned-all) with the windowed set, so a market that is both inside the window and
+    # carrying an open order/fresh candidate still contributes exactly one row.
+    priority_any_horizon = (
+        select(VenueMarket.id.label("vmid"), VenueMarket.ticker.label("ticker"),
+               VenueMarket.last_seen_at.label("last_seen_at"), has_priority.label("has_priority"))
+        .where(VenueMarket.match_status.in_(("matched", "fuzzy", "manual")), has_priority)
+    )
+    candidates = windowed.union(priority_any_horizon).subquery("candidates")
     # last_seen_at is a near-total tie (every market is refreshed in the same tick), so it
     # cannot decide which markets make the cap. Order by the latest quote's 24h volume.
     latest_quote = (

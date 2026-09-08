@@ -71,15 +71,16 @@ def test_alternates_due_near_and_far_intervals_are_independently_configurable():
     assert alternates_due(now, [far], {"far": now - timedelta(seconds=900)}, near_s=999999, far_s=900) == ["far"]
 
 
-def test_alternates_due_default_far_interval_differs_from_near():
-    # The interface's own defaults (near_s=120, far_s=900) are the pre-U1 shape. Production
-    # settings currently pass 120/120 so the split is a no-op there, but the function itself
-    # still tells near and far apart when nothing overrides its defaults.
-    now = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
-    far = ("far", now + timedelta(hours=20))
-    last = {"far": now - timedelta(seconds=200)}
-    assert alternates_due(now, [far], last) == []  # 200s < the default far_s of 900
-    assert alternates_due(now, [far], last, far_s=120) == ["far"]
+def test_alternates_due_defaults_mirror_settings_cadence(env_settings):
+    # Task 3b fix round 1, Minor 7: alternates_due's own defaults (near_s/far_s/window_h) must
+    # equal Settings' defaults for the same three values, read here rather than hard-coded a
+    # second time, so the interface never implies a shape no production caller passes.
+    import inspect
+
+    sig = inspect.signature(alternates_due)
+    assert sig.parameters["near_s"].default == env_settings.odds_alt_interval_near_s
+    assert sig.parameters["far_s"].default == env_settings.odds_alt_interval_far_s
+    assert sig.parameters["window_h"].default == env_settings.odds_alt_window_h
 
 
 def test_alternates_due_near_boundary_is_180_minutes():

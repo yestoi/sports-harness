@@ -37,6 +37,13 @@ def _ts(v) -> datetime | None:
         return None
 
 
+def _int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
 def truncate_ms(ts: datetime) -> datetime:
     """Drop everything finer than a millisecond off a trade timestamp.
 
@@ -84,7 +91,7 @@ def _count_non_linear_cent(vm: VenueMarket, ctx: dict | None) -> None:
     `snap_to_grid` falls back to whole cents for a market it has never seen a grid for, which
     is silently wrong for anything finer or coarser. Counted every tick a matched market
     carries a non-`linear_cent` shape, not just the tick it first matched."""
-    if ctx is not None and vm.price_level_structure not in (None, "linear_cent"):
+    if ctx is not None and vm.price_level_structure != "linear_cent":
         ctx["non_linear_cent"] = ctx.get("non_linear_cent", 0) + 1
 
 
@@ -117,15 +124,17 @@ def upsert_venue_markets(session: Session, sport: str, markets: list[dict], even
         vm.price_level_structure = m.get("price_level_structure") or vm.price_level_structure
         if m.get("price_ranges") is not None:
             vm.price_ranges = m.get("price_ranges")
-        if (idx := m.get("exchange_index")) is not None:
-            vm.exchange_index = int(idx)
+        if (idx := _int(m.get("exchange_index"))) is not None:
+            vm.exchange_index = idx
         if vm.match_status in ("matched", "manual") and vm.game_id is not None:
             _count_non_linear_cent(vm, ctx)
             continue
-        # About to (re)try matching this market: whatever match_key it carried belongs to a
-        # match that no longer holds (or never held), so it goes NULL until a fresh match sets
-        # it again below.
-        vm.match_key = None
+        # A fuzzy row re-runs matching every tick (this early-continue only covers
+        # matched/manual). A key exists exactly when a game_id does, so match_key is only ever
+        # cleared alongside game_id -- not unconditionally here -- otherwise a tick whose event
+        # cache happens to lack this ticker (or that fails to re-parse the date) would erase the
+        # key of a market that stays fuzzy-matched with its game_id untouched (controller ruling,
+        # Task 3b fix round 1, Important 1).
         event = events_by_ticker.get(et)
         if event is None:
             vm.match_reason = "no event title recorded"
@@ -139,13 +148,13 @@ def upsert_venue_markets(session: Session, sport: str, markets: list[dict], even
         em = match_event(session, sport, event, edate)
         vm.match_reason = em.reason
         if em.game_id is None:
-            vm.match_status, vm.match_confidence, vm.game_id = "unmatched", Decimal("0"), None
+            vm.match_status, vm.match_confidence, vm.game_id, vm.match_key = "unmatched", Decimal("0"), None, None
             res.unmatched += 1
             continue
         game = session.get(Game, em.game_id)
         side_team = side_team_id_for(session, sport, mc, game) if mc.side_kind == "team" else None
         if mc.side_kind == "team" and side_team is None:
-            vm.match_status, vm.match_confidence, vm.game_id = "unmatched", Decimal("0"), None
+            vm.match_status, vm.match_confidence, vm.game_id, vm.match_key = "unmatched", Decimal("0"), None, None
             vm.match_reason = f"side team unresolved: {mc.side_name}"
             res.unmatched += 1
             continue
