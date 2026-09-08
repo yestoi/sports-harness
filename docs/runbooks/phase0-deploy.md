@@ -51,6 +51,58 @@ SIGTERM. Recorder exited cleanly with no errors logged and flushed pending write
 410 `ws`-sourced (alongside 10184 pre-existing `rest`-sourced rows). See
 `.superpowers/sdd/2026-09-06-phase1-normalize-match/task-10-report.md` for full detail.
 
+## Paper executor (app-exec)
+
+The `app-exec` service runs `harness exec`, the phase 3 paper executor. Every 15 seconds it
+turns the tick's candidate signals into intents, decides what to place, cancel or expire, and
+infers fills from the recorded tape. **It places no live order.** There is no venue client in
+the executor, its compose block mounts no secrets and sets no `KALSHI_*` variable, and every
+order it writes carries `mode = paper`. Nothing it does can reach the exchange.
+
+Only one executor may run at a time. The loop takes a Postgres advisory lock at the start of
+each step and releases it at the end, so a second copy — a stray container, or an `exec-once`
+you run by hand while the service is up — finds the lock held, writes nothing at all and logs
+`executor lock held elsewhere; skipping this loop`.
+
+**Reading the heartbeat.** The `exec_heartbeat` table has one row. `last_loop_at` is the clock
+of the most recent completed step, `loops` counts steps since the row was created,
+`loops_skipped` counts steps the scheduler missed (a step that overran its period),
+`last_loop_ms` and `p95_loop_ms` are how long steps are taking, `book_dirty_markets` is how many
+markets the loop could not price this step, `ws_last_event_at` is the newest row on the tape,
+and `last_error` holds the message of the last step that raised, or NULL.
+
+```sh
+ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose exec -T postgres \
+  psql -U harness -d harness -c "select * from exec_heartbeat"'
+```
+
+Two readings matter most. `ws_last_event_at` far behind `last_loop_at` means the recorder has
+stopped, not the executor: the loop marks every book dirty, holds every resting order and
+places nothing, which is the safe behaviour but is not a working system. A rising
+`loops_skipped` with a large `p95_loop_ms` means the loop no longer fits in its period.
+
+**The healthcheck.** `harness exec-health` exits 1 when the heartbeat row is missing or its
+`last_loop_at` is more than 120 s old, and 0 otherwise. Compose runs it every 60 s, so a stalled
+executor shows as an unhealthy container in `make status-nas`. Run it by hand the same way:
+
+```sh
+ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose exec -T app-exec harness exec-health; echo $?'
+```
+
+**One step by hand.** `harness exec-once` runs a single step and prints its `ExecStats`
+(`intents_new`, `placed`, `cancelled`, `expired`, `fills`, `nw_fills`, `skipped`, `errors`,
+`loop_ms`, `locked`). It is the quickest way to see what the loop is deciding. With the service
+running it will report `locked=False` and do nothing; stop `app-exec` first if you want it to
+act.
+
+```sh
+ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose run --rm app-exec exec-once'
+```
+
+**Stopping it.** `docker compose stop app-exec` — the container handles SIGTERM, finishes the
+step in flight and shuts the scheduler down inside the 60 s grace period. Resting paper orders
+are rows in `orders` and simply stay where they are; nothing on the venue depends on them.
+
 ## Clock accuracy
 
 The NAS must run NTP (UGOS Control Panel → Time). Kalshi rejects a WebSocket handshake whose

@@ -10,7 +10,12 @@ import typer
 import uvicorn
 
 from harness.config.settings import Settings, get_settings
-from harness.db.engine import BATCH_STATEMENT_TIMEOUT_MS, make_engine, make_session_factory
+from harness.db.engine import (
+    BATCH_STATEMENT_TIMEOUT_MS,
+    EXEC_STATEMENT_TIMEOUT_MS,
+    make_engine,
+    make_session_factory,
+)
 from harness.db.schema import create_schema
 from harness.logging_setup import configure_logging
 
@@ -18,6 +23,10 @@ app = typer.Typer(no_args_is_help=True)
 variants_app = typer.Typer(no_args_is_help=True)
 app.add_typer(variants_app, name="variants")
 log = logging.getLogger("harness")
+
+#: How stale the executor heartbeat may be before `exec-health` reports the container unhealthy.
+#: Eight loops at the 15 s period: long enough that one slow step is not an outage.
+EXEC_HEALTH_MAX_AGE_S = 120
 
 
 def _variants_source(s: Settings):
@@ -90,6 +99,61 @@ def run() -> None:
         time.sleep(1)
     sched.shutdown(wait=True)
     log.info("scheduler stopped")
+
+
+@app.command("exec")
+def exec_cmd() -> None:
+    """Run the paper executor on its own interval. Places no live order and loads no secret."""
+    configure_logging()
+    from harness.scheduler import build_exec_scheduler, build_executor
+
+    s = get_settings()
+    sched = build_exec_scheduler(build_executor(s), s.exec_period_s)
+    sched.start()
+    stop = {"flag": False}
+
+    def _stop(*_):
+        stop["flag"] = True
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    log.info("executor started period=%ss variants=%s", s.exec_period_s, s.exec_variants)
+    while not stop["flag"]:
+        time.sleep(1)
+    sched.shutdown(wait=True)
+    log.info("executor stopped")
+
+
+@app.command("exec-once")
+def exec_once() -> None:
+    """One executor step, for a manual check. The advisory lock keeps it off the service's toes."""
+    configure_logging()
+    from harness.scheduler import build_executor
+
+    print(build_executor(get_settings()).step())
+
+
+@app.command("exec-health")
+def exec_health() -> None:
+    """Exit 1 when the executor's heartbeat is missing or older than EXEC_HEALTH_MAX_AGE_S.
+
+    Its own engine and its own connection: the compose healthcheck runs it in a fresh process,
+    and a health probe that shares a pool with a stalled loop would inherit the stall.
+    """
+    configure_logging()
+    from harness.execution.store import read_heartbeat
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url, EXEC_STATEMENT_TIMEOUT_MS))() as session:
+        row = read_heartbeat(session)
+    if row is None or row.last_loop_at is None:
+        log.error("no executor heartbeat")
+        raise typer.Exit(1)
+    age = float(row.age_s)
+    if age > EXEC_HEALTH_MAX_AGE_S:
+        log.error("executor heartbeat is %.0fs old (max %ss)", age, EXEC_HEALTH_MAX_AGE_S)
+        raise typer.Exit(1)
+    log.info("executor healthy: %.0fs since loop %s", age, row.loops)
 
 
 @app.command("serve")

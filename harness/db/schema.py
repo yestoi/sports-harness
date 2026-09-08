@@ -110,6 +110,15 @@ _COLUMN_DDL = (
     "alter table venue_markets add column if not exists match_key varchar(64)",
     "alter table runs add column if not exists build_sha varchar(24)",
     "alter table signals add column if not exists as_measured numeric(6,4)",
+    # Task 6: the rest of the fill simulator's per-track state, persisted on the order so a
+    # restart resumes the same simulation, plus the dirty accumulator in seconds.
+    "alter table orders add column if not exists crossed boolean not null default false",
+    "alter table orders add column if not exists last_print_ts timestamptz",
+    "alter table orders add column if not exists last_print_ids jsonb",
+    "alter table orders add column if not exists nw_crossed boolean not null default false",
+    "alter table orders add column if not exists nw_last_print_ts timestamptz",
+    "alter table orders add column if not exists nw_last_print_ids jsonb",
+    "alter table orders add column if not exists dirty_seconds integer not null default 0",
 )
 
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).

@@ -97,3 +97,21 @@ services:
         condition: service_healthy
     restart: on-failure
     stop_grace_period: 30s
+
+  app-exec:
+    build: .
+    user: "${APP_UID:-65534}:${APP_GID:-65534}"
+    command: ["exec"]
+    env_file: .env
+    # No volumes and no credential environment, deliberately: the paper executor has no venue
+    # client, so there is nothing here that could send an order even if the code changed.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "harness exec-health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    stop_grace_period: 60s

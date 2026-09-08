@@ -459,8 +459,22 @@ class Order(Base):
     nw_traded_at_price: Mapped[Decimal | None] = mapped_column(CONTRACTS)
     nw_tape_cursor_event_id: Mapped[int | None] = mapped_column(BigInteger)
     nw_done: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: The rest of `execution.fills.SimState`, per track (Task 4 review ruling). `crossed` makes
+    #: the worst-case fill happen once even though the book keeps crossing on every later loop;
+    #: the print watermark makes a print idempotent even though the executor keeps no print
+    #: cursor and rescans from `placed_at - 60 s` every loop.
+    crossed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_print_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_print_ids: Mapped[list | None] = mapped_column(JSONB)
+    nw_crossed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    nw_last_print_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    nw_last_print_ids: Mapped[list | None] = mapped_column(JSONB)
     #: Minutes this order's book spent dirty after a WS gap (D6), so an optimistic queue is visible.
     dirty_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: The same quantity in seconds, which is what the loop can actually accumulate: one dirty
+    #: 15 s loop is a quarter of a minute, and adding that to an integer column would round to
+    #: zero forever. `dirty_minutes` is derived from this in the same statement.
+    dirty_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
