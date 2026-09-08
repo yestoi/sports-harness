@@ -199,6 +199,74 @@ CHECKS: list[Check] = [
         "markouts_at_after_horizon",
         "select count(*) from markouts where at_ts > horizon_ts",
         "== 0", _zero),
+    # --- Final fix wave, I1: the eight Task 12b telemetry statements (verify.md:191-208).
+    # Task 12b built this registry against verify.md:145-190; Task 14 then extended the file
+    # with one invariant per new telemetry table, and until these landed "every check passed"
+    # was no longer "every Layer 2b invariant in verify.md is zero". Each is bounded the same
+    # way verify.md writes it: a 24 h (25 h for the daily check sweep) `ts` window on the
+    # append-only sample tables, and nothing at all on `report_runs`/`report_cells`, which
+    # gain a handful of rows a week.
+    Check(
+        "metric_samples_negative_24h",
+        "select count(*) from metric_samples "
+        "where ts > now() - interval '24 hours' and value < 0",
+        "== 0", _zero),
+    Check(
+        "operator_events_empty_summary_24h",
+        "select count(*) from operator_events "
+        "where ts > now() - interval '24 hours' and trim(summary) = ''",
+        "== 0", _zero),
+    Check(
+        "order_watch_negative_queue_24h",
+        """
+        select count(*) from order_watch_samples
+        where ts > now() - interval '24 hours'
+          and (queue_remaining < 0 or nw_queue_remaining < 0)
+        """,
+        "== 0", _zero),
+    Check(
+        "equity_mtm_coverage_out_of_range_24h",
+        """
+        select count(*) from equity_snapshots
+        where ts > now() - interval '24 hours' and mtm_coverage is not null
+          and (mtm_coverage < 0 or mtm_coverage > 1)
+        """,
+        "== 0", _zero),
+    Check(
+        "game_score_went_down_24h",
+        # A game's score can never go down: a later event carrying a lower home or away score
+        # than one of its own game's earlier events is a normalizer bug, not a comeback. The
+        # inner scan is bounded by `p.game_id = e.game_id` on the same 24 h slice.
+        """
+        select count(*) from game_score_events e
+        where e.ts > now() - interval '24 hours'
+          and exists (select 1 from game_score_events p
+                      where p.game_id = e.game_id and p.ts < e.ts
+                        and (p.home_score > e.home_score or p.away_score > e.away_score))
+        """,
+        "== 0", _zero),
+    Check(
+        "check_results_unknown_status_25h",
+        # 25 h, not 24: the sweep is daily, so a 24 h window can miss the previous run by
+        # minutes. Same window verify.md's own "all pass" query uses.
+        "select count(*) from check_results "
+        "where ts > now() - interval '25 hours' and status not in ('pass', 'fail', 'skip')",
+        "== 0", _zero),
+    Check(
+        "report_runs_generated_in_future",
+        # Small table (one provisional row per report_wtd pass plus one per weekly report),
+        # so no window is needed to keep it bounded.
+        "select count(*) from report_runs where generated_at > now()",
+        "== 0", _zero),
+    Check(
+        "report_cells_orphan",
+        # Also small, and also unwindowed: an orphan cell is a persist_report that wrote its
+        # cells without their run, which no window would be allowed to age out of view.
+        """
+        select count(*) from report_cells rc
+        where not exists (select 1 from report_runs rr where rr.id = rc.report_run_id)
+        """,
+        "== 0", _zero),
 ]
 
 

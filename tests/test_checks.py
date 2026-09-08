@@ -26,7 +26,17 @@ EXPECTED_NAMES = {
     "settlement_result_mismatch", "fair_values_negative_feed_lag",
     "benchmarks_source_after_target", "fills_outside_placement_window",
     "markouts_at_after_horizon",
+    # Final fix wave, I1: the eight Task 12b telemetry statements verify.md:191-208 added
+    # after the registry was built, so "all checks pass" is again "every Layer 2b invariant
+    # in verify.md is zero".
+    "metric_samples_negative_24h", "operator_events_empty_summary_24h",
+    "order_watch_negative_queue_24h", "equity_mtm_coverage_out_of_range_24h",
+    "game_score_went_down_24h", "check_results_unknown_status_25h",
+    "report_runs_generated_in_future", "report_cells_orphan",
 }
+
+#: verify.md:145-208 holds 27 invariant statements; the registry must hold one check each.
+EXPECTED_COUNT = 27
 
 
 def test_checks_all_have_timeout_and_no_tape_reads(db_session):
@@ -40,6 +50,7 @@ def test_checks_all_have_timeout_and_no_tape_reads(db_session):
     per check, captured directly off the wire against the real `CHECKS` list.
     """
     assert {c.name for c in CHECKS} == EXPECTED_NAMES
+    assert len(CHECKS) == EXPECTED_COUNT
     for check in CHECKS:
         assert check.threshold
         assert callable(check.ok)
