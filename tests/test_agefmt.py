@@ -58,9 +58,10 @@ def _in_scope(meta: dict, body: bytes) -> bool:
     2. An ML-KEM-**only** header is not either: no single-X25519-recipient implementation
        can decrypt those, and nine of them expect a `header failure` for a defect only an
        ML-KEM implementation can detect.
-    3. A vector that supplies identities but no *plain* X25519 identity is addressed
-       entirely to keys this reader cannot represent. Exactly one vector is caught only by
-       this condition -- `hybrid_and_x25519`, see the test below for the evidence.
+    3. A vector that supplies identities but no plain `AGE-SECRET-KEY-1` identity is out of
+       scope: it is addressed entirely to keys this reader cannot represent. Exactly one
+       vector is caught only by this condition -- `hybrid_and_x25519`, whose derivation is
+       in the test below.
 
     Condition 3 is stated as "supplies identities but none of them plain" rather than
     "supplies no plain identity" so that `empty`, which carries no `identity:` key at all,
