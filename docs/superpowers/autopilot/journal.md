@@ -519,3 +519,17 @@ Times are America/Chicago.
 - Rulings: (1) Orient rule 1 does not fire: carried fixes 9 and 13 are phase-bound (entry 38 ruling 1). (2) Rule 2: deployed = `main`, no deploy. (3) Rule 3: the last verify (36) postdates the last deploy (34); no wakeup survives a restart; the deferred items (fix 4 gap recovery, 7 null feed_kind rows) fold into the morning-after verify Tue 2026-09-08 after 08:10 CT. (4) Rule 4: the daily watch (30) and the alias pass (11) ran today; nothing due. (5) Rule 5 applies: phase 3 resumes at ledger rule 2a: the Task 3b and Task 5 reviewers are dispatched (opus: recorder/venue paths, execution path). (6) U6: Task 12b enters the wave map after Tasks 6, 7, 10, 11 and 12 and before 13; its brief is written from the plan text at that point. (7) U7: `git push origin main phase3-paper-execution` joins the bundle step after the phase and on Mondays; the loop never pulls.
 - Carried forward: none
 - Next: phase (Task 3b and Task 5 reviews in flight); the game window blocks deploys until about 22:30 CT; the Task 2b quiet-window deploy at the first boundary after 01:00 CT
+
+## 40. phase - phase 3 progress: Tasks 3b and 5 merged, Task 6 dispatched - 2026-09-07 19:28 CT
+- Orient: rule 5 continuation (entry 39 ruling 5)
+- Branch / commits: `phase3-paper-execution` 8002270..059cf40 (Task 5 487fd73, c26d394; Task 3b 5687a94, 059cf40)
+- Result: in progress (18 tasks with 12b: 1, 2, 2b, 3, 3b, 4, 4b, 5 complete; 6 implementing; 7-14 queued)
+- Dispatches: 7 this session (review 2, impl 3, re-review 2); day total 70
+- Tests: 540 on the phase branch at 059cf40, pristine
+- Review: Task 5 one fix round (a null target now emits `Skip(no_target)` instead of crashing the tick; `rebuild_state` counts each fill once: daily = open orders + fills today, game = open orders + unsettled positions; NO_EDGE shared); Task 3b one fix round (match_key cleared only where game_id is nulled; open-order tickers join the subscription at any horizon; None grid counts as non-linear; ROUND_HALF_UP in compose_match_key; alternates_due defaults mirror settings 120/120/36)
+- Deploy: none (game window open)
+- Verification: n/a
+- Rulings (all in the ledger): (1) Task 5 Important 1 fixed by a skip rule, not by narrowing types. (2) Task 5 Important 2: each stake enters each aggregate once. (3) Task 5 Minors 5 and 6 are Task 6 obligations (cancels applied before places; variant_cfg covers the union of intent and open-order variants with `with_defaults`); Minors 3, 4, 7 deferred. (4) Task 3b Important 2 implemented as the brief's "(any horizon)" union. (5) Task 3b Minors 1, 2, 4, 5, 7 fixed in the round; 3 and 8 deferred. (6) Task 6's Files gain models.py and schema.py for the six additive per-track SimState columns on `orders` (Task 4 ruling). (7) Fresh implementers for both fix rounds at the original tier (the previous session's agents are gone).
+- Anomalies: none
+- Carried forward: none
+- Next: Task 6 review (opus) when it reports; then 7, 8, 9 serial; game window closes about 22:30 CT; Task 2b quiet-window deploy after 01:00 CT
