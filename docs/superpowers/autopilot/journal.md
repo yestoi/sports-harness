@@ -533,3 +533,17 @@ Times are America/Chicago.
 - Anomalies: none
 - Carried forward: none
 - Next: Task 6 review (opus) when it reports; then 7, 8, 9 serial; game window closes about 22:30 CT; Task 2b quiet-window deploy after 01:00 CT
+
+## 41. phase - phase 3 progress: Tasks 6, 7, 8 merged, Task 9 dispatched - 2026-09-07 22:33 CT
+- Orient: rule 5 continuation (entry 40)
+- Branch / commits: `phase3-paper-execution` 059cf40..0110fcd (Task 6 fe54563, ceb68fd, 30b3b8d; Task 7 5d73017, 5e119f4, 888f604; Task 8 512862b, 8d433dc, 0110fcd; docs)
+- Result: in progress (18 tasks: 1, 2, 2b, 3, 3b, 4, 4b, 5, 6, 7, 8 complete; 9 implementing; 10-14 and 12b queued)
+- Dispatches: 19 this session (impl 6, review 5, re-review 5, plus 3 fix-round resumes by message); day total 82
+- Tests: 628 on the phase branch at 0110fcd, pristine
+- Review: Task 6 one fix round (kickoff skip recorded; cursor = what the simulation consumed; within-period gap recovery; nw_done on early returns; once-per-order cross across diverging tracks); Task 7 one fix round (live-only settlement ledger with the status update split out; per-ticker savepoints and a yes/no/tie/void whitelist; degraded status on ctx errors); Task 8 one fix round (Critical: the `result` CLV row could never join; candidacy is now per missing (row, type) pair; per-type target_ts; the drain continues past an unbenchmarkable game; Budget honoured)
+- Deploy: none (game window until about 22:30 CT; the quiet-window deploy is next at 01:00 CT)
+- Verification: n/a
+- Rulings (all in the ledger; the notable ones): (1) Task 6: the intent query drops the kickoff term so `Skip(kickoff)` is recorded; the persisted cursor is the last consumed event id; `dirty_seconds` accepted; restart forfeits one clamp (conservative). (2) Task 7: the brief's "non-replay order" is binding for the ledger; `void` joins the venue whitelist. (3) Task 8: the three `benchmark_type` columns widened to String(32) in the model only (the tables have never existed on the NAS, 0 of 3 at 21:20 CT), never by ALTER TYPE; an implementer's provisional ALTER was reverted before review; novig_devig_t5 is computed from the recorded Odds API novig lines (roadmap phase 5 note). (4) The result-lands-last assumption behind the drain's watermark accepted as structural.
+- Anomalies: the Task 8 implementer acted before a ruling reached it (an ALTER COLUMN TYPE, reverted in the next commit; the net diff has none)
+- Carried forward: none
+- Next: Task 9 review when it reports; then 10 (opus) and 12 (sonnet) in parallel; the Task 2b quiet-window deploy at the first boundary after 01:00 CT (writers stopped, `partition-bulk-tables`, recovery notes)
