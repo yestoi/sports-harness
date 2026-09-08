@@ -126,15 +126,28 @@ def test_run_checks_resets_statement_timeout_after_the_last_check(db_session):
     """Fix round 1, M1: `SET LOCAL` inside a savepoint that RELEASEs (no error, no timeout)
     survives past the savepoint for the rest of the transaction -- so without an explicit
     reset, whatever housekeeping does after `run_checks` would keep running under a 2 s
-    timeout it never asked for. A tiny `STATEMENT_TIMEOUT_MS` during `run_checks` and a
-    `pg_sleep` well past it, run afterward, proves the timeout no longer applies."""
+    timeout it never asked for.
+
+    Final fix wave, M2: this used to prove its point only by not raising on a `pg_sleep`, which
+    reads as an assertion-free test to a scanner. It now asserts the setting itself -- the
+    session's `statement_timeout` is back to the value it had before the call -- and keeps the
+    `pg_sleep` as the behavioural half, with its result asserted.
+    """
     job = JobRun(job="settle", started_at=NOW, status="running", notes={})
     db_session.add(job)
     db_session.flush()
+
+    before = db_session.execute(checks_mod.text("show statement_timeout")).scalar()
 
     fake = [Check("always_pass", "select 0", "== 0", lambda v: float(v) == 0.0)]
     with mock.patch.object(checks_mod, "STATEMENT_TIMEOUT_MS", 50):
         run_checks(db_session, NOW, job.id, checks=fake)
 
-    # 150ms comfortably exceeds the 50ms timeout run_checks used; if it leaked, this raises.
-    db_session.execute(checks_mod.text("select pg_sleep(0.15)"))
+    after = db_session.execute(checks_mod.text("show statement_timeout")).scalar()
+    assert after == before
+    assert after != "50ms"
+
+    # And behaviourally: 150ms comfortably exceeds the 50ms timeout run_checks used, so a leak
+    # would cancel this statement instead of returning its row.
+    assert db_session.execute(
+        checks_mod.text("select 1 from pg_sleep(0.15)")).scalar() == 1

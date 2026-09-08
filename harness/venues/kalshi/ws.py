@@ -14,6 +14,7 @@ from harness import telemetry
 from harness.config.settings import Settings
 from harness.db.models import Game, Order, Signal, StrategyVariant, VenueMarket, VenueQuote
 from harness.feeds.http import HttpClient
+from harness.logging_setup import redact
 from harness.venues.kalshi.auth import sign_request
 from harness.venues.kalshi.clock import server_time_offset_ms
 
@@ -374,7 +375,13 @@ class WsRecorder:
                 self._reconnects_since += 1
                 if self.sink is not None:
                     try:
-                        self.sink.write_event("ws_disconnect", repr(e)[:200], ts=self.clock())
+                        # Final fix wave, M1: redact *then* truncate. `telemetry.sanitize_reason`
+                        # strips punctuation but does not apply the F55 patterns, and the
+                        # dashboard renders `operator_events.summary` -- this was the one path
+                        # where an exception string reached a rendered field without passing
+                        # the log redactor.
+                        self.sink.write_event("ws_disconnect", redact(repr(e))[:200],
+                                              ts=self.clock())
                     except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the ws loop
                         log.exception("ws_disconnect event failed")
                         self._rollback_sink()

@@ -1296,3 +1296,40 @@ def test_a_stale_gap_sid_does_not_survive_into_the_next_connection(monkeypatch):
     assert sink.gap_sids == set()
     assert not [f for f in _subscription_frames(sockets[0]) if 99 in f["params"]["sids"]]
     assert sink.cleared == []
+
+
+def test_ws_disconnect_summary_goes_through_the_log_redactor(monkeypatch):
+    """Final fix wave, M1: the disconnect reason is an exception repr, and it was the one path
+    where an exception string reached a rendered column (`operator_events.summary`, on the
+    dashboard) without passing the F55 redaction patterns -- `telemetry.sanitize_reason` strips
+    punctuation but does not redact. websocket-client's own messages do not carry credentials
+    today, so this is defence in depth: an exception whose text quotes the connect URL with a
+    token-like query string must be stored redacted."""
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: [])
+
+    secret = "sk-ant-supersecrettoken"
+    url = f"wss://api.elections.kalshi.com/trade-api/ws/v2?api_key=abc123def&token={secret}"
+
+    def ws_factory(*_a, **_kw):
+        raise websocket.WebSocketException(f"handshake failed for {url}")
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None,
+                          ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+    sink = _FakeSink(lambda _m, _t: None)
+    real_write_event = sink.write_event
+
+    def write_event(kind, summary, ref=None, ts=None):
+        real_write_event(kind, summary, ref, ts)
+        recorder.stop()
+
+    sink.write_event = write_event
+    recorder.sink = sink
+    recorder.run_forever()
+
+    disconnects = [summary for kind, summary, _ in sink.events if kind == "ws_disconnect"]
+    assert disconnects
+    assert secret not in disconnects[0]
+    assert "abc123def" not in disconnects[0]
+    assert "[REDACTED]" in disconnects[0]
