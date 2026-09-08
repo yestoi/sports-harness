@@ -18,6 +18,7 @@ from sqlalchemy import select
 from harness.feeds.http import HttpClient
 from harness.venues.kalshi.http import (
     DEMO_HOST_SUFFIX, HostNotAllowed, KalshiTransport, PaperModeViolation, PROD_HOSTS,
+    VenueTransportError,
 )
 
 PROD = "https://api.elections.kalshi.com/trade-api/v2"
@@ -322,9 +323,50 @@ def test_a_recorded_row_carries_a_utc_timestamp_and_an_elapsed_ms():
 def test_a_transport_error_records_a_row_with_a_null_status():
     respx.get(f"{PROD}/exchange/status").mock(side_effect=httpx.ConnectError("boom"))
     rows = []
-    with pytest.raises(Exception):
+    with pytest.raises(VenueTransportError):
         _t(recorder=rows.append, sleep=lambda _s: None).request("GET", "/exchange/status")
     assert len(rows) == 2 and all(r.status is None for r in rows)   # one attempt, one retry
+
+
+@respx.mock
+def test_a_transport_error_is_wrapped_and_carries_no_request():
+    """An httpx exception's .request holds the signed headers, so it must not escape.
+
+    Checked on the object graph, not just the type: __cause__ and __context__ are both empty, so
+    there is no chain a caller could walk back to the request.
+    """
+    respx.get(f"{PROD}/portfolio/balance").mock(side_effect=httpx.ConnectError("boom"))
+    with pytest.raises(VenueTransportError) as exc:
+        _t(sleep=lambda _s: None).request("GET", "/portfolio/balance")
+    err = exc.value
+    assert err.method == "GET" and err.path == "/portfolio/balance"
+    assert err.cause_class_name == "ConnectError"
+    assert err.__cause__ is None and err.__context__ is None
+    assert not hasattr(err, "request")
+    assert not any(isinstance(v, (httpx.Request, httpx.Response, httpx.HTTPError))
+                   for v in vars(err).values())
+    assert str(err) == "GET /portfolio/balance failed: ConnectError"
+
+
+@respx.mock
+def test_the_wrapped_error_message_carries_no_header_value(caplog):
+    seen = {}
+
+    def _capture(request):
+        seen.update({k.upper(): v for k, v in dict(request.headers).items()})
+        raise httpx.ReadTimeout("t", request=request)
+
+    respx.get(f"{PROD}/portfolio/balance").mock(side_effect=_capture)
+    caplog.set_level(logging.NOTSET)
+    with pytest.raises(VenueTransportError) as exc:
+        _t(sleep=lambda _s: None).request("GET", "/portfolio/balance")
+
+    # What a caller that logs the exception would actually write.
+    logging.getLogger("caller").exception("venue call failed", exc_info=exc.value)
+    written = " ".join(f"{r.msg!r} {r.getMessage()!r} {r.args!r}" for r in caplog.records)
+    written += " " + repr(exc.value) + " " + str(exc.value)
+    for secret in (seen["KALSHI-ACCESS-KEY"], seen["KALSHI-ACCESS-SIGNATURE"]):
+        assert secret not in written
 
 
 # --- retries are re-signed (A-I5) -------------------------------------------------------------
@@ -427,9 +469,12 @@ def test_a_post_is_never_resent_after_a_timeout():
     respx.post(f"{PROD}/portfolio/events/orders").mock(side_effect=httpx.ReadTimeout("t"))
     rows = []
     t = _t(writes_enabled=True, recorder=rows.append, sleep=lambda _s: None)
-    with pytest.raises(httpx.ReadTimeout):
+    with pytest.raises(VenueTransportError) as exc:
         t.request("POST", "/portfolio/events/orders", json={"ticker": "X"})
     assert len(rows) == 1
+    # The wrapper, not the httpx exception, and no chain back to the signed request.
+    assert exc.value.cause_class_name == "ReadTimeout"
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
 
 
 @respx.mock

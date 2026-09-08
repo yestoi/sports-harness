@@ -36,9 +36,11 @@ the first place. `test_a_signed_request_emits_no_log_record_carrying_a_header_va
 at every level against the real signature that goes out on the wire. Any future caller that logs a
 headers mapping would defeat this, so do not.
 
-One thing this module cannot cover: a transport error propagates as the raw `httpx` exception, and
-`exc.request.headers` on it still holds the signed headers. A caller that logs the exception's
-request, rather than the exception, would put them in a log. Log the exception.
+A transport error surfaces as `VenueTransportError`, never as the raw `httpx` exception. An httpx
+exception carries `.request`, whose headers hold the live signed values, so a caller that logged it
+would put a working signature in a log. The wrapper holds the method, the signed path and the name
+of the underlying exception class, and nothing else; it is raised clear of the handler so neither
+`__cause__` nor `__context__` leads back to the request. Tasks 6 to 8 catch `VenueTransportError`.
 """
 import math
 import time
@@ -104,6 +106,21 @@ class PaperModeViolation(RuntimeError):
     def __init__(self, method: str, path: str) -> None:
         super().__init__(f"{method} {path} refused: this transport has writes disabled")
         self.method, self.path = method, path
+
+
+class VenueTransportError(RuntimeError):
+    """A network-layer failure, with the venue's request object deliberately left behind.
+
+    `httpx` exceptions carry `.request`, and that request's headers hold the live
+    `KALSHI-ACCESS-SIGNATURE` and `KALSHI-ACCESS-KEY` values. The log-redaction filter matches
+    `HEADER: value` text and not a repr, so a caller that logged such an exception would put a
+    usable signature in a log. This type holds only the method, the signed path and the name of
+    the underlying exception class, so there is nothing sensitive to leak.
+    """
+
+    def __init__(self, method: str, path: str, cause_class_name: str) -> None:
+        super().__init__(f"{method} {path} failed: {cause_class_name}")
+        self.method, self.path, self.cause_class_name = method, path, cause_class_name
 
 
 class HostNotAllowed(RuntimeError):
@@ -175,17 +192,24 @@ class KalshiTransport:
             headers = sign_request(self._key_id, self._pem, method, signed_path, ts_ms)
             self._counters["attempts"] += 1
             t0 = time.monotonic()
+            failure = None
             try:
                 resp = self._send(method, url, params, json, headers)
-            except (httpx.TimeoutException, httpx.TransportError):
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                # Keep the class name, never the exception: its .request holds the signed headers.
+                failure = VenueTransportError(method, path, type(exc).__name__)
                 self._record(method, path, None, now, _ms_since(t0))
+
+            if failure is not None:
                 # A non-idempotent request is never resent blind: the caller reconciles by
                 # client_order_id, because the venue may well have accepted the order.
                 if idempotent and n_err < RETRY_TRANSPORT_MAX:
                     n_err += 1
                     self._sleep(RETRY_BACKOFF_S)
                     continue
-                raise
+                # Raised clear of the except block, so __context__ is empty too; `from None`
+                # alone would leave the httpx exception, and its request, on __context__.
+                raise failure from None
 
             elapsed_ms = _ms_since(t0)
             self._record(method, path, resp.status_code, now, elapsed_ms)
