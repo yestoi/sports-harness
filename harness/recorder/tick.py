@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -59,6 +60,28 @@ _TIER_MAX_LEN = 32
 _LIMITS_WARNING_MAX_LEN = 200
 _CONTROL_CHARS = frozenset(chr(c) for c in range(0x20)) | {chr(0x7F)}
 
+#: The ceiling on the page pause the venue's own bucket may impose (fix round 1, Important 2).
+#: `KalshiPublic._pause` sleeps this after every page and the paging loops have no budget check
+#: inside them, so an unbounded pause from one malformed or mis-unit'd `refill_rate` would stop
+#: the recorder's Kalshi fetching silently and indefinitely -- `max_instances=1` then drops every
+#: subsequent tick. Five seconds is far above any real Kalshi read bucket and far below a tick.
+PAGE_PAUSE_CEILING_S = 5.0
+#: The range a venue-supplied refill rate must fall in to be believed, in requests per second,
+#: and the range for a bucket capacity (fix round 1, Important 1). A number outside either has no
+#: safe interpretation, so the whole read is discarded rather than clamped: these values reach a
+#: control path (the page pause) and `runs.notes`, and the global constraints keep venue numbers
+#: out of both unfiltered. `dec` has already rejected NaN and the infinities upstream; this also
+#: catches the finite Decimals that become 0.0 or inf when narrowed to a float (`1e-400`, `1e400`).
+LIMIT_RATE_RANGE = (0.001, 1e6)
+LIMIT_CAPACITY_RANGE = (0.0, 1e9)
+
+
+class _UnusableLimits(ValueError):
+    """A decoded `Limits` carrying a number outside `LIMIT_RATE_RANGE`/`LIMIT_CAPACITY_RANGE`, or
+    one that does not narrow to a finite float. Treated exactly like a failed read: the note is
+    `null`, the pause is untouched, and the tick carries on. Carries no venue text, only the
+    field name that failed."""
+
 
 def _safe_venue_text(value, max_len: int) -> str | None:
     """Untrusted venue text made safe to store and print: ASCII-escaped, every C0 control
@@ -69,19 +92,58 @@ def _safe_venue_text(value, max_len: int) -> str | None:
     return "".join(ch for ch in text if ch not in _CONTROL_CHARS)[:max_len]
 
 
-def _as_float(value: Decimal | None) -> float | None:
-    """A decoded venue Decimal as a JSON number for `runs.notes`. `dec` has already rejected
-    NaN and the infinities, so this cannot produce a value JSON refuses to serialise."""
-    return None if value is None else float(value)
+def _checked_float(value, lo: float, hi: float, field: str) -> float | None:
+    """A decoded venue Decimal as a finite JSON number inside [lo, hi], or None when the venue
+    did not send the field at all.
+
+    Fix round 1, Important 1. The old `_as_float` was wrong twice over: `float(Decimal('1e400'))`
+    is `inf`, which `json.dumps` writes as a bare `Infinity` that Postgres rejects for `jsonb`
+    (failing `finish_run` at the end of the tick), and `float(Decimal('1e-400'))` underflows to
+    `0.0`, which then divided by zero in the pause floor. Both Decimals are finite, so `dec`
+    passes them through.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise _UnusableLimits(f"{field} is not a number") from None
+    if not math.isfinite(number):
+        raise _UnusableLimits(f"{field} is not finite as a float")
+    if not lo <= number <= hi:
+        raise _UnusableLimits(f"{field} outside [{lo}, {hi}]")
+    return number
 
 
-def page_pause_s(setting: float, read_refill_rate: Decimal | None) -> float:
-    """The recorder's Kalshi page pause, floored by the venue's own read bucket and never
-    lowered below the setting (§1.3). A None, zero or negative refill rate leaves the setting
-    untouched: an unreadable bucket is not a licence to go faster."""
-    if read_refill_rate is None or read_refill_rate <= 0:
+def page_pause_s(setting: float, read_refill_rate: Decimal | float | None) -> float:
+    """The recorder's Kalshi page pause, floored by the venue's own read bucket, never lowered
+    below the setting and never raised above `PAGE_PAUSE_CEILING_S` (§1.3; fix round 1,
+    Important 2).
+
+    A None, zero, negative or unnarrowable refill rate leaves the setting untouched: an
+    unreadable bucket is not a licence to go faster. The rate is narrowed to a float *before*
+    the sign test, because `float(Decimal('1e-400'))` is `0.0` and dividing by it raises.
+
+    The ceiling is applied as `max(setting, PAGE_PAUSE_CEILING_S)` rather than a bare
+    `min(..., PAGE_PAUSE_CEILING_S)`: the operator's own `kalshi_sleep_s` is trusted input and
+    the task's headline invariant is that the pause is never lowered below it. The two agree for
+    every setting at or under the ceiling, which is every real configuration (production runs
+    0.05 s).
+    """
+    if read_refill_rate is None:
         return setting
-    return max(setting, 1.0 / float(read_refill_rate))
+    try:
+        rate = float(read_refill_rate)
+    except (TypeError, ValueError, OverflowError):
+        return setting
+    if not math.isfinite(rate) or rate <= 0:
+        return setting
+    floored = max(setting, 1.0 / rate)
+    if floored <= PAGE_PAUSE_CEILING_S:
+        return floored
+    log.warning("kalshi read bucket implies a %.1f s page pause; clamped to %.1f s",
+                floored, PAGE_PAUSE_CEILING_S)
+    return max(setting, PAGE_PAUSE_CEILING_S)
 
 
 def utcnow() -> datetime:
@@ -193,8 +255,11 @@ class Recorder:
         # the two bind mounts the recorder simply has no authenticated reader and no limits.
         self._limits_reader = limits_reader
         self._venue_limits = None            # the newest decoded Limits, or None
-        self._limits_read_at: datetime | None = None       # when that read succeeded
-        self._limits_attempted_at: datetime | None = None  # when one was last tried
+        self._limits_fields: dict | None = None   # its validated note fields, minus age_s
+        self._limits_read_at: datetime | None = None        # wall clock of the last success
+        # The cadence runs on the monotonic clock, not the wall clock (fix round 1, Minor): a
+        # backwards NTP step would otherwise defer the next read by the size of the jump.
+        self._limits_attempted_mono: float | None = None
         # 401/403 only (§9.4); reset by any successful read. Task 10's OutageCounter subsumes
         # this integer -- do not import it here, it does not exist yet, and no paper process
         # writes `venue_status` (ruling D11).
@@ -229,19 +294,32 @@ class Recorder:
         return body
 
     # ---- the venue's own rate limits (ruling A-C3) ----------------------------------
-    def _limits_note(self, pause_s: float) -> dict | None:
-        """The `runs.notes->'venue_limits'` block: numeric and enum fields only, never the raw
-        body (`Limits.raw` is deliberately not read here). `tier` is sanitized venue text."""
-        limits = self._venue_limits
-        if limits is None or self._limits_read_at is None:
-            return None
+    @staticmethod
+    def _limits_fields_from(limits, pause_s: float, read_at: datetime) -> dict:
+        """The `runs.notes->'venue_limits'` block minus `age_s`: numeric and enum fields only,
+        never the raw body (`Limits.raw` is deliberately not read here). `tier` is sanitized
+        venue text; every number is range-checked, so this raises `_UnusableLimits` rather than
+        returning something a `jsonb` column or a division would choke on."""
         return {"tier": _safe_venue_text(limits.tier, _TIER_MAX_LEN),
-                "read_refill_rate": _as_float(limits.read_refill_rate),
-                "read_capacity": _as_float(limits.read_capacity),
-                "write_refill_rate": _as_float(limits.write_refill_rate),
-                "write_capacity": _as_float(limits.write_capacity),
+                "read_refill_rate": _checked_float(limits.read_refill_rate, *LIMIT_RATE_RANGE,
+                                                   "read_refill_rate"),
+                "read_capacity": _checked_float(limits.read_capacity, *LIMIT_CAPACITY_RANGE,
+                                                "read_capacity"),
+                "write_refill_rate": _checked_float(limits.write_refill_rate, *LIMIT_RATE_RANGE,
+                                                    "write_refill_rate"),
+                "write_capacity": _checked_float(limits.write_capacity, *LIMIT_CAPACITY_RANGE,
+                                                 "write_capacity"),
                 "page_pause_s": pause_s,
-                "read_at": self._limits_read_at.isoformat()}
+                "read_at": read_at.isoformat()}
+
+    def _limits_note(self, now: datetime) -> dict | None:
+        """The stored fields plus `age_s`, seconds since the last successful read, so the Health
+        block shows how stale the block is rather than implying it was just refreshed (fix
+        round 1, Minor)."""
+        if self._limits_fields is None or self._limits_read_at is None:
+            return None
+        return {**self._limits_fields,
+                "age_s": round((now - self._limits_read_at).total_seconds(), 3)}
 
     def _read_limits(self, now: datetime, ctx: dict) -> None:
         """`GET /account/limits` at the first tick and hourly after it, on the signed GET-only
@@ -250,9 +328,11 @@ class Recorder:
         This is the only call that writes a `venue_requests` row in production, which is what
         makes the §3 paper-posture tripwire non-vacuous.
 
-        Three things are deliberate here. **It can never fail a tick**: any exception is caught,
-        warned about and turned into a `null` note, because the recorder's job is the tape and
-        a venue rate-limit reading is a nicety. **The cadence gates the attempt, not the
+        Three things are deliberate here. **It can never fail a tick**: the whole step -- the
+        call, the decode, the range checks, the note and the pause derivation -- sits inside one
+        `try`, and nothing after it can raise (fix round 1, Important 1: the success path used to
+        sit outside, so a finite-but-extreme venue rate raised `ZeroDivisionError` straight out
+        of `maybe_tick` and left the run row unfinished). **The cadence gates the attempt, not the
         success**: a 401 at a 30 s heartbeat would otherwise be 120 signed failures an hour,
         inflating the §9.4 auth-error count and hammering the venue, so a failed read waits out
         the hour like a successful one. **The pause is re-derived from the setting**, never from
@@ -264,16 +344,22 @@ class Recorder:
         """
         if self._limits_reader is None:
             return
-        due = (self._limits_attempted_at is None
-               or (now - self._limits_attempted_at).total_seconds() >= LIMITS_REFRESH_S)
-        if not due:
-            # Between reads the note still reports the limits actually in force, so the Health
-            # block does not blink to null for 59 minutes out of every 60.
-            ctx["venue_limits"] = self._limits_note(self.kalshi._sleep_s)
-            return
-        self._limits_attempted_at = now
         try:
+            mono = self.monotonic()
+            due = (self._limits_attempted_mono is None
+                   or (mono - self._limits_attempted_mono) >= LIMITS_REFRESH_S)
+            if not due:
+                # Between reads the note still reports the limits actually in force, so the
+                # Health block does not blink to null for 59 minutes out of every 60. `age_s`
+                # says how old the reading is.
+                ctx["venue_limits"] = self._limits_note(now)
+                return
+            # Set before the call, so a raising read still consumes the hour.
+            self._limits_attempted_mono = mono
             limits = self._limits_reader.get_account_limits()
+            fields = self._limits_fields_from(
+                limits, page_pause_s(self.s.kalshi_sleep_s, limits.read_refill_rate), now)
+            pause_s = fields["page_pause_s"]
         except Exception as e:  # noqa: BLE001 - a venue read never fails the tick
             log.warning("kalshi limits read failed on /account/limits: %s", type(e).__name__)
             if getattr(e, "status", None) in (401, 403):
@@ -283,11 +369,28 @@ class Recorder:
             # The pause and the last known limits are both left exactly as they were.
             ctx["venue_limits"] = None
             return
+        # Nothing below this line can raise: `fields` is built and range-checked above.
         self._limits_auth_errors = 0
         self._venue_limits = limits
+        self._limits_fields = fields
         self._limits_read_at = now
-        self.kalshi._sleep_s = page_pause_s(self.s.kalshi_sleep_s, limits.read_refill_rate)
-        ctx["venue_limits"] = self._limits_note(self.kalshi._sleep_s)
+        self.kalshi._sleep_s = pause_s
+        ctx["venue_limits"] = self._limits_note(now)
+
+    def close(self) -> None:
+        """Release the limits reader's httpx clients (fix round 1, Minor).
+
+        The scheduler's recorder lives as long as the process and never needs this; the one-shot
+        `harness tick-once` path does, or it leaks a client until exit. Never raises: this runs
+        in a `finally` after a tick whose result matters more than the cleanup.
+        """
+        transport = getattr(self._limits_reader, "_transport", None)
+        if transport is None:
+            return
+        try:
+            transport.close()
+        except Exception:  # noqa: BLE001
+            log.warning("closing the kalshi limits transport failed")
 
     def _checkpoint(self, session: Session, run: Run) -> None:
         """Commit what has been stored so far and drop it from the identity map (I1/I8)."""

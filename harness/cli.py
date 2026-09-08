@@ -75,7 +75,13 @@ def tick_once(force: bool = typer.Option(False, "--force", help="Fetch every sou
     configure_logging()
     from harness.scheduler import build_recorder
 
-    run = build_recorder(get_settings()).maybe_tick(force=force)
+    recorder = build_recorder(get_settings())
+    try:
+        run = recorder.maybe_tick(force=force)
+    finally:
+        # One-shot path: close the limits reader's httpx clients rather than leaking them until
+        # the process exits (Task 6b fix round 1, Minor). A no-op when no reader was built.
+        recorder.close()
     log.info("run %s status=%s n=%s credits=%s", run.id, run.status, run.n_requests, run.credits_used)
 
 

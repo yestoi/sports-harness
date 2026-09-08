@@ -1,3 +1,4 @@
+import logging
 from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -15,9 +16,12 @@ from harness.feeds.odds_api import OddsApiClient
 from harness.execution.loop import Executor
 from harness.recorder.tick import Recorder
 from harness.settlement.job import Settler
+from harness.venues.kalshi.auth import sign_request
 from harness.venues.kalshi.authed import KalshiReader
 from harness.venues.kalshi.http import KalshiTransport, session_recorder
 from harness.venues.kalshi.public import KalshiPublic
+
+log = logging.getLogger(__name__)
 
 
 def build_recorder(settings: Settings) -> Recorder:
@@ -33,17 +37,40 @@ def build_recorder(settings: Settings) -> Recorder:
     espn = EspnClient(http, settings.espn_base_url)
     kalshi = KalshiPublic(http, settings.kalshi_base_url, settings.kalshi_sleep_s)
     factory = make_session_factory(make_engine(settings.database_url))
-    limits_reader = None
-    if settings.has_kalshi_credentials():  # both paths .is_file() (N1): an unmounted secret is a directory
-        # GET-only by construction: writes_enabled=False, so the transport raises
-        # PaperModeViolation before signing on any non-GET, and holds no write client at all.
-        transport = KalshiTransport(
-            http, settings.kalshi_base_url, "prod",
-            settings.kalshi_key_id(), settings.kalshi_private_key_pem(),
-            timeout_s=settings.http_timeout_s, writes_enabled=False,
-            recorder=session_recorder(factory))
-        limits_reader = KalshiReader(transport)
-    return Recorder(settings, factory, odds, espn, kalshi, limits_reader=limits_reader)
+    return Recorder(settings, factory, odds, espn, kalshi,
+                    limits_reader=_build_limits_reader(settings, http, factory))
+
+
+def _build_limits_reader(settings: Settings, http: HttpClient, factory) -> "KalshiReader | None":
+    """The signed, GET-only reader, or None when the credentials are absent or unusable.
+
+    Fix round 1, Important 3: `is_file()` is True for a present-but-unreadable file, and a
+    wrong-mode host file behind Task 14's bind mount would otherwise raise `PermissionError`
+    straight out of `build_recorder` and stop the recorder process from starting at all. The
+    limits read is explicitly a nicety and must never cost the tape, so every credential problem
+    -- unreadable file, malformed PEM -- degrades to no reader. Only the exception's class name
+    is logged: never the key, never the path's contents.
+
+    The key is parsed eagerly, by signing one throwaway message that is never sent. A PEM that
+    cannot produce a signature is a credential problem, and catching it here turns it into one
+    startup warning instead of a failed read every hour for the life of the process.
+    """
+    if not settings.has_kalshi_credentials():  # both paths .is_file() (N1): an unmounted secret is a directory
+        return None
+    try:
+        key_id = settings.kalshi_key_id()
+        private_key_pem = settings.kalshi_private_key_pem()
+        sign_request(key_id, private_key_pem, "GET", "/account/limits", 0)
+    except Exception as e:  # noqa: BLE001 - OSError, ValueError, UnsupportedAlgorithm, ...
+        log.warning("kalshi limits reader not built, credentials unusable: %s", type(e).__name__)
+        return None
+    # GET-only by construction: writes_enabled=False, so the transport raises
+    # PaperModeViolation before signing on any non-GET, and holds no write client at all.
+    transport = KalshiTransport(
+        http, settings.kalshi_base_url, "prod", key_id, private_key_pem,
+        timeout_s=settings.http_timeout_s, writes_enabled=False,
+        recorder=session_recorder(factory))
+    return KalshiReader(transport)
 
 
 def build_settler(settings: Settings) -> Settler:

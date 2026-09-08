@@ -16,7 +16,6 @@ recorder tests drive `RecordingFakeTransport` (Task 6's `FakeTransport` plus Tas
 `session_recorder`), the credential tests write throwaway key files under `tmp_path`, and the
 one end-to-end test drives the real `KalshiTransport` over `respx`.
 """
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -32,7 +31,9 @@ from harness.db.models import VenueRequest
 from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
-from harness.recorder.tick import LIMITS_REFRESH_S, Recorder, page_pause_s
+from harness.recorder.tick import (
+    LIMITS_REFRESH_S, PAGE_PAUSE_CEILING_S, Recorder, page_pause_s,
+)
 from harness.scheduler import build_recorder
 from harness.venues.kalshi.authed import KalshiReader
 from harness.venues.kalshi.http import (
@@ -48,8 +49,8 @@ LIMITS_BODY = {"tier": "basic",
                "read": {"refill_rate": "10", "capacity": "100"},
                "write": {"refill_rate": "5", "capacity": "50"}}
 
-NOTE_FIELDS = {"tier", "read_refill_rate", "read_capacity",
-               "write_refill_rate", "write_capacity", "page_pause_s", "read_at"}
+NOTE_FIELDS = {"tier", "read_refill_rate", "read_capacity", "write_refill_rate",
+               "write_capacity", "page_pause_s", "read_at", "age_s"}
 
 
 # --- the pause floor -----------------------------------------------------------------------
@@ -64,6 +65,34 @@ NOTE_FIELDS = {"tier", "read_refill_rate", "read_capacity",
 ])
 def test_page_pause_is_floored_by_the_read_bucket_and_never_lowered(setting, rate, expected):
     assert page_pause_s(setting, rate) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("rate,expected", [
+    (Decimal("0.000001"), PAGE_PAUSE_CEILING_S),   # the ruled case: 1e6 s becomes the ceiling
+    (Decimal("0.2"), PAGE_PAUSE_CEILING_S),        # exactly at the ceiling, not clamped further
+    (Decimal("0.5"), 2.0),                         # under the ceiling: untouched
+])
+def test_page_pause_is_capped_by_the_ceiling(rate, expected):
+    """Fix round 1, Important 2. `KalshiPublic._pause` sleeps this after every page and the
+    paging loops have no budget check inside them, so an unbounded venue number would stop the
+    recorder's Kalshi fetching indefinitely."""
+    assert page_pause_s(0.05, rate) == pytest.approx(expected)
+
+
+def test_the_ceiling_never_lowers_the_operator_setting():
+    # The ceiling bounds the venue's contribution, not the operator's own trusted setting.
+    assert page_pause_s(9.0, Decimal("0.000001")) == pytest.approx(9.0)
+
+
+@pytest.mark.parametrize("rate", [
+    Decimal("1e-400"),   # finite as a Decimal, underflows to 0.0 as a float -> used to divide by zero
+    Decimal("1e400"),    # finite as a Decimal, overflows to inf as a float
+    Decimal("0"),
+    Decimal("-1"),
+    float("nan"),
+])
+def test_a_pathological_rate_leaves_the_setting_rather_than_raising(rate):
+    assert page_pause_s(0.05, rate) == pytest.approx(0.05)
 
 
 # --- the credential gate (plan-review round 2, N1) ------------------------------------------
@@ -153,7 +182,9 @@ def _mock_public_feeds() -> None:
 
 
 def _recorder(settings, db_session, queued, now=NOW):
-    clock = {"now": now}
+    """A recorder whose wall clock and monotonic clock are both controllable. The limits cadence
+    runs on the monotonic one (fix round 1, Minor), so `_advance` moves both together."""
+    clock = {"now": now, "mono": 1000.0}
     http = HttpClient(1, sleep=lambda s: None, clock=lambda: clock["now"])
     odds = OddsApiClient(http, "https://o/v4", "KEY", "pinnacle")
     espn = EspnClient(http, "https://e")
@@ -162,8 +193,14 @@ def _recorder(settings, db_session, queued, now=NOW):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     transport = RecordingFakeTransport(queued=list(queued), recorder=session_recorder(factory))
     rec = Recorder(settings, factory, odds, espn, kalshi, clock=lambda: clock["now"],
-                   monotonic=time.monotonic, limits_reader=KalshiReader(transport))
+                   monotonic=lambda: clock["mono"], limits_reader=KalshiReader(transport))
+    rec._test_clock = clock
     return rec, transport
+
+
+def _advance(rec, seconds: float) -> None:
+    rec._test_clock["now"] = rec._test_clock["now"] + timedelta(seconds=seconds)
+    rec._test_clock["mono"] = rec._test_clock["mono"] + seconds
 
 
 @pytest.fixture
@@ -204,7 +241,33 @@ def test_limits_are_re_read_hourly_not_every_tick(recorder_with_fake):
     rec.maybe_tick(force=True)
     rec.maybe_tick(force=True)
     assert sum(1 for c in t.calls if c[1] == "/account/limits") == 1
-    rec.clock = lambda: NOW + timedelta(seconds=LIMITS_REFRESH_S + 1)
+    _advance(rec, LIMITS_REFRESH_S + 1)
+    rec.maybe_tick(force=True)
+    assert sum(1 for c in t.calls if c[1] == "/account/limits") == 2
+
+
+@respx.mock
+def test_the_hour_boundary_is_inclusive(recorder_with_fake):
+    _mock_public_feeds()
+    rec, t = recorder_with_fake
+    rec.maybe_tick(force=True)
+    _advance(rec, LIMITS_REFRESH_S - 1)
+    rec.maybe_tick(force=True)
+    assert sum(1 for c in t.calls if c[1] == "/account/limits") == 1
+    _advance(rec, 1)                                    # exactly LIMITS_REFRESH_S since the read
+    rec.maybe_tick(force=True)
+    assert sum(1 for c in t.calls if c[1] == "/account/limits") == 2
+
+
+@respx.mock
+def test_the_cadence_survives_a_backwards_wall_clock_step(recorder_with_fake):
+    """Fix round 1, Minor: the cadence runs on the monotonic clock, so an NTP step backwards
+    cannot defer the next read by the size of the jump."""
+    _mock_public_feeds()
+    rec, t = recorder_with_fake
+    rec.maybe_tick(force=True)
+    rec._test_clock["now"] = NOW - timedelta(hours=6)    # the wall clock jumps backwards
+    rec._test_clock["mono"] += LIMITS_REFRESH_S + 1      # an hour of real time still passed
     rec.maybe_tick(force=True)
     assert sum(1 for c in t.calls if c[1] == "/account/limits") == 2
 
@@ -216,8 +279,11 @@ def test_a_tick_inside_the_hour_still_reports_the_limits_in_force(recorder_with_
     _mock_public_feeds()
     rec, _ = recorder_with_fake
     first = rec.maybe_tick(force=True).notes["venue_limits"]
+    _advance(rec, 120)
     second = rec.maybe_tick(force=True).notes["venue_limits"]
-    assert second == first
+    assert first["age_s"] == 0.0 and second["age_s"] == pytest.approx(120.0)
+    assert {k: v for k, v in second.items() if k != "age_s"} == \
+           {k: v for k, v in first.items() if k != "age_s"}
 
 
 @respx.mock
@@ -258,7 +324,7 @@ def test_a_401_counts_toward_the_auth_error_rule_and_a_success_resets_it(env_set
                        [_err(401, code="unauthorized"), _ok(LIMITS_BODY)])
     rec.maybe_tick(force=True)
     assert rec._limits_auth_errors == 1
-    rec.clock = lambda: NOW + timedelta(seconds=LIMITS_REFRESH_S + 1)
+    _advance(rec, LIMITS_REFRESH_S + 1)
     rec.maybe_tick(force=True)
     assert rec._limits_auth_errors == 0
 
@@ -307,6 +373,96 @@ def test_a_hostile_tier_string_is_escaped_and_truncated_in_the_note(env_settings
     note = rec.maybe_tick(force=True).notes["venue_limits"]
     assert "\n" not in note["tier"] and "\x00" not in note["tier"]
     assert note["tier"].isascii() and len(note["tier"]) <= 32
+
+
+@respx.mock
+@pytest.mark.parametrize("rate", ["1e-400", "1e400", "0", "-1", "NaN"])
+def test_a_pathological_venue_rate_never_aborts_the_tick(env_settings, db_session, rate):
+    """Fix round 1, Important 1. `1e-400` and `1e400` are finite Decimals, so `dec` passes them
+    through; the first used to underflow to 0.0 and raise `ZeroDivisionError` out of `maybe_tick`,
+    the second used to reach `runs.notes` as `inf`, which Postgres rejects for `jsonb` and which
+    would have failed `finish_run` and left the run row unfinished."""
+    _mock_public_feeds()
+    body = dict(LIMITS_BODY, read={"refill_rate": rate, "capacity": "100"})
+    rec, _ = _recorder(env_settings, db_session, [_ok(body)])
+    run = rec.maybe_tick(force=True)
+    assert run.status != "error"
+    assert run.notes["venue_limits"] is None       # an unusable number is a failed read
+    assert rec.kalshi._sleep_s == 0.05             # the pause is untouched
+    assert run.finished_at is not None             # the run row was finished, not abandoned
+
+
+@respx.mock
+def test_an_undecodable_venue_rate_reads_as_a_missing_bucket(env_settings, db_session):
+    """`dec` returns None for text it cannot parse at all, which is the venue not sending a
+    usable number rather than sending an out-of-range one: the note carries null for the field
+    and the pause stays at the setting."""
+    _mock_public_feeds()
+    body = dict(LIMITS_BODY, read={"refill_rate": "not-a-number", "capacity": "100"})
+    rec, _ = _recorder(env_settings, db_session, [_ok(body)])
+    note = rec.maybe_tick(force=True).notes["venue_limits"]
+    assert note["read_refill_rate"] is None and rec.kalshi._sleep_s == 0.05
+
+
+@respx.mock
+def test_a_pathological_venue_capacity_is_a_failed_read(env_settings, db_session):
+    _mock_public_feeds()
+    body = dict(LIMITS_BODY, read={"refill_rate": "10", "capacity": "1e400"})
+    rec, _ = _recorder(env_settings, db_session, [_ok(body)])
+    run = rec.maybe_tick(force=True)
+    assert run.notes["venue_limits"] is None and rec.kalshi._sleep_s == 0.05
+
+
+@respx.mock
+def test_a_missing_bucket_is_not_a_failed_read(env_settings, db_session):
+    """An absent field is not an out-of-range one: the note carries null for it and the pause
+    stays at the setting, which is the brief's `page_pause_s(setting, None)` case."""
+    _mock_public_feeds()
+    rec, _ = _recorder(env_settings, db_session, [_ok({"tier": "basic"})])
+    note = rec.maybe_tick(force=True).notes["venue_limits"]
+    assert note is not None and note["read_refill_rate"] is None
+    assert note["page_pause_s"] == pytest.approx(0.05) and rec.kalshi._sleep_s == 0.05
+
+
+@respx.mock
+def test_the_run_note_is_json_serialisable_for_jsonb(recorder_with_fake):
+    import json
+
+    _mock_public_feeds()
+    rec, _ = recorder_with_fake
+    note = rec.maybe_tick(force=True).notes["venue_limits"]
+    # allow_nan=False is what a jsonb-safe encoder does: bare Infinity/NaN are not valid JSON.
+    json.dumps(note, allow_nan=False)
+
+
+# --- an unusable credential costs the reader, never the process (fix round 1, Important 3) ----
+
+def test_an_unreadable_key_file_leaves_the_recorder_without_a_reader(env_settings_with_keys):
+    key_id = env_settings_with_keys.kalshi_key_id_file
+    key_id.chmod(0o000)
+    try:
+        assert env_settings_with_keys.has_kalshi_credentials() is True   # is_file() is still True
+        rec = build_recorder(env_settings_with_keys)
+    finally:
+        key_id.chmod(0o600)
+    assert rec._limits_reader is None                                    # and the process started
+
+
+def test_a_malformed_pem_leaves_the_recorder_without_a_reader(env_settings_with_keys):
+    env_settings_with_keys.kalshi_private_key_file.write_bytes(b"-----BEGIN PRIVATE KEY-----\nnope\n")
+    rec = build_recorder(env_settings_with_keys)
+    assert rec._limits_reader is None
+
+
+def test_close_releases_the_limits_transport(env_settings_with_keys):
+    rec = build_recorder(env_settings_with_keys)
+    assert rec._limits_reader is not None
+    rec.close()
+    rec.close()          # idempotent: the one-shot CLI path calls it from a finally
+
+
+def test_close_without_a_reader_is_a_no_op(env_settings):
+    build_recorder(env_settings).close()
 
 
 # --- the tripwire is no longer vacuous ---------------------------------------------------------
