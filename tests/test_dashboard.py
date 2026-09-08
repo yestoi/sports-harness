@@ -6,9 +6,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, insert
 from sqlalchemy.orm import sessionmaker
 
-from harness.dashboard.app import WINDOW_24H, _candidates, _data_quality, _funnel, _recent_run_notes, create_dashboard
-from harness.db.models import (ExecHeartbeat, Fill, JobRun, KillSwitch, Ledger, OperatorEvent, Order, OrderEvent,
-                                RawResponse, Run, StrategyVariant, VenueSettlement, VenueTrade)
+from harness.dashboard.app import (WINDOW_24H, _candidates, _data_quality, _funnel, _recent_run_notes, _websocket,
+                                    create_dashboard)
+from harness.db.models import (ExecHeartbeat, Fill, JobRun, KillSwitch, Ledger, MetricSample, OperatorEvent, Order,
+                                OrderEvent, RawResponse, Run, StrategyVariant, VenueSettlement, VenueTrade)
 from harness.execution.plan import POST_ONLY_REJECT
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
@@ -739,3 +740,86 @@ def test_funnel_candidates_and_data_quality_issue_no_statement_against_signal_ta
     assert "market_gap_snapshots" not in joined
     assert "signals" not in joined
     assert "venue_trades" not in joined
+
+
+# --- Fix 19: dashboard cold first request -- ws_trades_1h from metric_samples, not venue_trades ---
+
+def _ws_sample(ts, value, name="ws.trades_per_min", source="ws"):
+    return MetricSample(ts=ts, source=source, name=name, value=Decimal(str(value)))
+
+
+def test_ws_trades_1h_sums_ws_trades_per_min_metric_samples(db_session, env_settings):
+    """`ws_trades_1h` sums the last hour's `ws.trades_per_min` metric_samples (fix 19, verify
+    2026-09-08 09:28 CT), not a live count against `venue_trades`. A sample outside the 1h
+    window, one under a different metric name, one under a different source, and a real
+    `venue_trades` row with `source = 'ws'` inside the window must all be excluded -- only the
+    two matching per-minute samples (12 + 30) should be summed."""
+    db_session.add_all([
+        _ws_sample(NOW - timedelta(minutes=50), 12),
+        _ws_sample(NOW - timedelta(minutes=10), 30),
+        _ws_sample(NOW - timedelta(hours=2), 999),  # outside the 1h window
+        _ws_sample(NOW - timedelta(minutes=5), 500, name="ws.events_per_min"),  # wrong metric
+        _ws_sample(NOW - timedelta(minutes=5), 777, source="exec"),  # wrong source
+    ])
+    db_session.add(VenueTrade(venue="kalshi", trade_id="t-1", ticker="KXNFL-1", ts=NOW - timedelta(minutes=1),
+                              yes_price=Decimal("0.40"), count=Decimal("1"), taker_side="yes", source="ws"))
+    db_session.flush()
+
+    result = _websocket(db_session, NOW)
+
+    assert result["ws_trades_1h"] == 42
+
+
+def test_ws_trades_1h_is_zero_with_no_samples(db_session, env_settings):
+    """No `ws.trades_per_min` rows yet (e.g. right after a fresh deploy) must read 0, not NULL
+    or an error -- the sum is coalesced."""
+    result = _websocket(db_session, NOW)
+    assert result["ws_trades_1h"] == 0
+
+
+def test_websocket_issues_no_statement_against_venue_trades(db_session, env_settings):
+    """`_websocket` must not scan `venue_trades` at all (fix 19): the old live count over
+    `source = 'ws' and ts >= now() - 1h` had no covering index for the `source` filter and, on
+    the NAS after a Postgres restart, took 21.6s cold against the 10s page-time bound (verify
+    2026-09-08 09:28 CT)."""
+    db_session.add(VenueTrade(venue="kalshi", trade_id="t-1", ticker="KXNFL-1", ts=NOW,
+                              yes_price=Decimal("0.40"), count=Decimal("1"), taker_side="yes", source="ws"))
+    db_session.commit()
+    engine = db_session.get_bind()
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        _websocket(db_session, NOW)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert "venue_trades" not in "\n".join(statements).lower()
+
+
+def test_build_summary_issues_no_statement_against_venue_trades(db_session, env_settings, tmp_path):
+    """The whole page -- not just `_websocket` in isolation -- must never touch `venue_trades`
+    (fix 19)."""
+    _seed_full(db_session, env_settings)
+    db_session.add(VenueTrade(venue="kalshi", trade_id="t-1", ticker="KXNFL-1", ts=NOW,
+                              yes_price=Decimal("0.40"), count=Decimal("1"), taker_side="yes", source="ws"))
+    db_session.commit()
+    settings = _dashboard_settings(env_settings, tmp_path)
+    client = _client(db_session, settings)
+    engine = db_session.get_bind()
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        r = client.get("/api/summary")
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert r.status_code == 200
+    assert "venue_trades" not in "\n".join(statements).lower()

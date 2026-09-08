@@ -25,9 +25,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from harness import telemetry
 from harness.config.settings import Settings
 
-from harness.db.models import (ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Ledger, OddsSnapshot, Order,
-                                OrderbookEvent, OrderEvent, RawResponse, Run, Signal, StrategyVariant, Team,
-                                VenueMarket, VenueQuote, VenueTrade)
+from harness.db.models import (ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Ledger, MetricSample, OddsSnapshot,
+                                Order, OrderbookEvent, OrderEvent, RawResponse, Run, Signal, StrategyVariant, Team,
+                                VenueMarket, VenueQuote)
 from harness.execution.plan import POST_ONLY_REJECT
 from harness.health import compute_health
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_model_for
@@ -293,18 +293,40 @@ def _unmatched_markets(session: Session, now: datetime) -> list[dict]:
 
 def _websocket(session: Session, now: datetime) -> dict:
     """Orderbook events arrive at up to ~4M/hour during live games, so the event count uses a
-    5-minute window (BRIN-indexed) and the last event is read by primary key, not by max(ts)."""
+    5-minute window (`ix_obe_ts_brin`, a BRIN on `ts`, F19 -- correlated well since
+    `orderbook_events` has one writer, the WS sink, so `ts` tracks insertion order) and the
+    last event is read by primary key, not by max(ts).
+
+    `ws_trades_1h` ("WebSocket prints in the last hour") no longer counts `venue_trades` live
+    (fix 19/dashboard-cold, verify 2026-09-08 09:28 CT: a cold first `/api/summary` after a
+    Postgres restart took 21.6s against the 10s page-time bound). `venue_trades` does carry a
+    BRIN on `ts` (`ix_trades_ts_brin`), but this predicate also filters on `source = 'ws'`,
+    which no index covers, and `venue_trades` has two writers -- the WS sink and the REST
+    normalizer backfilling the same ticker's tape (see `VenueTrade`'s docstring) -- so `ts`
+    does not track insertion order as tightly as it does on the single-writer
+    `orderbook_events`, weakening the BRIN's block-range pruning. Instead this sums the last
+    hour of `ws.trades_per_min` metric_samples: one row a minute, written by
+    `WsRecorder._write_ws_metrics` (`harness/venues/kalshi/ws.py`) from
+    `WsSink.drain_counts()`'s exact per-minute trade tally, read here by `(name, ts desc)`
+    (`ix_metric_samples_name_ts`) -- a table with one row per source per minute, not one per
+    trade. The result is an approximation, not the exact live count that follows: any minute
+    whose sample write failed (ruling 1, telemetry never fails the ws loop) is silently
+    undercounted rather than retried, and the partial minute at each edge of the window is
+    either fully in or fully out by its sample's own `ts`, not pro-rated -- the same shape of
+    approximation `_data_quality`'s `kalshi_trades_normalized` already accepts, for the same
+    reason (fix 17 round 1)."""
     cutoff_5m = now - WINDOW_5M
     cutoff_1h = now - WINDOW_1H
     ob_count = session.execute(
         select(func.count()).select_from(OrderbookEvent).where(OrderbookEvent.ts >= cutoff_5m)
     ).scalar_one()
     last_ob = session.execute(select(OrderbookEvent.ts).order_by(OrderbookEvent.id.desc()).limit(1)).scalar()
-    trades_count = session.execute(
-        select(func.count()).select_from(VenueTrade)
-        .where(VenueTrade.source == "ws", VenueTrade.ts >= cutoff_1h)
+    trades_1h = session.execute(
+        select(func.coalesce(func.sum(MetricSample.value), 0))
+        .where(MetricSample.source == "ws", MetricSample.name == "ws.trades_per_min",
+              MetricSample.ts >= cutoff_1h)
     ).scalar_one()
-    return {"orderbook_events_5m": ob_count, "ws_trades_1h": trades_count, "last_event_at": _iso(last_ob)}
+    return {"orderbook_events_5m": ob_count, "ws_trades_1h": int(trades_1h), "last_event_at": _iso(last_ob)}
 
 
 def _data_quality(session: Session, now: datetime, run_notes_24h: list[dict] | None = None) -> dict:
