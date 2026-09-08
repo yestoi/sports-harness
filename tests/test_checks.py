@@ -3,14 +3,19 @@ guarantee, and `run_checks`' timeout handling.
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from unittest import mock
 
 import pytest
 from sqlalchemy import event as sa_event
 
-from harness.db.models import JobRun
+from harness.db.models import FairValue, JobRun, VenueTrade
 from harness.ops import checks as checks_mod
-from harness.ops.checks import CHECKS, Check, assert_no_tape_reads, run_checks
+from harness.ops.checks import CHECKS, Check, current_trades_partition, assert_no_tape_reads, run_checks
+
+
+def _check(name):
+    return next(c for c in CHECKS if c.name == name)
 
 NOW = datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc)
 
@@ -151,3 +156,60 @@ def test_run_checks_resets_statement_timeout_after_the_last_check(db_session):
     # would cancel this statement instead of returning its row.
     assert db_session.execute(
         checks_mod.text("select 1 from pg_sleep(0.15)")).scalar() == 1
+
+
+def test_current_trades_partition_matches_the_schema_naming():
+    from harness.db.schema import _partition_name, week_bounds
+    now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start, _ = week_bounds(now)
+    assert current_trades_partition(now) == _partition_name("venue_trades", start)
+
+
+def test_duplicate_trades_names_the_partition_not_the_parent():
+    now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    sql = _check("duplicate_trades").sql_for(now)
+    assert current_trades_partition(now) in sql
+    assert "from venue_trades\n" not in sql and "from venue_trades " not in sql
+
+
+def test_fair_values_staleness_check_is_bounded_to_24_hours():
+    sql = _check("fair_values_negative_staleness").sql
+    assert "created_at" in sql and "24 hours" in sql
+
+
+def test_both_bounded_checks_pass_on_a_seeded_database(db_session):
+    now = datetime.now(timezone.utc)
+    job = JobRun(job="settle", started_at=now, status="running", notes={})
+    db_session.add(job)
+    db_session.flush()
+
+    # One in-window fair value with staleness 5, one trade in the current week.
+    db_session.add(FairValue(run_id=1, game_id=1, market_type="moneyline",
+                             fair_p=Decimal("0.5500"), fair_source="direct",
+                             staleness_s=5, created_at=now))
+    db_session.add(VenueTrade(venue="kalshi", trade_id="t1", ticker="T", ts=now,
+                              yes_price=Decimal("0.2300"), count=Decimal("5.00"),
+                              taker_side="yes", is_block=False, source="rest", raw_id=None))
+    db_session.flush()
+
+    results = {r.check_name: r for r in run_checks(
+        db_session, now, job_run_id=job.id,
+        checks=[_check("duplicate_trades"), _check("fair_values_negative_staleness")])}
+    assert results["duplicate_trades"].status == "pass"
+    assert results["fair_values_negative_staleness"].status == "pass"
+
+
+def test_a_negative_staleness_row_inside_the_window_still_fails(db_session):
+    now = datetime.now(timezone.utc)
+    job = JobRun(job="settle", started_at=now, status="running", notes={})
+    db_session.add(job)
+    db_session.flush()
+
+    db_session.add(FairValue(run_id=1, game_id=1, market_type="moneyline",
+                             fair_p=Decimal("0.5500"), fair_source="direct",
+                             staleness_s=-1, created_at=now))
+    db_session.flush()
+
+    results = run_checks(db_session, now, job_run_id=job.id,
+                         checks=[_check("fair_values_negative_staleness")])
+    assert results[0].status == "fail"

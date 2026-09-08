@@ -173,6 +173,15 @@ def test_create_schema_adds_brin_time_indexes(db_session):
     assert names == {"ix_obe_ts_brin", "ix_trades_ts_brin"}
 
 
+def test_create_schema_adds_the_fair_values_created_brin(db_session):
+    """Carried fix 16: the bounded `fair_values_negative_staleness` check (harness/ops/checks.py)
+    filters on `created_at` alone, which `ix_fair_game_type_created` cannot serve since it leads
+    on `game_id`."""
+    row = db_session.execute(text(
+        "select indexdef from pg_indexes where indexname = 'ix_fair_created_brin'")).scalar()
+    assert row is not None and "brin" in row.lower() and "created_at" in row.lower()
+
+
 # ---------------------------------------------------------------------------
 # Phase 3 (addendum §5): execution, settlement, benchmark and CLV tables.
 # ---------------------------------------------------------------------------
@@ -407,11 +416,12 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
            if s.startswith(("alter table", "create index", "create unique index",
                             "create or replace view", "update venue_markets"))]
     # 24 column ALTERs + 19 indexes (Task 9 fix round 1, M1 adds ix_markouts_as_measured) +
-    # 3 views + 1 match_key backfill + 4 tape statements + the 4 tape indexes Task 2b guards
-    # behind "partitioned, or still empty" (both tape tables are partitioned here, so all four
-    # run) + 5 telemetry indexes (Task 12b: metric_samples, operator_events,
-    # game_score_events, check_results, report_runs).
-    assert len(ddl) == 61, [s for s, _, _ in ddl]
+    # 3 views + 1 match_key backfill + 1 concurrent BRIN (carried fix 16: ix_fair_created_brin)
+    # + 4 tape statements + the 4 tape indexes Task 2b guards behind "partitioned, or still
+    # empty" (both tape tables are partitioned here, so all four run) + 5 telemetry indexes
+    # (Task 12b: metric_samples, operator_events, game_score_events, check_results,
+    # report_runs).
+    assert len(ddl) == 62, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.

@@ -10,7 +10,7 @@ a timeout is recorded as `skip`, not as a failure of the whole stage.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 from sqlalchemy import text
@@ -33,18 +33,46 @@ class Check:
     sql: str
     threshold: str
     ok: Callable[[object], bool]
+    #: Carried fix 16: a check whose SQL must name the current weekly partition by name so the
+    #: planner prunes at plan time rather than scanning every attached partition. `sql` stays
+    #: the representative static text (assert_no_tape_reads and verify.md read it); `run_checks`
+    #: executes `sql_for(now)` when it is set.
+    sql_for: Callable[[datetime], str] | None = None
 
 
 def _zero(value: object) -> bool:
     return value is not None and float(value) == 0.0
 
 
+def current_trades_partition(now: datetime) -> str:
+    """The `venue_trades` weekly partition holding `now`, named exactly as
+    `harness.db.schema._partition_name` names it."""
+    from harness.db.schema import week_bounds
+
+    start, _ = week_bounds(now)
+    iso = start.isocalendar()
+    return f"venue_trades_y{iso.year}w{iso.week:02d}"
+
+
+def _duplicate_trades_sql(now: datetime) -> str:
+    return f"""
+        select count(*) from (
+            select venue, trade_id
+            from {current_trades_partition(now)}
+            group by venue, trade_id
+            having count(*) > 1
+        ) d
+    """
+
+
 CHECKS: list[Check] = [
     Check(
         "duplicate_trades",
-        # Bounded to the current weekly partition (F19): venue_trades is partitioned on ts,
-        # and a scan across every partition ever taped would be exactly the bulk-table cost
-        # this registry exists to avoid.
+        # Static text for assert_no_tape_reads and for verify.md's copy; `sql_for` is what runs.
+        # Carried fix 16: `from venue_trades where ts >= date_trunc('week', now())` still made
+        # the planner touch every attached partition, which exceeded the 2 s check timeout on
+        # NAS-sized tape. Naming the partition in Python prunes at plan time and lets the
+        # partition's own unique `(venue, trade_id)` index answer the grouping.
         """
         select count(*) from (
             select venue, trade_id, count(*) as c
@@ -54,7 +82,7 @@ CHECKS: list[Check] = [
             having count(*) > 1
         ) d
         """,
-        "== 0", _zero),
+        "== 0", _zero, sql_for=_duplicate_trades_sql),
     Check(
         "clv_p_used_matches_order_prob",
         # order_clv.p_used_kind = 'order' means p_used was copied from the order's own price
@@ -136,7 +164,11 @@ CHECKS: list[Check] = [
     # already one of the thirteen (verbatim); these eleven are the rest.
     Check(
         "fair_values_negative_staleness",
-        "select count(*) from fair_values where staleness_s < 0",
+        # Carried fix 16: unbounded, this scanned 475 MB and timed out. The 24 h bound rides
+        # the additive `ix_fair_created_brin` (harness/db/schema.py); `ix_fair_game_type_created`
+        # leads on game_id and cannot serve a bare created_at predicate.
+        "select count(*) from fair_values "
+        "where created_at > now() - interval '24 hours' and staleness_s < 0",
         "== 0", _zero),
     Check(
         "runs_taker_side_missing_24h",
@@ -282,6 +314,11 @@ def assert_no_tape_reads(checks: list[Check]) -> None:
                 raise ValueError(f"check {check.name!r} reads {forbidden}, which no check may")
         if "venue_trades" in lowered and "date_trunc('week'" not in lowered:
             raise ValueError(f"check {check.name!r} reads venue_trades unbounded by week")
+        if check.sql_for is not None:
+            probe = check.sql_for(datetime(2026, 1, 5, tzinfo=timezone.utc)).lower()
+            for forbidden in _FORBIDDEN_TABLES:
+                if forbidden in probe:
+                    raise ValueError(f"check {check.name!r} reads {forbidden}, which no check may")
 
 
 assert_no_tape_reads(CHECKS)
@@ -303,7 +340,8 @@ def run_checks(session: Session, now: datetime, job_run_id: int,
         try:
             with session.begin_nested():
                 session.execute(text(f"set local statement_timeout = {STATEMENT_TIMEOUT_MS}"))
-                value = session.execute(text(check.sql)).scalar()
+                sql = check.sql_for(now) if check.sql_for is not None else check.sql
+                value = session.execute(text(sql)).scalar()
             status = "pass" if check.ok(value) else "fail"
         except Exception as exc:  # noqa: BLE001 - one check must not cost the stage
             sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)

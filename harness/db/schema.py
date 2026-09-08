@@ -174,6 +174,15 @@ _INDEX_DDL = (
     "create index if not exists ix_report_runs_week on report_runs (year, week, generated_at desc)",
 )
 
+#: Carried fix 16. BRIN on `fair_values(created_at)` so the bounded staleness check
+#: (harness/ops/checks.py) can prune to the last 24 h instead of scanning 475 MB. CONCURRENTLY
+#: because `fair_values` takes a write on every pricing tick and init-db runs on every deploy;
+#: the connection is already AUTOCOMMIT, which is what CONCURRENTLY requires.
+_CONCURRENT_INDEX_DDL = (
+    "create index concurrently if not exists ix_fair_created_brin "
+    "on fair_values using brin (created_at)",
+)
+
 #: Open contracts and their average price per variant, from the queue-model fills of live orders
 #: that have not settled yet. snapshot_cross and no_watcher fills are counterfactuals, not positions.
 _POSITIONS_VIEW = """
@@ -388,6 +397,8 @@ def create_schema(engine: Engine) -> None:
         for statement in _COLUMN_DDL + _INDEX_DDL + _VIEW_DDL + _BACKFILL_DDL:
             _execute_ddl(conn, statement)
         _model_index_ddl(conn)
+        for statement in _CONCURRENT_INDEX_DDL:
+            _execute_ddl(conn, statement)
         for statement in _TAPE_DDL:
             _execute_ddl(conn, statement)
         for table in TAPE_TABLES:
