@@ -30,7 +30,11 @@ class Settings(BaseSettings):
     heartbeat_s: int = 30
     tz_local: str = "America/Chicago"
     variants_dir: Path | None = None
-    price_budget_s: int = 20
+    #: Amendment 4 (2026-09-08): raised from 20 to 45 inside the unchanged tick_budget_s = 100.
+    #: Every daytime pricing run on 2026-09-08 exhausted 20 s after one to four of seven
+    #: variants over 4,541 gaps, so the primary and the gate variant were scored on under half
+    #: the ticks (journal 57).
+    price_budget_s: int = 45
     dashboard_token_file: Path = Path("/run/secrets/dashboard_token")
     build_sha: str = "dev"
     build_time: str | None = None

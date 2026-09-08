@@ -63,3 +63,10 @@ def test_settings_phase3_defaults(monkeypatch):
     assert s.report_wtd_period_s == 21_600  # final review I6: six hours, not one
     assert s.db_budget_gb == 2000  # D9: 2 TB ceiling from U3
     assert s.gate_variant == "sharp_direct"  # U5/D1; the Task 4b deploy flips it
+
+
+def test_price_budget_is_45_inside_the_unchanged_tick_budget(env_settings):
+    # Amendment 4 (2026-09-08): raised from 20 s, which every daytime pricing run exhausted.
+    assert env_settings.price_budget_s == 45
+    assert env_settings.tick_budget_s == 100
+    assert env_settings.price_budget_s < env_settings.tick_budget_s

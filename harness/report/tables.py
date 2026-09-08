@@ -326,17 +326,41 @@ _T1_SCANNED = text("""
     group by g.sport
 """)
 
+#: Amendment 4 (2026-09-08): the pricing ticks a variant was scored on at all, over the pricing
+#: ticks in the week. The order the variant loop scores in is deliberately asymmetric after the
+#: amendment, so the asymmetry travels beside every cross-variant comparison.
+_T1_COVERAGE = text("""
+    select s.variant_id, count(distinct s.run_id) as scored_ticks
+    from signals s
+    where s.replay = false and s.created_at >= :start and s.created_at < :end
+    group by s.variant_id
+""")
+
+_T1_PRICING_TICKS = text("""
+    select count(distinct run_id) as ticks
+    from market_gap_snapshots
+    where created_at >= :start and created_at < :end
+""")
+
 _T1_COLUMNS = ["variant", "sport", "markets_scanned", "signals", "candidates", "orders",
-               "fills", "fill_rate", "distinct_markets", "distinct_market_days"]
+               "fills", "fill_rate", "distinct_markets", "distinct_market_days",
+               "tick_coverage"]
 
 
 def _table1(session: Session, window: dict, variants: list[dict]) -> Table:
     header = ("Funnel per registered variant x sport, over the week's non-replay rows. "
               "`fill_rate` is orders with at least one `queue_model` fill divided by orders; "
-              "`markets_scanned` is variant-independent (distinct markets with a gap snapshot).")
+              "`markets_scanned` is variant-independent (distinct markets with a gap snapshot). "
+              "`tick_coverage` is the share of the week's pricing ticks on which the variant "
+              "was scored at all (distinct `signals.run_id` over distinct "
+              "`market_gap_snapshots.run_id`); after Amendment 4 the gate variant and the "
+              "primary are at 100 % by construction and the secondaries rotate, so every "
+              "cross-variant comparison in tables 2 and 4 is read against this column.")
     signals = {(r.variant_id, r.sport): r for r in session.execute(_T1_SIGNALS, window)}
     orders = {(r.variant_id, r.sport): r for r in session.execute(_T1_ORDERS, window)}
     scanned = {r.sport: r.markets for r in session.execute(_T1_SCANNED, window)}
+    coverage = {r.variant_id: r.scored_ticks for r in session.execute(_T1_COVERAGE, window)}
+    pricing_ticks = session.execute(_T1_PRICING_TICKS, window).scalar_one()
     if not variants:
         return _placeholder_table("Table 1 (t1): funnel", header, _T1_COLUMNS,
                                   "no registered variant")
@@ -353,6 +377,8 @@ def _table1(session: Session, window: dict, variants: list[dict]) -> Table:
                 _share(o.filled_orders, n_orders) if o else PLACEHOLDER,
                 o.distinct_markets if o else 0,
                 o.distinct_market_days if o else 0,
+                # Per variant, not per sport: the same value in every sport row for a variant.
+                _share(coverage.get(variant["variant_id"], 0), pricing_ticks),
             ])
     return Table("Table 1 (t1): funnel", header, _T1_COLUMNS, rows)
 

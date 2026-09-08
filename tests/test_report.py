@@ -747,3 +747,35 @@ def test_restrict_to_selection_keys_a_contrast_on_its_benchmark(db_session, env_
     assert [r[0] for r in restrict_to_selection(tables, matching)["t2"].rows] == ["wide_band"]
     assert restrict_to_selection(tables, other)["t2"].rows == [[PLACEHOLDER] * len(
         tables["t2"].columns)]
+
+
+def test_table1_reports_tick_coverage_per_variant(db_session, env_settings):
+    """Amendment 4: two pricing ticks in the week, the primary scored on both and the secondary
+    on one, so the rotation's asymmetry is visible beside every cross-variant comparison."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    _variant(db_session, SECONDARY, "constrained", "secondary")
+    game = _game(db_session)
+    market = _market(db_session, game.id, "T-ML-COVER")
+    first = _gap(db_session, market, created_at=WED)
+    second = _gap(db_session, market, created_at=WED + timedelta(hours=1))
+    _signal(db_session, first, market, PRIMARY, created_at=WED)
+    _signal(db_session, second, market, PRIMARY, created_at=WED + timedelta(hours=1))
+    _signal(db_session, first, market, SECONDARY, created_at=WED)
+    db_session.flush()
+
+    table = _tables(db_session, env_settings)["t1"]
+    assert "tick_coverage" in table.columns
+    by_name = {row[0]: row for row in table.rows}
+    idx = table.columns.index("tick_coverage")
+    # `_share` returns a float, never a formatted string.
+    assert by_name["sharp_direct"][idx] == 1.0
+    assert by_name["constrained"][idx] == 0.5
+
+
+def test_table1_tick_coverage_is_a_placeholder_with_no_pricing_ticks(db_session, env_settings):
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    db_session.flush()
+
+    table = _tables(db_session, env_settings)["t1"]
+    idx = table.columns.index("tick_coverage")
+    assert all(row[idx] is PLACEHOLDER for row in table.rows)

@@ -7,6 +7,7 @@ stages and between variants; when it is spent, remaining work is skipped and the
 `budget_exhausted: True`. Stage 1 (fair values) always runs regardless of the budget.
 """
 
+import logging
 import time
 from datetime import datetime, timedelta
 
@@ -27,6 +28,8 @@ from harness.strategy.variants import Variant, active_variants
 #: insert dies above 3120 signals -- which a variant clears every tick now that there
 #: are thousands of matched venue markets. 1000 rows is 21,000 parameters a statement.
 SIGNAL_INSERT_CHUNK = 1000
+
+log = logging.getLogger(__name__)
 
 
 def _load_gap_rows(session: Session, run_id: int) -> list[GapRow]:
@@ -123,6 +126,28 @@ def pricing_clock_for_run(run, tick_budget_s: float) -> datetime:
         return run.finished_at
     return run.started_at + timedelta(seconds=tick_budget_s)
 
+
+def pricing_order(variants: list[Variant], gate_variant_name: str,
+                  run_id: int) -> tuple[list[Variant], bool]:
+    """Amendment 4: the gate variant and the active primary are scored on every tick; only the
+    secondaries rotate. Returns the ordered list and whether `gate_variant_name` was absent
+    from the active set (the Amendment 3 rename incident, made visible instead of silent).
+    """
+    head: list[Variant] = []
+    gate = next((v for v in variants if v.name == gate_variant_name), None)
+    missing = gate is None
+    if gate is not None:
+        head.append(gate)
+    primary = next((v for v in variants if v.tier == "primary" and v not in head), None)
+    if primary is not None:
+        head.append(primary)
+    tail = [v for v in variants if v not in head]
+    if tail:
+        start = run_id % len(tail)
+        tail = tail[start:] + tail[:start]
+    return head + tail, missing
+
+
 def price_and_signal(session: Session, run_id: int, now: datetime, settings: Settings, budget_s: float) -> dict:
     deadline = time.monotonic() + budget_s
 
@@ -139,6 +164,10 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         "budget_exhausted": False,
         "variants_run": [],
         "variants_skipped": [],
+        "variant_ms": {},
+        "order": [],
+        "gate_variant_missing": False,
+        "gate_variant_id": None,
     }
 
     # Stage 1 always runs, even with no budget left, so fair values keep advancing every tick.
@@ -169,22 +198,30 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # D12: computed once per run, not once per variant -- every variant's signals are labelled
     # against the same trailing bucket table. Read unconditionally, with no `ok()` check of its
     # own, so it costs the loop's deterministic budget accounting (each `ok()` call spends one
-    # `time.monotonic()` tick that `test_variant_order_rotates_by_run_id...` counts) nothing new;
-    # a variant loop that is about to skip everything below still gets a correctly-labelled
-    # `as_measured` on whatever it does score before its own `ok()` check trips.
+    # `time.monotonic()` tick that `test_variant_order_leads_with_the_gate_variant...` counts,
+    # as does each scored variant's Amendment 4 timing) nothing new; a variant loop that is
+    # about to skip everything below still gets a correctly-labelled `as_measured` on whatever
+    # it does score before its own `ok()` check trips.
     as_measured = as_measured_table(session, now)
 
-    # A busy tick that runs out of budget mid-loop always drops the same tail of the
-    # (name-sorted) variant list, so cross-variant comparisons would rest on non-random
-    # missingness. Rotate the starting point by run_id so the drop is spread evenly instead.
-    start = run_id % len(variants)
-    ordered = variants[start:] + variants[:start]
+    # Amendment 4 (2026-09-08): a busy tick that runs out of budget mid-loop must not drop the
+    # two variants every conclusion rests on. The gate variant and the active primary are scored
+    # first on every tick; only the secondary tail still rotates by run_id, so the missingness
+    # it carries stays spread evenly rather than always falling on the same (name-sorted) tail.
+    ordered, gate_missing = pricing_order(variants, settings.gate_variant, run_id)
+    result["gate_variant_missing"] = gate_missing
+    result["gate_variant_id"] = None if gate_missing else ordered[0].variant_id
+    result["order"] = [v.name for v in ordered]
+    if gate_missing:
+        log.warning("gate variant %r is not in the active set; pricing order falls back to "
+                    "the primary first (run %s)", settings.gate_variant, run_id)
 
     for i, variant in enumerate(ordered):
         if not ok():
             result["budget_exhausted"] = True
             result["variants_skipped"] = [v.name for v in ordered[i:]]
             break
+        t_variant = time.monotonic()
         signals = run_strategy(rows, variant, now, as_measured=as_measured)
         candidate = sum(1 for s in signals if s.decision == "candidate")
         rejected = len(signals) - candidate
@@ -192,5 +229,6 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         session.commit()
         result["signals"][variant.name] = {"candidate": candidate, "rejected": rejected}
         result["variants_run"].append(variant.name)
+        result["variant_ms"][variant.name] = int((time.monotonic() - t_variant) * 1000)
 
     return result

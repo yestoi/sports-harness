@@ -1,5 +1,6 @@
 import itertools
 import json
+import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -11,7 +12,12 @@ import yaml
 from harness.db.models import Game, OddsSnapshot, Run, Signal, VenueMarket, VenueQuote
 from harness.matching.teams import seed_teams_from_espn
 from harness.strategy import pipeline as pipeline_module
-from harness.strategy.pipeline import _insert_signals, _load_gap_rows, price_and_signal
+from harness.strategy.pipeline import (
+    _insert_signals,
+    _load_gap_rows,
+    price_and_signal,
+    pricing_order,
+)
 from harness.strategy.variants import (
     Variant,
     load_variants,
@@ -195,38 +201,52 @@ def test_price_and_signal_stops_when_budget_is_spent(env_settings, db_session):
 
 
 # --- final fix wave: variant rotation under budget ----------------------------
+# Re-pinned by Amendment 4 (2026-09-08): the head of the order no longer rotates. A budget that
+# only allows one variant now always spends it on the gate variant, then the primary; only the
+# secondary tail still rotates by run_id (pinned by test_pricing_order_rotates_only_the_tail).
 
-def test_variant_order_rotates_by_run_id_and_the_skip_is_recorded(env_settings, db_session, monkeypatch):
-    """A budget that only allows one variant must not always drop the same (alphabetically
-    later) one: which variant runs first should depend on run_id, and which variants were
-    skipped must be visible in the result rather than silently missing."""
+def test_variant_order_leads_with_the_gate_variant_and_the_skip_is_recorded(
+        env_settings, db_session, monkeypatch):
+    """A budget that only allows one variant must spend it on the variant the phase gate is
+    judged on, on every run_id, and the variants it skipped must be visible in the result
+    rather than silently missing."""
     variants = load_variants(ROTATION_VARIANTS_DIR)
     register_variants(db_session, variants, NOW, prune=True)
     assert [v.name for v in variants] == ["tiny", "tiny2"]  # sorted; active_variants matches
+    assert [v.tier for v in variants] == ["primary", "secondary"]
 
     # A deterministic fake clock: the Nth call to time.monotonic() returns N. price_and_signal
     # calls it once to set the deadline, then once per ok() check (after fair values, after
-    # gaps, then once per variant before scoring). budget_s=4 keeps the first three checks
-    # (t=1,2,3) inside the deadline (0+4) and expires on the second variant's check (t=4).
+    # gaps, then once per variant before scoring), and twice more per variant it scores (the
+    # Amendment 4 per-variant timing). budget_s=4 keeps the first three checks (t=1,2,3) inside
+    # the deadline (0+4) and expires on the second variant's check.
+    gate_settings = env_settings.model_copy(update={"gate_variant": "tiny2"})
     counter = itertools.count()
     monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(counter))
 
-    result_run1 = price_and_signal(db_session, 1001, NOW, env_settings, budget_s=4)
+    result_run1 = price_and_signal(db_session, 1001, NOW, gate_settings, budget_s=4)
     assert result_run1["budget_exhausted"] is True
-    assert len(result_run1["variants_run"]) == 1
-    assert result_run1["variants_skipped"] == [
-        v for v in ("tiny", "tiny2") if v not in result_run1["variants_run"]
-    ]
-
-    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(counter))
-    result_run2 = price_and_signal(db_session, 1002, NOW, env_settings, budget_s=4)
-    assert result_run2["budget_exhausted"] is True
-    assert len(result_run2["variants_run"]) == 1
-
-    # 1001 % 2 == 1 (starts at tiny2), 1002 % 2 == 0 (starts at tiny): different first variant.
-    assert result_run1["variants_run"] != result_run2["variants_run"]
+    assert result_run1["gate_variant_missing"] is False
     assert result_run1["variants_run"] == ["tiny2"]
-    assert result_run2["variants_run"] == ["tiny"]
+    assert result_run1["variants_skipped"] == ["tiny"]
+    assert result_run1["order"] == ["tiny2", "tiny"]
+
+    # 1001 % 2 == 1 and 1002 % 2 == 0 used to swap the first variant; the gate variant leads
+    # on both now.
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(counter))
+    result_run2 = price_and_signal(db_session, 1002, NOW, gate_settings, budget_s=4)
+    assert result_run2["budget_exhausted"] is True
+    assert result_run2["variants_run"] == ["tiny2"]
+    assert result_run2["variants_skipped"] == ["tiny"]
+
+    # With no registered row carrying the gate variant's name the primary leads instead, and
+    # the run says so rather than silently demoting the ordering (the Amendment 3 incident).
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(counter))
+    result_run3 = price_and_signal(db_session, 1003, NOW, env_settings, budget_s=4)
+    assert result_run3["gate_variant_missing"] is True
+    assert result_run3["gate_variant_id"] is None
+    assert result_run3["variants_run"] == ["tiny"]
+    assert result_run3["variants_skipped"] == ["tiny2"]
 
 
 def test_pricing_clock_for_run_uses_finished_at_then_start_plus_budget():
@@ -327,3 +347,83 @@ def test_importing_pipeline_registers_no_settlement_stage(monkeypatch):
     importlib.import_module("harness.strategy.pipeline")
 
     assert job_module.STAGES == []
+
+
+# --- Amendment 4: the gate variant and the primary are scored on every tick --------------------
+
+
+def _pv(name, tier="secondary"):
+    return Variant(name=name, tier=tier, config={}, variant_id=name[:12])
+
+
+def test_pricing_order_puts_gate_variant_then_primary_first():
+    variants = [_pv("alpha"), _pv("beta"), _pv("sharp_direct", "primary"), _pv("sharp_two_sided")]
+    ordered, missing = pricing_order(variants, "sharp_two_sided", run_id=0)
+    assert missing is False
+    assert [v.name for v in ordered][:2] == ["sharp_two_sided", "sharp_direct"]
+    assert sorted(v.name for v in ordered) == sorted(v.name for v in variants)
+
+
+def test_pricing_order_rotates_only_the_tail():
+    variants = [_pv("alpha"), _pv("beta"), _pv("gamma"),
+                _pv("sharp_direct", "primary"), _pv("sharp_two_sided")]
+    heads = set()
+    tails = []
+    for run_id in range(6):
+        ordered, _ = pricing_order(variants, "sharp_two_sided", run_id)
+        heads.add(tuple(v.name for v in ordered[:2]))
+        tails.append([v.name for v in ordered[2:]])
+    assert heads == {("sharp_two_sided", "sharp_direct")}
+    assert len({tuple(t) for t in tails}) == 3          # alpha, beta, gamma rotate
+    assert all(sorted(t) == ["alpha", "beta", "gamma"] for t in tails)
+
+
+def test_pricing_order_reports_a_missing_gate_variant():
+    variants = [_pv("alpha"), _pv("sharp_direct", "primary")]
+    ordered, missing = pricing_order(variants, "sharp_two_sided", run_id=0)
+    assert missing is True
+    assert ordered[0].name == "sharp_direct"
+
+
+def test_pricing_order_without_a_primary_still_leads_with_the_gate_variant():
+    variants = [_pv("alpha"), _pv("sharp_two_sided")]
+    ordered, missing = pricing_order(variants, "sharp_two_sided", run_id=1)
+    assert missing is False
+    assert ordered[0].name == "sharp_two_sided"
+
+
+def test_pricing_order_does_not_repeat_a_gate_variant_that_is_the_primary():
+    variants = [_pv("alpha"), _pv("sharp_direct", "primary")]
+    ordered, missing = pricing_order(variants, "sharp_direct", run_id=0)
+    assert missing is False
+    assert [v.name for v in ordered] == ["sharp_direct", "alpha"]
+
+
+def test_price_and_signal_records_order_and_per_variant_ms(env_settings, db_session):
+    game, run, markets = _seed(db_session)
+    register_variants(db_session, load_variants(VARIANTS_DIR), NOW, prune=True)
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=30)
+
+    assert result["order"] == result["variants_run"] + result["variants_skipped"]
+    assert set(result["variant_ms"]) == set(result["variants_run"])
+    assert all(isinstance(ms, int) and ms >= 0 for ms in result["variant_ms"].values())
+    assert result["gate_variant_missing"] is True   # the fixture registers no gate variant
+    assert result["gate_variant_id"] is None
+
+
+def test_price_and_signal_records_the_resolved_gate_variant_id(env_settings, db_session, caplog):
+    # B-I3: the run note carries the id, not only the name.
+    game, run, markets = _seed(db_session)
+    config = dict(yaml.safe_load((VARIANTS_DIR / "tiny.yaml").read_text()),
+                  name=env_settings.gate_variant)
+    gate = variant_from_config(config)
+    register_variants(db_session, [gate], NOW, prune=True)
+
+    with caplog.at_level(logging.WARNING, logger=pipeline_module.__name__):
+        result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=30)
+
+    assert result["gate_variant_missing"] is False
+    assert result["gate_variant_id"] == gate.variant_id
+    assert result["order"][0] == env_settings.gate_variant
+    assert caplog.records == []
