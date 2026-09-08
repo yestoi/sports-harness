@@ -12,11 +12,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
 
-from harness.db.models import MetricSample, OperatorEvent, RawResponse, Run, TradeWatermark, VenueMarket, VenueQuote, VenueTrade
+from harness.db.models import (Game, MetricSample, OperatorEvent, RawResponse, Run, TradeWatermark, VenueMarket,
+                               VenueQuote, VenueTrade)
 from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
 from harness.health import create_app
+from harness.matching.teams import seed_teams_from_espn
 from harness.normalize import runner as runner_mod
 from harness.recorder import store
 from harness.recorder.tick import Recorder, _pricing_samples, _recorder_samples
@@ -37,6 +39,7 @@ FIXD = Path(__file__).parent / "fixtures"
 ODDS = json.loads((FIXD / "odds_featured_nfl.json").read_text())
 ESPN = json.loads((FIXD / "espn_nfl_scoreboard.json").read_text())
 KM = json.loads((FIXD / "kalshi_markets_page.json").read_text())
+NFL_TEAMS = json.loads((FIXD / "espn_teams_nfl.json").read_text())
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)  # Wed 18:00 CT, 1h20m before the 19:20 kickoff
 
 
@@ -716,3 +719,102 @@ def test_recorder_deploy_event_on_build_sha_change(env_settings, db_session):
     # Checked once per process: a second tick under the same (now unchanged) build writes no
     # second deploy event.
     assert db_session.query(OperatorEvent).filter_by(kind="deploy").count() == 1
+
+
+# --- Fix 14: ESPN midnight-Eastern rollover ---------------------------------------------
+
+# 05:00Z = 01:00 ET (EDT, UTC-4) on 2026-09-09 -- just after the Eastern day rolled, so
+# "today" ET is 09-09 and "yesterday" ET is 09-08.
+ROLLOVER_NOW = datetime(2026, 9, 9, 5, 0, tzinfo=timezone.utc)
+# 00:20Z on 09-09 is 20:20 ET on 09-08 -- a kickoff that fell on yesterday's Eastern date.
+YESTERDAY_ET_KICKOFF = datetime(2026, 9, 9, 0, 20, tzinfo=timezone.utc)
+
+
+def _mock_nfl_scoreboard(dated_body: dict | None = None, plain_body: dict | None = None):
+    """Route https://e/nfl/scoreboard, replying with `dated_body` when the request carries a
+    `dates=20260908` param and `plain_body` (or an empty scoreboard) otherwise -- the two
+    fetches share a path, so only the query params tell them apart."""
+    calls = {"plain": [], "dated": []}
+
+    def _side_effect(request):
+        params = dict(request.url.params)
+        if params.get("dates"):
+            calls["dated"].append(params)
+            return httpx.Response(200, json=dated_body if dated_body is not None else {"events": []})
+        calls["plain"].append(params)
+        return httpx.Response(200, json=plain_body if plain_body is not None else {"events": []})
+
+    respx.get("https://e/nfl/scoreboard").mock(side_effect=_side_effect)
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": [], "trades": []}))
+    return calls
+
+
+@respx.mock
+def test_espn_rollover_fetch_issued_for_pending_yesterday_game(env_settings, db_session):
+    """A non-terminal game whose kickoff fell on the previous Eastern date makes the tick
+    issue the extra dated fetch (fix 14, journal 43-44: game 114)."""
+    calls = _mock_nfl_scoreboard()
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=YESTERDAY_ET_KICKOFF,
+                        status="in_progress", espn_event_id="900"))
+    db_session.commit()
+
+    rec, _ = _recorder(env_settings, db_session, now=ROLLOVER_NOW)
+    rec.maybe_tick()
+
+    assert calls["dated"] == [{"dates": "20260908"}]
+
+
+@respx.mock
+def test_espn_rollover_fetch_not_issued_once_game_is_terminal(env_settings, db_session):
+    """Once the previous-date game is terminal, the extra fetch stops (fix 14)."""
+    calls = _mock_nfl_scoreboard()
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=YESTERDAY_ET_KICKOFF,
+                        status="final", home_score=24, away_score=17, espn_event_id="900"))
+    db_session.commit()
+
+    rec, _ = _recorder(env_settings, db_session, now=ROLLOVER_NOW)
+    rec.maybe_tick()
+
+    assert calls["dated"] == []
+    assert calls["plain"]  # today's undated fetch still runs
+
+
+@respx.mock
+def test_espn_rollover_cadence_key_is_independent_of_todays(env_settings, db_session):
+    """The dated fetch's cadence key (`espn_dated:<sport>:<date>`) is tracked separately from
+    today's (`espn:<sport>`): pre-marking today's key as just-fetched must not suppress the
+    dated fetch, which has never run (fix 14)."""
+    calls = _mock_nfl_scoreboard()
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=YESTERDAY_ET_KICKOFF,
+                        status="in_progress", espn_event_id="900"))
+    store.set_source_state(db_session, "espn:nfl", ROLLOVER_NOW - timedelta(seconds=30))
+    db_session.commit()
+
+    rec, _ = _recorder(env_settings, db_session, now=ROLLOVER_NOW)
+    rec.maybe_tick()
+
+    assert calls["plain"] == []  # today's key says "not due yet"
+    assert calls["dated"] == [{"dates": "20260908"}]  # the dated key, unset, still fires
+
+
+@respx.mock
+def test_espn_rollover_heals_stuck_game_to_final(env_settings, db_session):
+    """End to end: the dated fetch's body carries a `final` event for the stuck game, and the
+    normal normalize pass inside the same tick links it to `status=final` with scores (fix
+    14, game 114's shape)."""
+    dated_body = {"events": [{"id": "900", "date": "2026-09-09T00:20Z",
+                  "status": {"type": {"name": "STATUS_FINAL"}},
+                  "competitions": [{"competitors": [
+                      {"homeAway": "home", "score": "24", "team": {"id": "14", "displayName": "Los Angeles Rams"}},
+                      {"homeAway": "away", "score": "17", "team": {"id": "19", "displayName": "New York Giants"}}]}]}]}
+    _mock_nfl_scoreboard(dated_body=dated_body)
+    seed_teams_from_espn(db_session, "nfl", NFL_TEAMS)
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=YESTERDAY_ET_KICKOFF,
+                        status="in_progress", espn_event_id="900"))
+    db_session.commit()
+
+    rec, _ = _recorder(env_settings, db_session, now=ROLLOVER_NOW)
+    rec.maybe_tick()
+
+    game = db_session.query(Game).filter_by(espn_event_id="900").one()
+    assert (game.status, game.home_score, game.away_score) == ("final", 24, 17)

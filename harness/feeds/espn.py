@@ -41,5 +41,12 @@ class EspnClient:
         self._http = http
         self._base = base_url.rstrip("/")
 
-    def fetch_scoreboard(self, sport: Sport) -> FetchResult:
-        return self._http.get(f"{self._base}{_PATH[sport]}", params=_PARAMS[sport], redact_params=())
+    def fetch_scoreboard(self, sport: Sport, dates: str | None = None) -> FetchResult:
+        """`dates` (ESPN's own `YYYYMMDD` format) asks for a specific day's scoreboard rather
+        than "today" in US/Eastern -- fix 14's dated re-fetch for games that fell off the
+        undated body at the Eastern midnight rollover. The path and every other param are
+        unchanged."""
+        params = dict(_PARAMS[sport]) if _PARAMS[sport] else {}
+        if dates:
+            params["dates"] = dates
+        return self._http.get(f"{self._base}{_PATH[sport]}", params=params or None, redact_params=())

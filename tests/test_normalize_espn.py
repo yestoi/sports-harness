@@ -103,3 +103,23 @@ def test_score_event_failure_does_not_poison_the_linker(db_session, monkeypatch)
     assert game.status == "final"
     assert (game.home_score, game.away_score) == (24, 17)
     assert db_session.query(GameScoreEvent).filter_by(game_id=game.id).count() == 0
+
+
+def test_link_updates_from_a_previous_dates_body(db_session):
+    """Fix 14: `link_espn_scoreboard` doesn't care which date's scoreboard a body came from --
+    a game stuck `in_progress` because it rolled off ESPN's undated (today-only) fetch at
+    midnight Eastern must still heal from a body fetched with a `dates=<previous day>` param,
+    as long as the body carries the game's event id."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(3, "05:00", 17, 10))
+    game = db_session.query(Game).filter_by(espn_event_id="401").one()
+    assert game.status == "in_progress"
+
+    previous_dates_body = {"events": [{"id": "401", "date": "2026-09-21T00:20Z",
+                           "status": {"type": {"name": "STATUS_FINAL"}},
+                           "competitions": [{"competitors": [
+                               {"homeAway": "home", "score": "24", "team": {"id": "14", "displayName": "Los Angeles Rams"}},
+                               {"homeAway": "away", "score": "17", "team": {"id": "19", "displayName": "New York Giants"}}]}]}]}
+    link_espn_scoreboard(db_session, "nfl", previous_dates_body)
+    game = db_session.query(Game).filter_by(espn_event_id="401").one()
+    assert (game.status, game.home_score, game.away_score) == ("final", 24, 17)

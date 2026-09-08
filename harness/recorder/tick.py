@@ -3,13 +3,14 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import desc, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from harness import telemetry
 from harness.config.settings import Settings
-from harness.db.models import RawResponse, Run
+from harness.db.models import Game, RawResponse, Run
 from harness.db.schema import ensure_partitions
 from harness.feeds.espn import EspnClient, Kickoff, parse_kickoffs
 from harness.feeds.odds_api import OddsApiClient, parse_credit_headers, parse_event_ids_and_times
@@ -26,6 +27,11 @@ _SERIES_SPORT = {s: ("nfl" if "NFL" in s else "ncaaf") for s in FOOTBALL_SERIES}
 ALTERNATES_BUDGET_S = 40  # alternates may spend at most this much of the tick budget
 KALSHI_COMMIT_EVERY = 50  # commit after this many stored trade/ladder responses
 TRADES_MAX_PAGES = 20  # 20,000 trades per window before we stop paginating and record a gap
+# Fix 14: ESPN's undated scoreboard is scoped to "today" in US/Eastern, not the recorder's own
+# tz_local -- the rollover this fetch chases is ESPN's, so it always uses Eastern regardless of
+# where the harness runs.
+_ESPN_TZ = ZoneInfo("America/New_York")
+_ESPN_TERMINAL_STATUSES = {"final", "postponed", "canceled"}
 
 
 def utcnow() -> datetime:
@@ -159,10 +165,45 @@ class Recorder:
                 if body is None:
                     body = self._latest_body(session, "espn", _ESPN_PATH[sport])
                 kickoffs.extend(parse_kickoffs(sport, body))
+                self._espn_rollover(session, run, sport, now, ctx)
             except Exception as e:  # noqa: BLE001
                 log.exception("espn failed")
                 ctx["errors"].append({key: repr(e)})
         return kickoffs
+
+    def _espn_rollover(self, session: Session, run: Run, sport: str, now: datetime, ctx: dict) -> None:
+        """Fix 14 (journal 43-44, game 114): ESPN's undated scoreboard drops an event the
+        instant its day rolls at 00:00 Eastern, so a game whose kickoff fell on the previous
+        Eastern date and is still non-terminal never gets a final status or score from the
+        plain fetch above and is stuck forever. While such a game exists for this sport, also
+        fetch that date's scoreboard (same path and other params, plus `dates=YYYYMMDD`) under
+        its own per-sport-and-date cadence key so it never competes with today's 900s fetch.
+        `_family_filter("espn")` in harness/normalize/runner.py partitions raw espn rows by
+        source alone, so the dated body is normalized exactly like today's -- no change needed
+        there or in `link_espn_scoreboard`, which already updates any game carrying the body's
+        event id regardless of which date fetched it.
+        """
+        yesterday_et = (now.astimezone(_ESPN_TZ) - timedelta(days=1)).date()
+        day_start = datetime.combine(yesterday_et, datetime.min.time(), tzinfo=_ESPN_TZ).astimezone(timezone.utc)
+        day_end = day_start + timedelta(days=1)
+        pending = session.query(Game.id).filter(
+            Game.sport == sport, Game.kickoff_utc >= day_start, Game.kickoff_utc < day_end,
+            Game.status.notin_(_ESPN_TERMINAL_STATUSES)
+        ).first() is not None
+        if not pending:
+            return
+        date_str = yesterday_et.strftime("%Y%m%d")
+        key = f"espn_dated:{sport}:{date_str}"
+        if not self._due(store.get_source_state(session, key), now, 900):
+            return
+        r = self.espn.fetch_scoreboard(sport, dates=date_str)  # type: ignore[arg-type]
+        store.store_raw(session, run.id, "espn", _ESPN_PATH[sport], {"dates": date_str}, r)
+        ctx["n"] += 1
+        if r.status == 200:
+            store.set_source_state(session, key, now)
+        else:
+            ctx["errors"].append({key: f"http {r.status}"})
+        ctx["fetched"] = True
 
     def _odds(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff], budget: _Budget,
               ctx: dict) -> None:

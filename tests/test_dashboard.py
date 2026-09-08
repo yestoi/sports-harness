@@ -3,9 +3,10 @@ from datetime import timedelta
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
-from harness.dashboard.app import create_dashboard
+from harness.dashboard.app import _funnel, create_dashboard
 from harness.db.models import (ExecHeartbeat, Fill, JobRun, KillSwitch, Ledger, OperatorEvent, Order, OrderEvent,
                                 RawResponse, Run, StrategyVariant, VenueSettlement, VenueTrade)
 from harness.execution.plan import POST_ONLY_REJECT
@@ -564,3 +565,51 @@ def test_settlement_health_reports_mismatches_and_stale_unsettled(db_session, en
     assert sh["mismatch_count_7d"] == 1
     assert sh["mismatches_7d"][0]["ticker"] == ticker
     assert sh["stale_unsettled"] == 0
+
+
+# --- Fix 15: the funnel reads runs.notes instead of scanning the pricing tables --------------
+
+def test_funnel_sums_pricing_counts_from_run_notes(db_session, env_settings):
+    """`_funnel`'s `fair_by_source`, `gaps` and `signals_by_variant` come from per-run sums of
+    `runs.notes->'pricing'` over the trailing 24h, not from scanning `fair_values`,
+    `market_gap_snapshots` or `signals` -- `_seed_full` below writes real (and different)
+    counts into those three tables, so this only passes once the notes' numbers, not the
+    tables', are what comes back (fix 15, journal 44: a 24h scan of those tables took 86-92s
+    against the 10s bound and blew the statement timeout after a restart)."""
+    game, run, markets = _seed_full(db_session, env_settings)
+    run.notes = {"pricing": {"fair_direct": 111, "fair_derived": 222, "gaps": 333,
+                             "signals": {"tiny": {"candidate": 44, "rejected": 55}}}}
+    db_session.add(Run(started_at=NOW - timedelta(hours=2), status="ok",
+                       notes={"pricing": {"fair_direct": 1, "fair_derived": 2, "gaps": 3,
+                                          "signals": {"tiny": {"candidate": 1, "rejected": 1}}}}))
+    db_session.flush()
+
+    result = _funnel(db_session, NOW)
+
+    assert result["fair_by_source"] == {"direct": 112, "derived": 224}
+    assert result["gaps"] == 336
+    assert result["signals_by_variant"]["tiny"]["candidate"] == 45
+    assert result["signals_by_variant"]["tiny"]["rejected"] == 56
+    assert result["signals_by_variant"]["tiny"]["tier"] == "primary"
+
+
+def test_funnel_issues_no_statement_against_the_pricing_tables(db_session, env_settings):
+    """The bounded query over `runs` must be the whole story: no statement `_funnel` issues
+    may touch `fair_values`, `market_gap_snapshots` or `signals` (fix 15)."""
+    _seed_full(db_session, env_settings)  # writes real rows to all three pricing tables
+    engine = db_session.get_bind()
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        _funnel(db_session, NOW)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    joined = "\n".join(statements).lower()
+    assert "fair_values" not in joined
+    assert "market_gap_snapshots" not in joined
+    assert "signals" not in joined

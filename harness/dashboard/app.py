@@ -25,9 +25,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from harness import telemetry
 from harness.config.settings import Settings
 
-from harness.db.models import (ExecHeartbeat, FairValue, Fill, Game, JobRun, KillSwitch, Ledger, MarketGapSnapshot,
-                                OddsSnapshot, Order, OrderbookEvent, OrderEvent, RawResponse, Run, Signal,
-                                StrategyVariant, Team, VenueMarket, VenueQuote, VenueTrade)
+from harness.db.models import (ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Ledger, OddsSnapshot, Order,
+                                OrderbookEvent, OrderEvent, RawResponse, Run, Signal, StrategyVariant, Team,
+                                VenueMarket, VenueQuote, VenueTrade)
 from harness.execution.plan import POST_ONLY_REJECT
 from harness.health import compute_health
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_model_for
@@ -94,6 +94,14 @@ def _health(session: Session, session_factory: sessionmaker, now: datetime, cred
 
 
 def _funnel(session: Session, now: datetime) -> dict:
+    """`sources` and `markets_by_sport` still come straight from `raw_responses` and
+    `venue_markets`, which stay small. `fair_by_source`, `gaps` and `signals_by_variant` are
+    per-run *sums* of `runs.notes->'pricing'` over the trailing 24h (fix 15, journal 44): a
+    direct scan of `fair_values`, `market_gap_snapshots` and `signals` took 86-92s against the
+    10s bound and blew the dashboard's statement timeout once the season's pricing volume grew,
+    and it recurs after every Postgres restart. The rendered keys are unchanged, so the frozen
+    `/api/summary` contract holds -- only where the values come from has changed.
+    """
     cutoff = now - WINDOW_24H
 
     sources = dict(session.execute(
@@ -112,30 +120,28 @@ def _funnel(session: Session, now: datetime) -> dict:
         ).all()
         markets_by_sport[sport] = dict(rows)
 
-    fair_by_source = dict(session.execute(
-        select(FairValue.fair_source, func.count())
-        .where(FairValue.created_at >= cutoff)
-        .group_by(FairValue.fair_source)
-    ).all())
-
-    gaps = session.execute(
-        select(func.count()).select_from(MarketGapSnapshot).where(MarketGapSnapshot.created_at >= cutoff)
-    ).scalar_one()
-
-    variants = session.execute(
-        select(StrategyVariant).where(StrategyVariant.active.is_(True)).order_by(StrategyVariant.name)
+    signals_by_variant = {
+        v.name: {"tier": v.tier, "candidate": 0, "rejected": 0}
+        for v in session.execute(
+            select(StrategyVariant).where(StrategyVariant.active.is_(True)).order_by(StrategyVariant.name)
+        ).scalars().all()
+    }
+    fair_direct = fair_derived = gaps = 0
+    notes_rows = session.execute(
+        select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.started_at)).limit(RUNS_NOTES_LIMIT)
     ).scalars().all()
-    signals_by_variant = {}
-    for v in variants:
-        counts = dict(session.execute(
-            select(Signal.decision, func.count())
-            .where(Signal.variant_id == v.variant_id, Signal.created_at >= cutoff, Signal.replay.is_(False))
-            .group_by(Signal.decision)
-        ).all())
-        signals_by_variant[v.name] = {"tier": v.tier, "candidate": counts.get("candidate", 0),
-                                       "rejected": counts.get("rejected", 0)}
+    for notes in notes_rows:
+        pricing = (notes or {}).get("pricing") or {}
+        fair_direct += pricing.get("fair_direct", 0) or 0
+        fair_derived += pricing.get("fair_derived", 0) or 0
+        gaps += pricing.get("gaps", 0) or 0
+        for variant, counts in (pricing.get("signals") or {}).items():
+            agg = signals_by_variant.setdefault(variant, {"tier": None, "candidate": 0, "rejected": 0})
+            agg["candidate"] += counts.get("candidate", 0) or 0
+            agg["rejected"] += counts.get("rejected", 0) or 0
 
-    return {"sources": sources, "markets_by_sport": markets_by_sport, "fair_by_source": fair_by_source,
+    return {"sources": sources, "markets_by_sport": markets_by_sport,
+            "fair_by_source": {"direct": fair_direct, "derived": fair_derived},
             "gaps": gaps, "signals_by_variant": signals_by_variant}
 
 
