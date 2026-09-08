@@ -205,6 +205,60 @@ def benchmarks_cmd(game_id: int = typer.Option(..., "--game-id")) -> None:
     print(f"game_id={game_id} benchmarks={n_benchmarks} result_benchmarks={n_result}")
 
 
+@app.command("report")
+def report_cmd(
+    week: int = typer.Option(..., "--week", help="ISO week number (R7)"),
+    year: int = typer.Option(2026, "--year"),
+    out: str = typer.Option("-", "--out", help="Markdown destination; '-' is stdout"),
+    selected_out: Path = typer.Option(None, "--selected-out",
+                                      help="Write the selection artefact (week-38 freeze)"),
+    confirm: Path = typer.Option(None, "--confirm",
+                                help="Restrict tables 2 and 4 to a selection artefact"),
+) -> None:
+    """The weekly report (§7.2): ten tables over one ISO week's non-replay rows.
+
+    Read-only. `--selected-out` writes the cells and contrasts this report selects, which is
+    what the controller commits as `docs/reports/2026-w38-selected.json` on Monday
+    2026-09-21; `--confirm` reads such a file back and evaluates only that set, which is what
+    the week-3 confirmation report does.
+    """
+    configure_logging()
+    from harness.report.tables import weekly_tables
+    from harness.report.weekly import (
+        build_meta,
+        read_selected,
+        render_markdown,
+        restrict_to_selection,
+        selection_document,
+        write_selected,
+    )
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))
+    with factory() as session:
+        try:
+            tables = weekly_tables(session, year, week, s)
+        except ValueError as exc:  # an ISO week that does not exist in that year
+            log.error("%s", exc)
+            raise typer.Exit(1) from exc
+        meta = build_meta(session, s, year, week, confirmation=confirm is not None)
+    # The selection is computed from the unrestricted tables: a confirmation run reports on a
+    # frozen set, it never selects a new one.
+    if selected_out is not None:
+        write_selected(selected_out, selection_document(tables, meta))
+        log.info("selection written to %s", selected_out)
+    if confirm is not None:
+        tables = restrict_to_selection(tables, read_selected(confirm))
+    document = render_markdown(tables, meta)
+    if out == "-":
+        print(document, end="")
+    else:
+        path = Path(out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(document)
+        log.info("report written to %s", path)
+
+
 @app.command("serve")
 def serve(port: int = 8080, host: str = "0.0.0.0") -> None:
     configure_logging()
