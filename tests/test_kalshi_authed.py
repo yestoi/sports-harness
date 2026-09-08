@@ -186,6 +186,14 @@ def test_the_api_error_code_is_ascii_escaped_and_truncated():
     assert code.isascii()
 
 
+def test_the_api_error_code_strips_every_control_character_and_del():
+    # fix round 2, Minor: not just \n/\r -- every C0 control char (here \t and \x01) and DEL.
+    t = FakeTransport(queued=[_err(400, code="ab\tc\x01d\x7fe")])
+    with pytest.raises(KalshiApiError) as exc_info:
+        KalshiReader(t).get_account_limits()
+    assert exc_info.value.code == "abcde"
+
+
 # --- fix round 1, Important 2: canonical_side wired into the decoders ------------------------
 
 def test_order_with_only_book_side_decodes_outcome_side_from_it():
@@ -195,11 +203,25 @@ def test_order_with_only_book_side_decodes_outcome_side_from_it():
     assert order.outcome_side == "no" and order.book_side == "ask"
 
 
-def test_order_with_only_legacy_side_and_action_decodes_correctly():
-    t = FakeTransport(queued=[_ok({"orders": [{
-        "order_id": "o1", "ticker": "T", "side": "no", "action": "sell"}], "cursor": ""})])
+@pytest.mark.parametrize("side,action,expected_outcome,expected_book", [
+    # fix round 2, Important: action flips the outcome relative to the legacy side; an
+    # absent action is treated as buy (round 1's version read `side` verbatim and ignored
+    # `action`, which inverted every sell order).
+    ("yes", "buy", "yes", "bid"),
+    ("yes", "sell", "no", "ask"),
+    ("no", "buy", "no", "ask"),
+    ("no", "sell", "yes", "bid"),
+    ("yes", None, "yes", "bid"),   # absent action treated as buy
+    ("no", None, "no", "ask"),
+])
+def test_order_with_only_legacy_side_and_action_decodes_correctly(
+        side, action, expected_outcome, expected_book):
+    payload = {"order_id": "o1", "ticker": "T", "side": side}
+    if action is not None:
+        payload["action"] = action
+    t = FakeTransport(queued=[_ok({"orders": [payload], "cursor": ""})])
     order = KalshiReader(t).get_orders()[0]
-    assert order.outcome_side == "no" and order.book_side == "ask"
+    assert order.outcome_side == expected_outcome and order.book_side == expected_book
 
 
 def test_order_with_no_direction_anywhere_raises_a_decode_error():

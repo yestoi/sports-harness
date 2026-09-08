@@ -66,14 +66,20 @@ class KalshiApiError(RuntimeError):
         self.code = code
 
 
+#: Every C0 control character (0x00-0x1F) and DEL (0x7F), stripped from a venue's `code`
+#: field rather than just the newlines (fix round 2, Minor).
+_CONTROL_CHARS = frozenset(chr(c) for c in range(0x20)) | {chr(0x7F)}
+
+
 def _sanitize_code(value) -> str | None:
-    """The venue's `code` field, made safe to hold on an exception: ASCII-escaped, newlines
-    stripped, truncated. Mirrors the global constraint's treatment of `venue_status.reason`
-    and the demo smoke's output, scaled down for an identifier rather than a sentence."""
+    """The venue's `code` field, made safe to hold on an exception: ASCII-escaped, every C0
+    control character and DEL stripped, truncated. Mirrors the global constraint's treatment
+    of `venue_status.reason` and the demo smoke's output, scaled down for an identifier
+    rather than a sentence."""
     if value is None:
         return None
     text = str(value).encode("ascii", "backslashreplace").decode("ascii")
-    text = text.replace("\n", "").replace("\r", "")
+    text = "".join(ch for ch in text if ch not in _CONTROL_CHARS)
     return text[:_CODE_MAX_LEN]
 
 
@@ -134,15 +140,27 @@ def _resolve_sides(payload: dict) -> tuple[str | None, str | None]:
     """The decoders' own direction resolution: `outcome_side`/`book_side` exactly as
     `canonical_side` reads them, plus one fallback `canonical_side` itself never takes (its
     tests pin that it ignores the deprecated pair): when both current fields are absent, the
-    legacy `side` (yes|no) resolves both the outcome and, since nothing else can, the book
-    side too. Returns (None, None) when nothing resolves; `require_side` raises instead."""
+    legacy `side` (yes|no) and `action` (buy|sell) pair resolves both the outcome and, since
+    nothing else can, the book side too. Returns (None, None) when nothing resolves;
+    `require_side` raises instead.
+
+    The legacy pair's mapping to outcome (fix round 2, Important -- round 1's version read
+    `side` verbatim and ignored `action`, which inverts a sell order): `action == "buy"`
+    keeps `side` as the outcome; `action == "sell"` flips it (buy-yes and sell-no both give
+    `yes`; buy-no and sell-yes both give `no`). An absent `action` is treated as `buy` --
+    the legacy field predates `action`, and unflipped is the common case. `book_side` is then
+    the ordinary bid/ask correspondence applied to that resolved outcome, exactly as
+    `canonical_side` maps it (yes->bid, no->ask), not to the raw `side` before the flip.
+    """
     outcome_side = payload.get("outcome_side")
     book_side = payload.get("book_side")
     if outcome_side or book_side:
         return (outcome_side or canonical_side(payload)), book_side
     legacy_side = payload.get("side")
     if legacy_side in ("yes", "no"):
-        return legacy_side, ("bid" if legacy_side == "yes" else "ask")
+        flip = payload.get("action") == "sell"
+        outcome = ("no" if legacy_side == "yes" else "yes") if flip else legacy_side
+        return outcome, ("bid" if outcome == "yes" else "ask")
     return None, None
 
 
