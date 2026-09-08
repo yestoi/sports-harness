@@ -733,3 +733,17 @@ Times are America/Chicago.
 - Rulings: (1) Neither hotfix is done: 17 (page time) has no branch; the panel hotfix (decision 53) has uncommitted work on `../sports-wt/fix-2026-09-08-report-panel` (branch `fix-2026-09-08-report-panel` from `main` de5514a). (2) The next session runs both hotfixes in parallel (disjoint areas: dashboard vs report) and ships them in one deploy (`make deploy-nas-app`; the diff is app-only), outside a game window, with a forced tick after 08:00 CT; then re-verifies the page-time row and renders `report --week 37 --out -` to confirm table 4's header reads featured-only. (3) Then the morning-after walker verify (the calendar day's first walker: check `signals` for 5632da729fa7 since the 08:10 CT run and `venue_markets.price_ranges` populating), the daily 09:00 CT line, then the repo bundle and `git push origin main` (U7).
 - Carried forward: none new (16 phase work; 17 open)
 - Next: fresh session per Kickoff; `state.md` carries the order
+
+## 55. preflight - fresh session - 2026-09-08 08:08 CT
+- Orient: n/a (preflight)
+- Branch / commits: `main` c39cf0f (docs only ahead of NAS 21f8ca4)
+- Result: done
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: `paper posture intact` (verbatim); evidence `docs/superpowers/autopilot/evidence/2026-09-08-preflight-0806.txt`: NAS 5/5 Up (app-exec, app-serve, postgres healthy), `/healthz` build 21f8ca4, credits 4,998,946 of 5,000,000, `/volume1` 69 % used (3.5 T free), memory available 1214 MB; game window 0|0|0; last real tick 3927 ok 101 s ago, heartbeat 3930 skipped 11 s, WS event age 0 s; tunnel 200; caffeinate running; secrets 600; test DB up, pytest processes 0
+- Tools (R23): ScheduleWakeup, PushNotification, ListAgents, CronCreate, CronList, CronDelete, Monitor, SendMessage and the Chrome set resolved; `tabs_context_mcp` answered (no tab group yet). Test notifications (R3, first session of the day): osascript sent ok; PushNotification returned "not sent - terminal active" (channel reachable, suppressed as redundant)
+- Rulings: (1) The untracked preflight evidence file is a state-file edit: committed here. (2) Worktree `../sports-wt/fix-2026-09-08-report-panel` maps to state.md (the dead implementer's uncommitted work is kept and re-dispatched per resume rule 2a); a new worktree `../sports-wt/fix-2026-09-08-dashboard` from `main` for carried fix 17. (3) The panel branch is based on de5514a and `main` moved by docs commits only: the controller rebases it onto `main` before the ff merge.
+- Carried forward: none
+- Next: hotfix (two batches in parallel: 17 dashboard, decision-53 report panel), one shared deploy

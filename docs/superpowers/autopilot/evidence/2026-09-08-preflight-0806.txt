@@ -1,0 +1,54 @@
+
+== clock
+2026-09-08 08:06:35 CDT
+2026-09-08T13:06:35Z (mac utc)
+
+== git
+main
+dirty files:        1
+c39cf0f docs: autopilot stopped (entry 54) - state for the next session: two hotfixes in parallel, walker verify, daily line, bundle+push
+de5514a docs: decision 53 - family panel ratified (gap_mid, featured feed); pre-registration note
+f37d8a2 docs: autopilot decision (51) and stopped (52) - gate cleared by the user: ALTERs, clv view, sharp_two_sided restored, settle ok; resume steps
+
+== mac
+ sleep                1 (sleep prevented by sharingd, caffeinate, powerd)
+71846 caffeinate -i -t 300
+
+== test db
+harness-pg-test Up 44 hours
+pytest processes: 0
+
+== secrets
+-rw------- anthropic_api_key
+-rw------- dashboard_token
+-rw------- kalshi_demo_key_id
+-rw------- kalshi_demo_private_key.pem
+-rw------- kalshi_key_id
+-rw------- kalshi_private_key.pem
+-rw------- odds_api_key
+.env.nas present
+
+== paper posture
+paper posture intact
+
+== tunnel
+localhost:8180 -> 200
+
+== nas
+2026-09-08T13:06:38Z (nas utc)
+sports-harness-app-exec-1 Up 3 hours (healthy)
+sports-harness-app-run-1 Up 3 hours
+sports-harness-app-serve-1 Up 3 hours (healthy)
+sports-harness-app-ws-1 Up 3 hours
+sports-harness-postgres-1 Up 7 hours (healthy)
+{"status":"ok","last_run_at":"2026-09-08T13:06:28.531858+00:00","last_status":"skipped","seconds_since":10,"credits_remaining":4998946,"credits_budget":5000000,"credits_low":false,"build":"21f8ca4"}
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.5T  69% /volume1
+mem available MB: 1214
+
+== deployed 21f8ca4 vs main c39cf0f
+
+== game window (in_progress | kickoff -4h..+15m | nfl kickoff 60-100m) and tick ages
+0 | 0 | 0
+last real tick | 3927 | ok | 101
+last heartbeat | 3930 | skipped | 11
+ws last event age s | 0
