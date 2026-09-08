@@ -181,6 +181,12 @@ _INDEX_DDL = (
     "create index if not exists ix_report_runs_week on report_runs (year, week, generated_at desc)",
     # Phase 4 §7: venue_requests is append-only and read by newest-first (outage/rate checks).
     "create index if not exists ix_venue_requests_ts on venue_requests (ts desc)",
+    # Phase 4 §9.3: the risk gate reads equity_snapshots per variant over a trailing window on
+    # every pricing tick (`risk.stopped_variants`, `risk.peak_equity_7d`) and once per equity
+    # sample. A plain btree on (variant_id, ts) serves both; the table is small (one row per
+    # exec variant per 300 s), so this is about keeping a hot per-tick read off a sort rather
+    # than about the table's size (Task 11 fix round 1).
+    "create index if not exists ix_equity_variant_ts on equity_snapshots (variant_id, ts)",
 )
 
 #: Carried fix 16. BRIN on `fair_values(created_at)` so the bounded staleness check
@@ -192,8 +198,13 @@ _CONCURRENT_INDEX_DDL = (
     "on fair_values using brin (created_at)",
 )
 
-#: Open contracts and their average price per variant, from the queue-model fills of live orders
-#: that have not settled yet. snapshot_cross and no_watcher fills are counterfactuals, not positions.
+#: Open contracts and their average price per variant, from the fills of live orders that have
+#: not settled yet, on either fill method that is money: `queue_model` (inferred against the
+#: recorded tape) and `venue` (the venue's own report). snapshot_cross and no_watcher fills are
+#: counterfactuals, not positions. The list matches `store.MONEY_FILL_METHODS` exactly -- the
+#: view and `store._POSITIONS` answer the same question and must not diverge on which fills are
+#: real (Task 11 fix round 1, Important 2). Widening a `create or replace view` is additive:
+#: the column list is unchanged, so nothing that reads it needs to know.
 _POSITIONS_VIEW = """
 create or replace view positions as
 select o.variant_id,
@@ -203,7 +214,7 @@ select o.variant_id,
        sum(f.contracts * f.prob) / nullif(sum(f.contracts), 0) as avg_price
 from fills f
 join orders o on o.id = f.order_id
-where f.fill_method = 'queue_model'
+where f.fill_method in ('queue_model', 'venue')
   and o.replay = false
   and o.status <> 'settled'
 group by o.variant_id, o.ticker, o.side

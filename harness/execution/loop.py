@@ -109,9 +109,9 @@ NO_WATCHER = "no_watcher"
 LATE_FILL = "late_fill"
 #: The `fills.fill_method` of a fill the venue reported, as against one the queue model
 #: inferred. Written only on the live path, which is dormant in this phase. Task 11 ruled on
-#: what the daily stake cap does with one: it counts. `store.load_fills_today` reads both
-#: methods, because the cap is a limit on money actually put at risk today and a real fill is
-#: the least deniable form of that -- see the ruling in `store.load_fills_today` itself.
+#: what the exposure reads do with one: they count it. `store.MONEY_FILL_METHODS` is the list,
+#: and it is what the daily stake cap, `load_positions` and the `positions` view all filter on,
+#: because a real fill is the least deniable form of money put at risk.
 VENUE = "venue"
 
 

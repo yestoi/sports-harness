@@ -198,6 +198,15 @@ def replay(
         # `as_measured` is a label, never a decision input (F56), and the live pipeline reads
         # it once per run at the same clock -- so replaying without it would leave the replay's
         # signals carrying a NULL where their live twins carry a bucket.
+        #
+        # `stopped` (§9.3's drawdown annotation) is deliberately *not* replayed, which is the
+        # opposite call for the opposite reason: it is a property of the live equity curve at
+        # that instant, not of the market being re-simulated, and a replay run keeps no equity
+        # curve of its own (`equity_snapshots` has no replay partition and the replay executor
+        # writes no telemetry at all). Replayed signals therefore always read
+        # `drawdown_stop = false`. Nothing is lost: the annotation decides nothing, and a
+        # replay that read the live curve would make a re-run's output depend on when it was
+        # run rather than on the window it covers.
         signals = run_strategy(rows, variant, clock, state=state,
                                as_measured=as_measured_table(session, clock))
         candidate = sum(1 for s in signals if s.decision == "candidate")

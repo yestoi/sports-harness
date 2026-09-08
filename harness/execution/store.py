@@ -427,24 +427,29 @@ def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
 
 # --- exposure -------------------------------------------------------------------------
 
+#: The fill methods that are *money*: one the queue model inferred against the recorded tape,
+#: and one the venue reported. Every exposure read in this module takes both (Task 11 ruling,
+#: widened to the position reads in fix round 1, Important 2). `no_watcher` and
+#: `snapshot_cross` are excluded because they are counterfactuals, never a trade of ours:
+#: `no_watcher` is what an order would have done if we had left it alone, and `snapshot_cross`
+#: is a book crossing.
+#:
+#: Leaving `venue` out would put the two halves of the exposure story out of step -- the daily
+#: cap counting a live fill while `cap_per_game`, `max_open` and `open_stake` saw no position
+#: at all -- and would let the live path spend the paper path's caps a second time. Nothing
+#: changes in the deployed posture: `fill_method = 'venue'` rows exist only in live mode, which
+#: is dormant, so every paper and replay number is byte-identical.
+MONEY_FILL_METHODS = ("queue_model", "venue")
+
 _POSITIONS = text("""
 select o.variant_id, o.game_id, m.side_team_id, o.side,
        sum(f.contracts * f.prob) as stake, max(o.edge_at_place) as edge
 from fills f
 join orders o on o.id = f.order_id
 join venue_markets m on m.id = o.venue_market_id
-where f.fill_method = 'queue_model' and o.replay = :replay and o.status <> 'settled'
+where f.fill_method = any(:methods) and o.replay = :replay and o.status <> 'settled'
 group by o.variant_id, o.game_id, m.side_team_id, o.side
 """)
-
-#: Task 11 ruling: both fill methods, not `queue_model` alone. A live fill carries
-#: `fill_method = 'venue'`, and the daily stake cap is a limit on money put at risk today --
-#: a real fill is the least deniable form of that, so leaving it out would let the live path
-#: spend the paper path's cap twice over. `snapshot_cross` and `no_watcher` are still excluded
-#: (they are counterfactuals, never money), which is what the explicit list below says.
-#: Nothing changes in the deployed posture: `fill_method = 'venue'` rows exist only in live
-#: mode, which is dormant, so every paper and replay number is byte-identical.
-DAILY_CAP_FILL_METHODS = ("queue_model", "venue")
 
 _FILLS_TODAY = text("""
 select o.variant_id, sum(f.contracts * f.prob) as stake
@@ -460,21 +465,18 @@ def load_positions(session: Session, replay: bool) -> list[PositionView]:
     return [PositionView(variant_id=r.variant_id, game_id=r.game_id,
                          side_team_id=r.side_team_id, side=r.side,
                          stake=r.stake or Decimal("0"), edge=r.edge)
-            for r in session.execute(_POSITIONS, {"replay": replay}).all()]
+            for r in session.execute(
+                _POSITIONS, {"replay": replay,
+                             "methods": list(MONEY_FILL_METHODS)}).all()]
 
 
 def load_fills_today(session: Session, replay: bool, since: datetime) -> list[FillView]:
     """Every watched fill since local midnight, settled or not (Task 5 ruling), on either fill
-    method: the queue model's and the venue's own (Task 11 ruling, `DAILY_CAP_FILL_METHODS`).
-
-    The counterfactual methods are excluded because they are not money: `no_watcher` is what an
-    order would have done if we had left it alone, and `snapshot_cross` is a book crossing, not
-    a trade of ours. A `venue` fill is money, so the daily cap sees it.
-    """
+    method that is money: the queue model's and the venue's own (`MONEY_FILL_METHODS`)."""
     return [FillView(variant_id=r.variant_id, stake=r.stake or Decimal("0"))
             for r in session.execute(
                 _FILLS_TODAY, {"replay": replay, "since": since,
-                               "methods": list(DAILY_CAP_FILL_METHODS)}).all()]
+                               "methods": list(MONEY_FILL_METHODS)}).all()]
 
 
 def local_midnight(now: datetime, tz) -> datetime:

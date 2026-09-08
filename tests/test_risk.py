@@ -7,14 +7,15 @@ The two things this file exists to pin are negative. The stop never decides a ca
 while it is tripped (decision 6: in paper the stop is information, not a brake).
 """
 
+import uuid
 from dataclasses import FrozenInstanceError
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 
-from harness.db.models import EquitySnapshot, Fill, KillSwitch, Order
+from harness.db.models import EquitySnapshot, Fill, KillSwitch, Order, VenueMarket
 from harness.execution import store
 from harness.execution.gateway import RECONCILE_FILL_LOOKBACK, PaperGateway
 from harness.execution.risk import (
@@ -347,3 +348,141 @@ def test_the_paper_poll_window_is_never_read(db_session):
     an answer no caller acts on."""
     assert PaperGateway().fills_since(db_session, NOW) == NOW
     assert PaperGateway().poll_fills(db_session, NOW - timedelta(days=1)) == []
+
+
+# --- fix round 1: one trip per stop episode, and a standing switch is left alone ---------------
+
+
+def _kill_switch(session):
+    with _fresh(session) as fresh:
+        return fresh.execute(select(KillSwitch)).scalar_one_or_none()
+
+
+def _clear_the_switch(session, now):
+    """What `harness kill-switch off` does: the latch goes inactive, the row stays."""
+    with _fresh(session) as fresh:
+        fresh.execute(update(KillSwitch).values(active=False, reason="operator", set_at=now))
+        fresh.commit()
+
+
+def test_the_kill_switch_trips_once_per_stop_episode(db_session):
+    """Three consecutive stopped samples are one episode and one trip. Re-tripping every
+    300 s would overwrite `set_at`, so the row would no longer say when trading stopped."""
+    _snapshot(db_session, "v1", NOW - timedelta(minutes=5), stop=True)
+    gateway = _kalshi(FakeTransport(), db_session)
+
+    for minutes in (0, 5, 10):
+        gateway.on_drawdown_stop(db_session, NOW + timedelta(minutes=minutes))
+
+    row = _kill_switch(db_session)
+    assert row.active is True and row.reason == "drawdown_stop:v1" and row.set_at == NOW
+
+
+def test_an_active_kill_switch_keeps_its_own_reason_and_time(db_session):
+    """A standing §9.2 budget trip is the operator's record of why and when trading stopped.
+    The drawdown stop never overwrites it."""
+    earlier = NOW - timedelta(hours=3)
+    with _fresh(db_session) as fresh:
+        fresh.add(KillSwitch(id=1, active=True, reason="message budget exceeded",
+                             set_at=earlier))
+        fresh.commit()
+    _snapshot(db_session, "v1", NOW - timedelta(minutes=5), stop=True)
+
+    _kalshi(FakeTransport(), db_session).on_drawdown_stop(db_session, NOW)
+
+    row = _kill_switch(db_session)
+    assert row.active is True
+    assert row.reason == "message budget exceeded" and row.set_at == earlier
+
+
+def test_an_operator_clear_is_not_re_asserted_while_the_condition_holds(db_session):
+    """The stop is a latch, not a lock. Once the operator has seen it and cleared it, the same
+    episode does not put it back within 300 s."""
+    _snapshot(db_session, "v1", NOW - timedelta(minutes=5), stop=True)
+    gateway = _kalshi(FakeTransport(), db_session)
+    gateway.on_drawdown_stop(db_session, NOW)
+    _clear_the_switch(db_session, NOW + timedelta(minutes=1))
+
+    gateway.on_drawdown_stop(db_session, NOW + timedelta(minutes=5))
+
+    assert _kill_switch(db_session).active is False
+
+
+def test_a_recovery_and_a_second_stop_trip_again(db_session):
+    """A new episode is a new trip: the variant left the stopped set and came back to it."""
+    _snapshot(db_session, "v1", NOW - timedelta(minutes=10), stop=True)
+    gateway = _kalshi(FakeTransport(), db_session)
+    gateway.on_drawdown_stop(db_session, NOW - timedelta(minutes=9))
+    _clear_the_switch(db_session, NOW - timedelta(minutes=8))
+
+    _snapshot(db_session, "v1", NOW - timedelta(minutes=5), stop=False)   # recovered
+    gateway.on_drawdown_stop(db_session, NOW - timedelta(minutes=4))
+    assert _kill_switch(db_session).active is False
+
+    _snapshot(db_session, "v1", NOW - timedelta(minutes=1), stop=True)    # and stopped again
+    gateway.on_drawdown_stop(db_session, NOW)
+
+    row = _kill_switch(db_session)
+    assert row.active is True and row.reason == "drawdown_stop:v1" and row.set_at == NOW
+
+
+def test_a_second_variant_stopping_trips_on_its_own_episode(db_session):
+    """The first trip names v1 only; v2's later stop is its own episode. The standing switch
+    keeps the first reason, because a cleared-then-re-tripped record is the operator's."""
+    _snapshot(db_session, "v1", NOW - timedelta(minutes=10), stop=True)
+    gateway = _kalshi(FakeTransport(), db_session)
+    gateway.on_drawdown_stop(db_session, NOW - timedelta(minutes=9))
+    _clear_the_switch(db_session, NOW - timedelta(minutes=8))
+
+    _snapshot(db_session, "v2", NOW - timedelta(minutes=1), stop=True)
+    assert gateway.on_drawdown_stop(db_session, NOW) == {"v1", "v2"}
+
+    row = _kill_switch(db_session)
+    assert row.active is True and row.reason == "drawdown_stop:v2" and row.set_at == NOW
+
+
+# --- fix round 1: the exposure reads see a venue fill ------------------------------------------
+
+
+def _venue_market(session, side_team_id=42) -> int:
+    """`store._POSITIONS` joins the market for its `side_team_id`, so a position needs one."""
+    market = VenueMarket(venue="kalshi", ticker=f"KXRISK-{uuid.uuid4().hex[:8]}",
+                         event_ticker="KXRISK-EVT", series_ticker="KXRISK",
+                         game_id=7, market_type="moneyline", side_team_id=side_team_id,
+                         first_seen_raw_id=1, last_seen_at=NOW)
+    session.add(market)
+    session.flush()
+    return market.id
+
+
+def test_load_positions_counts_a_venue_fill(db_session):
+    """`rebuild_state` feeds `cap_per_game` and `max_open` off this. A live position that read
+    as no position would let those caps be spent twice."""
+    order_id = _open_order(db_session, variant_id="v-pos", mode="live",
+                           venue_market_id=_venue_market(db_session), game_id=7)
+    _fill(db_session, order_id, "venue", NOW, prob="0.4000", contracts="10.00")
+
+    (view,) = store.load_positions(db_session, False)
+    assert view.variant_id == "v-pos" and view.stake == Decimal("4.0000")
+
+
+def test_load_positions_still_ignores_the_counterfactual_fill_methods(db_session):
+    order_id = _open_order(db_session, variant_id="v-pos", mode="live",
+                           venue_market_id=_venue_market(db_session), game_id=7)
+    _fill(db_session, order_id, "no_watcher", NOW, prob="0.4000", contracts="10.00")
+    _fill(db_session, order_id, "snapshot_cross", NOW, prob="0.4000", contracts="10.00")
+
+    assert store.load_positions(db_session, False) == []
+
+
+def test_the_positions_view_counts_a_venue_fill(db_session):
+    """The same widening in the view the dashboard, `open_stake` and `mtm_open` read."""
+    order_id = _open_order(db_session, variant_id="v-pos", mode="live")
+    _fill(db_session, order_id, "venue", NOW, prob="0.4000", contracts="10.00")
+    _fill(db_session, order_id, "queue_model", NOW, prob="0.6000", contracts="10.00")
+    _fill(db_session, order_id, "no_watcher", NOW, prob="0.9000", contracts="50.00")
+
+    (row,) = db_session.execute(text(
+        "select variant_id, open_contracts, avg_price from positions")).all()
+    assert row.variant_id == "v-pos" and row.open_contracts == Decimal("20.00")
+    assert row.avg_price == Decimal("0.5")

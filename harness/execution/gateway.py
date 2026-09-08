@@ -326,6 +326,10 @@ class KalshiGateway:
         #: `observe_tape` once per step. None until a step has run, which reads as "no claim"
         #: and leaves the silence test dormant rather than blocking every reprice at startup.
         self._ws_last_event_at: datetime | None = None
+        #: Section 9.3: the variants this process has already tripped the kill switch for, so
+        #: one stop episode is one trip (fix round 1, Important 1). A variant leaves the set
+        #: when its verdict recovers.
+        self._drawdown_tripped: set[str] = set()
 
     def observe_tape(self, ws_last_event_at: datetime | None) -> None:
         """The newest tape timestamp this step saw, which the loop already computes for the
@@ -451,14 +455,26 @@ class KalshiGateway:
         deployed posture constructs (roadmap invariant 9 forbids the *loop* toggling it in
         production). Sanitized like everything else that ends up in a text column, even though
         this string is our own.
+
+        A switch that is *already active* is left exactly as it is -- the `where` on the
+        conflict clause is what does it (fix round 1, Important 1). The row is the operator's
+        record of why trading stopped and when, and a second cause arriving afterwards is not a
+        reason to erase the first one: a standing "message budget exceeded" that a drawdown
+        stop overwrote 300 s later would read as though the budget breach had never happened.
+        The switch is already active either way, which is the part that matters.
         """
         stmt = insert(KillSwitch).values(
             id=1, active=True, reason=sanitize_venue_text(reason, 200), set_at=now)
-        session.execute(stmt.on_conflict_do_update(
+        result = session.execute(stmt.on_conflict_do_update(
             index_elements=[KillSwitch.id],
             set_={"active": True, "reason": stmt.excluded.reason,
-                  "set_at": stmt.excluded.set_at}))
-        log.error("kill switch tripped by the venue gateway: %s", reason)
+                  "set_at": stmt.excluded.set_at},
+            where=KillSwitch.active.is_(False)))
+        if result.rowcount:
+            log.error("kill switch tripped by the venue gateway: %s", reason)
+        else:
+            log.warning("kill switch is already active; the standing reason is kept and this "
+                        "one is only logged: %s", reason)
 
     def _require_routable(self, session, now) -> None:
         """Nothing new is routed to an `unavailable` or frozen venue (section 9.4). Cancels do
@@ -759,17 +775,27 @@ class KalshiGateway:
         the equity sampler runs inside `session.begin_nested()`, and a trip rolled back with
         its savepoint would be no trip at all.
 
-        The trip is re-asserted at every sample while the condition holds, which is deliberate:
-        clearing the switch with the curve still 20 % below its trailing peak would put money
-        back at risk under exactly the condition that stopped it, so an operator's clear takes
-        effect once the variant recovers or its last verdict ages out of the 7-day window.
+        One trip per stop episode per variant, not one per sample (fix round 1, Important 1).
+        `_drawdown_tripped` remembers which variants this process has already tripped for and
+        a variant leaves it the moment its verdict recovers, so the next stop is a new episode
+        and trips again. The stop is a latch the operator clears, not a lock they cannot: an
+        operator who has seen this trip and cleared it does not get it re-asserted 300 s later
+        by the same episode. It is in-process state, so a restart re-trips once, which is the
+        safe direction to be wrong in.
+
+        The returned set is every variant currently stopped, not only the ones just tripped:
+        callers ask this for the verdict, and the trip is a side effect of it.
         """
         stopped = stopped_variants(session, now)
-        if not stopped:
-            return set()
-        reason = ", ".join(f"drawdown_stop:{variant_id}" for variant_id in sorted(stopped))
+        # A recovered variant is forgotten first, so its next stop is a fresh episode.
+        self._drawdown_tripped &= stopped
+        fresh = stopped - self._drawdown_tripped
+        if not fresh:
+            return stopped
+        reason = ", ".join(f"drawdown_stop:{variant_id}" for variant_id in sorted(fresh))
         with self._venue_state_session(session) as state:
             self._trip_kill_switch(state, now, reason)
+        self._drawdown_tripped |= fresh
         return stopped
 
     def poll_fills(self, session, since, now=None) -> list:

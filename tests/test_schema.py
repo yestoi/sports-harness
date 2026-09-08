@@ -350,9 +350,11 @@ def test_views_select_on_empty_tables(db_session):
         assert db_session.execute(text(f"select * from {view}")).all() == []
 
 
-def test_positions_view_sums_queue_model_fills_of_live_orders(db_session):
-    """The dashboard's open position. snapshot_cross and no_watcher fills are counterfactuals,
-    a settled order is no longer a position, and replay orders are a separate book."""
+def test_positions_view_sums_the_money_fills_of_live_orders(db_session):
+    """The dashboard's open position, over both fill methods that are money -- the queue
+    model's and (Task 11 fix round 1) the venue's own. snapshot_cross and no_watcher fills are
+    counterfactuals, a settled order is no longer a position, and replay orders are a separate
+    book."""
     from harness.db.models import Fill
 
     live = _order(db_session)
@@ -367,6 +369,8 @@ def test_positions_view_sums_queue_model_fills_of_live_orders(db_session):
     fill(live, "10.00", "0.4000")
     fill(live, "30.00", "0.5000")
     fill(live, "50.00", "0.9000", method="no_watcher")
+    fill(live, "20.00", "0.7000", method="venue")
+    fill(live, "10.00", "0.5000", method="snapshot_cross")
     fill(settled, "10.00", "0.5000")
     fill(replayed, "10.00", "0.5000")
     db_session.flush()
@@ -374,7 +378,7 @@ def test_positions_view_sums_queue_model_fills_of_live_orders(db_session):
     rows = db_session.execute(text(
         "select variant_id, ticker, side, open_contracts, avg_price from positions")).all()
     assert [tuple(r) for r in rows] == [
-        ("sharp_direct", "T", "yes", Decimal("40.00"), Decimal("0.475")),
+        ("sharp_direct", "T", "yes", Decimal("60.00"), Decimal("0.55")),
     ]
 
 
@@ -421,9 +425,11 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # empty" (both tape tables are partitioned here, so all four run) + 5 telemetry indexes
     # (Task 12b: metric_samples, operator_events, game_score_events, check_results,
     # report_runs) + 6 phase 4 column ALTERs (equity_snapshots: peak_equity_7d, drawdown_pct,
-    # drawdown_stop; orders: venue_order_id, order_group_id, exchange_index_at_place) + 1 phase
-    # 4 index (ix_venue_requests_ts) = 62 + 7.
-    assert len(ddl) == 69, [s for s, _, _ in ddl]
+    # drawdown_stop; orders: venue_order_id, order_group_id, exchange_index_at_place) + 2 phase
+    # 4 indexes (ix_venue_requests_ts, and Task 11 fix round 1's ix_equity_variant_ts) = 62 + 8.
+    # The three views are unchanged in number: Task 11 widened the `positions` view's fill-method
+    # filter in place, which is one `create or replace view` as it always was.
+    assert len(ddl) == 70, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.
@@ -705,6 +711,12 @@ def test_venue_status_primary_key_is_venue_and_env(db_session):
 def test_venue_requests_index_exists(db_session):
     assert db_session.execute(text(
         "select 1 from pg_indexes where indexname = 'ix_venue_requests_ts'")).first()
+
+
+def test_equity_snapshots_index_exists(db_session):
+    """§9.3's per-variant trailing-window reads run on every pricing tick."""
+    assert db_session.execute(text(
+        "select 1 from pg_indexes where indexname = 'ix_equity_variant_ts'")).first()
 
 
 def test_backup_runs_accepts_a_drill_row(db_session):
