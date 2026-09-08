@@ -338,11 +338,9 @@ def _data_quality(session: Session, now: datetime, run_notes_24h: list[dict] | N
     for notes in run_notes_24h:
         notes = notes or {}
         trade_gaps.extend(notes.get("trade_gaps", []))
-        # Fix 17 round 2 (Important): a pre-fix-17 run row carries `taker_side_missing` but no
-        # `kalshi_trades_normalized` at all, so it must feed neither half of the ratio below --
-        # otherwise it inflates the numerator with nothing to balance it in the denominator,
-        # reading a false 1.0 right after deploy and decaying toward the truth only as old rows
-        # age out of the 24h window.
+        # Fix 17 round 2: a pre-fix-17 row has no `kalshi_trades_normalized` key, so it must
+        # feed neither half below -- else it inflates the numerator with no denominator to
+        # balance it, reading a false 1.0 right after deploy.
         if "kalshi_trades_normalized" not in notes:
             continue
         taker_side_missing += notes.get("taker_side_missing", 0) or 0

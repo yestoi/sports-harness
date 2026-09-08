@@ -471,12 +471,9 @@ def test_no_taker_side_share_uses_matching_24h_windows(db_session, env_settings,
 
 
 def test_pre_fix17_run_rows_are_excluded_from_the_share_but_not_from_trade_gaps(db_session, env_settings, tmp_path):
-    """Fix 17 round 2 (Important): a run row written before this fix carries `taker_side_missing`
-    but no `kalshi_trades_normalized` key at all. It must feed neither half of the share --
-    otherwise it inflates the numerator with nothing in the denominator to balance it, reading a
-    false 1.0 right after deploy and decaying toward the truth only as old rows age out of the
-    24h window. `trade_gaps_24h` has no such asymmetry and keeps counting every row, keyed or
-    not."""
+    """Fix 17 round 2: a run row with no `kalshi_trades_normalized` key must feed neither half
+    of the share (else it reads a false 1.0 right after deploy); `trade_gaps_24h` has no such
+    asymmetry and keeps counting every row, keyed or not."""
     game, run, markets = _seed_full(db_session, env_settings)
     settings = _dashboard_settings(env_settings, tmp_path)
 
