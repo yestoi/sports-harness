@@ -1,0 +1,41 @@
+-- Layer 2, build ae1e86c, Tue Sep  8 02:13:45 CDT 2026
+3229 | 2026-09-08 07:13:49.299777+00 | running | 0 |  | 
+3219 | 2026-09-08 07:08:19.300152+00 | ok | 0 |  | []
+3209 | 2026-09-08 06:24:49.294656+00 | ok | 0 |  | []
+3179 | 2026-09-08 06:09:49.294607+00 | ok | 0 |  | []
+3148 | 2026-09-08 05:54:19.294606+00 | ok | 3 | 4998958 | []
+skipped | 248
+ok | 19
+3229 | 2026-09-08 07:13:49.299777+00 | skipped
+rejected | 60003
+candidate | 2365
+delta | 26317
+snapshot | 890
+00:00:00.095015
+trade_watermarks | 2186 | 187 | 2026-09-07 15:18:36.574786+00 | 2026-09-08 05:32:48.531167+00
+runs | 3228 | 89 | 2026-09-08 02:07:46.295837+00 | 2026-09-08 05:45:49.000555+00
+normalize_state | 7 | 48 | 2026-09-08 04:38:48.002503+00 | 2026-09-08 05:17:48.619473+00
+venue_trades_legacy | 870052 | 37 | 2026-09-08 03:15:48.490532+00 | 2026-09-08 04:21:49.468942+00
+source_state | 23 | 30 | 2026-09-08 05:54:48.82815+00 | 2026-09-08 06:25:52.668833+00
+104 | 1664 MB
+20 GB
+
+178
+-- status-nas
+sports-harness-app-serve-1   Up 43 minutes (healthy)
+sports-harness-app-ws-1      Up 6 minutes
+sports-harness-postgres-1    Up 44 minutes (healthy)
+
+{"status":"ok","last_run_at":"2026-09-08T07:13:49.299777+00:00","last_status":"skipped","seconds_since":3,"credits_remaining":4998958,"credits_budget":5000000,"credits_low":false,"build":"ae1e86c"} [200]
+-- disk/mem
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.5T  69% /volume1
+               total        used        free      shared  buff/cache   available
+Mem:            7717        6395         448         574        2212        1321
+-- degraded sections (10m)
+0
+-- ERROR messages (10m)
+== app-run
+== app-serve
+== app-ws
+-- healthz
+{"status":"ok","last_run_at":"2026-09-08T07:13:49.299777+00:00","last_status":"skipped","seconds_since":5,"credits_remaining":4998958,"credits_budget":5000000,"credits_low":false,"build":"ae1e86c"}

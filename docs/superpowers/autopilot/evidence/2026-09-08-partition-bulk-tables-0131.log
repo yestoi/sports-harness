@@ -1,0 +1,21 @@
+Tue Sep  8 01:31:17 CDT 2026
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-08 06:31:22,860", "levelname": "INFO", "name": "harness.db.partition", "message": "building ix_obe_snapshot_legacy concurrently on orderbook_events"}
+{"asctime": "2026-09-08 06:37:28,080", "levelname": "INFO", "name": "harness.db.partition", "message": "building ix_obe_ticker_id_legacy concurrently on orderbook_events"}
+{"asctime": "2026-09-08 06:48:26,611", "levelname": "INFO", "name": "harness.db.partition", "message": "building ix_obe_gap_legacy concurrently on orderbook_events"}
+{"asctime": "2026-09-08 06:54:45,090", "levelname": "INFO", "name": "harness.db.partition", "message": "building orderbook_events_pkey_new concurrently on orderbook_events"}
+{"asctime": "2026-09-08 07:03:38,057", "levelname": "INFO", "name": "harness.db.partition", "message": "orderbook_events: renamed aside, cutover at 2026-09-08T06:30:58.623000+00:00 (1935.2s)"}
+{"asctime": "2026-09-08 07:06:26,820", "levelname": "INFO", "name": "harness.db.partition", "message": "orderbook_events: constraint validated (2104.0s)"}
+{"asctime": "2026-09-08 07:06:30,130", "levelname": "INFO", "name": "harness.db.partition", "message": "orderbook_events: partitioned in 2107.3s"}
+{"asctime": "2026-09-08 07:06:30,635", "levelname": "INFO", "name": "harness.db.partition", "message": "building ix_trades_venue_trade_id_legacy concurrently on venue_trades"}
+{"asctime": "2026-09-08 07:06:46,041", "levelname": "INFO", "name": "harness.db.partition", "message": "building venue_trades_pkey_new concurrently on venue_trades"}
+{"asctime": "2026-09-08 07:06:49,642", "levelname": "INFO", "name": "harness.db.partition", "message": "venue_trades: renamed aside, cutover at 2026-09-08T06:30:53.078000+00:00 (19.0s)"}
+{"asctime": "2026-09-08 07:06:49,706", "levelname": "INFO", "name": "harness.db.partition", "message": "venue_trades: constraint validated (19.1s)"}
+{"asctime": "2026-09-08 07:06:49,901", "levelname": "INFO", "name": "harness.db.partition", "message": "venue_trades: partitioned in 19.3s"}
+{"asctime": "2026-09-08 07:06:50,671", "levelname": "INFO", "name": "harness", "message": "partitioned: orderbook_events, venue_trades"}
+
+real	35m44.482s
+user	0m0.173s
+sys	0m0.188s
+exit=0
+Tue Sep  8 02:07:02 CDT 2026

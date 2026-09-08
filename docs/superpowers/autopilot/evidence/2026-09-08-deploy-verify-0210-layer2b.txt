@@ -1,0 +1,16 @@
+-- Layer 2b invariants (every count must be 0); build ae1e86c; 2026-09-08 02:10 CT
+0
+0
+0
+0
+0
+0
+0
+0
+0
+-- partition listing (Task 2b row) and duplicate-trade check on the legacy partition
+orderbook_events
+raw_responses
+venue_trades
+0
+0

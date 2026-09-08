@@ -561,3 +561,30 @@ Times are America/Chicago.
 - Anomalies: the controller's Task 10 merge first ran from a worktree cwd (no-op); redone from the main checkout (the state.md lesson stands)
 - Carried forward: none
 - Next: Task 11 review when it reports; the quiet-window deploy at the next boundary after 01:00 CT; then 12b (sonnet), 13 (opus), 14 (sonnet)
+
+## 43. deploy - main ae1e86c (Task 2b quiet-window deploy, U3 partition migration) - 2026-09-08 01:30 CT
+- Orient: plan Task 2b step 5 (controller, pre-authorized by U3) at the first boundary after 01:00 CT; ledger ruling 2026-09-07 23:36 CT: `main` fast-forwarded only to ae1e86c (compose fix 9, Task 2 with fix 13, Task 3, Task 4b code, Task 2b), never to the branch head, so `app-exec` waits for the phase deploy after the final review
+- Branch / commits: `main` 659ba67..ae1e86c (13 commits: 59a6737 compose fix 9; Task 2 b3f834f; Task 4b dcfc7cb; Task 3 0a2c313; Task 2b ae1e86c; docs)
+- Result: done (deploy); the migration done; the verify that follows is entry 44
+- Dispatches: 0
+- Tests: 418 passed on `main` at ae1e86c, pristine (`harness_test_main`)
+- Review: n/a
+- Deploy: ae1e86c at 01:29:10-01:30:14 CT via `make deploy-nas` with `app-ws` and `app-run` stopped first at 01:28:56 CT (fix 13 ships in this build; the writers-stopped procedure ends here); one refused attempt at 01:29:02 CT (an untracked evidence log dirtied the tree; logs now go to the scratchpad first); log `evidence/2026-09-08-deploy-0129-ae1e86c.log`; containers Up, `app-serve` healthy at 01:31 CT; stamp `"build":"ae1e86c"` verified 01:30:45 CT; Postgres restarted with fix 9 (`shared_buffers` 512MB, `effective_cache_size` 1536MB, `max_wal_size` 4GB); writers stopped again 01:31 CT for `partition-bulk-tables` (log `evidence/2026-09-08-partition-bulk-tables-0131.log`): orderbook_events partitioned in 2107 s (three legacy indexes and the new primary key built concurrently, constraint validated), venue_trades in 19 s; writers restarted 02:07:29 CT; about 66 min of quiet-hour tape not recorded (01:29-02:07 CT, journaled cost of the U3 migration); gap rows 0; the id sequence (29868588) equals the legacy max id; partitions legacy + y2026w37 + y2026w38 on both tables; both legacy check constraints validated; new rows landing in the w37 partitions from 02:08 CT
+- Verification: entry 44
+- Rulings: (1) The game-window rule read on the evidence for game 114 (ledger 01:14 CT; carried fix 14): absent from ESPN's live scoreboard, no tape on its 50 matched markets for 40 min, kickoff nearly 6 h earlier: the window was closed. (2) No forced tick: quiet hours (rows deferred to the 08:10 CT verify). (3) Carried fixes 9 and 13 close with this deploy: `show shared_buffers` reads the tuned value and `init-db` completed with the autocommit-per-statement `create_schema` (writers were stopped, so the deadlock path was not exercised; the unit test covers it).
+- Carried forward: 14 (ESPN midnight-Eastern rollover leaves a game in_progress forever; ships on the phase branch after Task 12b, before Task 13)
+- Next: verify (entry 44)
+
+## 44. verify - deploy ae1e86c - 2026-09-08 02:36 CT
+- Orient: rule 3 - no verify entry since the deploy (43)
+- Branch / commits: n/a
+- Result: **FAIL** (one row: dashboard page time), otherwise PASS
+- Dispatches: 0 (no walker: quiet hours, the day's first verify with the walker is the morning-after duty after 08:10 CT)
+- Tests: n/a
+- Review: n/a
+- Deploy: none (entry 43)
+- Verification: Layer 1 PASS (stamp ae1e86c, status ok). Layer 2 (evidence: `evidence/2026-09-08-deploy-verify-0212-layer2.txt`): containers Up and `app-serve` healthy; heartbeat rows inside 2 min; cadence run 07:08Z after the restart; ERROR lines 0 on every service; gap rows 0; WS age 0.1 s; Postgres health ok (no dead-tuple table over 20 %); WAL 1.6 GB; disk 3.5 T free (31 %); memory available 1321 MB; degraded sections 0 at 02:13 CT (four `funnel`/`data_quality` OperationalError warnings 02:16-02:20 CT, none in the ten minutes to 02:33 CT); credits 4,998,958; DB size 20 GB; `runs.build_sha` NULL (the column is written from Task 12b: not a FAIL; note). Layer 2b (evidence: `evidence/2026-09-08-deploy-verify-0210-layer2b.txt`): 9/9 invariants zero; the three bulk tables listed in `pg_partitioned_table`; duplicate trades 0; duplicate ids 0. Layer 3: **FAIL**: `/api/summary` 92 s at 02:20 CT and 86 s at 02:33 CT against the 10 s bound; `verify-summary` cannot fetch the page inside its 30 s curl (no evidence file); the transient re-check at 02:33 CT (ten minutes after the first FAIL) still fails: not transient. Cause (measured 02:36 CT): the funnel's 24 h counts scan the pricing tables (fair_values 7.5 s, market_gap_snapshots 13.5 s, signals 25.7 s per variant) on a cache flushed by the Postgres restart and the 30-minute index build; the partitioned tables answer in about a second (count 5 m 1.3 s, last event by id 0.2 s), so the migration is not the cause and this is not a failed deploy for the day's ceiling.
+- Anomalies: (1) `runs.build_sha` NULL on every row (dormant column until Task 12b). (2) Game 114 stays `in_progress` until fix 14 lands.
+- Rulings: (1) Carried fix 15 (roadmap) widened: every funnel count that scans a pricing table comes from `runs.notes` (the funnel's `raw_responses` and `venue_markets` counts stay); it ships on the phase branch with fix 14 after Task 12b merges (app.py is in flight there), before Task 13, per the hotfix rule that carried fixes touching in-flight files ride the branch. (2) The verify FAIL's hotfix unit is therefore the phase-branch fix batch, not a `fix-` branch from `main`; re-verify of the page-time row happens after the phase deploy - cost if wrong: the dashboard answers in about 90 s until the phase deploy (days, not weeks).
+- Carried forward: 15 (dashboard funnel scans; widened)
+- Next: phase (Task 12b fix round in flight); the fix batch (14, 15) after 12b merges; Task 13; Task 14; the morning-after verify after 08:10 CT
