@@ -21,18 +21,84 @@ our own bookkeeping and no venue ever hears about them.
 `PaperGateway` holds no transport, no writer and no reader, and neither does this module import
 one into the paper path by accident: `test_paper_gateway_never_touches_transport` asserts the
 attributes do not exist.
+
+Task 10 gave `KalshiGateway` the rest of section 9: the startup reconciliation, the outage
+counter behind `venue_status`, the freeze after an echo mismatch or a third consecutive reject,
+the kill switch on a message-budget breach, and the live-only refusal to reprice against a dirty
+book. All of it hangs off `_venue_call`, which is the single place a venue's answer becomes
+venue *state*, and none of it is on the paper path: the rules themselves live in
+`harness/execution/venue.py`, and `PaperGateway` imports nothing from it.
 """
 
+import logging
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Protocol
 
-from sqlalchemy import select
+import httpx
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert
 
-from harness.db.models import Order
+from harness.db.models import KillSwitch, Order
 from harness.execution import store
-from harness.venues.kalshi.authed import OrderIntent
+from harness.execution.plan import ExecSettings
+from harness.execution.venue import (
+    OUTAGE_ENV,
+    STATUS_UNAVAILABLE,
+    OutageCounter,
+    RejectTracker,
+    VenueNotRoutable,
+    freeze_market,
+    is_routable,
+    make_reason,
+    mark_status,
+    may_reprice,
+    read_status,
+    sanitize_venue_text,
+)
+from harness.venues.kalshi.authed import (
+    EchoMismatch,
+    KalshiApiError,
+    MessageBudgetExceeded,
+    OrderIntent,
+)
+from harness.venues.kalshi.http import VenueTransportError
+
+log = logging.getLogger(__name__)
+
+#: The one venue this gateway speaks to, and the key `venue_status` rows are written under.
+VENUE = "kalshi"
+
+#: The status a resting order carries at Kalshi, which is what the startup reconciliation asks
+#: for (section 9.1).
+RESTING_STATUS = "resting"
+
+#: How far back reconciliation reads fills when we hold none at all: far enough to cover a
+#: process that was down overnight, bounded so a first run does not page the whole account.
+RECONCILE_FILL_LOOKBACK = timedelta(hours=24)
+
+#: A send that never came back. The venue may or may not have the order, so the answer is a
+#: lookup by `client_order_id`, never a resend (section 9.1).
+_TRANSPORT_FAILURES = (VenueTransportError, httpx.TimeoutException, httpx.TransportError)
+
+#: "The caller made no claim about the book", which is a different thing from "there is no
+#: book" -- the second one blocks a reprice and the first one is simply not this gateway's
+#: question. See `KalshiGateway.amend`.
+_UNSET = object()
+
+
+def _is_reject(status: int | None) -> bool:
+    """Whether a non-2xx is the venue *refusing this order* rather than refusing us.
+
+    401 and 403 are the outage counter's, 429 is the rate limiter's and 5xx is the venue having
+    a bad afternoon; none of them says anything about the order. What is left -- a 400 on a
+    price, a 409 on a duplicate -- is a reject, and three consecutive ones on the same order
+    mean the venue will not take it at any price we are choosing.
+    """
+    return status is not None and 400 <= status < 500 and status not in (401, 403, 429)
 
 #: The statuses a live cancel or reconcile still has something to say about, shared with
 #: `store.OPEN_STATUSES` rather than re-listed here.
@@ -72,6 +138,21 @@ class NoOrderGroup(RuntimeError):
     back by the kickoff or outage path; failing closed is the only safe answer."""
 
 
+class OrderNotPlaced(RuntimeError):
+    """A send timed out and the follow-up lookup by `client_order_id` found no such order at the
+    venue, so the order was not placed.
+
+    Raised rather than resent. `client_order_id` is Kalshi's idempotency key and a blind resend
+    of a message that may in fact have arrived is how one intent becomes two positions; the
+    caller's answer is to let the next loop decide again from a clean slate (section 9.1).
+    """
+
+    def __init__(self, client_order_id: str) -> None:
+        super().__init__(f"no venue order for client_order_id {client_order_id!r} after a "
+                         "send timeout; not placed, and not resent")
+        self.client_order_id = client_order_id
+
+
 class OrderGateway(Protocol):
     """The whole of what the executor asks of a venue.
 
@@ -90,6 +171,11 @@ class OrderGateway(Protocol):
     #: `market` carries the venue's published tick grid (`price_ranges`), which is what the
     #: live amend snaps its new price to; the paper path ignores it. Returns whether our own
     #: row moved, so the caller reads the same boolean it reads off `cancel`.
+    #:
+    #: `KalshiGateway.amend` additionally takes a `book` keyword and refuses to reprice against
+    #: a dirty, stale or absent one (section 2.2). It is deliberately not in this signature:
+    #: `PaperGateway.amend` does not consult a book, because phase 3 reprices by cancel + place
+    #: and the golden replay pins that behaviour unchanged.
     def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal, market,
               now) -> bool: ...
 
@@ -181,13 +267,111 @@ class KalshiGateway:
     simulates_fills = False
 
     def __init__(self, writer, reader, session_factory=None, *,
-                 order_group_id: str | None = None, exchange_index: int = 0) -> None:
+                 order_group_id: str | None = None, exchange_index: int = 0,
+                 env: str = OUTAGE_ENV, exec_settings: ExecSettings | None = None,
+                 clock=None) -> None:
         self._writer = writer
         self._reader = reader
         #: For the reconciliation, which runs outside a step's session (Task 10).
         self._session_factory = session_factory
         self.order_group_id = order_group_id
         self.exchange_index = int(exchange_index)
+        #: Which `venue_status` row this gateway's failures write. A demo gateway can never mark
+        #: production, which is A-I3 enforced at the only place that marks anything.
+        self.env = str(env)
+        #: The reprice gate's staleness ceiling. A copy of the executor's own settings, so the
+        #: gate and the loop agree on what "stale" means.
+        self.exec_settings = exec_settings or ExecSettings()
+        self._now = clock or (lambda: datetime.now(timezone.utc))
+        #: Section 9.4, per gateway: two consecutive auth failures and this venue is marked.
+        self._outage = OutageCounter()
+        #: Three consecutive rejects on one order cancel it and freeze the venue 15 min.
+        self._rejects = RejectTracker()
+        #: What the venue says we hold, rebuilt by `reconcile` and empty until it has run.
+        self.positions: dict[str, Decimal] = {}
+
+    # -- venue health --------------------------------------------------------------------
+
+    @contextmanager
+    def _venue_call(self, session, now, *, reject_key: str | None = None,
+                    on_reject_limit=None):
+        """Every message this gateway sends goes through here, and this is where the venue's
+        answer becomes venue *state*.
+
+        Four outcomes are folded in, in the order they must be:
+
+        * A message-budget breach (section 9.2) trips the kill switch and re-raises. The writer
+          refused the message before the wire, so nothing was sent; the kill switch is the
+          caller's half of that rule.
+        * An echo mismatch means Task 7's writer has already cancelled the order; recording the
+          15-minute freeze is this half of the same rule.
+        * A `KalshiApiError` feeds the outage counter, and -- when it is a reject rather than a
+          refusal of *us* -- the per-order reject tracker.
+        * Anything else propagates untouched. In particular a `VenueTransportError` neither
+          counts toward an outage nor resets it: a network failure is not evidence about
+          authentication either way.
+
+        A success resets both counters, which is what makes them *consecutive* counters.
+        """
+        try:
+            yield
+        except MessageBudgetExceeded as exc:
+            self._trip_kill_switch(session, now, f"message budget exceeded: {exc}")
+            raise
+        except EchoMismatch as exc:
+            freeze_market(session, VENUE, self.env, exc.reason, now)
+            raise
+        except KalshiApiError as exc:
+            self._note_api_error(session, exc, now)
+            if (reject_key is not None and _is_reject(exc.status)
+                    and self._rejects.record_reject(reject_key)):
+                freeze_market(session, VENUE, self.env, "three_consecutive_rejects", now)
+                if on_reject_limit is not None:
+                    on_reject_limit()
+            raise
+        else:
+            self._outage.reset()
+            if reject_key is not None:
+                self._rejects.record_success(reject_key)
+
+    def _note_api_error(self, session, exc: KalshiApiError, now) -> None:
+        """Section 9.4's counter, and the mark it drives.
+
+        A-I3 is enforced by the first line: a demo gateway does not even count, so a demo
+        smoke's 401s cannot reach production's row. The reason carries the status code we
+        decided on plus a bounded, sanitized excerpt of the venue's own `code` field -- the only
+        venue text `KalshiApiError` keeps, which is deliberate (the message and the raw body may
+        echo request details back).
+        """
+        if self.env != OUTAGE_ENV:
+            return
+        if self._outage.record(exc.status, exc.code):
+            mark_status(session, VENUE, self.env, STATUS_UNAVAILABLE,
+                        make_reason(exc.status, exc.code), now)
+
+    def _trip_kill_switch(self, session, now, reason: str) -> None:
+        """Section 9.2: a message-budget breach trips the kill switch.
+
+        The only kill-switch write in this harness, and it is inside a gateway nothing in the
+        deployed posture constructs (roadmap invariant 9 forbids the *loop* toggling it in
+        production). Sanitized like everything else that ends up in a text column, even though
+        this string is our own.
+        """
+        stmt = insert(KillSwitch).values(
+            id=1, active=True, reason=sanitize_venue_text(reason, 200), set_at=now)
+        session.execute(stmt.on_conflict_do_update(
+            index_elements=[KillSwitch.id],
+            set_={"active": True, "reason": stmt.excluded.reason,
+                  "set_at": stmt.excluded.set_at}))
+        log.error("kill switch tripped by the venue gateway: %s", reason)
+
+    def _require_routable(self, session, now) -> None:
+        """Nothing new is routed to an `unavailable` or frozen venue (section 9.4). Cancels do
+        not come through here: an outage stops new risk, and stranding a resting order at the
+        venue would be the opposite of that."""
+        if not is_routable(session, VENUE, self.env, now):
+            raise VenueNotRoutable(VENUE, self.env,
+                                   read_status(session, VENUE, self.env) or "unknown")
 
     # -- placement -----------------------------------------------------------------------
 
@@ -198,14 +382,22 @@ class KalshiGateway:
         resent order is refused venue-side, while a row written for an order that never
         reached the venue would be a position we do not hold. The action runs inside the
         step's savepoint, so a transport failure takes the row with it and the startup
-        reconciliation is what closes the remaining window (Task 10).
+        reconciliation is what closes the remaining window.
+
+        Task 10 closes the window a good deal further. A send that times out is resolved by
+        asking the venue what it holds under our `client_order_id`; the order is written back
+        if it is there and `OrderNotPlaced` is raised if it is not, and either way exactly one
+        POST was sent. An `unavailable` or frozen venue refuses the placement before the intent
+        is even built, and a message-budget breach trips the kill switch on the way out.
         """
         if self.order_group_id is None:
             raise NoOrderGroup("a live order needs an order group; reconcile has not run")
         if values.get("expiry") is None:
             raise ValueError("a live order needs an expiry (R8: kickoff - 10 min)")
-        venue = self._writer.place_limit(OrderIntent(
-            client_order_id=values["client_order_id"],
+        self._require_routable(session, now)
+        client_order_id = str(values["client_order_id"])
+        intent = OrderIntent(
+            client_order_id=client_order_id,
             ticker=values["ticker"],
             side=values["side"],
             prob=values["prob"],
@@ -214,7 +406,15 @@ class KalshiGateway:
             exchange_index=self.exchange_index,
             order_group_id=self.order_group_id,
             price_ranges=getattr(market, "price_ranges", None),
-        ))
+        )
+        with self._venue_call(session, now, reject_key=client_order_id):
+            try:
+                venue = self._writer.place_limit(intent)
+            except _TRANSPORT_FAILURES:
+                # Never a blind resend: the send may well have arrived. The exception itself is
+                # dropped here rather than chained, because an httpx one carries `.request` and
+                # that request's headers hold the live signature (see `venues/kalshi/http.py`).
+                venue = self._resolve_after_timeout(client_order_id)
         group = venue.order_group_id or self.order_group_id
         order_id = store.insert_order(session, {
             **values,
@@ -234,12 +434,13 @@ class KalshiGateway:
         is cancelled locally alone rather than guessed at."""
         row = self._row(session, order_id)
         if row is not None and row.venue_order_id:
-            self._writer.cancel(row.venue_order_id, row.ticker,
-                                row.exchange_index_at_place or 0)
+            with self._venue_call(session, now):
+                self._writer.cancel(row.venue_order_id, row.ticker,
+                                    row.exchange_index_at_place or 0)
         return store.cancel_order(session, order_id, reason, now)
 
     def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal, market,
-              now) -> bool:
+              now, book=_UNSET) -> bool:
         """Reprice a resting live order in place. Returns whether our own row moved, exactly as
         `cancel` does, so the loop's counters read the same boolean on both paths.
 
@@ -254,23 +455,63 @@ class KalshiGateway:
         row = self._row(session, order_id)
         if row is None or row.status not in OPEN_STATUSES:
             return False
+        if not self._may_reprice(market, book, now):
+            return False
         updates: dict = {"prob": prob, "contracts": contracts}
         if row.venue_order_id:
             updated_client_order_id = str(uuid.uuid4())
-            self._writer.amend(row.venue_order_id, prob, contracts, row.client_order_id,
-                               updated_client_order_id, row.ticker, row.side,
-                               row.exchange_index_at_place or 0,
-                               getattr(market, "price_ranges", None))
+            with self._venue_call(
+                    session, now, reject_key=str(order_id),
+                    on_reject_limit=lambda: self._pull_back(session, order_id, now)):
+                self._writer.amend(row.venue_order_id, prob, contracts, row.client_order_id,
+                                   updated_client_order_id, row.ticker, row.side,
+                                   row.exchange_index_at_place or 0,
+                                   getattr(market, "price_ranges", None))
             updates["client_order_id"] = updated_client_order_id
         store.update_order(session, order_id, updates)
         return True
+
+    def _may_reprice(self, market, book, now) -> bool:
+        """Section 2.2's live-only rule, applied at the one place a live reprice is sent.
+
+        `book` is the caller's explicit claim and takes precedence; `_UNSET` means the caller
+        made none, in which case the `MarketNow` it is already passing is asked for the book it
+        carries. A caller that offers neither is not gated here -- that is the loop's decision
+        to make and Task 11 owns it -- but a caller that offers a book, including an explicit
+        `None`, gets the full rule, and `may_reprice(None, ...)` is False, because repricing
+        against a book we do not have is exactly what the rule forbids.
+        """
+        claimed = book if book is not _UNSET else getattr(market, "book", _UNSET)
+        if claimed is _UNSET:
+            return True
+        if may_reprice(claimed, now, self.exec_settings):
+            return True
+        log.info("skipping a live reprice: the book is dirty, stale or absent")
+        return False
+
+    def _pull_back(self, session, order_id: int, now) -> None:
+        """The third consecutive reject on one order: cancel it, here and at the venue.
+
+        A failure to cancel must not mask the reject that is already on its way up, so the
+        class name is kept and the exception is not -- a transport exception's `.request`
+        carries the live signed headers.
+        """
+        row = self._row(session, order_id)
+        if row is not None and row.venue_order_id:
+            try:
+                self._writer.cancel(row.venue_order_id, row.ticker,
+                                    row.exchange_index_at_place or 0)
+            except Exception as exc:
+                log.warning("cancel after three rejects failed: %s", type(exc).__name__)
+        store.cancel_order(session, order_id, "rejects", now)
 
     def cancel_all(self, session, reason: str, now) -> int:
         """One message pulls the whole group back; the rows are then closed one by one so that
         every cancel carries its reason. Returns how many of our rows actually moved."""
         group = self.order_group_id or self._group_of_open_orders(session)
         if group is not None:
-            self._writer.cancel_group(group)
+            with self._venue_call(session, now):
+                self._writer.cancel_group(group)
         ids = session.execute(
             select(Order.id).where(Order.status.in_(OPEN_STATUSES),
                                    Order.replay.is_(False), Order.mode == "live")
@@ -281,15 +522,116 @@ class KalshiGateway:
     # -- reads ---------------------------------------------------------------------------
 
     def reconcile(self, session, now) -> ReconcileReport:
-        """The startup sequence -- resting orders, unknown cancels, positions -- is Task 10's.
-        Until then this reports nothing found, which is what a gateway that has asked the venue
-        no questions is entitled to say."""
-        return ReconcileReport()
+        """Section 9.1's startup sequence, run before any loop.
+
+        Three questions, in this order, and then the cancels:
+
+        1. `GET /portfolio/orders?status=resting` -- what is the venue holding for us?
+        2. `GET /portfolio/fills?min_ts=...` -- what filled while we were not looking? `since`
+           is the newest live fill we already have, or a bounded lookback when we hold none.
+        3. `GET /portfolio/positions` -- what do we actually own? This is the rebuild: the
+           venue's answer replaces whatever this process thought it held, because after a crash
+           our own view is the one that might be wrong.
+
+        Then every resting order that is *not* ours (no row with that `client_order_id`) or is
+        past its deadline is cancelled. Both are the same failure seen from two sides: an order
+        outstanding at the venue that no live decision of ours is managing. The reads come first
+        so a cancel can never change the answer to a question still being asked.
+
+        No group is created here. Creating one is a message, and reconciliation asks questions;
+        a group the resting orders already carry is adopted instead, which is what lets
+        `cancel_all` pull them all back with one message afterwards.
+        """
+        with self._venue_call(session, now):
+            resting = self._reader.get_orders(RESTING_STATUS)
+        with self._venue_call(session, now):
+            fills = self._reader.get_fills(self._fills_since(session, now))
+        with self._venue_call(session, now):
+            positions = self._reader.get_positions()
+
+        self.positions = {p.ticker: p.position for p in positions
+                          if p.ticker and p.position}
+        known = self._live_open_orders(session)
+        if self.order_group_id is None:
+            self.order_group_id = next(
+                (v.order_group_id for v in resting if v.order_group_id), None)
+
+        cancelled_unknown = cancelled_past_deadline = 0
+        for view in resting:
+            row = known.get(view.client_order_id)
+            if row is None:
+                self._cancel_at_venue(session, view, now, self.exchange_index)
+                cancelled_unknown += 1
+            elif row.expiry is not None and row.expiry <= now:
+                self._cancel_at_venue(session, view, now,
+                                      row.exchange_index_at_place or 0)
+                store.cancel_order(session, row.id, "reconcile_expired", now)
+                cancelled_past_deadline += 1
+
+        report = ReconcileReport(
+            resting=len(resting), cancelled_unknown=cancelled_unknown,
+            cancelled_past_deadline=cancelled_past_deadline,
+            positions_rebuilt=len(self.positions), fills_seen=len(fills))
+        log.info("reconciled %s/%s: %r", VENUE, self.env, report)
+        return report
+
+    def _live_open_orders(self, session) -> dict:
+        """Our own resting live orders, keyed the way the venue keys them: `client_order_id` is
+        the one identifier both sides agree on before a venue order id exists."""
+        rows = session.execute(
+            select(Order).where(Order.status.in_(OPEN_STATUSES), Order.replay.is_(False),
+                                Order.mode == "live")).scalars().all()
+        return {row.client_order_id: row for row in rows}
+
+    def _cancel_at_venue(self, session, view, now, exchange_index: int) -> None:
+        """Cancel one resting order at the venue by the id the venue gave it. A cancel that
+        fails is logged and does not stop the rest of the reconciliation: the remaining orders
+        are exactly the ones that most need pulling back."""
+        if not view.order_id:
+            return
+        try:
+            with self._venue_call(session, now):
+                self._writer.cancel(view.order_id, view.ticker, exchange_index)
+        except Exception as exc:
+            log.warning("reconcile cancel of %r failed: %s",
+                        sanitize_venue_text(view.order_id, 64), type(exc).__name__)
+
+    def _fills_since(self, session, now) -> datetime:
+        """The newest live fill we already hold, or a bounded lookback when we hold none.
+
+        Reading from the newest fill rather than from process start is what makes this a
+        reconciliation: a fill that landed while we were down is still new to us.
+        """
+        newest = session.execute(text(
+            "select max(f.filled_at) from fills f join orders o on o.id = f.order_id "
+            "where o.mode = 'live' and o.replay = false")).scalar()
+        return newest or (now - RECONCILE_FILL_LOOKBACK)
+
+    def _resolve_after_timeout(self, client_order_id: str):
+        """Placed or not, decided by `client_order_id` and never by a resend (section 9.1).
+
+        The filter is applied here rather than in the query because Task 6's reader is GET-only
+        and pinned: `get_orders` takes a `status` and nothing else. The decision is still made
+        on the idempotency key -- the one identifier that is ours, unique, and known to both
+        sides before the venue has assigned anything.
+
+        The returned `OrderView` carries the two fields `place` reads off a placement,
+        `order_id` and `order_group_id`, so the caller does not care which of the two shapes it
+        got. The echo check is not re-run: we asked for one specific `client_order_id` and the
+        venue named it, and the next reconciliation is the backstop for anything else.
+        """
+        for view in self._reader.get_orders():
+            if view.client_order_id == client_order_id:
+                log.warning("send timed out; the venue holds %r for client_order_id %r",
+                            sanitize_venue_text(view.order_id, 64), client_order_id)
+                return view
+        raise OrderNotPlaced(client_order_id)
 
     def poll_fills(self, session, since) -> list:
         """The only live fill source (ruling B-I2): `GET /portfolio/fills` since `since`. The
         queue-model simulator is bypassed entirely in live mode."""
-        return self._reader.get_fills(since)
+        with self._venue_call(session, self._now()):
+            return self._reader.get_fills(since)
 
     # -- our rows behind a venue order ---------------------------------------------------
 

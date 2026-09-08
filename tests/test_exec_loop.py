@@ -174,7 +174,7 @@ def fills_of(session, order_id=None, method=None):
 
 
 def test_executor_version_is_bumped_for_the_loop():
-    assert EXECUTOR_VERSION == "4.0"
+    assert EXECUTOR_VERSION == "4.1"
 
 
 # --- the gateway seam -----------------------------------------------------------------
