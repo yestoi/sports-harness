@@ -32,7 +32,7 @@ def _rest_ladders():
 
 
 def test_executor_version_is_pinned():
-    assert EXECUTOR_VERSION == "3.7"
+    assert EXECUTOR_VERSION == "4.0"
 
 
 def test_from_ws_raw_builds_ladder_and_resting_at():

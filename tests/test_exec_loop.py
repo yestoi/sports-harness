@@ -37,6 +37,7 @@ from harness.db.models import (
     VenueTrade,
 )
 from harness.execution import EXECUTOR_VERSION, store
+from harness.execution.gateway import PaperGateway
 from harness.execution.loop import ExecStats, Executor
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
@@ -173,7 +174,35 @@ def fills_of(session, order_id=None, method=None):
 
 
 def test_executor_version_is_bumped_for_the_loop():
-    assert EXECUTOR_VERSION == "3.7"
+    assert EXECUTOR_VERSION == "4.0"
+
+
+# --- the gateway seam -----------------------------------------------------------------
+
+
+def test_the_loop_places_through_the_gateway(env_settings, db_session, world):
+    """Task 9: `_place` no longer calls `store.insert_order` itself. The spy is a `PaperGateway`
+    subclass, so the order it writes and everything downstream of it are unchanged."""
+    calls = []
+
+    class _Spy(PaperGateway):
+        def place(self, *a, **kw):
+            calls.append("place")
+            return super().place(*a, **kw)
+
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    clock = Clock(NOW)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    executor = Executor(env_settings, factory, clock=lambda: clock.now,
+                        monotonic=lambda: clock.mono, variants=["tiny"], gateway=_Spy())
+
+    stats = executor.step()
+
+    assert calls == ["place"]
+    assert stats.placed == 1
+    refresh(db_session)
+    assert orders_of(db_session)[0].mode == "paper"
 
 
 # --- intake, placement, the book ------------------------------------------------------

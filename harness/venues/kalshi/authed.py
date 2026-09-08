@@ -739,6 +739,13 @@ class KalshiWriter:
         self._bucket = TokenBucket(ORDER_MESSAGES_PER_MINUTE)
         self._fee_models: dict[str, tuple[str | None, FeeModel]] = {}
 
+    @property
+    def reader(self) -> KalshiReader:
+        """The GET-only reader this writer was built with, so a caller holding a writer does
+        not have to build a second one over the same transport (Task 9's `KalshiGateway`).
+        Read-only: the reader is chosen by `make_writer` and cannot be swapped afterwards."""
+        return self._reader
+
     # -- section 5.2, independent of the encoder ----------------------------------------------
 
     def _require_mode(self) -> None:

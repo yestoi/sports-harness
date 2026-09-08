@@ -25,8 +25,13 @@ Six things happen per step, in this order:
 6. **The heartbeat.** One row, one commit per step. A step that raises rolls back, records the
    error on the heartbeat and lets the next loop try again.
 
-No code path here sends an order, a quote or an RFQ answer. There is no venue client in this
-module and no credential is ever read: every fill is an inference drawn from the recorded tape.
+No code path here sends an order, a quote or an RFQ answer in the posture this runs in. Since
+Task 9 the loop's orders go to an `OrderGateway` rather than straight to `store`, and the one
+it builds from `Settings.mode` is `PaperGateway`: it holds no transport, no writer and no
+reader, no credential is ever read, and every fill is an inference drawn from the recorded
+tape. The live gateway is dormant -- building it needs a production writer, and `make_writer`
+refuses every one (§1.4) -- and in live mode the tape simulation is bypassed entirely, because
+there the venue's own fills are the only fill source.
 
 A replay executor (Task 13) runs the same six steps on a 15 s grid over a past range. The only
 difference is the horizon: `self._at(now)` is None for the live loop and the grid instant for a
@@ -68,6 +73,13 @@ from harness.execution.fills import (
     has_print,
     simulate_fills,
 )
+from harness.execution.gateway import (
+    KalshiGateway,
+    OrderGateway,
+    PaperGateway,
+    is_paper,
+    orders_by_venue_id,
+)
 from harness.execution.plan import (
     CapGate,
     Cancel,
@@ -82,7 +94,7 @@ from harness.execution.plan import (
     plan_actions,
     rebuild_state,
 )
-from harness.pricing.fees import KALSHI_FOOTBALL
+from harness.pricing.fees import KALSHI_FOOTBALL, fee_for_order
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +104,9 @@ CENT = Decimal("0.01")
 DURATION_WINDOW = 100
 QUEUE_MODEL = "queue_model"
 NO_WATCHER = "no_watcher"
+#: The `fills.fill_method` of a fill the venue reported, as against one the queue
+#: model inferred. Written only on the live path, which is dormant in this phase.
+VENUE = "venue"
 
 
 @dataclass
@@ -166,7 +181,8 @@ class Executor:
 
     def __init__(self, settings, session_factory,
                  clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
-                 replay: bool = False, variants: list[str] | None = None) -> None:
+                 replay: bool = False, variants: list[str] | None = None,
+                 gateway: OrderGateway | None = None) -> None:
         self.settings = settings
         self.exec_settings = ExecSettings.from_settings(settings)
         self.replay = replay
@@ -189,6 +205,22 @@ class Executor:
         self._equity_sampler = telemetry.Sampler(settings.equity_sample_s, clock=self._monotonic)
         self._metrics_acc = _MetricsAcc()
         self._startup_checked = False
+        #: Where an order actually goes. `PaperGateway` on the NAS and in every replay; the
+        #: live one cannot be built in this phase (`make_writer` refuses every prod call), so
+        #: an executor that asked for it fails at construction rather than at the first order.
+        self.gateway = gateway if gateway is not None else self._build_gateway(settings)
+
+    @staticmethod
+    def _build_gateway(settings) -> OrderGateway:
+        if getattr(settings, "mode", "paper") != "live":
+            return PaperGateway()
+        # Unreachable in this phase: `make_writer` raises `LiveGuardRefused` on every prod
+        # call (§1.4), so this returns nothing and the constructor raises. Imported here
+        # because it is the one place that needs it.
+        from harness.venues.kalshi.authed import make_writer
+
+        writer = make_writer(settings, "prod")
+        return KalshiGateway(writer, writer.reader)
 
     # --- the step ---------------------------------------------------------------------
 
@@ -467,7 +499,13 @@ class Executor:
 
         A raise inside a step would otherwise cost every other order its fills for that loop,
         so each order runs inside a savepoint and a failure is counted and stepped over.
+
+        In live mode (dormant) the queue model is bypassed entirely: the venue's own fills are
+        the only fill source there (ruling B-I2), and asking a simulator what a real order did
+        would be inventing a second answer to a question the venue has already settled.
         """
+        if not is_paper(self.gateway):
+            return self._venue_fills(session, working, now, stats, heartbeat)
         tape = self._tape(session, working, now)
         outcomes: dict[int, tuple[str, Decimal]] = {}
         for row in working:
@@ -481,6 +519,69 @@ class Executor:
                 stats.errors += 1
                 _note_error(heartbeat, f"order {row.id}: {type(exc).__name__}: {exc}")
         return outcomes
+
+    def _venue_fills(self, session: Session, working, now: datetime, stats: ExecStats,
+                     heartbeat: dict) -> dict[int, tuple[str, Decimal]]:
+        """The live fill step (dormant): `fills` and `ledger(kind='fill')` from `poll_fills`.
+
+        Everything about the row is ours except the trade: the price is read back into the
+        order's own side space off *our* `side` rather than the venue's word for it, the fee is
+        this harness's own model of the schedule, and the fill is keyed on the venue's trade id
+        so that re-polling the same window inserts nothing twice.
+        """
+        outcomes: dict[int, tuple[str, Decimal]] = {
+            row.id: (row.status, row.filled_contracts) for row in working}
+        since = store.local_midnight(now, ZoneInfo(self.settings.tz_local))
+        try:
+            venue_fills = self.gateway.poll_fills(session, since)
+        except Exception as exc:  # noqa: BLE001 - one poll, not the step
+            log.exception("polling venue fills failed")
+            stats.errors += 1
+            _note_error(heartbeat, f"poll_fills: {type(exc).__name__}: {exc}")
+            return outcomes
+        rows = orders_by_venue_id(session, [f.order_id for f in venue_fills])
+        for fill in venue_fills:
+            row = rows.get(fill.order_id)
+            if row is None or fill.price is None or fill.count is None:
+                continue
+            try:
+                with session.begin_nested():
+                    outcomes[row.id] = self._persist_venue_fill(session, row, fill, now, stats)
+            except Exception as exc:  # noqa: BLE001 - one fill, not the step
+                log.exception("recording venue fill for order %s failed", row.id)
+                stats.errors += 1
+                _note_error(heartbeat, f"order {row.id}: {type(exc).__name__}: {exc}")
+        return outcomes
+
+    def _persist_venue_fill(self, session: Session, row, fill, now: datetime,
+                            stats: ExecStats) -> tuple[str, Decimal]:
+        """One venue fill: the `fills` row, its cash movement, and the order it moved."""
+        fee_type, fee_multiplier, maker_rate = fill_fee_fields(KALSHI_FOOTBALL)
+        prob = side_p(fill.price, row.side)
+        contracts = Decimal(fill.count).quantize(CENT)
+        role = "taker" if fill.is_taker else "maker"
+        fee = fee_for_order(KALSHI_FOOTBALL, role, prob, contracts)
+        fill_id = store.insert_fill(
+            session, order_id=row.id, prob=prob, contracts=contracts, fee=fee,
+            fee_type=fee_type, fee_multiplier=fee_multiplier, maker_rate=maker_rate,
+            filled_at=fill.created_time or now, simulated=False, fill_method=VENUE,
+            source_trade_id=None if fill.trade_id is None else str(fill.trade_id)[:64],
+            source_event_id=None, taker_side=None, through=False, tape_source=None,
+            has_print=True, replay=False)
+        if fill_id is None:
+            return row.status, row.filled_contracts
+        stats.fills += 1
+        self._metrics_acc.filled_contracts += contracts
+        filled = row.filled_contracts + contracts
+        cash = -(prob * contracts + fee)
+        store.insert_ledger_fill(
+            session, ts=fill.created_time or now, variant_id=row.variant_id, kind="fill",
+            order_id=row.id, fill_id=fill_id, ticker=row.ticker, side=row.side,
+            contracts=contracts, price=prob, fee=fee, cash_delta=cash.quantize(CENT),
+            replay=False)
+        status = _next_status(row.status, filled, row.contracts)
+        store.update_order(session, row.id, {"filled_contracts": filled, "status": status})
+        return status, filled
 
     def _tape(self, session: Session, working, now: datetime) -> dict[str, tuple[list, list]]:
         """One print scan and one delta scan per ticker, shared by every order on it.
@@ -683,7 +784,7 @@ class Executor:
         if isinstance(action, Place):
             self._place(session, action, by_intent, extras, markets, rows, now, stats)
         elif isinstance(action, Cancel):
-            if store.cancel_order(session, action.order_id, action.reason, now):
+            if self.gateway.cancel(session, action.order_id, action.reason, now):
                 stats.cancelled += 1
                 if not self.replay:
                     acc = self._metrics_acc.cancelled
@@ -721,7 +822,7 @@ class Executor:
         cursor = None if book is None else book.last_event_id
         prefix = "replay" if self.replay else "paper"
         n = store.orders_for_intent(session, action.intent_id)
-        order_id = store.insert_order(session, {
+        values = {
             "intent_id": action.intent_id, "variant_id": intent.variant_id,
             "venue": extra.get("venue") or "kalshi", "mode": "paper",
             "client_order_id": f"{prefix}-{action.intent_id}-{n}", "ticker": intent.ticker,
@@ -752,7 +853,10 @@ class Executor:
             "sport": getattr(row, "sport", None), "kickoff_utc": intent.kickoff_utc,
             "match_key": market.match_key,
             "tape_cursor_event_id": cursor, "nw_tape_cursor_event_id": cursor,
-            "replay": self.replay})
+            "replay": self.replay}
+        # The one line of `_place` the gateway split moved: the values above are what phase 3
+        # built, in the order it built them, and `PaperGateway.place` is the same insert.
+        order_id = self.gateway.place(session, values, action, market, now).order_id
         if order_id is None:
             return
         stats.placed += 1
