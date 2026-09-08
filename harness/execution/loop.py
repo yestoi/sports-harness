@@ -77,8 +77,8 @@ from harness.execution.gateway import (
     KalshiGateway,
     OrderGateway,
     PaperGateway,
-    is_paper,
     orders_by_venue_id,
+    uses_the_simulator,
 )
 from harness.execution.plan import (
     CapGate,
@@ -104,8 +104,12 @@ CENT = Decimal("0.01")
 DURATION_WINDOW = 100
 QUEUE_MODEL = "queue_model"
 NO_WATCHER = "no_watcher"
-#: The `fills.fill_method` of a fill the venue reported, as against one the queue
-#: model inferred. Written only on the live path, which is dormant in this phase.
+#: The `order_events.kind` of a venue fill that arrived after its order left the book.
+LATE_FILL = "late_fill"
+#: The `fills.fill_method` of a fill the venue reported, as against one the queue model
+#: inferred. Written only on the live path, which is dormant in this phase. Note that
+#: `store.load_fills_today` -- the daily stake cap's read -- filters `fill_method =
+#: 'queue_model'`, so a venue fill is invisible to that cap until Task 11 rules on it.
 VENUE = "venue"
 
 
@@ -210,10 +214,12 @@ class Executor:
         #: an executor that asked for it fails at construction rather than at the first order.
         self.gateway = gateway if gateway is not None else self._build_gateway(settings)
 
-    @staticmethod
-    def _build_gateway(settings) -> OrderGateway:
+    def _build_gateway(self, settings) -> OrderGateway:
         if getattr(settings, "mode", "paper") != "live":
-            return PaperGateway()
+            # `self.replay` partitions the gateway as it partitions the rest of the loop: a
+            # replay executor's `cancel_all`, `reconcile` and `poll_fills` must read and move
+            # replay rows, never the live book (review round 1, Important 1).
+            return PaperGateway(replay=self.replay)
         # Unreachable in this phase: `make_writer` raises `LiveGuardRefused` on every prod
         # call (§1.4), so this returns nothing and the constructor raises. Imported here
         # because it is the one place that needs it.
@@ -504,7 +510,7 @@ class Executor:
         the only fill source there (ruling B-I2), and asking a simulator what a real order did
         would be inventing a second answer to a question the venue has already settled.
         """
-        if not is_paper(self.gateway):
+        if not uses_the_simulator(self.gateway):
             return self._venue_fills(session, working, now, stats, heartbeat)
         tape = self._tape(session, working, now)
         outcomes: dict[int, tuple[str, Decimal]] = {}
@@ -528,6 +534,15 @@ class Executor:
         order's own side space off *our* `side` rather than the venue's word for it, the fee is
         this harness's own model of the schedule, and the fill is keyed on the venue's trade id
         so that re-polling the same window inserts nothing twice.
+
+        Two things the paper path has are gone here, by construction rather than by oversight:
+        there is no `no_watcher` counterfactual for a live order (that track is the simulator's,
+        and a real order has only the one history), and a fill cannot be attributed to a print
+        on the tape.
+
+        The running totals are carried in `outcomes` rather than read back off the ORM row, so
+        two fills on one order in one poll add up whatever SQLAlchemy does with the Core UPDATE
+        underneath (review round 1, minor).
         """
         outcomes: dict[int, tuple[str, Decimal]] = {
             row.id: (row.status, row.filled_contracts) for row in working}
@@ -540,46 +555,65 @@ class Executor:
             _note_error(heartbeat, f"poll_fills: {type(exc).__name__}: {exc}")
             return outcomes
         rows = orders_by_venue_id(session, [f.order_id for f in venue_fills])
+        #: The status each order held when this step began. A fill is judged late against that,
+        #: never against a status this same poll has just moved.
+        was: dict[int, str] = {}
         for fill in venue_fills:
             row = rows.get(fill.order_id)
             if row is None or fill.price is None or fill.count is None:
                 continue
+            was.setdefault(row.id, row.status)
+            _, filled = outcomes.setdefault(row.id, (row.status, row.filled_contracts))
             try:
                 with session.begin_nested():
-                    outcomes[row.id] = self._persist_venue_fill(session, row, fill, now, stats)
+                    outcomes[row.id] = self._persist_venue_fill(
+                        session, row, fill, was[row.id], filled, now, stats)
             except Exception as exc:  # noqa: BLE001 - one fill, not the step
                 log.exception("recording venue fill for order %s failed", row.id)
                 stats.errors += 1
                 _note_error(heartbeat, f"order {row.id}: {type(exc).__name__}: {exc}")
         return outcomes
 
-    def _persist_venue_fill(self, session: Session, row, fill, now: datetime,
-                            stats: ExecStats) -> tuple[str, Decimal]:
-        """One venue fill: the `fills` row, its cash movement, and the order it moved."""
+    def _persist_venue_fill(self, session: Session, row, fill, was: str, filled: Decimal,
+                            now: datetime, stats: ExecStats) -> tuple[str, Decimal]:
+        """One venue fill: the `fills` row, its cash movement, and the order it moved.
+
+        `filled` is the running total for this order, and `was` is the status it held when the
+        step began. A fill that arrives for an order which has already left the book -- our
+        cancel and the venue's fill crossing on the wire, the ordinary live race -- is recorded
+        in full and marked with a `late_fill` event carrying that status, but never moves the
+        row off it: a cancelled order that came back as `partially_filled` would be put back
+        into `open_orders` and cancelled at the venue a second time (review round 1,
+        Important 3).
+        """
         fee_type, fee_multiplier, maker_rate = fill_fee_fields(KALSHI_FOOTBALL)
         prob = side_p(fill.price, row.side)
         contracts = Decimal(fill.count).quantize(CENT)
         role = "taker" if fill.is_taker else "maker"
         fee = fee_for_order(KALSHI_FOOTBALL, role, prob, contracts)
+        at = fill.created_time or now
         fill_id = store.insert_fill(
             session, order_id=row.id, prob=prob, contracts=contracts, fee=fee,
             fee_type=fee_type, fee_multiplier=fee_multiplier, maker_rate=maker_rate,
-            filled_at=fill.created_time or now, simulated=False, fill_method=VENUE,
+            filled_at=at, simulated=False, fill_method=VENUE,
             source_trade_id=None if fill.trade_id is None else str(fill.trade_id)[:64],
             source_event_id=None, taker_side=None, through=False, tape_source=None,
             has_print=True, replay=False)
         if fill_id is None:
-            return row.status, row.filled_contracts
+            return _venue_status(was, filled, row.contracts), filled
         stats.fills += 1
-        self._metrics_acc.filled_contracts += contracts
-        filled = row.filled_contracts + contracts
+        if not self.replay:
+            self._metrics_acc.filled_contracts += contracts
+        filled = filled + contracts
         cash = -(prob * contracts + fee)
         store.insert_ledger_fill(
-            session, ts=fill.created_time or now, variant_id=row.variant_id, kind="fill",
-            order_id=row.id, fill_id=fill_id, ticker=row.ticker, side=row.side,
-            contracts=contracts, price=prob, fee=fee, cash_delta=cash.quantize(CENT),
-            replay=False)
-        status = _next_status(row.status, filled, row.contracts)
+            session, ts=at, variant_id=row.variant_id, kind="fill", order_id=row.id,
+            fill_id=fill_id, ticker=row.ticker, side=row.side, contracts=contracts, price=prob,
+            fee=fee, cash_delta=cash.quantize(CENT), replay=False)
+        if was not in store.OPEN_STATUSES:
+            store.insert_event(session, order_id=row.id, ts=at, kind=LATE_FILL, prob=prob,
+                               contracts=contracts, reason=was, replay=False)
+        status = _venue_status(was, filled, row.contracts)
         store.update_order(session, row.id, {"filled_contracts": filled, "status": status})
         return status, filled
 
@@ -1067,6 +1101,15 @@ def _state_columns(prefix: str, state: SimState) -> dict:
             f"{prefix}crossed": state.crossed,
             f"{prefix}last_print_ts": state.last_print_ts,
             f"{prefix}last_print_ids": list(state.last_print_ids)}
+
+
+def _venue_status(was: str, filled: Decimal, contracts: Decimal) -> str:
+    """The status a venue fill leaves an order in. An order that had already left the book keeps
+    the status it left with: the fill is recorded, the position is real, and the order is still
+    not resting (review round 1, Important 3)."""
+    if was not in store.OPEN_STATUSES:
+        return was
+    return _next_status(was, filled, contracts)
 
 
 def _next_status(status: str, filled: Decimal, contracts: Decimal) -> str:

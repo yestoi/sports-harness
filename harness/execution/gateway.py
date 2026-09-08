@@ -23,6 +23,7 @@ one into the paper path by accident: `test_paper_gateway_never_touches_transport
 attributes do not exist.
 """
 
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
@@ -86,14 +87,28 @@ class OrderGateway(Protocol):
     #: `self._metrics_acc.cancelled[reason]` off exactly that boolean today.
     def cancel(self, session, order_id: int, reason: str, now) -> bool: ...
 
-    def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal,
+    #: `market` carries the venue's published tick grid (`price_ranges`), which is what the
+    #: live amend snaps its new price to; the paper path ignores it. Returns whether our own
+    #: row moved, so the caller reads the same boolean it reads off `cancel`.
+    def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal, market,
               now) -> bool: ...
 
     def cancel_all(self, session, reason: str, now) -> int: ...
 
     def reconcile(self, session, now) -> ReconcileReport: ...
 
+    #: Live only, and per *trade*: a list of `authed.VenueFillView` records, each carrying the
+    #: venue's `order_id`, `price` and `count`. `PaperGateway` has no venue to poll and returns
+    #: `[]` -- paper fills are written by the simulator, and the daily cap reads them through
+    #: `store.load_fills_today`, which is a per-*variant* aggregate and a different shape
+    #: entirely. A caller that wants the cap's numbers must call `store`, not a gateway
+    #: (review round 1, Important 5; Task 11 owns the cap).
     def poll_fills(self, session, since) -> list: ...
+
+    #: Declared, not inferred: the fill-branch dispatch asks the gateway whether the tape
+    #: simulator answers for its fills. A gateway that neither sets it nor inherits it fails
+    #: loudly in `uses_the_simulator` rather than silently taking the live branch.
+    simulates_fills: bool
 
 
 class PaperGateway:
@@ -102,12 +117,16 @@ class PaperGateway:
     `action`, `market` and `now` are part of the interface because the live path needs them --
     a venue order carries the market's tick grid and its own expiry -- and are unused here: the
     paper path's whole placement is the row `_place` already built.
+
+    `replay` partitions this gateway exactly as it partitions the executor that holds it: a
+    replay executor's gateway must never select, cancel or count a live row, so `Executor`
+    passes its own flag through (review round 1, Important 1).
     """
 
+    #: The tape simulator answers for every paper fill.
+    simulates_fills = True
+
     def __init__(self, replay: bool = False) -> None:
-        #: Only `poll_fills` reads it. The executor never calls `poll_fills` on the paper path
-        #: (the simulator writes the fills and `_persist_track` records them), so this is the
-        #: interface being honest rather than a second fill source.
         self.replay = bool(replay)
 
     def place(self, session, values: dict, action, market, now) -> PlacedOrder:
@@ -116,7 +135,7 @@ class PaperGateway:
     def cancel(self, session, order_id: int, reason: str, now) -> bool:
         return store.cancel_order(session, order_id, reason, now)
 
-    def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal,
+    def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal, market,
               now) -> bool:
         """Phase 3 reprices by cancelling and placing again, and the loop never amends a paper
         order. Raised rather than returning False so that a caller which one day routes a
@@ -140,9 +159,13 @@ class PaperGateway:
         return ReconcileReport(resting=store.count_open_orders(session, self.replay))
 
     def poll_fills(self, session, since) -> list:
-        """The simulator's fills, read back -- never a venue call. `_persist_track` has already
-        written them by the time anything could ask."""
-        return store.load_fills_today(session, replay=self.replay, since=since)
+        """Empty, always: paper has no venue to poll. The simulator writes every paper fill and
+        `_persist_track` records it in the same step, so there is nothing left for a poll to
+        discover, and the daily cap's numbers come from `store.load_fills_today` -- a
+        per-variant aggregate, not the per-trade records this method returns in live mode.
+        Returning that aggregate here would hand the caller the wrong shape under the same name
+        (review round 1, Important 5)."""
+        return []
 
 
 class KalshiGateway:
@@ -153,6 +176,9 @@ class KalshiGateway:
     pull all of them back at kickoff or during an outage. It is established by the startup
     reconciliation (Task 10); until it exists this gateway places nothing.
     """
+
+    #: The venue answers for every live fill; the tape simulator is bypassed entirely.
+    simulates_fills = False
 
     def __init__(self, writer, reader, session_factory=None, *,
                  order_group_id: str | None = None, exchange_index: int = 0) -> None:
@@ -212,18 +238,31 @@ class KalshiGateway:
                                 row.exchange_index_at_place or 0)
         return store.cancel_order(session, order_id, reason, now)
 
-    def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal,
+    def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal, market,
               now) -> bool:
         """Reprice a resting live order in place. Returns whether our own row moved, exactly as
-        `cancel` does, so the loop's counters read the same boolean on both paths."""
+        `cancel` does, so the loop's counters read the same boolean on both paths.
+
+        The venue's `client_order_id` is an idempotency key, and V2's amend replaces it with
+        `updated_client_order_id`: the new one is therefore a fresh uuid4 and is written back
+        onto our row, so a second amend sends the id the order actually carries rather than the
+        one it was placed with (review round 1, Important 4). The price snaps to the market's
+        own published grid, not to the fallback cent grid, which is why `market` is part of the
+        interface; Task 10, which owns the reprice decision, threads through the `MarketNow`
+        the loop is already holding.
+        """
         row = self._row(session, order_id)
         if row is None or row.status not in OPEN_STATUSES:
             return False
+        updates: dict = {"prob": prob, "contracts": contracts}
         if row.venue_order_id:
+            updated_client_order_id = str(uuid.uuid4())
             self._writer.amend(row.venue_order_id, prob, contracts, row.client_order_id,
-                               f"{row.client_order_id}-a", row.ticker, row.side,
-                               row.exchange_index_at_place or 0, None)
-        store.update_order(session, order_id, {"prob": prob, "contracts": contracts})
+                               updated_client_order_id, row.ticker, row.side,
+                               row.exchange_index_at_place or 0,
+                               getattr(market, "price_ranges", None))
+            updates["client_order_id"] = updated_client_order_id
+        store.update_order(session, order_id, updates)
         return True
 
     def cancel_all(self, session, reason: str, now) -> int:
@@ -279,10 +318,23 @@ def orders_by_venue_id(session, venue_order_ids) -> dict:
     return {row.venue_order_id: row for row in rows}
 
 
-def is_paper(gateway) -> bool:
-    """Whether this gateway is the paper one, and so takes the identical path it takes today.
+def uses_the_simulator(gateway) -> bool:
+    """Whether this gateway's fills come from the tape simulator, which is the paper path.
 
-    A function rather than a flag on the gateway: the guard has to be something a future
-    gateway cannot accidentally claim, and `isinstance` is exactly that.
+    Two guards, not one. The declared `simulates_fills` is the answer, because a gateway that
+    *wraps* `PaperGateway` rather than subclassing it would fail an `isinstance` test and take
+    the live branch -- silently ceasing to simulate anything, which is exactly the failure this
+    task's own golden test hit while it was being written. A gateway that declares nothing
+    raises here rather than being assumed to be either (review round 1, minor).
+
+    The `isinstance` half stays as the belt: a `PaperGateway` that has somehow been told it does
+    not simulate is a contradiction, not a configuration.
     """
-    return isinstance(gateway, PaperGateway)
+    declared = getattr(gateway, "simulates_fills", None)
+    if not isinstance(declared, bool):
+        raise TypeError(
+            f"{type(gateway).__name__} declares no simulates_fills; a gateway must say whether "
+            "its fills come from the simulator or from a venue")
+    if isinstance(gateway, PaperGateway) and not declared:
+        raise TypeError("a PaperGateway always simulates its fills")
+    return declared

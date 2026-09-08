@@ -6,17 +6,23 @@ The first is the seam itself: `PaperGateway` writes what phase 3 wrote, `KalshiG
 that plus the three venue columns and additionally sends a message, and the executor picks
 between them off `Settings.mode` and cannot pick the live one in this phase.
 
-The second is the D4 proof: `test_golden_replay_is_byte_identical_across_the_seam` replays the
-committed fixture day twice -- once through `_LegacyGateway`, a copy of the pre-gateway write
-path kept in this file, and once through `PaperGateway` as shipped -- and diffs everything the
-seam could plausibly have moved. Diffing only `order_events` would let a dropped
-`stats.cancelled` or a missing `_metrics_acc` bump through (C6), so the orders, the fills and
-their ledger, the heartbeat counters and the metric samples are all in the diff.
+The second is the golden replay, and it is worth being exact about what it does and does not
+establish. `test_golden_replay_is_byte_identical_across_the_seam` runs the committed fixture day
+through the shipped executor twice: once with `_LegacyGateway`, whose `place` and `cancel` are
+the two `store` calls phase 3 made inline, and once with `PaperGateway`. Both passes run the
+*same* loop, so the test cannot see a regression the two passes share -- it pins `PaperGateway`
+against the recorded phase-3 write path, not the loop against its own history. That is a
+tripwire for Tasks 10 and 11, which edit `gateway.py`: the day it stops being true that
+`PaperGateway.place` and `.cancel` are those two calls, the diff fires across `orders`,
+`order_events`, `fills`, `ledger`, the heartbeat counters and the metric samples.
+
+The evidence that the *loop* is unchanged is elsewhere and is stronger: the 50 phase-3 executor
+tests in `tests/test_exec_loop.py` pass unmodified, and the whole of `_place`'s diff is one
+line (review round 1, Important 2).
 
 `_LegacyGateway` is a copy rather than a recorded snapshot on purpose: a committed digest of
 "what phase 3 produced" would rot the first time an unrelated task changed the day, and would
-stop proving anything the moment it did. Two live implementations run against the same tape
-cannot rot.
+stop proving anything the moment it did.
 
 Nothing here opens a socket: the live tests drive Task 6's `FakeTransport`.
 """
@@ -46,6 +52,7 @@ from harness.execution.gateway import (
     PlacedOrder,
     ReconcileReport,
     orders_by_venue_id,
+    uses_the_simulator,
 )
 from harness.execution.loop import ExecStats, Executor
 from harness.execution.plan import Cancel
@@ -159,7 +166,7 @@ def test_paper_gateway_cancel_all_closes_every_resting_order(db_session):
 def test_paper_gateway_has_no_amend_because_phase_3_reprices_by_cancel_and_place(db_session):
     with pytest.raises(NotImplementedError):
         PaperGateway().amend(db_session, _open_order(db_session), Decimal("0.55"),
-                             Decimal("10.00"), NOW)
+                             Decimal("10.00"), _Market(), NOW)
 
 
 def test_paper_gateway_reconcile_counts_what_we_hold(db_session):
@@ -167,16 +174,48 @@ def test_paper_gateway_reconcile_counts_what_we_hold(db_session):
     assert PaperGateway().reconcile(db_session, NOW) == ReconcileReport(resting=1)
 
 
-def test_paper_gateway_poll_fills_returns_the_simulator_rows(db_session):
-    # PaperGateway.poll_fills is a read of what the simulator already wrote, never a venue call.
+def test_paper_gateway_poll_fills_is_empty_and_is_not_the_daily_caps_read(db_session):
+    """Paper has no venue to poll, and the cap's numbers are a different shape entirely: a
+    per-variant aggregate from `store`, not the per-trade records `poll_fills` returns in live
+    mode (review round 1, Important 5)."""
     order_id = _open_order(db_session)
     store.insert_fill(db_session, order_id=order_id, prob=Decimal("0.5600"),
                       contracts=Decimal("4.00"), fee=Decimal("0.0100"),
                       filled_at=NOW, simulated=True, fill_method="queue_model",
                       source_trade_id="tr-1", through=False, has_print=True, replay=False)
     db_session.flush()
-    assert PaperGateway().poll_fills(db_session, SINCE) == \
-        store.load_fills_today(db_session, replay=False, since=SINCE)
+
+    assert PaperGateway().poll_fills(db_session, SINCE) == []
+    assert store.load_fills_today(db_session, replay=False, since=SINCE), \
+        "the simulator's fill is still there; it is just not a gateway's to hand back"
+
+
+def test_a_replay_executors_gateway_is_scoped_to_replay_rows(env_settings, db_session):
+    """Review round 1, Important 1: a replay executor whose gateway was scoped to the live book
+    would cancel the live book the first time Task 10 wires the kickoff flatten."""
+    executor = Executor(env_settings, _factory(db_session), replay=True)
+    assert executor.gateway.replay is True
+    live = _open_order(db_session)
+    replayed = _open_order(db_session, replay=True)
+
+    assert executor.gateway.reconcile(db_session, NOW) == ReconcileReport(resting=1)
+    assert executor.gateway.cancel_all(db_session, "kickoff", NOW) == 1
+
+    assert db_session.get(Order, replayed).status == "cancelled"
+    assert db_session.get(Order, live).status == "open"
+
+
+def test_a_gateway_that_declares_no_fill_source_cannot_be_dispatched():
+    """A wrapper around `PaperGateway` fails an `isinstance` test and would silently take the
+    live branch, which is why the dispatch asks the gateway to declare itself."""
+
+    class _Wrapper:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+    assert uses_the_simulator(PaperGateway()) is True
+    with pytest.raises(TypeError):
+        uses_the_simulator(_Wrapper(PaperGateway()))
 
 
 def test_the_cancel_counters_still_move(env_settings, db_session):
@@ -260,6 +299,41 @@ def test_kalshi_gateway_cancel_sends_the_venue_cancel_then_closes_our_row(db_ses
     assert db_session.get(Order, order_id).cancel_reason == "reprice"
 
 
+def test_kalshi_gateway_amend_chains_a_fresh_client_order_id_and_snaps_to_the_market_grid(
+        db_session):
+    """Two successive amends. V2 replaces the idempotency key on every amend, so the second one
+    has to send the id the first one installed, and the price has to snap to the market's own
+    grid rather than the fallback cent one (review round 1, Important 4)."""
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.4000")}),
+                              _ok({"order": _echo_of(price="0.4000")})])
+    g = _kalshi(t)
+    order_id = _open_order(db_session, mode="live", venue_order_id="ov1",
+                           client_order_id="placed-1", prob=Decimal("0.4500"))
+    market = _Market([{"start": 0, "end": 1, "step": 0.05}])
+
+    assert g.amend(db_session, order_id, Decimal("0.4400"), Decimal("10.00"), market, NOW)
+    assert g.amend(db_session, order_id, Decimal("0.4400"), Decimal("10.00"), market, NOW)
+
+    first, second = t.calls[0][3], t.calls[1][3]
+    # 0.44 is off a 5-cent grid; the writer floors it to 0.40 and sends that, not 0.4400.
+    assert first["price"] == "0.4000" and first["count"] == "10.00"
+    assert first["client_order_id"] == "placed-1"
+    assert second["client_order_id"] == first["updated_client_order_id"]
+    assert second["updated_client_order_id"] != first["updated_client_order_id"]
+    assert db_session.get(Order, order_id).client_order_id == second["updated_client_order_id"]
+    assert db_session.get(Order, order_id).prob == Decimal("0.4400")
+
+
+def test_kalshi_gateway_amend_returns_false_for_an_order_that_is_not_resting(db_session):
+    t = FakeTransport(queued=[])
+    order_id = _open_order(db_session, mode="live", venue_order_id="ov1")
+    PaperGateway().cancel(db_session, order_id, "reprice", NOW)
+
+    assert _kalshi(t).amend(db_session, order_id, Decimal("0.44"), Decimal("10.00"),
+                            _Market(), NOW) is False
+    assert t.calls == []
+
+
 def test_orders_by_venue_id_maps_the_venues_ids_back_to_our_rows(db_session):
     order_id = _open_order(db_session, mode="live", venue_order_id="ov1")
     _open_order(db_session)
@@ -289,6 +363,53 @@ def test_the_live_fill_path_writes_fills_and_a_ledger_row_and_never_simulates(
     ledger = db_session.query(Ledger).one()
     assert ledger.kind == "fill" and ledger.fill_id == fill.id and ledger.cash_delta < 0
     assert stats.fills == 1
+
+
+def test_a_late_venue_fill_is_recorded_but_never_resurrects_a_cancelled_order(
+        env_settings, db_session):
+    """The ordinary live race: our cancel and the venue's fill cross on the wire. The fill and
+    its cash are real and are recorded; the order stays cancelled, because putting it back into
+    `open_orders` would have the loop cancel it at the venue a second time (review round 1,
+    Important 3)."""
+    t = FakeTransport(queued=[_ok({"fills": [{"trade_id": "t1", "order_id": "ov1",
+                                              "ticker": "KXNFLGAME-X", "outcome_side": "yes",
+                                              "price": "0.5600", "count": "4.00"}],
+                                   "cursor": ""})])
+    ex = Executor(env_settings, _factory(db_session), gateway=_kalshi(t))
+    order_id = _open_order(db_session, mode="live", venue_order_id="ov1")
+    store.cancel_order(db_session, order_id, "kickoff", NOW)
+    working = store.working_orders(db_session, replay=False)
+
+    outcomes = ex._simulate(db_session, working, {}, {}, set(), NOW, ExecStats(),
+                            {"last_error": None})
+
+    assert outcomes[order_id] == ("cancelled", Decimal("4.00"))
+    row = db_session.get(Order, order_id)
+    assert row.status == "cancelled" and row.filled_contracts == Decimal("4.00")
+    assert db_session.query(Fill).count() == 1 and db_session.query(Ledger).count() == 1
+    late = db_session.query(OrderEvent).filter_by(kind="late_fill").one()
+    assert (late.order_id, late.reason, late.contracts) == (order_id, "cancelled",
+                                                            Decimal("4.00"))
+
+
+def test_two_venue_fills_on_one_order_in_one_poll_add_up(env_settings, db_session):
+    """The running total is carried in the loop, not read back off the ORM row between fills."""
+    t = FakeTransport(queued=[_ok({"fills": [
+        {"trade_id": "t1", "order_id": "ov1", "ticker": "KXNFLGAME-X",
+         "outcome_side": "yes", "price": "0.5600", "count": "4.00"},
+        {"trade_id": "t2", "order_id": "ov1", "ticker": "KXNFLGAME-X",
+         "outcome_side": "yes", "price": "0.5600", "count": "2.00"}], "cursor": ""})])
+    ex = Executor(env_settings, _factory(db_session), gateway=_kalshi(t))
+    order_id = _open_order(db_session, mode="live", venue_order_id="ov1")
+    working = store.working_orders(db_session, replay=False)
+    stats = ExecStats()
+
+    outcomes = ex._simulate(db_session, working, {}, {}, set(), NOW, stats,
+                            {"last_error": None})
+
+    assert outcomes[order_id] == ("partially_filled", Decimal("6.00"))
+    assert db_session.get(Order, order_id).filled_contracts == Decimal("6.00")
+    assert stats.fills == 2
 
 
 # --- the golden replay ------------------------------------------------------------------
@@ -451,12 +572,17 @@ def _reset_the_order_side(session) -> None:
 
 
 def test_golden_replay_is_byte_identical_across_the_seam(env_settings, db_session):
-    """The D4 proof. Replay the committed fixture day twice -- once through a copy of the
-    pre-gateway code path and once through the executor as shipped -- and diff everything the
-    seam could plausibly move: `orders`, `order_events`, the fills and their ledger, the
-    heartbeat counters and the metric samples written during the replayed day. Diffing only
-    `order_events` would let a dropped `stats.cancelled` or a missing `_metrics_acc` bump pass
-    review (C6).
+    """`PaperGateway` still writes what phase 3 wrote, held against a copy of those two `store`
+    calls over the committed fixture day.
+
+    What this proves: the gateway. Both passes drive the shipped `Executor`, so a change inside
+    the loop moves both snapshots together and the diff stays empty -- this is a tripwire for
+    later edits to `gateway.py` (Tasks 10 and 11), not a re-derivation of phase 3's behaviour.
+    That the loop itself is unchanged is shown by the 50 unmodified tests in
+    `tests/test_exec_loop.py` and by the one-line `_place` diff (review round 1, Important 2).
+
+    The diff is deliberately wider than `order_events`: a dropped `stats.cancelled` or a missing
+    `_metrics_acc` bump shows up only in the heartbeat counters and the metric samples (C6).
     """
     clocks = _load_and_price_the_day(db_session, env_settings)
 
@@ -464,7 +590,11 @@ def test_golden_replay_is_byte_identical_across_the_seam(env_settings, db_sessio
     _reset_the_order_side(db_session)
     current = _run_fixture_day(db_session, env_settings, PaperGateway(), clocks)
 
+    # Without these the comparison could be two empty lists agreeing with each other.
     assert baseline["orders"], "the fixture day has to place at least one order"
     assert baseline["order_events"], "the fixture day has to write order events"
+    assert baseline["fills"], "the fixture day has to fill"
+    assert baseline["ledger"], "a fill has to move cash"
+    assert baseline["metrics"], "the day has to write a metric batch"
     for part in ("order_events", "orders", "fills", "ledger", "heartbeat", "metrics"):
         assert baseline[part] == current[part], part
