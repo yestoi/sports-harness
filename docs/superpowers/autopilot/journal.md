@@ -842,3 +842,30 @@ Times are America/Chicago.
 - Wave map: 1={1,2,3,12} 2={4} 3={5,13} 4={6,14} 5={6b,7} 6={8} 7={9} 8={10} 9={11} 10={15} 11={16}
 - Carried forward: none
 - Next: phase (wave 1 running)
+
+## 63. deploy - phase 4 Task 1 (pricing order and budget, Amendment 4) mid-phase - 2026-09-08 11:44 CT
+- Orient: the plan's Task 1 "Controller: deploy this task now" (R15: from `main`); Orient rule 2 also held (`main` ahead of the NAS in code)
+- Branch / commits: `phase4-t1-pricing` 185b182..ceae0f2 (rebased, merged as 2937a7a..a193fd0 into `phase4-kalshi-authed`, ff into `main`); NAS 1911a4f -> a193fd0
+- Result: done
+- Dispatches: 0 (the task's 3 seats are in the phase's count)
+- Tests: task branch 853 passed pristine; `main` a193fd0 all dots, exit 0
+- Review: task review clean after fix round 1 (the pricing budget capped to the cadence in force)
+- Deploy: a193fd0 at 11:44 CT via `make deploy-nas-app` (app-ws untouched, gap rows n/a), game window 0|0|0 at 11:43 CT, stamp verified (`/healthz` build a193fd0 at 11:46 CT), app-serve and app-exec healthy, forced tick run 4344 ok n=166 credits=6 at 11:49 CT
+- Verification: entry 64
+- Rulings: (1) The amendment's deploy line says `make deploy-nas-app` (the plan wrote `make deploy-nas`; the diff touched no build or socket file). (2) Amendment 4 placeholders filled: sha a193fd0, 11:44 CT, pre-fix range runs 344 (the first budget-exhausted pricing run of 2026-09-07) to 4327 (the last pricing run before the deploy); 4344 is the first post-fix run.
+- Carried forward: none
+- Next: verify (entry 64), then the phase continues (wave 1: Tasks 2, 3, 12 in flight)
+
+## 64. verify - Task 1 rows after deploy a193fd0 - 2026-09-08 11:57 CT
+- Orient: rule 3 - no verify since the deploy in entry 63; scoped to the rows the task names (the full morning-after verify ran in entry 57)
+- Branch / commits: `main` a193fd0
+- Result: done (PASS)
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none (entry 63)
+- Verification: PASS 6/6 (evidence: the run-note query in this entry; `evidence/2026-09-08-report-w37-coverage-1150.md`). Forced tick run 4344 (81 s at the 900 s daytime cadence): `pricing.order` = [sharp_two_sided, sharp_direct, wide_band, constrained, nfl_only, no_velocity, sharp_plus_derived] (the gate variant 5632da729fa7 first, the primary second, secondaries rotated) PASS; `variants_run` equals the order, all seven scored, `budget_exhausted` false PASS; `budget_s` 45, `budget_capped` false (fetch and normalize left the whole budget) PASS; `variant_ms` 2.4-2.6 s per YES-only variant and 4.9 s for the two-sided one, 19.5 s in total PASS; `gate_variant_id` 5632da729fa7, `gate_variant_missing` false PASS; build stamp since the restart a193fd0 (plus the old process's last runs) PASS; table 1 renders the `tick_coverage` column on the NAS PASS. Deferred: the coverage line's values are judged in the Monday duty (the column exists; the week-37 window straddles the deploy).
+- Rulings: (1) The pricing-budget anomaly of entries 57 and 60 is closed by this deploy; the phase 6 normalizer item keeps its measurement note. (2) The reviewer's watch item (a busy game-day tick may still overrun with the 20 s floor) is a verify.md row for Task 16: `recorder.tick_ms` and `budget_capped` on game-window ticks.
+- Anomalies: none
+- Carried forward: none
+- Next: phase (wave 1 continues)
