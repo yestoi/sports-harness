@@ -156,13 +156,15 @@ class Executor:
         started = self._monotonic()
         now = self._clock()
         skipped_loops = self._loops_skipped(started)
-        heartbeat = {"ws_last_event_at": None, "book_dirty_markets": 0}
+        heartbeat = {"ws_last_event_at": None, "book_dirty_markets": 0, "last_error": None}
         stats = ExecStats()
         session = Session(bind=conn)
         try:
             try:
                 self._body(session, now, stats, heartbeat)
-                error = None
+                # A step that survived one order's failure still committed, but a green
+                # heartbeat over a hundred swallowed failures would be a lie.
+                error = heartbeat["last_error"]
             except Exception as exc:  # noqa: BLE001 - the loop must survive any one step
                 session.rollback()
                 stats = ExecStats(errors=1)
@@ -208,7 +210,8 @@ class Executor:
         heartbeat["book_dirty_markets"] = sum(1 for m in markets.values() if m.dirty(now, s))
 
         # 4. Fills.
-        outcomes = self._simulate(session, working, markets, bases, recovering, now, stats)
+        outcomes = self._simulate(session, working, markets, bases, recovering, now, stats,
+                                  heartbeat)
 
         # 5. Decisions, applied in order.
         open_orders = [self._order_view(row, outcomes) for row in working
@@ -225,7 +228,7 @@ class Executor:
                             for variant in cfg}
         actions = plan_actions(intents, open_orders, markets, state_by_variant, cfg,
                                store.kill_active(session), now, s)
-        self._apply(session, actions, intents, extras, markets, rows, now, stats)
+        self._apply(session, actions, intents, extras, markets, rows, now, stats, heartbeat)
 
     # --- books ------------------------------------------------------------------------
 
@@ -267,7 +270,7 @@ class Executor:
     # --- fills ------------------------------------------------------------------------
 
     def _simulate(self, session: Session, working, markets, bases, recovering, now: datetime,
-                  stats: ExecStats) -> dict[int, tuple[str, Decimal]]:
+                  stats: ExecStats, heartbeat: dict) -> dict[int, tuple[str, Decimal]]:
         """Run both tracks for every working order. One order's failure is one order's failure.
 
         A raise inside a step would otherwise cost every other order its fills for that loop,
@@ -281,9 +284,10 @@ class Executor:
                 with session.begin_nested():
                     outcomes[row.id] = self._simulate_order(session, row, markets, bases,
                                                             recovering, tape, now, stats)
-            except Exception:  # noqa: BLE001 - one order, not the step
+            except Exception as exc:  # noqa: BLE001 - one order, not the step
                 log.exception("fill simulation failed for order %s", row.id)
                 stats.errors += 1
+                _note_error(heartbeat, f"order {row.id}: {type(exc).__name__}: {exc}")
         return outcomes
 
     def _tape(self, session: Session, working) -> dict[str, tuple[list, list]]:
@@ -454,16 +458,17 @@ class Executor:
     # --- actions ----------------------------------------------------------------------
 
     def _apply(self, session: Session, actions, intents, extras, markets, rows,
-               now: datetime, stats: ExecStats) -> None:
+               now: datetime, stats: ExecStats, heartbeat: dict) -> None:
         by_intent = {intent.intent_id: intent for intent in intents}
         for action in actions:
             try:
                 with session.begin_nested():
                     self._apply_one(session, action, by_intent, extras, markets, rows, now,
                                     stats)
-            except Exception:  # noqa: BLE001 - one action, not the step
+            except Exception as exc:  # noqa: BLE001 - one action, not the step
                 log.exception("applying %r failed", action)
                 stats.errors += 1
+                _note_error(heartbeat, f"{type(action).__name__}: {type(exc).__name__}: {exc}")
 
     def _apply_one(self, session: Session, action, by_intent, extras, markets, rows,
                    now: datetime, stats: ExecStats) -> None:
@@ -593,6 +598,12 @@ class Executor:
             with self._factory() as probe:
                 self._engine = probe.get_bind()
         return self._engine
+
+
+def _note_error(heartbeat: dict, message: str) -> None:
+    """Keep the first failure of the step; a later one rarely explains more than the first."""
+    if heartbeat["last_error"] is None:
+        heartbeat["last_error"] = message[:2000]
 
 
 def _state_of(row, prefix: str) -> SimState:

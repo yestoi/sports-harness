@@ -681,9 +681,10 @@ def test_exception_in_one_order_does_not_abort_the_step(env_settings, db_session
     assert fills_of(db_session, doomed.id) == []
     survivor = orders_of(db_session, T3)[0]
     assert survivor.filled_contracts == SIZE3
+    # The step committed, but a green heartbeat over a swallowed failure would be a lie.
     heartbeat = db_session.execute(text("select loops, last_error from exec_heartbeat")).one()
     assert heartbeat.loops == 2
-    assert heartbeat.last_error is None
+    assert "tape blew up" in heartbeat.last_error
 
 
 def test_heartbeat_fields(env_settings, db_session, world):
