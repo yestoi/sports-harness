@@ -356,14 +356,6 @@ _T2_GAP_CLV = text("""
 """)
 
 
-def _mean_by_snapshot(rows: Iterable[tuple]) -> dict:
-    """Collapse repeats on one snapshot to one value, so a reprice chain is not double-counted."""
-    acc: dict = defaultdict(list)
-    for key, value in rows:
-        acc[key].append(value)
-    return {key: sum(values) / len(values) for key, values in acc.items()}
-
-
 def _table2(session: Session, window: dict, variants: list[dict]) -> Table:
     columns = ["variant", "tier", "basis", *BENCHMARK_TYPES, f"holm({CONTRAST_BENCHMARK})",
                "gate"]
