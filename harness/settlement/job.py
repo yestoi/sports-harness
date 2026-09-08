@@ -81,7 +81,7 @@ STAGES: list[tuple[str, StageFn]] = []
 #: time so a module that does not exist yet cannot break this one.
 STAGE_MODULES: list[str] = [
     "harness.settlement.settle", "harness.settlement.benchmarks", "harness.settlement.order_clv",
-    "harness.settlement.markouts",
+    "harness.settlement.markouts", "harness.ops.housekeeping",
 ]
 
 _CTX: ContextVar[dict | None] = ContextVar("settlement_job_ctx", default=None)
@@ -103,10 +103,11 @@ def load_stages() -> list[tuple[str, StageFn]]:
     return STAGES
 
 
-def new_ctx(kalshi=None) -> dict:
-    """The per-run context every stage shares: the venue client, and the warnings and errors
-    that end up in `job_runs.notes`."""
-    return {"kalshi": kalshi, "warnings": [], "errors": []}
+def new_ctx(kalshi=None, settings=None) -> dict:
+    """The per-run context every stage shares: the venue client, the warnings and errors that
+    end up in `job_runs.notes`, and (additive, Task 12) the job's `Settings`, for the one stage
+    (`harness.ops.housekeeping`) that needs a setting (`db_budget_gb`) no other stage reads."""
+    return {"kalshi": kalshi, "warnings": [], "errors": [], "settings": settings}
 
 
 def current_ctx() -> dict:
@@ -157,7 +158,7 @@ class Settler:
             session.commit()
 
             budget = Budget(self.s.settle_budget_s, self._monotonic)
-            ctx = new_ctx(self._kalshi)
+            ctx = new_ctx(self._kalshi, self.s)
             results: list[StageResult] = []
             with use_ctx(ctx):
                 for name, fn in stages:

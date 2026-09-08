@@ -8,27 +8,34 @@ into `harness.health.compute_health` rather than re-deriving the staleness/error
 
 import hmac
 import logging
+import re
 import importlib.resources
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from harness.config.settings import Settings
 
-from harness.db.models import (FairValue, Game, KillSwitch, MarketGapSnapshot, OddsSnapshot, OrderbookEvent,
-                                RawResponse, Run, Signal, StrategyVariant, Team, VenueMarket, VenueQuote, VenueTrade)
+from harness.db.models import (ExecHeartbeat, FairValue, Fill, Game, JobRun, KillSwitch, Ledger, MarketGapSnapshot,
+                                OddsSnapshot, Order, OrderbookEvent, OrderEvent, RawResponse, Run, Signal,
+                                StrategyVariant, Team, VenueMarket, VenueQuote, VenueTrade)
+from harness.execution.plan import POST_ONLY_REJECT
 from harness.health import compute_health
+from harness.pricing.fees import KALSHI_FOOTBALL, fee_model_for
+from harness.settlement.settle import stale_unsettled
 
 log = logging.getLogger(__name__)
 WINDOW_24H = timedelta(hours=24)
+WINDOW_7D = timedelta(days=7)
 WINDOW_1H = timedelta(hours=1)
 WINDOW_5M = timedelta(minutes=5)
 SIGNALS_LIMIT = 100
@@ -39,6 +46,22 @@ RUNS_NOTES_LIMIT = 500  # bound on how many recent runs' notes we scan for trade
 #: prefix, same convention `harness match-report` (harness/cli.py) uses, because unmatched
 #: markets often have no `game_id` to join through.
 SPORT_PREFIXES = {"nfl": "KXNFL", "ncaaf": "KXNCAAF"}
+
+# --- Task 12: executor, orders/fills, P&L, candidates, skips, database ceiling, data quality --
+HEARTBEAT_RED_S = 60  # executor heartbeat age turns red past this many seconds
+WS_EVENT_RED_S = 120  # the executor's own ws_last_event_at turns red past this many seconds
+OPEN_ORDERS_LIMIT = 100
+FILLS_TODAY_LIMIT = 200
+EXPOSURE_LIMIT = 500  # positions is already one row per (variant, ticker, side); still bounded
+SKIP_REASONS_LIMIT = 20  # more than the number of distinct reasons order_events can carry
+JOB_RUNS_SCAN_LIMIT = 30  # a month of daily housekeeping notes, or a few days of hourly ones
+DB_CEILING_RED_PCT = 80.0
+#: F50: a kill reason is free text an operator types into a form; only this shape survives.
+KILL_REASON_RE = re.compile(r"[^\w \-.,:/()]")
+KILL_REASON_MAX = 200
+#: Sec-Fetch-Site values a same-origin browser POST can carry (a direct navigation or a request
+#: with no Sec-Fetch-Site support at all, e.g. curl, sends no header, which is accepted too).
+KILL_ALLOWED_SEC_FETCH_SITE = ("same-origin", "none")
 
 _exit_stack = ExitStack()
 
@@ -260,11 +283,238 @@ def _data_quality(session: Session, now: datetime) -> dict:
         select(Run.notes).where(Run.started_at >= cutoff_24h).order_by(desc(Run.started_at)).limit(RUNS_NOTES_LIMIT)
     ).scalars().all()
     trade_gaps = []
+    taker_side_missing = 0
     for notes in notes_rows:
         trade_gaps.extend((notes or {}).get("trade_gaps", []))
+        taker_side_missing += (notes or {}).get("taker_side_missing", 0) or 0
+
+    stored_trades_1h = session.execute(
+        select(func.count()).select_from(VenueTrade)
+        .where(VenueTrade.source == "rest", VenueTrade.ts >= cutoff_1h)
+    ).scalar_one()
+    # taker_side_missing is a 24h count (it comes from run notes, one per recorder tick) beside
+    # a 1h denominator; that understates the share slightly but the number is a smoke alarm, not
+    # an audited metric, and matching the 1h window the rest of this section uses keeps every
+    # row here reading from the same clock.
+    taker_side_total = taker_side_missing + stored_trades_1h
+    no_taker_side_share = (taker_side_missing / taker_side_total) if taker_side_total else None
+
+    matched_total, non_linear_cent = session.execute(
+        select(func.count(),
+              func.count().filter(VenueMarket.price_level_structure.isnot(None)
+                                  & (VenueMarket.price_level_structure != "linear_cent")))
+        .where(VenueMarket.match_status.in_(("matched", "fuzzy", "manual")), VenueMarket.last_seen_at >= cutoff_1h)
+    ).one()
+    non_linear_cent_share = (non_linear_cent / matched_total) if matched_total else None
+
+    nonzero_exchange_index = session.execute(
+        select(func.count()).select_from(VenueMarket)
+        .where(VenueMarket.exchange_index != 0, VenueMarket.last_seen_at >= cutoff_1h)
+    ).scalar_one()
+
+    skipped_total, post_only_rejects = session.execute(
+        select(func.count(), func.count().filter(OrderEvent.reason == POST_ONLY_REJECT))
+        .where(OrderEvent.kind == "skipped", OrderEvent.ts >= cutoff_1h)
+    ).one()
+    post_only_reject_rate = (post_only_rejects / skipped_total) if skipped_total else None
 
     return {"staleness_median_s": staleness_median_s, "trade_gaps_24h": len(trade_gaps),
-            "trade_gaps_sample": trade_gaps[:20]}
+            "trade_gaps_sample": trade_gaps[:20],
+            "no_taker_side_share_1h": no_taker_side_share,
+            "non_linear_cent_share_1h": non_linear_cent_share,
+            "non_linear_cent_count_1h": non_linear_cent,
+            "nonzero_exchange_index_1h": nonzero_exchange_index,
+            "post_only_reject_rate_1h": post_only_reject_rate,
+            "fee_drift": _fee_drift(session)}
+
+
+def _fee_drift(session: Session) -> dict:
+    """The newest stored Kalshi series body's fee shape against `KALSHI_FOOTBALL`, the fee
+    model the executor assumes for every series that has never recorded its own (F45/R21):
+    `fee_model_for(None, ...)` is `KALSHI_FOOTBALL` exactly, so any recorded shape that resolves
+    to a different maker rate, taker rate or multiplier is real drift, not noise."""
+    row = session.execute(
+        select(RawResponse.body, RawResponse.fetched_at)
+        .where(RawResponse.source == "kalshi", RawResponse.endpoint.like("/series/%"), RawResponse.http_status == 200)
+        .order_by(desc(RawResponse.fetched_at))
+        .limit(1)
+    ).first()
+    if row is None:
+        return {"checked": False}
+    body, fetched_at = row
+    info = (body or {}).get("series") or {}
+    fee_type, raw_multiplier = info.get("fee_type"), info.get("fee_multiplier")
+    try:
+        model = fee_model_for(fee_type, raw_multiplier)
+    except ValueError:
+        return {"checked": True, "fetched_at": _iso(fetched_at), "fee_type": fee_type, "drift": True,
+                "reason": "unsupported fee_type"}
+    drift = (model.maker_rate != KALSHI_FOOTBALL.maker_rate or model.taker_rate != KALSHI_FOOTBALL.taker_rate
+            or model.multiplier != KALSHI_FOOTBALL.multiplier)
+    return {"checked": True, "fetched_at": _iso(fetched_at), "fee_type": fee_type,
+            "maker_rate": _dec(model.maker_rate), "taker_rate": _dec(model.taker_rate),
+            "multiplier": _dec(model.multiplier), "drift": drift}
+
+
+def _local_day_bounds_utc(now: datetime, tz_local: str) -> tuple[datetime, datetime]:
+    """[local midnight, next local midnight) for `now`'s local calendar day, in UTC."""
+    tz = ZoneInfo(tz_local)
+    start_local = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def _executor(session: Session, now: datetime) -> dict:
+    """The paper executor's own heartbeat (`exec_heartbeat`, id=1): a stalled loop and an idle
+    one both mean zero recent orders, so the heartbeat age -- not order activity -- is what
+    tells them apart."""
+    row = session.get(ExecHeartbeat, 1)
+    if row is None:
+        return {"present": False}
+    heartbeat_age_s = (now - row.last_loop_at).total_seconds() if row.last_loop_at else None
+    ws_event_age_s = (now - row.ws_last_event_at).total_seconds() if row.ws_last_event_at else None
+    return {
+        "present": True,
+        "loops": row.loops,
+        "open_orders": row.open_orders,
+        "last_error": row.last_error,
+        "last_loop_ms": row.last_loop_ms,
+        "p95_loop_ms": row.p95_loop_ms,
+        "loops_skipped": row.loops_skipped,
+        "book_dirty_markets": row.book_dirty_markets,
+        "executor_version": row.executor_version,
+        "last_loop_at": _iso(row.last_loop_at),
+        "heartbeat_age_s": heartbeat_age_s,
+        "heartbeat_red": heartbeat_age_s is not None and heartbeat_age_s > HEARTBEAT_RED_S,
+        "ws_last_event_at": _iso(row.ws_last_event_at),
+        "ws_last_event_age_s": ws_event_age_s,
+        "ws_red": ws_event_age_s is not None and ws_event_age_s > WS_EVENT_RED_S,
+    }
+
+
+def _open_orders(session: Session, now: datetime) -> list[dict]:
+    del now  # bounded by status, not by a time window: an open order can be days old (R8)
+    rows = session.execute(
+        select(Order.id, Order.variant_id, Order.ticker, Order.side, Order.prob, Order.contracts,
+              Order.filled_contracts, Order.status, Order.book_source, Order.dirty_minutes, Order.placed_at)
+        .where(Order.status.in_(("open", "partially_filled")))
+        .order_by(desc(Order.placed_at))
+        .limit(OPEN_ORDERS_LIMIT)
+    ).all()
+    return [{"id": r.id, "variant": r.variant_id, "ticker": r.ticker, "side": r.side, "prob": _dec(r.prob),
+            "contracts": _dec(r.contracts), "filled_contracts": _dec(r.filled_contracts), "status": r.status,
+            "book_source": r.book_source, "dirty_minutes": r.dirty_minutes, "placed_at": _iso(r.placed_at)}
+           for r in rows]
+
+
+def _fills_today(session: Session, now: datetime, tz_local: str) -> list[dict]:
+    start, end = _local_day_bounds_utc(now, tz_local)
+    rows = session.execute(
+        select(Fill.id, Fill.order_id, Fill.prob, Fill.contracts, Fill.fee, Fill.fill_method, Fill.filled_at,
+              Order.variant_id, Order.ticker, Order.side)
+        .join(Order, Order.id == Fill.order_id)
+        .where(Fill.filled_at >= start, Fill.filled_at < end, Fill.fill_method == "queue_model",
+              Order.replay.is_(False))
+        .order_by(desc(Fill.filled_at))
+        .limit(FILLS_TODAY_LIMIT)
+    ).all()
+    return [{"id": r.id, "order_id": r.order_id, "variant": r.variant_id, "ticker": r.ticker, "side": r.side,
+            "prob": _dec(r.prob), "contracts": _dec(r.contracts), "fee": _dec(r.fee), "fill_method": r.fill_method,
+            "filled_at": _iso(r.filled_at)} for r in rows]
+
+
+_EXPOSURE = text(
+    "select variant_id, ticker, side, open_contracts, avg_price from positions "
+    "order by variant_id, ticker, side limit :limit")
+
+
+def _pnl(session: Session, now: datetime) -> dict:
+    cutoff = now - WINDOW_7D
+    rows = session.execute(
+        select(Ledger.variant_id, func.sum(Ledger.cash_delta), func.sum(Ledger.fee))
+        .where(Ledger.ts >= cutoff, Ledger.replay.is_(False))
+        .group_by(Ledger.variant_id)
+    ).all()
+    by_variant = {vid: {"cash_delta": _dec(cash), "fees": _dec(fee)} for vid, cash, fee in rows}
+
+    exposure_rows = session.execute(_EXPOSURE, {"limit": EXPOSURE_LIMIT}).all()
+    exposure = [{"variant": v, "ticker": t, "side": s, "open_contracts": _dec(oc), "avg_price": _dec(ap)}
+               for v, t, s, oc, ap in exposure_rows]
+    return {"by_variant_7d": by_variant, "exposure": exposure}
+
+
+def _candidates(session: Session, now: datetime) -> dict:
+    cutoff = now - WINDOW_24H
+    rows = session.execute(
+        select(StrategyVariant.name, Signal.side, func.count())
+        .join(StrategyVariant, StrategyVariant.variant_id == Signal.variant_id)
+        .where(Signal.decision == "candidate", Signal.created_at >= cutoff, Signal.replay.is_(False))
+        .group_by(StrategyVariant.name, Signal.side)
+    ).all()
+    out: dict[str, dict[str, int]] = {}
+    for name, side, n in rows:
+        out.setdefault(name, {})[side] = n
+    return out
+
+
+def _skip_reasons(session: Session, now: datetime) -> list[dict]:
+    cutoff = now - WINDOW_24H
+    rows = session.execute(
+        select(OrderEvent.reason, func.count())
+        .where(OrderEvent.kind == "skipped", OrderEvent.ts >= cutoff)
+        .group_by(OrderEvent.reason)
+        .order_by(desc(func.count()))
+        .limit(SKIP_REASONS_LIMIT)
+    ).all()
+    return [{"reason": r or "(none)", "count": n} for r, n in rows]
+
+
+def _latest_housekeeping_counts(session: Session, now: datetime) -> dict | None:
+    """The newest `housekeeping` stage note on `job_runs` that actually ran (not one the
+    once-a-day gate skipped), scanning back a bounded number of recent settlement passes."""
+    rows = session.execute(
+        select(JobRun.notes).where(JobRun.job == "settle").order_by(desc(JobRun.started_at))
+        .limit(JOB_RUNS_SCAN_LIMIT)
+    ).scalars().all()
+    for notes in rows:
+        for stage in (notes or {}).get("stages", []):
+            if stage.get("name") == "housekeeping" and "size_gb" in (stage.get("counts") or {}):
+                return stage["counts"]
+    return None
+
+
+def _db_ceiling(session: Session, now: datetime, db_budget_gb: int) -> dict:
+    note = _latest_housekeeping_counts(session, now)
+    if note is None:
+        return {"measured": False, "db_budget_gb": db_budget_gb, "size_gb": None, "pct_of_budget": None,
+                "red": False, "growth_gb_per_day": None, "days_to_ceiling": None, "partial": True,
+                "tables_gb": {}}
+    size_gb = note.get("size_gb")
+    pct = (100.0 * size_gb / db_budget_gb) if size_gb is not None and db_budget_gb else None
+    return {"measured": True, "db_budget_gb": db_budget_gb, "size_gb": size_gb, "pct_of_budget": pct,
+            "red": pct is not None and pct >= DB_CEILING_RED_PCT,
+            "growth_gb_per_day": note.get("growth_gb_per_day"), "days_to_ceiling": note.get("days_to_ceiling"),
+            "partial": note.get("partial", True), "tables_gb": note.get("tables_gb", {})}
+
+
+_SETTLEMENT_MISMATCHES = text("""
+    select d.ticker, d.result, v.result
+    from venue_settlements d
+    join venue_settlements v on v.venue = d.venue and v.ticker = d.ticker and v.source = 'venue'
+    where d.source = 'derived' and d.settled_at >= :cutoff
+      and coalesce(d.result, '') <> coalesce(v.result, '')
+    order by d.settled_at desc
+    limit :limit
+""")
+MISMATCHES_LIMIT = 50
+
+
+def _settlement_health(session: Session, now: datetime) -> dict:
+    cutoff = now - WINDOW_7D
+    rows = session.execute(_SETTLEMENT_MISMATCHES, {"cutoff": cutoff, "limit": MISMATCHES_LIMIT}).all()
+    mismatches = [{"ticker": t, "derived": d, "venue": v} for t, d, v in rows]
+    return {"mismatches_7d": mismatches, "mismatch_count_7d": len(mismatches),
+            "stale_unsettled": stale_unsettled(session, now)}
 
 
 def _section(session: Session, name: str, fn: Callable[[], dict]) -> dict:
@@ -278,7 +528,7 @@ def _section(session: Session, name: str, fn: Callable[[], dict]) -> dict:
 
 
 def build_summary(session: Session, session_factory: sessionmaker, now: datetime, credits_budget: int,
-                   build: dict | None = None) -> dict:
+                   tz_local: str = "UTC", db_budget_gb: int = 2000, build: dict | None = None) -> dict:
     if build is None:
         build = {"sha": "dev", "time": None}
     return {
@@ -292,6 +542,15 @@ def build_summary(session: Session, session_factory: sessionmaker, now: datetime
         "unmatched_markets": _section(session, "unmatched_markets", lambda: _unmatched_markets(session, now)),
         "websocket": _section(session, "websocket", lambda: _websocket(session, now)),
         "data_quality": _section(session, "data_quality", lambda: _data_quality(session, now)),
+        # --- Task 12 additions: additive keys only, the block above is the frozen contract ---
+        "executor": _section(session, "executor", lambda: _executor(session, now)),
+        "open_orders": _section(session, "open_orders", lambda: _open_orders(session, now)),
+        "fills_today": _section(session, "fills_today", lambda: _fills_today(session, now, tz_local)),
+        "pnl": _section(session, "pnl", lambda: _pnl(session, now)),
+        "candidates": _section(session, "candidates", lambda: _candidates(session, now)),
+        "skip_reasons": _section(session, "skip_reasons", lambda: _skip_reasons(session, now)),
+        "db_ceiling": _section(session, "db_ceiling", lambda: _db_ceiling(session, now, db_budget_gb)),
+        "settlement_health": _section(session, "settlement_health", lambda: _settlement_health(session, now)),
     }
 
 
@@ -311,29 +570,39 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
     def api_summary() -> dict:
         now = clock()
         with session_factory() as s:
-            return build_summary(s, session_factory, now, settings.odds_monthly_credits, build=build)
+            return build_summary(s, session_factory, now, settings.odds_monthly_credits,
+                                 settings.tz_local, settings.db_budget_gb, build=build)
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         now = clock()
         with session_factory() as s:
-            summary = build_summary(s, session_factory, now, settings.odds_monthly_credits, build=build)
+            summary = build_summary(s, session_factory, now, settings.odds_monthly_credits,
+                                    settings.tz_local, settings.db_budget_gb, build=build)
         return templates.TemplateResponse(request, "index.html", {"summary": summary})
 
     @app.post("/kill")
-    def kill(reason: str = Form(...)) -> dict:
+    def kill(reason: str = Form(...),
+             sec_fetch_site: str | None = Header(None, alias="Sec-Fetch-Site")) -> dict:
+        # F50: same-origin only. A browser sends Sec-Fetch-Site on every fetch/form POST; a
+        # value other than same-origin or none means the request came from another site's page,
+        # not this dashboard's own form. No header at all (curl, an older browser) is accepted,
+        # same as /kill always has been -- this is a same-origin check, not an auth check.
+        if sec_fetch_site is not None and sec_fetch_site not in KILL_ALLOWED_SEC_FETCH_SITE:
+            raise HTTPException(status_code=403, detail="cross-site request rejected")
+        clean_reason = KILL_REASON_RE.sub("", reason)[:KILL_REASON_MAX]
         now = clock()
         with session_factory() as s:
             row = s.get(KillSwitch, 1)
             if row is None:
-                row = KillSwitch(id=1, active=True, reason=reason, set_at=now)
+                row = KillSwitch(id=1, active=True, reason=clean_reason, set_at=now)
                 s.add(row)
             else:
                 row.active = True
-                row.reason = reason
+                row.reason = clean_reason
                 row.set_at = now
             s.commit()
-        return {"active": True, "reason": reason}
+        return {"active": True, "reason": clean_reason}
 
     @app.post("/unkill")
     def unkill(x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),

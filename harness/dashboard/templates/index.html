@@ -68,6 +68,25 @@
     <input type="password" name="token" placeholder="dashboard token" required>
     <button type="submit">Unkill</button>
   </form>
+  <h3>Executor</h3>
+  {% if summary.executor.error %}<p class="warn">unavailable: {{ summary.executor.error }}</p>
+  {% elif not summary.executor.present %}<p class="muted">no heartbeat recorded yet</p>
+  {% else %}
+  <div class="grid">
+    <div class="stat"><div class="label">Heartbeat age (s)</div>
+      <div class="value">{{ "%.0f"|format(summary.executor.heartbeat_age_s) if summary.executor.heartbeat_age_s is not none else "-" }}
+        {% if summary.executor.heartbeat_red %}<span class="badge bad">stale</span>{% endif %}</div></div>
+    <div class="stat"><div class="label">Last loop (ms)</div><div class="value">{{ summary.executor.last_loop_ms if summary.executor.last_loop_ms is not none else "-" }}</div></div>
+    <div class="stat"><div class="label">p95 loop (ms)</div><div class="value">{{ summary.executor.p95_loop_ms if summary.executor.p95_loop_ms is not none else "-" }}</div></div>
+    <div class="stat"><div class="label">Loops skipped</div><div class="value">{{ summary.executor.loops_skipped }}</div></div>
+    <div class="stat"><div class="label">Dirty book markets</div><div class="value">{{ summary.executor.book_dirty_markets }}</div></div>
+    <div class="stat"><div class="label">Open orders</div><div class="value">{{ summary.executor.open_orders }}</div></div>
+    <div class="stat"><div class="label">Last WS event (s ago)</div>
+      <div class="value">{{ "%.0f"|format(summary.executor.ws_last_event_age_s) if summary.executor.ws_last_event_age_s is not none else "-" }}
+        {% if summary.executor.ws_red %}<span class="badge bad">stale</span>{% endif %}</div></div>
+  </div>
+  {% if summary.executor.last_error %}<p class="muted">Last error: {{ summary.executor.last_error }}</p>{% endif %}
+  {% endif %}
 </section>
 
 <section>
@@ -177,6 +196,145 @@
     {% endfor %}
   </table>
   <p class="muted">Trade gaps recorded in run notes (last 24h): {{ summary.data_quality.trade_gaps_24h }}</p>
+  {% if not summary.data_quality.error %}
+  <h3>Microstructure (last 1h)</h3>
+  <div class="grid">
+    <div class="stat"><div class="label">Prints with no taker side</div>
+      <div class="value">{{ "%.2f%%"|format(summary.data_quality.no_taker_side_share_1h * 100) if summary.data_quality.no_taker_side_share_1h is not none else "-" }}</div></div>
+    <div class="stat"><div class="label">Matched markets not linear_cent</div>
+      <div class="value">{{ summary.data_quality.non_linear_cent_count_1h }}
+        ({{ "%.2f%%"|format(summary.data_quality.non_linear_cent_share_1h * 100) if summary.data_quality.non_linear_cent_share_1h is not none else "-" }})</div></div>
+    <div class="stat"><div class="label">Non-zero exchange_index</div><div class="value">{{ summary.data_quality.nonzero_exchange_index_1h }}</div></div>
+    <div class="stat"><div class="label">post_only_reject rate</div>
+      <div class="value">{{ "%.2f%%"|format(summary.data_quality.post_only_reject_rate_1h * 100) if summary.data_quality.post_only_reject_rate_1h is not none else "-" }}</div></div>
+  </div>
+  <h3>Fee drift</h3>
+  {% set fd = summary.data_quality.fee_drift %}
+  {% if not fd.checked %}<p class="muted">no series body recorded yet</p>
+  {% else %}
+  <p class="muted">
+    fee_type={{ fd.fee_type or "(default)" }}
+    {% if fd.maker_rate is not none %}maker={{ fd.maker_rate }} taker={{ fd.taker_rate }} multiplier={{ fd.multiplier }}{% endif %}
+    {% if fd.drift %}<span class="badge bad">DRIFT</span>{% else %}<span class="badge ok">matches KALSHI_FOOTBALL</span>{% endif %}
+    (as of {{ fd.fetched_at }})
+  </p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section>
+  <h2>Open paper orders and today's fills</h2>
+  <h3>Open orders</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>id</th><th>variant</th><th>ticker</th><th>side</th><th>prob</th><th>contracts</th><th>filled</th>
+        <th>status</th><th>book_source</th><th>dirty_minutes</th><th>placed_at</th></tr>
+    {% for o in summary.open_orders if summary.open_orders is iterable and o is mapping %}
+    <tr>
+      <td>{{ o.id }}</td><td>{{ o.variant }}</td><td>{{ o.ticker }}</td><td>{{ o.side }}</td><td>{{ o.prob }}</td>
+      <td>{{ o.contracts }}</td><td>{{ o.filled_contracts }}</td><td>{{ o.status }}</td>
+      <td>{{ o.book_source or "-" }}</td><td>{{ o.dirty_minutes }}</td><td>{{ o.placed_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <h3>Fills today</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>id</th><th>order_id</th><th>variant</th><th>ticker</th><th>side</th><th>prob</th><th>contracts</th>
+        <th>fee</th><th>filled_at</th></tr>
+    {% for f in summary.fills_today if summary.fills_today is iterable and f is mapping %}
+    <tr>
+      <td>{{ f.id }}</td><td>{{ f.order_id }}</td><td>{{ f.variant }}</td><td>{{ f.ticker }}</td><td>{{ f.side }}</td>
+      <td>{{ f.prob }}</td><td>{{ f.contracts }}</td><td>{{ f.fee }}</td><td>{{ f.filled_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>Paper P&amp;L (ledger, last 7d) and open exposure</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>variant</th><th>cash_delta</th><th>fees</th></tr>
+    {% for vid, v in (summary.pnl.by_variant_7d or {}).items() %}
+    <tr><td>{{ vid }}</td><td>{{ v.cash_delta }}</td><td>{{ v.fees }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  <h3>Open exposure (positions)</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>variant</th><th>ticker</th><th>side</th><th>open_contracts</th><th>avg_price</th></tr>
+    {% for p in (summary.pnl.exposure or []) %}
+    <tr><td>{{ p.variant }}</td><td>{{ p.ticker }}</td><td>{{ p.side }}</td><td>{{ p.open_contracts }}</td><td>{{ p.avg_price }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>Candidates (last 24h) and skip reasons</h2>
+  <h3>Candidates per variant and side</h3>
+  <table>
+    <tr><th>variant</th><th>side</th><th>count</th></tr>
+    {% for name, by_side in (summary.candidates or {}).items() if name != "error" %}
+      {% for side, n in by_side.items() %}
+      <tr><td>{{ name }}</td><td>{{ side }}</td><td>{{ n }}</td></tr>
+      {% endfor %}
+    {% endfor %}
+  </table>
+  <h3>Skip reasons</h3>
+  <table>
+    <tr><th>reason</th><th>count</th></tr>
+    {% for row in summary.skip_reasons if summary.skip_reasons is iterable and row is mapping %}
+    <tr><td>{{ row.reason }}</td><td>{{ row.count }}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+<section>
+  <h2>Database</h2>
+  {% if summary.db_ceiling.error %}<p class="warn">unavailable: {{ summary.db_ceiling.error }}</p>
+  {% elif not summary.db_ceiling.measured %}<p class="muted">not yet measurable</p>
+  {% else %}
+  <div class="grid">
+    <div class="stat"><div class="label">Size (GB)</div><div class="value">{{ "%.2f"|format(summary.db_ceiling.size_gb) }}</div></div>
+    <div class="stat"><div class="label">% of budget ({{ summary.db_ceiling.db_budget_gb }} GB)</div>
+      <div class="value">{{ "%.1f%%"|format(summary.db_ceiling.pct_of_budget) if summary.db_ceiling.pct_of_budget is not none else "-" }}
+        {% if summary.db_ceiling.red %}<span class="badge bad">high</span>{% endif %}</div></div>
+    <div class="stat"><div class="label">Growth (GB/day)</div>
+      <div class="value">{{ "%.2f"|format(summary.db_ceiling.growth_gb_per_day) if summary.db_ceiling.growth_gb_per_day is not none else "not yet measurable" }}</div></div>
+    <div class="stat"><div class="label">Days to ceiling</div>
+      <div class="value">{{ "%.0f"|format(summary.db_ceiling.days_to_ceiling) if summary.db_ceiling.days_to_ceiling is not none else "not yet measurable" }}
+        {% if summary.db_ceiling.partial %}<span class="badge warn">partial</span>{% endif %}</div></div>
+  </div>
+  <h3>Largest tables (GB)</h3>
+  <table>
+    <tr><th>table</th><th>GB</th></tr>
+    {% for name, gb in (summary.db_ceiling.tables_gb or {}).items() %}
+    <tr><td>{{ name }}</td><td>{{ gb }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Settlement health</h2>
+  {% if summary.settlement_health.error %}<p class="warn">unavailable: {{ summary.settlement_health.error }}</p>
+  {% else %}
+  <p class="muted">Stale unsettled (kickoff &gt; 72h ago, no settlement): {{ summary.settlement_health.stale_unsettled }}</p>
+  <h3>Settlement mismatches (last 7d): {{ summary.settlement_health.mismatch_count_7d }}</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>ticker</th><th>derived result</th><th>venue result</th></tr>
+    {% for m in summary.settlement_health.mismatches_7d %}
+    <tr><td>{{ m.ticker }}</td><td>{{ m.derived }}</td><td>{{ m.venue }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
 </section>
 
 </body>
