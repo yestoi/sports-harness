@@ -158,6 +158,10 @@ _INDEX_DDL = (
     # horizon = '30m' and fair_changed = true and at_ts >= :since), a sequential scan of
     # `markouts` otherwise on a hot pricing-tick read.
     "create index if not exists ix_markouts_as_measured on markouts (anchor, horizon, at_ts)",
+    # One gate report per (evaluation, variant): `harness gate` shares one `evaluated_at` across
+    # the rows of a run, so re-running the same evaluation is idempotent while a later one still
+    # appends (Task 11 fix round 1, P1). Rows are never rewritten.
+    "create unique index if not exists uq_gate_report on gate_reports (evaluated_at, variant_id)",
 )
 
 #: Open contracts and their average price per variant, from the queue-model fills of live orders

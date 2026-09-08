@@ -38,16 +38,17 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import GateReport
 from harness.execution.book import side_p
-from harness.report.stats import CI, cluster_ci
+from harness.report.stats import CI, cluster_ci, cluster_diff_ci
 # The order -> episode mapping the `order_episodes` view encodes. The view answers one row per
-# episode and so cannot say which episode a given order is in; `_episode_of` is Task 10's
-# reproduction of its rule and is reused here rather than restated (criterion 6 is the only
-# criterion scored per episode).
-from harness.report.tables import _episode_of
+# episode and so cannot say which episode a given order is in; `episode_of` is Task 10's
+# reproduction of its rule, shared with table 3 rather than restated here (criterion 6 is the
+# only criterion scored per episode).
+from harness.report.tables import episode_of
 
 log = logging.getLogger(__name__)
 
@@ -185,9 +186,18 @@ CRITERIA: tuple[Criterion, ...] = (
 
 
 def criteria_hash(criteria: tuple[Criterion, ...] | None = None) -> str:
-    """The sha256 of the sorted definition strings -- the identity of every stored gate row."""
-    definitions = sorted(c.definition for c in (CRITERIA if criteria is None else criteria))
-    return hashlib.sha256("\n".join(definitions).encode("utf-8")).hexdigest()
+    """The sha256 of the sorted criterion definitions and thresholds.
+
+    The brief states the hash over "the sorted definition strings"; the threshold is a field of
+    `Criterion` in the same brief, and editing `threshold=150` to `100` without touching the
+    text would otherwise leave the identity unchanged. So each criterion contributes
+    `definition [threshold=...]` and the set is sorted and hashed (Task 11 fix round 1, M3).
+    Every threshold is also spelled inside its own definition text, so in practice the two move
+    together; the hash no longer relies on that.
+    """
+    rows = sorted(f"{c.definition} [threshold={c.threshold!r}]"
+                  for c in (CRITERIA if criteria is None else criteria))
+    return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
 
 
 # --- helpers ---------------------------------------------------------------------------------
@@ -359,8 +369,13 @@ def markout_30m(session: Session, now: datetime, variant: str,
                                        "anchor": MARKOUT_ANCHOR,
                                        "horizon": MARKOUT_HORIZON}).all()
     unchanged = sum(1 for r in rows if not r.fair_changed)
-    pairs = [(float(r.fair_p - (r.p_used or 0) - (r.fee_per_contract or 0)), r.game_id)
-             for r in rows if r.fair_changed and r.fair_p is not None]
+    changed = [r for r in rows if r.fair_changed]
+    # A NULL price or fee makes the markout undefined, not zero: substituting zero would report
+    # roughly `fair_p` (~0.5) on a criterion that lives at ~0.005, in the direction of a false
+    # pass. Dropped rows are counted rather than silently absorbed (fix round 1, I2).
+    usable = [r for r in changed if r.fair_p is not None and r.p_used is not None
+              and r.fee_per_contract is not None]
+    pairs = [(float(r.fair_p - r.p_used - r.fee_per_contract), r.game_id) for r in usable]
     ci = _ci(pairs)
     passed = (_finite(ci.mean) and ci.mean > criterion.threshold
               and _finite(ci.t) and ci.t > MARKOUT_T)
@@ -368,6 +383,7 @@ def markout_30m(session: Session, now: datetime, variant: str,
                    ci.n_clusters,
                    {"t": ci.t if _finite(ci.t) else None, "min_t": MARKOUT_T,
                     "fair_unchanged_share": unchanged / len(rows) if rows else None,
+                    "dropped_incomplete": len(changed) - len(usable),
                     "anchor": MARKOUT_ANCHOR, "horizon": MARKOUT_HORIZON})
 
 
@@ -430,15 +446,16 @@ def filled_vs_unfilled(session: Session, now: datetime, variant: str,
                        criterion: Criterion) -> CriterionResult:
     """Criterion 6: an equivalence bound on unfilled-minus-filled CLV, per episode.
 
-    The difference of two means is read through `cluster_ci` rather than a second estimator:
-    weighting each episode by `N / n_side` (negative on the filled side) makes the mean of the
-    weighted values the difference of the two means, and the cluster-robust variance of that
-    mean is exactly the clustered sandwich for the difference (addendum §4's formula, applied
-    once). Fewer than 20 game clusters on either side is `insufficient`, which fails.
+    The bound is `cluster_diff_ci`, the two-sample clustered difference in means: its influence
+    function demeans within each side, which is what the difference of two means requires. A
+    sign-weighted `cluster_ci` demeans by the single pooled mean and only coincides with it when
+    every cluster holds the same proportion of filled and unfilled episodes -- which a game
+    does not (fix round 1, I1). Fewer than 20 game clusters on either side is `insufficient`,
+    which fails.
     """
     rows = [dict(r._mapping) for r in session.execute(
         _EPISODE_ORDERS, {"variant": variant, "now": now, "benchmark": PINNACLE})]
-    episodes = _episode_of(rows)
+    episodes = episode_of(rows)
     grouped: dict[int, dict] = {}
     for row in rows:
         episode = grouped.setdefault(episodes[row["id"]],
@@ -461,10 +478,8 @@ def filled_vs_unfilled(session: Session, now: datetime, variant: str,
     n_obs, n_clusters = len(scored), len({g for _, _, g in scored})
     if min(clusters_filled, clusters_unfilled) < MIN_CLUSTERS_PER_SIDE:
         return _result(criterion, None, False, n_obs, n_clusters, detail, status=INSUFFICIENT)
-    total = len(filled) + len(unfilled)
-    weighted = ([(total * v / len(unfilled), g) for v, g in unfilled]
-                + [(-total * v / len(filled), g) for v, g in filled])
-    ci = _ci(weighted)
+    ci = cluster_diff_ci([v for v, _, _ in scored], [not f for _, f, _ in scored],
+                         [g for _, _, g in scored], level=LEVEL)
     passed = _finite(ci.hi) and ci.hi < criterion.threshold
     detail["difference"] = ci.mean if _finite(ci.mean) else None
     return _result(criterion, ci.hi if _finite(ci.hi) else None, passed, n_obs, n_clusters,
@@ -527,17 +542,20 @@ _SETTLEMENT_MISMATCHES = text("""
     join venue_settlements v
       on v.venue = d.venue and v.ticker = d.ticker and v.source = 'venue'
     where d.source = 'derived' and d.settled_at <= :now
+      and v.settled_at <= :now
       and coalesce(d.result, '') <> coalesce(v.result, '')
 """)
 
 _SETTLEMENT_COVERAGE = text(f"""
     select count(*) as markets,
+           count(distinct d.game_id) as games,
            count(*) filter (where exists (
                select 1 from venue_settlements v
                where v.venue = d.venue and v.ticker = d.ticker and v.source = 'venue'
                  and v.settled_at <= :now)) as with_venue
-    from (select distinct s.venue, s.ticker
+    from (select distinct s.venue, s.ticker, m.game_id
           from venue_settlements s
+          left join venue_markets m on m.ticker = s.ticker and m.venue = s.venue
           where s.source = 'derived' and s.settled_at <= :now
             and exists (select 1
                         {_VARIANT_ORDERS} and o.ticker = s.ticker {_FILL_EVENT})) d
@@ -557,8 +575,9 @@ def settlement(session: Session, now: datetime, variant: str,
     markets, with_venue = int(row.markets or 0), int(row.with_venue or 0)
     coverage = with_venue / markets if markets else None
     passed = (mismatches == 0 and coverage is not None and coverage >= criterion.threshold)
-    return _result(criterion, coverage, passed, markets, markets,
-                   {"mismatches": mismatches, "markets_with_venue_row": with_venue})
+    return _result(criterion, coverage, passed, markets, int(row.games or 0),
+                   {"mismatches": mismatches, "markets_with_venue_row": with_venue,
+                    "n_markets": markets})
 
 
 _MISMATCHED = text(f"""
@@ -673,8 +692,11 @@ def evaluate_all(session: Session, now: datetime, variant_ids: list[str],
                  gate_variant: str) -> list[GateResult]:
     """Evaluate every variant and store one `gate_reports` row each, marking the gate row.
 
-    A re-run stores a new report run: rows are keyed by `evaluated_at` and are never rewritten,
-    so the history of what the gate said and when is append-only.
+    An evaluation is one `evaluated_at` shared by its rows, and `uq_gate_report` keys the table
+    on `(evaluated_at, variant_id)`: the insert goes in `on conflict do nothing`, so re-running
+    the same evaluation stores nothing new and cannot rewrite what the first run said. A later
+    evaluation appends its own rows, so the history of what the gate said and when is
+    append-only (fix round 1, P1).
     """
     marked = gate_row_variant(session, variant_ids, gate_variant)
     results = []
@@ -682,10 +704,17 @@ def evaluate_all(session: Session, now: datetime, variant_ids: list[str],
         result = evaluate_gate(session, now, variant_id)
         result = replace(result, gate_variant=variant_id == marked)
         results.append(result)
-        session.add(GateReport(
-            evaluated_at=now, variant_id=result.variant_id, gate_variant=result.gate_variant,
-            criteria_json={name: r.as_json() for name, r in result.criteria.items()},
-            criteria_hash=result.criteria_hash, passed=result.passed))
+        stored = session.execute(
+            insert(GateReport)
+            .values(evaluated_at=now, variant_id=result.variant_id,
+                    gate_variant=result.gate_variant,
+                    criteria_json={name: r.as_json() for name, r in result.criteria.items()},
+                    criteria_hash=result.criteria_hash, passed=result.passed)
+            .on_conflict_do_nothing(index_elements=["evaluated_at", "variant_id"])
+            .returning(GateReport.id)).first()
+        if stored is None:
+            log.info("gate report for %s at %s already stored; left as it was",
+                     result.variant_id, now.isoformat())
     session.flush()
     return results
 

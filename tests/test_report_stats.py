@@ -12,6 +12,7 @@ from harness.report.stats import (
     bh_reject,
     betainc,
     cluster_ci,
+    cluster_diff_ci,
     eb_shrink,
     holm_reject,
     km_median,
@@ -138,3 +139,40 @@ def test_a_zero_width_interval_does_not_exclude_zero():
     assert identical.se == 0.0
     assert not cell_excludes_zero((identical.mean, identical.n_obs, identical.n_clusters,
                                    identical.lo, identical.hi))
+
+
+def test_cluster_diff_ci_matches_hand_computation():
+    """The unpaired difference in means, clustered, on clusters with *different* proportions.
+
+    Three clusters holding 2/1, 1/2 and 1/1 observations per side -- the case a sign-weighted
+    `cluster_ci` cannot see, because its single pooled demean only coincides with the
+    difference's influence function when every cluster holds the same proportions.
+
+    a = [1, 2, 3, 0] (mean 1.5), b = [0, 1, 2, 4] (mean 1.75), difference -0.25.
+    u_i = (x - 1.5) / 4 on side a and -(x - 1.75) / 4 on side b, so the cluster sums are
+    0.4375, 0.5 and -0.9375 and SE^2 = (3 / 2) x (0.4375^2 + 0.5^2 + 0.9375^2) = 1.98046875.
+    """
+    values = [1.0, 2.0, 0.0, 3.0, 1.0, 2.0, 0.0, 4.0]
+    side = [True, True, False, True, False, False, True, False]
+    clusters = ["g1", "g1", "g1", "g2", "g2", "g2", "g3", "g3"]
+
+    ci = cluster_diff_ci(values, side, clusters)
+
+    assert isinstance(ci, CI)
+    assert ci.n_obs == 8 and ci.n_clusters == 3
+    assert abs(ci.mean - (-0.25)) < 1e-12
+    assert abs(ci.se - math.sqrt(1.98046875)) < 1e-12
+    assert abs(ci.t - (-0.25 / math.sqrt(1.98046875))) < 1e-12
+    # t_{0.95, 2} = 2.919986
+    assert abs(ci.lo - (-0.25 - 2.919986 * math.sqrt(1.98046875))) < 1e-4
+    assert abs(ci.hi - (-0.25 + 2.919986 * math.sqrt(1.98046875))) < 1e-4
+
+
+def test_cluster_diff_ci_degenerate_samples():
+    """One cluster has no between-cluster variation, and a side with no observation has no
+    difference at all: both answer `nan` rather than a fabricated number."""
+    one = cluster_diff_ci([1.0, 2.0], [True, False], ["g", "g"])
+    assert one.n_clusters == 1 and math.isnan(one.lo) and math.isnan(one.hi)
+    empty = cluster_diff_ci([1.0, 2.0], [True, True], ["a", "b"])
+    assert math.isnan(empty.mean) and empty.n_obs == 2
+    assert cluster_diff_ci([], [], []).n_obs == 0

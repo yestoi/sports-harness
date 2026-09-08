@@ -241,7 +241,7 @@ def _grouped_ci(pairs: Iterable[tuple[float, Any]]) -> CI:
     return cluster_ci(values, clusters)
 
 
-def _episode_of(orders: Sequence[dict]) -> dict[int, int]:
+def episode_of(orders: Sequence[dict]) -> dict[int, int]:
     """Order id -> episode id, by the rule `order_episodes` uses.
 
     The view answers one row per episode rather than per order, so it cannot say which episode
@@ -267,6 +267,12 @@ def _episode_of(orders: Sequence[dict]) -> dict[int, int]:
                 episodes[order["id"]] = order["id"]
             previous = order
     return episodes
+
+
+#: The name table 3 has always used. `harness/report/gate.py` reads the public one: criterion 6
+#: and table 3 must collapse reprice chains by the same rule, so they share this function rather
+#: than keeping two copies of the view's recursion (Task 11 fix round 1, P2).
+_episode_of = episode_of
 
 
 def _placeholder_table(title: str, header: str, columns: list[str], note: str) -> Table:

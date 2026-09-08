@@ -141,7 +141,8 @@ def _markout(session, order, anchor="nw_fill", horizon="30m", fair_p="0.5600",
              p_used="0.5000", fee="0.0025", fair_changed=True) -> Markout:
     row = Markout(order_id=order.id, anchor=anchor, horizon=horizon, at_ts=order.placed_at,
                   horizon_ts=order.placed_at + timedelta(minutes=30),
-                  p_used=Decimal(p_used), fee_per_contract=Decimal(fee),
+                  p_used=None if p_used is None else Decimal(p_used),
+                  fee_per_contract=None if fee is None else Decimal(fee),
                   fair_p=None if fair_p is None else Decimal(fair_p),
                   fair_changed=fair_changed, venue_mid=Decimal("0.5200"), source="quote")
     session.add(row)
@@ -552,3 +553,126 @@ def test_no_pooling_across_variants(db_session):
     assert primary.criteria["clv_pinnacle_lb"].n_obs == 4
     assert primary.criteria["clv_pinnacle_lb"].detail["mean"] == pytest.approx(0.02)
     assert second.criteria["clv_pinnacle_lb"].detail["mean"] == pytest.approx(-0.5)
+
+
+# --- fix round 1 -------------------------------------------------------------------------------
+
+
+def test_storing_the_same_evaluation_twice_leaves_one_row_per_variant(db_session):
+    """An evaluation is one `evaluated_at` shared by its rows, and it is stored once.
+
+    The unique index on `(evaluated_at, variant_id)` plus `on conflict do nothing` makes a
+    re-run of the same evaluation idempotent, while a later evaluation still appends.
+    """
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    _variant(db_session, SECOND, "sharp_two_sided", "secondary")
+
+    evaluate_all(db_session, NOW, [PRIMARY, SECOND], "sharp_direct")
+    evaluate_all(db_session, NOW, [PRIMARY, SECOND], "sharp_direct")
+
+    rows = db_session.query(GateReport).all()
+    assert len(rows) == 2
+    assert sorted(r.variant_id for r in rows) == [PRIMARY, SECOND]
+    evaluate_all(db_session, NOW + timedelta(hours=1), [PRIMARY, SECOND], "sharp_direct")
+    assert db_session.query(GateReport).count() == 4
+
+
+def test_episode_of_is_public_and_shared_with_the_report(db_session):
+    """Criterion 6 and table 3 must collapse reprice chains by the same rule, so they share one
+    function rather than two copies of it."""
+    from harness.report import tables
+
+    assert tables.episode_of is gate_mod.episode_of
+    assert tables._episode_of is tables.episode_of  # the private alias table 3 still uses
+
+
+def test_equivalence_bound_uses_the_two_sample_cluster_robust_estimator(db_session):
+    """The bound is the difference-in-means clustered interval, on clusters whose filled and
+    unfilled counts differ -- the case a sign-weighted `cluster_ci` gets wrong."""
+    from harness.report.stats import cluster_diff_ci
+
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    values, sides, clusters = [], [], []
+    for i in range(22):
+        market = _market(db_session, _game(db_session))
+        for j in range(1 + i % 3):  # 1..3 filled episodes
+            order = _order(db_session, market, PRIMARY)
+            _fill(db_session, order)
+            clv = f"0.0{10 + i + j:03d}"[:6]
+            _clv(db_session, order, "pinnacle_t5", clv_p_net=clv)
+            values.append(float(clv))
+            sides.append(False)
+            clusters.append(market.game_id)
+        for j in range(1 + (i + 1) % 2):  # 1..2 unfilled episodes
+            order = _order(db_session, market, PRIMARY)
+            clv = f"0.0{20 + i + j:03d}"[:6]
+            _clv(db_session, order, "pinnacle_t5", clv_p_net=clv)
+            values.append(float(clv))
+            sides.append(True)
+            clusters.append(market.game_id)
+
+    bound = evaluate_gate(db_session, NOW, PRIMARY).criteria["filled_vs_unfilled"]
+
+    expected = cluster_diff_ci(values, sides, clusters, level=0.90)
+    assert bound.status != INSUFFICIENT
+    assert bound.value == pytest.approx(expected.hi)
+    assert bound.detail["difference"] == pytest.approx(expected.mean)
+
+
+def test_markout_drops_rows_with_a_null_price(db_session):
+    """A NULL `p_used` or `fee_per_contract` makes the markout undefined, not zero: substituting
+    zero would report roughly `fair_p` (~0.5) on a criterion that lives at ~0.005."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    for i in range(6):
+        market = _market(db_session, _game(db_session))
+        order = _order(db_session, market, PRIMARY)
+        _fill(db_session, order)
+        _markout(db_session, order, "nw_fill", "30m", fair_p="0.5550" if i % 2 else "0.5650")
+    for missing in ("p_used", "fee"):
+        market = _market(db_session, _game(db_session))
+        order = _order(db_session, market, PRIMARY)
+        _fill(db_session, order)
+        _markout(db_session, order, "nw_fill", "30m", fair_p="0.9000",
+                 **{missing: None})
+
+    markout = evaluate_gate(db_session, NOW, PRIMARY).criteria["markout_30m"]
+
+    assert markout.n_obs == 6
+    assert markout.value == pytest.approx(0.0575)
+    assert markout.detail["dropped_incomplete"] == 2
+
+
+def test_settlement_counts_games_and_is_bounded_by_now(db_session):
+    """`n_clusters` is games, as the dataclass says, with the market count beside it; and a
+    venue settlement recorded after `now` cannot change what an evaluation at `now` said."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    markets = _seed_passing(db_session, games=4)
+    # A second market on the first game: five settled markets across four games.
+    second = _market(db_session, db_session.get(Game, markets[0].game_id))
+    _fill(db_session, _order(db_session, second, PRIMARY))
+    _settled(db_session, second)
+    # A market the venue settled the other way, after the evaluation instant.
+    later = _market(db_session, _game(db_session))
+    db_session.add(VenueSettlement(venue="kalshi", ticker=later.ticker, source="derived",
+                                   result="yes", payout=Decimal("1.00"), settled_at=PLACED))
+    db_session.add(VenueSettlement(venue="kalshi", ticker=later.ticker, source="venue",
+                                   result="no", payout=Decimal("0.00"),
+                                   settled_at=NOW + timedelta(hours=1)))
+    db_session.flush()
+
+    result = evaluate_gate(db_session, NOW, PRIMARY).criteria["settlement"]
+
+    assert result.detail["mismatches"] == 0
+    assert result.n_clusters == 4 and result.n_obs == 5
+    assert result.detail["n_markets"] == 5
+    assert result.passed is True
+
+
+def test_hash_changes_when_a_threshold_changes(monkeypatch):
+    """`threshold` is a field of the criterion, so it is part of the identity the hash stands
+    for: editing 150 to 100 without touching the text still moves the hash."""
+    before = criteria_hash()
+    edited = (Criterion(CRITERIA[0].name, CRITERIA[0].definition, CRITERIA[0].fn, 100),
+              ) + CRITERIA[1:]
+    monkeypatch.setattr(gate_mod, "CRITERIA", edited)
+    assert criteria_hash() != before

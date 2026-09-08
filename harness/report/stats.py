@@ -187,6 +187,55 @@ def cluster_ci(values: Sequence[float], clusters: Sequence, level: float = 0.90)
     return CI(xbar, xbar - crit * se, xbar + crit * se, se, xbar / se, n, g)
 
 
+def cluster_diff_ci(values: Sequence[float], side: Sequence, clusters: Sequence,
+                    level: float = 0.90) -> CI:
+    """The unpaired difference in means `mean(side true) - mean(side false)`, clustered.
+
+    `mean = xbar_a - xbar_b`, and the cluster-robust variance is built from the estimator's own
+    influence function, which demeans **within each side**:
+
+        u_i = (x_i - xbar_a) / n_a on side a,  u_i = -(x_i - xbar_b) / n_b on side b
+        SE^2 = (G / (G - 1)) x sum_g (sum_{i in g} u_i)^2,  t = mean / SE
+        mean +/- t_{(1+level)/2, G-1} x SE
+
+    This is the two-sample analogue of `cluster_ci`, which demeans by the single pooled mean --
+    correct for a mean, but not for a difference of two means unless every cluster happens to
+    hold the same proportion of each side. Criterion 6 of the go-live gate is exactly the case
+    where it does not: a game contributes however many filled and unfilled episodes it
+    contributed (Task 11 fix round 1, I1).
+
+    `paired_contrast` remains the right function when the two sequences are aligned on a shared
+    unit (table 2's snapshots); this one is for two independent sets of observations.
+
+    Degenerate samples answer `nan` rather than a number: a side with no observation has no
+    difference, and one cluster has no between-cluster variation to estimate.
+    """
+    if not (len(values) == len(side) == len(clusters)):
+        raise ValueError("values, side and clusters must be the same length")
+    n = len(values)
+    if n == 0:
+        return EMPTY_CI
+    a = [v for v, s in zip(values, side) if s]
+    b = [v for v, s in zip(values, side) if not s]
+    g = len(set(clusters))
+    if not a or not b:
+        return CI(NAN, NAN, NAN, NAN, NAN, n, g)
+    xbar_a, xbar_b = math.fsum(a) / len(a), math.fsum(b) / len(b)
+    diff = xbar_a - xbar_b
+    sums: dict = {}
+    for value, is_a, cluster in zip(values, side, clusters):
+        u = ((value - xbar_a) / len(a)) if is_a else (-(value - xbar_b) / len(b))
+        sums[cluster] = sums.get(cluster, 0.0) + u
+    if g < 2:
+        return CI(diff, NAN, NAN, NAN, NAN, n, g)
+    var = (g / (g - 1)) * math.fsum(s * s for s in sums.values())
+    se = math.sqrt(var) if var > 0 else 0.0
+    if se == 0.0:
+        return CI(diff, diff, diff, 0.0, NAN, n, g)
+    crit = t_ppf(0.5 + level / 2.0, g - 1)
+    return CI(diff, diff - crit * se, diff + crit * se, se, diff / se, n, g)
+
+
 def paired_contrast(values_a: Sequence[float], values_b: Sequence[float],
                     clusters: Sequence, level: float = 0.90) -> CI:
     """`cluster_ci` on the elementwise difference `a - b`.

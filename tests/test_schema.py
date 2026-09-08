@@ -410,7 +410,7 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # 3 views + 1 match_key backfill + 4 tape statements + the 4 tape indexes Task 2b guards
     # behind "partitioned, or still empty" (both tape tables are partitioned here, so all four
     # run).
-    assert len(ddl) == 55, [s for s, _, _ in ddl]
+    assert len(ddl) == 56, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.
