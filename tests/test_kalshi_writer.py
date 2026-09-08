@@ -1,0 +1,526 @@
+"""Task 7: KalshiWriter -- the dormant write path.
+
+Nothing here opens a socket or reads a credential: every test drives Task 6's `FakeTransport`
+(imported from `tests.test_kalshi_authed`, which is where it is defined and shared). The writer
+is never constructed for production in this phase -- Task 8's `make_writer` is the only caller
+that will hold the factory token, and these tests import that module-private sentinel to build
+one, which is exactly the point of the guard.
+
+The encoder is the judgement in this file. `orders.prob` lives in the order's own side space (a
+`no` order at 0.44 means 44 cents for NO), while Kalshi V2 quotes everything on the YES leg as a
+bid or an ask. The round-trip sweep below pins that inversion on both sides across the whole cent
+grid, because a silent inversion bug prices every NO order at its complement.
+"""
+import inspect
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import pytest
+
+from harness.venues.kalshi.authed import (
+    ORDER_MESSAGES_PER_MINUTE, CancelResult, EchoMismatch, KalshiDecodeError, KalshiReader,
+    KalshiWriter, MessageBudgetExceeded, OrderIntent, PreSendInvariantFailed, TokenBucket,
+    VenueOrder, _FACTORY_TOKEN, decode_side_price, encode_side_price, fixed_point, grid_steps,
+    snap_to_grid,
+)
+
+from tests.test_kalshi_authed import FakeTransport, _err, _ok
+
+CENT_GRID = [Decimal(f"0.{n:02d}") for n in range(1, 100)]
+CENT_RANGES = [{"start": 0, "end": 1, "step": 0.01}]
+#: 1789000000 -> 2026-09-08T18:26:40Z. The intent's expiry is kickoff - 10 min (R8), set once.
+EXPIRY = datetime.fromtimestamp(1789000000, tz=timezone.utc)
+
+
+class _FakeMonotonic:
+    """A monotonic clock the test advances by hand, so the bucket's refill is deterministic."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self._now = now
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+def _intent(**kw) -> OrderIntent:
+    fields = dict(
+        client_order_id="11111111-1111-1111-1111-111111111111",
+        ticker="KXNFLGAME-X",
+        side="yes",
+        prob=Decimal("0.56"),
+        contracts=Decimal("10"),
+        expiration_time=EXPIRY,
+        exchange_index=0,
+        order_group_id="g1",
+        price_ranges=CENT_RANGES,
+    )
+    fields.update(kw)
+    return OrderIntent(**fields)
+
+
+def _writer(transport, **kw) -> KalshiWriter:
+    """A writer built the way Task 8's factory will build one. The caps default high so that a
+    test aiming at one pre-send check is not tripped by another."""
+    fields = dict(
+        per_bet_cap_dollars=Decimal("1000"),
+        contract_cap=Decimal("1000"),
+        kill_switch_active=lambda: False,
+        writes_allowed=True,
+    )
+    fields.update(kw)
+    return KalshiWriter(transport, KalshiReader(transport), _factory_token=_FACTORY_TOKEN,
+                        **fields)
+
+
+def _echo_of(price="0.5600", count="10.00", remaining=None, fill="0.00", book_side="bid",
+             order_id="o1", **kw) -> dict:
+    """A V2 order as the venue echoes it back. `remaining` defaults to the whole count, so the
+    default echo satisfies the check (`remaining + fill == count`) and a test that wants a
+    mismatch has to ask for one."""
+    order = {
+        "order_id": order_id,
+        "client_order_id": "11111111-1111-1111-1111-111111111111",
+        "ticker": "KXNFLGAME-X",
+        "book_side": book_side,
+        "price": price,
+        "count": count,
+        "remaining_count": count if remaining is None else remaining,
+        "fill_count": fill,
+        "status": "resting",
+        "order_group_id": "g1",
+    }
+    order.update(kw)
+    return order
+
+
+# --- encoder / decoder round trip ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("p", CENT_GRID)
+@pytest.mark.parametrize("side", ["yes", "no"])
+def test_encode_decode_round_trip_over_both_sides_and_the_whole_grid(side, p):
+    ranges = [{"start": 0, "end": 1, "step": 0.01}]
+    book_side, yes_price = encode_side_price(side, p, ranges)
+    assert book_side == ("bid" if side == "yes" else "ask")
+    back_side, back_p = decode_side_price(book_side, yes_price)
+    assert back_side == side and back_p == p
+
+
+def test_no_side_is_priced_as_one_minus_p_on_the_yes_leg():
+    assert encode_side_price("no", Decimal("0.4400"),
+                             [{"start": 0, "end": 1, "step": 0.01}]) == ("ask", Decimal("0.5600"))
+
+
+def test_snap_to_grid_uses_the_markets_own_ranges_and_ties_go_down():
+    ranges = [{"start": 0, "end": 1, "step": 0.05}]
+    assert snap_to_grid(Decimal("0.5200"), ranges) == Decimal("0.5000")
+    assert snap_to_grid(Decimal("0.5250"), ranges) == Decimal("0.5000")   # tie -> down
+    assert snap_to_grid(Decimal("0.5300"), ranges) == Decimal("0.5500")
+
+
+def test_snap_falls_back_to_the_linear_cent_grid_when_price_ranges_is_null():
+    assert snap_to_grid(Decimal("0.5637"), None) == Decimal("0.5600")
+
+
+def test_grid_steps_excludes_zero_and_one_and_matches_the_fallback_on_the_cent_grid():
+    # 0 and 1 are not tradable prices, so the parsed cent grid is the fallback grid exactly.
+    assert grid_steps(CENT_RANGES) == grid_steps(None)
+    assert grid_steps(CENT_RANGES)[0] == Decimal("0.0100")
+    assert grid_steps(CENT_RANGES)[-1] == Decimal("0.9900")
+
+
+def test_grid_steps_unions_several_ranges_and_accepts_a_bare_dict():
+    steps = grid_steps([{"start": 0, "end": "0.10", "step": "0.01"},
+                        {"start": "0.10", "end": 1, "step": "0.10"}])
+    assert Decimal("0.0300") in steps and Decimal("0.5000") in steps
+    assert Decimal("0.5500") not in steps
+    assert grid_steps({"start": 0, "end": 1, "step": 0.05}) == grid_steps(
+        [{"start": 0, "end": 1, "step": 0.05}])
+
+
+@pytest.mark.parametrize("ranges", [
+    [], "nonsense", [{"start": 0, "end": 1, "step": 0}], [{"start": 0, "end": 1, "step": "NaN"}],
+    [{"start": 1, "end": 0, "step": "0.01"}], [{"start": 0, "end": 1, "step": "0.0000001"}],
+    [{"step": "0.01"}], ["not a dict"],
+])
+def test_grid_steps_falls_back_on_any_unparseable_or_hostile_ranges(ranges):
+    # price_ranges is venue text: a zero step, a NaN, or a step small enough to build a
+    # multi-million-entry list must not reach the snap loop.
+    assert grid_steps(ranges) == grid_steps(None)
+
+
+def test_decode_side_price_rejects_a_book_side_the_venue_invented():
+    with pytest.raises(KalshiDecodeError):
+        decode_side_price("sideways", Decimal("0.5000"))
+
+
+def test_encode_side_price_rejects_a_side_that_is_not_ours():
+    with pytest.raises(ValueError):
+        encode_side_price("maybe", Decimal("0.5000"), CENT_RANGES)
+
+
+def test_fixed_point_formats_prices_at_four_places_and_counts_at_two():
+    assert fixed_point(Decimal("0.56"), 4) == "0.5600"
+    assert fixed_point(Decimal("10"), 2) == "10.00"
+
+
+# --- request bodies -----------------------------------------------------------------------------
+
+
+def test_place_limit_sends_every_required_field_and_nothing_else():
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    _writer(t).place_limit(_intent(side="yes", prob=Decimal("0.56"), contracts=Decimal("10")))
+    method, path, params, body = t.calls[0]
+    assert (method, path) == ("POST", "/portfolio/events/orders")
+    assert body == {
+        "ticker": "KXNFLGAME-X", "side": "bid", "price": "0.5600", "count": "10.00",
+        "client_order_id": "11111111-1111-1111-1111-111111111111",
+        "order_group_id": "g1", "time_in_force": "good_till_canceled",
+        "expiration_time": 1789000000, "post_only": True,
+        "cancel_order_on_pause": True, "self_trade_prevention_type": "maker",
+        "exchange_index": 0}
+
+
+def test_place_limit_sends_the_no_leg_as_an_ask_at_one_minus_p():
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5600", count="10.00",
+                                                     book_side="ask")})])
+    _writer(t).place_limit(_intent(side="no", prob=Decimal("0.44"), contracts=Decimal("10")))
+    assert t.calls[0][3]["side"] == "ask" and t.calls[0][3]["price"] == "0.5600"
+
+
+def test_amend_sends_exactly_seven_fields_and_no_expiry():
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700", count="12.00")})])
+    _writer(t).amend("o1", Decimal("0.57"), Decimal("12"), "c1", "c2",
+                     ticker="KXNFLGAME-X", side="yes", exchange_index=0,
+                     price_ranges=[{"start": 0, "end": 1, "step": 0.01}])
+    _, path, _, body = t.calls[0]
+    assert path == "/portfolio/events/orders/o1/amend"
+    assert set(body) == {"ticker", "side", "price", "count", "client_order_id",
+                         "updated_client_order_id", "exchange_index"}
+
+
+def test_the_writer_never_exposes_an_expiry_amend():
+    # R8: no per-cycle renewal anywhere in the live adapter.
+    assert "expiry" not in inspect.signature(KalshiWriter.amend).parameters
+    assert "expiration_time" not in inspect.signature(KalshiWriter.amend).parameters
+
+
+def test_cancel_sends_exchange_index_and_market_ticker_in_the_query():
+    t = FakeTransport(queued=[_ok({"order_id": "o1", "client_order_id": "c1",
+                                   "reduced_by": "3.00", "ts_ms": 1757000000000})])
+    result = _writer(t).cancel("o1", ticker="KXNFLGAME-X", exchange_index=2)
+    method, path, params, body = t.calls[0]
+    assert method == "DELETE" and path == "/portfolio/events/orders/o1"
+    assert params == {"exchange_index": "2", "market_ticker": "KXNFLGAME-X"} and body is None
+    assert result == CancelResult("o1", "c1", Decimal("3.00"), 1757000000000)
+
+
+def test_cancel_result_is_not_decoded_as_an_order():
+    # A-I7: the V2 cancel response has no ticker, price, count or status.
+    assert not hasattr(CancelResult, "price") and not hasattr(CancelResult, "status")
+    assert [f for f in CancelResult.__dataclass_fields__] == [
+        "order_id", "client_order_id", "reduced_by", "ts_ms"]
+
+
+def test_create_group_and_cancel_group():
+    t = FakeTransport(queued=[_ok({"order_group_id": "g9"}), _ok({})])
+    w = _writer(t)
+    assert w.create_group(Decimal("5")) == "g9"
+    w.cancel_group("g9")
+    assert t.calls[1][0] == "DELETE" and t.calls[1][1].endswith("/g9")
+
+
+def test_create_group_raises_when_the_venue_returns_no_group_id():
+    with pytest.raises(KalshiDecodeError):
+        _writer(FakeTransport(queued=[_ok({})])).create_group(Decimal("5"))
+
+
+@pytest.mark.parametrize("call", [
+    lambda w: w.place_limit(_intent()),
+    lambda w: w.cancel("o1", ticker="T", exchange_index=0),
+    lambda w: w.cancel_group("g9"),
+    lambda w: w.create_group(Decimal("5")),
+])
+def test_every_write_raises_kalshi_api_error_on_a_non_2xx(call):
+    from harness.venues.kalshi.authed import KalshiApiError
+    with pytest.raises(KalshiApiError):
+        call(_writer(FakeTransport(queued=[_err(401, "unauthorized")])))
+
+
+# --- construction guard --------------------------------------------------------------------------
+
+
+def test_the_writer_refuses_direct_construction_outside_the_factory():
+    with pytest.raises(RuntimeError, match="make_writer"):
+        KalshiWriter(FakeTransport(), None, per_bet_cap_dollars=Decimal("1"),
+                     contract_cap=Decimal("1"), kill_switch_active=lambda: False,
+                     writes_allowed=True)
+
+
+# --- pre-send invariant (5.2), independent of the encoder ------------------------------------
+
+
+def test_pre_send_rejects_a_stake_over_the_per_bet_cap():
+    w = _writer(FakeTransport(), per_bet_cap_dollars=Decimal("5"))
+    with pytest.raises(PreSendInvariantFailed, match="per_bet_cap"):
+        w.place_limit(_intent(prob=Decimal("0.60"), contracts=Decimal("100")))
+
+
+def test_pre_send_rejects_more_contracts_than_the_cap():
+    w = _writer(FakeTransport(), contract_cap=Decimal("10"))
+    with pytest.raises(PreSendInvariantFailed, match="contract_cap"):
+        w.place_limit(_intent(contracts=Decimal("11")))
+
+
+@pytest.mark.parametrize("p", [Decimal("0.00"), Decimal("0.005"), Decimal("0.995"), Decimal("1")])
+def test_pre_send_rejects_a_probability_outside_the_band(p):
+    with pytest.raises(PreSendInvariantFailed, match="prob"):
+        _writer(FakeTransport()).place_limit(_intent(prob=p))
+
+
+def test_pre_send_rejects_when_the_kill_switch_is_active():
+    w = _writer(FakeTransport(), kill_switch_active=lambda: True)
+    with pytest.raises(PreSendInvariantFailed, match="kill switch"):
+        w.place_limit(_intent())
+
+
+def test_pre_send_rejects_when_writes_are_not_allowed():
+    w = _writer(FakeTransport(), writes_allowed=False)
+    with pytest.raises(PreSendInvariantFailed, match="mode"):
+        w.place_limit(_intent())
+
+
+def test_pre_send_runs_before_any_transport_call():
+    t = FakeTransport()
+    with pytest.raises(PreSendInvariantFailed):
+        _writer(t, contract_cap=Decimal("1")).place_limit(_intent(contracts=Decimal("50")))
+    assert t.calls == []
+
+
+def test_amend_re_checks_the_caps_before_sending():
+    # An amend can raise the stake, so it runs the same 5.2 checks on its own numbers.
+    t = FakeTransport()
+    with pytest.raises(PreSendInvariantFailed, match="contract_cap"):
+        _writer(t, contract_cap=Decimal("10")).amend(
+            "o1", Decimal("0.57"), Decimal("50"), "c1", "c2", ticker="T", side="yes",
+            exchange_index=0, price_ranges=CENT_RANGES)
+    assert t.calls == []
+
+
+@pytest.mark.parametrize("call", [
+    lambda w: w.cancel("o1", ticker="T", exchange_index=0),
+    lambda w: w.cancel_group("g9"),
+    lambda w: w.create_group(Decimal("5")),
+])
+def test_no_write_verb_leaves_the_process_when_the_mode_forbids_writes(call):
+    t = FakeTransport()
+    with pytest.raises(PreSendInvariantFailed, match="mode"):
+        call(_writer(t, writes_allowed=False))
+    assert t.calls == []
+
+
+def test_a_cancel_still_goes_out_while_the_kill_switch_is_active():
+    # The kill switch stops new risk; it must never strand a resting order.
+    t = FakeTransport(queued=[_ok({"order_id": "o1"})])
+    _writer(t, kill_switch_active=lambda: True).cancel("o1", ticker="T", exchange_index=0)
+    assert t.calls[0][0] == "DELETE"
+
+
+# --- echo check ------------------------------------------------------------------------------
+
+
+def test_echo_mismatch_on_the_count_cancels_and_raises():
+    t = FakeTransport(queued=[
+        _ok({"order": _echo_of(price="0.5600", count="10.00",
+                               remaining="4.00", fill="3.00")}),        # 4 + 3 != 10
+        _ok({"order_id": "o1", "client_order_id": "c1"})])              # the cancel
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert t.calls[1][0] == "DELETE"
+    assert exc.value.freeze_minutes == 15 and exc.value.reason == "echo_mismatch"
+
+
+def test_echo_mismatch_on_the_price_cancels_and_raises():
+    t = FakeTransport(queued=[
+        _ok({"order": _echo_of(price="0.5700", count="10.00",
+                               remaining="10.00", fill="0.00")}),
+        _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch):
+        _writer(t).place_limit(_intent(prob=Decimal("0.56"), contracts=Decimal("10")))
+    assert t.calls[1][0] == "DELETE"
+
+
+def test_a_missing_count_in_the_echo_is_a_mismatch():
+    t = FakeTransport(queued=[
+        _ok({"order": _echo_of(price="0.5600", count="10.00", remaining="10.00", fill=None)}),
+        _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch):
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+
+
+def test_a_failed_cancel_does_not_mask_the_echo_mismatch():
+    from harness.venues.kalshi.http import VenueTransportError
+    t = FakeTransport(queued=[
+        _ok({"order": _echo_of(price="0.5700", count="10.00")}),
+        VenueTransportError("DELETE", "/portfolio/events/orders/o1", "ConnectError")])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(prob=Decimal("0.56"), contracts=Decimal("10")))
+    assert exc.value.cancel_error == "VenueTransportError"
+
+
+def test_an_echo_mismatch_on_an_amend_cancels_and_raises():
+    t = FakeTransport(queued=[
+        _ok({"order": _echo_of(price="0.9900", count="12.00")}),
+        _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch):
+        _writer(t).amend("o1", Decimal("0.57"), Decimal("12"), "c1", "c2", ticker="KXNFLGAME-X",
+                         side="yes", exchange_index=0, price_ranges=CENT_RANGES)
+    assert t.calls[1][0] == "DELETE"
+
+
+def test_a_matching_echo_returns_a_venue_order_decoded_into_our_side_space():
+    t = FakeTransport(queued=[_ok({"order": _echo_of(
+        price="0.5600", count="10.00", remaining="10.00", fill="0.00", book_side="ask")})])
+    order = _writer(t).place_limit(_intent(side="no", prob=Decimal("0.44"),
+                                           contracts=Decimal("10")))
+    assert order.side == "no" and order.prob == Decimal("0.4400")
+
+
+def test_the_echo_check_compares_remaining_and_fill_as_decimals():
+    # "10" and "10.00" are the same count; a string comparison would call this a mismatch.
+    t = FakeTransport(queued=[_ok({"order": _echo_of(
+        price="0.5600", count="10", remaining="10", fill="0")})])
+    assert _writer(t).place_limit(_intent(contracts=Decimal("10.00"))) is not None
+
+
+def test_the_returned_venue_order_carries_the_venues_own_counts_and_raw_body():
+    t = FakeTransport(queued=[_ok({"order": _echo_of(
+        price="0.5600", count="10.00", remaining="7.00", fill="3.00")})])
+    order = _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert isinstance(order, VenueOrder)
+    assert order.remaining_count == Decimal("7.00") and order.fill_count == Decimal("3.00")
+    assert order.status == "resting" and order.order_group_id == "g1"
+    assert order.raw["order_id"] == "o1"
+
+
+def test_an_echo_with_only_an_outcome_side_still_decodes_into_our_space():
+    echo = _echo_of(price="0.5600", count="10.00")
+    echo.pop("book_side")
+    echo["outcome_side"] = "yes"
+    order = _writer(FakeTransport(queued=[_ok({"order": echo})])).place_limit(
+        _intent(contracts=Decimal("10")))
+    assert order.side == "yes" and order.prob == Decimal("0.5600")
+
+
+# --- token bucket (9.2) -----------------------------------------------------------------------
+
+
+def test_the_budget_is_sixty_order_messages_a_minute():
+    assert ORDER_MESSAGES_PER_MINUTE == 60
+
+
+def test_token_bucket_allows_sixty_messages_a_minute():
+    clock = _FakeMonotonic()
+    bucket = TokenBucket(60, monotonic=clock)
+    for _ in range(60):
+        bucket.take()
+    with pytest.raises(MessageBudgetExceeded):
+        bucket.take()
+
+
+def test_token_bucket_refills_over_time():
+    clock = _FakeMonotonic()
+    bucket = TokenBucket(60, monotonic=clock)
+    for _ in range(60):
+        bucket.take()
+    clock.advance(60)
+    for _ in range(60):
+        bucket.take()
+
+
+def test_token_bucket_refills_gradually_and_never_over_its_capacity():
+    clock = _FakeMonotonic()
+    bucket = TokenBucket(60, monotonic=clock)
+    for _ in range(60):
+        bucket.take()
+    clock.advance(10)                 # 10 s at one per second
+    for _ in range(10):
+        bucket.take()
+    with pytest.raises(MessageBudgetExceeded):
+        bucket.take()
+    clock.advance(600)                # ten minutes idle refills to the cap, not past it
+    for _ in range(60):
+        bucket.take()
+    with pytest.raises(MessageBudgetExceeded):
+        bucket.take()
+
+
+def test_a_sixty_first_order_message_in_a_minute_raises():
+    t = FakeTransport(queued=[_ok({"order": _echo_of()}) for _ in range(61)])
+    w = _writer(t)
+    for _ in range(60):
+        w.place_limit(_intent())
+    with pytest.raises(MessageBudgetExceeded):
+        w.place_limit(_intent())
+
+
+def test_cancel_and_amend_also_spend_a_token():
+    t = FakeTransport(queued=[_ok({"order_id": "o1"}) for _ in range(61)])
+    w = _writer(t)
+    for _ in range(60):
+        w.cancel("o1", ticker="T", exchange_index=0)
+    with pytest.raises(MessageBudgetExceeded):
+        w.cancel("o1", ticker="T", exchange_index=0)
+
+
+def test_the_budget_check_runs_after_the_pre_send_invariant():
+    # A rejected order must not spend a token: the budget is for messages that go out.
+    t = FakeTransport(queued=[_ok({"order": _echo_of()}) for _ in range(60)])
+    w = _writer(t, contract_cap=Decimal("20"))
+    for _ in range(30):
+        with pytest.raises(PreSendInvariantFailed):
+            w.place_limit(_intent(contracts=Decimal("50")))
+    for _ in range(60):
+        w.place_limit(_intent())
+
+
+# --- fee model (1.3) ---------------------------------------------------------------------------
+
+
+def test_fee_model_is_read_from_series_once_and_cached():
+    t = FakeTransport(queued=[_ok({"series": {"fee_type": "quadratic_with_maker_fees",
+                                              "fee_multiplier": 1}})])
+    w = _writer(t)
+    model = w.fee_model_for("KXNFLGAME-26SEP13ABCDEF-ABC")
+    assert model.maker_rate == Decimal("0.0175") and model.taker_rate == Decimal("0.07")
+    w.fee_model_for("KXNFLGAME-26SEP13ABCDEF-ABC")     # cached: no second call
+    assert len(t.calls) == 1
+    assert t.calls[0][:2] == ("GET", "/series/KXNFLGAME")
+
+
+def test_fee_model_rejects_an_unexpected_football_fee_shape():
+    t = FakeTransport(queued=[_ok({"series": {"fee_type": "quadratic", "fee_multiplier": 1}})])
+    with pytest.raises(AssertionError, match="maker"):
+        _writer(t).fee_model_for("KXNCAAFGAME-X")
+
+
+def test_fee_model_keeps_a_series_multiplier_as_a_decimal():
+    t = FakeTransport(queued=[_ok({"series": {"fee_type": "quadratic_with_maker_fees",
+                                              "fee_multiplier": "0.5"}})])
+    model = _writer(t).fee_model_for("KXNFLGAME-X")
+    assert model.multiplier == Decimal("0.5")
+
+
+def test_fee_model_does_not_assert_football_rates_on_another_series():
+    t = FakeTransport(queued=[_ok({"series": {"fee_type": "quadratic", "fee_multiplier": 1}})])
+    model = _writer(t).fee_model_for("KXOTHER-X")
+    assert model.maker_rate == Decimal("0") and model.taker_rate == Decimal("0.07")
+
+
+def test_fee_model_reads_series_through_the_reader_not_the_writer():
+    # 1.3: limits and series are read on the reader; the writer holds no GET of its own.
+    for name in ("get_series", "get_account_limits", "get_orders", "get_fills"):
+        assert not hasattr(KalshiWriter, name)

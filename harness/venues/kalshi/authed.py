@@ -32,11 +32,25 @@ reaching a decision (fix round 1, Important 3).
 instead of returning an empty or half-populated result: a 401 must be distinguishable from
 "the account has no resting orders" (fix round 1, Important 1). List endpoints raise on the
 first non-2xx page rather than stopping the loop silently.
+
+**The writer (Task 7).** `KalshiWriter` is the other half of this module and the only thing here
+that sends a non-GET. It is dormant in this phase: `__init__` refuses any construction that does
+not carry the module-private `_FACTORY_TOKEN`, which only Task 8's `make_writer` holds, so no
+production path can build one by accident and the transport underneath refuses a non-GET anyway
+while `writes_enabled` is false. Its judgement is the encoder: `orders.prob` is in the order's own
+side space (a `no` order at 0.44 means 44 cents for NO) while V2 quotes the YES leg only, so
+`encode_side_price` maps `(yes, p)` to a bid at `p` and `(no, p)` to an ask at `1 - p`, snapped to
+the market's own `price_ranges` grid, and `decode_side_price` is its exact inverse.
 """
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from urllib.parse import quote
+
+from harness.pricing.fees import FeeModel
+from harness.pricing.fees import fee_model_for as build_fee_model
 
 MAX_PAGES = 20
 PAGE_LIMIT = "1000"
@@ -357,3 +371,474 @@ class KalshiReader:
         result = self._transport.request("GET", path)
         _check_status(result, "GET", path)
         return result.body if isinstance(result.body, dict) else {}
+
+
+# =================================================================================================
+# The writer (Task 7): V2 event orders. Dormant in this phase -- see the module docstring.
+# =================================================================================================
+
+#: Section 9.2, per venue. A breach trips the kill switch; the writer refuses the message first.
+ORDER_MESSAGES_PER_MINUTE = 60
+
+ORDERS_PATH = "/portfolio/events/orders"
+ORDER_GROUPS_PATH = "/portfolio/order_groups"
+
+#: Section 5.2's probability band, in our own side space, checked before the encoder runs.
+MIN_PROB = Decimal("0.01")
+MAX_PROB = Decimal("0.99")
+
+#: How long the caller freezes the market after the venue echoes something we did not send.
+ECHO_FREEZE_MINUTES = 15
+
+#: Prices are Decimals at 4 places everywhere in this harness (global constraints, units).
+PRICE_QUANTUM = Decimal("0.0001")
+_ZERO = Decimal(0)
+_ONE = Decimal(1)
+
+#: The linear cent grid, used whenever a market's `price_ranges` is absent or unparseable.
+_CENT_GRID = tuple(Decimal(f"0.{n:02d}").quantize(PRICE_QUANTUM) for n in range(1, 100))
+
+#: A hostile or malformed `price_ranges` must not be able to make this process build a
+#: multi-million-entry list. `price_ranges` is venue text like any other field.
+_GRID_MAX_STEPS = 10_000
+
+#: The series prefixes the phase 3 D14 comparison pinned to Kalshi's football fee schedule.
+FOOTBALL_SERIES_PREFIXES = ("KXNFL", "KXNCAAF")
+
+#: Only Task 8's `make_writer` holds this. See `KalshiWriter.__init__`.
+_FACTORY_TOKEN = object()
+
+
+class EchoMismatch(RuntimeError):
+    """The venue echoed a price or a count we did not send. The writer has already cancelled
+    the order and asked its caller to freeze the market for 15 minutes (a `venue_status` row
+    `frozen`, reason `echo_mismatch`). `cancel_error` holds the class name of whatever went
+    wrong during that cancel, or None: the class name only, never the exception, because a
+    transport exception's `.request` carries the live signed headers."""
+
+    def __init__(self, order_id: str | None, reason: str, freeze_minutes: int,
+                 field: str | None = None, cancel_error: str | None = None) -> None:
+        super().__init__(
+            f"venue echo mismatch on {field or 'the order'} for order {order_id!r}: "
+            f"cancelled, freeze {freeze_minutes} min")
+        self.order_id = order_id
+        self.reason = reason
+        self.freeze_minutes = freeze_minutes
+        self.field = field
+        self.cancel_error = cancel_error
+
+
+class MessageBudgetExceeded(RuntimeError):
+    """More than 60 order messages in a minute (section 9.2). The caller trips the kill switch."""
+
+
+class PreSendInvariantFailed(RuntimeError):
+    """One of section 5.2's five pre-send checks failed. Raised before the token bucket and
+    before any transport call, so a rejected order never becomes a message."""
+
+
+@dataclass(frozen=True)
+class OrderIntent:
+    """One order to send. `prob` is in the order's own side space, exactly as `orders.prob` is
+    (an order on side `no` at 0.44 means 44 cents for NO), and the encoder is what turns that
+    into the YES-leg bid/ask Kalshi accepts."""
+    client_order_id: str          # the intent uuid, as a string
+    ticker: str
+    side: str                     # yes|no
+    prob: Decimal
+    contracts: Decimal
+    expiration_time: datetime     # kickoff - 10 min (R8), set once, never renewed
+    exchange_index: int
+    order_group_id: str
+    price_ranges: list | dict | None
+
+
+@dataclass(frozen=True)
+class VenueOrder:
+    order_id: str
+    client_order_id: str | None
+    ticker: str
+    side: str                     # yes|no, decoded back into our space
+    prob: Decimal | None          # decoded back into our space
+    contracts: Decimal | None
+    remaining_count: Decimal | None
+    fill_count: Decimal | None
+    status: str | None
+    order_group_id: str | None
+    raw: dict
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    """The V2 cancel response is not an order (A-I7): it carries only these four fields."""
+    order_id: str
+    client_order_id: str | None
+    reduced_by: Decimal | None
+    ts_ms: int | None
+
+
+class TokenBucket:
+    """Section 9.2's message budget: `rate_per_minute` tokens, refilled continuously at
+    `rate_per_minute / 60` a second and capped at `rate_per_minute`. Starts full, so a burst of
+    the whole minute's budget is allowed and the next message waits for a refill.
+
+    `take()` raises rather than sleeping: a writer that blocked here would hold the execution
+    cycle past its deadline, and the caller's answer to a breach is the kill switch, not a wait.
+    """
+
+    def __init__(self, rate_per_minute: int, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._capacity = float(rate_per_minute)
+        self._per_second = float(rate_per_minute) / 60.0
+        self._monotonic = monotonic
+        self._tokens = float(rate_per_minute)
+        self._last = monotonic()
+
+    def take(self) -> None:
+        now = self._monotonic()
+        elapsed = now - self._last
+        if elapsed > 0:
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._per_second)
+            self._last = now
+        if self._tokens < 1.0:
+            raise MessageBudgetExceeded(
+                f"more than {int(self._capacity)} order messages in a minute")
+        self._tokens -= 1.0
+
+    @property
+    def tokens(self) -> float:
+        return self._tokens
+
+
+def _as_decimal(value) -> Decimal:
+    """One of our own numbers as a Decimal. Unlike `dec`, this is for values the harness owns
+    (an intent's prob, a cap from Settings), so a bad one is a programming error, not venue text."""
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def _range_number(value) -> Decimal | None:
+    """A number out of a `price_ranges` entry: venue text, so anything unparseable or non-finite
+    is None and sends the whole grid to the fallback rather than raising."""
+    if value is None:
+        return None
+    try:
+        d = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return d if d.is_finite() else None
+
+
+def grid_steps(price_ranges) -> list[Decimal]:
+    """Every allowed YES price from a market's `price_ranges`
+    ([{"start": 0, "end": 1, "step": 0.01}]), as Decimals at 4 places. Falls back to the linear
+    cent grid 0.01..0.99 when price_ranges is absent or unparseable.
+
+    0 and 1 are dropped: they are not tradable prices, which is also what makes the parsed cent
+    grid identical to the fallback. Several ranges are unioned, so a market that quotes finer
+    increments near one edge gets both sets of steps.
+    """
+    ranges = [price_ranges] if isinstance(price_ranges, dict) else price_ranges
+    if not isinstance(ranges, (list, tuple)) or not ranges:
+        return list(_CENT_GRID)
+    steps: set[Decimal] = set()
+    for entry in ranges:
+        if not isinstance(entry, dict):
+            return list(_CENT_GRID)
+        start = _range_number(entry.get("start"))
+        end = _range_number(entry.get("end"))
+        step = _range_number(entry.get("step"))
+        if start is None or end is None or step is None or step <= 0 or end <= start:
+            return list(_CENT_GRID)
+        count = int((end - start) / step)
+        if count > _GRID_MAX_STEPS:
+            return list(_CENT_GRID)
+        for i in range(count + 1):
+            value = (start + step * i).quantize(PRICE_QUANTUM)
+            if _ZERO < value < _ONE:
+                steps.add(value)
+    if not steps:
+        return list(_CENT_GRID)
+    return sorted(steps)
+
+
+def snap_to_grid(p: Decimal, price_ranges) -> Decimal:
+    """The nearest allowed YES price, ties going down (never up: rounding a bid up pays more)."""
+    grid = grid_steps(price_ranges)
+    target = _as_decimal(p)
+    best = grid[0]
+    best_distance = abs(best - target)
+    for candidate in grid[1:]:          # ascending, and strictly-closer wins, so a tie stays low
+        distance = abs(candidate - target)
+        if distance < best_distance:
+            best, best_distance = candidate, distance
+    return best.quantize(PRICE_QUANTUM)
+
+
+def encode_side_price(side: str, prob: Decimal, price_ranges) -> tuple[str, Decimal]:
+    """(side=yes, p) -> ("bid", snap(p)); (side=no, p) -> ("ask", snap(1 - p)). The returned
+    price is always a YES-leg price on the market's grid."""
+    if side == "yes":
+        return "bid", snap_to_grid(_as_decimal(prob), price_ranges)
+    if side == "no":
+        return "ask", snap_to_grid(_ONE - _as_decimal(prob), price_ranges)
+    raise ValueError(f"side must be 'yes' or 'no', not {side!r}")
+
+
+def decode_side_price(book_side: str, price: Decimal) -> tuple[str, Decimal]:
+    """The exact inverse: ("bid", q) -> ("yes", q); ("ask", q) -> ("no", 1 - q)."""
+    q = _as_decimal(price).quantize(PRICE_QUANTUM)
+    if book_side == "bid":
+        return "yes", q
+    if book_side == "ask":
+        return "no", (_ONE - q).quantize(PRICE_QUANTUM)
+    raise KalshiDecodeError(f"venue sent an unknown book side {book_side!r}")
+
+
+def fixed_point(value: Decimal, places: int = 4) -> str:
+    """A Kalshi fixed-point string: prices at 4 places ("0.5600"), counts at 2 ("10.00")."""
+    quantum = Decimal(1).scaleb(-places)
+    return str(_as_decimal(value).quantize(quantum, rounding=ROUND_HALF_UP))
+
+
+def _decode_cancel(body: dict) -> CancelResult:
+    """The V2 cancel response, which is not an order (A-I7): four fields and no ticker, price,
+    count or status. Decoding it as an order would put `None` in every one of those and invite a
+    caller to act on them."""
+    return CancelResult(
+        order_id=body.get("order_id"),
+        client_order_id=body.get("client_order_id"),
+        reduced_by=dec(body.get("reduced_by")),
+        ts_ms=int(body["ts_ms"]) if body.get("ts_ms") is not None else None,
+    )
+
+
+def _book_side_of(view: OrderView) -> str | None:
+    """The echoed order's YES-leg book side: the venue's own `book_side` when it sent one, else
+    the ordinary correspondence from the canonical outcome (yes -> bid, no -> ask)."""
+    if view.book_side in ("bid", "ask"):
+        return view.book_side
+    if view.outcome_side == "yes":
+        return "bid"
+    if view.outcome_side == "no":
+        return "ask"
+    return None
+
+
+def _venue_order(view: OrderView, raw: dict) -> VenueOrder:
+    """An `OrderView` (the venue's own YES-leg shape) turned back into our side space."""
+    book_side = _book_side_of(view)
+    side, prob = view.outcome_side, None
+    if book_side is not None and view.price is not None:
+        side, prob = decode_side_price(book_side, view.price)
+    return VenueOrder(
+        order_id=view.order_id,
+        client_order_id=view.client_order_id,
+        ticker=view.ticker,
+        side=side,
+        prob=prob,
+        contracts=view.count,
+        remaining_count=view.remaining_count,
+        fill_count=view.fill_count,
+        status=view.status,
+        order_group_id=view.order_group_id,
+        raw=raw,
+    )
+
+
+class KalshiWriter:
+    """Built only by `make_writer` (Task 8). Direct construction outside the factory raises.
+
+    Every method that sends a message goes through the same three gates in the same order:
+    section 5.2's pre-send invariant, then the 60-a-minute token bucket, then the transport. The
+    order matters -- a rejected order must never spend a token, and neither may reach the wire --
+    so `place_limit` is written as that sequence and nothing else.
+    """
+
+    def __init__(self, transport, reader, *, per_bet_cap_dollars: Decimal,
+                 contract_cap: Decimal, kill_switch_active: Callable[[], bool],
+                 writes_allowed: bool, _factory_token: object = None) -> None:
+        if _factory_token is not _FACTORY_TOKEN:
+            raise RuntimeError("KalshiWriter is built only by make_writer")
+        self._transport = transport
+        self._reader = reader
+        self._per_bet_cap_dollars = _as_decimal(per_bet_cap_dollars)
+        self._contract_cap = _as_decimal(contract_cap)
+        self._kill_switch_active = kill_switch_active
+        self._writes_allowed = bool(writes_allowed)
+        self._bucket = TokenBucket(ORDER_MESSAGES_PER_MINUTE)
+        self._fee_models: dict[str, FeeModel] = {}
+
+    # -- section 5.2, independent of the encoder ----------------------------------------------
+
+    def _require_mode(self) -> None:
+        """The one check every message shares: this writer's mode allows writes at all. A cancel
+        does not go past this either -- a paper writer sends nothing, of any verb."""
+        if not self._writes_allowed:
+            raise PreSendInvariantFailed("mode does not allow writes")
+
+    def _check_caps(self, prob: Decimal, contracts: Decimal) -> None:
+        """The four risk checks, in an order chosen so each test's failure is the one named: a
+        stake over the cap is reported as `per_bet_cap` and not as an out-of-band probability."""
+        if self._kill_switch_active():
+            raise PreSendInvariantFailed("kill switch is active")
+        prob = _as_decimal(prob)
+        contracts = _as_decimal(contracts)
+        if not MIN_PROB <= prob <= MAX_PROB:
+            raise PreSendInvariantFailed(f"prob {prob} is outside [{MIN_PROB}, {MAX_PROB}]")
+        stake = prob * contracts
+        if stake > self._per_bet_cap_dollars:
+            raise PreSendInvariantFailed(
+                f"per_bet_cap exceeded: stake {stake} > {self._per_bet_cap_dollars}")
+        if contracts > self._contract_cap:
+            raise PreSendInvariantFailed(
+                f"contract_cap exceeded: {contracts} > {self._contract_cap}")
+
+    def _pre_send(self, prob: Decimal, contracts: Decimal) -> None:
+        self._require_mode()
+        self._check_caps(prob, contracts)
+
+    # -- writes ---------------------------------------------------------------------------------
+
+    def create_group(self, contracts_limit: Decimal) -> str:
+        self._require_mode()
+        self._bucket.take()
+        body = {"contracts_limit": fixed_point(contracts_limit, 2)}
+        result = self._transport.request("POST", ORDER_GROUPS_PATH, json=body)
+        _check_status(result, "POST", ORDER_GROUPS_PATH)
+        payload = result.body if isinstance(result.body, dict) else {}
+        group_id = payload.get("order_group_id")
+        if not group_id:
+            raise KalshiDecodeError("create_group response carried no order_group_id")
+        return str(group_id)
+
+    def place_limit(self, intent: OrderIntent) -> VenueOrder:
+        self._pre_send(intent.prob, intent.contracts)
+        self._bucket.take()
+        book_side, yes_price = encode_side_price(intent.side, intent.prob, intent.price_ranges)
+        body = {
+            "ticker": intent.ticker,
+            "side": book_side,                       # bid|ask on the YES leg
+            "price": fixed_point(yes_price, 4),      # "0.5600"
+            "count": fixed_point(intent.contracts, 2),
+            "client_order_id": intent.client_order_id,
+            "order_group_id": intent.order_group_id,
+            "time_in_force": "good_till_canceled",
+            "expiration_time": int(intent.expiration_time.timestamp()),   # int64 Unix seconds
+            "post_only": True,
+            "cancel_order_on_pause": True,
+            "self_trade_prevention_type": "maker",
+            "exchange_index": intent.exchange_index,
+        }
+        result = self._transport.request("POST", ORDERS_PATH, json=body)
+        _check_status(result, "POST", ORDERS_PATH)
+        return self._checked_echo(result, intent.ticker, intent.exchange_index,
+                                  yes_price, _as_decimal(intent.contracts))
+
+    def amend(self, order_id, prob, contracts, client_order_id,
+              updated_client_order_id, ticker, side, exchange_index, price_ranges) -> VenueOrder:
+        """Exactly the seven fields V2 takes, and no expiry parameter of any kind (R8): the
+        expiration is set once when the order is placed and is never renewed per cycle.
+
+        An amend can raise the stake, so it re-runs section 5.2 on its own numbers, and it runs
+        the same echo check -- a venue that amends to a price we did not send is the same
+        failure as a venue that places one.
+        """
+        self._pre_send(prob, contracts)
+        self._bucket.take()
+        book_side, yes_price = encode_side_price(side, prob, price_ranges)
+        path = f"{ORDERS_PATH}/{quote(str(order_id), safe='')}/amend"
+        body = {
+            "ticker": ticker,
+            "side": book_side,
+            "price": fixed_point(yes_price, 4),
+            "count": fixed_point(contracts, 2),
+            "client_order_id": client_order_id,
+            "updated_client_order_id": updated_client_order_id,
+            "exchange_index": exchange_index,
+        }
+        result = self._transport.request("POST", path, json=body)
+        _check_status(result, "POST", path)
+        return self._checked_echo(result, ticker, exchange_index, yes_price,
+                                  _as_decimal(contracts))
+
+    def cancel(self, order_id: str, ticker: str, exchange_index: int) -> CancelResult:
+        """`exchange_index` and `market_ticker` travel in the query, and are therefore outside
+        the signature (section 1.1). The kill switch does not block a cancel: it stops new risk,
+        and stranding a resting order would be the opposite of that."""
+        self._require_mode()
+        self._bucket.take()
+        path = f"{ORDERS_PATH}/{quote(str(order_id), safe='')}"
+        params = {"exchange_index": str(exchange_index), "market_ticker": str(ticker)}
+        result = self._transport.request("DELETE", path, params)
+        _check_status(result, "DELETE", path)
+        body = result.body if isinstance(result.body, dict) else {}
+        return _decode_cancel(body)
+
+    def cancel_group(self, group_id: str) -> None:
+        self._require_mode()
+        self._bucket.take()
+        path = f"{ORDER_GROUPS_PATH}/{quote(str(group_id), safe='')}"
+        result = self._transport.request("DELETE", path)
+        _check_status(result, "DELETE", path)
+
+    # -- the echo check ---------------------------------------------------------------------------
+
+    def _checked_echo(self, result, ticker: str, exchange_index: int, yes_price: Decimal,
+                      sent_count: Decimal) -> VenueOrder:
+        """`remaining_count + fill_count == sent count` and `price == the price we snapped`, both
+        as Decimals ("10" and "10.00" are the same count; a string compare would call that a
+        mismatch). On any mismatch the order is cancelled and `EchoMismatch` is raised, so the
+        caller freezes the market for 15 minutes with reason `echo_mismatch`.
+
+        A missing price or a missing count is a mismatch too: an echo that does not say what was
+        accepted has not confirmed anything.
+        """
+        body = result.body if isinstance(result.body, dict) else {}
+        payload = body.get("order") if isinstance(body.get("order"), dict) else body
+        view = _decode_order(payload)
+        field = None
+        if view.price is None or view.remaining_count is None or view.fill_count is None:
+            field = "the echoed price and counts"
+        elif view.price != yes_price:
+            field = "price"
+        elif view.remaining_count + view.fill_count != sent_count:
+            field = "count"
+        if field is None:
+            return _venue_order(view, payload)
+
+        cancel_error = None
+        if view.order_id:
+            try:
+                self.cancel(view.order_id, ticker=ticker, exchange_index=exchange_index)
+            except Exception as exc:      # a failed cancel must not mask the mismatch
+                # The class name only: a transport exception's `.request` holds live signed
+                # headers, so the exception itself is never carried forward (see http.py).
+                cancel_error = type(exc).__name__
+        else:
+            cancel_error = "no order_id to cancel"
+        raise EchoMismatch(order_id=view.order_id, reason="echo_mismatch",
+                           freeze_minutes=ECHO_FREEZE_MINUTES, field=field,
+                           cancel_error=cancel_error)
+
+    # -- fees -------------------------------------------------------------------------------------
+
+    def fee_model_for(self, ticker: str) -> FeeModel:
+        """The market's fee model, from `GET /series/{series}` once per series and cached.
+
+        Football is asserted rather than trusted: the phase 3 D14 comparison rests on maker
+        0.0175 and taker 0.07, and a series that quietly moved off that schedule would only show
+        up in the realised P&L. The GET is the reader's -- limits and series are read there, not
+        here (section 1.3), so this class holds no read method of its own.
+        """
+        series = str(ticker).split("-")[0]
+        model = self._fee_models.get(series)
+        if model is None:
+            body = self._reader.get_series(series)
+            payload = body.get("series") if isinstance(body.get("series"), dict) else body
+            model = build_fee_model(payload.get("fee_type"), payload.get("fee_multiplier"))
+            self._fee_models[series] = model
+        if series.startswith(FOOTBALL_SERIES_PREFIXES):
+            assert model.maker_rate == Decimal("0.0175"), (
+                f"{series}: maker rate {model.maker_rate} is not the football 0.0175")
+            assert model.taker_rate == Decimal("0.07"), (
+                f"{series}: taker rate {model.taker_rate} is not the football 0.07")
+        return model
