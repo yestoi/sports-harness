@@ -9,6 +9,7 @@ and `pg_total_relation_size` are properties of the actual database, not of the P
 them.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import sessionmaker
@@ -20,6 +21,7 @@ from harness.ops.housekeeping import (
     ceiling_projection,
     housekeeping,
     housekeeping_stage,
+    _table_sizes_gb,
 )
 from harness.recorder.store import get_source_state, set_source_state
 from harness.settlement.job import Settler, load_stages
@@ -156,3 +158,22 @@ def test_housekeeping_runs_on_the_settlement_job_once_per_day(db_session, env_se
                    monotonic=Mono(0.0)).run()
     stage2 = next(s for s in row2.notes["stages"] if s["name"] == "housekeeping")
     assert stage2["counts"] == {"skipped": True}
+
+
+# --- table sizes: partition children roll up to their logical table name (fix round 1, M2) ---
+
+
+def test_table_sizes_roll_up_partition_children_to_the_logical_table_name(db_session):
+    """`pg_total_relation_size` on a partitioned parent (relkind 'p') reports 0 -- it owns no
+    storage itself, its children do -- so without a `pg_inherits` rollup a partitioned table's
+    real size would either vanish from the list or surface under a same-week partition's own
+    name (e.g. `orderbook_events_y2026w37`) instead of the logical table an operator cares
+    about. `ensure_partitions` (conftest._schema) guarantees `orderbook_events`, `venue_trades`
+    and `raw_responses` each have at least one partition in this test database."""
+    sizes = _table_sizes_gb(db_session)
+
+    for logical_name in ("orderbook_events", "venue_trades", "raw_responses"):
+        assert logical_name in sizes
+
+    partition_child = re.compile(r"_y\d{4}w\d{2}$")
+    assert not any(partition_child.search(name) for name in sizes)

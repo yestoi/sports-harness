@@ -288,15 +288,16 @@ def _data_quality(session: Session, now: datetime) -> dict:
         trade_gaps.extend((notes or {}).get("trade_gaps", []))
         taker_side_missing += (notes or {}).get("taker_side_missing", 0) or 0
 
-    stored_trades_1h = session.execute(
+    # Fix round 1, I1: the brief's row is a 24h share. A dropped print (no resolvable taker
+    # side) never reaches venue_trades at all (harness/normalize/kalshi.py insert_trades), so
+    # the numerator can only come from run notes -- already a 24h scan, above. The denominator
+    # is widened to the same 24h window rather than the rest of this section's 1h, so both
+    # halves of the ratio read from the same clock.
+    stored_trades_24h = session.execute(
         select(func.count()).select_from(VenueTrade)
-        .where(VenueTrade.source == "rest", VenueTrade.ts >= cutoff_1h)
+        .where(VenueTrade.source == "rest", VenueTrade.ts >= cutoff_24h)
     ).scalar_one()
-    # taker_side_missing is a 24h count (it comes from run notes, one per recorder tick) beside
-    # a 1h denominator; that understates the share slightly but the number is a smoke alarm, not
-    # an audited metric, and matching the 1h window the rest of this section uses keeps every
-    # row here reading from the same clock.
-    taker_side_total = taker_side_missing + stored_trades_1h
+    taker_side_total = taker_side_missing + stored_trades_24h
     no_taker_side_share = (taker_side_missing / taker_side_total) if taker_side_total else None
 
     matched_total, non_linear_cent = session.execute(
@@ -314,13 +315,13 @@ def _data_quality(session: Session, now: datetime) -> dict:
 
     skipped_total, post_only_rejects = session.execute(
         select(func.count(), func.count().filter(OrderEvent.reason == POST_ONLY_REJECT))
-        .where(OrderEvent.kind == "skipped", OrderEvent.ts >= cutoff_1h)
+        .where(OrderEvent.kind == "skipped", OrderEvent.ts >= cutoff_1h, OrderEvent.replay.is_(False))
     ).one()
     post_only_reject_rate = (post_only_rejects / skipped_total) if skipped_total else None
 
     return {"staleness_median_s": staleness_median_s, "trade_gaps_24h": len(trade_gaps),
             "trade_gaps_sample": trade_gaps[:20],
-            "no_taker_side_share_1h": no_taker_side_share,
+            "no_taker_side_share_24h": no_taker_side_share,
             "non_linear_cent_share_1h": non_linear_cent_share,
             "non_linear_cent_count_1h": non_linear_cent,
             "nonzero_exchange_index_1h": nonzero_exchange_index,
@@ -397,7 +398,7 @@ def _open_orders(session: Session, now: datetime) -> list[dict]:
     rows = session.execute(
         select(Order.id, Order.variant_id, Order.ticker, Order.side, Order.prob, Order.contracts,
               Order.filled_contracts, Order.status, Order.book_source, Order.dirty_minutes, Order.placed_at)
-        .where(Order.status.in_(("open", "partially_filled")))
+        .where(Order.status.in_(("open", "partially_filled")), Order.replay.is_(False))
         .order_by(desc(Order.placed_at))
         .limit(OPEN_ORDERS_LIMIT)
     ).all()
@@ -461,7 +462,7 @@ def _skip_reasons(session: Session, now: datetime) -> list[dict]:
     cutoff = now - WINDOW_24H
     rows = session.execute(
         select(OrderEvent.reason, func.count())
-        .where(OrderEvent.kind == "skipped", OrderEvent.ts >= cutoff)
+        .where(OrderEvent.kind == "skipped", OrderEvent.ts >= cutoff, OrderEvent.replay.is_(False))
         .group_by(OrderEvent.reason)
         .order_by(desc(func.count()))
         .limit(SKIP_REASONS_LIMIT)

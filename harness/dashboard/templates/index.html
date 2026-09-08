@@ -197,10 +197,10 @@
   </table>
   <p class="muted">Trade gaps recorded in run notes (last 24h): {{ summary.data_quality.trade_gaps_24h }}</p>
   {% if not summary.data_quality.error %}
-  <h3>Microstructure (last 1h)</h3>
+  <h3>Microstructure</h3>
   <div class="grid">
-    <div class="stat"><div class="label">Prints with no taker side</div>
-      <div class="value">{{ "%.2f%%"|format(summary.data_quality.no_taker_side_share_1h * 100) if summary.data_quality.no_taker_side_share_1h is not none else "-" }}</div></div>
+    <div class="stat"><div class="label">Prints with no taker side (24h)</div>
+      <div class="value">{{ "%.2f%%"|format(summary.data_quality.no_taker_side_share_24h * 100) if summary.data_quality.no_taker_side_share_24h is not none else "-" }}</div></div>
     <div class="stat"><div class="label">Matched markets not linear_cent</div>
       <div class="value">{{ summary.data_quality.non_linear_cent_count_1h }}
         ({{ "%.2f%%"|format(summary.data_quality.non_linear_cent_share_1h * 100) if summary.data_quality.non_linear_cent_share_1h is not none else "-" }})</div></div>
@@ -225,11 +225,13 @@
 <section>
   <h2>Open paper orders and today's fills</h2>
   <h3>Open orders</h3>
+  {% if summary.open_orders.error %}<p class="warn">unavailable: {{ summary.open_orders.error }}</p>
+  {% else %}
   <div class="scroll">
   <table>
     <tr><th>id</th><th>variant</th><th>ticker</th><th>side</th><th>prob</th><th>contracts</th><th>filled</th>
         <th>status</th><th>book_source</th><th>dirty_minutes</th><th>placed_at</th></tr>
-    {% for o in summary.open_orders if summary.open_orders is iterable and o is mapping %}
+    {% for o in summary.open_orders %}
     <tr>
       <td>{{ o.id }}</td><td>{{ o.variant }}</td><td>{{ o.ticker }}</td><td>{{ o.side }}</td><td>{{ o.prob }}</td>
       <td>{{ o.contracts }}</td><td>{{ o.filled_contracts }}</td><td>{{ o.status }}</td>
@@ -238,12 +240,15 @@
     {% endfor %}
   </table>
   </div>
+  {% endif %}
   <h3>Fills today</h3>
+  {% if summary.fills_today.error %}<p class="warn">unavailable: {{ summary.fills_today.error }}</p>
+  {% else %}
   <div class="scroll">
   <table>
     <tr><th>id</th><th>order_id</th><th>variant</th><th>ticker</th><th>side</th><th>prob</th><th>contracts</th>
         <th>fee</th><th>filled_at</th></tr>
-    {% for f in summary.fills_today if summary.fills_today is iterable and f is mapping %}
+    {% for f in summary.fills_today %}
     <tr>
       <td>{{ f.id }}</td><td>{{ f.order_id }}</td><td>{{ f.variant }}</td><td>{{ f.ticker }}</td><td>{{ f.side }}</td>
       <td>{{ f.prob }}</td><td>{{ f.contracts }}</td><td>{{ f.fee }}</td><td>{{ f.filled_at }}</td>
@@ -251,10 +256,13 @@
     {% endfor %}
   </table>
   </div>
+  {% endif %}
 </section>
 
 <section>
   <h2>Paper P&amp;L (ledger, last 7d) and open exposure</h2>
+  {% if summary.pnl.error %}<p class="warn">unavailable: {{ summary.pnl.error }}</p>
+  {% else %}
   <div class="scroll">
   <table>
     <tr><th>variant</th><th>cash_delta</th><th>fees</th></tr>
@@ -272,26 +280,33 @@
     {% endfor %}
   </table>
   </div>
+  {% endif %}
 </section>
 
 <section>
   <h2>Candidates (last 24h) and skip reasons</h2>
   <h3>Candidates per variant and side</h3>
+  {% if summary.candidates.error %}<p class="warn">unavailable: {{ summary.candidates.error }}</p>
+  {% else %}
   <table>
     <tr><th>variant</th><th>side</th><th>count</th></tr>
-    {% for name, by_side in (summary.candidates or {}).items() if name != "error" %}
+    {% for name, by_side in (summary.candidates or {}).items() %}
       {% for side, n in by_side.items() %}
       <tr><td>{{ name }}</td><td>{{ side }}</td><td>{{ n }}</td></tr>
       {% endfor %}
     {% endfor %}
   </table>
+  {% endif %}
   <h3>Skip reasons</h3>
+  {% if summary.skip_reasons.error %}<p class="warn">unavailable: {{ summary.skip_reasons.error }}</p>
+  {% else %}
   <table>
     <tr><th>reason</th><th>count</th></tr>
-    {% for row in summary.skip_reasons if summary.skip_reasons is iterable and row is mapping %}
+    {% for row in summary.skip_reasons %}
     <tr><td>{{ row.reason }}</td><td>{{ row.count }}</td></tr>
     {% endfor %}
   </table>
+  {% endif %}
 </section>
 
 <section>

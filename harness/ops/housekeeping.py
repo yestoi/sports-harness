@@ -44,13 +44,20 @@ LOOKBACK = timedelta(days=7)
 FULL_WINDOW_NOTES = 7
 BYTES_PER_GB = 1024 ** 3
 
-_LARGEST_TABLES = text("""
-    select c.relname, pg_total_relation_size(c.oid) as bytes
+#: `pg_total_relation_size` on a partitioned parent (relkind 'p') reports 0 -- the parent owns
+#: no storage itself, its partitions do -- so every relation is joined back to its top-level
+#: parent through `pg_inherits` (a non-partitioned table, and a partitioned parent's own catalog
+#: row, both have no `pg_inherits` row and so keep their own name via the `coalesce`). Grouping
+#: on that name rolls every partition's bytes up under the one logical table name an operator
+#: cares about, rather than a same-week partition's own name (e.g. `orderbook_events_y2026w37`)
+#: or a parent that always reports 0 (fix round 1, M2).
+_TABLE_SIZES = text("""
+    select coalesce(parent.relname, c.relname) as relname, pg_total_relation_size(c.oid) as bytes
     from pg_class c
     join pg_namespace n on n.oid = c.relnamespace
+    left join pg_inherits i on i.inhrelid = c.oid
+    left join pg_class parent on parent.oid = i.inhparent
     where n.nspname = 'public' and c.relkind in ('r', 'p')
-    order by bytes desc
-    limit 6
 """)
 
 _DATABASE_SIZE = text("select pg_database_size(current_database())")
@@ -107,12 +114,20 @@ def _prior_sizes(session: Session, now: datetime) -> list[tuple[datetime, float]
     return out
 
 
+def _table_sizes_gb(session: Session) -> dict[str, float]:
+    """Every table's total size in GB, keyed by its logical (partition-rolled-up) name."""
+    totals: dict[str, int] = {}
+    for relname, nbytes in session.execute(_TABLE_SIZES).all():
+        totals[relname] = totals.get(relname, 0) + nbytes
+    return {name: round(nbytes / BYTES_PER_GB, 4) for name, nbytes in totals.items()}
+
+
 def housekeeping(session: Session, now: datetime, db_budget_gb: int) -> dict:
     """Measure the database, project its growth against `db_budget_gb`, and return the dict the
     settlement job records verbatim as this stage's `StageResult.counts` (and the dashboard's
     database-ceiling section reads back out of the newest such note)."""
-    tables_gb = {name: round(nbytes / BYTES_PER_GB, 4)
-                 for name, nbytes in session.execute(_LARGEST_TABLES).all()}
+    all_tables_gb = _table_sizes_gb(session)
+    tables_gb = dict(sorted(all_tables_gb.items(), key=lambda kv: kv[1], reverse=True)[:6])
     db_bytes = session.execute(_DATABASE_SIZE).scalar_one()
     size_gb = db_bytes / BYTES_PER_GB
 
