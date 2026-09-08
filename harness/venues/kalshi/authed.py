@@ -47,10 +47,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
+from harness.feeds.http import HttpClient
 from harness.pricing.fees import FeeModel
 from harness.pricing.fees import fee_model_for as build_fee_model
+from harness.venues.kalshi.http import DEMO_HOST_SUFFIX, KalshiTransport
 
 MAX_PAGES = 20
 PAGE_LIMIT = "1000"
@@ -941,3 +943,92 @@ class KalshiWriter:
         if series.startswith(FOOTBALL_SERIES_PREFIXES):
             _require_football_fees(series, fee_type, model)
         return model
+
+
+# =================================================================================================
+# The live guard (Task 8): the only constructor of a write-capable KalshiWriter.
+# =================================================================================================
+
+#: The four conditions, in the order the guard reports them. The first missing one names the
+#: refusal, so the message is stable and testable for every subset.
+LIVE_CONDITIONS = ("LIVE_TRADING=1", "mode=live", "passing gate report", "secrets/legal_decision")
+
+
+class LiveGuardRefused(RuntimeError):
+    """`make_writer` refused to build a writer for `env` because `missing` does not hold. Never
+    raised for `demo` once both secret files exist and the host resolves to `demo.kalshi.co`;
+    for `prod`, raised today unconditionally -- none of the four conditions holds."""
+
+    def __init__(self, env: str, missing: str) -> None:
+        super().__init__(f"refusing a {env} writer: {missing} is missing")
+        self.env, self.missing = env, missing
+
+
+def _has_passing_gate_report(session, gate_variant_name: str) -> bool:
+    """Resolves `gate_variant_name` to a `variant_id` through `strategy_variants` and returns
+    whether any `gate_reports` row for that `variant_id` has `passed = true`. A `None` session
+    means the condition cannot be proven, which is a refusal, not a pass."""
+    if session is None:
+        return False
+    from sqlalchemy import text as _sa_text
+
+    variant_id = session.execute(
+        _sa_text("select variant_id from strategy_variants where name = :n"),
+        {"n": gate_variant_name}).scalar()
+    if not variant_id:
+        return False
+    return bool(session.execute(
+        _sa_text("select 1 from gate_reports where variant_id = :v and passed = true limit 1"),
+        {"v": variant_id}).scalar())
+
+
+def make_writer(settings, env: str, session=None, *, per_bet_cap_dollars: Decimal | None = None,
+                contract_cap: Decimal | None = None,
+                kill_switch_active: Callable[[], bool] | None = None) -> KalshiWriter:
+    """The only way to build a KalshiWriter. Raises `LiveGuardRefused` unless every condition for
+    `env` holds. Nothing in phase 4 calls this with env='prod' outside tests.
+
+    `per_bet_cap_dollars`, `contract_cap` and `kill_switch_active` are not `Settings` fields
+    (they come from a variant's config or the live kill switch -- see the addendum); a caller
+    that has resolved them passes them through here. Absent a caller-supplied value the writer
+    is built with a zero cap and an always-open kill switch, so a writer built without them can
+    place nothing of consequence rather than something under an unreviewed default.
+    """
+    if env == "demo":
+        if not settings.has_kalshi_demo_credentials():
+            raise LiveGuardRefused("demo", "kalshi_demo key files")
+        host = urlsplit(settings.kalshi_demo_base_url).hostname or ""
+        if not (host == DEMO_HOST_SUFFIX or host.endswith("." + DEMO_HOST_SUFFIX)):
+            raise LiveGuardRefused("demo", f"a host ending in {DEMO_HOST_SUFFIX}")
+        http = HttpClient(settings.http_timeout_s)
+        transport = KalshiTransport(
+            http, settings.kalshi_demo_base_url, "demo",
+            settings.kalshi_demo_key_id(), settings.kalshi_demo_private_key_pem(),
+            timeout_s=settings.http_timeout_s, writes_enabled=True)
+    elif env == "prod":
+        if int(settings.live_trading) != 1:
+            raise LiveGuardRefused("prod", "LIVE_TRADING=1")
+        if settings.mode != "live":
+            raise LiveGuardRefused("prod", "mode=live")
+        if not _has_passing_gate_report(session, settings.gate_variant):
+            raise LiveGuardRefused("prod", "a passing gate report for the gate variant")
+        if not settings.legal_decision_file.exists():
+            raise LiveGuardRefused("prod", "secrets/legal_decision")
+        http = HttpClient(settings.http_timeout_s)
+        transport = KalshiTransport(
+            http, settings.kalshi_base_url, "prod",
+            settings.kalshi_key_id(), settings.kalshi_private_key_pem(),
+            timeout_s=settings.http_timeout_s, writes_enabled=True)
+    else:
+        raise ValueError(f"unknown env {env!r}")
+
+    reader = KalshiReader(transport)
+    return KalshiWriter(
+        transport, reader,
+        per_bet_cap_dollars=_as_decimal(per_bet_cap_dollars) if per_bet_cap_dollars is not None
+                            else _ZERO,
+        contract_cap=_as_decimal(contract_cap) if contract_cap is not None else _ZERO,
+        kill_switch_active=kill_switch_active if kill_switch_active is not None
+                          else (lambda: False),
+        writes_allowed=True,
+        _factory_token=_FACTORY_TOKEN)

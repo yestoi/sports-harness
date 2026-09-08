@@ -105,6 +105,20 @@ class Settings(BaseSettings):
     backup_encrypt_period_s: int = 600
     backup_nightly_max_age_h: int = 26
 
+    # --- phase 4: venue environment and posture -------------------------------------------
+    #: Which Kalshi exchange the authenticated adapter targets. `prod` is read-only in this
+    #: phase; `demo` is play money and is the only env in which writes can be enabled today.
+    kalshi_env: str = "prod"
+    kalshi_demo_base_url: str = "https://external-api.demo.kalshi.co/trade-api/v2"
+    kalshi_demo_ws_url: str = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
+    kalshi_demo_key_id_file: Path = Path("/run/secrets/kalshi_demo_key_id")
+    kalshi_demo_private_key_file: Path = Path("/run/secrets/kalshi_demo_private_key.pem")
+    legal_decision_file: Path = Path("secrets/legal_decision")
+    #: The committed posture lines in deploy/nas.env become the values that control. Both are
+    #: read by `make_writer` and by nothing else; flipping either is a gate (roadmap invariant 3).
+    mode: str = Field(default="paper", validation_alias="HARNESS_MODE")
+    live_trading: int = Field(default=0, validation_alias="LIVE_TRADING")
+
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()
 
@@ -121,6 +135,18 @@ class Settings(BaseSettings):
         and `kalshi_key_id()` would raise `IsADirectoryError` at recorder startup instead of the
         caller quietly running without a reader. Same rule as `backup_recipient_file`."""
         return self.kalshi_key_id_file.is_file() and self.kalshi_private_key_file.is_file()
+
+    def has_kalshi_demo_credentials(self) -> bool:
+        # is_file(), not exists(): Compose creates an empty *directory* on the host for a
+        # missing bind source, so exists() would be True with no credential behind it (C3).
+        return (self.kalshi_demo_key_id_file.is_file()
+                and self.kalshi_demo_private_key_file.is_file())
+
+    def kalshi_demo_key_id(self) -> str:
+        return self.kalshi_demo_key_id_file.read_text().strip()
+
+    def kalshi_demo_private_key_pem(self) -> bytes:
+        return self.kalshi_demo_private_key_file.read_bytes()
 
     def dashboard_token(self) -> str:
         return self.dashboard_token_file.read_text().strip()

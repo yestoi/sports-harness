@@ -72,3 +72,23 @@ def test_price_budget_is_45_inside_the_unchanged_tick_budget(env_settings):
     assert env_settings.price_budget_s == 45
     assert env_settings.tick_budget_s == 100
     assert env_settings.price_budget_s < env_settings.tick_budget_s
+
+
+def test_posture_defaults(env_settings):
+    assert env_settings.mode == "paper"
+    assert env_settings.live_trading == 0
+    assert env_settings.kalshi_env == "prod"
+
+
+def test_posture_binds_the_deploy_env_names(monkeypatch):
+    monkeypatch.setenv("HARNESS_MODE", "live")
+    monkeypatch.setenv("LIVE_TRADING", "1")
+    s = Settings(database_url="postgresql+psycopg://x/y")
+    assert s.mode == "live" and s.live_trading == 1
+
+
+def test_demo_hosts_are_pinned_to_the_roadmap_strings(env_settings):
+    assert env_settings.kalshi_demo_base_url == \
+        "https://external-api.demo.kalshi.co/trade-api/v2"
+    assert env_settings.kalshi_demo_ws_url == \
+        "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
