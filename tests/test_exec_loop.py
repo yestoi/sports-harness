@@ -173,7 +173,7 @@ def fills_of(session, order_id=None, method=None):
 
 
 def test_executor_version_is_bumped_for_the_loop():
-    assert EXECUTOR_VERSION == "3.6"
+    assert EXECUTOR_VERSION == "3.7"
 
 
 # --- intake, placement, the book ------------------------------------------------------
@@ -1328,3 +1328,55 @@ def test_exec_startup_deploy_and_config_change_events(env_settings, db_session, 
     assert len(config_events) == 1
     assert config_events[0].ref["variant_id"] == order.variant_id
     assert config_events[0].ref["from"] == "not-the-real-hash"
+
+
+# --- Final fix wave, I2: `store.newest_event_ts(at=...)` is bounded --------------------------
+
+AT = datetime(2026, 9, 9, 20, 0, tzinfo=timezone.utc)
+
+
+def _tape_row(session, ts, ticker="K1", seq=1):
+    row = OrderbookEvent(ticker=ticker, ts=ts, sid=2, seq=seq, kind="delta", side="yes",
+                         price=Decimal("0.35"), delta=Decimal("1.00"),
+                         raw={"market_ticker": ticker})
+    session.add(row)
+    session.flush()
+    return row
+
+
+def test_newest_event_ts_at_reads_the_newest_by_ts_not_the_highest_id(db_session):
+    """Final fix wave, I2. The replay path asks "how old is the tape's newest row at this
+    instant"; a backward walk of the primary key answers "which row was taped last", which is
+    a different question the moment the recorder writes out of `ts` order -- and, on a real
+    game day, it is a walk over every row taped *after* the instant before it reaches one at
+    or before it. Twenty rows after the instant and three before it, the last of which carries
+    the highest id and the *oldest* ts, is the shape that separates the two answers.
+    """
+    from harness.db.schema import ensure_partitions
+
+    ensure_partitions(db_session, AT)
+    _tape_row(db_session, AT - timedelta(seconds=300))
+    _tape_row(db_session, AT - timedelta(seconds=60))
+    # Taped last (highest id) but stamped oldest: `order by id desc` would return this one.
+    _tape_row(db_session, AT - timedelta(seconds=600))
+    for i in range(20):
+        _tape_row(db_session, AT + timedelta(seconds=i + 1))
+
+    assert store.newest_event_ts(db_session, AT) == AT - timedelta(seconds=60)
+
+
+def test_newest_event_ts_at_widens_once_then_reads_no_tape_at_all(db_session):
+    """The 10 minute window is widened once to 24 h, and stops there: a tape whose newest row
+    at the instant is older than a day reads as no tape (`None`), which the loop already
+    treats exactly as it treats a row older than `book_max_age_s` -- `dead_recorder`."""
+    from harness.db.schema import ensure_partitions
+
+    ensure_partitions(db_session, AT - timedelta(hours=30))
+    ensure_partitions(db_session, AT)
+
+    _tape_row(db_session, AT - timedelta(hours=30))
+    assert store.newest_event_ts(db_session, AT) is None
+
+    # Inside the widened 24 h window, it is found.
+    _tape_row(db_session, AT - timedelta(hours=6))
+    assert store.newest_event_ts(db_session, AT) == AT - timedelta(hours=6)

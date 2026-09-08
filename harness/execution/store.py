@@ -303,13 +303,28 @@ def market_rows(session: Session, venue_market_ids: Iterable[int],
     return {row.venue_market_id: row for row in session.execute(stmt, params).all()}
 
 
-# The live statement with the instant added, deliberately *not* `max(ts)`: `orderbook_events`
-# has no b-tree with `ts` leading (the PK is `(id, ts)`, the only `ts` index is a BRIN), so an
-# aggregate would read every row at or before the instant on a table taking 4M rows an hour --
-# once per 15 s grid step, under the executor's own statement timeout (fix round 1, I2). A
-# backward walk of the primary key stops at the first row inside the bound.
+# The live statement with the instant added, bounded below as well as above (final review I2).
+# `orderbook_events` is weekly-partitioned on `ts` with a per-partition PK of `(id, ts)`, so
+# `ts <= :at` alone prunes only the partitions that start after the instant: inside the one
+# holding it, the plan was a backward walk by `id` that filtered every row taped *after* the
+# instant before it reached one at or before it. Replaying a Sunday game day is a walk over
+# most of that week's tape, once per 15 s grid step, under the executor's own 10 s statement
+# timeout -- a hard failure of the Monday replay duty rather than a slow query. A lower `ts`
+# bound is answered off `ix_obe_ts_brin`, and the loop's question ("is the tape's newest row
+# older than `book_max_age_s`") never needs to look further back than the first window.
+# `(ts desc, id desc)` rather than `id desc`: the question is which row is newest by the
+# recorder's clock, not which was inserted last.
 _NEWEST_EVENT_AT = text(
-    "select ts from orderbook_events where ts <= :at order by id desc limit 1")
+    "select ts from orderbook_events where ts <= :at and ts > :lower "
+    "order by ts desc, id desc limit 1")
+
+#: The bounded tape lookback and its one widening. 10 minutes is five times `book_max_age_s`,
+#: so any answer the loop would act on differently is inside it; 24 h is the backstop for a
+#: replay that starts after a long recorder outage. Nothing older than that can read as
+#: anything but a dead recorder, so the second empty answer is `None` rather than a third,
+#: unbounded scan.
+TAPE_WINDOW = timedelta(minutes=10)
+TAPE_WINDOW_WIDE = timedelta(hours=24)
 
 
 def newest_event_ts(session: Session, at: datetime | None = None) -> datetime | None:
@@ -318,9 +333,17 @@ def newest_event_ts(session: Session, at: datetime | None = None) -> datetime | 
     Live reads the head by `id`, the tape's insertion order. A replay executor asks the same
     question of its own instant instead, so a recorder outage inside the replayed range still
     reads as one (F36) rather than being papered over by rows taped hours later.
+
+    The instant-bounded read looks back `TAPE_WINDOW`, then once more over `TAPE_WINDOW_WIDE`,
+    and answers `None` beyond that -- which `Executor._body` already treats exactly as it
+    treats a row older than `book_max_age_s`: `dead_recorder`.
     """
     if at is not None:
-        return session.execute(_NEWEST_EVENT_AT, {"at": at}).scalar()
+        for window in (TAPE_WINDOW, TAPE_WINDOW_WIDE):
+            got = session.execute(_NEWEST_EVENT_AT, {"at": at, "lower": at - window}).scalar()
+            if got is not None:
+                return got
+        return None
     return session.execute(text(
         "select ts from orderbook_events order by id desc limit 1")).scalar()
 

@@ -117,7 +117,33 @@ _CLEAN_SNAPSHOT_AFTER_AT = text(
     "                  and g.ts <= :instant) limit 1"
 )
 # The tape position a REST ladder was fetched at: the id its gap check compares against.
-_MAX_EVENT_ID_AT = text("select max(id) from orderbook_events where ts <= :fetched_at")
+# Bounded below as well as above (final review I3). `orderbook_events` is weekly-partitioned
+# on `ts` with a per-partition PK of `(id, ts)`, so `ts <= :fetched_at` alone prunes only the
+# partitions starting after the fetch: inside the one holding it, an unbounded `max(id)`
+# filtered every row taped afterwards. That runs on the REST-anchor branch of both `load_book`
+# and `book_at`, and `book_at` is what the markouts stage calls for every horizon with no
+# nearby quote, at instants hours or days in the past.
+_MAX_EVENT_ID_AT = text(
+    "select max(id) from orderbook_events where ts <= :fetched_at and ts > :lower")
+
+#: The bounded tape lookback and its one widening, the same pair `store.newest_event_ts` uses.
+#: 10 minutes covers any ladder a live loop fetched; 24 h is the backstop for a replay reaching
+#: into a quiet stretch. Past that the answer is 0, which makes every gap on sid 0 read as
+#: after the ladder -- the conservative direction, since a dirty book blocks decisions while a
+#: clean one would let a ladder that may have missed frames look tradeable (F36).
+TAPE_WINDOW = timedelta(minutes=10)
+TAPE_WINDOW_WIDE = timedelta(hours=24)
+
+
+def _max_event_id_at(session, fetched_at: datetime) -> int:
+    """The tape's head id at `fetched_at`, looked up inside `TAPE_WINDOW`, then once inside
+    `TAPE_WINDOW_WIDE`, then 0."""
+    for window in (TAPE_WINDOW, TAPE_WINDOW_WIDE):
+        got = session.execute(
+            _MAX_EVENT_ID_AT, {"fetched_at": fetched_at, "lower": fetched_at - window}).scalar()
+        if got is not None:
+            return got
+    return 0
 _NEWEST_EVENT_TS = text(
     "select max(ts) from orderbook_events where ticker = :t and ts <= :instant"
 )
@@ -345,8 +371,7 @@ def load_book(session, ticker: str, now: datetime) -> BookState | None:
         # still starts from 0, because a REST anchor selects its deltas by `ts >= fetched_at`.
         book = BookState.from_levels(ticker, rest.yes_bids, rest.no_bids, sid=0, seq=0,
                                      as_of=rest.fetched_at, source="rest", anchor_id=0)
-        book.gap_check_id = session.execute(
-            _MAX_EVENT_ID_AT, {"fetched_at": rest.fetched_at}).scalar() or 0
+        book.gap_check_id = _max_event_id_at(session, rest.fetched_at)
         lower = rest.fetched_at
     rows = session.execute(_DELTAS_BY_ID, {"t": ticker, "cursor": book.anchor_id, "lower": lower}).all()
     _apply_rows(book, rows, check_seq=use_ws)
@@ -410,8 +435,7 @@ def book_at(session, ticker: str, instant: datetime) -> BookState | None:
         # tape position the ladder was fetched at rather than to the anchor id it does not have.
         book = BookState.from_levels(ticker, rest.yes_bids, rest.no_bids, sid=0, seq=0,
                                      as_of=rest.fetched_at, source="rest", anchor_id=0)
-        book.gap_check_id = session.execute(
-            _MAX_EVENT_ID_AT, {"fetched_at": rest.fetched_at}).scalar() or 0
+        book.gap_check_id = _max_event_id_at(session, rest.fetched_at)
         lower = rest.fetched_at
     newest = session.execute(_NEWEST_EVENT_TS, {"t": ticker, "instant": instant}).scalar()
     # A REST-anchored ticker can have no tape rows of its own at all, and its ladder's own

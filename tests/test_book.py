@@ -32,7 +32,7 @@ def _rest_ladders():
 
 
 def test_executor_version_is_pinned():
-    assert EXECUTOR_VERSION == "3.6"
+    assert EXECUTOR_VERSION == "3.7"
 
 
 def test_from_ws_raw_builds_ladder_and_resting_at():
@@ -460,3 +460,43 @@ def test_load_book_at_dirties_on_a_gap_inside_the_range_only(db_session):
     _gap(db_session, sid=2, exposed_by="A", ts=NOW + timedelta(seconds=30))
     assert load_book_at(db_session, "A", NOW + timedelta(seconds=10)).dirty is False
     assert load_book_at(db_session, "A", NOW + timedelta(seconds=40)).dirty is True
+
+
+# --- Final fix wave, I3: the REST anchor's gap-check id is bounded below --------------------
+
+def test_rest_anchor_gap_check_id_reads_the_window_before_the_fetch(db_session):
+    """Final fix wave, I3. `max(id) where ts <= :fetched_at` had no lower bound, so inside the
+    partition holding the fetch the plan filtered every row taped after it -- the same
+    partition-scan shape as I2, on the branch `book_at` takes for every markout horizon with
+    no nearby quote. Bounded to the window before the fetch it still answers the same id, and
+    the twenty rows taped after the fetch are pruned rather than filtered.
+    """
+    vm = _market(db_session, "R")
+    fetched_at = NOW - timedelta(seconds=10)
+    _delta(db_session, "OTHER", fetched_at - timedelta(minutes=5), "yes", "0.35", "1.00")
+    inside = _delta(db_session, "OTHER", fetched_at - timedelta(minutes=1), "yes", "0.35", "1.00")
+    for i in range(20):
+        _delta(db_session, "OTHER", fetched_at + timedelta(seconds=i + 1), "yes", "0.35", "1.00")
+    _rest_snapshot(db_session, vm, fetched_at, raw_id=91)
+
+    book = load_book(db_session, "R", NOW)
+    assert book.source == "rest"
+    assert book.gap_check_id == inside.id
+
+
+def test_rest_anchor_gap_check_id_widens_once_then_stops(db_session):
+    """The window widens once to 24 h and stops there: a fetch whose newest preceding tape row
+    is older than a day takes gap-check id 0, which reads every gap on sid 0 as after the
+    ladder -- the conservative direction (a dirty book blocks decisions; a clean one would let
+    a ladder that may have missed frames look tradeable, F36)."""
+    vm = _market(db_session, "R")
+    fetched_at = NOW - timedelta(seconds=10)
+    ancient = _delta(db_session, "OTHER", fetched_at - timedelta(hours=30), "yes", "0.35", "1.00")
+    _rest_snapshot(db_session, vm, fetched_at, raw_id=92)
+
+    assert load_book(db_session, "R", NOW).gap_check_id == 0
+
+    # Inside the widened 24 h window, it is found again.
+    within = _delta(db_session, "OTHER", fetched_at - timedelta(hours=6), "yes", "0.35", "1.00")
+    assert within.id > ancient.id
+    assert load_book(db_session, "R", NOW).gap_check_id == within.id
