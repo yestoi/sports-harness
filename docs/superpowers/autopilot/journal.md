@@ -828,3 +828,17 @@ Times are America/Chicago.
 - Rulings (decisions taken on the user's behalf, addendum §11): D1 age v1 format implemented with `cryptography` (no `age` binary anywhere; CCTV vectors as fixtures); D2 dump sidecar on the postgres image (pg_dump with native zstd); D3 `signals` stays in the nightly dump per decision 8 (100-150 GB of nightlies by week 3, reversible by amendment); D4 gateway interface with `PaperGateway` (paper behaviour unchanged, golden replay); D5 `venue_requests` records authenticated calls only, made non-vacuous by the recorder's hourly limits read; D6 drawdown stop is an annotation label outside every decision rule (`ANNOTATION_LABELS`), paper keeps placing, the badge is phase 4.5; D7 `alembic` added to pyproject plus two appended pins (gate 7 forbids regenerating, not appending: listed for the user under "Decisions you may want to reverse"); D8 pricing order (gate variant by id, then primary, then rotating secondaries) and `price_budget_s` 20 -> 45 as Amendment 4 with the protocol's four elements, table 2 and family C named, a coverage line in table 1, deployed mid-phase by the controller; D9 demo hosts as pinned by the roadmap; D10 the restore drill in two halves (NAS restore into a throwaway container with an anonymous volume, Mac decrypt of the same build's file; plaintext kept until the Mac half proves decryption); D11 `venue_status` keyed (venue, env), outages counted for prod only. Further rulings: app-run gains the production key files read-only for the GET-only limits read (the read-scoped key TODO makes the fence physical); the demo smoke runs only as a controller `docker compose run` with explicit one-run mounts; `Settings.mode` and `live_trading` bound to HARNESS_MODE and LIVE_TRADING (implementing invariant 3, not changing it); Task 14 (unattended NAS shell scripts) is opus; Task 1 deploys with `make deploy-nas-app` (its diff is app-only), the phase deploy with `make deploy-nas`.
 - Carried forward: none (row 16 is the plan's Task 2)
 - Next: phase (Unit: phase; branch `phase4-kalshi-authed` from `main`; wave 1 = Tasks 1, 2, 3, 12 under the 3-implementer ceiling)
+
+## 62. phase start - phase 4 Kalshi authenticated adapter (still paper), risk gate, backups, Alembic - 2026-09-08 11:07 CT
+- Orient: rule 5 - phase 4 status `planned` (entry 61), no unmet gate
+- Branch / commits: `phase4-kalshi-authed` from `main` 185b182; plan `docs/superpowers/plans/2026-09-08-phase4-kalshi-authed.md` (17 tasks); SDD workspace `.superpowers/sdd/2026-09-08-phase4-kalshi-authed/` (ledger, briefs, reports)
+- Result: running
+- Dispatches: 0 at start (wave 1: Tasks 1 opus, 2 sonnet, 12 opus now; 3 sonnet when a slot frees; ceiling 3 concurrent)
+- Tests: n/a
+- Review: n/a
+- Deploy: Task 1 mid-phase (controller, from `main`, `make deploy-nas-app`); the phase deploy after Task 16 (`make deploy-nas`: Dockerfile and compose change)
+- Verification: n/a
+- Rulings: the ledger's standing rulings (deploy from main; trailers; parallel disjoint tasks); pre-flight scan clean (12 shared-file rows, all serialized by the wave map)
+- Wave map: 1={1,2,3,12} 2={4} 3={5,13} 4={6,14} 5={6b,7} 6={8} 7={9} 8={10} 9={11} 10={15} 11={16}
+- Carried forward: none
+- Next: phase (wave 1 running)
