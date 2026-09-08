@@ -79,7 +79,9 @@ STAGES: list[tuple[str, StageFn]] = []
 #: The modules `load_stages()` imports. A later task appends its own module name; Task 7 owns
 #: the first entry. Never import a stage module from here directly: the import happens at run
 #: time so a module that does not exist yet cannot break this one.
-STAGE_MODULES: list[str] = ["harness.settlement.settle"]
+STAGE_MODULES: list[str] = [
+    "harness.settlement.settle", "harness.settlement.benchmarks", "harness.settlement.order_clv",
+]
 
 _CTX: ContextVar[dict | None] = ContextVar("settlement_job_ctx", default=None)
 

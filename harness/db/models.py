@@ -570,7 +570,10 @@ class Benchmark(Base):
     outcome_team_id: Mapped[int | None] = mapped_column(Integer)
     outcome_side: Mapped[str | None] = mapped_column(String(8))
     threshold: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))
-    benchmark_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: String(32), not (16): "kalshi_last_trade_pre_kick" (26 chars) and "opening_first_seen"
+    #: (18 chars) are both longer than the column this table shipped with (Task 8 fix: the two
+    #: longest BENCHMARK_TYPES values did not fit their own column).
+    benchmark_type: Mapped[str] = mapped_column(String(32), nullable=False)
     p: Mapped[Decimal | None] = mapped_column(PROB)
     target_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -598,6 +601,10 @@ class OrderClv(Base):
     """CLV of a placed order against a benchmark (Task 8 fills it; the `clv` view reads it)."""
     __tablename__ = "order_clv"
     order_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: Still String(16) (unlike Benchmark.benchmark_type -- see its note): the `clv` view
+    #: depends on this column, and Postgres refuses ALTER COLUMN ... TYPE on a column a view
+    #: depends on. Widening it needs the view dropped and recreated around the ALTER, which
+    #: this task's constraints do not authorize unilaterally (open concern; see the report).
     benchmark_type: Mapped[str] = mapped_column(String(16), primary_key=True)
     p_bench: Mapped[Decimal | None] = mapped_column(PROB)
     p_used: Mapped[Decimal | None] = mapped_column(PROB)

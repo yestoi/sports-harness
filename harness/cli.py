@@ -175,6 +175,36 @@ def settle_cmd() -> None:
         raise typer.Exit(1)
 
 
+@app.command("benchmarks")
+def benchmarks_cmd(game_id: int = typer.Option(..., "--game-id")) -> None:
+    """Compute benchmarks for one game now, by hand -- for an operator who does not want to
+    wait for the game's kickoff + 5 min to fall inside the next scheduled settlement pass.
+
+    Runs the same insert path the `benchmarks`/`result_benchmarks` stages do, scoped to
+    `game_id`; the insert is through the same unique key, so a re-run is exactly as idempotent
+    as the scheduled job's.
+    """
+    configure_logging()
+    from harness.db.models import Game
+    from harness.settlement.benchmarks import (
+        compute_benchmarks_for_game,
+        insert_result_benchmarks_for_game,
+    )
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    now = datetime.now(timezone.utc)
+    with factory() as session:
+        if session.get(Game, game_id) is None:
+            log.error("game %s not found", game_id)
+            raise typer.Exit(1)
+        n_benchmarks = compute_benchmarks_for_game(session, game_id, now)
+        session.commit()
+        n_result = insert_result_benchmarks_for_game(session, game_id, now)
+        session.commit()
+    print(f"game_id={game_id} benchmarks={n_benchmarks} result_benchmarks={n_result}")
+
+
 @app.command("serve")
 def serve(port: int = 8080, host: str = "0.0.0.0") -> None:
     configure_logging()

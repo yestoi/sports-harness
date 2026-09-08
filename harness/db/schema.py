@@ -119,6 +119,11 @@ _COLUMN_DDL = (
     "alter table orders add column if not exists nw_last_print_ts timestamptz",
     "alter table orders add column if not exists nw_last_print_ids jsonb",
     "alter table orders add column if not exists dirty_seconds integer not null default 0",
+    # Task 8 fix: benchmarks shipped with benchmark_type varchar(16), too narrow for two of
+    # BENCHMARK_TYPES' own values ("opening_first_seen", 18 chars; "kalshi_last_trade_pre_kick",
+    # 26 chars). A lossless widening, safe to rerun -- unlike order_clv's own benchmark_type
+    # column, nothing views this table, so the ALTER never fights a dependent view.
+    "alter table benchmarks alter column benchmark_type type varchar(32)",
 )
 
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).

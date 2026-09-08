@@ -560,8 +560,15 @@ def test_settler_writes_job_runs_and_never_touches_runs_notes(db_session, env_se
 
     assert row.job == "settle" and row.status == "ok"
     assert row.started_at is not None and row.finished_at is not None
-    assert [s["name"] for s in row.notes["stages"]] == ["settle", "venue_result"]
-    assert row.notes["stages"][0]["counts"]["games"] == 1
+    # Task 8 folded four more stages (benchmarks, result_benchmarks, gap_outcomes_drain,
+    # order_clv) into the shared registry every settlement run now iterates; this run's own
+    # game and order pass cleanly through all of them (no errors, no warnings), so only
+    # `settle`'s and `venue_result`'s own presence and relative order are pinned here.
+    stages = {s["name"]: s for s in row.notes["stages"]}
+    names = [s["name"] for s in row.notes["stages"]]
+    assert {"settle", "venue_result"} <= set(names)
+    assert names.index("settle") < names.index("venue_result")
+    assert stages["settle"]["counts"]["games"] == 1
     assert row.notes["stale_unsettled"] == 0
     assert row.notes["warnings"] == [] and row.notes["errors"] == []
 

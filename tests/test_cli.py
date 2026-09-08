@@ -147,3 +147,34 @@ def test_init_db_runs_its_ddl_under_the_batch_statement_timeout(monkeypatch, cli
     result = runner.invoke(app, ["init-db"])
     assert result.exit_code == 0, result.output
     assert seen == [BATCH_STATEMENT_TIMEOUT_MS]
+
+
+def test_benchmarks_cmd_computes_and_is_idempotent(cli_settings, db_session):
+    from decimal import Decimal
+
+    from harness.db.models import Benchmark, Game, VenueMarket
+
+    kickoff = datetime(2026, 9, 12, 3, 0, tzinfo=timezone.utc) - timedelta(hours=4)
+    game = Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=kickoff, status="final")
+    db_session.add(game)
+    db_session.flush()
+    db_session.add(VenueMarket(venue="kalshi", ticker="T-ML-HOME", event_ticker="E", series_ticker="S",
+                               game_id=game.id, market_type="moneyline", side_team_id=14,
+                               match_confidence=Decimal("1.00"), match_status="matched",
+                               first_seen_raw_id=1, last_seen_at=kickoff))
+    db_session.commit()
+
+    result = runner.invoke(app, ["benchmarks", "--game-id", str(game.id)])
+    assert result.exit_code == 0, result.output
+    assert f"game_id={game.id}" in result.output
+    # No pre-kickoff odds/quotes/trades were seeded, so nothing computable inserts, but the
+    # command itself must run cleanly against a real (empty-of-data) game.
+    assert db_session.query(Benchmark).filter_by(game_id=game.id).count() == 0
+
+    again = runner.invoke(app, ["benchmarks", "--game-id", str(game.id)])
+    assert again.exit_code == 0, again.output
+
+
+def test_benchmarks_cmd_exits_1_for_an_unknown_game(cli_settings, db_session):
+    result = runner.invoke(app, ["benchmarks", "--game-id", "999999"])
+    assert result.exit_code == 1
