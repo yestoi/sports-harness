@@ -1,15 +1,15 @@
 # Autopilot state (rewritten by the loop at every unit boundary; the journal is the history)
 
-- Updated: 2026-09-08 00:40 CT
+- Updated: 2026-09-08 01:07 CT
 - Session: session_01ACYvEDzjr3oQvGNst45sjf (trailers from this session); preflight journal 39 (paper posture intact)
 - Position: **phase 3 in progress** (Orient rule 5); SDD ledger `.superpowers/sdd/2026-09-07-phase3-paper-execution/progress.md`
-- Branch: `phase3-paper-execution` at c317e5e (Tasks 1-10, 12 merged; 708 tests) (main checkout); `main` 659ba67 = NAS build 659ba67 (deployed 16:26 CT, verified 16:31 CT)
-- Agents in flight: `p3-impl-t11` (opus, dispatched 00:39 CT, timeout 02:09 CT) on `../sports-wt/phase3-t11-gate` from c317e5e; context task-11-context.md; report lands in task-11-report.md
-- Next in the phase: Task 11 review (opus: gate) -> fix rounds -> rebase, suite, ff-merge; 12b (U6, sonnet; brief task-12b-brief.md) after 11; 13 (opus) after 12b (both edit loop.py); 14 (sonnet) last; then final review (opus), audit, archive, merge to main, phase deploy
+- Branch: `phase3-paper-execution` at a0e3643 (Tasks 1-12 merged; 733 tests) (main checkout); `main` 659ba67 = NAS build 659ba67 (deployed 16:26 CT, verified 16:31 CT)
+- Agents in flight: `p3-impl-t12b` (sonnet, dispatched 01:06 CT, timeout 02:36 CT) on `../sports-wt/phase3-t12b-telemetry` from a0e3643; context task-12b-context.md; report lands in task-12b-report.md
+- Next in the phase: Task 12b review (opus: it touches execution/ and recorder/) -> fix rounds -> rebase, suite, ff-merge; 13 (opus) after 12b (both edit loop.py); 14 (sonnet) last; then final review (opus), audit, archive, merge to main, phase deploy
 - Deploys pending: Task 2b quiet-window deploy (01:00-08:00 CT, no game window; ledger ruling 2026-09-07 23:36 CT: `main` is fast-forwarded to ae1e86c ONLY, never to the branch head, so app-exec waits for the phase deploy): stop `app-ws` and `app-run` first, ff `main` to the phase branch, `make deploy-nas`, then `docker compose run --rm -T app-run partition-bulk-tables` (tens of minutes; recovery in `task-2b-live-run-recovery.md`), `show shared_buffers` for compose fix 9, verify Layers 1-2 plus `pg_partitioned_table` listing the three tables, remove carried fixes 9 and 13 when the rows pass. Task 4b deploy before 2026-09-16 (replay first, Amendment 3, `gate_variant` flip). Every deploy stops the writers first until fix 13 is on the NAS
-- Game window: FSU-SMU 18:15-22:30 CT tonight (blocks deploys; run the verify.md Game window query before any deploy)
+- Game window: game 114 (ncaaf, kickoff 20:20 CT Mon) still in_progress at 24-24 as of 00:54 CT (blocks the quiet-window deploy until it goes final); next kickoff Wed 2026-09-09 19:20 CT
 - Carried fixes: 9 and 13 open, both phase-bound (no hotfix unit)
 - Deferred items: fix 4 live gap recovery (read the app-ws log at the first `gap` row); 7 null feed_kind direct rows on run 2322 (re-check at the next verify); morning-after-game full verify with the walker (Tue 2026-09-08 after 08:10 CT); daily 09:00 CT line
 - U7: after the phase and on Mondays, `git push origin main phase3-paper-execution` beside the bundle; never pull; a failed push is journaled only
-- Day counters (2026-09-08): failed deploys 0, same-item repeat FAILs 0, dispatches 3 (session total 31; 2026-09-07 closed at 94), test notifications sent today: no (first session of the day runs them at its preflight)
+- Day counters (2026-09-08): failed deploys 0, same-item repeat FAILs 0, dispatches 8 (session total 36; 2026-09-07 closed at 94), test notifications sent today: no (first session of the day runs them at its preflight)
 - Lessons: run controller git operations from /Users/trey/dev/sports (never inside a worktree cwd); never day-wide scans on orderbook_events during verification; never a reviewer's suite while an implementer works on the same branch database; forced ticks fetch every family by design; reviewer reports over ~90 lines get truncated: ask for the full report in a file and a compact copy under 70 lines
