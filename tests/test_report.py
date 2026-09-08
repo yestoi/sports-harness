@@ -559,8 +559,11 @@ def test_a_homogeneous_stratum_counts_no_significant_cell(db_session, env_settin
 
 
 def test_table4_reports_feed_kind_as_a_stratum(db_session, env_settings):
-    """I1/I2: the grid carries feed_kind beside the staleness buckets as a stratum, and the
-    family runs on the gap_mid quantity over every feed rather than on featured rows alone."""
+    """I1/I2: the grid carries feed_kind beside the staleness buckets as a stratum. The
+    `gap_mid`, `gap_maker_net` and `clv_mid_p` panel columns stay display columns pooled over
+    every feed (decision 2026-09-08 moved only the family/shrinkage/§9.6 CI to the featured
+    feed, not these display cells); each `feed`/`stale` stratum column carries its own slice
+    alone."""
     from harness.report.tables import HEADLINE_PANEL
 
     assert HEADLINE_PANEL == "gap_mid"
@@ -580,13 +583,52 @@ def test_table4_reports_feed_kind_as_a_stratum(db_session, env_settings):
                and r[t4.columns.index("ttk")] == "< 3 h"
                and r[t4.columns.index("sport")] == "nfl"
                and r[t4.columns.index("market_type")] == "moneyline")
-    # The panel now covers both feeds; each stratum column carries its own feed alone.
+    # The display panel still pools both feeds; each stratum column carries its own feed alone.
     assert row[t4.columns.index("gap_mid")][1] == 2
     assert abs(row[t4.columns.index("gap_mid")][0] - 0.06) < 1e-9
     assert row[t4.columns.index("feed featured")][1] == 1
     assert row[t4.columns.index("feed alternate")][1] == 1
     assert row[t4.columns.index("feed unknown")] == PLACEHOLDER
     assert "gap_mid" in t4.header
+
+
+def test_table4_family_runs_on_the_featured_feed_only(db_session, env_settings):
+    """User decision 2026-09-08: families A/B, the empirical-Bayes shrinkage and the §9.6
+    significant-cell count run on `gap_mid` restricted to `feed_kind = featured` -- the
+    addendum's own words are "the headline H2 claim is from `feed_kind = featured`". Ten
+    featured-feed games land clearly positive; ten separate alternate-feed games land clearly
+    negative and would pull a pooled-feed mean back toward zero. The cell's BH verdict must
+    follow the featured rows (reject, positive direction), and the `feed alternate` display
+    column must still show the alternate rows untouched."""
+    for i in range(10):
+        # Distinct games per iteration: n_clusters counts games (F14), and a pooled-feed CI
+        # would otherwise cancel the paired +/- rows within one cluster instead of averaging
+        # across ten.
+        featured_game = _game(db_session)
+        featured_market = _market(db_session, featured_game.id, f"T-ML-FEAT-{i}")
+        # Small within-feed variation keeps the cluster-robust SE > 0 without moving the mean
+        # off a clearly positive ~0.10.
+        featured_value = "0.0900" if i % 2 == 0 else "0.1100"
+        _gap(db_session, featured_market, feed_kind="featured", gap_mid=featured_value)
+        alternate_game = _game(db_session)
+        alternate_market = _market(db_session, alternate_game.id, f"T-ML-ALT-{i}")
+        alternate_value = "-0.0900" if i % 2 == 0 else "-0.1100"
+        _gap(db_session, alternate_market, feed_kind="alternate", gap_mid=alternate_value)
+    db_session.flush()
+
+    t4 = _tables(db_session, env_settings)["t4"]
+    row = next(r for r in t4.rows
+               if r[t4.columns.index("fair_source")] == "direct"
+               and r[t4.columns.index("price_bucket")] == "50-65"
+               and r[t4.columns.index("ttk")] == "< 3 h"
+               and r[t4.columns.index("sport")] == "nfl"
+               and r[t4.columns.index("market_type")] == "moneyline")
+    assert row[t4.columns.index("bh")] == "reject", (
+        "the featured-only rows are clearly positive and should reject; a pooled-feed CI "
+        "(alternate rows cancel the featured ones) would not")
+    assert row[t4.columns.index("feed alternate")][1] == 10
+    assert row[t4.columns.index("feed alternate")][0] < 0, (
+        "the alternate display column must still show the alternate rows' own (negative) mean")
 
 
 def test_adverse_drift_uses_only_fair_changed_rows(db_session, env_settings):

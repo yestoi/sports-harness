@@ -74,15 +74,19 @@ STALENESS_BUCKETS = (("< 120", None, 120), ("120-300", 120, 300),
 #: Table 3's staleness split at the featured feed's own allowance (addendum §0.1).
 STALENESS_SPLIT_S = 220
 FEED_KINDS = ("featured", "alternate", "unknown")
-#: The stratum the headline H2 claim is read from (addendum §4). It is a stratum, not a
-#: filter: the family runs over every feed and `feed_kind` is reported as strata columns
-#: beside the staleness buckets (fix round 1, I1).
+#: The feed the mispricing map's families, shrinkage and §9.6 criterion are restricted to
+#: (user decision 2026-09-08): the addendum states "the headline H2 claim is from
+#: `feed_kind = featured`", so families A/B run on the featured-feed rows of `HEADLINE_PANEL`
+#: alone. `feed_kind` is still reported as strata columns beside the staleness buckets
+#: (fix round 1, I1), and those columns and the panel cells stay pooled over every feed as
+#: display columns outside the families.
 HEADLINE_FEED_KIND = "featured"
 #: The panel the mispricing map's families, shrinkage and §9.6 criterion are judged on. Spec
 #: §9.7 states H2 as "venue mid is systematically off sharp fair", and the stored `gap_mid`
 #: (`fair - mid`) is that quantity, so the family tests the hypothesis's own quantity (fix
-#: round 1, I2). `gap_maker_net` -- the tradeable version of the same gap -- is reported
-#: beside it as a panel column outside the family.
+#: round 1, I2), restricted to `feed_kind = HEADLINE_FEED_KIND`. `gap_maker_net` -- the
+#: tradeable version of the same gap -- is reported beside it as a panel column outside the
+#: family.
 HEADLINE_PANEL = "gap_mid"
 #: Table 2's Holm family (C) is the variant contrasts against this benchmark.
 CONTRAST_BENCHMARK = "pinnacle_t5"
@@ -643,17 +647,20 @@ def _table4(session: Session, window: dict) -> Table:
         "Mispricing map: price x time-to-kickoff x sport x market type, 72 cells per fair "
         "source. Sign convention: `gap_mid` is stored as `fair - mid`, so a positive value "
         "means the venue is cheap relative to the sharp fair (the spec's 'venue mid minus "
-        "sharp fair' is its negative). Panel cells cover every feed; the three `feed` columns "
-        "and the four `stale` columns are the same "
-        f"`{HEADLINE_PANEL}` panel within each stratum, and the headline H2 claim is the "
-        f"`feed {HEADLINE_FEED_KIND}` column. `posterior` is the "
+        "sharp fair' is its negative). Families A/B, the `posterior` shrinkage and the §9.6 "
+        f"count run on `{HEADLINE_PANEL}` restricted to the "
+        f"`feed {HEADLINE_FEED_KIND}` rows (user decision 2026-09-08: the addendum's own "
+        f"words are 'the headline H2 claim is from `feed_kind = {HEADLINE_FEED_KIND}`'). The "
+        f"`{HEADLINE_PANEL}`, `gap_maker_net` and `clv_mid_p` panel cells, the three `feed` "
+        "columns and the four `stale` columns are display columns pooled over every feed, "
+        "outside the families. `posterior` is the "
         "empirical-Bayes interval `m~ +/- t_{0.95, G-1} sqrt(B se^2)` shrunk within sport x "
         f"market type; `bh` is Benjamini-Hochberg at q = {BH_Q} on the two-sided "
-        f"cluster-robust t of `{HEADLINE_PANEL}` (spec §9.7's H2 quantity), family A the "
-        "direct cells and family B the derived cells. `gap_maker_net`, the tradeable version "
-        "of the same gap, is reported beside it and is not in either family. The §9.6 "
-        "criterion is judged on `posterior`, and a stratum with no heterogeneity contributes "
-        "no significant cell.")
+        f"cluster-robust t of `{HEADLINE_PANEL}` over `feed {HEADLINE_FEED_KIND}` (spec §9.7's "
+        "H2 quantity), family A the direct cells and family B the derived cells. "
+        "`gap_maker_net`, the tradeable version of the same gap, is reported beside it and is "
+        "not in either family. The §9.6 criterion is judged on `posterior`, and a stratum "
+        "with no heterogeneity contributes no significant cell.")
     params = dict(window, benchmark=CONTRAST_BENCHMARK)
     snapshots = [r for r in session.execute(_T4_SNAPSHOTS, params)]
 
@@ -685,7 +692,7 @@ def _table4(session: Session, window: dict) -> Table:
             for ttk, _, _ in TTK_BUCKETS
             for sport in SPORTS
             for market_type in MARKET_TYPES]
-    cis = {key: _grouped_ci(buckets[key][HEADLINE_PANEL]) for key in grid}
+    cis = {key: _grouped_ci(buckets[key][f"feed {HEADLINE_FEED_KIND}"]) for key in grid}
 
     # Shrinkage within sport x market type, per fair source, over cells with an estimable SE.
     posterior: dict[tuple, Any] = {key: PLACEHOLDER for key in grid}
