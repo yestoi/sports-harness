@@ -260,6 +260,25 @@ def test_benchmark_type_columns_fit_every_benchmark_type():
         assert col.type.length >= longest, (model.__tablename__, col.type.length, longest)
 
 
+def test_markout_anchor_and_horizon_columns_fit_every_label():
+    """Task 9 fix round 1, Minor 5: the same class of width regression the test above pins for
+    `benchmark_type`. `markouts.anchor` shipped at `String(8)`, too narrow for `"cross_fill"`
+    (10 chars); widened to `String(10)` in fix round 1 rather than an `ALTER`, since `markouts`
+    has never existed on the deployed database. This test pins both `anchor` and `horizon` so
+    neither can regress below the labels the code actually writes."""
+    from harness.db.models import Markout
+    from harness.settlement.markouts import HORIZONS, ZERO_M_ANCHORS
+
+    anchors = ("place", "fill", "nw_fill", "cross_fill")
+    horizons = (*HORIZONS, "close")
+    assert set(ZERO_M_ANCHORS) <= set(anchors)
+
+    anchor_col = Markout.__table__.c.anchor
+    horizon_col = Markout.__table__.c.horizon
+    assert anchor_col.type.length >= max(len(a) for a in anchors), anchor_col.type.length
+    assert horizon_col.type.length >= max(len(h) for h in horizons), horizon_col.type.length
+
+
 def test_fill_unique_key_dedupes_null_sources(db_session):
     from harness.db.models import Fill
 
@@ -387,10 +406,11 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     ddl = [(s, autocommit, txn) for s, autocommit, txn in seen
            if s.startswith(("alter table", "create index", "create unique index",
                             "create or replace view", "update venue_markets"))]
-    # 24 column ALTERs + 18 indexes + 3 views + 1 match_key backfill + 4 tape statements + the
-    # 4 tape indexes Task 2b guards behind "partitioned, or still empty" (both tape tables are
-    # partitioned here, so all four run).
-    assert len(ddl) == 54, [s for s, _, _ in ddl]
+    # 24 column ALTERs + 19 indexes (Task 9 fix round 1, M1 adds ix_markouts_as_measured) +
+    # 3 views + 1 match_key backfill + 4 tape statements + the 4 tape indexes Task 2b guards
+    # behind "partitioned, or still empty" (both tape tables are partitioned here, so all four
+    # run).
+    assert len(ddl) == 55, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.

@@ -18,7 +18,7 @@ from harness.config.settings import Settings
 from harness.db.models import Game, MarketGapSnapshot, Signal, VenueMarket
 from harness.pricing.fair import compute_fair_values
 from harness.pricing.gaps import build_gap_snapshots
-from harness.settlement.markouts import as_measured_table
+from harness.strategy.as_measured import as_measured_table
 from harness.strategy.run import GapRow, run_strategy
 from harness.strategy.variants import Variant, active_variants
 

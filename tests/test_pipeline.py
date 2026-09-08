@@ -295,3 +295,35 @@ def test_insert_signals_inserts_every_chunk_including_the_short_last_one(db_sess
 
     assert inserted == 5
     assert db_session.query(Signal).filter_by(run_id=run.id).count() == 5
+
+
+# --- Task 9 fix round 1, Important 5: pipeline must not pull in a settlement stage ------
+
+def test_importing_pipeline_registers_no_settlement_stage(monkeypatch):
+    """`pipeline.py` reads the D12 `as_measured` table on every pricing tick. It must do that
+    through `harness.strategy.as_measured`, a plain query module, never through
+    `harness.settlement.markouts` -- that module's body calls `register_stage("markouts", ...)`
+    at import time, and `harness.settlement.job.STAGE_MODULES` is what is supposed to control
+    registration order, not whichever module the recorder's tick happens to import first.
+
+    A plain `importlib.reload(pipeline_module)` would not catch a regression here: by the time
+    this test runs, `harness.settlement.markouts` is almost certainly already cached in
+    `sys.modules` (other test modules import it directly), so re-executing only `pipeline.py`
+    would not re-run `markouts.py`'s `register_stage` call even if `pipeline.py` still imported
+    it. Both modules -- and `harness.strategy.as_measured`, so the real import path is exercised
+    too -- are evicted from `sys.modules` first, and `STAGES` is emptied, so a fresh import of
+    `pipeline` that goes anywhere near `harness.settlement.markouts` shows up as a fresh append.
+    """
+    import importlib
+    import sys
+
+    import harness.settlement.job as job_module
+
+    monkeypatch.setattr(job_module, "STAGES", [])
+    for name in ("harness.settlement.markouts", "harness.strategy.as_measured",
+                "harness.strategy.pipeline"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    importlib.import_module("harness.strategy.pipeline")
+
+    assert job_module.STAGES == []

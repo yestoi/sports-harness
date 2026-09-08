@@ -154,6 +154,10 @@ _INDEX_DDL = (
     "coalesce(threshold, 0), benchmark_type)",
     "create unique index if not exists uq_ledger_fill on ledger (fill_id, kind)",
     "create index if not exists ix_job_runs on job_runs (job, started_at desc)",
+    # Task 9 fix round 1, M1: supports as_measured_table's scan (anchor = 'nw_fill' and
+    # horizon = '30m' and fair_changed = true and at_ts >= :since), a sequential scan of
+    # `markouts` otherwise on a hot pricing-tick read.
+    "create index if not exists ix_markouts_as_measured on markouts (anchor, horizon, at_ts)",
 )
 
 #: Open contracts and their average price per variant, from the queue-model fills of live orders

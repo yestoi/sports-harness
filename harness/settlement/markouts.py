@@ -1,6 +1,5 @@
 """Markouts: how an order's price aged against the sharp fair and the venue's own mid, from
-placement and from each fill set, plus the trailing `as_measured` bucket table that feeds
-(but never drives) the strategy's adverse-selection estimate.
+placement and from each fill set.
 
 `markout_at` is the one pure decision (ruling 1): given the fairs and quotes a caller has
 already loaded -- and, for a NO-side order, already converted through `side_p` -- it picks the
@@ -8,13 +7,15 @@ newest fair whose own book time is at or before the horizon, and a venue mid by 
 quote-then-book-then-none chain (F36: `book_mid_fn` already answers None for a book stale by
 `BOOK_MAX_AGE`). `compute_markouts` is the settlement stage: for every non-replay order it
 walks the anchors that apply (`place` always; `fill`/`nw_fill`/`cross_fill` once their fill
-exists) and writes whichever `HORIZONS` rows are both missing and already due (`horizon_ts <=
-now`), so an order gains rows over the two hours after each anchor and a re-run inserts
+exists) and writes whichever `HORIZONS` rows -- plus `close` (kickoff - 5 min) once the game's
+kickoff is known -- are both missing and already due (`horizon_ts <= now`), so an order gains
+rows over the two hours after each anchor (and, separately, at kickoff) and a re-run inserts
 nothing new.
 
-`as_measured_table` is the D12 bucket mean: trailing 14 days of `nw_fill` 30 m markouts with
-`fair_changed`, by (sport, 5c price bucket, side), NULL below 50 rows. `run_strategy` records
-it on `SignalRow.as_measured` and never reads it back into a label or a price (F56).
+The D12 `as_measured` bucket table that feeds (but never drives) the strategy's
+adverse-selection estimate lives in `harness/strategy/as_measured.py`, not here: it is read on
+every pricing tick, and this module owning it would have made importing the strategy's pricing
+path register a settlement stage as a side effect (fix round 1, Important 5).
 """
 
 import logging
@@ -28,8 +29,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import Markout
-from harness.execution.book import book_at, side_p
-from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
+from harness.execution.book import book_age_s, book_at, side_p
+from harness.pricing.fees import fee_model_for, fee_per_contract
 from harness.settlement.job import Budget, StageResult, current_ctx, register_stage
 
 log = logging.getLogger(__name__)
@@ -38,19 +39,23 @@ FOUR = Decimal("0.0001")
 
 #: Seconds after each anchor a markout row is due. `0m` (the anchor instant itself) is only
 #: ever written for the `fill`/`nw_fill` anchors, so "fair at fill" is a stored row -- `place`
-#: and `cross_fill` skip it (spec F15).
+#: and `cross_fill` skip it (spec F15). `HORIZONS` itself is pinned verbatim to the brief
+#: (ruling R1); `close` (fix round 1, I1) is not an offset from the anchor at all -- it is
+#: `kickoff_utc - 5 min`, the same instant for every anchor on one order -- so it is handled
+#: as its own case throughout rather than folded into this dict.
 HORIZONS = {"0m": 0, "1m": 60, "5m": 300, "30m": 1800, "120m": 7200}
 ZERO_M_ANCHORS = ("fill", "nw_fill")
+CLOSE_OFFSET = timedelta(minutes=5)
 
 #: How close a `venue_quotes` row must be to the horizon instant to be used over the WS book.
+#: One-sided (fix round 1, Important 3): a quote is only a candidate at or before the horizon,
+#: never after it -- a markout is a statement about what was knowable at that instant, and a
+#: quote from after it is exactly the movement a later horizon is supposed to measure.
 QUOTE_WINDOW = timedelta(seconds=60)
 
 #: The fee an order's markout is scored net of, at a fixed notional (spec F42's "the
 #: 100-contract reference is exact at every size") rather than the order's own `contracts`.
 FEE_CONTRACTS = 100
-
-AS_MEASURED_WINDOW = timedelta(days=14)
-AS_MEASURED_MIN_ROWS = 50
 
 
 def _horizons_for(anchor: str) -> tuple[str, ...]:
@@ -96,17 +101,25 @@ def markout_at(
     horizon_ts: datetime,
     fairs: list[FairPoint],
     quotes: list[tuple[datetime, Decimal]],
-    book_mid_fn: Callable[[datetime], Decimal | None],
+    book_mid_fn: Callable[[datetime], tuple[Decimal, int] | None],
 ) -> MarkoutPoint:
     """One markout at one horizon instant, pure and unit-tested without a database (ruling 1).
 
     The fair is the newest one whose own timestamp (`newest_book_ts`, fallback `created_at`)
-    is at or before `horizon_ts` -- `None` when nothing qualifies. The venue mid is the last
-    quote within `QUOTE_WINDOW` of `horizon_ts` (`source = quote`); failing that,
-    `book_mid_fn(horizon_ts)` (`source = ws_book`, already `None` when the book is stale --
-    F36); failing that, `source = none`. `anchor_ts` is part of the interface for symmetry
-    with the anchors `compute_markouts` builds around, but nothing here uses it: every
-    candidate is already scoped to this order's own tape by the caller.
+    is at or before `horizon_ts` -- `None` when nothing qualifies; a tie between two fairs with
+    the same effective timestamp is broken by whichever the caller placed earlier in `fairs`
+    (fix round 1, Important 6: `compute_markouts` orders its query `newest_book_ts desc,
+    created_at desc, id desc`, so `max`'s "first maximal element" rule resolves ties
+    deterministically instead of on database row order).
+
+    The venue mid is the last quote at or before `horizon_ts` and no more than `QUOTE_WINDOW`
+    behind it (`source = quote`; fix round 1, Important 3 -- no lookahead, so a later quote can
+    never leak into an earlier markout); failing that, `book_mid_fn(horizon_ts)` (`source =
+    ws_book`, a `(mid, age_s)` pair, already `None` when the book is stale -- F36; fix round 1,
+    Minor 2: the age is the book's own age at the horizon, never a stand-in `0`); failing that,
+    `source = none`. `anchor_ts` is part of the interface for symmetry with the anchors
+    `compute_markouts` builds around, but nothing here uses it: every candidate is already
+    scoped to this order's own tape by the caller.
     """
     del anchor_ts
 
@@ -120,14 +133,15 @@ def markout_at(
     else:
         fair_p = fair_row_id = fair_book_ts = fair_age_s = None
 
-    near = [(ts, p) for ts, p in quotes if abs((ts - horizon_ts).total_seconds()) <= QUOTE_WINDOW.total_seconds()]
+    near = [(ts, p) for ts, p in quotes if ts <= horizon_ts and horizon_ts - ts <= QUOTE_WINDOW]
     if near:
         ts, p = max(near, key=lambda item: item[0])
-        venue_mid, mid_age_s, source = p, int(abs((horizon_ts - ts).total_seconds())), "quote"
+        venue_mid, mid_age_s, source = p, int((horizon_ts - ts).total_seconds()), "quote"
     else:
-        book_mid = book_mid_fn(horizon_ts)
-        if book_mid is not None:
-            venue_mid, mid_age_s, source = book_mid, 0, "ws_book"
+        book_result = book_mid_fn(horizon_ts)
+        if book_result is not None:
+            book_mid, age_s = book_result
+            venue_mid, mid_age_s, source = book_mid, age_s, "ws_book"
         else:
             venue_mid, mid_age_s, source = None, None, "none"
 
@@ -139,37 +153,62 @@ def markout_at(
 # --- compute_markouts: the stage ----------------------------------------------------------
 
 #: A non-replay order is a candidate as long as some anchor it could have could still be
-#: missing its furthest (`120m`) row -- the same "per missing thing, not per any row exists"
-#: shape as Task 8's order_clv candidacy (fix round 1, C1), so an order whose fill lands well
-#: after placement is not locked out of its own `fill`/`nw_fill`/`cross_fill` rows forever.
+#: missing its furthest row -- the same "per missing thing, not per any row exists" shape as
+#: Task 8's order_clv candidacy (fix round 1, C1), so an order whose fill lands well after
+#: placement is not locked out of its own `fill`/`nw_fill`/`cross_fill` rows forever. "Furthest"
+#: is `120m` and, once the game's kickoff is known, `close` too (fix round 1, I1) -- `close`'s
+#: instant does not track the anchor, so it can fall either before or after `120m` and both
+#: must be checked for an anchor to read as done. An order whose game is unmatched
+#: (`kickoff_utc is null`) can never get a `close` row, so that half of the check is skipped
+#: for it rather than leaving it a permanent candidate.
 _CANDIDATE_ORDERS = text("""
     select o.id as order_id, o.side, o.prob, o.placed_at, o.game_id, o.fair_row_id_at_place,
            o.crossed, o.nw_crossed, o.ticker, o.venue_market_id,
-           m.market_type, m.side_team_id, m.side as market_side, m.threshold
+           m.market_type, m.side_team_id, m.side as market_side, m.threshold,
+           m.fee_type, m.fee_multiplier, g.kickoff_utc
     from orders o
     join venue_markets m on m.id = o.venue_market_id
+    left join games g on g.id = o.game_id
     where o.replay = false
       and (
         not exists (
           select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'place' and mk.horizon = '120m'
         )
+        or (g.kickoff_utc is not null and not exists (
+          select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'place' and mk.horizon = 'close'
+        ))
         or exists (
           select 1 from fills f where f.order_id = o.id and f.fill_method = 'queue_model'
-          and not exists (
-            select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'fill' and mk.horizon = '120m'
+          and (
+            not exists (
+              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'fill' and mk.horizon = '120m'
+            )
+            or (g.kickoff_utc is not null and not exists (
+              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'fill' and mk.horizon = 'close'
+            ))
           )
         )
         or exists (
           select 1 from fills f where f.order_id = o.id and f.fill_method in ('queue_model', 'no_watcher')
-          and not exists (
-            select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'nw_fill' and mk.horizon = '120m'
+          and (
+            not exists (
+              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'nw_fill' and mk.horizon = '120m'
+            )
+            or (g.kickoff_utc is not null and not exists (
+              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'nw_fill' and mk.horizon = 'close'
+            ))
           )
         )
         or (
           (o.crossed or o.nw_crossed)
           and exists (select 1 from fills f where f.order_id = o.id and f.fill_method = 'snapshot_cross')
-          and not exists (
-            select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'cross_fill' and mk.horizon = '120m'
+          and (
+            not exists (
+              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'cross_fill' and mk.horizon = '120m'
+            )
+            or (g.kickoff_utc is not null and not exists (
+              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'cross_fill' and mk.horizon = 'close'
+            ))
           )
         )
       )
@@ -182,19 +221,37 @@ _FILLS_FOR_ORDER = text("""
 
 _EXISTING_MARKOUTS = text("select anchor, horizon from markouts where order_id = :order_id")
 
+#: Fix round 1, Important 4: no `fair_source` filter. The shipped `= 'direct'` filter left
+#: every derived-shape order (e.g. `sharp_plus_derived`, `sources_allowed: [direct, derived]`)
+#: with an empty fair scan forever -- a direct fair is never computed for a shape once a
+#: derived one has been (`fair.py`'s `remaining` loop), so `fair_row_id` stayed `None` while
+#: `fair_row_id_at_place` did not, and `fair_changed` read `True` permanently. Any fair source
+#: for the shape is a candidate now, exactly as the order itself was priced against whichever
+#: source its own gap snapshot carried.
+#:
+#: Fix round 1, Important 6: `order by` makes the tie-break deterministic -- two fair rows
+#: from consecutive pricing ticks commonly share a `newest_book_ts` when no book event arrived
+#: between them, and without an explicit order the winner would depend on Postgres row order.
+#: `newest_book_ts desc nulls last` puts a real book time ahead of a fallback-to-`created_at`
+#: row; `created_at desc, id desc` breaks any further tie by recency, matching `markout_at`'s
+#: `max(..., key=_fair_ts)`, which keeps the first-seen maximal element.
 _FAIR_ROWS_FOR_SHAPE = text("""
     select id, created_at, newest_book_ts, fair_p from fair_values
     where game_id = :game_id and market_type = :market_type
       and coalesce(outcome_team_id, -1) = coalesce(:team_id, -1)
       and coalesce(outcome_side, '') = coalesce(:side, '')
       and coalesce(threshold, 0) = coalesce(:threshold, 0)
-      and fair_source = 'direct'
+    order by newest_book_ts desc nulls last, created_at desc, id desc
 """)
 
+#: Fix round 1, Important 3: one-sided (`fetched_at between horizon - 60s and horizon`, never
+#: past the horizon); `id desc` breaks a tie between two quotes sharing a `fetched_at` in
+#: favour of whichever was recorded later, the same shape as the fair tie-break above.
 _QUOTES_NEAR = text("""
-    select fetched_at, yes_bid, yes_ask from venue_quotes
+    select fetched_at, yes_bid, yes_ask, id from venue_quotes
     where venue_market_id = :venue_market_id and fetched_at between :lower and :upper
       and yes_bid is not null and yes_ask is not null
+    order by fetched_at desc, id desc
 """)
 
 
@@ -227,9 +284,9 @@ def _anchors_for(row, fills: list) -> list[tuple[str, datetime, Decimal]]:
 
 def _quotes_near(session: Session, venue_market_id: int, horizon_ts: datetime,
                  side: str) -> list[tuple[datetime, Decimal]]:
-    lower, upper = horizon_ts - QUOTE_WINDOW, horizon_ts + QUOTE_WINDOW
+    lower = horizon_ts - QUOTE_WINDOW
     rows = session.execute(
-        _QUOTES_NEAR, {"venue_market_id": venue_market_id, "lower": lower, "upper": upper}).all()
+        _QUOTES_NEAR, {"venue_market_id": venue_market_id, "lower": lower, "upper": horizon_ts}).all()
     out = []
     for r in rows:
         mid = ((r.yes_bid + r.yes_ask) / 2).quantize(FOUR, rounding=ROUND_HALF_UP)
@@ -237,14 +294,27 @@ def _quotes_near(session: Session, venue_market_id: int, horizon_ts: datetime,
     return out
 
 
-def _book_mid_fn(session: Session, ticker: str, side: str) -> Callable[[datetime], Decimal | None]:
-    def fn(instant: datetime) -> Decimal | None:
+def _book_mid_fn(session: Session, ticker: str, side: str) -> Callable[[datetime], tuple[Decimal, int] | None]:
+    """Fix round 1, Minor 2: returns `(mid, age_s)`, the book's own age at `instant`
+    (`book_age_s`, the same accessor the executor uses), rather than a bare mid a caller would
+    otherwise have to stand in a false `0` for."""
+    def fn(instant: datetime) -> tuple[Decimal, int] | None:
         book = book_at(session, ticker, instant)
         if book is None:
             return None
         mid = book.mid()
-        return None if mid is None else side_p(mid, side)
+        if mid is None:
+            return None
+        return side_p(mid, side), book_age_s(book, instant)
     return fn
+
+
+def _fee_role(anchor: str) -> str:
+    """Fix round 1, Important 7: `cross_fill` is a `snapshot_cross` fill -- by definition the
+    print crossed our resting price, i.e. we took liquidity -- so it is scored at the taker
+    rate; every other anchor (`place`, `fill`, `nw_fill`) is scored at the maker rate the paper
+    executor always posts at."""
+    return "taker" if anchor == "cross_fill" else "maker"
 
 
 def _process_order(session: Session, row, now: datetime,
@@ -265,18 +335,25 @@ def _process_order(session: Session, row, now: datetime,
     existing = {(r.anchor, r.horizon) for r in
                session.execute(_EXISTING_MARKOUTS, {"order_id": row.order_id}).all()}
     book_fn = _book_mid_fn(session, row.ticker, side)
+    fee_model = fee_model_for(row.fee_type, row.fee_multiplier)
+    close_ts = None if row.kickoff_utc is None else row.kickoff_utc - CLOSE_OFFSET
 
     inserted = 0
     for anchor, anchor_ts, p_used in _anchors_for(row, fills):
-        for horizon in _horizons_for(anchor):
+        role = _fee_role(anchor)
+        due: list[tuple[str, datetime]] = [
+            (h, anchor_ts + timedelta(seconds=HORIZONS[h])) for h in _horizons_for(anchor)
+        ]
+        if close_ts is not None:
+            due.append(("close", close_ts))
+        for horizon, horizon_ts in due:
             if (anchor, horizon) in existing:
                 continue
-            horizon_ts = anchor_ts + timedelta(seconds=HORIZONS[horizon])
             if horizon_ts > now:
                 continue
             quotes = _quotes_near(session, row.venue_market_id, horizon_ts, side)
             point = markout_at(anchor_ts, horizon_ts, fairs, quotes, book_fn)
-            fee = fee_per_contract(KALSHI_FOOTBALL, "maker", p_used, FEE_CONTRACTS)
+            fee = fee_per_contract(fee_model, role, p_used, FEE_CONTRACTS)
             fair_changed = point.fair_row_id != row.fair_row_id_at_place
             inserted += _insert_markout(
                 session, order_id=row.order_id, anchor=anchor, horizon=horizon,
@@ -320,40 +397,3 @@ def markouts_stage(session: Session, now: datetime, budget: Budget) -> StageResu
 
 
 register_stage("markouts", markouts_stage)
-
-
-# --- as_measured_table ---------------------------------------------------------------------
-
-_AS_MEASURED_ROWS = text("""
-    select o.sport, o.side, m.p_used, m.fair_p, m.fee_per_contract
-    from markouts m
-    join orders o on o.id = m.order_id
-    where m.anchor = 'nw_fill' and m.horizon = '30m' and m.fair_changed = true
-      and m.at_ts >= :since
-      and o.replay = false
-      and o.sport is not null and m.p_used is not null and m.fair_p is not null
-      and m.fee_per_contract is not null
-""")
-
-
-def _price_bucket(p: Decimal) -> int:
-    """The 5c price bucket a probability falls in, in whole cents (`gaps.py`'s convention)."""
-    return (int(p * 100) // 5) * 5
-
-
-def as_measured_table(session: Session, now: datetime) -> dict[tuple[str, int, str], Decimal]:
-    """D12: the trailing 14-day realised adverse-selection estimate, by (sport, 5c price
-    bucket, side), from `nw_fill` 30-minute markouts on rows where the fair actually moved
-    since placement (`fair_changed`). A bucket under `AS_MEASURED_MIN_ROWS` is left out of the
-    map entirely -- `run_strategy` records `None` for it -- rather than reported on too few
-    fills to mean anything (spec F56)."""
-    since = now - AS_MEASURED_WINDOW
-    buckets: dict[tuple[str, int, str], list[Decimal]] = {}
-    for row in session.execute(_AS_MEASURED_ROWS, {"since": since}).all():
-        key = (row.sport, _price_bucket(Decimal(row.p_used)), row.side)
-        value = Decimal(row.fair_p) - Decimal(row.p_used) - Decimal(row.fee_per_contract)
-        buckets.setdefault(key, []).append(value)
-    return {
-        key: (sum(values) / Decimal(len(values))).quantize(FOUR, rounding=ROUND_HALF_UP)
-        for key, values in buckets.items() if len(values) >= AS_MEASURED_MIN_ROWS
-    }

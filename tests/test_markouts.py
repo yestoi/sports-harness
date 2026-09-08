@@ -1,24 +1,26 @@
-"""Markouts at placement and fill, and the trailing `as_measured` bucket table.
+"""Markouts at placement and fill.
 
 `markout_at` is the one pure decision (ruling 1): it picks a fair by book time, then a venue
-mid by quote-then-book-then-none, from lists the caller has already loaded and, for a NO-side
-order, already flipped through `side_p`. `compute_markouts` is the settlement stage that walks
-non-replay orders, and `as_measured_table` is the trailing bucket mean that later feeds
-`SignalRow.as_measured` without ever being read by the strategy's own decision.
+mid by quote-then-book-then-none with no lookahead, from lists the caller has already loaded
+and, for a NO-side order, already flipped through `side_p`. `compute_markouts` is the
+settlement stage that walks non-replay orders and writes the horizons that are due, including
+`close` (kickoff - 5 min) once the game's kickoff is known.
+
+The trailing `as_measured` bucket table lives in `tests/test_as_measured.py`, alongside the
+module it now belongs to (`harness/strategy/as_measured.py`, fix round 1, Important 5).
 """
 
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from harness.db.models import Fill, Game, Markout, Order, VenueMarket, VenueQuote
+from harness.db.models import Fill, Game, Markout, OrderbookEvent, Order, VenueMarket, VenueQuote
 from harness.execution.book import side_p
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 from harness.settlement.job import Budget
 from harness.settlement.markouts import (
     HORIZONS,
     FairPoint,
-    as_measured_table,
     compute_markouts,
     markout_at,
 )
@@ -85,12 +87,20 @@ def _fill(session, order, fill_method="queue_model", filled_at=None, prob="0.500
     return f
 
 
+_fair_run_ids = iter(range(1, 10_000))
+
+
 def _fair_value(session, game_id, created_at, p, newest_book_ts=None, market_type="moneyline",
-                team=HOME, side=None, threshold=None, fair_source="direct"):
+                team=HOME, side=None, threshold=None, fair_source="direct", run_id=None):
     from harness.db.models import FairValue
 
-    row = FairValue(run_id=1, game_id=game_id, market_type=market_type, outcome_team_id=team,
-                    outcome_side=side, threshold=None if threshold is None else Decimal(str(threshold)),
+    # uq_fair_value_row is keyed (run_id, game_id, market_type, ..., fair_source): two fairs
+    # for the same shape need their own run_id, exactly as the pricing pipeline gives one fair
+    # value per run -- a fixed run_id=1 would collide the moment a test wants two fair rows for
+    # one shape (e.g. the tie-break test).
+    row = FairValue(run_id=run_id if run_id is not None else next(_fair_run_ids), game_id=game_id,
+                    market_type=market_type, outcome_team_id=team, outcome_side=side,
+                    threshold=None if threshold is None else Decimal(str(threshold)),
                     fair_p=Decimal(str(p)), fair_source=fair_source, created_at=created_at,
                     newest_book_ts=newest_book_ts)
     session.add(row)
@@ -105,6 +115,15 @@ def _quote(session, venue_market_id, fetched_at, yes_bid, yes_ask, raw_id=1) -> 
     session.add(q)
     session.flush()
     return q
+
+
+def _ws_snapshot(session, ticker, ts, yes=(("0.40", "10.00"),), no=(("0.55", "10.00"),), sid=1, seq=1):
+    row = OrderbookEvent(ticker=ticker, ts=ts, sid=sid, seq=seq, kind="snapshot",
+                         raw={"market_ticker": ticker, "yes_dollars_fp": [list(l) for l in yes],
+                              "no_dollars_fp": [list(l) for l in no]})
+    session.add(row)
+    session.flush()
+    return row
 
 
 FOUR = Decimal("0.0001")
@@ -156,25 +175,40 @@ def test_markout_fair_falls_back_to_created_at_and_can_be_missing():
     assert empty.fair_age_s is None
 
 
-def test_quote_then_book_then_none():
+def test_a_later_quote_is_ignored_in_favour_of_an_earlier_one():
+    """Fix round 1, Important 3: the quote window is one-sided -- a quote after the horizon
+    must never win over one before it, however much closer in time it is."""
     horizon_ts = NOW
-
-    # A quote within 60 s wins over the book.
     quotes = [(NOW - timedelta(seconds=30), Decimal("0.5100")),
-             (NOW - timedelta(minutes=10), Decimal("0.9000"))]
-    point = markout_at(NOW, horizon_ts, [], quotes, lambda instant: Decimal("0.6000"))
+             (NOW + timedelta(seconds=10), Decimal("0.9900"))]
+    point = markout_at(NOW, horizon_ts, [], quotes, lambda instant: None)
     assert point.source == "quote"
     assert point.venue_mid == Decimal("0.5100")
     assert point.mid_age_s == 30
 
-    # No quote within the window: falls back to the book mid.
-    point = markout_at(NOW, horizon_ts, [], [(NOW - timedelta(minutes=10), Decimal("0.9000"))],
-                       lambda instant: Decimal("0.6000"))
+
+def test_only_a_later_quote_falls_back_to_the_book():
+    """Fix round 1, Important 3: with nothing at or before the horizon, the chain falls to the
+    book mid rather than looking ahead to the later quote."""
+    horizon_ts = NOW
+    quotes = [(NOW + timedelta(seconds=10), Decimal("0.9900"))]
+    point = markout_at(NOW, horizon_ts, [], quotes, lambda instant: (Decimal("0.6000"), 12))
     assert point.source == "ws_book"
     assert point.venue_mid == Decimal("0.6000")
+    assert point.mid_age_s == 12
 
-    # Neither: none.
-    point = markout_at(NOW, horizon_ts, [], [], lambda instant: None)
+
+def test_a_quote_more_than_60s_stale_falls_back_to_the_book():
+    horizon_ts = NOW
+    quotes = [(NOW - timedelta(minutes=10), Decimal("0.9000"))]
+    point = markout_at(NOW, horizon_ts, [], quotes, lambda instant: (Decimal("0.6000"), 45))
+    assert point.source == "ws_book"
+    assert point.venue_mid == Decimal("0.6000")
+    assert point.mid_age_s == 45
+
+
+def test_neither_quote_nor_book_is_none():
+    point = markout_at(NOW, NOW, [], [], lambda instant: None)
     assert point.source == "none"
     assert point.venue_mid is None
     assert point.mid_age_s is None
@@ -193,7 +227,8 @@ def test_unfilled_orders_get_place_anchor_only(db_session):
     n = compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
     rows = db_session.query(Markout).filter_by(order_id=order.id).all()
 
-    assert n == len(rows) == 4  # 1m, 5m, 30m, 120m -- no 0m for `place`
+    assert n == len(rows) == 4  # 1m, 5m, 30m, 120m -- no 0m for `place`; kickoff is 2h out,
+    # so `close` isn't due in this test (see test_close_horizon_... below).
     anchors = {r.anchor for r in rows}
     assert anchors == {"place"}
     horizons = {r.horizon for r in rows}
@@ -248,6 +283,31 @@ def test_fill_nw_fill_and_cross_fill_anchors(db_session):
     assert n_again == 0
 
 
+def test_cross_fill_scored_at_the_taker_fee(db_session):
+    """Fix round 1, Important 7: a `snapshot_cross` fill takes liquidity, so it is scored net
+    of the taker rate; every other anchor keeps the maker rate the paper executor posts at."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    placed_at = NOW - timedelta(hours=3)
+    order = _order(db_session, market, side="yes", prob="0.5000", placed_at=placed_at,
+                  crossed=True)
+    _fill(db_session, order, fill_method="snapshot_cross",
+         filled_at=placed_at + timedelta(seconds=30), prob="0.5200")
+    db_session.commit()
+
+    compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    cross_row = db_session.query(Markout).filter_by(
+        order_id=order.id, anchor="cross_fill", horizon="1m").one()
+    place_row = db_session.query(Markout).filter_by(
+        order_id=order.id, anchor="place", horizon="1m").one()
+
+    assert cross_row.fee_per_contract == fee_per_contract(
+        KALSHI_FOOTBALL, "taker", Decimal("0.5200"), 100)
+    assert place_row.fee_per_contract == fee_per_contract(
+        KALSHI_FOOTBALL, "maker", Decimal("0.5000"), 100)
+    assert cross_row.fee_per_contract != place_row.fee_per_contract
+
+
 def test_no_cross_fill_anchor_when_order_never_crossed(db_session):
     game = _game(db_session)
     market = _market(db_session, game.id)
@@ -284,6 +344,131 @@ def test_no_side_markout_in_no_space(db_session):
     assert row.venue_mid == side_p(yes_mid, "no")
     assert row.venue_mid == Decimal("0.4100")
     assert row.source == "quote"
+
+
+def test_fair_scan_includes_derived_fair_rows(db_session):
+    """Fix round 1, Important 4: a derived-shape order (e.g. `sharp_plus_derived`) has no
+    `direct` fair row to scan against -- a direct fair is never computed for a shape once a
+    derived one has been. The scan must find its own `derived` fair, not read as permanently
+    `fair_changed` against an empty result."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    placed_at = NOW - timedelta(hours=3)
+    derived_created = placed_at - timedelta(minutes=5)
+    fv = _fair_value(db_session, game.id, derived_created, "0.6000",
+                     newest_book_ts=derived_created, fair_source="derived")
+    order = _order(db_session, market, side="yes", prob="0.5500", placed_at=placed_at,
+                  fair_row_id_at_place=fv.id)
+    db_session.commit()
+
+    compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    row = db_session.query(Markout).filter_by(order_id=order.id, anchor="place", horizon="1m").one()
+
+    assert row.fair_p == Decimal("0.6000")
+    assert row.fair_row_id == fv.id
+    assert row.fair_changed is False
+
+
+def test_fair_tie_break_prefers_latest_created_at_then_id(db_session):
+    """Fix round 1, Important 6: two fairs sharing a `newest_book_ts` (common when no book
+    event arrived between two pricing ticks) must resolve deterministically -- the one with
+    the later `created_at` wins, not whichever Postgres happens to return first."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    placed_at = NOW - timedelta(hours=3)
+    shared_book_ts = placed_at - timedelta(minutes=10)
+    _fair_value(db_session, game.id, shared_book_ts - timedelta(minutes=1), "0.5000",
+               newest_book_ts=shared_book_ts)
+    newer = _fair_value(db_session, game.id, shared_book_ts + timedelta(minutes=1), "0.5300",
+                        newest_book_ts=shared_book_ts)
+    order = _order(db_session, market, side="yes", prob="0.5000", placed_at=placed_at)
+    db_session.commit()
+
+    compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    row = db_session.query(Markout).filter_by(order_id=order.id, anchor="place", horizon="1m").one()
+
+    assert row.fair_row_id == newer.id
+    assert row.fair_p == Decimal("0.5300")
+
+
+def test_quote_tie_break_prefers_the_later_inserted_row(db_session):
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    placed_at = NOW - timedelta(hours=3)
+    tie_ts = placed_at + timedelta(minutes=1) - timedelta(seconds=10)
+    _quote(db_session, market.id, tie_ts, yes_bid="0.4000", yes_ask="0.4200", raw_id=1)
+    _quote(db_session, market.id, tie_ts, yes_bid="0.5800", yes_ask="0.6000", raw_id=2)
+    order = _order(db_session, market, side="yes", prob="0.5000", placed_at=placed_at)
+    db_session.commit()
+
+    compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    row = db_session.query(Markout).filter_by(order_id=order.id, anchor="place", horizon="1m").one()
+
+    assert row.venue_mid == (Decimal("0.5800") + Decimal("0.6000")) / 2
+    assert row.source == "quote"
+
+
+def test_book_mid_age_reflects_true_book_age_not_a_false_zero(db_session):
+    """Fix round 1, Minor 2: `mid_age_s` for a `ws_book` mid is the book's own age at the
+    horizon (`book_age_s`), never a stand-in `0`."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    placed_at = NOW - timedelta(hours=3)
+    order = _order(db_session, market, side="yes", prob="0.5000", placed_at=placed_at)
+    horizon_ts = placed_at + timedelta(minutes=1)
+    _ws_snapshot(db_session, market.ticker, horizon_ts - timedelta(seconds=45))
+    db_session.commit()
+
+    compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    row = db_session.query(Markout).filter_by(order_id=order.id, anchor="place", horizon="1m").one()
+
+    assert row.source == "ws_book"
+    assert row.mid_age_s == 45
+
+
+def test_close_horizon_is_kickoff_minus_five_minutes_for_every_anchor(db_session):
+    """Fix round 1, Important 1: `close` is `kickoff_utc - 5 min`, a sixth horizon label
+    written for every anchor once its own instant is due -- independent of the anchor's own
+    offset-based horizons."""
+    kickoff = NOW - timedelta(hours=1)
+    game = _game(db_session, kickoff=kickoff)
+    market = _market(db_session, game.id)
+    placed_at = NOW - timedelta(hours=3)
+    order = _order(db_session, market, side="yes", prob="0.5000", placed_at=placed_at)
+    _fill(db_session, order, fill_method="queue_model", filled_at=placed_at + timedelta(minutes=1))
+    db_session.commit()
+
+    compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    rows = {(r.anchor, r.horizon): r
+           for r in db_session.query(Markout).filter_by(order_id=order.id).all()}
+
+    close_ts = kickoff - timedelta(minutes=5)
+    assert ("place", "close") in rows
+    assert rows[("place", "close")].at_ts == placed_at
+    assert rows[("place", "close")].horizon_ts == close_ts
+    assert ("fill", "close") in rows
+    assert rows[("fill", "close")].horizon_ts == close_ts
+
+    again = compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    assert again == 0
+
+
+def test_close_horizon_never_written_when_the_game_is_unmatched(db_session):
+    """An order with no `game_id` (an unmatched market) can never get a `close` row -- there is
+    no kickoff to compute it from -- and must not be scanned forever waiting for one."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    order = _order(db_session, market, side="yes", prob="0.5000",
+                   placed_at=NOW - timedelta(hours=3))
+    db_session.execute(
+        Order.__table__.update().where(Order.id == order.id).values(game_id=None)
+    )
+    db_session.commit()
+
+    compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    anchors_and_horizons = {(r.anchor, r.horizon)
+                            for r in db_session.query(Markout).filter_by(order_id=order.id).all()}
+    assert ("place", "close") not in anchors_and_horizons
 
 
 def test_idempotent(db_session):
@@ -326,109 +511,3 @@ def test_horizons_beyond_now_are_not_written_yet(db_session):
     assert later == 1  # 30m horizon now due; 120m still isn't
     rows = db_session.query(Markout).filter_by(order_id=order.id).all()
     assert {r.horizon for r in rows} == {"1m", "5m", "30m"}
-
-
-# --- as_measured_table -------------------------------------------------------------------
-
-
-def _insert_markout_row(session, order_id, anchor, horizon, at_ts, fair_p, p_used, fee,
-                        fair_changed=True):
-    row = Markout(order_id=order_id, anchor=anchor, horizon=horizon, at_ts=at_ts,
-                  horizon_ts=at_ts + timedelta(seconds=HORIZONS[horizon]), p_used=p_used,
-                  fee_per_contract=fee, fair_p=fair_p, fair_row_id=999, fair_changed=fair_changed,
-                  source="quote")
-    session.add(row)
-    session.flush()
-    return row
-
-
-def test_as_measured_null_below_50_and_value_above(db_session):
-    game = _game(db_session)
-    market = _market(db_session, game.id)
-    fee = Decimal("0.0050")
-
-    # 49 rows in one bucket: below the floor, must not appear.
-    for i in range(49):
-        order = _order(db_session, market, side="yes", prob="0.5000",
-                       placed_at=NOW - timedelta(days=1), status="settled")
-        _insert_markout_row(db_session, order.id, "nw_fill", "30m", NOW - timedelta(days=1),
-                            fair_p=Decimal("0.5200"), p_used=Decimal("0.5000"), fee=fee)
-
-    # 50 rows in a different bucket (a different price -> a different 5c bucket): reaches
-    # the floor and gets a mean.
-    for i in range(50):
-        order = _order(db_session, market, side="yes", prob="0.6000",
-                       placed_at=NOW - timedelta(days=1), status="settled")
-        _insert_markout_row(db_session, order.id, "nw_fill", "30m", NOW - timedelta(days=1),
-                            fair_p=Decimal("0.6300"), p_used=Decimal("0.6000"), fee=fee)
-    db_session.commit()
-
-    table = as_measured_table(db_session, NOW)
-
-    assert ("nfl", 50, "yes") not in table
-    key = ("nfl", 60, "yes")
-    assert key in table
-    expected = Decimal("0.6300") - Decimal("0.6000") - fee
-    assert table[key] == expected.quantize(FOUR)
-
-
-def test_as_measured_excludes_stale_unchanged_and_wrong_anchor(db_session):
-    game = _game(db_session)
-    market = _market(db_session, game.id)
-    fee = Decimal("0.0050")
-
-    for i in range(50):
-        order = _order(db_session, market, side="yes", prob="0.5000",
-                       placed_at=NOW - timedelta(days=1), status="settled")
-        _insert_markout_row(db_session, order.id, "nw_fill", "30m", NOW - timedelta(days=1),
-                            fair_p=Decimal("0.5200"), p_used=Decimal("0.5000"), fee=fee,
-                            fair_changed=False)  # unchanged: excluded
-
-    for i in range(50):
-        order = _order(db_session, market, side="yes", prob="0.5000",
-                       placed_at=NOW - timedelta(days=1), status="settled")
-        _insert_markout_row(db_session, order.id, "fill", "30m", NOW - timedelta(days=1),
-                            fair_p=Decimal("0.5200"), p_used=Decimal("0.5000"), fee=fee)  # wrong anchor
-
-    for i in range(50):
-        order = _order(db_session, market, side="yes", prob="0.5000",
-                       placed_at=NOW - timedelta(days=1), status="settled")
-        _insert_markout_row(db_session, order.id, "nw_fill", "30m", NOW - timedelta(days=20),
-                            fair_p=Decimal("0.5200"), p_used=Decimal("0.5000"), fee=fee)  # too old
-    db_session.commit()
-
-    table = as_measured_table(db_session, NOW)
-    assert ("nfl", 50, "yes") not in table
-
-
-def test_as_measured_recorded_not_used():
-    """`SignalRow.as_measured` is set from the table but the decision (edge, labels,
-    rejection) is computed exactly as it would be with no table at all."""
-    from pathlib import Path
-
-    from harness.strategy.run import run_strategy
-    from harness.strategy.variants import load_variants
-
-    from tests.test_strategy import gap_row
-
-    variant = next(v for v in load_variants(Path("harness/variants")) if v.name == "sharp_direct")
-
-    row = gap_row()
-    (baseline,) = run_strategy([row], variant, NOW)
-    assert baseline.as_measured is None
-
-    bucket = (int(baseline.price_target * 100) // 5) * 5
-    key = (row.sport, bucket, baseline.side)
-    table = {key: Decimal("0.0123"), ("nfl", bucket + 1000, "yes"): Decimal("9.9999")}
-
-    (with_table,) = run_strategy([row], variant, NOW, as_measured=table)
-
-    assert with_table.decision == baseline.decision
-    assert with_table.edge == baseline.edge
-    assert with_table.labels == baseline.labels
-    assert with_table.price_target == baseline.price_target
-    assert with_table.as_measured == Decimal("0.0123")
-
-    # A row whose bucket has no entry in the table stays None.
-    (no_match,) = run_strategy([row], variant, NOW, as_measured={})
-    assert no_match.as_measured is None

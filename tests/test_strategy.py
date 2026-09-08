@@ -633,12 +633,20 @@ def _golden_rows() -> list[GapRow]:
 
 #: sha256 over every YES-only variant's signals for `_golden_rows()`, recorded from the
 #: strategy as it stood before the `sides` key existed. The six shipped ids are
-#: pre-registered, so a change here is a pre-registration amendment, not a test fix -- except
-#: for the one mechanical exception Task 9 introduces: `SignalRow` gained a new field
-#: (`as_measured`, D12), which moves every `astuple(s)` even though no caller here passes
-#: `as_measured` and the field is `None` on every signal below. Recomputed once for that
-#: reason; every other digit is exactly what it was.
-YES_ONLY_DIGEST = "82f38fbe9fe431e04abfa724882b3268e9d74e23d545cf0c6fd72c8debb95ea9"
+#: pre-registered, so a change here is a pre-registration amendment, not a test fix. `_golden_tuple`
+#: below is what keeps that true across Task 9's addition of `SignalRow.as_measured`.
+YES_ONLY_DIGEST = "9c40d9a5a9de0d61024117171ee3d958701f4089d47252c249ba56bfd1fedfa6"
+
+
+def _golden_tuple(s) -> tuple:
+    """`astuple(s)` minus `as_measured` (D12, Task 9 fix round 1, Important 2): `as_measured`
+    is a new trailing `SignalRow` field that no caller here passes and that is `None` on every
+    signal below, so it carries no pricing information -- but including it in the hash would
+    still move `YES_ONLY_DIGEST` on the field's addition alone, defeating what this digest is
+    for (proving no *number* moved on a yes-only variant). `as_measured` is declared last on
+    `SignalRow`, so `astuple(s)[:-1]` is exactly the pre-D12 field set the original constant
+    was recorded against."""
+    return astuple(s)[:-1]
 
 
 def test_yes_only_variants_unchanged():
@@ -650,7 +658,7 @@ def test_yes_only_variants_unchanged():
         names.append(v.name)
         signals = run_strategy(_golden_rows(), v, NOW, state=StrategyState())
         assert [s.side for s in signals] == ["yes"] * len(_golden_rows())
-        digest.update(repr((v.name, [astuple(s) for s in signals])).encode())
+        digest.update(repr((v.name, [_golden_tuple(s) for s in signals])).encode())
 
     assert names == ["constrained", "nfl_only", "no_velocity", "sharp_direct",
                      "sharp_plus_derived", "tiny", "wide_band"]

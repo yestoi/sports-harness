@@ -17,6 +17,7 @@ from datetime import datetime
 from decimal import ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 from harness.pricing.fees import KALSHI_FOOTBALL, FeeModel, fee_per_contract
+from harness.strategy.as_measured import price_bucket
 from harness.strategy.variants import Variant
 
 CENT = Decimal("0.01")
@@ -365,11 +366,15 @@ def _as_measured_for(
 ) -> Decimal | None:
     """The D12 bucket lookup for one signal: (sport, 5c price bucket, side) against the
     trailing `as_measured_table`. `None` whenever there is no table, no priced target, no
-    sport, or no bucket with enough rows -- never a reason to change the signal itself."""
+    sport, or no bucket with enough rows -- never a reason to change the signal itself.
+
+    `price_bucket` is imported rather than reimplemented (fix round 1, Minor 3): it is the
+    same formula `harness.strategy.as_measured.as_measured_table` keys its map with, so the
+    two sides of the lookup cannot drift into different bucket boundaries.
+    """
     if as_measured is None or price_target is None or row.sport is None:
         return None
-    bucket = (int(price_target * 100) // 5) * 5
-    return as_measured.get((row.sport, bucket, side))
+    return as_measured.get((row.sport, price_bucket(price_target), side))
 
 
 def run_strategy(
