@@ -98,10 +98,28 @@ def _tick_budget_s(settings: Settings | None) -> float:
     return Settings.model_fields["tick_budget_s"].default
 
 
+class RegisteredVariantError(ValueError):
+    """`--file` was passed for a name that is a registered live variant.
+
+    `register_variants` treats a supplied config for an existing name as a config change and
+    renames the live row aside, deactivating it (the Amendment 3 incident, 2026-09-08). A
+    registered variant is replayed by name; `--file` is for out-of-band replay variants only.
+    """
+
+
 def _resolve_variant(
     session: Session, variant_name: str, variant_file: Path | None, now: datetime
 ) -> Variant:
     if variant_file is not None:
+        registered = session.execute(
+            select(StrategyVariant).where(StrategyVariant.name == variant_name)
+        ).scalar_one_or_none()
+        if registered is not None and registered.tier != "replay":
+            raise RegisteredVariantError(
+                f"{variant_name!r} is a registered {registered.tier} variant "
+                f"({registered.variant_id}); replay it by name, without --file. Passing --file "
+                f"for a registered name renames the live row aside and deactivates it."
+            )
         config = dict(yaml.safe_load(Path(variant_file).read_text()))
         # --variant is the operator's stated intent; a mismatch usually means the wrong file
         # was passed (or vice versa), so this fails loudly before anything is registered
