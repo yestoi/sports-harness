@@ -950,7 +950,9 @@ class KalshiWriter:
 # =================================================================================================
 
 #: The four conditions, in the order the guard reports them. The first missing one names the
-#: refusal, so the message is stable and testable for every subset.
+#: refusal, so the message is stable and testable for every subset. `make_writer` raises these
+#: strings verbatim (fix round 1, M4): this is the one place they are spelled, so the documented
+#: order and the enforced order cannot drift apart.
 LIVE_CONDITIONS = ("LIVE_TRADING=1", "mode=live", "passing gate report", "secrets/legal_decision")
 
 
@@ -965,9 +967,16 @@ class LiveGuardRefused(RuntimeError):
 
 
 def _has_passing_gate_report(session, gate_variant_name: str) -> bool:
-    """Resolves `gate_variant_name` to a `variant_id` through `strategy_variants` and returns
-    whether any `gate_reports` row for that `variant_id` has `passed = true`. A `None` session
-    means the condition cannot be proven, which is a refusal, not a pass."""
+    """Resolves `gate_variant_name` to a `variant_id` through `strategy_variants`, then asks
+    whether the *newest* evaluation -- `max(evaluated_at)` across all of `gate_reports`, since
+    one evaluation stores one row per exec variant sharing that timestamp -- has a row for that
+    `variant_id` with `gate_variant = true` and `passed = true` (fix round 1 ruling: stricter
+    than "ever passed"). An older passing row for the same variant does not count once a newer
+    evaluation exists, and a later failing evaluation revokes one: only the latest evaluation's
+    say on the gate variant is live. Dormant today regardless -- condition 3 is one of four, and
+    the other three are unconditionally false in the deployed posture. A `None` session cannot
+    prove the condition, which is a refusal, not a pass.
+    """
     if session is None:
         return False
     from sqlalchemy import text as _sa_text
@@ -977,9 +986,13 @@ def _has_passing_gate_report(session, gate_variant_name: str) -> bool:
         {"n": gate_variant_name}).scalar()
     if not variant_id:
         return False
-    return bool(session.execute(
-        _sa_text("select 1 from gate_reports where variant_id = :v and passed = true limit 1"),
-        {"v": variant_id}).scalar())
+    passed = session.execute(
+        _sa_text(
+            "select passed from gate_reports "
+            "where evaluated_at = (select max(evaluated_at) from gate_reports) "
+            "and variant_id = :v and gate_variant = true"),
+        {"v": variant_id}).scalar()
+    return bool(passed)
 
 
 def make_writer(settings, env: str, session=None, *, per_bet_cap_dollars: Decimal | None = None,
@@ -1007,13 +1020,21 @@ def make_writer(settings, env: str, session=None, *, per_bet_cap_dollars: Decima
             timeout_s=settings.http_timeout_s, writes_enabled=True)
     elif env == "prod":
         if int(settings.live_trading) != 1:
-            raise LiveGuardRefused("prod", "LIVE_TRADING=1")
+            raise LiveGuardRefused("prod", LIVE_CONDITIONS[0])
         if settings.mode != "live":
-            raise LiveGuardRefused("prod", "mode=live")
+            raise LiveGuardRefused("prod", LIVE_CONDITIONS[1])
         if not _has_passing_gate_report(session, settings.gate_variant):
-            raise LiveGuardRefused("prod", "a passing gate report for the gate variant")
+            raise LiveGuardRefused("prod", LIVE_CONDITIONS[2])
         if not settings.legal_decision_file.exists():
-            raise LiveGuardRefused("prod", "secrets/legal_decision")
+            raise LiveGuardRefused("prod", LIVE_CONDITIONS[3])
+        # Fix round 1, M6: the four conditions above are the ones the addendum names, but a
+        # missing production key file is a fifth way to be unable to build a real writer, and
+        # letting it surface as a bare FileNotFoundError from kalshi_key_id()/
+        # kalshi_private_key_pem() below would leak a stack trace instead of a clean refusal.
+        # Unreachable today like the rest of this branch (all four conditions above are false in
+        # the deployed posture); this only matters once they are not.
+        if not settings.has_kalshi_credentials():
+            raise LiveGuardRefused("prod", "kalshi production key files")
         http = HttpClient(settings.http_timeout_s)
         transport = KalshiTransport(
             http, settings.kalshi_base_url, "prod",
