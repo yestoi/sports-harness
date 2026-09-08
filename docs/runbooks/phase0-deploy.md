@@ -103,6 +103,58 @@ ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose run --rm app-exec exec-on
 step in flight and shuts the scheduler down inside the 60 s grace period. Resting paper orders
 are rows in `orders` and simply stay where they are; nothing on the venue depends on them.
 
+## Settlement, reporting, the gate, and replay (phase 3 one-offs)
+
+These all run as `docker compose run --rm app-run <command>` on the NAS (or over ssh, `docker
+compose run --rm -T app-run <command>` so nothing waits on a TTY). Every one of them is
+read/write-safe to run by hand beside the scheduled services: each write is keyed and goes in
+`on conflict do nothing`, so a manual run and the scheduled job cannot double-post a fill,
+settlement or benchmark row.
+
+- **`harness settle`** runs one pass of the settlement job now instead of waiting for its own
+  schedule (`settle_period_s`): settle final games, fetch the venue's own result, compute
+  benchmarks, drain CLV and write markouts. It prints `job_run=<id> status=<ok|error>
+  budget_exhausted=<bool> stale_unsettled=<n> <stage=counts...>` and exits 1 on `status=error`.
+  Re-running it inserts nothing new for work already done.
+- **`harness report --week N --out -`** renders the weekly report (ten tables over one ISO
+  week's non-replay rows) to stdout; `--out <path>` writes a file instead. `--year` defaults to
+  2026. This is the only report path that persists `report_runs`/`report_cells` with
+  `provisional = false` — the hourly `report_wtd` settlement stage writes the same tables with
+  `provisional = true` so the dashboard has something to show before Monday. `--selected-out`
+  and `--confirm` are the week-3 pre-registration freeze/confirmation pair (§7.2) and are not
+  part of the weekly cadence.
+- **`harness gate`** evaluates the go-live gate criteria and stores one `gate_reports` row per
+  exec variant, always `passed = false` in phase 3 by construction (`legal_decision` and
+  `live_trading_env` are false). It exits 0 regardless of the verdict — the exit code reports
+  that the evaluation ran, not whether it passed — and every run stores a new row; nothing
+  already stored is ever rewritten.
+- **`harness exec-once`** is documented above with `app-exec`; it is safe to run beside the
+  running service only because the advisory lock makes the extra invocation a no-op
+  (`locked=False`, nothing written).
+- **`harness replay --from-run A --to-run B --variant NAME [--file PATH] --execute`** drives the
+  executor over a 15-second grid across `[pricing_clock_for_run(A), pricing_clock_for_run(B)]`
+  instead of one pass per run, so it reproduces paper orders and fills the same way the live
+  `app-exec` loop would have produced them for that range, tagging every row `replay = true`.
+  The Monday 09:45 CT operate duty runs it over the last game day and expects the resulting
+  order and fill counts to match the live ones within 2 % (R14); the unit test behind it asserts
+  strict equality on a fixed run range. Without `--execute` it re-scores signals only (the
+  pre-phase-3 replay path), which is what a measurement amendment cites for a labelling fix.
+- **`harness export-fixture`** writes a recorded game day's raw responses, WS snapshot, deltas
+  and prints out of the database as a self-contained fixture directory, the same shape as
+  `tests/fixtures/day_2026-09-13/`, for building or refreshing a test fixture from real NAS data
+  rather than by hand.
+
+**What "candidates since the staleness fix" means.** The dashboard and this contract sometimes
+need to report a candidate count that is only meaningful starting from a specific deploy, not
+since the database's beginning — the running example is a bug in how stale a feed value was
+allowed to be before it fed a signal. Once that kind of bug is fixed and deployed, candidates
+generated before the fix reflect the buggy logic and candidates after it don't, so summing across
+the boundary understates or overstates the healthy rate depending on which side dominates. Read
+"since the staleness fix" as "since the deploy time of the most recent carried fix that changed
+what counts as a valid candidate" — look up that fix's deploy sha and time in `roadmap.md`'s
+`Carried fixes` table and filter `signals.created_at` (or the funnel query) to `>= <that time>`.
+Item 13 of the Chrome checklist below is this count, rendered per variant.
+
 ## Clock accuracy
 
 The NAS must run NTP (UGOS Control Panel → Time). Kalshi rejects a WebSocket handshake whose
@@ -120,7 +172,7 @@ the skew in already-recorded timestamps — NTP on the NAS is still required for
 
 ## Upgrading to new code
 
-After pulling a new version, always run the schema step again before starting the services; `create_schema` is additive and idempotent, but the running containers never create tables on their own:
+After pulling a new version, always run the schema step again before starting the services; `init-db` (`create_schema`) only adds tables, views and nullable columns and is idempotent, but the running containers never create tables on their own:
 
 ```bash
 docker compose build
@@ -131,6 +183,17 @@ docker compose up -d
 ```
 
 Symptom of skipping this: `relation "teams" does not exist` in logs, `app-ws` restarting, and `notes.normalize_errors` on every run.
+
+**`partition-bulk-tables` (phase 3, one-off).** `docker compose run --rm app-run partition-bulk-tables`
+turns the live `orderbook_events` and `venue_trades` tables into weekly partitions (F19), so a
+Layer 2b invariant or a housekeeping check can scan one week's worth of rows instead of the
+whole tape. It is safe to run again on an already-partitioned database: it logs `partitioned:
+nothing (already partitioned)` and touches nothing. It ran once on the NAS on 2026-09-08,
+01:31-02:07 CT with the writers stopped (`orderbook_events` in 2107 s, `venue_trades` in 19 s);
+a future deploy does not need to repeat it, and the phase 3 Task 14 deploy skips it as a no-op
+for that reason. Run it with the writers (`app-run`, `app-ws`, `app-exec`) stopped if it is ever
+needed again on a table this large, since it validates a `CHECK` constraint by scanning the
+table it is attaching.
 
 ## Deploying with the Makefile (UGREEN NAS)
 

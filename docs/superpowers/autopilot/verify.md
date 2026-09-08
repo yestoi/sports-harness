@@ -84,14 +84,14 @@ rule below.
 | Degraded sections | `dashboard section` count = 0. These log at WARNING, so the ERROR check cannot see them. | existing |
 | Credits | `odds_remaining` numeric, decreasing only on real ticks, and above 20 % of the month's allowance (20,000 on the 100k tier, 1,000,000 after the U1 upgrade) | existing |
 | Signals | see the time-of-day table | existing |
-| DB size | below 800 GB; note the number in the journal | existing |
+| DB size | below the 2 TB ceiling (`db_budget_gb = 2000`, U3); the dashboard turns red at 80 %, 1.6 TB; note the number and the days-to-ceiling projection in the journal | existing |
 | Build stamp | every `runs` row since the deploy carries `build_sha = DEPLOY_SHA` (`select distinct build_sha from runs where started_at > '<deploy time>'`). The column arrives with phase 3 Task 2. | after phase 3 |
 
 ### Phase 3 additions (after the executor ships)
 
 ```
 select last_loop_at, loops, open_orders, last_error, last_loop_ms, p95_loop_ms, loops_skipped,
-       book_dirty_markets, now() - last_loop_at as age from exec_heartbeat;
+       book_dirty_markets, ws_last_event_at, now() - last_loop_at as age from exec_heartbeat;
 select status, count(*) from orders where replay=false group by 1;
 select count(*) from orders o where o.status='open' and o.replay=false
   and not exists (select 1 from orderbook_events e where e.ticker=o.ticker and e.ts > now() - interval '15 minutes');
@@ -99,6 +99,16 @@ select count(*) from intents; select count(*) from fills where replay=false;
 select count(*) from settlements; select count(*) from venue_settlements; select count(*) from benchmarks;
 select count(*) from gap_outcomes; select count(*) from markouts;
 select reason, count(*) from order_events where kind='skipped' and ts > now() - interval '24 hours' group by 1 order by 2 desc;
+select job, status, budget_exhausted, finished_at from job_runs order by id desc limit 3;
+select count(*) from order_clv;
+select count(*), sum(case when gate_variant then 1 else 0 end) from gate_reports where passed = false;
+-- Task 12b telemetry (U6)
+select name, max(ts) from metric_samples group by 1 order by 1;
+select count(*) from order_watch_samples where ts > now() - interval '1 hour';
+select variant_id, max(ts) from equity_snapshots group by 1;
+select count(*) from game_score_events where ts > now() - interval '24 hours';
+select check_name, status from check_results where ts > now() - interval '25 hours';
+select year, week, provisional, generated_at from report_runs order by id desc limit 3;
 ```
 
 | Check | Expected |
@@ -115,7 +125,15 @@ select reason, count(*) from order_events where kind='skipped' and ts > now() - 
 | Orders / intents | see the time-of-day table; every candidate of an exec variant newer than 1 h has an intent or a `skipped` event |
 | Days to budget | the dashboard projection from trailing 7-day growth is above 30 days |
 | Weekly report | `ssh … 'docker compose run --rm -T app-run report --week 37 --out -' > docs/reports/2026-w37.md` on the Mac writes tables 1 to 6 and 8 populated, 7/9/10 "not collected" |
-| `harness gate` | stores a `gate_reports` row with `passed = false` |
+| `harness gate` | stores one `gate_reports` row per exec variant, all `passed = false`, exactly one with `gate_variant = true` (`sharp_two_sided` after amendment 3) |
+| Settlement job | the newest `settle` row is `ok` and younger than `settle_period_s`; `budget_exhausted = true` on two consecutive rows is a carried fix |
+| Order CLV | > 0 once fills and benchmarks exist; the stale share of `order_clv` per benchmark type in the last 7 days under 20 % |
+| Metric samples (after Task 12b) | every `exec.*`, `recorder.*`, `ws.*` name younger than 5 min during a game window |
+| Order watch samples (after Task 12b) | > 0 in the last hour while any order is open |
+| Equity snapshots (after Task 12b) | a row per exec variant, `max(ts)` recent |
+| Game score events (after Task 12b) | > 0 in the last 24 h after a game day |
+| Check results (after Task 12b) | all `pass` in the last 25 h |
+| Report runs (after Task 12b) | the last three rows: `provisional = true` on the hourly `report_wtd` rows, `false` on `harness report`'s |
 
 ## Layer 2b: invariants and plausibility bands
 
@@ -142,6 +160,53 @@ select count(*) from benchmarks where source_ts > target_ts;
 select count(*) from fills f join orders o on o.id=f.order_id join games g on g.id=o.game_id
   where f.replay=false and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
 select count(*) from markouts where at_ts > horizon_ts;
+-- the remaining CHECKS (harness/ops/checks.py), same SQL: verify.md and CHECKS agree
+select count(*) from (
+    select venue, trade_id, count(*) as c
+    from venue_trades
+    where ts >= date_trunc('week', now())
+    group by venue, trade_id
+    having count(*) > 1
+) d;  -- duplicate_trades (D4); bounded to the current weekly partition, never the full tape
+select count(*) from order_clv c join orders o on o.id = c.order_id
+  where c.p_used_kind = 'order' and c.p_used <> o.prob;  -- clv_p_used_matches_order_prob
+select count(*) from job_runs
+  where job = 'settle' and started_at >= now() - interval '24 hours' and status = 'error';  -- settle_errors_24h
+select count(*) from venue_settlements d
+  where d.source = 'derived' and d.settled_at < now() - interval '48 hours'
+    and not exists (select 1 from venue_settlements v
+                    where v.venue = d.venue and v.ticker = d.ticker and v.source = 'venue');
+  -- derived_without_venue_row_48h: a settled market older than two days must have a venue row (R11)
+select count(*) from runs
+  where started_at >= now() - interval '24 hours' and build_sha is not null
+    and build_sha <> (select build_sha from runs where build_sha is not null order by id desc limit 1);
+  -- build_sha_drift: every recorder run in the last 24h carries the newest run's build_sha
+select count(*) from orders
+  where status in ('open', 'partially_filled') and replay = false
+    and expiry is not null and expiry < now() - interval '5 minutes';  -- orders_open_past_expiry
+select count(*) from (
+    select evaluated_at from gate_reports group by evaluated_at
+    having count(*) filter (where gate_variant) <> 1
+) g;  -- gate_rows_one_gate_variant: exactly one gate_variant=true row per evaluation
+-- Task 12b telemetry tables: one bounded invariant per new table (returns 0 when healthy)
+select count(*) from metric_samples where ts > now() - interval '24 hours' and value < 0;
+select count(*) from operator_events where ts > now() - interval '24 hours' and trim(summary) = '';
+select count(*) from order_watch_samples
+  where ts > now() - interval '24 hours' and (queue_remaining < 0 or nw_queue_remaining < 0);
+select count(*) from equity_snapshots
+  where ts > now() - interval '24 hours' and mtm_coverage is not null
+    and (mtm_coverage < 0 or mtm_coverage > 1);
+select count(*) from game_score_events e
+  where e.ts > now() - interval '24 hours'
+    and exists (select 1 from game_score_events p
+                where p.game_id = e.game_id and p.ts < e.ts
+                  and (p.home_score > e.home_score or p.away_score > e.away_score));
+  -- a game's score must never go down
+select count(*) from check_results
+  where ts > now() - interval '25 hours' and status not in ('pass', 'fail', 'skip');
+select count(*) from report_runs where generated_at > now();  -- small table, unbounded is fine
+select count(*) from report_cells rc
+  where not exists (select 1 from report_runs rr where rr.id = rc.report_run_id);  -- small table
 ```
 
 Five invariants that need their own statement rather than a single count:
@@ -172,7 +237,7 @@ good" is out of band. Out of band is an integrity anomaly, never a headline.
 | Markouts with `source = none` | < 10 % | horizon or quote lookup bug |
 | Settlement mismatches | 0 | matching bug (gate criterion) |
 | WS `gap` rows / snapshot rows, per day | < 1 % | recorder or deploy-timing problem |
-| Odds credits per day | 500 to 3,000 | cadence change or key leak |
+| Odds credits per day | 500 to 3,000 on the 100k tier; 2,000 to 170,000 after the U1 upgrade (5,000,000 / 30 days) | cadence change or key leak |
 
 ## Time-of-day expectations (America/Chicago)
 
