@@ -695,3 +695,22 @@ Times are America/Chicago.
 - Rulings: (1) The 1,277,190 replay signals stay (tagged, excluded from reports; the amendment's evidence). (2) The next plan-next amends the plan text for any later replay step: never `--file` for a registered variant.
 - Carried forward: none
 - Next: stopped (the report is updated in this commit); the operate duties continue (morning-after verify after 08:10 CT)
+
+## 51. decision - the user clears the gate and asks for a clean stop - 2026-09-08 07:12 CT
+- Orient: n/a (user instruction in chat)
+- Decision (user, verbatim, 2026-09-08 07:12 CT): "Run the four ALTER COLUMN TYPE statements on the NAS. The two UPDATE statements, and anything else needed so I may start the loop over in a fresh session."
+- Rulings: (1) The user's explicit instruction is the authorization for the ALTERs and the UPDATEs (gate 3 and the entry 50 row restore): the loop runs them now, in the order the stopped report gives, and verifies each. (2) The instruction to prepare a fresh session is read as the answer to the ceiling question (entry 49 b): the fresh session's Orient rule 1 opens the hotfix unit for carried fix 17 first; if the user meant otherwise, the roadmap's Carried fixes row is the place to say so. (3) This session ends at a clean boundary after the verification below, with `state.md` carrying the resume steps.
+- Next: the ALTERs, `init-db`, the UPDATEs, one `settle` pass, verification, `stopped` (entry 52)
+
+## 52. stopped - gate cleared by the user; clean boundary for a fresh session - 2026-09-08 07:36 CT
+- Orient: n/a (entry 51)
+- Branch / commits: `main` (docs only since 21f8ca4; NAS build 21f8ca4)
+- Result: done (the user's SQL executed and verified); stopped at the user's request
+- Dispatches: 0 (session total 57)
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: the four columns now `varchar(32)`/`varchar(32)`/`varchar(32)`/`varchar(10)` (information_schema at 07:34 CT); `clv` view recreated by `init-db` at 07:34 CT (pg_views count 1); `sharp_two_sided` (5632da729fa7) active under its own name, the replay row renamed `sharp_two_sided#e82fcd0a1e99`; settle job 4 at 07:35 CT `ok`: benchmarks 264 rows across nine types (incl. `kalshi_last_trade_pre_kick` 148, `opening_first_seen` 15, `result` 150), gap_outcomes 1,095, order_clv 0 (no orders yet), markouts 0
+- Rulings: (1) The entry 49 gates (a) and (b) are cleared by entry 51's decision; carried fix 17 (page time) is the fresh session's first unit (Orient rule 1), carried fix 16 stays phase work. (2) No wakeup survives this session (stopped).
+- Carried forward: none new (16, 17 open)
+- Next: fresh session per Kickoff. Orient: rule 1 hotfix 17 (`fix-2026-09-08-dashboard` from `main`, sonnet, reviewer sonnet; deploy with `make deploy-nas-app` since app-exec exists and the diff is app-only; re-verify the page-time row); then the morning-after verify with the walker (the calendar day's first walker verify; the 08:10 CT pricing run is the first to score `sharp_two_sided` live: check `signals` for 5632da729fa7 and `venue_markets.price_ranges` populating); the daily 09:00 CT line; then phase 4 plan-next (its first task carries fix 16 and the plan-text correction: never `--file` for a registered variant). Report: `docs/superpowers/autopilot/reports/2026-09-08-stopped-0736.md`
