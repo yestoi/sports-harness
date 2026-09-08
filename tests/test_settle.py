@@ -562,15 +562,18 @@ def test_settler_writes_job_runs_and_never_touches_runs_notes(db_session, env_se
     assert row.started_at is not None and row.finished_at is not None
     # Task 8 folded four more stages (benchmarks, result_benchmarks, gap_outcomes_drain,
     # order_clv) into the shared registry every settlement run now iterates; this run's own
-    # game and order pass cleanly through all of them (no errors, no warnings), so only
-    # `settle`'s and `venue_result`'s own presence and relative order are pinned here.
+    # game and order pass cleanly through all of them (no errors), so only `settle`'s and
+    # `venue_result`'s own presence and relative order are pinned here. This game has no
+    # odds/quotes/trades seeded, so `compute_benchmarks` (fix round 1, I2) legitimately warns
+    # that it produced no rows for it -- a real, expected warning, not a failure.
     stages = {s["name"]: s for s in row.notes["stages"]}
     names = [s["name"] for s in row.notes["stages"]]
     assert {"settle", "venue_result"} <= set(names)
     assert names.index("settle") < names.index("venue_result")
     assert stages["settle"]["counts"]["games"] == 1
     assert row.notes["stale_unsettled"] == 0
-    assert row.notes["warnings"] == [] and row.notes["errors"] == []
+    assert row.notes["warnings"] == [{"benchmarks_no_rows": game.id}]
+    assert row.notes["errors"] == []
 
     db_session.expire_all()
     assert db_session.get(Run, run.id).notes == {"tick": "mine"}

@@ -152,7 +152,7 @@ def test_init_db_runs_its_ddl_under_the_batch_statement_timeout(monkeypatch, cli
 def test_benchmarks_cmd_computes_and_is_idempotent(cli_settings, db_session):
     from decimal import Decimal
 
-    from harness.db.models import Benchmark, Game, VenueMarket
+    from harness.db.models import Benchmark, Game, OddsSnapshot, VenueMarket
 
     kickoff = datetime(2026, 9, 12, 3, 0, tzinfo=timezone.utc) - timedelta(hours=4)
     game = Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=kickoff, status="final")
@@ -162,17 +162,29 @@ def test_benchmarks_cmd_computes_and_is_idempotent(cli_settings, db_session):
                                game_id=game.id, market_type="moneyline", side_team_id=14,
                                match_confidence=Decimal("1.00"), match_status="matched",
                                first_seen_raw_id=1, last_seen_at=kickoff))
+    # Fix round 1, M6: a real pinnacle moneyline pair fetched inside the kickoff - 5 min
+    # lookback, so the CLI is shown actually computing something, not just running cleanly
+    # against an empty game.
+    fetched_at = kickoff - timedelta(minutes=6)
+    db_session.add(OddsSnapshot(raw_id=1, run_id=1, book="pinnacle", game_id=game.id,
+                               market_type="h2h", outcome_team_id=14, price_decimal=Decimal("1.6500"),
+                               book_last_update=fetched_at, fetched_at=fetched_at))
+    db_session.add(OddsSnapshot(raw_id=2, run_id=1, book="pinnacle", game_id=game.id,
+                               market_type="h2h", outcome_team_id=19, price_decimal=Decimal("2.4000"),
+                               book_last_update=fetched_at, fetched_at=fetched_at))
     db_session.commit()
 
     result = runner.invoke(app, ["benchmarks", "--game-id", str(game.id)])
     assert result.exit_code == 0, result.output
     assert f"game_id={game.id}" in result.output
-    # No pre-kickoff odds/quotes/trades were seeded, so nothing computable inserts, but the
-    # command itself must run cleanly against a real (empty-of-data) game.
-    assert db_session.query(Benchmark).filter_by(game_id=game.id).count() == 0
+    row = db_session.query(Benchmark).filter_by(game_id=game.id, benchmark_type="pinnacle_t5").one()
+    from harness.pricing.devig import devig
+
+    assert row.p == devig([Decimal("1.6500"), Decimal("2.4000")], method="power")[0]
 
     again = runner.invoke(app, ["benchmarks", "--game-id", str(game.id)])
     assert again.exit_code == 0, again.output
+    assert db_session.query(Benchmark).filter_by(game_id=game.id, benchmark_type="pinnacle_t5").count() == 1
 
 
 def test_benchmarks_cmd_exits_1_for_an_unknown_game(cli_settings, db_session):

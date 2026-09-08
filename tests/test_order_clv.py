@@ -212,6 +212,88 @@ def test_order_clv_excludes_replay_and_requires_game_benchmarks(db_session):
     assert db_session.query(OrderClv).count() == 0
 
 
+def test_order_clv_counts_orders_with_no_game_id_separately(db_session):
+    """Fix round 1, M8: a non-replay order with no `game_id` (e.g. placed against a market that
+    was still unmatched) can never satisfy the candidates query's benchmarks join. It must not
+    vanish silently -- the stage counts it separately as `no_game` rather than never appearing
+    anywhere."""
+    from harness.settlement.order_clv import order_clv_stage
+
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    _seed_all_benchmarks(db_session, game.id)
+    _order(db_session, market, side="no", prob="0.42")
+
+    no_game_order = Order(intent_id=uuid.uuid4(), variant_id="v1", venue="kalshi", mode="paper",
+                          client_order_id=f"co-{uuid.uuid4()}", ticker="T-NO-GAME",
+                          venue_market_id=market.id, side="yes", prob=Decimal("0.50"),
+                          contracts=Decimal("1.00"), status="open",
+                          placed_at=NOW - timedelta(hours=1), game_id=None, replay=False)
+    db_session.add(no_game_order)
+    db_session.commit()
+
+    result = order_clv_stage(db_session, NOW, Budget(60, Mono(0.0)))
+
+    assert result.counts["order_clv"] == len(BENCHMARK_TYPES)
+    assert result.counts["no_game"] == 1
+    assert db_session.query(OrderClv).filter_by(order_id=no_game_order.id).count() == 0
+
+
+# --- C1: the result benchmark joins once it lands ---------------------------------------
+
+
+def test_order_clv_and_gap_outcomes_pick_up_result_after_settlement(db_session):
+    """Fix round 1, C1 (Critical): the eight pre-kick benchmarks land at kickoff + 5 min, but
+    `result` lands only hours later once the game settles. Gating candidacy/the watermark on
+    "any row exists" locked every order and gap snapshot out of `result` forever the moment the
+    first eight landed. Candidacy must be per missing (order | gap snapshot, benchmark_type)
+    pair, so `result` joins on whichever pass follows its own insertion.
+    """
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    pre_kick_types = [t for t in BENCHMARK_TYPES if t != "result"]
+    for kind in pre_kick_types:
+        _benchmark(db_session, game.id, kind, "0.6000")
+    order = _order(db_session, market, side="no", prob="0.42")
+    gap = _gap(db_session, market.id, fair_p="0.5600", venue_mid="0.55", best_bid="0.50")
+    db_session.commit()
+
+    n1 = compute_order_clv(db_session, NOW, Budget(60, Mono(0.0)))
+    g1 = drain_gap_outcomes(db_session, batch=50_000)
+
+    assert n1 == len(pre_kick_types) == 8
+    pre_kick_gap_types = [t for t in GAP_OUTCOME_TYPES if t != "result"]
+    assert g1 == len(pre_kick_gap_types) == 3
+    # The game has not settled yet: the watermark must not have passed this snapshot.
+    watermark_row = db_session.get(JobState, GAP_OUTCOMES_WATERMARK_KEY)
+    assert watermark_row is None or watermark_row.value < gap.id
+
+    # Settlement lands.
+    _benchmark(db_session, game.id, "result", "1.0000")
+    db_session.commit()
+
+    n2 = compute_order_clv(db_session, NOW, Budget(60, Mono(0.0)))
+    g2 = drain_gap_outcomes(db_session, batch=50_000)
+
+    assert n2 == 1  # exactly the result row
+    assert g2 == 1  # exactly the result row
+    order_rows = {r.benchmark_type: r for r in
+                 db_session.query(OrderClv).filter_by(order_id=order.id).all()}
+    gap_rows = {r.benchmark_type: r for r in
+               db_session.query(GapOutcome).filter_by(gap_snapshot_id=gap.id).all()}
+    assert set(order_rows) == set(BENCHMARK_TYPES)
+    assert set(gap_rows) == set(GAP_OUTCOME_TYPES)
+    assert order_rows["result"].p_bench == side_p(Decimal("1.0000"), "no")
+    assert gap_rows["result"].p_bench == Decimal("1.0000")
+    # Now that the game is finished (has its `result` benchmark), the watermark passes it.
+    assert db_session.get(JobState, GAP_OUTCOMES_WATERMARK_KEY).value == gap.id
+
+    n3 = compute_order_clv(db_session, NOW, Budget(60, Mono(0.0)))
+    g3 = drain_gap_outcomes(db_session, batch=50_000)
+    assert n3 == 0
+    assert g3 == 0
+
+
 # --- drain_gap_outcomes ----------------------------------------------------------------
 
 
@@ -304,3 +386,105 @@ def test_drain_respects_batch_watermark_and_is_idempotent(db_session):
     fourth = drain_gap_outcomes(db_session, batch=50_000)
     assert fourth == len(GAP_OUTCOME_TYPES)
     assert db_session.get(JobState, GAP_OUTCOMES_WATERMARK_KEY).value == blocked.id
+
+
+def test_drain_gap_outcomes_continues_past_an_unfinished_game_to_a_later_one(db_session):
+    """Fix round 1, I2: the drain must not stop scanning at the first snapshot whose game is
+    not finished -- it processes the rest of the batch and only holds the watermark back."""
+    unfinished_game = _game(db_session)
+    unfinished_market = _market(db_session, unfinished_game.id, ticker="T-ML-UNFINISHED")
+    # No benchmarks at all for this game -- it never produces a row.
+    unfinished_gap = _gap(db_session, unfinished_market.id, fair_p="0.5000", venue_mid="0.50",
+                          best_bid="0.49")
+
+    finished_game = _game(db_session)
+    finished_market = _market(db_session, finished_game.id, ticker="T-ML-FINISHED")
+    for kind in GAP_OUTCOME_TYPES:
+        _benchmark(db_session, finished_game.id, kind, "0.6000")
+    finished_gap = _gap(db_session, finished_market.id, fair_p="0.5500", venue_mid="0.50",
+                        best_bid="0.49")
+    db_session.commit()
+    assert unfinished_gap.id < finished_gap.id
+
+    n = drain_gap_outcomes(db_session, batch=50_000)
+
+    assert n == len(GAP_OUTCOME_TYPES)  # only the finished snapshot produced rows
+    assert db_session.query(GapOutcome).filter_by(gap_snapshot_id=finished_gap.id).count() == len(GAP_OUTCOME_TYPES)
+    assert db_session.query(GapOutcome).filter_by(gap_snapshot_id=unfinished_gap.id).count() == 0
+    # The watermark holds back at the unfinished snapshot even though the later, finished one
+    # in the same batch was fully processed.
+    watermark_row = db_session.get(JobState, GAP_OUTCOMES_WATERMARK_KEY)
+    assert watermark_row is None or watermark_row.value < unfinished_gap.id
+
+
+def test_drain_gap_outcomes_respects_budget_and_reports_exhaustion(db_session):
+    """Fix round 1, I3: `drain_gap_outcomes` takes an optional `budget` and stops before
+    spending more of it; the stage reports `budget_exhausted` honestly rather than a hard
+    `False`."""
+    from harness.settlement.order_clv import gap_outcomes_drain_stage
+
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    for kind in GAP_OUTCOME_TYPES:
+        _benchmark(db_session, game.id, kind, "0.6000")
+    _gap(db_session, market.id, fair_p="0.5000", venue_mid="0.50", best_bid="0.49")
+    _gap(db_session, market.id, fair_p="0.5000", venue_mid="0.50", best_bid="0.49")
+    db_session.commit()
+
+    exhausted = Budget(-1, Mono(0.0))
+    assert exhausted.ok() is False
+
+    n = drain_gap_outcomes(db_session, batch=50_000, budget=exhausted)
+    assert n == 0
+    assert db_session.query(GapOutcome).count() == 0
+
+    # The brief's positional signature stays callable with no budget at all.
+    assert drain_gap_outcomes(db_session, 50_000) >= 0
+
+    result = gap_outcomes_drain_stage(db_session, NOW, exhausted)
+    assert result.budget_exhausted is True
+
+
+def test_primary_signal_is_deterministic_with_more_than_one_primary(db_session):
+    """Fix round 1, M1: with more than one `tier = 'primary'` variant signalling the same run
+    and gap snapshot, the pick must be deterministic rather than whichever row the planner
+    visits first."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    for kind in GAP_OUTCOME_TYPES:
+        _benchmark(db_session, game.id, kind, "0.6000")
+    gap = _gap(db_session, market.id, run_id=9, fair_p="0.5600", venue_mid="0.55", best_bid="0.50")
+    _primary_variant(db_session, "p1")
+    _primary_variant(db_session, "p2")
+    _signal(db_session, run_id=9, gap_snapshot_id=gap.id, venue_market_id=market.id,
+           variant_id="p1", price_target="0.5300")
+    _signal(db_session, run_id=9, gap_snapshot_id=gap.id, venue_market_id=market.id,
+           variant_id="p2", price_target="0.4800")
+    db_session.commit()
+
+    drain_gap_outcomes(db_session, batch=50_000)
+
+    row = db_session.query(GapOutcome).filter_by(gap_snapshot_id=gap.id, benchmark_type="pinnacle_t5").one()
+    # The earliest-recorded (lowest id) signal wins: p1's target, not p2's.
+    clv, clv_net, roi_net = clv_formulas(Decimal("0.6000"), Decimal("0.5300"))
+    assert row.clv_target_p == clv
+
+
+def test_p_used_kind_is_none_when_neither_target_nor_best_bid_exists(db_session):
+    """Fix round 1, M2: with no primary target and no best bid, there is no price this row was
+    "used" at -- `p_used_kind` must be NULL, not a `best_bid` label on a price that never
+    existed."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    for kind in GAP_OUTCOME_TYPES:
+        _benchmark(db_session, game.id, kind, "0.6000")
+    gap = _gap(db_session, market.id, fair_p="0.5600", venue_mid="0.55", best_bid=None)
+    db_session.commit()
+
+    drain_gap_outcomes(db_session, batch=50_000)
+
+    row = db_session.query(GapOutcome).filter_by(gap_snapshot_id=gap.id, benchmark_type="pinnacle_t5").one()
+    assert row.p_used_kind is None
+    assert row.clv_target_p is None
+    assert row.clv_target_p_net is None
+    assert row.clv_target_roi_net is None

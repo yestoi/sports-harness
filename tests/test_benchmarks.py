@@ -30,7 +30,7 @@ from harness.settlement.benchmarks import (
     insert_result_benchmarks,
     kickoff_moved,
 )
-from harness.settlement.job import Budget, load_stages
+from harness.settlement.job import Budget, load_stages, new_ctx, use_ctx
 
 NOW = datetime(2026, 9, 12, 3, 0, tzinfo=timezone.utc)
 HOME, AWAY = 14, 19
@@ -256,6 +256,19 @@ def test_compute_benchmarks_runs_once_per_game(db_session, monkeypatch):
     assert rows["pinnacle_t5"].p == expected_pinnacle
     assert all(r.kickoff_moved is False for r in rows.values())
 
+    # Fix round 1, I1: each type's target_ts is its own target, not uniformly `kickoff`.
+    assert rows["pinnacle_t5"].target_ts == t5
+    assert rows["novig_devig_t5"].target_ts == t5
+    assert rows["consensus_t5"].target_ts == t5
+    assert rows["consensus_t60"].target_ts == t60
+    assert rows["consensus_t180"].target_ts == t180
+    assert rows["kalshi_mid_t5"].target_ts == t5
+    assert rows["kalshi_last_trade_pre_kick"].target_ts == kickoff
+    # opening_first_seen stores its own chosen snapshot's ts as target_ts, and is never stale
+    # by definition -- there is no target it could be late for.
+    assert rows["opening_first_seen"].target_ts == rows["opening_first_seen"].source_ts
+    assert rows["opening_first_seen"].stale is False
+
     # Idempotent: a second pass finds the game already has rows and inserts nothing.
     again = compute_benchmarks(db_session, NOW, Budget(60, Mono(0.0)))
     assert again == 0
@@ -292,6 +305,65 @@ def test_pinnacle_t5_devig_matches_module_and_uses_alternates_for_non_main_rungs
     assert n >= 1
 
 
+def test_eligible_games_excludes_games_older_than_7_days_and_warns_while_scanned(db_session):
+    """Fix round 1, I2: a matched game whose price sources never produce a single benchmark row
+    stays in `_ELIGIBLE_GAMES` forever under the old "not exists benchmarks" gate alone -- the
+    7-day window bounds that. Within the window it is still scanned (and still produces
+    nothing), which is worth one warning per pass so an operator can see it stuck.
+    """
+    stuck = _game(db_session, kickoff=NOW - timedelta(hours=4))
+    _market(db_session, stuck.id, "T-ML-STUCK", side_team_id=HOME)  # no odds/quotes/trades at all
+
+    aged_out = _game(db_session, kickoff=NOW - timedelta(days=8))
+    _market(db_session, aged_out.id, "T-ML-AGED", side_team_id=HOME)
+    db_session.commit()
+
+    ctx = new_ctx()
+    with use_ctx(ctx):
+        n = compute_benchmarks(db_session, NOW, Budget(60, Mono(0.0)))
+
+    assert n == 0
+    assert db_session.query(Benchmark).count() == 0
+    # Only the in-window game is scanned (and warned about); the 8-day-old one never enters
+    # _ELIGIBLE_GAMES at all.
+    assert ctx["warnings"] == [{"benchmarks_no_rows": stuck.id}]
+
+
+def test_process_game_returns_zero_for_a_vanished_game(db_session):
+    """Fix round 1, M7: a game deleted between the eligibility query and the loop (or simply a
+    bad id) must not raise -- there is nothing left to benchmark, not an error."""
+    assert bm._process_game(db_session, 999_999, NOW) == 0
+
+
+def test_insert_result_benchmarks_calls_kickoff_moved_once_per_game(db_session, monkeypatch):
+    """Fix round 1, M9: two shapes on the same game settling in one pass must not compute
+    `kickoff_moved` twice -- it is a property of the game, not of the settling row."""
+    game = _game(db_session, kickoff=NOW - timedelta(hours=6), home_score=24, away_score=21)
+    ml = _market(db_session, game.id, "T-ML-HOME", side_team_id=HOME)
+    spread = _market(db_session, game.id, "T-SPR-HOME", market_type="spread", threshold="3.5",
+                     side_team_id=HOME)
+    db_session.add(VenueSettlement(venue="kalshi", ticker=ml.ticker, source="derived",
+                                   result="yes", payout=Decimal("1"),
+                                   settled_at=NOW - timedelta(hours=1)))
+    db_session.add(VenueSettlement(venue="kalshi", ticker=spread.ticker, source="derived",
+                                   result="yes", payout=Decimal("1"),
+                                   settled_at=NOW - timedelta(hours=1)))
+    db_session.commit()
+
+    calls = []
+    real = bm.kickoff_moved
+
+    def spy(session, g):
+        calls.append(g.id)
+        return real(session, g)
+
+    monkeypatch.setattr(bm, "kickoff_moved", spy)
+
+    n = insert_result_benchmarks(db_session, NOW, Budget(60, Mono(0.0)))
+    assert n == 2
+    assert calls == [game.id]
+
+
 # --- insert_result_benchmarks --------------------------------------------------------------
 
 
@@ -324,14 +396,22 @@ def test_stages_registered_in_order():
     present exactly once, and each module's own two stages come out in the order that module
     registers them in (source order, guaranteed whichever import first triggers it).
 
-    Not asserted here: the *cross-module* order (settle before benchmarks before order_clv).
-    `STAGE_MODULES` declares that order and `Settler.run()` (the only real caller) gets it,
-    because `load_stages()` is the first thing to import these modules there. In this test
-    suite, several files import a stage module directly at collection time to reach its pure
-    functions (this file included), and pytest collects files alphabetically -- so by the time
-    any test calls `load_stages()`, some later module may already have registered ahead of an
-    earlier one. That is a property of running tests together, not of the registration code.
+    Fix round 1, M5: `STAGE_MODULES` itself -- a plain list, evaluated once at import time,
+    unaffected by which module some other test file happened to import first -- is pinned
+    directly to the addendum's declared order. Combined with the per-module relative-order
+    assertions below, this pins the cross-module invariant without depending on the *live*
+    `STAGES` registry's order, which (because several test files import a stage module directly
+    at collection time to reach its pure functions, and pytest collects files alphabetically)
+    can have some later module registered ahead of an earlier one when the whole suite runs
+    together -- a property of running tests together, not of the registration code, and not
+    what `Settler.run()` actually sees in production (there, `load_stages()` is the first thing
+    to import these modules, so it gets `STAGE_MODULES`' order exactly).
     """
+    from harness.settlement.job import STAGE_MODULES
+
+    assert STAGE_MODULES == ["harness.settlement.settle", "harness.settlement.benchmarks",
+                             "harness.settlement.order_clv"]
+
     names = [name for name, _ in load_stages()]
     expected = {"settle", "venue_result", "benchmarks", "result_benchmarks",
                "gap_outcomes_drain", "order_clv"}

@@ -24,9 +24,9 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from harness.db.models import Benchmark, FairValue, Game, VenueMarket, VenueQuote, VenueTrade
+from harness.db.models import Benchmark, FairValue, Game, VenueMarket
 from harness.pricing.devig import devig
-from harness.pricing.fair import MATCHED_STATUSES
+from harness.pricing.fair import MATCHED_STATUSES, _shapes_for_game
 from harness.pricing.lines import (
     SPREAD_MARKETS, TOTAL_MARKETS, Line, latest_book_lines, ml_pair, spread_pair, total_pair,
 )
@@ -36,6 +36,12 @@ log = logging.getLogger(__name__)
 
 FOUR = Decimal("0.0001")
 STALE_WINDOW = timedelta(minutes=10)
+#: Fix round 1, I2: a matched game whose price sources never produce a single benchmark row
+#: (no odds, no quotes, no trades) would otherwise sit in `_ELIGIBLE_GAMES` forever -- `not
+#: exists benchmarks` stays true no matter how many times it is scanned. Bounding eligibility to
+#: kickoffs inside this window means such a game ages out within a week rather than being
+#: rescanned every settlement pass for the life of the database.
+ELIGIBLE_WINDOW = timedelta(days=7)
 
 #: `p, source_ts, stale` is what every non-result row needs; `result` is written separately by
 #: `insert_result_benchmarks` because it depends on the settlement, not on a pre-kickoff source.
@@ -70,6 +76,13 @@ class Snap:
     source_ts: datetime | None
 
 
+def _is_stale(source_ts: datetime, target_ts: datetime) -> bool:
+    """`source_ts < target_ts - 10 min` (spec F42), the one staleness comparison every
+    benchmark type shares -- `benchmark_at` and the two direct pair lookups (`_pinnacle_t5`,
+    `_novig_devig_t5`) all compare a source's own timestamp against a target the same way."""
+    return source_ts < target_ts - STALE_WINDOW
+
+
 def benchmark_at(kind: str, target_ts: datetime,
                  snapshots: list[Snap]) -> tuple[Decimal, datetime, bool] | None:
     """`(p, source_ts, stale)` for one benchmark type, or None when nothing qualifies.
@@ -93,8 +106,7 @@ def benchmark_at(kind: str, target_ts: datetime,
             return None
         chosen = max(candidates, key=lambda s: s.ts)
     source_ts = chosen.source_ts if chosen.source_ts is not None else chosen.ts
-    stale = source_ts < target_ts - STALE_WINDOW
-    return chosen.p, source_ts, stale
+    return chosen.p, source_ts, _is_stale(source_ts, target_ts)
 
 
 _FIRST_GAP_SNAPSHOT = text("""
@@ -122,26 +134,10 @@ def kickoff_moved(session: Session, game: Game) -> bool:
 
 # --- shapes ------------------------------------------------------------------------------
 
-
-def _shapes_for_markets(markets: list[VenueMarket]) -> list[tuple]:
-    """Distinct pricing shapes among a game's matched venue markets: the same rule
-    `harness.pricing.fair._shapes_for_game` uses, so a shape here is exactly the key a
-    `fair_values` row for this game was written under.
-    """
-    shapes: dict[tuple, None] = {}
-    for m in markets:
-        if m.match_status not in MATCHED_STATUSES:
-            continue
-        if m.market_type == "moneyline":
-            key = ("moneyline", m.side_team_id, None, None)
-        elif m.market_type == "spread":
-            key = ("spread", m.side_team_id, None, m.threshold)
-        elif m.market_type == "total":
-            key = ("total", None, "over", m.threshold)
-        else:
-            continue
-        shapes[key] = None
-    return list(shapes.keys())
+#: Fix round 1, M3: this was a verbatim copy of `_shapes_for_game`; imported directly instead,
+#: so a shape here is provably (not just by construction) the same key a `fair_values` row for
+#: this game was written under.
+_shapes_for_markets = _shapes_for_game
 
 
 def _markets_for_shape(markets: list[VenueMarket], shape: tuple) -> list[VenueMarket]:
@@ -178,8 +174,7 @@ def _pinnacle_t5(shape: tuple, home_id: int, away_id: int, lines: dict,
     leg1, leg2 = pair
     p = devig([leg1.price, leg2.price], method="power")[0]
     source_ts = leg1.last_update or leg1.fetched_at
-    stale = source_ts < target_ts - STALE_WINDOW
-    return "pinnacle_t5", p, source_ts, stale
+    return "pinnacle_t5", p, source_ts, _is_stale(source_ts, target_ts)
 
 
 def _novig_devig_t5(shape: tuple, home_id: int, away_id: int, lines: dict,
@@ -191,8 +186,7 @@ def _novig_devig_t5(shape: tuple, home_id: int, away_id: int, lines: dict,
     leg1, leg2 = pair
     p = devig([leg1.price, leg2.price], method="proportional")[0]
     source_ts = leg1.last_update or leg1.fetched_at
-    stale = source_ts < target_ts - STALE_WINDOW
-    return "novig_devig_t5", p, source_ts, stale
+    return "novig_devig_t5", p, source_ts, _is_stale(source_ts, target_ts)
 
 
 def _fair_snaps(session: Session, game_id: int, shape: tuple) -> list[Snap]:
@@ -207,32 +201,58 @@ def _fair_snaps(session: Session, game_id: int, shape: tuple) -> list[Snap]:
             for row in session.execute(stmt).all()]
 
 
-def _quote_snaps(session: Session, venue_market_ids: list[int]) -> list[Snap]:
-    if not venue_market_ids:
-        return []
-    stmt = select(VenueQuote).where(VenueQuote.venue_market_id.in_(venue_market_ids))
+#: Fix round 1, M4: one row per market, at or before the target, instead of a market's entire
+#: quote/trade history loaded into Python. Both `kalshi_mid_t5` and `kalshi_last_trade_pre_kick`
+#: only ever want "the last one at or before target" (never `opening_first_seen`'s "the first
+#: one ever"), so the target can be pushed into the query itself.
+_QUOTE_AT_OR_BEFORE = text("""
+    select yes_bid, yes_ask, fetched_at from venue_quotes
+    where venue_market_id = :venue_market_id and fetched_at <= :target
+    order by fetched_at desc limit 1
+""")
+
+_TRADE_AT_OR_BEFORE = text("""
+    select yes_price, ts from venue_trades
+    where ticker = :ticker and ts <= :target
+    order by ts desc limit 1
+""")
+
+
+def _quote_snaps(session: Session, venue_market_ids: list[int], target: datetime) -> list[Snap]:
     snaps = []
-    for row in session.execute(stmt).scalars():
-        if row.yes_bid is None or row.yes_ask is None:
+    for venue_market_id in venue_market_ids:
+        row = session.execute(
+            _QUOTE_AT_OR_BEFORE, {"venue_market_id": venue_market_id, "target": target}).first()
+        if row is None or row.yes_bid is None or row.yes_ask is None:
             continue
         mid = ((row.yes_bid + row.yes_ask) / 2).quantize(FOUR)
         snaps.append(Snap(ts=row.fetched_at, p=mid, source_ts=row.fetched_at))
     return snaps
 
 
-def _trade_snaps(session: Session, tickers: list[str]) -> list[Snap]:
-    if not tickers:
-        return []
-    stmt = select(VenueTrade).where(VenueTrade.ticker.in_(tickers))
-    return [Snap(ts=row.ts, p=row.yes_price, source_ts=row.ts)
-            for row in session.execute(stmt).scalars()]
+def _trade_snaps(session: Session, tickers: list[str], target: datetime) -> list[Snap]:
+    snaps = []
+    for ticker in tickers:
+        row = session.execute(_TRADE_AT_OR_BEFORE, {"ticker": ticker, "target": target}).first()
+        if row is None:
+            continue
+        snaps.append(Snap(ts=row.ts, p=row.yes_price, source_ts=row.ts))
+    return snaps
 
 
-def _benchmarks_for_shape(session: Session, game: Game, shape: tuple, lines_t5: dict,
-                          markets: list[VenueMarket]) -> list[tuple[str, Decimal, datetime, bool]]:
-    """Every `(benchmark_type, p, source_ts, stale)` this shape can produce, skipping any type
-    whose source has no snapshot at or before its target (spec: `benchmark_at` returns None ->
-    no row for that type).
+def _benchmarks_for_shape(
+    session: Session, game: Game, shape: tuple, lines_t5: dict, markets: list[VenueMarket],
+) -> list[tuple[str, Decimal, datetime, bool, datetime]]:
+    """Every `(benchmark_type, p, source_ts, stale, target_ts)` this shape can produce, skipping
+    any type whose source has no snapshot at or before its target (spec: `benchmark_at` returns
+    None -> no row for that type).
+
+    Fix round 1, I1: each type carries its *own* target -- kickoff minus 5/60/180 min for the
+    types selected against those cutoffs, kickoff itself for `kalshi_last_trade_pre_kick` (which
+    was always correct). `opening_first_seen` is a special case per the ruling: it stores the
+    chosen snapshot's own `ts` as `target_ts`, with `stale` forced `False` -- an opening line has
+    no target to be late for, so `benchmark_at`'s (kickoff-relative) stale computation for this
+    kind is discarded rather than stored.
     """
     kickoff = game.kickoff_utc
     t5, t60, t180 = kickoff - timedelta(minutes=5), kickoff - timedelta(minutes=60), kickoff - timedelta(minutes=180)
@@ -240,32 +260,38 @@ def _benchmarks_for_shape(session: Session, game: Game, shape: tuple, lines_t5: 
     venue_market_ids = [m.id for m in shape_markets]
     tickers = [m.ticker for m in shape_markets]
 
-    rows: list[tuple[str, Decimal, datetime, bool]] = []
+    rows: list[tuple[str, Decimal, datetime, bool, datetime]] = []
 
     pinnacle = _pinnacle_t5(shape, game.home_team_id, game.away_team_id, lines_t5, t5)
     if pinnacle is not None:
-        rows.append(pinnacle)
+        kind, p, source_ts, stale = pinnacle
+        rows.append((kind, p, source_ts, stale, t5))
 
     novig = _novig_devig_t5(shape, game.home_team_id, game.away_team_id, lines_t5, t5)
     if novig is not None:
-        rows.append(novig)
+        kind, p, source_ts, stale = novig
+        rows.append((kind, p, source_ts, stale, t5))
 
     fair_snaps = _fair_snaps(session, game.id, shape)
-    for kind, target in (("consensus_t5", t5), ("consensus_t60", t60), ("consensus_t180", t180),
-                         ("opening_first_seen", kickoff)):
+    for kind, target in (("consensus_t5", t5), ("consensus_t60", t60), ("consensus_t180", t180)):
         got = benchmark_at(kind, target, fair_snaps)
         if got is not None:
-            rows.append((kind, got[0], got[1], got[2]))
+            rows.append((kind, got[0], got[1], got[2], target))
 
-    quote_snaps = _quote_snaps(session, venue_market_ids)
+    opening = benchmark_at("opening_first_seen", kickoff, fair_snaps)
+    if opening is not None:
+        p, source_ts, _stale = opening
+        rows.append(("opening_first_seen", p, source_ts, False, source_ts))
+
+    quote_snaps = _quote_snaps(session, venue_market_ids, t5)
     got = benchmark_at("kalshi_mid_t5", t5, quote_snaps)
     if got is not None:
-        rows.append(("kalshi_mid_t5", got[0], got[1], got[2]))
+        rows.append(("kalshi_mid_t5", got[0], got[1], got[2], t5))
 
-    trade_snaps = _trade_snaps(session, tickers)
+    trade_snaps = _trade_snaps(session, tickers, kickoff)
     got = benchmark_at("kalshi_last_trade_pre_kick", kickoff, trade_snaps)
     if got is not None:
-        rows.append(("kalshi_last_trade_pre_kick", got[0], got[1], got[2]))
+        rows.append(("kalshi_last_trade_pre_kick", got[0], got[1], got[2], kickoff))
 
     return rows
 
@@ -277,6 +303,7 @@ _ELIGIBLE_GAMES = text("""
     from games g
     join venue_markets m on m.game_id = g.id
     where g.kickoff_utc + interval '5 minutes' <= :now
+      and g.kickoff_utc >= :cutoff
       and m.match_status = any(:statuses)
       and not exists (select 1 from benchmarks b where b.game_id = g.id)
     order by g.id
@@ -289,24 +316,33 @@ def _insert_benchmark(session: Session, **kwargs) -> int:
 
 
 def compute_benchmarks(session: Session, now: datetime, budget: Budget) -> int:
-    """Every non-`result` benchmark row for every game past `kickoff + 5 min` that has a
-    matched venue market and no benchmark rows yet (spec: computed exactly once per game).
+    """Every non-`result` benchmark row for every game past `kickoff + 5 min` (and within
+    `ELIGIBLE_WINDOW` of it -- fix round 1, I2) that has a matched venue market and no benchmark
+    rows yet (spec: computed exactly once per game).
 
     One savepoint per game, mirroring `run_settlement`: a game whose pricing data raises must
-    not cost the games around it their own rows.
+    not cost the games around it their own rows. A game that is eligible but produces zero rows
+    (a matched market with no computable price source) logs one `ctx["warnings"]` entry per
+    pass it is scanned in, so an operator can see it stuck before the 7-day window ages it out.
     """
     ctx = current_ctx()
     inserted = 0
     game_ids = session.execute(
-        _ELIGIBLE_GAMES, {"now": now, "statuses": list(MATCHED_STATUSES)}).scalars().all()
+        _ELIGIBLE_GAMES,
+        {"now": now, "cutoff": now - ELIGIBLE_WINDOW, "statuses": list(MATCHED_STATUSES)},
+    ).scalars().all()
     for seen, game_id in enumerate(game_ids):
         if not budget.ok():
             log.info("compute_benchmarks budget spent with %d games left", len(game_ids) - seen)
             break
         try:
             with session.begin_nested():
-                inserted += _process_game(session, game_id, now)
+                n = _process_game(session, game_id, now)
             session.commit()
+            inserted += n
+            if n == 0:
+                log.warning("compute_benchmarks produced no rows for game_id=%s", game_id)
+                ctx["warnings"].append({"benchmarks_no_rows": game_id})
         except Exception as exc:  # noqa: BLE001 - one game must not cost the pass
             session.rollback()
             log.exception("compute_benchmarks failed for game_id=%s", game_id)
@@ -325,6 +361,11 @@ def compute_benchmarks_for_game(session: Session, game_id: int, now: datetime) -
 
 def _process_game(session: Session, game_id: int, now: datetime) -> int:
     game = session.get(Game, game_id)
+    if game is None:
+        # Fix round 1, M7: a game deleted between the eligibility query and this loop is not
+        # this pass's problem to raise over -- there is nothing left to benchmark.
+        log.warning("compute_benchmarks: game_id=%s vanished before processing", game_id)
+        return 0
     markets = list(session.execute(
         select(VenueMarket).where(VenueMarket.game_id == game_id,
                                   VenueMarket.match_status.in_(MATCHED_STATUSES))).scalars())
@@ -336,11 +377,12 @@ def _process_game(session: Session, game_id: int, now: datetime) -> int:
     inserted = 0
     for shape in shapes:
         market_type, team_id, side, threshold = shape
-        for kind, p, source_ts, stale in _benchmarks_for_shape(session, game, shape, lines_t5, markets):
+        for kind, p, source_ts, stale, target_ts in _benchmarks_for_shape(
+                session, game, shape, lines_t5, markets):
             inserted += _insert_benchmark(
                 session, game_id=game_id, market_type=market_type, outcome_team_id=team_id,
                 outcome_side=side, threshold=threshold, benchmark_type=kind, p=p,
-                target_ts=game.kickoff_utc, source_ts=source_ts, stale=stale,
+                target_ts=target_ts, source_ts=source_ts, stale=stale,
                 kickoff_moved=moved, created_at=now)
     return inserted
 
@@ -400,14 +442,20 @@ def insert_result_benchmarks(session: Session, now: datetime, budget: Budget) ->
     ctx = current_ctx()
     inserted = 0
     rows = session.execute(_PENDING_RESULT_ROWS).all()
+    # Fix round 1, M9: several pending rows can share a game_id (one per settling shape), and
+    # `kickoff_moved` is a property of the game, not of the row -- compute it once per game.
+    moved_cache: dict[int, bool] = {}
     for seen, row in enumerate(rows):
         if not budget.ok():
             log.info("insert_result_benchmarks budget spent with %d rows left", len(rows) - seen)
             break
         try:
             with session.begin_nested():
-                game = session.get(Game, row.game_id)
-                moved = kickoff_moved(session, game) if game is not None else False
+                moved = moved_cache.get(row.game_id)
+                if moved is None:
+                    game = session.get(Game, row.game_id)
+                    moved = kickoff_moved(session, game) if game is not None else False
+                    moved_cache[row.game_id] = moved
                 inserted += _insert_benchmark(
                     session, game_id=row.game_id, market_type=row.market_type,
                     outcome_team_id=row.side_team_id, outcome_side=row.side,
