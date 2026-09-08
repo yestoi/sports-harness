@@ -15,16 +15,35 @@ from harness.feeds.odds_api import OddsApiClient
 from harness.execution.loop import Executor
 from harness.recorder.tick import Recorder
 from harness.settlement.job import Settler
+from harness.venues.kalshi.authed import KalshiReader
+from harness.venues.kalshi.http import KalshiTransport, session_recorder
 from harness.venues.kalshi.public import KalshiPublic
 
 
 def build_recorder(settings: Settings) -> Recorder:
+    """The recorder's composition root.
+
+    Ruling A-C3: the account's rate limits are read on the *reader*, because no writer exists in
+    production. The reader is built only when both production key files are files -- on the Mac,
+    and in any container without Task 14's two bind mounts, `limits_reader` stays None and the
+    recorder behaves exactly as it did before.
+    """
     http = HttpClient(settings.http_timeout_s)
     odds = OddsApiClient(http, settings.odds_api_base_url, settings.odds_api_key(), settings.odds_api_bookmakers)
     espn = EspnClient(http, settings.espn_base_url)
     kalshi = KalshiPublic(http, settings.kalshi_base_url, settings.kalshi_sleep_s)
     factory = make_session_factory(make_engine(settings.database_url))
-    return Recorder(settings, factory, odds, espn, kalshi)
+    limits_reader = None
+    if settings.has_kalshi_credentials():  # both paths .is_file() (N1): an unmounted secret is a directory
+        # GET-only by construction: writes_enabled=False, so the transport raises
+        # PaperModeViolation before signing on any non-GET, and holds no write client at all.
+        transport = KalshiTransport(
+            http, settings.kalshi_base_url, "prod",
+            settings.kalshi_key_id(), settings.kalshi_private_key_pem(),
+            timeout_s=settings.http_timeout_s, writes_enabled=False,
+            recorder=session_recorder(factory))
+        limits_reader = KalshiReader(transport)
+    return Recorder(settings, factory, odds, espn, kalshi, limits_reader=limits_reader)
 
 
 def build_settler(settings: Settings) -> Settler:

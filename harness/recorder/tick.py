@@ -46,6 +46,43 @@ PRICE_BUDGET_MARGIN_S = 10
 #: learned the day's kickoffs.
 DEFAULT_CADENCE_S = 900
 
+#: How often the recorder re-reads `GET /account/limits` on its signed, GET-only reader (§1.3,
+#: ruling A-C3). The tick runs every `heartbeat_s` (30 s in production); the account's tier and
+#: buckets change on the scale of days, so an hourly read is plenty and keeps the phase's only
+#: production signed call to about 24 a day.
+LIMITS_REFRESH_S = 3600
+#: The venue's `tier` is the one venue *string* this task stores and prints (`runs.notes` and the
+#: Health block), so it gets the global constraint's treatment for untrusted venue text, scaled
+#: to an identifier: ASCII-escaped, control characters stripped, truncated.
+_TIER_MAX_LEN = 32
+#: A failed read's `repr` goes into `notes.warnings`; bounded for the same reason.
+_LIMITS_WARNING_MAX_LEN = 200
+_CONTROL_CHARS = frozenset(chr(c) for c in range(0x20)) | {chr(0x7F)}
+
+
+def _safe_venue_text(value, max_len: int) -> str | None:
+    """Untrusted venue text made safe to store and print: ASCII-escaped, every C0 control
+    character and DEL removed, truncated. Never reaches a decision -- only a note."""
+    if value is None:
+        return None
+    text = str(value).encode("ascii", "backslashreplace").decode("ascii")
+    return "".join(ch for ch in text if ch not in _CONTROL_CHARS)[:max_len]
+
+
+def _as_float(value: Decimal | None) -> float | None:
+    """A decoded venue Decimal as a JSON number for `runs.notes`. `dec` has already rejected
+    NaN and the infinities, so this cannot produce a value JSON refuses to serialise."""
+    return None if value is None else float(value)
+
+
+def page_pause_s(setting: float, read_refill_rate: Decimal | None) -> float:
+    """The recorder's Kalshi page pause, floored by the venue's own read bucket and never
+    lowered below the setting (§1.3). A None, zero or negative refill rate leaves the setting
+    untouched: an unreadable bucket is not a licence to go faster."""
+    if read_refill_rate is None or read_refill_rate <= 0:
+        return setting
+    return max(setting, 1.0 / float(read_refill_rate))
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -145,11 +182,23 @@ class _Budget:
 class Recorder:
     def __init__(self, settings: Settings, session_factory: sessionmaker, odds: OddsApiClient, espn: EspnClient,
                  kalshi: KalshiPublic, clock: Callable[[], datetime] = utcnow,
-                 monotonic: Callable[[], float] = time.monotonic):
+                 monotonic: Callable[[], float] = time.monotonic,
+                 limits_reader=None):
         self.s = settings
         self.session_factory = session_factory
         self.odds, self.espn, self.kalshi = odds, espn, kalshi
         self.clock, self.monotonic = clock, monotonic
+        # Ruling A-C3. A `KalshiReader` (GET-only, signed) when `build_recorder` found both
+        # production key files, else None -- on the Mac, in tests and in any container without
+        # the two bind mounts the recorder simply has no authenticated reader and no limits.
+        self._limits_reader = limits_reader
+        self._venue_limits = None            # the newest decoded Limits, or None
+        self._limits_read_at: datetime | None = None       # when that read succeeded
+        self._limits_attempted_at: datetime | None = None  # when one was last tried
+        # 401/403 only (§9.4); reset by any successful read. Task 10's OutageCounter subsumes
+        # this integer -- do not import it here, it does not exist yet, and no paper process
+        # writes `venue_status` (ruling D11).
+        self._limits_auth_errors = 0
         # I7: last known-good body per (source, endpoint); avoids re-reading multi-MB JSONB every tick.
         self._last_good: dict[tuple[str, str], dict | list] = {}
         # A forced tick (deploy verification) ignores every per-source interval for that one tick.
@@ -178,6 +227,67 @@ class Recorder:
         if body is not None:
             self._last_good[(source, endpoint)] = body
         return body
+
+    # ---- the venue's own rate limits (ruling A-C3) ----------------------------------
+    def _limits_note(self, pause_s: float) -> dict | None:
+        """The `runs.notes->'venue_limits'` block: numeric and enum fields only, never the raw
+        body (`Limits.raw` is deliberately not read here). `tier` is sanitized venue text."""
+        limits = self._venue_limits
+        if limits is None or self._limits_read_at is None:
+            return None
+        return {"tier": _safe_venue_text(limits.tier, _TIER_MAX_LEN),
+                "read_refill_rate": _as_float(limits.read_refill_rate),
+                "read_capacity": _as_float(limits.read_capacity),
+                "write_refill_rate": _as_float(limits.write_refill_rate),
+                "write_capacity": _as_float(limits.write_capacity),
+                "page_pause_s": pause_s,
+                "read_at": self._limits_read_at.isoformat()}
+
+    def _read_limits(self, now: datetime, ctx: dict) -> None:
+        """`GET /account/limits` at the first tick and hourly after it, on the signed GET-only
+        reader (§1.3, ruling A-C3, roadmap pre-loaded decision 5).
+
+        This is the only call that writes a `venue_requests` row in production, which is what
+        makes the §3 paper-posture tripwire non-vacuous.
+
+        Three things are deliberate here. **It can never fail a tick**: any exception is caught,
+        warned about and turned into a `null` note, because the recorder's job is the tape and
+        a venue rate-limit reading is a nicety. **The cadence gates the attempt, not the
+        success**: a 401 at a 30 s heartbeat would otherwise be 120 signed failures an hour,
+        inflating the §9.4 auth-error count and hammering the venue, so a failed read waits out
+        the hour like a successful one. **The pause is re-derived from the setting**, never from
+        the pause currently in force, so repeated reads cannot ratchet it upwards.
+
+        Nothing here logs the exception object or a headers mapping (Task 5's review): an httpx
+        error carries `.request`, whose headers hold a live signature. The class name and the
+        constant path are all that go to the log.
+        """
+        if self._limits_reader is None:
+            return
+        due = (self._limits_attempted_at is None
+               or (now - self._limits_attempted_at).total_seconds() >= LIMITS_REFRESH_S)
+        if not due:
+            # Between reads the note still reports the limits actually in force, so the Health
+            # block does not blink to null for 59 minutes out of every 60.
+            ctx["venue_limits"] = self._limits_note(self.kalshi._sleep_s)
+            return
+        self._limits_attempted_at = now
+        try:
+            limits = self._limits_reader.get_account_limits()
+        except Exception as e:  # noqa: BLE001 - a venue read never fails the tick
+            log.warning("kalshi limits read failed on /account/limits: %s", type(e).__name__)
+            if getattr(e, "status", None) in (401, 403):
+                self._limits_auth_errors += 1
+            ctx["warnings"].append(
+                {"venue_limits": _safe_venue_text(repr(e), _LIMITS_WARNING_MAX_LEN)})
+            # The pause and the last known limits are both left exactly as they were.
+            ctx["venue_limits"] = None
+            return
+        self._limits_auth_errors = 0
+        self._venue_limits = limits
+        self._limits_read_at = now
+        self.kalshi._sleep_s = page_pause_s(self.s.kalshi_sleep_s, limits.read_refill_rate)
+        ctx["venue_limits"] = self._limits_note(self.kalshi._sleep_s)
 
     def _checkpoint(self, session: Session, run: Run) -> None:
         """Commit what has been stored so far and drop it from the identity map (I1/I8)."""
@@ -524,6 +634,9 @@ class Recorder:
                     except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a tick
                         log.exception("recorder deploy event failed")
                         session.rollback()
+            # Before the fetch phase, so this tick's Kalshi paging already runs at the floored
+            # pause rather than the next one.
+            self._read_limits(now, ctx)
             summaries: list[MarketSummary] = []
             # Bound before the try: an ESPN failure must still leave the pricing budget below a
             # cadence to work from, and no kickoffs is exactly what `interval_for` reads as the
@@ -612,7 +725,8 @@ class Recorder:
                                     "taker_side_missing": ctx.get("taker_side_missing", 0),
                                     "kalshi_trades_normalized": ctx.get("kalshi_trades_normalized", 0),
                                     "non_linear_cent": ctx.get("non_linear_cent", 0),
-                                    "pricing": ctx.get("pricing", {})},
+                                    "pricing": ctx.get("pricing", {}),
+                                    "venue_limits": ctx.get("venue_limits")},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
                      len(ctx["errors"]), len(ctx["warnings"]))

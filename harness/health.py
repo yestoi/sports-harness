@@ -34,11 +34,21 @@ def compute_health(session_factory: sessionmaker, now: datetime, credits_budget:
                 .order_by(desc(Run.id))
                 .first()
             )
+            # Task 6b (ruling A-C3): the tier and buckets the recorder read from
+            # `GET /account/limits`. Taken from the newest *non-skipped* run, so a quiet-window
+            # heartbeat cannot blank the block, the same way `credits_remaining` already works.
+            # A null here in production means `has_kalshi_credentials()` was False in app-run:
+            # check the two key mounts, because without them nothing writes a `venue_requests`
+            # row and the §3 tripwire is vacuous.
+            last_real = s.query(Run).filter(Run.status != "skipped").order_by(desc(Run.id)).first()
+            venue_limits = (last_real.notes or {}).get("venue_limits") if last_real else None
         else:
             last_with_credits = None
+            venue_limits = None
     if last is None:
         return ({"status": "error", "last_run_at": None, "last_status": None, "seconds_since": None,
-                 "credits_remaining": None, "credits_budget": credits_budget, "credits_low": False}, 503)
+                 "credits_remaining": None, "credits_budget": credits_budget, "credits_low": False,
+                 "venue_limits": None}, 503)
     since = (now - last.started_at).total_seconds()
     status = "stale" if since > STALE_AFTER_S else ("error" if last.status == "error" else "ok")
     code = 200 if status == "ok" else 503
@@ -46,7 +56,8 @@ def compute_health(session_factory: sessionmaker, now: datetime, credits_budget:
     credits_low = credits_remaining is not None and credits_remaining < CREDITS_LOW_FRACTION * credits_budget
     return ({"status": status, "last_run_at": last.started_at.isoformat(), "last_status": last.status,
              "seconds_since": int(since), "credits_remaining": credits_remaining,
-             "credits_budget": credits_budget, "credits_low": credits_low}, code)
+             "credits_budget": credits_budget, "credits_low": credits_low,
+             "venue_limits": venue_limits}, code)
 
 
 def create_app(session_factory: sessionmaker, clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> FastAPI:

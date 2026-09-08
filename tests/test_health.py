@@ -113,3 +113,44 @@ def test_healthz_credits_remaining_uses_newer_of_two_odds_ticks(db_session):
     finish_run(db_session, newer, "ok", odds_remaining=4999932, finished_at=NOW - timedelta(minutes=5))
     body, _ = compute_health(factory, NOW, credits_budget=5_000_000)
     assert body["credits_remaining"] == 4999932
+
+
+# --- Task 6b: the venue_limits block (ruling A-C3) -------------------------------------------
+
+def _run_with_notes(db_session, notes: dict, status: str = "ok"):
+    run = start_run(db_session, NOW - timedelta(minutes=2))
+    finish_run(db_session, run, status, notes=notes, finished_at=NOW - timedelta(minutes=2))
+    return run
+
+
+def test_health_reports_the_venue_limits_block(db_session):
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    _run_with_notes(db_session, {"venue_limits": {"tier": "basic", "read_refill_rate": 10.0}})
+    body, code = compute_health(factory, NOW, credits_budget=5_000_000)
+    assert code == 200
+    assert body["venue_limits"]["tier"] == "basic"
+    assert body["venue_limits"]["read_refill_rate"] == 10.0
+
+
+def test_health_reports_none_when_no_run_carries_limits(db_session):
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    _run_with_notes(db_session, {"errors": [], "warnings": []})
+    body, _ = compute_health(factory, NOW, credits_budget=5_000_000)
+    assert body["venue_limits"] is None
+
+
+def test_health_reports_none_venue_limits_when_no_run_exists(db_session):
+    # The 503 body has to carry the key too, or a caller reading it unconditionally KeyErrors.
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    body, code = compute_health(factory, NOW, credits_budget=5_000_000)
+    assert code == 503 and body["venue_limits"] is None
+
+
+def test_health_venue_limits_survives_a_newer_skipped_heartbeat(db_session):
+    # A `skipped` run is the quiet-window heartbeat; the limits in force are the last real
+    # tick's, exactly as credits_remaining already works.
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    _run_with_notes(db_session, {"venue_limits": {"tier": "basic", "read_refill_rate": 10.0}})
+    _run_with_notes(db_session, {"venue_limits": None}, status="skipped")
+    body, _ = compute_health(factory, NOW, credits_budget=5_000_000)
+    assert body["venue_limits"]["tier"] == "basic"

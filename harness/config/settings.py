@@ -115,7 +115,12 @@ class Settings(BaseSettings):
         return self.kalshi_private_key_file.read_bytes()
 
     def has_kalshi_credentials(self) -> bool:
-        return self.kalshi_key_id_file.exists() and self.kalshi_private_key_file.exists()
+        """Both key paths, switched on `is_file()` rather than `exists()` (plan-review round 2,
+        N1). Task 14 bind-mounts these two files into `app-run`; Compose materialises a missing
+        bind source as an empty *directory*, so `exists()` would be True with no key behind it
+        and `kalshi_key_id()` would raise `IsADirectoryError` at recorder startup instead of the
+        caller quietly running without a reader. Same rule as `backup_recipient_file`."""
+        return self.kalshi_key_id_file.is_file() and self.kalshi_private_key_file.is_file()
 
     def dashboard_token(self) -> str:
         return self.dashboard_token_file.read_text().strip()

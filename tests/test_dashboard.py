@@ -242,8 +242,10 @@ def test_healthz_keys_unchanged(db_session, env_settings, tmp_path):
     assert r.status_code == 200
     body = r.json()
     # U1 (2026-09-07): compute_health now also reports credits_budget and credits_low.
+    # Task 6b (ruling A-C3): and venue_limits, the tier and buckets from GET /account/limits.
     assert set(body.keys()) == {"status", "last_run_at", "last_status", "seconds_since", "credits_remaining",
-                                 "credits_budget", "credits_low", "build"}
+                                 "credits_budget", "credits_low", "build", "venue_limits"}
+    assert body["venue_limits"] is None  # no reader on the Mac: no credential files
     assert body["status"] == "ok" and body["last_status"] == "ok" and body["credits_remaining"] == 4000
     assert body["build"] == "dev"
 
