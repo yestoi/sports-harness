@@ -329,6 +329,52 @@ def test_eligible_games_excludes_games_older_than_7_days_and_warns_while_scanned
     assert ctx["warnings"] == [{"benchmarks_no_rows": stuck.id}]
 
 
+def test_a_raised_savepoint_leaves_the_game_eligible_after_its_result_row_lands(db_session):
+    """Final review I4: `_ELIGIBLE_GAMES` tested "no benchmarks at all", and `result` rows are
+    benchmarks. Registration order (`benchmarks` before `result_benchmarks`) protects the
+    normal path but not the failure path: a game whose `_process_game` raises inside its
+    savepoint rolls back with no rows, `insert_result_benchmarks` writes its `result` row in
+    the same pass, and from then on the game was locked out of all eight of its pre-kickoff
+    benchmarks forever -- while the same `result` row made `has_result` true in
+    `_NEXT_GAP_SNAPSHOTS`, so `drain_gap_outcomes` advanced its watermark past every one of
+    that game's snapshots as finished.
+    """
+    kickoff = NOW - timedelta(hours=4)
+    game = _game(db_session, kickoff=kickoff)
+    market = _market(db_session, game.id, "T-ML-HOME", side_team_id=HOME)
+    _seed_ml_lines(db_session, game.id, kickoff)
+    db_session.add(VenueSettlement(venue="kalshi", ticker=market.ticker, source="derived",
+                                   result="yes", payout=Decimal("1"),
+                                   settled_at=NOW - timedelta(hours=1)))
+    db_session.commit()
+
+    def boom(session, game_id, now):
+        raise RuntimeError("pricing blew up")
+
+    ctx = new_ctx()
+    with use_ctx(ctx):
+        original = bm._process_game
+        bm._process_game = boom
+        try:
+            assert compute_benchmarks(db_session, NOW, Budget(60, Mono(0.0))) == 0
+        finally:
+            bm._process_game = original
+        assert ctx["errors"] and ctx["errors"][0]["compute_benchmarks"] == game.id
+        assert db_session.query(Benchmark).filter_by(game_id=game.id).count() == 0
+
+        # The same pass then writes the game's `result` row, exactly as the stage order does.
+        assert insert_result_benchmarks(db_session, NOW, Budget(60, Mono(0.0))) == 1
+        db_session.commit()
+
+        # The next pass must still see the game: its only rows are `result` rows.
+        assert compute_benchmarks(db_session, NOW, Budget(60, Mono(0.0))) > 0
+
+    types = {r.benchmark_type for r in
+             db_session.query(Benchmark).filter_by(game_id=game.id).all()}
+    assert "result" in types
+    assert types - {"result"}  # the pre-kickoff benchmarks it would otherwise never get
+
+
 def test_process_game_returns_zero_for_a_vanished_game(db_session):
     """Fix round 1, M7: a game deleted between the eligibility query and the loop (or simply a
     bad id) must not raise -- there is nothing left to benchmark, not an error."""

@@ -298,6 +298,15 @@ def _benchmarks_for_shape(
 
 # --- the benchmarks stage ------------------------------------------------------------------
 
+#: Final review I4: `benchmark_type <> 'result'` in the "already has benchmarks" test. `result`
+#: rows are written by a *different* stage (`result_benchmarks`, registered after this one), so
+#: counting them here locked a game out of all eight of its pre-kickoff benchmarks the moment
+#: its own savepoint raised: `_process_game` rolls back with no rows, `insert_result_benchmarks`
+#: writes the `result` row in the same pass, and `not exists` is false from then on. The same
+#: `result` row makes `has_result` true in `order_clv._NEXT_GAP_SNAPSHOTS`, so the gap-outcome
+#: watermark then advances past every one of that game's snapshots as finished and they can
+#: never pick up a later benchmark either -- silent apart from one `ctx["errors"]` entry on the
+#: pass that raised.
 _ELIGIBLE_GAMES = text("""
     select distinct g.id
     from games g
@@ -305,7 +314,8 @@ _ELIGIBLE_GAMES = text("""
     where g.kickoff_utc + interval '5 minutes' <= :now
       and g.kickoff_utc >= :cutoff
       and m.match_status = any(:statuses)
-      and not exists (select 1 from benchmarks b where b.game_id = g.id)
+      and not exists (select 1 from benchmarks b
+                      where b.game_id = g.id and b.benchmark_type <> 'result')
     order by g.id
 """)
 
