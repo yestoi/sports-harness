@@ -720,3 +720,16 @@ Times are America/Chicago.
 - Decision (user, verbatim, 2026-09-08 07:43 CT): "I'll do the recommendation." (the recommendation of 07:40 CT: ratify `gap_mid` as the family panel and restrict families A and B, the shrinkage and the §9.6 count to the featured feed, the addendum's "the headline H2 claim is from `feed_kind = featured`"; the maker-net and all-feed cells stay as display columns)
 - Rulings: (1) The ratification is a dated note in the pre-registration record's Amendment 3 (appended now). (2) The feed restriction is a code change in `harness/report/tables.py` (`_table4`: the family's CI reads the `feed featured` bucket instead of the all-feed panel) shipped as a reviewed hotfix `fix-2026-09-08-report-panel` from `main` (sonnet implementer, sonnet reviewer), deployed with `make deploy-nas-app` (app-only diff; app-exec exists) outside a game window, and verified by rendering `report --week 37` on the NAS; the cell definitions, BH q, the grid and every threshold are untouched (R1) - cost if wrong: a week-38 selection on the featured stratum only, which is the addendum's own wording
 - Next: hotfix unit (entry 54)
+
+## 54. stopped - clean boundary before a fresh session (user request) - 2026-09-08 08:06 CT
+- Orient: n/a (user instruction in chat: "I'm ready to start a new session ... mark state files appropriately")
+- Branch / commits: `main` at de5514a plus this docs commit; NAS build 21f8ca4
+- Result: stopped at the user's request
+- Dispatches: 1 since entry 52 (the panel hotfix implementer, sonnet, dispatched 07:44 CT; idle at 08:04 CT with `harness/report/tables.py` and `tests/test_report.py` modified, uncommitted, no report: the dead implementer's partial work stays in the worktree per resume rule 2a)
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: not run (no walker verify today; the daily line not written today)
+- Rulings: (1) Neither hotfix is done: 17 (page time) has no branch; the panel hotfix (decision 53) has uncommitted work on `../sports-wt/fix-2026-09-08-report-panel` (branch `fix-2026-09-08-report-panel` from `main` de5514a). (2) The next session runs both hotfixes in parallel (disjoint areas: dashboard vs report) and ships them in one deploy (`make deploy-nas-app`; the diff is app-only), outside a game window, with a forced tick after 08:00 CT; then re-verifies the page-time row and renders `report --week 37 --out -` to confirm table 4's header reads featured-only. (3) Then the morning-after walker verify (the calendar day's first walker: check `signals` for 5632da729fa7 since the 08:10 CT run and `venue_markets.price_ranges` populating), the daily 09:00 CT line, then the repo bundle and `git push origin main` (U7).
+- Carried forward: none new (16 phase work; 17 open)
+- Next: fresh session per Kickoff; `state.md` carries the order
