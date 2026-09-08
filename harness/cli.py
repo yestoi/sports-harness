@@ -82,10 +82,11 @@ def tick_once(force: bool = typer.Option(False, "--force", help="Fetch every sou
 @app.command("run")
 def run() -> None:
     configure_logging()
-    from harness.scheduler import build_recorder, build_scheduler
+    from harness.scheduler import build_recorder, build_scheduler, build_settler
 
     s = get_settings()
-    sched = build_scheduler(build_recorder(s), s.heartbeat_s)
+    sched = build_scheduler(build_recorder(s), s.heartbeat_s, settler=build_settler(s),
+                            settle_period_s=s.settle_period_s)
     sched.start()
     stop = {"flag": False}
 
@@ -94,7 +95,7 @@ def run() -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    log.info("scheduler started heartbeat=%ss", s.heartbeat_s)
+    log.info("scheduler started heartbeat=%ss settle=%ss", s.heartbeat_s, s.settle_period_s)
     while not stop["flag"]:
         time.sleep(1)
     sched.shutdown(wait=True)
@@ -154,6 +155,24 @@ def exec_health() -> None:
         log.error("executor heartbeat is %.0fs old (max %ss)", age, EXEC_HEALTH_MAX_AGE_S)
         raise typer.Exit(1)
     log.info("executor healthy: %.0fs since loop %s", age, row.loops)
+
+
+@app.command("settle")
+def settle_cmd() -> None:
+    """One settlement job now: settle final games, then fetch the venue's own results.
+
+    Safe beside the scheduled job -- every write is keyed and goes in `on conflict do nothing`,
+    so the two passes cannot double-post a fill or overwrite a result.
+    """
+    configure_logging()
+    from harness.scheduler import build_settler
+
+    row = build_settler(get_settings()).run()
+    stages = " ".join(f"{s['name']}={s['counts'] or s['error']}" for s in row.notes["stages"])
+    print(f"job_run={row.id} status={row.status} budget_exhausted={row.budget_exhausted} "
+          f"stale_unsettled={row.notes['stale_unsettled']} {stages}")
+    if row.status == "error":
+        raise typer.Exit(1)
 
 
 @app.command("serve")
