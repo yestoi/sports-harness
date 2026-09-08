@@ -259,6 +259,41 @@ def report_cmd(
         log.info("report written to %s", path)
 
 
+@app.command("gate")
+def gate_cmd() -> None:
+    """Evaluate the go-live gate (§9.5, F13) and store one row per exec variant.
+
+    Prints every variant's criteria table, marks the one row the phase gate is judged on
+    (`Settings.gate_variant`, falling back to the active primary) and exits 0 whether or not
+    the gate passed: the exit code reports whether the evaluation ran, not the verdict. It
+    cannot report a pass in phase 3 -- `legal_decision` and `live_trading_env` are False by
+    construction -- and every run stores a new report; no stored row is ever rewritten.
+    """
+    configure_logging()
+    from harness.report.gate import (
+        evaluate_all,
+        exec_variant_ids,
+        registered_variants,
+        render_gate,
+    )
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))
+    now = datetime.now(timezone.utc)
+    with factory() as session:
+        variant_ids = exec_variant_ids(session, s)
+        if not variant_ids:
+            log.error("no active registered variant to evaluate; run `harness variants register`")
+            raise typer.Exit(1)
+        rows = registered_variants(session)
+        results = evaluate_all(session, now, variant_ids, s.gate_variant)
+        session.commit()
+        document = render_gate(results, {r.variant_id: r.name for r in rows},
+                               {r.variant_id: r.tier for r in rows})
+    print(document)
+    log.info("gate evaluated at %s for %d variant(s)", now.isoformat(), len(results))
+
+
 @app.command("serve")
 def serve(port: int = 8080, host: str = "0.0.0.0") -> None:
     configure_logging()

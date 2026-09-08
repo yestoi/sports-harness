@@ -3,26 +3,29 @@
 The package is read-only over the database. Nothing here writes a row, bumps a version or
 touches `harness/execution`, `harness/pricing` or `harness/settlement`; the report's only
 outputs are a Markdown document and, when the controller asks for it, the week-38 selection
-artefact.
+artefact. (`harness/report/gate.py` is the one exception and says so: it stores the gate rows
+it evaluates.)
 
-`CRITERIA_TEXT` lives here rather than in `harness/report/weekly.py` because two modules need
-it: this report prints its hash every week, and `harness gate` (Task 11) evaluates exactly
-these criteria and stores the same hash on every `gate_reports` row. Task 11 imports this
-constant rather than restating the criteria, so the two can never drift -- if they did, the
-hash printed beside a gate report would no longer identify the definitions that produced it.
+`CRITERIA_TEXT` and `criteria_hash` live here rather than in `harness/report/weekly.py`
+because two modules need them: this report prints the hash every week, and `harness gate`
+stores it on every `gate_reports` row. There is exactly one identity behind both. Task 11
+made `harness/report/gate.py`'s `CRITERIA` tuple the source -- each criterion carries its own
+definition text, the function that computes it and its threshold -- and this module renders
+that tuple into `CRITERIA_TEXT` and delegates `criteria_hash()` to it. So the hash printed
+beside a weekly report and the hash stored on a gate row are the same sha256 of the same
+sorted definition strings, and neither can drift from the definitions that produced it.
+
+Where Task 10's original wording of a criterion differed from the phase-3 brief's, the brief's
+definition won and the rendering below follows it (controller ruling, Task 11).
 """
 
-import hashlib
-
-#: The go-live gate criteria, verbatim from spec v2 §9.5 as amended by the phase-3 addendum
-#: §0.7 (its four remaining deviations are folded into the numbered items below). The
-#: numbering is the one §0.7 itself uses when it says "criteria 3, 6 and 7 read `order_clv`"
-#: and "criterion 8, `staleness_median`".
+#: The preamble of the rendered criteria: the rules that bind every criterion rather than any
+#: one of them (spec v2 §9.5 as amended by the phase-3 addendum §0.7).
 #:
 #: Ruling R1: these are invariants of the loop. Editing a threshold, a family or a definition
-#: here changes `criteria_hash`, which is exactly the signal the weekly report prints -- so an
-#: edit is a dated user decision and a pre-registration amendment, never a tidy-up.
-CRITERIA_TEXT = """\
+#: changes `criteria_hash`, which is exactly the signal the weekly report prints -- so an edit
+#: is a dated user decision and a pre-registration amendment, never a tidy-up.
+CRITERIA_PREAMBLE = """\
 Go-live gate criteria (spec v2 section 9.5 as amended by the phase 3 addendum section 0.7).
 
 Every t is cluster-robust by game with G - 1 degrees of freedom. Benchmark rows with
@@ -30,36 +33,37 @@ stale = true are excluded from every criterion and their share is printed. A gam
 kickoff moved more than 5 min after its first gap snapshot carries kickoff_moved = true and
 is excluded from gate means. Every criterion counts the variant's own non-replay fills, with
 each exec variant simulated as the sole participant.
-
-1. fills_confirmed: at least 150 paper fills across at least 40 games and both sports,
-   counted as fill events (orders with at least one queue_model fill), of which at least
-   80 % on book_source = ws with dirty_minutes = 0. has_print is a sanity assertion, not
-   the criterion.
-2. marquee_share: at least 30 % of fills in NFL or marquee NCAAF (spread <= 4c).
-3. clv_pinnacle_lower_bound: the lower bound of the 90 % cluster-robust CI on mean
-   net-of-fee CLV versus pinnacle_t5 is greater than 0.
-4. markout_30m: mean 30-minute markout net of maker fee greater than 0 with t > 2, read
-   from the nw_fill anchor against the direct sharp consensus on fair_changed rows.
-5. adverse_drift: adverse drift (fair at fill minus fair at place) greater than -1.0 pt.
-6. filled_minus_unfilled: the 90 % cluster-robust upper bound of mean(unfilled CLV minus
-   filled CLV) is below 1 pt, with at least 20 game clusters per side, else
-   insufficient (fails).
-7. clv_every_benchmark: mean CLV at or above 0 under every benchmark, excluding result and
-   opening_first_seen, which are reported with CIs and never gated.
-8. staleness_median: the median of fair_values.staleness_s over the variant's candidate
-   signals is below 90 s.
-9. mismatched_markets: zero orders whose market's venue_markets.match_key changed after
-   placement.
-10. settlement_mismatches: zero settlement mismatches, with at least 90 % of settled markets
-    carrying the variant's fills having a source = venue row.
-11. gate_report_stored: a stored passing gate report.
-12. legal_decision: the user's separate, documented legal decision. False by construction in
-    phase 3 code.
-13. live_trading_env: LIVE_TRADING=1 in the container environment at start plus the config
-    flag. False by construction in phase 3 code.
 """
 
 
-def criteria_hash(text: str = CRITERIA_TEXT) -> str:
+def render_criteria(criteria=None) -> str:
+    """The criteria as text: the preamble, then each definition numbered in `CRITERIA` order.
+
+    `harness.report.gate` is imported inside the function, not at module scope: `gate` imports
+    `harness.report.stats`, and a top-level import here would make the package's `__init__`
+    depend on its own submodule at import time.
+    """
+    if criteria is None:
+        from harness.report.gate import CRITERIA as criteria
+    lines = [CRITERIA_PREAMBLE]
+    for i, criterion in enumerate(criteria, start=1):
+        lines.append(f"{i}. {criterion.name}: {criterion.definition}.")
+    return "\n".join(lines) + "\n"
+
+
+def criteria_hash() -> str:
     """The sha256 of the gate definitions, printed by the report and stored on every gate row."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    from harness.report.gate import criteria_hash as _criteria_hash
+
+    return _criteria_hash()
+
+
+def __getattr__(name: str):
+    """`CRITERIA_TEXT` as a lazily rendered module attribute (PEP 562).
+
+    Rendering it on access rather than at import keeps the `gate` import out of this module's
+    body, and means a test that patches `gate.CRITERIA` sees the patched text here too.
+    """
+    if name == "CRITERIA_TEXT":
+        return render_criteria()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

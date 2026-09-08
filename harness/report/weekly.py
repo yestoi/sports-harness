@@ -19,7 +19,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from harness.report import CRITERIA_TEXT, criteria_hash
+from harness.report import criteria_hash
 from harness.report.tables import (
     CONTRAST_BENCHMARK,
     HEADLINE_PANEL,
@@ -224,7 +224,7 @@ def build_meta(session: Session, settings, year: int, week: int, now: datetime |
         "tz": settings.tz_local,
         "build_sha": settings.build_sha,
         "generated_at": (now or datetime.now(timezone.utc)).isoformat(),
-        "criteria_hash": criteria_hash(CRITERIA_TEXT),
+        "criteria_hash": criteria_hash(),
         "config_hashes": list(session.execute(_CONFIG_HASHES, window).scalars()),
         "previous_criteria_hash": session.execute(_PREVIOUS_HASH, window).scalar(),
         "confirmation": confirmation,
