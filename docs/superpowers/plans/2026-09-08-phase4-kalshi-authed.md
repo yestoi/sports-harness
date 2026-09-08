@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-08-phase4-kalshi-authed-design.md` (revision 2; §0 amendments, §11 decisions, §12 conformance, and the Rulings section, which records every design-review decision already applied to the text above it). Roadmap: `docs/superpowers/autopilot/roadmap.md` ("Pre-loaded decisions, Phase 4" items 1-11, "Invariants the loop never changes", "Carried fixes" item 16).
 
-**Model dispatch:** Tasks 1, 5, 7, 9, 10, 11, 12, 15 and 16 on `opus`; Tasks 2, 3, 4, 6, 8, 13 and 14 on the default tier (`sonnet`).
+**Model dispatch:** Tasks 1, 5, 6b, 7, 9, 10, 11, 12, 14, 15 and 16 on `opus`; Tasks 2, 3, 4, 6, 8 and 13 on the default tier (`sonnet`).
 
 **Order and waves.** Two tasks may run at once only when their `Files:` lines are disjoint. The wave map is at the end of this plan. Wave 1 is Tasks 1, 2, 3, 12.
 
@@ -51,8 +51,13 @@ These files are touched by more than one task. The listed tasks never run concur
 | `harness/db/models.py` | Task 4 only |
 | `harness/cli.py` | Task 13 (`backup-*`), Task 15 (`migrate`), Task 16 (`kalshi-smoke`, `venue-enable`) |
 | `harness/venues/kalshi/authed.py` | Task 6 (reader), Task 7 (writer), Task 8 (`make_writer`) |
+| `harness/scheduler.py` | Task 13 (the encrypt job), Task 6b (the recorder's reader and pause floor) |
 | `harness/execution/gateway.py` | Task 9 (create), Task 10 (venue state wiring) |
 | `harness/execution/loop.py` | Task 9 (gateway seam), Task 11 (drawdown sampling) |
+| `harness/execution/__init__.py` | Task 9 (`EXECUTOR_VERSION` 4.0), Task 10 (4.1), Task 11 (4.2) — one bump per task that changes `harness/execution/`, which is why 10 and 11 are serialised |
+| `harness/strategy/pipeline.py` | Task 1 (the ordering), Task 11 (the `stopped=` argument) |
+| `harness/report/tables.py` | Task 1 (`tick_coverage`), Task 11 (the stopped-share note) |
+| `harness/ops/backup.py` | Task 13 (create), Task 14 (the one `.ok` marker line) |
 | `docker-compose.yml` | Task 14 only |
 | `Makefile` | Task 14 only |
 | `docs/superpowers/autopilot/verify.md` | Task 16 only |
@@ -71,7 +76,12 @@ These files are touched by more than one task. The listed tasks never run concur
 - `harness/ops/checks.py` runs each check under `SET LOCAL statement_timeout = 2000` inside its own savepoint; a timeout records `status = 'skip'`, `detail = 'timeout'`. `assert_no_tape_reads` runs at import and forbids any check naming `orderbook_events` or `raw_responses`, and requires `date_trunc('week'` in any check naming `venue_trades`.
 - `VenueMarket.exchange_index` is `Integer`, `default=0`, `nullable=False`, already populated. `VenueMarket.price_ranges` is JSONB shaped `[{"start": 0, "end": 1, "step": 0.01}]`.
 - `EquitySnapshot` has PK `(ts, variant_id)` and columns `cash`, `open_stake`, `mtm_open`, `mtm_coverage`, `n_open_positions`, `n_open_orders`.
-- The CCTV age test vectors are already on disk: `tests/fixtures/age/cctv/` (147 vectors plus `README.md`) with `tests/fixtures/age/cctv-manifest.json` recording each file's source URL, sha256 and byte count. Excluding `README.md`, the vectors whose header carries no `armored:` and no `passphrase:` key number **84**: 18 `success`, 18 `payload failure`, 40 `header failure`, 8 `no match`, 1 `HMAC failure` (`hmac_bad`). Many carry `compressed: zlib` and must be zlib-decompressed before parsing.
+- The CCTV age test vectors are already on disk: `tests/fixtures/age/cctv/` (147 vectors plus `README.md`) with `tests/fixtures/age/cctv-manifest.json` recording each file's source URL, sha256 and byte count. **In-scope corpus: 69 vectors** (measured against the files on disk on 2026-09-08, not asserted from the review): skip a vector carrying `armored:` (26), carrying `passphrase:` (26), or carrying an ML-KEM recipient stanza (`mlkem768x25519`, any case) **and no `-> X25519` stanza** (16). The last condition is what an implementation of "the age v1 file format for one X25519 recipient" (addendum §4.3) cannot evaluate. It keeps `hybrid_and_x25519` (stanzas `X25519` + `mlkem768x25519`, `expect: success`: the unknown stanza is skipped and the X25519 one unwraps), `empty` (no stanza at all, `expect: header failure`) and `x25519_lowercase` (a lowercase `x25519` type, `expect: no match`, the vector that proves an unknown type is skipped rather than rejected). The 69 break down as 15 `success`, 18 `payload failure`, 32 `header failure`, 3 `no match`, 1 `HMAC failure` (`hmac_bad`); 19 of them carry `compressed: zlib` and must be zlib-decompressed before parsing.
+- `EXECUTOR_VERSION` is `"3.7"` today (`harness/execution/__init__.py:4`).
+- `_share(numerator, denominator)` (`harness/report/tables.py:232`) returns a **float** (`numerator / denominator`), or `PLACEHOLDER` when the denominator is 0. It never returns a formatted string.
+- `tests/test_strategy.py` pins `YES_ONLY_DIGEST` over `_golden_tuple(s) = astuple(s)[:-1]`, which **includes** the `labels` dict; the golden rows come from `_golden_rows()`, the variants from `load_variants(SHIPPED) + load_variants(FIXTURES)`, and the test is `test_yes_only_variants_unchanged`. Today's `CAP_LABELS` are already the tail of `LABEL_ORDER`.
+- `tests/test_kalshi_auth.py:10` generates a 2048-bit RSA key inline; the repo's respx style is the `@respx.mock` decorator (`tests/test_kalshi_public.py`), not a `respx_mock` fixture.
+- `build_recorder` (`harness/scheduler.py:19-25`) is the recorder's composition root and constructs `KalshiPublic(http, settings.kalshi_base_url, settings.kalshi_sleep_s)` at line 23. `Recorder.__init__` (`harness/recorder/tick.py:112`) takes `(settings, session_factory, odds, espn, kalshi, clock, monotonic)`. `docker-compose.yml` mounts the production Kalshi key files into `app-ws` only.
 - `docker-compose.yml` services today: `postgres`, `app-run`, `app-serve`, `app-ws`, `app-exec`. `app-exec` has no `volumes:` key and no credential environment.
 - The Makefile's two tar lists are identical: `pyproject.toml constraints.txt Dockerfile .dockerignore docker-compose.yml harness docs/runbooks`. The conditional secrets push loop already covers `kalshi_demo_key_id kalshi_demo_private_key.pem anthropic_api_key`.
 
@@ -94,7 +104,7 @@ These files are touched by more than one task. The listed tasks never run concur
 
 **Interfaces:**
 - Consumes: `active_variants(session) -> list[Variant]` (name-sorted, active primary/secondary only); `Settings.gate_variant: str`.
-- Produces: `pricing_order(variants: list[Variant], gate_variant_name: str, run_id: int) -> tuple[list[Variant], bool]` in `harness/strategy/pipeline.py`. Returns the ordered variants and whether the gate variant name was missing from `variants`. Ordering: the variant whose `name == gate_variant_name` first (if present), then the first variant with `tier == "primary"` (if present and not already first), then every remaining variant rotated by `run_id % len(remaining)` in the name-sorted order they arrived in. `price_and_signal`'s result dict gains `"variant_ms": {name: int}`, `"order": [name, ...]` and `"gate_variant_missing": bool`.
+- Produces: `pricing_order(variants: list[Variant], gate_variant_name: str, run_id: int) -> tuple[list[Variant], bool]` in `harness/strategy/pipeline.py`. Returns the ordered variants and whether the gate variant name was missing from `variants`. Ordering: the variant whose `name == gate_variant_name` first (if present), then the first variant with `tier == "primary"` (if present and not already first), then every remaining variant rotated by `run_id % len(remaining)` in the name-sorted order they arrived in. `price_and_signal`'s result dict gains `"variant_ms": {name: int}`, `"order": [name, ...]`, `"gate_variant_missing": bool` and `"gate_variant_id": str | None` — the resolved id, so ruling B-I3's "resolved to a `variant_id` per run" is auditable from `runs.notes` and not merely inferred from a name match.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_pipeline.py`.
 
@@ -152,6 +162,15 @@ def test_price_and_signal_records_order_and_per_variant_ms(db_session, env_setti
     assert set(result["variant_ms"]) == set(result["variants_run"])
     assert all(isinstance(ms, int) and ms >= 0 for ms in result["variant_ms"].values())
     assert result["gate_variant_missing"] is True   # the fixture registers no gate variant
+    assert result["gate_variant_id"] is None
+
+
+def test_price_and_signal_records_the_resolved_gate_variant_id(db_session, env_settings):
+    # B-I3: the run note carries the id, not only the name.
+    run_id = _seed_with_gate_variant(db_session)
+    result = price_and_signal(db_session, run_id, NOW, env_settings, budget_s=30)
+    assert result["gate_variant_missing"] is False
+    assert result["gate_variant_id"] == _gate_variant_id(db_session)
 ```
 
 In `tests/test_settings.py`:
@@ -173,8 +192,15 @@ def test_table1_reports_tick_coverage_per_variant(db_session):
     assert "tick_coverage" in table.columns
     by_name = {row[0]: row for row in table.rows}
     idx = table.columns.index("tick_coverage")
-    assert by_name["sharp_direct"][idx] == "100.0%"
-    assert by_name["constrained"][idx] == "50.0%"
+    # `_share` returns a float, never a formatted string (harness/report/tables.py:232).
+    assert by_name["sharp_direct"][idx] == 1.0
+    assert by_name["constrained"][idx] == 0.5
+
+
+def test_table1_tick_coverage_is_a_placeholder_with_no_pricing_ticks(db_session):
+    table = _table1(db_session, window_with_no_gap_snapshots, variants)
+    idx = table.columns.index("tick_coverage")
+    assert all(row[idx] is PLACEHOLDER for row in table.rows)
 ```
 
 - [ ] **Step 2: Run, verify they fail.**
@@ -223,13 +249,14 @@ and in `price_and_signal`, replace the `start = run_id % len(variants)` / `order
 ```python
     ordered, gate_missing = pricing_order(variants, settings.gate_variant, run_id)
     result["gate_variant_missing"] = gate_missing
+    result["gate_variant_id"] = None if gate_missing else ordered[0].variant_id
     result["order"] = [v.name for v in ordered]
     if gate_missing:
         log.warning("gate variant %r is not in the active set; pricing order falls back to "
                     "the primary first (run %s)", settings.gate_variant, run_id)
 ```
 
-Add `"variant_ms": {}`, `"order": []`, `"gate_variant_missing": False` to the initial `result` dict, add `import logging` / `log = logging.getLogger(__name__)` at the top if absent, and inside the variant loop record the elapsed milliseconds:
+Add `"variant_ms": {}`, `"order": []`, `"gate_variant_missing": False`, `"gate_variant_id": None` to the initial `result` dict, add `import logging` / `log = logging.getLogger(__name__)` at the top if absent, and inside the variant loop record the elapsed milliseconds:
 
 ```python
         t_variant = time.monotonic()
@@ -270,7 +297,7 @@ _T1_PRICING_TICKS = text("""
 Run: `.venv/bin/pytest tests/test_pipeline.py tests/test_settings.py tests/test_report.py -q` then `make test`
 Expected: PASS, pristine. The existing `test_variant_order_rotates_by_run_id...` test in `tests/test_pipeline.py` pins the old rotation; re-pin it to the new head-plus-rotated-tail shape in the same commit and say so in the message.
 
-**Acceptance:** `pricing_order` puts the gate variant and the primary first on every `run_id`, rotates only the tail, and flags a missing gate variant; `price_budget_s` is 45; `runs.notes->'pricing'` carries `order`, `variant_ms` and `gate_variant_missing`; table 1 carries `tick_coverage`.
+**Acceptance:** `pricing_order` puts the gate variant and the primary first on every `run_id`, rotates only the tail, and flags a missing gate variant; `price_budget_s` is 45; `runs.notes->'pricing'` carries `order`, `variant_ms`, `gate_variant_missing` and the resolved `gate_variant_id`; table 1 carries `tick_coverage` as a float share.
 
 - [ ] **Step 5: Commit.**
 
@@ -291,7 +318,7 @@ Append this block verbatim to the end of `docs/superpowers/reviews/2026-09-07-ph
 ## Amendment 4 (pricing order and budget; measurement fix, variant ids unchanged), recorded 2026-09-08 (phase 4 plan Task 1)
 
 - **Deploy:** `<DEPLOY_SHA>` at `<DEPLOY TIME CT>`, `make deploy-nas` from `main` (a mid-phase deploy, R15, inside the R4 deploy window).
-- **Change:** `price_and_signal` orders variants as the gate variant, then the active primary, then the secondaries rotated by `run_id` as before; only the secondary tail rotates. `Settings.price_budget_s` rises from 20 to 45 inside the unchanged `tick_budget_s = 100`. `runs.notes->'pricing'` gains `order`, `variant_ms` (per variant) and `gate_variant_missing`. A gate-variant name absent from the active set logs a WARNING and sets `gate_variant_missing = true` instead of silently demoting the ordering (the Amendment 3 rename incident).
+- **Change:** `price_and_signal` orders variants as the gate variant, then the active primary, then the secondaries rotated by `run_id` as before; only the secondary tail rotates. `Settings.price_budget_s` rises from 20 to 45 inside the unchanged `tick_budget_s = 100`. `runs.notes->'pricing'` gains `order`, `variant_ms` (per variant), `gate_variant_missing` and the resolved `gate_variant_id`. A gate-variant name absent from the active set logs a WARNING and sets `gate_variant_missing = true` instead of silently demoting the ordering (the Amendment 3 rename incident).
 - **Measured cause:** every daytime pricing run on 2026-09-08 (7 of 7; 83 of 272 since 2026-09-07) exhausted the 20 s budget after one to four of seven variants over 4,541 gaps, about 6 s per variant. The primary and the gate variant were therefore scored on under half the ticks (journal entry 57).
 - **Run-id range affected:** every pricing run from `<FIRST_EXHAUSTED_RUN>` (the first budget-exhausted daytime tick on 2026-09-07, per the journal 57 measurement) to `<DEPLOY_RUN>` is the **pre-fix range**. In it, secondaries were scored on a rotating subset of ticks and the primary and gate variant on under half the ticks. From `<DEPLOY_RUN>` on, the gate variant and the primary are scored on every tick and the secondaries still rotate.
 - **Tables and criteria touched:** **table 2** (CLV per variant, paired against the primary) and **family C** (the variant contrasts paired on shared snapshots), because secondary coverage in the pre-fix range is correlated with tick size rather than uniform by `run_id`, and after the fix the coverage is deliberately asymmetric (gate variant and primary at 100 %, secondaries rotating). **No threshold, family definition, cell grid or confirmation cut-off changes.** Table 1 gains an additive per-variant `tick_coverage` column so the asymmetry is visible beside every cross-variant comparison. Variant ids are unchanged; no new id is registered.
@@ -439,7 +466,7 @@ The `duplicate_trades` entry becomes:
         # partition's own unique `(venue, trade_id)` index answer the grouping.
         """
         select count(*) from (
-            select venue, trade_id
+            select venue, trade_id, count(*) as c
             from venue_trades
             where ts >= date_trunc('week', now())
             group by venue, trade_id
@@ -645,15 +672,28 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 
 Ruling A-C4: "CCTV vectors replace self-authored ones (fetched into `tests/fixtures/age/cctv`)". Addendum §9: "the age project's published test vectors (the C2SP CCTV `age` vectors... every vector marked `expect: success` must decrypt to its payload and every `expect: HMAC failure | header failure | payload failure` must be rejected; no self-authored vectors)."
 
+**Scope of the corpus, measured against the files on disk.** 147 vectors ship. A vector is **out of scope** when it carries `armored:` (26; ASCII armor is not this format's job), when it carries `passphrase:` (26; scrypt is not "one X25519 recipient"), or when it carries an ML-KEM recipient stanza (`mlkem768x25519`, matched case-insensitively on the stanza type) **and no `-> X25519` stanza** (16). That last condition is the one that matters: three of those sixteen expect `success` and no single-X25519-recipient implementation can decrypt them, and nine expect `header failure` for defects only an ML-KEM implementation can detect. It is deliberately narrower than "carries no X25519 stanza", which would wrongly drop three vectors that **are** in scope:
+
+| Vector | Stanzas | `expect` | Why it stays in scope |
+|---|---|---|---|
+| `hybrid_and_x25519` | `X25519`, `mlkem768x25519` | success | the unknown stanza is skipped and the X25519 one unwraps |
+| `empty` | none | header failure | a malformed file with no stanza at all; the header must fail before any identity is used |
+| `x25519_lowercase` | `x25519` | no match | the vector that proves an unknown stanza **type** is skipped, not rejected |
+
+That leaves **69** in scope: 15 `success`, 18 `payload failure`, 32 `header failure`, 3 `no match`, 1 `HMAC failure`. 19 carry `compressed: zlib`. One (`hybrid_x25519_arg`) carries two `identity:` lines and expects a header failure, so taking the first is safe.
+
 **The format, precisely** (implement exactly this; the vectors will catch any deviation):
 
 - Header: the literal line `age-encryption.org/v1`, then one or more stanzas, then `---` SP `<base64 header MAC>` LF.
 - A stanza is `-> ` followed by space-separated arguments, LF, then the stanza body as canonical unpadded base64 wrapped at 64 columns, with a final line that is strictly shorter than 64 columns (an exact multiple of 64 requires a trailing empty line). A body line of 64 columns followed by end-of-stanza is a **header failure**.
+- **An unrecognised recipient stanza type is skipped, never an error.** A header carrying only types this reader does not implement (`scrypt`, `grease`, `mlkem768x25519`, a lowercase `x25519`) parses fine and then yields `NoMatchError`, not `HeaderError`. Stanza **type** matching is exact and case-sensitive: `x25519` is not `X25519`.
 - The X25519 stanza: `-> X25519 <b64(ephemeral public key, 32 bytes)>` with a 32-byte body = the file key wrapped with ChaCha20-Poly1305.
   - `shared = X25519(ephemeral_secret, recipient_public)`; reject an all-zero shared secret.
   - `salt = ephemeral_public || recipient_public` (64 bytes).
   - `wrap_key = HKDF(algorithm=SHA256, length=32, salt=salt, info=b"age-encryption.org/v1/X25519").derive(shared)`.
   - Body = `ChaCha20Poly1305(wrap_key).encrypt(nonce=b"\x00"*12, file_key, None)` — 16-byte file key in, 32 bytes out.
+  - **The unwrapped file key must be exactly 16 bytes.** A stanza that authenticates but yields any other length is a `HeaderError`, not a success (`x25519_long_file_key` expects `header failure`).
+- **The header is validated before the identity is used.** `empty` carries no `identity:` key, so the runner passes `identity=None`; `decrypt` must raise `HeaderError` on the malformed header before it tries to parse an identity, and `parse_identity(None)` is never reached.
 - Header MAC: `mac_key = HKDF(SHA256, 32, salt=b"", info=b"header").derive(file_key)`; the MAC is `HMAC-SHA256(mac_key, header_without_the_mac)` where the header without the MAC is every byte from `age-encryption.org/v1\n` through the literal `---` (no trailing space, no LF). Encode it as canonical **unpadded** base64. A padded, non-canonical, extra-space, missing-space or trailing-space MAC line is a **header failure**, not an HMAC failure; a well-formed MAC line whose value is wrong is an **HMAC failure**.
 - Payload: 16 bytes of nonce follow the header's LF. `stream_key = HKDF(SHA256, 32, salt=nonce, info=b"payload").derive(file_key)`. Chunks are 64 KiB (65536) plaintext, each ChaCha20-Poly1305 with a 12-byte nonce = an 11-byte big-endian counter starting at 0 plus a final byte that is `0x01` on the last chunk and `0x00` otherwise. The counter must not wrap. The last chunk may be empty **only** when it is the only chunk. Trailing bytes after the last chunk, a non-final last chunk, two final chunks, or a short chunk that is not last are all **payload failures**.
 
@@ -668,7 +708,7 @@ Ruling A-C4: "CCTV vectors replace self-authored ones (fetched into `tests/fixtu
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_agefmt.py`.
 
-The vector runner is the centrepiece. It reads every file in `tests/fixtures/age/cctv/` except `README.md`, parses the textual header, and **skips** vectors carrying `armored:` or `passphrase:` (armor and scrypt are out of scope: the addendum's format is "one X25519 recipient"). That leaves 84 vectors: 18 `success`, 18 `payload failure`, 40 `header failure`, 8 `no match`, 1 `HMAC failure`.
+The vector runner is the centrepiece. It reads every file in `tests/fixtures/age/cctv/` except `README.md`, parses the textual header, decompresses a `compressed: zlib` body, and applies the three-condition scope filter above. That leaves **69** vectors: 15 `success`, 18 `payload failure`, 32 `header failure`, 3 `no match`, 1 `HMAC failure`.
 
 ```python
 import hashlib
@@ -698,18 +738,46 @@ def _load(path: Path) -> tuple[dict, bytes]:
     return meta, body
 
 
+def _stanza_types(body: bytes) -> list[str]:
+    """The recipient stanza types in an age header, in order. Reads only as far as the `---`
+    MAC line, so a payload byte can never be mistaken for a stanza."""
+    out = []
+    for line in body.split(b"\n"):
+        if line.startswith(b"---"):
+            break
+        if line.startswith(b"-> "):
+            out.append(line[3:].split(b" ")[0].decode("latin1"))
+    return out
+
+
+def _in_scope(meta: dict, body: bytes) -> bool:
+    """Armor and scrypt are not this format's job. An ML-KEM-**only** header is not either:
+    three such vectors expect `success` and no single-X25519-recipient implementation can
+    decrypt them. A hybrid header that also carries an X25519 stanza stays in scope (the
+    unknown stanza is skipped and the X25519 one unwraps), and so do `empty` (no stanza at
+    all) and `x25519_lowercase` (an unknown lowercase type, which must be skipped rather than
+    rejected)."""
+    if "armored" in meta or "passphrase" in meta:
+        return False
+    types = _stanza_types(body)
+    return not (any(t.lower().startswith("mlkem") for t in types)
+                and not any(t == "X25519" for t in types))
+
+
 def _vectors():
     for path in sorted(CCTV.iterdir()):
         if path.name == "README.md":
             continue
         meta, body = _load(path)
-        if "armored" in meta or "passphrase" in meta:
-            continue           # armor and scrypt are out of scope (one X25519 recipient)
+        if not _in_scope(meta, body):
+            continue
         yield pytest.param(path.name, meta, body, id=path.name)
 
 
-_EXPECTED_COUNTS = {"success": 18, "payload failure": 18, "header failure": 40,
-                    "no match": 8, "HMAC failure": 1}
+#: Measured against the fixtures on 2026-09-08. A drift here without a matching change to
+#: cctv-manifest.json means the corpus silently shrank, which is what this dict exists to catch.
+_EXPECTED_COUNTS = {"success": 15, "payload failure": 18, "header failure": 32,
+                    "no match": 3, "HMAC failure": 1}
 
 
 def test_the_vector_corpus_is_the_one_the_manifest_records():
@@ -725,10 +793,22 @@ def test_the_vector_corpus_is_the_one_the_manifest_records():
 
 def test_every_in_scope_vector_is_exercised():
     counts: dict[str, int] = {}
-    for _, meta, _ in [(p.values[0], p.values[1], p.values[2]) for p in _vectors()]:
-        expect = meta["expect"][0]
+    for param in _vectors():
+        expect = param.values[1]["expect"][0]
         counts[expect] = counts.get(expect, 0) + 1
     assert counts == _EXPECTED_COUNTS
+    assert sum(counts.values()) == 69
+
+
+def test_the_three_boundary_vectors_are_in_scope():
+    names = {p.values[0] for p in _vectors()}
+    assert {"hybrid_and_x25519", "empty", "x25519_lowercase"} <= names
+
+
+def test_the_ml_kem_only_vectors_are_out_of_scope():
+    names = {p.values[0] for p in _vectors()}
+    assert "hybrid" not in names and "hybrid_grease" not in names
+    assert "hybrid_multiple_recipients" not in names and "hybrid_uppercase" not in names
 
 
 @pytest.mark.parametrize("name,meta,body", list(_vectors()))
@@ -744,12 +824,16 @@ def test_cctv_vector(name, meta, body):
            "HMAC failure": agefmt.HmacError,
            "no match": agefmt.NoMatchError,
            "payload failure": agefmt.PayloadError}[expect]
+    # `identity` is None for `empty`, which carries no `identity:` key: the header must fail
+    # before any identity is parsed.
     with pytest.raises(exc):
         agefmt.decrypt(io.BytesIO(body), out, identity)
     if expect == "payload failure":
         # Everything released before the error must still match the payload hash.
         assert hashlib.sha256(out.getvalue()).hexdigest() == meta["payload"][0]
 ```
+
+`IDENTITY` is a module-level `generate_identity()[0]`; `_with_valid_mac(header)` appends a correct `--- <mac>` line and a 16-byte nonce with no chunks; `_x25519_file_wrapping(file_key)` builds a well-formed X25519 file whose wrapped key is the given bytes. All three are defined in this test module.
 
 Plus the round-trip and identity tests:
 
@@ -770,6 +854,25 @@ def test_generated_identity_and_recipient_have_the_standard_prefixes():
     assert recipient.startswith("age1") and recipient.islower()
     assert agefmt.parse_recipient(recipient).public_bytes_raw() == \
            agefmt.parse_identity(identity).public_key().public_bytes_raw()
+
+
+def test_an_unknown_stanza_type_is_skipped_not_rejected():
+    # x25519_lowercase in one line: an unrecognised type leaves the header valid, and the file
+    # simply carries no stanza this reader can unwrap.
+    header = b"age-encryption.org/v1\n-> grease abc\nZm9v\n-> x25519 abc\nYmFy\n"
+    with pytest.raises(agefmt.NoMatchError):
+        agefmt.decrypt(io.BytesIO(_with_valid_mac(header)), io.BytesIO(), IDENTITY)
+
+
+def test_a_file_key_that_is_not_sixteen_bytes_is_a_header_failure():
+    # x25519_long_file_key in one line.
+    with pytest.raises(agefmt.HeaderError):
+        agefmt.decrypt(io.BytesIO(_x25519_file_wrapping(b"k" * 32)), io.BytesIO(), IDENTITY)
+
+
+def test_a_malformed_header_fails_before_the_identity_is_parsed():
+    with pytest.raises(agefmt.HeaderError):
+        agefmt.decrypt(io.BytesIO(b"not-an-age-file\n"), io.BytesIO(), None)
 
 
 def test_a_wrong_identity_is_a_no_match():
@@ -820,9 +923,9 @@ Do not add a dependency. Do not read anything under `secrets/`.
 - [ ] **Step 4: Run the suite.**
 
 Run: `.venv/bin/pytest tests/test_agefmt.py -q` then `make test`
-Expected: PASS, pristine, with 84 parametrized vector cases plus the round trips.
+Expected: PASS, pristine, with 69 parametrized vector cases plus the round trips.
 
-**Acceptance:** all 84 in-scope CCTV vectors score exactly their `expect` value, every `success` and `payload failure` vector's released plaintext matches its recorded sha256, the manifest's sha256 and byte count match every file on disk, and round trips hold at 0, 65535, 65536, 65537, 131072 and 200000 bytes.
+**Acceptance:** all **69** in-scope CCTV vectors score exactly their `expect` value and the per-category counts equal 15 / 18 / 32 / 3 / 1; the three boundary vectors are in scope and the sixteen ML-KEM-only ones are not; every `success` and `payload failure` vector's released plaintext matches its recorded sha256; an unknown stanza type is skipped rather than rejected; a file key that is not 16 bytes is a header failure; a malformed header fails before any identity is parsed; the manifest's sha256 and byte count match every file on disk; round trips hold at 0, 65535, 65536, 65537, 131072 and 200000 bytes.
 
 - [ ] **Step 5: Commit.**
 
@@ -848,7 +951,7 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 **What this implements (addendum §7, verbatim):**
 - `venue_requests(id, venue, env, method, path, status, ts, elapsed_ms)`; index `(ts)`; invariant: `env = 'prod' and method not in ('GET','HEAD')` = 0.
 - `venue_status(venue, env, status, reason, since, updated_at)` with primary key `(venue, env)`; rows `ok | unavailable | frozen`; `reason` stores at most 120 characters of the venue body ASCII-escaped with newlines stripped; invariant: `updated_at <= now()`.
-- `backup_runs(id, kind, path, bytes, plaintext_sha256, ciphertext_sha256, status, rows_match, started_at, finished_at, notes jsonb)`; invariant: `finished_at >= started_at`.
+- `backup_runs(id, kind, path, bytes, plaintext_sha256, ciphertext_sha256, status, rows_match, started_at, finished_at, notes jsonb)`; invariant: `finished_at >= started_at`. **Plus one column §7 does not name:** `build_sha`. §4.3 and §4.4 both key the plaintext-release rule on "a `drill` row with `decrypt_ok = true` for the same build sha", and a JSONB predicate is not a thing to key a deletion on. It is a first-class `String(24)` column, matching `runs.build_sha`; `decrypt_ok` stays in `notes`.
 - `equity_snapshots` + `peak_equity_7d`, `drawdown_pct`, `drawdown_stop` (nullable, additive).
 - `orders` + `venue_order_id`, `order_group_id`, `exchange_index_at_place` (nullable; NULL for paper).
 
@@ -892,6 +995,9 @@ class BackupRun(Base):
     __tablename__ = "backup_runs"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)        # nightly|weekly|partition|encrypt|drill
+    #: The image build the row was written under. `delete_verified_plaintexts` keys the release
+    #: rule on it, so it is a column, not a `notes` key. Same width as `runs.build_sha`.
+    build_sha: Mapped[str | None] = mapped_column(String(24))
     path: Mapped[str | None] = mapped_column(String(256))
     bytes: Mapped[int | None] = mapped_column(BigInteger)
     plaintext_sha256: Mapped[str | None] = mapped_column(String(64))
@@ -977,9 +1083,17 @@ def test_venue_requests_index_exists(db_session):
 
 def test_backup_runs_accepts_a_drill_row(db_session):
     now = datetime.now(timezone.utc)
-    db_session.add(BackupRun(kind="drill", status="ok", rows_match=True,
-                             started_at=now, finished_at=now, notes={"tables": 41}))
+    db_session.add(BackupRun(kind="drill", status="ok", rows_match=True, build_sha="abc1234",
+                             started_at=now, finished_at=now,
+                             notes={"tables": 41, "decrypt_ok": True}))
     db_session.flush()
+
+
+def test_backup_runs_build_sha_is_a_column_not_a_notes_key(db_session):
+    cols = {r[0] for r in db_session.execute(text(
+        "select column_name from information_schema.columns "
+        "where table_name = 'backup_runs'"))}
+    assert "build_sha" in cols
 
 
 def test_phase4_schema_is_idempotent(_schema):
@@ -1074,7 +1188,7 @@ class VenueRequestRow:
 
 class KalshiTransport:
     def __init__(self, http, base_url, env, key_id, private_key_pem,
-                 clock_offset_ms=0, writes_enabled=False, recorder=None,
+                 timeout_s: float, clock_offset_ms=0, writes_enabled=False, recorder=None,
                  sleep=time.sleep, clock=lambda: datetime.now(timezone.utc)) -> None: ...
     def request(self, method, path, params=None, json=None) -> FetchResult: ...
     @property
@@ -1104,9 +1218,18 @@ PROD = "https://api.elections.kalshi.com/trade-api/v2"
 DEMO = "https://external-api.demo.kalshi.co/trade-api/v2"
 
 
+# KEY_PEM: a 2048-bit RSA key generated once at module import, exactly as
+# `tests/test_kalshi_auth.py:10` does it (import that helper rather than re-deriving it).
+# `verify_signature(headers, method, path)` loads KEY_PEM's public half and verifies the
+# RSA-PSS signature over f"{timestamp}{method}{path}"; `_StepClock(step_ms=N)` returns a UTC
+# datetime that advances N ms per call. `db_session_factory` is a fixture in
+# `tests/conftest.py` yielding a sessionmaker bound to the branch test database.
+# Note the repo's respx style is the `@respx.mock` decorator (`tests/test_kalshi_public.py`),
+# not a `respx_mock` fixture; use the decorator and rename the fixture argument out.
+
 def _t(base_url=PROD, env="prod", writes_enabled=False, recorder=None, **kw):
     return KalshiTransport(HttpClient(5.0), base_url, env, "kid", KEY_PEM,
-                           writes_enabled=writes_enabled,
+                           timeout_s=5.0, writes_enabled=writes_enabled,
                            recorder=recorder if recorder is not None else [].append, **kw)
 
 
@@ -1324,7 +1447,7 @@ Order of operations inside `request`, which is the security contract and must no
 1. `method = method.upper()`. If `method not in {"GET", "HEAD"}` and not `self._writes_enabled`: `raise PaperModeViolation(method, path)`. **Nothing above this line does I/O, signing, or recording.**
 2. `url = self._base + path`; `host = urlsplit(url).hostname`. For `env == "prod"`, `host in PROD_HOSTS` or raise `HostNotAllowed`; for `env == "demo"`, `host` is not `None` and `host == DEMO_HOST_SUFFIX or host.endswith("." + DEMO_HOST_SUFFIX)` or raise `HostNotAllowed`. Any other `env` raises `HostNotAllowed`.
 3. Attempt loop. Per attempt: `ts_ms = int(self._clock().timestamp() * 1000) + self._clock_offset_ms`; `signed_path = urlsplit(url).path`; `headers = sign_request(self._key_id, self._pem, method, signed_path, ts_ms)`. For GET/HEAD call `self._http.get(url, params=params, redact_params=())`; for anything else call `self._write_client.request(method, url, params=params, json=json, headers=headers)` and wrap the response in a `FetchResult` the same shape `HttpClient.get` returns.
-   - **`HttpClient.get` does not accept headers today.** Do not change `harness/feeds/http.py`: it is the recorder's client and adding a headers parameter would widen the recorder path. Instead the transport builds its own read path with the same `httpx.Client` it already owns for writes, and constructs a **read client** unconditionally: `self._read_client = httpx.Client(timeout=timeout_s)`. Keep `http: HttpClient` in the signature (callers pass it and it carries the timeout and the clock) but use `http._clock` for `fetched_at` and `http` only for its timeout. State this in a module docstring line: *the shared `HttpClient` cannot carry per-request headers, and widening it would widen the unauthenticated recorder path, so the transport owns both of its own httpx clients; `writes_enabled` still gates the non-GET one.* Adjust `test_transport_builds_no_write_client_when_disabled` accordingly — it asserts on `_write_client` only.
+   - **`HttpClient.get` does not accept headers today**, so §1.1's sentence "GET and HEAD go through the shared `HttpClient.get`" cannot be implemented literally: `HttpClient.get(url, params, redact_params)` has no headers parameter, and its internal retry loop would multiply signed attempts, which ruling A-I5 forbids. Do not change `harness/feeds/http.py`: it is the recorder's client, and adding a headers parameter would widen the unauthenticated recorder path that D5 and `test_http_client_has_no_write_methods` rest on. Instead the transport owns **both** of its own httpx clients: a read client constructed unconditionally and a write client constructed only when `writes_enabled`. `KalshiTransport.__init__` therefore takes an explicit `timeout_s: float` parameter, which every caller fills from `Settings.http_timeout_s` (the same value `build_recorder` passes to `HttpClient`); `http: HttpClient` stays in the signature for its `_clock` (so `FetchResult.fetched_at` matches the recorder's clock) and for nothing else. Put that reasoning in the module docstring. `test_transport_builds_no_write_client_when_disabled` asserts on `_write_client` only.
    - Record one `VenueRequestRow` per attempt (status `None` on a transport error), with `elapsed_ms` from `time.monotonic()`.
    - 429: `self._counters["venue_429"] += 1`; sleep `min(max(float(Retry-After or 2.0), 0.0), 10.0)`; retry while attempts on this call are `<= RETRY_429_MAX`.
    - 5xx: retry once.
@@ -1581,6 +1704,207 @@ Expected: PASS, pristine.
 ```bash
 git add harness/venues/kalshi/authed.py tests/test_kalshi_authed.py
 git commit -m "feat: KalshiReader - GET-only V2 decoders with Decimals and outcome_side as the direction source
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
+```
+
+---
+
+### Task 6b: The recorder's limits read (the only production `venue_requests` writer)
+
+**Files:**
+- Modify: `harness/scheduler.py` (`build_recorder`)
+- Modify: `harness/recorder/tick.py` (`Recorder.__init__`, the startup and hourly read, the run note)
+- Modify: `harness/health.py` (`compute_health`: the `venue_limits` block)
+- Create: `tests/test_kalshi_limits.py`
+- Test: `tests/test_health.py`, `tests/test_tick.py`
+
+**Depends on:** 6. **Model: opus** (this is the task that makes the phase's own paper-posture tripwire non-vacuous; getting the pause floor or the credential gate wrong is a production behaviour change on the live recorder).
+
+**What this implements (addendum §1.3's last bullet, accepted as ruling A-C3, verbatim):**
+
+> Limits are read on the **reader**, not the writer (no writer exists in production): the recorder constructs a `KalshiReader` at startup when the production key files exist (GET-only, signed) and calls `get_account_limits()` then and hourly; tier and buckets go into `runs.notes.venue_limits` and the Health block; the recorder's `kalshi_sleep_s` pause becomes `max(kalshi_sleep_s, 1 / read.refill_rate)`, never lower than the setting. A failed read (401, network) is logged, leaves the pause at the setting, and counts toward the §9.4 auth-error rule only on 401/403.
+
+Roadmap pre-loaded decision 5: "Read `GET /account/limits` at adapter construction, log the tier and buckets into `runs.notes` and the Health block, and size the recorder's page pause from the read bucket."
+
+**Why this task is load-bearing beyond the feature.** It is the only thing in the phase that writes a `venue_requests` row in production. Without it the §3 tripwire is vacuous (an empty table trivially satisfies "non-GET on prod = 0"), and Task 16's verify row from ruling A-I8 — `count(*) where env = 'prod' and method = 'GET' and ts > now() - interval '2 hours'` must be **> 0** — can never be satisfied, so the phase deploy's verification would fail by construction.
+
+**The container cannot make a signed call today.** `docker-compose.yml` mounts `secrets/kalshi_key_id` and `secrets/kalshi_private_key.pem` into `app-ws` only; `app-run` mounts `secrets/odds_api_key` and `pgdata` and nothing else, so `Settings.has_kalshi_credentials()` is False inside the recorder container. **Task 14 adds the two read-only mounts and the two `KALSHI_*_FILE` environment entries to `app-run`, copying the lines `app-ws` already carries.** That is stated here and owned there; this task's tests run against a `FakeTransport` and never need a file.
+
+**Interfaces:**
+- Consumes: `KalshiTransport` and `session_recorder` (Task 5); `KalshiReader.get_account_limits() -> Limits` with `tier`, `read_refill_rate`, `read_capacity`, `write_refill_rate`, `write_capacity`, `raw` (Task 6); `Settings.has_kalshi_credentials()`, `Settings.kalshi_sleep_s`, `Settings.http_timeout_s`, `Settings.kalshi_base_url`.
+- Produces, in `harness/recorder/tick.py`:
+
+```python
+LIMITS_REFRESH_S = 3600
+
+def page_pause_s(setting: float, read_refill_rate: Decimal | None) -> float:
+    """The recorder's Kalshi page pause, floored by the venue's own read bucket and never
+    lowered below the setting (§1.3). A None, zero or negative refill rate leaves the setting
+    untouched: an unreadable bucket is not a licence to go faster."""
+    if read_refill_rate is None or read_refill_rate <= 0:
+        return setting
+    return max(setting, 1.0 / float(read_refill_rate))
+```
+
+`Recorder.__init__` gains `limits_reader: KalshiReader | None = None`. When it is not None the recorder reads limits once at its first tick and then at most every `LIMITS_REFRESH_S`, keeps the decoded `Limits` on `self._venue_limits`, applies `page_pause_s` to `self.kalshi._sleep_s`, and puts a small dict in the tick's `ctx["venue_limits"]`, which `maybe_tick` writes into `notes` beside `pricing`:
+
+```python
+notes = {..., "pricing": ctx.get("pricing", {}), "venue_limits": ctx.get("venue_limits")}
+```
+
+The note's shape is numeric and enum fields only, never the raw body:
+
+```python
+{"tier": "basic", "read_refill_rate": 10.0, "read_capacity": 100.0,
+ "write_refill_rate": 5.0, "write_capacity": 50.0, "page_pause_s": 0.1, "read_at": "<iso>"}
+```
+
+`build_recorder` constructs the reader only when the credentials exist:
+
+```python
+def build_recorder(settings: Settings) -> Recorder:
+    http = HttpClient(settings.http_timeout_s)
+    ...
+    factory = make_session_factory(make_engine(settings.database_url))
+    limits_reader = None
+    if settings.has_kalshi_credentials():
+        # GET-only by construction: writes_enabled=False, so the transport raises
+        # PaperModeViolation before signing on any non-GET, and holds no write client at all.
+        transport = KalshiTransport(
+            http, settings.kalshi_base_url, "prod",
+            settings.kalshi_key_id(), settings.kalshi_private_key_pem(),
+            timeout_s=settings.http_timeout_s, writes_enabled=False,
+            recorder=session_recorder(factory))
+        limits_reader = KalshiReader(transport)
+    return Recorder(settings, factory, odds, espn, kalshi, limits_reader=limits_reader)
+```
+
+`compute_health` gains a `venue_limits` key read from the newest non-skipped run's `notes->'venue_limits'`, or `None`.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_kalshi_limits.py`.
+
+```python
+# --- the pause floor -----------------------------------------------------------------------
+
+@pytest.mark.parametrize("setting,rate,expected", [
+    (0.05, Decimal("10"), 0.1),      # the venue is slower than us: floor rises
+    (0.05, Decimal("100"), 0.05),    # the venue is faster: the setting wins
+    (0.5,  Decimal("10"), 0.5),      # never lower than the setting
+    (0.05, None, 0.05),              # unreadable bucket: unchanged
+    (0.05, Decimal("0"), 0.05),      # nonsense bucket: unchanged
+    (0.05, Decimal("-1"), 0.05),
+])
+def test_page_pause_is_floored_by_the_read_bucket_and_never_lowered(setting, rate, expected):
+    assert page_pause_s(setting, rate) == pytest.approx(expected)
+
+
+# --- the recorder wiring --------------------------------------------------------------------
+
+def test_no_limits_reader_is_built_without_the_credential_files(env_settings):
+    assert env_settings.has_kalshi_credentials() is False
+    assert build_recorder(env_settings)._limits_reader is None
+
+
+def test_the_limits_reader_is_get_only(env_settings_with_keys):
+    reader = build_recorder(env_settings_with_keys)._limits_reader
+    assert reader._transport._writes_enabled is False
+    assert reader._transport._write_client is None
+    with pytest.raises(PaperModeViolation):
+        reader._transport.request("POST", "/portfolio/events/orders")
+
+
+def test_the_first_tick_reads_limits_and_writes_the_run_note(db_session, recorder_with_fake):
+    rec, t = recorder_with_fake      # FakeTransport queued with one /account/limits body
+    run = rec.maybe_tick(force=True)
+    assert t.calls[0][1] == "/account/limits"
+    note = run.notes["venue_limits"]
+    assert note["tier"] == "basic" and note["read_refill_rate"] == 10.0
+    assert note["page_pause_s"] == pytest.approx(0.1)
+
+
+def test_limits_are_re_read_hourly_not_every_tick(recorder_with_fake):
+    rec, t = recorder_with_fake
+    rec.maybe_tick(force=True)
+    rec.maybe_tick(force=True)
+    assert sum(1 for c in t.calls if c[1] == "/account/limits") == 1
+    rec._clock = lambda: NOW + timedelta(seconds=LIMITS_REFRESH_S + 1)
+    rec.maybe_tick(force=True)
+    assert sum(1 for c in t.calls if c[1] == "/account/limits") == 2
+
+
+def test_the_read_applies_the_pause_floor_to_the_public_client(recorder_with_fake):
+    rec, _ = recorder_with_fake
+    assert rec.kalshi._sleep_s == 0.05
+    rec.maybe_tick(force=True)
+    assert rec.kalshi._sleep_s == pytest.approx(0.1)
+
+
+def test_a_failed_limits_read_leaves_the_pause_at_the_setting(recorder_with_fake_401):
+    rec, _ = recorder_with_fake_401
+    run = rec.maybe_tick(force=True)
+    assert rec.kalshi._sleep_s == 0.05
+    assert run.notes["venue_limits"] is None
+    assert any("limits" in str(w) for w in run.notes["warnings"])
+
+
+def test_a_failed_limits_read_never_fails_the_tick(recorder_with_fake_network_error):
+    rec, _ = recorder_with_fake_network_error
+    assert rec.maybe_tick(force=True).status != "error"
+
+
+def test_the_run_note_carries_no_raw_venue_body(recorder_with_fake):
+    rec, _ = recorder_with_fake
+    note = rec.maybe_tick(force=True).notes["venue_limits"]
+    assert set(note) == {"tier", "read_refill_rate", "read_capacity",
+                         "write_refill_rate", "write_capacity", "page_pause_s", "read_at"}
+
+
+# --- the tripwire is no longer vacuous ---------------------------------------------------------
+
+def test_the_limits_read_writes_a_prod_get_venue_request_row(db_session, recorder_with_fake):
+    rec, _ = recorder_with_fake
+    rec.maybe_tick(force=True)
+    rows = db_session.execute(select(VenueRequest)).scalars().all()
+    assert rows and all(r.env == "prod" and r.method == "GET" for r in rows)
+    assert any(r.path == "/account/limits" for r in rows)
+```
+
+In `tests/test_health.py`:
+
+```python
+def test_health_reports_the_venue_limits_block(db_session):
+    _run_with_notes(db_session, {"venue_limits": {"tier": "basic", "read_refill_rate": 10.0}})
+    body, code = compute_health(factory, NOW, credits_budget=5_000_000)
+    assert body["venue_limits"]["tier"] == "basic"
+
+
+def test_health_reports_none_when_no_run_carries_limits(db_session):
+    body, _ = compute_health(factory, NOW, credits_budget=5_000_000)
+    assert body["venue_limits"] is None
+```
+
+- [ ] **Step 2: Run, verify they fail.**
+
+Run: `.venv/bin/pytest tests/test_kalshi_limits.py tests/test_health.py -q`
+Expected: FAIL with `ImportError: cannot import name 'page_pause_s'`.
+
+- [ ] **Step 3: Implement.** The read is wrapped so it can never fail a tick: on any exception, log a WARNING, append `{"venue_limits": repr(exc)}` to `ctx["warnings"]`, leave `self._venue_limits` and the pause untouched, and set `ctx["venue_limits"] = None`. A 401 or 403 additionally feeds `OutageCounter` — **but that class arrives in Task 10, which runs later.** Do not import it here: record the status on `self._limits_auth_errors` (an integer reset by any success) and leave a one-line comment saying Task 10's counter subsumes it; the outage marking itself is the authenticated path's job and no paper process writes `venue_status` (ruling D11).
+
+- [ ] **Step 4: Run the suite.**
+
+Run: `make test`
+Expected: PASS, pristine.
+
+**Acceptance:** no reader is built without both credential files; the reader is provably GET-only; the first tick reads `/account/limits` and every subsequent tick within the hour does not; the pause is floored by the read bucket and never lowered below the setting; a 401 or a network error leaves the pause at the setting, warns, and does not fail the tick; the run note carries exactly the seven numeric and enum fields and no raw body; the read writes a `prod` `GET` row to `venue_requests`, which is what makes the §3 tripwire and Task 16's A-I8 verify row satisfiable.
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add harness/scheduler.py harness/recorder/tick.py harness/health.py \
+        tests/test_kalshi_limits.py tests/test_health.py
+git commit -m "feat: recorder reads Kalshi account limits hourly on a GET-only signed reader (A-C3)
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
@@ -1999,6 +2323,17 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 
 Roadmap invariant 3: "`mode` defaulting to paper; the `LIVE_TRADING` guard; ... `secrets/legal_decision`; any code that would make `harness gate` pass" are hard-forbidden to change.
 
+**No standing demo-secret mount.** No Compose service mounts the demo pair, and Task 14 does not add one: a service that always carries a live-exchange credential is a posture change this phase does not make. The smoke is a controller command that supplies the mount for the length of one `docker compose run --rm` (Task 16). The guard therefore tests `is_file()`, never `exists()`: Compose materialises a missing bind source as an empty **directory**, so `exists()` would be True with no credential behind it.
+
+**Where the caps come from.** `per_bet_cap_dollars` and `contract_cap` are **not** `Settings` fields and must not be added as ones. They are exec-variant config, read the same way `harness/execution/plan.py:cap_labels` reads them: `store.variant_configs(session, [variant_id])[variant_id]` gives the variant's config dict, whose `per_bet_cap` is a fraction of `bankroll`. `make_writer` therefore takes the resolved pair from its caller:
+
+```python
+per_bet_cap_dollars = Decimal(str(cfg["per_bet_cap"])) * Decimal(str(cfg["bankroll"]))
+contract_cap = Decimal(str(cfg.get("max_contracts", DEFAULT_CONTRACT_CAP)))
+```
+
+The demo smoke passes `per_bet_cap_dollars = Decimal("1")` and `contract_cap = Decimal("5")` (play money, one contract at the lowest grid price), which is why the smoke needs no variant at all.
+
 **Interfaces (produce):**
 
 ```python
@@ -2034,8 +2369,10 @@ Settings additions (each with the comment shown, in the phase 4 block):
     live_trading: int = Field(default=0, validation_alias="LIVE_TRADING")
 
     def has_kalshi_demo_credentials(self) -> bool:
-        return (self.kalshi_demo_key_id_file.exists()
-                and self.kalshi_demo_private_key_file.exists())
+        # is_file(), not exists(): Compose creates an empty *directory* on the host for a
+        # missing bind source, so exists() would be True with no credential behind it (C3).
+        return (self.kalshi_demo_key_id_file.is_file()
+                and self.kalshi_demo_private_key_file.is_file())
 ```
 
 Note `Settings.model_config` already sets `extra="ignore"` and reads `.env`; `validation_alias` is what binds the two bare environment names (pydantic-settings would otherwise expect `MODE` and `LIVE_TRADING` is already the right shape but is bound explicitly for symmetry and so a rename cannot silently unbind it).
@@ -2095,6 +2432,18 @@ def test_make_writer_demo_refuses_without_the_demo_secret_files(tmp_path, env_se
     with pytest.raises(LiveGuardRefused) as exc:
         make_writer(env_settings, "demo")
     assert "kalshi_demo" in exc.value.missing
+
+
+def test_make_writer_demo_refuses_when_the_secret_path_is_a_directory(tmp_path):
+    # C3: Compose materialises a missing bind source as an empty directory. exists() would be
+    # True; is_file() is what the guard tests.
+    (tmp_path / "kalshi_demo_key_id").mkdir()
+    (tmp_path / "kalshi_demo_private_key.pem").mkdir()
+    s = _settings_pointing_demo_files_at(tmp_path)
+    assert s.kalshi_demo_key_id_file.exists() is True
+    assert s.has_kalshi_demo_credentials() is False
+    with pytest.raises(LiveGuardRefused):
+        make_writer(s, "demo")
 
 
 def test_make_writer_demo_refuses_a_non_demo_host(tmp_path):
@@ -2194,7 +2543,7 @@ Every existence test is `Path.exists()`; **no file under `secrets/` is read**.
 Run: `.venv/bin/pytest tests/test_kalshi_guard.py tests/test_settings.py -q` then `make test`
 Expected: PASS, pristine; the subset test is 15 parametrized cases.
 
-**Acceptance:** all 15 proper subsets of the four prod conditions refuse, each naming the first missing one; `HARNESS_MODE=live` alone refuses; a passing gate row for another variant does not count; demo builds a writes-enabled writer only with both files and a demo host; direct construction raises; `deploy/nas.env` still asserts `LIVE_TRADING=0` and `HARNESS_MODE=paper`.
+**Acceptance:** all 15 proper subsets of the four prod conditions refuse, each naming the first missing one; `HARNESS_MODE=live` alone refuses; a passing gate row for another variant does not count; demo builds a writes-enabled writer only with both files and a demo host; a demo secret path that is a **directory** refuses (`is_file()`, not `exists()`); direct construction raises; `deploy/nas.env` still asserts `LIVE_TRADING=0` and `HARNESS_MODE=paper`.
 
 - [ ] **Step 5: Commit.**
 
@@ -2247,9 +2596,15 @@ class ReconcileReport:
     fills_seen: int = 0
 
 class OrderGateway(Protocol):
-    def place(self, session, action, intent, market, extra, row, now) -> PlacedOrder: ...
-    def cancel(self, session, order, reason: str, now) -> None: ...
-    def amend(self, session, order, prob: Decimal, contracts: Decimal, now) -> None: ...
+    #: `values` is the dict `_place` already builds, unchanged and complete. Passing it in
+    #: rather than rebuilding it inside the gateway is what keeps `_place` byte-for-byte: the
+    #: dict needs `self.replay`, `self.exec_settings` and `config_hash`, none of which belongs
+    #: on a gateway. The gateway's only job on the paper path is the insert.
+    def place(self, session, values: dict, action, market, now) -> PlacedOrder: ...
+    #: Returns whether a row actually moved, because `_apply_one` drives `stats.cancelled` and
+    #: `self._metrics_acc.cancelled[reason]` off exactly that boolean today.
+    def cancel(self, session, order_id: int, reason: str, now) -> bool: ...
+    def amend(self, session, order_id: int, prob: Decimal, contracts: Decimal, now) -> bool: ...
     def cancel_all(self, session, reason: str, now) -> int: ...
     def reconcile(self, session, now) -> ReconcileReport: ...
     def poll_fills(self, session, since) -> list: ...
@@ -2282,11 +2637,26 @@ class KalshiGateway:
         return KalshiGateway(writer, writer.reader)
 ```
 
-`_place` keeps building its values dict exactly as today, then calls `self.gateway.place(...)` instead of `store.insert_order`. `_apply_one`'s `Cancel` branch calls `self.gateway.cancel(...)`; the `Expire`, `CapGate` and `Skip` branches are unchanged (they are our own bookkeeping, not venue messages).
+`_place` keeps building its values dict exactly as today — same keys, same values, same order — and the only line that changes is `store.insert_order(session, {...})` becoming `self.gateway.place(session, values, action, market, now).order_id`. Everything after it is untouched: the `if order_id is None: return` early exit **before** `stats.placed += 1`, the `self._metrics_acc.placed += 1` bump, the `place` event, and the `no_book` skip event.
+
+`_apply_one`'s `Cancel` branch becomes `if self.gateway.cancel(session, action.order_id, action.reason, now):` and keeps both counter updates inside that branch verbatim:
+
+```python
+        elif isinstance(action, Cancel):
+            if self.gateway.cancel(session, action.order_id, action.reason, now):
+                stats.cancelled += 1
+                if not self.replay:
+                    acc = self._metrics_acc.cancelled
+                    acc[action.reason] = acc.get(action.reason, 0) + 1
+            store.insert_event(session, order_id=action.order_id, ts=now, kind="cancel",
+                               reason=action.reason, replay=self.replay)
+```
+
+The `Expire`, `CapGate` and `Skip` branches are unchanged: they are our own bookkeeping, not venue messages, and no gateway sees them.
 
 **Fill source.** `_persist_track` keeps writing simulator fills for `PaperGateway`. Add one branch at the top of the simulate step: when `self.gateway.poll_fills` is not `PaperGateway`'s, the simulator is skipped and `fills` / `ledger(kind='fill')` rows come from `poll_fills(session, since)`. Guard it on `isinstance(self.gateway, PaperGateway)` so paper takes the identical path it takes today.
 
-`EXECUTOR_VERSION` goes from `"3.1"` to `"4.0"`.
+`EXECUTOR_VERSION` goes from `"3.7"` (its value today, `harness/execution/__init__.py:4`) to `"4.0"`. The global constraint is one bump per task that changes `harness/execution/`, so Task 10 sets `"4.1"` and Task 11 `"4.2"`; each of the three lists `harness/execution/__init__.py` on its `Files:` line, which is why Tasks 10 and 11 cannot share a wave.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_gateway.py`.
 
@@ -2308,27 +2678,46 @@ def test_executor_in_live_mode_cannot_build_a_gateway(env_settings, session_fact
         Executor(live, session_factory)
 
 
-def test_golden_replay_paper_order_events_are_byte_identical(db_session, env_settings):
-    """The D4 proof. Replay the committed fixture day twice -- once through the pre-gateway
-    code path (a PaperGateway whose place/cancel call `store` directly, which is what the new
-    code does) and once through the executor as shipped -- and diff every order_events row.
+def test_golden_replay_is_byte_identical_across_the_seam(db_session, env_settings):
+    """The D4 proof. Replay the committed fixture day twice -- once through a copy of the
+    pre-gateway code path and once through the executor as shipped -- and diff everything the
+    seam could plausibly move: order_events, orders, the heartbeat counters and the metric
+    samples written during the replayed day. Diffing only order_events would let a dropped
+    `stats.cancelled` or a missing `_metrics_acc` bump pass review (C6).
     """
     baseline = _run_fixture_day(db_session, env_settings, gateway=_LegacyGateway())
     current = _run_fixture_day(db_session, env_settings, gateway=PaperGateway())
     assert _events_digest(baseline) == _events_digest(current)
     assert _orders_digest(baseline) == _orders_digest(current)
+    assert _heartbeat_counters(baseline) == _heartbeat_counters(current)
+    assert _metric_samples(baseline) == _metric_samples(current)
+
+
+def test_the_cancel_counters_still_move(db_session, env_settings, session_factory):
+    ex = Executor(env_settings, session_factory)
+    stats = _step_with_one_reprice_cancel(ex)
+    assert stats.cancelled == 1
+    assert ex._metrics_acc.cancelled == {"reprice": 1}
+
+
+def test_a_duplicate_placement_returns_none_and_skips_the_counters(db_session):
+    # store.insert_order returns None on the uq_open_order conflict; `_place` must return
+    # before stats.placed and before the `place` event, exactly as it does today.
+    placed = PaperGateway().place(db_session, _duplicate_values(), action, market, NOW)
+    assert placed.order_id is None
 
 
 def test_paper_gateway_place_writes_the_same_order_row(db_session):
-    order_id = PaperGateway().place(db_session, action, intent, market, extra, row, NOW).order_id
+    order_id = PaperGateway().place(db_session, values, action, market, NOW).order_id
     row = db_session.get(Order, order_id)
     assert row.mode == "paper" and row.venue_order_id is None
     assert row.order_group_id is None and row.exchange_index_at_place is None
 
 
-def test_paper_gateway_cancel_writes_the_same_cancel_event(db_session):
-    ...  # a cancel through the gateway produces the identical order_events row
-    assert event.kind == "cancel" and event.reason == "reprice"
+def test_paper_gateway_cancel_returns_whether_a_row_moved(db_session):
+    g = PaperGateway()
+    assert g.cancel(db_session, open_order_id, "reprice", NOW) is True
+    assert g.cancel(db_session, open_order_id, "reprice", NOW) is False   # already cancelled
 
 
 def test_paper_gateway_poll_fills_returns_the_simulator_rows(db_session):
@@ -2342,7 +2731,7 @@ def test_paper_gateway_poll_fills_returns_the_simulator_rows(db_session):
 def test_kalshi_gateway_place_sends_one_order_and_records_the_venue_ids(db_session):
     t = FakeTransport(queued=[_ok({"order": _echo_of(order_id="ov1", group="g1")})])
     g = KalshiGateway(_writer(t), KalshiReader(t))
-    placed = g.place(db_session, action, intent, market, extra, row, NOW)
+    placed = g.place(db_session, values, action, market, NOW)
     assert placed.venue_order_id == "ov1" and placed.order_group_id == "g1"
     assert db_session.get(Order, placed.order_id).exchange_index_at_place == 0
 
@@ -2365,7 +2754,7 @@ def test_kalshi_gateway_cancel_all_cancels_the_group(db_session):
 
 def test_executor_version_bumped():
     from harness.execution import EXECUTOR_VERSION
-    assert EXECUTOR_VERSION == "4.0"
+    assert EXECUTOR_VERSION == "4.0"      # Task 10 moves it to 4.1, Task 11 to 4.2
 ```
 
 In `tests/test_exec_loop.py`, every existing test must keep passing unchanged. Add one:
@@ -2396,7 +2785,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'harness.execution.gat
 Run: `make test`
 Expected: PASS, pristine, with every phase 3 executor test unchanged.
 
-**Acceptance:** the golden replay's `order_events` and `orders` digests are equal across the legacy and gateway paths; `PaperGateway` has no transport, writer or reader attribute; the loop places through the gateway; `KalshiGateway` sends one order and records the venue ids against `FakeTransport`; live mode cannot construct; `EXECUTOR_VERSION` is `4.0`.
+**Acceptance:** the golden replay's `order_events`, `orders`, heartbeat-counter and metric-sample digests are all equal across the legacy and gateway paths; `stats.cancelled` and `_metrics_acc.cancelled` still move; a duplicate placement returns `PlacedOrder(order_id=None)` and skips the counters and the `place` event; `PaperGateway` has no transport, writer or reader attribute; the loop places through the gateway; `KalshiGateway` sends one order and records the venue ids against `FakeTransport`; live mode cannot construct; `EXECUTOR_VERSION` is `4.0`.
 
 - [ ] **Step 5: Commit.**
 
@@ -2415,7 +2804,8 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 
 **Files:**
 - Create: `harness/execution/venue.py`
-- Modify: `harness/execution/gateway.py` (`KalshiGateway.reconcile`, the freeze and outage hooks)
+- Modify: `harness/execution/gateway.py` (`KalshiGateway.reconcile`, the freeze and outage hooks, the dirty-book reprice gate)
+- Modify: `harness/execution/__init__.py` (`EXECUTOR_VERSION` to `"4.1"`)
 - Create: `tests/test_venue_state.py`
 
 **Depends on:** 6, 7, 9. **Model: opus** (the outage rule's exact counting is what keeps a 429 storm from marking the venue down).
@@ -2471,6 +2861,13 @@ class RejectTracker:
     """Three consecutive rejects on one order cancel it and freeze its market for 15 min."""
     def record_reject(self, order_id: str) -> bool: ...   # True at the third
     def record_success(self, order_id: str) -> None: ...
+
+def may_reprice(book, now: datetime, s) -> bool:
+    """§2.2's WS rule, live-only: no reprice while the book is dirty. A `seq` gap sets
+    `BookState.dirty` and a book older than `book_max_age_s` is stale; either one blocks a
+    reprice until the book has been rebuilt from a REST snapshot. Phase 3's dirty-book rule
+    gates *fills* (`MarketNow.dirty`), which is a different question: an order may keep resting
+    on a dirty book, it just must not be re-priced against one."""
 ```
 
 `KalshiGateway.reconcile(session, now)` implements the startup sequence and returns `ReconcileReport`.
@@ -2638,6 +3035,49 @@ def test_a_timeout_whose_lookup_finds_nothing_reports_not_placed(db_session):
     assert sum(1 for c in t.calls if c[0] == "POST") == 1
 
 
+# --- no reprice while the book is dirty (§2.2, live only) --------------------------------------------
+
+def test_a_dirty_book_blocks_a_reprice():
+    book = _book(dirty=True, as_of=NOW)
+    assert may_reprice(book, NOW, EXEC_SETTINGS) is False
+
+
+def test_a_stale_book_blocks_a_reprice():
+    book = _book(dirty=False, as_of=NOW - timedelta(seconds=EXEC_SETTINGS.book_max_age_s + 1))
+    assert may_reprice(book, NOW, EXEC_SETTINGS) is False
+
+
+def test_an_absent_book_blocks_a_reprice():
+    assert may_reprice(None, NOW, EXEC_SETTINGS) is False
+
+
+def test_a_clean_fresh_book_allows_a_reprice():
+    assert may_reprice(_book(dirty=False, as_of=NOW), NOW, EXEC_SETTINGS) is True
+
+
+def test_a_rebuilt_book_allows_repricing_again():
+    book = _book(dirty=True, as_of=NOW)
+    assert may_reprice(book, NOW, EXEC_SETTINGS) is False
+    rebuilt = _book_from_rest_snapshot(NOW)          # dirty cleared by the REST rebuild
+    assert may_reprice(rebuilt, NOW, EXEC_SETTINGS) is True
+
+
+def test_the_kalshi_gateway_skips_an_amend_on_a_dirty_book(db_session):
+    t = FakeTransport()
+    g = KalshiGateway(_writer(t), KalshiReader(t))
+    assert g.amend(db_session, order_id, Decimal("0.57"), Decimal("2"), NOW,
+                   book=_book(dirty=True, as_of=NOW)) is False
+    assert t.calls == []          # nothing was sent
+
+
+def test_the_paper_path_is_unaffected_by_the_reprice_gate(db_session, env_settings,
+                                                          session_factory):
+    # Phase 3's reprice behaviour on a dirty book is unchanged: this rule is live-only.
+    before = _reprice_count(_run_fixture_day(db_session, env_settings, gateway=None))
+    after = _reprice_count(_run_fixture_day(db_session, env_settings, gateway=PaperGateway()))
+    assert before == after
+
+
 # --- the message budget trips the kill switch (§9.2) -------------------------------------------------
 
 def test_a_budget_breach_trips_the_kill_switch(db_session):
@@ -2656,18 +3096,21 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'harness.execution.ven
 
 - [ ] **Step 3: Implement.** `OutageCounter` keeps a small integer of consecutive auth errors and ignores every non-auth status without resetting. `mark_status` is a PostgreSQL upsert on `(venue, env)` that sets `since` only when the status actually changes. `is_routable` reads the row and, for `frozen`, compares `now` against `since + 15 minutes`. Every log line that carries a `reason` writes it as `reason=%r` with a preceding `untrusted venue text:` marker.
 
+`may_reprice` is a pure function and `KalshiGateway.amend` gains a `book` parameter it consults before sending. **`PaperGateway.amend` does not consult it**: phase 3's reprice behaviour is what the golden test pins and this phase does not change it. Bump `EXECUTOR_VERSION` to `"4.1"` and update Task 9's assertion in the same commit.
+
 - [ ] **Step 4: Run the suite.**
 
 Run: `make test`
 Expected: PASS, pristine.
 
-**Acceptance:** two consecutive 401/403s mark the venue and ten 429s or five 5xx never do; a 429 between two 401s does not clear the pair; a demo outage leaves production routable; a freeze expires at 15 minutes; three consecutive rejects on one order fire, counted per order; reconciliation cancels the unknown and expired resting orders and leaves the rest; a timeout is resolved by `client_order_id` with exactly one POST; paper writes no `venue_status` row; venue text is ASCII-only, newline-free and capped at 120 characters.
+**Acceptance:** two consecutive 401/403s mark the venue and ten 429s or five 5xx never do; a 429 between two 401s does not clear the pair; a demo outage leaves production routable; a freeze expires at 15 minutes; three consecutive rejects on one order fire, counted per order; reconciliation cancels the unknown and expired resting orders and leaves the rest; a timeout is resolved by `client_order_id` with exactly one POST; a dirty, stale or absent book blocks a live reprice and a REST rebuild releases it, while the paper reprice count is unchanged; paper writes no `venue_status` row; venue text is ASCII-only, newline-free and capped at 120 characters; `EXECUTOR_VERSION` is `"4.1"`.
 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add harness/execution/venue.py harness/execution/gateway.py tests/test_venue_state.py
-git commit -m "feat: venue state - outage counter, venue_status, 15 min freeze, startup reconciliation (9.1/9.4)
+git add harness/execution/venue.py harness/execution/gateway.py \
+        harness/execution/__init__.py tests/test_venue_state.py
+git commit -m "feat: venue state - outage counter, venue_status, freeze, reconciliation, no reprice while dirty (9.1/9.2/9.4)
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
@@ -2680,11 +3123,16 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 **Files:**
 - Create: `harness/execution/risk.py`
 - Modify: `harness/execution/loop.py` (`_write_equity_snapshots`)
+- Modify: `harness/execution/__init__.py` (`EXECUTOR_VERSION` to `"4.2"`)
 - Modify: `harness/strategy/run.py` (`ANNOTATION_LABELS`, `LABEL_ORDER`)
+- Modify: `harness/strategy/pipeline.py` (`price_and_signal` passes `stopped=`)
+- Modify: `harness/report/tables.py` (table 1's stopped-share note)
 - Create: `tests/test_risk.py`
-- Test: `tests/test_strategy.py`
+- Test: `tests/test_strategy.py`, `tests/test_pipeline.py`, `tests/test_report.py`
 
-**Depends on:** 4, 9. **Model: opus** (the annotation must be provably outside every registered decision rule; the golden digest test is the proof).
+**Depends on:** 1, 4, 9. **Model: opus** (the annotation must be provably outside every registered decision rule; the golden digest test is the proof).
+
+Task 1 restructured `price_and_signal`'s variant loop and table 1's columns; this task adds one argument to the call it left and one note to the table it left, which is why it depends on 1 even though the wave order already separates them.
 
 **What this implements (addendum §3, verbatim):**
 
@@ -2694,6 +3142,20 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 Ruling B-C2: "equity is `bankroll + ledger` per decision 6, `mtm` reported beside." Ruling A-C2/B-C1: "the label is an annotation excluded from the decision (`ANNOTATION_LABELS`), paper keeps placing."
 
 **The dashboard badge is out of scope here.** Roadmap phase 4.5 item 5 makes it a Pulse rule; this task writes the three columns the badge will read and nothing under `harness/dashboard/`.
+
+**Table 1's stopped-share note (§3, "Table 1 reports the stopped share as a note").** Task 1 owns table 1's `tick_coverage` column; this task appends one sentence to the same table's `note`, computed from `equity_snapshots`:
+
+```python
+_T1_STOPPED = text("""
+    select variant_id,
+           count(*) filter (where drawdown_stop) ::float / nullif(count(*), 0) as stopped_share
+    from equity_snapshots
+    where ts >= :start and ts < :end and drawdown_stop is not null
+    group by variant_id
+""")
+```
+
+and the note reads: `"drawdown stop: <name> <pct> of equity samples this week"` per variant with a non-zero share, or `"drawdown stop: none"` when every share is zero or the column is empty. It is a **note**, not a column: the stop annotates and never decides, and table 1's columns are what cross-variant comparisons read.
 
 **Interfaces (produce), in `harness/execution/risk.py`:**
 
@@ -2825,36 +3287,64 @@ def test_the_executor_keeps_placing_while_stopped(db_session, env_settings, sess
     assert db_session.execute(select(func.count()).select_from(Order)).scalar() > 0
 ```
 
-In `tests/test_strategy.py`, the existing golden digest test must keep passing unchanged. Add:
+**The golden digest: `YES_ONLY_DIGEST` does not move and must not be re-pinned.**
+
+`tests/test_strategy.py` hashes `_golden_tuple(s) = astuple(s)[:-1]`, which **includes** the `labels` dict, so appending `drawdown_stop` to `LABEL_ORDER` would move `YES_ONLY_DIGEST` on the field's addition alone. The fix is the one `_golden_tuple` already exists for: restrict the hashed `labels` to the decision labels.
 
 ```python
-def test_the_golden_label_digest_is_unchanged_by_the_annotation():
-    # The registered ids' decision rule is byte-identical with the annotation present.
-    assert _digest(run_strategy(GOLDEN_ROWS, GOLDEN_VARIANT, NOW)) == GOLDEN_DIGEST
-    assert _digest(run_strategy(GOLDEN_ROWS, GOLDEN_VARIANT, NOW, stopped=True)) == GOLDEN_DIGEST
+def _golden_tuple(s) -> tuple:
+    """`astuple(s)` minus `as_measured`, with `labels` restricted to the decision labels.
+
+    Phase 4 adds `drawdown_stop` to `LABEL_ORDER` as an *annotation* (`ANNOTATION_LABELS`),
+    excluded from `FILTER_LABELS` and from `CAP_LABELS`, so it can never change a decision.
+    Hashing it anyway would move this digest on the label's addition alone, which is exactly
+    what the digest exists to rule out. `CAP_LABELS` are already the tail of `LABEL_ORDER`, so
+    `FILTER_LABELS + CAP_LABELS` reproduces the pre-phase-4 key order exactly and
+    `YES_ONLY_DIGEST` is unchanged.
+    """
+    fields = list(astuple(s)[:-1])
+    labels = fields[LABELS_INDEX]
+    fields[LABELS_INDEX] = {k: labels[k] for k in FILTER_LABELS + CAP_LABELS}
+    return tuple(fields)
 ```
 
-If the existing golden digest hashes the whole `labels` dict, it will change when `drawdown_stop` is added. In that case the digest must be computed over `FILTER_LABELS + CAP_LABELS` only, and the test says why in a comment: *the digest pins the decision, and an annotation is by definition not part of it.* Re-pin the constant in the same commit and note it in the message.
+`YES_ONLY_DIGEST` keeps its current value `9c40d9a5a9de0d61024117171ee3d958701f4089d47252c249ba56bfd1fedfa6` and `test_yes_only_variants_unchanged` keeps its current body. **If the digest still moves after this change, that is a gate, not a test fix**: the file's own comment says the six ids are pre-registered and a change to the constant is a pre-registration amendment (roadmap invariant 2). Stop and report rather than re-pinning.
+
+Add one test beside it:
+
+```python
+def test_the_golden_digest_is_identical_with_the_annotation_set():
+    """The registered ids' decision is byte-identical whether or not the variant is stopped."""
+    for v in sorted(load_variants(SHIPPED) + load_variants(FIXTURES), key=lambda v: v.name):
+        if sides_for(v.config) != ["yes"]:
+            continue
+        plain = [_golden_tuple(s) for s in run_strategy(
+            _golden_rows(), v, NOW, state=StrategyState())]
+        stopped = [_golden_tuple(s) for s in run_strategy(
+            _golden_rows(), v, NOW, state=StrategyState(), stopped=True)]
+        assert plain == stopped
+```
 
 - [ ] **Step 2: Run, verify they fail.**
 
 Run: `.venv/bin/pytest tests/test_risk.py tests/test_strategy.py -q`
 Expected: FAIL with `ModuleNotFoundError: No module named 'harness.execution.risk'`.
 
-- [ ] **Step 3: Implement.** Add the module, the label plumbing, and the three values at the `insert_equity_snapshot` call site. Do **not** touch `harness/report/gate.py`, any threshold, or anything under `harness/variants/`. In live mode only (dormant), `KalshiGateway` reads `stopped_variants` and sets the kill switch with reason `drawdown_stop:<variant>`; guard it so `PaperGateway` cannot reach that code.
+- [ ] **Step 3: Implement.** Add the module, the label plumbing, the three values at the `insert_equity_snapshot` call site, the `stopped=` argument at `price_and_signal`'s `run_strategy` call, and table 1's note. Bump `EXECUTOR_VERSION` to `"4.2"` and update Task 10's assertion in the same commit. Do **not** touch `harness/report/gate.py`, any threshold, `YES_ONLY_DIGEST`, or anything under `harness/variants/`. In live mode only (dormant), `KalshiGateway` reads `stopped_variants` and sets the kill switch with reason `drawdown_stop:<variant>`; guard it so `PaperGateway` cannot reach that code.
 
 - [ ] **Step 4: Run the suite.**
 
 Run: `make test`
 Expected: PASS, pristine.
 
-**Acceptance:** the rule trips at exactly -20 % over the trailing 7 days of `cash` and never on `mtm_open`; the executor writes all three columns; `drawdown_stop` is in `LABEL_ORDER` and `ANNOTATION_LABELS` and in neither `FILTER_LABELS` nor `CAP_LABELS`; a stopped signal with every filter true is still a candidate and `drawdown_stop` is never a rejection reason; the golden decision digest is unchanged; the paper executor keeps placing.
+**Acceptance:** the rule trips at exactly -20 % over the trailing 7 days of `cash` and never on `mtm_open`; the executor writes all three columns; `drawdown_stop` is in `LABEL_ORDER` and `ANNOTATION_LABELS` and in neither `FILTER_LABELS` nor `CAP_LABELS`; a stopped signal with every filter true is still a candidate and `drawdown_stop` is never a rejection reason; **`YES_ONLY_DIGEST` is unchanged and un-re-pinned**, and the per-variant golden tuples are identical stopped and unstopped; table 1 carries the stopped-share note; the paper executor keeps placing; `EXECUTOR_VERSION` is `"4.2"`.
 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add harness/execution/risk.py harness/execution/loop.py harness/strategy/run.py \
-        tests/test_risk.py tests/test_strategy.py
+git add harness/execution/risk.py harness/execution/loop.py harness/execution/__init__.py \
+        harness/strategy/run.py harness/strategy/pipeline.py harness/report/tables.py \
+        tests/test_risk.py tests/test_strategy.py tests/test_pipeline.py tests/test_report.py
 git commit -m "feat: drawdown stop as an annotation - equity columns, ANNOTATION_LABELS, paper keeps placing (9.3)
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
@@ -2891,8 +3381,10 @@ Ruling A-C4: "plaintext kept until a Mac-side drill row for the same build prove
     #: Where the dump sidecar writes and the encrypt job reads. Bind-mounted into app-run
     #: read-write and into app-backup read-write; absent on the Mac, where the jobs no-op.
     backup_dir: Path = Path("/backups")
-    #: The age recipient. A feature switched on Path.exists(): with no public key the encrypt
-    #: job records `skipped: no recipient` and leaves the plaintexts alone.
+    #: The age recipient. A feature switched on `Path.is_file()`, not `exists()`: Compose
+    #: materialises a missing bind source as an empty *directory*, so `exists()` would be True
+    #: with no key behind it and the encrypt job would error instead of recording
+    #: `skipped: no recipient` (I6). With no public key the job leaves the plaintexts alone.
     backup_recipient_file: Path = Path("/run/backup_age.pub")
     #: The private identity, on the Mac only and never pushed to the NAS.
     backup_identity_file: Path = Path("secrets/backup_age_key")
@@ -2923,10 +3415,12 @@ def keygen(identity_path: Path, recipient_path: Path) -> str:
 def encrypt_pending(session, backup_dir: Path, recipient_file: Path, build_sha: str,
                     now: datetime) -> list[BackupRun]:
     """For every unit with a `.dump` and a `.meta.json` and no `.dump.age`: encrypt streaming
-    to `<name>.dump.age.tmp`, fsync, rename, verify the ciphertext's structure, and record one
-    `backup_runs` row (kind='encrypt'). Idempotent: a unit that already has a `.dump.age` is
-    skipped. With no recipient file, records one row `status='skipped'`,
-    `notes={'reason': 'no recipient'}` and touches nothing."""
+    to `<name>.dump.age.tmp`, fsync, rename, verify the ciphertext's structure, record one
+    `backup_runs` row (kind='encrypt', build_sha set) and write the unit's `.ok` marker beside
+    the ciphertext. Idempotent: a unit that already has a `.dump.age` is skipped. When
+    `recipient_file.is_file()` is False -- absent, or the empty directory Compose creates for a
+    missing bind source (I6) -- records one row `status='skipped'`,
+    `notes={'reason': 'no recipient'}` and touches nothing on disk."""
 
 def verify_ciphertext_structure(age_path: Path, plaintext_bytes: int) -> bool:
     """What can be proven without the private key: the header parses and the chunk count
@@ -2935,14 +3429,22 @@ def verify_ciphertext_structure(age_path: Path, plaintext_bytes: int) -> bool:
 def delete_verified_plaintexts(session, backup_dir: Path, build_sha: str,
                                now: datetime) -> list[Path]:
     """Delete a unit's plaintext only when `backup_runs` holds a `drill` row with
-    `notes->>'decrypt_ok' = 'true'` for the same build sha AND the unit's own encrypt row is
-    `ok` (A-C4). Never deletes a `.dump.age` or a `.meta.json`."""
+    `build_sha = :build_sha` (the column, Task 4) and `notes->>'decrypt_ok' = 'true'`, AND the
+    unit's own encrypt row is `ok` (A-C4). Never deletes a `.dump.age`, a `.meta.json` or a
+    `.ok` marker."""
 
 def decrypt_file(age_path: Path, out_path: Path, identity_file: Path) -> str:
     """Mac-side. Returns the sha256 of the decrypted plaintext."""
 
 def record_drill(session, build_sha: str, decrypt_ok: bool, plaintext_sha256: str,
-                 rows_match: bool | None, now: datetime, notes: dict) -> BackupRun: ...
+                 rows_match: bool | None, now: datetime, notes: dict) -> BackupRun:
+    """Writes `kind='drill'` with `build_sha` in its own column and `decrypt_ok` in `notes`."""
+
+def marker_path(unit: Unit) -> Path:
+    """The one name for the encrypt marker, used by `encrypt_pending` here and by `dump.sh`'s
+    retention loop (Task 14): `<kind>/harness-<kind>-<stamp>.ok`, beside the ciphertext. It
+    exists because the POSIX-sh sidecar cannot query `backup_runs` without authenticating to
+    Postgres, and A-I9 forbids deleting a `.dump.age` that has no `ok` row behind it."""
 
 def newest_nightly_ok(session, now: datetime, max_age_h: int) -> BackupRun | None:
     """The precheck's query half: the newest `kind='nightly'`, `status='ok'` row younger than
@@ -3004,6 +3506,23 @@ def test_without_a_recipient_it_records_skipped_and_touches_nothing(db_session, 
     assert (tmp_path / "nightly" / "harness-nightly-S1.dump").exists()
 
 
+def test_a_recipient_path_that_is_a_directory_is_also_no_recipient(db_session, tmp_path):
+    # I6: Compose creates an empty directory for a missing bind source. exists() is True;
+    # is_file() is what the job tests, so this must skip rather than error.
+    _unit(tmp_path, "nightly", "S1")
+    (tmp_path / "pub_dir").mkdir()
+    rows = encrypt_pending(db_session, tmp_path, tmp_path / "pub_dir", "abc", NOW)
+    assert len(rows) == 1 and rows[0].status == "skipped"
+    assert rows[0].notes["reason"] == "no recipient"
+    assert not list(tmp_path.rglob("*.age"))
+
+
+def test_encrypt_writes_the_ok_marker_beside_the_ciphertext(db_session, tmp_path):
+    _unit(tmp_path, "nightly", "S1")
+    encrypt_pending(db_session, tmp_path, _recipient(tmp_path), "abc1234", NOW)
+    assert (tmp_path / "nightly" / "harness-nightly-S1.ok").exists()
+
+
 def test_the_ciphertext_round_trips_through_the_private_key(db_session, tmp_path):
     ident, pub = tmp_path / "key", tmp_path / "pub"
     keygen(ident, pub)
@@ -3046,6 +3565,7 @@ def test_a_matching_drill_row_releases_only_the_plaintext(db_session, tmp_path):
     assert not (tmp_path / "nightly" / "harness-nightly-S1.dump").exists()
     assert (tmp_path / "nightly" / "harness-nightly-S1.dump.age").exists()
     assert (tmp_path / "nightly" / "harness-nightly-S1.meta.json").exists()
+    assert (tmp_path / "nightly" / "harness-nightly-S1.ok").exists()
 
 
 def test_a_failed_drill_never_releases_a_plaintext(db_session, tmp_path):
@@ -3089,19 +3609,38 @@ def test_newest_nightly_ok_ignores_an_error_row(db_session):
 # --- the scheduler job and the CLI -----------------------------------------------------------------
 
 def test_the_encrypt_job_is_registered_every_ten_minutes(env_settings):
-    sched = build_scheduler(_recorder(), 30, backup_period_s=env_settings.backup_encrypt_period_s)
+    # The guard is `if backup_encrypt is not None and backup_period_s`, so the callable is
+    # required: passing only the period registers nothing.
+    sched = build_scheduler(_recorder(), 30, backup_encrypt=lambda: None,
+                            backup_period_s=env_settings.backup_encrypt_period_s)
     job = sched.get_job("backup_encrypt")
     assert job is not None and job.trigger.interval.total_seconds() == 600
+
+
+def test_no_encrypt_job_without_a_callable_or_a_period(env_settings):
+    assert build_scheduler(_recorder(), 30).get_job("backup_encrypt") is None
+    assert build_scheduler(_recorder(), 30,
+                           backup_encrypt=lambda: None,
+                           backup_period_s=0).get_job("backup_encrypt") is None
 
 
 def test_backup_precheck_exits_1_without_a_fresh_nightly(cli_runner, db_session):
     assert cli_runner.invoke(app, ["backup-precheck"]).exit_code == 1
 
 
-def test_backup_keygen_prints_the_copy_out_instruction(cli_runner, tmp_path):
+def test_backup_keygen_prints_the_copy_out_instruction(cli_runner, tmp_path, monkeypatch):
+    # Never writes into the working tree: the CLI reads both paths from Settings, and this
+    # test points them at tmp_path. A real run here would drop secrets/backup_age_key into the
+    # checkout and keygen's refuse-to-overwrite rule would then break the next run.
+    monkeypatch.setenv("BACKUP_IDENTITY_FILE", str(tmp_path / "key"))
+    monkeypatch.setenv("BACKUP_RECIPIENT_FILE", str(tmp_path / "pub"))
+    get_settings.cache_clear()
     result = cli_runner.invoke(app, ["backup-keygen"])
-    assert "copy" in result.output.lower() and "secrets/backup_age_key" in result.output
+    assert result.exit_code == 0
+    assert "copy" in result.output.lower() and "backup_age_key" in result.output
     assert "AGE-SECRET-KEY" not in result.output      # never print the private key
+    assert not Path("secrets/backup_age_key").exists()
+    assert not Path("deploy/backup_age.pub").exists()
 ```
 
 - [ ] **Step 2: Run, verify they fail.**
@@ -3113,7 +3652,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'harness.ops.backup'`.
 
 `encrypt_pending` writes to `<name>.dump.age.tmp`, `os.fsync`es the handle, `os.replace`s it into place, then verifies structure and records the row. On any exception it records `status='error'` with the exception in `notes`, removes the `.tmp`, and continues to the next unit.
 
-`build_scheduler` gains `backup_period_s: int = 0` and registers the job only when it is non-zero and `settings.backup_dir` exists, so the Mac and the tests never run it by accident:
+`build_scheduler` gains `backup_encrypt: Callable[[], None] | None = None` and `backup_period_s: int = 0`, and registers the job only when **both** are given, so the Mac and the tests never run it by accident:
 
 ```python
     if backup_encrypt is not None and backup_period_s:
@@ -3145,7 +3684,7 @@ The controller adds a Carried-fixes nag row when it first runs this, and removes
 Run: `make test`
 Expected: PASS, pristine.
 
-**Acceptance:** keygen writes a 0600 identity it refuses to overwrite; encryption is idempotent, atomic through a `.tmp` rename, and records one `backup_runs` row per unit; a missing recipient records `skipped: no recipient` and touches nothing; the ciphertext round-trips through the private key; a plaintext is deleted only with a matching-build successful drill row, and the ciphertext and metadata never are; the precheck's 26-hour bound holds; the encrypt job registers at 600 s; keygen never prints the private key.
+**Acceptance:** keygen writes a 0600 identity it refuses to overwrite and writes nothing into the working tree under test; encryption is idempotent, atomic through a `.tmp` rename, records one `backup_runs` row per unit with `build_sha` set, and writes the unit's `.ok` marker; a recipient that is absent **or a directory** records `skipped: no recipient` and touches nothing; the ciphertext round-trips through the private key; a plaintext is deleted only with a matching-build successful drill row, and the ciphertext, metadata and marker never are; the precheck's 26-hour bound holds; the encrypt job registers only when both the callable and the period are given; keygen never prints the private key.
 
 - [ ] **Step 5: Commit.**
 
@@ -3164,12 +3703,13 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 
 **Files:**
 - Create: `deploy/backup/loop.sh`, `deploy/backup/dump.sh`, `deploy/backup/drill.sh`
-- Modify: `docker-compose.yml` (the new `app-backup` service; `app-run`'s two new mounts)
-- Modify: `Makefile` (both tar lists; the `backups/` mkdir with ownership)
+- Modify: `docker-compose.yml` (the new `app-backup` service; `app-run`'s four new mounts and two new environment entries)
+- Modify: `Makefile` (both tar lists; the `backups/` mkdir)
+- Modify: `harness/ops/backup.py` (the one `marker_path` write in `encrypt_pending`)
 - Create: `tests/test_backup_scripts.py`
 - Test: `tests/test_compose.py`
 
-**Depends on:** 13. Model: sonnet.
+**Depends on:** 13. **Model: opus** (three POSIX shell scripts that run unattended on the NAS, the only rule in the phase that deletes files, and a script that starts a container beside the production cluster — all checked only by static string greps, which is exactly where a shell bug survives review).
 
 **What this implements (addendum §4.1, §4.2 and §8, verbatim on every value):**
 
@@ -3186,7 +3726,7 @@ for t in raw_responses orderbook_events venue_trades venue_quotes odds_snapshots
 done
 ```
 
-**The retention rule** in `dump.sh`, after a successful dump: list units by stamp descending for the kind, keep the newest 30 (`nightly`) or 8 (`weekly`), and for each unit beyond that delete its `.dump.age` and `.meta.json` **only if** a marker file `<stamp>.ok` written by `backup-encrypt` exists beside them; the `.dump` is never deleted here (Task 13's `delete_verified_plaintexts` owns it). The sidecar cannot query Postgres for `backup_runs` cheaply from shell, so `backup-encrypt` writes the `<name>.ok` marker beside the ciphertext whenever it records an `ok` row — **add that one line to `harness/ops/backup.py`'s `encrypt_pending` in this task** and name the file on the `Files:` line. `partitions/` and `forever/` have no retention.
+**The retention rule** in `dump.sh`, after a successful dump: list units by stamp descending for the kind, keep the newest 30 (`nightly`) or 8 (`weekly`), and for each unit beyond that delete its `.dump.age` and `.meta.json` **only if** the unit's marker file exists beside them. The marker has **one** name everywhere, `<kind>/harness-<kind>-<stamp>.ok`, produced by `marker_path` (Task 13) and matched by `dump.sh` as `${BASE}.ok`. It exists because the POSIX-`sh` sidecar cannot query `backup_runs` without authenticating to Postgres, and ruling A-I9 forbids deleting a `.dump.age` with no `ok` row behind it. Retention **never** deletes a `.dump` (Task 13's `delete_verified_plaintexts` owns those), never deletes a marker whose ciphertext it is keeping, and never touches `partitions/` or `forever/`. Add the one `marker_path` write to `encrypt_pending` in this task; it is on the `Files:` line above.
 
 **Compose additions.** The new service, placed after `postgres`:
 
@@ -3214,25 +3754,39 @@ done
     stop_grace_period: 300s
 ```
 
-and `app-run` gains two mounts (B-I5, and the encrypt job needs the directory):
+and `app-run` gains four mounts and two environment entries. The first two are B-I5 and the encrypt job's directory; the last two are what Task 6b's limits read needs, copied verbatim from the lines `app-ws` already carries (without them `has_kalshi_credentials()` is False inside the recorder container, no `venue_requests` row is ever written in production, and Task 16's A-I8 verify row can never be satisfied):
 
 ```yaml
+    environment:
+      ODDS_API_KEY_FILE: /run/secrets/odds_api_key
+      KALSHI_KEY_ID_FILE: /run/secrets/kalshi_key_id
+      KALSHI_PRIVATE_KEY_FILE: /run/secrets/kalshi_private_key.pem
+    volumes:
+      - ./secrets/odds_api_key:/run/secrets/odds_api_key:ro
+      - ./pgdata:/pgdata-ro:ro
       - ./backups:/backups:rw
       - ./deploy/backup_age.pub:/run/backup_age.pub:ro
+      - ./secrets/kalshi_key_id:/run/secrets/kalshi_key_id:ro
+      - ./secrets/kalshi_private_key.pem:/run/secrets/kalshi_private_key.pem:ro
 ```
+
+The production key files are **read-scoped** (roadmap Secrets, first user action) and the transport the recorder builds them into has `writes_enabled=False`, so this mount adds a signed GET capability and nothing else.
+
+**No demo secrets are mounted anywhere** (C3). The demo pair reaches a container only inside the controller's own `docker compose run --rm -v ...` for the length of one smoke (Task 16). A standing mount of a live-exchange credential is a posture change this phase does not make.
 
 `app-exec` is **not** touched: no volumes, no secrets, no environment.
 
-**Makefile changes.** Both tar lists gain `deploy/backup deploy/backup_age.pub` (A-C5), and the `mkdir -p` line gains the backups tree with the app ownership (A-C6/B-I6):
+**Makefile changes.** Both tar lists gain `deploy/backup deploy/backup_age.pub` (A-C5), and the `mkdir -p` line gains the backups tree:
 
 ```make
 	@ssh $(NAS_USER)@$(NAS_IP) 'mkdir -p $(NAS_STACK)/secrets $(NAS_STACK)/pgdata \
 		$(NAS_STACK)/backups/nightly $(NAS_STACK)/backups/weekly \
-		$(NAS_STACK)/backups/partitions $(NAS_STACK)/backups/forever && \
-		chown -R $${APP_UID:-1000}:$${APP_GID:-10} $(NAS_STACK)/backups'
+		$(NAS_STACK)/backups/partitions $(NAS_STACK)/backups/forever'
 ```
 
-Use the same `APP_UID`/`APP_GID` the compose file defaults from `deploy/nas.env` (1000:10). The conditional secrets push loop already covers the demo pair; verify it and change nothing.
+**No `chown`.** The ssh runs as `trey`, who already owns `$(NAS_STACK)` and therefore owns every directory this `mkdir -p` creates; `deploy/nas.env` sets `APP_UID=1000`/`APP_GID=10`, which is that same user, and both `app-run` and `app-backup` carry `user: "${APP_UID:-65534}:${APP_GID:-65534}"`. So the sidecar's dumps and `app-run`'s encrypt-and-delete already act on files of one uid, which is all ruling A-C6/B-I6 asks for. A `chown -R` would be worse than redundant: a non-root user cannot change a file's owner and a group change needs membership in the target gid, so the command can exit non-zero and abort the whole deploy. Ownership is asserted in Task 16's verify row instead of forced here.
+
+The conditional secrets push loop already covers the demo pair; verify it and change nothing.
 
 `deploy/backup_age.pub` does not exist until `harness backup-keygen` runs. The tar list must not fail on an absent file: use `$(wildcard deploy/backup_age.pub)` so it is included only when present, and say so in a comment.
 
@@ -3273,6 +3827,27 @@ def test_app_run_mounts_backups_and_the_recipient():
     volumes = _service("app-run")["volumes"]
     assert "./backups:/backups:rw" in volumes
     assert "./deploy/backup_age.pub:/run/backup_age.pub:ro" in volumes
+
+
+def test_app_run_mounts_the_production_kalshi_keys_for_the_limits_read():
+    # C2: without these, has_kalshi_credentials() is False in the recorder container, nothing
+    # ever writes a venue_requests row in production, and the paper-posture tripwire is vacuous.
+    svc = _service("app-run")
+    assert "./secrets/kalshi_key_id:/run/secrets/kalshi_key_id:ro" in svc["volumes"]
+    assert ("./secrets/kalshi_private_key.pem:/run/secrets/kalshi_private_key.pem:ro"
+            in svc["volumes"])
+    assert svc["environment"]["KALSHI_KEY_ID_FILE"] == "/run/secrets/kalshi_key_id"
+    assert (svc["environment"]["KALSHI_PRIVATE_KEY_FILE"]
+            == "/run/secrets/kalshi_private_key.pem")
+
+
+def test_no_service_mounts_the_demo_secrets():
+    # C3: the demo pair reaches a container only inside the controller's own
+    # `docker compose run --rm -v ...`, never as a standing mount.
+    doc = yaml.safe_load(COMPOSE.read_text())
+    for name, svc in doc["services"].items():
+        for v in svc.get("volumes", []) or []:
+            assert "kalshi_demo" not in v, name
 
 
 def test_compose_app_exec_block_unchanged():
@@ -3339,7 +3914,13 @@ def test_retention_keeps_thirty_nightly_and_eight_weekly_units():
 
 
 def test_retention_never_deletes_an_age_without_an_ok_marker():
-    assert ".ok" in DUMP          # A-I9
+    assert "${BASE}.ok" in DUMP          # A-I9, and the one marker name (M4)
+
+
+def test_retention_never_deletes_a_plaintext_dump():
+    body = DUMP.split("retention")[-1]
+    assert ".dump.age" in body and ".meta.json" in body
+    assert 'rm -f "${BASE}.dump"' not in body
 
 
 def test_partitions_and_forever_have_no_retention():
@@ -3390,11 +3971,17 @@ def test_makefile_pushes_the_backup_scripts_and_the_public_key():
         "# secrets/backup_age_key is the age *private* key and is never pushed", "")
 
 
-def test_makefile_creates_the_backups_tree_with_app_ownership():
+def test_makefile_creates_the_backups_tree():
     mk = Path("Makefile").read_text()
     assert "backups/nightly" in mk and "backups/weekly" in mk
     assert "backups/partitions" in mk and "backups/forever" in mk
-    assert "chown" in mk and "APP_UID" in mk
+
+
+def test_the_deploy_recipe_never_chowns_the_backups_tree():
+    # I5: the ssh runs as the NAS user, who already owns the stack directory, and the compose
+    # `user:` matches it. A chown -R would fail for a non-root user and abort the deploy.
+    mk = Path("Makefile").read_text()
+    assert "chown" not in mk and "chgrp" not in mk
 ```
 
 - [ ] **Step 2: Run, verify they fail.**
@@ -3413,7 +4000,7 @@ Expected: FAIL with `FileNotFoundError: deploy/backup/dump.sh` and `KeyError: 'a
 Run: `make test`
 Expected: PASS, pristine. `make -n deploy-nas` must also still parse; run it and confirm it prints without error.
 
-**Acceptance:** `app-backup` runs `/backup/loop.sh` on `postgres:16` as the app uid with the scripts read-only, the backups read-write and no secrets mount; `app-run` mounts the backups and the recipient; the `app-exec` block is unchanged and no service mounts the private key; the dump excludes exactly the five bulk tables and their partitions with native zstd and no separate binary; every dump kind carries the 30 % guard; retention is 30/8 units and never deletes an `.age` without its `.ok` marker; partitions and forever have no retention; the drill uses a throwaway container with an anonymous volume; no script is destructive or reads `secrets/`; both tar lists push `deploy/backup` and the public key and the recipe creates the tree with app ownership.
+**Acceptance:** `app-backup` runs `/backup/loop.sh` on `postgres:16` as the app uid with the scripts read-only, the backups read-write and no secrets mount; `app-run` mounts the backups, the recipient and the two production Kalshi key files with their two `KALSHI_*_FILE` entries; **no service mounts the demo pair**; the `app-exec` block is unchanged and no service mounts the age private key; the dump excludes exactly the five bulk tables and their partitions with native zstd and no separate binary; every dump kind carries the 30 % guard; retention is 30/8 units, keys on `${BASE}.ok`, and never deletes a plaintext, a marker it is keeping, or anything under `partitions/` or `forever/`; the drill uses a throwaway container with an anonymous volume; no script is destructive or reads `secrets/`; both tar lists push `deploy/backup` and the public key; the recipe creates the tree and runs **no** `chown`.
 
 - [ ] **Step 5: Commit.**
 
@@ -3435,7 +4022,7 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 - Create: `alembic.ini`, `migrations/env.py`, `migrations/script.py.mako`, `migrations/versions/0001_baseline.py`
 - Create: `harness/db/migrate.py`
 - Modify: `harness/cli.py` (`migrate upgrade|stamp|current|ensure`)
-- Modify: `Dockerfile` (`COPY alembic.ini migrations ./`)
+- Modify: `Dockerfile` (two `COPY` lines: `alembic.ini` and `migrations`)
 - Modify: `pyproject.toml` (one dependency line)
 - Modify: `constraints.txt` (two appended pins)
 - Create: `docs/runbooks/alembic.md`
@@ -3448,7 +4035,7 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 > - Baseline `0001_baseline` hand-written from `create_schema` (tables, the BRIN and functional unique indexes, the partitioned **parents only**, views); partitions stay runtime objects created by `ensure_partitions` (weekly, named by date), never by a migration. `harness migrate stamp` on the NAS at the first deploy for the existing database (the baseline is not executed against it); `harness migrate upgrade` on an empty database creates the same schema. Verification: a test builds one database with `create_schema` and one with `upgrade_head`, drives both through `ensure_partitions` at one frozen clock, and compares the SQLAlchemy `inspect()` catalogue (tables, columns with types and nullability, primary keys, unique constraints, indexes with their expressions, partitioning read from `pg_partitioned_table`), excluding relations listed in `pg_inherits` and applying `_takes_new_indexes` identically (both databases empty), without `pg_dump` (the Mac has none).
 > - Authority: the SQLAlchemy models and `create_schema` remain the schema authority (`init-db` keeps re-applying the model-derived view and index DDL); Alembic records additive history for the migration tool's future use. A migration never changes a view or an existing index (a test greps `migrations/` for `drop_index`, `create_or_replace`, `DROP VIEW`, `ALTER INDEX` and fails on any hit); new indexes on bulk tables go through `concurrent_index` only.
 > - `env.py`: `include_object` excludes the partitioned tables and their partitions, every BRIN and functional index, and reflected-only objects; the migration connection runs `SET lock_timeout = '5s'` and `SET statement_timeout = '300s'`; a helper `concurrent_index(name, table, cols)` uses `op.get_context().autocommit_block()` and is the only way to create an index on a bulk table (a test greps the migrations for `create_index` on a bulk table outside it).
-> - Packaging: the Dockerfile gains `COPY alembic.ini migrations ./` beside `harness/` (a build change: this phase's deploy is `make deploy-nas`, never `deploy-nas-app`); `harness/db/migrate.py` exposes `upgrade_head(url)` and `stamp_head(url)` through `command.upgrade` / `command.stamp` with a `Config` built in code (no `alembic` binary on the path is assumed), and the CLI gains `harness migrate upgrade|stamp|current`.
+> - Packaging: the Dockerfile gains `COPY alembic.ini migrations ./` beside `harness/` (a build change: this phase's deploy is `make deploy-nas`, never `deploy-nas-app`) [**the addendum's single-line form is wrong and Step 3 below ships two lines; see C4**]; `harness/db/migrate.py` exposes `upgrade_head(url)` and `stamp_head(url)` through `command.upgrade` / `command.stamp` with a `Config` built in code (no `alembic` binary on the path is assumed), and the CLI gains `harness migrate upgrade|stamp|current`.
 > - Deploy order (`make deploy-nas`): push, build, `up -d postgres app-backup`, then `backup-precheck`..., then `harness migrate ensure`, then `init-db`, then `up -d` the remaining services. `ensure` is the guarded one-time stamp: when `alembic_version` is absent and the `runs` table exists (a populated pre-Alembic database) it stamps head and never executes the baseline; when `alembic_version` is absent and `runs` is absent (an empty database) it upgrades; otherwise it upgrades from the stored revision. Tests cover all three branches.
 > - Pins: `pyproject.toml` gains `alembic>=1.13` in `[project].dependencies` and `constraints.txt` gains exact pins for `alembic` and `Mako` appended below the existing lines; nothing else in either file changes.
 
@@ -3615,9 +4202,12 @@ def test_concurrent_index_uses_an_autocommit_block():
 
 # --- packaging and pins (D7) -------------------------------------------------------------------
 
-def test_the_dockerfile_copies_the_migrations():
+def test_the_dockerfile_copies_the_migrations_as_a_directory():
     df = Path("Dockerfile").read_text()
-    assert "COPY alembic.ini migrations ./" in df
+    assert "COPY alembic.ini ./" in df
+    assert "COPY migrations ./migrations" in df
+    # A single multi-source COPY would flatten migrations/ into /app.
+    assert "COPY alembic.ini migrations ./" not in df
 
 
 def test_pyproject_gains_exactly_one_dependency():
@@ -3660,7 +4250,14 @@ Install it first in the worktree venv: `.venv/bin/pip install "alembic>=1.13"`, 
 
 `constraints.txt`: **append** two lines at the end, in the file's existing `name==version` style, with the exact versions `pip show` reported. Do not re-sort, do not regenerate, do not touch any existing line. Add no comment (the file has none).
 
-`Dockerfile`: add `COPY alembic.ini migrations ./` immediately after `COPY harness ./harness`.
+`Dockerfile`: add **two** lines immediately after `COPY harness ./harness`:
+
+```dockerfile
+COPY alembic.ini ./
+COPY migrations ./migrations
+```
+
+One line would be wrong. With multiple sources and a directory destination, Docker's `COPY` copies the *contents* of a source directory, so `COPY alembic.ini migrations ./` produces `/app/env.py`, `/app/script.py.mako` and `/app/versions/` rather than `/app/migrations`, and both `script_location = migrations` and `migrate.py`'s `/app/migrations` fallback then fail inside the image. `COPY harness ./harness` works only because its destination names the directory.
 
 `alembic.ini`: minimal — `[alembic] script_location = migrations`, `prepend_sys_path = .`, and the standard `[loggers]` block. No `sqlalchemy.url` (the code sets it).
 
@@ -3736,7 +4333,7 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 - Modify: `docs/runbooks/phase0-deploy.md`
 - Create: `tests/test_kalshi_smoke.py`
 
-**Depends on:** 8, 10, 13, 14, 15. **Model: opus** (verify.md is the deploy contract; it is edited only here and only once).
+**Depends on:** 6b, 8, 10, 13, 14, 15. **Model: opus** (verify.md is the deploy contract; it is edited only here and only once).
 
 **What this implements (addendum §1.5, verbatim):**
 
@@ -3809,6 +4406,14 @@ def test_the_smoke_does_not_run_without_the_demo_secret_files():
         run_smoke(_settings_without_demo_files(), _factory(), NOW)
 
 
+def test_the_smoke_refuses_when_a_secret_path_is_an_empty_directory(tmp_path):
+    # C3: what Compose leaves behind for a missing bind source.
+    (tmp_path / "kalshi_demo_key_id").mkdir()
+    (tmp_path / "kalshi_demo_private_key.pem").mkdir()
+    with pytest.raises(LiveGuardRefused):
+        run_smoke(_settings_pointing_demo_files_at(tmp_path), _factory(), NOW)
+
+
 def test_the_order_is_post_only_at_the_lowest_grid_price_for_one_contract():
     t = FakeTransport(env="demo", queued=_full_demo_script())
     run_smoke(_demo_settings(), _factory(), NOW, sleep=lambda _s: None)
@@ -3872,7 +4477,20 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'harness.venues.kalshi
 
 - [ ] **Step 3: Implement** `smoke.py`, the two CLI commands, and the two runbooks.
 
-`harness kalshi-smoke --env demo` builds its writer through `make_writer(settings, "demo")`, so the host assertion and the file-existence check are the guard's, not a second copy. `harness venue-enable <venue> [--env prod]` calls `enable_venue` and prints the change; it is an operator command and the controller journals every use.
+`harness kalshi-smoke --env demo` builds its writer through `make_writer(settings, "demo")`, so the host assertion and the credential check are the guard's, not a second copy — and that check is `is_file()`, never `exists()` (C3).
+
+**The smoke is a controller command, not a service.** No Compose service mounts the demo pair, so the credentials reach a container only for the length of one `docker compose run --rm`. The command, used verbatim in the verify row and the runbook:
+
+```
+docker compose run --rm -T \
+  -v ./secrets/kalshi_demo_key_id:/run/secrets/kalshi_demo_key_id:ro \
+  -v ./secrets/kalshi_demo_private_key.pem:/run/secrets/kalshi_demo_private_key.pem:ro \
+  app-run kalshi-smoke --env demo
+```
+
+The mount targets are exactly `Settings.kalshi_demo_key_id_file` and `kalshi_demo_private_key_file`, so no setting changes. It runs only when both files exist on the NAS, checked with `ls -l` and never `cat`. If a bind source were missing, Compose would create an empty **directory** at the target and `exists()` would be True with no credential behind it, which is why the guard tests `is_file()`.
+
+`harness venue-enable <venue> [--env prod]` calls `enable_venue` and prints the change; it is an operator command and the controller journals every use.
 
 `docs/runbooks/backups.md`, written now:
 
@@ -3962,7 +4580,9 @@ select version_num from alembic_version;
 | Pricing coverage | `notes->'pricing'->'order'` on every daytime tick leads with the gate variant then the primary; `gate_variant_missing` count over 24 h is **0**; the `budget_exhausted` share is journaled |
 | `check_results` (fix 16) | all `pass` in the last 25 h. `duplicate_trades` and `fair_values_negative_staleness` must be `pass`, not `skip`: both were bounded in phase 4 Task 2 and a `skip` means the bound regressed. |
 | `alembic_version` | exactly one row, `version_num = '0001_baseline'` |
-| Demo smoke | **only when `secrets/kalshi_demo_key_id` and `secrets/kalshi_demo_private_key.pem` both exist on the NAS** (`ls -l`, never `cat`): `ssh … 'docker compose run --rm -T app-run kalshi-smoke --env demo'` exits 0 and prints the step table. A zero balance prints "demo unfunded" and still exits 0. Demo prices are not evidence and reach no table. When the files are absent the row is **skipped**, not failed. |
+| Demo smoke | **only when `secrets/kalshi_demo_key_id` and `secrets/kalshi_demo_private_key.pem` both exist on the NAS** (`ls -l`, never `cat`). No service mounts them, so the controller supplies the mount for one run: `ssh … 'cd /volume1/docker/sports-harness && docker compose run --rm -T -v ./secrets/kalshi_demo_key_id:/run/secrets/kalshi_demo_key_id:ro -v ./secrets/kalshi_demo_private_key.pem:/run/secrets/kalshi_demo_private_key.pem:ro app-run kalshi-smoke --env demo'`. Exits 0 and prints the step table. A zero balance prints "demo unfunded" and still exits 0. Demo prices are not evidence and reach no table. When the files are absent the row is **skipped**, not failed. |
+| `backups/` ownership | `ssh … 'ls -ld /volume1/docker/sports-harness/backups /volume1/docker/sports-harness/backups/nightly'` shows the same uid the app containers run as (`APP_UID`/`APP_GID` in `deploy/nas.env`, 1000:10). The deploy recipe runs no `chown`, so a mismatch here means the tree predates the recipe: fix it by hand once and journal it. |
+| Limits read | `runs.notes->'venue_limits'` on the newest non-skipped run carries a `tier` and a numeric `read_refill_rate`, and `/healthz` shows the same block. A `null` means `has_kalshi_credentials()` was False in `app-run`: check the two key mounts, because without them nothing writes a `venue_requests` row and the tripwire row above is vacuous. |
 | Demo secrets push | if the demo secrets exist on the Mac but not on the NAS, the Makefile's conditional push loop did not run: re-run `make deploy-nas` and journal it |
 
 **(c) Layer 2b, the invariants block** — append one bounded invariant per new table:
@@ -3995,16 +4615,16 @@ select count(*) from fair_values
       -- fair_values_negative_staleness (carried fix 16), bounded by ix_fair_created_brin
 ```
 
-**(d) Layer 3b, the walker checklist** — append items 17 to 19 and one sentence to the checklist's preamble ("items 17 to 19 apply once phase 4 is deployed"):
+**(d) Layer 2, the daily line** — append a "Daily line (phase 4)" paragraph after the Phase 4 checks table. §4.3 and §8 both ask the daily line to report two numbers, and neither needs code: the controller runs these two commands and journals the results.
 
 ```
-17. Health: no "drawdown stop" badge, or, if one is shown, it names a variant and the
-    executor block still shows a live heartbeat. A badge is an anomaly to journal, not a FAIL.
-18. Health or Floor: the venue-request tile shows a non-GET count of 0 for `prod`. Any other
-    number is a FAIL and a gate.
-19. Backups: the daily line shows a `backups/` size and an unencrypted-unit count. A rising
-    unencrypted count over two verifications is a carried fix.
+ssh … 'du -sh /volume1/docker/sports-harness/backups; du -sh /volume1/docker/sports-harness/backups/*'
+ssh … 'cd /volume1/docker/sports-harness && ls backups/nightly backups/weekly | sed "s/\.[^.]*$//" | sort -u | while read u; do [ -f "backups/nightly/$u.dump" ] || [ -f "backups/weekly/$u.dump" ] && { [ -f "backups/nightly/$u.dump.age" ] || [ -f "backups/weekly/$u.dump.age" ] || echo "$u"; }; done | wc -l'
 ```
+
+The first is the `backups/` size §8 asks for; the second is §4.3's count of units with a plaintext and no ciphertext. A count that rises across two consecutive verifications is a carried fix: either the encrypt job is not running, or the recipient is missing and every pass is recording `skipped: no recipient`.
+
+**(d2) Layer 3b, the walker checklist** — no new items. The two surfaces a walker could check for phase 4 (a drawdown badge, a venue-request tile) are **phase 4.5** work: roadmap 4.5 item 5 says "Phase 4 item 6 (drawdown alert) becomes a Pulse rule; item 7 (`venue_requests`) becomes a Floor tile." Nothing in this phase changes a page, so the checklist is unchanged and the same facts are checked deterministically in Layer 2 and 2b above.
 
 **(e) Verdict rules** — append one bullet:
 
@@ -4018,7 +4638,7 @@ select count(*) from fair_values
 Run: `make test`
 Expected: PASS, pristine.
 
-**Acceptance:** the smoke runs the full sequence in the specified order against `FakeTransport`, exits 0 on an unfunded demo after one call, refuses a non-demo host and missing files, sends a post-only 1-contract bid at the lowest grid price and amends one step up to 2 contracts, writes `venue_requests` tagged demo and nothing to `orders`, `fills` or the tape, and emits only sanitized ASCII detail; `venue-enable` clears an unavailable row; verify.md carries every row, query and checklist item listed above.
+**Acceptance:** the smoke runs the full sequence in the specified order against `FakeTransport`, exits 0 on an unfunded demo after one call, refuses a non-demo host, missing files **and a secret path that is an empty directory**, sends a post-only 1-contract bid at the lowest grid price and amends one step up to 2 contracts, writes `venue_requests` tagged demo and nothing to `orders`, `fills` or the tape, and emits only sanitized ASCII detail; `venue-enable` clears an unavailable row; verify.md carries every row, query, invariant and daily-line command listed above, and the walker checklist is unchanged.
 
 - [ ] **Step 6: Commit.**
 
@@ -4034,11 +4654,11 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 
 - [ ] **Step 7 (controller, the phase deploy unit after the merge).**
 
-Fast-forward `main` after a pristine full suite. Outside a game window (R4), run `make deploy-nas` — a **full** deploy, never `deploy-nas-app`: the Dockerfile and `docker-compose.yml` both change. The recipe's order is push, build, `up -d postgres app-backup`, `backup-precheck` (on a non-zero exit run `docker compose exec app-backup /backup/dump.sh nightly` first; on this first phase 4 deploy that fallback **is** the first dump), `harness migrate ensure` (expect `stamped` on the production database), `init-db`, `up -d` the rest.
+**First, on the Mac, before anything else:** run `harness backup-keygen`. It writes `secrets/backup_age_key` (0600, never pushed) and `deploy/backup_age.pub`, which must exist before the push or the tar list's `$(wildcard deploy/backup_age.pub)` resolves to nothing and the encrypt job records `skipped: no recipient` forever. Notify the user immediately with the copy-out instruction and add the nag to Carried fixes until they confirm. Commit the public key.
 
-Then, on the Mac, run `harness backup-keygen` **before** the deploy so `deploy/backup_age.pub` is in the push, notify the user immediately with the copy-out instruction, and add the nag to Carried fixes until they confirm.
+**Then** fast-forward `main` after a pristine full suite. Outside a game window (R4), run `make deploy-nas` — a **full** deploy, never `deploy-nas-app`: the Dockerfile and `docker-compose.yml` both change. The recipe's order is push, build, `up -d postgres app-backup`, `backup-precheck` (on a non-zero exit run `docker compose exec app-backup /backup/dump.sh nightly` first; on this first phase 4 deploy that fallback **is** the first dump), `harness migrate ensure` (expect `stamped` on the production database), `init-db`, `up -d` the rest.
 
-After the deploy: run verify.md Layers 1, 2, 2b and 3 plus the new Phase 4 block; run the restore drill's two halves and record the Mac half with `harness backup-drill-record`; run the demo smoke if the demo secrets exist; journal every number, including which `ensure` branch fired and the elapsed time of the first nightly dump.
+**After the deploy:** run verify.md Layers 1, 2, 2b and 3 plus the new Phase 4 block. Confirm on the first real tick that `runs.notes->'venue_limits'` is populated and that `venue_requests` has a `prod` `GET` row, because the paper-posture tripwire is vacuous until it does. Run the restore drill's two halves and record the Mac half with `harness backup-drill-record`. Run the demo smoke with the explicit mount if the demo secrets exist on the NAS. Journal every number, including which `ensure` branch fired and the elapsed time of the first nightly dump.
 
 ---
 
@@ -4048,31 +4668,36 @@ Two tasks in the same wave have disjoint `Files:` lines and may run in parallel 
 
 | Wave | Tasks | Why they are disjoint |
 |---|---|---|
-| 1 | **1, 2, 3, 12** | pipeline/settings/tables/prereg; checks/schema; replay; agefmt |
+| 1 | **1, 2, 3, 12** | pipeline + settings + tables + prereg; checks + schema; replay; agefmt |
 | 2 | **4** | alone on `schema.py` (wave 1's Task 2 held it) and sole owner of `models.py` |
-| 3 | **5, 13** | kalshi/http.py + test_logging; ops/backup.py + settings + cli + scheduler |
-| 4 | **6, 14** | kalshi/authed.py; deploy/backup + compose + Makefile + test_compose |
-| 5 | **7** | alone on `authed.py` |
+| 3 | **5, 13** | `kalshi/http.py` + test_logging; `ops/backup.py` + settings + cli + scheduler |
+| 4 | **6, 14** | `kalshi/authed.py`; `deploy/backup` + compose + Makefile + `ops/backup.py` (Task 13 released it in wave 3) |
+| 5 | **6b, 7** | scheduler + recorder/tick + health; `authed.py` |
 | 6 | **8** | alone on `authed.py` and `settings.py` |
-| 7 | **9** | gateway.py + loop.py + execution/`__init__`.py |
-| 8 | **10, 11** | venue.py + gateway.py; risk.py + loop.py + strategy/run.py |
-| 9 | **15** | migrations + migrate.py + cli.py + Dockerfile + pins + runbook |
-| 10 | **16** | smoke.py + cli.py + verify.md + runbooks |
+| 7 | **9** | `gateway.py` + `loop.py` + `execution/__init__.py` |
+| 8 | **10** | `venue.py` + `gateway.py` + `execution/__init__.py` |
+| 9 | **11** | `risk.py` + `loop.py` + `execution/__init__.py` + `strategy/run.py` + `pipeline.py` + `tables.py` |
+| 10 | **15** | migrations + `migrate.py` + `cli.py` + Dockerfile + pins + runbook |
+| 11 | **16** | `smoke.py` + `cli.py` + verify.md + runbooks |
 
-Waves 5 and 6 are single-task by necessity: Tasks 7 and 8 both extend `authed.py`, which Task 6 creates.
+Three waves are single-task by necessity. Waves 6 and 7 serialise on `authed.py`, which Task 6 creates and Tasks 7 and 8 extend. **Waves 8 and 9 serialise on `harness/execution/__init__.py`:** the global constraint bumps `EXECUTOR_VERSION` once per task that changes `harness/execution/`, so Tasks 9, 10 and 11 each own that file for one wave (4.0, 4.1, 4.2). Tasks 10 and 11 were paired in the previous revision; a shared `__init__.py` is what separates them now.
 
-**Model dispatch:** opus on 1, 5, 7, 9, 10, 11, 12, 15, 16; sonnet on 2, 3, 4, 6, 8, 13, 14.
+Wave 5 pairs Task 6b with Task 7 across `harness/scheduler.py` (released by Task 13 in wave 3) and `authed.py`.
+
+**Model dispatch:** opus on 1, 5, 6b, 7, 9, 10, 11, 12, 14, 15, 16; sonnet on 2, 3, 4, 6, 8, 13. Task 14 moved to opus: it authors three POSIX shell scripts that run unattended on the NAS, owns the only rule in the phase that deletes files, and writes a script that starts a container beside the production cluster, all checked by static greps alone.
 
 ---
 
 ## Self-review
 
-**Spec coverage.** §0.1 (expiry stays R8) → Task 7's `test_the_writer_never_exposes_an_expiry_amend`. §0.2 (V2 order shape) → Tasks 6 and 7. §0.3 (drawdown in paper) → Task 11. §0.4 (backups, no weekly full dump, age in Python) → Tasks 12, 13, 14. §0.5 (message budget) → Task 7's token bucket, Task 10's kill-switch trip. §0.6 (demo-host assertion) → Tasks 5 and 8. §0.7 (Amendment 4) → Task 1. §1.1 → Task 5. §1.2 → Task 6. §1.3 → Task 7. §1.4 → Task 8. §1.5 → Task 16. §2.1 → Task 9. §2.2 → Task 10. §2.3 (sharding) → Tasks 4 (`exchange_index_at_place`) and 7 (sent on every order, amend and cancel). §3 → Task 11, with the tripwire's verify rows in Task 16. §4.1, §4.2 → Task 14. §4.3 → Tasks 12 and 13. §4.4 → Task 14 (NAS half script), Task 13 (`backup-drill-record`), Task 16 (runbook and verify row). §5 → Task 15. §6.1 → Task 1, §6.2 → Task 2, §6.3 → Task 3. §7 → Task 4. §8 (ops) → Tasks 13, 14, 16. §9 (testing) → every task's Step 1; the six named refusal tests land in Tasks 5 (four), 9 (`test_paper_gateway_never_touches_transport`) and 14 (`test_compose_app_exec_block_unchanged`); `test_make_writer_prod_refuses_every_subset` in Task 8. §11 decisions D1-D11 land in Tasks 12, 14, 14, 9, 5, 11, 15, 1, 8, 13/14, 10. §12 conformance: item 4 (additive schema) is checked by Task 4's and Task 15's tests, item 5 by the six refusal tests, item 8 by Task 16's runbook and deploy step, item 9 by Task 16's verify.md rows, item 12 by every task's `Files:`/`Depends on:` lines.
+**Revision note (2026-09-08).** This is revision 2, after one plan review (`.superpowers/sdd/plan-next-phase4/plan-review.md`). Six Critical, eleven Important and eleven Minor findings were ruled on by the controller and all are applied. The structural changes: **Task 6b is new** (the recorder's limits read, addendum §1.3 / ruling A-C3, which had no task and without which the phase's own paper-posture tripwire and Task 16's A-I8 verify row are both vacuous); **Task 14 moved to opus**; **Tasks 10 and 11 no longer share a wave** because each bumps `EXECUTOR_VERSION`; and the CCTV corpus was re-measured against the fixtures.
+
+**Spec coverage.** §0.1 (expiry stays R8) → Task 7's `test_the_writer_never_exposes_an_expiry_amend`. §0.2 (V2 order shape) → Tasks 6 and 7. §0.3 (drawdown in paper) → Task 11. §0.4 (backups, no weekly full dump, age in Python) → Tasks 12, 13, 14. §0.5 (message budget) → Task 7's token bucket, Task 10's kill-switch trip. §0.6 (demo-host assertion) → Tasks 5 and 8. §0.7 (Amendment 4) → Task 1. §1.1 → Task 5. §1.2 → Task 6. §1.3 → Task 7, and its limits-read bullet (ruling A-C3) → **Task 6b**, with the two `app-run` key mounts it needs in Task 14. §1.4 → Task 8. §1.5 → Task 16. §2.1 → Task 9. §2.2 → Task 10, including the WS "no reprice while dirty" rule (`may_reprice`). §2.3 (sharding) → Tasks 4 (`exchange_index_at_place`) and 7 (sent on every order, amend and cancel). §3 → Task 11, including "Table 1 reports the stopped share as a note"; the tripwire's verify rows are in Task 16 and are satisfiable only because Task 6b writes the production `GET` rows. §4.1, §4.2 → Task 14. §4.3 → Tasks 12 and 13. §4.4 → Task 14 (NAS half script), Task 13 (`backup-drill-record`), Task 16 (runbook and verify row). §5 → Task 15. §6.1 → Task 1, §6.2 → Task 2, §6.3 → Task 3. §7 → Task 4. §8 (ops) → Tasks 13, 14, 16; §4.3's and §8's two daily-line numbers are commands in Task 16's verify.md text, run by the controller, with no code owner. §9 (testing) → every task's Step 1; the six named refusal tests land in Tasks 5 (four), 9 (`test_paper_gateway_never_touches_transport`) and 14 (`test_compose_app_exec_block_unchanged`); `test_make_writer_prod_refuses_every_subset` in Task 8. §11 decisions D1-D11 land in Tasks 12, 14, 14, 9, 5, 11, 15, 1, 8, 13/14, 10. §12 conformance: item 4 (additive schema) is checked by Task 4's and Task 15's tests, item 5 by the six refusal tests, item 8 by Task 16's runbook and deploy step, item 9 by Task 16's verify.md rows, item 12 by every task's `Files:`/`Depends on:` lines.
 
 Roadmap pre-loaded decisions 1-11 map to Tasks 8/16, 5/6/7, 6/7, 8, 4/7, 11, 4/5, 12/13/14, 15, 15 (pins) and nothing (item 11 needs no code: `signals.as_measured` is already recorded and unused).
 
-**Placeholder scan.** No task says "TBD", "similar to Task N", "add error handling" or "write tests for the above". Every test step names its tests; every code step shows the code or the exact statements. Two deliberate parametrizations are described rather than enumerated: Task 8's 15 prod subsets (generated by `itertools.combinations`) and Task 12's 84 CCTV vectors (generated from the fixture directory with the expected counts asserted). Task 15's two `constraints.txt` pins carry `pip show`'s versions because the exact numbers are not knowable before the install; the step says how to get them and the test asserts exactly two lines were appended.
+**Placeholder scan.** No task says "TBD", "similar to Task N", "add error handling" or "write tests for the above". Every test step names its tests; every code step shows the code or the exact statements. Two deliberate parametrizations are described rather than enumerated: Task 8's 15 prod subsets (generated by `itertools.combinations`) and Task 12's 69 CCTV vectors (generated from the fixture directory with the expected counts asserted). Task 15's two `constraints.txt` pins carry `pip show`'s versions because the exact numbers are not knowable before the install; the step says how to get them and the test asserts exactly two lines were appended. Task 5's helper fixtures (`KEY_PEM`, `verify_signature`, `_StepClock`, `db_session_factory`) and Task 12's (`IDENTITY`, `_with_valid_mac`, `_x25519_file_wrapping`) are named with their source or their contract.
 
-**Type consistency.** `KalshiTransport` / `PaperModeViolation` / `HostNotAllowed` / `VenueRequestRow` (T5) are used by T6, T7, T8, T9, T10, T16. `KalshiReader`, `OrderView`, `VenueFillView`, `PositionView`, `Balance`, `Limits`, `canonical_side`, `dec` (T6) by T7, T9, T10, T16 — note `VenueFillView`, deliberately not `FillView`, which already exists in `harness/execution/plan.py`. `OrderIntent`, `VenueOrder`, `CancelResult`, `EchoMismatch`, `MessageBudgetExceeded`, `PreSendInvariantFailed`, `TokenBucket`, `encode_side_price`/`decode_side_price`/`snap_to_grid` (T7) by T8, T9, T10, T16. `make_writer` / `LiveGuardRefused` (T8) by T9, T16. `OrderGateway`, `PaperGateway`, `KalshiGateway`, `PlacedOrder`, `ReconcileReport` (T9) by T10, T11. `sanitize_venue_text`, `mark_status`, `read_status`, `is_routable`, `freeze_market`, `enable_venue`, `OutageCounter`, `RejectTracker` (T10) by T16. `compute_drawdown`, `peak_equity_7d`, `stopped_variants`, `ANNOTATION_LABELS` (T11) by T1's pipeline call site — **T11 depends on T1's `price_and_signal` shape but not the reverse; T11 adds the `stopped=` argument to the call T1 already restructured, which is why T11 comes later.** `encrypt`, `decrypt`, `generate_identity`, `header_chunk_count` (T12) by T13. `Unit`, `encrypt_pending`, `delete_verified_plaintexts`, `newest_nightly_ok`, `record_drill` (T13) by T14's `.ok` marker and T16's runbook. `VenueRequest`, `VenueStatus`, `BackupRun` and the six columns (T4) by T5, T10, T11, T13, T15, T16. `pricing_order` (T1) by nothing else. `current_trades_partition` (T2) by T16's verify.md amendment. `RegisteredVariantError` (T3) by nothing else.
+**Type consistency.** `KalshiTransport` / `PaperModeViolation` / `HostNotAllowed` / `VenueRequestRow` (T5) are used by T6, T7, T8, T9, T10, T16. `KalshiReader`, `OrderView`, `VenueFillView`, `PositionView`, `Balance`, `Limits`, `canonical_side`, `dec` (T6) by T7, T9, T10, T16 — note `VenueFillView`, deliberately not `FillView`, which already exists in `harness/execution/plan.py`. `OrderIntent`, `VenueOrder`, `CancelResult`, `EchoMismatch`, `MessageBudgetExceeded`, `PreSendInvariantFailed`, `TokenBucket`, `encode_side_price`/`decode_side_price`/`snap_to_grid` (T7) by T8, T9, T10, T16. `make_writer` / `LiveGuardRefused` (T8) by T9, T16. `OrderGateway`, `PaperGateway`, `KalshiGateway`, `PlacedOrder`, `ReconcileReport` (T9) by T10, T11. `sanitize_venue_text`, `mark_status`, `read_status`, `is_routable`, `freeze_market`, `enable_venue`, `OutageCounter`, `RejectTracker` (T10) by T16. `compute_drawdown`, `peak_equity_7d`, `stopped_variants`, `ANNOTATION_LABELS`, `may_reprice` (T11 and T10) — T11 adds the `stopped=` argument to the `run_strategy` call T1 restructured and the stopped-share note to the table T1 extended, which is why its `Depends on:` names 1. `page_pause_s`, `LIMITS_REFRESH_S` (T6b) by nothing else; T6b consumes `KalshiTransport` and `session_recorder` (T5) and `KalshiReader.get_account_limits` (T6), and its container mounts are Task 14's. `marker_path` (T13) by T14's retention loop — one name, `<kind>/harness-<kind>-<stamp>.ok`. `BackupRun.build_sha` (T4, a column) by T13's release rule. `encrypt`, `decrypt`, `generate_identity`, `header_chunk_count` (T12) by T13. `Unit`, `encrypt_pending`, `delete_verified_plaintexts`, `newest_nightly_ok`, `record_drill` (T13) by T14's `.ok` marker and T16's runbook. `VenueRequest`, `VenueStatus`, `BackupRun` and the six columns (T4) by T5, T10, T11, T13, T15, T16. `pricing_order` (T1) by nothing else. `current_trades_partition` (T2) by T16's verify.md amendment. `RegisteredVariantError` (T3) by nothing else. `PlacedOrder`/`place(session, values, action, market, now)` and `cancel(...) -> bool` are the corrected T9 signatures used by T10; the earlier `place(session, action, intent, market, extra, row, now)` shape contradicted "`_place` keeps building its values dict exactly as today" and is gone.
 
 **Instructions inside data.** None found. The addendum, the two design reviews, the roadmap, the pre-registration record, the phase 3 plan, `verify.md` and the CCTV `README.md` contain no directive text addressed to a reader or an agent. The CCTV vectors are binary test data with a small key-value header (`expect`, `payload`, `identity`, `file key`, `comment`); the `comment` values are descriptive English about the vector and carry no instruction. Every path that stores or prints venue text sanitizes it (Task 10's `sanitize_venue_text`, Task 16's 80-character step detail), and verify.md gains a verdict rule saying venue text never decides a verdict.
