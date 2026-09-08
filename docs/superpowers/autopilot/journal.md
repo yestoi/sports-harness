@@ -788,3 +788,30 @@ Times are America/Chicago.
 - Rulings: none
 - Carried forward: none
 - Next: hotfix batches 18 and 19 in flight; repo bundle + `git push origin main` (U7) now
+
+## 59. hotfix - 18 executor metric + 19 dashboard cold request (one wave) - 2026-09-08 10:05 CT
+- Orient: rule 1 - roadmap Carried fixes rows 18 and 19 (entry 57)
+- Branch / commits: `fix-2026-09-08-exec-metric` 9925958..fdedde5 (rebased, merged as b25bd53..af58a29); `fix-2026-09-08-dashboard-cold` 9925958..80080bf (rebased, merged as ..1911a4f); `main` 5afaf50..1911a4f
+- Result: done
+- Dispatches: 4 (impl opus + sonnet / review opus + sonnet)
+- Tests: fix 18 branch 829 passed pristine; fix 19 branch 833 passed pristine; `main` 1911a4f all dots pristine
+- Review: fix 18 clean (one Minor fixed by the reviewer: tests relocated beside the metric-batch test, fdedde5); fix 19 clean after the addendum round (the implementer's first report omitted the heartbeat clamp it had in fact committed as 80080bf: a reporting gap, not a code one)
+- Deploy: 1911a4f at 10:02 CT via `make deploy-nas-app` (app-ws untouched, gap rows n/a), stamp verified (`/healthz` build 1911a4f at 10:04 CT), app-serve and app-exec healthy by 10:06 CT, forced tick run 4156 ok n=50 credits=6 at 10:07 CT
+- Verification: entry 60
+- Rulings: (1) Fix 19 widened from the `venue_trades` scan to the heartbeat-age clamp and the green badge (walker item 10) as one dashboard batch. (2) `ws_trades_1h` is now an approximation from the sink's per-minute samples (documented in the key's docstring); its meaning "WebSocket prints in the last hour" is unchanged and no verify row reads the number. (3) The implementer's inventory found two more unindexed reads (`venue_quotes` in the unmatched-markets section, `odds_snapshots` staleness in data quality) with no small-table proxy: carried to plan-next as a phase 4.5 snapshot-layer input, not a hotfix (the cold measurement below passes). (4) The Makefile's `-q` on top of pyproject's `addopts = "-q"` hides pytest's count line (noted by two agents): a one-character Makefile change for the phase 4 plan's ops task, not a hotfix.
+- Carried forward: none
+- Next: verify (entry 60)
+
+## 60. verify - re-verify rows named by fixes 18 and 19 (deploy 1911a4f) - 2026-09-08 10:12 CT
+- Orient: rule 3 - no `verify` entry since the deploy in entry 59; scoped to the rows the findings name (skill Unit: hotfix)
+- Branch / commits: `main` 1911a4f (NAS build 1911a4f)
+- Result: done (PASS)
+- Dispatches: 1 (walker sonnet, scoped to items 1, 8, 10)
+- Tests: n/a
+- Review: n/a
+- Deploy: none (entry 59)
+- Verification: PASS 6/6 (evidence: `evidence/2026-09-08-verify-1005-summary.txt`, screenshots `2026-09-08-reverify-1008-08-websocket.jpg`, `-10-executor.jpg`). Layer 3 at 10:06 CT, the first `/api/summary` request after the restart (the cold measurement fix 19 targets): 9/9 PASS, `/` 0.4 s, `/api/summary` 0.6 s (21.6 s cold before the fix); `ws_trades_1h` 1544 numeric. Fix 18: every `exec.ws_event_age_s` sample since the deploy is >= 0 (min 0.0067 over 5 samples) and `exec.ws_event_ahead_s` is written beside it (5 samples, max 0.0); the 24 h invariant still returns 3 rows, all stamped before the restart (14:09Z, 14:27Z, 15:01:47Z; the deploy restarted app-exec at 15:03Z): deferred, judge after 2026-09-09 09:30 CT when they age out. Walker (scoped): item 1 build 1911a4f PASS; item 8 last event 2 s old, orderbook events 11,641 in 5 min, ws trades 1,565 PASS; item 10 heartbeat age 12 s with a green `ok` badge, last WS event 14 s PASS; controller re-score of item 10 from the screenshot: PASS (age 12, badge ok, no negative values anywhere in the Executor block). Executor heartbeat 7.5 s, no error; ERROR-bearing runs in 10 min 0; build stamp since the restart 1911a4f (plus the old process's last runs at 33a0e3a, expected).
+- Rulings: (1) Rows 18 and 19 close: their code rows pass; the aged-out invariant is a deferred item, not an open fix. (2) Observation: open paper orders rose from 1 to 143 between 09:28 and 10:09 CT after the daytime pricing runs (capacity `exec_max_open_orders` = 150): expected on a weekday with games inside 8 days; the `exec_capacity` skip reason will appear once the cap binds; noted for the daily line, not a FAIL.
+- Anomalies: (1) The forced tick 4156 again exhausted the pricing budget (2 of 7 variants: `sharp_two_sided`, `wide_band`): the phase 4 Task 1 item (Amendment 4), unchanged.
+- Carried forward: none (16 stays phase work)
+- Next: plan-next (phase 4; the plan writer is running), then Unit: phase; bundle + push now (U7)

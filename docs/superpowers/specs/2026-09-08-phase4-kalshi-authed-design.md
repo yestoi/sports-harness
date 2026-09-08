@@ -151,7 +151,7 @@ Phase 4.5 surfaces and the learnable layer; phase 5 futures, NWS, parlay CLI, sh
 11. Out of scope: §10 equals the roadmap's phases 4.5-6.
 12. Every plan task carries `Files:` and `Depends on:` lines (the plan writer's contract).
 
-## Rulings (design review, 2026-09-08 10:00-11:00 CT; reports under `.superpowers/sdd/plan-next-phase4/`)
+## Rulings (design review, 2026-09-08 09:45-10:00 CT; reports under `.superpowers/sdd/plan-next-phase4/`)
 
 Reviewer A (venue practitioner + risk and security), reviewer B (experiment design + architecture). Every finding is ruled on; the addendum text above is revision 2 with each accepted change applied.
 
