@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import yaml
+from sqlalchemy import text
 
 from harness.db.models import Game, OddsSnapshot, Run, Signal, VenueMarket, VenueQuote
 from harness.matching.teams import seed_teams_from_espn
@@ -18,8 +19,10 @@ from harness.strategy.pipeline import (
     price_and_signal,
     pricing_order,
 )
+from harness.strategy.run import run_strategy
 from harness.strategy.variants import (
     Variant,
+    active_variants,
     load_variants,
     register_variants,
     variant_from_config,
@@ -427,3 +430,61 @@ def test_price_and_signal_records_the_resolved_gate_variant_id(env_settings, db_
     assert result["gate_variant_id"] == gate.variant_id
     assert result["order"][0] == env_settings.gate_variant
     assert caplog.records == []
+
+
+# --- Task 11: the risk gate's annotation ------------------------------------------------------
+
+
+def _stop_the_variant(db_session, name="tiny", stop=True):
+    """A tripped (or recovered) risk-gate verdict on `name`'s newest equity snapshot."""
+    from harness.db.models import EquitySnapshot
+
+    variant_id = db_session.execute(
+        text("select variant_id from strategy_variants where name = :n"), {"n": name}).scalar_one()
+    db_session.add(EquitySnapshot(
+        ts=NOW - timedelta(minutes=5), variant_id=variant_id, cash=Decimal("2250.00"),
+        open_stake=Decimal("0"), mtm_open=None, mtm_coverage=None, n_open_positions=0,
+        n_open_orders=0, peak_equity_7d=Decimal("3000.00"), drawdown_pct=Decimal("-0.2500"),
+        drawdown_stop=stop))
+    db_session.flush()
+    return variant_id
+
+
+def test_price_and_signal_annotates_a_stopped_variant_and_decides_nothing_differently(
+        env_settings, db_session):
+    """Spec §9.3 in the pipeline: `drawdown_stop` rides on every signal of a stopped variant
+    and changes not one decision (ruling A-C2/B-C1).
+
+    The comparison is against the *unstopped* strategy run over the very rows the pipeline
+    priced, so what is asserted is the whole recorded outcome -- decision, reason, price, stake
+    and size -- and not merely that some count came out the same.
+    """
+    game, run, markets = _seed(db_session)
+    register_variants(db_session, load_variants(VARIANTS_DIR), NOW, prune=True)
+    _stop_the_variant(db_session)
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
+    assert set(result["signals"]) == {"tiny"}
+
+    rows = db_session.query(Signal).filter_by(run_id=run.id).all()
+    assert rows
+    assert all(s.labels["drawdown_stop"] is True for s in rows)
+    assert all(s.rejection_reason != "drawdown_stop" for s in rows)
+
+    variant = next(v for v in active_variants(db_session) if v.name == "tiny")
+    unstopped = run_strategy(_load_gap_rows(db_session, run.id), variant, NOW)
+    want = {(s.venue_market_id, s.side): (s.decision, s.rejection_reason, s.price_target,
+                                          s.edge, s.stake, s.contracts) for s in unstopped}
+    got = {(s.venue_market_id, s.side): (s.decision, s.rejection_reason, s.price_target,
+                                         s.edge, s.stake, s.contracts) for s in rows}
+    assert got == want
+
+
+def test_a_recovered_variant_is_not_annotated(env_settings, db_session):
+    game, run, markets = _seed(db_session)
+    register_variants(db_session, load_variants(VARIANTS_DIR), NOW, prune=True)
+    _stop_the_variant(db_session, stop=False)
+
+    price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
+    rows = db_session.query(Signal).filter_by(run_id=run.id).all()
+    assert rows and all(s.labels["drawdown_stop"] is False for s in rows)

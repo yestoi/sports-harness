@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 from harness.cli import app
 from harness.config.settings import get_settings
 from harness.db.models import (
+    EquitySnapshot,
     FairValue,
     Fill,
     Game,
@@ -779,3 +780,47 @@ def test_table1_tick_coverage_is_a_placeholder_with_no_pricing_ticks(db_session,
     table = _tables(db_session, env_settings)["t1"]
     idx = table.columns.index("tick_coverage")
     assert all(row[idx] is PLACEHOLDER for row in table.rows)
+
+
+# --- Task 11: table 1's stopped-share note ----------------------------------------------------
+
+
+def _equity(session, variant_id, ts, stop, cash="3000.00"):
+    session.add(EquitySnapshot(
+        ts=ts, variant_id=variant_id, cash=Decimal(cash), open_stake=Decimal("0"),
+        mtm_open=None, mtm_coverage=None, n_open_positions=0, n_open_orders=0,
+        peak_equity_7d=Decimal(cash), drawdown_pct=Decimal("0.0000"), drawdown_stop=stop))
+    session.flush()
+
+
+def test_table1_notes_the_stopped_share_per_variant(db_session, env_settings):
+    """§9.3: the stop is reported as a note, never as a column -- an annotation does not enter
+    a cross-variant comparison."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    _variant(db_session, SECONDARY, "constrained", "secondary")
+    for i in range(4):
+        _equity(db_session, PRIMARY, WED + timedelta(minutes=5 * i), stop=i == 0)
+        _equity(db_session, SECONDARY, WED + timedelta(minutes=5 * i), stop=False)
+    db_session.flush()
+
+    table = _tables(db_session, env_settings)["t1"]
+    assert "drawdown stop: sharp_direct 25.0% of equity samples this week" in table.note
+    assert "constrained" not in table.note        # a zero share is not reported
+    assert "drawdown_stop" not in table.columns   # a note, never a column
+
+
+def test_table1_notes_no_drawdown_stop_when_nothing_tripped(db_session, env_settings):
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    _equity(db_session, PRIMARY, WED, stop=False)
+    db_session.flush()
+    assert _tables(db_session, env_settings)["t1"].note == "drawdown stop: none"
+
+
+def test_table1_stopped_share_ignores_rows_outside_the_week_and_unevaluated_ones(
+        db_session, env_settings):
+    """A row written before the gate shipped carries NULL and is neither a stop nor a sample."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    _equity(db_session, PRIMARY, WED - timedelta(days=14), stop=True)   # a previous week
+    _equity(db_session, PRIMARY, WED, stop=None)                       # never evaluated
+    db_session.flush()
+    assert _tables(db_session, env_settings)["t1"].note == "drawdown stop: none"

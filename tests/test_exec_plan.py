@@ -131,7 +131,7 @@ def plan(intents=(), orders=(), markets=None, states=None, variants=None, kill=F
 
 
 def test_executor_version_is_bumped_for_plan():
-    assert EXECUTOR_VERSION == "4.1"
+    assert EXECUTOR_VERSION == "4.2"
 
 
 def test_config_hash_changes_with_settings_and_version(monkeypatch):

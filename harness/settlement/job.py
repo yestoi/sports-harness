@@ -236,8 +236,16 @@ def _write_settle_equity_snapshots(session: Session, now: datetime, settings) ->
     """One `equity_snapshots` row per exec variant, right after the `settle` stage (design
     spec §3.4). `mtm_open` and `mtm_coverage` are always NULL here (fix round 1, I1: one
     convention with the executor's own writer) -- the settler has no live book at all, so
-    there is nothing to mark or to compute a coverage share over."""
+    there is nothing to mark or to compute a coverage share over.
+
+    The three risk-gate columns are *not* NULL here. Spec §9.3 evaluates the stop at every
+    equity sample, and this is one: it is a sample of the same `cash`, taken by the same rule
+    through the same pure functions the executor uses. Leaving them NULL would make the
+    settler's row a hole in the curve that `risk.stopped_variants` would have to route around
+    on every read (it still does, for the rows written before this gate shipped).
+    """
     from harness.execution import store as exec_store
+    from harness.execution.risk import compute_drawdown, peak_equity_7d
 
     variant_ids = exec_store.resolve_variants(session, settings.exec_variants)
     if not variant_ids:
@@ -250,10 +258,12 @@ def _write_settle_equity_snapshots(session: Session, now: datetime, settings) ->
                     if p.open_contracts and p.avg_price is not None]
         open_stake = sum((p.open_contracts * p.avg_price for p in positions), Decimal("0"))
         n_open_orders = exec_store.count_variant_open_orders(session, variant_id, False)
+        drawdown = compute_drawdown(cash, peak_equity_7d(session, variant_id, now, cash))
         exec_store.insert_equity_snapshot(
             session, ts=now, variant_id=variant_id, cash=cash, open_stake=open_stake,
             mtm_open=None, mtm_coverage=None, n_open_positions=len(positions),
-            n_open_orders=n_open_orders)
+            n_open_orders=n_open_orders, peak_equity_7d=drawdown.peak_equity_7d,
+            drawdown_pct=drawdown.drawdown_pct, drawdown_stop=drawdown.drawdown_stop)
 
 
 def _status(results: list[StageResult], ctx_errors: list) -> str:

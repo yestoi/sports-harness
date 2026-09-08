@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from harness.config.settings import Settings
 from harness.db.models import Game, MarketGapSnapshot, Signal, VenueMarket
+from harness.execution.risk import stopped_variants
 from harness.pricing.fair import compute_fair_values
 from harness.pricing.gaps import build_gap_snapshots
 from harness.strategy.as_measured import as_measured_table
@@ -204,6 +205,13 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # it does score before its own `ok()` check trips.
     as_measured = as_measured_table(session, now)
 
+    # Spec §9.3's risk gate, read once per run for the same reason `as_measured` is: every
+    # variant's signals are annotated against one reading of the equity curve, and one query
+    # per tick beats one per variant. It is an *annotation* (`ANNOTATION_LABELS`) -- it labels
+    # what was true when the signal was made and decides nothing, so a stopped variant prices,
+    # sizes and takes exactly what it would have taken unstopped.
+    stopped = stopped_variants(session, now)
+
     # Amendment 4 (2026-09-08): a busy tick that runs out of budget mid-loop must not drop the
     # two variants every conclusion rests on. The gate variant and the active primary are scored
     # first on every tick; only the secondary tail still rotates by run_id, so the missingness
@@ -222,7 +230,8 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
             result["variants_skipped"] = [v.name for v in ordered[i:]]
             break
         t_variant = time.monotonic()
-        signals = run_strategy(rows, variant, now, as_measured=as_measured)
+        signals = run_strategy(rows, variant, now, as_measured=as_measured,
+                               stopped=variant.variant_id in stopped)
         candidate = sum(1 for s in signals if s.decision == "candidate")
         rejected = len(signals) - candidate
         _insert_signals(session, run_id, variant, now, signals)

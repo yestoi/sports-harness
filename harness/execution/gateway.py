@@ -45,6 +45,7 @@ from sqlalchemy.dialects.postgresql import insert
 from harness.db.models import KillSwitch, Order
 from harness.execution import store
 from harness.execution.plan import ExecSettings
+from harness.execution.risk import stopped_variants
 from harness.execution.venue import (
     OUTAGE_ENV,
     STATUS_UNAVAILABLE,
@@ -196,6 +197,17 @@ class OrderGateway(Protocol):
     #: `KalshiGateway` feeds it to section 2.2's "30 s without a ping" reprice test.
     def observe_tape(self, ws_last_event_at) -> None: ...
 
+    #: Where the equity sampler is polled for `since`. `KalshiGateway` answers with its own
+    #: fill watermark; `PaperGateway` has no venue to poll and its answer is never used.
+    def fills_since(self, session, now) -> datetime: ...
+
+    #: Section 9.3's response to a tripped drawdown stop, called once per equity sample with
+    #: the sample already written. `PaperGateway` does nothing at all -- in paper the stop is
+    #: information (decision 6) and the executor keeps placing. `KalshiGateway` trips the kill
+    #: switch, which is why the branch lives on the gateway rather than in the loop: the paper
+    #: path has no code to reach.
+    def on_drawdown_stop(self, session, now) -> set[str]: ...
+
     #: Declared, not inferred: the fill-branch dispatch asks the gateway whether the tape
     #: simulator answers for its fills. A gateway that neither sets it nor inherits it fails
     #: loudly in `uses_the_simulator` rather than silently taking the live branch.
@@ -252,6 +264,18 @@ class PaperGateway:
     def observe_tape(self, ws_last_event_at) -> None:
         """Ignored. Section 2.2's ping rule is live-only, and phase 3's reprice behaviour on a
         quiet socket is what the golden replay pins."""
+
+    def fills_since(self, session, now) -> datetime:
+        """`now`, and it is never read: `poll_fills` below returns `[]` whatever window it is
+        given, and the live fill step is the only caller."""
+        return now
+
+    def on_drawdown_stop(self, session, now) -> set[str]:
+        """Nothing. Decision 6: in paper the drawdown stop is information, so the executor
+        keeps placing and the label on the signal is the whole of the effect. The kill-switch
+        response lives on the live gateway, where this method is overridden -- so the paper
+        path does not merely decline to trip the switch, it holds no code that could."""
+        return set()
 
     def poll_fills(self, session, since, now=None) -> list:
         """Empty, always: paper has no venue to poll. The simulator writes every paper fill and
@@ -627,7 +651,7 @@ class KalshiGateway:
         with self._venue_call(session, now):
             resting = self._reader.get_orders(RESTING_STATUS)
         with self._venue_call(session, now):
-            fills = self._reader.get_fills(self._fills_since(session, now))
+            fills = self._reader.get_fills(self.fills_since(session, now))
         with self._venue_call(session, now):
             positions = self._reader.get_positions()
 
@@ -682,11 +706,20 @@ class KalshiGateway:
             log.warning("reconcile cancel of %r failed: %s",
                         sanitize_venue_text(view.order_id, 64), type(exc).__name__)
 
-    def _fills_since(self, session, now) -> datetime:
+    def fills_since(self, session, now) -> datetime:
         """The newest live fill we already hold, or a bounded lookback when we hold none.
 
         Reading from the newest fill rather than from process start is what makes this a
         reconciliation: a fill that landed while we were down is still new to us.
+
+        Task 11 gave the loop's own fill poll the same answer. `reconcile` counts the fills it
+        finds and writes none of them (it is the read half of section 9.1), so a fill that
+        landed while we were down is discovered by the reconciliation and *recorded* by the
+        first poll after it -- which can only happen if that poll's window reaches back past
+        the fill. A window anchored on local midnight would lose exactly the fills that
+        straddled it. The watermark is the last fill we hold, so the window closes as soon as
+        one is written and re-polling costs one bounded request; `fills` is keyed on the
+        venue's trade id, so a re-poll of the same window inserts nothing twice.
         """
         newest = session.execute(text(
             "select max(f.filled_at) from fills f join orders o on o.id = f.order_id "
@@ -712,6 +745,32 @@ class KalshiGateway:
                             sanitize_venue_text(view.order_id, 64), client_order_id)
                 return view
         raise OrderNotPlaced(client_order_id)
+
+    def on_drawdown_stop(self, session, now) -> set[str]:
+        """Section 9.3 on the live path: a stopped variant trips the kill switch.
+
+        Live is the half of decision 6 that is a brake rather than a label -- "alert and label"
+        is the paper response, and real money that is 20 % below its trailing peak stops. The
+        switch is global and `plan_actions` already reads it, so one stopped variant halts new
+        placement for all of them; that is deliberate, because the switch is an operator-cleared
+        latch and this is the dormant path.
+
+        Written through `_venue_state_session` for the same reason every other safety write is:
+        the equity sampler runs inside `session.begin_nested()`, and a trip rolled back with
+        its savepoint would be no trip at all.
+
+        The trip is re-asserted at every sample while the condition holds, which is deliberate:
+        clearing the switch with the curve still 20 % below its trailing peak would put money
+        back at risk under exactly the condition that stopped it, so an operator's clear takes
+        effect once the variant recovers or its last verdict ages out of the 7-day window.
+        """
+        stopped = stopped_variants(session, now)
+        if not stopped:
+            return set()
+        reason = ", ".join(f"drawdown_stop:{variant_id}" for variant_id in sorted(stopped))
+        with self._venue_state_session(session) as state:
+            self._trip_kill_switch(state, now, reason)
+        return stopped
 
     def poll_fills(self, session, since, now=None) -> list:
         """The only live fill source (ruling B-I2): `GET /portfolio/fills` since `since`. The

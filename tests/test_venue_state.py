@@ -702,7 +702,7 @@ def test_the_kill_switch_row_carries_a_reason(db_session):
 
 
 def test_executor_version_is_bumped_for_venue_state():
-    assert EXECUTOR_VERSION == "4.1"
+    assert EXECUTOR_VERSION == "4.2"
 
 
 # --- fix round 1: venue state outlives the exception that wrote it -------------------------

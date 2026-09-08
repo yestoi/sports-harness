@@ -1,5 +1,5 @@
 import hashlib
-from dataclasses import astuple, replace
+from dataclasses import astuple, fields, replace
 from datetime import datetime, timezone
 from decimal import ROUND_DOWN, ROUND_FLOOR, Decimal
 from pathlib import Path
@@ -8,8 +8,12 @@ import pytest
 
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 from harness.strategy.run import (
+    ANNOTATION_LABELS,
+    CAP_LABELS,
+    FILTER_LABELS,
     LABEL_ORDER,
     GapRow,
+    SignalRow,
     StrategyState,
     floor_cents,
     run_strategy,
@@ -100,7 +104,10 @@ def test_clean_row_is_a_candidate_with_the_spec_numbers():
     want = expected_pricing(Decimal("0.5500"), Decimal("0.0100"), v.config)
     assert sig.decision == "candidate"
     assert sig.rejection_reason is None
-    assert all(sig.labels.values()), sig.labels
+    # Every *decision* label, which is what "clean" means. `drawdown_stop` is an annotation:
+    # False here says the variant is not stopped, not that a filter failed.
+    assert all(sig.labels[label] for label in FILTER_LABELS + CAP_LABELS), sig.labels
+    assert sig.labels["drawdown_stop"] is False
     assert list(sig.labels) == LABEL_ORDER
     assert sig.edge_min == want["edge_min"]
     assert sig.price_target == want["price_target"]
@@ -401,8 +408,12 @@ def test_gap_row_is_a_plain_dataclass():
 
 # --- review round 1 ---------------------------------------------------------
 
-def test_label_order_has_seventeen_labels_with_match_confidence_after_the_sport():
-    assert len(LABEL_ORDER) == 17
+def test_label_order_is_thirteen_filters_four_caps_and_one_annotation():
+    """The seventeen labels of phase 3 plus phase 4's one annotation. What must not move is the
+    decision set: thirteen filters and four caps, in that order, `match_confidence` third."""
+    assert len(LABEL_ORDER) == 18
+    assert len(FILTER_LABELS) == 13 and len(CAP_LABELS) == 4 and len(ANNOTATION_LABELS) == 1
+    assert LABEL_ORDER[:len(FILTER_LABELS) + len(CAP_LABELS)] == FILTER_LABELS + CAP_LABELS
     assert LABEL_ORDER[LABEL_ORDER.index("sport_allowed") + 1] == "match_confidence"
 
 
@@ -638,15 +649,30 @@ def _golden_rows() -> list[GapRow]:
 YES_ONLY_DIGEST = "9c40d9a5a9de0d61024117171ee3d958701f4089d47252c249ba56bfd1fedfa6"
 
 
+#: Where `labels` sits in `astuple(SignalRow)`. Read off the dataclass rather than written
+#: down, so a field inserted before it cannot silently re-point the restriction below.
+LABELS_INDEX = [f.name for f in fields(SignalRow)].index("labels")
+
+
 def _golden_tuple(s) -> tuple:
-    """`astuple(s)` minus `as_measured` (D12, Task 9 fix round 1, Important 2): `as_measured`
-    is a new trailing `SignalRow` field that no caller here passes and that is `None` on every
-    signal below, so it carries no pricing information -- but including it in the hash would
-    still move `YES_ONLY_DIGEST` on the field's addition alone, defeating what this digest is
-    for (proving no *number* moved on a yes-only variant). `as_measured` is declared last on
-    `SignalRow`, so `astuple(s)[:-1]` is exactly the pre-D12 field set the original constant
-    was recorded against."""
-    return astuple(s)[:-1]
+    """`astuple(s)` minus `as_measured`, with `labels` restricted to the decision labels.
+
+    Two later fields would otherwise move this digest on their addition alone, which is exactly
+    what the digest exists to rule out (it proves no *number* moved on a yes-only variant):
+
+    * `as_measured` (D12, Task 9 fix round 1, Important 2) is a trailing `SignalRow` field that
+      no caller here passes and that is `None` on every signal below, so `astuple(s)[:-1]` is
+      the pre-D12 field set the original constant was recorded against.
+    * `drawdown_stop` (phase 4 Task 11) is added to `LABEL_ORDER` as an *annotation*
+      (`ANNOTATION_LABELS`), excluded from `FILTER_LABELS` and from `CAP_LABELS`, so it can
+      never change a decision. `CAP_LABELS` are already the tail of `LABEL_ORDER`, so
+      `FILTER_LABELS + CAP_LABELS` reproduces the pre-phase-4 key order exactly and
+      `YES_ONLY_DIGEST` is unchanged.
+    """
+    fields_out = list(astuple(s)[:-1])
+    labels = fields_out[LABELS_INDEX]
+    fields_out[LABELS_INDEX] = {k: labels[k] for k in FILTER_LABELS + CAP_LABELS}
+    return tuple(fields_out)
 
 
 def test_yes_only_variants_unchanged():
@@ -663,3 +689,24 @@ def test_yes_only_variants_unchanged():
     assert names == ["constrained", "nfl_only", "no_velocity", "sharp_direct",
                      "sharp_plus_derived", "tiny", "wide_band"]
     assert digest.hexdigest() == YES_ONLY_DIGEST
+
+
+def test_the_golden_digest_is_identical_with_the_annotation_set():
+    """The registered ids' decision is byte-identical whether or not the variant is stopped."""
+    for v in sorted(load_variants(SHIPPED) + load_variants(FIXTURES), key=lambda v: v.name):
+        if sides_for(v.config) != ["yes"]:
+            continue
+        plain = [_golden_tuple(s) for s in run_strategy(
+            _golden_rows(), v, NOW, state=StrategyState())]
+        stopped = [_golden_tuple(s) for s in run_strategy(
+            _golden_rows(), v, NOW, state=StrategyState(), stopped=True)]
+        assert plain == stopped
+
+
+def test_the_annotation_is_recorded_on_every_signal_including_the_rejected_ones():
+    """Every signal carries the annotation, whatever its decision -- it answers "what else was
+    true when this signal was made", so a rejected row needs it as much as a candidate."""
+    signals = run_strategy(_golden_rows(), variant("sharp_direct"), NOW, stopped=True)
+    assert {s.decision for s in signals} == {"candidate", "rejected"}
+    assert all(s.labels["drawdown_stop"] is True for s in signals)
+    assert all(list(s.labels) == LABEL_ORDER for s in signals)

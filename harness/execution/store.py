@@ -437,10 +437,19 @@ where f.fill_method = 'queue_model' and o.replay = :replay and o.status <> 'sett
 group by o.variant_id, o.game_id, m.side_team_id, o.side
 """)
 
+#: Task 11 ruling: both fill methods, not `queue_model` alone. A live fill carries
+#: `fill_method = 'venue'`, and the daily stake cap is a limit on money put at risk today --
+#: a real fill is the least deniable form of that, so leaving it out would let the live path
+#: spend the paper path's cap twice over. `snapshot_cross` and `no_watcher` are still excluded
+#: (they are counterfactuals, never money), which is what the explicit list below says.
+#: Nothing changes in the deployed posture: `fill_method = 'venue'` rows exist only in live
+#: mode, which is dormant, so every paper and replay number is byte-identical.
+DAILY_CAP_FILL_METHODS = ("queue_model", "venue")
+
 _FILLS_TODAY = text("""
 select o.variant_id, sum(f.contracts * f.prob) as stake
 from fills f join orders o on o.id = f.order_id
-where f.fill_method = 'queue_model' and o.replay = :replay and f.filled_at >= :since
+where f.fill_method = any(:methods) and o.replay = :replay and f.filled_at >= :since
 group by o.variant_id
 """)
 
@@ -455,9 +464,17 @@ def load_positions(session: Session, replay: bool) -> list[PositionView]:
 
 
 def load_fills_today(session: Session, replay: bool, since: datetime) -> list[FillView]:
-    """Every watched `queue_model` fill since local midnight, settled or not (Task 5 ruling)."""
+    """Every watched fill since local midnight, settled or not (Task 5 ruling), on either fill
+    method: the queue model's and the venue's own (Task 11 ruling, `DAILY_CAP_FILL_METHODS`).
+
+    The counterfactual methods are excluded because they are not money: `no_watcher` is what an
+    order would have done if we had left it alone, and `snapshot_cross` is a book crossing, not
+    a trade of ours. A `venue` fill is money, so the daily cap sees it.
+    """
     return [FillView(variant_id=r.variant_id, stake=r.stake or Decimal("0"))
-            for r in session.execute(_FILLS_TODAY, {"replay": replay, "since": since}).all()]
+            for r in session.execute(
+                _FILLS_TODAY, {"replay": replay, "since": since,
+                               "methods": list(DAILY_CAP_FILL_METHODS)}).all()]
 
 
 def local_midnight(now: datetime, tz) -> datetime:

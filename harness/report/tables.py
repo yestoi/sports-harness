@@ -342,9 +342,38 @@ _T1_PRICING_TICKS = text("""
     where created_at >= :start and created_at < :end
 """)
 
+#: Task 11: the risk gate's share of the week, per variant. A *note*, never a column -- the
+#: drawdown stop annotates and never decides, and table 1's columns are what cross-variant
+#: comparisons read. `drawdown_stop is not null` keeps rows written before the gate shipped out
+#: of the denominator: they were never evaluated, so counting them would dilute the share.
+_T1_STOPPED = text("""
+    select variant_id,
+           count(*) filter (where drawdown_stop) ::float / nullif(count(*), 0) as stopped_share
+    from equity_snapshots
+    where ts >= :start and ts < :end and drawdown_stop is not null
+    group by variant_id
+""")
+
 _T1_COLUMNS = ["variant", "sport", "markets_scanned", "signals", "candidates", "orders",
                "fills", "fill_rate", "distinct_markets", "distinct_market_days",
                "tick_coverage"]
+
+
+def _stopped_note(session: Session, window: dict, variants: list[dict]) -> str:
+    """One sentence per variant that was stopped at all this week, or `drawdown stop: none`.
+
+    Reads `drawdown stop: <name> <pct> of equity samples this week`. A variant whose share is
+    zero is not named: the note exists to say which curves went 20 % below their trailing peak,
+    and listing the ones that did not would bury that.
+    """
+    names = {v["variant_id"]: v["name"] for v in variants}
+    shares = [(names.get(r.variant_id, r.variant_id), r.stopped_share)
+              for r in session.execute(_T1_STOPPED, window)
+              if r.stopped_share]
+    if not shares:
+        return "drawdown stop: none"
+    return "; ".join(f"drawdown stop: {name} {share:.1%} of equity samples this week"
+                     for name, share in sorted(shares))
 
 
 def _table1(session: Session, window: dict, variants: list[dict]) -> Table:
@@ -361,9 +390,10 @@ def _table1(session: Session, window: dict, variants: list[dict]) -> Table:
     scanned = {r.sport: r.markets for r in session.execute(_T1_SCANNED, window)}
     coverage = {r.variant_id: r.scored_ticks for r in session.execute(_T1_COVERAGE, window)}
     pricing_ticks = session.execute(_T1_PRICING_TICKS, window).scalar_one()
+    note = _stopped_note(session, window, variants)
     if not variants:
         return _placeholder_table("Table 1 (t1): funnel", header, _T1_COLUMNS,
-                                  "no registered variant")
+                                  f"no registered variant; {note}")
     rows = []
     for variant in variants:
         for sport in SPORTS:
@@ -380,7 +410,7 @@ def _table1(session: Session, window: dict, variants: list[dict]) -> Table:
                 # Per variant, not per sport: the same value in every sport row for a variant.
                 _share(coverage.get(variant["variant_id"], 0), pricing_ticks),
             ])
-    return Table("Table 1 (t1): funnel", header, _T1_COLUMNS, rows)
+    return Table("Table 1 (t1): funnel", header, _T1_COLUMNS, rows, note)
 
 
 # --- table 2: CLV per variant, paired against the primary ---------------------------------------

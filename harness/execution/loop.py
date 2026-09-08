@@ -94,6 +94,7 @@ from harness.execution.plan import (
     plan_actions,
     rebuild_state,
 )
+from harness.execution.risk import compute_drawdown, peak_equity_7d
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_for_order
 
 log = logging.getLogger(__name__)
@@ -107,9 +108,10 @@ NO_WATCHER = "no_watcher"
 #: The `order_events.kind` of a venue fill that arrived after its order left the book.
 LATE_FILL = "late_fill"
 #: The `fills.fill_method` of a fill the venue reported, as against one the queue model
-#: inferred. Written only on the live path, which is dormant in this phase. Note that
-#: `store.load_fills_today` -- the daily stake cap's read -- filters `fill_method =
-#: 'queue_model'`, so a venue fill is invisible to that cap until Task 11 rules on it.
+#: inferred. Written only on the live path, which is dormant in this phase. Task 11 ruled on
+#: what the daily stake cap does with one: it counts. `store.load_fills_today` reads both
+#: methods, because the cap is a limit on money actually put at risk today and a real fill is
+#: the least deniable form of that -- see the ruling in `store.load_fills_today` itself.
 VENUE = "venue"
 
 
@@ -554,7 +556,13 @@ class Executor:
         """
         outcomes: dict[int, tuple[str, Decimal]] = {
             row.id: (row.status, row.filled_contracts) for row in working}
-        since = store.local_midnight(now, ZoneInfo(self.settings.tz_local))
+        # The window reaches back to the last live fill we hold, not to local midnight
+        # (Task 11 ruling): `reconcile` counts the fills it finds and writes none of them, so a
+        # fill that landed while we were down is only ever *recorded* by the first poll whose
+        # window covers it -- and a midnight anchor loses exactly the ones that straddled it.
+        # Re-polling a window we have already seen inserts nothing twice: `fills` is keyed on
+        # the venue's trade id.
+        since = self.gateway.fills_since(session, now)
         try:
             venue_fills = self.gateway.poll_fills(session, since, now)
         except Exception as exc:  # noqa: BLE001 - one poll, not the step
@@ -1007,10 +1015,20 @@ class Executor:
             mtm_coverage = (covered_contracts / total_contracts) if total_contracts > ZERO \
                 else None
             n_open_orders = store.count_variant_open_orders(session, variant_id, self.replay)
+            # Spec §9.3, evaluated at every equity sample: the trailing-7-day peak of *cash*
+            # and the drawdown against it. `mtm_open` is written beside it and never enters
+            # it (decision 6, ruling B-C2).
+            drawdown = compute_drawdown(cash, peak_equity_7d(session, variant_id, now, cash))
             store.insert_equity_snapshot(
                 session, ts=now, variant_id=variant_id, cash=cash, open_stake=open_stake,
                 mtm_open=mtm_open if any_book else None, mtm_coverage=mtm_coverage,
-                n_open_positions=len(positions), n_open_orders=n_open_orders)
+                n_open_positions=len(positions), n_open_orders=n_open_orders,
+                peak_equity_7d=drawdown.peak_equity_7d, drawdown_pct=drawdown.drawdown_pct,
+                drawdown_stop=drawdown.drawdown_stop)
+        # The stop is information in paper: nothing above changes what the executor placed this
+        # step, and nothing here cancels anything. The live gateway is the one that treats it as
+        # a brake, and `PaperGateway.on_drawdown_stop` is a no-op it cannot reach.
+        self.gateway.on_drawdown_stop(session, now)
 
     # --- small helpers ----------------------------------------------------------------
 

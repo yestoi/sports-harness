@@ -44,9 +44,24 @@ LABEL_ORDER = [
     "cap_per_game",
     "cap_daily",
     "max_open",
+    "drawdown_stop",
 ]
+
+#: Labels that are recorded on every signal and are *never* part of any decision. Subtracted
+#: from FILTER_LABELS below, so adding one cannot change the candidate set of a registered
+#: variant id (spec §9.3, ruling A-C2/B-C1). An annotation answers "what else was true when this
+#: signal was made", never "should we act".
+#:
+#: `drawdown_stop` is the risk gate's verdict for this signal's variant (`harness/execution/
+#: risk.py`). In paper the stop is information -- the executor keeps placing while it is
+#: tripped, per decision 6 -- so it labels the record and stops nothing here. Annotations are
+#: appended to the *tail* of LABEL_ORDER, after the caps, which is what lets a golden digest
+#: taken over `FILTER_LABELS + CAP_LABELS` reproduce the pre-annotation key order exactly.
+ANNOTATION_LABELS = ["drawdown_stop"]
+
 CAP_LABELS = ["cap_per_bet", "cap_per_game", "cap_daily", "max_open"]
-FILTER_LABELS = [label for label in LABEL_ORDER if label not in CAP_LABELS]
+FILTER_LABELS = [label for label in LABEL_ORDER
+                 if label not in CAP_LABELS and label not in ANNOTATION_LABELS]
 
 #: The edge a draft with no edge sorts under, so it lands last in descending-edge order. The
 #: executor orders its intents the same way and shares this constant, so the two orderings
@@ -384,6 +399,7 @@ def run_strategy(
     state: StrategyState | None = None,
     fee_model: FeeModel = KALSHI_FOOTBALL,
     as_measured: dict[tuple[str, int, str], Decimal] | None = None,
+    stopped: bool = False,
 ) -> list[SignalRow]:
     """Evaluate `rows` under `variant`, one `SignalRow` per row and side, in input order.
 
@@ -395,6 +411,13 @@ def run_strategy(
     `as_measured` (D12), when given, is recorded on each signal's own `SignalRow.as_measured`
     bucket and nowhere else -- every existing caller passes nothing and sees no change at all
     (F56: the seed stays frozen; this is measurement, not a decision input).
+
+    `stopped` is this variant's risk-gate verdict (spec §9.3): whether its equity is more than
+    20 % below its trailing-7-day peak. It is recorded as the `drawdown_stop` *annotation* on
+    every signal and it decides nothing -- `ANNOTATION_LABELS` is subtracted from
+    `FILTER_LABELS`, so `_decide` never counts it and it can never be a `rejection_reason`. A
+    stopped variant prices, sizes and takes exactly what it would have taken unstopped, which
+    `test_the_golden_digest_is_identical_with_the_annotation_set` pins per registered id.
     """
     cfg = variant.config
     state = state if state is not None else StrategyState()
@@ -406,6 +429,9 @@ def run_strategy(
         for side in sides:
             view = side_view(row, side)
             labels = _filters(view, cfg)
+            # The annotation, set once per draft so that the unpriceable branch below carries
+            # it too. It is outside `FILTER_LABELS` and `CAP_LABELS`, so `_decide` skips it.
+            labels["drawdown_stop"] = bool(stopped)
             if labels["has_fair"]:
                 drafts.append(_price_and_size(row, view, side, cfg, fee_model, labels))
             else:
