@@ -668,11 +668,20 @@ def test_settlement_counts_games_and_is_bounded_by_now(db_session):
     assert result.passed is True
 
 
-def test_hash_changes_when_a_threshold_changes(monkeypatch):
-    """`threshold` is a field of the criterion, so it is part of the identity the hash stands
-    for: editing 150 to 100 without touching the text still moves the hash."""
+def test_hash_is_over_the_definition_strings_only(monkeypatch):
+    """The brief defines `criteria_hash` as the sha256 of the sorted definition strings, so the
+    other `Criterion` fields are outside it.
+
+    Nothing is lost: every threshold is spelled inside its own definition text, so a real
+    threshold change is a definition change and does move the hash. This pins the identity
+    against a field being folded in, which would change the hash's value for no gain.
+    """
     before = criteria_hash()
-    edited = (Criterion(CRITERIA[0].name, CRITERIA[0].definition, CRITERIA[0].fn, 100),
-              ) + CRITERIA[1:]
-    monkeypatch.setattr(gate_mod, "CRITERIA", edited)
-    assert criteria_hash() != before
+    thresholds = (Criterion(CRITERIA[0].name, CRITERIA[0].definition, CRITERIA[0].fn, 100),
+                  ) + CRITERIA[1:]
+    monkeypatch.setattr(gate_mod, "CRITERIA", thresholds)
+    assert criteria_hash() == before
+    names = (Criterion("renamed", CRITERIA[0].definition, CRITERIA[0].fn,
+                       CRITERIA[0].threshold),) + CRITERIA[1:]
+    monkeypatch.setattr(gate_mod, "CRITERIA", names)
+    assert criteria_hash() == before

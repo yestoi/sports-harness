@@ -186,18 +186,16 @@ CRITERIA: tuple[Criterion, ...] = (
 
 
 def criteria_hash(criteria: tuple[Criterion, ...] | None = None) -> str:
-    """The sha256 of the sorted criterion definitions and thresholds.
+    """The sha256 of the sorted definition strings -- the identity of every stored gate row.
 
-    The brief states the hash over "the sorted definition strings"; the threshold is a field of
-    `Criterion` in the same brief, and editing `threshold=150` to `100` without touching the
-    text would otherwise leave the identity unchanged. So each criterion contributes
-    `definition [threshold=...]` and the set is sorted and hashed (Task 11 fix round 1, M3).
-    Every threshold is also spelled inside its own definition text, so in practice the two move
-    together; the hash no longer relies on that.
+    Definitions only, as the brief defines it. `threshold`, `fn`, the names and the order are
+    outside the hash, and nothing is lost by that: every threshold is spelled inside its own
+    definition text, so a real threshold change is a definition change and does move the hash.
+    (Fix round 1 folded the `threshold` field in as well; the controller reverted it, because it
+    changed the hash's value for no gain.)
     """
-    rows = sorted(f"{c.definition} [threshold={c.threshold!r}]"
-                  for c in (CRITERIA if criteria is None else criteria))
-    return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+    definitions = sorted(c.definition for c in (CRITERIA if criteria is None else criteria))
+    return hashlib.sha256("\n".join(definitions).encode("utf-8")).hexdigest()
 
 
 # --- helpers ---------------------------------------------------------------------------------
