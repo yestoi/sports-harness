@@ -1,0 +1,109 @@
+-- Layer 2, build 21f8ca4, Tue Sep  8 04:57:03 CDT 2026
+3553 | 2026-09-08 09:55:58.531235+00 | ok | 0 |  | []
+3546 | 2026-09-08 09:52:28.531722+00 | ok | 0 |  | []
+3523 | 2026-09-08 09:40:49.299848+00 | ok | 0 |  | []
+3492 | 2026-09-08 09:25:19.299864+00 | ok | 0 |  | []
+3461 | 2026-09-08 09:09:49.300578+00 | ok | 0 |  | []
+skipped | 322
+ok | 15
+3555 | 2026-09-08 09:56:58.531171+00 | skipped
+delta | 31991
+snapshot | 612
+00:00:03.046574
+trade_watermarks | 2186 | 187 | 2026-09-07 15:18:36.574786+00 | 2026-09-08 05:32:48.531167+00
+runs | 3555 | 130 | 2026-09-08 02:07:46.295837+00 | 2026-09-08 09:32:31.069364+00
+venue_trades_legacy | 870052 | 37 | 2026-09-08 03:15:48.490532+00 | 2026-09-08 04:21:49.468942+00
+normalize_state | 8 | 22 | 2026-09-08 07:39:29.351574+00 | 2026-09-08 09:41:31.133281+00
+exec_heartbeat | 1 | 19 |  | 
+102 | 1632 MB
+20 GB
+21f8ca4
+-- phase 3 additions
+2026-09-08 09:56:58.929204+00 | 20 | 0 |  | 6 | 47 | 0 | 0 | 2026-09-08 09:56:58.7+00 | 00:00:13.82576
+0
+0
+97
+200
+100
+0
+0
+0
+settle | degraded | f | 2026-09-08 09:52:16.681744+00 | 2026-09-08 09:55:37.928581+00
+db.size_gb | 2026-09-08 09:52:16.681744+00
+db.table_gb | 2026-09-08 09:52:16.681744+00
+exec.dirty_markets | 2026-09-08 09:56:43.929268+00
+exec.filled_contracts | 2026-09-08 09:56:43.929268+00
+exec.intents_considered | 2026-09-08 09:56:43.929268+00
+exec.loop_ms | 2026-09-08 09:56:43.929268+00
+exec.loops_skipped | 2026-09-08 09:56:43.929268+00
+exec.open_orders | 2026-09-08 09:56:43.929268+00
+exec.p95_loop_ms | 2026-09-08 09:56:43.929268+00
+exec.placed | 2026-09-08 09:56:43.929268+00
+exec.ws_event_age_s | 2026-09-08 09:56:43.929268+00
+host.disk_free_gb | 2026-09-08 09:52:16.681744+00
+host.mem_available_mb | 2026-09-08 09:52:16.681744+00
+match.rate | 2026-09-08 09:52:16.681744+00
+match.unmatched | 2026-09-08 09:52:16.681744+00
+recorder.errors | 2026-09-08 09:56:58.531171+00
+recorder.fetched | 2026-09-08 09:55:58.531235+00
+recorder.tick_ms | 2026-09-08 09:56:58.531171+00
+recorder.trade_gaps | 2026-09-08 09:56:58.531171+00
+ws.events_per_min | 2026-09-08 09:57:09.58246+00
+ws.gaps | 2026-09-08 09:57:09.58246+00
+ws.reconnects | 2026-09-08 09:57:09.58246+00
+ws.sink_lag_s | 2026-09-08 09:57:09.58246+00
+ws.subscribed_tickers | 2026-09-08 09:57:09.58246+00
+ws.trades_per_min | 2026-09-08 09:57:09.58246+00
+duplicate_trades | skip
+clv_p_used_matches_order_prob | pass
+settle_errors_24h | pass
+derived_without_venue_row_48h | pass
+build_sha_drift | pass
+orders_open_past_expiry | pass
+fills_without_print | pass
+gate_rows_one_gate_variant | pass
+fair_values_negative_staleness | skip
+runs_taker_side_missing_24h | pass
+orders_without_place_event | pass
+intents_without_order_or_skip | pass
+fill_contracts_exceed_order_contracts | pass
+orders_filled_exceeds_contracts | pass
+settlement_result_mismatch | pass
+fair_values_negative_feed_lag | pass
+benchmarks_source_after_target | pass
+fills_outside_placement_window | pass
+markouts_at_after_horizon | pass
+metric_samples_negative_24h | pass
+operator_events_empty_summary_24h | pass
+order_watch_negative_queue_24h | pass
+equity_mtm_coverage_out_of_range_24h | pass
+game_score_went_down_24h | pass
+check_results_unknown_status_25h | pass
+report_runs_generated_in_future | pass
+report_cells_orphan | pass
+114 | final | 24 | 27
+{} | 2026-09-08 09:55:59.137978+00
+{} | 2026-09-08 09:55:58.902256+00
+{"dates": "20260907"} | 2026-09-08 09:52:29.216107+00
+{} | 2026-09-08 09:40:49.908616+00
+-- status-nas
+sports-harness-app-exec-1 Up 5 minutes (healthy)
+sports-harness-app-run-1 Up 5 minutes
+sports-harness-app-serve-1 Up 5 minutes (healthy)
+sports-harness-app-ws-1 Up 5 minutes
+sports-harness-postgres-1 Up 3 hours (healthy)
+-- disk/mem
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.5T  69% /volume1
+               total        used        free      shared  buff/cache   available
+Mem:            7717        6357         331         598        2391        1359
+-- degraded sections (10m)
+0
+-- ERROR messages (10m)
+== app-run
+== app-serve
+== app-ws
+== app-exec
+-- page time
+200 42.996444
+-- healthz
+{"status":"ok","last_run_at":"2026-09-08T09:57:58.534832+00:00","last_status":"skipped","seconds_since":3,"credits_remaining":4998958,"credits_budget":5000000,"credits_low":false,"build":"21f8ca4"}

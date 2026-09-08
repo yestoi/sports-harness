@@ -1,0 +1,15 @@
+-- Layer 2b invariants (every count must be 0); build 21f8ca4
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0

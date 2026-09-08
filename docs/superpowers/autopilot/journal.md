@@ -618,3 +618,57 @@ Times are America/Chicago.
 - Anomalies: none new
 - Carried forward: none (phase 6's deferred list lives in the archived final review and ledger)
 - Next: deploy (entry 47) from `main` after `make test` on main; verify (entry 48); the phase report; bundle + `git push origin main phase3-paper-execution` (U7); Task 4b step 5's replay and Amendment 3; the morning-after verify with the walker after 08:10 CT
+
+## 47. deploy - main 21f8ca4 (phase 3 deploy: app-exec, settlement, report, gate, telemetry) - 2026-09-08 04:52 CT
+- Orient: rule 2 after the merge (entry 46): `main` 21f8ca4 ahead of the NAS build ae1e86c in code; preconditions held (main, clean tree; game window 0|0|0 with game 114 excluded by the entry 43 ruling; suite on main 821 passed pristine)
+- Branch / commits: `main` ae1e86c..21f8ca4
+- Result: done
+- Dispatches: 0
+- Tests: 821 passed on `main` at 21f8ca4, pristine (`harness_test_main`)
+- Review: n/a
+- Deploy: 21f8ca4 at 04:50:56-04:51:57 CT via `make deploy-nas` (the diff touches models.py and docker-compose.yml; `app-ws` restarted, a few seconds of quiet-hour tape), exit 0, no seed-teams warning, log `evidence/2026-09-08-deploy-0452-21f8ca4.log`; containers Up, `app-exec` present and healthy by 04:57 CT, `app-serve` healthy; stamp `"build":"21f8ca4"` at 04:52 CT; first executor heartbeat at 04:52:13 CT (loop 1, 610 ms, version 3.7, no error); snapshots 128 in the first 3 min; gap rows 0; no forced tick (quiet hours); the first settlement pass run by hand at 04:52-04:55 CT per the final review's deploy note 5 (97 games and 100 markets settled, 100 venue rows, 0 mismatches, `job_runs` 1 `degraded`: see entry 48)
+- Verification: entry 48
+- Rulings: (1) `GATE_VARIANT=sharp_two_sided` in `deploy/nas.env` (U5, Task 4b step 5) rode this deploy. (2) The Amendment 3 replay (`replay --from-run 2321 --to-run 3477 --variant sharp_two_sided`) launched on the NAS at 05:00 CT after the deploy; its counts go into the amendment when it finishes (a following session appends it if this one stops first).
+- Carried forward: none in this entry
+- Next: verify (entry 48)
+
+## 48. verify - deploy 21f8ca4 - 2026-09-08 04:58 CT
+- Orient: rule 3 - no verify entry since the deploy (47)
+- Branch / commits: n/a
+- Result: **FAIL** (three rows), otherwise PASS
+- Dispatches: 0 (no walker: quiet hours; the day's first walker verify is the morning-after duty after 08:10 CT; the FAIL rows are deterministic)
+- Tests: n/a
+- Review: n/a
+- Deploy: none (entry 47)
+- Verification: Layer 1 PASS (stamp 21f8ca4). Layer 2 (evidence: `evidence/2026-09-08-deploy-verify-0458-layer2.txt`): containers Up, `app-exec` and `app-serve` healthy; cadence runs ok with 0 errors and `build_sha = 21f8ca4`; heartbeat rows inside 2 min; ERROR lines 0 on all four services in the 10 min window; gap rows 0; WS age 3 s; Postgres health ok; WAL 1.6 GB; DB 20 GB; disk 31 % free; memory 1359 MB; degraded sections 0; credits 4,998,958; `exec_heartbeat` age 14 s, loops 20, p95 47 ms, no error PASS; orders 0 and intents 0 (no exec-variant candidates in quiet hours; not a FAIL by the time-of-day table); settlements 97 and venue rows 100 PASS; game 114 `final` 24-27 (carried fix 14 healed it through the dated fetch `{"dates": "20260907"}` at 09:52:29Z) PASS; `metric_samples` fresh for every exec.*, recorder.*, ws.*, host.*, db.*, match.* name PASS; `check_results` 25 pass and 2 **skip** (`duplicate_trades`, `fair_values_negative_staleness`: statement timeouts) against the row's "all pass": **FAIL** (carried fix 16); `/api/summary` 200 in 43 s against the 10 s bound: **FAIL**, the second time running for this row (entry 44): a ceiling (carried fix 17); `verify-summary` cannot fetch the page. Layer 2b (evidence: `evidence/2026-09-08-deploy-verify-0458-layer2b.txt`): 14/14 zero PASS. `settle` job 1 `degraded`: `compute_benchmarks` failed for games 17, 18 and 114 with `StringDataRightTruncation` on `benchmarks.benchmark_type varchar(16)` (`kalshi_last_trade_pre_kick` is 26 chars): **FAIL** on the settlement row, cause below.
+- Anomalies: (1) The production columns `benchmarks.benchmark_type`, `gap_outcomes.benchmark_type`, `order_clv.benchmark_type` are `varchar(16)` and `markouts.anchor` `varchar(8)`: the 01:30 CT deploy (ae1e86c, Task 2's models) created the four tables at those widths, and `create_all` never widens an existing column, so the Task 8 and Task 9 width rulings ("the tables have never existed in production, no ALTER needed") were true at 21:20 CT on 2026-09-07 and false after 01:30 CT; my error: I did not re-check after the quiet-window deploy. `benchmarks` holds 100 partial rows (games whose types all fit); the other three tables are empty. (2) `runs.build_sha` is NULL on heartbeat (`skipped`) rows and set on real ticks: acceptable, noted for the verify row's wording.
+- Rulings: (1) The width fix is an `ALTER TABLE ... ALTER COLUMN ... TYPE` on production (metadata-only on empty or 100-row tables; the `clv` view must be dropped and recreated around the `order_clv` change): gate 3, the user executes; the loop proposes the exact statements (entry 49). (2) Until then the settlement job stays `degraded` every hour on the benchmarks stage only (savepoint per game; settle, venue_result, CLV drain and markouts unaffected), the executor and recorder run normally. (3) Carried fix 16 is phase work (a check change), 17 a hotfix from `main` once the gate clears.
+- Carried forward: 16 (two checks exceed the 2 s timeout; verify.md row), 17 (page time: the candidates section scans signals)
+- Next: gate (entry 49)
+
+## 49. gate - production column widths need an ALTER TYPE; the page-time row failed twice running - 2026-09-08 05:05 CT
+- Orient: gates 3 and 12 (entry 48)
+- Branch / commits: `main` 21f8ca4 plus this docs commit
+- Result: gated: (a) an `ALTER COLUMN ... TYPE` on the production database (gate 3: the user executes); (b) the same verify item (page time) failing twice running (a ceiling, gate 12)
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: entry 48
+- Question (a): the four columns below must be widened before benchmarks, CLV and markouts can record the pre-registered names. Options: (1) the user runs the five statements below on the NAS (metadata-only, seconds; `benchmarks` has 100 rows, the others 0); (2) the loop ships a migration CLI that does the same (still an ALTER TYPE in code: gate 3 either way); (3) shorten the stored names (edits registered names: gate 9, and R1 forbids). Recommendation: option 1, now, in this order, then `docker compose run --rm app-run init-db` to recreate the `clv` view, then `docker compose run --rm -T app-run settle` once so the benchmarks stage catches up:
+  ```
+  ssh trey@192.168.12.228 'cd /volume1/docker/sports-harness && docker compose exec -T postgres psql -U harness -d harness' <<'SQL'
+  begin;
+  drop view if exists clv;
+  alter table benchmarks alter column benchmark_type type varchar(32);
+  alter table gap_outcomes alter column benchmark_type type varchar(32);
+  alter table order_clv alter column benchmark_type type varchar(32);
+  alter table markouts alter column anchor type varchar(10);
+  commit;
+  SQL
+  ssh trey@192.168.12.228 'cd /volume1/docker/sports-harness && docker compose run --rm app-run init-db && docker compose run --rm -T app-run settle'
+  ```
+  (`init-db` recreates `clv` with `CREATE OR REPLACE VIEW`; the DDL count pin covers only statements `create_schema` issues, so nothing else changes.) Question (b): the page-time row: carried fix 17 (a hotfix from `main`) is the loop's proposed remedy; the ceiling asks the user to say "continue" so the loop may run that hotfix and re-verify. Recommendation: after (a), answer "continue" and the loop runs fix 17, re-verifies the page-time and check rows, and resumes the calendar (the morning-after verify with the walker after 08:10 CT; Task 4b step 5's Amendment 3 with the replay counts).
+- Rulings: (1) While gated, the executor, recorder, settlement (degraded on one stage) and dashboard keep running: nothing stops data. (2) The Amendment 3 replay result (background) is recorded by the next session if it finishes after this one stops.
+- Carried forward: none beyond entry 48
+- Next: stopped (report `docs/superpowers/autopilot/reports/2026-09-08-stopped-0505.md`), both notifications, the repo bundle and `git push origin main` (U7)
