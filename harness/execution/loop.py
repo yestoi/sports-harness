@@ -27,6 +27,13 @@ Six things happen per step, in this order:
 
 No code path here sends an order, a quote or an RFQ answer. There is no venue client in this
 module and no credential is ever read: every fill is an inference drawn from the recorded tape.
+
+A replay executor (Task 13) runs the same six steps on a 15 s grid over a past range. The only
+difference is the horizon: `self._at(now)` is None for the live loop and the grid instant for a
+replay, and every read that could otherwise see past it -- the tape's head, a later run's
+signals, a gap snapshot priced an hour afterwards, the book -- takes it. It also holds its own
+advisory lock and writes no heartbeat, so a replayed day cannot stall the live service or
+overwrite the row `exec-health` reads.
 """
 
 import logging
@@ -181,8 +188,9 @@ class Executor:
 
     def step(self) -> ExecStats:
         """One loop. Never raises: a failure is rolled back and recorded on the heartbeat."""
+        key = store.REPLAY_LOCK_KEY if self.replay else store.LOCK_KEY
         with self._bind().connect() as conn:
-            if not store.try_lock(conn):
+            if not store.try_lock(conn, key):
                 log.info("executor lock held elsewhere; skipping this loop")
                 return ExecStats(locked=False)
             # End the lock statement's own transaction: the advisory lock is session-scoped and
@@ -192,7 +200,7 @@ class Executor:
                 return self._locked_step(conn)
             finally:
                 conn.rollback()
-                store.unlock(conn)
+                store.unlock(conn, key)
                 conn.commit()
 
     def _locked_step(self, conn) -> ExecStats:
@@ -221,8 +229,12 @@ class Executor:
                 # region again (as on the base before this task), and the metric batch runs in
                 # its own savepoint so a database-level failure inside it cannot poison this
                 # transaction and take the step's own orders/fills/heartbeat down with it.
-                open_orders_count = store.count_open_orders(session, self.replay)
+                # Task 13: `exec_heartbeat` is one row for the whole harness and its
+                # `last_loop_at` is what `exec-health` restarts the container on, so a replay --
+                # whose clock is a past instant -- writes none of it, exactly as it writes no
+                # telemetry (ruling 4). Its own step still commits.
                 if not self.replay:
+                    open_orders_count = store.count_open_orders(session, self.replay)
                     try:
                         with session.begin_nested():
                             wrote_metrics = self._write_metric_batch(
@@ -230,14 +242,14 @@ class Executor:
                     except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
                         log.exception("exec metric batch failed")
                         wrote_metrics = False
-                store.write_heartbeat(
-                    session, last_loop_at=now,
-                    open_orders=open_orders_count,
-                    last_error=error, last_loop_ms=stats.loop_ms, p95_loop_ms=self._p95(),
-                    loops_skipped=skipped_loops,
-                    book_dirty_markets=heartbeat["book_dirty_markets"],
-                    ws_last_event_at=heartbeat["ws_last_event_at"],
-                    executor_version=execution.EXECUTOR_VERSION)
+                    store.write_heartbeat(
+                        session, last_loop_at=now,
+                        open_orders=open_orders_count,
+                        last_error=error, last_loop_ms=stats.loop_ms, p95_loop_ms=self._p95(),
+                        loops_skipped=skipped_loops,
+                        book_dirty_markets=heartbeat["book_dirty_markets"],
+                        ws_last_event_at=heartbeat["ws_last_event_at"],
+                        executor_version=execution.EXECUTOR_VERSION)
                 session.commit()
                 # Fix round 1, M3: only forget this window's counts once the batch that
                 # reported them is actually durable; a rolled-back commit leaves them intact
@@ -286,9 +298,18 @@ class Executor:
         telemetry.record_many(session, "exec", samples, ts=now)
         return True
 
+    def _at(self, now: datetime) -> datetime | None:
+        """The horizon every read stops at: None live (the head), the grid instant in replay.
+
+        One place, because the guarantee is one guarantee: a replay executor decides on exactly
+        what the live loop could have seen at that instant and nothing taped afterwards.
+        """
+        return now if self.replay else None
+
     def _body(self, session: Session, now: datetime, stats: ExecStats, heartbeat: dict,
              skipped_loops: int = 0) -> None:
         s = self.exec_settings
+        at = self._at(now)
         if not self.replay:
             self._metrics_acc.loops_skipped += skipped_loops
         variant_ids = store.resolve_variants(session, self._variant_names)
@@ -301,15 +322,15 @@ class Executor:
         lower = now - timedelta(seconds=s.intent_ttl_s)
 
         # 2. Intake.
-        candidates = store.candidate_signals(session, variant_ids, lower, self.replay)
+        candidates = store.candidate_signals(session, variant_ids, lower, self.replay, at)
         stats.intents_new = store.insert_intents(session, candidates, now, self.replay)
-        intents, extras = store.load_intents(session, variant_ids, lower, self.replay)
+        intents, extras = store.load_intents(session, variant_ids, lower, self.replay, at)
 
         # 3. Books and markets.
         working = store.working_orders(session, self.replay)
         rows = store.market_rows(session, ({i.venue_market_id for i in intents}
-                                           | {w.venue_market_id for w in working}))
-        ws_last = store.newest_event_ts(session)
+                                           | {w.venue_market_id for w in working}), at)
+        ws_last = store.newest_event_ts(session, at)
         heartbeat["ws_last_event_at"] = ws_last
         # F36: a recorder that stopped writing makes every ladder a stale one, and a stale
         # ladder that still looks tradeable is the failure this check exists to prevent.
@@ -373,13 +394,13 @@ class Executor:
         for ticker in sorted(tickers):
             cached = self.books.get(ticker)
             if cached is None:
-                book = load_book(session, ticker, now)
+                book = self._book_now(session, ticker, now, None)
                 self.books[ticker] = book
                 bases[ticker] = book
             else:
                 base = cached.copy()
                 bases[ticker] = base
-                advanced = advance_book(session, cached, now)
+                advanced = self._book_now(session, ticker, now, cached)
                 self.books[ticker] = advanced
                 if (advanced.anchor_id, advanced.source) != (base.anchor_id, base.source):
                     # `advance_book` re-anchors inside a single call when a gap is followed by a
@@ -399,6 +420,24 @@ class Executor:
         self.books = {t: book for t, book in self.books.items() if t in tickers}
         return bases, recovering
 
+    def _book_now(self, session: Session, ticker: str, now: datetime,
+                  cached: BookState | None) -> BookState | None:
+        """The ticker's book at `now`: the tape's head live, the past instant in replay.
+
+        `load_book` and `advance_book` both run to the head of the tape with no upper `ts`
+        bound, which is right for a loop whose clock *is* the head and catastrophic for one
+        whose clock is three days behind it, so replay reads `book_at(session, ticker, now)`
+        instead (ruling 2). `book_at` returns None once the newest row at the instant is older
+        than `BOOK_MAX_AGE`, where `advance_book` would hand back the same stale book and let
+        `MarketNow.dirty` reject it on age; keeping the cached book in that case is what makes
+        a quiet market read the same way on both paths rather than as a market with no book.
+        """
+        if not self.replay:
+            return load_book(session, ticker, now) if cached is None \
+                else advance_book(session, cached, now)
+        book = book_at(session, ticker, now)
+        return cached if book is None else book
+
     def _market_now(self, row, dead_recorder: bool) -> MarketNow:
         return MarketNow(
             venue_market_id=row.venue_market_id, ticker=row.ticker, fair_p=row.fair_p,
@@ -417,7 +456,7 @@ class Executor:
         A raise inside a step would otherwise cost every other order its fills for that loop,
         so each order runs inside a savepoint and a failure is counted and stepped over.
         """
-        tape = self._tape(session, working)
+        tape = self._tape(session, working, now)
         outcomes: dict[int, tuple[str, Decimal]] = {}
         for row in working:
             outcomes[row.id] = (row.status, row.filled_contracts)
@@ -431,12 +470,14 @@ class Executor:
                 _note_error(heartbeat, f"order {row.id}: {type(exc).__name__}: {exc}")
         return outcomes
 
-    def _tape(self, session: Session, working) -> dict[str, tuple[list, list]]:
+    def _tape(self, session: Session, working, now: datetime) -> dict[str, tuple[list, list]]:
         """One print scan and one delta scan per ticker, shared by every order on it.
 
         Prints have no cursor (§1) and are rescanned from `placed_at - 60 s` every loop; the
         simulator's print watermark is what makes the re-feed idempotent. Deltas keep the id
         cursor, so the scan starts at the earliest cursor any track on the ticker still holds.
+        Both scans stop at `_at(now)` in replay: `simulate_fills` already refuses to walk past
+        its deadline, but `has_print` reads the whole print list.
         """
         windows: dict[str, tuple[datetime, int | None]] = {}
         for row in working:
@@ -447,10 +488,11 @@ class Executor:
                     cursor = value if cursor is None else min(cursor, value)
             windows[row.ticker] = (lower, cursor)
         out = {}
+        at = self._at(now)
         for ticker, (placed_at, cursor) in windows.items():
             lower = placed_at - store.PRINT_LOOKBACK
-            out[ticker] = (store.load_prints(session, ticker, lower),
-                           store.load_deltas(session, ticker, cursor or 0, lower))
+            out[ticker] = (store.load_prints(session, ticker, lower, at),
+                           store.load_deltas(session, ticker, cursor or 0, lower, at))
         return out
 
     def _simulate_order(self, session: Session, row, markets, bases, recovering, tape,

@@ -449,25 +449,95 @@ def replay_cmd(
     to_run: int = typer.Option(..., "--to-run"),
     variant: str = typer.Option(..., "--variant"),
     file: Path = typer.Option(None, "--file"),
+    execute: bool = typer.Option(False, "--execute",
+                                help="Also re-run the paper executor on a 15 s grid over the range"),
 ) -> None:
+    """Re-score a run range under one variant; with `--execute`, re-run the executor over it.
+
+    Places no order anywhere: `--execute` steps a *replay* executor, whose every row is tagged
+    `replay = true` and which never touches a live row, the ledger, the heartbeat or telemetry.
+    """
     configure_logging()
     from harness.replay import replay
 
     s = get_settings()
-    factory = make_session_factory(make_engine(s.database_url))
+    # The executor's own statement timeout: `--execute` runs the same loop the service does,
+    # and a tape scan that outlives a step is a stall there for the same reason it is here.
+    engine = (make_engine(s.database_url, EXEC_STATEMENT_TIMEOUT_MS) if execute
+              else make_engine(s.database_url))
+    factory = make_session_factory(engine)
     with factory() as session:
         try:
-            counts = replay(session, from_run, to_run, variant, variant_file=file)
+            counts = replay(session, from_run, to_run, variant, variant_file=file,
+                            execute=execute, settings=s)
         except ValueError as exc:
             log.error("%s", exc)
             raise typer.Exit(1) from exc
 
     total = counts.signals_candidate + counts.signals_rejected
     rate = counts.signals_candidate / total if total else 0.0
+    tail = f" orders={counts.orders} fills={counts.fills}" if execute else ""
     print(
         f"runs={counts.runs} candidate={counts.signals_candidate} rejected={counts.signals_rejected} "
-        f"inserted={counts.inserted} candidate_rate={rate:.4f}"
+        f"inserted={counts.inserted} candidate_rate={rate:.4f}{tail}"
     )
+
+
+@app.command("export-fixture")
+def export_fixture_cmd(
+    from_run: int = typer.Option(None, "--from-run"),
+    to_run: int = typer.Option(None, "--to-run"),
+    kind: str = typer.Option("day", "--kind", help="day | ws-tape"),
+    ticker: str = typer.Option(None, "--ticker"),
+    from_ts: str = typer.Option(None, "--from", help="ISO-8601 instant, UTC if no offset"),
+    to_ts: str = typer.Option(None, "--to", help="ISO-8601 instant, UTC if no offset"),
+    out: str = typer.Option(..., "--out", help="File to write, or '-' for stdout"),
+) -> None:
+    """Dump a slice of the record as JSON, so a day can be replayed away from the NAS.
+
+    `--kind day --from-run A --to-run B` dumps the `raw_responses` of the range plus every
+    `orderbook_events` and `venue_trades` row inside the runs' own window -- the three tables a
+    replay reads and the only ones that cannot be rebuilt from anything else. `--kind ws-tape
+    --ticker T --from TS --to TS` dumps one ticker's anchoring snapshot, deltas and prints, the
+    shape `tests/fixtures/tape_sample_*.json` already carries.
+
+    Reads only. Nothing here writes a row, and no credential is opened: the bodies come off the
+    database exactly as the recorder taped them.
+    """
+    configure_logging()
+    from harness.fixtures import export_day, export_ws_tape, write_export
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))() as session:
+        try:
+            if kind == "day":
+                if from_run is None or to_run is None:
+                    raise ValueError("--kind day needs --from-run and --to-run")
+                doc = export_day(session, from_run, to_run, s.tick_budget_s)
+            elif kind == "ws-tape":
+                if not ticker or not from_ts or not to_ts:
+                    raise ValueError("--kind ws-tape needs --ticker, --from and --to")
+                doc = export_ws_tape(session, ticker, _utc(from_ts), _utc(to_ts))
+            else:
+                raise ValueError(f"unknown --kind {kind!r} (day | ws-tape)")
+        except ValueError as exc:
+            log.error("%s", exc)
+            raise typer.Exit(1) from exc
+    write_export(doc, out)
+
+
+def _utc(value: str) -> datetime:
+    """One ISO-8601 instant off the command line. The record is all UTC (F2), so a bare
+    timestamp is read as UTC rather than as whatever the operator's box is set to.
+
+    Parsed here rather than by Typer, whose `datetime` option accepts three fixed formats and
+    rejects the offset-bearing string every timestamp in this harness is printed with.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{value!r} is not an ISO-8601 instant") from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 @app.command("reprocess")

@@ -11,6 +11,12 @@ Two rules shape this module and both come from the addendum:
   lower `ts` bound only; `id` is the recorder's insertion order and the only monotone quantity
   on the tape. Prints have no cursor at all -- the executor rescans them from
   `placed_at - 60 s` every loop and the simulator's print watermark absorbs the re-feed.
+* **The past instant (`at`).** A replay executor's clock is a grid instant days in the past, so
+  every read it makes has to stop there: the tape at its head, the signals of a later run, a gap
+  snapshot priced an hour afterwards would all be information the live loop could not have had.
+  Each reader below therefore takes an `at: datetime | None` -- None is the live path and reads
+  the head, a value is the replay path and bounds the read on `ts <= at` (`created_at <= at` for
+  the pricing tables), ordered by `(ts, id)` for the tape (Task 13, ruling 2).
 
 Reads return frozen views from `harness.execution.plan` wherever the decision chain consumes
 them, so the loop never passes a raw `Row` into a pure function.
@@ -35,6 +41,10 @@ log = logging.getLogger(__name__)
 #: The advisory lock the single live executor holds for the length of one step. `hashtext` is
 #: stable for a given string across a cluster's lifetime, which is all this needs.
 LOCK_KEY = "harness.exec"
+#: A replay executor's own key. It writes only `replay = true` rows, so it races nothing the
+#: live loop owns -- and sharing one key would let an operator's `replay --execute` and the
+#: service take turns skipping each other's steps for the length of a replayed day.
+REPLAY_LOCK_KEY = "harness.exec.replay"
 
 #: The prints a fill simulation rescans on every loop, measured back from `placed_at` (§1).
 PRINT_LOOKBACK = timedelta(seconds=60)
@@ -45,14 +55,14 @@ OPEN_STATUSES = ("open", "partially_filled")
 # --- the advisory lock ----------------------------------------------------------------
 
 
-def try_lock(conn) -> bool:
+def try_lock(conn, key: str = LOCK_KEY) -> bool:
     """Take the executor's session-level advisory lock, or report that someone else has it."""
     return bool(conn.execute(text("select pg_try_advisory_lock(hashtext(:k))"),
-                             {"k": LOCK_KEY}).scalar())
+                             {"k": key}).scalar())
 
 
-def unlock(conn) -> None:
-    conn.execute(text("select pg_advisory_unlock(hashtext(:k))"), {"k": LOCK_KEY})
+def unlock(conn, key: str = LOCK_KEY) -> None:
+    conn.execute(text("select pg_advisory_unlock(hashtext(:k))"), {"k": key})
 
 
 # --- variants -------------------------------------------------------------------------
@@ -93,7 +103,18 @@ def kill_active(session: Session) -> bool:
 
 # --- intake ---------------------------------------------------------------------------
 
-_CANDIDATES = text("""
+
+def _live_and_at(sql: str, bound: str) -> tuple:
+    """The live and past-instant forms of one statement, both compiled once at import.
+
+    `sql` carries a `{at}` placeholder in its `where`: the live form drops it, the `at` form
+    fills it with `bound`. Building the two up front rather than per call keeps SQLAlchemy's
+    compiled-statement cache working, which a `text()` made inside the loop would defeat.
+    """
+    return text(sql.format(at="")), text(sql.format(at=bound))
+
+
+_CANDIDATES, _CANDIDATES_AT = _live_and_at("""
 select s.id as signal_id, s.variant_id, s.venue_market_id, s.side, s.price_target, s.contracts,
        s.edge, s.edge_min, s.fair_p, s.stake, s.created_at, s.as_estimate, s.gap_snapshot_id,
        m.ticker, m.venue, m.game_id, g.kickoff_utc, gs.fair_value_id
@@ -103,22 +124,29 @@ left join games g on g.id = m.game_id
 left join market_gap_snapshots gs on gs.id = s.gap_snapshot_id
 left join intents i on i.signal_id = s.id
 where s.decision = 'candidate' and s.replay = :replay and s.variant_id = any(:variants)
-  and s.created_at >= :lower and i.signal_id is null
+  and s.created_at >= :lower{at} and i.signal_id is null
 order by s.id
-""")
+""", " and s.created_at <= :at")
 
 
 def candidate_signals(session: Session, variant_ids: Sequence[str], lower: datetime,
-                      replay: bool) -> list:
+                      replay: bool, at: datetime | None = None) -> list:
     """Candidate signals of the executed variants inside the intent TTL that have no intent yet.
 
     Nothing is filtered out beyond that (§1): whether the loop can act on the signal is the
     decision chain's business, and the intent row is the record that it was offered one.
+
+    `at` is a replay executor's grid instant: a replayed range holds every run's signals from
+    the first step, and acting at 19:00 on a signal a 19:30 run produced would be the one thing
+    a replay must never do.
     """
     if not variant_ids:
         return []
-    return session.execute(_CANDIDATES, {"replay": replay, "variants": list(variant_ids),
-                                         "lower": lower}).all()
+    params = {"replay": replay, "variants": list(variant_ids), "lower": lower}
+    stmt = _CANDIDATES
+    if at is not None:
+        stmt, params = _CANDIDATES_AT, params | {"at": at}
+    return session.execute(stmt, params).all()
 
 
 def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool) -> int:
@@ -139,7 +167,7 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
     return written
 
 
-_NEWEST_INTENTS = text("""
+_NEWEST_INTENTS, _NEWEST_INTENTS_AT = _live_and_at("""
 select distinct on (i.variant_id, i.venue_market_id, i.side)
        i.id, i.signal_id, i.variant_id, i.venue_market_id, i.ticker, i.side, i.target_prob,
        i.target_contracts, i.edge, i.edge_min, i.fair_p, i.fair_row_id, i.game_id,
@@ -148,22 +176,22 @@ select distinct on (i.variant_id, i.venue_market_id, i.side)
 from intents i
 left join signals s on s.id = i.signal_id
 where i.replay = :replay and i.variant_id = any(:variants)
-  and i.signal_created_at >= :lower
+  and i.signal_created_at >= :lower{at}
 order by i.variant_id, i.venue_market_id, i.side, i.signal_created_at desc, i.created_at desc,
          i.signal_id desc, i.id desc
-""")
+""", " and i.signal_created_at <= :at")
 
-_NEWEST_DECISIONS = text("""
+_NEWEST_DECISIONS, _NEWEST_DECISIONS_AT = _live_and_at("""
 select distinct on (s.variant_id, s.venue_market_id, s.side)
        s.variant_id, s.venue_market_id, s.side, s.decision
 from signals s
-where s.replay = :replay and s.variant_id = any(:variants) and s.created_at >= :lower
+where s.replay = :replay and s.variant_id = any(:variants) and s.created_at >= :lower{at}
 order by s.variant_id, s.venue_market_id, s.side, s.created_at desc, s.id desc
-""")
+""", " and s.created_at <= :at")
 
 
 def load_intents(session: Session, variant_ids: Sequence[str], lower: datetime,
-                 replay: bool) -> tuple[list[IntentView], dict]:
+                 replay: bool, at: datetime | None = None) -> tuple[list[IntentView], dict]:
     """The intents the decision chain sees, plus the placement context they carry.
 
     The newest intent per `(variant_id, venue_market_id, side)` inside the TTL. The kickoff
@@ -179,11 +207,17 @@ def load_intents(session: Session, variant_ids: Sequence[str], lower: datetime,
     if not variant_ids:
         return [], {}
     params = {"replay": replay, "variants": list(variant_ids), "lower": lower}
+    intents_stmt, decisions_stmt = _NEWEST_INTENTS, _NEWEST_DECISIONS
+    if at is not None:
+        # The `at` bound belongs on both halves: a decision a later run reversed must not
+        # cancel an order the replayed instant had every reason to still be holding.
+        intents_stmt, decisions_stmt = _NEWEST_INTENTS_AT, _NEWEST_DECISIONS_AT
+        params = params | {"at": at}
     decisions = {(r.variant_id, r.venue_market_id, r.side): r.decision
-                 for r in session.execute(_NEWEST_DECISIONS, params).all()}
+                 for r in session.execute(decisions_stmt, params).all()}
     views: list[IntentView] = []
     extras: dict = {}
-    for row in session.execute(_NEWEST_INTENTS, params).all():
+    for row in session.execute(intents_stmt, params).all():
         key = (row.variant_id, row.venue_market_id, row.side)
         views.append(IntentView(
             intent_id=row.id, signal_id=row.signal_id, variant_id=row.variant_id,
@@ -228,7 +262,7 @@ def working_orders(session: Session, replay: bool) -> list:
     return session.execute(_WORKING_ORDERS, {"replay": replay}).all()
 
 
-_MARKETS = text("""
+_MARKETS, _MARKETS_AT = _live_and_at("""
 select m.id as venue_market_id, m.ticker, m.venue, m.match_status, m.match_key, m.game_id,
        m.side_team_id, g.sport, g.kickoff_utc,
        gap.id as gap_snapshot_id, gap.fair_p, gap.fair_value_id, gap.staleness_s,
@@ -238,24 +272,44 @@ from venue_markets m
 left join games g on g.id = m.game_id
 left join lateral (
     select s.* from market_gap_snapshots s
-    where s.venue_market_id = m.id order by s.created_at desc, s.id desc limit 1
+    where s.venue_market_id = m.id{at} order by s.created_at desc, s.id desc limit 1
 ) gap on true
 left join fair_values fv on fv.id = gap.fair_value_id
 where m.id = any(:ids)
-""")
+""", " and s.created_at <= :at")
 
 
-def market_rows(session: Session, venue_market_ids: Iterable[int]) -> dict[int, object]:
+def market_rows(session: Session, venue_market_ids: Iterable[int],
+                at: datetime | None = None) -> dict[int, object]:
     """One row per market: its identity plus its newest gap snapshot and that snapshot's fair
-    value. `fair_ts` is the fair value's own `created_at`, never the snapshot's."""
+    value. `fair_ts` is the fair value's own `created_at`, never the snapshot's.
+
+    `at` picks the newest snapshot the replayed instant could have seen. Without it every
+    market in a replay would be priced off the last snapshot of the whole range, which is the
+    one number the decision chain must not be given."""
     ids = sorted(set(venue_market_ids))
     if not ids:
         return {}
-    return {row.venue_market_id: row for row in session.execute(_MARKETS, {"ids": ids}).all()}
+    params = {"ids": ids}
+    stmt = _MARKETS
+    if at is not None:
+        stmt, params = _MARKETS_AT, params | {"at": at}
+    return {row.venue_market_id: row for row in session.execute(stmt, params).all()}
 
 
-def newest_event_ts(session: Session) -> datetime | None:
-    """The `ts` of the tape's newest row by `id` -- the recorder's own liveness signal."""
+_NEWEST_EVENT_AT = text(
+    "select max(ts) from orderbook_events where ts <= :at")
+
+
+def newest_event_ts(session: Session, at: datetime | None = None) -> datetime | None:
+    """The `ts` of the tape's newest row -- the recorder's own liveness signal.
+
+    Live reads the head by `id`, the tape's insertion order. A replay executor asks the same
+    question of its own instant instead, so a recorder outage inside the replayed range still
+    reads as one (F36) rather than being papered over by rows taped hours later.
+    """
+    if at is not None:
+        return session.execute(_NEWEST_EVENT_AT, {"at": at}).scalar()
     return session.execute(text(
         "select ts from orderbook_events order by id desc limit 1")).scalar()
 
@@ -271,17 +325,32 @@ select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) 
 from venue_trades where ticker = :t and ts >= :lower order by ts, trade_id
 """)
 
+_PRINTS_AT = text("""
+select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,
+       source
+from venue_trades where ticker = :t and ts >= :lower and ts <= :at order by ts, trade_id
+""")
 
-def load_prints(session: Session, ticker: str, lower: datetime) -> list[TapePrint]:
+
+def load_prints(session: Session, ticker: str, lower: datetime,
+                at: datetime | None = None) -> list[TapePrint]:
     """Prints for one ticker since `lower`, deduplicated by `trade_id`.
 
     The same trade reaches us from the WebSocket and from REST, and `venue_trades` is
     partitioned on `ts` -- so `ts` is part of its primary key and cannot deduplicate a pair of
     rows a millisecond apart. The first row per `trade_id` in `ts` order wins.
+
+    `at` bounds the scan at a replay executor's own instant. `simulate_fills` already drops a
+    print past its deadline, but `has_print` does not: it scans the whole list, so an unbounded
+    replay would explain a fill with a trade printed after the instant that produced it.
     """
     seen: set[str] = set()
     out: list[TapePrint] = []
-    for row in session.execute(_PRINTS, {"t": ticker, "lower": lower}).all():
+    params = {"t": ticker, "lower": lower}
+    stmt = _PRINTS
+    if at is not None:
+        stmt, params = _PRINTS_AT, params | {"at": at}
+    for row in session.execute(stmt, params).all():
         if row.trade_id in seen:
             continue
         seen.add(row.trade_id)
@@ -295,10 +364,28 @@ select id, ts, side, price, delta, sid, seq from orderbook_events
 where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower order by id
 """)
 
+# The past-instant scan (`ix_obe_ticker_ts`), matching `book._DELTAS_BY_TS`: bounded on `ts` at
+# both ends and ordered by `(ts, id)`, never by `(sid, seq)`.
+_DELTAS_AT = text("""
+select id, ts, side, price, delta, sid, seq from orderbook_events
+where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower and ts <= :at
+order by ts, id
+""")
 
-def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime) -> list[TapeDelta]:
-    """Deltas after `cursor`, in `id` order, with a lower `ts` bound and no upper one."""
-    rows = session.execute(_DELTAS, {"t": ticker, "cursor": cursor, "lower": lower}).all()
+
+def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
+                at: datetime | None = None) -> list[TapeDelta]:
+    """Deltas after `cursor`, with a lower `ts` bound; `at` adds the replay path's upper one.
+
+    Live orders by `id` with no upper bound -- the head is where the loop's clock is. A replay
+    executor stops at its own grid instant and orders by `(ts, id)`, which is the same order
+    `_merge_events` re-imposes anyway, so the two paths hand the simulator the same sequence.
+    """
+    params = {"t": ticker, "cursor": cursor, "lower": lower}
+    stmt = _DELTAS
+    if at is not None:
+        stmt, params = _DELTAS_AT, params | {"at": at}
+    rows = session.execute(stmt, params).all()
     return [TapeDelta(event_id=r.id, ts=r.ts, side=r.side, price=r.price, delta=r.delta,
                       sid=r.sid, seq=r.seq)
             for r in rows if r.side is not None and r.price is not None and r.delta is not None]

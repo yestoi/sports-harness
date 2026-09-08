@@ -1,0 +1,1058 @@
+{
+ "kind": "day",
+ "exported_at": "2026-09-08T08:10:56.423070+00:00",
+ "meta": {
+  "from_run": 1,
+  "to_run": 2,
+  "window": {
+   "lower": "2026-09-13T18:55:00+00:00",
+   "upper": "2026-09-13T19:09:40+00:00"
+  },
+  "runs": [
+   {
+    "id": 1,
+    "started_at": "2026-09-13T19:00:00+00:00",
+    "finished_at": "2026-09-13T19:01:40+00:00",
+    "status": "ok"
+   },
+   {
+    "id": 2,
+    "started_at": "2026-09-13T19:03:00+00:00",
+    "finished_at": "2026-09-13T19:04:40+00:00",
+    "status": "ok"
+   }
+  ]
+ },
+ "raw_responses": [
+  {
+   "id": 1,
+   "fetched_at": "2026-09-13T19:01:00+00:00",
+   "run_id": 1,
+   "source": "odds_api",
+   "endpoint": "/sports/americanfootball_nfl/odds",
+   "params": {
+    "regions": "us"
+   },
+   "http_status": 200,
+   "body": [
+    {
+     "id": "day-synth-nfl",
+     "away_team": "New England Patriots",
+     "home_team": "Seattle Seahawks",
+     "sport_key": "americanfootball_nfl",
+     "bookmakers": [
+      {
+       "key": "pinnacle",
+       "markets": [
+        {
+         "key": "h2h",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "price": 1.68
+          },
+          {
+           "name": "New England Patriots",
+           "price": 2.3
+          }
+         ]
+        },
+        {
+         "key": "spreads",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "point": -3.5,
+           "price": 1.92
+          },
+          {
+           "name": "New England Patriots",
+           "point": 3.5,
+           "price": 1.98
+          }
+         ]
+        },
+        {
+         "key": "totals",
+         "outcomes": [
+          {
+           "name": "Over",
+           "point": 44.5,
+           "price": 1.91
+          },
+          {
+           "name": "Under",
+           "point": 44.5,
+           "price": 1.99
+          }
+         ]
+        }
+       ],
+       "last_update": "2026-09-13T18:59:00Z"
+      },
+      {
+       "key": "betonlineag",
+       "markets": [
+        {
+         "key": "h2h",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "price": 1.7
+          },
+          {
+           "name": "New England Patriots",
+           "price": 2.32
+          }
+         ]
+        },
+        {
+         "key": "spreads",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "point": -3.5,
+           "price": 1.94
+          },
+          {
+           "name": "New England Patriots",
+           "point": 3.5,
+           "price": 2.0
+          }
+         ]
+        },
+        {
+         "key": "totals",
+         "outcomes": [
+          {
+           "name": "Over",
+           "point": 44.5,
+           "price": 1.93
+          },
+          {
+           "name": "Under",
+           "point": 44.5,
+           "price": 2.01
+          }
+         ]
+        }
+       ],
+       "last_update": "2026-09-13T18:59:00Z"
+      },
+      {
+       "key": "lowvig",
+       "markets": [
+        {
+         "key": "h2h",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "price": 1.665
+          },
+          {
+           "name": "New England Patriots",
+           "price": 2.285
+          }
+         ]
+        },
+        {
+         "key": "spreads",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "point": -3.5,
+           "price": 1.905
+          },
+          {
+           "name": "New England Patriots",
+           "point": 3.5,
+           "price": 1.965
+          }
+         ]
+        },
+        {
+         "key": "totals",
+         "outcomes": [
+          {
+           "name": "Over",
+           "point": 44.5,
+           "price": 1.895
+          },
+          {
+           "name": "Under",
+           "point": 44.5,
+           "price": 1.975
+          }
+         ]
+        }
+       ],
+       "last_update": "2026-09-13T18:59:00Z"
+      }
+     ],
+     "commence_time": "2026-09-13T21:00:00Z"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "fetched_at": "2026-09-13T19:01:00+00:00",
+   "run_id": 1,
+   "source": "odds_api",
+   "endpoint": "/sports/americanfootball_nfl/events/day-synth-nfl/odds",
+   "params": {
+    "markets": "alternate_spreads,alternate_totals"
+   },
+   "http_status": 200,
+   "body": {
+    "id": "day-synth-nfl",
+    "away_team": "New England Patriots",
+    "home_team": "Seattle Seahawks",
+    "bookmakers": [
+     {
+      "key": "pinnacle",
+      "markets": [
+       {
+        "key": "alternate_spreads",
+        "outcomes": [
+         {
+          "name": "Seattle Seahawks",
+          "point": -6.5,
+          "price": 1.5
+         },
+         {
+          "name": "New England Patriots",
+          "point": 6.5,
+          "price": 2.6
+         },
+         {
+          "name": "Seattle Seahawks",
+          "point": -1.5,
+          "price": 2.1
+         },
+         {
+          "name": "New England Patriots",
+          "point": 1.5,
+          "price": 1.75
+         }
+        ]
+       },
+       {
+        "key": "alternate_totals",
+        "outcomes": [
+         {
+          "name": "Over",
+          "point": 41.5,
+          "price": 1.8
+         },
+         {
+          "name": "Under",
+          "point": 41.5,
+          "price": 2.05
+         },
+         {
+          "name": "Over",
+          "point": 47.5,
+          "price": 2.05
+         },
+         {
+          "name": "Under",
+          "point": 47.5,
+          "price": 1.8
+         }
+        ]
+       }
+      ],
+      "last_update": "2026-09-13T18:59:00Z"
+     }
+    ],
+    "commence_time": "2026-09-13T21:00:00Z"
+   }
+  },
+  {
+   "id": 3,
+   "fetched_at": "2026-09-13T19:01:00+00:00",
+   "run_id": 1,
+   "source": "kalshi",
+   "endpoint": "/events",
+   "params": {
+    "series_ticker": "KXNFLGAME"
+   },
+   "http_status": 200,
+   "body": {
+    "cursor": "",
+    "events": [
+     {
+      "title": "New England vs Seattle",
+      "event_ticker": "KXNFLGAME-26SEP13NEWSEA"
+     },
+     {
+      "title": "New England vs Seattle: Spread",
+      "event_ticker": "KXNFLSPREAD-26SEP13NEWSEA"
+     },
+     {
+      "title": "New England vs Seattle: Total",
+      "event_ticker": "KXNFLTOTAL-26SEP13NEWSEA"
+     },
+     {
+      "title": "Zzz United vs Yyy Rovers",
+      "event_ticker": "KXNFLGAME-26SEP13ZZZYYY"
+     }
+    ]
+   }
+  },
+  {
+   "id": 4,
+   "fetched_at": "2026-09-13T19:01:00+00:00",
+   "run_id": 1,
+   "source": "kalshi",
+   "endpoint": "/markets",
+   "params": {
+    "series_ticker": "KXNFLGAME"
+   },
+   "http_status": 200,
+   "body": {
+    "cursor": "",
+    "markets": [
+     {
+      "title": "Seattle wins",
+      "status": "active",
+      "ticker": "KXNFLGAME-26SEP13NEWSEA-SEA",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLGAME-26SEP13NEWSEA",
+      "custom_strike": {
+       "football_team": "11111111-2222-3333-4444-555555555555"
+      },
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "Seattle",
+      "no_ask_dollars": "0.5",
+      "no_bid_dollars": "0.48",
+      "yes_ask_dollars": "0.52",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.5",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     },
+     {
+      "title": "New England wins",
+      "status": "active",
+      "ticker": "KXNFLGAME-26SEP13NEWSEA-NE",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLGAME-26SEP13NEWSEA",
+      "custom_strike": {
+       "football_team": "66666666-7777-8888-9999-aaaaaaaaaaaa"
+      },
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "New England",
+      "no_ask_dollars": "0.56",
+      "no_bid_dollars": "0.54",
+      "yes_ask_dollars": "0.46",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.44",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     },
+     {
+      "title": "Seattle wins by over 3.5 points?",
+      "status": "active",
+      "ticker": "KXNFLSPREAD-26SEP13NEWSEA-SEA3",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLSPREAD-26SEP13NEWSEA",
+      "floor_strike": 3.5,
+      "custom_strike": {
+       "football_team": "11111111-2222-3333-4444-555555555555"
+      },
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "Seattle wins by over 3.5 points",
+      "no_ask_dollars": "0.56",
+      "no_bid_dollars": "0.54",
+      "yes_ask_dollars": "0.46",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.44",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     },
+     {
+      "title": "Will there be over 44.5 points scored?",
+      "status": "active",
+      "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLTOTAL-26SEP13NEWSEA",
+      "floor_strike": 44.5,
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "Over 44.5 points scored",
+      "no_ask_dollars": "0.54",
+      "no_bid_dollars": "0.52",
+      "yes_ask_dollars": "0.48",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.46",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     },
+     {
+      "title": "Zzz United wins",
+      "status": "active",
+      "ticker": "KXNFLGAME-26SEP13ZZZYYY-ZZZ",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLGAME-26SEP13ZZZYYY",
+      "custom_strike": {
+       "football_team": "cccccccc-dddd-eeee-ffff-000000000000"
+      },
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "Zzz United",
+      "no_ask_dollars": "0.5",
+      "no_bid_dollars": "0.48",
+      "yes_ask_dollars": "0.52",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.5",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     }
+    ]
+   }
+  },
+  {
+   "id": 5,
+   "fetched_at": "2026-09-13T19:04:00+00:00",
+   "run_id": 2,
+   "source": "odds_api",
+   "endpoint": "/sports/americanfootball_nfl/odds",
+   "params": {
+    "regions": "us"
+   },
+   "http_status": 200,
+   "body": [
+    {
+     "id": "day-synth-nfl",
+     "away_team": "New England Patriots",
+     "home_team": "Seattle Seahawks",
+     "sport_key": "americanfootball_nfl",
+     "bookmakers": [
+      {
+       "key": "pinnacle",
+       "markets": [
+        {
+         "key": "h2h",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "price": 1.68
+          },
+          {
+           "name": "New England Patriots",
+           "price": 2.3
+          }
+         ]
+        },
+        {
+         "key": "spreads",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "point": -3.5,
+           "price": 1.92
+          },
+          {
+           "name": "New England Patriots",
+           "point": 3.5,
+           "price": 1.98
+          }
+         ]
+        },
+        {
+         "key": "totals",
+         "outcomes": [
+          {
+           "name": "Over",
+           "point": 44.5,
+           "price": 1.91
+          },
+          {
+           "name": "Under",
+           "point": 44.5,
+           "price": 1.99
+          }
+         ]
+        }
+       ],
+       "last_update": "2026-09-13T19:02:00Z"
+      },
+      {
+       "key": "betonlineag",
+       "markets": [
+        {
+         "key": "h2h",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "price": 1.7
+          },
+          {
+           "name": "New England Patriots",
+           "price": 2.32
+          }
+         ]
+        },
+        {
+         "key": "spreads",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "point": -3.5,
+           "price": 1.94
+          },
+          {
+           "name": "New England Patriots",
+           "point": 3.5,
+           "price": 2.0
+          }
+         ]
+        },
+        {
+         "key": "totals",
+         "outcomes": [
+          {
+           "name": "Over",
+           "point": 44.5,
+           "price": 1.93
+          },
+          {
+           "name": "Under",
+           "point": 44.5,
+           "price": 2.01
+          }
+         ]
+        }
+       ],
+       "last_update": "2026-09-13T19:02:00Z"
+      },
+      {
+       "key": "lowvig",
+       "markets": [
+        {
+         "key": "h2h",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "price": 1.665
+          },
+          {
+           "name": "New England Patriots",
+           "price": 2.285
+          }
+         ]
+        },
+        {
+         "key": "spreads",
+         "outcomes": [
+          {
+           "name": "Seattle Seahawks",
+           "point": -3.5,
+           "price": 1.905
+          },
+          {
+           "name": "New England Patriots",
+           "point": 3.5,
+           "price": 1.965
+          }
+         ]
+        },
+        {
+         "key": "totals",
+         "outcomes": [
+          {
+           "name": "Over",
+           "point": 44.5,
+           "price": 1.895
+          },
+          {
+           "name": "Under",
+           "point": 44.5,
+           "price": 1.975
+          }
+         ]
+        }
+       ],
+       "last_update": "2026-09-13T19:02:00Z"
+      }
+     ],
+     "commence_time": "2026-09-13T21:00:00Z"
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "fetched_at": "2026-09-13T19:04:00+00:00",
+   "run_id": 2,
+   "source": "odds_api",
+   "endpoint": "/sports/americanfootball_nfl/events/day-synth-nfl/odds",
+   "params": {
+    "markets": "alternate_spreads,alternate_totals"
+   },
+   "http_status": 200,
+   "body": {
+    "id": "day-synth-nfl",
+    "away_team": "New England Patriots",
+    "home_team": "Seattle Seahawks",
+    "bookmakers": [
+     {
+      "key": "pinnacle",
+      "markets": [
+       {
+        "key": "alternate_spreads",
+        "outcomes": [
+         {
+          "name": "Seattle Seahawks",
+          "point": -6.5,
+          "price": 1.5
+         },
+         {
+          "name": "New England Patriots",
+          "point": 6.5,
+          "price": 2.6
+         },
+         {
+          "name": "Seattle Seahawks",
+          "point": -1.5,
+          "price": 2.1
+         },
+         {
+          "name": "New England Patriots",
+          "point": 1.5,
+          "price": 1.75
+         }
+        ]
+       },
+       {
+        "key": "alternate_totals",
+        "outcomes": [
+         {
+          "name": "Over",
+          "point": 41.5,
+          "price": 1.8
+         },
+         {
+          "name": "Under",
+          "point": 41.5,
+          "price": 2.05
+         },
+         {
+          "name": "Over",
+          "point": 47.5,
+          "price": 2.05
+         },
+         {
+          "name": "Under",
+          "point": 47.5,
+          "price": 1.8
+         }
+        ]
+       }
+      ],
+      "last_update": "2026-09-13T19:02:00Z"
+     }
+    ],
+    "commence_time": "2026-09-13T21:00:00Z"
+   }
+  },
+  {
+   "id": 7,
+   "fetched_at": "2026-09-13T19:04:00+00:00",
+   "run_id": 2,
+   "source": "kalshi",
+   "endpoint": "/events",
+   "params": {
+    "series_ticker": "KXNFLGAME"
+   },
+   "http_status": 200,
+   "body": {
+    "cursor": "",
+    "events": [
+     {
+      "title": "New England vs Seattle",
+      "event_ticker": "KXNFLGAME-26SEP13NEWSEA"
+     },
+     {
+      "title": "New England vs Seattle: Spread",
+      "event_ticker": "KXNFLSPREAD-26SEP13NEWSEA"
+     },
+     {
+      "title": "New England vs Seattle: Total",
+      "event_ticker": "KXNFLTOTAL-26SEP13NEWSEA"
+     },
+     {
+      "title": "Zzz United vs Yyy Rovers",
+      "event_ticker": "KXNFLGAME-26SEP13ZZZYYY"
+     }
+    ]
+   }
+  },
+  {
+   "id": 8,
+   "fetched_at": "2026-09-13T19:04:00+00:00",
+   "run_id": 2,
+   "source": "kalshi",
+   "endpoint": "/markets",
+   "params": {
+    "series_ticker": "KXNFLGAME"
+   },
+   "http_status": 200,
+   "body": {
+    "cursor": "",
+    "markets": [
+     {
+      "title": "Seattle wins",
+      "status": "active",
+      "ticker": "KXNFLGAME-26SEP13NEWSEA-SEA",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLGAME-26SEP13NEWSEA",
+      "custom_strike": {
+       "football_team": "11111111-2222-3333-4444-555555555555"
+      },
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "Seattle",
+      "no_ask_dollars": "0.5",
+      "no_bid_dollars": "0.48",
+      "yes_ask_dollars": "0.52",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.5",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     },
+     {
+      "title": "New England wins",
+      "status": "active",
+      "ticker": "KXNFLGAME-26SEP13NEWSEA-NE",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLGAME-26SEP13NEWSEA",
+      "custom_strike": {
+       "football_team": "66666666-7777-8888-9999-aaaaaaaaaaaa"
+      },
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "New England",
+      "no_ask_dollars": "0.56",
+      "no_bid_dollars": "0.54",
+      "yes_ask_dollars": "0.46",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.44",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     },
+     {
+      "title": "Seattle wins by over 3.5 points?",
+      "status": "active",
+      "ticker": "KXNFLSPREAD-26SEP13NEWSEA-SEA3",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLSPREAD-26SEP13NEWSEA",
+      "floor_strike": 3.5,
+      "custom_strike": {
+       "football_team": "11111111-2222-3333-4444-555555555555"
+      },
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "Seattle wins by over 3.5 points",
+      "no_ask_dollars": "0.56",
+      "no_bid_dollars": "0.54",
+      "yes_ask_dollars": "0.46",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.44",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     },
+     {
+      "title": "Will there be over 44.5 points scored?",
+      "status": "active",
+      "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLTOTAL-26SEP13NEWSEA",
+      "floor_strike": 44.5,
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "Over 44.5 points scored",
+      "no_ask_dollars": "0.54",
+      "no_bid_dollars": "0.52",
+      "yes_ask_dollars": "0.48",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.46",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     },
+     {
+      "title": "Zzz United wins",
+      "status": "active",
+      "ticker": "KXNFLGAME-26SEP13ZZZYYY-ZZZ",
+      "volume_fp": "420.00",
+      "close_time": "2026-09-14T01:00:00Z",
+      "event_ticker": "KXNFLGAME-26SEP13ZZZYYY",
+      "custom_strike": {
+       "football_team": "cccccccc-dddd-eeee-ffff-000000000000"
+      },
+      "volume_24h_fp": "900.00",
+      "yes_sub_title": "Zzz United",
+      "no_ask_dollars": "0.5",
+      "no_bid_dollars": "0.48",
+      "yes_ask_dollars": "0.52",
+      "yes_ask_size_fp": "150.00",
+      "yes_bid_dollars": "0.5",
+      "yes_bid_size_fp": "150.00",
+      "open_interest_fp": "2500.00",
+      "price_level_structure": "linear_1c",
+      "expected_expiration_time": "2026-09-14T01:00:00Z"
+     }
+    ]
+   }
+  }
+ ],
+ "orderbook_events": [
+  {
+   "id": 1,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:01:00+00:00",
+   "sid": 2,
+   "seq": 1,
+   "kind": "snapshot",
+   "side": null,
+   "price": null,
+   "delta": null,
+   "raw": {
+    "market_ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+    "no_dollars_fp": [
+     [
+      "0.5100",
+      "600.00"
+     ],
+     [
+      "0.4900",
+      "800.00"
+     ]
+    ],
+    "yes_dollars_fp": [
+     [
+      "0.4700",
+      "40.00"
+     ],
+     [
+      "0.4500",
+      "500.00"
+     ]
+    ]
+   }
+  },
+  {
+   "id": 2,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:01:20+00:00",
+   "sid": 2,
+   "seq": 2,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": 7.0,
+   "raw": {}
+  },
+  {
+   "id": 3,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:01:40+00:00",
+   "sid": 2,
+   "seq": 3,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": -5.0,
+   "raw": {}
+  },
+  {
+   "id": 4,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:02:00+00:00",
+   "sid": 2,
+   "seq": 4,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": 7.0,
+   "raw": {}
+  },
+  {
+   "id": 5,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:02:20+00:00",
+   "sid": 2,
+   "seq": 5,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": -5.0,
+   "raw": {}
+  },
+  {
+   "id": 6,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:02:40+00:00",
+   "sid": 2,
+   "seq": 6,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": 7.0,
+   "raw": {}
+  },
+  {
+   "id": 7,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:03:00+00:00",
+   "sid": 2,
+   "seq": 7,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": -5.0,
+   "raw": {}
+  },
+  {
+   "id": 8,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:03:20+00:00",
+   "sid": 2,
+   "seq": 8,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": 7.0,
+   "raw": {}
+  },
+  {
+   "id": 9,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:03:40+00:00",
+   "sid": 2,
+   "seq": 9,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": -5.0,
+   "raw": {}
+  },
+  {
+   "id": 10,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:04:00+00:00",
+   "sid": 2,
+   "seq": 10,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": 7.0,
+   "raw": {}
+  },
+  {
+   "id": 11,
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:04:20+00:00",
+   "sid": 2,
+   "seq": 11,
+   "kind": "delta",
+   "side": "no",
+   "price": 0.49,
+   "delta": -5.0,
+   "raw": {}
+  }
+ ],
+ "venue_trades": [
+  {
+   "venue": "kalshi",
+   "trade_id": "day-synth-0",
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:02:10+00:00",
+   "yes_price": 0.47,
+   "count": 12.0,
+   "taker_side": "no",
+   "taker_outcome_side": "no",
+   "taker_book_side": null,
+   "is_block": false,
+   "source": "ws"
+  },
+  {
+   "venue": "kalshi",
+   "trade_id": "day-synth-1",
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:02:35+00:00",
+   "yes_price": 0.47,
+   "count": 14.0,
+   "taker_side": "no",
+   "taker_outcome_side": "no",
+   "taker_book_side": null,
+   "is_block": false,
+   "source": "ws"
+  },
+  {
+   "venue": "kalshi",
+   "trade_id": "day-synth-2",
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:03:00+00:00",
+   "yes_price": 0.47,
+   "count": 14.0,
+   "taker_side": "no",
+   "taker_outcome_side": "no",
+   "taker_book_side": null,
+   "is_block": false,
+   "source": "ws"
+  },
+  {
+   "venue": "kalshi",
+   "trade_id": "day-synth-3",
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:03:30+00:00",
+   "yes_price": 0.47,
+   "count": 60.0,
+   "taker_side": "no",
+   "taker_outcome_side": "no",
+   "taker_book_side": null,
+   "is_block": false,
+   "source": "ws"
+  },
+  {
+   "venue": "kalshi",
+   "trade_id": "day-synth-4",
+   "ticker": "KXNFLTOTAL-26SEP13NEWSEA-44",
+   "ts": "2026-09-13T19:03:50+00:00",
+   "yes_price": 0.47,
+   "count": 80.0,
+   "taker_side": "no",
+   "taker_outcome_side": "no",
+   "taker_book_side": null,
+   "is_block": false,
+   "source": "ws"
+  }
+ ],
+ "counts": {
+  "raw_responses": 8,
+  "orderbook_events": 11,
+  "venue_trades": 5
+ }
+}
