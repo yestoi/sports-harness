@@ -458,7 +458,7 @@ def replay_cmd(
     `replay = true` and which never touches a live row, the ledger, the heartbeat or telemetry.
     """
     configure_logging()
-    from harness.replay import replay
+    from harness.replay import ReplayStepError, replay
 
     s = get_settings()
     # The executor's own statement timeout: `--execute` runs the same loop the service does,
@@ -470,7 +470,9 @@ def replay_cmd(
         try:
             counts = replay(session, from_run, to_run, variant, variant_file=file,
                             execute=execute, settings=s)
-        except ValueError as exc:
+        # A replay whose grid did not run cleanly has no counts worth printing: exiting 0 with
+        # `orders=0` would read as a total replay-versus-live divergence rather than a failure.
+        except (ValueError, ReplayStepError) as exc:
             log.error("%s", exc)
             raise typer.Exit(1) from exc
 

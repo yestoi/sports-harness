@@ -7,7 +7,17 @@ import pytest
 
 from harness.db.models import OrderbookEvent, OrderbookSnapshot, VenueMarket
 from harness.execution import EXECUTOR_VERSION
-from harness.execution.book import BookState, advance_book, book_age_s, book_at, load_book, opp, side_p
+from harness.execution.book import (
+    BookState,
+    advance_book,
+    advance_book_at,
+    book_age_s,
+    book_at,
+    load_book,
+    load_book_at,
+    opp,
+    side_p,
+)
 
 NOW = datetime(2026, 9, 13, 17, 0, tzinfo=timezone.utc)
 # The `orderbook_snapshot` message body the recorder stores in `orderbook_events.raw`
@@ -364,3 +374,89 @@ def test_book_age_s_never_negative():
                               source="ws", anchor_id=1)
     assert book_age_s(b, NOW) == 0
     assert book_age_s(b, NOW + timedelta(seconds=9)) == 6
+
+
+# --- fix round 1: the past-instant book is the live book, bounded ----------------------
+
+
+def test_book_at_applies_the_live_delta_set(db_session):
+    """A delta stamped just before its snapshot is applied at a past instant, exactly as live.
+
+    Snapshots carry the recorder's clock and deltas the venue's, so a delta that genuinely
+    follows a snapshot can be stamped a little before it -- which is what `DELTA_LOOKBACK` is
+    for. Scanning by `ts >` alone would drop it in replay and leave the level wrong until the
+    next snapshot, so `book_at` takes the live delta set (`id > anchor and ts >= anchor ts -
+    DELTA_LOOKBACK`) with the instant as its upper bound.
+    """
+    snap = _ws_snapshot(db_session, "A", NOW, sid=2, seq=1)
+    early = _delta(db_session, "A", NOW - timedelta(seconds=2), "yes", "0.3500", "6.00",
+                   sid=2, seq=2)
+    assert early.id > snap.id
+    _delta(db_session, "A", NOW + timedelta(seconds=1), "yes", "0.3500", "-4.00", sid=2, seq=3)
+
+    live = load_book(db_session, "A", NOW + timedelta(seconds=10))
+    at = book_at(db_session, "A", NOW + timedelta(seconds=10))
+
+    assert live.yes_bids == {Decimal("0.3500"): Decimal("12.00")}
+    assert at.yes_bids == live.yes_bids
+    assert (at.last_event_id, at.as_of, at.dirty) == (live.last_event_id, live.as_of, live.dirty)
+
+
+def test_book_at_anchors_on_a_rest_ladder_when_it_is_the_fresher_source(db_session):
+    """A ticker the WebSocket never snapshotted still has a book at a past instant.
+
+    `load_book` picks the fresher of the newest WS snapshot and the newest REST ladder, so a
+    replay that only looked at WS snapshots would hand the executor no book at all for a
+    REST-anchored ticker -- every order on it placed under `no_book` and never filled.
+    """
+    vm = _market(db_session, "R")
+    _rest_snapshot(db_session, vm, NOW - timedelta(seconds=10), raw_id=41)
+
+    at = book_at(db_session, "R", NOW)
+    live = load_book(db_session, "R", NOW)
+
+    assert at is not None and at.source == "rest"
+    assert (at.sid, at.seq) == (0, 0)
+    assert at.yes_bids == live.yes_bids and at.no_bids == live.no_bids
+    assert at.gap_check_id == live.gap_check_id
+    # And the fresher of the two sources still wins, at the instant.
+    _ws_snapshot(db_session, "R", NOW - timedelta(seconds=2), sid=7)
+    assert book_at(db_session, "R", NOW).source == "ws"
+    assert book_at(db_session, "R", NOW - timedelta(seconds=5)).source == "rest"
+
+
+def test_advance_book_at_matches_advance_book_bounded_at_the_instant(db_session):
+    """`advance_book_at` is `advance_book` with an upper `ts` bound: same book, incrementally.
+
+    A replay steps a whole day 15 s at a time, so rebuilding each book from its anchor at every
+    step is quadratic in the day's tape. Advancing the cached book has to land on exactly the
+    book a rebuild would have produced.
+    """
+    _ws_snapshot(db_session, "A", NOW, sid=2, seq=1)
+    _delta(db_session, "A", NOW + timedelta(seconds=1), "yes", "0.3500", "-4.00", sid=2, seq=2)
+    _delta(db_session, "A", NOW + timedelta(seconds=20), "yes", "0.3500", "-3.00", sid=2, seq=3)
+    _delta(db_session, "A", NOW + timedelta(seconds=40), "yes", "0.3400", "9.00", sid=2, seq=4)
+
+    book = book_at(db_session, "A", NOW + timedelta(seconds=10))
+    for step in (25, 45, 60):
+        book = advance_book_at(db_session, book, NOW + timedelta(seconds=step))
+        rebuilt = book_at(db_session, "A", NOW + timedelta(seconds=step))
+        assert book.yes_bids == rebuilt.yes_bids, step
+        assert (book.as_of, book.last_event_id, book.seq) == (
+            rebuilt.as_of, rebuilt.last_event_id, rebuilt.seq), step
+
+
+def test_load_book_at_dirties_on_a_gap_inside_the_range_only(db_session):
+    """`load_book_at` is `load_book`'s gap check bounded at the instant.
+
+    A gap taped after the instant says nothing about the book at the instant -- reusing the
+    live `id > anchor` test unbounded would dirty every historical book on that subscription
+    forever. A gap recorded before it is a lost frame the live loop would have seen.
+    """
+    _ws_snapshot(db_session, "A", NOW, sid=2, seq=1)
+    _delta(db_session, "A", NOW + timedelta(seconds=1), "yes", "0.3500", "-4.00", sid=2, seq=2)
+    assert load_book_at(db_session, "A", NOW + timedelta(seconds=10)).dirty is False
+
+    _gap(db_session, sid=2, exposed_by="A", ts=NOW + timedelta(seconds=30))
+    assert load_book_at(db_session, "A", NOW + timedelta(seconds=10)).dirty is False
+    assert load_book_at(db_session, "A", NOW + timedelta(seconds=40)).dirty is True

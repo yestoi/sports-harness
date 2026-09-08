@@ -16,6 +16,7 @@ wall time.
 
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ from harness.db.models import (
     OddsSnapshot,
     Order,
     OrderEvent,
+    OrderbookSnapshot,
     Run,
     Signal,
     VenueMarket,
@@ -36,7 +38,7 @@ from harness.db.models import (
 from harness.replay import replay
 from harness.strategy.pipeline import price_and_signal, pricing_clock_for_run
 from harness.strategy.variants import load_variants, register_variants
-from tests.test_exec_loop import T2, T3, Clock, _book2, _book3, _print, make_executor
+from tests.test_exec_loop import T2, T3, VM3, Clock, _book2, _delta, _print, make_executor
 from tests.test_pipeline import NOW, VARIANTS_DIR, _seed
 
 runner = CliRunner()
@@ -91,6 +93,23 @@ def _second_run(session, at: datetime) -> Run:
     return run
 
 
+def _rest_book3(session, fetched_at: datetime) -> OrderbookSnapshot:
+    """T3's book as a REST ladder rather than a WebSocket snapshot.
+
+    Same shape as `tests.test_exec_loop._book3` -- 20 resting at 0.50, 30 at our 0.45 target,
+    50 on the NO side at 0.48, so the midpoint is the 0.51 the gap snapshot recorded and the
+    `venue_move` rule stays quiet -- but reached through `orderbook_snapshots`, which is the
+    only anchor `load_book` has for a ticker the WebSocket never snapshotted.
+    """
+    row = OrderbookSnapshot(
+        raw_id=90_001, venue_market_id=VM3, fetched_at=fetched_at,
+        yes_bids=[["0.5000", "20.00"], ["0.4500", "30.00"]],
+        no_bids=[["0.4800", "50.00"]])
+    session.add(row)
+    session.flush()
+    return row
+
+
 def _order_key(row) -> tuple:
     return (row.ticker, row.side, row.prob, row.contracts, row.placed_at)
 
@@ -123,21 +142,43 @@ def _row_counts(session) -> dict:
 
 @pytest.fixture
 def two_runs(env_settings, db_session):
-    """Two priced runs 45 s apart, both books on the tape, one print that fills T2 in between.
+    """Two priced runs 45 s apart over a tape shaped to catch every way the two books can differ.
 
     The live pass is driven exactly as the day happened: run A is priced, the executor steps
     the grid, and run B's signals only appear at run B's own clock -- which is the state a
     replay of the same range has to reconstruct from nothing but the record.
+
+    The tape carries, deliberately (fix round 1, I3):
+
+    * **T2, WebSocket-anchored, with a delta stream straddling its snapshot.** The first delta
+      carries a venue timestamp five seconds *earlier* than the snapshot's recorder timestamp,
+      which is the ordinary case `DELTA_LOOKBACK` exists for. A replay that scanned deltas by
+      `ts > snapshot ts` would silently drop it, join a 40-deep queue instead of a 50-deep one
+      and fill ten contracts more than the live pass did.
+    * **T3, REST-anchored, with no WebSocket snapshot at all.** A replay that only anchors on
+      WebSocket snapshots gives this ticker no book, places under `no_book` and never fills it.
+    * **One print per ticker, each filling through the deltas above.**
     """
     game, run_a, markets = _seed(db_session)
     _finish(db_session, run_a, NOW)
     register_variants(db_session, load_variants(VARIANTS_DIR), NOW, prune=True)
+
+    # T2: the WS anchor, then three deltas -- one stamped before it, two inside the grid.
     _book2(db_session, NOW - timedelta(seconds=5))
-    _book3(db_session, NOW - timedelta(seconds=5))
-    # 100 contracts lifted at our 0.35 on T2: the 40 resting ahead of us go first, we take the
-    # remaining 60 of our 97, and the fill lands on the step at NOW + 30.
-    _print(db_session, T2, NOW + timedelta(seconds=20), "0.35", "100", taker_side="no",
+    _delta(db_session, T2, NOW - timedelta(seconds=7), "yes", "0.35", "10.00", seq=2)
+    _delta(db_session, T2, NOW + timedelta(seconds=5), "yes", "0.35", "-5.00", seq=3)
+    _delta(db_session, T2, NOW + timedelta(seconds=25), "no", "0.48", "3.00", seq=4)
+    # 100 contracts lifted at our 0.35: the 45 left resting ahead of us go first and we take
+    # the next 55 of our 97, which is a different number from the one a replay reading the
+    # wrong delta set would produce.
+    _print(db_session, T2, NOW + timedelta(seconds=30), "0.35", "100", taker_side="no",
            trade_id="fill-t2")
+
+    # T3: a REST ladder and no WS snapshot, quoting the same 0.51 mid as its gap snapshot.
+    _rest_book3(db_session, NOW - timedelta(seconds=5))
+    _delta(db_session, T3, NOW + timedelta(seconds=10), "no", "0.48", "5.00", seq=2, sid=0)
+    _print(db_session, T3, NOW + timedelta(seconds=35), "0.45", "100", taker_side="no",
+           trade_id="fill-t3")
     db_session.commit()
     run_b = _second_run(db_session, NOW + timedelta(seconds=GRID_S))
     db_session.commit()
@@ -277,6 +318,141 @@ def test_rerun_inserts_zero(env_settings, db_session, two_runs):
     assert second.signals_rejected == first.signals_rejected
     assert second.orders == first.orders and second.fills == first.fills
     assert _row_counts(db_session) == before
+
+
+# --- fix round 1 ----------------------------------------------------------------------
+
+
+def test_replay_advances_its_book_instead_of_rebuilding_it(monkeypatch, env_settings,
+                                                           db_session, two_runs):
+    """The replay executor carries its book across grid steps, exactly as the live loop does.
+
+    A rebuild from the anchor at every step is quadratic in the day's tape: step k re-applies
+    every delta since the ticker's last snapshot, and snapshots only arrive on a (re)subscribe.
+    Over a six-hour day that is 1,440 steps against a growing prefix, which will not finish
+    inside the executor's own statement timeout.
+    """
+    from harness.execution import loop as loop_mod
+
+    game, run_a, run_b = two_runs
+    price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
+    price_and_signal(db_session, run_b.id, NOW + timedelta(seconds=GRID_S), env_settings,
+                     budget_s=20)
+    db_session.commit()
+
+    built: list[str] = []
+    advanced: list[str] = []
+    real_build, real_advance = loop_mod.load_book_at, loop_mod.advance_book_at
+
+    def counting_build(session, ticker, now):
+        built.append(ticker)
+        return real_build(session, ticker, now)
+
+    def counting_advance(session, book, now):
+        advanced.append(book.ticker)
+        return real_advance(session, book, now)
+
+    monkeypatch.setattr(loop_mod, "load_book_at", counting_build)
+    monkeypatch.setattr(loop_mod, "advance_book_at", counting_advance)
+
+    replay(db_session, run_a.id, run_b.id, "tiny", execute=True, settings=env_settings)
+
+    # Four grid instants. Each ticker that has a book is anchored once, at the step that first
+    # sees it, and advanced at every step after -- never rebuilt from its anchor.
+    steps = GRID_S // env_settings.exec_period_s + 1
+    for ticker in (T2, T3):
+        assert built.count(ticker) == 1, (ticker, built)
+        assert advanced.count(ticker) == steps - 1, (ticker, advanced)
+
+
+def test_replay_step_failure_fails_the_command(monkeypatch, env_settings, db_session, two_runs):
+    """A step that fails stops the replay instead of reporting `orders=0`.
+
+    `Executor.step` never raises by design -- the live loop has to survive one bad step -- so a
+    statement timeout inside a replayed day would otherwise be logged, swallowed, and reported
+    to the Monday duty as a total replay-versus-live divergence with no visible cause.
+    """
+    from harness.execution.loop import Executor
+    from harness.replay import ReplayStepError
+
+    game, run_a, run_b = two_runs
+    price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
+    db_session.commit()
+
+    def boom(self, session, now, stats, heartbeat, skipped_loops=0):
+        raise RuntimeError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(Executor, "_body", boom)
+    with pytest.raises(ReplayStepError, match="statement timeout"):
+        replay(db_session, run_a.id, run_b.id, "tiny", execute=True, settings=env_settings)
+
+
+def test_replay_cli_exits_1_when_a_step_fails(monkeypatch, env_settings, db_session, two_runs):
+    """The same failure, through the command an operator actually runs."""
+    import os
+
+    from harness.cli import app
+    from harness.config.settings import get_settings
+    from harness.execution.loop import Executor
+
+    game, run_a, run_b = two_runs
+    price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
+    db_session.commit()
+    url = os.environ.get("DATABASE_URL_TEST")
+    if not url:
+        pytest.skip("DATABASE_URL_TEST not set")
+
+    def boom(self, session, now, stats, heartbeat, skipped_loops=0):
+        raise RuntimeError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(Executor, "_body", boom)
+    monkeypatch.setenv("DATABASE_URL", url)
+    get_settings.cache_clear()
+    try:
+        result = runner.invoke(app, ["replay", "--from-run", str(run_a.id),
+                                     "--to-run", str(run_b.id), "--variant", "tiny",
+                                     "--execute"])
+        assert result.exit_code == 1, result.output
+    finally:
+        get_settings.cache_clear()
+
+
+def test_replay_row_counts_leave_the_callers_transaction_alone(env_settings, db_session,
+                                                               two_runs):
+    """Counting the replay's rows must not commit whatever the caller was in the middle of."""
+    from harness.replay import _replay_row_counts
+
+    game, run_a, run_b = two_runs
+    marker = NOW + timedelta(hours=3)
+    db_session.add(Run(started_at=marker, status="running"))
+    db_session.flush()
+
+    orders, fills = _replay_row_counts(db_session, "deadbeef1234", NOW, marker)
+    assert (orders, fills) == (0, 0)
+
+    db_session.rollback()
+    assert db_session.query(Run).filter(Run.started_at == marker).count() == 0
+
+
+def test_fixture_day_game_pick_is_deterministic(db_session):
+    """The day loader picks its game by the lowest id, not by whatever the planner returns."""
+    from harness.db.models import Game
+    from tests.fixture_day import pick_game
+
+    kickoff = NOW + timedelta(days=1)
+    games = [Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=kickoff),
+             Game(sport="nfl", home_team_id=20, away_team_id=24, kickoff_utc=kickoff)]
+    db_session.add_all(games)
+    db_session.flush()
+    for i, game in enumerate(reversed(games)):
+        db_session.add(VenueMarket(
+            venue="kalshi", ticker=f"KXPICK-{i}", event_ticker="KXPICK", series_ticker="KXPICK",
+            game_id=game.id, market_type="moneyline", side_team_id=game.home_team_id,
+            match_confidence=Decimal("1.00"), match_status="matched", first_seen_raw_id=1,
+            last_seen_at=NOW))
+    db_session.flush()
+
+    assert pick_game(db_session) == min(g.id for g in games)
 
 
 # --- the fixture day ------------------------------------------------------------------

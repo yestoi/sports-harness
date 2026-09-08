@@ -128,8 +128,7 @@ def load_day(session, directory: Path, settings) -> DayResult:
         replay(session, runs[0].id, runs[-1].id, VARIANT, execute=True, settings=settings)
         session.commit()
 
-        game_id = session.query(VenueMarket.game_id).filter(
-            VenueMarket.game_id.isnot(None)).limit(1).scalar()
+        game_id = pick_game(session)
         compute_benchmarks_for_game(session, game_id, _after_kickoff(session, game_id))
         session.commit()
         drain_gap_outcomes(session)
@@ -149,6 +148,19 @@ def load_day(session, directory: Path, settings) -> DayResult:
                      .filter(Order.replay.is_(True)).count(),
         gap_outcomes=session.query(GapOutcome).count(),
     )
+
+
+def pick_game(session) -> int | None:
+    """The day's game: the lowest matched game id.
+
+    Ordered rather than `limit(1)` on whatever the planner returns first (fix round 1, M2). One
+    game in the committed day today, so the ordering never changes the answer -- but a day with
+    two would otherwise benchmark a different one from run to run.
+    """
+    return (session.query(VenueMarket.game_id)
+            .filter(VenueMarket.game_id.isnot(None))
+            .order_by(VenueMarket.game_id)
+            .limit(1).scalar())
 
 
 def _after_kickoff(session, game_id: int) -> datetime:

@@ -18,6 +18,12 @@ Two rules shape this module and both come from the addendum:
   the head, a value is the replay path and bounds the read on `ts <= at` (`created_at <= at` for
   the pricing tables), ordered by `(ts, id)` for the tape (Task 13, ruling 2).
 
+  The horizon reaches every table that has a history to bound. It cannot reach the dimension
+  tables: `venue_markets.match_status` / `match_key` and `games.kickoff_utc` are read at their
+  current values, so a market matched (or a kickoff moved) *after* the replayed instant reads
+  that way in the replay. Bounding those would need a history the schema does not keep, so this
+  is a stated limitation of a replay rather than something the reader can fix (review M7).
+
 Reads return frozen views from `harness.execution.plan` wherever the decision chain consumes
 them, so the loop never passes a raw `Row` into a pure function.
 """
@@ -297,8 +303,13 @@ def market_rows(session: Session, venue_market_ids: Iterable[int],
     return {row.venue_market_id: row for row in session.execute(stmt, params).all()}
 
 
+# The live statement with the instant added, deliberately *not* `max(ts)`: `orderbook_events`
+# has no b-tree with `ts` leading (the PK is `(id, ts)`, the only `ts` index is a BRIN), so an
+# aggregate would read every row at or before the instant on a table taking 4M rows an hour --
+# once per 15 s grid step, under the executor's own statement timeout (fix round 1, I2). A
+# backward walk of the primary key stops at the first row inside the bound.
 _NEWEST_EVENT_AT = text(
-    "select max(ts) from orderbook_events where ts <= :at")
+    "select ts from orderbook_events where ts <= :at order by id desc limit 1")
 
 
 def newest_event_ts(session: Session, at: datetime | None = None) -> datetime | None:

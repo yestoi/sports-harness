@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from harness.config.settings import Settings
 from harness.db.models import MarketGapSnapshot, Run, StrategyVariant
+from harness.execution import store
 from harness.execution.loop import Executor
 from harness.strategy.as_measured import as_measured_table
 from harness.strategy.pipeline import _insert_signals, _load_gap_rows, pricing_clock_for_run
@@ -51,6 +52,18 @@ class ReplayCounts:
     #: record's totals rather than this call's: a rerun writes nothing and still reports them.
     orders: int = 0
     fills: int = 0
+
+
+class ReplayStepError(RuntimeError):
+    """A replay grid step did not run cleanly, so the replay's counts mean nothing.
+
+    `Executor.step` never raises: the live loop has to survive one bad step, and a failure is
+    rolled back, recorded on the heartbeat and stepped over. A replay has no next loop to be
+    saved by -- a swallowed statement timeout would come out as `orders=0`, which the Monday
+    replay-versus-live duty would read as a total divergence with no visible cause -- so the
+    replay driver turns a step's own error, or a step it never got to run, into a failure of
+    the whole command (fix round 1, I2).
+    """
 
 
 class _Grid:
@@ -210,10 +223,16 @@ def _execute(session: Session, settings: Settings, variant: Variant,
                         variants=[variant.variant_id])
     steps = 0
     while grid.now() <= last:
+        instant, steps = grid.now(), steps + 1
         stats = executor.step()
-        steps += 1
         if not stats.locked:
-            log.warning("replay executor step %s skipped: another replay holds the lock", steps)
+            raise ReplayStepError(
+                f"replay step {steps} at {instant.isoformat()} never ran: another replay holds "
+                f"the {store.REPLAY_LOCK_KEY} lock")
+        if stats.errors:
+            raise ReplayStepError(
+                f"replay step {steps} at {instant.isoformat()} failed: "
+                f"{stats.last_error or 'see the executor log'}")
         grid.advance()
     log.info("replay executor stepped %s times over [%s, %s]", steps, first, last)
     return _replay_row_counts(session, variant.variant_id, first, last)
@@ -238,8 +257,13 @@ def _replay_row_counts(session: Session, variant_id: str, first: datetime,
     caller wants to hear is what stands, not what this call was optimistic about. Scoped to the
     replayed variant and the grid's own window, so replaying a second range afterwards reports
     that range rather than the season's running total.
+
+    Read through a session of its own (fix round 1, M1). The executor committed on its own
+    connection, so the count has to be taken outside whatever snapshot the caller is holding --
+    and committing the caller's transaction to get there would be an undocumented side effect
+    of asking for a number.
     """
-    session.commit()  # end the caller's snapshot so the executor's own commits are visible
-    row = session.execute(_REPLAY_COUNTS,
-                          {"v": variant_id, "first": first, "last": last}).one()
+    with Session(bind=session.get_bind()) as reader:
+        row = reader.execute(_REPLAY_COUNTS,
+                             {"v": variant_id, "first": first, "last": last}).one()
     return int(row.orders), int(row.fills)

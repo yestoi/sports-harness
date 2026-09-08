@@ -53,9 +53,11 @@ from harness.execution.book import (
     ZERO,
     BookState,
     advance_book,
+    advance_book_at,
     book_age_s,
     book_at,
     load_book,
+    load_book_at,
     side_p,
 )
 from harness.execution.fills import (
@@ -106,6 +108,10 @@ class ExecStats:
     errors: int = 0
     loop_ms: int = 0
     locked: bool = True
+    #: The first failure of the step, the same string the heartbeat's `last_error` carries.
+    #: A live loop reads it off the heartbeat; a replay writes no heartbeat and needs the
+    #: message here to fail its own command with it (fix round 1, I2).
+    last_error: str | None = None
 
 
 @dataclass
@@ -222,6 +228,7 @@ class Executor:
                 error = f"{type(exc).__name__}: {exc}"[:2000]
                 log.exception("executor step failed")
             stats.loop_ms = int((self._monotonic() - started) * 1000)
+            stats.last_error = error
             self._durations.append(stats.loop_ms)
             wrote_metrics = False
             try:
@@ -424,19 +431,19 @@ class Executor:
                   cached: BookState | None) -> BookState | None:
         """The ticker's book at `now`: the tape's head live, the past instant in replay.
 
-        `load_book` and `advance_book` both run to the head of the tape with no upper `ts`
-        bound, which is right for a loop whose clock *is* the head and catastrophic for one
-        whose clock is three days behind it, so replay reads `book_at(session, ticker, now)`
-        instead (ruling 2). `book_at` returns None once the newest row at the instant is older
-        than `BOOK_MAX_AGE`, where `advance_book` would hand back the same stale book and let
-        `MarketNow.dirty` reject it on age; keeping the cached book in that case is what makes
-        a quiet market read the same way on both paths rather than as a market with no book.
+        The two paths are the same two calls. `load_book`/`advance_book` run to the head of the
+        tape with no upper `ts` bound, which is right for a loop whose clock *is* the head and
+        catastrophic for one whose clock is three days behind it, so replay takes
+        `load_book_at`/`advance_book_at` -- the same rules with the instant as their upper
+        bound (fix round 1, I1 and I2). Both paths build once and advance afterwards: a replay
+        that rebuilt each book from its anchor at every 15 s step would be quadratic in the
+        day's tape.
         """
-        if not self.replay:
-            return load_book(session, ticker, now) if cached is None \
-                else advance_book(session, cached, now)
-        book = book_at(session, ticker, now)
-        return cached if book is None else book
+        if self.replay:
+            return (load_book_at(session, ticker, now) if cached is None
+                    else advance_book_at(session, cached, now))
+        return (load_book(session, ticker, now) if cached is None
+                else advance_book(session, cached, now))
 
     def _market_now(self, row, dead_recorder: bool) -> MarketNow:
         return MarketNow(

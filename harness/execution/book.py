@@ -57,10 +57,16 @@ _DELTAS_BY_ID = text(
     "select id, side, price, delta, seq, ts from orderbook_events "
     "where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower order by id"
 )
-# The past-instant scan (`ix_obe_ticker_ts`): bounded on `ts` at both ends, `(ts, id)` order.
+# The past-instant scan (`ix_obe_ticker_ts`): the *same* delta set the live path takes --
+# `id > anchor` plus the `DELTA_LOOKBACK` floor -- with the instant as its upper bound, and
+# `(ts, id)` order rather than `id` order because the question is what the venue's book looked
+# like at a moment. Selecting on `ts >` alone would drop every delta stamped a little before
+# its own snapshot, which is exactly the case `DELTA_LOOKBACK` exists for, and would leave the
+# level wrong until the next snapshot rather than for five seconds (fix round 1, I1).
 _DELTAS_BY_TS = text(
     "select id, side, price, delta, seq, ts from orderbook_events "
-    "where ticker = :t and kind = 'delta' and ts > :lower and ts <= :upper order by ts, id"
+    "where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower and ts <= :upper "
+    "order by ts, id"
 )
 _NEWEST_WS_SNAPSHOT = text(
     "select id, ts, sid, seq, raw from orderbook_events "
@@ -75,11 +81,24 @@ _NEWEST_REST_SNAPSHOT = text(
     "join venue_markets m on m.id = s.venue_market_id "
     "where m.ticker = :t order by s.fetched_at desc limit 1"
 )
+_NEWEST_REST_SNAPSHOT_AT = text(
+    "select s.fetched_at, s.yes_bids, s.no_bids from orderbook_snapshots s "
+    "join venue_markets m on m.id = s.venue_market_id "
+    "where m.ticker = :t and s.fetched_at <= :instant order by s.fetched_at desc limit 1"
+)
 # A gap is per subscription id and dirties every ticker on that sid (§0.12), so this asks
 # only about `sid` -- which works for the hotfix gap rows (`ticker = ''`) and the older ones
 # that carried the exposing ticker (`ix_obe_gap`).
 _GAP_AFTER = text(
     "select 1 from orderbook_events where kind = 'gap' and sid = :sid and id > :anchor_id limit 1"
+)
+# The same test bounded at a past instant. A gap taped *after* the instant says nothing about
+# the book at it -- reusing the unbounded live test would dirty every historical book on that
+# subscription for the rest of the season -- but a gap the live loop had already seen is a lost
+# frame the replayed book has to carry too.
+_GAP_AFTER_AT = text(
+    "select 1 from orderbook_events where kind = 'gap' and sid = :sid and id > :anchor_id "
+    "and ts <= :instant limit 1"
 )
 # A re-anchor target has to be a snapshot that is itself clean: re-anchoring onto a snapshot
 # that was already followed by a gap on its own sid would clear `dirty` while the ladders stay
@@ -89,6 +108,13 @@ _CLEAN_SNAPSHOT_AFTER = text(
     "where s.ticker = :t and s.kind = 'snapshot' and s.id > :anchor_id "
     "and not exists (select 1 from orderbook_events g "
     "                where g.kind = 'gap' and g.sid = s.sid and g.id > s.id) limit 1"
+)
+_CLEAN_SNAPSHOT_AFTER_AT = text(
+    "select 1 from orderbook_events s "
+    "where s.ticker = :t and s.kind = 'snapshot' and s.id > :anchor_id and s.ts <= :instant "
+    "and not exists (select 1 from orderbook_events g "
+    "                where g.kind = 'gap' and g.sid = s.sid and g.id > s.id "
+    "                  and g.ts <= :instant) limit 1"
 )
 # The tape position a REST ladder was fetched at: the id its gap check compares against.
 _MAX_EVENT_ID_AT = text("select max(id) from orderbook_events where ts <= :fetched_at")
@@ -285,6 +311,13 @@ def _gapped(session, book: BookState) -> bool:
                            {"sid": book.sid, "anchor_id": book.gap_check_id}).first() is not None
 
 
+def _gapped_at(session, book: BookState, instant: datetime) -> bool:
+    """`_gapped` bounded at a past instant (see `_GAP_AFTER_AT`)."""
+    return session.execute(_GAP_AFTER_AT,
+                           {"sid": book.sid, "anchor_id": book.gap_check_id,
+                            "instant": instant}).first() is not None
+
+
 def load_book(session, ticker: str, now: datetime) -> BookState | None:
     """Anchor on the fresher of the two snapshot sources, then advance to the tape's head.
 
@@ -346,29 +379,89 @@ def advance_book(session, book: BookState, now: datetime) -> BookState:
 
 
 def book_at(session, ticker: str, instant: datetime) -> BookState | None:
-    """The book as of a past instant, for markouts and replay.
+    """The book as of a past instant: `load_book`'s rules, bounded there.
 
-    Bounded on `ts` at both ends and ordered by `(ts, id)`: the caller is asking what the
-    venue's book looked like at a moment, not what our recorder had ingested by then.
-    Returns None when nothing anchors it, or when the newest event at the instant is more
-    than `BOOK_MAX_AGE` old -- a recorder outage must not read as a quiet market (F36).
+    Anchors on the fresher of the newest WebSocket snapshot and the newest REST ladder *at or
+    before* `instant`, exactly as `load_book` chooses between them, then folds in the live
+    delta set (`id > anchor and ts >= anchor ts - DELTA_LOOKBACK`) up to `instant`, ordered by
+    `(ts, id)` because the question is what the venue's book looked like at a moment rather
+    than what our recorder had ingested by then.
+
+    Returns None when nothing anchors it, or when the freshest thing it knows about at the
+    instant is more than `BOOK_MAX_AGE` old -- a recorder outage must not read as a quiet
+    market (F36).
 
     Dirtiness here comes only from a seq break among the deltas actually replayed. The live
-    path's `gap.id > anchor.id` test cannot be reused: every gap after the instant also has a
-    higher id, so hours later it would dirty every historical book on that sid and take the
-    markouts with it. A gap inside the replayed range is a missing frame, which is exactly
-    what the seq check in `apply_delta` catches.
+    path's `gap.id > anchor.id` test is deliberately not applied: every gap after the instant
+    also has a higher id, so hours later it would dirty every historical book on that sid and
+    take the markouts with it. A caller that wants the live loop's own gap verdict -- the
+    replay executor -- uses `load_book_at`, which adds it bounded at the instant.
     """
     ws = session.execute(_NEWEST_WS_SNAPSHOT_AT, {"t": ticker, "instant": instant}).first()
-    if ws is None:
+    rest = session.execute(_NEWEST_REST_SNAPSHOT_AT, {"t": ticker, "instant": instant}).first()
+    if ws is None and rest is None:
         return None
+    use_ws = ws is not None and (rest is None or ws.ts >= rest.fetched_at)
+    if use_ws:
+        book = BookState.from_ws_raw(ticker, ws.raw, ws.sid, ws.seq, ws.ts, ws.id)
+        lower = ws.ts - DELTA_LOOKBACK
+    else:
+        # Same bookkeeping as `load_book`'s REST branch: sid 0, and a gap-check id dated to the
+        # tape position the ladder was fetched at rather than to the anchor id it does not have.
+        book = BookState.from_levels(ticker, rest.yes_bids, rest.no_bids, sid=0, seq=0,
+                                     as_of=rest.fetched_at, source="rest", anchor_id=0)
+        book.gap_check_id = session.execute(
+            _MAX_EVENT_ID_AT, {"fetched_at": rest.fetched_at}).scalar() or 0
+        lower = rest.fetched_at
     newest = session.execute(_NEWEST_EVENT_TS, {"t": ticker, "instant": instant}).scalar()
-    if newest is None or newest < instant - BOOK_MAX_AGE:
+    # A REST-anchored ticker can have no tape rows of its own at all, and its ladder's own
+    # fetch time is then the only freshness there is to check.
+    freshest = max(t for t in (newest, book.as_of) if t is not None)
+    if freshest < instant - BOOK_MAX_AGE:
         return None
-    book = BookState.from_ws_raw(ticker, ws.raw, ws.sid, ws.seq, ws.ts, ws.id)
-    rows = session.execute(_DELTAS_BY_TS, {"t": ticker, "lower": ws.ts, "upper": instant}).all()
-    _apply_rows(book, rows, check_seq=True)
+    rows = session.execute(_DELTAS_BY_TS, {"t": ticker, "cursor": book.anchor_id,
+                                           "lower": lower, "upper": instant}).all()
+    _apply_rows(book, rows, check_seq=use_ws)
     return book
+
+
+def load_book_at(session, ticker: str, instant: datetime) -> BookState | None:
+    """`load_book` bounded at a past instant -- the book a replay executor starts a ticker on.
+
+    `book_at` plus the live loop's own gap verdict, bounded: a gap the live loop had already
+    seen by `instant` dirtied its book, so it has to dirty the replayed one too, while a gap
+    taped afterwards is not information the replayed instant had.
+    """
+    book = book_at(session, ticker, instant)
+    if book is not None and _gapped_at(session, book, instant):
+        book.dirty = True
+    return book
+
+
+def advance_book_at(session, book: BookState, instant: datetime) -> BookState:
+    """`advance_book` bounded at a past instant. The argument is never mutated.
+
+    A replay executor steps a whole day 15 s at a time. Rebuilding each book from its anchor
+    at every step is quadratic in the day's tape -- snapshots arrive only on a (re)subscribe,
+    so step *k* would re-apply every delta since the ticker's last one -- and would not finish
+    inside the executor's own statement timeout. This is the incremental path the live loop
+    already takes, with the instant as its upper bound, and it re-anchors on the same rule:
+    only a dirty book with a clean snapshot after it, both at or before the instant.
+    """
+    out = book.copy()
+    lower = out.as_of - DELTA_LOOKBACK
+    rows = session.execute(_DELTAS_BY_TS, {"t": out.ticker, "cursor": out.last_event_id,
+                                           "lower": lower, "upper": instant}).all()
+    _apply_rows(out, rows, check_seq=out.source == "ws")
+    if _gapped_at(session, out, instant):
+        out.dirty = True
+    if out.dirty and session.execute(
+            _CLEAN_SNAPSHOT_AFTER_AT,
+            {"t": out.ticker, "anchor_id": out.gap_check_id, "instant": instant}).first() is not None:
+        reloaded = load_book_at(session, out.ticker, instant)
+        if reloaded is not None:
+            return reloaded
+    return out
 
 
 def book_age_s(book: BookState, now: datetime) -> int:
