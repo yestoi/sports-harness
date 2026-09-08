@@ -22,20 +22,9 @@ from harness.db.models import GapOutcome, JobState, OrderClv
 from harness.execution.book import side_p
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 from harness.settlement.benchmarks import BENCHMARK_TYPES, GAP_OUTCOME_TYPES
-from harness.settlement.job import Budget, StageResult, current_ctx, register_stage
+from harness.settlement.job import Budget, StageResult, register_stage
 
 log = logging.getLogger(__name__)
-
-#: `order_clv.benchmark_type` is `String(16)` (unlike `benchmarks.benchmark_type`, widened this
-#: task): the `clv` view depends on the column, and Postgres refuses `ALTER COLUMN ... TYPE` on
-#: a column a view depends on without dropping the view first, which this task's constraints
-#: (no DROP, no ALTER TYPE) do not authorize. Two of `BENCHMARK_TYPES` -- "opening_first_seen"
-#: and "kalshi_last_trade_pre_kick" -- are longer than 16 characters, so those two types are
-#: skipped for `order_clv` specifically (a warning, not a crash: the same shape `_usable_result`
-#: takes in `settle.py` for a `venue_settlements.result` value too long for its own column).
-#: `gap_outcomes` and `benchmarks` are unaffected: `GAP_OUTCOME_TYPES` values are all <= 13
-#: characters, and `benchmarks.benchmark_type` was widened. See the report for the open concern.
-ORDER_CLV_BENCHMARK_TYPE_MAX = 16
 
 #: The fee a paper order's CLV is scored net of. Contracts is a fixed notional (100) rather
 #: than the order's own size: CLV is a price comparison, and a per-contract fee is the same
@@ -101,7 +90,6 @@ def compute_order_clv(session: Session, now: datetime, budget: Budget) -> int:
     an unfilled order gets the same rows a filled one does (spec: every order, whether filled
     or not)."""
     del now
-    ctx = current_ctx()
     inserted = 0
     rows = session.execute(_ORDER_CLV_CANDIDATES).all()
     cache: dict[tuple, dict[str, tuple[Decimal, bool]]] = {}
@@ -118,11 +106,6 @@ def compute_order_clv(session: Session, now: datetime, budget: Budget) -> int:
         for benchmark_type in BENCHMARK_TYPES:
             bench = benches.get(benchmark_type)
             if bench is None:
-                continue
-            if len(benchmark_type) > ORDER_CLV_BENCHMARK_TYPE_MAX:
-                log.warning("order_clv skipped %s: benchmark_type too long for its column",
-                           benchmark_type)
-                ctx["warnings"].append({"order_clv_benchmark_type_too_long": benchmark_type})
                 continue
             p, stale = bench
             p_bench = side_p(p, row.side)

@@ -570,9 +570,11 @@ class Benchmark(Base):
     outcome_team_id: Mapped[int | None] = mapped_column(Integer)
     outcome_side: Mapped[str | None] = mapped_column(String(8))
     threshold: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))
-    #: String(32), not (16): "kalshi_last_trade_pre_kick" (26 chars) and "opening_first_seen"
-    #: (18 chars) are both longer than the column this table shipped with (Task 8 fix: the two
-    #: longest BENCHMARK_TYPES values did not fit their own column).
+    #: String(32): "kalshi_last_trade_pre_kick" (26 chars) and "opening_first_seen" (18 chars)
+    #: are both longer than 16 -- this table (and gap_outcomes, order_clv below) shipped with
+    #: benchmark_type varchar(16), too narrow for BENCHMARK_TYPES' own longest values (Task 8
+    #: fix; ruled: fix the model, not an ALTER, since none of the three tables has ever existed
+    #: on the deployed database -- see test_benchmark_type_columns_fit_every_benchmark_type).
     benchmark_type: Mapped[str] = mapped_column(String(32), nullable=False)
     p: Mapped[Decimal | None] = mapped_column(PROB)
     target_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -587,7 +589,8 @@ class GapOutcome(Base):
     whether or not a variant traded it."""
     __tablename__ = "gap_outcomes"
     gap_snapshot_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    benchmark_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    #: String(32): see the matching note on Benchmark.benchmark_type (Task 8 fix).
+    benchmark_type: Mapped[str] = mapped_column(String(32), primary_key=True)
     p_bench: Mapped[Decimal | None] = mapped_column(PROB)
     clv_mid_p: Mapped[Decimal | None] = mapped_column(PROB)
     clv_bid_p: Mapped[Decimal | None] = mapped_column(PROB)
@@ -601,11 +604,11 @@ class OrderClv(Base):
     """CLV of a placed order against a benchmark (Task 8 fills it; the `clv` view reads it)."""
     __tablename__ = "order_clv"
     order_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    #: Still String(16) (unlike Benchmark.benchmark_type -- see its note): the `clv` view
-    #: depends on this column, and Postgres refuses ALTER COLUMN ... TYPE on a column a view
-    #: depends on. Widening it needs the view dropped and recreated around the ALTER, which
-    #: this task's constraints do not authorize unilaterally (open concern; see the report).
-    benchmark_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    #: String(32): see the matching note on Benchmark.benchmark_type (Task 8 fix). The `clv`
+    #: view (Task 2) reads this column, but `create_all` creates order_clv (and the view is a
+    #: separate `CREATE OR REPLACE VIEW` statement) at the right width from the start -- no
+    #: ALTER is needed since the table has never existed on the deployed database.
+    benchmark_type: Mapped[str] = mapped_column(String(32), primary_key=True)
     p_bench: Mapped[Decimal | None] = mapped_column(PROB)
     p_used: Mapped[Decimal | None] = mapped_column(PROB)
     p_used_kind: Mapped[str | None] = mapped_column(String(8))

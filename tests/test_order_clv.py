@@ -152,11 +152,6 @@ def _seed_all_benchmarks(session, game_id, p="0.6000", stale_type=None):
         _benchmark(session, game_id, kind, p, stale=(kind == stale_type))
 
 
-#: `order_clv.benchmark_type` is still `String(16)` (see order_clv.py's ORDER_CLV_BENCHMARK_TYPE_MAX
-#: note): these two BENCHMARK_TYPES values are longer and are skipped with a warning, not stored.
-_ORDER_CLV_STORABLE_TYPES = tuple(t for t in BENCHMARK_TYPES if len(t) <= 16)
-
-
 def test_order_clv_one_row_per_benchmark_type_in_side_space(db_session):
     game = _game(db_session)
     market = _market(db_session, game.id)
@@ -167,8 +162,8 @@ def test_order_clv_one_row_per_benchmark_type_in_side_space(db_session):
     n = compute_order_clv(db_session, NOW, Budget(60, Mono(0.0)))
     rows = {r.benchmark_type: r for r in db_session.query(OrderClv).filter_by(order_id=order.id).all()}
 
-    assert n == len(_ORDER_CLV_STORABLE_TYPES) == len(rows)
-    assert set(rows) == set(_ORDER_CLV_STORABLE_TYPES)
+    assert n == len(BENCHMARK_TYPES) == len(rows)
+    assert set(rows) == set(BENCHMARK_TYPES)
     expected_p_bench = side_p(Decimal("0.6000"), "no")
     assert expected_p_bench == Decimal("0.4000")
     for row in rows.values():
@@ -190,7 +185,7 @@ def test_order_clv_idempotent_and_stale_copied(db_session):
     db_session.commit()
 
     first = compute_order_clv(db_session, NOW, Budget(60, Mono(0.0)))
-    assert first == len(_ORDER_CLV_STORABLE_TYPES)
+    assert first == len(BENCHMARK_TYPES)
     row = db_session.query(OrderClv).filter_by(order_id=order.id, benchmark_type="pinnacle_t5").one()
     assert row.stale is True
     other = db_session.query(OrderClv).filter_by(order_id=order.id, benchmark_type="consensus_t5").one()
@@ -198,7 +193,7 @@ def test_order_clv_idempotent_and_stale_copied(db_session):
 
     again = compute_order_clv(db_session, NOW, Budget(60, Mono(0.0)))
     assert again == 0
-    assert db_session.query(OrderClv).filter_by(order_id=order.id).count() == len(_ORDER_CLV_STORABLE_TYPES)
+    assert db_session.query(OrderClv).filter_by(order_id=order.id).count() == len(BENCHMARK_TYPES)
 
 
 def test_order_clv_excludes_replay_and_requires_game_benchmarks(db_session):
