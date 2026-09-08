@@ -588,3 +588,18 @@ Times are America/Chicago.
 - Rulings: (1) Carried fix 15 (roadmap) widened: every funnel count that scans a pricing table comes from `runs.notes` (the funnel's `raw_responses` and `venue_markets` counts stay); it ships on the phase branch with fix 14 after Task 12b merges (app.py is in flight there), before Task 13, per the hotfix rule that carried fixes touching in-flight files ride the branch. (2) The verify FAIL's hotfix unit is therefore the phase-branch fix batch, not a `fix-` branch from `main`; re-verify of the page-time row happens after the phase deploy - cost if wrong: the dashboard answers in about 90 s until the phase deploy (days, not weeks).
 - Carried forward: 15 (dashboard funnel scans; widened)
 - Next: phase (Task 12b fix round in flight); the fix batch (14, 15) after 12b merges; Task 13; Task 14; the morning-after verify after 08:10 CT
+
+## 45. phase - phase 3: all 18 tasks merged, final review dispatched - 2026-09-08 04:05 CT
+- Orient: rule 5 continuation (entry 42)
+- Branch / commits: `phase3-paper-execution` c317e5e..4570acc (Task 11 a0e3643; Task 12b a677a24; fix batch 14+15 131c092; Task 13 9706d42; Task 14 4570acc; docs)
+- Result: in progress (18/18 tasks complete plus the fix batch; final whole-branch review in flight)
+- Dispatches: 52 this session (impl 12 incl. the batch, review 13, re-review 12, plus fix-round resumes by message); 2026-09-08 so far: 24
+- Tests: 809 on the phase branch at 4570acc, pristine
+- Review: Task 11 one fix round (unique gate rows; the difference-in-means cluster-robust SE; NULL prices dropped; hash over definitions only); Task 12b one fix round (Critical: telemetry writers could roll back a step; savepoints; one mtm_coverage convention; 19 checks); fix batch one round (dated body kept out of the latest-body fallback; uncapped 24 h notes); Task 13 one fix round (replay's book is the live book bounded at the instant; advanced not rebuilt; a failing step exits 1; the R14 fixture covers deltas and a REST anchor); Task 14 clean
+- Deploy: none since ae1e86c (entry 43)
+- Verification: n/a (entry 44 FAIL on page time stands until the phase deploy re-verifies with fix 15)
+- Rulings (the notable ones; all in the ledger): (1) CHECKS covers every Layer 2b statement in verify.md (19), not the brief's eight examples. (2) The criteria hash stays over the sorted definition strings (my threshold-fold ruling withdrawn). (3) The dated ESPN body never feeds today's latest-body fallback. (4) Replay's book follows the live rules bounded at the instant; a replay step that fails exits 1. (5) The quiet-window deploy's page-time FAIL is closed by fix 15 at the phase deploy, not by a `fix-` branch from `main`. (6) Task 14 merged last per plan order after its clean review.
+- Audit 3a (verbatim outputs): variants diff empty; pyproject diff empty; hosts: `harness/venues/kalshi/ws.py:22:FALLBACK_URL = "wss://external-api-ws.kalshi.com/"` (on main since 7b27916, phase 1); DDL grep: 14 prose/test/helper lines (`truncate_ms`, docstrings, test names), no statement
+- Anomalies: ledger timestamps ran up to 20 min ahead of the clock during the night (entries 42-44 carry the clock time; the ledger's own stamps are approximate)
+- Carried forward: none (14 and 15 closed on the branch)
+- Next: final review verdict -> fix wave if needed -> archive, merge to main, phase deploy (adds app-exec; quiet hours: no forced tick), verify, phase report, bundle and push (U7); then Task 4b step 5 (replay, `variants register`, Amendment 3 with the gap_mid note, `gate_variant` flip) before 2026-09-16
