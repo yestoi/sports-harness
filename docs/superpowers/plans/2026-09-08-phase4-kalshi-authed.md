@@ -1995,7 +1995,7 @@ def grid_steps(price_ranges) -> list[Decimal]:
     cent grid 0.01..0.99 when price_ranges is absent or unparseable."""
 
 def snap_to_grid(p: Decimal, price_ranges) -> Decimal:
-    """The nearest allowed YES price, ties going down (never up: rounding a bid up pays more)."""
+    """The floor in the intent's own side space (controller ruling at task review 2026-09-08: never raises our cost on either side; matches `snap_to_grid` in `harness/strategy/run.py`), formerly nearest allowed YES price, ties going down (never up: rounding a bid up pays more)."""
 
 def encode_side_price(side: str, prob: Decimal, price_ranges) -> tuple[str, Decimal]:
     """(side=yes, p) -> ("bid", snap(p)); (side=no, p) -> ("ask", snap(1 - p)). The returned
