@@ -296,8 +296,13 @@ class Executor:
         # "every exec.* name younger than 5 minutes" never reads a legitimate gap as a miss.
         samples.append(("exec.p95_loop_ms", self._p95(), {}))
         ws_last = heartbeat["ws_last_event_at"]
+        # Fix 18: `ws_last` is the newest WS book event's timestamp, which carries the
+        # exchange's clock and can run ahead of ours. A raw difference then goes negative and
+        # breaks verify.md's `metric_samples.value < 0` invariant, so the age is clamped at
+        # zero and the skew is kept -- non-negative -- as its own metric instead of lost.
         age = None if ws_last is None else (now - ws_last).total_seconds()
-        samples.append(("exec.ws_event_age_s", age, {}))
+        samples.append(("exec.ws_event_age_s", None if age is None else max(age, 0.0), {}))
+        samples.append(("exec.ws_event_ahead_s", None if age is None else max(-age, 0.0), {}))
         for reason, count in acc.cancelled.items():
             samples.append(("exec.cancelled", count, {"reason": reason}))
         for reason, count in acc.skipped.items():

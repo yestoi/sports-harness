@@ -1380,3 +1380,49 @@ def test_newest_event_ts_at_widens_once_then_reads_no_tape_at_all(db_session):
     # Inside the widened 24 h window, it is found.
     _tape_row(db_session, AT - timedelta(hours=6))
     assert store.newest_event_ts(db_session, AT) == AT - timedelta(hours=6)
+
+
+def _ws_age_samples(env_settings, db_session, clock, ws_last):
+    """One `_write_metric_batch` with a hand-built heartbeat, returning the WS-clock pair
+    `(exec.ws_event_age_s, exec.ws_event_ahead_s)` it wrote."""
+    executor = make_executor(env_settings, db_session, clock)
+    heartbeat = {"book_dirty_markets": 0, "ws_last_event_at": ws_last}
+    wrote = executor._write_metric_batch(db_session, clock.now, ExecStats(loop_ms=7),
+                                         heartbeat, open_orders_count=0)
+    assert wrote is True  # the first call of a fresh Sampler is always due
+    db_session.commit()
+    rows = {r.name: r.value for r in db_session.query(MetricSample).filter(
+        MetricSample.name.in_(["exec.ws_event_age_s", "exec.ws_event_ahead_s"])).all()}
+    assert set(rows) == {"exec.ws_event_age_s", "exec.ws_event_ahead_s"}, (
+        "both WS-clock samples are written on every batch, NULL or not")
+    return rows["exec.ws_event_age_s"], rows["exec.ws_event_ahead_s"]
+
+
+def test_ws_event_age_clamped_at_zero_and_skew_recorded_ahead(env_settings, db_session, world):
+    """The exchange's clock can be ahead of the executor's, which used to write a negative
+    `exec.ws_event_age_s` and break verify.md's `metric_samples.value < 0` invariant. The age
+    is now clamped at zero and the skew is kept, non-negative, as `exec.ws_event_ahead_s`."""
+    clock = Clock(NOW)
+    age, ahead = _ws_age_samples(env_settings, db_session, clock,
+                                 clock.now + timedelta(seconds=7))
+    assert age == Decimal("0.000000")
+    assert ahead == Decimal("7.000000")
+
+
+def test_ws_event_age_behind_clock_is_the_age_and_ahead_is_zero(env_settings, db_session, world):
+    """The ordinary case is unchanged: a 30 s old event is still 30 s old, and nothing is
+    ahead of the executor's clock."""
+    clock = Clock(NOW)
+    age, ahead = _ws_age_samples(env_settings, db_session, clock,
+                                 clock.now - timedelta(seconds=30))
+    assert age == Decimal("30.000000")
+    assert ahead == Decimal("0.000000")
+
+
+def test_ws_event_age_and_ahead_are_both_null_before_any_event(env_settings, db_session, world):
+    """No WS event has ever arrived: both samples are written, both NULL -- so verify.md's
+    "every exec.* name younger than 5 minutes" never reads the gap as a missing metric."""
+    clock = Clock(NOW)
+    age, ahead = _ws_age_samples(env_settings, db_session, clock, None)
+    assert age is None
+    assert ahead is None
