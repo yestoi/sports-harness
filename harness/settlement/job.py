@@ -81,6 +81,7 @@ STAGES: list[tuple[str, StageFn]] = []
 #: time so a module that does not exist yet cannot break this one.
 STAGE_MODULES: list[str] = [
     "harness.settlement.settle", "harness.settlement.benchmarks", "harness.settlement.order_clv",
+    "harness.settlement.markouts",
 ]
 
 _CTX: ContextVar[dict | None] = ContextVar("settlement_job_ctx", default=None)

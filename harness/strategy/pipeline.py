@@ -18,6 +18,7 @@ from harness.config.settings import Settings
 from harness.db.models import Game, MarketGapSnapshot, Signal, VenueMarket
 from harness.pricing.fair import compute_fair_values
 from harness.pricing.gaps import build_gap_snapshots
+from harness.settlement.markouts import as_measured_table
 from harness.strategy.run import GapRow, run_strategy
 from harness.strategy.variants import Variant, active_variants
 
@@ -95,6 +96,7 @@ def _insert_signals(
             decision=s.decision,
             rejection_reason=s.rejection_reason,
             labels=s.labels,
+            as_measured=s.as_measured,
             replay=replay,
             created_at=now,
         )
@@ -164,6 +166,14 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
 
     rows = _load_gap_rows(session, run_id)
 
+    # D12: computed once per run, not once per variant -- every variant's signals are labelled
+    # against the same trailing bucket table. Read unconditionally, with no `ok()` check of its
+    # own, so it costs the loop's deterministic budget accounting (each `ok()` call spends one
+    # `time.monotonic()` tick that `test_variant_order_rotates_by_run_id...` counts) nothing new;
+    # a variant loop that is about to skip everything below still gets a correctly-labelled
+    # `as_measured` on whatever it does score before its own `ok()` check trips.
+    as_measured = as_measured_table(session, now)
+
     # A busy tick that runs out of budget mid-loop always drops the same tail of the
     # (name-sorted) variant list, so cross-variant comparisons would rest on non-random
     # missingness. Rotate the starting point by run_id so the drop is spread evenly instead.
@@ -175,7 +185,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
             result["budget_exhausted"] = True
             result["variants_skipped"] = [v.name for v in ordered[i:]]
             break
-        signals = run_strategy(rows, variant, now)
+        signals = run_strategy(rows, variant, now, as_measured=as_measured)
         candidate = sum(1 for s in signals if s.decision == "candidate")
         rejected = len(signals) - candidate
         _insert_signals(session, run_id, variant, now, signals)

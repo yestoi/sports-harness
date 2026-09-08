@@ -263,6 +263,7 @@ def _bulk_signal(i: int) -> SimpleNamespace:
         decision="rejected",
         rejection_reason="edge_floor",
         labels={"i": i},
+        as_measured=None,
     )
 
 

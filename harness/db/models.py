@@ -523,7 +523,10 @@ class Markout(Base):
     """Fair-value markout for one order at one anchor and horizon."""
     __tablename__ = "markouts"
     order_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    anchor: Mapped[str] = mapped_column(String(8), primary_key=True)
+    #: String(10): "cross_fill" (10 chars) is longer than the 8 this table shipped with (the
+    #: same class of fix as `Benchmark.benchmark_type` -- fix the model, not an ALTER, since
+    #: this table has never existed on the deployed database; Task 9).
+    anchor: Mapped[str] = mapped_column(String(10), primary_key=True)
     horizon: Mapped[str] = mapped_column(String(6), primary_key=True)
     at_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     horizon_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

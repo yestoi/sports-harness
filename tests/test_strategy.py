@@ -633,8 +633,12 @@ def _golden_rows() -> list[GapRow]:
 
 #: sha256 over every YES-only variant's signals for `_golden_rows()`, recorded from the
 #: strategy as it stood before the `sides` key existed. The six shipped ids are
-#: pre-registered, so a change here is a pre-registration amendment, not a test fix.
-YES_ONLY_DIGEST = "9c40d9a5a9de0d61024117171ee3d958701f4089d47252c249ba56bfd1fedfa6"
+#: pre-registered, so a change here is a pre-registration amendment, not a test fix -- except
+#: for the one mechanical exception Task 9 introduces: `SignalRow` gained a new field
+#: (`as_measured`, D12), which moves every `astuple(s)` even though no caller here passes
+#: `as_measured` and the field is `None` on every signal below. Recomputed once for that
+#: reason; every other digit is exactly what it was.
+YES_ONLY_DIGEST = "82f38fbe9fe431e04abfa724882b3268e9d74e23d545cf0c6fd72c8debb95ea9"
 
 
 def test_yes_only_variants_unchanged():

@@ -139,6 +139,10 @@ class SignalRow:
     decision: str = "rejected"
     rejection_reason: str | None = None
     labels: dict[str, bool] = field(default_factory=dict)
+    #: D12: the trailing 14-day realised adverse-selection mean for this row's own (sport, 5c
+    #: price bucket, side) bucket, from `harness.settlement.markouts.as_measured_table`. Recorded
+    #: only -- nothing in this module reads it back into a label, an edge or a price (F56).
+    as_measured: Decimal | None = None
 
 
 def _dec(value) -> Decimal:
@@ -356,12 +360,25 @@ def _decide(labels: dict[str, bool], apply_caps: bool) -> tuple[str, str | None]
     return "candidate", None
 
 
+def _as_measured_for(
+    row: GapRow, side: str, price_target: Decimal | None, as_measured: dict | None
+) -> Decimal | None:
+    """The D12 bucket lookup for one signal: (sport, 5c price bucket, side) against the
+    trailing `as_measured_table`. `None` whenever there is no table, no priced target, no
+    sport, or no bucket with enough rows -- never a reason to change the signal itself."""
+    if as_measured is None or price_target is None or row.sport is None:
+        return None
+    bucket = (int(price_target * 100) // 5) * 5
+    return as_measured.get((row.sport, bucket, side))
+
+
 def run_strategy(
     rows: list[GapRow],
     variant: Variant,
     now: datetime,
     state: StrategyState | None = None,
     fee_model: FeeModel = KALSHI_FOOTBALL,
+    as_measured: dict[tuple[str, int, str], Decimal] | None = None,
 ) -> list[SignalRow]:
     """Evaluate `rows` under `variant`, one `SignalRow` per row and side, in input order.
 
@@ -369,6 +386,10 @@ def run_strategy(
     exactly one signal per row as it always has. Caps are applied in edge-descending order
     across every side at once, so the best price wins the bankroll wherever it sits; `state`
     accumulates only what candidates consume.
+
+    `as_measured` (D12), when given, is recorded on each signal's own `SignalRow.as_measured`
+    bucket and nowhere else -- every existing caller passes nothing and sees no change at all
+    (F56: the seed stays frozen; this is measurement, not a decision input).
     """
     cfg = variant.config
     state = state if state is not None else StrategyState()
@@ -426,5 +447,6 @@ def run_strategy(
             decision=decision,
             rejection_reason=rejection_reason,
             labels={label: draft.labels[label] for label in LABEL_ORDER},
+            as_measured=_as_measured_for(row, draft.side, draft.price_target, as_measured),
         )
     return [s for s in signals if s is not None]
