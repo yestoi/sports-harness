@@ -672,3 +672,26 @@ Times are America/Chicago.
 - Rulings: (1) While gated, the executor, recorder, settlement (degraded on one stage) and dashboard keep running: nothing stops data. (2) The Amendment 3 replay result (background) is recorded by the next session if it finishes after this one stops.
 - Carried forward: none beyond entry 48
 - Next: stopped (report `docs/superpowers/autopilot/reports/2026-09-08-stopped-0505.md`), both notifications, the repo bundle and `git push origin main` (U7)
+
+## 50. gate (addendum) - the Amendment 3 replay demoted the live sharp_two_sided row - 2026-09-08 05:20 CT
+- Orient: the entry 49 gate stands; this adds a third item for the user
+- Branch / commits: `main` (docs)
+- Result: gated (a third question)
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: n/a
+- Anomaly: the plan's Task 4b step 5 command (`replay ... --variant sharp_two_sided --file harness/variants/sharp_two_sided.yaml`) registers the file's config with `tier: replay` as a new id (e82fcd0a1e99) and, by `register_variants`' documented rule for a name whose config changed, renamed the live secondary row 5632da729fa7 to `sharp_two_sided#5632da729fa7` and set it inactive at 09:58:22Z. The replay itself succeeded (Amendment 3 appended to the pre-registration record with its counts). A plan defect (the command should name the registered variant without `--file`), recorded; my error was running the plan's text without reading the replay's registration path first.
+- Question: restore the live row. Options: (1) the user runs two UPDATEs (below); (2) the loop runs them (a hand edit to a registered row: gate 9's spirit, so no); (3) leave it: the NO-side variant is never scored live and the gate row stays on the primary. Recommendation: option 1, now:
+  ```
+  ssh trey@192.168.12.228 'cd /volume1/docker/sports-harness && docker compose exec -T postgres psql -U harness -d harness' <<'SQL'
+  update strategy_variants set name = 'sharp_two_sided#e82fcd0a1e99' where variant_id = 'e82fcd0a1e99';
+  update strategy_variants set name = 'sharp_two_sided', active = true where variant_id = '5632da729fa7';
+  select variant_id, name, tier, active from strategy_variants order by registered_at;
+  SQL
+  ```
+  (The replay row keeps its signals; the live row's id, config and registration time are untouched.)
+- Rulings: (1) The 1,277,190 replay signals stay (tagged, excluded from reports; the amendment's evidence). (2) The next plan-next amends the plan text for any later replay step: never `--file` for a registered variant.
+- Carried forward: none
+- Next: stopped (the report is updated in this commit); the operate duties continue (morning-after verify after 08:10 CT)

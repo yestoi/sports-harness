@@ -1,11 +1,11 @@
 # Autopilot state (rewritten by the loop at every unit boundary; the journal is the history)
 
-- Updated: 2026-09-08 05:08 CT
+- Updated: 2026-09-08 05:22 CT
 - Session: session_01ACYvEDzjr3oQvGNst45sjf (trailers from this session); preflight journal 39 (paper posture intact)
-- Position: **gated** (journal 49): (a) four production columns need an ALTER COLUMN TYPE (gate 3; the exact statements are in entry 49 and the stopped report); (b) the page-time verify row failed twice running (ceiling). Phase 3 is done and deployed (21f8ca4); the executor, recorder and settlement (degraded on the benchmarks stage) run. Resume: the user runs the ALTERs + init-db + settle, answers in chat; then hotfix 17 from main, re-verify, the morning-after walker verify after 08:10 CT, Amendment 3
+- Position: **gated** (journal 49 + 50): (c) the live sharp_two_sided row must be restored by the user (entry 50 SQL); (a) four production columns need an ALTER COLUMN TYPE (gate 3; the exact statements are in entry 49 and the stopped report); (b) the page-time verify row failed twice running (ceiling). Phase 3 is done and deployed (21f8ca4); the executor, recorder and settlement (degraded on the benchmarks stage) run. Resume: the user runs the ALTERs + init-db + settle, answers in chat; then hotfix 17 from main, re-verify, the morning-after walker verify after 08:10 CT, Amendment 3
 - Branch: `main` at the gate commit; NAS build 21f8ca4 (deployed 04:52 CT; verify entry 48 FAIL on three rows: page time, check_results skips, settle degraded)
 - Agents in flight: none
-- Next (after the user's answer): decision entry; hotfix 17 (dashboard candidates section) from main -> deploy (deploy-nas-app now applies when the diff is app-only) -> re-verify page time; carried fix 16 into the next plan-next; Amendment 3 (replay counts from the background run, log in the scratchpad or re-run: `replay --from-run 2321 --to-run 3477 --variant sharp_two_sided --file harness/variants/sharp_two_sided.yaml`); phase 4 plan-next
+- Next (after the user's answer): decision entry; hotfix 17 (dashboard candidates section) from main -> deploy (deploy-nas-app now applies when the diff is app-only) -> re-verify page time; carried fix 16 into the next plan-next; Amendment 3 appended 05:20 CT (never pass --file to replay for a registered variant: it demotes the live row); phase 4 plan-next
 - Deploys pending: hotfix 17 after the gate; Task 4b step 5 remains only the Amendment 3 text (the variant is registered, GATE_VARIANT flipped in deploy/nas.env, replay counts pending)
 - Game window: none until Wed 2026-09-09 19:20 CT (game 114 reads in_progress but is over; fix 14)
 - Carried fixes: 16 (two checks exceed the 2 s timeout; verify.md row: phase work), 17 (page time: the candidates section scans signals: hotfix from main after the gate)
