@@ -730,18 +730,21 @@ def test_phase4_schema_is_idempotent(_schema):
 
 
 def test_drop_schema_still_covers_every_model(_schema):
-    drop_schema(_schema)
-    with _schema.connect() as conn:
-        present = {r[0] for r in conn.execute(text("select tablename from pg_tables"))}
-    assert not (set(Base.metadata.tables) & present)
-    create_schema(_schema)
-    # _schema is session-scoped: drop_schema took the tape/raw_responses partitions with it, and
-    # create_schema only rebuilds the partitioned parents, not their weekly children. Without
-    # this, every later test in the session that inserts a dated row into a partitioned table
-    # (test_schema_phase1.py, test_settle.py, ...) fails with "no partition of relation found
-    # for row" -- the same restoration test_drop_schema_covers_every_model above already does
-    # in its `finally` block.
+    # _schema is session-scoped and shared with every later test file: a failed assertion here
+    # must not leave the database dropped for the rest of the session, so the restoration goes
+    # in `finally`, exactly like the sibling test_drop_schema_covers_every_model above.
     from sqlalchemy.orm import sessionmaker
 
-    with sessionmaker(bind=_schema)() as session:
-        ensure_partitions(session, datetime.now(timezone.utc))
+    try:
+        drop_schema(_schema)
+        with _schema.connect() as conn:
+            present = {r[0] for r in conn.execute(text("select tablename from pg_tables"))}
+        assert not (set(Base.metadata.tables) & present)
+    finally:
+        create_schema(_schema)
+        # create_schema only rebuilds the partitioned parents, not their weekly children.
+        # Without this, every later test in the session that inserts a dated row into a
+        # partitioned table (test_schema_phase1.py, test_settle.py, ...) fails with "no
+        # partition of relation found for row".
+        with sessionmaker(bind=_schema)() as session:
+            ensure_partitions(session, datetime.now(timezone.utc))
