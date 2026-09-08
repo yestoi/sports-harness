@@ -453,6 +453,28 @@ def test_unexpected_venue_result_is_skipped_and_the_next_ticker_still_settles(db
     assert ctx["errors"] == []
 
 
+def test_void_gets_a_venue_row_and_counts_as_a_mismatch(db_session):
+    """A voided market is a settled market as far as the venue is concerned, so it must get its
+    `source = venue` row: without one it can never satisfy the 48 h "derived rows have a venue
+    row" invariant or gate criterion 9. It also disagrees with our derived result by definition
+    -- the ledger paid on a market the venue refused to settle -- so it is a mismatch.
+    """
+    run = _run_row(db_session)
+    _derived(db_session, "T-VOID", result="yes", payout=ONE)
+    _settled_page(db_session, run.id, [{"ticker": "T-VOID", "result": "void"}],
+                  NOW - timedelta(hours=1))
+    db_session.commit()
+
+    ctx = _ctx()
+    assert run_venue_result(db_session, NOW, None, Budget(60, Mono(0.0)), ctx) == 1
+
+    row = db_session.query(VenueSettlement).filter(VenueSettlement.source == "venue").one()
+    assert row.result == "void"
+    assert row.payout is None
+    assert ctx["warnings"] == [{"settlement_mismatch": "T-VOID"}]
+    assert ctx["errors"] == []
+
+
 def test_venue_result_isolates_a_failing_ticker(db_session, monkeypatch):
     """One ticker that raises must not abort the stage: `_PENDING_VENUE_ROWS` is ordered by
     ticker, so without a savepoint the first bad ticker would block every later one forever."""

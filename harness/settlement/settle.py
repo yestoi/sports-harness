@@ -45,7 +45,13 @@ SETTLEABLE = ("filled", "partially_filled")
 #: The only results `venue_settlements.result` can hold (varchar(4)). Kalshi's `result` is free
 #: text, so anything else is a warning and no row: a value we cannot store is a value we cannot
 #: compare, and guessing at it would put a wrong result beside a right one.
-VENUE_RESULTS = ("yes", "no", "tie")
+#:
+#: `void` is in the set even though it pays nothing. A voided market is settled as far as the
+#: venue is concerned, so it needs its `source = venue` row or it can never satisfy the 48 h
+#: "every derived row has a venue row" invariant or gate criterion 9 -- and a void against a
+#: derived yes/no is a real disagreement, because the ledger paid on a market the venue refused
+#: to settle. `tie` is ours, not Kalshi's, and is here so a derived tie can be compared.
+VENUE_RESULTS = ("yes", "no", "tie", "void")
 #: How far back `run_venue_result` reads the recorder's stored settled pages (the recorder keeps
 #: an 8-day window, so 7 days always has one full football week in it).
 SETTLED_BODY_WINDOW = timedelta(days=7)
@@ -431,7 +437,8 @@ def _result_from_body(body) -> str | None:
 
 
 def _venue_payout(result: str) -> Decimal | None:
-    """The payout one venue result implies. Only `VENUE_RESULTS` ever reach here."""
+    """The payout one venue result implies. Only `VENUE_RESULTS` ever reach here, and `void`
+    carries no payout at all -- the column is nullable for exactly that case."""
     if result == "yes":
         return ONE
     if result == "no":
