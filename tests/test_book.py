@@ -500,3 +500,78 @@ def test_rest_anchor_gap_check_id_widens_once_then_stops(db_session):
     within = _delta(db_session, "OTHER", fetched_at - timedelta(hours=6), "yes", "0.35", "1.00")
     assert within.id > ancient.id
     assert load_book(db_session, "R", NOW).gap_check_id == within.id
+
+
+# --- Final fix wave, I7: BookWalker ---------------------------------------------------------
+
+def test_book_walker_matches_a_per_instant_rebuild_with_deltas_between_the_instants(db_session):
+    """The whole point of the walker: the same book `book_at` builds, without re-anchoring and
+    replaying from the snapshot at every instant. The fixture puts deltas *between* the
+    instants, which is the case a cached book would get wrong if it did not advance.
+    """
+    from harness.execution.book import BookWalker
+
+    _ws_snapshot(db_session, "W", NOW - timedelta(minutes=10), sid=2, seq=1,
+                 yes=(("0.40", "10.00"),), no=(("0.55", "10.00"),))
+    instants = [NOW - timedelta(minutes=m) for m in (9, 7, 5, 3, 1)]
+    seq = 2
+    for i, instant in enumerate(instants):
+        # Two deltas before each instant, so every step has movement to fold in.
+        _delta(db_session, "W", instant - timedelta(seconds=30), "yes", "0.40", "1.00", seq=seq)
+        _delta(db_session, "W", instant - timedelta(seconds=5), "no", "0.55", f"{i + 1}.00",
+               seq=seq + 1)
+        seq += 2
+    db_session.flush()
+
+    walker = BookWalker(db_session, "W")
+    for instant in instants:
+        walked = walker.at(instant)
+        rebuilt = book_at(db_session, "W", instant)
+        assert walked is not None and rebuilt is not None
+        assert walked.yes_bids == rebuilt.yes_bids
+        assert walked.no_bids == rebuilt.no_bids
+        assert walked.mid() == rebuilt.mid()
+        assert walked.as_of == rebuilt.as_of
+        assert book_age_s(walked, instant) == book_age_s(rebuilt, instant)
+
+
+def test_book_walker_re_anchors_when_a_new_snapshot_lands_between_instants(db_session):
+    """A snapshot between two instants is the one thing that changes which anchor `book_at`
+    would pick, so the walker rebuilds rather than folding deltas onto the stale ladder."""
+    from harness.execution.book import BookWalker
+
+    first, second = NOW - timedelta(minutes=5), NOW
+    _ws_snapshot(db_session, "W", first - timedelta(seconds=10), sid=2, seq=1,
+                 yes=(("0.40", "10.00"),), no=(("0.55", "10.00"),))
+    _delta(db_session, "W", first - timedelta(seconds=5), "yes", "0.40", "5.00", sid=2, seq=2)
+    # The resubscribe: a fresh snapshot on a new sid with a different ladder entirely.
+    _ws_snapshot(db_session, "W", second - timedelta(seconds=10), sid=3, seq=1,
+                 yes=(("0.30", "7.00"),), no=(("0.60", "8.00"),))
+    db_session.flush()
+
+    walker = BookWalker(db_session, "W")
+    assert walker.at(first).yes_bids == book_at(db_session, "W", first).yes_bids
+    walked, rebuilt = walker.at(second), book_at(db_session, "W", second)
+    assert walked.yes_bids == rebuilt.yes_bids == {Decimal("0.3000"): Decimal("7.00")}
+    assert (walked.sid, walked.anchor_id) == (rebuilt.sid, rebuilt.anchor_id)
+
+
+def test_book_walker_reports_a_stale_instant_and_keeps_walking_afterwards(db_session):
+    """A quiet stretch answers None (F36) exactly as `book_at` does, and the cached book
+    survives it: the instant after fresh deltas arrive advances rather than rebuilding."""
+    from harness.execution.book import BookWalker
+
+    base = NOW - timedelta(minutes=20)
+    _ws_snapshot(db_session, "W", base, sid=2, seq=1, yes=(("0.40", "10.00"),),
+                 no=(("0.55", "10.00"),))
+    quiet = base + timedelta(minutes=10)  # nothing taped within BOOK_MAX_AGE of this
+    later = base + timedelta(minutes=15)
+    _delta(db_session, "W", later - timedelta(seconds=5), "yes", "0.40", "3.00", sid=2, seq=2)
+    db_session.flush()
+
+    walker = BookWalker(db_session, "W")
+    assert walker.at(base + timedelta(seconds=30)) is not None
+    assert walker.at(quiet) is None and book_at(db_session, "W", quiet) is None
+    walked, rebuilt = walker.at(later), book_at(db_session, "W", later)
+    assert walked is not None and rebuilt is not None
+    assert walked.yes_bids == rebuilt.yes_bids == {Decimal("0.4000"): Decimal("13.00")}

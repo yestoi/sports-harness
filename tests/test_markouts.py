@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from harness.db.models import Fill, Game, Markout, OrderbookEvent, Order, VenueMarket, VenueQuote
-from harness.execution.book import side_p
+from harness.execution.book import book_age_s, book_at, side_p
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 from harness.settlement.job import Budget
 from harness.settlement.markouts import (
@@ -511,3 +511,57 @@ def test_horizons_beyond_now_are_not_written_yet(db_session):
     assert later == 1  # 30m horizon now due; 120m still isn't
     rows = db_session.query(Markout).filter_by(order_id=order.id).all()
     assert {r.horizon for r in rows} == {"1m", "5m", "30m"}
+
+
+def test_one_book_per_order_walked_forward_not_rebuilt_per_horizon(db_session):
+    """Final review I7: `_book_mid_fn` called `book_at` afresh for every (anchor, horizon) with
+    no nearby quote, so one order re-anchored on the ticker's newest snapshot and replayed
+    every delta since it up to twenty-four times. The stage now walks one book per order
+    through its horizons in `ts` order.
+
+    Both halves are asserted: the anchor is loaded once for the order rather than once per
+    horizon, and every mid and age still equals what a per-instant rebuild produces.
+    """
+    from sqlalchemy import event as sa_event
+
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    placed_at = NOW - timedelta(hours=3)
+    order = _order(db_session, market, side="yes", prob="0.5000", placed_at=placed_at)
+    _ws_snapshot(db_session, market.ticker, placed_at - timedelta(seconds=30))
+    # A delta shortly before each due horizon, so the book differs at every one of them and a
+    # cached-but-not-advanced book would be caught.
+    seq = 2
+    for name in ("1m", "5m", "30m", "120m"):
+        horizon_ts = placed_at + timedelta(seconds=HORIZONS[name])
+        db_session.add(OrderbookEvent(
+            ticker=market.ticker, ts=horizon_ts - timedelta(seconds=20), sid=1, seq=seq,
+            kind="delta", side="yes", price=Decimal("0.40"), delta=Decimal("1.00"),
+            raw={"market_ticker": market.ticker}))
+        seq += 1
+    db_session.commit()
+
+    engine = db_session.get_bind()
+    statements: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()).lower())
+
+    sa_event.listen(engine, "before_cursor_execute", capture)
+    try:
+        compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", capture)
+    db_session.commit()
+
+    rows = db_session.query(Markout).filter_by(order_id=order.id, anchor="place").all()
+    assert {r.horizon for r in rows} == {"1m", "5m", "30m", "120m"}
+
+    anchor_loads = [s for s in statements if "kind = 'snapshot' and ts <=" in s]
+    assert len(anchor_loads) == 1, f"{len(anchor_loads)} anchor loads for one order's horizons"
+
+    for row in rows:
+        rebuilt = book_at(db_session, market.ticker, row.horizon_ts)
+        assert row.source == "ws_book"
+        assert row.venue_mid == side_p(rebuilt.mid(), "yes")
+        assert row.mid_age_s == book_age_s(rebuilt, row.horizon_ts)

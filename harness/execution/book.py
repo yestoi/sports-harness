@@ -116,6 +116,17 @@ _CLEAN_SNAPSHOT_AFTER_AT = text(
     "                where g.kind = 'gap' and g.sid = s.sid and g.id > s.id "
     "                  and g.ts <= :instant) limit 1"
 )
+# Did a new anchor land between two past instants? A WebSocket snapshot or a REST ladder is
+# the only thing that can change which anchor `book_at` would pick, so these two probes are
+# what let `BookWalker` advance a cached book instead of rebuilding it (final review I7).
+_WS_SNAPSHOT_BETWEEN = text(
+    "select 1 from orderbook_events where ticker = :t and kind = 'snapshot' "
+    "and ts > :lower and ts <= :upper limit 1"
+)
+_REST_SNAPSHOT_BETWEEN = text(
+    "select 1 from orderbook_snapshots s join venue_markets m on m.id = s.venue_market_id "
+    "where m.ticker = :t and s.fetched_at > :lower and s.fetched_at <= :upper limit 1"
+)
 # The tape position a REST ladder was fetched at: the id its gap check compares against.
 # Bounded below as well as above (final review I3). `orderbook_events` is weekly-partitioned
 # on `ts` with a per-partition PK of `(id, ts)`, so `ts <= :fetched_at` alone prunes only the
@@ -403,6 +414,43 @@ def advance_book(session, book: BookState, now: datetime) -> BookState:
     return out
 
 
+def _book_at_unchecked(session, ticker: str, instant: datetime) -> BookState | None:
+    """`book_at` without its F36 staleness gate: the anchor at or before `instant` plus every
+    delta up to it, whatever the tape's age. Split out for `BookWalker`, which has to keep a
+    book across an instant where it reads as stale so the next instant can still advance it
+    rather than rebuilding from the anchor."""
+    ws = session.execute(_NEWEST_WS_SNAPSHOT_AT, {"t": ticker, "instant": instant}).first()
+    rest = session.execute(_NEWEST_REST_SNAPSHOT_AT, {"t": ticker, "instant": instant}).first()
+    if ws is None and rest is None:
+        return None
+    use_ws = ws is not None and (rest is None or ws.ts >= rest.fetched_at)
+    if use_ws:
+        book = BookState.from_ws_raw(ticker, ws.raw, ws.sid, ws.seq, ws.ts, ws.id)
+        lower = ws.ts - DELTA_LOOKBACK
+    else:
+        # Same bookkeeping as `load_book`'s REST branch: sid 0, and a gap-check id dated to the
+        # tape position the ladder was fetched at rather than to the anchor id it does not have.
+        book = BookState.from_levels(ticker, rest.yes_bids, rest.no_bids, sid=0, seq=0,
+                                     as_of=rest.fetched_at, source="rest", anchor_id=0)
+        book.gap_check_id = _max_event_id_at(session, rest.fetched_at)
+        lower = rest.fetched_at
+    rows = session.execute(_DELTAS_BY_TS, {"t": ticker, "cursor": book.anchor_id,
+                                           "lower": lower, "upper": instant}).all()
+    _apply_rows(book, rows, check_seq=use_ws)
+    return book
+
+
+def _too_stale(session, book: BookState, instant: datetime) -> bool:
+    """F36: the freshest thing known about this ticker at `instant` is older than
+    `BOOK_MAX_AGE`, so there is no book -- a recorder outage must not read as a quiet market."""
+    newest = session.execute(
+        _NEWEST_EVENT_TS, {"t": book.ticker, "instant": instant}).scalar()
+    # A REST-anchored ticker can have no tape rows of its own at all, and its ladder's own
+    # fetch time is then the only freshness there is to check.
+    freshest = max(t for t in (newest, book.as_of) if t is not None)
+    return freshest < instant - BOOK_MAX_AGE
+
+
 def book_at(session, ticker: str, instant: datetime) -> BookState | None:
     """The book as of a past instant: `load_book`'s rules, bounded there.
 
@@ -422,30 +470,9 @@ def book_at(session, ticker: str, instant: datetime) -> BookState | None:
     take the markouts with it. A caller that wants the live loop's own gap verdict -- the
     replay executor -- uses `load_book_at`, which adds it bounded at the instant.
     """
-    ws = session.execute(_NEWEST_WS_SNAPSHOT_AT, {"t": ticker, "instant": instant}).first()
-    rest = session.execute(_NEWEST_REST_SNAPSHOT_AT, {"t": ticker, "instant": instant}).first()
-    if ws is None and rest is None:
+    book = _book_at_unchecked(session, ticker, instant)
+    if book is None or _too_stale(session, book, instant):
         return None
-    use_ws = ws is not None and (rest is None or ws.ts >= rest.fetched_at)
-    if use_ws:
-        book = BookState.from_ws_raw(ticker, ws.raw, ws.sid, ws.seq, ws.ts, ws.id)
-        lower = ws.ts - DELTA_LOOKBACK
-    else:
-        # Same bookkeeping as `load_book`'s REST branch: sid 0, and a gap-check id dated to the
-        # tape position the ladder was fetched at rather than to the anchor id it does not have.
-        book = BookState.from_levels(ticker, rest.yes_bids, rest.no_bids, sid=0, seq=0,
-                                     as_of=rest.fetched_at, source="rest", anchor_id=0)
-        book.gap_check_id = _max_event_id_at(session, rest.fetched_at)
-        lower = rest.fetched_at
-    newest = session.execute(_NEWEST_EVENT_TS, {"t": ticker, "instant": instant}).scalar()
-    # A REST-anchored ticker can have no tape rows of its own at all, and its ladder's own
-    # fetch time is then the only freshness there is to check.
-    freshest = max(t for t in (newest, book.as_of) if t is not None)
-    if freshest < instant - BOOK_MAX_AGE:
-        return None
-    rows = session.execute(_DELTAS_BY_TS, {"t": ticker, "cursor": book.anchor_id,
-                                           "lower": lower, "upper": instant}).all()
-    _apply_rows(book, rows, check_seq=use_ws)
     return book
 
 
@@ -486,6 +513,66 @@ def advance_book_at(session, book: BookState, instant: datetime) -> BookState:
         if reloaded is not None:
             return reloaded
     return out
+
+
+class BookWalker:
+    """One ticker's book walked forward through a sequence of past instants (final review I7).
+
+    `book_at` re-anchors on the ticker's newest snapshot and replays every delta since it, on
+    every call. A caller with many instants on one ticker pays that replay once per instant:
+    the markouts stage asks for up to four anchors x six horizons per order, and on a ticker
+    that has not been re-subscribed for hours each of those is hours of deltas, under the
+    settler's 900 s batch timeout. A markouts stage that keeps running out of budget shows up
+    as gate criteria 4 and 5 reading `insufficient` rather than as an error, which is why this
+    is worth removing rather than measuring.
+
+    The answer is the same book `book_at` would build. The anchor is reloaded only when a new
+    WebSocket snapshot or REST ladder landed between the last instant and this one -- the only
+    thing that can change which anchor `book_at` picks -- and otherwise the cached book is
+    advanced with `advance_book_at`, whose delta scan starts at the book's own cursor instead
+    of at the anchor. The F36 staleness gate is applied at each instant exactly as `book_at`
+    applies it, and a stale instant does not discard the cached book, so a quiet stretch
+    followed by fresh deltas still advances rather than rebuilding.
+
+    Instants are expected in ascending order (`compute_markouts` sorts each order's horizons
+    before walking them); one that goes backwards is answered by a full rebuild rather than
+    incorrectly.
+
+    One deliberate difference from `book_at`: `advance_book_at` carries the live loop's own
+    gap verdict, so a walked book can be `dirty` where a rebuilt one is not. Nothing that reads
+    a walked book consults `dirty` -- `mid()`, `as_of` and therefore `book_age_s` are identical
+    either way -- and erring dirty is the safe direction.
+    """
+
+    def __init__(self, session, ticker: str) -> None:
+        self.session = session
+        self.ticker = ticker
+        self._book: BookState | None = None
+        self._at: datetime | None = None
+
+    def at(self, instant: datetime) -> BookState | None:
+        """The book at `instant`, or None when nothing anchors it or it reads as stale."""
+        book = self._walk(instant)
+        if book is None or _too_stale(self.session, book, instant):
+            return None
+        return book
+
+    def _walk(self, instant: datetime) -> BookState | None:
+        cached, cached_at = self._book, self._at
+        if (cached is not None and cached_at is not None and instant >= cached_at
+                and not self._new_anchor(cached_at, instant)):
+            book = advance_book_at(self.session, cached, instant)
+        else:
+            book = _book_at_unchecked(self.session, self.ticker, instant)
+        self._book, self._at = book, instant
+        return book
+
+    def _new_anchor(self, lower: datetime, upper: datetime) -> bool:
+        if lower == upper:
+            return False
+        params = {"t": self.ticker, "lower": lower, "upper": upper}
+        return (self.session.execute(_WS_SNAPSHOT_BETWEEN, params).first() is not None
+                or self.session.execute(_REST_SNAPSHOT_BETWEEN, params).first() is not None)
 
 
 def book_age_s(book: BookState, now: datetime) -> int:

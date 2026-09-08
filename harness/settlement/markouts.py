@@ -29,7 +29,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import Markout
-from harness.execution.book import book_age_s, book_at, side_p
+from harness.execution.book import BookWalker, book_age_s, side_p
 from harness.pricing.fees import fee_model_for, fee_per_contract
 from harness.settlement.job import Budget, StageResult, current_ctx, register_stage
 
@@ -297,9 +297,17 @@ def _quotes_near(session: Session, venue_market_id: int, horizon_ts: datetime,
 def _book_mid_fn(session: Session, ticker: str, side: str) -> Callable[[datetime], tuple[Decimal, int] | None]:
     """Fix round 1, Minor 2: returns `(mid, age_s)`, the book's own age at `instant`
     (`book_age_s`, the same accessor the executor uses), rather than a bare mid a caller would
-    otherwise have to stand in a false `0` for."""
+    otherwise have to stand in a false `0` for.
+
+    Final review I7: one `BookWalker` per order, not a `book_at` rebuild per horizon. The
+    walker answers the book `book_at` would build at each instant, re-anchoring only when a new
+    snapshot landed between two of them and otherwise advancing the cached book from its own
+    cursor. `_process_order` hands it instants in `ts` order for that reason.
+    """
+    walker = BookWalker(session, ticker)
+
     def fn(instant: datetime) -> tuple[Decimal, int] | None:
-        book = book_at(session, ticker, instant)
+        book = walker.at(instant)
         if book is None:
             return None
         mid = book.mid()
@@ -338,30 +346,38 @@ def _process_order(session: Session, row, now: datetime,
     fee_model = fee_model_for(row.fee_type, row.fee_multiplier)
     close_ts = None if row.kickoff_utc is None else row.kickoff_utc - CLOSE_OFFSET
 
-    inserted = 0
+    # Every (anchor, horizon) this order still owes, collected across the anchors first and
+    # then walked in `horizon_ts` order (final review I7): `book_fn` keeps one book per order
+    # and advances it, so it has to be asked for instants that only move forward. The rows
+    # themselves are independent of the order they are written in.
+    due: list[tuple[datetime, str, str, datetime, Decimal]] = []
     for anchor, anchor_ts, p_used in _anchors_for(row, fills):
-        role = _fee_role(anchor)
-        due: list[tuple[str, datetime]] = [
+        horizons: list[tuple[str, datetime]] = [
             (h, anchor_ts + timedelta(seconds=HORIZONS[h])) for h in _horizons_for(anchor)
         ]
         if close_ts is not None:
-            due.append(("close", close_ts))
-        for horizon, horizon_ts in due:
+            horizons.append(("close", close_ts))
+        for horizon, horizon_ts in horizons:
             if (anchor, horizon) in existing:
                 continue
             if horizon_ts > now:
                 continue
-            quotes = _quotes_near(session, row.venue_market_id, horizon_ts, side)
-            point = markout_at(anchor_ts, horizon_ts, fairs, quotes, book_fn)
-            fee = fee_per_contract(fee_model, role, p_used, FEE_CONTRACTS)
-            fair_changed = point.fair_row_id != row.fair_row_id_at_place
-            inserted += _insert_markout(
-                session, order_id=row.order_id, anchor=anchor, horizon=horizon,
-                at_ts=anchor_ts, horizon_ts=horizon_ts, p_used=p_used, fee_per_contract=fee,
-                fair_p=point.fair_p, fair_row_id=point.fair_row_id,
-                fair_book_ts=point.fair_book_ts, fair_changed=fair_changed,
-                fair_age_s=point.fair_age_s, venue_mid=point.venue_mid,
-                mid_age_s=point.mid_age_s, source=point.source)
+            due.append((horizon_ts, anchor, horizon, anchor_ts, p_used))
+    due.sort(key=lambda d: (d[0], d[1], d[2]))
+
+    inserted = 0
+    for horizon_ts, anchor, horizon, anchor_ts, p_used in due:
+        quotes = _quotes_near(session, row.venue_market_id, horizon_ts, side)
+        point = markout_at(anchor_ts, horizon_ts, fairs, quotes, book_fn)
+        fee = fee_per_contract(fee_model, _fee_role(anchor), p_used, FEE_CONTRACTS)
+        fair_changed = point.fair_row_id != row.fair_row_id_at_place
+        inserted += _insert_markout(
+            session, order_id=row.order_id, anchor=anchor, horizon=horizon,
+            at_ts=anchor_ts, horizon_ts=horizon_ts, p_used=p_used, fee_per_contract=fee,
+            fair_p=point.fair_p, fair_row_id=point.fair_row_id,
+            fair_book_ts=point.fair_book_ts, fair_changed=fair_changed,
+            fair_age_s=point.fair_age_s, venue_mid=point.venue_mid,
+            mid_age_s=point.mid_age_s, source=point.source)
     return inserted
 
 
