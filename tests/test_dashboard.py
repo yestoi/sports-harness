@@ -470,6 +470,34 @@ def test_no_taker_side_share_uses_matching_24h_windows(db_session, env_settings,
     assert body["data_quality"]["no_taker_side_share_24h"] == 0.75
 
 
+def test_pre_fix17_run_rows_are_excluded_from_the_share_but_not_from_trade_gaps(db_session, env_settings, tmp_path):
+    """Fix 17 round 2 (Important): a run row written before this fix carries `taker_side_missing`
+    but no `kalshi_trades_normalized` key at all. It must feed neither half of the share --
+    otherwise it inflates the numerator with nothing in the denominator to balance it, reading a
+    false 1.0 right after deploy and decaying toward the truth only as old rows age out of the
+    24h window. `trade_gaps_24h` has no such asymmetry and keeps counting every row, keyed or
+    not."""
+    game, run, markets = _seed_full(db_session, env_settings)
+    settings = _dashboard_settings(env_settings, tmp_path)
+
+    # Pre-fix-17 row: no `kalshi_trades_normalized` key at all.
+    unkeyed_run = Run(started_at=NOW - timedelta(hours=2), status="ok",
+                      notes={"taker_side_missing": 5, "trade_gaps": [{"ticker": "OLD"}]})
+    db_session.add(unkeyed_run)
+    # Post-fix-17 row: both halves keyed.
+    run.notes = {"taker_side_missing": 1, "kalshi_trades_normalized": 3,
+                "trade_gaps": [{"ticker": "NEW"}]}
+    db_session.commit()
+
+    body = _client(db_session, settings).get("/api/summary").json()
+    dq = body["data_quality"]
+    # The unkeyed row's 5 dropped prints must not appear in either half of the ratio: only the
+    # keyed row's 1/(1+3) = 0.25 comes through, not 6/(6+3).
+    assert dq["no_taker_side_share_24h"] == 0.25
+    # trade_gaps has no such asymmetry: both rows' gaps still count.
+    assert dq["trade_gaps_24h"] == 2
+
+
 def test_replay_rows_excluded_from_open_orders_skip_reasons_and_post_only_reject_rate(
         db_session, env_settings, tmp_path):
     """Fix round 1, I2: a concurrent replay/backtest run writes into the same orders/order_events

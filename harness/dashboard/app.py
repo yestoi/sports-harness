@@ -336,9 +336,17 @@ def _data_quality(session: Session, now: datetime, run_notes_24h: list[dict] | N
     taker_side_missing = 0
     kalshi_trades_normalized = 0
     for notes in run_notes_24h:
-        trade_gaps.extend((notes or {}).get("trade_gaps", []))
-        taker_side_missing += (notes or {}).get("taker_side_missing", 0) or 0
-        kalshi_trades_normalized += (notes or {}).get("kalshi_trades_normalized", 0) or 0
+        notes = notes or {}
+        trade_gaps.extend(notes.get("trade_gaps", []))
+        # Fix 17 round 2 (Important): a pre-fix-17 run row carries `taker_side_missing` but no
+        # `kalshi_trades_normalized` at all, so it must feed neither half of the ratio below --
+        # otherwise it inflates the numerator with nothing to balance it in the denominator,
+        # reading a false 1.0 right after deploy and decaying toward the truth only as old rows
+        # age out of the 24h window.
+        if "kalshi_trades_normalized" not in notes:
+            continue
+        taker_side_missing += notes.get("taker_side_missing", 0) or 0
+        kalshi_trades_normalized += notes["kalshi_trades_normalized"] or 0
 
     # Fix round 1, I1: the brief's row is a 24h share. A dropped print (no resolvable taker
     # side) never reaches venue_trades at all (harness/normalize/kalshi.py insert_trades), so
