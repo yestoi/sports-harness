@@ -547,3 +547,17 @@ Times are America/Chicago.
 - Anomalies: the Task 8 implementer acted before a ruling reached it (an ALTER COLUMN TYPE, reverted in the next commit; the net diff has none)
 - Carried forward: none
 - Next: Task 9 review when it reports; then 10 (opus) and 12 (sonnet) in parallel; the Task 2b quiet-window deploy at the first boundary after 01:00 CT (writers stopped, `partition-bulk-tables`, recovery notes)
+
+## 42. phase - phase 3 progress: Tasks 9, 10, 12 merged, Task 11 dispatched - 2026-09-08 00:40 CT
+- Orient: rule 5 continuation (entry 41)
+- Branch / commits: `phase3-paper-execution` 0110fcd..c317e5e (Task 9 f9210ca, 1be170d; Task 10 3f14623.., c403636; Task 12 96f0e88.., c317e5e; docs)
+- Result: in progress (18 tasks: 1-10, 12 complete (12 of 18); 11 implementing; 12b, 13, 14 queued)
+- Dispatches: 31 this session (impl 8, review 8, re-review 8, plus fix-round resumes by message); day total 2026-09-07: 94; 2026-09-08 so far: 3
+- Tests: 708 on the phase branch at c317e5e, pristine
+- Review: Task 9 one fix round (close horizon; no-lookahead quotes; any fair source; as_measured off the stage module; deterministic ties; taker fee on cross_fill); Task 10 one fix round (Critical: a homogeneous stratum counted cells toward §9.6; feed_kind stratum; gap_mid as the family panel; fair_changed adverse drift; CRITERIA_TEXT completed); Task 12 one fix round (24 h windows; replay filters; fee-drift tests; banners; partition roll-up)
+- Deploy: none (the quiet-window deploy is next, at the 01:00 CT boundary: `main` to ae1e86c only, ledger ruling 23:36 CT)
+- Verification: n/a
+- Rulings (all in the ledger; the notable ones): (1) the families A and B, the shrinkage and the §9.6 count run on the gap_mid quantity §9.7 names, over every feed, with feed_kind as a stratum and the maker-net panel beside them; the user ratifies or switches before the Mon 2026-09-21 freeze (phase report: Decisions you may want to reverse). (2) A τ² = 0 stratum or a zero-width posterior interval never counts as significant. (3) Task 10 and Task 12 reviewers chosen outside the path table (opus for the gate's statistics; sonnet for a one-line registry append). (4) `Markout.anchor` widened in the model only (no ALTER; no production table). (5) The quiet-window deploy carries `main` only to ae1e86c (the U3 scope); app-exec rides the phase deploy after the final review.
+- Anomalies: the controller's Task 10 merge first ran from a worktree cwd (no-op); redone from the main checkout (the state.md lesson stands)
+- Carried forward: none
+- Next: Task 11 review when it reports; the quiet-window deploy at the next boundary after 01:00 CT; then 12b (sonnet), 13 (opus), 14 (sonnet)
