@@ -94,13 +94,16 @@ def _health(session: Session, session_factory: sessionmaker, now: datetime, cred
 
 
 def _recent_run_notes(session: Session, cutoff: datetime, limit: int | None = None) -> list[dict]:
-    """Every run row's `notes` JSON since `cutoff`, newest first -- the one query both `_funnel`
-    and `_data_quality` scan `runs.notes` through (fix round 1, Minor 3: they used to run this
-    query twice). `limit`, when given, caps the row count; omit it for a window meant to be read
-    in full. `_funnel` passes no limit: capping it at `RUNS_NOTES_LIMIT` (500) used to silently
-    truncate its "24h" scan to about 4.2 hours at the default 30s heartbeat (fix round 1,
-    Important 2) -- ~2880 rows a day of this ~2MB table is cheap to scan in full. `_data_quality`
-    keeps the existing `RUNS_NOTES_LIMIT` cap, unchanged by this fix.
+    """Every run row's `notes` JSON since `cutoff`, newest first -- the one query `_funnel`,
+    `_candidates` and `_data_quality` scan `runs.notes` through (fix round 1, Minor 3: `_funnel`
+    and `_data_quality` used to run this query twice; fix 17, journal 44/48: `build_summary` now
+    fetches the 24h window once and hands the same list to `_funnel` and `_candidates`, so
+    `_candidates` never calls this directly except in its own direct unit tests). `limit`, when
+    given, caps the row count; omit it for a window meant to be read in full. `_funnel` and
+    `_candidates` pass no limit: capping it at `RUNS_NOTES_LIMIT` (500) used to silently truncate
+    a "24h" scan to about 4.2 hours at the default 30s heartbeat (fix round 1, Important 2) --
+    ~2880 rows a day of this ~2MB table is cheap to scan in full. `_data_quality` keeps the
+    existing `RUNS_NOTES_LIMIT` cap, unchanged by this fix.
     """
     stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.started_at))
     if limit is not None:
@@ -108,7 +111,30 @@ def _recent_run_notes(session: Session, cutoff: datetime, limit: int | None = No
     return session.execute(stmt).scalars().all()
 
 
-def _funnel(session: Session, now: datetime) -> dict:
+def _signals_by_variant_from_notes(session: Session, run_notes: list[dict]) -> dict:
+    """`{variant_name: {tier, candidate, rejected}}`, seeded with every active variant's `tier`
+    from `strategy_variants` (a small table -- this join stays a live query) and summed from
+    `run_notes`' `pricing.signals` (fix 15, journal 44). Factored out of `_funnel` in fix 17
+    (journal 44/48) so `_candidates` can reuse it instead of issuing its own group-by over
+    `signals`; both callers pass the *same* `run_notes` list so `runs.notes` is scanned once
+    per page, not once per section.
+    """
+    signals_by_variant = {
+        v.name: {"tier": v.tier, "candidate": 0, "rejected": 0}
+        for v in session.execute(
+            select(StrategyVariant).where(StrategyVariant.active.is_(True)).order_by(StrategyVariant.name)
+        ).scalars().all()
+    }
+    for notes in run_notes:
+        pricing = (notes or {}).get("pricing") or {}
+        for variant, counts in (pricing.get("signals") or {}).items():
+            agg = signals_by_variant.setdefault(variant, {"tier": None, "candidate": 0, "rejected": 0})
+            agg["candidate"] += counts.get("candidate", 0) or 0
+            agg["rejected"] += counts.get("rejected", 0) or 0
+    return signals_by_variant
+
+
+def _funnel(session: Session, now: datetime, run_notes_24h: list[dict] | None = None) -> dict:
     """`sources` and `markets_by_sport` still come straight from `raw_responses` and
     `venue_markets`, which stay small. `fair_by_source`, `gaps` and `signals_by_variant` are
     per-run *sums* of `runs.notes->'pricing'` over the trailing 24h (fix 15, journal 44): a
@@ -119,6 +145,11 @@ def _funnel(session: Session, now: datetime) -> dict:
     uncapped (fix round 1, Important 2): `RUNS_NOTES_LIMIT` covers only a few hours at the
     default heartbeat, and this section's own docstring -- and the `sources`/`markets_by_sport`
     keys beside it -- promise the full 24h.
+
+    `run_notes_24h`, when given, is the already-fetched `runs.notes` rows for the trailing 24h
+    (fix 17): `build_summary` fetches this once and passes it to both `_funnel` and
+    `_candidates` so the page issues one scan of `runs.notes`, not two. Omit it (as the direct
+    unit tests below do) and this fetches it itself.
     """
     cutoff = now - WINDOW_24H
 
@@ -138,22 +169,16 @@ def _funnel(session: Session, now: datetime) -> dict:
         ).all()
         markets_by_sport[sport] = dict(rows)
 
-    signals_by_variant = {
-        v.name: {"tier": v.tier, "candidate": 0, "rejected": 0}
-        for v in session.execute(
-            select(StrategyVariant).where(StrategyVariant.active.is_(True)).order_by(StrategyVariant.name)
-        ).scalars().all()
-    }
+    if run_notes_24h is None:
+        run_notes_24h = _recent_run_notes(session, cutoff)
+
+    signals_by_variant = _signals_by_variant_from_notes(session, run_notes_24h)
     fair_direct = fair_derived = gaps = 0
-    for notes in _recent_run_notes(session, cutoff):
+    for notes in run_notes_24h:
         pricing = (notes or {}).get("pricing") or {}
         fair_direct += pricing.get("fair_direct", 0) or 0
         fair_derived += pricing.get("fair_derived", 0) or 0
         gaps += pricing.get("gaps", 0) or 0
-        for variant, counts in (pricing.get("signals") or {}).items():
-            agg = signals_by_variant.setdefault(variant, {"tier": None, "candidate": 0, "rejected": 0})
-            agg["candidate"] += counts.get("candidate", 0) or 0
-            agg["rejected"] += counts.get("rejected", 0) or 0
 
     return {"sources": sources, "markets_by_sport": markets_by_sport,
             "fair_by_source": {"direct": fair_direct, "derived": fair_derived},
@@ -459,18 +484,25 @@ def _pnl(session: Session, now: datetime) -> dict:
     return {"by_variant_7d": by_variant, "exposure": exposure}
 
 
-def _candidates(session: Session, now: datetime) -> dict:
+def _candidates(session: Session, now: datetime, run_notes_24h: list[dict] | None = None) -> dict:
+    """Per-variant candidate counts over the trailing 24h, from `runs.notes->'pricing'->'signals'`
+    -- the same per-run sums `_funnel`'s `signals_by_variant` uses (fix 17, journal 44/48). The
+    previous version grouped `signals` by variant and side directly; on the NAS's season-sized
+    `signals` table (~3.9M rows/day) that took 43s against the 10s page-time bound. Run notes
+    carry no per-side split (`price_and_signal` only tallies candidate/rejected per variant), so
+    the by-side breakdown is dropped -- controller ruling, journal 48/roadmap row 17 -- and the
+    `sides` key says why instead of silently going empty.
+
+    `run_notes_24h`, when given, is the same list `build_summary` already fetched for `_funnel`,
+    so this issues no statement against `signals` at all when called from the summary builder.
+    Omit it and this fetches its own (used by the direct unit tests).
+    """
     cutoff = now - WINDOW_24H
-    rows = session.execute(
-        select(StrategyVariant.name, Signal.side, func.count())
-        .join(StrategyVariant, StrategyVariant.variant_id == Signal.variant_id)
-        .where(Signal.decision == "candidate", Signal.created_at >= cutoff, Signal.replay.is_(False))
-        .group_by(StrategyVariant.name, Signal.side)
-    ).all()
-    out: dict[str, dict[str, int]] = {}
-    for name, side, n in rows:
-        out.setdefault(name, {})[side] = n
-    return out
+    if run_notes_24h is None:
+        run_notes_24h = _recent_run_notes(session, cutoff)
+    signals_by_variant = _signals_by_variant_from_notes(session, run_notes_24h)
+    by_variant = {name: {"candidate": agg["candidate"]} for name, agg in signals_by_variant.items()}
+    return {"by_variant": by_variant, "sides": "not split: served from run notes (fix 17)"}
 
 
 def _skip_reasons(session: Session, now: datetime) -> list[dict]:
@@ -554,12 +586,26 @@ def build_summary(session: Session, session_factory: sessionmaker, now: datetime
                    tz_local: str = "UTC", db_budget_gb: int = 2000, build: dict | None = None) -> dict:
     if build is None:
         build = {"sha": "dev", "time": None}
+
+    # Fix 17 (journal 44/48): `_funnel` and `_candidates` both aggregate `runs.notes` over the
+    # trailing 24h; fetch it once here and hand both sections the same list so the page scans
+    # `runs.notes` once, not twice. Memoized rather than fetched eagerly so a failure here still
+    # degrades only the section(s) that hit it, via `_section`, instead of the whole page -- if
+    # `_funnel` fails before caching it, `_candidates` retries the fetch on its own.
+    run_notes_24h: list[dict] | None = None
+
+    def _shared_run_notes_24h() -> list[dict]:
+        nonlocal run_notes_24h
+        if run_notes_24h is None:
+            run_notes_24h = _recent_run_notes(session, now - WINDOW_24H)
+        return run_notes_24h
+
     return {
         "now": _iso(now),
         "build": build,
         "health": _section(session, "health", lambda: _health(session, session_factory, now, credits_budget)),
         "kill_switch": _section(session, "kill_switch", lambda: _kill_switch(session)),
-        "funnel": _section(session, "funnel", lambda: _funnel(session, now)),
+        "funnel": _section(session, "funnel", lambda: _funnel(session, now, _shared_run_notes_24h())),
         "match_report": _section(session, "match_report", lambda: _match_report(session, now)),
         "signals": _section(session, "signals", lambda: _primary_signals(session, now)),
         "unmatched_markets": _section(session, "unmatched_markets", lambda: _unmatched_markets(session, now)),
@@ -570,7 +616,7 @@ def build_summary(session: Session, session_factory: sessionmaker, now: datetime
         "open_orders": _section(session, "open_orders", lambda: _open_orders(session, now)),
         "fills_today": _section(session, "fills_today", lambda: _fills_today(session, now, tz_local)),
         "pnl": _section(session, "pnl", lambda: _pnl(session, now)),
-        "candidates": _section(session, "candidates", lambda: _candidates(session, now)),
+        "candidates": _section(session, "candidates", lambda: _candidates(session, now, _shared_run_notes_24h())),
         "skip_reasons": _section(session, "skip_reasons", lambda: _skip_reasons(session, now)),
         "db_ceiling": _section(session, "db_ceiling", lambda: _db_ceiling(session, now, db_budget_gb)),
         "settlement_health": _section(session, "settlement_health", lambda: _settlement_health(session, now)),

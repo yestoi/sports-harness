@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, insert
 from sqlalchemy.orm import sessionmaker
 
-from harness.dashboard.app import _funnel, create_dashboard
+from harness.dashboard.app import WINDOW_24H, _candidates, _data_quality, _funnel, _recent_run_notes, create_dashboard
 from harness.db.models import (ExecHeartbeat, Fill, JobRun, KillSwitch, Ledger, OperatorEvent, Order, OrderEvent,
                                 RawResponse, Run, StrategyVariant, VenueSettlement, VenueTrade)
 from harness.execution.plan import POST_ONLY_REJECT
@@ -654,3 +654,54 @@ def test_funnel_section_reports_unavailable_on_a_malformed_pricing_note(db_sessi
     body = r.json()
     assert "error" in body["funnel"]
     assert "health" in body  # the rest of the page still renders
+
+
+# --- Fix 17: candidates served from run notes, not a live scan of `signals` ------------------
+
+def test_candidates_sums_pricing_counts_from_run_notes_ignoring_stale_rows(db_session, env_settings):
+    """`_candidates` sources its per-variant counts from `runs.notes->'pricing'->'signals'`
+    (fix 17, journal 44/48), the same per-run sums `_funnel`'s `signals_by_variant` uses --
+    not from a live group-by over `signals`. `_seed_full` writes real (and different) rows to
+    `signals` via `price_and_signal`, so this only passes if the notes' numbers, not the
+    table's, come back, and a run older than the 24h window is ignored."""
+    game, run, markets = _seed_full(db_session, env_settings)
+    run.notes = {"pricing": {"signals": {"tiny": {"candidate": 44, "rejected": 55}}}}
+    db_session.add(Run(started_at=NOW - timedelta(hours=2), status="ok",
+                       notes={"pricing": {"signals": {"tiny": {"candidate": 1, "rejected": 1}}}}))
+    db_session.add(Run(started_at=NOW - timedelta(hours=25), status="ok",
+                       notes={"pricing": {"signals": {"tiny": {"candidate": 1000, "rejected": 1000}}}}))
+    db_session.flush()
+
+    result = _candidates(db_session, NOW)
+
+    assert result["by_variant"]["tiny"]["candidate"] == 45
+    assert result["sides"] == "not split: served from run notes (fix 17)"
+
+
+def test_funnel_candidates_and_data_quality_issue_no_statement_against_signal_tables(db_session, env_settings):
+    """Fix 17 (journal 44/48): none of these three sections, called the way `build_summary`
+    calls them (a shared `run_notes_24h` fetched once, passed to `_funnel` and `_candidates`),
+    may issue a statement against `signals`, `fair_values` or `market_gap_snapshots` -- even
+    though `_seed_full` writes real rows to all three via `price_and_signal`. The previous
+    `_candidates` grouped `signals` by variant and side directly; that query took 43s against
+    the 10s page-time bound on the NAS's season-sized `signals` table."""
+    _seed_full(db_session, env_settings)
+    engine = db_session.get_bind()
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        run_notes_24h = _recent_run_notes(db_session, NOW - WINDOW_24H)
+        _funnel(db_session, NOW, run_notes_24h)
+        _candidates(db_session, NOW, run_notes_24h)
+        _data_quality(db_session, NOW)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    joined = "\n".join(statements).lower()
+    assert "fair_values" not in joined
+    assert "market_gap_snapshots" not in joined
+    assert "signals" not in joined

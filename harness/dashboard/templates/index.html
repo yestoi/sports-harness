@@ -285,15 +285,14 @@
 
 <section>
   <h2>Candidates (last 24h) and skip reasons</h2>
-  <h3>Candidates per variant and side</h3>
+  <h3>Candidates per variant</h3>
   {% if summary.candidates.error %}<p class="warn">unavailable: {{ summary.candidates.error }}</p>
   {% else %}
+  <p class="muted">{{ summary.candidates.sides }}</p>
   <table>
-    <tr><th>variant</th><th>side</th><th>count</th></tr>
-    {% for name, by_side in (summary.candidates or {}).items() %}
-      {% for side, n in by_side.items() %}
-      <tr><td>{{ name }}</td><td>{{ side }}</td><td>{{ n }}</td></tr>
-      {% endfor %}
+    <tr><th>variant</th><th>count</th></tr>
+    {% for name, counts in (summary.candidates.by_variant or {}).items() %}
+      <tr><td>{{ name }}</td><td>{{ counts.candidate }}</td></tr>
     {% endfor %}
   </table>
   {% endif %}
