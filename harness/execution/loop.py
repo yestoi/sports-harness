@@ -226,7 +226,11 @@ class Executor:
         from harness.venues.kalshi.authed import make_writer
 
         writer = make_writer(settings, "prod")
-        return KalshiGateway(writer, writer.reader)
+        # The factory is what venue state is written through: an outage mark, a freeze or a
+        # kill-switch trip must outlive the exception that caused it, and `_apply` rolls its
+        # savepoint back on exactly that path (Task 10 fix round 1, Important 1).
+        return KalshiGateway(writer, writer.reader, self._factory,
+                             exec_settings=self.exec_settings, clock=self._clock)
 
     # --- the step ---------------------------------------------------------------------
 
@@ -382,6 +386,10 @@ class Executor:
                                            | {w.venue_market_id for w in working}), at)
         ws_last = store.newest_event_ts(session, at)
         heartbeat["ws_last_event_at"] = ws_last
+        # Section 2.2's "30 s without a ping", which is a live-only reprice rule: the gateway
+        # needs the tape position this step already computed, and `PaperGateway` discards it
+        # (Task 10 fix round 1, Important 3).
+        self.gateway.observe_tape(ws_last)
         # F36: a recorder that stopped writing makes every ladder a stale one, and a stale
         # ladder that still looks tradeable is the failure this check exists to prevent.
         dead_recorder = (ws_last is None
@@ -548,7 +556,7 @@ class Executor:
             row.id: (row.status, row.filled_contracts) for row in working}
         since = store.local_midnight(now, ZoneInfo(self.settings.tz_local))
         try:
-            venue_fills = self.gateway.poll_fills(session, since)
+            venue_fills = self.gateway.poll_fills(session, since, now)
         except Exception as exc:  # noqa: BLE001 - one poll, not the step
             log.exception("polling venue fills failed")
             stats.errors += 1

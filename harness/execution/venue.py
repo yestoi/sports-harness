@@ -248,11 +248,30 @@ def is_routable(session, venue: str, env: str, now: datetime) -> bool:
     return False
 
 
-def freeze_market(session, venue: str, env: str, reason: str, now: datetime) -> None:
+class FreezeWindowMismatch(ValueError):
+    """A caller asked for a freeze window this table cannot record.
+
+    `venue_status` carries `since` and a status, and nothing else: the window's length is
+    `FREEZE_MINUTES`, read back by `is_routable`, and there is no column to hold a different
+    one. So a caller asking for a window that is not `FREEZE_MINUTES` is refused rather than
+    quietly given fifteen minutes. Today the only such caller is the echo path, whose
+    `EchoMismatch.freeze_minutes` comes from Task 7's `ECHO_FREEZE_MINUTES`; passing it through
+    is what makes the two constants checked at runtime instead of assumed to agree (fix round 1,
+    Minor 2).
+    """
+
+
+def freeze_market(session, venue: str, env: str, reason: str, now: datetime,
+                  minutes: int = FREEZE_MINUTES) -> None:
     """A 15-minute freeze after an echo mismatch or a third consecutive reject.
 
     The window restarts on every call, so a second incident inside the first freeze extends it.
+    `minutes` exists to be *checked*, not to vary: see `FreezeWindowMismatch`.
     """
+    if int(minutes) != FREEZE_MINUTES:
+        raise FreezeWindowMismatch(
+            f"venue_status records one freeze window ({FREEZE_MINUTES} min) and cannot hold "
+            f"{minutes}")
     _upsert(session, venue, env, STATUS_FROZEN, reason, now, restart_since=True)
     log.warning("venue %s/%s frozen for %d min; untrusted venue text: reason=%r",
                 venue, env, FREEZE_MINUTES, sanitize_venue_text(reason))

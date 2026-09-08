@@ -51,6 +51,7 @@ from harness.execution.venue import (
     OutageCounter,
     RejectTracker,
     VenueNotRoutable,
+    enable_venue,
     freeze_market,
     is_routable,
     make_reason,
@@ -189,7 +190,11 @@ class OrderGateway(Protocol):
     #: `store.load_fills_today`, which is a per-*variant* aggregate and a different shape
     #: entirely. A caller that wants the cap's numbers must call `store`, not a gateway
     #: (review round 1, Important 5; Task 11 owns the cap).
-    def poll_fills(self, session, since) -> list: ...
+    def poll_fills(self, session, since, now=None) -> list: ...
+
+    #: The newest tape row this step saw, handed over once a step. `PaperGateway` ignores it;
+    #: `KalshiGateway` feeds it to section 2.2's "30 s without a ping" reprice test.
+    def observe_tape(self, ws_last_event_at) -> None: ...
 
     #: Declared, not inferred: the fill-branch dispatch asks the gateway whether the tape
     #: simulator answers for its fills. A gateway that neither sets it nor inherits it fails
@@ -244,7 +249,11 @@ class PaperGateway:
         is a count of what we hold and nothing was found to be out of step."""
         return ReconcileReport(resting=store.count_open_orders(session, self.replay))
 
-    def poll_fills(self, session, since) -> list:
+    def observe_tape(self, ws_last_event_at) -> None:
+        """Ignored. Section 2.2's ping rule is live-only, and phase 3's reprice behaviour on a
+        quiet socket is what the golden replay pins."""
+
+    def poll_fills(self, session, since, now=None) -> list:
         """Empty, always: paper has no venue to poll. The simulator writes every paper fill and
         `_persist_track` records it in the same step, so there is nothing left for a poll to
         discover, and the daily cap's numbers come from `store.load_fills_today` -- a
@@ -289,8 +298,63 @@ class KalshiGateway:
         self._rejects = RejectTracker()
         #: What the venue says we hold, rebuilt by `reconcile` and empty until it has run.
         self.positions: dict[str, Decimal] = {}
+        #: Section 2.2's ping half: the newest tape row the loop has seen, handed over by
+        #: `observe_tape` once per step. None until a step has run, which reads as "no claim"
+        #: and leaves the silence test dormant rather than blocking every reprice at startup.
+        self._ws_last_event_at: datetime | None = None
+
+    def observe_tape(self, ws_last_event_at: datetime | None) -> None:
+        """The newest tape timestamp this step saw, which the loop already computes for the
+        heartbeat and the dead-recorder test. Handing it to the gateway is what makes section
+        2.2's "30 s without a ping" actually fire on a live reprice: a book can still read as
+        fresh for a while after the frames stop arriving (fix round 1, Important 3)."""
+        self._ws_last_event_at = ws_last_event_at
+
+    def enable(self, session, now) -> bool:
+        """`harness venue-enable` as this process sees it: clear the row *and* the in-process
+        outage counter.
+
+        Without the reset the counter is still latched from the outage, so the very next single
+        401 would re-mark a venue an operator has just cleared -- one auth failure, not two (fix
+        round 1, Minor 1). A CLI in another process has no counter to reset and calls
+        `venue.enable_venue` directly.
+        """
+        self._outage.reset()
+        return enable_venue(session, VENUE, self.env, now)
 
     # -- venue health --------------------------------------------------------------------
+
+    @contextmanager
+    def _venue_state_session(self, session):
+        """A short transaction of its own for every venue-state write, committed before the
+        exception that caused it is re-raised.
+
+        This is not a nicety. `Executor._apply` runs each action inside `session.begin_nested()`
+        and catches the exception *outside* the savepoint, so a row written on the caller's
+        session and then followed by a `raise` is rolled back with the savepoint -- taking the
+        outage mark, the freeze, the reject cancel and the kill-switch trip with it. The safety
+        state has to outlive the failure it describes, so it is written on a session of its own
+        and committed (fix round 1, Important 1).
+
+        `session_factory` is what that constructor argument has always been for. When there is
+        none, the caller's session is used and the risk is logged loudly rather than hidden:
+        a write that might be rolled back still beats no write at all -- `poll_fills`, for one,
+        is not inside a savepoint -- but a live gateway must be given a factory.
+        """
+        if self._session_factory is None:
+            log.error("no session_factory: venue state is being written on the caller's "
+                      "session and may be rolled back with its savepoint")
+            yield session
+            return
+        state = self._session_factory()
+        try:
+            yield state
+            state.commit()
+        except Exception:
+            state.rollback()
+            raise
+        finally:
+            state.close()
 
     @contextmanager
     def _venue_call(self, session, now, *, reject_key: str | None = None,
@@ -316,18 +380,25 @@ class KalshiGateway:
         try:
             yield
         except MessageBudgetExceeded as exc:
-            self._trip_kill_switch(session, now, f"message budget exceeded: {exc}")
+            with self._venue_state_session(session) as state:
+                self._trip_kill_switch(state, now, f"message budget exceeded: {exc}")
             raise
         except EchoMismatch as exc:
-            freeze_market(session, VENUE, self.env, exc.reason, now)
+            # The window comes off the exception rather than off this module's constant, so
+            # Task 7's `ECHO_FREEZE_MINUTES` and `FREEZE_MINUTES` cannot drift apart silently.
+            with self._venue_state_session(session) as state:
+                freeze_market(state, VENUE, self.env, exc.reason, now,
+                              minutes=exc.freeze_minutes)
             raise
         except KalshiApiError as exc:
-            self._note_api_error(session, exc, now)
-            if (reject_key is not None and _is_reject(exc.status)
-                    and self._rejects.record_reject(reject_key)):
-                freeze_market(session, VENUE, self.env, "three_consecutive_rejects", now)
-                if on_reject_limit is not None:
-                    on_reject_limit()
+            rejected = (reject_key is not None and _is_reject(exc.status)
+                        and self._rejects.record_reject(reject_key))
+            with self._venue_state_session(session) as state:
+                self._note_api_error(state, exc, now)
+                if rejected:
+                    freeze_market(state, VENUE, self.env, "three_consecutive_rejects", now)
+                    if on_reject_limit is not None:
+                        on_reject_limit(state)
             raise
         else:
             self._outage.reset()
@@ -455,6 +526,10 @@ class KalshiGateway:
         row = self._row(session, order_id)
         if row is None or row.status not in OPEN_STATUSES:
             return False
+        # A reprice is new risk at a new price, so section 9.4's "nothing new is routed" covers
+        # it: an unavailable or frozen venue blocks it, which is the whole point of the reject
+        # freeze (fix round 1, Important 2). Cancels stay ungated.
+        self._require_routable(session, now)
         if not self._may_reprice(market, book, now):
             return False
         updates: dict = {"prob": prob, "contracts": contracts}
@@ -462,7 +537,7 @@ class KalshiGateway:
             updated_client_order_id = str(uuid.uuid4())
             with self._venue_call(
                     session, now, reject_key=str(order_id),
-                    on_reject_limit=lambda: self._pull_back(session, order_id, now)):
+                    on_reject_limit=lambda state: self._pull_back(state, order_id, now)):
                 self._writer.amend(row.venue_order_id, prob, contracts, row.client_order_id,
                                    updated_client_order_id, row.ticker, row.side,
                                    row.exchange_index_at_place or 0,
@@ -484,26 +559,33 @@ class KalshiGateway:
         claimed = book if book is not _UNSET else getattr(market, "book", _UNSET)
         if claimed is _UNSET:
             return True
-        if may_reprice(claimed, now, self.exec_settings):
+        if may_reprice(claimed, now, self.exec_settings,
+                       ws_last_event_at=self._ws_last_event_at):
             return True
-        log.info("skipping a live reprice: the book is dirty, stale or absent")
+        log.info("skipping a live reprice: the book is dirty, stale, absent, or the socket "
+                 "has been silent")
         return False
 
-    def _pull_back(self, session, order_id: int, now) -> None:
+    def _pull_back(self, state, order_id: int, now) -> None:
         """The third consecutive reject on one order: cancel it, here and at the venue.
 
-        A failure to cancel must not mask the reject that is already on its way up, so the
-        class name is kept and the exception is not -- a transport exception's `.request`
-        carries the live signed headers.
+        `state` is the venue-state session, not the caller's: this cancel is safety state and
+        has to survive the reject that is on its way up (fix round 1, Important 1). It sees the
+        order because a repriced order was placed in an earlier step, which committed; the loop
+        never places and amends the same order inside one step.
+
+        A failure to cancel at the venue must not mask the reject, so the class name is kept and
+        the exception is not -- a transport exception's `.request` carries the live signed
+        headers.
         """
-        row = self._row(session, order_id)
+        row = state.get(Order, order_id)
         if row is not None and row.venue_order_id:
             try:
                 self._writer.cancel(row.venue_order_id, row.ticker,
                                     row.exchange_index_at_place or 0)
             except Exception as exc:
                 log.warning("cancel after three rejects failed: %s", type(exc).__name__)
-        store.cancel_order(session, order_id, "rejects", now)
+        store.cancel_order(state, order_id, "rejects", now)
 
     def cancel_all(self, session, reason: str, now) -> int:
         """One message pulls the whole group back; the rows are then closed one by one so that
@@ -560,6 +642,10 @@ class KalshiGateway:
         for view in resting:
             row = known.get(view.client_order_id)
             if row is None:
+                # We hold no row for this order, so its shard is a guess: this gateway's own
+                # `exchange_index`, which is the one every order it places carries. An order
+                # from another shard would refuse the cancel and be reported by
+                # `_cancel_at_venue` rather than silently left resting (fix round 1, Minor 5).
                 self._cancel_at_venue(session, view, now, self.exchange_index)
                 cancelled_unknown += 1
             elif row.expiry is not None and row.expiry <= now:
@@ -627,10 +713,15 @@ class KalshiGateway:
                 return view
         raise OrderNotPlaced(client_order_id)
 
-    def poll_fills(self, session, since) -> list:
+    def poll_fills(self, session, since, now=None) -> list:
         """The only live fill source (ruling B-I2): `GET /portfolio/fills` since `since`. The
-        queue-model simulator is bypassed entirely in live mode."""
-        with self._venue_call(session, self._now()):
+        queue-model simulator is bypassed entirely in live mode.
+
+        `now` is the loop's clock, so a mark or freeze written from a fill poll carries the same
+        instant `is_routable` is later asked with; it falls back to this gateway's own clock for
+        a caller that has none (fix round 1, Minor 3).
+        """
+        with self._venue_call(session, now or self._now()):
             return self._reader.get_fills(since)
 
     # -- our rows behind a venue order ---------------------------------------------------

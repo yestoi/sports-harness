@@ -34,6 +34,7 @@ from harness.execution.loop import Executor
 from harness.execution.plan import ExecSettings
 from harness.execution.venue import (
     FREEZE_MINUTES,
+    FreezeWindowMismatch,
     OUTAGE_AFTER_CONSECUTIVE,
     REASON_MAX_CHARS,
     REJECTS_BEFORE_FREEZE,
@@ -50,11 +51,14 @@ from harness.execution.venue import (
     sanitize_venue_text,
 )
 from harness.venues.kalshi.authed import (
+    ECHO_FREEZE_MINUTES,
+    ORDERS_PATH,
     KalshiApiError,
     KalshiReader,
     MessageBudgetExceeded,
     TokenBucket,
 )
+from harness.venues.kalshi.http import VenueTransportError
 
 from tests.test_kalshi_authed import FakeTransport, _err, _ok
 from tests.test_kalshi_writer import _echo_of, _writer
@@ -114,10 +118,22 @@ def _open_order(session, **kw) -> int:
     return order_id
 
 
-def _kalshi(transport, **kw) -> KalshiGateway:
+def _kalshi(transport, session=None, **kw) -> KalshiGateway:
+    """A live gateway wired the way the executor wires one. `session` supplies the
+    `session_factory` every venue-state write goes through: an outage mark, a freeze, a reject
+    cancel and a kill-switch trip are committed on a session of their own so they outlive the
+    exception that caused them (fix round 1, Important 1)."""
     kw.setdefault("order_group_id", "g1")
     kw.setdefault("clock", lambda: NOW)
+    if session is not None:
+        kw.setdefault("session_factory", _factory(session))
     return KalshiGateway(_writer(transport), KalshiReader(transport), **kw)
+
+
+def _fresh(session):
+    """A session that shares nothing with the test's own: what an operator, the dashboard or
+    the next process would see. Venue state has to be visible here or it did not survive."""
+    return _factory(session)()
 
 
 def _factory(session):
@@ -275,7 +291,7 @@ def test_a_demo_outage_never_marks_production(db_session):
 def test_the_outage_counter_only_marks_production(db_session):
     """A-I3 at the gateway: a demo gateway counts nothing and writes no row at all."""
     t = FakeTransport(queued=[_err(401), _err(401)])
-    g = _kalshi(t, env="demo")
+    g = _kalshi(t, db_session, env="demo")
     for _ in range(2):
         with pytest.raises(KalshiApiError):
             g.poll_fills(db_session, NOW - timedelta(hours=1))
@@ -329,7 +345,7 @@ def test_an_unavailable_venue_routes_nothing_new(db_session):
     t = FakeTransport(queued=[])
     mark_status(db_session, "kalshi", "prod", "unavailable", "401", NOW)
     with pytest.raises(VenueNotRoutable):
-        _kalshi(t).place(db_session, _values(), None, _Market(CENT_RANGES), NOW)
+        _kalshi(t, db_session).place(db_session, _values(), None, _Market(CENT_RANGES), NOW)
     assert t.calls == []
 
 
@@ -338,13 +354,13 @@ def test_an_unavailable_venue_still_lets_a_cancel_out(db_session):
     t = FakeTransport(queued=[_ok({"order_id": "ov1", "reduced_by": "10.00"})])
     mark_status(db_session, "kalshi", "prod", "unavailable", "401", NOW)
     order_id = _open_order(db_session, venue_order_id="ov1")
-    assert _kalshi(t).cancel(db_session, order_id, "outage", NOW) is True
+    assert _kalshi(t, db_session).cancel(db_session, order_id, "outage", NOW) is True
     assert t.calls[0][0] == "DELETE"
 
 
 def test_two_401s_at_the_gateway_mark_production_unavailable(db_session):
     t = FakeTransport(queued=[_err(401, code="unauthorized"), _err(401, code="unauthorized")])
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
     for _ in range(2):
         with pytest.raises(KalshiApiError):
             g.poll_fills(db_session, NOW - timedelta(hours=1))
@@ -355,7 +371,7 @@ def test_two_401s_at_the_gateway_mark_production_unavailable(db_session):
 
 def test_a_429_storm_at_the_gateway_never_marks_the_venue(db_session):
     t = FakeTransport(queued=[_err(429) for _ in range(6)])
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
     for _ in range(6):
         with pytest.raises(KalshiApiError):
             g.poll_fills(db_session, NOW - timedelta(hours=1))
@@ -402,14 +418,16 @@ def test_a_third_reject_on_one_order_cancels_it_and_freezes_the_market(db_sessio
     t = FakeTransport(queued=[_err(400, code="bad_price"), _err(400, code="bad_price"),
                               _err(400, code="bad_price"),
                               _ok({"order_id": "ov1", "reduced_by": "10.00"})])
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
     order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-rej")
+    db_session.commit()      # the order was placed in an earlier, committed step
     market = _Market(CENT_RANGES)
 
     for _ in range(REJECTS_BEFORE_FREEZE):
         with pytest.raises(KalshiApiError):
             g.amend(db_session, order_id, Decimal("0.4400"), Decimal("10.00"), market, NOW)
 
+    db_session.expire_all()
     assert db_session.get(Order, order_id).status == "cancelled"
     assert is_routable(db_session, "kalshi", "prod", NOW) is False
     assert is_routable(db_session, "kalshi", "prod",
@@ -420,7 +438,7 @@ def test_an_echo_mismatch_freezes_the_market_for_fifteen_minutes(db_session):
     """Task 7's writer cancels the order and raises; this task is the half that records it."""
     t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.9900")}),
                               _ok({"order_id": "o1"})])
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
     values = _values(prob=Decimal("0.5600"), contracts=Decimal("10.00"))
 
     with pytest.raises(Exception):
@@ -440,7 +458,7 @@ def test_reconcile_cancels_a_resting_order_unknown_to_our_orders_table(db_sessio
         _ok({"fills": [], "cursor": ""}),
         _ok({"market_positions": [], "cursor": ""}),
         _ok({"order_id": "ov9"})])
-    report = _kalshi(t).reconcile(db_session, NOW)
+    report = _kalshi(t, db_session).reconcile(db_session, NOW)
     assert report.cancelled_unknown == 1
     assert t.calls[-1][0] == "DELETE"
 
@@ -450,7 +468,7 @@ def test_reconcile_asks_the_three_questions_in_order(db_session):
         _ok({"orders": [], "cursor": ""}),
         _ok({"fills": [], "cursor": ""}),
         _ok({"market_positions": [], "cursor": ""})])
-    report = _kalshi(t).reconcile(db_session, NOW)
+    report = _kalshi(t, db_session).reconcile(db_session, NOW)
     assert [c[1] for c in t.calls] == ["/portfolio/orders", "/portfolio/fills",
                                        "/portfolio/positions"]
     assert t.calls[0][2]["status"] == "resting"
@@ -466,7 +484,7 @@ def test_reconcile_cancels_a_resting_order_past_its_deadline(db_session):
         _ok({"market_positions": [], "cursor": ""}),
         _ok({"order_id": "ov1"})])
 
-    report = _kalshi(t).reconcile(db_session, NOW)
+    report = _kalshi(t, db_session).reconcile(db_session, NOW)
 
     assert report.cancelled_past_deadline == 1 and report.cancelled_unknown == 0
     assert t.calls[-1][0] == "DELETE"
@@ -481,7 +499,7 @@ def test_reconcile_leaves_a_known_in_deadline_order_resting(db_session):
         _ok({"fills": [], "cursor": ""}),
         _ok({"market_positions": [], "cursor": ""})])
 
-    report = _kalshi(t).reconcile(db_session, NOW)
+    report = _kalshi(t, db_session).reconcile(db_session, NOW)
 
     assert report.cancelled_unknown == 0 and report.cancelled_past_deadline == 0
     assert report.resting == 1
@@ -496,7 +514,7 @@ def test_reconcile_rebuilds_positions(db_session):
         _ok({"market_positions": [{"ticker": "A", "position": "5.00"},
                                   {"ticker": "B", "position": "-2.00"},
                                   {"ticker": "C", "position": "0"}], "cursor": ""})])
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
 
     report = g.reconcile(db_session, NOW)
 
@@ -511,7 +529,7 @@ def test_reconcile_counts_the_fills_it_read(db_session):
                         "outcome_side": "yes", "price": "0.5600", "count": "2.00"}],
              "cursor": ""}),
         _ok({"market_positions": [], "cursor": ""})])
-    assert _kalshi(t).reconcile(db_session, NOW).fills_seen == 1
+    assert _kalshi(t, db_session).reconcile(db_session, NOW).fills_seen == 1
 
 
 def test_reconcile_adopts_the_order_group_the_venue_already_holds(db_session):
@@ -524,7 +542,7 @@ def test_reconcile_adopts_the_order_group_the_venue_already_holds(db_session):
                                  order_group_id="g-old")], "cursor": ""}),
         _ok({"fills": [], "cursor": ""}),
         _ok({"market_positions": [], "cursor": ""})])
-    g = _kalshi(t, order_group_id=None)
+    g = _kalshi(t, db_session, order_group_id=None)
 
     g.reconcile(db_session, NOW)
 
@@ -537,7 +555,7 @@ def test_a_timeout_after_send_is_resolved_by_client_order_id_not_a_resend(db_ses
         httpx.ReadTimeout("t"),
         _ok({"orders": [_resting(order_id="ov1", client_order_id="c-uuid",
                                  order_group_id="g1")], "cursor": ""})])
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
 
     placed = g.place(db_session, _values(client_order_id="c-uuid"), None,
                      _Market(CENT_RANGES), NOW)
@@ -550,7 +568,7 @@ def test_a_timeout_after_send_is_resolved_by_client_order_id_not_a_resend(db_ses
 
 def test_a_timeout_whose_lookup_finds_nothing_reports_not_placed(db_session):
     t = FakeTransport(queued=[httpx.ReadTimeout("t"), _ok({"orders": [], "cursor": ""})])
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
     with pytest.raises(OrderNotPlaced):
         g.place(db_session, _values(client_order_id="c-uuid"), None, _Market(CENT_RANGES), NOW)
     assert sum(1 for c in t.calls if c[0] == "POST") == 1
@@ -563,7 +581,7 @@ def test_a_timeout_lookup_that_finds_someone_elses_order_reports_not_placed(db_s
         httpx.ReadTimeout("t"),
         _ok({"orders": [_resting(order_id="ov2", client_order_id="not-ours")], "cursor": ""})])
     with pytest.raises(OrderNotPlaced):
-        _kalshi(t).place(db_session, _values(client_order_id="c-uuid"), None,
+        _kalshi(t, db_session).place(db_session, _values(client_order_id="c-uuid"), None,
                          _Market(CENT_RANGES), NOW)
 
 
@@ -614,7 +632,7 @@ def test_a_rest_book_is_not_judged_on_websocket_silence():
 
 def test_the_kalshi_gateway_skips_an_amend_on_a_dirty_book(db_session):
     t = FakeTransport()
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
     order_id = _open_order(db_session, venue_order_id="ov1")
     assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("2.00"),
                    _Market(CENT_RANGES), NOW, book=_book(dirty=True, as_of=NOW)) is False
@@ -625,7 +643,7 @@ def test_the_kalshi_gateway_reads_the_book_off_the_market_when_given_one(db_sess
     """`MarketNow` carries the book the loop is already holding, so a caller that forgets the
     keyword is still gated."""
     t = FakeTransport()
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
     order_id = _open_order(db_session, venue_order_id="ov1")
     market = _MarketWithBook(_book(dirty=True, as_of=NOW), CENT_RANGES)
     assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("2.00"),
@@ -635,7 +653,7 @@ def test_the_kalshi_gateway_reads_the_book_off_the_market_when_given_one(db_sess
 
 def test_the_kalshi_gateway_amends_on_a_clean_book(db_session):
     t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700")})])
-    g = _kalshi(t)
+    g = _kalshi(t, db_session)
     order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-clean")
     market = _MarketWithBook(_book(dirty=False, as_of=NOW), CENT_RANGES)
     assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("10.00"),
@@ -685,3 +703,216 @@ def test_the_kill_switch_row_carries_a_reason(db_session):
 
 def test_executor_version_is_bumped_for_venue_state():
     assert EXECUTOR_VERSION == "4.1"
+
+
+# --- fix round 1: venue state outlives the exception that wrote it -------------------------
+#
+# `Executor._apply` runs every action inside `session.begin_nested()` and catches the exception
+# outside it, so a row written on the caller's session and then followed by a `raise` is rolled
+# back with the savepoint. These tests reproduce that savepoint exactly and then read the state
+# on a session that shares nothing with the test's own.
+
+
+def test_an_outage_mark_survives_the_callers_savepoint(db_session):
+    t = FakeTransport(queued=[_err(401, code="unauthorized"), _err(401, code="unauthorized")])
+    g = _kalshi(t, db_session)
+
+    for _ in range(2):
+        with pytest.raises(KalshiApiError):
+            with db_session.begin_nested():
+                g.poll_fills(db_session, NOW - timedelta(hours=1), NOW)
+
+    with _fresh(db_session) as fresh:
+        row = fresh.get(VenueStatus, ("kalshi", "prod"))
+        assert row is not None and row.status == "unavailable"
+        assert is_routable(fresh, "kalshi", "prod", NOW) is False
+
+
+def test_an_echo_mismatch_freeze_survives_the_callers_savepoint(db_session):
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.9900")}),
+                              _ok({"order_id": "o1"})])
+    g = _kalshi(t, db_session)
+
+    with pytest.raises(Exception):
+        with db_session.begin_nested():
+            g.place(db_session, _values(), None, _Market(CENT_RANGES), NOW)
+
+    with _fresh(db_session) as fresh:
+        row = fresh.get(VenueStatus, ("kalshi", "prod"))
+        assert row is not None and (row.status, row.reason) == ("frozen", "echo_mismatch")
+
+
+def test_the_kill_switch_trip_survives_the_callers_savepoint(db_session):
+    t = FakeTransport()
+    g = KalshiGateway(_empty_bucket_writer(t), KalshiReader(t), _factory(db_session),
+                      order_group_id="g1", clock=lambda: NOW)
+
+    with pytest.raises(MessageBudgetExceeded):
+        with db_session.begin_nested():
+            g.place(db_session, _values(), None, _Market(CENT_RANGES), NOW)
+
+    with _fresh(db_session) as fresh:
+        assert fresh.execute(select(KillSwitch.active)).scalar() is True
+
+
+def test_the_reject_cancel_and_freeze_survive_the_callers_savepoint(db_session):
+    t = FakeTransport(queued=[_err(400, code="bad_price"), _err(400, code="bad_price"),
+                              _err(400, code="bad_price"),
+                              _ok({"order_id": "ov1", "reduced_by": "10.00"})])
+    g = _kalshi(t, db_session)
+    order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-sp")
+    db_session.commit()
+
+    for _ in range(REJECTS_BEFORE_FREEZE):
+        with pytest.raises(KalshiApiError):
+            with db_session.begin_nested():
+                g.amend(db_session, order_id, Decimal("0.4400"), Decimal("10.00"),
+                        _Market(CENT_RANGES), NOW)
+
+    with _fresh(db_session) as fresh:
+        assert fresh.get(Order, order_id).status == "cancelled"
+        assert is_routable(fresh, "kalshi", "prod", NOW) is False
+
+
+def test_without_a_session_factory_the_write_still_happens_on_the_callers_session(db_session):
+    """The documented fallback. A write that might be rolled back beats no write at all, and
+    `poll_fills` is one caller that is not inside a savepoint."""
+    t = FakeTransport(queued=[_err(401), _err(401)])
+    g = KalshiGateway(_writer(t), KalshiReader(t), order_group_id="g1", clock=lambda: NOW)
+    for _ in range(2):
+        with pytest.raises(KalshiApiError):
+            g.poll_fills(db_session, NOW - timedelta(hours=1), NOW)
+    assert read_status(db_session, "kalshi", "prod") == "unavailable"
+
+
+# --- fix round 1: a frozen venue blocks reprices too ---------------------------------------
+
+
+def test_a_frozen_venue_blocks_an_amend(db_session):
+    """Section 9.4's "nothing new is routed" covers a reprice: it is new risk at a new price,
+    and the reject freeze exists precisely to stop the activity that produced the rejects."""
+    t = FakeTransport()
+    freeze_market(db_session, "kalshi", "prod", "echo_mismatch", NOW)
+    order_id = _open_order(db_session, venue_order_id="ov1")
+    with pytest.raises(VenueNotRoutable):
+        _kalshi(t, db_session).amend(db_session, order_id, Decimal("0.5700"),
+                                     Decimal("10.00"), _Market(CENT_RANGES), NOW)
+    assert t.calls == []
+
+
+def test_an_unavailable_venue_blocks_an_amend(db_session):
+    t = FakeTransport()
+    mark_status(db_session, "kalshi", "prod", "unavailable", "401", NOW)
+    order_id = _open_order(db_session, venue_order_id="ov1")
+    with pytest.raises(VenueNotRoutable):
+        _kalshi(t, db_session).amend(db_session, order_id, Decimal("0.5700"),
+                                     Decimal("10.00"), _Market(CENT_RANGES), NOW)
+    assert t.calls == []
+
+
+def test_an_amend_is_allowed_again_once_the_freeze_expires(db_session):
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700")})])
+    freeze_market(db_session, "kalshi", "prod", "echo_mismatch", NOW)
+    order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-thaw")
+    later = NOW + timedelta(minutes=FREEZE_MINUTES + 1)
+    assert _kalshi(t, db_session).amend(db_session, order_id, Decimal("0.5700"),
+                                        Decimal("10.00"), _MarketWithBook(
+                                            _book(as_of=later), CENT_RANGES), later) is True
+
+
+# --- fix round 1: the 30 s ping rule is live ------------------------------------------------
+
+
+def test_the_loop_hands_the_gateway_its_tape_position(env_settings, db_session):
+    """One call site: the loop already computes `ws_last_event_at` for the heartbeat, and the
+    gateway needs it for section 2.2's silence test. `PaperGateway` discards it."""
+    seen = []
+
+    class _Spy(PaperGateway):
+        def observe_tape(self, ws_last_event_at):
+            seen.append(ws_last_event_at)
+
+    Executor(env_settings, _factory(db_session), gateway=_Spy()).step()
+    assert len(seen) == 1
+
+
+def test_websocket_silence_blocks_a_live_reprice_and_a_fresh_event_releases_it(db_session):
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700")})])
+    g = _kalshi(t, db_session)
+    order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-ws")
+    market = _MarketWithBook(_book(dirty=False, as_of=NOW), CENT_RANGES)
+
+    g.observe_tape(NOW - timedelta(seconds=31))
+    assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("10.00"),
+                   market, NOW) is False
+    assert t.calls == []
+
+    g.observe_tape(NOW)
+    assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("10.00"),
+                   market, NOW) is True
+    assert [c[0] for c in t.calls] == ["POST"]
+
+
+def test_a_gateway_that_has_seen_no_tape_yet_does_not_block_every_reprice(db_session):
+    """None reads as "no claim", not as "silent forever": a gateway before its first step must
+    not be permanently unable to reprice."""
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700")})])
+    g = _kalshi(t, db_session)
+    order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-none")
+    assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("10.00"),
+                   _MarketWithBook(_book(as_of=NOW), CENT_RANGES), NOW) is True
+
+
+# --- fix round 1: the remaining minors ------------------------------------------------------
+
+
+def test_enabling_the_venue_resets_the_gateways_outage_counter(db_session):
+    """Without the reset the counter is still latched, so the very next single 401 would
+    re-mark a venue an operator has just cleared -- one auth failure, not two."""
+    t = FakeTransport(queued=[_err(401), _err(401), _err(401)])
+    g = _kalshi(t, db_session)
+    for _ in range(2):
+        with pytest.raises(KalshiApiError):
+            g.poll_fills(db_session, NOW - timedelta(hours=1), NOW)
+    assert g.enable(db_session, NOW) is True
+    assert is_routable(db_session, "kalshi", "prod", NOW) is True
+
+    with pytest.raises(KalshiApiError):
+        g.poll_fills(db_session, NOW - timedelta(hours=1), NOW)
+    assert is_routable(db_session, "kalshi", "prod", NOW) is True
+
+
+def test_a_freeze_window_the_table_cannot_record_is_refused():
+    """`venue_status` holds one window length. A caller asking for another is refused rather
+    than silently given fifteen minutes, which is what keeps Task 7's `ECHO_FREEZE_MINUTES` and
+    this module's `FREEZE_MINUTES` checked against each other instead of assumed equal."""
+    assert ECHO_FREEZE_MINUTES == FREEZE_MINUTES
+    with pytest.raises(FreezeWindowMismatch):
+        freeze_market(None, "kalshi", "prod", "echo_mismatch", NOW, minutes=30)
+
+
+def test_a_send_timeout_in_the_production_shape_is_resolved_by_client_order_id(db_session):
+    """`KalshiTransport` never lets an httpx exception out: it wraps every one into
+    `VenueTransportError`, because an httpx exception's `.request` carries the live signed
+    headers. That is the shape this branch sees in production."""
+    t = FakeTransport(queued=[
+        VenueTransportError("POST", ORDERS_PATH, "ReadTimeout"),
+        _ok({"orders": [_resting(order_id="ov7", client_order_id="c-prod",
+                                 order_group_id="g1")], "cursor": ""})])
+    g = _kalshi(t, db_session)
+
+    placed = g.place(db_session, _values(client_order_id="c-prod"), None,
+                     _Market(CENT_RANGES), NOW)
+
+    assert placed.venue_order_id == "ov7"
+    assert sum(1 for c in t.calls if c[0] == "POST") == 1
+
+
+def test_poll_fills_marks_with_the_callers_clock(db_session):
+    """A mark written from a fill poll must carry the loop's instant, not wall-clock time."""
+    t = FakeTransport(queued=[_err(401), _err(401)])
+    g = _kalshi(t, db_session, clock=lambda: NOW + timedelta(days=99))
+    for _ in range(2):
+        with pytest.raises(KalshiApiError):
+            g.poll_fills(db_session, NOW - timedelta(hours=1), NOW)
+    assert db_session.get(VenueStatus, ("kalshi", "prod")).since == NOW
