@@ -176,6 +176,38 @@ def test_ciphertext_structure_check_catches_a_truncated_file(tmp_path):
     assert verify_ciphertext_structure(age_path, plaintext_bytes=len(payload)) is False
 
 
+def test_a_failed_structure_check_renames_the_bad_ciphertext_and_stays_eligible_for_retry(
+    monkeypatch, db_session, tmp_path,
+):
+    # Fix round 1, ruling 5: never delete a ciphertext already written (roadmap invariant 5);
+    # rename it aside with a `.bad-<stamp>` suffix and leave the unit eligible for a fresh
+    # encrypt attempt on the next pass.
+    _unit(tmp_path, "nightly", "S1")
+    pub = _recipient(tmp_path)
+
+    monkeypatch.setattr("harness.ops.backup.verify_ciphertext_structure", lambda *a, **k: False)
+    rows = encrypt_pending(db_session, tmp_path, pub, "abc1234", NOW)
+    assert len(rows) == 1 and rows[0].status == "error"
+    bad = tmp_path / "nightly" / f"harness-nightly-S1.dump.age.bad-{NOW.strftime('%Y%m%dT%H%M%SZ')}"
+    assert bad.exists()
+    assert not (tmp_path / "nightly" / "harness-nightly-S1.dump.age").exists()
+    assert rows[0].path == str(bad)
+
+    monkeypatch.undo()  # restore the real verify_ciphertext_structure
+    later = NOW + timedelta(minutes=1)
+    rows2 = encrypt_pending(db_session, tmp_path, pub, "abc1234", later)
+    assert len(rows2) == 1 and rows2[0].status == "ok"
+    assert (tmp_path / "nightly" / "harness-nightly-S1.dump.age").exists()
+    assert bad.exists()  # the earlier bad file was never deleted
+
+
+def test_scan_units_ignores_a_renamed_bad_ciphertext(tmp_path):
+    _unit(tmp_path, "nightly", "S1")
+    (tmp_path / "nightly" / "harness-nightly-S1.dump.age.bad-20260908T120000Z").write_bytes(b"junk")
+    unit = next(u for u in scan_units(tmp_path) if u.stamp == "S1")
+    assert unit.age is None
+
+
 # --- the plaintext deletion rule (A-C4) ----------------------------------------------------------
 
 
@@ -187,6 +219,8 @@ def test_a_plaintext_survives_without_a_drill_row(db_session, tmp_path):
 
 
 def test_a_drill_row_for_another_build_does_not_release_the_plaintext(db_session, tmp_path):
+    # The unit was encrypted under build abc1234; a drill for a different build's ciphertexts
+    # says nothing about whether abc1234's ciphertext decrypts.
     _unit(tmp_path, "nightly", "S1")
     encrypt_pending(db_session, tmp_path, _recipient(tmp_path), "abc1234", NOW)
     record_drill(db_session, "OTHER99", True, "sha", True, NOW, {})
@@ -210,6 +244,37 @@ def test_a_failed_drill_never_releases_a_plaintext(db_session, tmp_path):
     encrypt_pending(db_session, tmp_path, _recipient(tmp_path), "abc1234", NOW)
     record_drill(db_session, "abc1234", False, "sha", False, NOW, {})
     assert delete_verified_plaintexts(db_session, tmp_path, "abc1234", NOW) == []
+
+
+def test_a_plaintext_survives_if_its_ciphertext_is_missing_from_disk(db_session, tmp_path):
+    # Fix round 1, ruling 1: the encrypt row's path is not proof a ciphertext exists -- the
+    # file is. An `ok` row plus a matching drill is not enough if the .dump.age is gone.
+    _unit(tmp_path, "nightly", "S1")
+    encrypt_pending(db_session, tmp_path, _recipient(tmp_path), "abc1234", NOW)
+    record_drill(db_session, "abc1234", True, "sha", True, NOW, {})
+    (tmp_path / "nightly" / "harness-nightly-S1.dump.age").unlink()
+    assert delete_verified_plaintexts(db_session, tmp_path, "abc1234", NOW) == []
+    assert (tmp_path / "nightly" / "harness-nightly-S1.dump").exists()
+
+
+def test_the_release_rule_ignores_the_callers_build_sha(db_session, tmp_path):
+    # Fix round 1, ruling 2: the gate is the encrypt row's own build_sha, matched to a drill for
+    # that same build -- the build_sha the caller (the running process) passes in is irrelevant.
+    _unit(tmp_path, "nightly", "S1")
+    encrypt_pending(db_session, tmp_path, _recipient(tmp_path), "buildX", NOW)
+    record_drill(db_session, "buildX", True, "sha", True, NOW, {})
+    deleted = delete_verified_plaintexts(db_session, tmp_path, "totally-unrelated-build", NOW)
+    assert len(deleted) == 1
+    assert not (tmp_path / "nightly" / "harness-nightly-S1.dump").exists()
+
+
+def test_a_drill_for_a_different_build_than_the_encrypt_row_does_not_release(db_session, tmp_path):
+    # Same scenario as "another build" above, but now pinned against the encrypt row's build
+    # rather than the (now-unused) caller build_sha, to make the rule's actual key explicit.
+    _unit(tmp_path, "nightly", "S1")
+    encrypt_pending(db_session, tmp_path, _recipient(tmp_path), "buildX", NOW)
+    record_drill(db_session, "buildY", True, "sha", True, NOW, {})
+    assert delete_verified_plaintexts(db_session, tmp_path, "buildX", NOW) == []
 
 
 # --- units and the precheck ------------------------------------------------------------------------
@@ -281,33 +346,40 @@ def test_backup_precheck_exits_0_with_a_fresh_nightly(cli_runner, cli_settings, 
 
 
 def test_backup_keygen_prints_the_copy_out_instruction(cli_runner, tmp_path, monkeypatch):
-    # Never writes into the working tree: the CLI reads both paths from Settings, and this
-    # test points them at tmp_path. A real run here would drop secrets/backup_age_key into the
-    # checkout and keygen's refuse-to-overwrite rule would then break the next run.
+    # Fix round 1, rulings 3-4: --identity/--recipient are explicit CLI options (not read from
+    # Settings), so this test points them at tmp_path and checks the actual paths were written
+    # there -- never asserting that the *real* secrets/backup_age_key is absent, which would
+    # fail forever once the operator actually generates the real key (ruling 4).
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db")
-    monkeypatch.setenv("BACKUP_IDENTITY_FILE", str(tmp_path / "key"))
-    monkeypatch.setenv("BACKUP_RECIPIENT_FILE", str(tmp_path / "pub"))
     get_settings.cache_clear()
-    result = cli_runner.invoke(app, ["backup-keygen"])
+    ident = tmp_path / "secrets" / "backup_age_key"
+    pub = tmp_path / "deploy" / "backup_age.pub"
+    result = cli_runner.invoke(app, ["backup-keygen", "--identity", str(ident), "--recipient", str(pub)])
     assert result.exit_code == 0, result.output
-    assert "copy" in result.output.lower() and "backup_age_key" in result.output
+    assert "copy" in result.output.lower() and str(ident) in result.output and str(pub) in result.output
     assert "AGE-SECRET-KEY" not in result.output      # never print the private key
-    from pathlib import Path
-
-    assert not Path("secrets/backup_age_key").exists()
-    assert not Path("deploy/backup_age.pub").exists()
+    assert ident.exists() and pub.exists()            # written only where instructed
+    assert oct(ident.stat().st_mode)[-3:] == "600"
     get_settings.cache_clear()
+
+
+def test_backup_keygen_writes_recipient_before_identity_so_a_half_pair_never_blocks_a_retry(tmp_path):
+    # Fix round 1, ruling 3: identity's existence is the only overwrite guard, so the recipient
+    # must land first -- otherwise a failure between the two writes leaves an identity on disk
+    # with no recipient, and the refuse-to-overwrite rule would then block ever finishing.
+    ident, pub = tmp_path / "key", tmp_path / "pub"
+    keygen(ident, pub)
+    assert pub.exists() and ident.exists()
 
 
 def test_backup_keygen_refuses_when_backup_dir_exists(cli_runner, tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db")
     monkeypatch.setenv("BACKUP_DIR", str(tmp_path))     # a real backup_dir means this is the NAS
-    monkeypatch.setenv("BACKUP_IDENTITY_FILE", str(tmp_path / "key"))
-    monkeypatch.setenv("BACKUP_RECIPIENT_FILE", str(tmp_path / "pub"))
     get_settings.cache_clear()
-    result = cli_runner.invoke(app, ["backup-keygen"])
+    ident, pub = tmp_path / "key", tmp_path / "pub"
+    result = cli_runner.invoke(app, ["backup-keygen", "--identity", str(ident), "--recipient", str(pub)])
     assert result.exit_code == 1
-    assert not (tmp_path / "key").exists()
+    assert not ident.exists()
     get_settings.cache_clear()
 
 

@@ -21,7 +21,7 @@ import hashlib
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import BinaryIO
 
@@ -88,13 +88,20 @@ def _unit_name(kind: str, stamp: str) -> str:
     return f"{_NAME_PREFIX}{kind}-{stamp}"
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def scan_units(backup_dir: Path) -> list[Unit]:
     """Group every `.dump`, `.dump.age` and `.meta.json` under `backup_dir` into `Unit`s.
 
     `backup_dir` holds one subdirectory per kind (`nightly/`, `weekly/`, `partition/`); the
     stamp is whatever follows `harness-<kind>-` up to the file's extension. A `.dump.age.tmp`
-    (an encryption still in flight) and a `.ok` marker are not unit members and are ignored
-    here -- the marker is read directly by `dump.sh`'s retention loop, not through this scan.
+    (an encryption still in flight), a `.ok` marker and a `.dump.age.bad-<stamp>` (a ciphertext
+    that failed its structure check, renamed aside rather than deleted -- roadmap invariant 5)
+    are not unit members and are ignored here -- the marker is read directly by `dump.sh`'s
+    retention loop, not through this scan, and a `.bad-` file is neither the unit's ciphertext
+    nor its plaintext, so the unit stays eligible for the next encrypt pass.
     A missing `backup_dir` (the Mac, where the jobs no-op) scans as empty.
     """
     backup_dir = Path(backup_dir)
@@ -109,7 +116,7 @@ def scan_units(backup_dir: Path) -> list[Unit]:
             name = entry.name
             if not name.startswith(prefix):
                 continue
-            if name.endswith(".dump.age.tmp") or name.endswith(".ok"):
+            if name.endswith(".dump.age.tmp") or name.endswith(".ok") or ".dump.age.bad-" in name:
                 continue
             if name.endswith(".dump.age"):
                 stamp, ext = name[len(prefix):-len(".dump.age")], "age"
@@ -140,22 +147,36 @@ def marker_path(unit: Unit) -> Path:
 
 
 def keygen(identity_path: Path, recipient_path: Path) -> str:
-    """Write the private identity 0600 and the public recipient 0644. Refuses to overwrite an
+    """Write the public recipient 0644, then the private identity 0600. Refuses to overwrite an
     existing identity (a regenerated key makes every existing backup undecryptable). Returns
-    the recipient string for the operator notice."""
+    the recipient string for the operator notice.
+
+    The recipient is written first and the identity last, and the identity's existence is the
+    only overwrite guard: if the recipient write fails, the identity was never touched and a
+    retry is unblocked; if the identity write fails after the recipient succeeded, a retry just
+    rewrites the (idempotent) recipient and then the identity. Writing the identity first would
+    leave a half-finished pair -- an identity on disk with no matching recipient -- that the
+    refuse-to-overwrite rule would then block from ever completing.
+    """
     identity_path = Path(identity_path)
     recipient_path = Path(recipient_path)
     if identity_path.exists():
         raise FileExistsError(f"{identity_path} already exists; refusing to regenerate the backup key")
 
     identity, recipient = generate_identity()
-    identity_path.parent.mkdir(parents=True, exist_ok=True)
-    identity_path.write_text(identity + "\n")
-    identity_path.chmod(0o600)
 
     recipient_path.parent.mkdir(parents=True, exist_ok=True)
     recipient_path.write_text(recipient + "\n")
     recipient_path.chmod(0o644)
+
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(identity_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(identity + "\n")
+    except BaseException:
+        identity_path.unlink(missing_ok=True)
+        raise
     return recipient
 
 
@@ -192,7 +213,7 @@ def encrypt_pending(session: Session, backup_dir: Path, recipient_file: Path, bu
         if not has_recipient:
             row = BackupRun(
                 kind="encrypt", build_sha=build_sha, path=str(unit.dump), status="skipped",
-                started_at=now, finished_at=now, notes={"reason": "no recipient"},
+                started_at=now, finished_at=_utcnow(), notes={"reason": "no recipient"},
             )
             session.add(row)
             session.commit()
@@ -204,6 +225,7 @@ def encrypt_pending(session: Session, backup_dir: Path, recipient_file: Path, bu
 
 
 def _encrypt_unit(session: Session, unit: Unit, recipient: str, build_sha: str, now: datetime) -> BackupRun:
+    started_at = now
     dump = unit.dump
     tmp_path = dump.with_name(dump.name + ".age.tmp")
     final_path = dump.with_name(dump.name + ".age")
@@ -218,10 +240,19 @@ def _encrypt_unit(session: Session, unit: Unit, recipient: str, build_sha: str, 
         os.replace(tmp_path, final_path)
 
         ok = verify_ciphertext_structure(final_path, plaintext_bytes)
+        if ok:
+            path_for_row = final_path
+        else:
+            # Never delete anything already written (roadmap invariant 5): rename the bad
+            # ciphertext aside so scan_units no longer sees a `.dump.age` for this unit, which
+            # leaves it eligible for a fresh encrypt attempt on the next pass.
+            path_for_row = final_path.with_name(final_path.name + f".bad-{started_at.strftime('%Y%m%dT%H%M%SZ')}")
+            os.replace(final_path, path_for_row)
+
         row = BackupRun(
-            kind="encrypt", build_sha=build_sha, path=str(final_path), bytes=plaintext_bytes,
+            kind="encrypt", build_sha=build_sha, path=str(path_for_row), bytes=plaintext_bytes,
             plaintext_sha256=plaintext_hash.hexdigest(), ciphertext_sha256=ciphertext_hash.hexdigest(),
-            status="ok" if ok else "error", started_at=now, finished_at=now,
+            status="ok" if ok else "error", started_at=started_at, finished_at=_utcnow(),
             notes=None if ok else {"error": "ciphertext structure check failed after encryption"},
         )
         session.add(row)
@@ -230,10 +261,11 @@ def _encrypt_unit(session: Session, unit: Unit, recipient: str, build_sha: str, 
             marker_path(unit).write_text("")
         return row
     except Exception as exc:
+        session.rollback()
         tmp_path.unlink(missing_ok=True)
         row = BackupRun(
             kind="encrypt", build_sha=build_sha, path=str(dump), status="error",
-            started_at=now, finished_at=now, notes={"error": repr(exc)},
+            started_at=started_at, finished_at=_utcnow(), notes={"error": repr(exc)},
         )
         session.add(row)
         session.commit()
@@ -243,30 +275,33 @@ def _encrypt_unit(session: Session, unit: Unit, recipient: str, build_sha: str, 
 
 def delete_verified_plaintexts(session: Session, backup_dir: Path, build_sha: str,
                                now: datetime) -> list[Path]:
-    """Delete a unit's plaintext only when `backup_runs` holds a `drill` row with
-    `build_sha = :build_sha` (the column, Task 4) and `notes->>'decrypt_ok' = 'true'`, AND the
-    unit's own encrypt row is `ok` (A-C4). Never deletes a `.dump.age`, a `.meta.json` or a
-    `.ok` marker.
-    """
-    del now  # the release rule has no time bound of its own; kept for interface symmetry
-    drills = session.execute(
-        select(BackupRun).where(BackupRun.kind == "drill", BackupRun.build_sha == build_sha)
-    ).scalars().all()
-    if not any(d.notes and d.notes.get("decrypt_ok") is True for d in drills):
-        return []
+    """Delete a unit's plaintext only when its own `ok` `encrypt` row (matched by the
+    ciphertext's path) carries a build, `E.build_sha`, for which `backup_runs` also holds a
+    `drill` row with that same `build_sha` and `notes->>'decrypt_ok' = 'true'` (A-C4). Never
+    deletes a `.dump.age`, a `.meta.json` or a `.ok` marker -- and never a plaintext whose
+    ciphertext is not actually on disk: the encrypt row's path is not proof, the file is.
 
+    The rule is keyed on the encrypt row's own `build_sha`, not on the caller's `build_sha`
+    (a drill of any file encrypted under build X releases every unit encrypted under X,
+    however long ago) -- so `build_sha` and `now` are accepted only for interface symmetry
+    with `encrypt_pending` and are not otherwise used here.
+    """
+    del build_sha, now
     deleted: list[Path] = []
     for unit in scan_units(backup_dir):
-        if unit.dump is None:
+        if unit.dump is None or unit.age is None:
             continue
-        age_path = str(unit.dump.with_name(unit.dump.name + ".age"))
         encrypt_row = session.execute(
             select(BackupRun).where(
-                BackupRun.kind == "encrypt", BackupRun.build_sha == build_sha,
-                BackupRun.path == age_path, BackupRun.status == "ok",
+                BackupRun.kind == "encrypt", BackupRun.path == str(unit.age), BackupRun.status == "ok",
             )
         ).scalars().first()
-        if encrypt_row is None:
+        if encrypt_row is None or encrypt_row.build_sha is None:
+            continue
+        drills = session.execute(
+            select(BackupRun).where(BackupRun.kind == "drill", BackupRun.build_sha == encrypt_row.build_sha)
+        ).scalars().all()
+        if not any(d.notes and d.notes.get("decrypt_ok") is True for d in drills):
             continue
         unit.dump.unlink()
         deleted.append(unit.dump)

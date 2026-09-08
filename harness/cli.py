@@ -115,12 +115,22 @@ def run() -> None:
 
 
 @app.command("backup-keygen")
-def backup_keygen_cmd() -> None:
+def backup_keygen_cmd(
+    identity: Path = typer.Option(Path("secrets/backup_age_key"), "--identity",
+                                  help="Where to write the private identity (0600)"),
+    recipient: Path = typer.Option(Path("deploy/backup_age.pub"), "--recipient",
+                                   help="Where to write the public recipient (committed source, pushed to the NAS)"),
+) -> None:
     """Mac only: generates the backup age keypair. Refuses when `backup_dir` exists, which
     means this is running on the NAS -- the private key is never written there.
 
-    Prints the fixed copy-out instruction (never the private key itself); the controller adds
-    the Carried-fixes nag the first time this succeeds and clears it once the user confirms.
+    `--identity`/`--recipient` default to the repo-relative paths the Makefile expects
+    (`secrets/backup_age_key`, `deploy/backup_age.pub`) -- not `Settings.backup_recipient_file`,
+    which is the NAS container's runtime bind-mount path, not a place to ever write from here.
+
+    Prints the copy-out instruction with the actual paths written (never the private key
+    itself); the controller adds the Carried-fixes nag the first time this succeeds and clears
+    it once the user confirms.
     """
     configure_logging()
     from harness.ops.backup import keygen
@@ -129,10 +139,10 @@ def backup_keygen_cmd() -> None:
     if s.backup_dir.exists():
         log.error("backup_dir %s exists; backup-keygen runs on the Mac only", s.backup_dir)
         raise typer.Exit(1)
-    keygen(s.backup_identity_file, s.backup_recipient_file)
-    print("Wrote secrets/backup_age_key (0600) and deploy/backup_age.pub.")
-    print("COPY secrets/backup_age_key SOMEWHERE SAFE NOW. A backup no one can decrypt is not a backup.")
-    print("The private key is never pushed to the NAS; only deploy/backup_age.pub is.")
+    keygen(identity, recipient)
+    print(f"Wrote {identity} (0600) and {recipient}.")
+    print(f"COPY {identity} SOMEWHERE SAFE NOW. A backup no one can decrypt is not a backup.")
+    print(f"The private key is never pushed to the NAS; only {recipient} is.")
 
 
 @app.command("backup-encrypt")
