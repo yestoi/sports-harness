@@ -33,9 +33,43 @@ TRADES_MAX_PAGES = 20  # 20,000 trades per window before we stop paginating and 
 _ESPN_TZ = ZoneInfo("America/New_York")
 _ESPN_TERMINAL_STATUSES = {"final", "postponed", "canceled"}
 
+#: Amendment 4 fix round 1. `tick_budget_s` bounds the fetch phase only: normalization takes up
+#: to 30 s after it and pricing a further `price_budget_s`, so a 45 s pricing budget would put
+#: the worst-case tick at 175 s -- past the 120 s game-window cadence and far past the 20 s NFL
+#: pre-kickoff one. `max_instances=1, coalesce=True` on the scheduler's job then drops the next
+#: tick outright and the data it would have recorded is simply lost. So pricing gets what the
+#: cadence in force actually leaves, less a margin, and never less than the floor.
+PRICE_BUDGET_FLOOR_S = 20
+PRICE_BUDGET_MARGIN_S = 10
+#: The weekday period `interval_for` returns outside every game window. Used when no sport has a
+#: cadence in force -- the 01:00-08:00 quiet window, or a tick whose ESPN fetch failed before it
+#: learned the day's kickoffs.
+DEFAULT_CADENCE_S = 900
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def cadence_in_force(now: datetime, kickoffs: list[Kickoff], tz: str) -> int:
+    """The shortest cadence any sport is on for this tick, from the same `interval_for` the
+    per-source `_due` checks use. That is how soon the next tick's fetches come due, so it is the
+    wall clock this tick's fetch, normalization and pricing have to fit inside."""
+    intervals = [i for i in (interval_for(sport, now, kickoffs, tz) for sport in SPORTS)
+                 if i is not None]
+    return min(intervals, default=DEFAULT_CADENCE_S)
+
+
+def pricing_budget(price_budget_s: int, cadence_s: int, elapsed_s: float) -> tuple[float, bool]:
+    """The pricing budget this tick may actually spend, and whether the cadence capped it.
+
+    `elapsed_s` is the monotonic time the tick has already spent fetching and normalizing.
+    Below `PRICE_BUDGET_FLOOR_S` the tick overruns its cadence by design: scoring nothing at all
+    would leave the gate variant unmeasured on exactly the busiest ticks.
+    """
+    effective = max(PRICE_BUDGET_FLOOR_S,
+                    min(price_budget_s, cadence_s - elapsed_s - PRICE_BUDGET_MARGIN_S))
+    return effective, effective < price_budget_s
 
 
 # --- Task 12b telemetry -----------------------------------------------------------------
@@ -491,6 +525,10 @@ class Recorder:
                         log.exception("recorder deploy event failed")
                         session.rollback()
             summaries: list[MarketSummary] = []
+            # Bound before the try: an ESPN failure must still leave the pricing budget below a
+            # cadence to work from, and no kickoffs is exactly what `interval_for` reads as the
+            # quiet weekday period.
+            kickoffs: list[Kickoff] = []
             try:
                 kickoffs = self._espn(session, run, now, ctx)
                 self._checkpoint(session, run)
@@ -528,8 +566,18 @@ class Recorder:
                 # loader's upper bound would otherwise fall back to the previous fetch (2-5 min old),
                 # labelling every fair value stale.
                 pricing_now = self.clock()
+                # Amendment 4 fix round 1: `price_budget_s` is what pricing may spend, not what
+                # it always gets. Fetch and normalization have already run, so pricing takes what
+                # is left of the cadence in force less a margin, and never less than the floor.
+                budget_s, budget_capped = pricing_budget(
+                    self.s.price_budget_s,
+                    cadence_in_force(pricing_now, kickoffs, self.s.tz_local),
+                    self.monotonic() - started_mono)
                 try:
-                    ctx["pricing"] = price_and_signal(session, run.id, pricing_now, self.s, self.s.price_budget_s)
+                    pricing = price_and_signal(session, run.id, pricing_now, self.s, budget_s)
+                    pricing["budget_s"] = budget_s
+                    pricing["budget_capped"] = budget_capped
+                    ctx["pricing"] = pricing
                 except Exception as e:  # noqa: BLE001
                     log.exception("pricing failed")
                     session.rollback()

@@ -14,14 +14,23 @@ from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import (Game, MetricSample, OperatorEvent, RawResponse, Run, TradeWatermark, VenueMarket,
                                VenueQuote, VenueTrade)
-from harness.feeds.espn import EspnClient
+from harness.feeds.espn import EspnClient, Kickoff
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
 from harness.health import create_app
 from harness.matching.teams import seed_teams_from_espn
 from harness.normalize import runner as runner_mod
 from harness.recorder import store
-from harness.recorder.tick import Recorder, _pricing_samples, _recorder_samples
+from harness.recorder.tick import (
+    DEFAULT_CADENCE_S,
+    PRICE_BUDGET_FLOOR_S,
+    PRICE_BUDGET_MARGIN_S,
+    Recorder,
+    _pricing_samples,
+    _recorder_samples,
+    cadence_in_force,
+    pricing_budget,
+)
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
 from harness.venues.kalshi.public import KalshiPublic
@@ -947,3 +956,73 @@ def test_espn_rollover_window_excludes_0030_et_today(env_settings, db_session):
     rec.maybe_tick()
 
     assert calls["dated"] == []
+
+
+# --- Amendment 4 fix round 1: the pricing budget is capped to the cadence in force -------------
+
+
+def test_pricing_budget_is_the_setting_when_the_cadence_is_wide():
+    # 900 - 12 - 10 leaves far more than the setting asks for, so the setting stands.
+    assert pricing_budget(45, cadence_s=900, elapsed_s=12.0) == (45, False)
+
+
+def test_pricing_budget_is_capped_to_what_a_game_window_cadence_leaves():
+    # 120 s cadence, 80 s already spent on fetch and normalization, 10 s margin.
+    assert pricing_budget(45, cadence_s=120, elapsed_s=80.0) == (30, True)
+
+
+def test_pricing_budget_never_falls_below_the_floor():
+    # The 20 s NFL pre-kickoff cadence cannot fit any pricing at all; the floor wins, and the
+    # tick overruns by design rather than scoring nothing.
+    assert pricing_budget(45, cadence_s=20, elapsed_s=5.0) == (PRICE_BUDGET_FLOOR_S, True)
+    assert PRICE_BUDGET_FLOOR_S == 20 and PRICE_BUDGET_MARGIN_S == 10
+
+
+def test_cadence_in_force_is_the_shortest_any_sport_is_on():
+    kickoffs = [Kickoff(sport="nfl", espn_event_id="e1", kickoff_utc=NOW + timedelta(minutes=80),
+                        home="LAR", away="NYG", status="scheduled")]
+    # NFL is 80 minutes out, so its cadence is 20 s; ncaaf has no game and sits at 900 s.
+    assert cadence_in_force(NOW, kickoffs, "America/Chicago") == 20
+    assert cadence_in_force(NOW, [], "America/Chicago") == 900
+
+
+def test_cadence_in_force_falls_back_to_the_weekday_period_in_the_quiet_window():
+    quiet = NOW - timedelta(hours=18)  # 05:00 CT, inside the 01:00-08:00 do-not-fetch window
+    assert cadence_in_force(quiet, [], "America/Chicago") == DEFAULT_CADENCE_S == 900
+
+
+@respx.mock
+def test_run_note_records_the_uncapped_pricing_budget(env_settings, db_session):
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={}))
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+
+    # No kickoffs, so the 900 s weekday cadence is in force and the setting stands.
+    assert run.notes["pricing"]["budget_s"] == env_settings.price_budget_s == 45
+    assert run.notes["pricing"]["budget_capped"] is False
+
+
+@respx.mock
+def test_run_note_records_a_pricing_budget_capped_by_the_pre_kickoff_cadence(env_settings, db_session):
+    # NOW is 1h20m before the fixture's kickoff, which puts NFL on its 20 s cadence: nothing
+    # fits, so the floor applies and the run says the budget was capped.
+    respx.get(url__regex=r"https://k/series/.*").mock(return_value=httpx.Response(200, json={"series": {}}))
+    respx.get("https://e/nfl/scoreboard").mock(return_value=httpx.Response(200, json=ESPN))
+    respx.get("https://e/college-football/scoreboard").mock(return_value=httpx.Response(200, json={"events": []}))
+    respx.get(url__regex=r"https://o/.*").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://k/markets").mock(return_value=httpx.Response(200, json=KM))
+    respx.get("https://k/events").mock(return_value=httpx.Response(200, json={"cursor": "", "events": []}))
+    respx.get("https://k/markets/trades").mock(return_value=httpx.Response(200, json={"trades": []}))
+    respx.get(url__regex=r"https://k/markets/[^/]+/orderbook").mock(return_value=httpx.Response(200, json={}))
+
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+
+    assert run.notes["pricing"]["budget_s"] == PRICE_BUDGET_FLOOR_S
+    assert run.notes["pricing"]["budget_capped"] is True
