@@ -2,7 +2,7 @@
 guarantee, and `run_checks`' timeout handling.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest import mock
 
@@ -213,3 +213,78 @@ def test_a_negative_staleness_row_inside_the_window_still_fails(db_session):
     results = run_checks(db_session, now, job_run_id=job.id,
                          checks=[_check("fair_values_negative_staleness")])
     assert results[0].status == "fail"
+
+
+def test_duplicate_trades_flags_a_duplicate_in_the_current_partition(db_session):
+    """Fix round 1, Important 2: prove the dedupe actually catches a duplicate, not just that
+    it stays under the timeout on a clean database."""
+    now = datetime.now(timezone.utc)
+    job = JobRun(job="settle", started_at=now, status="running", notes={})
+    db_session.add(job)
+    db_session.flush()
+
+    for i in range(2):
+        db_session.add(VenueTrade(venue="kalshi", trade_id="dup-1", ticker="T",
+                                  ts=now - timedelta(seconds=i), yes_price=Decimal("0.2300"),
+                                  count=Decimal("5.00"), taker_side="yes", is_block=False,
+                                  source="rest", raw_id=None))
+    db_session.flush()
+
+    result = run_checks(db_session, now, job_run_id=job.id,
+                        checks=[_check("duplicate_trades")])[0]
+    assert result.status == "fail"
+    assert float(result.value) == 1.0
+
+
+def test_duplicate_trades_ignores_a_duplicate_confined_to_an_older_partition(db_session):
+    """Fix round 1, Important 2: a duplicate three weeks back must not leak into the
+    current-week bounded check -- proving the partition bound actually excludes older weeks,
+    not just that it names the right partition."""
+    from harness.db.schema import _partition_name, week_bounds
+
+    now = datetime.now(timezone.utc)
+    start, _ = week_bounds(now)
+    old_start = start - timedelta(weeks=3)
+    old_end = old_start + timedelta(days=7)
+    name = _partition_name("venue_trades", old_start)
+    db_session.execute(checks_mod.text(
+        f"create table if not exists {name} partition of venue_trades "
+        f"for values from ('{old_start.isoformat()}') to ('{old_end.isoformat()}')"))
+    db_session.flush()
+
+    job = JobRun(job="settle", started_at=now, status="running", notes={})
+    db_session.add(job)
+    db_session.flush()
+
+    old_ts = old_start + timedelta(days=1)
+    for i in range(2):
+        db_session.add(VenueTrade(venue="kalshi", trade_id="dup-old", ticker="T",
+                                  ts=old_ts - timedelta(seconds=i), yes_price=Decimal("0.2300"),
+                                  count=Decimal("5.00"), taker_side="yes", is_block=False,
+                                  source="rest", raw_id=None))
+    db_session.flush()
+
+    result = run_checks(db_session, now, job_run_id=job.id,
+                        checks=[_check("duplicate_trades")])[0]
+    assert result.status == "pass"
+    assert float(result.value) == 0.0
+
+
+def test_duplicate_trades_falls_back_to_the_parent_table_when_the_partition_is_missing(db_session):
+    """Fix round 1, Important 1: before the first recorder tick after a cold start (or on a
+    fresh database) the current week's venue_trades partition does not exist yet. Naming it in
+    the query must not turn into a `skip` -- it must fall back to the static, parent-table
+    statement, which is always valid."""
+    now = datetime.now(timezone.utc)
+    name = current_trades_partition(now)
+    db_session.execute(checks_mod.text(f"drop table if exists {name}"))
+
+    job = JobRun(job="settle", started_at=now, status="running", notes={})
+    db_session.add(job)
+    db_session.flush()
+
+    result = run_checks(db_session, now, job_run_id=job.id,
+                        checks=[_check("duplicate_trades")])[0]
+    assert result.status == "pass"
+    assert result.detail is None
+    assert float(result.value) == 0.0

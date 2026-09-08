@@ -324,6 +324,25 @@ def assert_no_tape_reads(checks: list[Check]) -> None:
 assert_no_tape_reads(CHECKS)
 
 
+def _execute_bounded(session: Session, sql: str) -> object:
+    """Run one check statement inside its own savepoint under the check timeout. Raises on
+    error or timeout; the caller decides how to record (or retry) that."""
+    with session.begin_nested():
+        session.execute(text(f"set local statement_timeout = {STATEMENT_TIMEOUT_MS}"))
+        return session.execute(text(sql)).scalar()
+
+
+def _classify_failure(check_name: str, exc: Exception) -> tuple[str, str]:
+    """Every check failure is recorded as `skip`, never as a stage failure (ruling 1): a
+    `query_canceled` from our own `SET LOCAL statement_timeout` is `detail='timeout'`; anything
+    else logs the exception and truncates it into `detail`."""
+    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+    if sqlstate == "57014":  # query_canceled: our own SET LOCAL statement_timeout
+        return "skip", "timeout"
+    log.exception("check %s failed", check_name)
+    return "skip", f"{type(exc).__name__}: {exc}"[:200]
+
+
 def run_checks(session: Session, now: datetime, job_run_id: int,
               checks: list[Check] | None = None) -> list[CheckResult]:
     """Run every check under its own statement timeout and write one `check_results` row each.
@@ -337,19 +356,27 @@ def run_checks(session: Session, now: datetime, job_run_id: int,
     for check in checks if checks is not None else CHECKS:
         value = None
         detail: str | None = None
+        sql = check.sql_for(now) if check.sql_for is not None else check.sql
         try:
-            with session.begin_nested():
-                session.execute(text(f"set local statement_timeout = {STATEMENT_TIMEOUT_MS}"))
-                sql = check.sql_for(now) if check.sql_for is not None else check.sql
-                value = session.execute(text(sql)).scalar()
+            value = _execute_bounded(session, sql)
             status = "pass" if check.ok(value) else "fail"
         except Exception as exc:  # noqa: BLE001 - one check must not cost the stage
             sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
-            if sqlstate == "57014":  # query_canceled: our own SET LOCAL statement_timeout
-                status, detail = "skip", "timeout"
+            # Carried fix 16 fix round 1: `duplicate_trades` names the current week's
+            # partition by name so the planner prunes at plan time -- but before the first
+            # recorder tick after a cold start (or on a fresh database) that partition does
+            # not exist yet, and naming a table that does not exist is `UndefinedTable`
+            # (42P01), not "zero rows". Fall back once to the static, parent-table statement
+            # in `check.sql`, bounded the same way and always valid: a missing partition for a
+            # time range is legitimately zero matching rows, not an error.
+            if sqlstate == "42P01" and check.sql_for is not None:
+                try:
+                    value = _execute_bounded(session, check.sql)
+                    status = "pass" if check.ok(value) else "fail"
+                except Exception as exc2:  # noqa: BLE001 - same rule: never cost the stage
+                    status, detail = _classify_failure(check.name, exc2)
             else:
-                status, detail = "skip", f"{type(exc).__name__}: {exc}"[:200]
-                log.exception("check %s failed", check.name)
+                status, detail = _classify_failure(check.name, exc)
         results.append(CheckResult(job_run_id=job_run_id, ts=now, check_name=check.name,
                                    status=status, value=value, threshold=check.threshold,
                                    detail=detail))
