@@ -489,3 +489,181 @@ def test_report_rejects_a_week_that_does_not_exist(cli_settings):
     result = runner.invoke(app, ["report", "--week", "54", "--year", str(YEAR), "--out", "-"])
     assert result.exit_code == 1
     assert result.stdout == ""
+
+
+# --- fix round 1 -------------------------------------------------------------------------------
+
+
+def test_a_homogeneous_stratum_counts_no_significant_cell(db_session, env_settings):
+    """C1: the pre-registration record says a tau^2 = 0 stratum "counts no cell as significant
+    on the posterior interval". Three cells at a positive grand mean, ten games each, all with
+    the same cell mean, must leave the §9.6 count at zero."""
+    for i in range(10):
+        game = _game(db_session)
+        for j, mid in enumerate(("0.3000", "0.4200", "0.5500")):
+            market = _market(db_session, game.id, f"T-ML-{i}-{j}")
+            # Within-cell variation keeps se > 0; identical cell means keep tau^2 = 0.
+            value = "0.0200" if i % 2 == 0 else "0.0400"
+            _gap(db_session, market, venue_mid=mid, gap_mid=value, gap_maker_net=value)
+    db_session.flush()
+
+    t4 = _tables(db_session, env_settings)["t4"]
+    populated = [r for r in t4.rows
+                 if r[t4.columns.index("fair_source")] == "direct"
+                 and r[t4.columns.index("gap_mid")] != PLACEHOLDER]
+    assert len(populated) == 3
+    assert all(r[t4.columns.index("gap_mid")][2] == 10 for r in populated), "not greyed"
+    assert "no heterogeneity detected" in t4.note
+    assert "posterior interval excludes zero: 0" in t4.note
+    assert all(r[t4.columns.index("posterior")] == PLACEHOLDER for r in populated)
+    # And nothing the selection artefact would carry claims otherwise.
+    assert not any(c["posterior_excludes_zero"] for c in select_cells({"t4": t4})["cells"])
+
+
+def test_table4_reports_feed_kind_as_a_stratum(db_session, env_settings):
+    """I1/I2: the grid carries feed_kind beside the staleness buckets as a stratum, and the
+    family runs on the gap_mid quantity over every feed rather than on featured rows alone."""
+    from harness.report.tables import HEADLINE_PANEL
+
+    assert HEADLINE_PANEL == "gap_mid"
+    game = _game(db_session)
+    featured = _market(db_session, game.id, "T-ML-FEATURED")
+    alternate = _market(db_session, game.id, "T-ML-ALTERNATE")
+    _gap(db_session, featured, feed_kind="featured", gap_mid="0.0500")
+    _gap(db_session, alternate, feed_kind="alternate", gap_mid="0.0700")
+    db_session.flush()
+
+    t4 = _tables(db_session, env_settings)["t4"]
+    for name in ("feed featured", "feed alternate", "feed unknown"):
+        assert name in t4.columns
+    row = next(r for r in t4.rows
+               if r[t4.columns.index("fair_source")] == "direct"
+               and r[t4.columns.index("price_bucket")] == "50-65"
+               and r[t4.columns.index("ttk")] == "< 3 h"
+               and r[t4.columns.index("sport")] == "nfl"
+               and r[t4.columns.index("market_type")] == "moneyline")
+    # The panel now covers both feeds; each stratum column carries its own feed alone.
+    assert row[t4.columns.index("gap_mid")][1] == 2
+    assert abs(row[t4.columns.index("gap_mid")][0] - 0.06) < 1e-9
+    assert row[t4.columns.index("feed featured")][1] == 1
+    assert row[t4.columns.index("feed alternate")][1] == 1
+    assert row[t4.columns.index("feed unknown")] == PLACEHOLDER
+    assert "gap_mid" in t4.header
+
+
+def test_adverse_drift_uses_only_fair_changed_rows(db_session, env_settings):
+    """I3: criterion 5 reads adverse drift on fair_changed rows; an order whose fair never
+    moved must not be averaged in. cross_fill has no 0 m markout by construction, so its
+    column is the placeholder and the header says why."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    game = _game(db_session)
+    moved = _market(db_session, game.id, "T-ML-MOVED")
+    still = _market(db_session, game.id, "T-ML-STILL")
+    changed_order = _order(db_session, moved, PRIMARY)
+    unchanged_order = _order(db_session, still, PRIMARY)
+    _fill(db_session, changed_order)
+    _fill(db_session, unchanged_order)
+    _markout(db_session, changed_order, "fill", "0m", fair_p="0.5800", fair_changed=True)
+    _markout(db_session, unchanged_order, "fill", "0m", fair_p="0.5500", fair_changed=False)
+    db_session.flush()
+
+    t3 = _tables(db_session, env_settings)["t3"]
+    row = next(r for r in t3.rows if r[1] == "queue_model" and r[2] == "featured"
+               and r[3].startswith("<="))
+    drift = row[t3.columns.index("adverse_drift")]
+    assert drift[1] == 1, "only the fair_changed row counts"
+    assert abs(drift[0] - 0.03) < 1e-9  # 0.58 - 0.55
+    cross = next(r for r in t3.rows if r[1].endswith("snapshot_cross") and r[2] == "featured"
+                 and r[3].startswith("<="))
+    assert cross[t3.columns.index("adverse_drift")] == PLACEHOLDER
+    assert "cross_fill" in t3.header
+
+
+def test_table3_counts_every_episode_in_the_slice_and_not_a_straddling_one(db_session,
+                                                                          env_settings):
+    """M3/M4: an unfilled order is still an episode, and a reprice chain whose head was placed
+    before Monday belongs to the previous week's report, so this one must not recount it.
+
+    The two behaviours sit on different variants so each lands in its own table-3 row and
+    neither can mask the other.
+    """
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    _variant(db_session, SECONDARY, "wide_band", "secondary")
+    game = _game(db_session)
+    unfilled_market = _market(db_session, game.id, "T-ML-UNFILLED")
+    _order(db_session, unfilled_market, PRIMARY)
+    straddle_market = _market(db_session, game.id, "T-ML-STRADDLE")
+    _order(db_session, straddle_market, SECONDARY, placed_at=WEEK_START - timedelta(hours=2),
+           status="cancelled", cancel_reason="reprice",
+           cancelled_at=WEEK_START - timedelta(hours=1))
+    tail = _order(db_session, straddle_market, SECONDARY,
+                  placed_at=WEEK_START + timedelta(hours=1))
+    _fill(db_session, tail, filled_at=WEEK_START + timedelta(hours=2))
+    db_session.flush()
+
+    t3 = _tables(db_session, env_settings)["t3"]
+
+    def slice_row(variant):
+        return next(r for r in t3.rows if r[0] == variant and r[1] == "queue_model"
+                    and r[2] == "featured" and r[3].startswith("<="))
+
+    unfilled = slice_row("sharp_direct")
+    assert unfilled[t3.columns.index("fills")] == 0
+    assert unfilled[t3.columns.index("episodes")] == 1, "an unfilled order is still an episode"
+
+    straddle = slice_row("wide_band")
+    assert straddle[t3.columns.index("fills")] == 1, "the tail's fill is this week's"
+    assert straddle[t3.columns.index("episodes")] == 0, "the chain's head is last week's"
+    assert "first order" in t3.header
+
+
+def test_table6_ignores_a_replay_fill_on_a_live_order(db_session, env_settings):
+    """M6 (reviewer M7): the queue-consumption ratio's `exists` subquery must carry the same
+    `replay = false` filter every other fill query does."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    game = _game(db_session)
+    market = _market(db_session, game.id, "T-ML-HOME")
+    order = _order(db_session, market, PRIMARY)
+    fill = _fill(db_session, order)
+    fill.replay = True
+    db_session.flush()
+
+    t6 = _tables(db_session, env_settings)["t6"]
+    row = next(r for r in t6.rows if r[1] == "queue-consumption ratio median")
+    assert row[2] == PLACEHOLDER and row[3] == 0
+
+
+def test_criteria_text_carries_the_kickoff_moved_exclusion_and_the_insufficient_verdict():
+    """M1: the hash is the identity of the definition set, so a definitional exclusion that is
+    missing from the text is missing from the hash."""
+    from harness.report import CRITERIA_TEXT, criteria_hash
+
+    assert "kickoff_moved" in CRITERIA_TEXT
+    assert "insufficient (fails)" in CRITERIA_TEXT
+    assert len(criteria_hash()) == 64
+
+
+def test_table8_does_not_claim_a_stale_exclusion_table_4_cannot_perform(db_session,
+                                                                       env_settings):
+    """M2: `gap_outcomes` has no `stale` column, so only table 2's executed-variant path can
+    filter on it."""
+    t8 = _tables(db_session, env_settings)["t8"]
+    assert "gap_outcomes" in t8.header
+    assert "excluded from every gate criterion and from tables 2 and 4" not in t8.header
+
+
+def test_restrict_to_selection_keys_a_contrast_on_its_benchmark(db_session, env_settings):
+    """M5: `CONTRAST_KEY` promises a two-part key; a selection naming another benchmark must
+    not silently match the pinnacle_t5 contrast."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    _variant(db_session, SECONDARY, "wide_band", "secondary")
+    db_session.flush()
+    tables = _tables(db_session, env_settings)
+
+    matching = {"cells": [], "contrasts": [{"variant": "wide_band",
+                                            "benchmark_type": "pinnacle_t5"}]}
+    other = {"cells": [], "contrasts": [{"variant": "wide_band",
+                                         "benchmark_type": "consensus_t5"}]}
+    assert [r[0] for r in restrict_to_selection(tables, matching)["t2"].rows] == ["wide_band"]
+    assert restrict_to_selection(tables, other)["t2"].rows == [[PLACEHOLDER] * len(
+        tables["t2"].columns)]

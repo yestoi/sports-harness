@@ -74,11 +74,16 @@ STALENESS_BUCKETS = (("< 120", None, 120), ("120-300", 120, 300),
 #: Table 3's staleness split at the featured feed's own allowance (addendum §0.1).
 STALENESS_SPLIT_S = 220
 FEED_KINDS = ("featured", "alternate", "unknown")
-#: The headline stratum for the H2 claim and for family A/B (addendum §4).
+#: The stratum the headline H2 claim is read from (addendum §4). It is a stratum, not a
+#: filter: the family runs over every feed and `feed_kind` is reported as strata columns
+#: beside the staleness buckets (fix round 1, I1).
 HEADLINE_FEED_KIND = "featured"
-#: The panel the mispricing map's families, shrinkage and §9.6 criterion are judged on: the
-#: exploitable quantity, not the raw mid gap.
-HEADLINE_PANEL = "gap_maker_net"
+#: The panel the mispricing map's families, shrinkage and §9.6 criterion are judged on. Spec
+#: §9.7 states H2 as "venue mid is systematically off sharp fair", and the stored `gap_mid`
+#: (`fair - mid`) is that quantity, so the family tests the hypothesis's own quantity (fix
+#: round 1, I2). `gap_maker_net` -- the tradeable version of the same gap -- is reported
+#: beside it as a panel column outside the family.
+HEADLINE_PANEL = "gap_mid"
 #: Table 2's Holm family (C) is the variant contrasts against this benchmark.
 CONTRAST_BENCHMARK = "pinnacle_t5"
 #: Table 3's fill sets and the markout anchor each one is scored from (addendum §0.15).
@@ -96,6 +101,10 @@ MAX_LAG = timedelta(minutes=60)
 #: Bounds on the two tape scans, so a report over a busy week cannot run unbounded.
 MAX_MOVES = 2000
 MAX_QUEUE_SAMPLES = 5000
+#: How far before the week's Monday table 3 reads orders, so a reprice chain that straddles the
+#: boundary resolves to its true head (M3). A chain lives inside one order's life, which ends at
+#: kickoff - 10 min, so two weeks is generous.
+CHAIN_LOOKBACK = timedelta(days=14)
 
 NOT_COLLECTED = "not collected in phase 3 (addendum §0.4)"
 
@@ -137,10 +146,21 @@ def is_flagged(value: Any) -> bool:
 
 
 def cell_excludes_zero(value: Any) -> bool:
+    """Whether the cell's interval lies entirely on one side of zero.
+
+    A zero-width interval never does, whatever side of zero it sits on (C1). Two routes
+    produce one at a non-zero estimate: a stratum with `tau^2 = 0`, where every `B` is zero and
+    the posterior collapses onto the grand mean, and a cell whose between-cluster variance is
+    exactly zero, where the half-width is zero. Counting either as significant would let a
+    homogeneous stratum declare the §9.6 criterion met on no evidence of heterogeneity at all,
+    which the pre-registration record forbids in as many words.
+    """
     if not _is_cell(value):
         return False
     lo, hi = value[3], value[4]
     if lo != lo or hi != hi:  # nan
+        return False
+    if hi <= lo:
         return False
     return lo > 0.0 or hi < 0.0
 
@@ -438,11 +458,14 @@ def _table2(session: Session, window: dict, variants: list[dict]) -> Table:
 
 # --- table 3: adverse selection and markouts ----------------------------------------------------
 
+#: Orders reach back past the week's Monday by CHAIN_LOOKBACK so a reprice chain that
+#: straddles the boundary can be resolved (M3). Only orders inside the window are ever reported;
+#: the earlier rows exist solely to find a chain's head.
 _T3_ORDERS = text("""
     select o.id, o.variant_id, o.venue_market_id, o.side, o.placed_at, o.cancel_reason,
            o.cancelled_at, o.game_id, o.feed_kind, o.staleness_at_place, o.fair_p_at_place
     from orders o
-    where o.replay = false and o.placed_at >= :start and o.placed_at < :end
+    where o.replay = false and o.placed_at >= :chain_start and o.placed_at < :end
 """)
 
 _T3_FILLS = text("""
@@ -472,13 +495,23 @@ def _table3(session: Session, window: dict, variants: list[dict]) -> Table:
               "Reprice chains are collapsed to episodes. The 1 m and 5 m markouts come off the "
               "venue mid; the 30 m and 120 m markouts off the sharp fair and only on "
               "`fair_changed` rows. `adverse_drift` is the anchor's own 0 m fair minus the fair "
-              "at placement in the order's side space; positive means the fair moved our way. "
+              "at placement in the order's side space, on `fair_changed` rows only; positive "
+              "means the fair moved our way. It is the placeholder for the `cross_fill` set by "
+              "construction: `ZERO_M_ANCHORS` writes a 0 m markout for the `fill` and `nw_fill` "
+              "anchors only, so a cross has no fair-at-fill row to difference. "
               "All net of the maker fee. Split by variant first: each exec variant is simulated "
               "as the sole participant, so pooling two variants' fills on one market would "
-              "count the same tape twice.")
-    orders = [dict(r._mapping) for r in session.execute(_T3_ORDERS, window)]
-    by_id = {o["id"]: o for o in orders}
-    episodes = _episode_of(orders)
+              "count the same tape twice. `episodes` counts every episode in the slice, filled "
+              "or not; an episode belongs to the week its first order was placed in, so a "
+              "reprice chain straddling Monday is counted once, in the earlier week.")
+    chain_window = dict(window, chain_start=window["start"] - CHAIN_LOOKBACK)
+    resolvable = [dict(r._mapping) for r in session.execute(_T3_ORDERS, chain_window)]
+    by_id = {o["id"]: o for o in resolvable}
+    episodes = _episode_of(resolvable)
+    # An episode belongs to the week its first order was placed in, so a chain whose head
+    # predates Monday is the previous report's and is not recounted here (M3).
+    orders = [o for o in resolvable if window["start"] <= o["placed_at"] < window["end"]]
+    in_week = {o["id"] for o in orders}
 
     fills: dict[int, list[str]] = defaultdict(list)
     for row in session.execute(_T3_FILLS, window):
@@ -529,12 +562,17 @@ def _table3(session: Session, window: dict, variants: list[dict]) -> Table:
         return cell(_grouped_ci(pairs))
 
     def drift_cell(ids: list[int], anchor: str) -> Any:
-        """`fair at the anchor - fair at place`, in the order's own side space."""
+        """`fair at the anchor - fair at place`, in the order's own side space.
+
+        On `fair_changed` rows only (addendum §3, criterion 5). An order whose fair never moved
+        contributes a structural zero, and averaging those in pulls the estimate toward zero --
+        the direction that makes the `> -1.0 pt` threshold look safer than it is.
+        """
         pairs = []
         for order_id in ids:
             row = markouts.get((order_id, anchor, "0m"))
             at_place = by_id[order_id]["fair_p_at_place"]
-            if row is None or row.fair_p is None or at_place is None:
+            if row is None or row.fair_p is None or at_place is None or not row.fair_changed:
                 continue
             pairs.append((float(row.fair_p - side_p(at_place, by_id[order_id]["side"])),
                           by_id[order_id]["game_id"]))
@@ -549,11 +587,12 @@ def _table3(session: Session, window: dict, variants: list[dict]) -> Table:
                     ids = [o["id"] for o in mine if in_slice(o, feed, label, lo, hi)]
                     n_fills = sum(1 for i in ids
                                   for method in fills.get(i, []) if method in methods)
-                    filled = [i for i in ids
-                              if any(m in methods for m in fills.get(i, []))]
+                    # Every episode in the slice, filled or not (M4): the other cells in the
+                    # row are over all of the slice's orders, so this column must be too.
+                    slice_episodes = {episodes[i] for i in ids if episodes[i] in in_week}
                     rows.append([
                         variant_name, set_name, feed, label,
-                        len({episodes[i] for i in filled}), n_fills,
+                        len(slice_episodes), n_fills,
                         markout_cell(ids, anchor, "1m", "venue_mid"),
                         markout_cell(ids, anchor, "5m", "venue_mid"),
                         markout_cell(ids, anchor, "30m", "fair_p"),
@@ -583,6 +622,7 @@ _T4_SNAPSHOTS = text("""
 
 _T4_COLUMNS = ["fair_source", "price_bucket", "ttk", "sport", "market_type",
                "gap_mid", "gap_maker_net", "clv_mid_p", "posterior", "bh",
+               "feed featured", "feed alternate", "feed unknown",
                "stale < 120", "stale 120-300", "stale 300-1000", "stale > 1000"]
 
 
@@ -591,13 +631,17 @@ def _table4(session: Session, window: dict) -> Table:
         "Mispricing map: price x time-to-kickoff x sport x market type, 72 cells per fair "
         "source. Sign convention: `gap_mid` is stored as `fair - mid`, so a positive value "
         "means the venue is cheap relative to the sharp fair (the spec's 'venue mid minus "
-        f"sharp fair' is its negative). Panel cells are the `{HEADLINE_FEED_KIND}` feed only "
-        "(the headline H2 stratum); the four `stale` columns are the same "
-        f"`{HEADLINE_PANEL}` panel within each staleness stratum. `posterior` is the "
+        "sharp fair' is its negative). Panel cells cover every feed; the three `feed` columns "
+        "and the four `stale` columns are the same "
+        f"`{HEADLINE_PANEL}` panel within each stratum, and the headline H2 claim is the "
+        f"`feed {HEADLINE_FEED_KIND}` column. `posterior` is the "
         "empirical-Bayes interval `m~ +/- t_{0.95, G-1} sqrt(B se^2)` shrunk within sport x "
         f"market type; `bh` is Benjamini-Hochberg at q = {BH_Q} on the two-sided "
-        f"cluster-robust t of `{HEADLINE_PANEL}`, family A the direct cells and family B the "
-        "derived cells. The §9.6 criterion is judged on `posterior`.")
+        f"cluster-robust t of `{HEADLINE_PANEL}` (spec §9.7's H2 quantity), family A the "
+        "direct cells and family B the derived cells. `gap_maker_net`, the tradeable version "
+        "of the same gap, is reported beside it and is not in either family. The §9.6 "
+        "criterion is judged on `posterior`, and a stratum with no heterogeneity contributes "
+        "no significant cell.")
     params = dict(window, benchmark=CONTRAST_BENCHMARK)
     snapshots = [r for r in session.execute(_T4_SNAPSHOTS, params)]
 
@@ -610,16 +654,18 @@ def _table4(session: Session, window: dict) -> Table:
                 or row.market_type not in MARKET_TYPES or row.fair_source not in FAIR_SOURCES):
             continue
         key = (row.fair_source, price, ttk, row.sport, row.market_type)
-        featured = _feed_kind(row.feed_kind) == HEADLINE_FEED_KIND
-        if not featured:
-            continue
         for panel, value in (("gap_mid", row.gap_mid), ("gap_maker_net", row.gap_maker_net),
                              ("clv_mid_p", row.clv_mid_p)):
             if value is not None:
                 buckets[key][panel].append((float(value), row.game_id))
+        family_value = getattr(row, HEADLINE_PANEL)
+        if family_value is None:
+            continue
+        point = (float(family_value), row.game_id)
+        buckets[key][f"feed {_feed_kind(row.feed_kind)}"].append(point)
         stratum = _bucket_staleness(row.staleness_s)
-        if stratum is not None and row.gap_maker_net is not None:
-            buckets[key][f"stale {stratum}"].append((float(row.gap_maker_net), row.game_id))
+        if stratum is not None:
+            buckets[key][f"stale {stratum}"].append(point)
 
     grid = [(source, price, ttk, sport, market_type)
             for source in FAIR_SOURCES
@@ -643,11 +689,16 @@ def _table4(session: Session, window: dict) -> Table:
                 shrunk = eb_shrink([cis[k].mean for k in stratum],
                                    [cis[k].se for k in stratum],
                                    [cis[k].n_clusters - 1 for k in stratum])
+                if shrunk.note:
+                    # tau^2 = 0: every cell collapses onto the grand mean, so there is no
+                    # posterior interval to report and no cell counts toward §9.6 (C1; the
+                    # pre-registration record's analysis plan says so in as many words).
+                    notes.append(f"{source}/{sport}/{market_type}: {shrunk.note} "
+                                 "(no posterior interval; no cell counts toward §9.6)")
+                    continue
                 for i, key in enumerate(stratum):
                     posterior[key] = (shrunk.m_tilde[i], cis[key].n_obs, cis[key].n_clusters,
                                       shrunk.lo[i], shrunk.hi[i])
-                if shrunk.note:
-                    notes.append(f"{source}/{sport}/{market_type}: {shrunk.note}")
 
     # Families A (direct) and B (derived): BH on the headline panel, greyed cells excluded.
     verdict: dict[tuple, str] = {key: PLACEHOLDER for key in grid}
@@ -670,10 +721,11 @@ def _table4(session: Session, window: dict) -> Table:
         source, price, ttk, sport, market_type = key
         panels = [cell(_grouped_ci(buckets[key][panel]))
                   for panel in ("gap_mid", "gap_maker_net", "clv_mid_p")]
+        feeds = [cell(_grouped_ci(buckets[key][f"feed {name}"])) for name in FEED_KINDS]
         strata = [cell(_grouped_ci(buckets[key][f"stale {name}"]))
                   for name, _, _ in STALENESS_BUCKETS]
         rows.append([source, price, ttk, sport, market_type, *panels,
-                     posterior[key], verdict[key], *strata])
+                     posterior[key], verdict[key], *feeds, *strata])
     significant = sum(1 for key in grid
                       if cis[key].n_clusters >= GREY_CLUSTERS and cell_excludes_zero(posterior[key]))
     note = "; ".join([*family_notes,
@@ -865,7 +917,7 @@ _T6_ORDERS = text("""
     select o.variant_id, o.game_id, o.queue_ahead_at_place, o.book_source, o.dirty_minutes,
            o.traded_at_price, o.venue_market_id,
            exists (select 1 from fills f where f.order_id = o.id
-                     and f.fill_method = 'queue_model') as has_queue_fill,
+                     and f.fill_method = 'queue_model' and f.replay = false) as has_queue_fill,
            o.worst_case_fill
     from orders o
     where o.replay = false and o.placed_at >= :start and o.placed_at < :end
@@ -1078,8 +1130,11 @@ _T8_STALE = text("""
 
 def _table8(session: Session, window: dict) -> Table:
     header = ("Data quality over the week. The stale share per benchmark type is the fraction "
-              "whose source was already more than 10 min old at the target instant; those rows "
-              "are excluded from every gate criterion and from tables 2 and 4.")
+              "whose source was already more than 10 min old at the target instant. Those rows "
+              "are excluded from every gate criterion and from table 2's executed-variant path, "
+              "which reads `order_clv.stale`. `gap_outcomes` carries no `stale` column, so "
+              "table 2's non-executed path and table 4's `clv_mid_p` panel cannot filter on it: "
+              "read those two beside this share, not net of it.")
     rows = []
     for metric, (sql, extra) in _T8_QUERIES.items():
         params = dict(window)

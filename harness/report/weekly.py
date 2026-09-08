@@ -168,7 +168,8 @@ def restrict_to_selection(tables: dict[str, Table], selection: dict) -> dict[str
     out = dict(tables)
     wanted_cells = {tuple(entry.get(name) for name in CELL_KEY)
                     for entry in selection.get("cells", [])}
-    wanted_contrasts = {entry.get("variant") for entry in selection.get("contrasts", [])}
+    wanted_contrasts = {tuple(entry.get(name) for name in CONTRAST_KEY)
+                        for entry in selection.get("contrasts", [])}
 
     t4 = tables.get("t4")
     if t4 is not None:
@@ -183,7 +184,10 @@ def restrict_to_selection(tables: dict[str, Table], selection: dict) -> dict[str
     t2 = tables.get("t2")
     if t2 is not None:
         variant = t2.columns.index("variant")
-        rows = [row for row in t2.rows if row[variant] in wanted_contrasts]
+        # Keyed on the benchmark too (M5): table 2 tests one contrast per variant, against
+        # CONTRAST_BENCHMARK, so a selection naming another benchmark selects nothing here.
+        rows = [row for row in t2.rows
+                if (row[variant], CONTRAST_BENCHMARK) in wanted_contrasts]
         out["t2"] = with_rows(t2, rows,
                               f"{CONFIRMATION_NOTE} {len(rows)} selected contrast(s) evaluated.")
     return out

@@ -26,9 +26,10 @@ CRITERIA_TEXT = """\
 Go-live gate criteria (spec v2 section 9.5 as amended by the phase 3 addendum section 0.7).
 
 Every t is cluster-robust by game with G - 1 degrees of freedom. Benchmark rows with
-stale = true are excluded from every criterion and their share is printed. Every criterion
-counts the variant's own non-replay fills, with each exec variant simulated as the sole
-participant.
+stale = true are excluded from every criterion and their share is printed. A game whose
+kickoff moved more than 5 min after its first gap snapshot carries kickoff_moved = true and
+is excluded from gate means. Every criterion counts the variant's own non-replay fills, with
+each exec variant simulated as the sole participant.
 
 1. fills_confirmed: at least 150 paper fills across at least 40 games and both sports,
    counted as fill events (orders with at least one queue_model fill), of which at least
@@ -41,7 +42,8 @@ participant.
    from the nw_fill anchor against the direct sharp consensus on fair_changed rows.
 5. adverse_drift: adverse drift (fair at fill minus fair at place) greater than -1.0 pt.
 6. filled_minus_unfilled: the 90 % cluster-robust upper bound of mean(unfilled CLV minus
-   filled CLV) is below 1 pt, with at least 20 game clusters per side, else insufficient.
+   filled CLV) is below 1 pt, with at least 20 game clusters per side, else
+   insufficient (fails).
 7. clv_every_benchmark: mean CLV at or above 0 under every benchmark, excluding result and
    opening_first_seen, which are reported with CIs and never gated.
 8. staleness_median: the median of fair_values.staleness_s over the variant's candidate

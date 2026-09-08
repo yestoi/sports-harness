@@ -117,3 +117,24 @@ def test_km_median_with_censoring():
     assert median is None
     assert abs(censored_share - 2 / 3) < 1e-12
     assert km_median([], []) == (None, 0.0)
+
+
+def test_a_zero_width_interval_does_not_exclude_zero():
+    """A collapsed interval is not evidence. Two routes produce one at a positive estimate:
+    a tau^2 = 0 stratum (every B = 0, so lo = hi = the grand mean) and a cell whose
+    between-cluster variance is exactly zero (se = 0, so the half-width is zero)."""
+    from harness.report.tables import cell_excludes_zero
+
+    assert cell_excludes_zero((0.03, 40, 12, 0.01, 0.05))
+    assert cell_excludes_zero((-0.03, 40, 12, -0.05, -0.01))
+    assert not cell_excludes_zero((0.03, 40, 12, 0.03, 0.03))
+    assert not cell_excludes_zero((0.03, 40, 12, -0.01, 0.05))
+
+    flat = eb_shrink([0.03, 0.03, 0.03], [0.01, 0.01, 0.01], [9, 9, 9])
+    assert flat.note == "no heterogeneity detected"
+    assert not cell_excludes_zero((flat.m_tilde[0], 40, 12, flat.lo[0], flat.hi[0]))
+
+    identical = cluster_ci([0.03] * 6, ["a", "a", "b", "b", "c", "c"])
+    assert identical.se == 0.0
+    assert not cell_excludes_zero((identical.mean, identical.n_obs, identical.n_clusters,
+                                   identical.lo, identical.hi))
