@@ -1,0 +1,18 @@
+== Mac-side 2026-09-08 09:26 CT
+sports-harness-app-run-1     Up 7 minutes
+sports-harness-app-serve-1   Up 7 minutes (healthy)
+sports-harness-app-ws-1      Up 5 hours
+sports-harness-postgres-1    Up 8 hours (healthy)
+
+{"status":"ok","last_run_at":"2026-09-08T14:25:36.414933+00:00","last_status":"skipped","seconds_since":28,"credits_remaining":4998844,"credits_budget":5000000,"credits_low":false,"build":"33a0e3a"} [200]
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.5T  69% /volume1
+               total        used        free      shared  buff/cache   available
+Mem:            7717        6320         361         621        2420        1396
+Swap:           9999        4515        5484
+-- dashboard section count (10m)
+0
+-- ERROR messages (10m)
+== app-run
+== app-serve
+== app-ws
+== app-exec

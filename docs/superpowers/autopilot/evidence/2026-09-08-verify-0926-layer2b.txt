@@ -1,0 +1,33 @@
+== Layer 2b invariants 2026-09-08 09:26 CT (every count must be 0)
+fv_neg_staleness | 0
+taker_side_missing_runs | 0
+orders_without_place | 0
+intents_orphan | 0
+fill_gt_order | 0
+filled_gt_contracts | 0
+queue_fill_no_print | 0
+settle_mismatch | 0
+fv_neg_feed_lag | 0
+bench_src_gt_target | 0
+fill_time_bounds | 0
+markout_at_gt_horizon | 0
+duplicate_trades | 0
+clv_p_used | 0
+settle_errors_24h | 0
+derived_without_venue_48h | 0
+build_sha_drift | 519
+orders_open_past_expiry | 0
+gate_rows_one_gate_variant | 0
+metric_neg | 1
+operator_events_blank | 0
+order_watch_neg | 0
+equity_cov | 0
+score_down | 0
+check_status_bad | 0
+report_runs_future | 0
+report_cells_orphan | 0
+-- special statements
+book_source | ws | 99
+stale_share_24h | pinnacle_t5 | 0 | 11
+stale_share_24h | consensus_t5 | 1 | 12
+gap_rows_today | 0 | 10153098
