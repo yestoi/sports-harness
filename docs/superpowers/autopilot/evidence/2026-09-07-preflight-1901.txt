@@ -1,0 +1,53 @@
+
+== clock
+2026-09-07 19:00:48 CDT
+2026-09-08T00:00:48Z (mac utc)
+
+== git
+phase3-paper-execution
+dirty files:        1
+de80053 docs: autopilot state - note U6 (Task 12b in the plan order) and U7 (remote) for the resuming session
+89b6b23 docs: dashboard mockups - light-mode fun accent darkened for cream, alive-lamp glow mapped, leg dividers legible
+473fefb docs: dashboard light and dark token set (spec §5), night-paper ticket, light-mode mockups for Pulse, Floor and Ticket
+
+== mac
+ sleep                1 (sleep prevented by sharingd, caffeinate, useractivityd, powerd)
+10664 caffeinate -i -t 300
+
+== test db
+harness-pg-test Up 31 hours
+pytest processes: 0
+
+== secrets
+-rw------- anthropic_api_key
+-rw------- dashboard_token
+-rw------- kalshi_demo_key_id
+-rw------- kalshi_demo_private_key.pem
+-rw------- kalshi_key_id
+-rw------- kalshi_private_key.pem
+-rw------- odds_api_key
+.env.nas present
+
+== paper posture
+paper posture intact
+
+== tunnel
+localhost:8180 -> 200
+
+== nas
+2026-09-08T00:00:52Z (nas utc)
+sports-harness-app-run-1 Up 3 hours
+sports-harness-app-serve-1 Up 3 hours (healthy)
+sports-harness-app-ws-1 Up 3 hours
+sports-harness-postgres-1 Up 24 hours (healthy)
+{"status":"ok","last_run_at":"2026-09-08T00:00:49.294623+00:00","last_status":"skipped","seconds_since":4,"credits_remaining":4999396,"credits_budget":5000000,"credits_low":false,"build":"659ba67"}
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.5T  69% /volume1
+mem available MB: 1068
+
+== deployed 659ba67 vs main 659ba67
+
+== game window (in_progress | kickoff -4h..+15m | nfl kickoff 60-100m) and tick ages
+0 | 1 | 0
+last real tick | 2558 | ok | 126
+last heartbeat | 2561 | skipped | 6
+ws last event age s | 0

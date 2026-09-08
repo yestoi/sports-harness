@@ -505,3 +505,17 @@ Times are America/Chicago.
 - Rulings: (1) Carried fixes 9 and 13 are phase-bound (roadmap rows say so): the fresh session's Orient rule 1 does not open a hotfix unit for them; they close with the Task 2b quiet-window deploy's verify. (2) The 19:15 CT game-window observation is dropped; the morning-after full verify (walker) covers the first game under the widened subscription and the gap recovery. (3) The user's objection window on the Task 2b primary-key drop (entry 35 ruling 3) stays open until the fresh session runs the quiet-window deploy; silence is consent per addendum D15.
 - Carried forward: none
 - Next: fresh session per Kickoff; Orient rule 5 resumes the phase from the ledger: dispatch the Task 3b and Task 5 reviewers (opus), fix rounds, merges, then Task 6 (opus), Tasks 7-9 serial, 10+12 parallel, 11, 13, 14; the Task 2b quiet-window deploy (writers stopped, `partition-bulk-tables`, recovery notes in `task-2b-live-run-recovery.md`) at the first 01:00-08:00 CT boundary; the Task 4b deploy (replay first, Amendment 3, `gate_variant` flip) before 2026-09-16. Report: `docs/superpowers/autopilot/reports/2026-09-07-stopped-1820.md`
+
+## 39. preflight - fresh session (Kickoff) - 2026-09-07 19:01 CT
+- Orient: n/a (preflight)
+- Branch / commits: `phase3-paper-execution` at de80053 (docs-only above ff72562: the user's U6/U7 roadmap edits, README, canvas sources); `main` 659ba67 = NAS build
+- Result: done; paper posture line verbatim: `paper posture intact`
+- Dispatches: 0
+- Tests: n/a
+- Review: n/a
+- Deploy: none
+- Verification: preflight evidence `evidence/2026-09-07-preflight-1901.txt`: clock 19:00:48 CDT; git dirty 1 (the evidence file itself); sleep prevented (caffeinate); test DB Up, pytest 0; secrets 7 files 0600, .env.nas present; tunnel 200; NAS containers Up, `app-serve` healthy, `/healthz` ok build 659ba67, credits 4,999,396; `/volume1` 3.5 T free (69 % used); mem available 1068 MB; deployed = main; game window 0|1|0 (FSU-SMU kickoff inside 4 h: window open until about 22:30 CT); last real tick 2558 ok 126 s; heartbeat 2561 skipped 6 s; WS age 0 s
+- Tools (R23): ScheduleWakeup, PushNotification, ListAgents, CronCreate/CronList/CronDelete, Monitor, SendMessage and the Chrome set resolved; `tabs_context_mcp` answered (no tab group yet). Test notifications already sent today (11:15 CT), not repeated
+- Rulings: (1) Orient rule 1 does not fire: carried fixes 9 and 13 are phase-bound (entry 38 ruling 1). (2) Rule 2: deployed = `main`, no deploy. (3) Rule 3: the last verify (36) postdates the last deploy (34); no wakeup survives a restart; the deferred items (fix 4 gap recovery, 7 null feed_kind rows) fold into the morning-after verify Tue 2026-09-08 after 08:10 CT. (4) Rule 4: the daily watch (30) and the alias pass (11) ran today; nothing due. (5) Rule 5 applies: phase 3 resumes at ledger rule 2a: the Task 3b and Task 5 reviewers are dispatched (opus: recorder/venue paths, execution path). (6) U6: Task 12b enters the wave map after Tasks 6, 7, 10, 11 and 12 and before 13; its brief is written from the plan text at that point. (7) U7: `git push origin main phase3-paper-execution` joins the bundle step after the phase and on Mondays; the loop never pulls.
+- Carried forward: none
+- Next: phase (Task 3b and Task 5 reviews in flight); the game window blocks deploys until about 22:30 CT; the Task 2b quiet-window deploy at the first boundary after 01:00 CT
