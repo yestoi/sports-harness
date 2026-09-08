@@ -4,8 +4,10 @@ Conformance item 5. `request()` is the paper-posture fence for the whole phase, 
 operations inside it is a security contract:
 
 1. Refuse a non-GET when writes are disabled, before signing, before any network I/O and before
-   any recording. A paper transport does not even construct the httpx client that could send a
-   write, so there is no object in the process capable of placing an order.
+   any recording. A paper transport holds no write-capable client: `_write_client` is not
+   constructed at all, and `_read_client` is a `_ReadOnlyClient` facade exposing only `get`,
+   `head` and `close`, so neither attribute offers a `post`, `put`, `delete`, `patch` or
+   `request`.
 2. Assert the host on the *parsed* hostname (roadmap invariant 8). A raw-string suffix test
    would accept "https://evil.com/?x=api.elections.kalshi.com".
 3. Sign and send, one `venue_requests` row per attempt, never headers and never bodies.
@@ -20,6 +22,9 @@ widen exactly the path that decision D5 and `test_http_client_has_no_write_metho
 the transport holds two clients of its own, a read client built unconditionally and a write
 client built only when `writes_enabled`, and takes an explicit `timeout_s` that every caller
 fills from `Settings.http_timeout_s` (the same value `build_recorder` passes to `HttpClient`).
+The read client is wrapped in `_ReadOnlyClient` because a bare `httpx.Client` carries the write
+verbs: the original design got "no write-capable object in a paper process" for free by reading
+through `HttpClient`, and owning the client back would otherwise have silently dropped it.
 The `http: HttpClient` argument stays in the signature for its clock, so `FetchResult.fetched_at`
 matches the recorder's clock, and for nothing else.
 
@@ -30,6 +35,10 @@ a dict repr, so this module does not depend on it: it hands the logging layer no
 the first place. `test_a_signed_request_emits_no_log_record_carrying_a_header_value` asserts that
 at every level against the real signature that goes out on the wire. Any future caller that logs a
 headers mapping would defeat this, so do not.
+
+One thing this module cannot cover: a transport error propagates as the raw `httpx` exception, and
+`exc.request.headers` on it still holds the signed headers. A caller that logs the exception's
+request, rather than the exception, would put them in a log. Log the exception.
 """
 import math
 import time
@@ -59,6 +68,33 @@ RETRY_BACKOFF_S = 1.0
 
 #: The only methods a paper transport may send, and the only ones that are safe to resend.
 IDEMPOTENT_METHODS = frozenset({"GET", "HEAD"})
+
+
+class _ReadOnlyClient:
+    """An httpx client with only the safe verbs on it.
+
+    Conformance item 5 requires that a paper transport hold no write-capable client. The transport
+    owns its read client (see the module docstring for why), and a bare `httpx.Client` carries
+    `post`, `put`, `delete`, `patch` and `request`, so handing one to a paper transport would leave
+    a working write primitive sitting in the process. This facade keeps the client private and
+    exposes `get`, `head` and `close`, and nothing else.
+    """
+
+    __slots__ = ("_client",)
+
+    def __init__(self, timeout_s: float) -> None:
+        self._client = httpx.Client(timeout=timeout_s)
+
+    def get(self, url: str, params: dict | None = None,
+            headers: dict[str, str] | None = None) -> httpx.Response:
+        return self._client.get(url, params=params, headers=headers)
+
+    def head(self, url: str, params: dict | None = None,
+             headers: dict[str, str] | None = None) -> httpx.Response:
+        return self._client.head(url, params=params, headers=headers)
+
+    def close(self) -> None:
+        self._client.close()
 
 
 class PaperModeViolation(RuntimeError):
@@ -106,7 +142,7 @@ class KalshiTransport:
         self._recorder = recorder
         self._sleep = sleep
         self._clock = clock
-        self._read_client = httpx.Client(timeout=timeout_s)
+        self._read_client = _ReadOnlyClient(timeout_s)
         # The whole point of conformance item 5: with writes disabled this stays None, so the
         # process holds no object that can send a POST, PUT, PATCH or DELETE.
         self._write_client = httpx.Client(timeout=timeout_s) if writes_enabled else None
@@ -129,9 +165,8 @@ class KalshiTransport:
         #    recorded as its own row.
         signed_path = urlsplit(url).path          # the /trade-api/v2 prefix in, the query out
         idempotent = method in IDEMPOTENT_METHODS
-        client = self._read_client if idempotent else self._write_client
-        if client is None:                        # unreachable; a guard that survives python -O
-            raise PaperModeViolation(method, path)
+        if not idempotent and self._write_client is None:
+            raise PaperModeViolation(method, path)   # unreachable; a guard that survives python -O
         n_429 = n_5xx = n_err = 0
 
         while True:
@@ -141,7 +176,7 @@ class KalshiTransport:
             self._counters["attempts"] += 1
             t0 = time.monotonic()
             try:
-                resp = client.request(method, url, params=params, json=json, headers=headers)
+                resp = self._send(method, url, params, json, headers)
             except (httpx.TimeoutException, httpx.TransportError):
                 self._record(method, path, None, now, _ms_since(t0))
                 # A non-idempotent request is never resent blind: the caller reconciles by
@@ -172,8 +207,23 @@ class KalshiTransport:
 
     # -- helpers -----------------------------------------------------------------------------
 
+    def _send(self, method: str, url: str, params: dict | None, json: dict | None,
+              headers: dict[str, str]) -> httpx.Response:
+        """Dispatch by verb. GET and HEAD are the only two the read facade can express, and every
+        other verb has already been refused unless `_write_client` exists."""
+        if method == "GET":
+            return self._read_client.get(url, params=params, headers=headers)
+        if method == "HEAD":
+            return self._read_client.head(url, params=params, headers=headers)
+        return self._write_client.request(method, url, params=params, json=json, headers=headers)
+
     def _assert_host(self, url: str) -> None:
-        host = urlsplit(url).hostname             # parsed, never a raw-string suffix test
+        parts = urlsplit(url)
+        if parts.scheme != "https":
+            # A signature in cleartext is a leaked signature. The base URL comes from Settings, not
+            # from venue data, so this is a guard against a misconfiguration rather than an attack.
+            raise HostNotAllowed(f"only https may be signed, not {parts.scheme!r}")
+        host = parts.hostname                     # parsed, never a raw-string suffix test
         if self._env == "prod":
             if host not in PROD_HOSTS:
                 raise HostNotAllowed(f"prod may not reach host {host!r}")

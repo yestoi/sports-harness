@@ -76,10 +76,25 @@ def db_session_factory(_schema):
         conn.execute(text(f"truncate {tables} restart identity cascade"))
 
 
+_OPEN: list = []
+
+
+@pytest.fixture(autouse=True)
+def _close_clients():
+    """Close every client _t opened, so the suite leaks no sockets and stays pristine under -W
+    error. Both close() calls are idempotent, so a test that closes its own transport is fine."""
+    yield
+    while _OPEN:
+        _OPEN.pop().close()
+
+
 def _t(base_url=PROD, env="prod", writes_enabled=False, recorder=None, **kw):
-    return KalshiTransport(HttpClient(5.0), base_url, env, "kid", KEY_PEM,
-                           timeout_s=5.0, writes_enabled=writes_enabled,
-                           recorder=recorder if recorder is not None else [].append, **kw)
+    http = HttpClient(5.0)
+    transport = KalshiTransport(http, base_url, env, "kid", KEY_PEM,
+                                timeout_s=5.0, writes_enabled=writes_enabled,
+                                recorder=recorder if recorder is not None else [].append, **kw)
+    _OPEN.extend((transport, http))
+    return transport
 
 
 # --- conformance item 5: the refusal matrix ------------------------------------------------
@@ -99,6 +114,9 @@ def test_transport_refuses_every_non_get_when_writes_disabled(method, path):
         t.request(method, path)
     assert exc.value.method == method and exc.value.path == path
     assert rows == []          # refused before signing, before I/O, before recording
+    # And there is no object left in the process that could have sent it anyway.
+    assert t._write_client is None
+    assert not hasattr(t._read_client, "post") and not hasattr(t._read_client, "request")
 
 
 def test_transport_refuses_post_when_writes_disabled():
@@ -149,8 +167,22 @@ def test_transport_builds_no_write_client_when_disabled():
     assert t._write_client is None
     t2 = _t(writes_enabled=True)
     assert isinstance(t2._write_client, httpx.Client)
-    t.close()
-    t2.close()
+
+
+def test_the_read_client_exposes_no_write_verb():
+    # A bare httpx.Client carries post/put/delete/patch/request, so the transport wraps it. This
+    # is the property conformance item 5 is named for: a paper process holds no write primitive.
+    t = _t(writes_enabled=False)
+    for name in ("post", "put", "delete", "patch", "request", "send", "stream"):
+        assert not hasattr(t._read_client, name), f"the read client exposes {name}"
+    assert hasattr(t._read_client, "get") and hasattr(t._read_client, "head")
+
+
+def test_the_read_client_is_read_only_even_when_writes_are_enabled():
+    # Reads never borrow the write client, and writes never borrow the read one.
+    t = _t(writes_enabled=True)
+    assert not hasattr(t._read_client, "post")
+    assert hasattr(t._write_client, "post")
 
 
 def test_http_client_has_no_write_methods():
@@ -187,6 +219,12 @@ def test_demo_suffix_check_is_on_a_label_boundary():
     with pytest.raises(HostNotAllowed):
         _t(base_url="https://evil-demo.kalshi.co.attacker.test/trade-api/v2",
            env="demo").request("GET", "/exchange/status")
+
+
+def test_a_cleartext_base_url_is_refused_before_signing():
+    # A signature sent over http is a leaked signature.
+    with pytest.raises(HostNotAllowed):
+        _t(base_url="http://api.elections.kalshi.com/trade-api/v2").request("GET", "/exchange/status")
 
 
 def test_an_unknown_env_is_refused():
@@ -413,11 +451,23 @@ def test_a_write_goes_through_the_transport_private_client():
 
 
 @respx.mock
-def test_a_write_never_touches_the_read_client():
+def test_a_write_never_touches_the_read_client(monkeypatch):
+    # Patched on the class: the facade uses __slots__, so it takes no instance attributes.
     respx.post(f"{PROD}/portfolio/events/orders").respond(201, json={})
     t = _t(writes_enabled=True)
-    t._read_client.request = lambda *a, **k: pytest.fail("a write used the read client")
+    for verb in ("get", "head"):
+        monkeypatch.setattr(type(t._read_client), verb,
+                            lambda *a, **k: pytest.fail("a write used the read client"))
     assert t.request("POST", "/portfolio/events/orders", json={"ticker": "X"}).status == 201
+
+
+@respx.mock
+def test_a_read_never_touches_the_write_client(monkeypatch):
+    respx.get(f"{PROD}/exchange/status").respond(200, json={})
+    t = _t(writes_enabled=True)
+    monkeypatch.setattr(t._write_client, "request",
+                        lambda *a, **k: pytest.fail("a read used the write client"))
+    assert t.request("GET", "/exchange/status").status == 200
 
 
 @respx.mock
