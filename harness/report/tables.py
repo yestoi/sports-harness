@@ -120,6 +120,12 @@ class Table:
     rows: list[list]
     note: str | None = None
 
+    def row_key(self, row: list) -> str:
+        """One row's identity in `report_cells` (Task 12b): its first column, rendered as a
+        plain string. Every table's first column is already the thing a reader keys the row
+        on by eye (a variant, a ticker, a stratum), so this needs no per-table mapping."""
+        return "" if not row else str(row[0])
+
 
 # --- cells ----------------------------------------------------------------------------------
 

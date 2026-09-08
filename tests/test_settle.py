@@ -17,14 +17,17 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import (
+    EquitySnapshot,
     Fill,
     Game,
     JobRun,
     Ledger,
+    OperatorEvent,
     Order,
     RawResponse,
     Run,
     Settlement,
+    StrategyVariant,
     VenueMarket,
     VenueSettlement,
 )
@@ -545,6 +548,29 @@ def test_stage_registry_runs_stages_in_registration_order_under_one_budget(
     assert stages[2]["counts"] == {"n": 3}
     assert row.status == "degraded"
     assert row.budget_exhausted is True
+
+    # Task 12b: one settle_error event for the raising stage, one budget_exhausted for "last".
+    errors = db_session.query(OperatorEvent).filter_by(kind="settle_error").all()
+    assert len(errors) == 1 and errors[0].ref == {"stage": "boom"}
+    exhausted = db_session.query(OperatorEvent).filter_by(kind="budget_exhausted").all()
+    assert len(exhausted) == 1 and exhausted[0].ref == {"stage": "last"}
+
+
+def test_equity_snapshot_written_after_the_settle_stage(db_session, env_settings):
+    """Task 12b: one `equity_snapshots` row per exec variant right after the real `settle`
+    stage runs, with `mtm_open = None` -- the settler has no live book to mark against."""
+    db_session.add(StrategyVariant(variant_id="v1", name=env_settings.exec_variants[0],
+                                   tier="primary", config_json={"bankroll": 500},
+                                   registered_at=NOW, active=True))
+    db_session.commit()
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
+
+    snap = db_session.query(EquitySnapshot).filter_by(variant_id="v1").one()
+    assert snap.cash == Decimal("500")
+    assert snap.mtm_open is None
+    assert snap.mtm_coverage == Decimal("0")
 
 
 def test_settler_writes_job_runs_and_never_touches_runs_notes(db_session, env_settings):

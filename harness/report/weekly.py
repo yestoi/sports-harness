@@ -10,6 +10,7 @@ knowing how many games it came from: `grey` marks a cell below 10 game clusters 
 BH/Holm family and outside the §9.6 count) and `flag` one below 30.
 """
 
+import hashlib
 import json
 import math
 from datetime import datetime, timezone
@@ -19,14 +20,17 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from harness.db.models import ReportCell, ReportRun
 from harness.report import criteria_hash
 from harness.report.tables import (
     CONTRAST_BENCHMARK,
     HEADLINE_PANEL,
+    NOT_COLLECTED,
     PLACEHOLDER,
     SIGNIFICANT_CELLS_REQUIRED,
     TABLE_KEYS,
     Table,
+    _is_cell,
     cell_excludes_zero,
     is_flagged,
     is_grey,
@@ -229,6 +233,64 @@ def build_meta(session: Session, settings, year: int, week: int, now: datetime |
         "previous_criteria_hash": session.execute(_PREVIOUS_HASH, window).scalar(),
         "confirmation": confirmation,
     }
+
+
+def _cell_fields(value: Any) -> dict:
+    """One cell's `report_cells` columns (Task 12b): the CI quintet when the cell is one,
+    `text` always the same rendered string `render_markdown` shows, and `flags` the same
+    greyed/flagged/not_collected rules that markdown already carries as a marker or a note."""
+    if _is_cell(value):
+        estimate, n_obs, n_clusters, lo, hi = value
+        return {"estimate": estimate, "n_obs": n_obs, "n_clusters": n_clusters, "lo": lo,
+               "hi": hi, "text": _format_cell(value)[:64],
+               "flags": {"greyed": is_grey(value), "flagged": is_flagged(value),
+                        "not_collected": False}}
+    return {"estimate": None, "n_obs": None, "n_clusters": None, "lo": None, "hi": None,
+           "text": _format_cell(value)[:64],
+           "flags": {"greyed": False, "flagged": False, "not_collected": value == NOT_COLLECTED}}
+
+
+def persist_report(session: Session, tables: dict[str, Table], meta: dict, year: int, week: int,
+                   provisional: bool, markdown: str | None) -> int:
+    """Write one `report_runs` row and every cell of every table, in the caller's own
+    transaction (`harness report` commits it beside the markdown write; `report_wtd` commits it
+    beside its `job_state` bookkeeping). Returns the new `report_runs.id`.
+
+    A re-run of the same week is a new row, never an overwrite (design spec §3.7): the UI reads
+    the newest non-provisional run for a closed week, and the provisional hourly runs are their
+    own trail of what the report looked like as the week went on.
+    """
+    generated_at = meta.get("generated_at")
+    if isinstance(generated_at, str):
+        generated_at = datetime.fromisoformat(generated_at)
+    run = ReportRun(
+        year=year, week=week, generated_at=generated_at or datetime.now(timezone.utc),
+        provisional=provisional, build_sha=meta.get("build_sha") or "",
+        criteria_hash=meta.get("criteria_hash") or "",
+        config_hashes=list(meta.get("config_hashes") or []),
+        markdown=markdown,
+        markdown_sha256=hashlib.sha256(markdown.encode()).hexdigest() if markdown else None,
+    )
+    session.add(run)
+    session.flush()
+    n = 0
+    for table_key, table in tables.items():
+        # `Table.row_key` is only the first column, and several tables (t4's price-bucket x
+        # ttk x sport x market_type grid, in particular) repeat that column across many rows --
+        # so a run of the same base key within one table is disambiguated with a suffix, which
+        # keeps the composite primary key (report_run_id, table_key, row_key, col_key) unique
+        # without changing what `Table.row_key` itself means.
+        seen: dict[str, int] = {}
+        for row in table.rows:
+            base = table.row_key(row)[:60]
+            seen[base] = seen.get(base, 0) + 1
+            row_key = base if seen[base] == 1 else f"{base}#{seen[base]}"
+            for col_key, value in zip(table.columns, row):
+                session.add(ReportCell(report_run_id=run.id, table_key=table_key,
+                                       row_key=row_key, col_key=col_key, **_cell_fields(value)))
+                n += 1
+    session.flush()
+    return run.id
 
 
 def selection_document(tables: dict[str, Table], meta: dict) -> dict:

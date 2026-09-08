@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from harness.db.models import Game
+from harness.db.models import Game, GameScoreEvent
 from harness.matching.games import upsert_games_from_odds
 from harness.matching.teams import seed_teams_from_espn
 from harness.normalize.espn import link_espn_scoreboard
@@ -39,3 +39,37 @@ def test_unknown_status_is_kept_raw_lowercased(db_session):
               {"homeAway": "away", "team": {"id": "19", "displayName": "New York Giants"}}]}]}]}
     link_espn_scoreboard(db_session, "nfl", sb)
     assert db_session.query(Game).filter_by(espn_event_id="402").one().status == "status_suspended"
+
+
+def _in_progress_body(period, clock, home_score, away_score):
+    return {"events": [{"id": "401", "date": "2026-09-21T00:20Z",
+            "status": {"type": {"name": "STATUS_IN_PROGRESS"}, "period": period, "displayClock": clock},
+            "competitions": [{"competitors": [
+                {"homeAway": "home", "score": str(home_score), "team": {"id": "14", "displayName": "Los Angeles Rams"}},
+                {"homeAway": "away", "score": str(away_score), "team": {"id": "19", "displayName": "New York Giants"}}]}]}]}
+
+
+def test_score_event_on_clock_change_not_on_identical_body(db_session):
+    """Task 12b: `game_score_events` appends whenever `(status, period, clock, home_score,
+    away_score)` differs from the game's newest row, and appends nothing for a re-poll that
+    changed nothing (ESPN is polled every tick, so the identical case is the common one)."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(2, "12:34", 7, 0))
+    game = db_session.query(Game).filter_by(espn_event_id="401").one()
+    rows = db_session.query(GameScoreEvent).filter_by(game_id=game.id).order_by(GameScoreEvent.id).all()
+    assert len(rows) == 1
+    first = rows[0]
+    assert (first.status, first.period, first.clock, first.home_score, first.away_score) == (
+        "in_progress", 2, "12:34", 7, 0)
+    assert first.raw_id is None
+
+    # The identical body again (a re-poll with nothing new): no second row.
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(2, "12:34", 7, 0))
+    assert db_session.query(GameScoreEvent).filter_by(game_id=game.id).count() == 1
+
+    # Only the clock changed: a new row.
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(2, "11:50", 7, 0))
+    rows = db_session.query(GameScoreEvent).filter_by(game_id=game.id).order_by(GameScoreEvent.id).all()
+    assert len(rows) == 2
+    assert rows[-1].clock == "11:50"

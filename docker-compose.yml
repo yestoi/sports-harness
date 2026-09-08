@@ -47,6 +47,9 @@ services:
       ODDS_API_KEY_FILE: /run/secrets/odds_api_key
     volumes:
       - ./secrets/odds_api_key:/run/secrets/odds_api_key:ro
+      # Task 12b: os.statvfs only, for host.disk_free_gb (design spec §3.1). Read-only, and
+      # never mounted into app-exec: the executor has no volumes at all, deliberately.
+      - ./pgdata:/pgdata-ro:ro
     depends_on:
       postgres:
         condition: service_healthy

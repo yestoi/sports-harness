@@ -493,6 +493,23 @@ def test_gate_cli_stores_rows_prints_a_summary_and_exits_zero(db_session, cli_se
     assert len(rows) == 1 and rows[0].gate_variant is True and rows[0].passed is False
 
 
+def test_gate_cli_writes_gate_evaluated_event(db_session, cli_settings):
+    """Task 12b: `harness gate` writes one `gate_evaluated` operator_event carrying the
+    evaluation's own criteria_hash."""
+    from harness.db.models import OperatorEvent
+
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    _seed_passing(db_session, games=4)
+    db_session.commit()
+
+    result = runner.invoke(app, ["gate"])
+    assert result.exit_code == 0, result.output
+
+    event = db_session.query(OperatorEvent).filter_by(kind="gate_evaluated").one()
+    stored = db_session.query(GateReport).first()
+    assert event.ref == {"criteria_hash": stored.criteria_hash}
+
+
 # --- settlement and match keys ----------------------------------------------------------------
 
 

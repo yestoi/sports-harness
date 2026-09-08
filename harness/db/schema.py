@@ -162,6 +162,16 @@ _INDEX_DDL = (
     # the rows of a run, so re-running the same evaluation is idempotent while a later one still
     # appends (Task 11 fix round 1, P1). Rows are never rewritten.
     "create unique index if not exists uq_gate_report on gate_reports (evaluated_at, variant_id)",
+    # Task 12b telemetry (U6, dashboard design spec §3): every read the dashboard and the
+    # report do against these tables is "the newest/last N by time", so each gets one
+    # descending-time index; `desc()` on a model-level Index needs a real column object at
+    # class-body time, so -- like every other non-trivial index in this file -- these are raw
+    # DDL rather than a model __table_args__ entry.
+    "create index if not exists ix_metric_samples_name_ts on metric_samples (name, ts desc)",
+    "create index if not exists ix_operator_events_ts on operator_events (ts desc)",
+    "create index if not exists ix_game_score_events_game_ts on game_score_events (game_id, ts desc)",
+    "create index if not exists ix_check_results_ts on check_results (ts desc)",
+    "create index if not exists ix_report_runs_week on report_runs (year, week, generated_at desc)",
 )
 
 #: Open contracts and their average price per variant, from the queue-model fills of live orders

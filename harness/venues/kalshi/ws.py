@@ -10,6 +10,7 @@ import websocket
 from sqlalchemy import select, true
 from sqlalchemy.orm import Session, sessionmaker
 
+from harness import telemetry
 from harness.config.settings import Settings
 from harness.db.models import Game, Order, Signal, StrategyVariant, VenueMarket, VenueQuote
 from harness.feeds.http import HttpClient
@@ -125,6 +126,11 @@ class WsRecorder:
         # limit) and when the recent ones did (the 300 s fall-through to a reconnect).
         self._last_recovery: dict[int, float] = {}
         self._recoveries: dict[int, list[float]] = {}
+        # Task 12b: reconnects since the last metrics batch, and that batch's own 60 s clock
+        # (its own `time.monotonic`, independent of `self.clock`, which tests fix at a
+        # constant instant).
+        self._reconnects_since = 0
+        self._metrics_sampler = telemetry.Sampler(60.0)
 
     def _headers(self) -> list[str]:
         ts_ms = int(self.clock().timestamp() * 1000) + self._offset_ms
@@ -227,10 +233,36 @@ class WsRecorder:
     def stop(self, *_):
         self._stop = True
 
+    def _write_ws_metrics(self) -> None:
+        """`ws.*` metric_samples, once a minute (design spec §3.1), through the sink's own
+        session -- best-effort, and a no-op when there is no sink (a unit test that never
+        wired one) or the sink is a test double without the Task 12b methods."""
+        if self.sink is None:
+            return
+        try:
+            counts = self.sink.drain_counts()
+            now = self.clock()
+            samples = [
+                ("ws.events_per_min", counts["events"], {}),
+                ("ws.trades_per_min", counts["trades"], {}),
+                ("ws.subscribed_tickers", len(self._current), {}),
+                ("ws.reconnects", self._reconnects_since, {}),
+                ("ws.gaps", counts["gaps"], {}),
+            ]
+            lag = self.sink.sink_lag_s(now)
+            if lag is not None:
+                samples.append(("ws.sink_lag_s", lag, {}))
+            self.sink.write_metrics(now, samples)
+            self._reconnects_since = 0
+        except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the ws loop
+            log.exception("ws metrics failed")
+
     def _recv_loop(self, ws) -> None:
         subscribed_at, msg_id, last_plan = time.monotonic(), 2, time.monotonic()
         timeouts, error_msg = 0, None
         while not self._stop:
+            if self._metrics_sampler.due("ws"):
+                self._write_ws_metrics()
             try:
                 raw = ws.recv()
                 timeouts = 0
@@ -292,6 +324,10 @@ class WsRecorder:
                 # sink can only learn this connection's offset once the connect has returned.
                 if self.sink is not None:
                     self.sink.offset_ms = self._offset_ms
+                    try:
+                        self.sink.write_event("ws_connect", "connected", ts=self.clock())
+                    except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the ws loop
+                        log.exception("ws_connect event failed")
                 self._sids, self._current = [], []
                 self._last_recovery, self._recoveries = {}, {}
                 try:
@@ -321,6 +357,12 @@ class WsRecorder:
                             log.exception("ws sink flush failed")
             except Exception as e:  # noqa: BLE001
                 log.warning("ws loop error: %r; reconnecting in %.0fs", e, self._backoff)
+                self._reconnects_since += 1
+                if self.sink is not None:
+                    try:
+                        self.sink.write_event("ws_disconnect", repr(e)[:200], ts=self.clock())
+                    except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the ws loop
+                        log.exception("ws_disconnect event failed")
                 time.sleep(self._backoff)
                 self._backoff = min(self._backoff * 2, 60.0)
         self.sink.close()

@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     #: "sharp_two_sided"; falls back to the active primary when the named variant is unregistered.
     gate_variant: str = "sharp_direct"
 
+    # --- Task 12b: telemetry --------------------------------------------------------------
+    metric_sample_s: int = 60
+    watch_sample_s: int = 60
+    equity_sample_s: int = 300
+    #: Where the Postgres data directory is bind-mounted read-only into app-run, for
+    #: `os.statvfs` only (`host.disk_free_gb`). Absent on the Mac and in tests, where the
+    #: metric is skipped rather than erroring (ruling 3).
+    pg_data_mount: Path = Path("/pgdata-ro")
+
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()
 

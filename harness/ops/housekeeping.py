@@ -19,15 +19,22 @@ the harness already reads and writes.
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from harness import telemetry
+from harness.ops.checks import run_checks
 from harness.recorder.store import get_source_state, set_source_state
 from harness.settlement.job import Budget, StageResult, current_ctx, register_stage
 
 log = logging.getLogger(__name__)
+
+#: Same convention `harness/dashboard/app.py` uses for a market's sport, since VenueMarket has
+#: no `sport` column of its own.
+SPORT_PREFIXES = {"nfl": "KXNFL", "ncaaf": "KXNCAAF"}
 
 #: The `source_state` key this stage's once-a-day gate reads and writes.
 JOB_STATE_KEY = "housekeeping_last"
@@ -122,6 +129,79 @@ def _table_sizes_gb(session: Session) -> dict[str, float]:
     return {name: round(nbytes / BYTES_PER_GB, 4) for name, nbytes in totals.items()}
 
 
+#: A market's own liveness window (mirrors the dashboard's match-report section): only markets
+#: this recorder has actually seen recently count towards the rate.
+MATCH_WINDOW = timedelta(hours=24)
+
+
+def match_rates(session: Session, now: datetime) -> dict[str, dict]:
+    """Matched share and unmatched count per sport, over `venue_markets` seen in the last 24h --
+    the same shape the dashboard's match-report section already computes, kept here too since
+    `match.rate{sport}`/`match.unmatched{sport}` (design spec §3.1) is a metric, not a page."""
+    cutoff = now - MATCH_WINDOW
+    out: dict[str, dict] = {}
+    for sport, prefix in SPORT_PREFIXES.items():
+        counts = dict(session.execute(text(
+            "select match_status, count(*) from venue_markets "
+            "where series_ticker like :prefix and last_seen_at >= :cutoff group by match_status"),
+            {"prefix": f"{prefix}%", "cutoff": cutoff}).all())
+        total = sum(counts.values())
+        matched = counts.get("matched", 0) + counts.get("fuzzy", 0) + counts.get("manual", 0)
+        unmatched = counts.get("unmatched", 0)
+        out[sport] = {"rate": (matched / total) if total else None, "unmatched": unmatched}
+    return out
+
+
+def _host_disk_free_gb(mount) -> tuple[float | None, str | None]:
+    """`os.statvfs` on the Postgres data mount; `skip` with a note when it is absent (ruling 3:
+    the Mac and every test have no such mount, never an error)."""
+    try:
+        st = os.statvfs(mount)
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        return None, "mount absent"
+    return (st.f_bavail * st.f_frsize) / BYTES_PER_GB, None
+
+
+def _host_mem_available_mb() -> tuple[float | None, str | None]:
+    """`/proc/meminfo`'s `MemAvailable`; absent on macOS and skipped there too (ruling 3)."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    kb = int(line.split()[1])
+                    return kb / 1024, None
+    except (FileNotFoundError, OSError, ValueError, IndexError):
+        return None, "meminfo absent"
+    return None, "MemAvailable not reported"
+
+
+def record_housekeeping_metrics(session: Session, now: datetime, counts: dict,
+                                match_by_sport: dict[str, dict], pg_data_mount) -> int:
+    """Every `metric_samples` row housekeeping writes (design spec §3.1), as one batch."""
+    samples: list[tuple[str, object, dict]] = [
+        ("db.size_gb", counts["size_gb"], {}),
+    ]
+    for table, gb in counts.get("tables_gb", {}).items():
+        samples.append(("db.table_gb", gb, {"table": table}))
+    if counts.get("growth_gb_per_day") is not None:
+        samples.append(("db.growth_gb_per_day", counts["growth_gb_per_day"], {}))
+    disk_free_gb, disk_note = _host_disk_free_gb(pg_data_mount)
+    if disk_free_gb is not None:
+        samples.append(("host.disk_free_gb", disk_free_gb, {}))
+    else:
+        log.info("host.disk_free_gb skipped: %s", disk_note)
+    mem_mb, mem_note = _host_mem_available_mb()
+    if mem_mb is not None:
+        samples.append(("host.mem_available_mb", mem_mb, {}))
+    else:
+        log.info("host.mem_available_mb skipped: %s", mem_note)
+    for sport, rates in match_by_sport.items():
+        if rates["rate"] is not None:
+            samples.append(("match.rate", rates["rate"], {"sport": sport}))
+        samples.append(("match.unmatched", rates["unmatched"], {"sport": sport}))
+    return telemetry.record_many(session, "housekeeping", samples, ts=now)
+
+
 def housekeeping(session: Session, now: datetime, db_budget_gb: int) -> dict:
     """Measure the database, project its growth against `db_budget_gb`, and return the dict the
     settlement job records verbatim as this stage's `StageResult.counts` (and the dashboard's
@@ -143,16 +223,43 @@ def _due(last: datetime | None, now: datetime) -> bool:
 
 def housekeeping_stage(session: Session, now: datetime, budget: Budget) -> StageResult:
     """The once-a-day gate: a handful of catalog queries never worth spending the shared
-    settlement budget on, so `budget` is accepted only to match `StageFn` and is never checked."""
+    settlement budget on, so `budget` is accepted only to match `StageFn` and is never checked.
+
+    Task 12b additions, all best-effort (ruling 1: a telemetry failure must never fail this
+    stage): the `metric_samples` batch, the Layer 2b check registry (`check_results`, one row
+    per check) and one `operator_events(check_failed)` row per failing check.
+    """
     del budget
     last = get_source_state(session, JOB_STATE_KEY)
     if not _due(last, now):
         return StageResult("housekeeping", {"skipped": True}, False, None)
 
-    settings = current_ctx().get("settings")
+    ctx = current_ctx()
+    settings = ctx.get("settings")
     db_budget_gb = settings.db_budget_gb if settings is not None else DEFAULT_DB_BUDGET_GB
+    pg_data_mount = settings.pg_data_mount if settings is not None else "/pgdata-ro"
     counts = housekeeping(session, now, db_budget_gb)
     set_source_state(session, JOB_STATE_KEY, now)
+
+    try:
+        with session.begin_nested():
+            match_by_sport = match_rates(session, now)
+            record_housekeeping_metrics(session, now, counts, match_by_sport, pg_data_mount)
+    except Exception:  # noqa: BLE001 - telemetry must never fail this stage
+        log.exception("housekeeping metrics failed")
+
+    try:
+        with session.begin_nested():
+            results = run_checks(session, now, ctx.get("job_run_id"))
+            for result in results:
+                if result.status == "fail":
+                    telemetry.event(
+                        session, "check_failed", result.check_name,
+                        ref={"value": None if result.value is None else float(result.value),
+                            "threshold": result.threshold}, ts=now)
+    except Exception:  # noqa: BLE001 - telemetry must never fail this stage
+        log.exception("housekeeping checks failed")
+
     return StageResult("housekeeping", counts, False, None)
 
 

@@ -12,14 +12,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
 
-from harness.db.models import RawResponse, Run, TradeWatermark, VenueMarket, VenueQuote, VenueTrade
+from harness.db.models import MetricSample, OperatorEvent, RawResponse, Run, TradeWatermark, VenueMarket, VenueQuote, VenueTrade
 from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
 from harness.health import create_app
 from harness.normalize import runner as runner_mod
 from harness.recorder import store
-from harness.recorder.tick import Recorder
+from harness.recorder.tick import Recorder, _pricing_samples, _recorder_samples
+from harness.strategy.pipeline import price_and_signal
+from harness.strategy.variants import load_variants, register_variants
 from harness.venues.kalshi.public import KalshiPublic
 
 
@@ -653,3 +655,64 @@ def test_forced_tick_never_overrides_the_quiet_window(env_settings, db_session):
     assert rec._due(NOW, NOW, 900) is True
     rec._force = False
     assert rec._due(NOW, NOW, 900) is False
+
+
+# --- Task 12b telemetry ----------------------------------------------------------------
+
+
+def test_tick_records_run_metrics_with_feed_kind_and_variant_labels(env_settings, db_session):
+    """`_pricing_samples`/`_recorder_samples` (harness/recorder/tick.py) produce the
+    `pricing.*`/`recorder.*` metric_samples design spec §3.1 names, with a real `feed_kind`
+    label off `fair_values` and a real `variant` label off `price_and_signal`'s own result."""
+    from tests.test_pipeline import NOW as SEED_NOW
+    from tests.test_pipeline import VARIANTS_DIR, _seed
+
+    game, run, markets = _seed(db_session)
+    register_variants(db_session, load_variants(VARIANTS_DIR), SEED_NOW, prune=True)
+    pricing = price_and_signal(db_session, run.id, SEED_NOW, env_settings, budget_s=20)
+    db_session.commit()
+
+    pricing_samples = _pricing_samples(db_session, run.id, pricing)
+    fair_value_samples = [(n, v, l) for n, v, l in pricing_samples if n == "pricing.fair_values"]
+    assert fair_value_samples, pricing_samples
+    assert all("feed_kind" in labels for _, _, labels in fair_value_samples)
+
+    candidate_samples = [(n, v, l) for n, v, l in pricing_samples if n == "pricing.candidates"]
+    assert candidate_samples
+    assert any(labels.get("variant") == "tiny" for _, _, labels in candidate_samples)
+
+    ctx = {"errors": [], "trade_gaps": [{"ticker": "t"}], "remaining": 42, "pricing": pricing}
+    recorder_samples = _recorder_samples(db_session, run.id, 123, ctx)
+    names = {n for n, _, _ in recorder_samples}
+    assert {"recorder.tick_ms", "recorder.errors", "recorder.credits_remaining",
+           "recorder.trade_gaps"} <= names
+    tick_ms = next(v for n, v, _ in recorder_samples if n == "recorder.tick_ms")
+    assert tick_ms == 123
+    trade_gaps = next(v for n, v, _ in recorder_samples if n == "recorder.trade_gaps")
+    assert trade_gaps == 1
+
+
+@respx.mock
+def test_recorder_deploy_event_on_build_sha_change(env_settings, db_session):
+    """The recorder's own startup check: a `deploy` operator_event once, the first tick this
+    process's build_sha disagrees with the newest prior run's -- and every run row after that
+    carries this process's own build_sha (D11's backstop)."""
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": [], "trades": []}))
+    db_session.add(Run(started_at=NOW - timedelta(hours=1), status="ok", build_sha="old-sha"))
+    db_session.commit()
+
+    env_settings.build_sha = "new-sha"
+    rec, clock = _recorder(env_settings, db_session)
+    first = rec.maybe_tick()
+    assert first.build_sha == "new-sha"
+
+    events = db_session.query(OperatorEvent).filter_by(kind="deploy").all()
+    assert len(events) == 1
+    assert events[0].ref == {"from": "old-sha", "to": "new-sha"}
+
+    clock["now"] = NOW + timedelta(seconds=60)
+    second = rec.maybe_tick(force=True)
+    assert second.build_sha == "new-sha"
+    # Checked once per process: a second tick under the same (now unchanged) build writes no
+    # second deploy event.
+    assert db_session.query(OperatorEvent).filter_by(kind="deploy").count() == 1

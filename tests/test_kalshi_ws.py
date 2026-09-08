@@ -164,6 +164,10 @@ class _FakeSink:
         self.gap_sids: set[int] = set()
         self.offset_ms = 0
         self.cleared: list[int] = []
+        # Task 12b: a test double for the writer methods `WsRecorder` calls through the sink,
+        # so a test that never cares about telemetry doesn't have to see it fail and log.
+        self.events: list[tuple[str, str, dict | None]] = []
+        self.metric_batches: list[list[tuple[str, object, dict]]] = []
 
     def handle(self, msg, received_at):
         self._on_handle(msg, received_at)
@@ -179,6 +183,18 @@ class _FakeSink:
 
     def close(self):
         self.closed = True
+
+    def drain_counts(self):
+        return {"events": 0, "trades": 0, "gaps": 0}
+
+    def sink_lag_s(self, now):
+        return None
+
+    def write_metrics(self, ts, samples):
+        self.metric_batches.append(list(samples))
+
+    def write_event(self, kind, summary, ref=None, ts=None):
+        self.events.append((kind, summary, ref))
 
 
 def test_backoff_reset_deferred_until_first_data_message(monkeypatch):
@@ -302,6 +318,73 @@ def test_connect_retries_once_on_401_using_date_header_offset(monkeypatch):
     assert ws == "CONNECTED"
     assert calls == ["wss://fake.example/ws", "wss://fake.example/ws"]
     assert abs(recorder._offset_ms - 480000) <= 2000
+
+
+class _CountingSink(_FakeSink):
+    """A `_FakeSink` whose telemetry hooks return configurable, non-trivial numbers, so a test
+    can assert on the actual samples `_write_ws_metrics` builds."""
+
+    def __init__(self, on_handle, counts=None, lag=None):
+        super().__init__(on_handle)
+        self._counts = counts or {"events": 0, "trades": 0, "gaps": 0}
+        self._lag = lag
+
+    def drain_counts(self):
+        return dict(self._counts)
+
+    def sink_lag_s(self, now):
+        return self._lag
+
+
+def test_ws_metrics_once_per_minute_and_connect_disconnect_events(monkeypatch):
+    """`_write_ws_metrics` batches the design spec §3.1 `ws.*` names once a minute
+    (`Sampler`), and `run_forever` writes a `ws_connect`/`ws_disconnect` event on every
+    connect/disconnect transition, through the sink's own session."""
+    sink = _CountingSink(lambda m, t: None, counts={"events": 5, "trades": 2, "gaps": 1}, lag=3.5)
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=lambda *a, **kw: None, clock=lambda: NOW)
+    recorder._current = ["A", "B"]
+    recorder._reconnects_since = 2
+
+    # Cadence: the first call is always due (Sampler semantics); a second right after is not.
+    assert recorder._metrics_sampler.due("ws") is True
+    assert recorder._metrics_sampler.due("ws") is False
+
+    recorder._write_ws_metrics()
+
+    assert len(sink.metric_batches) == 1
+    by_name = {n: (v, l) for n, v, l in sink.metric_batches[0]}
+    assert by_name["ws.events_per_min"] == (5, {})
+    assert by_name["ws.trades_per_min"] == (2, {})
+    assert by_name["ws.subscribed_tickers"] == (2, {})
+    assert by_name["ws.reconnects"] == (2, {})
+    assert by_name["ws.gaps"] == (1, {})
+    assert by_name["ws.sink_lag_s"] == (3.5, {})
+    assert recorder._reconnects_since == 0  # reset once the batch is written
+
+    # --- connect/disconnect events over a real (rejected-then-accepted) connection cycle ---
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: [])
+
+    error = json.dumps({"type": "error", "msg": {"code": 6}})
+    subscribed = json.dumps({"type": "subscribed", "msg": {"sid": 1}})
+    trade = json.dumps({"type": "trade", "sid": 1, "seq": 1, "msg": {}})
+    connect_calls = {"n": 0}
+
+    def ws_factory(url, header, timeout):
+        connect_calls["n"] += 1
+        return _FakeWs([error]) if connect_calls["n"] == 1 else _FakeWs([subscribed, trade])
+
+    recorder2 = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), None,
+                           ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder2, "_headers", lambda: [])
+    events_sink = _FakeSink(lambda _m, _t: recorder2.stop())
+    recorder2.sink = events_sink
+    recorder2.run_forever()
+
+    kinds = [kind for kind, _, _ in events_sink.events]
+    assert kinds == ["ws_connect", "ws_disconnect", "ws_connect"]
+    assert events_sink.events[1][1]  # a reason string, not blank
 
 
 def test_refresh_offset_keeps_previous_value_on_fetch_error():

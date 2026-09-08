@@ -3,7 +3,8 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint, Uuid,
+    BigInteger, Boolean, DateTime, Index, Integer, Numeric, SmallInteger, String, Text,
+    UniqueConstraint, Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -687,3 +688,134 @@ class JobState(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[int | None] = mapped_column(BigInteger)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Task 12b: telemetry the dashboard cannot backfill (U6, spec
+# `2026-09-07-dashboard-surfaces-design.md` §3). Every table here is additive and never read
+# by a fill, a decision, a settlement or a heartbeat -- only by the dashboard, the weekly
+# report and the operator. The five indexes an ordered-by-time query needs are raw DDL in
+# harness/db/schema.py (`_INDEX_DDL`), the same convention every other non-trivial index in
+# this file uses.
+# ---------------------------------------------------------------------------
+
+
+class MetricSample(Base):
+    """One time series point. `source` is the writer (recorder, ws, exec, settle,
+    housekeeping, serve); `name` is a dotted metric like `exec.loop_ms`; `labels` carries the
+    metric's dimension (a reason, a feed_kind, a variant) when it has one."""
+    __tablename__ = "metric_samples"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(12), nullable=False)
+    name: Mapped[str] = mapped_column(String(48), nullable=False)
+    labels: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+
+
+class OperatorEvent(Base):
+    """One operator-visible event: a kill, a deploy, a settle error, a check failure, a note.
+    `summary` always passes the F50 sanitizer (`harness.telemetry.sanitize_reason`) before
+    insert, whatever kind of free text produced it."""
+    __tablename__ = "operator_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    summary: Mapped[str] = mapped_column(String(200), nullable=False)
+    ref: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class OrderWatchSample(Base):
+    """One open order's queue and book state, sampled every `watch_sample_s`, plus one
+    terminal row (`terminal` set) the step the order leaves the open set on."""
+    __tablename__ = "order_watch_samples"
+    order_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    queue_remaining: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    nw_queue_remaining: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    best_bid: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    best_ask: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    fair_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    book_dirty: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    terminal: Mapped[str | None] = mapped_column(String(12))
+
+
+class EquitySnapshot(Base):
+    """One exec variant's cash and mark-to-market, sampled every `equity_sample_s` by the
+    executor and once more by the settler after its `settle` stage (`mtm_open` is NULL there:
+    the settler has no live book to mark against)."""
+    __tablename__ = "equity_snapshots"
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    variant_id: Mapped[str] = mapped_column(String(12), primary_key=True)
+    cash: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    open_stake: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    mtm_open: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    mtm_coverage: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    n_open_positions: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_open_orders: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class GameScoreEvent(Base):
+    """One change in a game's live score/clock/status, appended by `link_espn_scoreboard`
+    whenever any of those fields differs from the game's newest row."""
+    __tablename__ = "game_score_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: String(24), not the brief's String(12): this mirrors `Game.status` exactly, which is
+    #: also String(24) precisely because an unrecognized ESPN status is kept raw and lowercased
+    #: rather than dropped (`link_espn_scoreboard`'s `_STATUS.get(raw, raw.lower())`) -- e.g.
+    #: "status_suspended" (17 chars) already exceeds 12 (see test_unknown_status_is_kept_raw_lowercased).
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    period: Mapped[int | None] = mapped_column(SmallInteger)
+    clock: Mapped[str | None] = mapped_column(String(8))
+    home_score: Mapped[int | None] = mapped_column(SmallInteger)
+    away_score: Mapped[int | None] = mapped_column(SmallInteger)
+    raw_id: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class CheckResult(Base):
+    """One Layer 2b invariant's outcome for one housekeeping pass (`harness.ops.checks`)."""
+    __tablename__ = "check_results"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    check_name: Mapped[str] = mapped_column(String(48), nullable=False)
+    status: Mapped[str] = mapped_column(String(8), nullable=False)  # pass|fail|skip
+    value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    threshold: Mapped[str | None] = mapped_column(String(48))
+    detail: Mapped[str | None] = mapped_column(String(200))
+
+
+class ReportRun(Base):
+    """One rendering of the weekly report: `harness report` (`provisional = false`) or the
+    hourly `report_wtd` settlement stage (`provisional = true`)."""
+    __tablename__ = "report_runs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    week: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    provisional: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    build_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    criteria_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_hashes: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    markdown: Mapped[str | None] = mapped_column(Text)
+    markdown_sha256: Mapped[str | None] = mapped_column(String(64))
+
+
+class ReportCell(Base):
+    """One cell of one table of one report run, so the dashboard can read the report without
+    parsing Markdown. `text` is the exact rendered string; `flags` carries `greyed`, `flagged`
+    and `not_collected`, the same rules `render_markdown` already uses."""
+    __tablename__ = "report_cells"
+    report_run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    table_key: Mapped[str] = mapped_column(String(4), primary_key=True)
+    row_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    col_key: Mapped[str] = mapped_column(String(48), primary_key=True)
+    estimate: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    n_obs: Mapped[int | None] = mapped_column(Integer)
+    n_clusters: Mapped[int | None] = mapped_column(Integer)
+    lo: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    hi: Mapped[Decimal | None] = mapped_column(Numeric(14, 6))
+    text: Mapped[str | None] = mapped_column(String(64))
+    flags: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)

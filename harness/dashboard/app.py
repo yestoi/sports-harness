@@ -8,7 +8,6 @@ into `harness.health.compute_health` rather than re-deriving the staleness/error
 
 import hmac
 import logging
-import re
 import importlib.resources
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
@@ -23,6 +22,7 @@ from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from harness import telemetry
 from harness.config.settings import Settings
 
 from harness.db.models import (ExecHeartbeat, FairValue, Fill, Game, JobRun, KillSwitch, Ledger, MarketGapSnapshot,
@@ -56,9 +56,6 @@ EXPOSURE_LIMIT = 500  # positions is already one row per (variant, ticker, side)
 SKIP_REASONS_LIMIT = 20  # more than the number of distinct reasons order_events can carry
 JOB_RUNS_SCAN_LIMIT = 30  # a month of daily housekeeping notes, or a few days of hourly ones
 DB_CEILING_RED_PCT = 80.0
-#: F50: a kill reason is free text an operator types into a form; only this shape survives.
-KILL_REASON_RE = re.compile(r"[^\w \-.,:/()]")
-KILL_REASON_MAX = 200
 #: Sec-Fetch-Site values a same-origin browser POST can carry (a direct navigation or a request
 #: with no Sec-Fetch-Site support at all, e.g. curl, sends no header, which is accepted too).
 KILL_ALLOWED_SEC_FETCH_SITE = ("same-origin", "none")
@@ -591,7 +588,7 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
         # same as /kill always has been -- this is a same-origin check, not an auth check.
         if sec_fetch_site is not None and sec_fetch_site not in KILL_ALLOWED_SEC_FETCH_SITE:
             raise HTTPException(status_code=403, detail="cross-site request rejected")
-        clean_reason = KILL_REASON_RE.sub("", reason)[:KILL_REASON_MAX]
+        clean_reason = telemetry.sanitize_reason(reason)
         now = clock()
         with session_factory() as s:
             row = s.get(KillSwitch, 1)
@@ -602,6 +599,8 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
                 row.active = True
                 row.reason = clean_reason
                 row.set_at = now
+            # Same transaction as the row update (design spec §3.2).
+            telemetry.event(s, "kill_on", clean_reason, ts=now)
             s.commit()
         return {"active": True, "reason": clean_reason}
 
@@ -628,6 +627,8 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
             else:
                 row.active = False
                 row.set_at = now
+            # Same transaction as the row update (design spec §3.2).
+            telemetry.event(s, "kill_off", "", ts=now)
             s.commit()
         return {"active": False}
 

@@ -190,3 +190,26 @@ def test_benchmarks_cmd_computes_and_is_idempotent(cli_settings, db_session):
 def test_benchmarks_cmd_exits_1_for_an_unknown_game(cli_settings, db_session):
     result = runner.invoke(app, ["benchmarks", "--game-id", "999999"])
     assert result.exit_code == 1
+
+
+# --- Task 12b: `harness note` -----------------------------------------------------------
+
+
+def test_note_cli_writes_event(cli_settings, db_session):
+    from harness.db.models import OperatorEvent
+
+    result = runner.invoke(app, ["note", "--kind", "verify_pass", "week 38 dashboard check OK"])
+    assert result.exit_code == 0, result.output
+
+    row = db_session.query(OperatorEvent).one()
+    assert row.kind == "verify_pass"
+    assert row.summary == "week 38 dashboard check OK"
+    assert str(row.id) in result.output.strip()
+
+
+def test_note_cli_rejects_an_unknown_kind(cli_settings, db_session):
+    from harness.db.models import OperatorEvent
+
+    result = runner.invoke(app, ["note", "--kind", "not-a-real-kind", "text"])
+    assert result.exit_code == 1
+    assert db_session.query(OperatorEvent).count() == 0

@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from harness.dashboard.app import create_dashboard
-from harness.db.models import (ExecHeartbeat, Fill, JobRun, KillSwitch, Ledger, Order, OrderEvent, RawResponse,
-                                Run, StrategyVariant, VenueSettlement, VenueTrade)
+from harness.db.models import (ExecHeartbeat, Fill, JobRun, KillSwitch, Ledger, OperatorEvent, Order, OrderEvent,
+                                RawResponse, Run, StrategyVariant, VenueSettlement, VenueTrade)
 from harness.execution.plan import POST_ONLY_REJECT
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
@@ -127,6 +127,30 @@ def test_unkill_with_right_token_is_200_and_inactive(db_session, env_settings, t
     db_session.expire_all()
     row = db_session.get(KillSwitch, 1)
     assert row.active is False
+
+
+def test_kill_and_unkill_write_operator_events(db_session, env_settings, tmp_path):
+    """`/kill` and `/unkill` each write one `operator_events` row in the same transaction as
+    the `kill_switch` row update (design spec §3.2), and a kill reason is sanitized the same
+    way `harness.telemetry.sanitize_reason` sanitizes any other operator text."""
+    _seed_full(db_session, env_settings)
+    settings = _dashboard_settings(env_settings, tmp_path)
+    client = _client(db_session, settings)
+
+    r = client.post("/kill", data={"reason": "manual pause <script>bad</script>"})
+    assert r.status_code == 200
+
+    kill_events = db_session.query(OperatorEvent).filter_by(kind="kill_on").all()
+    assert len(kill_events) == 1
+    assert "<" not in kill_events[0].summary and ">" not in kill_events[0].summary
+    assert kill_events[0].summary == db_session.get(KillSwitch, 1).reason
+
+    r = client.post("/unkill", headers={"X-Dashboard-Token": "supersecret"})
+    assert r.status_code == 200
+
+    unkill_events = db_session.query(OperatorEvent).filter_by(kind="kill_off").all()
+    assert len(unkill_events) == 1
+    assert unkill_events[0].summary == ""
 
 
 def test_unkill_missing_token_file_is_403(db_session, env_settings, tmp_path):

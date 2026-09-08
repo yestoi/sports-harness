@@ -29,10 +29,12 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from importlib import import_module
 
 from sqlalchemy.orm import Session
 
+from harness import telemetry
 from harness.db.models import JobRun
 
 log = logging.getLogger(__name__)
@@ -81,7 +83,7 @@ STAGES: list[tuple[str, StageFn]] = []
 #: time so a module that does not exist yet cannot break this one.
 STAGE_MODULES: list[str] = [
     "harness.settlement.settle", "harness.settlement.benchmarks", "harness.settlement.order_clv",
-    "harness.settlement.markouts", "harness.ops.housekeeping",
+    "harness.settlement.markouts", "harness.ops.housekeeping", "harness.settlement.report_wtd",
 ]
 
 _CTX: ContextVar[dict | None] = ContextVar("settlement_job_ctx", default=None)
@@ -105,9 +107,11 @@ def load_stages() -> list[tuple[str, StageFn]]:
 
 def new_ctx(kalshi=None, settings=None) -> dict:
     """The per-run context every stage shares: the venue client, the warnings and errors that
-    end up in `job_runs.notes`, and (additive, Task 12) the job's `Settings`, for the one stage
-    (`harness.ops.housekeeping`) that needs a setting (`db_budget_gb`) no other stage reads."""
-    return {"kalshi": kalshi, "warnings": [], "errors": [], "settings": settings}
+    end up in `job_runs.notes`, (additive, Task 12) the job's `Settings`, for the stages that
+    need a setting no other stage reads, and (additive, Task 12b) `job_run_id`, which
+    `harness.ops.housekeeping` needs to key its `check_results` rows to. `Settler.run()` fills
+    `job_run_id` in once the row has one; a stage called outside a job sees `None`."""
+    return {"kalshi": kalshi, "warnings": [], "errors": [], "settings": settings, "job_run_id": None}
 
 
 def current_ctx() -> dict:
@@ -159,10 +163,38 @@ class Settler:
 
             budget = Budget(self.s.settle_budget_s, self._monotonic)
             ctx = new_ctx(self._kalshi, self.s)
+            # Task 12b: the one stage that writes check_results (harness.ops.housekeeping)
+            # needs this run's own id to key its rows to.
+            ctx["job_run_id"] = row.id
             results: list[StageResult] = []
             with use_ctx(ctx):
                 for name, fn in stages:
-                    results.append(self._run_stage(session, name, fn, now, budget))
+                    result = self._run_stage(session, name, fn, now, budget)
+                    results.append(result)
+                    if name == "settle":
+                        # Task 12b: one equity_snapshots row per exec variant right after the
+                        # stage that can move the ledger, whether or not it errored -- the
+                        # settler has no live book, so mtm_open is always None here (the
+                        # executor's own sample is the one that can mark against a book).
+                        try:
+                            _write_settle_equity_snapshots(session, now, self.s)
+                            session.commit()
+                        except Exception:  # noqa: BLE001 - ruling 1
+                            log.exception("settle equity snapshots failed")
+                            session.rollback()
+
+            try:
+                for result in results:
+                    if result.error is not None:
+                        telemetry.event(session, "settle_error", f"{result.name}: {result.error}",
+                                        ref={"stage": result.name}, ts=now)
+                    if result.budget_exhausted:
+                        telemetry.event(session, "budget_exhausted", result.name,
+                                        ref={"stage": result.name}, ts=now)
+                session.commit()
+            except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the job
+                log.exception("settle telemetry events failed")
+                session.rollback()
 
             stale = self._stale(session, stale_unsettled, now, ctx)
             row.finished_at = self._clock()
@@ -198,6 +230,29 @@ class Settler:
             log.exception("stale_unsettled failed")
             ctx["errors"].append({"stale_unsettled": f"{type(exc).__name__}: {exc}"[:500]})
             return None
+
+
+def _write_settle_equity_snapshots(session: Session, now: datetime, settings) -> None:
+    """One `equity_snapshots` row per exec variant, right after the `settle` stage (design
+    spec §3.4). `mtm_open` is always None here and `mtm_coverage` is always 0: the settler has
+    no live book at all, unlike the executor's own periodic sample."""
+    from harness.execution import store as exec_store
+
+    variant_ids = exec_store.resolve_variants(session, settings.exec_variants)
+    if not variant_ids:
+        return
+    cfg = exec_store.variant_configs(session, variant_ids)
+    for variant_id in variant_ids:
+        bankroll = Decimal(str(cfg.get(variant_id, {}).get("bankroll", 0)))
+        cash = bankroll + exec_store.ledger_cash_delta(session, variant_id)
+        positions = [p for p in exec_store.positions_for_variant(session, variant_id)
+                    if p.open_contracts and p.avg_price is not None]
+        open_stake = sum((p.open_contracts * p.avg_price for p in positions), Decimal("0"))
+        n_open_orders = exec_store.count_variant_open_orders(session, variant_id, False)
+        exec_store.insert_equity_snapshot(
+            session, ts=now, variant_id=variant_id, cash=cash, open_stake=open_stake,
+            mtm_open=None, mtm_coverage=Decimal("0"), n_open_positions=len(positions),
+            n_open_orders=n_open_orders)
 
 
 def _status(results: list[StageResult], ctx_errors: list) -> str:

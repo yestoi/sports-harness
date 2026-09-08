@@ -223,9 +223,11 @@ def report_cmd(
     the week-3 confirmation report does.
     """
     configure_logging()
+    from harness import telemetry
     from harness.report.tables import weekly_tables
     from harness.report.weekly import (
         build_meta,
+        persist_report,
         read_selected,
         render_markdown,
         restrict_to_selection,
@@ -242,14 +244,24 @@ def report_cmd(
             log.error("%s", exc)
             raise typer.Exit(1) from exc
         meta = build_meta(session, s, year, week, confirmation=confirm is not None)
-    # The selection is computed from the unrestricted tables: a confirmation run reports on a
-    # frozen set, it never selects a new one.
-    if selected_out is not None:
-        write_selected(selected_out, selection_document(tables, meta))
-        log.info("selection written to %s", selected_out)
-    if confirm is not None:
-        tables = restrict_to_selection(tables, read_selected(confirm))
-    document = render_markdown(tables, meta)
+        # The selection is computed from the unrestricted tables: a confirmation run reports on
+        # a frozen set, it never selects a new one.
+        if selected_out is not None:
+            write_selected(selected_out, selection_document(tables, meta))
+            log.info("selection written to %s", selected_out)
+        if confirm is not None:
+            tables = restrict_to_selection(tables, read_selected(confirm))
+        document = render_markdown(tables, meta)
+        # Task 12b: report_runs/report_cells and the report_written event, in the same
+        # transaction as the markdown write -- `provisional = false`, since a scheduled
+        # `harness report` is the week's authoritative rendering (the hourly `report_wtd`
+        # settlement stage writes the provisional ones).
+        now = datetime.now(timezone.utc)
+        report_run_id = persist_report(session, tables, meta, year, week,
+                                       provisional=False, markdown=document)
+        telemetry.event(session, "report_written", f"weekly report {year}-W{week:02d} written",
+                        ref={"year": year, "week": week, "report_run_id": report_run_id}, ts=now)
+        session.commit()
     if out == "-":
         print(document, end="")
     else:
@@ -270,6 +282,7 @@ def gate_cmd() -> None:
     construction -- and every run stores a new report; no stored row is ever rewritten.
     """
     configure_logging()
+    from harness import telemetry
     from harness.report.gate import (
         evaluate_all,
         exec_variant_ids,
@@ -287,11 +300,39 @@ def gate_cmd() -> None:
             raise typer.Exit(1)
         rows = registered_variants(session)
         results = evaluate_all(session, now, variant_ids, s.gate_variant)
+        telemetry.event(session, "gate_evaluated", f"gate evaluated for {len(results)} variant(s)",
+                        ref={"criteria_hash": results[0].criteria_hash if results else None}, ts=now)
         session.commit()
         document = render_gate(results, {r.variant_id: r.name for r in rows},
                                {r.variant_id: r.tier for r in rows})
     print(document)
     log.info("gate evaluated at %s for %d variant(s)", now.isoformat(), len(results))
+
+
+#: `operator_events.kind` values `harness note` may write (design spec §3.2).
+NOTE_KINDS = ("amendment", "alias_pass", "verify_pass", "verify_fail", "drill", "note")
+
+
+@app.command("note")
+def note_cmd(
+    text: str = typer.Argument(..., help="Free text; sanitized and truncated to 200 chars (F50)"),
+    kind: str = typer.Option(..., "--kind", help=f"one of: {', '.join(NOTE_KINDS)}"),
+) -> None:
+    """One `operator_events` row for the operator or the autopilot (design spec §3.2): a
+    pre-registration amendment, an alias pass, a verify pass or fail, a drill, or a plain note.
+    Prints the new row's id."""
+    configure_logging()
+    from harness import telemetry
+
+    if kind not in NOTE_KINDS:
+        log.error("unknown --kind %r; must be one of: %s", kind, ", ".join(NOTE_KINDS))
+        raise typer.Exit(1)
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    with factory() as session:
+        event_id = telemetry.event(session, kind, text, ts=datetime.now(timezone.utc))
+        session.commit()
+    print(event_id)
 
 
 @app.command("serve")

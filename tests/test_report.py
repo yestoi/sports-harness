@@ -363,6 +363,24 @@ def test_out_dash_writes_stdout(cli_settings, db_session):
     assert "(t4)" in result.stdout
 
 
+def test_report_cmd_persists_the_report_and_writes_report_written_event(cli_settings, db_session):
+    """Task 12b: `harness report` writes `report_runs`/`report_cells` (`provisional = false`)
+    and a `report_written` operator_event, in the same transaction as the markdown."""
+    from harness.db.models import OperatorEvent, ReportCell, ReportRun
+
+    db_session.commit()
+    result = runner.invoke(app, ["report", "--week", str(WEEK), "--year", str(YEAR), "--out", "-"])
+    assert result.exit_code == 0, result.output
+
+    run = db_session.query(ReportRun).filter_by(year=YEAR, week=WEEK).one()
+    assert run.provisional is False
+    assert run.markdown == result.stdout
+    assert db_session.query(ReportCell).filter_by(report_run_id=run.id).count() > 0
+
+    event = db_session.query(OperatorEvent).filter_by(kind="report_written").one()
+    assert event.ref == {"year": YEAR, "week": WEEK, "report_run_id": run.id}
+
+
 def test_selected_json_round_trip_and_confirm_restricts(tmp_path, cli_settings, db_session):
     # `cli_settings` already points get_settings() at the test database; `env_settings` would
     # point it back at a fake host, so this test builds its tables from the same settings the

@@ -14,20 +14,24 @@ from pathlib import Path
 
 import pytest
 import yaml
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import sessionmaker
 from typer.testing import CliRunner
 
 from harness.config.settings import get_settings
 from harness.db.models import (
+    EquitySnapshot,
     Fill,
     Game,
     Intent,
     KillSwitch,
     Ledger,
+    MetricSample,
     Order,
     OrderEvent,
     OrderbookEvent,
+    OrderWatchSample,
+    OperatorEvent,
     Signal,
     VenueMarket,
     VenueTrade,
@@ -169,7 +173,7 @@ def fills_of(session, order_id=None, method=None):
 
 
 def test_executor_version_is_bumped_for_the_loop():
-    assert EXECUTOR_VERSION == "3.4"
+    assert EXECUTOR_VERSION == "3.5"
 
 
 # --- intake, placement, the book ------------------------------------------------------
@@ -1112,3 +1116,168 @@ def test_newest_intent_per_key_breaks_a_timestamp_tie_on_the_signal(env_settings
 
     assert stats.intents_new == 2
     assert orders_of(db_session)[0].prob == Decimal("0.3300")
+
+
+# --- Task 12b telemetry ----------------------------------------------------------------
+
+
+def test_exec_writes_metric_batch_every_metric_sample_s_not_every_loop(env_settings, db_session, world):
+    """`metric_sample_s = 60` over a 15 s loop period: one batch on the first loop, none of the
+    next three, then a second batch once 60 s of the executor's own clock has passed."""
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+
+    executor.step()
+    refresh(db_session)
+    first_count = db_session.query(MetricSample).filter_by(source="exec").count()
+    assert first_count > 0
+    names = {r.name for r in db_session.query(MetricSample).filter_by(source="exec").all()}
+    assert {"exec.loop_ms", "exec.open_orders", "exec.dirty_markets",
+           "exec.intents_considered", "exec.placed", "exec.filled_contracts"} <= names
+
+    for _ in range(3):
+        clock.advance(15)
+        executor.step()
+        refresh(db_session)
+    assert db_session.query(MetricSample).filter_by(source="exec").count() == first_count
+
+    clock.advance(15)  # the executor's own monotonic clock has now advanced 60s since loop 1
+    executor.step()
+    refresh(db_session)
+    assert db_session.query(MetricSample).filter_by(source="exec").count() > first_count
+
+
+def test_open_order_watch_sample_every_60s_and_terminal_row_on_cancel(env_settings, db_session, world):
+    """One periodic `order_watch_samples` row per open order every `watch_sample_s`, plus one
+    terminal row the loop it leaves the open set."""
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+
+    executor.step()  # places the order; it is not "working" until the next loop
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert db_session.query(OrderWatchSample).filter_by(order_id=order.id).count() == 0
+
+    def samples():
+        return (db_session.query(OrderWatchSample).filter_by(order_id=order.id)
+               .order_by(OrderWatchSample.ts).all())
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert len(samples()) == 1
+    assert samples()[0].terminal is None
+    assert samples()[0].queue_remaining is not None
+
+    clock.advance(15)  # 15s since the first watch sample: not due again yet
+    executor.step()
+    refresh(db_session)
+    assert len(samples()) == 1
+
+    db_session.add(KillSwitch(id=1, active=True, reason="test", set_at=clock.now))
+    db_session.commit()
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+
+    order = db_session.get(Order, order.id)
+    assert order.status == "cancelled"
+    rows = samples()
+    assert len(rows) == 2
+    assert rows[-1].terminal == "cancelled"
+
+
+def test_equity_snapshot_cash_equals_bankroll_plus_ledger_and_mtm_coverage(env_settings, db_session, world):
+    """Bankroll plus the ledger's cash movement, with a mark-to-market that only counts the
+    contracts whose ticker has a live book right now (design spec §3.4)."""
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    clock = Clock(NOW)
+    # A short equity_sample_s keeps the test from having to run the clock far enough forward
+    # that the book/tape look stale to the executor's own staleness rules.
+    settings = env_settings.model_copy(update={"equity_sample_s": 5})
+    executor = make_executor(settings, db_session, clock)
+
+    executor.step()  # places the order; equity_sample_s's first call is always due, cash=3000
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+
+    # A print through the resting price fills the order, so there's a position to mark.
+    _print(db_session, T2, clock.now + timedelta(seconds=5), "0.35", "50", trade_id="fill1")
+    db_session.commit()
+    clock.advance(15)  # >= equity_sample_s since the first sample: due again
+    executor.step()
+    refresh(db_session)
+
+    snap = (db_session.query(EquitySnapshot).filter_by(variant_id=order.variant_id)
+           .order_by(EquitySnapshot.ts.desc()).first())
+    assert snap is not None
+
+    ledger_sum = db_session.query(func.sum(Ledger.cash_delta)).filter_by(
+        variant_id=order.variant_id, replay=False).scalar() or Decimal("0")
+    assert ledger_sum < 0  # the fill actually moved cash, or this test proves nothing
+    assert snap.cash == Decimal("3000") + ledger_sum
+    assert snap.mtm_coverage == Decimal("1.0000")  # T2's book is live at sample time
+    assert snap.n_open_orders >= 0
+
+
+def test_replay_writes_no_telemetry(env_settings, db_session, world):
+    """A replay executor writes no metric samples, operator events, watch samples or equity
+    snapshots -- ever (ruling 1)."""
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock, replay=True)
+
+    for _ in range(5):
+        executor.step()
+        clock.advance(60)  # spans every sampler's period at least once
+    refresh(db_session)
+
+    assert db_session.query(MetricSample).count() == 0
+    assert db_session.query(OperatorEvent).count() == 0
+    assert db_session.query(OrderWatchSample).count() == 0
+    assert db_session.query(EquitySnapshot).count() == 0
+
+
+def test_exec_startup_deploy_and_config_change_events(env_settings, db_session, world):
+    """A `deploy` event once the heartbeat's executor_version disagrees with this build's, and
+    a `config_change` event once a variant's newest open order's config_hash disagrees with
+    what this process would place next -- both checked once, at startup."""
+    from harness.db.models import ExecHeartbeat
+
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.add(ExecHeartbeat(id=1, executor_version="0.1", loops=0, open_orders=0))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+
+    deploy_events = db_session.query(OperatorEvent).filter_by(kind="deploy").all()
+    assert len(deploy_events) == 1
+    assert deploy_events[0].ref == {"from": "0.1", "to": EXECUTOR_VERSION}
+
+    # The startup check runs once per Executor instance, not once per loop.
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert db_session.query(OperatorEvent).filter_by(kind="deploy").count() == 1
+
+    order = orders_of(db_session)[0]
+    order.config_hash = "not-the-real-hash"
+    db_session.commit()
+
+    clock2 = Clock(NOW + timedelta(seconds=1))
+    make_executor(env_settings, db_session, clock2).step()
+    refresh(db_session)
+
+    config_events = db_session.query(OperatorEvent).filter_by(kind="config_change").all()
+    assert len(config_events) == 1
+    assert config_events[0].ref["variant_id"] == order.variant_id
+    assert config_events[0].ref["from"] == "not-the-real-hash"

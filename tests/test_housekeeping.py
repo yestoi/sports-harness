@@ -9,22 +9,27 @@ and `pg_total_relation_size` are properties of the actual database, not of the P
 them.
 """
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import sessionmaker
 
-from harness.db.models import JobRun
+from harness.db.models import CheckResult, JobRun, MetricSample
 from harness.ops.housekeeping import (
     DUE_HOUR_UTC,
     JOB_STATE_KEY,
     ceiling_projection,
     housekeeping,
     housekeeping_stage,
+    match_rates,
+    record_housekeeping_metrics,
+    _host_disk_free_gb,
+    _host_mem_available_mb,
     _table_sizes_gb,
 )
 from harness.recorder.store import get_source_state, set_source_state
-from harness.settlement.job import Settler, load_stages
+from harness.settlement.job import Settler, load_stages, new_ctx, use_ctx
 
 NOW = datetime(2026, 9, 12, 9, 30, tzinfo=timezone.utc)  # at/after 09:00 UTC: due today
 
@@ -177,3 +182,52 @@ def test_table_sizes_roll_up_partition_children_to_the_logical_table_name(db_ses
 
     partition_child = re.compile(r"_y\d{4}w\d{2}$")
     assert not any(partition_child.search(name) for name in sizes)
+
+
+# --- Task 12b telemetry ----------------------------------------------------------------
+
+
+def test_housekeeping_host_metrics_skip_when_paths_absent(db_session):
+    """Ruling 3: `host.disk_free_gb` (no `/pgdata-ro` mount) and `host.mem_available_mb` (no
+    `/proc/meminfo`, i.e. every Mac and every test) are skipped, not errors -- the rest of the
+    batch (db.*, match.*) still writes."""
+    mount, note = _host_disk_free_gb("/no/such/mount")
+    assert mount is None and note
+
+    mem, mem_note = _host_mem_available_mb()
+    # This suite runs on the Mac (and any CI without /proc/meminfo); on real Linux this would
+    # be populated, so only assert the "absent" branch when it is actually absent.
+    if not os.path.exists("/proc/meminfo"):
+        assert mem is None and mem_note
+
+    counts = housekeeping(db_session, NOW, 2000)
+    match_by_sport = match_rates(db_session, NOW)
+    n = record_housekeeping_metrics(db_session, NOW, counts, match_by_sport, "/no/such/mount")
+    db_session.flush()
+
+    names = {r.name for r in db_session.query(MetricSample).filter_by(source="housekeeping").all()}
+    assert "db.size_gb" in names
+    assert "host.disk_free_gb" not in names  # skipped: no mount
+    if not os.path.exists("/proc/meminfo"):
+        assert "host.mem_available_mb" not in names
+    assert n == db_session.query(MetricSample).filter_by(source="housekeeping").count()
+
+
+def test_housekeeping_stage_writes_metrics_and_check_results(db_session, env_settings):
+    """The stage writes its `metric_samples` batch and the Layer 2b `check_results` registry
+    (one row per check) when it actually runs, both best-effort so neither can fail the stage
+    the way a raise from `run_checks` would (ruling 1)."""
+    job = JobRun(job="settle", started_at=NOW, status="running", notes={})
+    db_session.add(job)
+    db_session.commit()
+
+    ctx = new_ctx(settings=env_settings)
+    ctx["job_run_id"] = job.id
+    with use_ctx(ctx):
+        result = housekeeping_stage(db_session, NOW, budget=None)
+    db_session.commit()
+
+    assert result.counts.get("skipped") is not True
+    assert db_session.query(MetricSample).filter_by(source="housekeeping").count() > 0
+    check_rows = db_session.query(CheckResult).filter_by(job_run_id=job.id).all()
+    assert len(check_rows) == 8  # every registered Layer 2b check

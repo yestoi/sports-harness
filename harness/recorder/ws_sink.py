@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import sessionmaker
 
+from harness import telemetry
 from harness.db.models import OrderbookEvent, VenueTrade
 from harness.normalize.kalshi import taker_side_of, truncate_ms
 
@@ -50,6 +51,13 @@ class WsSink:
         self.gap_sids: set[int] = set()
         self.errors = 0
         self.missing_side = 0
+        # Task 12b: per-minute counters `WsRecorder.maybe_write_metrics` batches and resets;
+        # `_last_event_ts` is the newest tape row this sink has actually written, for
+        # `ws.sink_lag_s`.
+        self._events_since = 0
+        self._trades_since = 0
+        self._gaps_since = 0
+        self._last_event_ts: datetime | None = None
 
     def _maybe_commit(self, force: bool = False) -> None:
         if force or self._pending >= self._commit_every or time.monotonic() - self._last_commit >= self._interval:
@@ -88,6 +96,7 @@ class WsSink:
             self._pending += 1
             self._pending_sids.add(sid)
             self.gap_sids.add(sid)
+            self._gaps_since += 1
         self._last_seq[sid] = seq
 
     def handle(self, msg: dict, received_at: datetime) -> str | None:
@@ -121,6 +130,10 @@ class WsSink:
                     # psycopg3 reports rowcount -1 for ON CONFLICT DO NOTHING; count returned rows instead (Task 6 ruling)
                     landed = len(self._session.execute(stmt).fetchall())
                     self._pending += landed
+                    if landed:
+                        self._events_since += landed
+                        self._trades_since += landed
+                        self._last_event_ts = truncate_ms(_ts(body.get("ts_ms"), received_at))
                     if landed and sid is not None:
                         self._pending_sids.add(sid)
             elif kind == "orderbook_snapshot":
@@ -138,6 +151,8 @@ class WsSink:
                 self._session.add(OrderbookEvent(ticker=ticker, ts=received_at, sid=sid or 0, seq=seq or 0, kind="snapshot",
                                                  raw={**body, "recorder_offset_ms": self.offset_ms}))
                 self._pending += 1
+                self._events_since += 1
+                self._last_event_ts = received_at
                 if sid is not None:
                     self._pending_sids.add(sid)
             elif kind == "orderbook_delta":
@@ -147,6 +162,8 @@ class WsSink:
                 self._session.add(OrderbookEvent(ticker=ticker, ts=ts, sid=sid or 0, seq=seq or 0, kind="delta", side=body.get("side"),
                                                  price=_dec(body.get("price_dollars")), delta=_dec(body.get("delta_fp")), raw=body))
                 self._pending += 1
+                self._events_since += 1
+                self._last_event_ts = ts
                 if sid is not None:
                     self._pending_sids.add(sid)
             else:
@@ -187,6 +204,7 @@ class WsSink:
                     marked_seq = (seq or 0) if marked == failing else self._last_seq.get(marked, 0)
                     self._session.add(OrderbookEvent(ticker="", ts=received_at, sid=marked, seq=marked_seq,
                                                      kind="gap", raw=dict(raw)))
+                    self._gaps_since += 1
                 self._session.commit()
             except Exception:
                 # Whatever broke the message may be the database itself. Losing the mark is bad;
@@ -206,3 +224,31 @@ class WsSink:
     def close(self) -> None:
         self._maybe_commit(force=True)
         self._session.close()
+
+    # --- Task 12b telemetry -------------------------------------------------------------
+
+    def drain_counts(self) -> dict:
+        """Message counts since the last drain, reset to zero. `WsRecorder` calls this once a
+        minute to batch `ws.events_per_min`/`ws.trades_per_min`/`ws.gaps` (design spec §3.1)."""
+        counts = {"events": self._events_since, "trades": self._trades_since,
+                 "gaps": self._gaps_since}
+        self._events_since = self._trades_since = self._gaps_since = 0
+        return counts
+
+    def sink_lag_s(self, now: datetime) -> float | None:
+        """Seconds between `now` and the newest tape row this sink has actually written, or
+        None before it has written one."""
+        return None if self._last_event_ts is None else (now - self._last_event_ts).total_seconds()
+
+    def write_metrics(self, ts: datetime, samples) -> None:
+        """`ws.*` metric_samples through this sink's own session -- the brief's "through the
+        sink's session", since only the sink holds a database session at all."""
+        telemetry.record_many(self._session, "ws", samples, ts=ts)
+        self._maybe_commit(force=True)
+
+    def write_event(self, kind: str, summary: str, ref: dict | None = None,
+                    ts: datetime | None = None) -> None:
+        """One `operator_events` row through this sink's own session (`ws_connect`,
+        `ws_disconnect`)."""
+        telemetry.event(self._session, kind, summary, ref=ref, ts=ts)
+        self._maybe_commit(force=True)

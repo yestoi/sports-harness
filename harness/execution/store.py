@@ -25,7 +25,7 @@ from sqlalchemy import text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from harness.db.models import Fill, Intent, Ledger, Order, OrderEvent
+from harness.db.models import EquitySnapshot, Fill, Intent, Ledger, Order, OrderEvent, OrderWatchSample
 from harness.execution.fills import TapeDelta, TapePrint
 from harness.execution.plan import FillView, IntentView, PositionView
 from harness.strategy.variants import with_defaults
@@ -467,3 +467,75 @@ def read_heartbeat(session: Session):
     return session.execute(text(
         "select last_loop_at, extract(epoch from (now() - last_loop_at)) as age_s, loops, "
         "last_error from exec_heartbeat where id = 1")).first()
+
+
+# --- Task 12b telemetry -----------------------------------------------------------------
+
+
+def read_heartbeat_executor_version(session: Session) -> str | None:
+    """The `EXECUTOR_VERSION` the last process to write the heartbeat ran, or None before the
+    first heartbeat ever lands."""
+    return session.execute(text(
+        "select executor_version from exec_heartbeat where id = 1")).scalar()
+
+
+def newest_open_order_config_hash(session: Session, variant_id: str) -> str | None:
+    """The `config_hash` of `variant_id`'s newest currently-open non-replay order, or None
+    when it has none (nothing to compare a startup config change against)."""
+    return session.execute(text(
+        "select config_hash from orders where variant_id = :v and replay = false "
+        "and status = any(:st) order by placed_at desc limit 1"),
+        {"v": variant_id, "st": list(OPEN_STATUSES)}).scalar()
+
+
+_ORDER_STATUS_SNAPSHOT = text(
+    "select id, status, queue_remaining, nw_queue_remaining from orders where id = any(:ids)")
+
+
+def order_status_snapshot(session: Session, order_ids) -> dict[int, tuple]:
+    """Each order's current `(status, queue_remaining, nw_queue_remaining)`, read fresh after
+    this step's fills and actions have already been applied in the same transaction."""
+    ids = list(order_ids)
+    if not ids:
+        return {}
+    rows = session.execute(_ORDER_STATUS_SNAPSHOT, {"ids": ids}).all()
+    return {r.id: (r.status, r.queue_remaining, r.nw_queue_remaining) for r in rows}
+
+
+def insert_order_watch_samples(session: Session, rows: list[dict]) -> int:
+    """One `order_watch_samples` row per dict, as one `INSERT ... VALUES` batch. `(order_id,
+    ts)` is the primary key, so a retried step cannot double-sample the same order the same
+    instant."""
+    if not rows:
+        return 0
+    session.execute(insert(OrderWatchSample).values(rows).on_conflict_do_nothing())
+    return len(rows)
+
+
+def ledger_cash_delta(session: Session, variant_id: str) -> Decimal:
+    """One variant's all-time non-replay cash movement -- the whole of `equity_snapshots.cash`
+    beyond its starting bankroll."""
+    return session.execute(text(
+        "select coalesce(sum(cash_delta), 0) from ledger where variant_id = :v and replay = false"),
+        {"v": variant_id}).scalar() or Decimal("0")
+
+
+_POSITIONS_FOR_VARIANT = text(
+    "select ticker, side, open_contracts, avg_price from positions where variant_id = :v")
+
+
+def positions_for_variant(session: Session, variant_id: str):
+    """One variant's open positions, from the `positions` view (`harness/db/schema.py`)."""
+    return session.execute(_POSITIONS_FOR_VARIANT, {"v": variant_id}).all()
+
+
+def count_variant_open_orders(session: Session, variant_id: str, replay: bool) -> int:
+    return int(session.execute(text(
+        "select count(*) from orders where variant_id = :v and status = any(:st) and replay = :r"),
+        {"v": variant_id, "st": list(OPEN_STATUSES), "r": replay}).scalar() or 0)
+
+
+def insert_equity_snapshot(session: Session, **values) -> None:
+    """One `equity_snapshots` row; `(ts, variant_id)` is the primary key, so a retried step
+    cannot double-sample the same variant the same instant."""
+    session.execute(insert(EquitySnapshot).values(**values).on_conflict_do_nothing())

@@ -29,6 +29,11 @@ def _postgres_service() -> dict:
     return doc["services"]["postgres"]
 
 
+def _service(name: str) -> dict:
+    doc = yaml.safe_load(COMPOSE.read_text())
+    return doc["services"][name]
+
+
 def test_postgres_command_starts_with_postgres():
     command = _postgres_service()["command"]
     assert command[0] == "postgres"
@@ -76,3 +81,34 @@ def test_postgres_environment_unchanged():
         "POSTGRES_PASSWORD": "harness",
         "POSTGRES_DB": "harness",
     }
+
+
+# --- Task 12b: the read-only Postgres data mount for host.disk_free_gb -------------------
+
+
+def test_compose_app_run_pgdata_bind_is_read_only():
+    volumes = _service("app-run")["volumes"]
+    pgdata_binds = [v for v in volumes if v.startswith("./pgdata:")]
+    assert pgdata_binds == ["./pgdata:/pgdata-ro:ro"]
+
+
+def test_compose_app_run_keeps_its_other_bind_and_env():
+    service = _service("app-run")
+    assert "./secrets/odds_api_key:/run/secrets/odds_api_key:ro" in service["volumes"]
+    assert service["environment"] == {"ODDS_API_KEY_FILE": "/run/secrets/odds_api_key"}
+
+
+def test_compose_app_exec_has_no_volumes_and_no_kalshi_env():
+    service = _service("app-exec")
+    assert "volumes" not in service
+    env = service.get("environment") or {}
+    assert not any(k.startswith("KALSHI_") for k in env)
+
+
+def test_compose_no_other_service_mounts_pgdata_ro():
+    doc = yaml.safe_load(COMPOSE.read_text())
+    for name, service in doc["services"].items():
+        if name == "app-run":
+            continue
+        volumes = service.get("volumes") or []
+        assert not any("/pgdata-ro" in v for v in volumes), name

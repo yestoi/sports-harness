@@ -4,9 +4,10 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Callable
 
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from harness import telemetry
 from harness.config.settings import Settings
 from harness.db.models import RawResponse, Run
 from harness.db.schema import ensure_partitions
@@ -29,6 +30,64 @@ TRADES_MAX_PAGES = 20  # 20,000 trades per window before we stop paginating and 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# --- Task 12b telemetry -----------------------------------------------------------------
+
+_NEWEST_RUN_BUILD_SHA = text("select build_sha from runs order by id desc limit 1")
+
+_FETCHED_BY_SOURCE = text(
+    "select source, count(*) from raw_responses where run_id = :run_id group by source")
+
+_FAIR_VALUES_BY_FEED_KIND = text("""
+    select coalesce(feed_kind, 'none') as feed_kind, count(*),
+           percentile_cont(0.5) within group (order by staleness_s)
+    from fair_values where run_id = :run_id
+    group by coalesce(feed_kind, 'none')
+""")
+
+_REJECTED_BY_VARIANT_REASON = text("""
+    select v.name, coalesce(s.rejection_reason, 'unknown'), count(*)
+    from signals s join strategy_variants v on v.variant_id = s.variant_id
+    where s.run_id = :run_id and s.decision = 'rejected'
+    group by v.name, coalesce(s.rejection_reason, 'unknown')
+""")
+
+
+def _pricing_samples(session: Session, run_id: int, pricing: dict) -> list[tuple[str, object, dict]]:
+    """`pricing.*` metric_samples for one tick (design spec §3.1), read back from what this
+    run actually wrote rather than threaded through `price_and_signal`'s return value: that
+    dict already carries candidate/rejected *counts*, not the reason breakdown the dashboard
+    wants, and the fair-value feed_kind split is a property of the `fair_values` rows
+    themselves.
+    """
+    samples: list[tuple[str, object, dict]] = []
+    for feed_kind, count, median_staleness in session.execute(
+            _FAIR_VALUES_BY_FEED_KIND, {"run_id": run_id}).all():
+        label = {"feed_kind": feed_kind}
+        samples.append(("pricing.fair_values", count, label))
+        if median_staleness is not None:
+            samples.append(("pricing.staleness_median_s", float(median_staleness), label))
+    for variant, counts in (pricing or {}).get("signals", {}).items():
+        samples.append(("pricing.candidates", counts.get("candidate", 0), {"variant": variant}))
+    for variant, reason, count in session.execute(
+            _REJECTED_BY_VARIANT_REASON, {"run_id": run_id}).all():
+        samples.append(("pricing.rejected", count, {"variant": variant, "reason": reason}))
+    return samples
+
+
+def _recorder_samples(session: Session, run_id: int, tick_ms: int,
+                      ctx: dict) -> list[tuple[str, object, dict]]:
+    """`recorder.*` metric_samples for one tick."""
+    samples: list[tuple[str, object, dict]] = [("recorder.tick_ms", tick_ms, {})]
+    for source, count in session.execute(_FETCHED_BY_SOURCE, {"run_id": run_id}).all():
+        samples.append(("recorder.fetched", count, {"source": source}))
+    samples.append(("recorder.errors", len(ctx["errors"]), {}))
+    if ctx.get("remaining") is not None:
+        samples.append(("recorder.credits_remaining", ctx["remaining"], {}))
+    samples.append(("recorder.trade_gaps", len(ctx["trade_gaps"]), {}))
+    samples.extend(_pricing_samples(session, run_id, ctx.get("pricing") or {}))
+    return samples
 
 
 class _Budget:
@@ -55,6 +114,8 @@ class Recorder:
         self._last_good: dict[tuple[str, str], dict | list] = {}
         # A forced tick (deploy verification) ignores every per-source interval for that one tick.
         self._force = False
+        # Task 12b: the build_sha deploy check runs once per process, at the first tick.
+        self._startup_checked = False
 
     # ---- helpers -------------------------------------------------------------------
     def _latest_body_from_db(self, session: Session, source: str, endpoint: str) -> dict | list | None:
@@ -349,12 +410,33 @@ class Recorder:
     def maybe_tick(self, force: bool = False) -> Run:
         self._force = force
         now = self.clock()
+        started_mono = self.monotonic()
         budget = _Budget(self.s.tick_budget_s, self.monotonic)
         ctx: dict = {"n": 0, "credits": 0, "remaining": None, "errors": [], "warnings": [], "fetched": False,
                      "skipped_trades": 0, "skipped_ladders": 0, "skipped_alternates": 0, "trade_gaps": []}
         with self.session_factory() as session:
             ensure_partitions(session, now)
+            # Task 12b: read the newest run's build_sha before this run's own row exists, so
+            # the comparison below is against the *previous* deploy, not this one.
+            prior_sha = (session.execute(_NEWEST_RUN_BUILD_SHA).scalar()
+                        if not self._startup_checked else None)
             run = store.start_run(session, now)
+            run.build_sha = self.s.build_sha
+            # Committed on its own, ahead of everything telemetry can fail on below (D11's
+            # backstop: every run row must carry its build_sha whether or not the deploy event
+            # or the end-of-tick metric batch succeeds).
+            session.commit()
+            if not self._startup_checked:
+                self._startup_checked = True
+                if prior_sha is not None and prior_sha != self.s.build_sha:
+                    try:
+                        telemetry.event(
+                            session, "deploy", f"build_sha {prior_sha} -> {self.s.build_sha}",
+                            ref={"from": prior_sha, "to": self.s.build_sha}, ts=now)
+                        session.commit()
+                    except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a tick
+                        log.exception("recorder deploy event failed")
+                        session.rollback()
             summaries: list[MarketSummary] = []
             try:
                 kickoffs = self._espn(session, run, now, ctx)
@@ -407,6 +489,13 @@ class Recorder:
                 status = "degraded"
             else:
                 status = "ok" if ctx["fetched"] else "skipped"
+            try:
+                tick_ms = int((self.monotonic() - started_mono) * 1000)
+                telemetry.record_many(session, "recorder",
+                                      _recorder_samples(session, run.id, tick_ms, ctx), ts=now)
+            except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a tick
+                log.exception("recorder metrics failed")
+                session.rollback()
             store.finish_run(session, run, status, error=None if not ctx["errors"] else "see notes",
                              n_requests=ctx["n"], credits_used=ctx["credits"], odds_remaining=ctx["remaining"],
                              budget_exhausted=exhausted,

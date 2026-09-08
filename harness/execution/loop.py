@@ -40,9 +40,17 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from harness import execution
+from harness import execution, telemetry
 from harness.execution import store
-from harness.execution.book import ZERO, BookState, advance_book, book_age_s, book_at, load_book
+from harness.execution.book import (
+    ZERO,
+    BookState,
+    advance_book,
+    book_age_s,
+    book_at,
+    load_book,
+    side_p,
+)
 from harness.execution.fills import (
     CROSS,
     PaperOrder,
@@ -94,6 +102,32 @@ class ExecStats:
 
 
 @dataclass
+class _MetricsAcc:
+    """The `exec.*` counters `metric_sample_s` batches (design spec §3.1): totals since the
+    previous sample, reset the moment a batch is written. Never touched by a replay executor
+    (ruling: `test_replay_writes_no_telemetry`)."""
+
+    intents_considered: int = 0
+    placed: int = 0
+    cancelled: dict = None
+    skipped: dict = None
+    filled_contracts: Decimal = ZERO
+    loops_skipped: int = 0
+
+    def __post_init__(self) -> None:
+        self.cancelled = self.cancelled or {}
+        self.skipped = self.skipped or {}
+
+    def reset(self) -> None:
+        self.intents_considered = 0
+        self.placed = 0
+        self.cancelled = {}
+        self.skipped = {}
+        self.filled_contracts = ZERO
+        self.loops_skipped = 0
+
+
+@dataclass
 class _TrackResult:
     """One track's outcome for one order: the state to persist and what was actually written."""
 
@@ -134,6 +168,14 @@ class Executor:
         self._dirty_tickers: set[str] = set()
         self._durations: deque[int] = deque(maxlen=DURATION_WINDOW)
         self._last_mono: float | None = None
+        # Task 12b telemetry: samplers keyed on this executor's own injected monotonic clock
+        # (so a test's fake clock drives them exactly like it drives the loop period), the
+        # counters they batch, and the once-per-process startup check.
+        self._metric_sampler = telemetry.Sampler(settings.metric_sample_s, clock=self._monotonic)
+        self._watch_sampler = telemetry.Sampler(settings.watch_sample_s, clock=self._monotonic)
+        self._equity_sampler = telemetry.Sampler(settings.equity_sample_s, clock=self._monotonic)
+        self._metrics_acc = _MetricsAcc()
+        self._startup_checked = False
 
     # --- the step ---------------------------------------------------------------------
 
@@ -162,7 +204,7 @@ class Executor:
         session = Session(bind=conn)
         try:
             try:
-                self._body(session, now, stats, heartbeat)
+                self._body(session, now, stats, heartbeat, skipped_loops)
                 # A step that survived one order's failure still committed, but a green
                 # heartbeat over a hundred swallowed failures would be a lie.
                 error = heartbeat["last_error"]
@@ -173,10 +215,16 @@ class Executor:
                 log.exception("executor step failed")
             stats.loop_ms = int((self._monotonic() - started) * 1000)
             self._durations.append(stats.loop_ms)
+            open_orders_count = store.count_open_orders(session, self.replay)
+            if not self.replay:
+                try:
+                    self._write_metric_batch(session, now, stats, heartbeat, open_orders_count)
+                except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
+                    log.exception("exec metric batch failed")
             try:
                 store.write_heartbeat(
                     session, last_loop_at=now,
-                    open_orders=store.count_open_orders(session, self.replay),
+                    open_orders=open_orders_count,
                     last_error=error, last_loop_ms=stats.loop_ms, p95_loop_ms=self._p95(),
                     loops_skipped=skipped_loops,
                     book_dirty_markets=heartbeat["book_dirty_markets"],
@@ -193,9 +241,46 @@ class Executor:
             session.close()
         return stats
 
-    def _body(self, session: Session, now: datetime, stats: ExecStats, heartbeat: dict) -> None:
+    def _write_metric_batch(self, session: Session, now: datetime, stats: ExecStats,
+                            heartbeat: dict, open_orders_count: int) -> None:
+        """`exec.*` metric_samples, once every `metric_sample_s` (Sampler("metrics")), never
+        for a replay executor (the caller already guards that)."""
+        if not self._metric_sampler.due("metrics"):
+            return
+        acc = self._metrics_acc
+        samples: list[tuple[str, object, dict]] = [
+            ("exec.loop_ms", stats.loop_ms, {}),
+            ("exec.loops_skipped", acc.loops_skipped, {}),
+            ("exec.open_orders", open_orders_count, {}),
+            ("exec.dirty_markets", heartbeat["book_dirty_markets"], {}),
+            ("exec.intents_considered", acc.intents_considered, {}),
+            ("exec.placed", acc.placed, {}),
+            ("exec.filled_contracts", acc.filled_contracts, {}),
+        ]
+        p95 = self._p95()
+        if p95 is not None:
+            samples.append(("exec.p95_loop_ms", p95, {}))
+        ws_last = heartbeat["ws_last_event_at"]
+        if ws_last is not None:
+            samples.append(("exec.ws_event_age_s", (now - ws_last).total_seconds(), {}))
+        for reason, count in acc.cancelled.items():
+            samples.append(("exec.cancelled", count, {"reason": reason}))
+        for reason, count in acc.skipped.items():
+            samples.append(("exec.skipped", count, {"reason": reason}))
+        telemetry.record_many(session, "exec", samples, ts=now)
+        acc.reset()
+
+    def _body(self, session: Session, now: datetime, stats: ExecStats, heartbeat: dict,
+             skipped_loops: int = 0) -> None:
         s = self.exec_settings
+        if not self.replay:
+            self._metrics_acc.loops_skipped += skipped_loops
         variant_ids = store.resolve_variants(session, self._variant_names)
+        if not self.replay:
+            try:
+                self._check_startup_events(session, variant_ids, now)
+            except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
+                log.exception("exec startup telemetry failed")
         lower = now - timedelta(seconds=s.intent_ttl_s)
 
         # 2. Intake.
@@ -229,6 +314,8 @@ class Executor:
                                               | {o.variant_id for o in open_orders}))
         intents = self._with_config(intents, cfg, "intent")
         open_orders = self._with_config(open_orders, cfg, "order")
+        if not self.replay:
+            self._metrics_acc.intents_considered += len(intents)
         positions = store.load_positions(session, self.replay)
         midnight = store.local_midnight(now, ZoneInfo(self.settings.tz_local))
         fills_today = store.load_fills_today(session, self.replay, midnight)
@@ -237,6 +324,17 @@ class Executor:
         actions = plan_actions(intents, open_orders, markets, state_by_variant, cfg,
                                store.kill_active(session), now, s)
         self._apply(session, actions, intents, extras, markets, rows, now, stats, heartbeat)
+
+        if not self.replay:
+            try:
+                self._write_order_watch_samples(session, working, markets, now)
+            except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
+                log.exception("order watch samples failed")
+            try:
+                if self._equity_sampler.due("equity"):
+                    self._write_equity_snapshots(session, variant_ids, now)
+            except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
+                log.exception("equity snapshots failed")
 
     # --- books ------------------------------------------------------------------------
 
@@ -462,6 +560,8 @@ class Executor:
             inserted += 1
             filled += fill.contracts
             if ledger:
+                if not self.replay:
+                    self._metrics_acc.filled_contracts += fill.contracts
                 cash = -(fill.prob * fill.contracts + fill.fee)
                 store.insert_ledger_fill(
                     session, ts=fill.filled_at, variant_id=row.variant_id, kind="fill",
@@ -509,6 +609,9 @@ class Executor:
         elif isinstance(action, Cancel):
             if store.cancel_order(session, action.order_id, action.reason, now):
                 stats.cancelled += 1
+                if not self.replay:
+                    acc = self._metrics_acc.cancelled
+                    acc[action.reason] = acc.get(action.reason, 0) + 1
             store.insert_event(session, order_id=action.order_id, ts=now, kind="cancel",
                                reason=action.reason, replay=self.replay)
         elif isinstance(action, Expire):
@@ -527,6 +630,9 @@ class Executor:
                                          replay=self.replay)
             if written is not None:
                 stats.skipped += 1
+                if not self.replay:
+                    acc = self._metrics_acc.skipped
+                    acc[action.reason] = acc.get(action.reason, 0) + 1
 
     def _place(self, session: Session, action: Place, by_intent, extras, markets, rows,
                now: datetime, stats: ExecStats) -> None:
@@ -574,6 +680,8 @@ class Executor:
         if order_id is None:
             return
         stats.placed += 1
+        if not self.replay:
+            self._metrics_acc.placed += 1
         store.insert_event(session, order_id=order_id, intent_id=action.intent_id, ts=now,
                            kind="place", prob=action.prob, contracts=action.contracts,
                            fair_p_at_event=market.fair_p, replay=self.replay)
@@ -581,6 +689,99 @@ class Executor:
             # The order rests, but the record says the queue behind it was unknowable (R10).
             store.insert_event(session, intent_id=action.intent_id, ts=now, kind="skipped",
                                reason="no_book", replay=self.replay)
+
+    # --- Task 12b telemetry -------------------------------------------------------------
+
+    def _check_startup_events(self, session: Session, variant_ids: list[str],
+                              now: datetime) -> None:
+        """Once per process (`_startup_checked`): a `deploy` event when this build's
+        `EXECUTOR_VERSION` differs from the heartbeat's, and one `config_change` event per
+        variant whose current config hash differs from its own newest open order's."""
+        if self._startup_checked:
+            return
+        self._startup_checked = True
+        heartbeat_version = store.read_heartbeat_executor_version(session)
+        if heartbeat_version is not None and heartbeat_version != execution.EXECUTOR_VERSION:
+            telemetry.event(
+                session, "deploy",
+                f"executor_version {heartbeat_version} -> {execution.EXECUTOR_VERSION}",
+                ref={"from": heartbeat_version, "to": execution.EXECUTOR_VERSION}, ts=now)
+        for variant_id in variant_ids:
+            newest_hash = store.newest_open_order_config_hash(session, variant_id)
+            if newest_hash is None:
+                continue
+            current_hash = config_hash(variant_id, self.exec_settings)
+            if current_hash != newest_hash:
+                telemetry.event(
+                    session, "config_change", f"{variant_id} config hash changed",
+                    ref={"variant_id": variant_id, "from": newest_hash, "to": current_hash},
+                    ts=now)
+
+    def _write_order_watch_samples(self, session: Session, working, markets, now: datetime) -> None:
+        """One `order_watch_samples` row per open order due for its periodic sample, plus one
+        terminal row for every order that left the open set this step (design spec §3.3)."""
+        prior_open = {row.id: row for row in working if row.status in store.OPEN_STATUSES}
+        if not prior_open:
+            return
+        current = store.order_status_snapshot(session, prior_open.keys())
+        rows_out: list[dict] = []
+        for order_id, row in prior_open.items():
+            snap = current.get(order_id)
+            if snap is None:
+                continue
+            status, queue_remaining, nw_queue_remaining = snap
+            terminal = status if status in ("filled", "cancelled", "expired") else None
+            if terminal is None:
+                if status not in store.OPEN_STATUSES or not self._watch_sampler.due(order_id):
+                    continue
+            book = self.books.get(row.ticker)
+            market = markets.get(row.venue_market_id)
+            rows_out.append(dict(
+                order_id=order_id, ts=now, queue_remaining=queue_remaining,
+                nw_queue_remaining=nw_queue_remaining,
+                best_bid=None if book is None else book.best_bid(row.side),
+                best_ask=None if book is None else book.best_ask(row.side),
+                fair_p=None if market is None else market.fair_p,
+                book_dirty=True if book is None else book.dirty, terminal=terminal))
+        if rows_out:
+            store.insert_order_watch_samples(session, rows_out)
+
+    def _write_equity_snapshots(self, session: Session, variant_ids: list[str],
+                                now: datetime) -> None:
+        """One `equity_snapshots` row per exec variant, every `equity_sample_s` (design spec
+        §3.4): cash off the ledger, open exposure and a mark-to-market that only counts
+        contracts whose ticker has a live book right now."""
+        if not variant_ids:
+            return
+        cfg = store.variant_configs(session, variant_ids)
+        for variant_id in variant_ids:
+            bankroll = Decimal(str(cfg.get(variant_id, {}).get("bankroll", 0)))
+            cash = bankroll + store.ledger_cash_delta(session, variant_id)
+            # A fully-closed (variant, ticker, side) still rows out of the `positions` view
+            # with open_contracts = 0 and avg_price NULL (its `nullif` divides 0 by 0); neither
+            # an open position nor something a book can mark, so it drops out here.
+            positions = [p for p in store.positions_for_variant(session, variant_id)
+                        if p.open_contracts and p.avg_price is not None]
+            open_stake = sum((p.open_contracts * p.avg_price for p in positions), ZERO)
+            total_contracts = sum((p.open_contracts for p in positions), ZERO)
+            covered_contracts = ZERO
+            mtm_open = ZERO
+            any_book = False
+            for p in positions:
+                book = self.books.get(p.ticker)
+                mid = None if book is None else book.mid()
+                if mid is None:
+                    continue
+                any_book = True
+                covered_contracts += p.open_contracts
+                mtm_open += p.open_contracts * side_p(mid, p.side)
+            mtm_coverage = (covered_contracts / total_contracts) if total_contracts > ZERO \
+                else Decimal("1")
+            n_open_orders = store.count_variant_open_orders(session, variant_id, self.replay)
+            store.insert_equity_snapshot(
+                session, ts=now, variant_id=variant_id, cash=cash, open_stake=open_stake,
+                mtm_open=mtm_open if any_book else None, mtm_coverage=mtm_coverage,
+                n_open_positions=len(positions), n_open_orders=n_open_orders)
 
     # --- small helpers ----------------------------------------------------------------
 
