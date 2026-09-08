@@ -93,13 +93,24 @@ def test_compose_app_run_pgdata_bind_is_read_only():
 
 
 def test_compose_app_run_keeps_its_other_bind_and_env():
+    # Exhaustive on purpose, on both keys and mounts: app-run carries credentials, and an
+    # equality assertion is what makes a stray entry -- a demo key file, a second recipient --
+    # fail the suite instead of passing three "in" checks. Task 14 added the two KALSHI_*_FILE
+    # entries app-ws already carries (the limits read) and four mounts; this is that exact set.
     service = _service("app-run")
-    assert "./secrets/odds_api_key:/run/secrets/odds_api_key:ro" in service["volumes"]
-    # Task 14 adds the two KALSHI_*_FILE entries app-ws already carries (the limits read), so
-    # this pins the odds key entry rather than the whole mapping; the Kalshi pair has its own
-    # test below and test_compose_app_exec_has_no_volumes_and_no_kalshi_env still holds the
-    # executor to none of it.
-    assert service["environment"]["ODDS_API_KEY_FILE"] == "/run/secrets/odds_api_key"
+    assert service["environment"] == {
+        "ODDS_API_KEY_FILE": "/run/secrets/odds_api_key",
+        "KALSHI_KEY_ID_FILE": "/run/secrets/kalshi_key_id",
+        "KALSHI_PRIVATE_KEY_FILE": "/run/secrets/kalshi_private_key.pem",
+    }
+    assert service["volumes"] == [
+        "./secrets/odds_api_key:/run/secrets/odds_api_key:ro",
+        "./pgdata:/pgdata-ro:ro",
+        "./backups:/backups:rw",
+        "./deploy/backup_age.pub:/run/backup_age.pub:ro",
+        "./secrets/kalshi_key_id:/run/secrets/kalshi_key_id:ro",
+        "./secrets/kalshi_private_key.pem:/run/secrets/kalshi_private_key.pem:ro",
+    ]
 
 
 def test_compose_app_exec_has_no_volumes_and_no_kalshi_env():

@@ -5,8 +5,10 @@ set -f   # no pathname expansion: the --exclude-table-data patterns below stay l
 # One dump of the harness database, run by loop.sh inside the app-backup sidecar (addendum
 # 4.1 and 4.2).  POSIX sh: this runs on postgres:16, whose /bin/sh is dash.
 #
-#   dump.sh nightly                     schema-and-non-bulk-data dump, retained 30 units
+#   dump.sh nightly                     schema-and-non-bulk-data dump, retained 30 units,
+#                                       followed by the forever dump below
 #   dump.sh weekly                      the same dump, retained 8 units
+#   dump.sh forever                     ledger + gate_reports, never pruned
 #   dump.sh partition <table> <part>    one sealed weekly partition, kept forever
 #
 # The sidecar is the only place pg_dump 16 exists in this stack (the app image has none and
@@ -14,11 +16,24 @@ set -f   # no pathname expansion: the --exclude-table-data patterns below stay l
 # PGDATABASE/PGPASSWORD from its service environment, because libpq cannot parse the
 # postgresql+psycopg:// dialect URL the application uses.
 #
+# Every kind writes the same shape -- <base>.dump plus <base>.meta.json -- because that shape is
+# what `harness backup-encrypt` recognises as a unit.  So every kind, forever/ included, is
+# encrypted to <base>.dump.age with the age recipient, structure-checked, marked with
+# <base>.ok, and released from its plaintext only after a Mac-side decrypt drill.  Nothing
+# here is left readable to whoever reaches the NAS share.
+#
+# The forever export is therefore a custom-format dump, not a .csv.  To get CSV back from one:
+#
+#   pg_restore --data-only -t ledger -f - <base>.dump      # COPY + tab-separated rows
+#
+# or, for true CSV, restore it into a throwaway with deploy/backup/drill.sh and then, in that
+# container, COPY (SELECT * FROM ledger) TO STDOUT WITH (FORMAT csv, HEADER true).
+#
 # What this script may delete: a ".tmp" it wrote itself in this run, and -- in prune_units at
 # the bottom -- the ciphertext, sidecar and marker of a unit that is past the keep window AND
-# carries the ".ok" marker harness backup-encrypt writes beside a verified ciphertext.  It
+# carries the ".ok" marker `harness backup-encrypt` writes beside a verified ciphertext.  It
 # never deletes a plaintext ".dump" (delete_verified_plaintexts owns those, and only after a
-# Mac-side decrypt drill), and it never touches partitions/ or forever/.
+# Mac-side decrypt drill), and it is never called for the two kinds that are kept forever.
 # =============================================================================================
 
 BACKUPS_DIR="${BACKUPS_DIR:-/backups}"
@@ -26,6 +41,11 @@ BACKUPS_DIR="${BACKUPS_DIR:-/backups}"
 # Ruling B-I10.  /backups is the bind mount of /volume1/docker/sports-harness/backups, so its
 # filesystem free percentage is /volume1's.  Every dump kind checks it and skips below 30 %.
 MIN_FREE_PCT="${MIN_FREE_PCT:-30}"
+
+# One dump at a time.  The scheduled loop and the deploy recipe's fallback dump run in the same
+# container, and two runs starting in the same second would collide on the stamp.
+LOCK_FILE="${LOCK_FILE:-$BACKUPS_DIR/.dump.lock}"
+LOCK_WAIT_S="${LOCK_WAIT_S:-900}"
 
 # Retention, counted in units (dump + ciphertext + sidecar + marker), never in files.
 KEEP_NIGHTLY=30
@@ -47,7 +67,7 @@ now_iso()    { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # --- the backup_runs row -----------------------------------------------------------------
 # backup-precheck reads the newest kind='nightly' status='ok' row, so the sidecar writes it;
-# harness backup-encrypt writes only the kind='encrypt' rows.  A failure to record is logged
+# `harness backup-encrypt` writes only the kind='encrypt' rows.  A failure to record is logged
 # and never fails the dump: the file on disk is the backup, the row is the report of it.
 
 sql_quote() { printf '%s' "$1" | sed "s/'/''/g"; }
@@ -66,7 +86,28 @@ $(sql_json "$_notes"))" >/dev/null; then
     fi
 }
 
+# --- one dump at a time ----------------------------------------------------------------------
+
+lock_or_skip() {
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "WARN flock is unavailable; running $1 without the dump lock"
+        return 0
+    fi
+    if ! : >> "$LOCK_FILE" 2>/dev/null; then
+        echo "WARN cannot open $LOCK_FILE; running $1 without the dump lock"
+        return 0
+    fi
+    exec 9>> "$LOCK_FILE"
+    if ! flock -w "$LOCK_WAIT_S" 9; then
+        echo "SKIP $1 another dump.sh run holds $LOCK_FILE"
+        return 1
+    fi
+    return 0
+}
+
 # --- the free-space guard ------------------------------------------------------------------
+# Fails closed: anything but a plain integer percentage is treated as no space at all, because
+# the alternative is filling /volume1 and taking the recorder down with it.
 
 free_pct() {
     # df -P prints one line per filesystem: capacity ($5) is the *used* percentage.
@@ -76,12 +117,13 @@ free_pct() {
 require_free_space() {
     _kind=$1
     _pct=$(free_pct "$BACKUPS_DIR" || true)
-    if [ -z "$_pct" ]; then
-        echo "SKIP $_kind could not read free space on $BACKUPS_DIR"
-        record_run "$_kind" skipped "" "" "" "$(now_iso)" "$(now_iso)" \
-            '{"reason":"free space unreadable"}'
-        return 1
-    fi
+    case "$_pct" in
+        ''|*[!0-9]*)
+            echo "SKIP $_kind could not read a free-space percentage for $BACKUPS_DIR"
+            record_run "$_kind" skipped "" "" "" "$(now_iso)" "$(now_iso)" \
+                '{"reason":"free space unreadable"}'
+            return 1 ;;
+    esac
     if [ "$_pct" -lt "$MIN_FREE_PCT" ]; then
         echo "SKIP $_kind free=${_pct}% below MIN_FREE_PCT=${MIN_FREE_PCT}% on $BACKUPS_DIR"
         record_run "$_kind" skipped "" "" "" "$(now_iso)" "$(now_iso)" \
@@ -93,7 +135,7 @@ require_free_space() {
 
 # --- one dump ------------------------------------------------------------------------------
 # Writes <base>.dump.tmp, then the sidecar, then renames the plaintext into place, so a unit is
-# never visible to harness backup-encrypt without the .meta.json it needs (scan_units ignores
+# never visible to `harness backup-encrypt` without the .meta.json it needs (scan_units ignores
 # both ".tmp" names).  The sidecar carries what a later reader cannot recompute from a deleted
 # plaintext: its sha256, its size, the window it covers and pg_dump's own exit code.
 
@@ -116,7 +158,7 @@ META
 }
 
 run_dump() {
-    # kind dir_name tables_json  [extra pg_dump args...]
+    # kind dir_name tables_json name_extra [pg_dump args...]
     _kind=$1; _dir_name=$2; _tables_json=$3; _name_extra=$4
     shift 4
 
@@ -139,8 +181,22 @@ run_dump() {
         return 1
     fi
 
+    # No pipefail in POSIX sh, so cut would mask a sha256sum failure and the sidecar would
+    # record the empty string in the one field an operator trusts years later. Check instead.
     _bytes=$(wc -c < "$_tmp" | tr -d ' ')
     _sha=$(sha256sum "$_tmp" | cut -d' ' -f1)
+    _bad=0
+    case "$_bytes" in ''|*[!0-9]*) _bad=1 ;; esac
+    case "$_sha" in ''|*[!0-9a-f]*) _bad=1 ;; esac
+    [ "${#_sha}" -eq 64 ] || _bad=1
+    if [ "$_bad" -ne 0 ]; then
+        echo "ERROR $_kind could not size or hash $_tmp"
+        rm -f -- "$_tmp"          # the only removal here: the file this run wrote and cannot describe
+        record_run "$_kind" error "$_base.dump" "" "" "$_started" "$_finished" \
+            '{"error":"sha256 or size unavailable"}'
+        return 1
+    fi
+
     write_meta "$_base" "$_kind" "$_stamp" "$_sha" "$_bytes" "$_started" "$_finished" "$_rc" \
         "$_tables_json"
     mv -- "$_tmp" "$_base.dump"
@@ -150,26 +206,15 @@ run_dump() {
     return 0
 }
 
-# --- the CSV exports that outlive every dump ------------------------------------------------
+# --- the export that outlives every other unit ----------------------------------------------
 # ledger and gate_reports are small, are the two tables a human will want years from now, and
-# are never pruned.  COPY ... TO STDOUT is a plain read; the file is written .tmp and renamed.
+# are never pruned.  Same custom format and same unit shape as a nightly, so the same encrypt,
+# structure check, marker and release rule apply to them.
 
-export_forever() {
-    _dir="$BACKUPS_DIR/forever"
-    mkdir -p "$_dir"
-    _stamp=$1
-    for _t in ledger gate_reports; do
-        _out="$_dir/$_t-$_stamp.csv"
-        if psql -v ON_ERROR_STOP=1 -q \
-            -c "COPY (SELECT * FROM public.$_t) TO STDOUT WITH (FORMAT csv, HEADER true)" \
-            > "$_out.tmp"; then
-            mv -- "$_out.tmp" "$_out"
-            echo "OK forever $_out"
-        else
-            echo "WARN forever export of $_t failed"
-            rm -f -- "$_out.tmp"  # the only removal here: the incomplete file this run wrote
-        fi
-    done
+dump_forever() {
+    require_free_space forever || return 0
+    run_dump forever forever '{"included":["ledger","gate_reports"]}' "" \
+        -t public.ledger -t public.gate_reports
 }
 
 # --- one sealed weekly partition, archived once and then never touched ----------------------
@@ -193,21 +238,26 @@ archive_partition() {
 
 # --- dispatch --------------------------------------------------------------------------------
 # Every kind guards on free space first and journals its skip on stdout (the controller reads
-# `docker compose logs app-backup`) as well as into backup_runs.
+# `docker compose logs app-backup`) as well as into backup_runs.  Only nightly and weekly are
+# ever pruned; forever/ and partitions/ are kept for good.
 
 main() {
     mkdir -p "$BACKUPS_DIR"
+    lock_or_skip "${1:-dump}" || return 0
     case "${1:-}" in
         nightly)
             require_free_space nightly || return 0
             run_dump nightly nightly "{\"data_excluded\":$EXCLUDED_JSON}" "" $EXCLUDE_ARGS
-            export_forever "$(now_stamp)"
+            dump_forever
             prune_units nightly "$KEEP_NIGHTLY"
             ;;
         weekly)
             require_free_space weekly || return 0
             run_dump weekly weekly "{\"data_excluded\":$EXCLUDED_JSON}" "" $EXCLUDE_ARGS
             prune_units weekly "$KEEP_WEEKLY"
+            ;;
+        forever)
+            dump_forever
             ;;
         partition)
             if [ $# -ne 3 ]; then
@@ -218,18 +268,20 @@ main() {
             archive_partition "$2" "$3"
             ;;
         *)
-            echo "usage: dump.sh nightly|weekly|partition <table> <partition>" >&2
+            echo "usage: dump.sh nightly|weekly|forever|partition <table> <partition>" >&2
             return 2
             ;;
     esac
 }
 
 # --- unit retention (ruling A-I9) -------------------------------------------------------------
-# Units are counted newest-first by their sidecar (exactly one per unit, and the basic-format
-# UTC stamp sorts lexically), and only units past the keep window are considered at all.
+# A unit is a stamp that has a plaintext, a ciphertext, or both.  A lone sidecar is not a unit:
+# it is the crash orphan of a run that died between writing the sidecar and renaming the dump,
+# and counting it would let it hold a keep slot for good.  Units are taken newest-first (the
+# basic-format UTC stamp sorts lexically) and only those past the keep window are considered.
 #
 # A unit is released only when the marker beside it exists.  The marker is written by
-# harness backup-encrypt after the ciphertext passed its structure check, and it is the whole
+# `harness backup-encrypt` after the ciphertext passed its structure check, and it is the whole
 # reason this loop is allowed to delete anything: a POSIX-sh sidecar cannot query backup_runs
 # without authenticating to Postgres, so the marker file is the ok row's stand-in on disk.
 # No marker, or a plaintext still sitting beside the ciphertext (not yet released by a
@@ -244,12 +296,16 @@ prune_units() {
     _dir="$BACKUPS_DIR/$_kind"
     [ -d "$_dir" ] || return 0
 
+    _stamps=$(find "$_dir" -maxdepth 1 -type f \
+        \( -name "harness-$_kind-*.dump" -o -name "harness-$_kind-*.dump.age" \) \
+        | sed -e 's#^.*/##' -e "s#^harness-$_kind-##" -e 's#\.dump\.age$##' -e 's#\.dump$##' \
+        | sort -ru)
+
     _n=0
-    for _meta in $(find "$_dir" -maxdepth 1 -type f -name "harness-$_kind-*.meta.json" | sort -r)
-    do
+    for _stamp in $_stamps; do
         _n=$((_n + 1))
         [ "$_n" -gt "$_keep" ] || continue
-        BASE="${_meta%.meta.json}"
+        BASE="$_dir/harness-$_kind-$_stamp"
         if [ ! -f "${BASE}.ok" ]; then
             echo "KEEP ${BASE} past the newest $_keep but has no ${BASE}.ok marker"
             continue
@@ -263,4 +319,10 @@ prune_units() {
     done
 }
 
-main "$@"
+# Sourceable: the deletion rule above is the only file-removing code in this phase, and a test
+# that reaches it directly is worth more than a grep. In bash, BASH_SOURCE is the file being
+# read and differs from $0 when the file is sourced; in dash it is unset, so the fallback makes
+# this always true and the script runs as it always did.
+if [ "${BASH_SOURCE:-$0}" = "$0" ]; then
+    main "$@"
+fi

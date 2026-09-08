@@ -11,8 +11,11 @@ assertions mean the same thing however pytest is invoked.
 
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parent.parent
 LOOP_PATH = ROOT / "deploy/backup/loop.sh"
@@ -93,9 +96,26 @@ def test_partitions_and_forever_have_no_retention():
     assert "partitions" not in body and "forever" not in body
 
 
-def test_ledger_and_gate_reports_are_exported_forever_as_csv():
-    assert "COPY" in DUMP and "ledger" in DUMP and "gate_reports" in DUMP
+def test_ledger_and_gate_reports_are_exported_forever_as_an_encrypted_unit():
+    # Fix round 1 item 3. These were plaintext CSVs, which no part of the encrypt pipeline ever
+    # saw: scan_units groups only .dump/.dump.age/.meta.json, so a .csv was never a unit member
+    # and sat readable on the share. They are now an ordinary unit of the same shape as a
+    # nightly, so backup-encrypt encrypts them and the plaintext release rule applies.
+    assert "run_dump forever forever" in DUMP
+    assert "-t public.ledger" in DUMP and "-t public.gate_reports" in DUMP
     assert "forever" in DUMP
+
+
+def test_no_plaintext_csv_is_written_anywhere():
+    for line in DUMP.splitlines():
+        if line.lstrip().startswith("#"):
+            continue          # the header documents how to get CSV back on demand
+        assert ".csv" not in line, line
+
+
+def test_retention_is_called_for_the_two_pruned_kinds_and_nothing_else():
+    # forever/ and partitions/ are kept for good, so they must never reach prune_units.
+    assert re.findall(r"^\s*prune_units (\S+)", DUMP, re.M) == ["nightly", "weekly"]
 
 
 def test_no_script_removes_a_tree():
@@ -165,6 +185,134 @@ def test_the_deploy_recipe_runs_the_precheck_before_the_schema_step():
     assert mk.index("backup-precheck") < mk.index("app-run init-db")
 
 
+def test_the_deploy_recipe_asks_the_precheck_again_after_the_fallback_dump():
+    # Fix round 1 item 1: dump.sh exits 0 when it *skips* (low disk, or the lock is held), so
+    # the fallback's own exit status is not evidence of a fresh dump. The recipe must ask the
+    # precheck again and abort when the answer is still no.
+    mk = (ROOT / "Makefile").read_text()
+    recipe = mk.split("deploy-nas:")[1].split("\ndeploy-nas-app:")[0]
+    assert recipe.count("app-run backup-precheck") == 2   # invocations, not the comment
+    assert "ABORT" in recipe and "exit 1" in recipe
+    fallback = recipe.index("/backup/dump.sh nightly")
+    assert recipe.index("app-run backup-precheck", fallback) > fallback
+
+
 def test_the_deploy_recipe_starts_app_backup_with_postgres():
     mk = (ROOT / "Makefile").read_text()
     assert "up -d postgres app-backup" in mk
+
+
+# --- the deletion rule, executed ------------------------------------------------------------
+# dump.sh guards its own `main "$@"`, so bash can source it and call prune_units directly. This
+# is the only file-deleting code in the phase; a substring grep is not a regression net for it.
+# Nothing here starts a container or opens a database: prune_units reads the filesystem only.
+
+
+def _unit(directory: Path, kind: str, stamp: str, *, dump=False, age=True, meta=True, ok=True):
+    base = directory / f"harness-{kind}-{stamp}"
+    if dump:
+        base.with_name(base.name + ".dump").write_text("plaintext")
+    if age:
+        base.with_name(base.name + ".dump.age").write_text("ciphertext")
+    if meta:
+        base.with_name(base.name + ".meta.json").write_text("{}")
+    if ok:
+        base.with_name(base.name + ".ok").write_text("")
+    return base
+
+
+def _prune(root: Path, kind: str, keep: int) -> str:
+    script = (f"BACKUPS_DIR={shlex.quote(str(root))}\n"
+              f". {shlex.quote(str(DUMP_PATH))}\n"
+              f"prune_units {kind} {keep}\n")
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+@pytest.fixture()
+def nightly_dir(tmp_path: Path) -> Path:
+    directory = tmp_path / "nightly"
+    directory.mkdir()
+    return directory
+
+
+def test_sourcing_dump_sh_does_not_run_a_dump(tmp_path: Path):
+    done = subprocess.run(
+        ["bash", "-c", f"BACKUPS_DIR={shlex.quote(str(tmp_path))}\n. {shlex.quote(str(DUMP_PATH))}\n"],
+        capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "" and done.stderr == ""
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_prune_keeps_a_unit_with_no_ok_marker(nightly_dir: Path):
+    old = _unit(nightly_dir, "nightly", "20260101T000000Z", ok=False)
+    _unit(nightly_dir, "nightly", "20260202T000000Z")
+    out = _prune(nightly_dir.parent, "nightly", 1)
+    assert "KEEP" in out and "PRUNED" not in out
+    assert old.with_name(old.name + ".dump.age").exists()
+    assert old.with_name(old.name + ".meta.json").exists()
+
+
+def test_prune_keeps_a_unit_whose_plaintext_is_not_yet_released(nightly_dir: Path):
+    old = _unit(nightly_dir, "nightly", "20260101T000000Z", dump=True)
+    _unit(nightly_dir, "nightly", "20260202T000000Z")
+    out = _prune(nightly_dir.parent, "nightly", 1)
+    assert "unreleased plaintext" in out and "PRUNED" not in out
+    assert old.with_name(old.name + ".dump").exists()
+    assert old.with_name(old.name + ".dump.age").exists()
+
+
+def test_prune_never_removes_a_plaintext(nightly_dir: Path):
+    for day in range(1, 6):
+        _unit(nightly_dir, "nightly", f"202601{day:02d}T000000Z", dump=True)
+    _prune(nightly_dir.parent, "nightly", 1)
+    assert len(list(nightly_dir.glob("*.dump"))) == 5
+
+
+def test_prune_leaves_a_bad_ciphertext_alone(nightly_dir: Path):
+    old = _unit(nightly_dir, "nightly", "20260101T000000Z")
+    bad = old.with_name(old.name + ".dump.age.bad-20260105T000000Z")
+    bad.write_text("rejected")
+    _unit(nightly_dir, "nightly", "20260202T000000Z")
+    out = _prune(nightly_dir.parent, "nightly", 1)
+    assert "PRUNED" in out
+    assert bad.exists()
+    assert not old.with_name(old.name + ".dump.age").exists()
+
+
+def test_prune_keeps_the_newest_thirty_units_and_removes_the_thirty_first_whole(nightly_dir: Path):
+    stamps = [f"202601{day:02d}T000000Z" for day in range(1, 32)]
+    for stamp in stamps:
+        _unit(nightly_dir, "nightly", stamp)
+    out = _prune(nightly_dir.parent, "nightly", 30)
+    assert out.count("PRUNED") == 1
+    oldest = nightly_dir / f"harness-nightly-{stamps[0]}"
+    for ext in (".dump.age", ".meta.json", ".ok"):
+        assert not oldest.with_name(oldest.name + ext).exists()
+    for stamp in stamps[1:]:
+        assert (nightly_dir / f"harness-nightly-{stamp}.dump.age").exists()
+
+
+def test_a_lone_sidecar_is_not_counted_as_a_unit(nightly_dir: Path):
+    # A run that died between writing the sidecar and renaming the dump leaves an orphan .meta;
+    # counting it would hold a keep slot for good and prune a real unit one slot early.
+    for day in range(1, 4):
+        (nightly_dir / f"harness-nightly-202601{day:02d}T000000Z.meta.json").write_text("{}")
+    kept = _unit(nightly_dir, "nightly", "20260210T000000Z")
+    out = _prune(nightly_dir.parent, "nightly", 1)
+    assert "PRUNED" not in out
+    assert kept.with_name(kept.name + ".dump.age").exists()
+
+
+def test_prune_does_nothing_to_a_kind_it_was_not_asked_about(tmp_path: Path):
+    forever = tmp_path / "forever"
+    forever.mkdir()
+    _unit(forever, "forever", "20260101T000000Z")
+    nightly = tmp_path / "nightly"
+    nightly.mkdir()
+    _unit(nightly, "nightly", "20260101T000000Z")
+    _unit(nightly, "nightly", "20260202T000000Z")
+    _prune(tmp_path, "nightly", 1)
+    assert len(list(forever.iterdir())) == 3

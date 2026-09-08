@@ -51,9 +51,12 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 # A schema change goes in behind a fresh dump. `backup-precheck` is the query half only: it
 # exits 0 when the newest nightly backup_runs row is ok and younger than 26 h, and 1 otherwise.
 # On non-zero this takes the dump first, which on the first phase 4 deploy is the first dump
-# there has ever been. -T because this runs over ssh with no tty.
+# there has ever been -- and then asks again. The second ask is the point: dump.sh exits 0 when
+# it *skips* (below 30 % free, or another dump holds the lock), so trusting the fallback's own
+# exit status would let a migration land on an unbacked database with no error anywhere. A
+# precheck that still fails after the fallback aborts the deploy. -T because ssh has no tty.
 	@printf "$(GREEN)[DEPLOY]$(NC) Backup precheck (dumps first when the newest nightly is stale)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || docker compose exec -T app-backup /backup/dump.sh nightly'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || { docker compose exec -T app-backup /backup/dump.sh nightly && docker compose run --rm app-run backup-precheck; } || { echo "[DEPLOY] ABORT: no nightly backup_runs row is ok and under 26h, and the fallback dump did not produce one. A SKIP line in: docker compose logs app-backup means /volume1 free is below 30 percent, or another dump held the lock."; exit 1; }'
 # `harness migrate ensure` arrives with Task 15. Until then the command is not in the image, so
 # this probes for it instead of swallowing an exit status -- once the command exists, a real
 # migration failure still fails the deploy here.
