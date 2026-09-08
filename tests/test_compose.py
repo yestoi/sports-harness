@@ -95,7 +95,11 @@ def test_compose_app_run_pgdata_bind_is_read_only():
 def test_compose_app_run_keeps_its_other_bind_and_env():
     service = _service("app-run")
     assert "./secrets/odds_api_key:/run/secrets/odds_api_key:ro" in service["volumes"]
-    assert service["environment"] == {"ODDS_API_KEY_FILE": "/run/secrets/odds_api_key"}
+    # Task 14 adds the two KALSHI_*_FILE entries app-ws already carries (the limits read), so
+    # this pins the odds key entry rather than the whole mapping; the Kalshi pair has its own
+    # test below and test_compose_app_exec_has_no_volumes_and_no_kalshi_env still holds the
+    # executor to none of it.
+    assert service["environment"]["ODDS_API_KEY_FILE"] == "/run/secrets/odds_api_key"
 
 
 def test_compose_app_exec_has_no_volumes_and_no_kalshi_env():
@@ -112,3 +116,76 @@ def test_compose_no_other_service_mounts_pgdata_ro():
             continue
         volumes = service.get("volumes") or []
         assert not any("/pgdata-ro" in v for v in volumes), name
+
+
+# --- Task 14: the app-backup dump sidecar, and app-run's backup + limits mounts ----------
+
+
+def test_app_backup_service_exists_on_the_postgres_image():
+    s = _service("app-backup")
+    assert s["image"] == "postgres:16" and "build" not in s
+    assert s["command"] == ["/backup/loop.sh"]
+    assert s["restart"] == "unless-stopped"
+
+
+def test_app_backup_runs_as_the_app_uid():
+    assert _service("app-backup")["user"] == "${APP_UID:-65534}:${APP_GID:-65534}"
+
+
+def test_app_backup_mounts_the_scripts_read_only_and_the_backups_read_write():
+    volumes = _service("app-backup")["volumes"]
+    assert "./deploy/backup:/backup:ro" in volumes
+    assert "./backups:/backups:rw" in volumes
+
+
+def test_app_backup_has_no_secrets_mount():
+    for v in _service("app-backup")["volumes"]:
+        assert "secrets" not in v
+
+
+def test_app_backup_uses_pg_environment_not_the_sqlalchemy_url():
+    env = _service("app-backup")["environment"]
+    assert env["PGHOST"] == "postgres" and env["PGDATABASE"] == "harness"
+    assert not any("postgresql+psycopg" in str(v) for v in env.values())
+
+
+def test_app_run_mounts_backups_and_the_recipient():
+    volumes = _service("app-run")["volumes"]
+    assert "./backups:/backups:rw" in volumes
+    assert "./deploy/backup_age.pub:/run/backup_age.pub:ro" in volumes
+
+
+def test_app_run_mounts_the_production_kalshi_keys_for_the_limits_read():
+    # C2: without these, has_kalshi_credentials() is False in the recorder container, nothing
+    # ever writes a venue_requests row in production, and the paper-posture tripwire is vacuous.
+    svc = _service("app-run")
+    assert "./secrets/kalshi_key_id:/run/secrets/kalshi_key_id:ro" in svc["volumes"]
+    assert ("./secrets/kalshi_private_key.pem:/run/secrets/kalshi_private_key.pem:ro"
+            in svc["volumes"])
+    assert svc["environment"]["KALSHI_KEY_ID_FILE"] == "/run/secrets/kalshi_key_id"
+    assert (svc["environment"]["KALSHI_PRIVATE_KEY_FILE"]
+            == "/run/secrets/kalshi_private_key.pem")
+
+
+def test_no_service_mounts_the_demo_secrets():
+    # C3: the demo pair reaches a container only inside the controller's own
+    # `docker compose run --rm -v ...`, never as a standing mount.
+    doc = yaml.safe_load(COMPOSE.read_text())
+    for name, svc in doc["services"].items():
+        for v in svc.get("volumes", []) or []:
+            assert "kalshi_demo" not in v, name
+
+
+def test_compose_app_exec_block_unchanged():
+    # Conformance item 5: the executor has no volumes, no credentials, no backups mount.
+    s = _service("app-exec")
+    assert "volumes" not in s
+    assert "environment" not in s
+    assert s["command"] == ["exec"]
+
+
+def test_no_service_mounts_the_age_private_key():
+    doc = yaml.safe_load(COMPOSE.read_text())
+    for name, svc in doc["services"].items():
+        for v in svc.get("volumes", []) or []:
+            assert "backup_age_key" not in v, name

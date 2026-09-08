@@ -16,8 +16,21 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 	@if [ -n "$$(git status --porcelain)" ] && [ "$$ALLOW_DIRTY" != "1" ]; then \
 		echo "refusing to deploy a dirty tree; commit first (or ALLOW_DIRTY=1)"; exit 1; fi
 	@printf "$(GREEN)[DEPLOY]$(NC) Pushing to $(NAS_USER)@$(NAS_IP):$(NAS_STACK)\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'mkdir -p $(NAS_STACK)/secrets $(NAS_STACK)/pgdata'
+# Ownership is not forced here, deliberately (A-C6/B-I6): this ssh runs as the NAS user, who
+# owns $(NAS_STACK) and therefore owns every directory created below, and deploy/nas.env sets
+# APP_UID/APP_GID to that same user, which is what both app-run and app-backup run as. So the
+# sidecar's dumps and app-run's encrypt-and-delete already act on files of one uid. Forcing it
+# would be worse than redundant: a non-root user cannot change a file's owner, so the command
+# could exit non-zero and abort the whole deploy. Task 16's verify row asserts it instead.
+	@ssh $(NAS_USER)@$(NAS_IP) 'mkdir -p $(NAS_STACK)/secrets $(NAS_STACK)/pgdata \
+		$(NAS_STACK)/backups/nightly $(NAS_STACK)/backups/weekly \
+		$(NAS_STACK)/backups/partitions $(NAS_STACK)/backups/forever'
+# A-C5: deploy/backup carries the three sidecar scripts app-backup bind-mounts read-only.
+# deploy/backup_age.pub does not exist until `harness backup-keygen` runs on the Mac, so it goes
+# through $(wildcard ...): when it is absent that expands to nothing instead of failing tar and
+# aborting the whole deploy.
 	@tar cf - --exclude='__pycache__' pyproject.toml constraints.txt Dockerfile .dockerignore docker-compose.yml harness docs/runbooks \
+		deploy/backup $(wildcard deploy/backup_age.pub) \
 		| ssh $(NAS_USER)@$(NAS_IP) 'tar xf - -C $(NAS_STACK)'
 	@mkdir -p build
 	@cp deploy/nas.env build/nas.env
@@ -33,8 +46,19 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 	done
 	@ssh $(NAS_USER)@$(NAS_IP) 'test -f $(NAS_STACK)/secrets/dashboard_token || openssl rand -hex 32 > $(NAS_STACK)/secrets/dashboard_token'
 	@ssh $(NAS_USER)@$(NAS_IP) 'chmod 600 $(NAS_STACK)/secrets/*'
-	@printf "$(GREEN)[DEPLOY]$(NC) Building image and starting postgres...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build && docker compose up -d postgres'
+	@printf "$(GREEN)[DEPLOY]$(NC) Building image and starting postgres + the backup sidecar...\n"
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build && docker compose up -d postgres app-backup'
+# A schema change goes in behind a fresh dump. `backup-precheck` is the query half only: it
+# exits 0 when the newest nightly backup_runs row is ok and younger than 26 h, and 1 otherwise.
+# On non-zero this takes the dump first, which on the first phase 4 deploy is the first dump
+# there has ever been. -T because this runs over ssh with no tty.
+	@printf "$(GREEN)[DEPLOY]$(NC) Backup precheck (dumps first when the newest nightly is stale)...\n"
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || docker compose exec -T app-backup /backup/dump.sh nightly'
+# `harness migrate ensure` arrives with Task 15. Until then the command is not in the image, so
+# this probes for it instead of swallowing an exit status -- once the command exists, a real
+# migration failure still fails the deploy here.
+	@printf "$(GREEN)[DEPLOY]$(NC) Alembic ensure (skipped when this build has no migrate command)...\n"
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && if docker compose run --rm app-run --help 2>&1 | grep -qw migrate; then docker compose run --rm app-run migrate ensure; else echo "[DEPLOY] NOTE: no migrate command in this build (Task 15 adds it); skipping"; fi'
 	@printf "$(GREEN)[DEPLOY]$(NC) Schema + teams (idempotent; required after every upgrade)...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register'
 	@printf "$(GREEN)[DEPLOY]$(NC) Starting services...\n"
@@ -49,8 +73,21 @@ deploy-nas-app: ## Same push, but restart only app-run/app-serve/app-exec (app-w
 	@docker compose config --services | grep -qx app-exec || { \
 		echo "deploy-nas-app: no app-exec service in docker-compose.yml (it arrives with phase 3); use make deploy-nas"; exit 1; }
 	@printf "$(GREEN)[DEPLOY]$(NC) Pushing to $(NAS_USER)@$(NAS_IP):$(NAS_STACK) (app only)\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'mkdir -p $(NAS_STACK)/secrets $(NAS_STACK)/pgdata'
+# Ownership is not forced here, deliberately (A-C6/B-I6): this ssh runs as the NAS user, who
+# owns $(NAS_STACK) and therefore owns every directory created below, and deploy/nas.env sets
+# APP_UID/APP_GID to that same user, which is what both app-run and app-backup run as. So the
+# sidecar's dumps and app-run's encrypt-and-delete already act on files of one uid. Forcing it
+# would be worse than redundant: a non-root user cannot change a file's owner, so the command
+# could exit non-zero and abort the whole deploy. Task 16's verify row asserts it instead.
+	@ssh $(NAS_USER)@$(NAS_IP) 'mkdir -p $(NAS_STACK)/secrets $(NAS_STACK)/pgdata \
+		$(NAS_STACK)/backups/nightly $(NAS_STACK)/backups/weekly \
+		$(NAS_STACK)/backups/partitions $(NAS_STACK)/backups/forever'
+# A-C5: deploy/backup carries the three sidecar scripts app-backup bind-mounts read-only.
+# deploy/backup_age.pub does not exist until `harness backup-keygen` runs on the Mac, so it goes
+# through $(wildcard ...): when it is absent that expands to nothing instead of failing tar and
+# aborting the whole deploy.
 	@tar cf - --exclude='__pycache__' pyproject.toml constraints.txt Dockerfile .dockerignore docker-compose.yml harness docs/runbooks \
+		deploy/backup $(wildcard deploy/backup_age.pub) \
 		| ssh $(NAS_USER)@$(NAS_IP) 'tar xf - -C $(NAS_STACK)'
 	@mkdir -p build
 	@cp deploy/nas.env build/nas.env

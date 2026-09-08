@@ -11,3 +11,4 @@ pgdata/
 build/
 dist/
 .env.nas
+backups/

@@ -38,6 +38,28 @@ services:
       retries: 10
     restart: unless-stopped
 
+  app-backup:
+    image: postgres:16
+    user: "${APP_UID:-65534}:${APP_GID:-65534}"
+    # The postgres image is the only place pg_dump 16 exists; the app image has none and gains
+    # no packages (D2). This service holds no secret beyond PGPASSWORD, which is the same
+    # value the SQLAlchemy URL in .env already carries (A-I2: libpq cannot parse that URL).
+    command: ["/backup/loop.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: harness
+      PGDATABASE: harness
+      PGPASSWORD: harness
+      TZ: UTC
+    volumes:
+      - ./deploy/backup:/backup:ro
+      - ./backups:/backups:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 300s
+
   app-run:
     build: .
     user: "${APP_UID:-65534}:${APP_GID:-65534}"
@@ -45,11 +67,25 @@ services:
     env_file: .env
     environment:
       ODDS_API_KEY_FILE: /run/secrets/odds_api_key
+      # C2: the scheduled limits read needs the production key files here exactly as app-ws
+      # already has them. Without these, has_kalshi_credentials() is False in the recorder
+      # container and no venue_requests row is ever written in production. Both key files are
+      # read-scoped and the transport the recorder builds has writes_enabled=False, so this
+      # adds a signed GET capability and nothing else.
+      KALSHI_KEY_ID_FILE: /run/secrets/kalshi_key_id
+      KALSHI_PRIVATE_KEY_FILE: /run/secrets/kalshi_private_key.pem
     volumes:
       - ./secrets/odds_api_key:/run/secrets/odds_api_key:ro
       # Task 12b: os.statvfs only, for host.disk_free_gb (design spec §3.1). Read-only, and
       # never mounted into app-exec: the executor has no volumes at all, deliberately.
       - ./pgdata:/pgdata-ro:ro
+      # The backup encrypt job runs inside app-run: it reads the sidecar's plaintexts, writes
+      # the ciphertexts and markers beside them, and needs the public recipient. The age
+      # *private* key is never on the NAS, so a ciphertext here cannot be decrypted here.
+      - ./backups:/backups:rw
+      - ./deploy/backup_age.pub:/run/backup_age.pub:ro
+      - ./secrets/kalshi_key_id:/run/secrets/kalshi_key_id:ro
+      - ./secrets/kalshi_private_key.pem:/run/secrets/kalshi_private_key.pem:ro
     depends_on:
       postgres:
         condition: service_healthy
