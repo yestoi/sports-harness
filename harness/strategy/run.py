@@ -47,6 +47,11 @@ LABEL_ORDER = [
 CAP_LABELS = ["cap_per_bet", "cap_per_game", "cap_daily", "max_open"]
 FILTER_LABELS = [label for label in LABEL_ORDER if label not in CAP_LABELS]
 
+#: The edge a draft with no edge sorts under, so it lands last in descending-edge order. The
+#: executor orders its intents the same way and shares this constant, so the two orderings
+#: cannot drift apart.
+NO_EDGE = Decimal("-999")
+
 # Same-side moneyline and spread on one game are a single position (spec §6.5); totals
 # are their own position, so they never take a dedupe key.
 SIDE_MARKETS = ("moneyline", "spread")
@@ -384,7 +389,7 @@ def run_strategy(
 
     order = sorted(
         range(len(drafts)),
-        key=lambda i: (-(drafts[i].edge if drafts[i].edge is not None else Decimal("-999")), i),
+        key=lambda i: (-(drafts[i].edge if drafts[i].edge is not None else NO_EDGE), i),
     )
 
     signals: list[SignalRow | None] = [None] * len(drafts)

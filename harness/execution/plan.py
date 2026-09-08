@@ -7,7 +7,7 @@ touches no database and reads no clock, because Task 6 runs it live and Task 13 
 over a recorded tape on a 15 s grid: the same snapshot must produce the same actions in both.
 
 There are exactly two rule chains and both are ordered. The order is the specification, not an
-implementation detail, so `_order_action` and `_intent_action` read line by line in the order
+implementation detail, so `_order_action` and `_intent_actions` read line by line in the order
 the addendum states them and each rule returns rather than falling through:
 
 *Per open order* -- expiry first (R8's guarantee outranks everything, including the kill
@@ -18,8 +18,12 @@ at position four on purpose: a dirty book is a book we cannot read, so we make n
 decision on it, while the three rules above it depend on nothing the book could tell us.
 
 *Per intent with no order resting* (in descending `edge`, so the ceiling truncates the least
-valuable candidates, F33) -- kill switch, kickoff cutoff, match, fair staleness, dirty book,
-post-only reject (F38), the caps and finally capacity. Only then is a `Place` emitted.
+valuable candidates, F33) -- kill switch, kickoff cutoff, match, fair staleness, dirty book, a
+missing target, post-only reject (F38), the caps and finally capacity. Only then is a `Place`
+emitted. `no_target` sits where it does because it is the first rule that has to read
+`target_prob`: an intent with no price or size still earns whichever of the five reasons above
+it names first, and a null target is one intent's `Skip` rather than an exception that would
+take the whole tick down with it.
 
 Nothing here mutates its arguments: the exposure state is copied per variant before placements
 accumulate against the caps, and a `BookState` is only ever read. `Renew` does not exist (R8):
@@ -37,11 +41,9 @@ from decimal import ROUND_HALF_UP, Decimal
 from harness import execution
 from harness.execution.book import FOUR, QTY, SIDES, YES, ZERO, BookState, book_age_s, side_p
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
-from harness.strategy.run import CAP_LABELS, CONFIDENT_MATCHES, StrategyState
+from harness.strategy.run import CAP_LABELS, CONFIDENT_MATCHES, NO_EDGE, StrategyState
 
 CENT = Decimal("0.01")
-#: The sentinel an intent with no edge sorts under, as `run_strategy` orders its drafts.
-NO_EDGE = Decimal("-999")
 #: The fee reference size: a per-contract maker fee is size-independent at this schedule (F11).
 FEE_REFERENCE = 100
 
@@ -57,6 +59,7 @@ KICKOFF = "kickoff"
 BOOK_DIRTY = "book_dirty"
 POST_ONLY_REJECT = "post_only_reject"
 EXEC_CAPACITY = "exec_capacity"
+NO_TARGET = "no_target"
 
 REJECTED = "rejected"
 
@@ -341,6 +344,18 @@ def rebuild_state(open_orders: list[OpenOrderView], positions: list[PositionView
     The executor owns exposure: the tick's `run_strategy` labels the caps against a fresh state
     and never places, so only this rebuild knows what a variant is actually carrying. Rows for
     other variants are ignored, so the caller can pass one query's worth of rows per loop.
+
+    The three inputs overlap, because a fill both creates a position and is one of today's
+    fills, so each contract's stake enters each aggregate exactly once:
+
+    * `daily_exposure` = the open orders' stake + `fills_today`. Positions are excluded: a
+      position from an earlier day's fill is not exposure taken *today*, and a position from
+      today's fill is already in `fills_today`.
+    * `game_exposure` and `positions` = the open orders' stake + the unsettled positions. Fills
+      are excluded: they are already the positions they created.
+
+    Adding all three to one sum would count a contract filled today twice in `daily_exposure`
+    and bind `cap_daily` at roughly half its intended level.
     """
     state = StrategyState()
     for order in open_orders:
@@ -351,7 +366,7 @@ def rebuild_state(open_orders: list[OpenOrderView], positions: list[PositionView
     for position in positions:
         if position.variant_id != variant_id:
             continue
-        _add_exposure(state, position.game_id, _money(position.stake))
+        _add_game_exposure(state, position.game_id, _money(position.stake))
         key = (position.game_id, position.side_team_id, position.side)
         if position.edge is not None and None not in key[:2]:
             held = state.positions.get(key)
@@ -364,7 +379,13 @@ def rebuild_state(open_orders: list[OpenOrderView], positions: list[PositionView
 
 
 def _add_exposure(state: StrategyState, game_id: int | None, stake: Decimal) -> None:
+    """An open order (or a placement this loop): exposure taken today, and against the game."""
     state.daily_exposure += stake
+    _add_game_exposure(state, game_id, stake)
+
+
+def _add_game_exposure(state: StrategyState, game_id: int | None, stake: Decimal) -> None:
+    """An unsettled position: exposure against the game, but not against today's total."""
     if game_id is not None:
         state.game_exposure[game_id] = state.game_exposure.get(game_id, ZERO) + stake
 
@@ -500,8 +521,13 @@ def _intent_actions(intent: IntentView, market: MarketNow | None, cfg: dict,
         return [Skip(intent.intent_id, FAIR_STALE)]
     if market.dirty(now, s):
         return [Skip(intent.intent_id, BOOK_DIRTY)]
+    # The first rule that needs the target: everything above it holds for an intent with no
+    # price or size too, and this is where such an intent stops. `Place` still refuses a null
+    # target, but as a backstop rather than as the way the loop finds out.
+    if intent.target_prob is None or intent.target_contracts is None:
+        return [Skip(intent.intent_id, NO_TARGET)]
     ask = market.best_ask(intent.side)
-    if ask is not None and intent.target_prob is not None and intent.target_prob >= ask:
+    if ask is not None and intent.target_prob >= ask:
         # A live post-only order at or through the ask is rejected by the venue (F38).
         return [Skip(intent.intent_id, POST_ONLY_REJECT)]
 

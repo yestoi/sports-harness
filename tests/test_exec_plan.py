@@ -92,8 +92,10 @@ def intent(side="yes", variant="v1", vm_id=1, prob="0.45", contracts="20", edge=
            stake="60", game_id=11, kickoff=KICKOFF, decision="candidate", n=1,
            created=None) -> IntentView:
     return IntentView(intent_id=uid(n), signal_id=100 + n, variant_id=variant,
-                      venue_market_id=vm_id, ticker="K1", side=side, target_prob=dec(prob),
-                      target_contracts=dec(contracts), edge=dec(edge), edge_min=dec("0.02"),
+                      venue_market_id=vm_id, ticker="K1", side=side,
+                      target_prob=None if prob is None else dec(prob),
+                      target_contracts=None if contracts is None else dec(contracts),
+                      edge=dec(edge), edge_min=dec("0.02"),
                       fair_p=dec("0.60"), game_id=game_id, kickoff_utc=kickoff, stake=dec(stake),
                       signal_created_at=created or NOW - timedelta(seconds=5),
                       latest_decision=decision)
@@ -356,6 +358,33 @@ def test_post_only_reject_on_place_and_reprice(side):
 
 
 @pytest.mark.parametrize("side", SIDES)
+@pytest.mark.parametrize("missing", ["prob", "contracts"])
+def test_a_null_target_skips_rather_than_crashing_the_tick(side, missing):
+    """An intent with no target price or size cannot be placed, and must not abort the tick."""
+    null = intent(side=side, **{"prob" if missing == "prob" else "contracts": None})
+    assert plan(intents=[null], markets={1: market(side=side)}) == [
+        Skip(uid(1), "no_target")]
+    # Every rule the brief puts before the target still runs and still names its own reason.
+    assert plan(intents=[null], markets={1: market(side=side, matched=False)}) == [
+        Skip(uid(1), "unmatched")]
+    assert plan(intents=[null], markets={1: market(side=side)},
+                now=KICKOFF - timedelta(minutes=9)) == [Skip(uid(1), "kickoff")]
+
+
+@pytest.mark.parametrize("missing", ["prob", "contracts"])
+def test_a_null_target_leaves_the_other_variants_alone(missing):
+    """The skip is one intent's, not the tick's: every other variant still gets its action."""
+    null = intent(variant="v1", vm_id=1, n=1, edge="0.09",
+                  **{"prob" if missing == "prob" else "contracts": None})
+    healthy = intent(variant="v2", vm_id=2, n=2, side="no", edge="0.03", game_id=12)
+    markets = {1: market(vm_id=1), 2: market(vm_id=2, side="no")}
+    assert plan(intents=[null, healthy], markets=markets) == [
+        Skip(uid(1), "no_target"),
+        Place(uid(2), "no", Decimal("0.4500"), Decimal("20.00"),
+              KICKOFF - timedelta(minutes=10), False)]
+
+
+@pytest.mark.parametrize("side", SIDES)
 def test_no_book_places_with_flag(side):
     m = {1: market(side=side, book=None)}
     [action] = plan(intents=[intent(side=side)], markets=m)
@@ -445,10 +474,28 @@ def test_rebuild_state_sums_stakes_and_daily_fills_since_local_midnight():
     state = rebuild_state(orders, positions, fills, "v1")
 
     assert state.open_orders == 2
-    assert state.daily_exposure == Decimal("245")  # 60 + 40 + 100 + 20 + 25
-    assert state.game_exposure == {11: Decimal("180"), 12: Decimal("40")}
+    assert state.daily_exposure == Decimal("125")  # orders 60 + 40, fills 25; positions excluded
+    assert state.game_exposure == {11: Decimal("180"), 12: Decimal("40")}  # orders + positions
     # Same key twice keeps the better edge, exactly as `run_strategy` records it.
     assert state.positions == {(11, 5, "yes"): Decimal("0.07")}
+
+
+def test_rebuild_state_counts_a_filled_contract_once_in_each_aggregate():
+    """One order filled today is a position *and* a fill; each aggregate must see it once.
+
+    `daily_exposure` takes the open orders and today's fills; `game_exposure` takes the open
+    orders and the unsettled positions. Adding all three to one sum double-counts the fill and
+    binds `cap_daily` at about half its intended level.
+    """
+    orders = [order(variant="v1", oid=1, stake="100", game_id=7)]
+    # The same 40 of stake, seen twice: once as the position it created, once as today's fill.
+    positions = [PositionView("v1", 7, 5, "yes", Decimal("40"), Decimal("0.03"))]
+    fills = [FillView("v1", Decimal("40"))]
+
+    state = rebuild_state(orders, positions, fills, "v1")
+
+    assert state.daily_exposure == Decimal("140")  # order 100 + fill 40, not 180
+    assert state.game_exposure == {7: Decimal("140")}  # order 100 + position 40, not 180
 
 
 def test_rebuild_state_keys_positions_by_side():
