@@ -19,9 +19,9 @@ import pytest
 
 from harness.venues.kalshi.authed import (
     ORDER_MESSAGES_PER_MINUTE, CancelResult, EchoMismatch, KalshiDecodeError, KalshiReader,
-    KalshiWriter, MessageBudgetExceeded, OrderIntent, PreSendInvariantFailed, TokenBucket,
-    VenueOrder, _FACTORY_TOKEN, decode_side_price, encode_side_price, fixed_point, grid_steps,
-    snap_to_grid,
+    FeeModelMismatch, KalshiWriter, MessageBudgetExceeded, OrderIntent, PreSendInvariantFailed,
+    PriceOffGrid, TokenBucket, VenueOrder, _FACTORY_TOKEN, decode_side_price, encode_side_price,
+    fixed_point, grid_steps, snap_intent, snap_to_grid,
 )
 
 from tests.test_kalshi_authed import FakeTransport, _err, _ok
@@ -114,15 +114,48 @@ def test_no_side_is_priced_as_one_minus_p_on_the_yes_leg():
                              [{"start": 0, "end": 1, "step": 0.01}]) == ("ask", Decimal("0.5600"))
 
 
-def test_snap_to_grid_uses_the_markets_own_ranges_and_ties_go_down():
+def test_snap_to_grid_uses_the_markets_own_ranges_and_always_floors():
+    # Fix round 1, Important 2: a floor, not a nearest. Rounding a price up costs us money on
+    # whichever side we are on, and it would undo the floor the strategy already applied.
     ranges = [{"start": 0, "end": 1, "step": 0.05}]
     assert snap_to_grid(Decimal("0.5200"), ranges) == Decimal("0.5000")
-    assert snap_to_grid(Decimal("0.5250"), ranges) == Decimal("0.5000")   # tie -> down
-    assert snap_to_grid(Decimal("0.5300"), ranges) == Decimal("0.5500")
+    assert snap_to_grid(Decimal("0.5250"), ranges) == Decimal("0.5000")
+    assert snap_to_grid(Decimal("0.5300"), ranges) == Decimal("0.5000")
+    assert snap_to_grid(Decimal("0.5500"), ranges) == Decimal("0.5500")   # exact stays put
 
 
 def test_snap_falls_back_to_the_linear_cent_grid_when_price_ranges_is_null():
     assert snap_to_grid(Decimal("0.5637"), None) == Decimal("0.5600")
+
+
+def test_the_yes_leg_floors_the_price_we_bid():
+    ranges = [{"start": 0, "end": 1, "step": 0.05}]
+    assert encode_side_price("yes", Decimal("0.5300"), ranges) == ("bid", Decimal("0.5000"))
+
+
+def test_the_no_leg_floors_what_we_pay_for_no_not_the_yes_price():
+    # NO at 0.4750 on a 5c grid pays 0.45, which is an ask at 0.55. Snapping the YES leg down
+    # instead would have sent an ask at 0.50 and paid 0.50 for the NO.
+    ranges = [{"start": 0, "end": 1, "step": 0.05}]
+    assert encode_side_price("no", Decimal("0.4750"), ranges) == ("ask", Decimal("0.5500"))
+    book_side, yes_price, own_prob = snap_intent("no", Decimal("0.4750"), ranges)
+    assert (book_side, yes_price, own_prob) == ("ask", Decimal("0.5500"), Decimal("0.4500"))
+
+
+@pytest.mark.parametrize("side", ["yes", "no"])
+def test_a_price_below_the_markets_lowest_tick_is_refused_never_snapped_to_zero(side):
+    ranges = [{"start": 0, "end": 1, "step": 0.05}]
+    with pytest.raises(PriceOffGrid):
+        encode_side_price(side, Decimal("0.0200"), ranges)
+
+
+def test_a_refused_price_never_reaches_the_transport_or_spends_a_token():
+    t = FakeTransport()
+    w = _writer(t)
+    with pytest.raises(PriceOffGrid):
+        w.place_limit(_intent(prob=Decimal("0.02"),
+                              price_ranges=[{"start": 0, "end": 1, "step": 0.05}]))
+    assert t.calls == [] and w._bucket.tokens == ORDER_MESSAGES_PER_MINUTE
 
 
 def test_grid_steps_excludes_zero_and_one_and_matches_the_fallback_on_the_cent_grid():
@@ -231,6 +264,23 @@ def test_create_group_and_cancel_group():
     assert w.create_group(Decimal("5")) == "g9"
     w.cancel_group("g9")
     assert t.calls[1][0] == "DELETE" and t.calls[1][1].endswith("/g9")
+
+
+def test_create_group_posts_the_create_sub_path_with_the_fixed_point_field():
+    # Fix round 1, Critical 1: the endpoint is /portfolio/order_groups/create, and
+    # `contracts_limit` on the wire is an int64 -- the fixed-point string form is
+    # `contracts_limit_fp`, which is the one that can carry a Numeric(14,2) quantity.
+    t = FakeTransport(queued=[_ok({"order_group_id": "g9"})])
+    _writer(t).create_group(Decimal("5"))
+    method, path, params, body = t.calls[0]
+    assert (method, path) == ("POST", "/portfolio/order_groups/create")
+    assert body == {"contracts_limit_fp": "5.00"}
+
+
+def test_create_group_sends_the_exchange_index_only_when_it_is_not_the_default_shard():
+    t = FakeTransport(queued=[_ok({"order_group_id": "g9"})])
+    _writer(t).create_group(Decimal("2.50"), exchange_index=2)
+    assert t.calls[0][3] == {"contracts_limit_fp": "2.50", "exchange_index": 2}
 
 
 def test_create_group_raises_when_the_venue_returns_no_group_id():
@@ -381,6 +431,49 @@ def test_an_echo_mismatch_on_an_amend_cancels_and_raises():
     assert t.calls[1][0] == "DELETE"
 
 
+def test_an_echo_that_flips_the_book_side_is_a_mismatch():
+    # Fix round 1, Important 1: a NO order echoed as a bid at the same YES price is the exact
+    # inverse of the order. Comparing only the raw YES-leg price waved it through.
+    t = FakeTransport(queued=[
+        _ok({"order": _echo_of(price="0.5600", count="10.00", book_side="bid")}),
+        _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(side="no", prob=Decimal("0.44"),
+                                       contracts=Decimal("10")))
+    assert exc.value.field == "side" and exc.value.reason == "echo_mismatch"
+    assert t.calls[1][0] == "DELETE"
+
+
+def test_an_echo_with_a_direction_we_do_not_recognise_is_a_mismatch():
+    # Never let unvalidated venue text land in VenueOrder.side.
+    echo = _echo_of(price="0.5600", count="10.00")
+    echo["book_side"] = "sideways"
+    echo["outcome_side"] = "maybe"
+    t = FakeTransport(queued=[_ok({"order": echo}), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert exc.value.field == "side"
+
+
+def test_an_approved_order_always_carries_our_own_side_and_a_decimal_prob():
+    for side, book_side, prob in [("yes", "bid", Decimal("0.56")), ("no", "ask", Decimal("0.44"))]:
+        t = FakeTransport(queued=[_ok({"order": _echo_of(
+            price="0.5600", count="10.00", book_side=book_side)})])
+        order = _writer(t).place_limit(_intent(side=side, prob=prob, contracts=Decimal("10")))
+        assert order.side in ("yes", "no") and order.side == side
+        assert isinstance(order.prob, Decimal) and order.prob == prob
+
+
+def test_the_echo_is_compared_against_the_snapped_price_not_the_raw_request():
+    # An off-grid request goes out floored, so the venue echoes the floored price. Comparing
+    # against the caller's pre-snap number would freeze the market on every such order.
+    ranges = [{"start": 0, "end": 1, "step": 0.05}]
+    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5000", count="10.00")})])
+    order = _writer(t).place_limit(_intent(prob=Decimal("0.5300"), contracts=Decimal("10"),
+                                           price_ranges=ranges))
+    assert t.calls[0][3]["price"] == "0.5000" and order.prob == Decimal("0.5000")
+
+
 def test_a_matching_echo_returns_a_venue_order_decoded_into_our_side_space():
     t = FakeTransport(queued=[_ok({"order": _echo_of(
         price="0.5600", count="10.00", remaining="10.00", fill="0.00", book_side="ask")})])
@@ -510,8 +603,41 @@ def test_fee_model_rejects_an_unexpected_football_fee_shape():
 def test_fee_model_keeps_a_series_multiplier_as_a_decimal():
     t = FakeTransport(queued=[_ok({"series": {"fee_type": "quadratic_with_maker_fees",
                                               "fee_multiplier": "0.5"}})])
-    model = _writer(t).fee_model_for("KXNFLGAME-X")
+    model = _writer(t).fee_model_for("KXOTHER-X")
     assert model.multiplier == Decimal("0.5")
+
+
+def test_fee_model_rejects_a_football_series_with_no_fee_type():
+    # fee_model_for answers a missing fee_type with the football model itself, so an empty
+    # /series/ body would otherwise walk straight through the D14 guard.
+    t = FakeTransport(queued=[_ok({"series": {}})])
+    with pytest.raises(FeeModelMismatch, match="fee_type"):
+        _writer(t).fee_model_for("KXNFLGAME-X")
+
+
+def test_fee_model_rejects_a_football_series_repriced_by_a_multiplier():
+    t = FakeTransport(queued=[_ok({"series": {"fee_type": "quadratic_with_maker_fees",
+                                              "fee_multiplier": "2"}})])
+    with pytest.raises(FeeModelMismatch, match="multiplier"):
+        _writer(t).fee_model_for("KXNFLGAME-X")
+
+
+def test_the_fee_guard_is_an_explicit_raise_not_a_bare_assert():
+    # python -O strips `assert`; this guard must survive it. FeeModelMismatch subclasses
+    # AssertionError so the D14 comparison's `pytest.raises(AssertionError)` still holds.
+    import harness.venues.kalshi.authed as mod
+    source = inspect.getsource(mod._require_football_fees)
+    assert "assert " not in source
+    assert issubclass(FeeModelMismatch, AssertionError)
+
+
+def test_the_fee_guard_runs_again_on_a_cache_hit():
+    t = FakeTransport(queued=[_ok({"series": {}})])
+    w = _writer(t)
+    for _ in range(2):
+        with pytest.raises(FeeModelMismatch):
+            w.fee_model_for("KXNFLGAME-X")
+    assert len(t.calls) == 1
 
 
 def test_fee_model_does_not_assert_football_rates_on_another_series():

@@ -382,6 +382,9 @@ ORDER_MESSAGES_PER_MINUTE = 60
 
 ORDERS_PATH = "/portfolio/events/orders"
 ORDER_GROUPS_PATH = "/portfolio/order_groups"
+#: Creating a group is a POST to its own `/create` sub-path, not to the collection
+#: (Trade API reference, read 2026-09-08). The DELETE is on the collection member.
+ORDER_GROUPS_CREATE_PATH = "/portfolio/order_groups/create"
 
 #: Section 5.2's probability band, in our own side space, checked before the encoder runs.
 MIN_PROB = Decimal("0.01")
@@ -435,6 +438,20 @@ class MessageBudgetExceeded(RuntimeError):
 class PreSendInvariantFailed(RuntimeError):
     """One of section 5.2's five pre-send checks failed. Raised before the token bucket and
     before any transport call, so a rejected order never becomes a message."""
+
+
+class PriceOffGrid(ValueError):
+    """The intent's own-side probability is below the lowest price this market quotes, so there
+    is no allowed price at or below it. Refused rather than snapped: the only price below the
+    market's first tick is zero, and an order at zero is not the order that was intended."""
+
+
+class FeeModelMismatch(AssertionError):
+    """A football series did not price at Kalshi's football fee schedule (maker 0.0175, taker
+    0.07, multiplier 1), or sent no `fee_type` at all. Subclasses `AssertionError` because that
+    is what the phase 3 D14 comparison raises, but it is an explicit `raise`: a bare `assert`
+    disappears under `python -O`, and this guard is the only thing standing between a repriced
+    series and a silently wrong realised P&L."""
 
 
 @dataclass(frozen=True)
@@ -561,26 +578,54 @@ def grid_steps(price_ranges) -> list[Decimal]:
 
 
 def snap_to_grid(p: Decimal, price_ranges) -> Decimal:
-    """The nearest allowed YES price, ties going down (never up: rounding a bid up pays more)."""
+    """The greatest allowed price at or below `p`: a floor, not a nearest.
+
+    `p` is in whatever side space it arrives in, and the caller is expected to pass the order's
+    *own-side* probability (fix round 1, Important 2). Flooring there is what makes the snap
+    conservative on both legs -- we never pay more than we meant to for a YES *or* for a NO --
+    and it matches `harness.strategy.run.snap_to_grid`, which floors the price the strategy
+    already sized its edge against. A nearest-with-ties-down snap rounds a non-tie up, so the
+    writer could re-round a floored strategy price back above the edge it was chosen for.
+
+    A `p` below the market's lowest tick raises `PriceOffGrid` rather than snapping to zero.
+    """
     grid = grid_steps(price_ranges)
     target = _as_decimal(p)
-    best = grid[0]
-    best_distance = abs(best - target)
-    for candidate in grid[1:]:          # ascending, and strictly-closer wins, so a tie stays low
-        distance = abs(candidate - target)
-        if distance < best_distance:
-            best, best_distance = candidate, distance
+    best = None
+    for candidate in grid:              # ascending
+        if candidate > target:
+            break
+        best = candidate
+    if best is None:
+        raise PriceOffGrid(
+            f"probability {target} is below this market's lowest price {grid[0]}")
     return best.quantize(PRICE_QUANTUM)
 
 
-def encode_side_price(side: str, prob: Decimal, price_ranges) -> tuple[str, Decimal]:
-    """(side=yes, p) -> ("bid", snap(p)); (side=no, p) -> ("ask", snap(1 - p)). The returned
-    price is always a YES-leg price on the market's grid."""
+def snap_intent(side: str, prob: Decimal, price_ranges) -> tuple[str, Decimal, Decimal]:
+    """The whole encode in one pass: `(book_side, yes_price, own_prob)`.
+
+    `own_prob` is the floored price in *our* side space -- what this order actually pays if it
+    fills -- and it is the value the echo check compares the venue's echo against. `yes_price`
+    is the same number expressed on the YES leg, which is the only leg V2 quotes. Building the
+    grid once here keeps `encode_side_price`'s pinned two-value signature intact without
+    parsing `price_ranges` twice per order.
+    """
+    if side not in ("yes", "no"):
+        raise ValueError(f"side must be 'yes' or 'no', not {side!r}")
+    own_prob = snap_to_grid(_as_decimal(prob), price_ranges)
     if side == "yes":
-        return "bid", snap_to_grid(_as_decimal(prob), price_ranges)
-    if side == "no":
-        return "ask", snap_to_grid(_ONE - _as_decimal(prob), price_ranges)
-    raise ValueError(f"side must be 'yes' or 'no', not {side!r}")
+        return "bid", own_prob, own_prob
+    return "ask", (_ONE - own_prob).quantize(PRICE_QUANTUM), own_prob
+
+
+def encode_side_price(side: str, prob: Decimal, price_ranges) -> tuple[str, Decimal]:
+    """(side=yes, p) -> ("bid", floor(p)); (side=no, p) -> ("ask", 1 - floor(p)). The snap is
+    applied to `p` in the order's own side space and the result is converted to the YES leg
+    afterwards, so the price moves in our favour on both sides. The returned price is always a
+    YES-leg price."""
+    book_side, yes_price, _ = snap_intent(side, prob, price_ranges)
+    return book_side, yes_price
 
 
 def decode_side_price(book_side: str, price: Decimal) -> tuple[str, Decimal]:
@@ -623,12 +668,14 @@ def _book_side_of(view: OrderView) -> str | None:
     return None
 
 
-def _venue_order(view: OrderView, raw: dict) -> VenueOrder:
-    """An `OrderView` (the venue's own YES-leg shape) turned back into our side space."""
-    book_side = _book_side_of(view)
-    side, prob = view.outcome_side, None
-    if book_side is not None and view.price is not None:
-        side, prob = decode_side_price(book_side, view.price)
+def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal) -> VenueOrder:
+    """An `OrderView` (the venue's own YES-leg shape) turned back into our side space.
+
+    `side` and `prob` are passed in already decoded and already compared against what was sent,
+    never re-derived here: an approved `VenueOrder` therefore carries `yes` or `no` and a
+    `Decimal`, and can never carry raw venue text in `side` or `None` in `prob` (fix round 1,
+    Important 1). An echo this pair cannot be built from is a mismatch, not an order.
+    """
     return VenueOrder(
         order_id=view.order_id,
         client_order_id=view.client_order_id,
@@ -642,6 +689,29 @@ def _venue_order(view: OrderView, raw: dict) -> VenueOrder:
         order_group_id=view.order_group_id,
         raw=raw,
     )
+
+
+def _require_football_fees(series: str, fee_type: str | None, model: FeeModel) -> None:
+    """Kalshi's football schedule, checked explicitly rather than with a bare `assert`, which
+    `python -O` strips (fix round 1, Minor 2).
+
+    `fee_type` must be present: `harness.pricing.fees.fee_model_for` answers a missing one with
+    the football model itself, so an empty `/series/` body would otherwise walk straight through
+    the guard the D14 comparison rests on (fix round 1, Minor 1). The multiplier is pinned too:
+    a series repriced at 2x carries the same two rates and charges twice.
+    """
+    if not fee_type:
+        raise FeeModelMismatch(
+            f"{series}: the series carried no fee_type, so its maker and taker rates are unknown")
+    if model.maker_rate != Decimal("0.0175"):
+        raise FeeModelMismatch(
+            f"{series}: maker rate {model.maker_rate} is not the football 0.0175")
+    if model.taker_rate != Decimal("0.07"):
+        raise FeeModelMismatch(
+            f"{series}: taker rate {model.taker_rate} is not the football 0.07")
+    if model.multiplier != _ONE:
+        raise FeeModelMismatch(
+            f"{series}: fee multiplier {model.multiplier} is not 1")
 
 
 class KalshiWriter:
@@ -665,7 +735,7 @@ class KalshiWriter:
         self._kill_switch_active = kill_switch_active
         self._writes_allowed = bool(writes_allowed)
         self._bucket = TokenBucket(ORDER_MESSAGES_PER_MINUTE)
-        self._fee_models: dict[str, FeeModel] = {}
+        self._fee_models: dict[str, tuple[str | None, FeeModel]] = {}
 
     # -- section 5.2, independent of the encoder ----------------------------------------------
 
@@ -698,12 +768,20 @@ class KalshiWriter:
 
     # -- writes ---------------------------------------------------------------------------------
 
-    def create_group(self, contracts_limit: Decimal) -> str:
+    def create_group(self, contracts_limit: Decimal, exchange_index: int = 0) -> str:
+        """`POST /portfolio/order_groups/create`. `contracts_limit` on the wire is an int64
+        whole-contract count and `contracts_limit_fp` is its fixed-point string form (Trade API
+        reference, read 2026-09-08); this harness's contract quantities are `Numeric(14,2)` and
+        may be fractional, so the fixed-point field is the one that can carry them (fix round 1,
+        Critical 1). `exchange_index` is sent only when it is not the default shard, so a
+        group on shard 0 stays byte-identical to the documented minimal body."""
         self._require_mode()
         self._bucket.take()
-        body = {"contracts_limit": fixed_point(contracts_limit, 2)}
-        result = self._transport.request("POST", ORDER_GROUPS_PATH, json=body)
-        _check_status(result, "POST", ORDER_GROUPS_PATH)
+        body = {"contracts_limit_fp": fixed_point(contracts_limit, 2)}
+        if exchange_index:
+            body["exchange_index"] = exchange_index
+        result = self._transport.request("POST", ORDER_GROUPS_CREATE_PATH, json=body)
+        _check_status(result, "POST", ORDER_GROUPS_CREATE_PATH)
         payload = result.body if isinstance(result.body, dict) else {}
         group_id = payload.get("order_group_id")
         if not group_id:
@@ -712,8 +790,12 @@ class KalshiWriter:
 
     def place_limit(self, intent: OrderIntent) -> VenueOrder:
         self._pre_send(intent.prob, intent.contracts)
+        # The encode sits between the invariant and the bucket: it can still refuse (a price
+        # below the market's lowest tick, a side that is not ours), and a refused order must no
+        # more spend a token than a capped one.
+        book_side, yes_price, own_prob = snap_intent(intent.side, intent.prob,
+                                                     intent.price_ranges)
         self._bucket.take()
-        book_side, yes_price = encode_side_price(intent.side, intent.prob, intent.price_ranges)
         body = {
             "ticker": intent.ticker,
             "side": book_side,                       # bid|ask on the YES leg
@@ -731,7 +813,7 @@ class KalshiWriter:
         result = self._transport.request("POST", ORDERS_PATH, json=body)
         _check_status(result, "POST", ORDERS_PATH)
         return self._checked_echo(result, intent.ticker, intent.exchange_index,
-                                  yes_price, _as_decimal(intent.contracts))
+                                  intent.side, own_prob, _as_decimal(intent.contracts))
 
     def amend(self, order_id, prob, contracts, client_order_id,
               updated_client_order_id, ticker, side, exchange_index, price_ranges) -> VenueOrder:
@@ -743,8 +825,8 @@ class KalshiWriter:
         failure as a venue that places one.
         """
         self._pre_send(prob, contracts)
+        book_side, yes_price, own_prob = snap_intent(side, prob, price_ranges)
         self._bucket.take()
-        book_side, yes_price = encode_side_price(side, prob, price_ranges)
         path = f"{ORDERS_PATH}/{quote(str(order_id), safe='')}/amend"
         body = {
             "ticker": ticker,
@@ -757,7 +839,7 @@ class KalshiWriter:
         }
         result = self._transport.request("POST", path, json=body)
         _check_status(result, "POST", path)
-        return self._checked_echo(result, ticker, exchange_index, yes_price,
+        return self._checked_echo(result, ticker, exchange_index, side, own_prob,
                                   _as_decimal(contracts))
 
     def cancel(self, order_id: str, ticker: str, exchange_index: int) -> CancelResult:
@@ -782,28 +864,45 @@ class KalshiWriter:
 
     # -- the echo check ---------------------------------------------------------------------------
 
-    def _checked_echo(self, result, ticker: str, exchange_index: int, yes_price: Decimal,
-                      sent_count: Decimal) -> VenueOrder:
-        """`remaining_count + fill_count == sent count` and `price == the price we snapped`, both
-        as Decimals ("10" and "10.00" are the same count; a string compare would call that a
-        mismatch). On any mismatch the order is cancelled and `EchoMismatch` is raised, so the
-        caller freezes the market for 15 minutes with reason `echo_mismatch`.
+    def _checked_echo(self, result, ticker: str, exchange_index: int, sent_side: str,
+                      sent_prob: Decimal, sent_count: Decimal) -> VenueOrder:
+        """The venue's echo, decoded into *our* side space and compared there.
 
-        A missing price or a missing count is a mismatch too: an echo that does not say what was
-        accepted has not confirmed anything.
+        Three comparisons, all as Decimals or canonical `yes`/`no` strings, never as venue text:
+        the decoded side equals the side we sent, the decoded own-side probability equals the
+        one we sent (the floored `own_prob`, which is the price this order actually pays -- not
+        the caller's pre-snap request, which would mismatch on every off-grid intent), and
+        `remaining_count + fill_count` equals the count we sent ("10" and "10.00" are the same
+        count; a string compare would call that a mismatch).
+
+        Comparing in our own space is what catches a flipped book side (fix round 1, Important
+        1): a NO order echoed back as `bid` at the same YES price is the exact inverse of the
+        order, and comparing the raw YES-leg price alone waves it through.
+
+        A missing price, a missing count, or an echo with no direction this decoder recognises
+        is a mismatch too: an echo that does not say what was accepted has confirmed nothing. On
+        any mismatch the order is cancelled and `EchoMismatch` is raised, so the caller freezes
+        the market for 15 minutes with reason `echo_mismatch`.
         """
         body = result.body if isinstance(result.body, dict) else {}
         payload = body.get("order") if isinstance(body.get("order"), dict) else body
         view = _decode_order(payload)
-        field = None
+        book_side = _book_side_of(view)
+        field = side = prob = None
         if view.price is None or view.remaining_count is None or view.fill_count is None:
             field = "the echoed price and counts"
-        elif view.price != yes_price:
-            field = "price"
-        elif view.remaining_count + view.fill_count != sent_count:
-            field = "count"
+        elif book_side is None:
+            field = "side"                      # the venue's direction is not one we recognise
+        else:
+            side, prob = decode_side_price(book_side, view.price)
+            if side != sent_side:
+                field = "side"
+            elif prob != sent_prob:
+                field = "prob"
+            elif view.remaining_count + view.fill_count != sent_count:
+                field = "count"
         if field is None:
-            return _venue_order(view, payload)
+            return _venue_order(view, payload, side, prob)
 
         cancel_error = None
         if view.order_id:
@@ -824,21 +923,21 @@ class KalshiWriter:
     def fee_model_for(self, ticker: str) -> FeeModel:
         """The market's fee model, from `GET /series/{series}` once per series and cached.
 
-        Football is asserted rather than trusted: the phase 3 D14 comparison rests on maker
-        0.0175 and taker 0.07, and a series that quietly moved off that schedule would only show
-        up in the realised P&L. The GET is the reader's -- limits and series are read there, not
-        here (section 1.3), so this class holds no read method of its own.
+        Football is checked rather than trusted: the phase 3 D14 comparison rests on maker
+        0.0175 and taker 0.07 at multiplier 1, and a series that quietly moved off that schedule
+        would only show up in the realised P&L. The GET is the reader's -- limits and series are
+        read there, not here (section 1.3), so this class holds no read method of its own. The
+        `fee_type` is cached alongside the model so the guard is the same on a cache hit.
         """
         series = str(ticker).split("-")[0]
-        model = self._fee_models.get(series)
-        if model is None:
+        cached = self._fee_models.get(series)
+        if cached is None:
             body = self._reader.get_series(series)
             payload = body.get("series") if isinstance(body.get("series"), dict) else body
-            model = build_fee_model(payload.get("fee_type"), payload.get("fee_multiplier"))
-            self._fee_models[series] = model
+            fee_type = payload.get("fee_type")
+            cached = (fee_type, build_fee_model(fee_type, payload.get("fee_multiplier")))
+            self._fee_models[series] = cached
+        fee_type, model = cached
         if series.startswith(FOOTBALL_SERIES_PREFIXES):
-            assert model.maker_rate == Decimal("0.0175"), (
-                f"{series}: maker rate {model.maker_rate} is not the football 0.0175")
-            assert model.taker_rate == Decimal("0.07"), (
-                f"{series}: taker rate {model.taker_rate} is not the football 0.07")
+            _require_football_fees(series, fee_type, model)
         return model
