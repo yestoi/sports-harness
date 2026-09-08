@@ -275,3 +275,28 @@ def test_insert_trades_without_ctx_still_drops_the_sideless_print(db_session):
     # ctx is optional: reprocess() and ad-hoc callers pass none and must not crash.
     assert insert_trades(db_session, {"trades": [_print("no-side")]}, raw_id=9) == 0
     assert db_session.query(VenueTrade).count() == 0
+
+
+def test_insert_trades_accumulates_kalshi_trades_normalized_in_ctx(db_session):
+    """Fix 17 round 1 (roadmap row 17, Important): the dashboard's `no_taker_side_share_24h`
+    denominator moved from a live `venue_trades` count to `runs.notes`' `kalshi_trades_normalized`
+    -- the same count of REST trade rows this function newly inserts, summed in `ctx` across
+    every `/markets/trades` page one run processes (mirroring how `taker_side_missing` already
+    accumulates), so `harness.recorder.tick.Recorder` can write the running total into notes."""
+    ctx: dict = {}
+    body_1 = {"cursor": "", "trades": [_print("t-1", taker_outcome_side="no", taker_book_side="ask"),
+                                       _print("t-2", taker_outcome_side="yes", taker_book_side="bid"),
+                                       _print("t-no-side")]}
+    assert insert_trades(db_session, body_1, raw_id=10, ctx=ctx) == 2
+    assert ctx["kalshi_trades_normalized"] == 2
+    assert ctx["taker_side_missing"] == 1
+
+    # A second page in the same run adds to the running total rather than resetting it.
+    body_2 = {"cursor": "", "trades": [_print("t-3", taker_outcome_side="no", taker_book_side="ask")]}
+    assert insert_trades(db_session, body_2, raw_id=11, ctx=ctx) == 1
+    assert ctx["kalshi_trades_normalized"] == 3
+    assert ctx["taker_side_missing"] == 1
+
+    # A page that inserts nothing new (already-recorded trade_ids) still adds zero, not nothing.
+    assert insert_trades(db_session, body_2, raw_id=11, ctx=ctx) == 0
+    assert ctx["kalshi_trades_normalized"] == 3

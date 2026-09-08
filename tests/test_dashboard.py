@@ -253,7 +253,7 @@ def test_a_failing_section_does_not_take_the_page_down(monkeypatch, db_session, 
 
     _seed_full(db_session, env_settings)
 
-    def boom(session, now):
+    def boom(*args, **kwargs):
         raise OperationalError("select 1", {}, Exception("canceling statement due to statement timeout"))
 
     monkeypatch.setattr(dash, "_websocket", boom)
@@ -430,6 +430,9 @@ def test_data_quality_rows(db_session, env_settings, tmp_path):
                                body={"series": {"fee_type": "quadratic", "fee_multiplier": "1"}}))
     _skip_event(db_session, POST_ONLY_REJECT, ts=NOW - timedelta(minutes=5))
     _skip_event(db_session, "fair_stale", ts=NOW - timedelta(minutes=5))
+    # Fix 17 round 1: the no-taker-side denominator now comes from runs.notes'
+    # `kalshi_trades_normalized`, not a live `venue_trades` count.
+    run.notes = {"taker_side_missing": 1, "kalshi_trades_normalized": 3}
     db_session.commit()
 
     body = _client(db_session, settings).get("/api/summary").json()
@@ -440,25 +443,25 @@ def test_data_quality_rows(db_session, env_settings, tmp_path):
     assert dq["post_only_reject_rate_1h"] == 0.5
     assert "non_linear_cent_share_1h" in dq
     assert "nonzero_exchange_index_1h" in dq
-    assert "no_taker_side_share_24h" in dq
+    assert dq["no_taker_side_share_24h"] == 0.25
 
 
 def test_no_taker_side_share_uses_matching_24h_windows(db_session, env_settings, tmp_path):
     """Fix round 1, I1: the brief's row is a 24h share. The numerator can only come from run
     notes (a dropped print never reaches venue_trades at all), so the fix widens the
     denominator to the same 24h window rather than trying to source the numerator from
-    venue_trades."""
+    venue_trades. Fix 17 round 1: the denominator itself moved from a live `venue_trades` count
+    to `runs.notes`' `kalshi_trades_normalized` (the same per-run sum `insert_trades` already
+    writes for the rows it puts in `venue_trades`), so both halves of the ratio read from run
+    notes over the same 24h window."""
     game, run, markets = _seed_full(db_session, env_settings)
     settings = _dashboard_settings(env_settings, tmp_path)
 
-    # 3 dropped prints, all inside 24h but outside the old 1h denominator window.
+    # 3 dropped prints and 1 normalized trade, both inside 24h but outside the old 1h
+    # denominator window.
     old_run = Run(started_at=NOW - timedelta(hours=20), status="ok",
-                 notes={"taker_side_missing": 3})
+                 notes={"taker_side_missing": 3, "kalshi_trades_normalized": 1})
     db_session.add(old_run)
-    # 1 stored trade, also outside 1h but inside 24h.
-    db_session.add(VenueTrade(venue="kalshi", trade_id="t-old", ticker=markets[0].ticker,
-                              ts=NOW - timedelta(hours=20), yes_price=Decimal("0.40"),
-                              count=Decimal("1"), taker_side="yes", source="rest"))
     db_session.commit()
 
     body = _client(db_session, settings).get("/api/summary").json()
@@ -679,13 +682,18 @@ def test_candidates_sums_pricing_counts_from_run_notes_ignoring_stale_rows(db_se
 
 
 def test_funnel_candidates_and_data_quality_issue_no_statement_against_signal_tables(db_session, env_settings):
-    """Fix 17 (journal 44/48): none of these three sections, called the way `build_summary`
-    calls them (a shared `run_notes_24h` fetched once, passed to `_funnel` and `_candidates`),
-    may issue a statement against `signals`, `fair_values` or `market_gap_snapshots` -- even
-    though `_seed_full` writes real rows to all three via `price_and_signal`. The previous
-    `_candidates` grouped `signals` by variant and side directly; that query took 43s against
-    the 10s page-time bound on the NAS's season-sized `signals` table."""
-    _seed_full(db_session, env_settings)
+    """Fix 17 (journal 44/48) plus round 1 (roadmap row 17, Important): none of these three
+    sections, called the way `build_summary` calls them (a shared `run_notes_24h` fetched once,
+    passed to all three), may issue a statement against `signals`, `fair_values`,
+    `market_gap_snapshots` or `venue_trades` -- even though `_seed_full` writes real rows to the
+    first three via `price_and_signal`, and this test adds a real `venue_trades` row too. The
+    previous `_candidates` grouped `signals` by variant and side directly (43s against the 10s
+    page-time bound on the NAS's season-sized `signals` table); the previous `_data_quality`
+    counted `venue_trades` live for the no-taker-side denominator, unindexed on `source`."""
+    game, run, markets = _seed_full(db_session, env_settings)
+    db_session.add(VenueTrade(venue="kalshi", trade_id="t-1", ticker=markets[0].ticker, ts=NOW,
+                              yes_price=Decimal("0.40"), count=Decimal("1"), taker_side="yes", source="rest"))
+    db_session.commit()
     engine = db_session.get_bind()
     statements: list[str] = []
 
@@ -697,7 +705,7 @@ def test_funnel_candidates_and_data_quality_issue_no_statement_against_signal_ta
         run_notes_24h = _recent_run_notes(db_session, NOW - WINDOW_24H)
         _funnel(db_session, NOW, run_notes_24h)
         _candidates(db_session, NOW, run_notes_24h)
-        _data_quality(db_session, NOW)
+        _data_quality(db_session, NOW, run_notes_24h)
     finally:
         event.remove(engine, "before_cursor_execute", _capture)
 
@@ -705,3 +713,4 @@ def test_funnel_candidates_and_data_quality_issue_no_statement_against_signal_ta
     assert "fair_values" not in joined
     assert "market_gap_snapshots" not in joined
     assert "signals" not in joined
+    assert "venue_trades" not in joined

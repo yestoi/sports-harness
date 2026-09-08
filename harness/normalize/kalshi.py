@@ -232,6 +232,14 @@ def _already_recorded(session: Session, trades: list[dict]) -> set[str]:
 
 
 def insert_trades(session: Session, body: dict, raw_id: int, ctx: dict | None = None) -> int:
+    """Returns the number of REST trade rows newly inserted into `venue_trades` from this page
+    (deduplicated against already-recorded `trade_id`s). When `ctx` is given, also accumulates
+    that count into `ctx["kalshi_trades_normalized"]` across every page a run processes (fix
+    17 round 1, journal/roadmap row 17): the dashboard's `no_taker_side_share_24h` denominator
+    used to come from a live `venue_trades` count with no index on `source`, which after
+    partition pruning could still sequentially scan up to two weekly partitions; this counter
+    lets it read the same run-notes 24h window as the `taker_side_missing` numerator instead.
+    """
     n, dropped = 0, 0
     trades = (body or {}).get("trades", []) if isinstance(body, dict) else []
     recorded = _already_recorded(session, trades)
@@ -258,4 +266,6 @@ def insert_trades(session: Session, body: dict, raw_id: int, ctx: dict | None = 
         log.warning("kalshi trades: %d prints dropped, taker side missing (raw_id=%s)", dropped, raw_id)
         if ctx is not None:
             ctx["taker_side_missing"] = ctx.setdefault("taker_side_missing", 0) + dropped
+    if ctx is not None:
+        ctx["kalshi_trades_normalized"] = ctx.setdefault("kalshi_trades_normalized", 0) + n
     return n

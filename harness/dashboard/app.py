@@ -41,7 +41,6 @@ WINDOW_5M = timedelta(minutes=5)
 SIGNALS_LIMIT = 100
 UNMATCHED_LIMIT = 50
 REASONS_LIMIT = 10
-RUNS_NOTES_LIMIT = 500  # bound on how many recent runs' notes we scan for trade gaps
 #: VenueMarket has no `sport` column; a market's sport is inferred from its Kalshi series
 #: prefix, same convention `harness match-report` (harness/cli.py) uses, because unmatched
 #: markets often have no `game_id` to join through.
@@ -97,13 +96,13 @@ def _recent_run_notes(session: Session, cutoff: datetime, limit: int | None = No
     """Every run row's `notes` JSON since `cutoff`, newest first -- the one query `_funnel`,
     `_candidates` and `_data_quality` scan `runs.notes` through (fix round 1, Minor 3: `_funnel`
     and `_data_quality` used to run this query twice; fix 17, journal 44/48: `build_summary` now
-    fetches the 24h window once and hands the same list to `_funnel` and `_candidates`, so
-    `_candidates` never calls this directly except in its own direct unit tests). `limit`, when
-    given, caps the row count; omit it for a window meant to be read in full. `_funnel` and
-    `_candidates` pass no limit: capping it at `RUNS_NOTES_LIMIT` (500) used to silently truncate
-    a "24h" scan to about 4.2 hours at the default 30s heartbeat (fix round 1, Important 2) --
-    ~2880 rows a day of this ~2MB table is cheap to scan in full. `_data_quality` keeps the
-    existing `RUNS_NOTES_LIMIT` cap, unchanged by this fix.
+    fetches the 24h window once and hands the same list to all three, so none of them call this
+    directly except in their own direct unit tests). `limit`, when given, caps the row count;
+    omit it for a window meant to be read in full -- all three pass no limit as of fix 17 round
+    1: a 500-row cap used to silently truncate a "24h" scan to about 4.2 hours at the default
+    30s heartbeat (fix round 1, Important 2), and `_data_quality`'s `kalshi_trades_normalized`
+    sum needs the same true 24h window `_funnel` and `_candidates` already get. ~2880 rows a day
+    of this ~2MB table is cheap to scan in full.
     """
     stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.started_at))
     if limit is not None:
@@ -142,13 +141,13 @@ def _funnel(session: Session, now: datetime, run_notes_24h: list[dict] | None = 
     10s bound and blew the dashboard's statement timeout once the season's pricing volume grew,
     and it recurs after every Postgres restart. The rendered keys are unchanged, so the frozen
     `/api/summary` contract holds -- only where the values come from has changed. The scan is
-    uncapped (fix round 1, Important 2): `RUNS_NOTES_LIMIT` covers only a few hours at the
-    default heartbeat, and this section's own docstring -- and the `sources`/`markets_by_sport`
-    keys beside it -- promise the full 24h.
+    uncapped (fix round 1, Important 2): a 500-row cap covers only a few hours at the default
+    heartbeat, and this section's own docstring -- and the `sources`/`markets_by_sport` keys
+    beside it -- promise the full 24h.
 
     `run_notes_24h`, when given, is the already-fetched `runs.notes` rows for the trailing 24h
-    (fix 17): `build_summary` fetches this once and passes it to both `_funnel` and
-    `_candidates` so the page issues one scan of `runs.notes`, not two. Omit it (as the direct
+    (fix 17): `build_summary` fetches this once and passes it to `_funnel`, `_candidates` and
+    `_data_quality` so the page issues one scan of `runs.notes`, not three. Omit it (as the direct
     unit tests below do) and this fetches it itself.
     """
     cutoff = now - WINDOW_24H
@@ -308,7 +307,16 @@ def _websocket(session: Session, now: datetime) -> dict:
     return {"orderbook_events_5m": ob_count, "ws_trades_1h": trades_count, "last_event_at": _iso(last_ob)}
 
 
-def _data_quality(session: Session, now: datetime) -> dict:
+def _data_quality(session: Session, now: datetime, run_notes_24h: list[dict] | None = None) -> dict:
+    """`run_notes_24h`, when given, is the same uncapped 24h `runs.notes` list `build_summary`
+    already fetched for `_funnel` and `_candidates` (fix 17 round 1): this section used to keep
+    its own 500-row-capped fetch, but the `kalshi_trades_normalized` sum below needs the true
+    24h window (the cap truncates to about 4.2h at the default heartbeat -- see
+    `_recent_run_notes`'s docstring), so it now shares the uncapped list instead, both fixing
+    that truncation for `trade_gaps`/`taker_side_missing` too and dropping this section's own
+    scan of `runs.notes` down to zero when called from `build_summary`. Omit it (as the direct
+    unit tests do) and this fetches its own, uncapped.
+    """
     cutoff_1h = now - WINDOW_1H
     rows = session.execute(
         select(OddsSnapshot.book, OddsSnapshot.fetched_at, OddsSnapshot.book_last_update)
@@ -322,22 +330,31 @@ def _data_quality(session: Session, now: datetime) -> dict:
     staleness_median_s = {book: median(vals) for book, vals in by_book.items()}
 
     cutoff_24h = now - WINDOW_24H
+    if run_notes_24h is None:
+        run_notes_24h = _recent_run_notes(session, cutoff_24h)
     trade_gaps = []
     taker_side_missing = 0
-    for notes in _recent_run_notes(session, cutoff_24h, limit=RUNS_NOTES_LIMIT):
+    kalshi_trades_normalized = 0
+    for notes in run_notes_24h:
         trade_gaps.extend((notes or {}).get("trade_gaps", []))
         taker_side_missing += (notes or {}).get("taker_side_missing", 0) or 0
+        kalshi_trades_normalized += (notes or {}).get("kalshi_trades_normalized", 0) or 0
 
     # Fix round 1, I1: the brief's row is a 24h share. A dropped print (no resolvable taker
     # side) never reaches venue_trades at all (harness/normalize/kalshi.py insert_trades), so
     # the numerator can only come from run notes -- already a 24h scan, above. The denominator
     # is widened to the same 24h window rather than the rest of this section's 1h, so both
     # halves of the ratio read from the same clock.
-    stored_trades_24h = session.execute(
-        select(func.count()).select_from(VenueTrade)
-        .where(VenueTrade.source == "rest", VenueTrade.ts >= cutoff_24h)
-    ).scalar_one()
-    taker_side_total = taker_side_missing + stored_trades_24h
+    #
+    # Fix 17 round 1 (roadmap row 17, Important): the denominator used to be a live count over
+    # `venue_trades` (`source = 'rest' and ts >= cutoff_24h`); `venue_trades` carries no index
+    # on `source`, so even bounded by weekly RANGE partition pruning (F19) that statement could
+    # still sequentially scan up to two full weekly partitions inside the 2s statement budget.
+    # It is now `kalshi_trades_normalized`, the same per-run sum of REST trade rows
+    # `insert_trades` (`harness/normalize/kalshi.py`) writes into `venue_trades`, read from
+    # `runs.notes` above instead of the table -- so both halves of the ratio come from the same
+    # scan, and this section issues no statement against `venue_trades` at all.
+    taker_side_total = taker_side_missing + kalshi_trades_normalized
     no_taker_side_share = (taker_side_missing / taker_side_total) if taker_side_total else None
 
     matched_total, non_linear_cent = session.execute(
@@ -610,7 +627,7 @@ def build_summary(session: Session, session_factory: sessionmaker, now: datetime
         "signals": _section(session, "signals", lambda: _primary_signals(session, now)),
         "unmatched_markets": _section(session, "unmatched_markets", lambda: _unmatched_markets(session, now)),
         "websocket": _section(session, "websocket", lambda: _websocket(session, now)),
-        "data_quality": _section(session, "data_quality", lambda: _data_quality(session, now)),
+        "data_quality": _section(session, "data_quality", lambda: _data_quality(session, now, _shared_run_notes_24h())),
         # --- Task 12 additions: additive keys only, the block above is the frozen contract ---
         "executor": _section(session, "executor", lambda: _executor(session, now)),
         "open_orders": _section(session, "open_orders", lambda: _open_orders(session, now)),

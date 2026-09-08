@@ -562,6 +562,7 @@ class Recorder:
                                     "normalize_errors": ctx.get("normalize_errors", []),
                                     "odds_dropped": ctx.get("odds_dropped", {}),
                                     "taker_side_missing": ctx.get("taker_side_missing", 0),
+                                    "kalshi_trades_normalized": ctx.get("kalshi_trades_normalized", 0),
                                     "non_linear_cent": ctx.get("non_linear_cent", 0),
                                     "pricing": ctx.get("pricing", {})},
                              finished_at=self.clock())
