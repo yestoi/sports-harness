@@ -91,6 +91,20 @@ class Settings(BaseSettings):
     #: metric is skipped rather than erroring (ruling 3).
     pg_data_mount: Path = Path("/pgdata-ro")
 
+    # --- phase 4: backups -------------------------------------------------------------------
+    #: Where the dump sidecar writes and the encrypt job reads. Bind-mounted into app-run
+    #: read-write and into app-backup read-write; absent on the Mac, where the jobs no-op.
+    backup_dir: Path = Path("/backups")
+    #: The age recipient. A feature switched on `Path.is_file()`, not `exists()`: Compose
+    #: materialises a missing bind source as an empty *directory*, so `exists()` would be True
+    #: with no key behind it and the encrypt job would error instead of recording
+    #: `skipped: no recipient` (I6). With no public key the job leaves the plaintexts alone.
+    backup_recipient_file: Path = Path("/run/backup_age.pub")
+    #: The private identity, on the Mac only and never pushed to the NAS.
+    backup_identity_file: Path = Path("secrets/backup_age_key")
+    backup_encrypt_period_s: int = 600
+    backup_nightly_max_age_h: int = 26
+
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()
 

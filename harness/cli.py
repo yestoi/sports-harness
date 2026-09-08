@@ -82,11 +82,22 @@ def tick_once(force: bool = typer.Option(False, "--force", help="Fetch every sou
 @app.command("run")
 def run() -> None:
     configure_logging()
+    from harness.ops.backup import delete_verified_plaintexts, encrypt_pending
     from harness.scheduler import build_recorder, build_scheduler, build_settler
 
     s = get_settings()
+    backup_factory = make_session_factory(make_engine(s.database_url))
+
+    def _backup_encrypt() -> None:
+        now = datetime.now(timezone.utc)
+        with backup_factory() as session:
+            encrypted = encrypt_pending(session, s.backup_dir, s.backup_recipient_file, s.build_sha, now)
+            deleted = delete_verified_plaintexts(session, s.backup_dir, s.build_sha, now)
+        log.info("backup_encrypt rows=%s deleted_plaintexts=%s", len(encrypted), len(deleted))
+
     sched = build_scheduler(build_recorder(s), s.heartbeat_s, settler=build_settler(s),
-                            settle_period_s=s.settle_period_s)
+                            settle_period_s=s.settle_period_s, backup_encrypt=_backup_encrypt,
+                            backup_period_s=s.backup_encrypt_period_s)
     sched.start()
     stop = {"flag": False}
 
@@ -95,11 +106,103 @@ def run() -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    log.info("scheduler started heartbeat=%ss settle=%ss", s.heartbeat_s, s.settle_period_s)
+    log.info("scheduler started heartbeat=%ss settle=%ss backup_encrypt=%ss", s.heartbeat_s,
+             s.settle_period_s, s.backup_encrypt_period_s)
     while not stop["flag"]:
         time.sleep(1)
     sched.shutdown(wait=True)
     log.info("scheduler stopped")
+
+
+@app.command("backup-keygen")
+def backup_keygen_cmd() -> None:
+    """Mac only: generates the backup age keypair. Refuses when `backup_dir` exists, which
+    means this is running on the NAS -- the private key is never written there.
+
+    Prints the fixed copy-out instruction (never the private key itself); the controller adds
+    the Carried-fixes nag the first time this succeeds and clears it once the user confirms.
+    """
+    configure_logging()
+    from harness.ops.backup import keygen
+
+    s = get_settings()
+    if s.backup_dir.exists():
+        log.error("backup_dir %s exists; backup-keygen runs on the Mac only", s.backup_dir)
+        raise typer.Exit(1)
+    keygen(s.backup_identity_file, s.backup_recipient_file)
+    print("Wrote secrets/backup_age_key (0600) and deploy/backup_age.pub.")
+    print("COPY secrets/backup_age_key SOMEWHERE SAFE NOW. A backup no one can decrypt is not a backup.")
+    print("The private key is never pushed to the NAS; only deploy/backup_age.pub is.")
+
+
+@app.command("backup-encrypt")
+def backup_encrypt_cmd() -> None:
+    """One encrypt pass now, for a manual check beside the scheduled `app-run` job."""
+    configure_logging()
+    from harness.ops.backup import encrypt_pending
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url))() as session:
+        rows = encrypt_pending(session, s.backup_dir, s.backup_recipient_file, s.build_sha,
+                               datetime.now(timezone.utc))
+    print(f"rows={len(rows)}")
+
+
+@app.command("backup-decrypt")
+def backup_decrypt_cmd(
+    age_file: Path = typer.Argument(..., help="Ciphertext to decrypt"),
+    out: Path = typer.Option(..., "--out", help="Where to write the decrypted plaintext"),
+) -> None:
+    """Mac-side, with `secrets/backup_age_key`. Prints the sha256 of the decrypted plaintext."""
+    configure_logging()
+    from harness.ops.agefmt import AgeError
+    from harness.ops.backup import decrypt_file
+
+    s = get_settings()
+    try:
+        digest = decrypt_file(age_file, out, s.backup_identity_file)
+    except (AgeError, ValueError) as exc:
+        # decrypt() raises a bare ValueError for an unparseable identity, beside AgeError for
+        # every other way a decrypt can fail.
+        log.error("backup-decrypt failed: %s", exc)
+        raise typer.Exit(1) from exc
+    print(digest)
+
+
+@app.command("backup-drill-record")
+def backup_drill_record_cmd(
+    build_sha: str = typer.Option(..., "--build-sha"),
+    decrypt_ok: bool = typer.Option(..., "--decrypt-ok/--no-decrypt-ok"),
+    plaintext_sha256: str = typer.Option(..., "--plaintext-sha256"),
+    rows_match: bool = typer.Option(None, "--rows-match/--no-rows-match"),
+) -> None:
+    """Records a Mac-side decrypt drill's result. The Mac half of §4.4, run over the tunnel."""
+    configure_logging()
+    from harness.ops.backup import record_drill
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url))() as session:
+        row = record_drill(session, build_sha, decrypt_ok, plaintext_sha256, rows_match,
+                           datetime.now(timezone.utc), {})
+    print(f"backup_run={row.id} status={row.status}")
+
+
+@app.command("backup-precheck")
+def backup_precheck_cmd() -> None:
+    """The query half of §5's deploy order: exit 0 when the newest nightly `backup_runs` row is
+    `ok` and younger than `backup_nightly_max_age_h`, else 1. Never runs docker itself -- the
+    deploy recipe (Task 14) decides what to run on a non-zero exit.
+    """
+    configure_logging()
+    from harness.ops.backup import newest_nightly_ok
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url))() as session:
+        row = newest_nightly_ok(session, datetime.now(timezone.utc), s.backup_nightly_max_age_h)
+    if row is None:
+        print(f"no nightly backup_runs row ok within {s.backup_nightly_max_age_h}h")
+        raise typer.Exit(1)
+    print(f"ok backup_run={row.id} finished_at={row.finished_at}")
 
 
 @app.command("exec")

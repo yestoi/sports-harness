@@ -1,3 +1,5 @@
+from typing import Callable
+
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from harness.config.settings import Settings
@@ -39,7 +41,8 @@ def build_settler(settings: Settings) -> Settler:
 
 
 def build_scheduler(recorder: Recorder, heartbeat_s: int, settler: Settler | None = None,
-                    settle_period_s: int = 3600) -> BackgroundScheduler:
+                    settle_period_s: int = 3600, backup_encrypt: Callable[[], None] | None = None,
+                    backup_period_s: int = 0) -> BackgroundScheduler:
     """The recorder's tick, and the settler on its own slot when one is given.
 
     `BackgroundScheduler`'s default executor is a thread pool, so the settlement batch runs
@@ -47,12 +50,19 @@ def build_scheduler(recorder: Recorder, heartbeat_s: int, settler: Settler | Non
     batch on the tick's thread would delay a 30 s heartbeat, and two jobs writing the same
     `runs` row would lose one of the updates (arch review §3.4). `misfire_grace_time=300`
     because an hourly job that starts a few minutes late is still worth running.
+
+    `backup_encrypt` gets its own slot the same way, registered only when both it and
+    `backup_period_s` are given -- so the Mac (no backup_dir) and the tests never run it by
+    accident just because a period default is nonzero.
     """
     sched = BackgroundScheduler(timezone="UTC")
     sched.add_job(recorder.maybe_tick, "interval", seconds=heartbeat_s, id="maybe_tick",
                   max_instances=1, coalesce=True, misfire_grace_time=60)
     if settler is not None:
         sched.add_job(settler.run, "interval", seconds=settle_period_s, id="settle",
+                      max_instances=1, coalesce=True, misfire_grace_time=300)
+    if backup_encrypt is not None and backup_period_s:
+        sched.add_job(backup_encrypt, "interval", seconds=backup_period_s, id="backup_encrypt",
                       max_instances=1, coalesce=True, misfire_grace_time=300)
     return sched
 
