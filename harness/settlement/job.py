@@ -162,7 +162,7 @@ class Settler:
 
             stale = self._stale(session, stale_unsettled, now, ctx)
             row.finished_at = self._clock()
-            row.status = _status(results)
+            row.status = _status(results, ctx["errors"])
             row.budget_exhausted = any(r.budget_exhausted for r in results)
             row.notes = {"stages": [r.as_note() for r in results],
                          "stale_unsettled": stale,
@@ -196,12 +196,17 @@ class Settler:
             return None
 
 
-def _status(results: list[StageResult]) -> str:
+def _status(results: list[StageResult], ctx_errors: list) -> str:
     """`error` only when every stage failed: one broken stage beside four healthy ones is a
-    degraded job, and the dashboard's red is reserved for a job that achieved nothing."""
-    if not results:
-        return "ok"
+    degraded job, and the dashboard's red is reserved for a job that achieved nothing.
+
+    `ctx_errors` is what keeps a pass that settled nothing from reading `ok`. A stage that
+    isolates its own failures -- `settle` per game, `venue_result` per ticker -- returns without
+    an `error` however many units failed inside it, so the units' errors are the only signal
+    that something went wrong, and `verify.md` switches on this column rather than on `notes`.
+    A failing `stale_unsettled` lands in the same list and degrades the run for the same reason.
+    """
     failed = [r for r in results if r.error is not None]
-    if not failed:
-        return "ok"
-    return "error" if len(failed) == len(results) else "degraded"
+    if results and len(failed) == len(results):
+        return "error"
+    return "degraded" if failed or ctx_errors else "ok"

@@ -27,7 +27,8 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from harness.db.models import Ledger, Settlement, VenueSettlement
+from harness.db.models import Settlement, VenueSettlement
+from harness.execution import store as exec_store
 from harness.execution.book import side_p
 from harness.recorder import store as raw_store
 from harness.settlement.job import Budget, StageResult, current_ctx, register_stage
@@ -41,8 +42,10 @@ QUEUE_MODEL = "queue_model"
 #: The only statuses a settlement may move. An order that was cancelled or expired keeps that
 #: status forever: it is the record of what the executor did, not of what the game did.
 SETTLEABLE = ("filled", "partially_filled")
-#: The market shapes the harness prices and therefore the only ones it can resolve from a score.
-RESOLVABLE = ("moneyline", "spread", "total")
+#: The only results `venue_settlements.result` can hold (varchar(4)). Kalshi's `result` is free
+#: text, so anything else is a warning and no row: a value we cannot store is a value we cannot
+#: compare, and guessing at it would put a wrong result beside a right one.
+VENUE_RESULTS = ("yes", "no", "tie")
 #: How far back `run_venue_result` reads the recorder's stored settled pages (the recorder keeps
 #: an 8-day window, so 7 days always has one full football week in it).
 SETTLED_BODY_WINDOW = timedelta(days=7)
@@ -58,6 +61,9 @@ class SettleCounts:
     mismatches: int = 0
     venue_rows: int = 0
     budget_exhausted: bool = False
+    #: Settlement ledger rows this pass actually wrote. Additive to the brief's six fields so
+    #: the shared `insert_ledger_fill`'s RETURNING has a counter to move (fix round 1, M2).
+    ledger_rows: int = 0
 
 
 # --- pure decisions --------------------------------------------------------------------
@@ -134,29 +140,36 @@ order by g.id
 #: The markets one finished game settles. A confidently matched market is settled because it is
 #: this game's market; a market that is no longer confidently matched is settled anyway when an
 #: order was placed on it, so a match downgraded after a fill can never leave that fill unpaid.
+#: No filter on `market_type`: a shape this harness cannot resolve raises out of `resolve_market`
+#: and takes its game down loudly, rather than being dropped here with its fills left unpaid.
 _GAME_MARKETS = text("""
 select m.id, m.venue, m.ticker, m.market_type, m.threshold, m.side_team_id, m.side
 from venue_markets m
 where m.game_id = :game_id
-  and m.market_type = any(:types)
   and (m.match_status in ('matched', 'manual')
        or exists (select 1 from orders o where o.venue_market_id = m.id))
 order by m.id
 """)
 
-#: Every watched fill on one ticker. `snapshot_cross` and `no_watcher` fills are counterfactuals
-#: and hold no contracts, so they take no cash. Replay fills settle onto replay ledger rows.
+#: Every watched fill on one ticker that takes cash. `snapshot_cross` and `no_watcher` fills are
+#: counterfactuals and hold no contracts; a replay fill holds contracts in a re-simulation, not
+#: in the account, so the ledger -- which is the live record a report reads -- excludes it.
 _TICKER_FILLS = text("""
 select f.id as fill_id, f.contracts, f.prob, o.id as order_id, o.variant_id, o.side, o.replay
 from fills f
 join orders o on o.id = f.order_id
-where o.ticker = :ticker and f.fill_method = :method
+where o.ticker = :ticker and o.venue = :venue and o.replay = false
+  and f.fill_method = :method
 order by f.id
 """)
 
-_SETTLE_ORDER = text(
-    "update orders set status = 'settled' where id = :order_id and status = any(:statuses) "
-    "returning id")
+#: The status update is deliberately not part of the fill loop: a replay order takes no cash but
+#: must still leave `open`/`filled`, or it strands in the replay executor's positions forever
+#: (`harness/execution/store.py` `_POSITIONS`). Bounded on the statuses it may move, so a retry
+#: can never resurrect a cancelled or expired order.
+_SETTLE_ORDERS_ON_TICKER = text(
+    "update orders set status = 'settled' "
+    "where ticker = :ticker and venue = :venue and status = any(:statuses) returning id")
 
 _STALE_UNSETTLED = text("""
 select count(*)
@@ -190,7 +203,7 @@ def run_settlement(session: Session, now: datetime, kalshi, budget: Budget,
             break
         try:
             with session.begin_nested():
-                settled, markets, orders = _settle_game(session, now, game)
+                settled, markets, orders, ledger_rows = _settle_game(session, now, game)
             session.commit()
         except Exception as exc:  # noqa: BLE001 - one game must not cost the pass
             session.rollback()
@@ -201,10 +214,11 @@ def run_settlement(session: Session, now: datetime, kalshi, budget: Budget,
         counts.games += settled
         counts.markets += markets
         counts.orders += orders
+        counts.ledger_rows += ledger_rows
     return counts
 
 
-def _settle_game(session: Session, now: datetime, game) -> tuple[int, int, int]:
+def _settle_game(session: Session, now: datetime, game) -> tuple[int, int, int, int]:
     """One game inside its own savepoint: the score, every market's derived result, and the
     cash and status of every fill on those markets."""
     inserted = session.execute(
@@ -213,9 +227,8 @@ def _settle_game(session: Session, now: datetime, game) -> tuple[int, int, int]:
                 source="espn", settled_at=now)
         .on_conflict_do_nothing(index_elements=["game_id"])
         .returning(Settlement.game_id)).first()
-    markets = orders = 0
-    for market in session.execute(_GAME_MARKETS,
-                                  {"game_id": game.id, "types": list(RESOLVABLE)}).all():
+    markets = orders = ledger_rows = 0
+    for market in session.execute(_GAME_MARKETS, {"game_id": game.id}).all():
         payout_yes = resolve_market(market.market_type, market.threshold, market.side_team_id,
                                     game.home_team_id, game.away_team_id,
                                     game.home_score, game.away_score)
@@ -226,36 +239,38 @@ def _settle_game(session: Session, now: datetime, game) -> tuple[int, int, int]:
             .on_conflict_do_nothing(index_elements=["venue", "ticker", "source"])
             .returning(VenueSettlement.ticker)).first()
         markets += 0 if written is None else 1
-        orders += _settle_ticker(session, now, market.ticker, payout_yes)
-    return (0 if inserted is None else 1), markets, orders
+        posted, moved = _settle_ticker(session, now, market.venue, market.ticker, payout_yes)
+        ledger_rows += posted
+        orders += moved
+    return (0 if inserted is None else 1), markets, orders, ledger_rows
 
 
-def _settle_ticker(session: Session, now: datetime, ticker: str, payout_yes: Decimal) -> int:
-    """Post one ledger row per watched fill on `ticker` and settle the orders that hold them.
+def _settle_ticker(session: Session, now: datetime, venue: str, ticker: str,
+                   payout_yes: Decimal) -> tuple[int, int]:
+    """Post one ledger row per live watched fill on `ticker`, then settle every order on it.
 
-    Returns how many orders this call actually moved, not how many fills it saw: an order with
-    two fills is settled once, and an order already settled by an earlier pass moves nothing.
+    Returns `(ledger rows written, orders moved)`, both counted from the rows the statements
+    actually returned: a fill already paid by an earlier pass writes nothing, and an order with
+    two fills is settled once.
     """
-    moved = 0
-    for fill in session.execute(_TICKER_FILLS, {"ticker": ticker, "method": QUEUE_MODEL}).all():
+    posted = 0
+    for fill in session.execute(
+            _TICKER_FILLS, {"ticker": ticker, "venue": venue, "method": QUEUE_MODEL}).all():
         payout = payout_for_side(payout_yes, fill.side)
         contracts = Decimal(fill.contracts)
-        session.execute(
-            insert(Ledger)
-            .values(ts=now, variant_id=fill.variant_id, kind="settlement", order_id=fill.order_id,
-                    fill_id=fill.fill_id, ticker=ticker, side=fill.side, contracts=contracts,
-                    price=fill.prob, payout=payout,
-                    cash_delta=(contracts * payout).quantize(CENT, rounding=ROUND_HALF_UP),
-                    replay=fill.replay)
-            # The returned row is what says the cash was posted by this pass rather than an
-            # earlier one; nothing here counts ledger rows, but the order's status update below
-            # is bounded the same way and is the counter that moves.
-            .on_conflict_do_nothing(index_elements=["fill_id", "kind"])
-            .returning(Ledger.id))
-        row = session.execute(_SETTLE_ORDER,
-                              {"order_id": fill.order_id, "statuses": list(SETTLEABLE)}).first()
-        moved += 0 if row is None else 1
-    return moved
+        # The executor's own idempotent ledger insert, keyed `(fill_id, kind)`: one writer for
+        # the table means one place where a cash row's shape can drift.
+        row_id = exec_store.insert_ledger_fill(
+            session, ts=now, variant_id=fill.variant_id, kind="settlement",
+            order_id=fill.order_id, fill_id=fill.fill_id, ticker=ticker, side=fill.side,
+            contracts=contracts, price=fill.prob, payout=payout,
+            cash_delta=(contracts * payout).quantize(CENT, rounding=ROUND_HALF_UP),
+            replay=fill.replay)
+        posted += 0 if row_id is None else 1
+    moved = session.execute(_SETTLE_ORDERS_ON_TICKER,
+                            {"ticker": ticker, "venue": venue,
+                             "statuses": list(SETTLEABLE)}).all()
+    return posted, len(moved)
 
 
 def stale_unsettled(session: Session, now: datetime) -> int:
@@ -311,8 +326,11 @@ def run_venue_result(session: Session, now: datetime, kalshi, budget: Budget, ct
     `result` is still empty gets no row at all -- Kalshi has not settled it yet -- and is retried
     on the next pass rather than recorded as a blank disagreement.
 
-    One commit per ticker that did anything, so a pass that dies at market 600 of a CFB Saturday
-    keeps the 599 results it already has and the fetches it already paid for.
+    One savepoint and one commit per ticker. `_PENDING_VENUE_ROWS` is ordered by ticker, so
+    without the savepoint the first ticker that raised would be first again on the next pass and
+    every ticker after it would never get a venue row at all; with it, the failure is one entry
+    in `ctx["errors"]` and the pass carries on. The per-ticker commit also means a pass that
+    dies at market 600 of a CFB Saturday keeps the 599 results and the fetches it paid for.
     """
     pending = session.execute(_PENDING_VENUE_ROWS).all()
     if not pending:
@@ -324,33 +342,58 @@ def run_venue_result(session: Session, now: datetime, kalshi, budget: Budget, ct
     written = 0
     for seen, row in enumerate(pending):
         result, raw_id = stored.get(row.ticker, (None, None))
-        fetched = False
         if not result and kalshi is not None:
             if not budget.ok():
                 log.info("venue_result budget spent with %d tickers left",
                          len(pending) - seen)
                 break
             result, raw_id = _fetch_result(session, kalshi, row.ticker, run_id, ctx)
-            fetched = True
-        if not result:
-            if fetched:
-                session.commit()  # keep the stored body even with nothing to settle yet
+            session.commit()  # keep the stored body whatever the rest of this ticker does
+        result = _usable_result(result, row.ticker, ctx)
+        if result is None:
             continue
-        inserted = session.execute(
-            insert(VenueSettlement)
-            .values(venue=row.venue, ticker=row.ticker, source=VENUE, result=result,
-                    payout=_venue_payout(result), settled_at=now, raw_id=raw_id)
-            .on_conflict_do_nothing(index_elements=["venue", "ticker", "source"])
-            .returning(VenueSettlement.ticker)).first()
-        session.commit()
+        try:
+            with session.begin_nested():
+                inserted = session.execute(
+                    insert(VenueSettlement)
+                    .values(venue=row.venue, ticker=row.ticker, source=VENUE, result=result,
+                            payout=_venue_payout(result), settled_at=now, raw_id=raw_id)
+                    .on_conflict_do_nothing(index_elements=["venue", "ticker", "source"])
+                    .returning(VenueSettlement.ticker)).first()
+            session.commit()
+        except Exception as exc:  # noqa: BLE001 - one ticker must not cost the stage
+            session.rollback()
+            log.exception("venue result for %s failed", row.ticker)
+            ctx["errors"].append({"venue_result": row.ticker,
+                                  "error": f"{type(exc).__name__}: {exc}"[:500]})
+            continue
         if inserted is None:
             continue
         written += 1
+        # Only a result we could store is a result we can compare: an unusable one never gets
+        # this far, so a mismatch always means the venue and the score genuinely disagree.
         if result != row.result:
             log.warning("settlement mismatch on %s: derived %s, venue %s",
                         row.ticker, row.result, result)
             ctx["warnings"].append({"settlement_mismatch": row.ticker})
     return written
+
+
+def _usable_result(result: str | None, ticker: str, ctx: dict) -> str | None:
+    """`yes`, `no` or `tie`, or None with a warning recorded.
+
+    `venue_settlements.result` is `varchar(4)` and Kalshi's `result` is free text, so a longer
+    value would raise `StringDataRightTruncation` on the insert. An empty one simply means the
+    venue has not settled the market yet and is retried silently next pass; a non-empty one we
+    cannot store is worth a warning, because it is a shape of answer nobody here anticipated.
+    """
+    if not result:
+        return None
+    if result in VENUE_RESULTS:
+        return result
+    log.warning("unexpected venue result on %s: %r", ticker, result[:32])
+    ctx["warnings"].append({"unexpected_venue_result": ticker, "result": result[:16]})
+    return None
 
 
 def _fetch_result(session: Session, kalshi, ticker: str, run_id: int | None,
@@ -388,12 +431,12 @@ def _result_from_body(body) -> str | None:
 
 
 def _venue_payout(result: str) -> Decimal | None:
-    """The venue speaks in `yes`/`no`; anything else (a void) carries no payout of its own."""
+    """The payout one venue result implies. Only `VENUE_RESULTS` ever reach here."""
     if result == "yes":
         return ONE
     if result == "no":
         return ZERO
-    return None
+    return HALF if result == "tie" else None
 
 
 # --- stages ----------------------------------------------------------------------------
@@ -404,17 +447,23 @@ def settle_stage(session: Session, now: datetime, budget: Budget) -> StageResult
     counts = run_settlement(session, now, ctx.get("kalshi"), budget, ctx)
     return StageResult("settle",
                        {"games": counts.games, "markets": counts.markets,
-                        "orders": counts.orders},
+                        "orders": counts.orders, "ledger_rows": counts.ledger_rows},
                        counts.budget_exhausted, None)
 
 
 def venue_result_stage(session: Session, now: datetime, budget: Budget) -> StageResult:
     ctx = current_ctx()
-    before = len(ctx["warnings"])
+    before = _mismatch_count(ctx)
     rows = run_venue_result(session, now, ctx.get("kalshi"), budget, ctx)
     return StageResult("venue_result",
-                       {"venue_rows": rows, "mismatches": len(ctx["warnings"]) - before},
+                       {"venue_rows": rows, "mismatches": _mismatch_count(ctx) - before},
                        not budget.ok(), None)
+
+
+def _mismatch_count(ctx: dict) -> int:
+    """Counted by key, not by list length: the stage adds two kinds of warning and only one of
+    them is a derived-versus-venue disagreement."""
+    return sum(1 for w in ctx["warnings"] if "settlement_mismatch" in w)
 
 
 register_stage("settle", settle_stage)

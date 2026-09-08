@@ -30,6 +30,7 @@ from harness.db.models import (
 )
 from harness.feeds.http import HttpClient
 from harness.settlement import job as job_module
+from harness.settlement import settle as settle_module
 from harness.settlement.job import Budget, Settler, StageResult, load_stages, register_stage
 from harness.settlement.settle import (
     payout_for_side,
@@ -86,8 +87,8 @@ def _market(session, game_id, ticker, market_type, threshold=None, side_team_id=
 
 
 def _order(session, market, variant="v1", side="yes", prob="0.40", contracts="10.00",
-           status="filled", replay=False) -> Order:
-    o = Order(intent_id=uuid.uuid4(), variant_id=variant, venue="kalshi", mode="paper",
+           status="filled", replay=False, venue="kalshi") -> Order:
+    o = Order(intent_id=uuid.uuid4(), variant_id=variant, venue=venue, mode="paper",
               client_order_id=f"co-{uuid.uuid4()}", ticker=market.ticker,
               venue_market_id=market.id, side=side, prob=Decimal(prob),
               contracts=Decimal(contracts), status=status, placed_at=NOW - timedelta(hours=6),
@@ -191,10 +192,11 @@ def test_settlement_is_idempotent(db_session):
     db_session.commit()
 
     first = run_settlement(db_session, NOW, None, Budget(60, Mono(0.0)), _ctx())
-    assert (first.games, first.markets, first.orders) == (1, 4, 1)
+    assert (first.games, first.markets, first.orders, first.ledger_rows) == (1, 4, 1, 1)
 
     second = run_settlement(db_session, NOW, None, Budget(60, Mono(0.0)), _ctx())
-    assert (second.games, second.markets, second.orders) == (0, 0, 0)
+    # Only rows this pass actually wrote move a counter, so a re-run moves nothing.
+    assert (second.games, second.markets, second.orders, second.ledger_rows) == (0, 0, 0, 0)
 
     assert db_session.query(Settlement).count() == 1
     rows = {r.ticker: r for r in db_session.query(VenueSettlement).all()}
@@ -262,22 +264,56 @@ def test_ledger_cash_delta_per_fill_and_restricted_status_update(db_session):
     assert db_session.get(Order, open_order.id).status == "open"
 
 
-def test_replay_orders_settle_onto_replay_ledger_rows(db_session):
+def test_replay_order_settles_without_a_ledger_row(db_session):
+    """The ledger is the live record: only a non-replay fill takes cash (brief, Task 7 fix 1).
+
+    The status update is a separate statement over the ticker, so a replay order still reaches
+    `settled` and leaves the replay executor's positions instead of stranding there forever.
+    The `venue` predicate on both statements is asserted here too: an order on another venue's
+    book that happens to share a ticker is not this market's order.
+    """
     game = _game(db_session)
     market = _market(db_session, game.id, "T-ML-HOME", "moneyline", side_team_id=HOME)
     live = _order(db_session, market, variant="v1", contracts="5.00")
     shadow = _order(db_session, market, variant="v1", contracts="5.00", replay=True)
+    other_venue = _order(db_session, market, variant="v1", contracts="5.00", venue="novig")
     _fill(db_session, live, contracts="5.00", trade_id="a")
     _fill(db_session, shadow, contracts="5.00", trade_id="b")
+    _fill(db_session, other_venue, contracts="5.00", trade_id="c")
     db_session.commit()
 
-    run_settlement(db_session, NOW, None, Budget(60, Mono(0.0)), _ctx())
+    counts = run_settlement(db_session, NOW, None, Budget(60, Mono(0.0)), _ctx())
 
-    flags = {r.order_id: r.replay for r in db_session.query(Ledger).all()}
-    assert flags == {live.id: False, shadow.id: True}
+    rows = db_session.query(Ledger).all()
+    assert [(r.order_id, r.replay) for r in rows] == [(live.id, False)]
+    assert counts.ledger_rows == 1
+    # Both kalshi orders settle; the other venue's order is not this market's business.
+    assert counts.orders == 2
+    db_session.expire_all()
+    assert db_session.get(Order, live.id).status == "settled"
+    assert db_session.get(Order, shadow.id).status == "settled"
+    assert db_session.get(Order, other_venue.id).status == "filled"
     live_total = db_session.execute(text(
         "select coalesce(sum(cash_delta), 0) from ledger where replay = false")).scalar()
     assert live_total == Decimal("5.00")
+
+
+def test_unknown_market_type_fails_its_game_loudly(db_session):
+    """Nothing is filtered out of the record silently: a shape this harness cannot resolve takes
+    its own game down with an error rather than leaving its fills quietly unpaid."""
+    odd = _game(db_session)
+    good = _game(db_session)
+    _market(db_session, odd.id, "T-ODD", "firsthalf", threshold="20.5", side_team_id=HOME)
+    _market(db_session, odd.id, "T-ODD-ML", "moneyline", side_team_id=HOME)
+    _market(db_session, good.id, "T-GOOD", "moneyline", side_team_id=HOME)
+    db_session.commit()
+
+    ctx = _ctx()
+    counts = run_settlement(db_session, NOW, None, Budget(60, Mono(0.0)), ctx)
+
+    assert counts.games == 1
+    assert {r.ticker for r in db_session.query(VenueSettlement).all()} == {"T-GOOD"}
+    assert len(ctx["errors"]) == 1 and "firsthalf" in repr(ctx["errors"][0])
 
 
 def test_budget_stops_between_games_and_resumes(db_session):
@@ -392,6 +428,60 @@ def test_venue_row_absent_while_result_empty_then_written_on_retry(db_session):
     assert len(route.calls) == 2
 
 
+def test_unexpected_venue_result_is_skipped_and_the_next_ticker_still_settles(db_session):
+    """`venue_settlements.result` is a 4-character column and Kalshi's `result` is free text, so
+    anything outside yes/no/tie is recorded as a warning and written nowhere -- and it must not
+    cost every ticker ordered after it its own venue row."""
+    run = _run_row(db_session)
+    _derived(db_session, "T-A-BAD", result="yes", payout=ONE)
+    _derived(db_session, "T-B-GOOD", result="yes", payout=ONE)
+    _settled_page(db_session, run.id,
+                  [{"ticker": "T-A-BAD", "result": "cancelled_by_exchange"},
+                   {"ticker": "T-B-GOOD", "result": "yes"}],
+                  NOW - timedelta(hours=1))
+    db_session.commit()
+
+    ctx = _ctx()
+    assert run_venue_result(db_session, NOW, None, Budget(60, Mono(0.0)), ctx) == 1
+
+    rows = {r.ticker for r in db_session.query(VenueSettlement)
+            .filter(VenueSettlement.source == "venue").all()}
+    assert rows == {"T-B-GOOD"}
+    assert ctx["warnings"] == [
+        {"unexpected_venue_result": "T-A-BAD", "result": "cancelled_by_exc"}]
+    # An unusable result is never a settlement mismatch: we do not know what the venue said.
+    assert ctx["errors"] == []
+
+
+def test_venue_result_isolates_a_failing_ticker(db_session, monkeypatch):
+    """One ticker that raises must not abort the stage: `_PENDING_VENUE_ROWS` is ordered by
+    ticker, so without a savepoint the first bad ticker would block every later one forever."""
+    run = _run_row(db_session)
+    _derived(db_session, "T-A-BOOM", result="no", payout=ZERO)
+    _derived(db_session, "T-B-GOOD", result="yes", payout=ONE)
+    _settled_page(db_session, run.id,
+                  [{"ticker": "T-A-BOOM", "result": "no"}, {"ticker": "T-B-GOOD", "result": "yes"}],
+                  NOW - timedelta(hours=1))
+    db_session.commit()
+
+    real = settle_module._venue_payout
+
+    def only_yes(result):
+        if result == "no":
+            raise RuntimeError("venue payout exploded")
+        return real(result)
+
+    monkeypatch.setattr(settle_module, "_venue_payout", only_yes)
+
+    ctx = _ctx()
+    written = run_venue_result(db_session, NOW, None, Budget(60, Mono(0.0)), ctx)
+
+    assert written == 1
+    assert [r.ticker for r in db_session.query(VenueSettlement)
+            .filter(VenueSettlement.source == "venue").all()] == ["T-B-GOOD"]
+    assert len(ctx["errors"]) == 1 and "T-A-BOOM" in repr(ctx["errors"][0])
+
+
 # --- the stage registry and the settler ------------------------------------------------
 
 
@@ -457,3 +547,41 @@ def test_settler_writes_job_runs_and_never_touches_runs_notes(db_session, env_se
     assert db_session.get(Run, run.id).notes == {"tick": "mine"}
     assert db_session.query(JobRun).count() == 1
     assert db_session.query(Settlement).count() == 1
+
+
+def test_load_stages_twice_registers_each_stage_once(monkeypatch):
+    """Ruling 4: `load_stages()` is idempotent, and so is `register_stage` on a repeated name."""
+    first = [name for name, _ in load_stages()]
+    second = [name for name, _ in load_stages()]
+    assert first == second
+    assert first.count("settle") == 1 and first.count("venue_result") == 1
+
+    # The guard underneath it: a module re-imported (or a stage registered twice by hand)
+    # cannot append a second copy.
+    monkeypatch.setattr(job_module, "STAGES", [])
+
+    def fake(session, now, budget):
+        return StageResult("fake", {}, False, None)
+
+    register_stage("fake", fake)
+    register_stage("fake", fake)
+    assert [name for name, _ in job_module.STAGES] == ["fake"]
+
+
+def test_settler_reports_degraded_when_a_game_fails(db_session, env_settings):
+    """A pass that recorded game errors must not read `ok`: `verify.md` switches on that column
+    and nothing automated reads `notes`."""
+    bad = _game(db_session)
+    good = _game(db_session)
+    _market(db_session, bad.id, "T-BAD-SPR", "spread", threshold=None, side_team_id=HOME)
+    _market(db_session, good.id, "T-GOOD", "moneyline", side_team_id=HOME)
+    db_session.commit()
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    row = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
+
+    assert row.status == "degraded"
+    assert row.notes["stages"][0]["error"] is None  # the stage itself did not raise
+    assert len(row.notes["errors"]) == 1
+    db_session.expire_all()
+    assert [r.game_id for r in db_session.query(Settlement).all()] == [good.id]
