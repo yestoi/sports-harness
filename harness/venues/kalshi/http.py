@@ -23,9 +23,13 @@ fills from `Settings.http_timeout_s` (the same value `build_recorder` passes to 
 The `http: HttpClient` argument stays in the signature for its clock, so `FetchResult.fetched_at`
 matches the recorder's clock, and for nothing else.
 
-Nothing here ever logs a header mapping or a request body. The signed values would be redacted in
-`HEADER: value` form by the roadmap-invariant-4 filter in `harness/logging_setup.py`, but that
-filter does not match a dict repr, so the transport does not hand it one.
+**The transport never logs a header dict.** It never logs a request body either, and the
+`venue_requests` row has no field that could hold one. The roadmap-invariant-4 filter in
+`harness/logging_setup.py` redacts a signed value in `HEADER: value` text form but does not match
+a dict repr, so this module does not depend on it: it hands the logging layer no header mapping in
+the first place. `test_a_signed_request_emits_no_log_record_carrying_a_header_value` asserts that
+at every level against the real signature that goes out on the wire. Any future caller that logs a
+headers mapping would defeat this, so do not.
 """
 import math
 import time

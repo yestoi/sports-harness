@@ -4,6 +4,8 @@ The refusal matrix and the host assertion are the reason nothing in phase 4 can 
 production venue. Every test here is a fence, not a feature.
 """
 import base64
+import dataclasses
+import logging
 
 import httpx
 import pytest
@@ -436,6 +438,47 @@ def test_a_non_json_body_yields_a_none_body_not_an_error():
     respx.get(f"{PROD}/exchange/status").respond(200, text="not json")
     r = _t().request("GET", "/exchange/status")
     assert r.status == 200 and r.body is None
+
+
+# --- the transport never hands a header value to the logging layer ---------------------------
+
+@respx.mock
+def test_a_signed_request_emits_no_log_record_carrying_a_header_value(caplog):
+    """The guarantee this module owns.
+
+    The roadmap-invariant-4 filter in harness/logging_setup.py redacts "HEADER: value" text but
+    not a dict repr, so the transport does not rely on it: it never logs a header mapping at all.
+    Asserted here at every level, on the record's msg, its rendered message and its args, using
+    the real signature that went out on the wire.
+    """
+    seen = {}
+
+    def _capture(request):
+        seen.update({k.upper(): v for k, v in dict(request.headers).items()})
+        return httpx.Response(200, json={"balance": 0})
+
+    respx.get(f"{PROD}/portfolio/balance").mock(side_effect=_capture)
+    rows = []
+    caplog.set_level(logging.NOTSET)        # NOTSET on the root captures every level
+    _t(recorder=rows.append).request("GET", "/portfolio/balance")
+
+    secrets = [seen["KALSHI-ACCESS-KEY"], seen["KALSHI-ACCESS-SIGNATURE"],
+               seen["KALSHI-ACCESS-TIMESTAMP"]]
+    assert all(secrets) and len(secrets[1]) > 100        # a real RSA-PSS signature went out
+
+    for record in caplog.records:
+        blob = f"{record.msg!r} {record.getMessage()!r} {record.args!r}"
+        for secret in secrets:
+            assert secret not in blob, (
+                f"{record.name} at {record.levelname} logged a signed header value")
+
+    # And the venue_requests row carries no header field and no body field, by construction.
+    (row,) = rows
+    assert [f.name for f in dataclasses.fields(row)] == [
+        "venue", "env", "method", "path", "status", "ts", "elapsed_ms"]
+    row_blob = " ".join(str(getattr(row, f.name)) for f in dataclasses.fields(row))
+    for secret in secrets:
+        assert secret not in row_blob
 
 
 def test_session_recorder_writes_a_row_per_call(db_session_factory):
