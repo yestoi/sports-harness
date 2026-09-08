@@ -12,7 +12,18 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from harness.db.models import Game, Order, OrderbookEvent, Signal, StrategyVariant, VenueMarket, VenueQuote, VenueTrade
+from harness.db.models import (
+    Game,
+    MetricSample,
+    OperatorEvent,
+    Order,
+    OrderbookEvent,
+    Signal,
+    StrategyVariant,
+    VenueMarket,
+    VenueQuote,
+    VenueTrade,
+)
 from harness.feeds.http import FetchError
 from harness.recorder.ws_sink import WsSink
 from harness.venues.kalshi import ws as ws_module
@@ -168,6 +179,7 @@ class _FakeSink:
         # so a test that never cares about telemetry doesn't have to see it fail and log.
         self.events: list[tuple[str, str, dict | None]] = []
         self.metric_batches: list[list[tuple[str, object, dict]]] = []
+        self.rollbacks = 0
 
     def handle(self, msg, received_at):
         self._on_handle(msg, received_at)
@@ -195,6 +207,9 @@ class _FakeSink:
 
     def write_event(self, kind, summary, ref=None, ts=None):
         self.events.append((kind, summary, ref))
+
+    def rollback(self):
+        self.rollbacks += 1
 
 
 def test_backoff_reset_deferred_until_first_data_message(monkeypatch):
@@ -385,6 +400,84 @@ def test_ws_metrics_once_per_minute_and_connect_disconnect_events(monkeypatch):
     kinds = [kind for kind, _, _ in events_sink.events]
     assert kinds == ["ws_connect", "ws_disconnect", "ws_connect"]
     assert events_sink.events[1][1]  # a reason string, not blank
+
+
+def test_ws_metrics_and_event_failures_roll_back_the_sink(monkeypatch):
+    """Fix round 1, I3: a failed `write_metrics`/`write_event` call rolls the sink's session
+    back, so it cannot strand the sink in a failed transaction that then costs tape rows."""
+
+    class _BoomSink(_FakeSink):
+        def write_metrics(self, ts, samples):
+            raise RuntimeError("boom")
+
+        def write_event(self, kind, summary, ref=None, ts=None):
+            raise RuntimeError("boom")
+
+    sink = _BoomSink(lambda m, t: None)
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=lambda *a, **kw: None, clock=lambda: NOW)
+
+    recorder._write_ws_metrics()  # must not raise
+    assert sink.rollbacks == 1
+
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: [])
+    error = json.dumps({"type": "error", "msg": {"code": 6}})
+    calls = {"n": 0}
+
+    def ws_factory(url, header, timeout):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            recorder.stop()
+        return _FakeWs([error])
+
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+    monkeypatch.setattr(recorder, "ws_factory", ws_factory)
+    recorder.run_forever()
+
+    # One rollback from the metrics call above, one each for the connect and disconnect
+    # events every failed connection cycle writes.
+    assert sink.rollbacks > 1
+
+
+def test_ws_real_sink_writes_metrics_and_connect_event(db_session):
+    """Fix round 1, I4/I5: the `ws.*` metric batch and a `ws_connect` event, written through a
+    real `WsSink` (not a test double), land as real rows -- `drain_counts`, `sink_lag_s` and
+    the four counters `WsSink.handle`/`_check_seq` maintain are all exercised for real."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+
+    trade = {"type": "trade", "sid": 1, "seq": 1, "msg": {
+        "trade_id": "real-1", "market_ticker": "K1", "yes_price_dollars": "0.4000",
+        "count_fp": "5.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": 1789234000000}}
+    sink.handle(trade, NOW)
+    snap = {"type": "orderbook_snapshot", "sid": 2, "seq": 1,
+           "msg": {"market_ticker": "K1", "yes_dollars_fp": [], "no_dollars_fp": []}}
+    sink.handle(snap, NOW)
+    # A second message on sid 2 with a seq that skips: a real gap row.
+    gap_delta = json_delta = {"type": "orderbook_delta", "sid": 2, "seq": 5, "msg": {
+        "market_ticker": "K1", "price_dollars": "0.35", "delta_fp": "1.00", "ts_ms": 1789234001000}}
+    sink.handle(gap_delta, NOW)
+    sink.flush()
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=lambda *a, **kw: None, clock=lambda: NOW)
+    recorder._current = ["K1"]
+    recorder._reconnects_since = 1
+    recorder._write_ws_metrics()
+
+    events_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.events_per_min").one()
+    assert events_row.value >= 2  # the trade and the snapshot
+    trades_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.trades_per_min").one()
+    assert trades_row.value == 1
+    gaps_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.gaps").one()
+    assert gaps_row.value == 1
+    lag_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.sink_lag_s").one()
+    assert lag_row.value is not None
+
+    sink.write_event("ws_connect", "connected", ts=NOW)
+    event = db_session.query(OperatorEvent).filter_by(kind="ws_connect").one()
+    assert event.summary == "connected"
 
 
 def test_refresh_offset_keeps_previous_value_on_fetch_error():

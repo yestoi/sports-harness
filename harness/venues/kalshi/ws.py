@@ -233,6 +233,16 @@ class WsRecorder:
     def stop(self, *_):
         self._stop = True
 
+    def _rollback_sink(self) -> None:
+        """Best-effort: roll the sink's session back after one of its telemetry writes fails.
+        A `rollback` the sink does not implement (a minimal test double) is not this method's
+        problem to solve -- it is still better to try and lose nothing than to skip it."""
+        try:
+            if self.sink is not None and hasattr(self.sink, "rollback"):
+                self.sink.rollback()
+        except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the ws loop
+            log.exception("ws sink rollback failed")
+
     def _write_ws_metrics(self) -> None:
         """`ws.*` metric_samples, once a minute (design spec §3.1), through the sink's own
         session -- best-effort, and a no-op when there is no sink (a unit test that never
@@ -256,6 +266,9 @@ class WsRecorder:
             self._reconnects_since = 0
         except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the ws loop
             log.exception("ws metrics failed")
+            # Fix round 1, I3: a failed insert leaves the sink's session in a failed
+            # transaction; roll it back so the next tape row `handle()` writes does not fail too.
+            self._rollback_sink()
 
     def _recv_loop(self, ws) -> None:
         subscribed_at, msg_id, last_plan = time.monotonic(), 2, time.monotonic()
@@ -328,6 +341,7 @@ class WsRecorder:
                         self.sink.write_event("ws_connect", "connected", ts=self.clock())
                     except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the ws loop
                         log.exception("ws_connect event failed")
+                        self._rollback_sink()
                 self._sids, self._current = [], []
                 self._last_recovery, self._recoveries = {}, {}
                 try:
@@ -363,6 +377,7 @@ class WsRecorder:
                         self.sink.write_event("ws_disconnect", repr(e)[:200], ts=self.clock())
                     except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the ws loop
                         log.exception("ws_disconnect event failed")
+                        self._rollback_sink()
                 time.sleep(self._backoff)
                 self._backoff = min(self._backoff * 2, 60.0)
         self.sink.close()

@@ -1121,6 +1121,43 @@ def test_newest_intent_per_key_breaks_a_timestamp_tie_on_the_signal(env_settings
 # --- Task 12b telemetry ----------------------------------------------------------------
 
 
+def test_telemetry_writer_failure_does_not_poison_the_step(env_settings, db_session, world, monkeypatch):
+    """Fix round 1, C1: a database-level failure inside a telemetry writer (here,
+    `store.insert_order_watch_samples`) must land in its own savepoint, not the step's whole
+    transaction -- this step's own fill and heartbeat write must still commit, and `step()`
+    must still return normally rather than raising `InFailedSqlTransaction`."""
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+
+    executor.step()  # places the order
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+
+    # A print that fills the order on the next step, the same step the writer below poisons.
+    _print(db_session, T2, clock.now + timedelta(seconds=5), "0.35", "50", trade_id="c1-fill")
+    db_session.commit()
+
+    def poison(session, rows):
+        session.execute(text("select 1/0"))  # a real Postgres-level failure, not just Python's
+        return 0
+
+    monkeypatch.setattr(store, "insert_order_watch_samples", poison)
+
+    clock.advance(15)
+    stats = executor.step()  # must not raise
+    refresh(db_session)
+
+    assert stats.locked is True
+    assert len(fills_of(db_session, order.id, "queue_model")) == 1  # this step's fill survived
+
+    from harness.db.models import ExecHeartbeat
+
+    hb = db_session.get(ExecHeartbeat, 1)
+    assert hb.last_loop_at == clock.now  # the heartbeat still committed this step
+
+
 def test_exec_writes_metric_batch_every_metric_sample_s_not_every_loop(env_settings, db_session, world):
     """`metric_sample_s = 60` over a 15 s loop period: one batch on the first loop, none of the
     next three, then a second batch once 60 s of the executor's own clock has passed."""
@@ -1190,6 +1227,9 @@ def test_open_order_watch_sample_every_60s_and_terminal_row_on_cancel(env_settin
     assert len(rows) == 2
     assert rows[-1].terminal == "cancelled"
 
+    # Fix round 1, M4: a terminal order's sampler entry is forgotten, not kept forever.
+    assert order.id not in executor._watch_sampler._last
+
 
 def test_equity_snapshot_cash_equals_bankroll_plus_ledger_and_mtm_coverage(env_settings, db_session, world):
     """Bankroll plus the ledger's cash movement, with a mark-to-market that only counts the
@@ -1205,6 +1245,13 @@ def test_equity_snapshot_cash_equals_bankroll_plus_ledger_and_mtm_coverage(env_s
     executor.step()  # places the order; equity_sample_s's first call is always due, cash=3000
     refresh(db_session)
     order = orders_of(db_session)[0]
+
+    # Fix round 1, I1: no open positions yet -> mtm_coverage is NULL, not a defaulted 1.
+    first_snap = (db_session.query(EquitySnapshot).filter_by(variant_id=order.variant_id)
+                 .order_by(EquitySnapshot.ts.desc()).first())
+    assert first_snap is not None
+    assert first_snap.mtm_open is None
+    assert first_snap.mtm_coverage is None
 
     # A print through the resting price fills the order, so there's a position to mark.
     _print(db_session, T2, clock.now + timedelta(seconds=5), "0.35", "50", trade_id="fill1")

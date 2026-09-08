@@ -710,7 +710,12 @@ class MetricSample(Base):
     source: Mapped[str] = mapped_column(String(12), nullable=False)
     name: Mapped[str] = mapped_column(String(48), nullable=False)
     labels: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    value: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    #: Nullable, not the brief's bare `Numeric(18,6)` (fix round 1, M2): `exec.p95_loop_ms`
+    #: before any loop duration exists and `exec.ws_event_age_s` before any WS event ever has
+    #: are both legitimate "nothing to report yet", always written so the verify.md query
+    #: "every exec.* name younger than 5 minutes" never misreads the gap as a missing metric.
+    #: This table has never existed in production, so this is a model change, not an ALTER.
+    value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
 
 
 class OperatorEvent(Base):
@@ -750,7 +755,12 @@ class EquitySnapshot(Base):
     cash: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     open_stake: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     mtm_open: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
-    mtm_coverage: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    #: Nullable, not the brief's bare `Numeric(5,4)` (fix round 1, I1, one convention): NULL
+    #: when there is nothing to compute a coverage share over -- a variant with no open
+    #: positions (the executor) or the settler's snapshot, which has no live book at all and so
+    #: no coverage concept to report. This table has never existed in production, so this is a
+    #: model change, not an ALTER.
+    mtm_coverage: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
     n_open_positions: Mapped[int] = mapped_column(Integer, nullable=False)
     n_open_orders: Mapped[int] = mapped_column(Integer, nullable=False)
 

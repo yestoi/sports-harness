@@ -89,3 +89,8 @@ class Sampler:
             return False
         self._last[key] = now
         return True
+
+    def forget(self, key: Any) -> None:
+        """Drop a key's remembered clock, e.g. once its subject (an order) is gone for good and
+        will never be sampled again -- otherwise the dict grows for the life of the process."""
+        self._last.pop(key, None)

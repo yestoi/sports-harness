@@ -64,7 +64,7 @@ def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
     sport = _sport_from_endpoint(r.endpoint, r.params)
     body = r.body
     if family == "espn" and sport:
-        link_espn_scoreboard(session, sport, body)
+        link_espn_scoreboard(session, sport, body, raw_id=r.id)
     elif family in ("odds_featured", "odds_alternates") and sport:
         if family == "odds_featured":
             res = upsert_games_from_odds(session, sport, body, r.id)

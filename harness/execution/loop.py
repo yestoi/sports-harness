@@ -215,13 +215,21 @@ class Executor:
                 log.exception("executor step failed")
             stats.loop_ms = int((self._monotonic() - started) * 1000)
             self._durations.append(stats.loop_ms)
-            open_orders_count = store.count_open_orders(session, self.replay)
-            if not self.replay:
-                try:
-                    self._write_metric_batch(session, now, stats, heartbeat, open_orders_count)
-                except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
-                    log.exception("exec metric batch failed")
+            wrote_metrics = False
             try:
+                # Fix round 1, C1: count_open_orders and the heartbeat write share one guarded
+                # region again (as on the base before this task), and the metric batch runs in
+                # its own savepoint so a database-level failure inside it cannot poison this
+                # transaction and take the step's own orders/fills/heartbeat down with it.
+                open_orders_count = store.count_open_orders(session, self.replay)
+                if not self.replay:
+                    try:
+                        with session.begin_nested():
+                            wrote_metrics = self._write_metric_batch(
+                                session, now, stats, heartbeat, open_orders_count)
+                    except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
+                        log.exception("exec metric batch failed")
+                        wrote_metrics = False
                 store.write_heartbeat(
                     session, last_loop_at=now,
                     open_orders=open_orders_count,
@@ -231,6 +239,11 @@ class Executor:
                     ws_last_event_at=heartbeat["ws_last_event_at"],
                     executor_version=execution.EXECUTOR_VERSION)
                 session.commit()
+                # Fix round 1, M3: only forget this window's counts once the batch that
+                # reported them is actually durable; a rolled-back commit leaves them intact
+                # for the next attempt instead of quietly under-reporting them forever.
+                if wrote_metrics:
+                    self._metrics_acc.reset()
             except Exception:  # noqa: BLE001 - the scheduler has no error path of its own
                 # The step's own work goes with it: the heartbeat is written in the same
                 # transaction. Losing one loop is survivable; killing the scheduler is not.
@@ -242,11 +255,13 @@ class Executor:
         return stats
 
     def _write_metric_batch(self, session: Session, now: datetime, stats: ExecStats,
-                            heartbeat: dict, open_orders_count: int) -> None:
+                            heartbeat: dict, open_orders_count: int) -> bool:
         """`exec.*` metric_samples, once every `metric_sample_s` (Sampler("metrics")), never
-        for a replay executor (the caller already guards that)."""
+        for a replay executor (the caller already guards that). Returns whether a batch was
+        actually written, so the caller can defer resetting the accumulator until the whole
+        step commits (fix round 1, M3)."""
         if not self._metric_sampler.due("metrics"):
-            return
+            return False
         acc = self._metrics_acc
         samples: list[tuple[str, object, dict]] = [
             ("exec.loop_ms", stats.loop_ms, {}),
@@ -257,18 +272,19 @@ class Executor:
             ("exec.placed", acc.placed, {}),
             ("exec.filled_contracts", acc.filled_contracts, {}),
         ]
-        p95 = self._p95()
-        if p95 is not None:
-            samples.append(("exec.p95_loop_ms", p95, {}))
+        # Fix round 1, M2: always written, NULL when there is nothing to report yet
+        # (`MetricSample.value` is nullable precisely for these two), so the verify.md query
+        # "every exec.* name younger than 5 minutes" never reads a legitimate gap as a miss.
+        samples.append(("exec.p95_loop_ms", self._p95(), {}))
         ws_last = heartbeat["ws_last_event_at"]
-        if ws_last is not None:
-            samples.append(("exec.ws_event_age_s", (now - ws_last).total_seconds(), {}))
+        age = None if ws_last is None else (now - ws_last).total_seconds()
+        samples.append(("exec.ws_event_age_s", age, {}))
         for reason, count in acc.cancelled.items():
             samples.append(("exec.cancelled", count, {"reason": reason}))
         for reason, count in acc.skipped.items():
             samples.append(("exec.skipped", count, {"reason": reason}))
         telemetry.record_many(session, "exec", samples, ts=now)
-        acc.reset()
+        return True
 
     def _body(self, session: Session, now: datetime, stats: ExecStats, heartbeat: dict,
              skipped_loops: int = 0) -> None:
@@ -278,7 +294,8 @@ class Executor:
         variant_ids = store.resolve_variants(session, self._variant_names)
         if not self.replay:
             try:
-                self._check_startup_events(session, variant_ids, now)
+                with session.begin_nested():
+                    self._check_startup_events(session, variant_ids, now)
             except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
                 log.exception("exec startup telemetry failed")
         lower = now - timedelta(seconds=s.intent_ttl_s)
@@ -326,13 +343,18 @@ class Executor:
         self._apply(session, actions, intents, extras, markets, rows, now, stats, heartbeat)
 
         if not self.replay:
+            # Fix round 1, C1: each writer runs inside its own savepoint, so a database-level
+            # failure rolls back only that writer's own work, never this step's orders, fills
+            # or events sitting in the same transaction.
             try:
-                self._write_order_watch_samples(session, working, markets, now)
+                with session.begin_nested():
+                    self._write_order_watch_samples(session, working, markets, now)
             except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
                 log.exception("order watch samples failed")
             try:
                 if self._equity_sampler.due("equity"):
-                    self._write_equity_snapshots(session, variant_ids, now)
+                    with session.begin_nested():
+                        self._write_equity_snapshots(session, variant_ids, now)
             except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
                 log.exception("equity snapshots failed")
 
@@ -743,6 +765,10 @@ class Executor:
                 best_ask=None if book is None else book.best_ask(row.side),
                 fair_p=None if market is None else market.fair_p,
                 book_dirty=True if book is None else book.dirty, terminal=terminal))
+            if terminal is not None:
+                # Fix round 1, M4: a terminal order is never sampled again, so its clock would
+                # otherwise sit in this dict for the rest of the process's life.
+                self._watch_sampler.forget(order_id)
         if rows_out:
             store.insert_order_watch_samples(session, rows_out)
 
@@ -775,8 +801,11 @@ class Executor:
                 any_book = True
                 covered_contracts += p.open_contracts
                 mtm_open += p.open_contracts * side_p(mid, p.side)
+            # Fix round 1, I1: one convention. NULL when there is nothing to compute a share
+            # over (no open positions at all); otherwise the real contract-weighted share,
+            # matching spec §3.4's "share of open contracts" rather than a share of positions.
             mtm_coverage = (covered_contracts / total_contracts) if total_contracts > ZERO \
-                else Decimal("1")
+                else None
             n_open_orders = store.count_variant_open_orders(session, variant_id, self.replay)
             store.insert_equity_snapshot(
                 session, ts=now, variant_id=variant_id, cash=cash, open_stake=open_stake,

@@ -229,5 +229,7 @@ def test_housekeeping_stage_writes_metrics_and_check_results(db_session, env_set
 
     assert result.counts.get("skipped") is not True
     assert db_session.query(MetricSample).filter_by(source="housekeeping").count() > 0
+    from harness.ops.checks import CHECKS
+
     check_rows = db_session.query(CheckResult).filter_by(job_run_id=job.id).all()
-    assert len(check_rows) == 8  # every registered Layer 2b check
+    assert len(check_rows) == len(CHECKS)  # every registered Layer 2b check

@@ -30,7 +30,7 @@ from harness.report.tables import (
     SIGNIFICANT_CELLS_REQUIRED,
     TABLE_KEYS,
     Table,
-    _is_cell,
+    is_cell,
     cell_excludes_zero,
     is_flagged,
     is_grey,
@@ -239,7 +239,7 @@ def _cell_fields(value: Any) -> dict:
     """One cell's `report_cells` columns (Task 12b): the CI quintet when the cell is one,
     `text` always the same rendered string `render_markdown` shows, and `flags` the same
     greyed/flagged/not_collected rules that markdown already carries as a marker or a note."""
-    if _is_cell(value):
+    if is_cell(value):
         estimate, n_obs, n_clusters, lo, hi = value
         return {"estimate": estimate, "n_obs": n_obs, "n_clusters": n_clusters, "lo": lo,
                "hi": hi, "text": _format_cell(value)[:64],

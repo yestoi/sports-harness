@@ -3,8 +3,10 @@ guarantee, and `run_checks`' timeout handling.
 """
 
 from datetime import datetime, timezone
+from unittest import mock
 
 import pytest
+from sqlalchemy import event as sa_event
 
 from harness.db.models import JobRun
 from harness.ops import checks as checks_mod
@@ -16,18 +18,52 @@ EXPECTED_NAMES = {
     "duplicate_trades", "clv_p_used_matches_order_prob", "settle_errors_24h",
     "derived_without_venue_row_48h", "build_sha_drift", "orders_open_past_expiry",
     "fills_without_print", "gate_rows_one_gate_variant",
+    # Fix round 1, coverage: every remaining Layer 2b invariant statement in
+    # verify.md:127-144 (fills_without_print above is already one of the thirteen).
+    "fair_values_negative_staleness", "runs_taker_side_missing_24h",
+    "orders_without_place_event", "intents_without_order_or_skip",
+    "fill_contracts_exceed_order_contracts", "orders_filled_exceeds_contracts",
+    "settlement_result_mismatch", "fair_values_negative_feed_lag",
+    "benchmarks_source_after_target", "fills_outside_placement_window",
+    "markouts_at_after_horizon",
 }
 
 
-def test_checks_all_have_timeout_and_no_tape_reads():
+def test_checks_all_have_timeout_and_no_tape_reads(db_session):
     """Every Layer 2b invariant from verify.md is registered exactly once, and the static
     tape-access guarantee holds over the real registry (it also runs at import of the module,
-    so this re-asserts it directly rather than only relying on that side effect)."""
+    so this re-asserts it directly rather than only relying on that side effect).
+
+    Fix round 1, M6: also proves every check actually runs under the `SET LOCAL
+    statement_timeout` -- not just the hand-picked ones in
+    `test_run_checks_writes_pass_fail_and_skip_on_timeout` -- by counting that statement once
+    per check, captured directly off the wire against the real `CHECKS` list.
+    """
     assert {c.name for c in CHECKS} == EXPECTED_NAMES
     for check in CHECKS:
         assert check.threshold
         assert callable(check.ok)
     assert_no_tape_reads(CHECKS)  # must not raise
+
+    engine = db_session.get_bind()
+    statements: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.strip().lower())
+
+    sa_event.listen(engine, "before_cursor_execute", capture)
+    try:
+        job = JobRun(job="settle", started_at=NOW, status="running", notes={})
+        db_session.add(job)
+        db_session.flush()
+        results = run_checks(db_session, NOW, job.id, checks=CHECKS)
+    finally:
+        sa_event.remove(engine, "before_cursor_execute", capture)
+
+    timeout_sets = [s for s in statements if s.startswith("set local statement_timeout")]
+    assert len(timeout_sets) == len(CHECKS)
+    assert len(results) == len(CHECKS)
+    assert all(r.status in ("pass", "fail", "skip") for r in results)
 
 
 def test_assert_no_tape_reads_rejects_orderbook_events():
@@ -73,3 +109,21 @@ def test_run_checks_writes_pass_fail_and_skip_on_timeout(db_session, monkeypatch
 
     # The session survived the timeout: a later statement on it still works.
     assert db_session.execute(checks_mod.text("select 1")).scalar() == 1
+
+
+def test_run_checks_resets_statement_timeout_after_the_last_check(db_session):
+    """Fix round 1, M1: `SET LOCAL` inside a savepoint that RELEASEs (no error, no timeout)
+    survives past the savepoint for the rest of the transaction -- so without an explicit
+    reset, whatever housekeeping does after `run_checks` would keep running under a 2 s
+    timeout it never asked for. A tiny `STATEMENT_TIMEOUT_MS` during `run_checks` and a
+    `pg_sleep` well past it, run afterward, proves the timeout no longer applies."""
+    job = JobRun(job="settle", started_at=NOW, status="running", notes={})
+    db_session.add(job)
+    db_session.flush()
+
+    fake = [Check("always_pass", "select 0", "== 0", lambda v: float(v) == 0.0)]
+    with mock.patch.object(checks_mod, "STATEMENT_TIMEOUT_MS", 50):
+        run_checks(db_session, NOW, job.id, checks=fake)
+
+    # 150ms comfortably exceeds the 50ms timeout run_checks used; if it leaked, this raises.
+    db_session.execute(checks_mod.text("select pg_sleep(0.15)"))

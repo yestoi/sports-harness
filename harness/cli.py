@@ -256,12 +256,20 @@ def report_cmd(
         # transaction as the markdown write -- `provisional = false`, since a scheduled
         # `harness report` is the week's authoritative rendering (the hourly `report_wtd`
         # settlement stage writes the provisional ones).
-        now = datetime.now(timezone.utc)
-        report_run_id = persist_report(session, tables, meta, year, week,
-                                       provisional=False, markdown=document)
-        telemetry.event(session, "report_written", f"weekly report {year}-W{week:02d} written",
-                        ref={"year": year, "week": week, "report_run_id": report_run_id}, ts=now)
-        session.commit()
+        #
+        # Fix round 1, I5: a `--confirm` run is deliberately restricted to a frozen cell set
+        # (the week-3 confirmation), never a rendering of the week's real data -- persisting it
+        # as `provisional = false` would make it indistinguishable from, and shadow, the actual
+        # weekly report for that week. So it persists nothing at all; the confirmation's only
+        # output is the markdown file/stdout, exactly as before this task.
+        if confirm is None:
+            now = datetime.now(timezone.utc)
+            report_run_id = persist_report(session, tables, meta, year, week,
+                                           provisional=False, markdown=document)
+            telemetry.event(
+                session, "report_written", f"weekly report {year}-W{week:02d} written",
+                ref={"year": year, "week": week, "report_run_id": report_run_id}, ts=now)
+            session.commit()
     if out == "-":
         print(document, end="")
     else:

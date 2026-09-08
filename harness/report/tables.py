@@ -137,18 +137,18 @@ def cell(ci: CI) -> Any:
     return (ci.mean, ci.n_obs, ci.n_clusters, ci.lo, ci.hi)
 
 
-def _is_cell(value: Any) -> bool:
+def is_cell(value: Any) -> bool:
     return isinstance(value, tuple) and len(value) == 5
 
 
 def is_grey(value: Any) -> bool:
     """Below 10 game clusters: printed, excluded from every BH/Holm family and from §9.6."""
-    return _is_cell(value) and value[2] < GREY_CLUSTERS
+    return is_cell(value) and value[2] < GREY_CLUSTERS
 
 
 def is_flagged(value: Any) -> bool:
     """Below 30 game clusters: printed with a flag, still inside the families."""
-    return _is_cell(value) and value[2] < FLAG_CLUSTERS
+    return is_cell(value) and value[2] < FLAG_CLUSTERS
 
 
 def cell_excludes_zero(value: Any) -> bool:
@@ -161,7 +161,7 @@ def cell_excludes_zero(value: Any) -> bool:
     homogeneous stratum declare the §9.6 criterion met on no evidence of heterogeneity at all,
     which the pre-registration record forbids in as many words.
     """
-    if not _is_cell(value):
+    if not is_cell(value):
         return False
     lo, hi = value[3], value[4]
     if lo != lo or hi != hi:  # nan
@@ -449,7 +449,7 @@ def _table2(session: Session, window: dict, variants: list[dict]) -> Table:
 
     # Family C: Holm over the non-primary contrasts, greyed cells excluded and counted.
     eligible = [(i, ci) for i, (ci, value) in zip(contrast_index, contrast_cells)
-                if _is_cell(value) and not is_grey(value)]
+                if is_cell(value) and not is_grey(value)]
     greyed = len(contrast_cells) - len(eligible)
     if eligible:
         pvalues = [two_sided_p(ci.t, ci.n_clusters - 1) for _, ci in eligible]
@@ -458,7 +458,7 @@ def _table2(session: Session, window: dict, variants: list[dict]) -> Table:
             rows[i][columns.index(f"holm({CONTRAST_BENCHMARK})")] = "reject" if rejected else "-"
     holm_column = columns.index(f"holm({CONTRAST_BENCHMARK})")
     for i, (_, value) in zip(contrast_index, contrast_cells):
-        if rows[i][holm_column] == PLACEHOLDER and _is_cell(value):
+        if rows[i][holm_column] == PLACEHOLDER and is_cell(value):
             rows[i][holm_column] = "grey"
     note = (f"family C: {len(eligible)} contrast(s) tested, {greyed} greyed out "
             f"(< {GREY_CLUSTERS} game clusters) and excluded from Holm.")

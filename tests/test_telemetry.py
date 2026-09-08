@@ -110,3 +110,17 @@ def test_sampler_first_call_due_then_period():
     assert sampler.due("k2") is True
     t[0] = 61
     assert sampler.due("k2") is False
+
+
+def test_sampler_forget_drops_the_key_so_it_is_due_again_immediately():
+    t = [0.0]
+    sampler = Sampler(60, clock=lambda: t[0])
+    assert sampler.due("order-1") is True
+    t[0] = 10
+    assert sampler.due("order-1") is False
+
+    sampler.forget("order-1")
+    assert "order-1" not in sampler._last
+
+    # Forgotten: due again immediately, as if it were a brand-new key.
+    assert sampler.due("order-1") is True

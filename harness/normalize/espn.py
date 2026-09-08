@@ -44,14 +44,15 @@ def _period(v) -> int | None:
 
 
 def _maybe_score_event(session: Session, game: Game, status_obj: dict, status: str,
-                       hs: int | None, as_: int | None) -> None:
+                       hs: int | None, as_: int | None, raw_id: int | None) -> None:
     """Append one `game_score_events` row when anything about the live score changed since
     the game's newest row -- appended, never updated, so the dashboard can show the game's
-    whole in-progress timeline, not just its current state."""
-    if game.id is None:
-        # A game created this call has no id yet, and there is nothing to compare against
-        # anyway: its first score event is unconditionally novel.
-        session.flush()
+    whole in-progress timeline, not just its current state.
+
+    `game.id` must already exist by the time this is called (fix round 1, I2): the caller
+    flushes a brand-new game *outside* this function's own savepoint, so a database failure in
+    here can never roll the game itself back out of existence along with the telemetry row.
+    """
     period = _period(status_obj.get("period"))
     clock = status_obj.get("displayClock")
     clock = str(clock)[:8] if clock else None
@@ -61,10 +62,11 @@ def _maybe_score_event(session: Session, game: Game, status_obj: dict, status: s
         return
     session.add(GameScoreEvent(game_id=game.id, ts=datetime.now(timezone.utc), status=status,
                                period=period, clock=clock, home_score=hs, away_score=as_,
-                               raw_id=None))
+                               raw_id=raw_id))
 
 
-def link_espn_scoreboard(session: Session, sport: str, body: dict) -> LinkResult:
+def link_espn_scoreboard(session: Session, sport: str, body: dict,
+                         raw_id: int | None = None) -> LinkResult:
     res = LinkResult()
     if not isinstance(body, dict):
         return res
@@ -99,8 +101,13 @@ def link_espn_scoreboard(session: Session, sport: str, body: dict) -> LinkResult
             res.status_updates += 1
         if g.kickoff_utc != kick:
             g.kickoff_utc = kick
+        if g.id is None:
+            # Fix round 1, I2: flushed here, outside the savepoint below, so a telemetry
+            # failure's rollback can never undo the game's own creation along with it.
+            session.flush()
         try:
-            _maybe_score_event(session, g, status_obj, status, hs, as_)
+            with session.begin_nested():
+                _maybe_score_event(session, g, status_obj, status, hs, as_, raw_id)
         except Exception:  # noqa: BLE001 - telemetry never fails the tick this runs inside
             log.exception("game_score_events write failed for %s", eid)
     session.flush()

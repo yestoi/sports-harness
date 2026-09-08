@@ -252,3 +252,12 @@ class WsSink:
         `ws_disconnect`)."""
         telemetry.event(self._session, kind, summary, ref=ref, ts=ts)
         self._maybe_commit(force=True)
+
+    def rollback(self) -> None:
+        """Fix round 1, I3: `WsRecorder` calls this when a `write_metrics`/`write_event` call
+        raises, so a failed telemetry insert cannot leave this sink's session in a failed
+        transaction that then poisons every tape row `handle()` tries to write next."""
+        self._session.rollback()
+        self._pending = 0
+        self._pending_sids.clear()
+        self._last_commit = time.monotonic()

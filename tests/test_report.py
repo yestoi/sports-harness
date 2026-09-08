@@ -381,6 +381,26 @@ def test_report_cmd_persists_the_report_and_writes_report_written_event(cli_sett
     assert event.ref == {"year": YEAR, "week": WEEK, "report_run_id": run.id}
 
 
+def test_confirm_report_does_not_persist_a_shadow_run(tmp_path, cli_settings, db_session):
+    """Fix round 1, I5: `--confirm` still renders and prints markdown but persists nothing to
+    `report_runs`/`report_cells` and writes no `report_written` event -- a restricted
+    confirmation run must never be able to shadow the week's real, unrestricted report."""
+    from harness.db.models import OperatorEvent, ReportRun
+
+    db_session.commit()
+    selection = {"year": YEAR, "week": WEEK, "criteria_hash": "0" * 64, "cells": [], "contrasts": []}
+    path = tmp_path / "selection.json"
+    write_selected(path, selection)
+
+    result = runner.invoke(app, ["report", "--week", str(WEEK), "--year", str(YEAR),
+                                 "--out", "-", "--confirm", str(path)])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("# ")
+
+    assert db_session.query(ReportRun).filter_by(year=YEAR, week=WEEK).count() == 0
+    assert db_session.query(OperatorEvent).filter_by(kind="report_written").count() == 0
+
+
 def test_selected_json_round_trip_and_confirm_restricts(tmp_path, cli_settings, db_session):
     # `cli_settings` already points get_settings() at the test database; `env_settings` would
     # point it back at a fake host, so this test builds its tables from the same settings the

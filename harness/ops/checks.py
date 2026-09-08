@@ -131,6 +131,74 @@ CHECKS: list[Check] = [
         ) g
         """,
         "== 1 per evaluation", _zero),
+    # --- Fix round 1, coverage: every Layer 2b invariant statement in verify.md:127-144,
+    # not only the eight the brief's own parenthetical names. `fills_without_print` above is
+    # already one of the thirteen (verbatim); these eleven are the rest.
+    Check(
+        "fair_values_negative_staleness",
+        "select count(*) from fair_values where staleness_s < 0",
+        "== 0", _zero),
+    Check(
+        "runs_taker_side_missing_24h",
+        "select count(*) from runs where started_at > now() - interval '24 hours' "
+        "and coalesce((notes->>'taker_side_missing')::int, 0) > 0",
+        "== 0", _zero),
+    Check(
+        "orders_without_place_event",
+        "select count(*) from orders o where replay = false and not exists "
+        "(select 1 from order_events e where e.order_id = o.id and e.kind = 'place')",
+        "== 0", _zero),
+    Check(
+        "intents_without_order_or_skip",
+        """
+        select count(*) from intents i
+        where i.replay = false and i.created_at < now() - interval '2 minutes'
+          and not exists (select 1 from orders o where o.intent_id = i.id)
+          and not exists (select 1 from order_events e
+                          where e.intent_id = i.id and e.kind = 'skipped')
+        """,
+        "== 0", _zero),
+    Check(
+        "fill_contracts_exceed_order_contracts",
+        "select count(*) from fills f join orders o on o.id = f.order_id "
+        "where f.replay = false and f.contracts > o.contracts",
+        "== 0", _zero),
+    Check(
+        "orders_filled_exceeds_contracts",
+        "select count(*) from orders where replay = false and filled_contracts > contracts",
+        "== 0", _zero),
+    Check(
+        "settlement_result_mismatch",
+        # Distinct from derived_without_venue_row_48h above: this is the pair actually
+        # disagreeing, not one side missing.
+        """
+        select count(*) from venue_settlements d
+        join venue_settlements v on v.venue = d.venue and v.ticker = d.ticker
+        where d.source = 'derived' and v.source = 'venue' and d.result <> v.result
+        """,
+        "== 0", _zero),
+    Check(
+        "fair_values_negative_feed_lag",
+        "select count(*) from fair_values where feed_lag_s < 0",
+        "== 0", _zero),
+    Check(
+        "benchmarks_source_after_target",
+        "select count(*) from benchmarks where source_ts > target_ts",
+        "== 0", _zero),
+    Check(
+        "fills_outside_placement_window",
+        """
+        select count(*) from fills f
+        join orders o on o.id = f.order_id
+        join games g on g.id = o.game_id
+        where f.replay = false
+          and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes')
+        """,
+        "== 0", _zero),
+    Check(
+        "markouts_at_after_horizon",
+        "select count(*) from markouts where at_ts > horizon_ts",
+        "== 0", _zero),
 ]
 
 
@@ -182,4 +250,12 @@ def run_checks(session: Session, now: datetime, job_run_id: int,
     for row in results:
         session.add(row)
     session.flush()
+    # Fix round 1, M1: `SET LOCAL` inside a savepoint that RELEASEs (a check that neither
+    # errored nor timed out) survives the release and would otherwise keep the 2 s timeout in
+    # effect for the rest of housekeeping's transaction. Reset it once, outside every savepoint,
+    # so nothing after this call runs under a timeout it never asked for.
+    try:
+        session.execute(text("set statement_timeout = default"))
+    except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails the stage
+        log.exception("resetting statement_timeout after run_checks failed")
     return results

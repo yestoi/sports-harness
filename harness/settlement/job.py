@@ -234,8 +234,9 @@ class Settler:
 
 def _write_settle_equity_snapshots(session: Session, now: datetime, settings) -> None:
     """One `equity_snapshots` row per exec variant, right after the `settle` stage (design
-    spec §3.4). `mtm_open` is always None here and `mtm_coverage` is always 0: the settler has
-    no live book at all, unlike the executor's own periodic sample."""
+    spec §3.4). `mtm_open` and `mtm_coverage` are always NULL here (fix round 1, I1: one
+    convention with the executor's own writer) -- the settler has no live book at all, so
+    there is nothing to mark or to compute a coverage share over."""
     from harness.execution import store as exec_store
 
     variant_ids = exec_store.resolve_variants(session, settings.exec_variants)
@@ -251,7 +252,7 @@ def _write_settle_equity_snapshots(session: Session, now: datetime, settings) ->
         n_open_orders = exec_store.count_variant_open_orders(session, variant_id, False)
         exec_store.insert_equity_snapshot(
             session, ts=now, variant_id=variant_id, cash=cash, open_stake=open_stake,
-            mtm_open=None, mtm_coverage=Decimal("0"), n_open_positions=len(positions),
+            mtm_open=None, mtm_coverage=None, n_open_positions=len(positions),
             n_open_orders=n_open_orders)
 
 

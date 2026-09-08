@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from sqlalchemy import text
+
 from harness.db.models import Game, GameScoreEvent
 from harness.matching.games import upsert_games_from_odds
 from harness.matching.teams import seed_teams_from_espn
@@ -73,3 +75,31 @@ def test_score_event_on_clock_change_not_on_identical_body(db_session):
     rows = db_session.query(GameScoreEvent).filter_by(game_id=game.id).order_by(GameScoreEvent.id).all()
     assert len(rows) == 2
     assert rows[-1].clock == "11:50"
+
+
+def test_score_event_carries_the_raw_response_id(db_session):
+    """Coverage fix: `game_score_events.raw_id` (design spec §3.5) is populated from the
+    caller's raw_responses row, threaded through `harness/normalize/runner.py`'s call."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    link_espn_scoreboard(db_session, "nfl", SB, raw_id=555)
+    game = db_session.query(Game).filter_by(espn_event_id="401").one()
+    row = db_session.query(GameScoreEvent).filter_by(game_id=game.id).one()
+    assert row.raw_id == 555
+
+
+def test_score_event_failure_does_not_poison_the_linker(db_session, monkeypatch):
+    """Fix round 1, I2: a database-level failure inside the score-event write must not abort
+    the linker's transaction -- the game's own status/score update (and the final flush) must
+    still land."""
+    import harness.normalize.espn as espn_mod
+
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    monkeypatch.setattr(espn_mod, "_NEWEST_SCORE_EVENT", text("select 1/0"))
+
+    res = link_espn_scoreboard(db_session, "nfl", SB)  # must not raise
+    assert res.linked == 1
+
+    game = db_session.query(Game).filter_by(espn_event_id="401").one()
+    assert game.status == "final"
+    assert (game.home_score, game.away_score) == (24, 17)
+    assert db_session.query(GameScoreEvent).filter_by(game_id=game.id).count() == 0

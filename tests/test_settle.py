@@ -557,8 +557,10 @@ def test_stage_registry_runs_stages_in_registration_order_under_one_budget(
 
 
 def test_equity_snapshot_written_after_the_settle_stage(db_session, env_settings):
-    """Task 12b: one `equity_snapshots` row per exec variant right after the real `settle`
-    stage runs, with `mtm_open = None` -- the settler has no live book to mark against."""
+    """Task 12b, fix round 1 I1: one `equity_snapshots` row per exec variant right after the
+    real `settle` stage runs, with `mtm_open` and `mtm_coverage` both NULL -- the settler has
+    no live book at all, the same convention the executor's own writer uses when it has
+    nothing to compute a coverage share over."""
     db_session.add(StrategyVariant(variant_id="v1", name=env_settings.exec_variants[0],
                                    tier="primary", config_json={"bankroll": 500},
                                    registered_at=NOW, active=True))
@@ -570,7 +572,7 @@ def test_equity_snapshot_written_after_the_settle_stage(db_session, env_settings
     snap = db_session.query(EquitySnapshot).filter_by(variant_id="v1").one()
     assert snap.cash == Decimal("500")
     assert snap.mtm_open is None
-    assert snap.mtm_coverage == Decimal("0")
+    assert snap.mtm_coverage is None
 
 
 def test_settler_writes_job_runs_and_never_touches_runs_notes(db_session, env_settings):
