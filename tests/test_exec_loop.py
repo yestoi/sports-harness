@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 from harness.config.settings import get_settings
 from harness.db.models import (
     Fill,
+    Game,
     Intent,
     KillSwitch,
     Ledger,
@@ -31,7 +32,7 @@ from harness.db.models import (
     VenueMarket,
     VenueTrade,
 )
-from harness.execution import EXECUTOR_VERSION
+from harness.execution import EXECUTOR_VERSION, store
 from harness.execution.loop import ExecStats, Executor
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
@@ -383,8 +384,10 @@ def test_nw_fill_writes_no_ledger_or_position_row(env_settings, db_session, worl
 
     assert fills_of(db_session, method="no_watcher")
     assert db_session.query(Ledger).count() == 0
-    rows = db_session.execute(text("select * from positions")).all()
-    assert rows == []
+    assert db_session.execute(text("select * from positions")).all() == []
+    # `rebuild_state` reads `store.load_positions`, not the shipped view, so that is what has to
+    # stay empty for the caps to be right.
+    assert store.load_positions(db_session, False) == []
 
 
 def test_crossed_order_gets_exactly_one_snapshot_cross_fill_with_no_position_or_ledger(
@@ -787,3 +790,325 @@ def test_uuid_client_order_id_fits_the_column():
     """`client_order_id` is String(64); the paper/replay prefix plus a uuid plus the counter
     has to fit, or a placement would fail at insert time rather than in review."""
     assert len(f"replay-{uuid.uuid4()}-99") <= 64
+
+
+# --- fix round 1 ----------------------------------------------------------------------
+
+
+def test_intent_inside_the_kickoff_cutoff_is_skipped_and_recorded(env_settings, db_session, world):
+    """R8/F34: an intent too close to kickoff is not placed, and the record says so.
+
+    The intent still reaches `plan_actions`; the kickoff rule is what declines it, so the loop
+    writes the `kickoff` skip instead of silently dropping the intent before the chain.
+    """
+    game = db_session.query(Game).one()
+    game.kickoff_utc = NOW + timedelta(minutes=5)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    stats = executor.step()
+    refresh(db_session)
+
+    assert stats.intents_new == 1
+    assert orders_of(db_session) == []
+    skips = [e for e in events_of(db_session, "skipped") if e.reason == "kickoff"]
+    assert len(skips) == 1
+    assert skips[0].intent_id == db_session.query(Intent).one().id
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert len([e for e in events_of(db_session, "skipped") if e.reason == "kickoff"]) == 1
+
+
+def test_cursor_stops_at_the_last_event_the_simulation_consumed(env_settings, db_session, world):
+    """A delta stamped ahead of the loop clock is not consumed, so the cursor must not pass it.
+
+    `advance_book` folds a delta in on `id` with no upper `ts` bound, while the simulation stops
+    at its deadline. Writing the cache's head back as the cursor would jump the order over a
+    delta it never applied. The next step reaches it through `book_at(ts_of(cursor))`.
+    """
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    at_place = order.tape_cursor_event_id
+
+    # The venue's own clock runs ahead of ours: this delta lands on the tape now but is stamped
+    # a minute into our future.
+    clock.advance(15)
+    skewed = _delta(db_session, T2, clock.now + timedelta(seconds=60), "yes", "0.35", "-40.00",
+                    seq=2)
+    db_session.commit()
+    executor.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.tape_cursor_event_id == at_place
+    assert order.tape_cursor_event_id < skewed.id
+    assert order.queue_remaining == Decimal("40.00")
+
+    # Once the clock catches up the delta is consumed, through the `book_at` restart branch.
+    clock.advance(120)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.tape_cursor_event_id == skewed.id
+    assert order.queue_remaining == Decimal("0.00")
+
+
+def test_a_fresh_executor_resumes_from_the_persisted_cursor(env_settings, db_session, world):
+    """Replay's first step, and every restart: no book cache, so the cursor is behind the head."""
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    make_executor(env_settings, db_session, clock).step()
+    refresh(db_session)
+
+    _delta(db_session, T2, clock.now + timedelta(seconds=2), "yes", "0.35", "-10.00", seq=2)
+    _print(db_session, T2, clock.now + timedelta(seconds=5), "0.35", "60", trade_id="resume")
+    db_session.commit()
+
+    clock.advance(15)
+    fresh = make_executor(env_settings, db_session, clock)
+    assert fresh.books == {}
+    fresh.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    # 40 resting, 10 cancelled by the delta, 60 printed: 30 clears the queue, 30 is ours.
+    assert order.queue_remaining == Decimal("0.00")
+    assert order.filled_contracts == Decimal("30.00")
+
+
+def test_gap_and_resubscribe_inside_one_period_re_anchor_the_queue(env_settings, db_session, world):
+    """A WS gap and the resubscribe snapshot that follows it can both land between two steps.
+
+    `advance_book` then re-anchors inside one call and the book is clean at both step
+    boundaries, so a recovery detected by comparing dirtiness across steps would miss it and the
+    order would keep a queue built from a tape with a hole in it.
+    """
+    clock = Clock(NOW)
+    snapshot = _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert orders_of(db_session)[0].queue_remaining == Decimal("40.00")
+
+    _gap(db_session, NOW + timedelta(seconds=1), sid=snapshot.sid)
+    fresh = _ws_snapshot(db_session, T2, NOW + timedelta(seconds=5),
+                         [("0.50", "20.00"), ("0.35", "5.00")], [("0.48", "50.00")], sid=3)
+    db_session.commit()
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+
+    assert executor.books[T2].dirty is False
+    order = orders_of(db_session)[0]
+    assert order.queue_remaining == Decimal("5.00")
+    assert order.tape_cursor_event_id == fresh.id
+    assert order.nw_tape_cursor_event_id == fresh.id
+
+
+def test_recovery_after_a_dirty_stretch_clamps_the_queue_and_moves_the_cursors(
+        env_settings, db_session, world):
+    """The step-boundary case: dirty for a whole loop, then a clean snapshot."""
+    clock = Clock(NOW)
+    snapshot = _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+
+    _gap(db_session, NOW + timedelta(seconds=1), sid=snapshot.sid)
+    db_session.commit()
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert orders_of(db_session)[0].queue_remaining == Decimal("40.00")
+
+    clean = _ws_snapshot(db_session, T2, clock.now + timedelta(seconds=5),
+                         [("0.50", "20.00"), ("0.35", "8.00")], [("0.48", "50.00")], sid=4)
+    db_session.commit()
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.queue_remaining == Decimal("8.00")
+    assert order.tape_cursor_event_id == clean.id
+
+
+def test_expired_order_with_a_dirty_book_is_marked_nw_done(env_settings, db_session, world):
+    """Both early returns must still close the no-watcher track, or the order is rescanned for
+    the rest of the season and widens every other order's print window on its ticker."""
+    clock = Clock(NOW)
+    snapshot = _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+
+    _gap(db_session, NOW + timedelta(seconds=1), sid=snapshot.sid)
+    db_session.commit()
+    clock.now = order.expiry + timedelta(seconds=1)
+    clock.mono += 15
+    executor.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.status == "expired"
+    assert order.nw_done is True
+    assert store.working_orders(db_session, False) == []
+
+
+def test_expired_order_that_never_got_a_book_is_marked_nw_done(env_settings, db_session, world):
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.book_source == "none"
+
+    clock.now = order.expiry + timedelta(seconds=1)
+    clock.mono += 15
+    executor.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.nw_done is True
+    assert store.working_orders(db_session, False) == []
+
+
+def test_book_cache_evicts_a_ticker_with_nothing_working_on_it(env_settings, db_session, world):
+    """One BookState per ticker ever traded would accumulate all season, and a dormant entry is
+    later advanced from a very old `as_of`."""
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    assert set(executor.books) == {T2}
+
+    executor.books["KXNFL-P-9"] = executor.books[T2].copy()
+    clock.advance(15)
+    executor.step()
+    assert set(executor.books) == {T2}
+
+
+def test_step_returns_stats_when_the_heartbeat_write_fails(env_settings, db_session, world,
+                                                           monkeypatch):
+    """`step()` says it never raises. The scheduler has no error path of its own, so a raise out
+    of the heartbeat write would take the whole loop down."""
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+
+    from harness.execution import loop as loop_module
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("heartbeat is down")
+
+    monkeypatch.setattr(loop_module.store, "write_heartbeat", boom)
+    stats = executor.step()
+    assert isinstance(stats, ExecStats)
+    assert stats.errors >= 1
+
+    # The lock was still released, so the next step runs normally.
+    monkeypatch.undo()
+    clock.advance(15)
+    assert executor.step().locked is True
+
+
+def test_cancelling_or_expiring_an_order_twice_reports_only_the_first(env_settings, db_session,
+                                                                     world):
+    """`stats.cancelled`/`expired` move on a row the statement actually changed, like `placed`."""
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    make_executor(env_settings, db_session, clock).step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+
+    assert store.cancel_order(db_session, order.id, "kill_switch", NOW) is True
+    assert store.cancel_order(db_session, order.id, "kill_switch", NOW) is False
+    assert store.expire_order(db_session, order.id) is False
+    db_session.rollback()
+
+
+def test_fair_books_json_is_null_because_fair_values_has_no_books_column(env_settings,
+                                                                        db_session, world):
+    """A named gap, not an oversight: `fair_values` carries `model_json` (the margin model's
+    parameters, NULL for a direct fair value) and no column holding the devigged per-book inputs
+    behind the consensus. Until one exists, `orders.fair_books_json` cannot be filled."""
+    from harness.db.models import FairValue
+
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    make_executor(env_settings, db_session, Clock(NOW)).step()
+    refresh(db_session)
+
+    assert orders_of(db_session)[0].fair_books_json is None
+    assert not [c for c in FairValue.__table__.columns if "book" in c.name and c.name != "newest_book_ts"]
+
+
+def test_cross_is_written_once_when_the_tracks_diverge_after_a_cancel(env_settings, db_session,
+                                                                     world):
+    """After a cancel the watched track stops and the no-watcher track runs on, so the two
+    cursors diverge and `_sim_book` hands them different books. Exactly one cross row."""
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+
+    db_session.add(KillSwitch(id=1, active=True, reason="test", set_at=NOW))
+    db_session.commit()
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.status == "cancelled"
+    assert fills_of(db_session, order.id, "snapshot_cross") == []
+
+    _delta(db_session, T2, clock.now + timedelta(seconds=5), "no", "0.70", "25.00", seq=2)
+    db_session.commit()
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert len(fills_of(db_session, order.id, "snapshot_cross")) == 1
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert len(fills_of(db_session, order.id, "snapshot_cross")) == 1
+
+
+def test_newest_intent_per_key_breaks_a_timestamp_tie_on_the_signal(env_settings, db_session,
+                                                                    world):
+    """Two signals for one key stamped the same instant: the later signal is the newer intent."""
+    old = db_session.query(Signal).filter_by(venue_market_id=VM2, decision="candidate").one()
+    db_session.add(Signal(run_id=old.run_id + 1000, variant_id=old.variant_id,
+                          gap_snapshot_id=old.gap_snapshot_id, venue_market_id=VM2, side="yes",
+                          fair_p=old.fair_p, fair_source=old.fair_source,
+                          price_target=Decimal("0.3300"), as_estimate=old.as_estimate,
+                          edge=old.edge, edge_min=old.edge_min, stake=old.stake, contracts=90,
+                          decision="candidate", labels={}, created_at=old.created_at))
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    stats = make_executor(env_settings, db_session, Clock(NOW)).step()
+    refresh(db_session)
+
+    assert stats.intents_new == 2
+    assert orders_of(db_session)[0].prob == Decimal("0.3300")

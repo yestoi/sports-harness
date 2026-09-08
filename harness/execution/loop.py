@@ -101,6 +101,7 @@ class _TrackResult:
     filled: Decimal
     inserted: int
     crossed: bool
+    cross_written: bool = False
 
 
 class Executor:
@@ -172,14 +173,22 @@ class Executor:
                 log.exception("executor step failed")
             stats.loop_ms = int((self._monotonic() - started) * 1000)
             self._durations.append(stats.loop_ms)
-            store.write_heartbeat(
-                session, last_loop_at=now, open_orders=store.count_open_orders(session, self.replay),
-                last_error=error, last_loop_ms=stats.loop_ms, p95_loop_ms=self._p95(),
-                loops_skipped=skipped_loops,
-                book_dirty_markets=heartbeat["book_dirty_markets"],
-                ws_last_event_at=heartbeat["ws_last_event_at"],
-                executor_version=execution.EXECUTOR_VERSION)
-            session.commit()
+            try:
+                store.write_heartbeat(
+                    session, last_loop_at=now,
+                    open_orders=store.count_open_orders(session, self.replay),
+                    last_error=error, last_loop_ms=stats.loop_ms, p95_loop_ms=self._p95(),
+                    loops_skipped=skipped_loops,
+                    book_dirty_markets=heartbeat["book_dirty_markets"],
+                    ws_last_event_at=heartbeat["ws_last_event_at"],
+                    executor_version=execution.EXECUTOR_VERSION)
+                session.commit()
+            except Exception:  # noqa: BLE001 - the scheduler has no error path of its own
+                # The step's own work goes with it: the heartbeat is written in the same
+                # transaction. Losing one loop is survivable; killing the scheduler is not.
+                log.exception("heartbeat write failed")
+                stats.errors += 1
+                session.rollback()
         finally:
             session.close()
         return stats
@@ -192,8 +201,7 @@ class Executor:
         # 2. Intake.
         candidates = store.candidate_signals(session, variant_ids, lower, self.replay)
         stats.intents_new = store.insert_intents(session, candidates, now, self.replay)
-        intents, extras = store.load_intents(session, variant_ids, lower, now + s.cutoff,
-                                             self.replay)
+        intents, extras = store.load_intents(session, variant_ids, lower, self.replay)
 
         # 3. Books and markets.
         working = store.working_orders(session, self.replay)
@@ -241,6 +249,7 @@ class Executor:
         never mutated by a simulation.
         """
         bases: dict[str, BookState | None] = {}
+        re_anchored: set[str] = set()
         for ticker in sorted(tickers):
             cached = self.books.get(ticker)
             if cached is None:
@@ -248,14 +257,26 @@ class Executor:
                 self.books[ticker] = book
                 bases[ticker] = book
             else:
-                bases[ticker] = cached.copy()
-                self.books[ticker] = advance_book(session, cached, now)
+                base = cached.copy()
+                bases[ticker] = base
+                advanced = advance_book(session, cached, now)
+                self.books[ticker] = advanced
+                if (advanced.anchor_id, advanced.source) != (base.anchor_id, base.source):
+                    # `advance_book` re-anchors inside a single call when a gap is followed by a
+                    # clean snapshot, so a gap and its resubscribe can both land between two 15 s
+                    # steps and leave the book clean at either boundary. Comparing anchors is what
+                    # catches that; comparing dirtiness across steps would not.
+                    re_anchored.add(ticker)
         dirty = {t for t in tickers
                  if self.books.get(t) is not None and self.books[t].dirty}
-        # A ticker that was dirty last step and is clean now is re-anchored by the fill step:
-        # the queue we believed in was built from a tape with a hole in it.
-        recovering = {t for t in tickers if t in self._dirty_tickers} - dirty
-        self._dirty_tickers = (self._dirty_tickers - tickers) | dirty
+        # A ticker that was dirty last step and is clean now, or one whose anchor moved inside
+        # this step, is re-anchored by the fill step: the queue we believed in was built from a
+        # tape with a hole in it.
+        recovering = ({t for t in tickers if t in self._dirty_tickers} | re_anchored) - dirty
+        self._dirty_tickers = dirty
+        # One BookState per ticker ever traded would accumulate all season, and a dormant entry
+        # would later be advanced from a very old `as_of`.
+        self.books = {t: book for t, book in self.books.items() if t in tickers}
         return bases, recovering
 
     def _market_now(self, row, dead_recorder: bool) -> MarketNow:
@@ -321,6 +342,7 @@ class Executor:
             # A book we cannot read tells us nothing about the queue, so neither track advances
             # and the order records how long it spent in that state (D6).
             store.add_dirty_seconds(session, row.id, self.settings.exec_period_s)
+            self._close_nw_if_expired(session, row, now)
             return row.status, row.filled_contracts
 
         watched = _state_of(row, "")
@@ -333,6 +355,7 @@ class Executor:
             # simulation the first time one exists, at the back of that book's queue, and the
             # prints and deltas of the no-book window are discarded rather than guessed at.
             if book is None:
+                self._close_nw_if_expired(session, row, now)
                 return row.status, row.filled_contracts
             queue = book.resting_at(row.side, row.prob)
             for state in (watched, no_watcher):
@@ -360,18 +383,23 @@ class Executor:
                            expiry=row.expiry or now,
                            queue_ahead_at_place=updates.get("queue_ahead_at_place",
                                                             row.queue_ahead_at_place))
-        head = book.last_event_id if book is not None else None
+        # F41's worst case is one fill per order, not one per track. The two tracks stop at
+        # different deadlines, so after a cancel their cursors diverge and `_sim_book` hands
+        # them different books, which would stamp two different crossing ids on one order.
+        crossed_already = bool(row.crossed or row.nw_crossed)
 
         if row.status in store.OPEN_STATUSES:
             result = simulate_fills(order, watched, self._sim_book(session, row, watched, bases,
                                                                    anchor),
                                     prints, deltas, now, QUEUE_MODEL)
-            track = self._persist_track(session, row, order, result, prints, ledger=True)
+            track = self._persist_track(session, row, order, result, prints, ledger=True,
+                                        crossed_already=crossed_already)
+            crossed_already = crossed_already or track.cross_written
             stats.fills += track.inserted
             filled = track.filled
             status = _next_status(row.status, filled, row.contracts)
             updates.update(filled_contracts=filled, status=status,
-                           **_state_columns("", track.state, head))
+                           **_state_columns("", track.state))
             if track.crossed:
                 updates["worst_case_fill"] = True
         else:
@@ -382,12 +410,13 @@ class Executor:
             result = simulate_fills(order, no_watcher,
                                     self._sim_book(session, row, no_watcher, bases, anchor),
                                     prints, deltas, deadline, NO_WATCHER)
-            track = self._persist_track(session, row, order, result, prints, ledger=False)
+            track = self._persist_track(session, row, order, result, prints, ledger=False,
+                                        crossed_already=crossed_already)
             stats.nw_fills += track.inserted
             done = ((row.expiry is not None and row.expiry <= now)
                     or track.filled >= row.contracts)
             updates.update(nw_filled_contracts=track.filled, nw_done=done,
-                           **_state_columns("nw_", track.state, head))
+                           **_state_columns("nw_", track.state))
             if track.crossed:
                 updates["worst_case_fill"] = True
 
@@ -414,7 +443,7 @@ class Executor:
         return None if base is None else base.copy()
 
     def _persist_track(self, session: Session, row, order: PaperOrder, result, prints,
-                       ledger: bool) -> _TrackResult:
+                       ledger: bool, crossed_already: bool) -> _TrackResult:
         """Write one track's fills. Only a row the database actually accepted moves a total."""
         fee_type, fee_multiplier, maker_rate = fill_fee_fields(KALSHI_FOOTBALL)
         filled = row.filled_contracts if ledger else row.nw_filled_contracts
@@ -439,11 +468,13 @@ class Executor:
                     order_id=row.id, fill_id=fill_id, ticker=row.ticker, side=row.side,
                     contracts=fill.contracts, price=fill.prob, fee=fill.fee,
                     cash_delta=cash.quantize(CENT), replay=self.replay)
-        if result.cross is not None:
-            # F41's worst case, written once per order: whichever track sees the crossing first
-            # inserts it, and the unique key on the crossing row dedupes the other one. It is
-            # never a position, never in the ledger and never in P&L.
-            store.insert_fill(
+        cross_written = False
+        if result.cross is not None and not crossed_already:
+            # Written once per order: the first track of the first step that sees the crossing
+            # inserts it, the order's persisted `crossed`/`nw_crossed` flags close the door
+            # afterwards, and the unique key on the crossing row is the backstop. It is never a
+            # position, never in the ledger and never in P&L.
+            cross_written = store.insert_fill(
                 session, order_id=row.id, prob=result.cross.prob,
                 contracts=result.cross.contracts, fee=result.cross.fee, fee_type=fee_type,
                 fee_multiplier=fee_multiplier, maker_rate=maker_rate,
@@ -451,9 +482,10 @@ class Executor:
                 source_trade_id=None, source_event_id=result.cross.source_event_id,
                 taker_side=None, through=result.cross.through,
                 tape_source=result.cross.tape_source,
-                has_print=has_print(result.cross, order, prints), replay=self.replay)
+                has_print=has_print(result.cross, order, prints),
+                replay=self.replay) is not None
         return _TrackResult(state=result.state, filled=filled, inserted=inserted,
-                            crossed=result.crossed)
+                            crossed=result.crossed, cross_written=cross_written)
 
     # --- actions ----------------------------------------------------------------------
 
@@ -475,17 +507,15 @@ class Executor:
         if isinstance(action, Place):
             self._place(session, action, by_intent, extras, markets, rows, now, stats)
         elif isinstance(action, Cancel):
-            store.update_order(session, action.order_id,
-                               {"status": "cancelled", "cancel_reason": action.reason,
-                                "cancelled_at": now})
+            if store.cancel_order(session, action.order_id, action.reason, now):
+                stats.cancelled += 1
             store.insert_event(session, order_id=action.order_id, ts=now, kind="cancel",
                                reason=action.reason, replay=self.replay)
-            stats.cancelled += 1
         elif isinstance(action, Expire):
-            store.update_order(session, action.order_id, {"status": "expired"})
+            if store.expire_order(session, action.order_id):
+                stats.expired += 1
             store.insert_event(session, order_id=action.order_id, ts=now, kind="expire",
                                reason="expiry", replay=self.replay)
-            stats.expired += 1
         elif isinstance(action, CapGate):
             # Written for every exec variant whether or not it blocked, so replay can measure
             # what the caps cost the variants that do not apply them (amendment 2).
@@ -517,6 +547,10 @@ class Executor:
             "prob": action.prob, "contracts": action.contracts, "status": "open",
             "placed_at": now, "expiry": action.expiry,
             "fair_p_at_place": market.fair_p, "fair_row_id_at_place": market.fair_row_id,
+            # `fair_books_json` stays NULL: `fair_values` has no column carrying the devigged
+            # per-book inputs behind the consensus. Its `model_json` is the margin model's
+            # parameters and is NULL for a direct fair value, so it is not that. Filling this
+            # needs a pricing-side column first (test_fair_books_json_is_null_...).
             "venue_bid_at_place": market.best_bid_yes,
             "venue_ask_at_place": market.best_ask_yes,
             "venue_mid_at_place": market.mid_yes,
@@ -549,6 +583,17 @@ class Executor:
                                reason="no_book", replay=self.replay)
 
     # --- small helpers ----------------------------------------------------------------
+
+    def _close_nw_if_expired(self, session: Session, row, now: datetime) -> None:
+        """Close the no-watcher track of an expired order on a path that ran no simulation.
+
+        `working_orders` selects `status in ('open','partially_filled') or nw_done = false`, so
+        an order whose book is dirty or has never existed at its expiry would otherwise be
+        re-scanned every 15 s for the rest of the season -- and `_tape` would keep widening the
+        print window for every other order on its ticker back to this one's placement.
+        """
+        if not row.nw_done and row.expiry is not None and row.expiry <= now:
+            store.update_order(session, row.id, {"nw_done": True})
 
     def _order_view(self, row, outcomes) -> OpenOrderView:
         _, filled = outcomes.get(row.id, (row.status, row.filled_contracts))
@@ -618,16 +663,16 @@ def _state_of(row, prefix: str) -> SimState:
         last_print_ids=tuple(getattr(row, f"{prefix}last_print_ids") or ()))
 
 
-def _state_columns(prefix: str, state: SimState, head: int | None) -> dict:
+def _state_columns(prefix: str, state: SimState) -> dict:
     """The columns one track's `SimState` is persisted in.
 
-    The cursor lands on the tape's head for this ticker rather than on the last row the
-    simulator happened to consume, so every cursor on a ticker agrees after the step and the
-    next loop re-reads nothing it has already seen.
+    The cursor is the last tape row the simulation actually consumed and nothing else. The
+    cache's own head runs ahead of it -- `advance_book` folds a delta in on `id` with no upper
+    `ts` bound while `_merge_events` stops at the track's deadline -- so writing the head back
+    would jump the order over a delta stamped ahead of our clock. The next step reaches that
+    delta through `_sim_book`'s `book_at(ts_of(cursor))` branch instead.
     """
     cursor = state.cursor_event_id
-    if head is not None:
-        cursor = head if cursor is None else max(cursor, head)
     return {f"{prefix}queue_remaining": state.queue_remaining,
             f"{prefix}traded_at_price": state.traded_at_price,
             f"{prefix}tape_cursor_event_id": cursor,

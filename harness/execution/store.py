@@ -148,8 +148,9 @@ select distinct on (i.variant_id, i.venue_market_id, i.side)
 from intents i
 left join signals s on s.id = i.signal_id
 where i.replay = :replay and i.variant_id = any(:variants)
-  and i.signal_created_at >= :lower and i.kickoff_utc > :kickoff_bound
-order by i.variant_id, i.venue_market_id, i.side, i.signal_created_at desc, i.created_at desc
+  and i.signal_created_at >= :lower
+order by i.variant_id, i.venue_market_id, i.side, i.signal_created_at desc, i.created_at desc,
+         i.signal_id desc, i.id desc
 """)
 
 _NEWEST_DECISIONS = text("""
@@ -162,13 +163,18 @@ order by s.variant_id, s.venue_market_id, s.side, s.created_at desc, s.id desc
 
 
 def load_intents(session: Session, variant_ids: Sequence[str], lower: datetime,
-                 kickoff_bound: datetime, replay: bool) -> tuple[list[IntentView], dict]:
+                 replay: bool) -> tuple[list[IntentView], dict]:
     """The intents the decision chain sees, plus the placement context they carry.
 
-    The newest intent per `(variant_id, venue_market_id, side)` inside the TTL whose kickoff is
-    still further out than the cutoff (F34). `latest_decision` is read separately, from the
-    newest *signal* on the same key whatever its decision, which is how an order placed by an
-    intent whose signal has since been rejected gets cancelled.
+    The newest intent per `(variant_id, venue_market_id, side)` inside the TTL. The kickoff
+    cutoff is deliberately *not* applied here: `plan_actions`' own `kickoff` rule is what
+    declines an intent too close to kickoff, and filtering it out first would leave that
+    decision with no record (F34, R8). `signal_id desc` breaks a timestamp tie, since
+    `intents.id` is a uuid and orders nothing meaningful.
+
+    `latest_decision` is read separately, from the newest *signal* on the same key whatever its
+    decision, which is how an order placed by an intent whose signal has since been rejected
+    gets cancelled.
     """
     if not variant_ids:
         return [], {}
@@ -177,7 +183,7 @@ def load_intents(session: Session, variant_ids: Sequence[str], lower: datetime,
                  for r in session.execute(_NEWEST_DECISIONS, params).all()}
     views: list[IntentView] = []
     extras: dict = {}
-    for row in session.execute(_NEWEST_INTENTS, {**params, "kickoff_bound": kickoff_bound}).all():
+    for row in session.execute(_NEWEST_INTENTS, params).all():
         key = (row.variant_id, row.venue_market_id, row.side)
         views.append(IntentView(
             intent_id=row.id, signal_id=row.signal_id, variant_id=row.variant_id,
@@ -398,6 +404,28 @@ def add_dirty_seconds(session: Session, order_id: int, seconds: int) -> None:
         "update orders set dirty_seconds = dirty_seconds + :s, "
         "dirty_minutes = (dirty_seconds + :s) / 60 where id = :i"),
         {"s": int(seconds), "i": order_id})
+
+
+def cancel_order(session: Session, order_id: int, reason: str, now: datetime) -> bool:
+    """Cancel a resting order; False when it was not resting, so a re-applied cancel is a no-op.
+
+    Bounded on the open statuses for the same reason every insert is bounded on a unique key: a
+    retried step must not move a counter twice or overwrite a cancel reason already recorded.
+    """
+    stmt = (update(Order)
+            .where(Order.id == order_id, Order.status.in_(OPEN_STATUSES))
+            .values(status="cancelled", cancel_reason=reason, cancelled_at=now)
+            .returning(Order.id))
+    return session.execute(stmt).first() is not None
+
+
+def expire_order(session: Session, order_id: int) -> bool:
+    """Expire a resting order; False when it was not resting (R8's guarantee, applied once)."""
+    stmt = (update(Order)
+            .where(Order.id == order_id, Order.status.in_(OPEN_STATUSES))
+            .values(status="expired")
+            .returning(Order.id))
+    return session.execute(stmt).first() is not None
 
 
 def count_open_orders(session: Session, replay: bool) -> int:
