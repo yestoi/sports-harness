@@ -457,8 +457,13 @@ def _executor(session: Session, now: datetime) -> dict:
     row = session.get(ExecHeartbeat, 1)
     if row is None:
         return {"present": False}
-    heartbeat_age_s = (now - row.last_loop_at).total_seconds() if row.last_loop_at else None
-    ws_event_age_s = (now - row.ws_last_event_at).total_seconds() if row.ws_last_event_at else None
+    # Clamped at 0.0, not left negative (fix 19 addendum, walkthrough 2026-09-08 09:28 CT): the
+    # executor can write a heartbeat between this query's read and the request's `now` (a
+    # negative `heartbeat_age_s`), and the exchange's own event timestamps run up to ~7s ahead
+    # of the NAS clock (a negative `ws_last_event_age_s`). Both are still fresh, not stale, so
+    # 0.0 is the honest floor; the template's "%.0f" turned -0.6 into the misleading "-1".
+    heartbeat_age_s = max(0.0, (now - row.last_loop_at).total_seconds()) if row.last_loop_at else None
+    ws_event_age_s = max(0.0, (now - row.ws_last_event_at).total_seconds()) if row.ws_last_event_at else None
     return {
         "present": True,
         "loops": row.loops,

@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import timedelta
 from decimal import Decimal
@@ -6,8 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, insert
 from sqlalchemy.orm import sessionmaker
 
-from harness.dashboard.app import (WINDOW_24H, _candidates, _data_quality, _funnel, _recent_run_notes, _websocket,
-                                    create_dashboard)
+from harness.dashboard.app import (WINDOW_24H, _candidates, _data_quality, _executor, _funnel, _recent_run_notes,
+                                    _websocket, create_dashboard)
 from harness.db.models import (ExecHeartbeat, Fill, JobRun, KillSwitch, Ledger, MetricSample, OperatorEvent, Order,
                                 OrderEvent, RawResponse, Run, StrategyVariant, VenueSettlement, VenueTrade)
 from harness.execution.plan import POST_ONLY_REJECT
@@ -823,3 +824,51 @@ def test_build_summary_issues_no_statement_against_venue_trades(db_session, env_
 
     assert r.status_code == 200
     assert "venue_trades" not in "\n".join(statements).lower()
+
+
+# --- Fix 19 addendum: clamp executor ages at 0, not negative -----------------------------
+
+def test_executor_ages_clamp_at_zero_not_negative(db_session, env_settings):
+    """A heartbeat written between the SQL read and the request's `now` (a `last_loop_at` a
+    fraction of a second in the future), or a WS event timestamped ahead of the NAS clock (up
+    to ~7s), must read 0.0 -- not a negative age that the template's "%.0f" rounds to a
+    misleading "-1" (fix 19 addendum, walkthrough 2026-09-08 09:28 CT). Neither is stale, so
+    0.0 is the honest floor, and the red thresholds are unaffected either way."""
+    db_session.add(ExecHeartbeat(id=1, last_loop_at=NOW + timedelta(milliseconds=600), loops=1,
+                                 open_orders=0, ws_last_event_at=NOW + timedelta(seconds=7)))
+    db_session.flush()
+
+    result = _executor(db_session, NOW)
+
+    assert result["heartbeat_age_s"] == 0.0
+    assert result["ws_last_event_age_s"] == 0.0
+    assert result["heartbeat_red"] is False
+    assert result["ws_red"] is False
+
+
+def test_executor_ages_stay_none_without_timestamps(db_session, env_settings):
+    """Clamping must not turn a missing timestamp into a fake 0.0."""
+    db_session.add(ExecHeartbeat(id=1, loops=0, open_orders=0))
+    db_session.flush()
+
+    result = _executor(db_session, NOW)
+
+    assert result["heartbeat_age_s"] is None
+    assert result["ws_last_event_age_s"] is None
+
+
+def test_executor_heartbeat_renders_green_when_not_stale(db_session, env_settings, tmp_path):
+    """verify.md item 10: "Executor block in Health: heartbeat age under 60s, rendered
+    green." Before this fix the value was bare text with a "stale" badge only when red -- no
+    positive colour cue when it wasn't."""
+    _seed_full(db_session, env_settings)
+    db_session.add(ExecHeartbeat(id=1, last_loop_at=NOW - timedelta(seconds=5), loops=1, open_orders=0))
+    db_session.commit()
+    settings = _dashboard_settings(env_settings, tmp_path)
+    page = _client(db_session, settings).get("/")
+
+    match = re.search(r"Heartbeat age \(s\).*?</div></div>", page.text, re.S)
+    assert match is not None
+    fragment = match.group(0)
+    assert 'class="badge ok"' in fragment
+    assert "badge bad" not in fragment

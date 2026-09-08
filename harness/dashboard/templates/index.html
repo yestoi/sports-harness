@@ -75,7 +75,8 @@
   <div class="grid">
     <div class="stat"><div class="label">Heartbeat age (s)</div>
       <div class="value">{{ "%.0f"|format(summary.executor.heartbeat_age_s) if summary.executor.heartbeat_age_s is not none else "-" }}
-        {% if summary.executor.heartbeat_red %}<span class="badge bad">stale</span>{% endif %}</div></div>
+        {% if summary.executor.heartbeat_red %}<span class="badge bad">stale</span>
+        {% elif summary.executor.heartbeat_age_s is not none %}<span class="badge ok">ok</span>{% endif %}</div></div>
     <div class="stat"><div class="label">Last loop (ms)</div><div class="value">{{ summary.executor.last_loop_ms if summary.executor.last_loop_ms is not none else "-" }}</div></div>
     <div class="stat"><div class="label">p95 loop (ms)</div><div class="value">{{ summary.executor.p95_loop_ms if summary.executor.p95_loop_ms is not none else "-" }}</div></div>
     <div class="stat"><div class="label">Loops skipped</div><div class="value">{{ summary.executor.loops_skipped }}</div></div>
