@@ -76,14 +76,31 @@ def test_report_wtd_stage_hourly_provisional_and_yields_on_low_budget(db_session
         assert rows[0].provisional is True
         assert rows[0].markdown is None
 
-        # Not due again inside the same hour.
-        result2 = report_wtd_stage(db_session, NOW + timedelta(minutes=30), ok_budget)
+        # Not due again inside the period -- an hour later, where it used to run again.
+        result2 = report_wtd_stage(db_session, NOW + timedelta(hours=1, minutes=1), ok_budget)
         db_session.commit()
         assert result2.counts.get("skipped") is True
         assert db_session.query(ReportRun).count() == 1
 
-        # Due again an hour after the first run.
-        result3 = report_wtd_stage(db_session, NOW + timedelta(hours=1, minutes=1), ok_budget)
+        # Due again six hours after the first run (final review I6).
+        result3 = report_wtd_stage(db_session, NOW + timedelta(hours=6, minutes=1), ok_budget)
         db_session.commit()
         assert result3.counts.get("skipped") is not True
+        assert db_session.query(ReportRun).count() == 2
+
+
+def test_report_wtd_cadence_comes_from_the_setting(db_session, env_settings):
+    """Final review I6: `report_wtd_period_s` gates the stage, so an operator who wants the
+    week-to-date tables refreshed more often (or not at all until Monday) moves one setting
+    rather than a module constant."""
+    hourly = env_settings.model_copy(update={"report_wtd_period_s": 3600})
+    with use_ctx(new_ctx(settings=hourly)):
+        ok_budget = Budget(300, lambda: 0.0)
+        report_wtd_stage(db_session, NOW, ok_budget)
+        db_session.commit()
+        assert db_session.query(ReportRun).count() == 1
+
+        result = report_wtd_stage(db_session, NOW + timedelta(hours=1, minutes=1), ok_budget)
+        db_session.commit()
+        assert result.counts.get("skipped") is not True
         assert db_session.query(ReportRun).count() == 2

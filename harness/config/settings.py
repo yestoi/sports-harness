@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     settle_period_s: int = 3600
     settle_budget_s: int = 600
     gap_outcomes_batch: int = 50_000
+    #: How often the `report_wtd` stage rebuilds the week-to-date tables (final review I6).
+    #: Six hours, not the hourly cadence the design spec's §3.7 named: two of the ten tables
+    #: materialise a week of rows in Python (`tables._T4_SNAPSHOTS` loads every
+    #: `market_gap_snapshots` row of the week; `_T5_SNAPSHOTS` parses every WebSocket snapshot
+    #: body for the week's moved tickers into a `BookState`), the NAS has about 1 GB of RAM to
+    #: spare, and the stage shares its hourly slot with `settle`. Nothing downstream needs the
+    #: provisional tables fresher than that; raise it to 3600 for a debugging pass.
+    report_wtd_period_s: int = 21_600
     db_budget_gb: int = 2000  # D9: the 2 TB ceiling from U3; the dashboard turns red at 80 %
     #: U5/D1: the one variant the phase gate is judged on. The Task 4b deploy flips it to
     #: "sharp_two_sided"; falls back to the active primary when the named variant is unregistered.

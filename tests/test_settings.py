@@ -60,5 +60,6 @@ def test_settings_phase3_defaults(monkeypatch):
     assert s.settle_period_s == 3600
     assert s.settle_budget_s == 600
     assert s.gap_outcomes_batch == 50_000
+    assert s.report_wtd_period_s == 21_600  # final review I6: six hours, not one
     assert s.db_budget_gb == 2000  # D9: 2 TB ceiling from U3
     assert s.gate_variant == "sharp_direct"  # U5/D1; the Task 4b deploy flips it
