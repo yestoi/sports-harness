@@ -125,7 +125,14 @@ class Recorder:
 
     # ---- helpers -------------------------------------------------------------------
     def _latest_body_from_db(self, session: Session, source: str, endpoint: str) -> dict | list | None:
+        # Fix round 1, Important 1: fix 14's dated rollover fetch is stored under this same
+        # (source, endpoint) and can be the newest row for it, e.g. right after a restart
+        # while today's cadence key is still fresh. It must never be handed back here as
+        # "today's" body -- that would feed yesterday's (possibly still in_progress) games into
+        # the paid Odds/Kalshi cadence planner. `~params.has_key("dates")` excludes it; every
+        # other caller's rows have no `dates` key, so this filter is a no-op for them.
         row = (session.query(RawResponse).filter_by(source=source, endpoint=endpoint, http_status=200)
+               .filter(~RawResponse.params.has_key("dates"))
                .order_by(desc(RawResponse.fetched_at)).first())
         return row.body if row else None
 
@@ -183,9 +190,14 @@ class Recorder:
         there or in `link_espn_scoreboard`, which already updates any game carrying the body's
         event id regardless of which date fetched it.
         """
+        # Fix round 1, Minor 1: each edge is its own Eastern midnight, converted independently --
+        # not `day_start + 24h` -- so the window is exactly one Eastern calendar day even across
+        # a DST transition (the US fall-back day has a 25th UTC hour; `+timedelta(days=1)` on the
+        # UTC-converted start would end the window an hour before the next Eastern midnight).
         yesterday_et = (now.astimezone(_ESPN_TZ) - timedelta(days=1)).date()
         day_start = datetime.combine(yesterday_et, datetime.min.time(), tzinfo=_ESPN_TZ).astimezone(timezone.utc)
-        day_end = day_start + timedelta(days=1)
+        day_end = datetime.combine(yesterday_et + timedelta(days=1), datetime.min.time(),
+                                   tzinfo=_ESPN_TZ).astimezone(timezone.utc)
         pending = session.query(Game.id).filter(
             Game.sport == sport, Game.kickoff_utc >= day_start, Game.kickoff_utc < day_end,
             Game.status.notin_(_ESPN_TERMINAL_STATUSES)

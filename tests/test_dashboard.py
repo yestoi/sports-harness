@@ -3,7 +3,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import event, insert
 from sqlalchemy.orm import sessionmaker
 
 from harness.dashboard.app import _funnel, create_dashboard
@@ -613,3 +613,44 @@ def test_funnel_issues_no_statement_against_the_pricing_tables(db_session, env_s
     assert "fair_values" not in joined
     assert "market_gap_snapshots" not in joined
     assert "signals" not in joined
+
+
+# --- Fix round 1: review findings -------------------------------------------------------
+
+def test_funnel_aggregates_the_full_24h_window_not_just_the_row_cap(db_session, env_settings):
+    """Fix round 1, Important 2: `RUNS_NOTES_LIMIT` (500) must not silently truncate the
+    funnel's "24h" scan -- at the default 30s heartbeat that is only ~4.2 hours in production.
+    A pricing-bearing run just inside the 24h window, with 510 newer (pricing-empty) heartbeat
+    runs stacked after it, must still contribute; before the fix the old run falls past the
+    500-row cap and its counts are dropped."""
+    old_run = Run(started_at=NOW - timedelta(hours=23, minutes=55), status="ok",
+                 notes={"pricing": {"fair_direct": 7, "fair_derived": 0, "gaps": 0, "signals": {}}})
+    db_session.add(old_run)
+    db_session.flush()
+    heartbeats = [
+        {"started_at": NOW - timedelta(hours=23, minutes=54) + timedelta(seconds=i * 5),
+         "status": "skipped", "notes": {"pricing": {}}, "n_requests": 0, "credits_used": 0,
+         "budget_exhausted": False}
+        for i in range(510)
+    ]
+    db_session.execute(insert(Run), heartbeats)
+    db_session.flush()
+
+    result = _funnel(db_session, NOW)
+    assert result["fair_by_source"]["direct"] == 7
+
+
+def test_funnel_section_reports_unavailable_on_a_malformed_pricing_note(db_session, env_settings, tmp_path):
+    """Fix round 1, Minor 4: a malformed `pricing` note (wrong shape -- here a string where a
+    dict is expected) must degrade only the funnel section, via `_section`'s "unavailable"
+    contract, not take down the whole `/api/summary` page."""
+    db_session.add(Run(started_at=NOW, status="ok", notes={"pricing": "not-a-dict"}))
+    db_session.commit()
+    settings = _dashboard_settings(env_settings, tmp_path)
+    client = _client(db_session, settings)
+
+    r = client.get("/api/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert "error" in body["funnel"]
+    assert "health" in body  # the rest of the page still renders

@@ -818,3 +818,132 @@ def test_espn_rollover_heals_stuck_game_to_final(env_settings, db_session):
 
     game = db_session.query(Game).filter_by(espn_event_id="900").one()
     assert (game.status, game.home_score, game.away_score) == ("final", 24, 17)
+
+
+# --- Fix round 1: review findings ---------------------------------------------------------
+
+@respx.mock
+def test_espn_latest_body_after_restart_ignores_a_dated_row(env_settings, db_session, monkeypatch):
+    """Fix round 1, Important 1: `_latest_body_from_db` (harness/recorder/tick.py:121-124) must
+    not hand back a dated rollover body as "today's" scoreboard. Simulates a restart: both
+    `espn:nfl` and the dated key are already fresh (so neither fetch runs this tick and a fresh
+    Recorder's empty `_last_good` cache must fall through to the DB), and the dated row (stored
+    later, as fix 14's own extra fetch would be) must not be the one that comes back."""
+    import harness.recorder.tick as tick_mod
+
+    _mock_nfl_scoreboard()  # neither route should be hit: both cadence keys are fresh
+    db_session.add(RawResponse(fetched_at=NOW - timedelta(minutes=5), run_id=1, source="espn",
+                               endpoint="/nfl/scoreboard", params={}, http_status=200, body=ESPN))
+    dated_body = {"events": [{"id": "999", "date": "2026-09-08T20:20Z",
+                  "status": {"type": {"name": "STATUS_IN_PROGRESS"}},
+                  "competitions": [{"competitors": [
+                      {"homeAway": "home", "team": {"id": "1", "displayName": "H"}},
+                      {"homeAway": "away", "team": {"id": "2", "displayName": "A"}}]}]}]}
+    db_session.add(RawResponse(fetched_at=NOW - timedelta(minutes=1), run_id=1, source="espn",
+                               endpoint="/nfl/scoreboard", params={"dates": "20260908"}, http_status=200,
+                               body=dated_body))
+    store.set_source_state(db_session, "espn:nfl", NOW - timedelta(seconds=30))
+    store.set_source_state(db_session, "espn_dated:nfl:20260908", NOW - timedelta(seconds=30))
+    db_session.commit()
+
+    seen: dict = {}
+    real_parse = tick_mod.parse_kickoffs
+
+    def _capture(sport, body):
+        if sport == "nfl":
+            seen["nfl"] = body
+        return real_parse(sport, body)
+
+    monkeypatch.setattr(tick_mod, "parse_kickoffs", _capture)
+
+    rec, _ = _recorder(env_settings, db_session)  # a fresh Recorder: _last_good starts empty
+    rec.maybe_tick()
+
+    ids = {str(e["id"]) for e in (seen.get("nfl") or {}).get("events", [])}
+    assert "401872656" in ids  # today's fixture event made it through
+    assert "999" not in ids  # the dated row's event never did
+
+
+def test_latest_body_from_db_excludes_dated_rows_directly(env_settings, db_session):
+    """Fix round 1, Important 1, unit level: `_latest_body_from_db` itself must skip a row
+    whose `params` carries `dates`, even when that row is the newest by `fetched_at`."""
+    db_session.add(RawResponse(fetched_at=NOW - timedelta(minutes=5), run_id=1, source="espn",
+                               endpoint="/nfl/scoreboard", params={}, http_status=200, body=ESPN))
+    db_session.add(RawResponse(fetched_at=NOW, run_id=1, source="espn", endpoint="/nfl/scoreboard",
+                               params={"dates": "20260908"}, http_status=200, body={"events": [{"id": "999"}]}))
+    db_session.commit()
+
+    rec, _ = _recorder(env_settings, db_session)
+    body = Recorder._latest_body_from_db(rec, db_session, "espn", "/nfl/scoreboard")
+    assert body == ESPN
+
+
+@respx.mock
+def test_espn_rollover_window_spans_the_full_eastern_day_across_dst_fallback(env_settings, db_session):
+    """Fix round 1, Minor 1: the rollover window must be `[midnight ET yesterday, midnight ET
+    today)`, not `day_start + 24h` -- on the US Eastern fall-back day (clocks go EDT -> EST),
+    that 24h-flat window is an hour short and misses a kickoff between 23:00 and 24:00 ET on
+    the DST-transition day. 2026-11-01 is that Sunday; a kickoff at 23:30 ET that day is
+    04:30Z on 11-02 once EST (UTC-5) is in effect."""
+    calls = _mock_nfl_scoreboard()
+    dst_kickoff = datetime(2026, 11, 2, 4, 30, tzinfo=timezone.utc)  # 23:30 ET on 2026-11-01
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=dst_kickoff,
+                        status="in_progress", espn_event_id="900"))
+    db_session.commit()
+
+    dst_now = datetime(2026, 11, 2, 6, 0, tzinfo=timezone.utc)  # 01:00 ET on 2026-11-02 (EST)
+    rec, _ = _recorder(env_settings, db_session, now=dst_now)
+    rec.maybe_tick()
+
+    assert calls["dated"] == [{"dates": "20261101"}]
+
+
+@respx.mock
+def test_espn_rollover_uses_eastern_not_local_tz(env_settings, db_session):
+    """Fix round 1, Minor 2: a kickoff between 00:00 and 01:00 ET pins the zone choice --
+    00:30 ET on 2026-09-08 is 23:30 CT on 2026-09-07 (a different calendar date in
+    `Settings.tz_local`, America/Chicago). The rollover must key off ESPN's Eastern date, so
+    this game (Eastern date 09-08) must be picked up as "yesterday" relative to a `now` whose
+    Eastern date is 09-09 -- a Chicago-keyed implementation would miss it."""
+    calls = _mock_nfl_scoreboard()
+    et_0030_kickoff = datetime(2026, 9, 8, 4, 30, tzinfo=timezone.utc)  # 00:30 ET / 23:30 CT
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=et_0030_kickoff,
+                        status="in_progress", espn_event_id="900"))
+    db_session.commit()
+
+    rec, _ = _recorder(env_settings, db_session, now=ROLLOVER_NOW)
+    rec.maybe_tick()
+
+    assert calls["dated"] == [{"dates": "20260908"}]
+
+
+@respx.mock
+def test_espn_rollover_window_includes_2330_et_yesterday(env_settings, db_session):
+    """Fix round 1, Minor 2: pins the window's lower/upper edge -- 23:30 ET on the previous
+    Eastern date is inside the window and must trigger the dated fetch."""
+    calls = _mock_nfl_scoreboard()
+    edge_kickoff = datetime(2026, 9, 9, 3, 30, tzinfo=timezone.utc)  # 23:30 ET on 2026-09-08
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=edge_kickoff,
+                        status="in_progress", espn_event_id="900"))
+    db_session.commit()
+
+    rec, _ = _recorder(env_settings, db_session, now=ROLLOVER_NOW)
+    rec.maybe_tick()
+
+    assert calls["dated"] == [{"dates": "20260908"}]
+
+
+@respx.mock
+def test_espn_rollover_window_excludes_0030_et_today(env_settings, db_session):
+    """Fix round 1, Minor 2: pins the window's edge on the other side -- 00:30 ET on *today's*
+    Eastern date is today's game, not yesterday's, and must not trigger the dated fetch."""
+    calls = _mock_nfl_scoreboard()
+    today_kickoff = datetime(2026, 9, 9, 4, 30, tzinfo=timezone.utc)  # 00:30 ET on 2026-09-09 (today)
+    db_session.add(Game(sport="nfl", home_team_id=14, away_team_id=19, kickoff_utc=today_kickoff,
+                        status="in_progress", espn_event_id="901"))
+    db_session.commit()
+
+    rec, _ = _recorder(env_settings, db_session, now=ROLLOVER_NOW)
+    rec.maybe_tick()
+
+    assert calls["dated"] == []

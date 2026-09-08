@@ -93,6 +93,21 @@ def _health(session: Session, session_factory: sessionmaker, now: datetime, cred
     return {**body, "run_id": last_run_id}
 
 
+def _recent_run_notes(session: Session, cutoff: datetime, limit: int | None = None) -> list[dict]:
+    """Every run row's `notes` JSON since `cutoff`, newest first -- the one query both `_funnel`
+    and `_data_quality` scan `runs.notes` through (fix round 1, Minor 3: they used to run this
+    query twice). `limit`, when given, caps the row count; omit it for a window meant to be read
+    in full. `_funnel` passes no limit: capping it at `RUNS_NOTES_LIMIT` (500) used to silently
+    truncate its "24h" scan to about 4.2 hours at the default 30s heartbeat (fix round 1,
+    Important 2) -- ~2880 rows a day of this ~2MB table is cheap to scan in full. `_data_quality`
+    keeps the existing `RUNS_NOTES_LIMIT` cap, unchanged by this fix.
+    """
+    stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.started_at))
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return session.execute(stmt).scalars().all()
+
+
 def _funnel(session: Session, now: datetime) -> dict:
     """`sources` and `markets_by_sport` still come straight from `raw_responses` and
     `venue_markets`, which stay small. `fair_by_source`, `gaps` and `signals_by_variant` are
@@ -100,7 +115,10 @@ def _funnel(session: Session, now: datetime) -> dict:
     direct scan of `fair_values`, `market_gap_snapshots` and `signals` took 86-92s against the
     10s bound and blew the dashboard's statement timeout once the season's pricing volume grew,
     and it recurs after every Postgres restart. The rendered keys are unchanged, so the frozen
-    `/api/summary` contract holds -- only where the values come from has changed.
+    `/api/summary` contract holds -- only where the values come from has changed. The scan is
+    uncapped (fix round 1, Important 2): `RUNS_NOTES_LIMIT` covers only a few hours at the
+    default heartbeat, and this section's own docstring -- and the `sources`/`markets_by_sport`
+    keys beside it -- promise the full 24h.
     """
     cutoff = now - WINDOW_24H
 
@@ -127,10 +145,7 @@ def _funnel(session: Session, now: datetime) -> dict:
         ).scalars().all()
     }
     fair_direct = fair_derived = gaps = 0
-    notes_rows = session.execute(
-        select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.started_at)).limit(RUNS_NOTES_LIMIT)
-    ).scalars().all()
-    for notes in notes_rows:
+    for notes in _recent_run_notes(session, cutoff):
         pricing = (notes or {}).get("pricing") or {}
         fair_direct += pricing.get("fair_direct", 0) or 0
         fair_derived += pricing.get("fair_derived", 0) or 0
@@ -282,12 +297,9 @@ def _data_quality(session: Session, now: datetime) -> dict:
     staleness_median_s = {book: median(vals) for book, vals in by_book.items()}
 
     cutoff_24h = now - WINDOW_24H
-    notes_rows = session.execute(
-        select(Run.notes).where(Run.started_at >= cutoff_24h).order_by(desc(Run.started_at)).limit(RUNS_NOTES_LIMIT)
-    ).scalars().all()
     trade_gaps = []
     taker_side_missing = 0
-    for notes in notes_rows:
+    for notes in _recent_run_notes(session, cutoff_24h, limit=RUNS_NOTES_LIMIT):
         trade_gaps.extend((notes or {}).get("trade_gaps", []))
         taker_side_missing += (notes or {}).get("taker_side_missing", 0) or 0
 
@@ -522,10 +534,17 @@ def _settlement_health(session: Session, now: datetime) -> dict:
 
 
 def _section(session: Session, name: str, fn: Callable[[], dict]) -> dict:
-    """One slow or failing section (e.g. a statement timeout) must not take the whole page down."""
+    """One slow or failing section (e.g. a statement timeout) must not take the whole page down.
+
+    Fix round 1, Minor 4: also catches the shapes a malformed `runs.notes` JSON blob raises
+    when a section does Python-level arithmetic over it (`_funnel`, `_data_quality`) --
+    `TypeError`/`ValueError`/`AttributeError`/`KeyError` from e.g. a string where a dict was
+    expected, or a missing key on an object that isn't a dict at all. Notes are written only by
+    our own code, so this is a defensive backstop, not an expected path.
+    """
     try:
         return fn()
-    except SQLAlchemyError as e:  # noqa: BLE001
+    except (SQLAlchemyError, TypeError, ValueError, AttributeError, KeyError) as e:  # noqa: BLE001
         log.warning("dashboard section %s failed: %s", name, type(e).__name__)
         session.rollback()
         return {"error": type(e).__name__}
