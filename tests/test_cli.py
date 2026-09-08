@@ -213,3 +213,29 @@ def test_note_cli_rejects_an_unknown_kind(cli_settings, db_session):
     result = runner.invoke(app, ["note", "--kind", "not-a-real-kind", "text"])
     assert result.exit_code == 1
     assert db_session.query(OperatorEvent).count() == 0
+
+
+def test_runbook_export_fixture_paragraph_matches_the_shipped_command():
+    """Final review I5: the runbook's `export-fixture` paragraph had drifted from the CLI --
+    it described a fixture *directory* "the same shape as tests/fixtures/day_2026-09-13/",
+    named none of the required options, and pointed at a path that does not exist, so an
+    operator following it got a Typer usage error. This pins the two ways it drifted: every
+    long option the paragraph names is a real option of the command, and every fixture path
+    it names is a real path in the tree.
+    """
+    import re
+    from pathlib import Path
+
+    import typer
+
+    root = Path(__file__).parent.parent
+    runbook = (root / "docs" / "runbooks" / "phase0-deploy.md").read_text()
+    para = next(p for p in runbook.split("\n- **")
+                if p.startswith("`harness export-fixture")).split("\n\n")[0]
+
+    command = typer.main.get_command(app).commands["export-fixture"]
+    declared = {opt for param in command.params for opt in param.opts}
+    assert set(re.findall(r"--[a-z][a-z-]*", para)) <= declared
+
+    for path in re.findall(r"tests/fixtures/[\w./*-]+", para):
+        assert list(root.glob(path)), f"{path} does not exist"

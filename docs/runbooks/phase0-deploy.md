@@ -139,10 +139,16 @@ settlement or benchmark row.
   order and fill counts to match the live ones within 2 % (R14); the unit test behind it asserts
   strict equality on a fixed run range. Without `--execute` it re-scores signals only (the
   pre-phase-3 replay path), which is what a measurement amendment cites for a labelling fix.
-- **`harness export-fixture`** writes a recorded game day's raw responses, WS snapshot, deltas
-  and prints out of the database as a self-contained fixture directory, the same shape as
-  `tests/fixtures/day_2026-09-13/`, for building or refreshing a test fixture from real NAS data
-  rather than by hand.
+- **`harness export-fixture --kind day|ws-tape --out PATH`** dumps a slice of the record as a
+  single self-contained JSON document, for building or refreshing a test fixture from real NAS
+  data rather than by hand. `--out` is required; `--out -` writes the document to stdout
+  instead of a file. `--kind day --from-run A --to-run B` writes that run range's
+  `raw_responses` plus every `orderbook_events` and `venue_trades` row inside the runs' own
+  window — the three tables a replay reads, and the shape `tests/fixtures/day_synthetic/day.json`
+  carries. `--kind ws-tape --ticker T --from TS --to TS` (ISO-8601 instants, UTC when they carry
+  no offset) writes one ticker's anchoring snapshot, deltas and prints, the shape
+  `tests/fixtures/tape_sample_*.json` carries. It reads only: nothing here writes a row and no
+  credential is opened.
 
 **What "candidates since the staleness fix" means.** The dashboard and this contract sometimes
 need to report a candidate count that is only meaningful starting from a specific deploy, not
