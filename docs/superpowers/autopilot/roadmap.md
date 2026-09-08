@@ -18,7 +18,7 @@ section F holds the binding decisions and rulings.
 | 1 Normalize and match | done 2026-09-06, deployed | `docs/superpowers/plans/2026-09-06-phase1-normalize-match.md` | n/a |
 | 2 Pricing and signals | done 2026-09-07, deployed (hotfix `3224d0a`) | `docs/superpowers/plans/2026-09-07-phase2-pricing-signals.md` | n/a |
 | 3 Paper execution, settlement, benchmarks, CLV | **done** (merged 2026-09-08 04:55 CT, journal entry 46), revised by the 2026-09-07 review; gains **Task 2b partitioning (U3, pre-authorized)**, **Task 4b NO-side (U2)** and **Task 12b telemetry (U6)** | `docs/superpowers/plans/2026-09-07-phase3-paper-execution.md` | none |
-| 4 Kalshi authenticated adapter (still paper), risk gate, backups, Alembic | not planned | plan-next | none; the demo smoke runs only when `secrets/kalshi_demo_*` exist |
+| 4 Kalshi authenticated adapter (still paper), risk gate, backups, Alembic | **planned** 2026-09-08 (journal 61) | `docs/superpowers/plans/2026-09-08-phase4-kalshi-authed.md` (spec: `docs/superpowers/specs/2026-09-08-phase4-kalshi-authed-design.md`) | none; the demo smoke runs only when `secrets/kalshi_demo_*` exist |
 | 4.5 Dashboard surfaces: Pulse, Floor, Study, Gate (snapshot layer, `/ui/`, table t12; absorbs phase 5(g)) | not planned | plan-next from `docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md` and its design canvas | none |
 | 5 Research layer and hypotheses: futures snapshots, NWS, parlay CLI, shadow veto, report annotator, RFQ listener (overview page moved to 4.5) | not planned | plan-next | none; veto and annotator run only when `secrets/anthropic_api_key` exists |
 | 6 Deferred items from the phase 2 and 3 reviews | not planned | plan-next | none |

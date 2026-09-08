@@ -25,7 +25,7 @@ Every task's requirements implicitly include this section. Values are copied ver
 - **Database: additive only.** No `DROP`, `RENAME`, `TRUNCATE`, `ALTER TYPE` or `DELETE` anywhere, in code or by hand. Schema changes are `CREATE ... IF NOT EXISTS` and `ADD COLUMN IF NOT EXISTS` in `create_schema`, and the same in the Alembic baseline. `drop_schema` and the per-test truncate act only on the branch test database at `localhost:5433`.
 - **Dependencies.** `alembic>=1.13` is the only new entry in `pyproject.toml`'s `[project].dependencies`. `constraints.txt` gains exactly two appended exact pins (`alembic` and `Mako`) below the existing lines; nothing else in either file changes, and the file is never regenerated. No other dependency is added or bumped.
 - **Outbound hosts.** Only `api.the-odds-api.com`, `api.elections.kalshi.com`, `site.api.espn.com`, `api.weather.gov`, `api.anthropic.com`, `external-api.demo.kalshi.co`, `external-api-ws.demo.kalshi.co`. The pre-existing `wss://external-api-ws.kalshi.com/` fallback in `harness/venues/kalshi/ws.py` is unchanged.
-- **Secrets.** No task reads a file under `secrets/`; features switch on `Path.exists()` only. `secrets/backup_age_key` is never pushed to the NAS. `deploy/backup_age.pub` is committed source and is pushed.
+- **Secrets.** No brief and no test reads the contents of a file under `secrets/`; runtime code reads a listed key file only through `Settings` (Task 6b's limits reader reads the production key files at runtime exactly as `app-ws` does today); features switch on `Path.is_file()` only. `secrets/backup_age_key` is never pushed to the NAS. `deploy/backup_age.pub` is committed source and is pushed.
 - **Replay commands.** Every replay command anywhere in this plan names the registered variant and never passes `--file`. Task 3 makes `--file` with a registered non-replay name an error.
 - **Units and types.** Probabilities `Decimal` at 4 places (`Numeric(6,4)`); contract quantities `Decimal` quantized to `0.01` (`Numeric(14,2)`); money `Decimal`; every timestamp `timestamptz` UTC. Kalshi fixed-point strings are `Decimal(str(...))` on decode and formatted to 4 places on encode.
 - **Versions.** Any change under `harness/execution/` bumps `EXECUTOR_VERSION` in `harness/execution/__init__.py`; reviewers check the bump.
@@ -1714,6 +1714,7 @@ Claude-Session: https://claude.ai/code/session_01NS7krCnaLCV6QawWTyEjHZ"
 ### Task 6b: The recorder's limits read (the only production `venue_requests` writer)
 
 **Files:**
+- Modify: `harness/config/settings.py` (`has_kalshi_credentials()` uses `.is_file()` on both paths: with the new bind mounts a missing host file becomes an empty directory inside the container, and `exists()` would be true while `read_text()` raises; plan-review round 2, N1)
 - Modify: `harness/scheduler.py` (`build_recorder`)
 - Modify: `harness/recorder/tick.py` (`Recorder.__init__`, the startup and hourly read, the run note)
 - Modify: `harness/health.py` (`compute_health`: the `venue_limits` block)
@@ -1769,7 +1770,7 @@ def build_recorder(settings: Settings) -> Recorder:
     ...
     factory = make_session_factory(make_engine(settings.database_url))
     limits_reader = None
-    if settings.has_kalshi_credentials():
+    if settings.has_kalshi_credentials():  # both paths .is_file() (N1): an unmounted secret is a directory
         # GET-only by construction: writes_enabled=False, so the transport raises
         # PaperModeViolation before signing on any non-GET, and holds no write client at all.
         transport = KalshiTransport(
@@ -1829,7 +1830,7 @@ def test_limits_are_re_read_hourly_not_every_tick(recorder_with_fake):
     rec.maybe_tick(force=True)
     rec.maybe_tick(force=True)
     assert sum(1 for c in t.calls if c[1] == "/account/limits") == 1
-    rec._clock = lambda: NOW + timedelta(seconds=LIMITS_REFRESH_S + 1)
+    rec.clock = lambda: NOW + timedelta(seconds=LIMITS_REFRESH_S + 1)  # the attribute is `clock` (round 2, N2)
     rec.maybe_tick(force=True)
     assert sum(1 for c in t.calls if c[1] == "/account/limits") == 2
 
@@ -4619,7 +4620,7 @@ select count(*) from fair_values
 
 ```
 ssh … 'du -sh /volume1/docker/sports-harness/backups; du -sh /volume1/docker/sports-harness/backups/*'
-ssh … 'cd /volume1/docker/sports-harness && ls backups/nightly backups/weekly | sed "s/\.[^.]*$//" | sort -u | while read u; do [ -f "backups/nightly/$u.dump" ] || [ -f "backups/weekly/$u.dump" ] && { [ -f "backups/nightly/$u.dump.age" ] || [ -f "backups/weekly/$u.dump.age" ] || echo "$u"; }; done | wc -l'
+ssh … 'cd /volume1/docker/sports-harness && for d in backups/nightly backups/weekly; do for f in "$d"/*.dump; do [ -f "$f" ] || continue; [ -f "$f.age" ] || echo "$f"; done; done | wc -l'  # plaintext units with no ciphertext yet (files only, no headers: round 2, N4)
 ```
 
 The first is the `backups/` size §8 asks for; the second is §4.3's count of units with a plaintext and no ciphertext. A count that rises across two consecutive verifications is a carried fix: either the encrypt job is not running, or the recipient is missing and every pass is recording `skipped: no recipient`.

@@ -100,7 +100,7 @@ The verify.md Layer 2 row (Task last): newest `backup_runs` nightly `ok` younger
 
 - `venue_requests(id, venue, env, method, path, status, ts, elapsed_ms)`; index `(ts)`; invariant: `env = 'prod' and method not in ('GET','HEAD')` = 0.
 - `venue_status(venue, env, status, reason, since, updated_at)` with primary key `(venue, env)`; rows `ok | unavailable | frozen`; the §9.4 outage counter runs only for `env = 'prod'` (a demo smoke's 401s never mark production); `reason` stores at most 120 characters of the venue body ASCII-escaped with newlines stripped, and every log line and evidence file that carries it fences it as untrusted text; invariant: `updated_at <= now()`.
-- `backup_runs(id, kind, path, bytes, plaintext_sha256, ciphertext_sha256, status, rows_match, started_at, finished_at, notes jsonb)`; invariant: `finished_at >= started_at`.
+- `backup_runs(id, kind, path, bytes, plaintext_sha256, ciphertext_sha256, build_sha, status, rows_match, started_at, finished_at, notes jsonb)` (erratum: `build_sha` added at plan review round 2, N3; §4.3 already records it); invariant: `finished_at >= started_at`.
 - `equity_snapshots` + `peak_equity_7d`, `drawdown_pct`, `drawdown_stop` (nullable, additive).
 - `orders` + `venue_order_id`, `order_group_id`, `exchange_index_at_place` (nullable; NULL for paper).
 - `alembic_version` (Alembic's own).
