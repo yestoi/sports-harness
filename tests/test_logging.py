@@ -1,6 +1,8 @@
 import json
 import logging
 
+import pytest
+
 from harness.logging_setup import configure_logging, redact
 
 
@@ -96,3 +98,25 @@ def test_json_logging_redacts_anthropic_key_in_traceback(capsys):
     assert "sk-ant-api03-abcDEF_123-xyz" not in line
     assert "[REDACTED]" in rec["exc_info"]
     assert "ValueError" in rec["exc_info"]
+
+
+def test_signed_kalshi_headers_are_redacted_in_plain_form():
+    headers = {"KALSHI-ACCESS-KEY": "kid-abcdef123456",
+               "KALSHI-ACCESS-TIMESTAMP": "1757000000000",
+               "KALSHI-ACCESS-SIGNATURE": "Zm9vYmFyc2lnbmF0dXJl"}
+    plain = " ".join(f"{k}: {v}" for k, v in headers.items())
+    assert "kid-abcdef123456" not in redact(plain)
+    assert "Zm9vYmFyc2lnbmF0dXJl" not in redact(plain)
+    assert "1757000000000" in redact(plain)     # the timestamp is not a secret
+
+
+@pytest.mark.xfail(reason="The filter matches HEADER: value; a dict repr puts a closing quote "
+                          "between the name and the colon, so no pattern fires. The filter is "
+                          "roadmap invariant 4 and is not edited here. KalshiTransport never "
+                          "logs a header mapping, so the gap is unreachable from that path.")
+def test_signed_kalshi_headers_are_redacted_in_dict_repr_form():
+    headers = {"KALSHI-ACCESS-KEY": "kid-abcdef123456",
+               "KALSHI-ACCESS-TIMESTAMP": "1757000000000",
+               "KALSHI-ACCESS-SIGNATURE": "Zm9vYmFyc2lnbmF0dXJl"}
+    assert "kid-abcdef123456" not in redact(repr(headers))
+    assert "Zm9vYmFyc2lnbmF0dXJl" not in redact(repr(headers))
