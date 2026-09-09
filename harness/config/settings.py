@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     #: "sharp_two_sided"; falls back to the active primary when the named variant is unregistered.
     gate_variant: str = "sharp_direct"
 
+    # --- phase 4.5: dashboard surfaces ------------------------------------------------------
+    #: Whether `app-serve`'s lifespan starts the snapshot scheduler. True in production; the
+    #: test fixtures set it false and drive `run_builder` directly, so entering a TestClient
+    #: context never starts real jobs against the test database. It is also the off switch if a
+    #: builder ever costs more than its budget: `app-serve` still serves the last written rows.
+    snapshots_enabled: bool = True
+
     # --- Task 12b: telemetry --------------------------------------------------------------
     metric_sample_s: int = 60
     watch_sample_s: int = 60

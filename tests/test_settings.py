@@ -99,3 +99,12 @@ def test_demo_hosts_are_pinned_to_the_roadmap_strings(env_settings):
         "https://external-api.demo.kalshi.co/trade-api/v2"
     assert env_settings.kalshi_demo_ws_url == \
         "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
+
+
+def test_settings_phase45_defaults(monkeypatch):
+    """The scheduler's off switch. True in production so `app-serve`'s lifespan starts the
+    snapshot jobs; the dashboard test fixtures set it false so entering a TestClient context
+    never starts real jobs against the test database."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db")
+    s = Settings()
+    assert s.snapshots_enabled is True
