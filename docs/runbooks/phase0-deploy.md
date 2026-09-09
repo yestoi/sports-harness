@@ -210,8 +210,10 @@ in this phase. The recipe's order is fixed and the middle of it is new:
 2. `docker compose build`;
 3. `docker compose up -d postgres app-backup`;
 4. `harness backup-precheck` — exits 0 when the newest `kind='nightly'`, `status='ok'`
-   `backup_runs` row is younger than 26 h. On a non-zero exit the recipe runs
-   `docker compose exec -T app-backup /backup/dump.sh nightly` and **asks again**; a second
+   `backup_runs` row is younger than 26 h. On a non-zero exit the recipe runs `init-db` (so the
+   `backup_runs` table exists — on the very first phase 4 deploy it does not, and every phase 4
+   schema change is additive, so creating it early here costs nothing), then
+   `docker compose exec -T app-backup /backup/dump.sh nightly`, and **asks again**; a second
    failure aborts the deploy. On the first phase 4 deploy that fallback dump *is* the first
    dump, so expect it, and expect the deploy to pause for as long as it takes;
 5. `harness migrate ensure`;

@@ -185,6 +185,19 @@ def test_the_deploy_recipe_runs_the_precheck_before_the_schema_step():
     assert mk.index("backup-precheck") < mk.index("app-run init-db")
 
 
+def test_the_deploy_recipe_bootstraps_the_schema_before_the_fallback_dump():
+    # C1: on the very first phase 4 deploy `backup_runs` does not exist yet, so the first
+    # `backup-precheck` always fails. The fallback branch must create the schema (`init-db`)
+    # before taking the dump and asking again, or the fallback dump's own `record_run` insert
+    # fails the same way and the deploy aborts even though nothing is actually broken.
+    mk = (ROOT / "Makefile").read_text()
+    recipe = mk.split("deploy-nas:")[1].split("\ndeploy-nas-app:")[0]
+    first_precheck = recipe.index("app-run backup-precheck")
+    fallback_init_db = recipe.index("app-run init-db", first_precheck)
+    fallback_dump = recipe.index("/backup/dump.sh nightly", first_precheck)
+    assert fallback_init_db < fallback_dump
+
+
 def test_the_deploy_recipe_asks_the_precheck_again_after_the_fallback_dump():
     # Fix round 1 item 1: dump.sh exits 0 when it *skips* (low disk, or the lock is held), so
     # the fallback's own exit status is not evidence of a fresh dump. The recipe must ask the

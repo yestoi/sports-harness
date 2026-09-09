@@ -50,13 +50,18 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build && docker compose up -d postgres app-backup'
 # A schema change goes in behind a fresh dump. `backup-precheck` is the query half only: it
 # exits 0 when the newest nightly backup_runs row is ok and younger than 26 h, and 1 otherwise.
-# On non-zero this takes the dump first, which on the first phase 4 deploy is the first dump
-# there has ever been -- and then asks again. The second ask is the point: dump.sh exits 0 when
-# it *skips* (below 30 % free, or another dump holds the lock), so trusting the fallback's own
-# exit status would let a migration land on an unbacked database with no error anywhere. A
-# precheck that still fails after the fallback aborts the deploy. -T because ssh has no tty.
+# On the very first phase 4 deploy `backup_runs` itself does not exist yet (it is created by
+# `init-db`'s create_schema, which otherwise would not run until two steps later), so the
+# fallback runs `init-db` before taking the dump -- every phase 4 schema change is
+# `CREATE ... IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`, so running it ahead of the dump costs
+# nothing on every later deploy, where a fresh nightly row already exists and the happy path
+# never enters this branch. Then it dumps and asks again. The second ask is the point: dump.sh
+# exits 0 when it *skips* (below 30 % free, or another dump holds the lock), so trusting the
+# fallback's own exit status would let a migration land on an unbacked database with no error
+# anywhere. A precheck that still fails after the fallback aborts the deploy. -T because ssh has
+# no tty.
 	@printf "$(GREEN)[DEPLOY]$(NC) Backup precheck (dumps first when the newest nightly is stale)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || { docker compose exec -T app-backup /backup/dump.sh nightly && docker compose run --rm app-run backup-precheck; } || { echo "[DEPLOY] ABORT: no nightly backup_runs row is ok and under 26h, and the fallback dump did not produce one. A SKIP line in: docker compose logs app-backup means /volume1 free is below 30 percent, or another dump held the lock."; exit 1; }'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || { docker compose run --rm app-run init-db && docker compose exec -T app-backup /backup/dump.sh nightly && docker compose run --rm app-run backup-precheck; } || { echo "[DEPLOY] ABORT: no nightly backup_runs row is ok and under 26h, and the fallback dump did not produce one. A SKIP line in: docker compose logs app-backup means /volume1 free is below 30 percent, or another dump held the lock."; exit 1; }'
 # The guarded one-time stamp, behind the fresh dump and ahead of init-db. It prints which of its
 # three branches it took: `stamped` (a populated pre-Alembic database, which is what the NAS is on
 # this phase's first deploy: head is recorded, the baseline is never executed), `upgraded` (an
