@@ -1,0 +1,2 @@
+ Container sports-harness-postgres-1  Running
+Error response from daemon: create ./secrets/kalshi_demo_key_id: "./secrets/kalshi_demo_key_id" includes invalid characters for a local volume name, only "[a-zA-Z0-9][a-zA-Z0-9_.-]" are allowed. If you intended to pass a host directory, use absolute path

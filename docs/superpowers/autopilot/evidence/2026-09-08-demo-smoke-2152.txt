@@ -1,0 +1,11 @@
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-09 02:45:59,842", "levelname": "WARNING", "name": "harness", "message": "kalshi demo smoke failed at step place: KalshiDecodeError"}
+{"asctime": "2026-09-09 02:46:00,112", "levelname": "WARNING", "name": "harness.execution.venue", "message": "venue kalshi/demo -> unavailable; untrusted venue text: reason='place: payload has no outcome_side, book_side, or legacy side'"}
+step            ok    detail
+balance         true  balance=249000 payout=none
+market          true  markets=72 chosen=1 parsed_ranges=True
+grid            true  steps=99 low=0.0100 next=0.0200 high=0.9900
+group           true  created=true limit=5
+place           false KalshiDecodeError
+cleanup         true  cancelled=true
+unfunded=false exit=1

@@ -1,0 +1,41 @@
+== phase 4 deploy verify, Layer 2 2026-09-08 21:29 CT
+-- runs
+5405 | 2026-09-09 02:28:42.527047+00 | ok | 2 | 4997946 | []
+5404 | 2026-09-09 02:22:45.796406+00 | ok | 2 | 4997948 | []
+5400 | 2026-09-09 02:20:45.795544+00 | ok | 2 | 4997950 | []
+5396 | 2026-09-09 02:18:45.795412+00 | ok | 2 | 4997952 | []
+5391 | 2026-09-09 02:16:15.797039+00 | ok | 2 | 4997954 | []
+skipped | 232
+ok | 84
+5406 | 2026-09-09 02:29:12.526595+00 | skipped
+-- ws
+00:00:00.277826
+delta | 448966
+snapshot | 1730
+-- pg
+intents | 12556 | 1212 | 2026-09-09 00:29:45.922985+00
+trade_watermarks | 2624 | 164 | 2026-09-08 16:08:37.908444+00
+runs | 5407 | 164 | 2026-09-08 19:42:41.614065+00
+64 | 1024 MB
+23 GB
+-- exec
+2026-09-09 02:22:45.714844+00 | 3918 | 150 |  | 21768 | 38 | 00:06:48.100485
+settle | ok | f | 2026-09-09 01:53:23.738033+00
+settle | ok | f | 2026-09-09 00:51:07.860618+00
+duplicate_trades | skip
+fair_values_negative_staleness | skip
+-- 2b invariants (all 0 except the aged metric rows)
+fv_neg_staleness | 0
+orders_without_place | 0
+settle_mismatch | 0
+orders_open_past_expiry | 0
+gate_rows_one_gate_variant | 0
+metric_neg_24h | 3 | 2026-09-08 14:09:28.931356+00
+venue_requests_prod_nonget | 0
+venue_requests_prod_get_2h | 1
+venue_status_future | 0
+venue_status_rows | 0
+backup_runs_time | 0
+equity_drawdown | 5632da729fa7 |  |  | 
+equity_drawdown | f259ca109084 |  |  | 
+equity_drawdown | ff363c8ac08d |  |  | 
