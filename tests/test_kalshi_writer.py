@@ -1208,3 +1208,43 @@ def test_fee_model_reads_series_through_the_reader_not_the_writer():
     # 1.3: limits and series are read on the reader; the writer holds no GET of its own.
     for name in ("get_series", "get_account_limits", "get_orders", "get_fills"):
         assert not hasattr(KalshiWriter, name)
+
+
+def test_a_first_try_confirming_read_reports_one_read():
+    """The happy path: one GET, `confirm_reads = 1`."""
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10.00"))
+    order = _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert order.confirm_reads == 1
+    assert sum(1 for c in t.calls if c[0] == "GET") == 1
+
+
+def test_a_404_then_success_reports_two_reads():
+    """Fix 27's backoff: the first read 404s, the second answers. Two reads, one sleep."""
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _err(404, "order_not_found"),
+        _ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    order = _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert order.confirm_reads == 2
+    assert slept == [0.25]
+
+
+def test_a_stale_read_then_a_fresh_one_reports_two_reads():
+    """Fix 28's stale path shares the same budget and the same counter: a read that has not
+    seen the write is a read all the same."""
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _ok({"order": _echo_of(price="0.5600", count="10.00",
+                               client_order_id="an-older-id")}),
+        _ok({"order": _echo_of(price="0.5600", count="10.00",
+                               client_order_id="11111111-1111-1111-1111-111111111111")})])
+    order = _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert order.confirm_reads == 2
+    assert slept == [0.25]
+
+
+def test_confirm_reads_is_never_zero_on_an_approved_order():
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10.00"))
+    assert _writer(t).place_limit(_intent(contracts=Decimal("10"))).confirm_reads >= 1

@@ -602,6 +602,12 @@ class VenueOrder:
     status: str | None
     order_group_id: str | None
     raw: dict
+    #: How many `GET /portfolio/orders/{id}` calls the echo check made to confirm this order,
+    #: 1 to 4 (addendum §0.8). One is the happy path; more means the venue's read-after-write
+    #: lag made the first read 404 or answer with the previous order (fix 27, fix 28). The demo
+    #: smoke prints it as `reads=N`, so drift toward the 1.5 s backoff ceiling is visible in the
+    #: step table before it becomes a freeze. Nothing decides on it.
+    confirm_reads: int = 1
 
 
 @dataclass(frozen=True)
@@ -868,7 +874,8 @@ def _is_stale(view: OrderView, expected_client_order_id: str | None) -> bool:
 
 
 def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal,
-                 fill_count: Decimal | None, remaining_count: Decimal | None) -> VenueOrder:
+                 fill_count: Decimal | None, remaining_count: Decimal | None,
+                 confirm_reads: int = 1) -> VenueOrder:
     """An `OrderView` (the venue's own YES-leg shape) turned back into our side space.
 
     `side` and `prob` are passed in already decoded and already compared against what was sent,
@@ -902,6 +909,7 @@ def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal,
         status=view.status,
         order_group_id=view.order_group_id,
         raw=raw,
+        confirm_reads=confirm_reads,
     )
 
 
@@ -1140,13 +1148,14 @@ class KalshiWriter:
         body = result.body if isinstance(result.body, dict) else {}
         created = _decode_create_order(body)
         view = side = prob = None
+        reads = 0
         field = _count_mismatch(created, sent_count)
         if field is None:
-            view, side, prob, field = self._confirmed_order(
+            view, side, prob, field, reads = self._confirmed_order(
                 created.order_id, sent_side, sent_prob, expected_client_order_id)
         if field is None:
             return _venue_order(view, _payload(body), side, prob,
-                                created.fill_count, created.remaining_count)
+                                created.fill_count, created.remaining_count, reads)
 
         cancel_id = created.order_id or known_order_id
         cancel_error = None
@@ -1168,8 +1177,9 @@ class KalshiWriter:
         """`GET /portfolio/orders/{id}` -- the only place the accepted side and price can be
         read, now that the create/amend response is known to carry neither (fix 24).
 
-        Returns `(view, side, prob, field)`, where `field` is None when the fetched order agrees
-        with what was sent and otherwise names what did not confirm. The read goes through the
+        Returns `(view, side, prob, field, reads)`, where `field` is None when the fetched order
+        agrees with what was sent and otherwise names what did not confirm, and `reads` is how
+        many `GET`s were spent (addendum §0.8). The read goes through the
         reader's own decoder, so the direction resolution and the Decimal rules are the same
         ones every other order in this module goes through, and `decode_side_price` puts the
         result back into our side space before anything is compared.
@@ -1217,39 +1227,43 @@ class KalshiWriter:
         """
         view = None
         attempts = 0
+        reads = 0
         while True:
             try:
+                reads += 1
                 view = self._reader.get_order(order_id)
             except KalshiDecodeError as exc:
-                return None, None, None, f"the confirming read ({type(exc).__name__})"
+                return None, None, None, f"the confirming read ({type(exc).__name__})", reads
             except Exception as exc:
                 attempts += 1
                 if isinstance(exc, KalshiApiError) and exc.status == 404:
                     if attempts > len(CONFIRM_NOT_FOUND_BACKOFF_S):
                         return None, None, None, (
-                            f"the confirming read (404 after {attempts} attempts)")
+                            f"the confirming read (404 after {attempts} attempts)"), reads
                     self._sleep(CONFIRM_NOT_FOUND_BACKOFF_S[attempts - 1])
                     continue
                 if attempts >= CONFIRM_READ_ATTEMPTS:
-                    return None, None, None, f"the confirming read ({type(exc).__name__})"
+                    return None, None, None, f"the confirming read ({type(exc).__name__})", reads
                 continue
             if not _is_stale(view, expected_client_order_id):
                 break
             attempts += 1
             if attempts > len(CONFIRM_NOT_FOUND_BACKOFF_S):
-                return view, None, None, f"the confirming read (stale after {attempts} attempts)"
+                return view, None, None, (
+                    f"the confirming read (stale after {attempts} attempts)"), reads
             self._sleep(CONFIRM_NOT_FOUND_BACKOFF_S[attempts - 1])
         book_side = _book_side_of(view)
         if view.price is None:
-            return view, None, None, "the confirmed price"
+            return view, None, None, "the confirmed price", reads
         if book_side is None:
-            return view, None, None, "side"   # the venue's direction is not one we recognise
+            # the venue's direction is not one we recognise
+            return view, None, None, "side", reads
         side, prob = decode_side_price(book_side, view.price)
         if side != sent_side:
-            return view, None, None, "side"
+            return view, None, None, "side", reads
         if prob != sent_prob:
-            return view, None, None, "prob"
-        return view, side, prob, None
+            return view, None, None, "prob", reads
+        return view, side, prob, None, reads
 
     # -- fees -------------------------------------------------------------------------------------
 

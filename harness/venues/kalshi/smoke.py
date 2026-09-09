@@ -238,14 +238,14 @@ def run_smoke(settings, session_factory, now, sleep=time.sleep, *,
             expiration_time=now + timedelta(seconds=SMOKE_FIRST_EXPIRY_S),
             exchange_index=0, order_group_id=group_id, price_ranges=price_ranges))
         record("place", f"prob={_num(placed.prob)} contracts={_num(placed.contracts)} "
-                        f"status={_enum(placed.status)}")
+                        f"status={_enum(placed.status)} reads={placed.confirm_reads}")
 
         # 6. Amend: one grid step up, two contracts. The echo check runs again here.
         amended = writer.amend(placed.order_id, second, SMOKE_AMEND_CONTRACTS,
                                client_order_id, str(uuid.uuid4()), ticker, "yes", 0,
                                price_ranges)
         record("amend", f"prob={_num(amended.prob)} contracts={_num(amended.contracts)} "
-                        f"status={_enum(amended.status)}")
+                        f"status={_enum(amended.status)} reads={amended.confirm_reads}")
 
         # 7. Read it back, and check the venue agrees with its own echo. The size is the sum of
         #    the two live counts, never `count` (fix 28): the single-order body carries no

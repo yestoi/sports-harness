@@ -314,9 +314,25 @@ def test_the_v2_response_shapes_reach_cancel_group_with_place_and_amend_ok(tmp_p
     by_name = {s.name: s for s in result.steps}
     for name in ("place", "amend", "get_order", "cancel", "cancel_group"):
         assert by_name[name].ok, (name, by_name[name].detail)
-    assert by_name["place"].detail == "prob=0.0100 contracts=1.00 status=resting"
-    assert by_name["amend"].detail == "prob=0.0200 contracts=2.00 status=resting"
+    # The full demo script's place hits fix 27's two 404s before the confirming read lands
+    # (three GETs); the amend hits fix 28's one stale read before the fresh one (two GETs).
+    assert by_name["place"].detail == "prob=0.0100 contracts=1.00 status=resting reads=3"
+    assert by_name["amend"].detail == "prob=0.0200 contracts=2.00 status=resting reads=2"
     assert result.exit_code() == 0
+
+
+def test_place_and_amend_details_carry_the_confirming_read_count(tmp_path):
+    # The full demo script's place absorbs fix 27's two 404s (three GETs, not the happy
+    # path's one); the writer-level tests above cover the one-read happy path directly.
+    t = FakeTransport(env="demo", queued=_full_demo_script())
+    result = run_smoke(_demo_settings(tmp_path), _factory(), NOW, sleep=lambda _s: None,
+                       writer_factory=_injecting(t))
+    steps = {s.name: s for s in result.steps}
+    assert "reads=3" in steps["place"].detail
+    assert "reads=" in steps["amend"].detail
+    # The detail stays inside the 80-character sanitized budget.
+    assert len(steps["place"].detail) <= 80
+    assert len(steps["amend"].detail) <= 80
 
 
 def test_the_read_back_step_checks_the_counts_the_venue_really_sends(tmp_path):
