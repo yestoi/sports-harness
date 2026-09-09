@@ -55,18 +55,21 @@ CENT_RANGES = [{"start": 0, "end": 1, "step": 0.01}]
 
 #: The exact order the sequence sends. The methods and the paths are asserted separately, so a
 #: reordering that keeps the same multiset of calls still fails.
-EXPECTED_METHODS = ["GET", "GET", "POST", "POST", "POST", "GET", "DELETE", "DELETE", "POST",
-                    "GET", "GET", "GET"]
+EXPECTED_METHODS = ["GET", "GET", "POST", "POST", "GET", "POST", "GET", "GET", "DELETE",
+                    "DELETE", "POST", "GET", "GET", "GET", "GET"]
 EXPECTED_PATHS = [
     "/portfolio/balance",
     "/markets",                                   # the nearest open KXNFLGAME market
     "/portfolio/order_groups/create",             # create_group(5)
     "/portfolio/events/orders",                   # place
+    "/portfolio/orders/o1",                       # the place's confirming read (fix 24)
     "/portfolio/events/orders/o1/amend",          # amend
-    "/portfolio/orders/o1",                       # get_order
+    "/portfolio/orders/o1",                       # the amend's confirming read (fix 24)
+    "/portfolio/orders/o1",                       # get_order, the smoke's own step 7
     "/portfolio/events/orders/o1",                # cancel
     "/portfolio/order_groups/g1",                 # cancel_group
     "/portfolio/events/orders",                   # the expiry order
+    "/portfolio/orders/o2",                       # its confirming read (fix 24)
     "/portfolio/orders",                          # get_orders(resting)
     "/portfolio/fills",
     "/portfolio/positions",
@@ -113,6 +116,8 @@ def _market(ticker: str, close_time: str, price_ranges=None) -> dict:
 
 
 def _echo(order_id: str, price: str, count: str, book_side: str = "bid") -> dict:
+    """A V2 order, the shape `GET /portfolio/orders/{id}` answers with. Since fix 24 this is
+    what the echo check reads the accepted side and price out of."""
     return {"order": {
         "order_id": order_id,
         "client_order_id": "11111111-1111-1111-1111-111111111111",
@@ -127,6 +132,20 @@ def _echo(order_id: str, price: str, count: str, book_side: str = "bid") -> dict
     }}
 
 
+def _created(order_id: str, count: str) -> dict:
+    """The V2 create/amend response (fix 24): ids, counts and a timestamp, and no side and no
+    price. The first demo smoke failed at `place` because this body was decoded as an order."""
+    return {
+        "order_id": order_id,
+        "client_order_id": "11111111-1111-1111-1111-111111111111",
+        "fill_count": "0.00",
+        "remaining_count": count,
+        "average_fill_price": None,
+        "average_fee_paid": "0.0000",
+        "ts_ms": 1789000000000,
+    }
+
+
 def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
     """The twelve responses the full sequence consumes, in order."""
     return [
@@ -135,13 +154,16 @@ def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
                          _market(TICKER, "2026-09-14T23:00:00Z", price_ranges)],
              "cursor": ""}),
         _ok({"order_group_id": "g1"}),
-        _ok(_echo("o1", "0.0100", "1.00")),
-        _ok(_echo("o1", "0.0200", "2.00")),
-        _ok(_echo("o1", "0.0200", "2.00")),
+        _ok(_created("o1", "1.00")),                 # place
+        _ok(_echo("o1", "0.0100", "1.00")),          # its confirming read
+        _ok(_created("o1", "2.00")),                 # amend
+        _ok(_echo("o1", "0.0200", "2.00")),          # its confirming read
+        _ok(_echo("o1", "0.0200", "2.00")),          # the smoke's own get_order step
         _ok({"order_id": "o1", "client_order_id": "c1", "reduced_by": "2.00",
              "ts_ms": 1789000000000}),
         _ok({}),
-        _ok(_echo("o2", "0.0100", "1.00")),
+        _ok(_created("o2", "1.00")),                 # the expiry order
+        _ok(_echo("o2", "0.0100", "1.00")),          # its confirming read
         _ok({"orders": resting_after_expiry or [], "cursor": ""}),
         _ok({"fills": [], "cursor": ""}),
         _ok({"market_positions": [], "cursor": ""}),
@@ -149,7 +171,7 @@ def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
 
 
 def _script_failing_at_amend() -> list:
-    script = _full_demo_script()[:4]
+    script = _full_demo_script()[:5]              # through the place and its confirming read
     script.append(_err(400, "bad_price"))
     script.append(_ok({}))            # the best-effort cancel_group the failure path runs
     return script
@@ -168,7 +190,9 @@ def _script_with_hostile_strings() -> list:
         "close_time": "2026-09-14T23:00:00Z", "price_ranges": CENT_RANGES,
         "title": HOSTILE}], "cursor": ""})
     script[2] = _ok({"order_group_id": "g1", "note": HOSTILE})
-    for i in (3, 4, 5, 8):
+    for i in (3, 5, 10):                          # the create/amend responses
+        script[i].body["note"] = HOSTILE
+    for i in (4, 6, 7, 11):                       # the order-shaped confirming reads
         body = script[i].body
         body["order"]["status"] = HOSTILE
         body["note"] = HOSTILE
@@ -217,6 +241,22 @@ def test_smoke_runs_the_full_sequence_in_order(tmp_path):
     assert [c[1] for c in t.calls] == EXPECTED_PATHS
     assert result.unfunded is False
     assert all(isinstance(s, SmokeStep) and s.ok for s in result.steps)
+
+
+def test_the_v2_response_shapes_reach_cancel_group_with_place_and_amend_ok(tmp_path):
+    """Fix 24, the regression the first demo smoke found. The venue answered `place` with a
+    create response -- ids, counts and a timestamp, no side and no price -- and the echo check
+    decoded it as an order, so `require_side` raised `KalshiDecodeError` and the run stopped at
+    `place`. With both shapes decoded where they belong the sequence runs through."""
+    t = FakeTransport(env="demo", queued=_full_demo_script())
+    result = run_smoke(_demo_settings(tmp_path), _factory(), NOW, sleep=lambda _s: None,
+                       writer_factory=_injecting(t))
+    by_name = {s.name: s for s in result.steps}
+    for name in ("place", "amend", "get_order", "cancel", "cancel_group"):
+        assert by_name[name].ok, (name, by_name[name].detail)
+    assert by_name["place"].detail == "prob=0.0100 contracts=1.00 status=resting"
+    assert by_name["amend"].detail == "prob=0.0200 contracts=2.00 status=resting"
+    assert result.exit_code() == 0
 
 
 def test_a_zero_balance_journals_demo_unfunded_and_exits_zero(tmp_path):

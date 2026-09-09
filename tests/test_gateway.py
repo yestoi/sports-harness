@@ -59,7 +59,7 @@ from harness.execution.plan import Cancel
 from harness.venues.kalshi.authed import ORDERS_PATH, KalshiReader, LiveGuardRefused
 
 from tests.test_kalshi_authed import FakeTransport, _ok
-from tests.test_kalshi_writer import _echo_of, _writer
+from tests.test_kalshi_writer import _accepted, _writer
 
 NOW = datetime(2026, 9, 8, 18, 0, tzinfo=timezone.utc)
 SINCE = NOW - timedelta(hours=12)
@@ -247,7 +247,7 @@ def _kalshi(transport, **kw) -> KalshiGateway:
 
 
 def test_kalshi_gateway_place_sends_one_order_and_records_the_venue_ids(db_session):
-    t = FakeTransport(queued=[_ok({"order": _echo_of(order_id="ov1", order_group_id="g1")})])
+    t = FakeTransport(queued=_accepted(order_id="ov1", order_group_id="g1"))
     g = _kalshi(t)
     values = _values(client_order_id="11111111-1111-1111-1111-111111111111",
                      ticker="KXNFLGAME-X", prob=Decimal("0.5600"),
@@ -255,7 +255,9 @@ def test_kalshi_gateway_place_sends_one_order_and_records_the_venue_ids(db_sessi
 
     placed = g.place(db_session, values, None, _Market(CENT_RANGES), NOW)
 
-    assert [(c[0], c[1]) for c in t.calls] == [("POST", ORDERS_PATH)]
+    # The confirming read is the echo check's, and it is a GET (fix 24).
+    assert [(c[0], c[1]) for c in t.calls] == [("POST", ORDERS_PATH),
+                                               ("GET", "/portfolio/orders/ov1")]
     assert placed.venue_order_id == "ov1" and placed.order_group_id == "g1"
     row = db_session.get(Order, placed.order_id)
     assert row.exchange_index_at_place == 0
@@ -304,8 +306,7 @@ def test_kalshi_gateway_amend_chains_a_fresh_client_order_id_and_snaps_to_the_ma
     """Two successive amends. V2 replaces the idempotency key on every amend, so the second one
     has to send the id the first one installed, and the price has to snap to the market's own
     grid rather than the fallback cent one (review round 1, Important 4)."""
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.4000")}),
-                              _ok({"order": _echo_of(price="0.4000")})])
+    t = FakeTransport(queued=_accepted(price="0.4000") + _accepted(price="0.4000"))
     g = _kalshi(t)
     order_id = _open_order(db_session, mode="live", venue_order_id="ov1",
                            client_order_id="placed-1", prob=Decimal("0.4500"))
@@ -314,7 +315,7 @@ def test_kalshi_gateway_amend_chains_a_fresh_client_order_id_and_snaps_to_the_ma
     assert g.amend(db_session, order_id, Decimal("0.4400"), Decimal("10.00"), market, NOW)
     assert g.amend(db_session, order_id, Decimal("0.4400"), Decimal("10.00"), market, NOW)
 
-    first, second = t.calls[0][3], t.calls[1][3]
+    first, second = [c[3] for c in t.calls if c[0] == "POST"]
     # 0.44 is off a 5-cent grid; the writer floors it to 0.40 and sends that, not 0.4400.
     assert first["price"] == "0.4000" and first["count"] == "10.00"
     assert first["client_order_id"] == "placed-1"

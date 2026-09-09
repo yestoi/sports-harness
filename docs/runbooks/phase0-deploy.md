@@ -235,13 +235,18 @@ rows tagged `env = 'demo'` and, on a failure, one `venue_status` row for `('kals
 **Demo prices are not evidence** and reach no pricing table and no tape.
 
 **No compose service mounts the demo key pair.** The credentials reach a container only for the
-length of one `docker compose run --rm`, and the controller supplies the two mounts itself:
+length of one `docker compose run --rm`, and the controller supplies the two mounts itself.
+
+Each `-v` source has to be an **absolute host path**. `docker compose run` reads a relative
+`./secrets/...` as a *volume name*, not a bind, and refuses the run outright — which is what the
+first demo smoke hit. `$NAS_STACK` is that absolute path, so it is what the mounts are written
+against:
 
 ```bash
 ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && ls -l secrets/kalshi_demo_key_id secrets/kalshi_demo_private_key.pem'
 ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose run --rm -T \
-  -v ./secrets/kalshi_demo_key_id:/run/secrets/kalshi_demo_key_id:ro \
-  -v ./secrets/kalshi_demo_private_key.pem:/run/secrets/kalshi_demo_private_key.pem:ro \
+  -v /volume1/docker/sports-harness/secrets/kalshi_demo_key_id:/run/secrets/kalshi_demo_key_id:ro \
+  -v /volume1/docker/sports-harness/secrets/kalshi_demo_private_key.pem:/run/secrets/kalshi_demo_private_key.pem:ro \
   app-run kalshi-smoke --env demo'
 ```
 

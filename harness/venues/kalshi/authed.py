@@ -41,6 +41,12 @@ while `writes_enabled` is false. Its judgement is the encoder: `orders.prob` is 
 side space (a `no` order at 0.44 means 44 cents for NO) while V2 quotes the YES leg only, so
 `encode_side_price` maps `(yes, p)` to a bid at `p` and `(no, p)` to an ask at `1 - p`, snapped to
 the market's own `price_ranges` grid, and `decode_side_price` is its exact inverse.
+
+**The echo, in two pieces.** V2's create and amend responses are not orders (fix 24, after the
+first demo smoke failed at `place`): they carry ids, counts, an average fill price and a
+timestamp, and no side and no price at all, so `CreateOrderResult` is what decodes them. The
+count arithmetic is done from that response and the accepted side and price are read back with
+`get_order`, whose payload is a real order. Nothing here decodes a create response as an order.
 """
 import time
 from collections.abc import Callable
@@ -249,6 +255,26 @@ class Limits:
     raw: dict
 
 
+def _payload(body: dict) -> dict:
+    """The object a V2 response wraps in `order`, or the body itself when it does not wrap one.
+    Both shapes are in use across the endpoints this module reads, and guessing wrong costs a
+    decoder every field it was looking for."""
+    inner = body.get("order")
+    return inner if isinstance(inner, dict) else body
+
+
+def _ts_ms(value) -> int | None:
+    """A venue millisecond timestamp as an int. `KalshiDecodeError` rather than a bare
+    `ValueError` when the venue sends something that is not one, and the message carries the
+    field name only -- never the string itself."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise KalshiDecodeError("venue sent a ts_ms that is not an integer") from None
+
+
 def _decode_order(o: dict) -> OrderView:
     outcome_side, book_side = require_side(o)
     return OrderView(
@@ -348,8 +374,7 @@ class KalshiReader:
         result = self._transport.request("GET", path)
         _check_status(result, "GET", path)
         body = result.body if isinstance(result.body, dict) else {}
-        order = body.get("order", body)
-        return _decode_order(order)
+        return _decode_order(_payload(body))
 
     def get_fills(self, since: datetime | None = None) -> list[VenueFillView]:
         params = {"min_ts": str(int(since.timestamp()))} if since is not None else {}
@@ -431,7 +456,11 @@ class EchoMismatch(RuntimeError):
     the order and asked its caller to freeze the market for 15 minutes (a `venue_status` row
     `frozen`, reason `echo_mismatch`). `cancel_error` holds the class name of whatever went
     wrong during that cancel, or None: the class name only, never the exception, because a
-    transport exception's `.request` carries the live signed headers."""
+    transport exception's `.request` carries the live signed headers.
+
+    `field` names what failed to confirm -- an order field that came back different, or the
+    confirming read itself when it could not be made at all (fix 24).
+    """
 
     def __init__(self, order_id: str | None, reason: str, freeze_minutes: int,
                  field: str | None = None, cancel_error: str | None = None) -> None:
@@ -505,6 +534,25 @@ class CancelResult:
     order_id: str
     client_order_id: str | None
     reduced_by: Decimal | None
+    ts_ms: int | None
+
+
+@dataclass(frozen=True)
+class CreateOrderResult:
+    """The V2 create/amend response, which is not an order either (fix 24).
+
+    `POST /portfolio/events/orders` and `.../amend` answer with ids, counts, an average fill
+    price, an average fee and a timestamp -- and **no side and no price of their own** (Trade
+    API reference, read 2026-09-08). Decoding that body as an order is what made the first demo
+    smoke fail at `place`: `require_side` found no `outcome_side`, no `book_side` and no legacy
+    `side`, and raised. So the accepted side and price are read back with `get_order` instead,
+    and this record carries what the response really does say.
+    """
+    order_id: str | None
+    client_order_id: str | None
+    fill_count: Decimal | None
+    remaining_count: Decimal | None
+    average_fill_price: Decimal | None
     ts_ms: int | None
 
 
@@ -666,8 +714,51 @@ def _decode_cancel(body: dict) -> CancelResult:
         order_id=body.get("order_id"),
         client_order_id=body.get("client_order_id"),
         reduced_by=dec(body.get("reduced_by")),
-        ts_ms=int(body["ts_ms"]) if body.get("ts_ms") is not None else None,
+        ts_ms=_ts_ms(body.get("ts_ms")),
     )
+
+
+def _decorative(decode: Callable, value):
+    """A field of this response that nothing decides on, decoded so that a bad one cannot raise.
+
+    The two counts are decoded strictly, because the echo check's arithmetic rests on them and a
+    count we cannot read is a mismatch. `average_fill_price` and `ts_ms` are neither compared nor
+    stored nor divided by, and raising on one of them would abandon a *placed* order before the
+    check has had the chance to cancel it -- trading a cosmetic field for resting risk. So they
+    decode to None instead, which is what an absent field already decodes to.
+    """
+    try:
+        return decode(value)
+    except KalshiDecodeError:
+        return None
+
+
+def _decode_create_order(body: dict) -> CreateOrderResult:
+    """The create/amend response. No `require_side` call and no price: those fields are not in
+    this shape, and asking for them is the bug fix 24 removes."""
+    payload = _payload(body)
+    return CreateOrderResult(
+        order_id=payload.get("order_id"),
+        client_order_id=payload.get("client_order_id"),
+        fill_count=dec(payload.get("fill_count")),
+        remaining_count=dec(payload.get("remaining_count")),
+        average_fill_price=_decorative(dec, payload.get("average_fill_price")),
+        ts_ms=_decorative(_ts_ms, payload.get("ts_ms")),
+    )
+
+
+def _count_mismatch(created: CreateOrderResult, sent_count: Decimal) -> str | None:
+    """What the create/amend response alone can settle: that it named an order at all, and that
+    the counts it reports add up to the count we sent. None when both hold."""
+    if not created.order_id:
+        field = "order_id"
+    elif created.fill_count is None or created.remaining_count is None:
+        field = "the echoed counts"
+    elif created.remaining_count + created.fill_count != sent_count:
+        field = "count"
+    else:
+        return None
+    return field
 
 
 def _book_side_of(view: OrderView) -> str | None:
@@ -682,13 +773,19 @@ def _book_side_of(view: OrderView) -> str | None:
     return None
 
 
-def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal) -> VenueOrder:
+def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal,
+                 fill_count: Decimal | None, remaining_count: Decimal | None) -> VenueOrder:
     """An `OrderView` (the venue's own YES-leg shape) turned back into our side space.
 
     `side` and `prob` are passed in already decoded and already compared against what was sent,
     never re-derived here: an approved `VenueOrder` therefore carries `yes` or `no` and a
     `Decimal`, and can never carry raw venue text in `side` or `None` in `prob` (fix round 1,
     Important 1). An echo this pair cannot be built from is a mismatch, not an order.
+
+    The two counts come in the same way, and from the create/amend response rather than from
+    `view` (fix 24): they are the venue's answer to the message we actually sent, and they are
+    the pair the count arithmetic was checked against. `raw` is that same response body, for the
+    same reason -- it is what the venue said when it accepted the order.
     """
     return VenueOrder(
         order_id=view.order_id,
@@ -697,8 +794,8 @@ def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal) -> VenueO
         side=side,
         prob=prob,
         contracts=view.count,
-        remaining_count=view.remaining_count,
-        fill_count=view.fill_count,
+        remaining_count=remaining_count,
+        fill_count=fill_count,
         status=view.status,
         order_group_id=view.order_group_id,
         raw=raw,
@@ -887,57 +984,84 @@ class KalshiWriter:
 
     def _checked_echo(self, result, ticker: str, exchange_index: int, sent_side: str,
                       sent_prob: Decimal, sent_count: Decimal) -> VenueOrder:
-        """The venue's echo, decoded into *our* side space and compared there.
+        """The venue's answer to a create or an amend, checked in *our* side space.
 
-        Three comparisons, all as Decimals or canonical `yes`/`no` strings, never as venue text:
-        the decoded side equals the side we sent, the decoded own-side probability equals the
-        one we sent (the floored `own_prob`, which is the price this order actually pays -- not
-        the caller's pre-snap request, which would mismatch on every off-grid intent), and
-        `remaining_count + fill_count` equals the count we sent ("10" and "10.00" are the same
-        count; a string compare would call that a mismatch).
+        The answer arrives in two pieces, because V2 sends it in two pieces (fix 24). The
+        create/amend response carries the ids and the counts and nothing else -- no side, no
+        price -- so the count arithmetic is done from it (`remaining_count + fill_count` equals
+        the count we sent; "10" and "10.00" are the same count, which is why these are Decimals
+        and not strings), and the accepted side and price are then read back with a
+        `get_order`, whose payload really is an order and really does carry both.
 
-        Comparing in our own space is what catches a flipped book side (fix round 1, Important
-        1): a NO order echoed back as `bid` at the same YES price is the exact inverse of the
-        order, and comparing the raw YES-leg price alone waves it through.
+        The comparison itself is unchanged: the decoded own-side probability must equal the
+        floored `own_prob` we sent (not the caller's pre-snap request, which would mismatch on
+        every off-grid intent), and the decoded side must equal the side we sent. Comparing in
+        our own space is what catches a flipped book side (fix round 1, Important 1): a NO order
+        echoed back as `bid` at the same YES price is the exact inverse of the order, and
+        comparing the raw YES-leg price alone waves it through.
 
-        A missing price, a missing count, or an echo with no direction this decoder recognises
-        is a mismatch too: an echo that does not say what was accepted has confirmed nothing. On
-        any mismatch the order is cancelled and `EchoMismatch` is raised, so the caller freezes
-        the market for 15 minutes with reason `echo_mismatch`.
+        Anything that leaves the acceptance unconfirmed is a mismatch, not an order: a response
+        with no `order_id`, a missing count, an order the confirming read cannot fetch or
+        decode, or a fetched order with no price or no direction this decoder recognises. On any
+        of them the order is cancelled and `EchoMismatch` is raised, so the caller freezes the
+        market for 15 minutes with reason `echo_mismatch`. Failing closed on a confirming read
+        that did not answer is deliberate: an unconfirmed order is resting risk we cannot
+        describe, and the freeze is what stops more of it being added.
         """
         body = result.body if isinstance(result.body, dict) else {}
-        payload = body.get("order") if isinstance(body.get("order"), dict) else body
-        view = _decode_order(payload)
-        book_side = _book_side_of(view)
-        field = side = prob = None
-        if view.price is None or view.remaining_count is None or view.fill_count is None:
-            field = "the echoed price and counts"
-        elif book_side is None:
-            field = "side"                      # the venue's direction is not one we recognise
-        else:
-            side, prob = decode_side_price(book_side, view.price)
-            if side != sent_side:
-                field = "side"
-            elif prob != sent_prob:
-                field = "prob"
-            elif view.remaining_count + view.fill_count != sent_count:
-                field = "count"
+        created = _decode_create_order(body)
+        view = side = prob = None
+        field = _count_mismatch(created, sent_count)
         if field is None:
-            return _venue_order(view, payload, side, prob)
+            view, side, prob, field = self._confirmed_order(
+                created.order_id, sent_side, sent_prob)
+        if field is None:
+            return _venue_order(view, _payload(body), side, prob,
+                                created.fill_count, created.remaining_count)
 
         cancel_error = None
-        if view.order_id:
+        if created.order_id:
             try:
-                self.cancel(view.order_id, ticker=ticker, exchange_index=exchange_index)
+                self.cancel(created.order_id, ticker=ticker, exchange_index=exchange_index)
             except Exception as exc:      # a failed cancel must not mask the mismatch
                 # The class name only: a transport exception's `.request` holds live signed
                 # headers, so the exception itself is never carried forward (see http.py).
                 cancel_error = type(exc).__name__
         else:
             cancel_error = "no order_id to cancel"
-        raise EchoMismatch(order_id=view.order_id, reason="echo_mismatch",
+        raise EchoMismatch(order_id=created.order_id, reason="echo_mismatch",
                            freeze_minutes=ECHO_FREEZE_MINUTES, field=field,
                            cancel_error=cancel_error)
+
+    def _confirmed_order(self, order_id, sent_side: str, sent_prob: Decimal):
+        """`GET /portfolio/orders/{id}` -- the only place the accepted side and price can be
+        read, now that the create/amend response is known to carry neither (fix 24).
+
+        Returns `(view, side, prob, field)`, where `field` is None when the fetched order agrees
+        with what was sent and otherwise names what did not confirm. The read goes through the
+        reader's own decoder, so the direction resolution and the Decimal rules are the same
+        ones every other order in this module goes through, and `decode_side_price` puts the
+        result back into our side space before anything is compared.
+
+        A read that raises is not an acquittal: the class name of whatever went wrong is kept
+        (a class name, never the exception -- its `.request` may hold live signed headers) and
+        the caller treats it as a mismatch.
+        """
+        try:
+            view = self._reader.get_order(order_id)
+        except Exception as exc:
+            return None, None, None, f"the confirming read ({type(exc).__name__})"
+        book_side = _book_side_of(view)
+        if view.price is None:
+            return view, None, None, "the confirmed price"
+        if book_side is None:
+            return view, None, None, "side"   # the venue's direction is not one we recognise
+        side, prob = decode_side_price(book_side, view.price)
+        if side != sent_side:
+            return view, None, None, "side"
+        if prob != sent_prob:
+            return view, None, None, "prob"
+        return view, side, prob, None
 
     # -- fees -------------------------------------------------------------------------------------
 

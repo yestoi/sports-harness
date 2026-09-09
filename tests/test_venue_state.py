@@ -54,6 +54,7 @@ from harness.venues.kalshi.authed import (
     ECHO_FREEZE_MINUTES,
     ORDERS_PATH,
     KalshiApiError,
+    KalshiDecodeError,
     KalshiReader,
     MessageBudgetExceeded,
     TokenBucket,
@@ -61,7 +62,7 @@ from harness.venues.kalshi.authed import (
 from harness.venues.kalshi.http import VenueTransportError
 
 from tests.test_kalshi_authed import FakeTransport, _err, _ok
-from tests.test_kalshi_writer import _echo_of, _writer
+from tests.test_kalshi_writer import _accepted, _writer
 
 NOW = datetime(2026, 9, 8, 18, 0, tzinfo=timezone.utc)
 EXEC_SETTINGS = ExecSettings()
@@ -218,6 +219,43 @@ def test_reset_clears_the_counter():
     c.record(401, {})
     c.reset()
     assert c.record(401, {}) is False
+
+
+def test_a_decode_error_is_not_an_auth_error_and_never_counts(db_session):
+    """Fix 24's follow-up. The first demo smoke failed with a `KalshiDecodeError` and the demo
+    `venue_status` row came back `unavailable`, which looked like the section 9.4 counter
+    firing on a decode error. It was not: this counter reads the HTTP status integer and
+    nothing else, and a decode error carries no status at all -- it neither counts nor clears
+    a standing pair. The demo row was written by the smoke's own failure path, which marks
+    `('kalshi', 'demo')` for *any* failing step by design and never touches production (A-I3).
+    """
+    c = OutageCounter()
+    c.record(401, {})
+    assert c.record(getattr(KalshiDecodeError("no side"), "status", None), {}) is False
+    assert c.count == 1
+    assert c.record(401, {}) is True
+
+
+def test_a_decode_error_out_of_the_write_path_marks_nothing_and_does_not_count(db_session):
+    """The same thing one level up: a `KalshiDecodeError` propagates out of the gateway's guard
+    untouched. It writes no `venue_status` row, and it leaves the counter where it was, so two
+    later 401s still take exactly two to mark the venue."""
+    body = {"order_id": "o1", "client_order_id": "c1", "fill_count": "NaN",
+            "remaining_count": "10.00", "ts_ms": 1789000000000}
+    t = FakeTransport(queued=[_ok(body), _err(401), _err(401)])
+    g = _kalshi(t, db_session)
+
+    with pytest.raises(KalshiDecodeError):
+        g.place(db_session, _values(prob=Decimal("0.5600"), contracts=Decimal("10.00")),
+                None, _Market(CENT_RANGES), NOW)
+    assert db_session.get(VenueStatus, ("kalshi", "prod")) is None
+
+    for _ in range(2):
+        with pytest.raises(KalshiApiError):
+            g.place(db_session, _values(prob=Decimal("0.5600"), contracts=Decimal("10.00")),
+                    None, _Market(CENT_RANGES), NOW)
+    with _fresh(db_session) as fresh:
+        assert fresh.get(VenueStatus, ("kalshi", "prod")).status == "unavailable"
 
 
 def test_marking_writes_the_status_code_and_a_bounded_body_excerpt(db_session):
@@ -436,8 +474,7 @@ def test_a_third_reject_on_one_order_cancels_it_and_freezes_the_market(db_sessio
 
 def test_an_echo_mismatch_freezes_the_market_for_fifteen_minutes(db_session):
     """Task 7's writer cancels the order and raises; this task is the half that records it."""
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.9900")}),
-                              _ok({"order_id": "o1"})])
+    t = FakeTransport(queued=_accepted(price="0.9900") + [_ok({"order_id": "o1"})])
     g = _kalshi(t, db_session)
     values = _values(prob=Decimal("0.5600"), contracts=Decimal("10.00"))
 
@@ -652,13 +689,13 @@ def test_the_kalshi_gateway_reads_the_book_off_the_market_when_given_one(db_sess
 
 
 def test_the_kalshi_gateway_amends_on_a_clean_book(db_session):
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700")})])
+    t = FakeTransport(queued=_accepted(price="0.5700"))
     g = _kalshi(t, db_session)
     order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-clean")
     market = _MarketWithBook(_book(dirty=False, as_of=NOW), CENT_RANGES)
     assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("10.00"),
                    market, NOW) is True
-    assert [c[0] for c in t.calls] == ["POST"]
+    assert [c[0] for c in t.calls] == ["POST", "GET"]
 
 
 def test_the_paper_path_has_no_reprice_gate():
@@ -729,8 +766,7 @@ def test_an_outage_mark_survives_the_callers_savepoint(db_session):
 
 
 def test_an_echo_mismatch_freeze_survives_the_callers_savepoint(db_session):
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.9900")}),
-                              _ok({"order_id": "o1"})])
+    t = FakeTransport(queued=_accepted(price="0.9900") + [_ok({"order_id": "o1"})])
     g = _kalshi(t, db_session)
 
     with pytest.raises(Exception):
@@ -811,7 +847,7 @@ def test_an_unavailable_venue_blocks_an_amend(db_session):
 
 
 def test_an_amend_is_allowed_again_once_the_freeze_expires(db_session):
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700")})])
+    t = FakeTransport(queued=_accepted(price="0.5700"))
     freeze_market(db_session, "kalshi", "prod", "echo_mismatch", NOW)
     order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-thaw")
     later = NOW + timedelta(minutes=FREEZE_MINUTES + 1)
@@ -837,7 +873,7 @@ def test_the_loop_hands_the_gateway_its_tape_position(env_settings, db_session):
 
 
 def test_websocket_silence_blocks_a_live_reprice_and_a_fresh_event_releases_it(db_session):
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700")})])
+    t = FakeTransport(queued=_accepted(price="0.5700"))
     g = _kalshi(t, db_session)
     order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-ws")
     market = _MarketWithBook(_book(dirty=False, as_of=NOW), CENT_RANGES)
@@ -850,13 +886,13 @@ def test_websocket_silence_blocks_a_live_reprice_and_a_fresh_event_releases_it(d
     g.observe_tape(NOW)
     assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("10.00"),
                    market, NOW) is True
-    assert [c[0] for c in t.calls] == ["POST"]
+    assert [c[0] for c in t.calls] == ["POST", "GET"]
 
 
 def test_a_gateway_that_has_seen_no_tape_yet_does_not_block_every_reprice(db_session):
     """None reads as "no claim", not as "silent forever": a gateway before its first step must
     not be permanently unable to reprice."""
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700")})])
+    t = FakeTransport(queued=_accepted(price="0.5700"))
     g = _kalshi(t, db_session)
     order_id = _open_order(db_session, venue_order_id="ov1", client_order_id="c-none")
     assert g.amend(db_session, order_id, Decimal("0.5700"), Decimal("10.00"),

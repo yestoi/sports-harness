@@ -18,10 +18,11 @@ from decimal import Decimal
 import pytest
 
 from harness.venues.kalshi.authed import (
-    ORDER_MESSAGES_PER_MINUTE, CancelResult, EchoMismatch, KalshiDecodeError, KalshiReader,
-    FeeModelMismatch, KalshiWriter, MessageBudgetExceeded, OrderIntent, PreSendInvariantFailed,
-    PriceOffGrid, TokenBucket, VenueOrder, _FACTORY_TOKEN, decode_side_price, encode_side_price,
-    fixed_point, grid_steps, snap_intent, snap_to_grid,
+    ORDER_MESSAGES_PER_MINUTE, CancelResult, CreateOrderResult, EchoMismatch, KalshiDecodeError,
+    KalshiReader, FeeModelMismatch, KalshiWriter, MessageBudgetExceeded, OrderIntent,
+    PreSendInvariantFailed, PriceOffGrid, TokenBucket, VenueOrder, _FACTORY_TOKEN,
+    _decode_create_order, decode_side_price, encode_side_price, fixed_point, grid_steps,
+    snap_intent, snap_to_grid,
 )
 
 from tests.test_kalshi_authed import FakeTransport, _err, _ok
@@ -77,9 +78,10 @@ def _writer(transport, **kw) -> KalshiWriter:
 
 def _echo_of(price="0.5600", count="10.00", remaining=None, fill="0.00", book_side="bid",
              order_id="o1", **kw) -> dict:
-    """A V2 order as the venue echoes it back. `remaining` defaults to the whole count, so the
-    default echo satisfies the check (`remaining + fill == count`) and a test that wants a
-    mismatch has to ask for one."""
+    """A V2 *order*, the shape `GET /portfolio/orders/{id}` answers with. Since fix 24 this is
+    what the echo check reads the accepted side and price out of; the create/amend response
+    carries neither, and `_created` below is that shape. `remaining` defaults to the whole
+    count, so the default pair satisfies the check and a mismatch has to be asked for."""
     order = {
         "order_id": order_id,
         "client_order_id": "11111111-1111-1111-1111-111111111111",
@@ -94,6 +96,38 @@ def _echo_of(price="0.5600", count="10.00", remaining=None, fill="0.00", book_si
     }
     order.update(kw)
     return order
+
+
+def _created(count="10.00", remaining=None, fill="0.00", order_id="o1", **kw) -> dict:
+    """The V2 create/amend response (fix 24, Trade API reference read 2026-09-08): ids, counts,
+    an average fill price, an average fee and a timestamp -- and no side and no price at all.
+    Decoding this as an order is what made the first demo smoke fail at `place`."""
+    body = {
+        "order_id": order_id,
+        "client_order_id": "11111111-1111-1111-1111-111111111111",
+        "fill_count": fill,
+        "remaining_count": count if remaining is None else remaining,
+        "average_fill_price": None,
+        "average_fee_paid": "0.0000",
+        "ts_ms": 1789000000000,
+    }
+    body.update(kw)
+    return body
+
+
+def _accepted(price="0.5600", count="10.00", remaining=None, fill="0.00", book_side="bid",
+              order_id="o1", created=None, **order_kw) -> list:
+    """The two responses one accepted place or amend now consumes: the create/amend answer the
+    counts are checked against, then the `get_order` the side and the price are read back from.
+    Shared with `tests/test_gateway.py` and `tests/test_venue_state.py`, which drive the same
+    write path through `KalshiGateway`. `created` overrides fields on the create response;
+    everything else goes to the order the confirming read returns."""
+    return [
+        _ok(_created(count=count, remaining=remaining, fill=fill, order_id=order_id,
+                     **(created or {}))),
+        _ok({"order": _echo_of(price=price, count=count, remaining=remaining, fill=fill,
+                               book_side=book_side, order_id=order_id, **order_kw)}),
+    ]
 
 
 # --- encoder / decoder round trip ---------------------------------------------------------------
@@ -204,7 +238,7 @@ def test_fixed_point_formats_prices_at_four_places_and_counts_at_two():
 
 
 def test_place_limit_sends_every_required_field_and_nothing_else():
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10.00"))
     _writer(t).place_limit(_intent(side="yes", prob=Decimal("0.56"), contracts=Decimal("10")))
     method, path, params, body = t.calls[0]
     assert (method, path) == ("POST", "/portfolio/events/orders")
@@ -218,14 +252,13 @@ def test_place_limit_sends_every_required_field_and_nothing_else():
 
 
 def test_place_limit_sends_the_no_leg_as_an_ask_at_one_minus_p():
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5600", count="10.00",
-                                                     book_side="ask")})])
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10.00", book_side="ask"))
     _writer(t).place_limit(_intent(side="no", prob=Decimal("0.44"), contracts=Decimal("10")))
     assert t.calls[0][3]["side"] == "ask" and t.calls[0][3]["price"] == "0.5600"
 
 
 def test_amend_sends_exactly_seven_fields_and_no_expiry():
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5700", count="12.00")})])
+    t = FakeTransport(queued=_accepted(price="0.5700", count="12.00"))
     _writer(t).amend("o1", Decimal("0.57"), Decimal("12"), "c1", "c2",
                      ticker="KXNFLGAME-X", side="yes", exchange_index=0,
                      price_ranges=[{"start": 0, "end": 1, "step": 0.01}])
@@ -380,76 +413,167 @@ def test_a_cancel_still_goes_out_while_the_kill_switch_is_active():
 
 
 # --- echo check ------------------------------------------------------------------------------
+#
+# Fix 24: the echo arrives in two pieces. The create/amend response settles the counts, and the
+# side and the price come from the `get_order` the check makes straight afterwards. So an
+# accepted place is `_accepted(...)` -- two responses -- and a mismatch is asked for in whichever
+# of the two carries the field under test.
+
+
+def test_the_create_response_shape_is_decoded_without_a_side_or_a_price():
+    # The exact body the live venue sent when the first demo smoke failed at `place`.
+    result = _decode_create_order({
+        "order_id": "o1", "client_order_id": "c1", "fill_count": "0.00",
+        "remaining_count": "10.00", "average_fill_price": "0.0000",
+        "average_fee_paid": "0.0000", "ts_ms": 1789000000000})
+    assert result == CreateOrderResult("o1", "c1", Decimal("0.00"), Decimal("10.00"),
+                                       Decimal("0.0000"), 1789000000000)
+    assert not hasattr(CreateOrderResult, "price") and not hasattr(CreateOrderResult, "side")
+
+
+def test_a_create_response_no_longer_raises_a_decode_error_for_a_missing_side():
+    # The regression itself: `require_side` raised KalshiDecodeError on this body, so `place`
+    # never reached the comparison at all.
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10.00"))
+    order = _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert order.side == "yes" and order.prob == Decimal("0.5600")
+
+
+def test_the_side_and_price_come_from_a_get_order_after_the_create():
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10.00"))
+    _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert [(c[0], c[1]) for c in t.calls] == [
+        ("POST", "/portfolio/events/orders"), ("GET", "/portfolio/orders/o1")]
+
+
+def test_an_amend_confirms_itself_with_a_get_order_too():
+    t = FakeTransport(queued=_accepted(price="0.5700", count="12.00"))
+    _writer(t).amend("o1", Decimal("0.57"), Decimal("12"), "c1", "c2", ticker="KXNFLGAME-X",
+                     side="yes", exchange_index=0, price_ranges=CENT_RANGES)
+    assert [(c[0], c[1]) for c in t.calls] == [
+        ("POST", "/portfolio/events/orders/o1/amend"), ("GET", "/portfolio/orders/o1")]
 
 
 def test_echo_mismatch_on_the_count_cancels_and_raises():
+    # 4 + 3 != 10, and it is the create response that says so: the counts are checked there,
+    # before the confirming read is even made.
     t = FakeTransport(queued=[
-        _ok({"order": _echo_of(price="0.5600", count="10.00",
-                               remaining="4.00", fill="3.00")}),        # 4 + 3 != 10
+        _ok(_created(count="10.00", remaining="4.00", fill="3.00")),
         _ok({"order_id": "o1", "client_order_id": "c1"})])              # the cancel
     with pytest.raises(EchoMismatch) as exc:
         _writer(t).place_limit(_intent(contracts=Decimal("10")))
     assert t.calls[1][0] == "DELETE"
+    assert exc.value.field == "count"
     assert exc.value.freeze_minutes == 15 and exc.value.reason == "echo_mismatch"
 
 
-def test_echo_mismatch_on_the_price_cancels_and_raises():
+def test_a_count_mismatch_is_caught_before_the_confirming_read_is_made():
     t = FakeTransport(queued=[
-        _ok({"order": _echo_of(price="0.5700", count="10.00",
-                               remaining="10.00", fill="0.00")}),
-        _ok({"order_id": "o1"})])
-    with pytest.raises(EchoMismatch):
-        _writer(t).place_limit(_intent(prob=Decimal("0.56"), contracts=Decimal("10")))
-    assert t.calls[1][0] == "DELETE"
-
-
-def test_a_missing_count_in_the_echo_is_a_mismatch():
-    t = FakeTransport(queued=[
-        _ok({"order": _echo_of(price="0.5600", count="10.00", remaining="10.00", fill=None)}),
+        _ok(_created(count="10.00", remaining="4.00", fill="3.00")),
         _ok({"order_id": "o1"})])
     with pytest.raises(EchoMismatch):
         _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert [c[0] for c in t.calls] == ["POST", "DELETE"]        # no GET in between
+
+
+def test_echo_mismatch_on_the_price_cancels_and_raises():
+    t = FakeTransport(queued=_accepted(price="0.5700", count="10.00")
+                      + [_ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(prob=Decimal("0.56"), contracts=Decimal("10")))
+    assert exc.value.field == "prob"
+    assert t.calls[2][0] == "DELETE"
+
+
+def test_a_missing_count_in_the_create_response_is_a_mismatch():
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00", remaining="10.00", fill=None)),
+        _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert exc.value.field == "the echoed counts"
+
+
+def test_a_create_response_with_no_order_id_is_a_mismatch_with_nothing_to_cancel():
+    t = FakeTransport(queued=[_ok(_created(count="10.00", order_id=None))])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert exc.value.field == "order_id"
+    assert exc.value.cancel_error == "no order_id to cancel"
+    assert len(t.calls) == 1                    # no cancel, and no confirming read
+
+
+def test_a_confirming_read_that_fails_is_a_mismatch_and_the_order_is_cancelled():
+    # An order we cannot describe is resting risk: it is cancelled and the market is frozen,
+    # rather than returned as though the venue had confirmed it.
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _err(500),                              # the confirming GET
+        _ok({"order_id": "o1"})])               # the cancel
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert "the confirming read" in exc.value.field and "KalshiApiError" in exc.value.field
+    assert t.calls[2][0] == "DELETE"
+
+
+def test_a_confirming_read_that_will_not_decode_is_a_mismatch():
+    # A fetched order with no direction anywhere raises KalshiDecodeError in the reader.
+    order = _echo_of(price="0.5600", count="10.00")
+    order.pop("book_side")
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _ok({"order": order}), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert "KalshiDecodeError" in exc.value.field
+
+
+def test_a_confirmed_order_with_no_price_is_a_mismatch():
+    order = _echo_of(price=None, count="10.00")
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _ok({"order": order}), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert exc.value.field == "the confirmed price"
 
 
 def test_a_failed_cancel_does_not_mask_the_echo_mismatch():
     from harness.venues.kalshi.http import VenueTransportError
-    t = FakeTransport(queued=[
-        _ok({"order": _echo_of(price="0.5700", count="10.00")}),
-        VenueTransportError("DELETE", "/portfolio/events/orders/o1", "ConnectError")])
+    t = FakeTransport(queued=_accepted(price="0.5700", count="10.00")
+                      + [VenueTransportError("DELETE", "/portfolio/events/orders/o1",
+                                             "ConnectError")])
     with pytest.raises(EchoMismatch) as exc:
         _writer(t).place_limit(_intent(prob=Decimal("0.56"), contracts=Decimal("10")))
     assert exc.value.cancel_error == "VenueTransportError"
 
 
 def test_an_echo_mismatch_on_an_amend_cancels_and_raises():
-    t = FakeTransport(queued=[
-        _ok({"order": _echo_of(price="0.9900", count="12.00")}),
-        _ok({"order_id": "o1"})])
+    t = FakeTransport(queued=_accepted(price="0.9900", count="12.00")
+                      + [_ok({"order_id": "o1"})])
     with pytest.raises(EchoMismatch):
         _writer(t).amend("o1", Decimal("0.57"), Decimal("12"), "c1", "c2", ticker="KXNFLGAME-X",
                          side="yes", exchange_index=0, price_ranges=CENT_RANGES)
-    assert t.calls[1][0] == "DELETE"
+    assert t.calls[2][0] == "DELETE"
 
 
 def test_an_echo_that_flips_the_book_side_is_a_mismatch():
     # Fix round 1, Important 1: a NO order echoed as a bid at the same YES price is the exact
     # inverse of the order. Comparing only the raw YES-leg price waved it through.
-    t = FakeTransport(queued=[
-        _ok({"order": _echo_of(price="0.5600", count="10.00", book_side="bid")}),
-        _ok({"order_id": "o1"})])
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10.00", book_side="bid")
+                      + [_ok({"order_id": "o1"})])
     with pytest.raises(EchoMismatch) as exc:
         _writer(t).place_limit(_intent(side="no", prob=Decimal("0.44"),
                                        contracts=Decimal("10")))
     assert exc.value.field == "side" and exc.value.reason == "echo_mismatch"
-    assert t.calls[1][0] == "DELETE"
+    assert t.calls[2][0] == "DELETE"
 
 
 def test_an_echo_with_a_direction_we_do_not_recognise_is_a_mismatch():
     # Never let unvalidated venue text land in VenueOrder.side.
-    echo = _echo_of(price="0.5600", count="10.00")
-    echo["book_side"] = "sideways"
-    echo["outcome_side"] = "maybe"
-    t = FakeTransport(queued=[_ok({"order": echo}), _ok({"order_id": "o1"})])
+    order = _echo_of(price="0.5600", count="10.00")
+    order["book_side"] = "sideways"
+    order["outcome_side"] = "maybe"
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _ok({"order": order}), _ok({"order_id": "o1"})])
     with pytest.raises(EchoMismatch) as exc:
         _writer(t).place_limit(_intent(contracts=Decimal("10")))
     assert exc.value.field == "side"
@@ -457,8 +581,8 @@ def test_an_echo_with_a_direction_we_do_not_recognise_is_a_mismatch():
 
 def test_an_approved_order_always_carries_our_own_side_and_a_decimal_prob():
     for side, book_side, prob in [("yes", "bid", Decimal("0.56")), ("no", "ask", Decimal("0.44"))]:
-        t = FakeTransport(queued=[_ok({"order": _echo_of(
-            price="0.5600", count="10.00", book_side=book_side)})])
+        t = FakeTransport(queued=_accepted(price="0.5600", count="10.00",
+                                           book_side=book_side))
         order = _writer(t).place_limit(_intent(side=side, prob=prob, contracts=Decimal("10")))
         assert order.side in ("yes", "no") and order.side == side
         assert isinstance(order.prob, Decimal) and order.prob == prob
@@ -468,15 +592,15 @@ def test_the_echo_is_compared_against_the_snapped_price_not_the_raw_request():
     # An off-grid request goes out floored, so the venue echoes the floored price. Comparing
     # against the caller's pre-snap number would freeze the market on every such order.
     ranges = [{"start": 0, "end": 1, "step": 0.05}]
-    t = FakeTransport(queued=[_ok({"order": _echo_of(price="0.5000", count="10.00")})])
+    t = FakeTransport(queued=_accepted(price="0.5000", count="10.00"))
     order = _writer(t).place_limit(_intent(prob=Decimal("0.5300"), contracts=Decimal("10"),
                                            price_ranges=ranges))
     assert t.calls[0][3]["price"] == "0.5000" and order.prob == Decimal("0.5000")
 
 
 def test_a_matching_echo_returns_a_venue_order_decoded_into_our_side_space():
-    t = FakeTransport(queued=[_ok({"order": _echo_of(
-        price="0.5600", count="10.00", remaining="10.00", fill="0.00", book_side="ask")})])
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10.00", remaining="10.00",
+                                       fill="0.00", book_side="ask"))
     order = _writer(t).place_limit(_intent(side="no", prob=Decimal("0.44"),
                                            contracts=Decimal("10")))
     assert order.side == "no" and order.prob == Decimal("0.4400")
@@ -484,28 +608,55 @@ def test_a_matching_echo_returns_a_venue_order_decoded_into_our_side_space():
 
 def test_the_echo_check_compares_remaining_and_fill_as_decimals():
     # "10" and "10.00" are the same count; a string comparison would call this a mismatch.
-    t = FakeTransport(queued=[_ok({"order": _echo_of(
-        price="0.5600", count="10", remaining="10", fill="0")})])
+    t = FakeTransport(queued=_accepted(price="0.5600", count="10", remaining="10", fill="0"))
     assert _writer(t).place_limit(_intent(contracts=Decimal("10.00"))) is not None
 
 
-def test_the_returned_venue_order_carries_the_venues_own_counts_and_raw_body():
-    t = FakeTransport(queued=[_ok({"order": _echo_of(
-        price="0.5600", count="10.00", remaining="7.00", fill="3.00")})])
+def test_the_returned_venue_order_carries_the_response_counts_and_the_response_body():
+    # Fix 24: the counts and `raw` come from the create response -- the venue's answer to the
+    # message we sent -- while the ticker, status and group come from the confirmed order.
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00", remaining="7.00", fill="3.00")),
+        _ok({"order": _echo_of(price="0.5600", count="10.00", remaining="9.00", fill="1.00")})])
     order = _writer(t).place_limit(_intent(contracts=Decimal("10")))
     assert isinstance(order, VenueOrder)
     assert order.remaining_count == Decimal("7.00") and order.fill_count == Decimal("3.00")
     assert order.status == "resting" and order.order_group_id == "g1"
-    assert order.raw["order_id"] == "o1"
+    assert order.raw["order_id"] == "o1" and order.raw["ts_ms"] == 1789000000000
 
 
 def test_an_echo_with_only_an_outcome_side_still_decodes_into_our_space():
-    echo = _echo_of(price="0.5600", count="10.00")
-    echo.pop("book_side")
-    echo["outcome_side"] = "yes"
-    order = _writer(FakeTransport(queued=[_ok({"order": echo})])).place_limit(
-        _intent(contracts=Decimal("10")))
+    order = _echo_of(price="0.5600", count="10.00")
+    order.pop("book_side")
+    order["outcome_side"] = "yes"
+    t = FakeTransport(queued=[_ok(_created(count="10.00")), _ok({"order": order})])
+    placed = _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert placed.side == "yes" and placed.prob == Decimal("0.5600")
+
+
+def test_a_mangled_decorative_field_does_not_abandon_a_placed_order():
+    """`average_fill_price` and `ts_ms` are neither compared nor stored, so a bad one decodes to
+    None. Raising instead would walk away from an order the venue has already accepted, before
+    the echo check has had the chance to cancel it."""
+    t = FakeTransport(queued=_accepted(
+        price="0.5600", count="10.00",
+        created={"average_fill_price": "NaN", "ts_ms": "not-an-integer"}))
+    order = _writer(t).place_limit(_intent(contracts=Decimal("10")))
     assert order.side == "yes" and order.prob == Decimal("0.5600")
+
+
+def test_a_count_the_venue_mangled_is_still_a_mismatch_and_not_a_none():
+    """The other half of the same rule: the counts are decided on, so they stay strict."""
+    t = FakeTransport(queued=[_ok(_created(count="10.00", fill="NaN"))])
+    with pytest.raises(KalshiDecodeError):
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+
+
+def test_a_create_response_wrapped_in_an_order_key_decodes_the_same_way():
+    t = FakeTransport(queued=[
+        _ok({"order": _created(count="10.00")}),
+        _ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    assert _writer(t).place_limit(_intent(contracts=Decimal("10"))).order_id == "o1"
 
 
 # --- token bucket (9.2) -----------------------------------------------------------------------
@@ -552,7 +703,9 @@ def test_token_bucket_refills_gradually_and_never_over_its_capacity():
 
 
 def test_a_sixty_first_order_message_in_a_minute_raises():
-    t = FakeTransport(queued=[_ok({"order": _echo_of()}) for _ in range(61)])
+    # Each accepted place now consumes two responses; only the POST spends a token, because
+    # the confirming read is a GET on the reader (fix 24).
+    t = FakeTransport(queued=[r for _ in range(61) for r in _accepted()])
     w = _writer(t)
     for _ in range(60):
         w.place_limit(_intent())
@@ -571,7 +724,7 @@ def test_cancel_and_amend_also_spend_a_token():
 
 def test_the_budget_check_runs_after_the_pre_send_invariant():
     # A rejected order must not spend a token: the budget is for messages that go out.
-    t = FakeTransport(queued=[_ok({"order": _echo_of()}) for _ in range(60)])
+    t = FakeTransport(queued=[r for _ in range(60) for r in _accepted()])
     w = _writer(t, contract_cap=Decimal("20"))
     for _ in range(30):
         with pytest.raises(PreSendInvariantFailed):
