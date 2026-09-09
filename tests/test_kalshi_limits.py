@@ -49,6 +49,12 @@ LIMITS_BODY = {"tier": "basic",
                "read": {"refill_rate": "10", "capacity": "100"},
                "write": {"refill_rate": "5", "capacity": "50"}}
 
+#: The shape the live venue actually sends (fix 23): `usage_tier`, and `bucket_capacity` in each
+#: bucket. The production read that found this decoded to a null tier and null capacities.
+LIVE_LIMITS_BODY = {"usage_tier": "advanced",
+                    "read": {"refill_rate": "10", "bucket_capacity": "100"},
+                    "write": {"refill_rate": "5", "bucket_capacity": "50"}}
+
 NOTE_FIELDS = {"tier", "read_refill_rate", "read_capacity", "write_refill_rate",
                "write_capacity", "page_pause_s", "read_at", "age_s"}
 
@@ -361,6 +367,32 @@ def test_the_run_note_carries_no_raw_venue_body(recorder_with_fake):
     rec, _ = recorder_with_fake
     note = rec.maybe_tick(force=True).notes["venue_limits"]
     assert set(note) == NOTE_FIELDS
+
+
+@respx.mock
+def test_the_live_limits_shape_carries_the_tier_and_both_capacities_into_the_note(
+        env_settings, db_session):
+    """Fix 23, end to end. Nothing in the recorder changed: once the decoder reads the names the
+    venue actually sends, the note carries the tier and both bucket ceilings on its own."""
+    _mock_public_feeds()
+    rec, _ = _recorder(env_settings, db_session, [_ok(LIVE_LIMITS_BODY)])
+    note = rec.maybe_tick(force=True).notes["venue_limits"]
+    assert note["tier"] == "advanced"
+    assert note["read_capacity"] == 100.0 and note["write_capacity"] == 50.0
+    assert note["read_refill_rate"] == 10.0 and note["page_pause_s"] == pytest.approx(0.1)
+    assert set(note) == NOTE_FIELDS
+
+
+@respx.mock
+def test_a_hostile_usage_tier_is_escaped_and_truncated_in_the_note(env_settings, db_session):
+    """The sanitizer still stands in front of the new field name: `usage_tier` is venue text
+    like `tier` was, and it reaches `runs.notes` and the dashboard."""
+    _mock_public_feeds()
+    body = dict(LIVE_LIMITS_BODY, usage_tier="ad\nvanced\x00\u00e9" + "x" * 200)
+    rec, _ = _recorder(env_settings, db_session, [_ok(body)])
+    note = rec.maybe_tick(force=True).notes["venue_limits"]
+    assert "\n" not in note["tier"] and "\x00" not in note["tier"]
+    assert note["tier"].isascii() and len(note["tier"]) <= 32
 
 
 @respx.mock

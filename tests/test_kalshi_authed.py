@@ -130,6 +130,47 @@ def test_get_account_limits_decodes_the_buckets():
     assert limits.write_capacity == Decimal("50")
 
 
+def test_get_account_limits_decodes_the_shape_the_live_venue_actually_sends():
+    """Fix 23. The live `GET /account/limits` names the tier `usage_tier` and each bucket's
+    ceiling `bucket_capacity`; only `refill_rate` matched the names this decoder used, which is
+    why the first production read came back with rates beside a null tier and null capacities."""
+    t = FakeTransport(queued=[_ok({
+        "usage_tier": "advanced",
+        "read": {"refill_rate": "10", "bucket_capacity": "100"},
+        "write": {"refill_rate": "5", "bucket_capacity": "50"}})])
+    limits = KalshiReader(t).get_account_limits()
+    assert limits.tier == "advanced"
+    assert limits.read_refill_rate == Decimal("10") and limits.read_capacity == Decimal("100")
+    assert limits.write_refill_rate == Decimal("5") and limits.write_capacity == Decimal("50")
+
+
+def test_account_limits_prefers_the_current_names_over_the_older_ones():
+    t = FakeTransport(queued=[_ok({
+        "usage_tier": "advanced", "tier": "basic",
+        "read": {"refill_rate": "10", "bucket_capacity": "100", "capacity": "1"},
+        "write": {"refill_rate": "5", "bucket_capacity": "50", "capacity": "2"}})])
+    limits = KalshiReader(t).get_account_limits()
+    assert limits.tier == "advanced"
+    assert limits.read_capacity == Decimal("100") and limits.write_capacity == Decimal("50")
+
+
+def test_account_limits_falls_back_when_the_venue_sends_only_the_older_names():
+    t = FakeTransport(queued=[_ok({"tier": "basic",
+                                   "read": {"refill_rate": "10", "capacity": "100"},
+                                   "write": {"refill_rate": "5", "capacity": "50"}})])
+    limits = KalshiReader(t).get_account_limits()
+    assert limits.tier == "basic" and limits.read_capacity == Decimal("100")
+
+
+def test_account_limits_with_neither_capacity_name_decodes_to_none():
+    t = FakeTransport(queued=[_ok({"read": {"refill_rate": "10"},
+                                   "write": {"refill_rate": "5"}})])
+    limits = KalshiReader(t).get_account_limits()
+    assert limits.tier is None
+    assert limits.read_capacity is None and limits.write_capacity is None
+    assert limits.read_refill_rate == Decimal("10")
+
+
 def test_list_endpoints_follow_the_cursor():
     # fix round 1: _decode_order now requires a resolvable direction (Important 2), so these
     # fixtures carry a minimal outcome_side -- this test is about cursor-following, not

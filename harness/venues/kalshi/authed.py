@@ -283,6 +283,14 @@ def _decode_fill(f: dict) -> VenueFillView:
     )
 
 
+def _bucket_capacity(bucket: dict):
+    """One rate bucket's ceiling. The live Trade API sends `bucket_capacity`; `capacity` is the
+    older name and is read only when the current one is absent, so a venue that goes back to it
+    still decodes (fix 23). Returns the venue's raw value -- `dec` is what makes it a Decimal."""
+    value = bucket.get("bucket_capacity")
+    return value if value is not None else bucket.get("capacity")
+
+
 def _decode_position(p: dict) -> PositionView:
     return PositionView(
         ticker=p.get("ticker"),
@@ -349,17 +357,21 @@ class KalshiReader:
         return [_decode_fill(f) for f in rows]
 
     def get_account_limits(self) -> Limits:
+        """`GET /account/limits`. The live Trade API names the tier `usage_tier` and each
+        bucket's ceiling `bucket_capacity`; `tier` and `capacity` are read only as a fallback
+        (fix 23, reference read 2026-09-08). Only `refill_rate` was ever right, which is why a
+        production read came back with numeric rates beside a null tier and null capacities."""
         result = self._transport.request("GET", "/account/limits")
         _check_status(result, "GET", "/account/limits")
         body = result.body if isinstance(result.body, dict) else {}
         read = body.get("read") or {}
         write = body.get("write") or {}
         return Limits(
-            tier=body.get("tier"),
+            tier=body.get("usage_tier") or body.get("tier"),
             read_refill_rate=dec(read.get("refill_rate")),
-            read_capacity=dec(read.get("capacity")),
+            read_capacity=dec(_bucket_capacity(read)),
             write_refill_rate=dec(write.get("refill_rate")),
-            write_capacity=dec(write.get("capacity")),
+            write_capacity=dec(_bucket_capacity(write)),
             raw=body,
         )
 
