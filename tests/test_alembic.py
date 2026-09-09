@@ -140,10 +140,17 @@ def _catalogue(engine) -> dict:
         if name in inherited or name == "alembic_version":
             continue
         tables[name] = {
-            "columns": {c["name"]: (str(c["type"]), c["nullable"])
+            # The server default matters as much as the type: `create_schema` and the baseline
+            # disagreeing about a SERIAL or a `default 0` is exactly the drift this test exists
+            # to catch, and both spell it as a column default.
+            "columns": {c["name"]: (str(c["type"]), c["nullable"], c.get("default"))
                         for c in insp.get_columns(name)},
             "pk": tuple(insp.get_pk_constraint(name)["constrained_columns"]),
             "unique": _norm(sorted(insp.get_unique_constraints(name), key=lambda u: u["name"])),
+            "checks": _norm(sorted(insp.get_check_constraints(name),
+                                   key=lambda c: c["name"] or "")),
+            "foreign_keys": _norm(sorted(insp.get_foreign_keys(name),
+                                         key=lambda f: f["name"] or "")),
             "indexes": {i["name"]: _norm({k: v for k, v in i.items() if k != "name"})
                         for i in insp.get_indexes(name) if i["name"] not in inherited},
         }
@@ -164,7 +171,7 @@ def _diff(a: dict, b: dict) -> str:
         if ta is None or tb is None:
             out.append(f"{name}: present in only one database")
             continue
-        for part in ("columns", "pk", "unique", "indexes"):
+        for part in ("columns", "pk", "unique", "checks", "foreign_keys", "indexes"):
             if ta[part] != tb[part]:
                 out.append(f"{name}.{part}: {ta[part]} != {tb[part]}")
     return "\n".join(out)
@@ -190,9 +197,21 @@ def test_the_catalogue_covers_columns_types_nullability_keys_and_indexes(two_dat
     create_schema(a)
     cat = _catalogue(a)
     orders = cat["tables"]["orders"]
-    assert orders["columns"]["prob"] == ("NUMERIC(6, 4)", False)
-    assert orders["columns"]["venue_order_id"] == ("VARCHAR(64)", True)
+    assert orders["columns"]["prob"] == ("NUMERIC(6, 4)", False, None)
+    assert orders["columns"]["venue_order_id"] == ("VARCHAR(64)", True, None)
+    # The server default is part of the column, and the sequence a SERIAL primary key carries is
+    # the drift fix 1 of review round 1 caught: `create_schema` and the baseline disagreed about
+    # whether `exec_heartbeat.id` had one.
+    assert orders["columns"]["id"] == ("BIGINT", False, "nextval('orders_id_seq'::regclass)")
+    # `exec_heartbeat.id` is the one integer primary key that is deliberately not a SERIAL: the
+    # model gives it a client-side default of 1 (the table holds one row), so neither builder
+    # attaches a sequence, and `create_all` emits a plain integer.
+    assert cat["tables"]["exec_heartbeat"]["columns"]["id"] == ("INTEGER", False, None)
     assert "uq_open_order" in orders["indexes"]
+    # No table in this schema declares a check constraint or a foreign key. The catalogue carries
+    # both anyway, so the day one is added, a baseline that missed it fails here.
+    assert orders["checks"] == () and orders["foreign_keys"] == ()
+    assert all(t["checks"] == () and t["foreign_keys"] == () for t in cat["tables"].values())
     assert cat["partitioned"] == {"raw_responses", "orderbook_events", "venue_trades"}
 
 
@@ -373,16 +392,24 @@ def test_the_dockerfile_copies_the_migrations_as_a_directory():
     assert "COPY alembic.ini migrations ./" not in df
 
 
-def test_the_deploy_recipe_pushes_the_migrations_and_runs_ensure():
+def test_both_deploy_recipes_push_the_migrations_and_the_full_one_runs_ensure():
+    """Both tar lists, not just the full deploy's. An app-only deploy that shipped a stale
+    migrations directory would build an image whose baseline no longer matches the models."""
     mk = (ROOT / "Makefile").read_text()
-    assert "alembic.ini migrations" in mk, "make deploy-nas must push the migrations to the NAS"
+    tars = [l for l in mk.splitlines() if l.lstrip().startswith("@tar cf -")]
+    assert len(tars) == 2, tars
+    for line in tars:
+        assert "alembic.ini migrations" in line, line
     assert "docker compose run --rm app-run migrate ensure" in mk
     assert "no migrate command in this build" not in mk, "the Task 14 probe is now the real command"
 
 
 def test_pyproject_gains_exactly_one_dependency():
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
-    assert "alembic>=1.13" in deps
+    # >=1.16 is the floor the baseline actually needs: `op.create_table(if_not_exists=...)` and
+    # `op.create_index(if_not_exists=...)` arrived there, and every statement in it is IF NOT
+    # EXISTS. constraints.txt pins 1.19.2 on top of this.
+    assert "alembic>=1.16" in deps
     assert len(deps) == 16          # 15 before this phase, plus alembic
 
 

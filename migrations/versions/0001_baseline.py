@@ -105,7 +105,10 @@ def upgrade() -> None:
     if_not_exists=True,
     )
     op.create_table('exec_heartbeat',
-    sa.Column('id', sa.Integer(), nullable=False),
+    # Not a SERIAL: the model gives this a client-side default of 1 (the table holds one row),
+    # so `create_schema` emits a plain integer and the baseline has to as well. Alembic would
+    # otherwise infer autoincrement from "integer primary key" and attach a sequence.
+    sa.Column('id', sa.Integer(), autoincrement=False, nullable=False),
     sa.Column('last_loop_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('loops', sa.Integer(), nullable=False),
     sa.Column('open_orders', sa.Integer(), nullable=False),

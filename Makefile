@@ -90,7 +90,7 @@ deploy-nas-app: ## Same push, but restart only app-run/app-serve/app-exec (app-w
 # deploy/backup_age.pub does not exist until `harness backup-keygen` runs on the Mac, so it goes
 # through $(wildcard ...): when it is absent that expands to nothing instead of failing tar and
 # aborting the whole deploy.
-	@tar cf - --exclude='__pycache__' pyproject.toml constraints.txt Dockerfile .dockerignore docker-compose.yml harness docs/runbooks \
+	@tar cf - --exclude='__pycache__' pyproject.toml constraints.txt Dockerfile .dockerignore docker-compose.yml harness alembic.ini migrations docs/runbooks \
 		deploy/backup $(wildcard deploy/backup_age.pub) \
 		| ssh $(NAS_USER)@$(NAS_IP) 'tar xf - -C $(NAS_STACK)'
 	@mkdir -p build
