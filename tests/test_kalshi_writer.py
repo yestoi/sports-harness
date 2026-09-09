@@ -77,14 +77,21 @@ def _writer(transport, **kw) -> KalshiWriter:
 
 
 def _echo_of(price="0.5600", count="10.00", remaining=None, fill="0.00", book_side="bid",
-             order_id="o1", **kw) -> dict:
+             order_id="o1", client_order_id=None, **kw) -> dict:
     """A V2 *order*, the shape `GET /portfolio/orders/{id}` answers with. Since fix 24 this is
     what the echo check reads the accepted side and price out of; the create/amend response
     carries neither, and `_created` below is that shape. `remaining` defaults to the whole
-    count, so the default pair satisfies the check and a mismatch has to be asked for."""
+    count, so the default pair satisfies the check and a mismatch has to be asked for.
+
+    `client_order_id` defaults to absent, which fix 28's freshness check reads as fresh. That is
+    what keeps this fixture shareable: `tests/test_gateway.py` and `tests/test_venue_state.py`
+    drive amends whose `updated_client_order_id` is a uuid4 generated inside the gateway, so no
+    fixture can echo it back, and a stale-looking read there would cost four sleeps and a
+    freeze. The freshness check itself is pinned below with the id passed in explicitly.
+    """
     order = {
         "order_id": order_id,
-        "client_order_id": "11111111-1111-1111-1111-111111111111",
+        "client_order_id": client_order_id,
         "ticker": "KXNFLGAME-X",
         "book_side": book_side,
         "price": price,
@@ -99,14 +106,14 @@ def _echo_of(price="0.5600", count="10.00", remaining=None, fill="0.00", book_si
 
 
 def _live_order_of(price="0.5600", count="10.00", remaining=None, fill="0.00",
-                   book_side="bid", order_id="o1", **kw) -> dict:
+                   book_side="bid", order_id="o1", client_order_id=None, **kw) -> dict:
     """The single-order GET as the reference actually sends it: `yes_price_dollars`, `count_fp`,
     `remaining_count_fp`, `fill_count_fp` (fix round 1, Important 1). Same order, other
     vocabulary -- and `no_price_dollars` is present precisely because the decoder must ignore
     it."""
     order = {
         "order_id": order_id,
-        "client_order_id": "11111111-1111-1111-1111-111111111111",
+        "client_order_id": client_order_id,
         "ticker": "KXNFLGAME-X",
         "book_side": book_side,
         "yes_price_dollars": price,
@@ -897,6 +904,133 @@ def test_the_writer_sleeps_with_time_sleep_when_nothing_is_injected():
 
     assert "sleep" in inspect.signature(KalshiWriter.__init__).parameters
     assert _writer(FakeTransport())._sleep is time.sleep
+
+
+# --- a read is fresh only when it carries the id we sent (fix 28) -----------------------------
+#
+# Measured twice on the demo venue, 2026-09-09 13:23 and 13:25 UTC (evidence
+# `docs/superpowers/autopilot/evidence/2026-09-09-demo-amend-diag-0823.txt` and `-0825.txt`).
+# The amend answered 200 with the same order id and the `updated_client_order_id` we sent, and
+# the confirming read then came back 200 carrying the *original* client id, the old price and
+# the old count for another 0.3 to 0.9 s. The read model lags the matching engine after an
+# amend exactly as it does after a create -- fix 27's 404s -- but the row already exists, so the
+# lag surfaces as a stale 200 instead of a 404 and the echo check froze a perfectly good order.
+#
+# Price and count cannot tell "stale" from "wrong". The client id can: the venue assigns it on
+# the write, so a read that still shows the previous one has not seen the write yet.
+#
+# The amend response's own `client_order_id` is deliberately not the expectation. The Kalshi
+# changelog (2026-05-21) says V2 amend and cancel responses may carry incorrect order details
+# even when the operation executed correctly, so the expectation is the id *we* sent.
+
+
+def _amend(writer, price="0.02", count="2", updated="c2"):
+    return writer.amend("o1", Decimal(price), Decimal(count), "c1", updated,
+                        ticker="KXNFLGAME-X", side="yes", exchange_index=0,
+                        price_ranges=CENT_RANGES)
+
+
+def test_an_amend_read_still_showing_the_old_client_id_is_retried_until_it_is_fresh():
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="2.00")),
+        # +282 ms: the old id, the old price, the old count -- the read model has not caught up.
+        _ok({"order": _echo_of(price="0.0100", count="1.00", client_order_id="c1")}),
+        # +895 ms: the id the amend assigned, and the amended price.
+        _ok({"order": _echo_of(price="0.0200", count="2.00", client_order_id="c2")})])
+    order = _amend(_writer(t, sleep=slept.append))
+    assert order.side == "yes" and order.prob == Decimal("0.0200")
+    assert slept == [0.25]                                   # one wait, then confirmed
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET"]  # confirmed, never cancelled
+
+
+def test_four_stale_reads_cancel_the_amended_order_and_freeze_naming_stale_and_the_count():
+    slept = []
+    t = FakeTransport(
+        queued=[_ok(_created(count="2.00"))]
+        + [_ok({"order": _echo_of(price="0.0100", count="1.00", client_order_id="c1")})
+           for _ in range(4)]
+        + [_ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _amend(_writer(t, sleep=slept.append))
+    assert exc.value.field == "the confirming read (stale after 4 attempts)"
+    assert exc.value.order_id == "o1" and exc.value.cancel_error is None
+    assert exc.value.freeze_minutes == 15 and exc.value.reason == "echo_mismatch"
+    assert slept == [0.25, 0.5, 0.75]                    # the same 1.5 s ceiling as the 404s
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET", "GET", "GET", "DELETE"]
+    assert t.calls[-1][1] == "/portfolio/events/orders/o1"
+
+
+def test_a_fresh_read_at_the_wrong_price_cancels_on_the_first_read_with_no_retry():
+    # The freshness retry is for a read that has not seen the write. A read that *has* seen it
+    # and disagrees is the venue's final answer, and sleeping on it only delays the cancel.
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="2.00")),
+        _ok({"order": _echo_of(price="0.0300", count="2.00", client_order_id="c2")}),
+        _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _amend(_writer(t, sleep=slept.append))
+    assert exc.value.field == "prob"
+    assert slept == []
+    assert [c[0] for c in t.calls] == ["POST", "GET", "DELETE"]
+
+
+def test_a_fresh_read_on_the_flipped_side_cancels_on_the_first_read_too():
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="2.00")),
+        _ok({"order": _echo_of(price="0.9800", count="2.00", book_side="ask",
+                               client_order_id="c2")}),
+        _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _amend(_writer(t, sleep=slept.append))
+    assert exc.value.field == "side"
+    assert slept == []
+    assert [c[0] for c in t.calls] == ["POST", "GET", "DELETE"]
+
+
+def test_the_attempt_budget_is_shared_between_a_404_and_a_stale_read():
+    # Four reads in all, whichever mix of the two lags produces them: a venue that answers one
+    # of each must not earn eight.
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _err(404, "order_not_found"),
+        _ok({"order": _echo_of(price="0.5600", count="10.00", client_order_id="an-older-id")}),
+        _ok({"order": _echo_of(price="0.5600", count="10.00",
+                               client_order_id="11111111-1111-1111-1111-111111111111")})])
+    order = _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert order.side == "yes" and order.prob == Decimal("0.5600")
+    assert slept == [0.25, 0.5]
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET", "GET"]
+
+
+def test_a_read_that_carries_no_client_order_id_at_all_is_taken_as_fresh():
+    """A venue that stops sending the id must not earn four sleeps and a freeze on every order.
+    With nothing to compare, the read is compared on side and price exactly as it was before."""
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    order = _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert order.prob == Decimal("0.5600")
+    assert slept == []
+    assert [c[0] for c in t.calls] == ["POST", "GET"]
+
+
+def test_the_amended_size_comes_from_the_amend_response_not_the_reads_initial_count():
+    """`initial_count_fp` is the size at placement and does not follow an amend: the venue was
+    measured reporting 1.00 there while `remaining_count_fp` had moved to 2.00. So
+    `VenueOrder.contracts` is `fill_count + remaining_count` from the response the venue sent
+    when it accepted the write -- the pair the count arithmetic already checked."""
+    t = FakeTransport(queued=[
+        _ok(_created(count="2.00")),
+        _ok({"order": _live_order_of(price="0.0200", count=None, remaining="2.00",
+                                     client_order_id="c2", initial_count_fp="1.00")})])
+    order = _amend(_writer(t))
+    assert order.contracts == Decimal("2.00")
+    assert order.remaining_count == Decimal("2.00") and order.fill_count == Decimal("0.00")
 
 
 # --- the amend knows the id it addressed (fix round 1, Minor) ---------------------------------

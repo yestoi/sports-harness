@@ -365,6 +365,30 @@ def test_get_order_decodes_the_dollars_and_fp_names_the_reference_sends():
     assert order.outcome_side == "yes" and order.book_side == "bid"
 
 
+def test_get_order_reads_initial_count_fp_when_the_venue_sends_no_count_at_all():
+    """Fix 28. The single-order read the demo venue really answers with carries
+    `initial_count_fp`, `remaining_count_fp` and `fill_count_fp` -- and no `count_fp` and no
+    `count` (measured 2026-09-09 13:25 UTC, evidence
+    `docs/superpowers/autopilot/evidence/2026-09-09-demo-amend-diag-0825.txt`). `count` was
+    therefore None on every real read, which is what printed `contracts=none` at the smoke's
+    `place` step on every run. The fixture above sends `count_fp`, a shape the venue never
+    sends, which is why the suite did not catch it.
+    """
+    t = FakeTransport(queued=[_ok({"order": {
+        "order_id": "01a08658-31d0-7248-9a42-c8e755af43f2",
+        "client_order_id": "bd78e150-03fc-4245-b0ed-9baf158c0ff7",
+        "ticker": "KXNFLGAME-26SEP09NESEA-SEA", "side": "yes", "action": "buy",
+        "outcome_side": "yes", "book_side": "bid",
+        "yes_price_dollars": "0.0200", "no_price_dollars": "0.9800",
+        "initial_count_fp": "1.00", "remaining_count_fp": "2.00", "fill_count_fp": "0.00",
+        "status": "resting"}})])
+    order = KalshiReader(t).get_order("01a08658-31d0-7248-9a42-c8e755af43f2")
+    assert order.count == Decimal("1.00")            # the size at placement, not the amended one
+    assert order.remaining_count == Decimal("2.00")
+    assert order.fill_count == Decimal("0.00")
+    assert order.price == Decimal("0.0200")
+
+
 def test_an_order_with_only_a_no_price_decodes_to_no_price_at_all():
     """`no_price_dollars` is never read: `decode_side_price` is defined on the YES leg, and a
     second conversion here would sit in front of the echo check's own."""

@@ -56,7 +56,7 @@ CENT_RANGES = [{"start": 0, "end": 1, "step": 0.01}]
 #: The exact order the sequence sends. The methods and the paths are asserted separately, so a
 #: reordering that keeps the same multiset of calls still fails.
 EXPECTED_METHODS = ["GET", "GET", "POST", "POST", "GET", "GET", "GET", "POST", "GET", "GET",
-                    "DELETE", "DELETE", "POST", "GET", "GET", "GET", "GET"]
+                    "GET", "DELETE", "DELETE", "POST", "GET", "GET", "GET", "GET"]
 EXPECTED_PATHS = [
     "/portfolio/balance",
     "/markets",                                   # the nearest open KXNFLGAME market
@@ -66,7 +66,8 @@ EXPECTED_PATHS = [
     "/portfolio/orders/o1",                       # 404 again -- read-after-write lag (fix 27)
     "/portfolio/orders/o1",                       # and now the order is readable
     "/portfolio/events/orders/o1/amend",          # amend
-    "/portfolio/orders/o1",                       # the amend's confirming read (fix 24)
+    "/portfolio/orders/o1",                       # the amend's confirming read: stale (fix 28)
+    "/portfolio/orders/o1",                       # and now it carries the id the amend assigned
     "/portfolio/orders/o1",                       # get_order, the smoke's own step 7
     "/portfolio/events/orders/o1",                # cancel
     "/portfolio/order_groups/g1",                 # cancel_group
@@ -117,18 +118,33 @@ def _market(ticker: str, close_time: str, price_ranges=None) -> dict:
     }
 
 
-def _echo(order_id: str, price: str, count: str, book_side: str = "bid") -> dict:
-    """A V2 order, the shape `GET /portfolio/orders/{id}` answers with. Since fix 24 this is
-    what the echo check reads the accepted side and price out of."""
+def _echo(order_id: str, price: str, remaining: str, book_side: str = "bid",
+          client_order_id=None) -> dict:
+    """A V2 order in the shape `GET /portfolio/orders/{id}` really answers with (fix 28).
+
+    Measured on the demo venue 2026-09-09 13:25 UTC (evidence
+    `docs/superpowers/autopilot/evidence/2026-09-09-demo-amend-diag-0825.txt`):
+    `yes_price_dollars`, `initial_count_fp`, `remaining_count_fp` and `fill_count_fp`, and no
+    `count_fp` and no `count` at all. `initial_count_fp` is the size at placement and does not
+    follow an amend, which is why it stays 1.00 here while `remaining` goes to 2.00.
+
+    `client_order_id` defaults to absent, which the freshness check reads as fresh: the smoke
+    generates its own uuid4s at run time, so no fixture can echo the real one back. The one
+    read that is meant to be stale passes the previous id explicitly.
+    """
     return {"order": {
         "order_id": order_id,
-        "client_order_id": "11111111-1111-1111-1111-111111111111",
+        "client_order_id": client_order_id,
         "ticker": TICKER,
+        "side": "yes",
+        "action": "buy",
+        "outcome_side": "yes",
         "book_side": book_side,
-        "price": price,
-        "count": count,
-        "remaining_count": count,
-        "fill_count": "0.00",
+        "yes_price_dollars": price,
+        "no_price_dollars": str(Decimal("1") - Decimal(price)),
+        "initial_count_fp": "1.00",
+        "remaining_count_fp": remaining,
+        "fill_count_fp": "0.00",
         "status": "resting",
         "order_group_id": "g1",
     }}
@@ -149,9 +165,10 @@ def _created(order_id: str, count: str) -> dict:
 
 
 def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
-    """The seventeen responses the full sequence consumes, in order (fix 24 added the three
+    """The eighteen responses the full sequence consumes, in order (fix 24 added the three
     confirming reads; fix 27 added the two 404s the demo venue really answered the first of them
-    with, 130 ms and 210 ms after returning 201 for the create)."""
+    with, 130 ms and 210 ms after returning 201 for the create; fix 28 added the stale 200 it
+    answers the amend's first confirming read with)."""
     return [
         _ok({"balance": "250.00"}),
         _ok({"markets": [_market(LATER_TICKER, "2026-09-21T23:00:00Z", price_ranges),
@@ -163,7 +180,11 @@ def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
         _err(404, "order_not_found"),                # has made the order readable (fix 27)
         _ok(_echo("o1", "0.0100", "1.00")),          # and now it has
         _ok(_created("o1", "2.00")),                 # amend
-        _ok(_echo("o1", "0.0200", "2.00")),          # its confirming read
+        # The amend's first confirming read, +282 ms: still the previous client id, the old
+        # price and the old count, because the read model has not seen the amend yet (fix 28).
+        _ok(_echo("o1", "0.0100", "1.00",
+                  client_order_id="14697037-e5de-401c-8f6e-48cc0202ca91")),
+        _ok(_echo("o1", "0.0200", "2.00")),          # +895 ms: the amended order
         _ok(_echo("o1", "0.0200", "2.00")),          # the smoke's own get_order step
         _ok({"order_id": "o1", "client_order_id": "c1", "reduced_by": "2.00",
              "ts_ms": 1789000000000}),
@@ -196,11 +217,11 @@ def _script_with_hostile_strings() -> list:
         "close_time": "2026-09-14T23:00:00Z", "price_ranges": CENT_RANGES,
         "title": HOSTILE}], "cursor": ""})
     script[2] = _ok({"order_group_id": "g1", "note": HOSTILE})
-    for i in (3, 7, 12):                          # the create/amend responses
+    for i in (3, 7, 13):                          # the create/amend responses
         script[i].body["note"] = HOSTILE
     for i in (4, 5):                              # the place's two 404s (fix 27)
         script[i].body["code"] = HOSTILE
-    for i in (6, 8, 9, 13):                       # the order-shaped confirming reads
+    for i in (6, 8, 9, 10, 14):                   # the order-shaped reads (8 is stale, fix 28)
         body = script[i].body
         body["order"]["status"] = HOSTILE
         body["note"] = HOSTILE
@@ -209,22 +230,28 @@ def _script_with_hostile_strings() -> list:
 
 # --- writers -----------------------------------------------------------------------------------
 
-def _writer_over(transport) -> KalshiWriter:
+def _writer_over(transport, sleep=None) -> KalshiWriter:
     """A writer built the way `harness.venues.kalshi.smoke` builds one, with the smoke's own
     tiny caps, over the fake transport instead of a real one. Its confirming-read backoff is a
     no-op here (fix 27): the schedule itself is pinned in `tests/test_kalshi_writer.py`, and no
-    test in this file should spend 0.75 s of real time proving the venue was slow."""
+    test in this file should spend 0.75 s of real time proving the venue was slow. `sleep`
+    replaces that no-op with a recorder for the one test that asserts the wait (fix 28)."""
     return KalshiWriter(transport, KalshiReader(transport),
                         per_bet_cap_dollars=SMOKE_PER_BET_CAP_DOLLARS,
                         contract_cap=SMOKE_CONTRACT_CAP,
                         kill_switch_active=lambda: False,
-                        writes_allowed=True, sleep=lambda _s: None,
+                        writes_allowed=True, sleep=sleep or (lambda _s: None),
                         _factory_token=_FACTORY_TOKEN)
 
 
 def _injecting(transport):
     """A `writer_factory` that hands `run_smoke` a writer over `transport`."""
     return lambda settings, session_factory: _writer_over(transport)
+
+
+def _writer_factory_recording_sleeps(transport, slept):
+    """`_injecting`, with the writer's confirming-read backoff recorded rather than dropped."""
+    return lambda settings, session_factory: _writer_over(transport, sleep=slept.append)
 
 
 def _factory():
@@ -267,6 +294,33 @@ def test_the_v2_response_shapes_reach_cancel_group_with_place_and_amend_ok(tmp_p
         assert by_name[name].ok, (name, by_name[name].detail)
     assert by_name["place"].detail == "prob=0.0100 contracts=1.00 status=resting"
     assert by_name["amend"].detail == "prob=0.0200 contracts=2.00 status=resting"
+    assert result.exit_code() == 0
+
+
+def test_the_read_back_step_checks_the_counts_the_venue_really_sends(tmp_path):
+    """Fix 28. The single-order read carries no `count_fp` and no `count`, so `OrderView.count`
+    is the size at placement at best and None at worst; the amended size is
+    `fill_count + remaining_count`. Step 7 compared `count` to two contracts, so it would have
+    failed on every run once the amend confirmed."""
+    t = FakeTransport(env="demo", queued=_full_demo_script())
+    result = run_smoke(_demo_settings(tmp_path), _factory(), NOW, sleep=lambda _s: None,
+                       writer_factory=_injecting(t))
+    step = next(s for s in result.steps if s.name == "get_order")
+    assert step.ok and step.detail == "price=0.0200 remaining=2.00 fill=0.00 status=resting"
+
+
+def test_the_amends_stale_confirming_read_costs_a_wait_and_not_the_run(tmp_path):
+    """The read model lags the amend by 0.3 to 0.9 s and answers 200 with the previous client
+    id (fix 28). Before the freshness check that stale body failed the echo check on price, so
+    the order was cancelled and the market frozen on a good amend."""
+    slept = []
+    t = FakeTransport(env="demo", queued=_full_demo_script())
+    result = run_smoke(_demo_settings(tmp_path), _factory(), NOW, sleep=lambda _s: None,
+                       writer_factory=_writer_factory_recording_sleeps(t, slept))
+    by_name = {s.name: s for s in result.steps}
+    assert by_name["amend"].ok and by_name["cancel_group"].ok
+    # The place's two 404s, then the amend's one stale 200. Each budget restarts per write.
+    assert slept == [0.25, 0.5, 0.25]
     assert result.exit_code() == 0
 
 

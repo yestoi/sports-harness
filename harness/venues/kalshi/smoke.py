@@ -240,14 +240,23 @@ def run_smoke(settings, session_factory, now, sleep=time.sleep, *,
         record("amend", f"prob={_num(amended.prob)} contracts={_num(amended.contracts)} "
                         f"status={_enum(amended.status)}")
 
-        # 7. Read it back, and check the venue agrees with its own echo.
+        # 7. Read it back, and check the venue agrees with its own echo. The size is the sum of
+        #    the two live counts, never `count` (fix 28): the single-order body carries no
+        #    `count` at all, and its `initial_count_fp` is the size at placement, which stays
+        #    at one contract after an amend to two.
         fetched = reader.get_order(placed.order_id)
-        if fetched.price != second or fetched.count != SMOKE_AMEND_CONTRACTS:
+        total = (None if fetched.fill_count is None or fetched.remaining_count is None
+                 else fetched.fill_count + fetched.remaining_count)
+        if fetched.price != second or total != SMOKE_AMEND_CONTRACTS:
             raise SmokeAborted(
-                _detail(f"get_order price={_num(fetched.price)} count={_num(fetched.count)} "
+                _detail(f"get_order price={_num(fetched.price)} "
+                        f"remaining={_num(fetched.remaining_count)} "
+                        f"fill={_num(fetched.fill_count)} "
                         f"expected {second}/{SMOKE_AMEND_CONTRACTS}"),
                 "get_order disagreed with the amend echo")
-        record("get_order", f"price={_num(fetched.price)} count={_num(fetched.count)} "
+        record("get_order", f"price={_num(fetched.price)} "
+                            f"remaining={_num(fetched.remaining_count)} "
+                            f"fill={_num(fetched.fill_count)} "
                             f"status={_enum(fetched.status)}")
 
         # 8. Cancel, then cancel the group.

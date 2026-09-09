@@ -310,6 +310,14 @@ def _decode_order(o: dict) -> OrderView:
     echo check's own. An order that carries only a NO price decodes to `price=None`, which the
     echo check treats as unconfirmed -- so the order is cancelled and the market frozen, which is
     the right answer to a price this decoder cannot place on the leg it compares against.
+
+    **`count` also reads `initial_count_fp`** (fix 28). The single-order read the demo venue
+    really answers with carries `initial_count_fp`, `remaining_count_fp` and `fill_count_fp` and
+    **no `count_fp` and no `count`** (measured 2026-09-09 13:25 UTC), so `count` came back None
+    on every real read. `initial_count_fp` is the size at *placement* and does not follow an
+    amend: the venue reported 1.00 there while `remaining_count_fp` had already moved to 2.00.
+    That is why it is read last of the three, and why the current total is `fill_count +
+    remaining_count`, which is what `_venue_order` puts in `VenueOrder.contracts`.
     """
     outcome_side, book_side = require_side(o)
     return OrderView(
@@ -319,7 +327,7 @@ def _decode_order(o: dict) -> OrderView:
         outcome_side=outcome_side,
         book_side=book_side,
         price=dec(_first_present(o, "yes_price_dollars", "price")),
-        count=dec(_first_present(o, "count_fp", "count")),
+        count=dec(_first_present(o, "count_fp", "initial_count_fp", "count")),
         remaining_count=dec(_first_present(o, "remaining_count_fp", "remaining_count")),
         fill_count=dec(_first_present(o, "fill_count_fp", "fill_count")),
         status=o.get("status"),
@@ -845,6 +853,20 @@ def _book_side_of(view: OrderView) -> str | None:
     return None
 
 
+def _is_stale(view: OrderView, expected_client_order_id: str | None) -> bool:
+    """Whether a confirming read predates the write it is meant to confirm (fix 28).
+
+    The venue assigns the client id on the write -- the intent's id for a create,
+    `updated_client_order_id` for an amend -- so a read carrying a different one is answering
+    out of a read model that has not caught up. `None` on either side is not staleness: with
+    nothing to compare there is nothing this can say, and calling that stale would earn a venue
+    that stopped sending the field four sleeps and a freeze on every single order.
+    """
+    return (expected_client_order_id is not None
+            and view.client_order_id is not None
+            and view.client_order_id != expected_client_order_id)
+
+
 def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal,
                  fill_count: Decimal | None, remaining_count: Decimal | None) -> VenueOrder:
     """An `OrderView` (the venue's own YES-leg shape) turned back into our side space.
@@ -858,14 +880,21 @@ def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal,
     `view` (fix 24): they are the venue's answer to the message we actually sent, and they are
     the pair the count arithmetic was checked against. `raw` is that same response body, for the
     same reason -- it is what the venue said when it accepted the order.
+
+    `contracts` is the sum of that same pair (fix 28). The read's own `count` is not the current
+    size: the single-order body carries no `count` at all, and its `initial_count_fp` is the
+    size at placement, which does not follow an amend. `view.count` remains the fallback for a
+    venue that sends neither count on the response.
     """
+    contracts = (fill_count + remaining_count
+                 if fill_count is not None and remaining_count is not None else view.count)
     return VenueOrder(
         order_id=view.order_id,
         client_order_id=view.client_order_id,
         ticker=view.ticker,
         side=side,
         prob=prob,
-        contracts=view.count,
+        contracts=contracts,
         remaining_count=remaining_count,
         fill_count=fill_count,
         status=view.status,
@@ -1007,7 +1036,8 @@ class KalshiWriter:
         result = self._transport.request("POST", ORDERS_PATH, json=body)
         _check_status(result, "POST", ORDERS_PATH)
         return self._checked_echo(result, intent.ticker, intent.exchange_index,
-                                  intent.side, own_prob, _as_decimal(intent.contracts))
+                                  intent.side, own_prob, _as_decimal(intent.contracts),
+                                  expected_client_order_id=intent.client_order_id)
 
     def amend(self, order_id, prob, contracts, client_order_id,
               updated_client_order_id, ticker, side, exchange_index, price_ranges) -> VenueOrder:
@@ -1017,6 +1047,10 @@ class KalshiWriter:
         An amend can raise the stake, so it re-runs section 5.2 on its own numbers, and it runs
         the same echo check -- a venue that amends to a price we did not send is the same
         failure as a venue that places one.
+
+        `updated_client_order_id` is the id the venue assigns to the amended order, so it is
+        also what the confirming read has to carry before its price and side mean anything
+        (fix 28).
         """
         self._pre_send(prob, contracts)
         book_side, yes_price, own_prob = snap_intent(side, prob, price_ranges)
@@ -1035,6 +1069,7 @@ class KalshiWriter:
         _check_status(result, "POST", path)
         return self._checked_echo(result, ticker, exchange_index, side, own_prob,
                                   _as_decimal(contracts),
+                                  expected_client_order_id=updated_client_order_id,
                                   known_order_id=str(order_id))
 
     def cancel(self, order_id: str, ticker: str, exchange_index: int) -> CancelResult:
@@ -1061,6 +1096,7 @@ class KalshiWriter:
 
     def _checked_echo(self, result, ticker: str, exchange_index: int, sent_side: str,
                       sent_prob: Decimal, sent_count: Decimal,
+                      expected_client_order_id: str | None,
                       known_order_id: str | None = None) -> VenueOrder:
         """The venue's answer to a create or an amend, checked in *our* side space.
 
@@ -1087,7 +1123,12 @@ class KalshiWriter:
         describe, and the freeze is what stops more of it being added. It is retried first, so a
         single transient failure does not cost a freeze: once immediately for an error that says
         nothing (`CONFIRM_READ_ATTEMPTS`), and on a backoff for a `404`, which says only that the
-        venue has not caught up with its own create yet (`CONFIRM_NOT_FOUND_BACKOFF_S`, fix 27).
+        venue has not caught up with its own create yet (`CONFIRM_NOT_FOUND_BACKOFF_S`, fix 27),
+        and on a read that answered 200 out of that same lagging read model (fix 28).
+
+        `expected_client_order_id` is the client id this write assigned -- the intent's id for a
+        create, `updated_client_order_id` for an amend. It is what tells a *stale* read from a
+        *wrong* one; see `_confirmed_order`.
 
         `known_order_id` is the id the caller already addressed -- an amend has one, a place does
         not. It is the cancel path's fallback when the response itself names no order (fix round
@@ -1100,7 +1141,7 @@ class KalshiWriter:
         field = _count_mismatch(created, sent_count)
         if field is None:
             view, side, prob, field = self._confirmed_order(
-                created.order_id, sent_side, sent_prob)
+                created.order_id, sent_side, sent_prob, expected_client_order_id)
         if field is None:
             return _venue_order(view, _payload(body), side, prob,
                                 created.fill_count, created.remaining_count)
@@ -1120,7 +1161,8 @@ class KalshiWriter:
                            freeze_minutes=ECHO_FREEZE_MINUTES, field=field,
                            cancel_error=cancel_error)
 
-    def _confirmed_order(self, order_id, sent_side: str, sent_prob: Decimal):
+    def _confirmed_order(self, order_id, sent_side: str, sent_prob: Decimal,
+                         expected_client_order_id: str | None):
         """`GET /portfolio/orders/{id}` -- the only place the accepted side and price can be
         read, now that the create/amend response is known to carry neither (fix 24).
 
@@ -1151,13 +1193,31 @@ class KalshiWriter:
 
         A read that arrived and would not *decode* is not retried. The payload is the payload,
         and asking the same question again spends a request to be told the same thing.
+
+        **A read that arrived and is stale is retried too** (fix 28). After an amend the row
+        already exists, so the same read-after-write lag answers 200 with the *previous* order
+        rather than 404 -- measured twice on the demo venue, 2026-09-09 13:23 and 13:25 UTC: the
+        confirming read carried the original client id, the old price and the old count for
+        another 0.3 to 0.9 s, and the echo check cancelled a perfectly good amend on the price.
+        Price and count cannot tell "stale" from "wrong", but the client id can: the venue
+        assigns `expected_client_order_id` on the write itself, so a read still showing another
+        one has not seen the write. Those reads share the 404 budget -- four in all, whichever
+        mix -- because both are the same lag and the ceiling is on the cycle, not on the cause.
+
+        The amend response's own `client_order_id` is deliberately not the expectation: the
+        Kalshi changelog (2026-05-21) says V2 amend and cancel responses may carry incorrect
+        order details even where the operation executed correctly. The expectation is the id we
+        sent. A read whose `client_order_id` is None is taken as fresh, so a venue that stops
+        sending the field does not cost four sleeps and a freeze on every order.
+
+        A *fresh* read is compared exactly once. A flipped side or a wrong price in a read that
+        has seen the write is the venue's final answer, and retrying it only delays the cancel.
         """
         view = None
         attempts = 0
         while True:
             try:
                 view = self._reader.get_order(order_id)
-                break
             except KalshiDecodeError as exc:
                 return None, None, None, f"the confirming read ({type(exc).__name__})"
             except Exception as exc:
@@ -1170,6 +1230,13 @@ class KalshiWriter:
                     continue
                 if attempts >= CONFIRM_READ_ATTEMPTS:
                     return None, None, None, f"the confirming read ({type(exc).__name__})"
+                continue
+            if not _is_stale(view, expected_client_order_id):
+                break
+            attempts += 1
+            if attempts > len(CONFIRM_NOT_FOUND_BACKOFF_S):
+                return view, None, None, f"the confirming read (stale after {attempts} attempts)"
+            self._sleep(CONFIRM_NOT_FOUND_BACKOFF_S[attempts - 1])
         book_side = _book_side_of(view)
         if view.price is None:
             return view, None, None, "the confirmed price"
