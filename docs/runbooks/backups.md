@@ -88,6 +88,17 @@ Two halves, both recorded in `backup_runs` with `kind = 'drill'`.
    The printed sha256 must equal that unit's `backup_runs.plaintext_sha256`. Record it:
    `harness backup-drill-record --build-sha <sha> --decrypt-ok --plaintext-sha256 <sha256> --rows-match`
 
+   `backup-drill-record` writes to the harness database, which lives on the NAS, and
+   `docker-compose.yml` publishes no host port for `postgres` — pointing at `127.0.0.1:5432` on
+   the NAS host reaches nothing, so the tunnel has to target the container itself. Open one in
+   another shell: `ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose exec -T postgres
+   hostname -i'` to read the container's address, then
+   `ssh -N -L 5432:<that address>:5432 $NAS_USER@$NAS_IP`. With the tunnel open, run the record
+   command as `DATABASE_URL=postgresql+psycopg://harness:harness@127.0.0.1:5432/harness harness
+   backup-drill-record ...`. The row must land in the NAS database or the release rule
+   (`backup-encrypt`'s plaintext deletion) never sees it — a drill recorded against a local
+   database is a drill that never happened as far as retention is concerned.
+
 Only after a `drill` row with `decrypt_ok = true` for the same build sha exists does
 `backup-encrypt` delete that build's plaintexts. Until then they stay, bounded by retention.
 

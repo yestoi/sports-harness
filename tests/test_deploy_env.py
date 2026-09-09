@@ -34,6 +34,12 @@ def test_paper_posture_is_asserted_positively():
     assert "HARNESS_MODE=paper" in text
 
 
+def test_kalshi_env_posture_is_committed():
+    """I3: `KALSHI_ENV=prod` is informational -- writes stay dormant regardless -- but the
+    posture file is the audited artifact, so it states it explicitly like the other two."""
+    assert "KALSHI_ENV=prod" in NAS_ENV.read_text()
+
+
 def test_app_uid_is_the_nas_login_user():
     """F54: the containers run as uid 1000 so the 0600 secret files are readable without chown.
     The runbook's rollback and secret steps depend on this staying true."""
