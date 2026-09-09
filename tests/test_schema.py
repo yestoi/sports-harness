@@ -429,10 +429,15 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # 4 indexes (ix_venue_requests_ts, and Task 11 fix round 1's ix_equity_variant_ts) = 62 + 8
     # + 1 (fix 25 round 1: ix_odds_fetched_book, the odds-staleness covering index, run
     # CONCURRENTLY from _CONCURRENT_INDEX_DDL per F65 -- it still matches the "create index"
-    # prefix filter above, so it counts here the same as a plain one) = 71.
+    # prefix filter above, so it counts here the same as a plain one) = 71
+    # + 1 (phase 4.5 T5: ix_orders_key_placed, the second _CONCURRENT_INDEX_DDL entry, which the
+    # corrected `intents_without_order_or_skip` check rides) = 72.
+    # Phase 4.5's two model indexes (ix_parlay_cards_week, ix_parlay_legs_card_seq) do not add to
+    # this count: `_model_index_ddl` builds them with `checkfirst=True`, and the db_session
+    # fixture has already run create_schema once, so the second run emits nothing for them.
     # The three views are unchanged in number: Task 11 widened the `positions` view's fill-method
     # filter in place, which is one `create or replace view` as it always was.
-    assert len(ddl) == 71, [s for s, _, _ in ddl]
+    assert len(ddl) == 72, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.

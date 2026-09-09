@@ -206,6 +206,16 @@ _CONCURRENT_INDEX_DDL = (
     # the next init-db.
     "create index concurrently if not exists ix_odds_fetched_book "
     "on odds_snapshots (fetched_at, book, book_last_update)",
+    # Phase 4.5 (addendum §0.4a): the corrected `intents_without_order_or_skip` (T1) asks, per
+    # candidate intent, whether an order was working on its (variant_id, venue_market_id, side)
+    # key at the intent's own created_at. `orders` carries no index on that triple and none on
+    # any time column, so without this the added clause is a correlated sequential scan and the
+    # check degrades to a daily `skip`. CONCURRENTLY because `orders` takes writes on the
+    # executor's 15 s loop and init-db runs on every deploy; the connection is already
+    # AUTOCOMMIT, which is what CONCURRENTLY requires. `migrations/versions/0002_phase45.py`
+    # mirrors it, and the two must land together or the catalogue diff fails.
+    "create index concurrently if not exists ix_orders_key_placed "
+    "on orders (variant_id, venue_market_id, side, placed_at)",
 )
 
 #: Open contracts and their average price per variant, from the fills of live orders that have

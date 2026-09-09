@@ -228,7 +228,7 @@ def test_the_baseline_creates_partitioned_parents_only(two_databases):
 # --- the three ensure branches (A-I11) ------------------------------------------------------
 
 def test_ensure_stamps_a_populated_pre_alembic_database(scratch_db):
-    from harness.db.migrate import current_revision, ensure
+    from harness.db.migrate import HEAD_REVISION, current_revision, ensure
 
     create_schema(scratch_db)                    # `runs` exists, no alembic_version
     with scratch_db.begin() as conn:
@@ -236,18 +236,18 @@ def test_ensure_stamps_a_populated_pre_alembic_database(scratch_db):
             "insert into runs (started_at, status, n_requests, credits_used, "
             "budget_exhausted, notes) values (now(), 'ok', 0, 0, false, '{}'::jsonb)"))
     assert ensure(_url(scratch_db)) == "stamped"
-    assert current_revision(_url(scratch_db)) == "0001_baseline"
-    # The baseline was never executed against it: no duplicate-object error above, and the
+    assert current_revision(_url(scratch_db)) == HEAD_REVISION
+    # Neither migration was executed against it: no duplicate-object error above, and the
     # pre-existing row is untouched.
     with scratch_db.connect() as conn:
         assert conn.execute(text("select count(*) from runs")).scalar() == 1
 
 
 def test_ensure_upgrades_an_empty_database(scratch_db):
-    from harness.db.migrate import current_revision, ensure
+    from harness.db.migrate import HEAD_REVISION, current_revision, ensure
 
     assert ensure(_url(scratch_db)) == "upgraded"
-    assert current_revision(_url(scratch_db)) == "0001_baseline"
+    assert current_revision(_url(scratch_db)) == HEAD_REVISION
     with scratch_db.connect() as conn:
         assert conn.execute(text(
             "select 1 from pg_tables where tablename = 'orders'")).first()
@@ -261,13 +261,13 @@ def test_ensure_is_a_no_op_at_head(scratch_db):
 
 
 def test_ensure_is_idempotent_across_all_three_paths(scratch_db):
-    from harness.db.migrate import current_revision, ensure
+    from harness.db.migrate import HEAD_REVISION, current_revision, ensure
 
     create_schema(scratch_db)
     assert ensure(_url(scratch_db)) == "stamped"
     assert ensure(_url(scratch_db)) == "current"
     assert ensure(_url(scratch_db)) == "current"
-    assert current_revision(_url(scratch_db)) == "0001_baseline"
+    assert current_revision(_url(scratch_db)) == HEAD_REVISION
 
 
 def test_current_revision_is_none_before_anything_ran(scratch_db):
@@ -277,10 +277,10 @@ def test_current_revision_is_none_before_anything_ran(scratch_db):
 
 
 def test_stamp_head_records_the_revision_without_building_the_schema(scratch_db):
-    from harness.db.migrate import current_revision, stamp_head
+    from harness.db.migrate import HEAD_REVISION, current_revision, stamp_head
 
     stamp_head(_url(scratch_db))
-    assert current_revision(_url(scratch_db)) == "0001_baseline"
+    assert current_revision(_url(scratch_db)) == HEAD_REVISION
     with scratch_db.connect() as conn:
         assert conn.execute(text(
             "select 1 from pg_tables where tablename = 'orders'")).first() is None
@@ -303,8 +303,8 @@ def test_no_migration_creates_a_bulk_index_outside_concurrent_index(path):
             assert table not in match.group(1), f"{path.name}: {table} outside concurrent_index"
 
 
-def test_there_is_exactly_one_migration_and_it_is_the_baseline():
-    assert [p.name for p in VERSIONS] == ["0001_baseline.py"]
+def test_the_versions_directory_holds_the_baseline_and_phase45():
+    assert [p.name for p in VERSIONS] == ["0001_baseline.py", "0002_phase45.py"]
 
 
 def _load_baseline():
@@ -439,12 +439,12 @@ def cli_runner(monkeypatch, scratch_db):
 
 
 def test_migrate_current_prints_the_revision(cli_runner, scratch_db):
-    from harness.db.migrate import ensure
+    from harness.db.migrate import HEAD_REVISION, ensure
 
     ensure(_url(scratch_db))
     result = cli_runner.invoke(app, ["migrate", "current"])
     assert result.exit_code == 0, result.output
-    assert "0001_baseline" in result.output
+    assert HEAD_REVISION in result.output
 
 
 def test_migrate_current_prints_none_on_an_unstamped_database(cli_runner):
@@ -466,3 +466,79 @@ def test_migrate_upgrade_and_stamp_are_commands(cli_runner, scratch_db):
         assert conn.execute(text(
             "select 1 from pg_tables where tablename = 'orders'")).first()
     assert cli_runner.invoke(app, ["migrate", "stamp"]).exit_code == 0
+
+
+# --- phase 4.5: revision 0002 ---------------------------------------------------------------
+
+def _load_revision(filename: str):
+    path = ROOT / "migrations" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(f"rev_{filename[:-3]}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_phase45_follows_the_baseline_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0002_phase45.py")
+    assert module.revision == "0002_phase45"
+    assert module.down_revision == "0001_baseline"
+    assert HEAD_REVISION == "0002_phase45"
+
+
+def test_the_phase45_downgrade_is_a_no_op_and_drops_nothing():
+    """Conformance item 4: the audit grep for non-additive statements must stay empty, so the
+    downgrade is `pass`. The loop never drops; a downgrade is the user's hand action."""
+    module = _load_revision("0002_phase45.py")
+    assert module.downgrade() is None
+    body = (ROOT / "migrations" / "versions" / "0002_phase45.py").read_text().lower()
+    for word in ("drop ", "truncate", "delete from"):
+        assert word not in body, f"0002_phase45 contains {word!r}"
+
+
+def test_ensure_raises_on_a_database_stamped_ahead_of_the_script_directory(scratch_db):
+    """The rollback constraint of §8, as behaviour. `ensure`'s `current` branch calls
+    `upgrade_head` unconditionally, so a database recording a revision this checkout does not
+    carry aborts the deploy rather than no-opping. That is why a rollback goes through
+    `make deploy-nas-app`, which never runs `ensure`, and why a later *full* deploy on a
+    rolled-back sha needs a hand `alembic stamp 0001_baseline` first."""
+    from harness.db.migrate import ensure, upgrade_head
+
+    url = _url(scratch_db)
+    upgrade_head(url)
+    with scratch_db.begin() as conn:
+        conn.execute(text("update alembic_version set version_num = '0003_from_the_future'"))
+
+    with pytest.raises(Exception) as caught:
+        ensure(url)
+    assert "0003_from_the_future" in str(caught.value)
+
+
+def test_the_phase45_tables_are_present_after_both_paths(two_databases):
+    """The five parlay tables and dashboard_snapshots exist whichever way the database was
+    built, which is what makes a mid-phase app-only deploy safe: create_schema is the schema
+    authority and init-db is idempotent."""
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    expected = {"dashboard_snapshots", "parlay_cards", "parlay_legs", "parlay_placements",
+                "parlay_ledger", "parlay_leg_probs"}
+    for engine in (a, b):
+        names = set(inspect(engine).get_table_names())
+        assert expected <= names
+
+
+def test_the_orders_key_index_is_in_both_catalogues(two_databases):
+    """Step 5 adds it to `create_schema` and Step 6 to this revision, in this one task: the
+    catalogue diff fails if either half lands without the other."""
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        indexes = {i["name"] for i in inspect(engine).get_indexes("orders")}
+        assert "ix_orders_key_placed" in indexes

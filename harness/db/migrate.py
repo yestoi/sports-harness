@@ -20,9 +20,16 @@ from sqlalchemy import create_engine, text
 
 log = logging.getLogger(__name__)
 
-#: The one revision this phase ships. `ensure` stamps or upgrades to it by name so a typo in the
-#: script directory fails loudly instead of silently stamping nothing.
-HEAD_REVISION = "0001_baseline"
+#: The revision this checkout carries. `ensure` stamps or upgrades to it **by name**, so a typo
+#: in the script directory fails loudly instead of silently stamping nothing -- and so a
+#: revision that is not named here is never applied, which is why adding a file is not enough.
+#:
+#: Phase 4.5 bumps it from "0001_baseline". Two consequences the runbook states and a test pins:
+#: only the full `make deploy-nas` runs `migrate ensure`, so a mid-phase app-only deploy leaves
+#: the stamp at the baseline while `create_schema` still creates the new tables; and a database
+#: stamped at 0002 with a checkout that has only 0001 aborts at `ensure`, because its `current`
+#: branch calls `upgrade_head` unconditionally.
+HEAD_REVISION = "0002_phase45"
 
 #: Where the migrations live inside the image. The Dockerfile's `COPY migrations ./migrations`
 #: puts them here; the checkout path below is what the test suite and a developer use.
@@ -54,12 +61,12 @@ def alembic_config(url: str) -> Config:
 
 
 def upgrade_head(url: str) -> None:
-    """Bring an empty or partially migrated database up to the baseline."""
+    """Bring a database up to the pinned head revision."""
     command.upgrade(alembic_config(url), HEAD_REVISION)
 
 
 def stamp_head(url: str) -> None:
-    """Record the baseline as applied without executing it."""
+    """Record the pinned head as applied without executing it."""
     command.stamp(alembic_config(url), HEAD_REVISION)
 
 

@@ -288,3 +288,15 @@ def test_duplicate_trades_falls_back_to_the_parent_table_when_the_partition_is_m
     assert result.status == "pass"
     assert result.detail is None
     assert float(result.value) == 0.0
+
+
+def test_the_orders_key_index_is_built_concurrently(db_session):
+    from sqlalchemy import text
+
+    from harness.db.schema import _CONCURRENT_INDEX_DDL
+
+    ddl = " ".join(_CONCURRENT_INDEX_DDL).lower()
+    assert "create index concurrently if not exists ix_orders_key_placed" in ddl
+    present = db_session.execute(text(
+        "select 1 from pg_indexes where indexname = 'ix_orders_key_placed'")).first()
+    assert present is not None, "create_schema did not build ix_orders_key_placed"

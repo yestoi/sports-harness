@@ -891,3 +891,111 @@ class BackupRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     notes: Mapped[dict | None] = mapped_column(JSONB)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.5: the dashboard snapshot table (spec §3.8) and the parlay tables (spec §3.9).
+#
+# `dashboard_snapshots` is the whole point of the surface design: a request handler reads one
+# row of it by primary key and never reaches another table, so "no page view runs a query"
+# (spec §0.3) is structural rather than a habit.
+#
+# The five parlay tables are created here and stay empty until phase 5c writes them. The Ticket
+# surface renders the between-cards state now and is tested against fixture cards, so the
+# writers land into a finished, guarded surface rather than one built around them.
+# ---------------------------------------------------------------------------
+
+
+class DashboardSnapshot(Base):
+    """One surface's pre-aggregated payload. `name` is a builder name (`pulse`, `floor`,
+    `gate`, `ticket`) or `study:<year>-<week>`; `error` carries an exception **class name**,
+    never `str(exc)`, whose text could hold SQL or row content, and a build that errors leaves
+    the previous `payload` in place."""
+    __tablename__ = "dashboard_snapshots"
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    elapsed_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    error: Mapped[str | None] = mapped_column(String(80))
+
+
+class ParlayCard(Base):
+    """One week's fun-money parlay slip. Real money, $50 a week, placed by hand at DraftKings:
+    this is the one table family in the harness that is not paper. `rationale` is F50-sanitized
+    at write (phase 5c) and again on the way into a payload."""
+    __tablename__ = "parlay_cards"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    week: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    sport: Mapped[str] = mapped_column(String(5), nullable=False)          # nfl|ncaaf
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)          # smart|lottery
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stake: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    dk_payout_est: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    true_prob_est: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    hold_est: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    rationale: Mapped[str | None] = mapped_column(String(600))
+    anchor_leg_id: Mapped[int | None] = mapped_column(Integer)
+    #: proposed|placed|alive|cashed|busted|void
+    status: Mapped[str] = mapped_column(String(8), nullable=False)
+    correlated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    __table_args__ = (Index("ix_parlay_cards_week", "year", "week"),)
+
+
+class ParlayLeg(Base):
+    """One leg of a card. `plain_text` is the fan-facing description ("LSU to win"); it is
+    written by phase 5c and sanitized on the way into a payload, because the surface ships
+    before the writer does and is the only guard until then."""
+    __tablename__ = "parlay_legs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    card_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    game_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    market_type: Mapped[str] = mapped_column(String(6), nullable=False)   # ml|spread|total
+    side_team_id: Mapped[int | None] = mapped_column(Integer)
+    side: Mapped[str | None] = mapped_column(String(5))                   # over|under
+    threshold: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
+    dk_american: Mapped[int] = mapped_column(Integer, nullable=False)
+    dk_decimal: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    plain_text: Mapped[str] = mapped_column(String(80), nullable=False)
+    odds_snapshot_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: pending|alive|hit|miss|void
+    status: Mapped[str] = mapped_column(String(8), nullable=False)
+    graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (Index("ix_parlay_legs_card_seq", "card_id", "seq"),)
+
+
+class ParlayPlacement(Base):
+    """The hand placement, confirmed through `harness parlay placed` (phase 5c). A card with no
+    row here is shown as "not placed" and never enters the ledger."""
+    __tablename__ = "parlay_placements"
+    card_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stake_actual: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    dk_payout_actual: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    dk_odds_actual: Mapped[int | None] = mapped_column(Integer)
+    note: Mapped[str | None] = mapped_column(String(200))
+
+
+class ParlayLedger(Base):
+    """Fun-money cash movements: the stake on placement, the return on `cashed`, the stake back
+    on `void`."""
+    __tablename__ = "parlay_ledger"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    card_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(6), nullable=False)          # stake|return|void
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    week: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+
+
+class ParlayLegProb(Base):
+    """"Sharps say NN %" per leg, once per recorder tick while a card is placed or alive and
+    its game is inside the in-progress window (phase 5c writes it). `book_p` is DraftKings' own
+    live implied probability when the feed carries one."""
+    __tablename__ = "parlay_leg_probs"
+    leg_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    sharp_p: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+    book_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
