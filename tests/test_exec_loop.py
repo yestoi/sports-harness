@@ -8,13 +8,14 @@ than wall time, and one step is one commit.
 
 import os
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 import yaml
-from sqlalchemy import func, text
+from sqlalchemy import event, func, text
 from sqlalchemy.orm import sessionmaker
 from typer.testing import CliRunner
 
@@ -174,7 +175,7 @@ def fills_of(session, order_id=None, method=None):
 
 
 def test_executor_version_is_bumped_for_the_loop():
-    assert EXECUTOR_VERSION == "4.2"
+    assert EXECUTOR_VERSION == "4.3"
 
 
 # --- the gateway seam -----------------------------------------------------------------
@@ -917,6 +918,212 @@ def test_a_fresh_executor_resumes_from_the_persisted_cursor(env_settings, db_ses
     # 40 resting, 10 cancelled by the delta, 60 printed: 30 clears the queue, 30 is ours.
     assert order.queue_remaining == Decimal("0.00")
     assert order.filled_contracts == Decimal("30.00")
+
+
+# --- fix 22: the delta read ------------------------------------------------------------
+
+
+@contextmanager
+def capture_sql(session):
+    """Every statement the engine actually sends, for the length of the block."""
+    seen: list[str] = []
+    engine = session.get_bind()
+
+    def hook(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement)
+
+    event.listen(engine, "before_cursor_execute", hook)
+    try:
+        yield seen
+    finally:
+        event.remove(engine, "before_cursor_execute", hook)
+
+
+def _delta_where(seen: list[str]) -> str:
+    """The `where` clause of the one `orderbook_events` delta read in `seen`."""
+    reads = [q for q in seen if "orderbook_events" in q and "'delta'" in q]
+    assert len(reads) == 1, reads
+    body = reads[0].lower()
+    return body.split("where", 1)[1].split("order by", 1)[0]
+
+
+def test_the_live_delta_read_drops_the_ts_bound_once_a_cursor_exists(env_settings, db_session,
+                                                                     world):
+    """Fix 22. `id` is monotone, so past a cursor the `ts` bound selects nothing extra -- and on
+    the production tape it cost a BitmapAnd against a 1.67M-row index every loop, per ticker."""
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    lower = NOW - timedelta(hours=9)
+
+    with capture_sql(db_session) as seen:
+        store.load_deltas(db_session, T2, 0, lower)
+    first = _delta_where(seen)
+    assert "ts >=" in first
+    assert "limit" in seen[-1].lower()
+
+    with capture_sql(db_session) as seen:
+        store.load_deltas(db_session, T2, 1234, lower)
+    live = _delta_where(seen)
+    assert "ts" not in live
+    assert "id >" in live
+    assert "limit" in seen[-1].lower()
+
+    # The replay path is untouched: both `ts` bounds, ordered by (ts, id), no limit.
+    with capture_sql(db_session) as seen:
+        store.load_deltas(db_session, T2, 1234, lower, at=NOW)
+    replay = _delta_where(seen)
+    assert "ts >=" in replay and "ts <=" in replay
+    assert "order by ts, id" in seen[-1].lower()
+    assert "limit" not in seen[-1].lower()
+
+
+def test_a_partial_delta_batch_advances_the_cursor_and_the_next_loop_continues(
+        env_settings, db_session, world, monkeypatch):
+    """A backlog is walked over several bounded loops, each starting where the last stopped.
+
+    Before fix 22 the read was unbounded, so a ticker far enough behind produced one statement
+    that ran past the 30 s timeout, died, advanced nothing, and left the next loop the identical
+    read to fail on.
+    """
+    monkeypatch.setattr(store, "DELTA_BATCH_LIMIT", 2)
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert orders_of(db_session)[0].queue_remaining == Decimal("40.00")
+
+    backlog = [_delta(db_session, T2, NOW + timedelta(seconds=n), "yes", "0.35", "-5.00",
+                      seq=1 + n) for n in range(1, 6)]
+    db_session.commit()
+
+    clock.advance(15)
+    stats = executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    # Two of the five, and the cursor sits on the last row consumed -- not on the tape's head.
+    assert order.tape_cursor_event_id == backlog[1].id
+    assert order.nw_tape_cursor_event_id == backlog[1].id
+    assert order.queue_remaining == Decimal("30.00")
+    # A truncated read is the executor running behind the tape, and the heartbeat says so.
+    assert "tape_lag" in stats.last_error
+    assert T2 in stats.last_error
+    heartbeat = db_session.execute(text("select last_error from exec_heartbeat")).scalar()
+    assert "tape_lag" in heartbeat
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.tape_cursor_event_id == backlog[3].id
+    assert order.queue_remaining == Decimal("20.00")
+
+    clock.advance(15)
+    stats = executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.tape_cursor_event_id == backlog[4].id
+    assert order.queue_remaining == Decimal("15.00")
+
+
+def test_a_failed_tape_read_costs_one_ticker_and_keeps_every_other_cursor(
+        env_settings, db_session, world, monkeypatch):
+    """Fix 22: the statement timeout we actually saw. It must not roll the step back."""
+    keep_only(db_session, {VM2, VM3})
+    signal3 = db_session.query(Signal).filter_by(venue_market_id=VM3).one()
+    signal3.decision, signal3.rejection_reason = "candidate", None
+    _book2(db_session, NOW - timedelta(seconds=5))
+    _book3(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert len(db_session.query(Order).all()) == 2
+    before = orders_of(db_session, T3)[0].tape_cursor_event_id
+
+    real = store.load_deltas
+
+    def explode(session, ticker, *args, **kwargs):
+        if ticker == T3:
+            raise RuntimeError("canceling statement due to statement timeout")
+        return real(session, ticker, *args, **kwargs)
+
+    monkeypatch.setattr(store, "load_deltas", explode)
+    moved = _delta(db_session, T2, clock.now + timedelta(seconds=2), "yes", "0.35", "-40.00",
+                   seq=2)
+    _print(db_session, T3, clock.now + timedelta(seconds=5), "0.40", "500", trade_id="p3-lost")
+    db_session.commit()
+
+    clock.advance(15)
+    stats = executor.step()
+    refresh(db_session)
+
+    assert stats.errors >= 1
+    # T2 read, simulated and committed its cursor in the same step T3's read failed.
+    t2 = orders_of(db_session, T2)[0]
+    assert t2.tape_cursor_event_id == moved.id
+    assert t2.queue_remaining == Decimal("0.00")
+    # T3 sat the loop out entirely: no fills off a tape we could not read, cursor untouched.
+    t3 = orders_of(db_session, T3)[0]
+    assert t3.tape_cursor_event_id == before
+    assert fills_of(db_session, t3.id) == []
+    heartbeat = db_session.execute(text("select loops, last_error from exec_heartbeat")).one()
+    assert heartbeat.loops == 2
+    assert "statement timeout" in heartbeat.last_error
+
+    # The next loop reads it fine and the print it missed is still there to be consumed.
+    monkeypatch.setattr(store, "load_deltas", real)
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert orders_of(db_session, T3)[0].filled_contracts == SIZE3
+
+
+def test_a_finished_track_cursor_does_not_drag_the_ticker_scan_back(env_settings, db_session,
+                                                                    world):
+    """Fix 22: the read starts at the earliest cursor a track will actually consume from.
+
+    A cancelled order's watched cursor is frozen where that track stopped. Folding it into the
+    per-ticker minimum would re-read the whole window behind it on every loop for as long as the
+    order's no-watcher counterfactual runs -- up to `intent_ttl_s` of tape, every 15 s.
+    """
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    frozen = order.tape_cursor_event_id
+
+    # Cancel the watched track by hand; the no-watcher track runs on.
+    db_session.query(Order).filter_by(id=order.id).update({"status": "cancelled"})
+    db_session.commit()
+
+    later = _delta(db_session, T2, clock.now + timedelta(seconds=2), "yes", "0.35", "-40.00",
+                   seq=2)
+    db_session.commit()
+    clock.advance(15)
+
+    working = store.working_orders(db_session, False)
+    with capture_sql(db_session) as seen:
+        executor._tape(db_session, working, clock.now,
+                       {"last_error": None, "tape_lag": []})
+    where = _delta_where(seen)
+    assert "ts" not in where
+    reads = [q for q in seen if "orderbook_events" in q and "'delta'" in q]
+    assert reads, seen
+    refresh(db_session)
+
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.status == "cancelled"
+    assert order.tape_cursor_event_id == frozen
+    assert order.nw_tape_cursor_event_id == later.id
 
 
 def test_gap_and_resubscribe_inside_one_period_re_anchor_the_queue(env_settings, db_session, world):

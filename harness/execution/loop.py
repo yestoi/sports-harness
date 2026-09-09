@@ -257,7 +257,8 @@ class Executor:
         started = self._monotonic()
         now = self._clock()
         skipped_loops = self._loops_skipped(started)
-        heartbeat = {"ws_last_event_at": None, "book_dirty_markets": 0, "last_error": None}
+        heartbeat = {"ws_last_event_at": None, "book_dirty_markets": 0, "last_error": None,
+                     "tape_lag": []}
         stats = ExecStats()
         session = Session(bind=conn)
         try:
@@ -265,7 +266,7 @@ class Executor:
                 self._body(session, now, stats, heartbeat, skipped_loops)
                 # A step that survived one order's failure still committed, but a green
                 # heartbeat over a hundred swallowed failures would be a lie.
-                error = heartbeat["last_error"]
+                error = _with_tape_lag(heartbeat["last_error"], heartbeat["tape_lag"])
             except Exception as exc:  # noqa: BLE001 - the loop must survive any one step
                 session.rollback()
                 stats = ExecStats(errors=1)
@@ -522,10 +523,18 @@ class Executor:
         """
         if not uses_the_simulator(self.gateway):
             return self._venue_fills(session, working, now, stats, heartbeat)
-        tape = self._tape(session, working, now)
+        tape, unread = self._tape(session, working, now, heartbeat)
+        stats.errors += len(unread)
         outcomes: dict[int, tuple[str, Decimal]] = {}
         for row in working:
             outcomes[row.id] = (row.status, row.filled_contracts)
+            if row.ticker in unread:
+                # This ticker's tape read failed (fix 22: a statement timeout is the one we have
+                # actually seen). Simulating its orders against an empty tape would move their
+                # print watermarks and their cross flags on evidence we do not have, so the
+                # whole ticker sits this loop out with its cursors where they are. Every other
+                # ticker in this loop keeps its progress.
+                continue
             try:
                 with session.begin_nested():
                     outcomes[row.id] = self._simulate_order(session, row, markets, bases,
@@ -633,30 +642,67 @@ class Executor:
         store.update_order(session, row.id, {"filled_contracts": filled, "status": status})
         return status, filled
 
-    def _tape(self, session: Session, working, now: datetime) -> dict[str, tuple[list, list]]:
+    def _tape(self, session: Session, working, now: datetime,
+              heartbeat: dict) -> tuple[dict[str, tuple[list, list]], set[str]]:
         """One print scan and one delta scan per ticker, shared by every order on it.
 
         Prints have no cursor (§1) and are rescanned from `placed_at - 60 s` every loop; the
         simulator's print watermark is what makes the re-feed idempotent. Deltas keep the id
-        cursor, so the scan starts at the earliest cursor any track on the ticker still holds.
-        Both scans stop at `_at(now)` in replay: `simulate_fills` already refuses to walk past
-        its deadline, but `has_print` reads the whole print list.
+        cursor, so the scan starts at the earliest cursor any track on the ticker *is still
+        going to read* -- the watched cursor of a cancelled order and the no-watcher cursor of
+        a finished counterfactual are both frozen where that track stopped, and folding them in
+        would drag the ticker's scan back to a position no live track will ever consume from
+        (fix 22). Both scans stop at `_at(now)` in replay: `simulate_fills` already refuses to
+        walk past its deadline, but `has_print` reads the whole print list.
+
+        Returns the tape and the set of tickers whose read failed. Each ticker is read inside
+        its own savepoint, so one ticker's statement timeout rolls back to the savepoint and
+        leaves this transaction -- and every cursor already advanced in this loop -- intact.
         """
         windows: dict[str, tuple[datetime, int | None]] = {}
         for row in working:
             lower, cursor = windows.get(row.ticker, (row.placed_at, None))
             lower = min(lower, row.placed_at)
-            for value in (row.tape_cursor_event_id, row.nw_tape_cursor_event_id):
+            live = []
+            if row.status in store.OPEN_STATUSES:
+                live.append(row.tape_cursor_event_id)
+            if not row.nw_done:
+                live.append(row.nw_tape_cursor_event_id)
+            for value in live:
                 if value is not None:
                     cursor = value if cursor is None else min(cursor, value)
             windows[row.ticker] = (lower, cursor)
-        out = {}
+        out: dict[str, tuple[list, list]] = {}
+        unread: set[str] = set()
+        lagging: list[str] = []
         at = self._at(now)
         for ticker, (placed_at, cursor) in windows.items():
             lower = placed_at - store.PRINT_LOOKBACK
-            out[ticker] = (store.load_prints(session, ticker, lower, at),
-                           store.load_deltas(session, ticker, cursor or 0, lower, at))
-        return out
+            try:
+                with session.begin_nested():
+                    prints = store.load_prints(session, ticker, lower, at)
+                    batch = store.load_deltas(session, ticker, cursor or 0, lower, at)
+            except Exception as exc:  # noqa: BLE001 - one ticker, not the step
+                log.exception("tape read failed for %s", ticker)
+                unread.add(ticker)
+                _note_error(heartbeat, f"tape {ticker}: {type(exc).__name__}: {exc}")
+                continue
+            deltas = batch.deltas
+            if batch.truncated and deltas:
+                # The read stopped at its limit, so this ticker's tape has more behind it than
+                # this loop asked for and the last row we hold is a position, not the head.
+                # Prints past that position are dropped rather than fed early: a print applied
+                # ahead of the deltas that belong with it is applied against the wrong queue,
+                # and the simulator's watermark would then refuse to reconsider it. Nothing is
+                # lost -- prints carry no cursor and the next loop rescans the same window,
+                # by which time the deltas have caught up.
+                covered = deltas[-1].ts
+                prints = [p for p in prints if p.ts <= covered]
+                lagging.append(ticker)
+            out[ticker] = (prints, deltas)
+        if lagging:
+            heartbeat["tape_lag"] = sorted(lagging)
+        return out, unread
 
     def _simulate_order(self, session: Session, row, markets, bases, recovering, tape,
                         now: datetime, stats: ExecStats) -> tuple[str, Decimal]:
@@ -1097,6 +1143,22 @@ def _note_error(heartbeat: dict, message: str) -> None:
     """Keep the first failure of the step; a later one rarely explains more than the first."""
     if heartbeat["last_error"] is None:
         heartbeat["last_error"] = message[:2000]
+
+
+def _with_tape_lag(error: str | None, lagging: list[str]) -> str | None:
+    """Append the loop's tape lag to whatever it is already reporting.
+
+    A truncated delta read means the executor is behind that ticker's tape and its books are
+    only current to the last row it consumed (fix 22). That is not a failure -- the loop is
+    catching up by design and will close the gap over the next few loops -- so it neither
+    raises nor displaces a real error, but a heartbeat that said nothing about it would let the
+    executor run minutes behind the tape looking perfectly healthy. It is appended rather than
+    written through `_note_error`, which keeps only the first message of a step.
+    """
+    if not lagging:
+        return error
+    note = f"tape_lag: {len(lagging)} ticker(s) behind ({','.join(lagging[:5])})"
+    return note[:2000] if error is None else f"{error}; {note}"[:2000]
 
 
 def _state_of(row, prefix: str) -> SimState:

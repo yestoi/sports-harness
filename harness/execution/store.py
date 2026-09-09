@@ -7,10 +7,13 @@ Two rules shape this module and both come from the addendum:
   insert, so the returned row -- not the row count -- is what says whether anything was
   written, and only a returned row moves a counter or a running total. A step that dies
   half-way and is retried therefore writes each row exactly once.
-* **Tape access.** The live path reads deltas by `id` (`id > cursor and ts >= lower`) with a
-  lower `ts` bound only; `id` is the recorder's insertion order and the only monotone quantity
-  on the tape. Prints have no cursor at all -- the executor rescans them from
-  `placed_at - 60 s` every loop and the simulator's print watermark absorbs the re-feed.
+* **Tape access.** The live path reads deltas by `id` alone (`id > cursor`, capped at
+  `DELTA_BATCH_LIMIT` rows); `id` is the recorder's insertion order and the only monotone
+  quantity on the tape, so a cursor bounds the scan by itself and a `ts` predicate beside it
+  only buys the planner a second index to AND (fix 22). The `ts >= lower` bound survives on the
+  first read of a ticker, where there is no cursor yet. Prints have no cursor at all -- the
+  executor rescans them from `placed_at - 60 s` every loop and the simulator's print watermark
+  absorbs the re-feed.
 * **The past instant (`at`).** A replay executor's clock is a grid instant days in the past, so
   every read it makes has to stop there: the tape at its head, the signals of a later run, a gap
   snapshot priced an hour afterwards would all be information the live loop could not have had.
@@ -31,7 +34,7 @@ them, so the loop never passes a raw `Row` into a pure function.
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Iterable, Sequence
+from typing import Iterable, NamedTuple, Sequence
 
 from sqlalchemy import text, update
 from sqlalchemy.dialects.postgresql import insert
@@ -393,13 +396,48 @@ def load_prints(session: Session, ticker: str, lower: datetime,
     return out
 
 
+#: The most rows one live delta read hands back for one ticker in one loop. A ticker with more
+#: tape than this behind its cursor catches up over successive loops -- each one starting where
+#: the last stopped -- instead of asking for the whole backlog in a single statement that runs
+#: past the 30 s timeout, dies, and leaves the next loop the identical read to fail on
+#: (fix 22, journal 68). 20 000 delta rows is far more than a 15 s loop can accrue on any real
+#: ticker, so the live path never truncates in steady state; this is the catch-up bound.
+DELTA_BATCH_LIMIT = 20_000
+
+
+class DeltaBatch(NamedTuple):
+    """One live delta read. `truncated` is "the limit was reached, so assume more to come" --
+    the caller must treat the last row as a tape position it is still behind, never as the head
+    of the tape."""
+
+    deltas: list[TapeDelta]
+    truncated: bool
+
+
+# The live scan once a cursor exists: `(ticker, id)` alone, no `ts` predicate. `id` is the
+# recorder's insertion order and is monotone, so every row past the cursor is also past the
+# cursor's `ts` and the `ts >= :lower` bound adds nothing but work. On the production tape it
+# added a great deal of it: `EXPLAIN` showed the planner ANDing a bitmap of the `ts` index
+# (1 668 859 estimated rows for a 9-hour lower bound) with `(ticker, id)` to return 3 349 rows,
+# once per open-order ticker per loop -- 30-140 s loops, rising `loops_skipped`, and finally
+# the 30 s statement timeout (fix 22, journal 68).
 _DELTAS = text("""
 select id, ts, side, price, delta, sid, seq from orderbook_events
-where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower order by id
+where ticker = :t and kind = 'delta' and id > :cursor
+order by id limit :limit
+""")
+
+# The first read of a ticker, where `cursor = 0` bounds nothing and `ts >= :lower` is the only
+# thing keeping a newly placed order off the whole season's tape.
+_DELTAS_FIRST = text("""
+select id, ts, side, price, delta, sid, seq from orderbook_events
+where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower
+order by id limit :limit
 """)
 
 # The past-instant scan (`ix_obe_ticker_ts`), matching `book._DELTAS_BY_TS`: bounded on `ts` at
-# both ends and ordered by `(ts, id)`, never by `(sid, seq)`.
+# both ends and ordered by `(ts, id)`, never by `(sid, seq)`. Unchanged by fix 22 -- a replay
+# reads a closed range at its own pace and has no loop deadline to miss.
 _DELTAS_AT = text("""
 select id, ts, side, price, delta, sid, seq from orderbook_events
 where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower and ts <= :at
@@ -407,22 +445,39 @@ order by ts, id
 """)
 
 
-def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
-                at: datetime | None = None) -> list[TapeDelta]:
-    """Deltas after `cursor`, with a lower `ts` bound; `at` adds the replay path's upper one.
-
-    Live orders by `id` with no upper bound -- the head is where the loop's clock is. A replay
-    executor stops at its own grid instant and orders by `(ts, id)`, which is the same order
-    `_merge_events` re-imposes anyway, so the two paths hand the simulator the same sequence.
-    """
-    params = {"t": ticker, "cursor": cursor, "lower": lower}
-    stmt = _DELTAS
-    if at is not None:
-        stmt, params = _DELTAS_AT, params | {"at": at}
-    rows = session.execute(stmt, params).all()
+def _tape_deltas(rows) -> list[TapeDelta]:
     return [TapeDelta(event_id=r.id, ts=r.ts, side=r.side, price=r.price, delta=r.delta,
                       sid=r.sid, seq=r.seq)
             for r in rows if r.side is not None and r.price is not None and r.delta is not None]
+
+
+def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
+                at: datetime | None = None) -> DeltaBatch:
+    """Deltas after `cursor`; `at` is the replay path's upper bound.
+
+    Live orders by `id` with no upper bound -- the head is where the loop's clock is -- and is
+    bounded to `DELTA_BATCH_LIMIT` rows, which is what makes a backlog cost several bounded
+    loops instead of one unbounded read. The `ts >= lower` bound is carried only by the first
+    read of a ticker (`cursor = 0`), where it is the only bound there is; once a cursor exists
+    `id > cursor` is strictly stronger and the `ts` predicate only costs the planner a second
+    index (fix 22).
+
+    A replay executor stops at its own grid instant and orders by `(ts, id)`, which is the same
+    order `_merge_events` re-imposes anyway, so the two paths hand the simulator the same
+    sequence. That path keeps both bounds and takes no limit: it reads a closed range.
+    """
+    if at is not None:
+        rows = session.execute(
+            _DELTAS_AT, {"t": ticker, "cursor": cursor, "lower": lower, "at": at}).all()
+        return DeltaBatch(_tape_deltas(rows), False)
+    if cursor > 0:
+        rows = session.execute(
+            _DELTAS, {"t": ticker, "cursor": cursor, "limit": DELTA_BATCH_LIMIT}).all()
+    else:
+        rows = session.execute(
+            _DELTAS_FIRST,
+            {"t": ticker, "cursor": cursor, "lower": lower, "limit": DELTA_BATCH_LIMIT}).all()
+    return DeltaBatch(_tape_deltas(rows), len(rows) >= DELTA_BATCH_LIMIT)
 
 
 # --- exposure -------------------------------------------------------------------------
