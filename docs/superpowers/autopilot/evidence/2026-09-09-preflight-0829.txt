@@ -1,0 +1,56 @@
+
+== clock
+2026-09-09 08:29:39 CDT
+2026-09-09T13:29:39Z (mac utc)
+
+== git
+main
+dirty files:        1
+8b1f0b7 docs: autopilot journal 77 (fix 28 root cause reproduced live; brief rewritten; count decode defect); roadmap row 28; state
+e68bab3 docs: autopilot journal 76 (6e3b33f deployed; smoke amend stale read; ceiling gate); phase 4 report final; stopped report; roadmap row 28; state gated
+eb173b5 docs: phase 4 report draft (smoke result pending)
+
+== mac
+ sleep                1 (sleep prevented by caffeinate, powerd)
+83377 caffeinate -i -t 300
+
+== test db
+harness-pg-test Up 2 days
+pytest processes: 0
+
+== secrets
+-rw------- anthropic_api_key
+-rw------- backup_age_key
+-rw------- dashboard_token
+-rw------- kalshi_demo_key_id
+-rw------- kalshi_demo_private_key.pem
+-rw------- kalshi_key_id
+-rw------- kalshi_private_key.pem
+-rw------- odds_api_key
+.env.nas present
+
+== paper posture
+paper posture intact
+
+== tunnel
+localhost:8180 -> 200
+
+== nas
+2026-09-09T13:29:39Z (nas utc)
+sports-harness-app-backup-1 Up 11 hours
+sports-harness-app-exec-1 Up 8 hours (healthy)
+sports-harness-app-run-1 Up 8 hours
+sports-harness-app-serve-1 Up 8 hours (healthy)
+sports-harness-app-ws-1 Up 8 hours
+sports-harness-postgres-1 Up 31 hours (healthy)
+{"status":"ok","last_run_at":"2026-09-09T13:29:14.312576+00:00","last_status":"ok","seconds_since":25,"credits_remaining":4997608,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":2040.0,"read_at":"2026-09-09T12:55:14.312146+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"6e3b33f"}
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.4T  69% /volume1
+mem available MB: 1183
+
+== deployed 6e3b33f vs main 8b1f0b7
+
+== game window (in_progress | kickoff -4h..+15m | nfl kickoff 60-100m) and tick ages
+0 | 0 | 0
+last real tick | 6640 | ok | 27
+last heartbeat | 6640 | ok | 27
+ws last event age s | 1

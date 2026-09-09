@@ -1,0 +1,460 @@
+== check_results 25h
+ERROR:  syntax error at or near "31897625"
+LINE 1: ...ts from check_results where ts > now() - interval 31897625 h...
+                                                             ^
+== limits read on newest non-skipped run
+ERROR:  trailing junk after numeric literal at or near "318976venue_limits318976"
+LINE 1: select id, started_at, status, notes->318976venue_limits3189...
+                                              ^
+== metric_samples negative 24h
+ERROR:  syntax error at or near "31897624"
+LINE 1: ...) from metric_samples where ts > now() - interval 31897624 h...
+                                                             ^
+== fix 26 rows: tape metrics 3h
+ERROR:  syntax error at or near "3189763"
+LINE 1: ...) from metric_samples where ts > now() - interval 3189763 ho...
+                                                             ^
+== tape read failed in exec logs (last 3h)
+0
+== heartbeat
+ERROR:  trailing junk after numeric literal at or near "318976exec"
+LINE 1: ...w()-max(ts) as age from metric_samples where name=318976exec...
+                                                             ^
+== venue_status
+ venue  | env  |   status    |             since             |          updated_at           
+--------+------+-------------+-------------------------------+-------------------------------
+ kalshi | demo | unavailable | 2026-09-09 02:45:51.857649+00 | 2026-09-09 05:53:30.078384+00
+(1 row)
+
+== venue_requests 24h
+ERROR:  syntax error at or near "31897624"
+LINE 1: ...) from venue_requests where ts > now() - interval 31897624 h...
+                                                             ^
+== backup_runs
+ id |  kind   | status |   bytes    | build_sha |          finished_at          |       age       
+----+---------+--------+------------+-----------+-------------------------------+-----------------
+  9 | encrypt | ok     | 1078104591 | 6e3b33f   | 2026-09-09 08:43:01.259584+00 | 04:47:36.914222
+  8 | encrypt | ok     |       5982 | 6e3b33f   | 2026-09-09 08:42:44.951481+00 | 04:47:53.222325
+  7 | forever | ok     |       5982 |           | 2026-09-09 08:34:28+00        | 04:56:10.173806
+  6 | nightly | ok     | 1078104591 |           | 2026-09-09 08:34:16+00        | 04:56:22.173806
+  5 | drill   | ok     |            | babf8d3   | 2026-09-09 05:17:41.276203+00 | 08:12:56.897603
+  4 | encrypt | ok     | 1074284762 | babf8d3   | 2026-09-09 02:38:35.182248+00 | 10:52:02.991558
+(6 rows)
+
+== backups listing
+backups/nightly:
+total 3155320
+-rwxrwxrwx 1 trey admin 1074547234 Sep  8 21:38 harness-nightly-20260909T022322Z.dump.age
+-rwxrwxrwx 1 trey admin        434 Sep  8 21:27 harness-nightly-20260909T022322Z.meta.json
+-rwxrwxrwx 1 trey admin          0 Sep  8 21:38 harness-nightly-20260909T022322Z.ok
+-rwxrwxrwx 1 trey admin 1078104591 Sep  9 03:34 harness-nightly-20260909T083002Z.dump
+-rwxrwxrwx 1 trey admin 1078367991 Sep  9 03:43 harness-nightly-20260909T083002Z.dump.age
+-rwxrwxrwx 1 trey admin        434 Sep  9 03:34 harness-nightly-20260909T083002Z.meta.json
+-rwxrwxrwx 1 trey admin          0 Sep  9 03:43 harness-nightly-20260909T083002Z.ok
+
+backups/weekly:
+total 0
+3.1G	backups
+== plaintext with no ciphertext
+0
+== df
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.4T  69% /volume1
+               total        used        free      shared  buff/cache   available
+Mem:            7717        6564         373         537        2071        1152
+== db size
+ERROR:  trailing junk after numeric literal at or near "318976harness318976"
+LINE 1: select pg_size_pretty(pg_database_size(318976harness318976))
+                                               ^
+== alembic
+0001_baseline
+== pricing last 3 non-skipped
+ERROR:  trailing junk after numeric literal at or near "318976pricing318976"
+LINE 1: select id, started_at, notes->318976pricing318976->318976bud...
+                                      ^
+== open orders
+ERROR:  trailing junk after numeric literal at or near "318976open318976"
+LINE 1: select count(*) from orders where status=318976open318976 an...
+                                                 ^
+== check_results 25h
+              check_name               | status |              ts               
+---------------------------------------+--------+-------------------------------
+ benchmarks_source_after_target        | pass   | 2026-09-09 09:52:44.314055+00
+ build_sha_drift                       | fail   | 2026-09-09 09:52:44.314055+00
+ check_results_unknown_status_25h      | pass   | 2026-09-09 09:52:44.314055+00
+ clv_p_used_matches_order_prob         | pass   | 2026-09-09 09:52:44.314055+00
+ derived_without_venue_row_48h         | pass   | 2026-09-09 09:52:44.314055+00
+ duplicate_trades                      | pass   | 2026-09-09 09:52:44.314055+00
+ equity_mtm_coverage_out_of_range_24h  | pass   | 2026-09-09 09:52:44.314055+00
+ fair_values_negative_feed_lag         | skip   | 2026-09-09 09:52:44.314055+00
+ fair_values_negative_staleness        | pass   | 2026-09-09 09:52:44.314055+00
+ fill_contracts_exceed_order_contracts | pass   | 2026-09-09 09:52:44.314055+00
+ fills_outside_placement_window        | pass   | 2026-09-09 09:52:44.314055+00
+ fills_without_print                   | pass   | 2026-09-09 09:52:44.314055+00
+ game_score_went_down_24h              | pass   | 2026-09-09 09:52:44.314055+00
+ gate_rows_one_gate_variant            | pass   | 2026-09-09 09:52:44.314055+00
+ intents_without_order_or_skip         | fail   | 2026-09-09 09:52:44.314055+00
+ markouts_at_after_horizon             | pass   | 2026-09-09 09:52:44.314055+00
+ metric_samples_negative_24h           | fail   | 2026-09-09 09:52:44.314055+00
+ operator_events_empty_summary_24h     | pass   | 2026-09-09 09:52:44.314055+00
+ orders_filled_exceeds_contracts       | pass   | 2026-09-09 09:52:44.314055+00
+ orders_open_past_expiry               | pass   | 2026-09-09 09:52:44.314055+00
+ orders_without_place_event            | pass   | 2026-09-09 09:52:44.314055+00
+ order_watch_negative_queue_24h        | pass   | 2026-09-09 09:52:44.314055+00
+ report_cells_orphan                   | pass   | 2026-09-09 09:52:44.314055+00
+ report_runs_generated_in_future       | pass   | 2026-09-09 09:52:44.314055+00
+ runs_taker_side_missing_24h           | pass   | 2026-09-09 09:52:44.314055+00
+ settle_errors_24h                     | pass   | 2026-09-09 09:52:44.314055+00
+ settlement_result_mismatch            | pass   | 2026-09-09 09:52:44.314055+00
+(27 rows)
+
+== limits read on newest non-skipped run
+  id  |          started_at           | status |                                                                                                  venue_limits                                                                                                   
+------+-------------------------------+--------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 6640 | 2026-09-09 13:29:14.312576+00 | ok     | {"tier": "basic", "age_s": 2040.0, "read_at": "2026-09-09T12:55:14.312146+00:00", "page_pause_s": 0.05, "read_capacity": 600.0, "write_capacity": 100.0, "read_refill_rate": 200.0, "write_refill_rate": 100.0}
+(1 row)
+
+== metric_samples negative 24h
+ negative_samples 
+------------------
+                3
+(1 row)
+
+== fix 26 rows: tape metrics 3h
+         name          |     min      |     max      | count 
+-----------------------+--------------+--------------+-------
+ exec.tape_lag_tickers |     0.000000 |     0.000000 |   159
+ exec.tape_batch_min   | 20000.000000 | 20000.000000 |   159
+ exec.loop_ms          |  1882.000000 |  3978.000000 |   159
+(3 rows)
+
+     name     |        p95         
+--------------+--------------------
+ exec.loop_ms | 2890.2999999999997
+(1 row)
+
+== heartbeat age
+       age       
+-----------------
+ 00:01:09.073411
+(1 row)
+
+== venue_requests 24h
+ env  | method | count 
+------+--------+-------
+ demo | DELETE |     9
+ demo | GET    |    47
+ demo | POST   |    13
+ prod | GET    |    13
+(4 rows)
+
+== db size
+ pg_size_pretty 
+----------------
+ 24 GB
+(1 row)
+
+== pricing last 3 non-skipped
+  id  |          started_at           | budget_s | capped | ord 
+------+-------------------------------+----------+--------+-----
+ 6640 | 2026-09-09 13:29:14.312576+00 |          |        | 
+ 6637 | 2026-09-09 13:27:44.313417+00 |          |        | 
+ 6636 | 2026-09-09 13:27:14.312451+00 |          |        | 
+(3 rows)
+
+== open orders
+ open_orders 
+-------------
+         123
+(1 row)
+
+== metric names age
+            name            |       age       
+----------------------------+-----------------
+ db.growth_gb_per_day       | 03:38:09.267549
+ db.size_gb                 | 03:38:09.267549
+ db.table_gb                | 03:38:09.267549
+ exec.cancelled             | 00:24:39.102466
+ exec.dirty_markets         | 00:01:09.101745
+ exec.filled_contracts      | 00:01:09.101745
+ exec.intents_considered    | 00:01:09.101745
+ exec.loop_ms               | 00:01:09.101745
+ exec.loops_skipped         | 00:01:09.101745
+ exec.open_orders           | 00:01:09.101745
+ exec.p95_loop_ms           | 00:01:09.101745
+ exec.placed                | 00:01:09.101745
+ exec.skipped               | 00:08:54.099897
+ exec.tape_batch_min        | 00:01:09.101745
+ exec.tape_lag_tickers      | 00:01:09.101745
+ exec.ws_event_age_s        | 00:01:09.101745
+ exec.ws_event_ahead_s      | 00:01:09.101745
+ host.disk_free_gb          | 03:38:09.267549
+ host.mem_available_mb      | 03:38:09.267549
+ match.rate                 | 03:38:09.267549
+ match.unmatched            | 03:38:09.267549
+ pricing.candidates         | 00:15:09.268857
+ pricing.fair_values        | 00:15:09.268857
+ pricing.rejected           | 00:15:09.268857
+ pricing.staleness_median_s | 00:15:09.268857
+ recorder.credits_remaining | 00:01:39.269028
+ recorder.errors            | 00:00:09.269355
+ recorder.fetched           | 00:01:39.269028
+ recorder.tick_ms           | 00:00:09.269355
+ recorder.trade_gaps        | 00:00:09.269355
+ ws.events_per_min          | 00:00:52.032742
+ ws.gaps                    | 00:00:52.032742
+ ws.reconnects              | 00:00:52.032742
+ ws.sink_lag_s              | 00:00:52.032742
+ ws.subscribed_tickers      | 00:00:52.032742
+ ws.trades_per_min          | 00:00:52.032742
+(36 rows)
+
+== last 3 runs with a pricing block
+  id  |          started_at           | status  | budget_s | capped | ord 
+------+-------------------------------+---------+----------+--------+-----
+ 6643 | 2026-09-09 13:30:44.312249+00 | skipped |          |        | 
+ 6642 | 2026-09-09 13:30:14.312005+00 | skipped |          |        | 
+ 6641 | 2026-09-09 13:29:44.312681+00 | skipped |          |        | 
+(3 rows)
+
+== runs status last hour
+ status  | count |              max              
+---------+-------+-------------------------------
+ ok      |    19 | 2026-09-09 13:29:14.312576+00
+ running |     1 | 2026-09-09 13:31:14.312503+00
+ skipped |    91 | 2026-09-09 13:30:44.312249+00
+(3 rows)
+
+== build_sha in runs last 24h
+ build_sha | count |              min              |              max              
+-----------+-------+-------------------------------+-------------------------------
+ 21f8ca4   |    88 | 2026-09-08 13:31:58.531304+00 | 2026-09-08 14:16:58.531749+00
+ 33a0e3a   |    86 | 2026-09-08 14:19:06.415766+00 | 2026-09-08 15:03:06.41527+00
+ 1911a4f   |   190 | 2026-09-08 15:04:05.815595+00 | 2026-09-08 16:46:05.814082+00
+ a193fd0   |  1064 | 2026-09-08 16:46:45.796008+00 | 2026-09-09 02:22:45.796406+00
+ babf8d3   |   150 | 2026-09-09 02:28:42.527047+00 | 2026-09-09 04:04:12.526538+00
+ bdea218   |   104 | 2026-09-09 04:09:15.745059+00 | 2026-09-09 05:08:15.744871+00
+ 417eecd   |    78 | 2026-09-09 05:09:18.987597+00 | 2026-09-09 05:50:18.987355+00
+ 6e3b33f   |   908 | 2026-09-09 05:53:14.312178+00 | 2026-09-09 13:31:14.312503+00
+(8 rows)
+
+== exec heartbeat table
+ERROR:  column "updated_at" does not exist
+LINE 1: select * from exec_heartbeat order by updated_at desc limit ...
+                                              ^
+== intents_without_order_or_skip: count and samples
+ count 
+-------
+  2459
+(1 row)
+
+                  id                  |  variant_id  |               ticker                |          created_at           
+--------------------------------------+--------------+-------------------------------------+-------------------------------
+ 047f13bb-0aba-4ed1-8814-7909d50609bb | ff363c8ac08d | KXNCAAFGAME-26SEP12MSSTMINN-MSST    | 2026-09-09 13:17:59.48236+00
+ 31f6a14b-6e43-49e6-b74a-115a86179ffb | ff363c8ac08d | KXNCAAFGAME-26SEP13NMSUHAW-NMSU     | 2026-09-09 13:17:59.48236+00
+ b8bcfd4e-dcbe-4c1c-8fa5-d173f89548cc | ff363c8ac08d | KXNFLSPREAD-26SEP13WASPHI-PHI5      | 2026-09-09 13:17:59.48236+00
+ 1922d5fd-dc99-40de-94cf-8b202ada2a82 | ff363c8ac08d | KXNCAAFGAME-26SEP12MSSTMINN-MINN    | 2026-09-09 13:17:59.48236+00
+ 46b97a73-915d-4547-923d-bff298086aa6 | ff363c8ac08d | KXNCAAFGAME-26SEP12APPECU-APP       | 2026-09-09 13:17:59.48236+00
+ 65d6f956-7f29-42c1-88f3-9d87b114cbbb | ff363c8ac08d | KXNCAAFSPREAD-26SEP12USATULN-TULN10 | 2026-09-09 13:17:59.48236+00
+ 89fa27ae-ef0f-4cb8-96f2-2bc8de17bbea | 5632da729fa7 | KXNCAAFGAME-26SEP12MSSTMINN-MINN    | 2026-09-09 13:17:44.479977+00
+ 5a46e294-6644-4997-8ecf-1e96398489bd | 5632da729fa7 | KXNFLGAME-26SEP14DENKC-DEN          | 2026-09-09 13:17:44.479977+00
+(8 rows)
+
+           hr           | count 
+------------------------+-------
+ 2026-09-09 13:00:00+00 |   122
+ 2026-09-09 05:00:00+00 |    24
+ 2026-09-09 02:00:00+00 |   428
+ 2026-09-09 01:00:00+00 |   338
+ 2026-09-09 00:00:00+00 |   185
+ 2026-09-08 22:00:00+00 |    10
+ 2026-09-08 21:00:00+00 |   137
+ 2026-09-08 20:00:00+00 |   490
+ 2026-09-08 19:00:00+00 |   447
+ 2026-09-08 18:00:00+00 |   232
+ 2026-09-08 17:00:00+00 |    31
+ 2026-09-08 16:00:00+00 |     7
+(12 rows)
+
+== heartbeat
+         last_loop_at          | loops | open_orders | last_error | last_loop_ms | p95_loop_ms | loops_skipped | book_dirty_markets |     ws_last_event_at      |       age       
+-------------------------------+-------+-------------+------------+--------------+-------------+---------------+--------------------+---------------------------+-----------------
+ 2026-09-09 13:31:44.479826+00 |  6362 |         123 |            |         3302 |        2998 |           153 |                112 | 2026-09-09 13:31:43.01+00 | 00:00:15.924964
+(1 row)
+
+== run 6640 notes keys
+    jsonb_object_keys     
+--------------------------
+ errors
+ pricing
+ warnings
+ normalized
+ trade_gaps
+ odds_dropped
+ venue_limits
+ skipped_trades
+ non_linear_cent
+ skipped_ladders
+ normalize_errors
+ unresolved_teams
+ skipped_alternates
+ taker_side_missing
+ kalshi_trades_normalized
+(15 rows)
+
+== newest run carrying a pricing budget
+  id  |          started_at           | status | budget_s | capped |                                                       ord                                                        
+------+-------------------------------+--------+----------+--------+------------------------------------------------------------------------------------------------------------------
+ 6617 | 2026-09-09 13:15:44.312747+00 | ok     | 45       | false  | ["sharp_two_sided", "sharp_direct", "no_velocity", "sharp_plus_derived", "wide_band", "constrained", "nfl_only"]
+ 6591 | 2026-09-09 13:00:14.312564+00 | ok     | 45       | false  | ["sharp_two_sided", "sharp_direct", "nfl_only", "no_velocity", "sharp_plus_derived", "wide_band", "constrained"]
+(2 rows)
+
+== negative metric rows
+        name         |              ts               |   value   
+---------------------+-------------------------------+-----------
+ exec.ws_event_age_s | 2026-09-08 14:09:28.931356+00 | -0.005644
+ exec.ws_event_age_s | 2026-09-08 14:27:32.577464+00 | -6.997536
+ exec.ws_event_age_s | 2026-09-08 15:01:47.579585+00 | -0.029415
+(3 rows)
+
+== orphan intents by variant
+== intents total by variant last 24h
+  variant_id  | count 
+--------------+-------
+ 5632da729fa7 |  9198
+ f259ca109084 |  4692
+ ff363c8ac08d |   348
+(3 rows)
+
+== order_events kinds last 24h
+   kind   | count 
+----------+-------
+ skipped  | 22776
+ cap_gate |  2031
+ place    |  1370
+ cancel   |  1247
+(4 rows)
+
+== events for one orphan intent
+ kind | reason | ts 
+------+--------+----
+(0 rows)
+
+== orphan intents: any event at all?
+ERROR:  relation "variants" does not exist
+LINE 1: ...d_at), max(i.created_at) from intents i left join variants v...
+                                                             ^
+ with_some_event | total 
+-----------------+-------
+               0 |  2459
+(1 row)
+
+== intents columns
+    column_name    
+-------------------
+ id
+ signal_id
+ variant_id
+ venue
+ venue_market_id
+ ticker
+ side
+ target_prob
+ target_contracts
+ edge
+ edge_min
+ fair_p
+ fair_row_id
+ game_id
+ kickoff_utc
+ stake
+ signal_created_at
+ created_at
+ replay
+(19 rows)
+
+== orphan intents by status column if any
+ERROR:  column i.status does not exist
+LINE 1: select i.status, count(*) from intents i where i.replay = fa...
+               ^
+HINT:  Perhaps you meant to reference the column "i.stake".
+== orphans by variant
+  variant_id  | count |              min              |              max              
+--------------+-------+-------------------------------+-------------------------------
+ 5632da729fa7 |  1569 | 2026-09-08 15:07:36.083072+00 | 2026-09-09 13:17:44.479977+00
+ f259ca109084 |   787 | 2026-09-08 16:39:51.081377+00 | 2026-09-09 13:17:44.479977+00
+ ff363c8ac08d |   103 | 2026-09-08 17:35:00.71285+00  | 2026-09-09 13:17:59.48236+00
+(3 rows)
+
+== orphans: kickoff horizon and venue
+ venue  | count |   min_to_kick   |      med_to_kick      |      max_to_kick       
+--------+-------+-----------------+-----------------------+------------------------
+ kalshi |  2459 | 11:02:15.520023 | 3 days 22:15:14.28733 | 6 days 05:53:59.286864
+(1 row)
+
+== decided intents: kickoff horizon for comparison (last 24h)
+ count |       min       |    percentile_cont     |          max           
+-------+-----------------+------------------------+------------------------
+ 11960 | 10:47:15.520995 | 4 days 01:31:14.286762 | 6 days 10:28:01.070659
+(1 row)
+
+== orphans superseded by a later intent on the same key?
+ superseded | total 
+------------+-------
+       2452 |  2459
+(1 row)
+
+== the 13:17:59 batch: all intents created that second, decided vs not
+ total | decided 
+-------+---------
+     9 |       3
+(1 row)
+
+== one orphan vs one decided from that batch
+                  id                  |               ticker                | side | target_prob | target_contracts |  edge  | edge_min | stake |      kickoff_utc       | has_vm | ev 
+--------------------------------------+-------------------------------------+------+-------------+------------------+--------+----------+-------+------------------------+--------+----
+ 46b97a73-915d-4547-923d-bff298086aa6 | KXNCAAFGAME-26SEP12APPECU-APP       | yes  |      0.2100 |           195.00 | 0.0531 |   0.0358 | 41.06 | 2026-09-12 16:00:00+00 | t      | f
+ 1922d5fd-dc99-40de-94cf-8b202ada2a82 | KXNCAAFGAME-26SEP12MSSTMINN-MINN    | yes  |      0.4300 |           154.00 | 0.0601 |   0.0409 | 66.42 | 2026-09-12 19:30:00+00 | t      | f
+ 047f13bb-0aba-4ed1-8814-7909d50609bb | KXNCAAFGAME-26SEP12MSSTMINN-MSST    | yes  |      0.4500 |           126.00 | 0.0513 |   0.0409 | 56.76 | 2026-09-12 19:30:00+00 | t      | f
+ 31f6a14b-6e43-49e6-b74a-115a86179ffb | KXNCAAFGAME-26SEP13NMSUHAW-NMSU     | yes  |      0.2000 |           218.00 | 0.0565 |   0.0379 | 43.74 | 2026-09-13 04:00:00+00 | t      | f
+ 65d6f956-7f29-42c1-88f3-9d87b114cbbb | KXNCAAFSPREAD-26SEP12USATULN-TULN10 | yes  |      0.4400 |           120.00 | 0.0494 |   0.0328 | 53.17 | 2026-09-12 23:00:00+00 | t      | f
+ b8bcfd4e-dcbe-4c1c-8fa5-d173f89548cc | KXNFLSPREAD-26SEP13WASPHI-PHI5      | yes  |      0.4500 |           111.00 | 0.0464 |   0.0272 | 50.02 | 2026-09-13 20:25:00+00 | t      | f
+(6 rows)
+
+== the 7 orphans with no later intent on their key
+                  id                  |  variant_id  |              ticker               | side |          created_at           |       signal_created_at       |      kickoff_utc       | key_intents 
+--------------------------------------+--------------+-----------------------------------+------+-------------------------------+-------------------------------+------------------------+-------------
+ 594957eb-64f2-4ebb-9fa3-95f86faa1bc2 | 5632da729fa7 | KXNCAAFTOTAL-26SEP12MDCONN-53     | yes  | 2026-09-08 15:07:36.083072+00 | 2026-09-08 15:07:08.373166+00 | 2026-09-12 19:30:00+00 |           4
+ 98b823fc-9fee-423f-b41e-c72e27b5a390 | 5632da729fa7 | KXNCAAFTOTAL-26SEP12MDCONN-53     | no   | 2026-09-08 15:07:36.083072+00 | 2026-09-08 15:07:08.373166+00 | 2026-09-12 19:30:00+00 |           4
+ 7f92c4a2-b715-431b-b4be-af25b605dcc0 | f259ca109084 | KXNCAAFTOTAL-26SEP12UTSATXST-67   | yes  | 2026-09-09 00:13:15.713116+00 | 2026-09-09 00:12:40.969438+00 | 2026-09-12 19:30:00+00 |          32
+ 6739651b-99c2-4bd3-ad06-d1eb0a42213b | 5632da729fa7 | KXNCAAFTOTAL-26SEP12UTSATXST-67   | yes  | 2026-09-09 00:13:15.713116+00 | 2026-09-09 00:12:40.969438+00 | 2026-09-12 19:30:00+00 |          29
+ 199de8d7-1c06-4fa5-a37c-7192fe00484b | ff363c8ac08d | KXNCAAFSPREAD-26SEP12RICEND-ND45  | yes  | 2026-09-09 00:13:15.713116+00 | 2026-09-09 00:12:40.969438+00 | 2026-09-12 19:30:00+00 |          29
+ 05ec0957-5057-48ce-b6a4-8a3b726b6dcc | 5632da729fa7 | KXNCAAFTOTAL-26SEP12UTSATXST-67   | no   | 2026-09-09 00:13:15.713116+00 | 2026-09-09 00:12:40.969438+00 | 2026-09-12 19:30:00+00 |          29
+ d7161932-863d-4c1b-819e-c207e6e45b16 | ff363c8ac08d | KXNCAAFSPREAD-26SEP12ARIZBYU-BYU8 | yes  | 2026-09-09 01:30:30.715296+00 | 2026-09-09 01:29:38.571838+00 | 2026-09-12 19:30:00+00 |          18
+(7 rows)
+
+== 13:17:59 batch grouped by key
+  variant_id  | venue_market_id | side | count | decided 
+--------------+-----------------+------+-------+---------
+ ff363c8ac08d |              63 | yes  |     1 |       1
+ ff363c8ac08d |              64 | yes  |     1 |       1
+ ff363c8ac08d |             129 | yes  |     1 |       0
+ ff363c8ac08d |             989 | yes  |     1 |       0
+ ff363c8ac08d |            1100 | yes  |     1 |       1
+ ff363c8ac08d |            1147 | yes  |     1 |       0
+ ff363c8ac08d |            1148 | yes  |     1 |       0
+ ff363c8ac08d |            1186 | yes  |     1 |       0
+ ff363c8ac08d |            1692 | yes  |     1 |       0
+(9 rows)
+
+== same-second duplicate keys across all intents last 24h
+ dup_rows 
+----------
+        0
+(1 row)
+
+== orphans whose key had an order working when they were created
+ total | had_working_order | key_had_any_order_before 
+-------+-------------------+--------------------------
+  2459 |              2459 |                     2459
+(1 row)
+
