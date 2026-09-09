@@ -1,4 +1,6 @@
-"""The ten tables of spec §7.2, built over one ISO week's rows.
+"""The tables of spec §7.2, built over one ISO week's rows.
+
+t1-t8 and t11 are implemented; t7, t9 and t10 are not-collected today.
 
 Read-only: every function here runs `select`s and returns `Table` values. Nothing writes, and
 nothing imports the executor's or the settler's write paths (addendum ruling 6).
@@ -46,7 +48,7 @@ from harness.report.stats import (
 from harness.settlement.benchmarks import BENCHMARK_TYPES
 from harness.settlement.order_clv import clv_formulas
 
-TABLE_KEYS = ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t9", "t10")
+TABLE_KEYS = ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9", "t10")
 
 #: What an empty cell prints. Never "" (the brief's `test_render_has_no_empty_cells`).
 PLACEHOLDER = "--"
@@ -1226,6 +1228,41 @@ def _table8(session: Session, window: dict) -> Table:
     return Table("Table 8 (t8): data quality", header, _T8_COLUMNS, rows)
 
 
+# --- table 11: venue requests by method and env -------------------------------------------------
+
+_T11_COLUMNS = ["env", "method", "count"]
+
+_T11_COUNTS = text("""
+    select env, method, count(*) as n
+    from venue_requests
+    where ts >= :start and ts < :end
+    group by env, method
+    order by env, method
+""")
+
+_T11_PROD_NON_GET = text("""
+    select count(*) from venue_requests
+    where ts >= :start and ts < :end and env = 'prod' and method <> 'GET'
+""")
+
+
+def _table11(session: Session, window: dict) -> Table:
+    header = ("Authenticated venue requests by method and env, over the week (addendum §1.1). "
+              "One row per (env, method) pair; the public read path is not recorded here (the "
+              "recorder's reads are already in `raw_responses`, D5). Additive, not a gate "
+              "input: the tripwire this table exists to carry is that production writes stay "
+              "dormant, so any non-GET row against `env = 'prod'` is a control breach.")
+    rows = [[row.env, row.method, int(row.n)]
+            for row in session.execute(_T11_COUNTS, window)]
+    prod_non_get = int(session.execute(_T11_PROD_NON_GET, window).scalar() or 0)
+    note = f"prod non-GET = {prod_non_get}"
+    if not rows:
+        return _placeholder_table("Table 11 (t11): venue requests by method and env", header,
+                                  _T11_COLUMNS, note)
+    return Table("Table 11 (t11): venue requests by method and env", header, _T11_COLUMNS, rows,
+                 note)
+
+
 # --- tables 7, 9, 10: not collected ----------------------------------------------------------------
 
 
@@ -1244,7 +1281,7 @@ _VARIANTS = text("""
 
 
 def weekly_tables(session: Session, year: int, week: int, settings) -> dict[str, Table]:
-    """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t10` (with `t4b`).
+    """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t11` (with `t4b`).
 
     Read-only. Each table is restricted to the week's non-replay rows and each per-variant table
     groups by variant first; a table with nothing in it still answers a placeholder row.
@@ -1262,6 +1299,7 @@ def weekly_tables(session: Session, year: int, week: int, settings) -> dict[str,
         "t6": _table6(session, window, variants),
         "t7": _not_collected("t7", "veto", "The shadow veto arrives in phase 5."),
         "t8": _table8(session, window),
+        "t11": _table11(session, window),
         "t9": _not_collected("t9", "flow", "H3's flow imbalance is a later phase."),
         "t10": _not_collected("t10", "RFQ", "The combo RFQ listener is a later phase."),
     }

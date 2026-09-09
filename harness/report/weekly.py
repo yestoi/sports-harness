@@ -84,7 +84,7 @@ def _render_table(table: Table) -> list[str]:
 
 
 def render_markdown(tables: dict[str, Table], meta: dict) -> str:
-    """The whole report: a provenance block, then the ten tables in order.
+    """The whole report: a provenance block, then the tables in order.
 
     `meta` carries `build_sha`, `criteria_hash`, the executor `config_hash` values seen in the
     week, and -- when the previous report's hash differs -- `previous_criteria_hash`, which is

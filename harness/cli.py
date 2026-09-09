@@ -443,7 +443,7 @@ def report_cmd(
     confirm: Path = typer.Option(None, "--confirm",
                                 help="Restrict tables 2 and 4 to a selection artefact"),
 ) -> None:
-    """The weekly report (§7.2): ten tables over one ISO week's non-replay rows.
+    """The weekly report (§7.2): the tables over one ISO week's non-replay rows.
 
     Read-only. `--selected-out` writes the cells and contrasts this report selects, which is
     what the controller commits as `docs/reports/2026-w38-selected.json` on Monday

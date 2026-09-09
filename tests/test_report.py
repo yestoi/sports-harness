@@ -31,6 +31,7 @@ from harness.db.models import (
     Signal,
     StrategyVariant,
     VenueMarket,
+    VenueRequest,
 )
 from harness.report.tables import (
     FLAG_CLUSTERS,
@@ -216,6 +217,15 @@ def _ws_snapshot(session, ticker, ts, yes_bid, no_bid, seq=1) -> OrderbookEvent:
     return row
 
 
+def _venue_request(session, env="prod", method="GET", ts=None, venue="kalshi",
+                   path="/trade-api/v2/portfolio/balance", status=200) -> VenueRequest:
+    row = VenueRequest(venue=venue, env=env, method=method, path=path, status=status,
+                       ts=ts or WED, elapsed_ms=10)
+    session.add(row)
+    session.flush()
+    return row
+
+
 def _tables(db_session, env_settings):
     return weekly_tables(db_session, YEAR, WEEK, env_settings)
 
@@ -232,7 +242,8 @@ def test_week_bounds_are_monday_midnight_local():
 def test_weekly_tables_return_every_key_with_placeholders(db_session, env_settings):
     tables = _tables(db_session, env_settings)
     assert list(tables) == list(TABLE_KEYS)
-    assert set(TABLE_KEYS) == {"t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t9", "t10"}
+    assert set(TABLE_KEYS) == {"t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9",
+                               "t10"}
     for key, table in tables.items():
         assert isinstance(table, Table), key
         assert table.title and table.header, key
@@ -731,6 +742,37 @@ def test_table8_does_not_claim_a_stale_exclusion_table_4_cannot_perform(db_sessi
     t8 = _tables(db_session, env_settings)["t8"]
     assert "gap_outcomes" in t8.header
     assert "excluded from every gate criterion and from tables 2 and 4" not in t8.header
+
+
+def test_table11_empty_reads_zero_non_get(db_session, env_settings):
+    """I1: an empty week still renders table 11 (a placeholder row, like every other table),
+    and the tripwire note reads 0 rather than being silently absent."""
+    t11 = _tables(db_session, env_settings)["t11"]
+    assert t11.rows == [[PLACEHOLDER] * len(t11.columns)]
+    assert t11.note == "prod non-GET = 0"
+
+
+def test_table11_counts_rows_per_env_and_method(db_session, env_settings):
+    """I1: seeded rows land in the right (env, method) bucket and nowhere else."""
+    _venue_request(db_session, env="prod", method="GET")
+    _venue_request(db_session, env="prod", method="GET")
+    _venue_request(db_session, env="demo", method="POST")
+    t11 = _tables(db_session, env_settings)["t11"]
+    counts = {(r[0], r[1]): r[2] for r in t11.rows}
+    assert counts[("prod", "GET")] == 2
+    assert counts[("demo", "POST")] == 1
+    assert t11.note == "prod non-GET = 0"
+
+
+def test_table11_flags_a_prod_non_get_row(db_session, env_settings):
+    """I1: the tripwire this table exists to carry -- a production write must never be
+    dormant-but-silent in the report."""
+    _venue_request(db_session, env="prod", method="GET")
+    _venue_request(db_session, env="prod", method="POST")
+    t11 = _tables(db_session, env_settings)["t11"]
+    counts = {(r[0], r[1]): r[2] for r in t11.rows}
+    assert counts[("prod", "POST")] == 1
+    assert t11.note == "prod non-GET = 1"
 
 
 def test_restrict_to_selection_keys_a_contrast_on_its_benchmark(db_session, env_settings):
