@@ -74,10 +74,17 @@ def test_price_budget_is_45_inside_the_unchanged_tick_budget(env_settings):
     assert env_settings.price_budget_s < env_settings.tick_budget_s
 
 
-def test_posture_defaults(env_settings):
-    assert env_settings.mode == "paper"
-    assert env_settings.live_trading == 0
-    assert env_settings.kalshi_env == "prod"
+def test_posture_defaults(monkeypatch):
+    """Minor 24: the ambient shell may already export HARNESS_MODE, LIVE_TRADING or
+    KALSHI_ENV (an operator's own session, or a leftover from another test); clear them first
+    so this proves Settings' own default, not whatever the shell happened to hold."""
+    monkeypatch.delenv("HARNESS_MODE", raising=False)
+    monkeypatch.delenv("LIVE_TRADING", raising=False)
+    monkeypatch.delenv("KALSHI_ENV", raising=False)
+    s = Settings(database_url="postgresql+psycopg://x/y")
+    assert s.mode == "paper"
+    assert s.live_trading == 0
+    assert s.kalshi_env == "prod"
 
 
 def test_posture_binds_the_deploy_env_names(monkeypatch):
