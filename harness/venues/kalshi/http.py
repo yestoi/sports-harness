@@ -9,7 +9,8 @@ operations inside it is a security contract:
    `head` and `close`, so neither attribute offers a `post`, `put`, `delete`, `patch` or
    `request`.
 2. Assert the host on the *parsed* hostname (roadmap invariant 8). A raw-string suffix test
-   would accept "https://evil.com/?x=api.elections.kalshi.com".
+   would accept a URL whose query string merely contains the real host's name while the URL
+   itself points at a foreign host.
 3. Sign and send, one `venue_requests` row per attempt, never headers and never bodies.
 
 **Why the transport owns its own httpx clients.** Addendum §1.1 says GET and HEAD go through the
@@ -57,7 +58,8 @@ from harness.venues.kalshi.auth import sign_request
 
 #: Roadmap invariant 8. `prod` may only reach the production REST host; `demo` may only reach a
 #: host whose registrable name ends in demo.kalshi.co. Checked on the parsed hostname, never on
-#: the URL string: "https://evil.com/?x=api.elections.kalshi.com" passes a suffix test.
+#: the URL string: a suffix test on the raw string passes a foreign host whose query string
+#: merely happens to contain the real host's name.
 PROD_HOSTS = frozenset({"api.elections.kalshi.com"})
 DEMO_HOST_SUFFIX = "demo.kalshi.co"
 

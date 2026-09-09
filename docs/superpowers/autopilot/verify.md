@@ -271,7 +271,10 @@ select count(*) from equity_snapshots
     and (drawdown_pct < -1 or drawdown_pct > 0);
   -- drawdown_pct is a fraction, not percentage points: (cash - peak_7d) / peak_7d. peak_equity_7d
   -- folds today's cash into the peak, so a new high reads exactly 0 and the band is [-1, 0];
-  -- cash cannot go below zero, which is what pins the lower bound.
+  -- cash cannot go below zero, which is what pins the lower bound. That assumption holds at
+  -- today's sizes; if a row ever prints below -1, cash itself has gone negative in paper --
+  -- read it as a solvency event, journal it as an integrity anomaly, and do not wave it off as
+  -- a query bug.
 select count(*) from runs where started_at > now() - interval '24 hours'
   and (notes->'pricing'->>'gate_variant_missing')::boolean = true;
 ```
