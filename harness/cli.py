@@ -22,6 +22,8 @@ from harness.logging_setup import configure_logging
 app = typer.Typer(no_args_is_help=True)
 variants_app = typer.Typer(no_args_is_help=True)
 app.add_typer(variants_app, name="variants")
+migrate_app = typer.Typer(no_args_is_help=True, help="Alembic: additive schema history")
+app.add_typer(migrate_app, name="migrate")
 log = logging.getLogger("harness")
 
 #: How stale the executor heartbeat may be before `exec-health` reports the container unhealthy.
@@ -54,6 +56,47 @@ def init_db() -> None:
     # retry set, so a slow statement would be cancelled twice instead of finishing.
     create_schema(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))
     log.info("schema created")
+
+
+@migrate_app.command("upgrade")
+def migrate_upgrade() -> None:
+    """Run every migration the database has not applied yet, up to the baseline."""
+    configure_logging()
+    from harness.db.migrate import upgrade_head
+
+    upgrade_head(get_settings().database_url)
+    log.info("migrate: upgraded")
+
+
+@migrate_app.command("stamp")
+def migrate_stamp() -> None:
+    """Record head as applied without executing it: the pre-Alembic database's one-time bridge."""
+    configure_logging()
+    from harness.db.migrate import stamp_head
+
+    stamp_head(get_settings().database_url)
+    log.info("migrate: stamped")
+
+
+@migrate_app.command("current")
+def migrate_current() -> None:
+    """Print the revision the database records, or `none` when it has never been stamped."""
+    from harness.db.migrate import current_revision
+
+    print(current_revision(get_settings().database_url) or "none")
+
+
+@migrate_app.command("ensure")
+def migrate_ensure() -> None:
+    """The guarded one-time stamp `make deploy-nas` runs before init-db.
+
+    Prints the branch it took: `stamped` (a populated pre-Alembic database), `upgraded` (an
+    empty one) or `current` (upgrade from the stored revision).
+    """
+    configure_logging()
+    from harness.db.migrate import ensure
+
+    print(ensure(get_settings().database_url))
 
 
 @app.command("partition-bulk-tables")

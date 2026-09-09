@@ -8,6 +8,13 @@ COPY pyproject.toml ./
 # constraints.txt is a gate for the autopilot loop, never a ruling.
 COPY constraints.txt ./
 COPY harness ./harness
+# Two lines, deliberately, and never one with both sources: given several sources and a
+# directory destination, Docker copies the *contents* of a source directory, so the one-line
+# form would put env.py, script.py.mako and versions/ straight into /app and break both
+# `script_location` and the /app/migrations fallback in harness/db/migrate.py. The line above
+# works only because its destination names the directory.
+COPY alembic.ini ./
+COPY migrations ./migrations
 RUN pip install -c constraints.txt .
 USER nobody
 ENTRYPOINT ["harness"]

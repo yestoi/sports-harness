@@ -29,7 +29,7 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 # deploy/backup_age.pub does not exist until `harness backup-keygen` runs on the Mac, so it goes
 # through $(wildcard ...): when it is absent that expands to nothing instead of failing tar and
 # aborting the whole deploy.
-	@tar cf - --exclude='__pycache__' pyproject.toml constraints.txt Dockerfile .dockerignore docker-compose.yml harness docs/runbooks \
+	@tar cf - --exclude='__pycache__' pyproject.toml constraints.txt Dockerfile .dockerignore docker-compose.yml harness alembic.ini migrations docs/runbooks \
 		deploy/backup $(wildcard deploy/backup_age.pub) \
 		| ssh $(NAS_USER)@$(NAS_IP) 'tar xf - -C $(NAS_STACK)'
 	@mkdir -p build
@@ -57,11 +57,12 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 # precheck that still fails after the fallback aborts the deploy. -T because ssh has no tty.
 	@printf "$(GREEN)[DEPLOY]$(NC) Backup precheck (dumps first when the newest nightly is stale)...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || { docker compose exec -T app-backup /backup/dump.sh nightly && docker compose run --rm app-run backup-precheck; } || { echo "[DEPLOY] ABORT: no nightly backup_runs row is ok and under 26h, and the fallback dump did not produce one. A SKIP line in: docker compose logs app-backup means /volume1 free is below 30 percent, or another dump held the lock."; exit 1; }'
-# `harness migrate ensure` arrives with Task 15. Until then the command is not in the image, so
-# this probes for it instead of swallowing an exit status -- once the command exists, a real
-# migration failure still fails the deploy here.
-	@printf "$(GREEN)[DEPLOY]$(NC) Alembic ensure (skipped when this build has no migrate command)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && if docker compose run --rm app-run --help 2>&1 | grep -qw migrate; then docker compose run --rm app-run migrate ensure; else echo "[DEPLOY] NOTE: no migrate command in this build (Task 15 adds it); skipping"; fi'
+# The guarded one-time stamp, behind the fresh dump and ahead of init-db. It prints which of its
+# three branches it took: `stamped` (a populated pre-Alembic database, which is what the NAS is on
+# this phase's first deploy: head is recorded, the baseline is never executed), `upgraded` (an
+# empty database) or `current`. A real migration failure fails the deploy here.
+	@printf "$(GREEN)[DEPLOY]$(NC) Alembic ensure (stamp on the pre-Alembic database, upgrade on an empty one)...\n"
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run migrate ensure'
 	@printf "$(GREEN)[DEPLOY]$(NC) Schema + teams (idempotent; required after every upgrade)...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register'
 	@printf "$(GREEN)[DEPLOY]$(NC) Starting services...\n"
