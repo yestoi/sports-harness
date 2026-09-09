@@ -8,12 +8,12 @@ set -f   # no pathname expansion anywhere in this script
 #     deploy/backup/drill.sh backups/nightly/harness-nightly-20260908T083000Z.dump
 #
 # It proves the plaintext restores and that the tables it carries hold the row counts the
-# production database holds.  Roadmap invariant 5 is untouched: the restore target is a
+# sidecar recorded when the dump was taken. The production database is not read at all.
+# Roadmap invariant 5 is untouched: the restore target is a
 # throwaway postgres:16 container with the anonymous data volume the image declares, which
 # `docker run --rm` removes with the container.  No named volume, no host path, nothing on the
-# production cluster created or dropped; the only production statements are the SELECTs that
-# count rows.  Proof that the *ciphertext* decrypts is the Mac half and lives elsewhere: the
-# private key is not on the NAS.
+# production cluster created, dropped or read.  Proof that the *ciphertext* decrypts is the Mac
+# half and lives elsewhere: the private key is not on the NAS.
 # =============================================================================================
 
 DUMP_FILE="${1:-}"
@@ -29,11 +29,33 @@ fi
 MIN_FREE_PCT="${MIN_FREE_PCT:-30}"
 DRILL_DB="${DRILL_DB:-drill}"
 DRILL_USER="${DRILL_USER:-drill}"
-# How the production counts are read.  Read-only by construction: the only statement sent is a
-# SELECT count(*).  Overridable so the drill can be pointed at an already-running psql.
-PROD_PSQL="${PROD_PSQL:-docker compose exec -T postgres psql -U harness -d harness -qAt}"
 
 BULK="raw_responses orderbook_events venue_trades venue_quotes odds_snapshots"
+
+# The dump-time counts sidecar (addendum §0.7).  The comparison is against these, never against
+# the live database: production keeps recording after the dump, so a live comparison reports a
+# MISMATCH on every busy table and the verdict line means nothing.
+META_FILE="${DUMP_FILE%.dump}.meta.json"
+if [ ! -f "$META_FILE" ]; then
+    echo "ERROR no sidecar beside the dump: $META_FILE" >&2
+    echo "      the drill compares against dump-time counts, so it cannot run without one" >&2
+    exit 1
+fi
+
+# One table's count out of the sidecar's "counts" object.  Prints nothing when the table is not
+# in it (an excluded table, or a table created after the dump).  POSIX sed and tr only: the
+# throwaway container has no jq and the NAS is not asked to grow one.
+meta_count() {
+    tr -d ' \n' < "$META_FILE" \
+        | sed -n 's/.*"counts":{\([^}]*\)}.*/\1/p' \
+        | tr ',' '\n' \
+        | sed -n "s/^\"$1\"://p"
+}
+
+COUNTS_SNAPSHOT=$(tr -d ' \n' < "$META_FILE" \
+    | sed -n 's/.*"counts_snapshot":"\([^"]*\)".*/\1/p')
+[ -n "$COUNTS_SNAPSHOT" ] || COUNTS_SNAPSHOT="same as dump"
+echo "INFO counts_snapshot=$COUNTS_SNAPSHOT"
 
 free_pct=$(df -P "$(dirname "$DUMP_FILE")" | awk 'NR == 2 { gsub(/%/, "", $5); print 100 - $5 }')
 if [ -z "$free_pct" ] || [ "$free_pct" -lt "$MIN_FREE_PCT" ]; then
@@ -91,15 +113,10 @@ drill_psql() { docker exec "$CID" psql -U "$DRILL_USER" -d "$DRILL_DB" -qAt -c "
 tables=$(drill_psql "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace \
 where n.nspname = 'public' and c.relkind = 'r' and c.relispartition = false order by 1")
 
-if ! $PROD_PSQL -c "select 1" >/dev/null 2>&1; then
-    echo "ERROR cannot read the production database for the comparison; run this from the" >&2
-    echo "      stack directory on the NAS, or set PROD_PSQL" >&2
-    exit 1
-fi
-
-echo "table restored production"
+echo "table restored dump_time"
 mismatches=0
 compared=0
+missing=0
 for t in $tables; do
     skip=0
     for b in $BULK; do
@@ -107,22 +124,30 @@ for t in $tables; do
     done
     [ "$skip" -eq 0 ] || continue
     here=$(drill_psql "select count(*) from public.\"$t\"")
-    there=$($PROD_PSQL -c "select count(*) from public.\"$t\"" | tr -d '\r')
+    there=$(meta_count "$t")
+    if [ -z "$there" ]; then
+        echo "$t $here - NO_DUMP_TIME_COUNT"
+        missing=$((missing + 1))
+        continue
+    fi
     compared=$((compared + 1))
     if [ "$here" = "$there" ]; then
         echo "$t $here $there"
+    elif [ "$COUNTS_SNAPSHOT" = "before dump" ] && [ "$here" -gt "$there" ]; then
+        # The labelled fallback: the counts predate the dump's own snapshot, so a busy table
+        # legitimately restores with more rows than the sidecar records -- never fewer.
+        echo "$t $here $there GREW"
     else
         echo "$t $here $there MISMATCH"
         mismatches=$((mismatches + 1))
     fi
 done
 
-# The verdict is the output, not the exit status.  A dump is a point-in-time snapshot and
-# production keeps recording, so a MISMATCH on a live table means the counts moved on, not that
-# the restore is bad; what the operator is looking for is a table that came back empty or
-# missing.  The exit status stays 0 so a difference here never reads as a failed drill --
-# `harness backup-drill-record --rows-match/--no-rows-match` is where the verdict is filed.
-echo "COMPARED $compared MISMATCHES $mismatches"
+# The verdict is the output, not the exit status.  It is now a real verdict: both numbers are
+# from the same instant, so a MISMATCH means the restore does not carry what the dump carried,
+# which is exactly what the drill exists to catch.  A table with no dump-time count is reported
+# and excluded from the verdict rather than silently passed.
+echo "COMPARED $compared MISMATCHES $mismatches NO_COUNT $missing"
 if [ "$compared" -gt 0 ] && [ "$mismatches" -eq 0 ]; then
     echo "ROWS_MATCH true"
 else

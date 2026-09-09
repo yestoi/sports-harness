@@ -62,6 +62,10 @@ EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude-table-data=public.odds_snapshots --exclude
 
 EXCLUDED_JSON='["raw_responses","orderbook_events","venue_trades","venue_quotes","odds_snapshots"]'
 
+# The same five names as EXCLUDED_JSON, as a space-separated list the counter skips: their data
+# is not in the dump, so counting them would record a number the restore can never match.
+EXCLUDED_TABLES="raw_responses orderbook_events venue_trades venue_quotes odds_snapshots"
+
 now_stamp()  { date -u +%Y%m%dT%H%M%SZ; }
 now_iso()    { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -139,6 +143,107 @@ require_free_space() {
 # both ".tmp" names).  The sidecar carries what a later reader cannot recompute from a deleted
 # plaintext: its sha256, its size, the window it covers and pg_dump's own exit code.
 
+# --- dump-time row counts (addendum §0.7) ----------------------------------------------------
+# The restore drill's comparison has to be against the counts as they were when the dump was
+# taken: production keeps recording, so comparing a restore against the live database reports a
+# MISMATCH on every busy table and the ROWS_MATCH line says nothing.  One scan of each dumped
+# table, in the same 03:30 CT window; `signals` is the largest and is the cost.
+#
+# Partitioned parents are counted through the parent, which sums its children -- the same number
+# pg_restore's data produces.  Excluded tables are skipped entirely.  A psql failure yields an
+# empty object rather than a partial one: a sidecar that records some counts and silently drops
+# others is worse than one that records none, because the drill would compare fewer tables and
+# still print ROWS_MATCH true.
+table_counts_sql() {
+    _skip_pattern=""
+    for _t in $EXCLUDED_TABLES; do
+        _skip_pattern="$_skip_pattern'$_t',"
+    done
+    printf '%s' "select string_agg(format('%L:%s', t, n), ',' order by t) from (
+              select c.relname as t,
+                     (xpath('/row/c/text()',
+                            query_to_xml(format('select count(*) as c from public.%I', c.relname),
+                                         false, true, '')))[1]::text::bigint as n
+              from pg_class c
+              join pg_namespace ns on ns.oid = c.relnamespace
+              where ns.nspname = 'public'
+                and c.relkind in ('r', 'p')
+                and c.relispartition = false
+                and c.relname not in (${_skip_pattern}'')
+          ) s;"
+}
+
+# The standalone form, used only by the labelled fallback below: its own connection, its own
+# snapshot.  The snapshot path sends `table_counts_sql` down the FIFO instead, so the counts and
+# the dump see the same rows.
+table_counts_json() {
+    _pairs=$(psql -v ON_ERROR_STOP=1 -qAt -c "$(table_counts_sql)" 2>/dev/null) || _pairs=""
+    if [ -z "$_pairs" ]; then
+        echo "WARN could not read dump-time table counts" >&2
+        printf '{}'
+        return 0
+    fi
+    printf '{%s}' "$_pairs"
+}
+
+# --- one snapshot for the dump and the counts -------------------------------------------------
+# pg_dump takes its repeatable-read snapshot when it starts and a nightly run takes minutes, in
+# which signals, orders, fills, metric_samples and order_events all keep taking writes.  Counting
+# after the dump returns would describe a strictly newer database, so every busy table would
+# mismatch and ROWS_MATCH would mean nothing -- the failure this whole change exists to remove.
+# So: export a snapshot, hand it to pg_dump, run the counts on the same session, then commit.
+# The session must stay open for the whole dump or the snapshot is released, which is why psql
+# reads from a FIFO rather than from a heredoc.
+
+open_snapshot() {
+    _snap_ctl=$(mktemp -u)
+    _snap_out=$(mktemp)
+    # Prove psql can connect before opening the FIFO: `exec 8> "$_snap_ctl"` blocks until a
+    # reader arrives, so a psql that cannot start would hang the nightly dump forever instead of
+    # taking the labelled fallback below.
+    psql -X -qAt -c 'select 1' >/dev/null 2>&1 || return 1
+    mkfifo "$_snap_ctl" || return 1
+    ( psql -X -v ON_ERROR_STOP=1 -qAt -f - < "$_snap_ctl" > "$_snap_out" ) &
+    _snap_pid=$!
+    # Hold the write end open ourselves, so psql does not see EOF between statements.
+    exec 8> "$_snap_ctl"
+    printf 'begin isolation level repeatable read;\nselect pg_export_snapshot();\n' >&8
+    # Wait for the snapshot id to appear, up to 10 seconds.
+    _i=0
+    while [ ! -s "$_snap_out" ] && [ "$_i" -lt 100 ]; do _i=$((_i + 1)); sleep 0.1; done
+    _snap=$(head -1 "$_snap_out")
+    case "$_snap" in
+        [0-9]*-[0-9]*-[0-9]*) return 0 ;;
+        *) echo "WARN could not export a dump snapshot; counts fall back to before-dump" >&2
+           close_snapshot; return 1 ;;
+    esac
+}
+
+# The counts, on the session that holds the snapshot: the statement goes down the FIFO and the
+# answer comes back out of the same output file, appended after the snapshot id psql already
+# wrote.  The file's contents are never wiped: psql holds it open and keeps its own write
+# offset, so `: > "$_snap_out"` would leave the counts sitting behind a run of NUL padding and
+# `head -1` would read the NULs.  Wait for a new line instead, and read the last one.
+_snap_lines() { wc -l < "$_snap_out" | tr -d ' '; }
+snapshot_counts_json() {
+    _before=$(_snap_lines)
+    printf '%s\n' "$(table_counts_sql)" >&8   # one statement, one line, already ';'-terminated
+    _i=0
+    while [ "$(_snap_lines)" -le "$_before" ] && [ "$_i" -lt 600 ]; do _i=$((_i + 1)); sleep 0.1; done
+    _pairs=$(tail -1 "$_snap_out")
+    if [ -z "$_pairs" ]; then printf '{}'; else printf '{%s}' "$_pairs"; fi
+}
+
+close_snapshot() {
+    if [ -n "${_snap_pid:-}" ]; then
+        printf 'commit;\n' >&8 2>/dev/null || true
+        exec 8>&- 2>/dev/null || true
+        wait "$_snap_pid" 2>/dev/null || true
+        _snap_pid=""
+    fi
+    rm -f -- "$_snap_ctl" "$_snap_out"     # the two temporaries this run made, and nothing else
+}
+
 write_meta() {
     # base kind stamp sha bytes started finished exit_code tables_json
     cat > "$1.meta.json.tmp" <<META
@@ -170,7 +275,18 @@ run_dump() {
     _started=$(now_iso)
 
     _rc=0
-    pg_dump -Fc --compress=zstd:3 "$@" -f "$_tmp" || _rc=$?
+    _counts_snapshot="same as dump"
+    if open_snapshot; then
+        pg_dump -Fc --compress=zstd:3 --snapshot="$_snap" "$@" -f "$_tmp" || _rc=$?
+        _counts=$(snapshot_counts_json)
+        close_snapshot
+    else
+        # Labelled fallback: the counts are taken immediately *before* the dump, so a busy table
+        # can legitimately restore with MORE rows than the sidecar records, never fewer.
+        _counts_snapshot="before dump"
+        _counts=$(table_counts_json)
+        pg_dump -Fc --compress=zstd:3 "$@" -f "$_tmp" || _rc=$?
+    fi
     _finished=$(now_iso)
 
     if [ "$_rc" -ne 0 ]; then
@@ -197,8 +313,12 @@ run_dump() {
         return 1
     fi
 
+    # _tables_json is always a one-key object ({"data_excluded":[...]} or {"included":[...]}),
+    # so this sed appends two keys to it: the result is
+    # {"data_excluded":[...],"counts":{...},"counts_snapshot":"same as dump"}.
     write_meta "$_base" "$_kind" "$_stamp" "$_sha" "$_bytes" "$_started" "$_finished" "$_rc" \
-        "$_tables_json"
+        "$(printf '%s' "$_tables_json" \
+           | sed "s/}$/,\"counts\":$_counts,\"counts_snapshot\":\"$_counts_snapshot\"}/")"
     mv -- "$_tmp" "$_base.dump"
     record_run "$_kind" ok "$_base.dump" "$_bytes" "$_sha" "$_started" "$_finished" \
         "{\"exit_code\":0}"

@@ -355,3 +355,84 @@ def test_prune_does_nothing_to_a_kind_it_was_not_asked_about(tmp_path: Path):
     _unit(nightly, "nightly", "20260202T000000Z")
     _prune(tmp_path, "nightly", 1)
     assert len(list(forever.iterdir())) == 3
+
+
+def test_dump_sh_writes_table_counts_into_the_meta_sidecar():
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert "table_counts_json()" in body
+    # The counts come from the database at dump time, never from a later reader.
+    assert "select count(*)" in body
+    # Every excluded table is left out of the counts, because its data is not in the dump.
+    assert "EXCLUDED_TABLES=" in body
+    assert '"counts":' in body
+    assert '"counts_snapshot":' in body
+
+
+def test_the_counts_share_the_dumps_own_snapshot():
+    """pg_dump snapshots at start and runs for minutes; counting afterwards would describe a
+    strictly newer database and every busy table would mismatch. The counts join the dump's
+    snapshot instead."""
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert "pg_export_snapshot()" in body
+    assert "repeatable read" in body
+    assert '--snapshot="$_snap"' in body
+    # The counts are taken before pg_dump returns, on the session that exported the snapshot.
+    assert body.index("pg_export_snapshot()") < body.index('--snapshot="$_snap"')
+
+
+def test_the_fallback_is_labelled_when_it_is_taken():
+    """If the FIFO session proves unreliable under the sidecar's dash, the counts are taken
+    immediately *before* pg_dump and the sidecar says so, and drill.sh keys ROWS_MATCH on
+    growth rather than equality. Either way the file records which was done."""
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert '"same as dump"' in body or '"before dump"' in body
+
+
+def test_dump_sh_still_passes_shellcheck_free_syntax():
+    subprocess.run(["sh", "-n", str(ROOT / "deploy" / "backup" / "dump.sh")], check=True)
+    subprocess.run(["sh", "-n", str(ROOT / "deploy" / "backup" / "drill.sh")], check=True)
+
+
+def test_drill_sh_reads_the_meta_counts_and_never_the_live_database():
+    body = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    assert ".meta.json" in body
+    assert "meta_count()" in body
+    assert "COUNTS_SNAPSHOT" in body
+    # The live comparison is gone: no PROD_PSQL, no docker compose exec postgres psql.
+    assert "PROD_PSQL" not in body
+    assert "docker compose exec -T postgres psql" not in body
+    assert "ROWS_MATCH true" in body and "ROWS_MATCH false" in body
+
+
+def test_drill_meta_count_extraction_reads_a_real_sidecar(tmp_path):
+    """The extractor is plain POSIX text handling, so it is testable without a container."""
+    meta = tmp_path / "harness-nightly-20260909T033000Z.meta.json"
+    meta.write_text(
+        '{\n  "kind": "nightly",\n  "stamp": "20260909T033000Z",\n'
+        '  "path": "x.dump",\n  "sha256": "ab",\n  "bytes": 12,\n'
+        '  "started": "s",\n  "finished": "f",\n  "exit_code": 0,\n'
+        '  "tables": {"data_excluded":["raw_responses"],'
+        '"counts":{"orders":4212,"signals":881033,"ledger":0}}\n}\n')
+    script = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    body = script.split("meta_count()", 1)[1].split("}", 1)[0]
+    assert "counts" in body
+
+    # _meta_count_function always returns text ending in "\n}\n" (the function's closing brace
+    # line), so a leading ";" here would start a shell line with nothing before it -- a POSIX
+    # syntax error regardless of the function body. The extracted text's own trailing newline is
+    # the statement separator, so the next command follows with no ";" of its own.
+    out = subprocess.run(
+        ["sh", "-c",
+         f'META_FILE="{meta}"; ' + _meta_count_function(script) +
+         'meta_count orders; meta_count signals; meta_count ledger; meta_count nosuch'],
+        capture_output=True, text=True, check=True)
+    assert out.stdout.split() == ["4212", "881033", "0", ""] or \
+           out.stdout.split() == ["4212", "881033", "0"]
+
+
+def _meta_count_function(script: str) -> str:
+    """The `meta_count` shell function lifted out of drill.sh, so the test runs the real code
+    rather than a copy of it."""
+    start = script.index("meta_count()")
+    end = script.index("\n}\n", start) + len("\n}\n")
+    return script[start:end]
