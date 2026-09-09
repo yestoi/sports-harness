@@ -264,6 +264,63 @@ def backup_precheck_cmd() -> None:
     print(f"ok backup_run={row.id} finished_at={row.finished_at}")
 
 
+@app.command("kalshi-smoke")
+def kalshi_smoke_cmd(
+    env: str = typer.Option("demo", "--env", help="Only 'demo' is accepted."),
+) -> None:
+    """One full authenticated round trip against Kalshi's demo exchange (addendum 1.5).
+
+    A controller command, never a service: no compose service mounts the demo key pair, so the
+    credentials reach a container only for the length of one `docker compose run --rm` that
+    supplies the two mounts itself. See docs/runbooks/phase0-deploy.md.
+
+    Exits 0 when every step passed, and also when the demo account is unfunded (pre-loaded
+    decision 1: an unfunded demo cannot rest an order, and that is not a deploy failure).
+    Demo prices are not evidence and reach no table.
+    """
+    configure_logging()
+    from harness.venues.kalshi.authed import LiveGuardRefused
+    from harness.venues.kalshi.smoke import format_steps, run_smoke
+
+    if env != "demo":
+        # The production writer is refused by `make_writer` anyway; refusing here keeps the
+        # command's contract single-valued rather than resting on a guard two layers down.
+        print(f"kalshi-smoke runs against demo only, not {env!r}")
+        raise typer.Exit(2)
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    try:
+        result = run_smoke(s, factory, datetime.now(timezone.utc))
+    except LiveGuardRefused as exc:
+        print(f"refused: {exc.missing} is missing")
+        raise typer.Exit(1) from None
+    print(format_steps(result))
+    raise typer.Exit(result.exit_code())
+
+
+@app.command("venue-enable")
+def venue_enable_cmd(
+    venue: str = typer.Argument(..., help="The venue to re-enable, e.g. kalshi."),
+    env: str = typer.Option("prod", "--env", help="prod or demo."),
+) -> None:
+    """Clear an `unavailable` or `frozen` `venue_status` row: the manual re-enable after an
+    outage mark. Never automatic -- an account refused twice needs a human to find out why
+    before it sends again -- and the controller journals every use."""
+    configure_logging()
+    from harness.execution.venue import enable_venue, read_status
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url))() as session:
+        before = read_status(session, venue, env)
+        changed = enable_venue(session, venue, env, datetime.now(timezone.utc))
+        session.commit()
+        after = read_status(session, venue, env)
+    if changed:
+        print(f"{venue}/{env}: {before} -> {after}")
+    else:
+        print(f"{venue}/{env}: no change (was {before})")
+
+
 @app.command("exec")
 def exec_cmd() -> None:
     """Run the paper executor on its own interval. Places no live order and loads no secret."""

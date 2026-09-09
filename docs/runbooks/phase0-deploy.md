@@ -161,6 +161,139 @@ what counts as a valid candidate" — look up that fix's deploy sha and time in 
 `Carried fixes` table and filter `signals.created_at` (or the funnel query) to `>= <that time>`.
 Item 13 of the Chrome checklist below is this count, rendered per variant.
 
+## Phase 4: backups, Alembic, and the authenticated Kalshi adapter
+
+Phase 4 adds one service, one host directory, one deploy step and two manual commands. Nothing
+in it sends an order to the production venue: the transport refuses every non-GET method before
+signing when writes are disabled, and `make_writer(settings, "prod")` refuses on all four of
+`LIVE_TRADING=1`, `HARNESS_MODE=live`, a passing gate report and `secrets/legal_decision`.
+
+**Read first:** `docs/runbooks/backups.md` (units, retention, the restore drill, the key) and
+`docs/runbooks/alembic.md` (the baseline, `migrate ensure`, the numbered rollback).
+
+### `app-backup`, and the `backups/` host path
+
+`app-backup` runs `postgres:16` with no build and no command but `/backup/loop.sh`. It is the
+only place `pg_dump` 16 exists in this stack; the app image has none and gains no packages. It
+bind-mounts `deploy/backup` read-only and `./backups` read-write, and holds no secret beyond
+`PGPASSWORD`, which is the value `.env`'s SQLAlchemy URL already carries.
+
+`make deploy-nas` creates `backups/`, `backups/nightly`, `backups/weekly`, `backups/partitions`
+and `backups/forever` before it pushes. The recipe runs no `chown`: `deploy/nas.env` sets
+`APP_UID=1000`/`APP_GID=10`, and both `app-run` and `app-backup` run as that user, which already
+owns the tree. A `backups/` tree that predates the recipe can be owned by someone else; fix it
+by hand once and journal it.
+
+### The keypair, before the first phase 4 deploy
+
+On the Mac, **before pushing anything**:
+
+```bash
+harness backup-keygen        # writes secrets/backup_age_key (0600) and deploy/backup_age.pub
+git add deploy/backup_age.pub && git commit    # the public key is committed source
+```
+
+Copy `secrets/backup_age_key` somewhere safe immediately. It is never pushed to the NAS, so a
+NAS compromise cannot decrypt the backups it holds — and neither can you, without that file.
+
+Order matters. The Makefile pushes the recipient through `$(wildcard deploy/backup_age.pub)`,
+which resolves to nothing when the file does not exist. Deploy without it and Docker creates a
+*directory* at the bind target and every encrypt pass records `skipped: no recipient` for good.
+
+### Deploy order
+
+`make deploy-nas`, never `deploy-nas-app`: the Dockerfile and `docker-compose.yml` both change
+in this phase. The recipe's order is fixed and the middle of it is new:
+
+1. push the tree, `deploy/nas.env` as `.env`, `deploy/backup`, `deploy/backup_age.pub` and the
+   secrets that exist;
+2. `docker compose build`;
+3. `docker compose up -d postgres app-backup`;
+4. `harness backup-precheck` — exits 0 when the newest `kind='nightly'`, `status='ok'`
+   `backup_runs` row is younger than 26 h. On a non-zero exit the recipe runs
+   `docker compose exec -T app-backup /backup/dump.sh nightly` and **asks again**; a second
+   failure aborts the deploy. On the first phase 4 deploy that fallback dump *is* the first
+   dump, so expect it, and expect the deploy to pause for as long as it takes;
+5. `harness migrate ensure`;
+6. `init-db`, `seed-teams`, `variants register`;
+7. `docker compose up -d` for the rest of the stack.
+
+`migrate ensure` prints which branch it took. On the production database, which has tables and
+no `alembic_version`, expect `stamped`: it writes the baseline revision and **never executes the
+baseline against a populated database**. `upgraded` on that database would mean it tried to
+create what is already there. Journal which branch fired.
+
+### `harness kalshi-smoke --env demo` (manual, and only when the demo secrets exist)
+
+One full authenticated round trip against play money: balance, the nearest open `KXNFLGAME`
+market, an order group, a post-only 1-contract YES bid at the market's lowest grid price, an
+amend one grid step up to 2 contracts, a read-back, a cancel, a group cancel, a second order
+that the venue itself expires after 60 s, then fills and positions. It writes `venue_requests`
+rows tagged `env = 'demo'` and, on a failure, one `venue_status` row for `('kalshi', 'demo')`.
+**Demo prices are not evidence** and reach no pricing table and no tape.
+
+**No compose service mounts the demo key pair.** The credentials reach a container only for the
+length of one `docker compose run --rm`, and the controller supplies the two mounts itself:
+
+```bash
+ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && ls -l secrets/kalshi_demo_key_id secrets/kalshi_demo_private_key.pem'
+ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose run --rm -T \
+  -v ./secrets/kalshi_demo_key_id:/run/secrets/kalshi_demo_key_id:ro \
+  -v ./secrets/kalshi_demo_private_key.pem:/run/secrets/kalshi_demo_private_key.pem:ro \
+  app-run kalshi-smoke --env demo'
+```
+
+`ls -l`, never `cat`: whether the files exist is the only thing anyone needs to know about them.
+When either is missing the smoke is **skipped**, not failed, and `make deploy-nas`'s conditional
+push loop is where to look — a demo secret present on the Mac and absent on the NAS means that
+loop did not run, so re-run `make deploy-nas` and journal it.
+
+The guard checks `Path.is_file()`, not `exists()`. If a bind source is missing, Compose creates
+an empty *directory* at the mount target, and `exists()` would call that a credential.
+
+Reading the output: it is a table of steps, each `true` or `false` with a short detail. The
+details carry numbers, booleans and a small allowlist of order statuses, and never a string the
+venue chose — a ticker, a title or an error message from Kalshi is untrusted text and is kept
+out of the terminal deliberately. **Never log a headers mapping** from this path: the redaction
+filter in `harness/logging_setup.py` rewrites `HEADER: value` text, but a dict repr walks
+straight through it and a signed request's headers are a live credential.
+
+Two outcomes that are not failures:
+
+- **`demo unfunded`.** A zero balance exits 0 after one call and sends nothing. An unfunded demo
+  account cannot rest an order, and that is not a deploy failure.
+- **A venue rejection.** The encoder floors the intent's own-side probability to the market's
+  grid and then converts to the YES leg, so on an asymmetric grid a NO leg's YES price can land
+  off-grid and the venue refuses it. The smoke prints the grid it used (`steps=`, `low=`,
+  `next=`, `high=`) and reports the rejection as a named step, not a traceback. Journal the grid.
+
+### `harness venue-enable <venue> [--env prod]` (manual)
+
+The re-enable after an outage mark. Two consecutive authentication failures against production
+write `venue_status` = `unavailable`, and nothing clears it automatically: an account that has
+been refused twice needs a human to find out why before it sends again.
+
+```bash
+ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && docker compose run --rm -T app-run venue-enable kalshi'
+```
+
+It prints `kalshi/prod: unavailable -> ok`, or `no change` when there was nothing to clear, and
+exits 0 either way. The `venue_status.reason` it clears is up to 120 characters of the venue's
+own body: quote it in the journal, never act on it, and never let it decide a verdict. The
+controller journals every use of this command.
+
+### What phase 4 adds to a verification
+
+`docs/superpowers/autopilot/verify.md` gains a Phase 4 SQL block, a Phase 4 checks table, five
+invariants and a daily line. Two of its rows are worth knowing before the first deploy:
+
+- The **paper-posture tripwire** has two halves. Non-GET rows on `env = 'prod'` must be 0, *and*
+  prod `GET` rows in the last 2 hours must be above 0 — the recorder's hourly `/account/limits`
+  read is what writes them. A green tripwire on an empty table proves nothing.
+- `runs.notes->'venue_limits'` `null` on the newest non-skipped run means
+  `has_kalshi_credentials()` was False inside `app-run`. Check the two production key mounts on
+  the `app-run` service; without them nothing writes a `venue_requests` row at all.
+
 ## Clock accuracy
 
 The NAS must run NTP (UGOS Control Panel → Time). Kalshi rejects a WebSocket handshake whose
