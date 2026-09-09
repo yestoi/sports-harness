@@ -239,21 +239,26 @@ def test_a_decode_error_is_not_an_auth_error_and_never_counts(db_session):
 def test_a_decode_error_out_of_the_write_path_marks_nothing_and_does_not_count(db_session):
     """The same thing one level up: a `KalshiDecodeError` propagates out of the gateway's guard
     untouched. It writes no `venue_status` row, and it leaves the counter where it was, so two
-    later 401s still take exactly two to mark the venue."""
-    body = {"order_id": "o1", "client_order_id": "c1", "fill_count": "NaN",
-            "remaining_count": "10.00", "ts_ms": 1789000000000}
-    t = FakeTransport(queued=[_ok(body), _err(401), _err(401)])
+    later 401s still take exactly two to mark the venue.
+
+    The decode error is raised on the *cancel* path. Fix round 1's Important 2 made every field
+    of a create/amend response decode leniently, precisely so an accepted order reaches the echo
+    check's cancel and freeze instead of a bare decode error; the cancel response is where an
+    undecodable field still surfaces as one.
+    """
+    t = FakeTransport(queued=[
+        _ok({"order_id": "ov1", "reduced_by": "10.00", "ts_ms": "not-an-integer"}),
+        _err(401), _err(401)])
     g = _kalshi(t, db_session)
+    order_id = _open_order(db_session, venue_order_id="ov1", exchange_index_at_place=0)
 
     with pytest.raises(KalshiDecodeError):
-        g.place(db_session, _values(prob=Decimal("0.5600"), contracts=Decimal("10.00")),
-                None, _Market(CENT_RANGES), NOW)
+        g.cancel(db_session, order_id, "reprice", NOW)
     assert db_session.get(VenueStatus, ("kalshi", "prod")) is None
 
     for _ in range(2):
         with pytest.raises(KalshiApiError):
-            g.place(db_session, _values(prob=Decimal("0.5600"), contracts=Decimal("10.00")),
-                    None, _Market(CENT_RANGES), NOW)
+            g.cancel(db_session, order_id, "reprice", NOW)
     with _fresh(db_session) as fresh:
         assert fresh.get(VenueStatus, ("kalshi", "prod")).status == "unavailable"
 

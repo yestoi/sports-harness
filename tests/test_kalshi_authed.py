@@ -307,6 +307,32 @@ def test_get_order_decodes_a_single_order():
     assert t.calls[0][0] == "GET" and t.calls[0][1] == "/portfolio/orders/o1"
 
 
+def test_get_order_decodes_the_dollars_and_fp_names_the_reference_sends():
+    """Fix round 1, Important 1. The single-order GET sends `yes_price_dollars` and the `_fp`
+    counts, which the rest of this repo already decodes on the public side. Reading only
+    `price`/`count`/... left every one of them None."""
+    t = FakeTransport(queued=[_ok({"order": {
+        "order_id": "o1", "client_order_id": "c1", "ticker": "KXNFLGAME-X",
+        "book_side": "bid",
+        "yes_price_dollars": "0.5600", "no_price_dollars": "0.4400",
+        "count_fp": "10.00", "remaining_count_fp": "7.00", "fill_count_fp": "3.00",
+        "status": "resting", "order_group_id": "g1"}})])
+    order = KalshiReader(t).get_order("o1")
+    assert order.price == Decimal("0.5600") and order.count == Decimal("10.00")
+    assert order.remaining_count == Decimal("7.00")
+    assert order.fill_count == Decimal("3.00")
+    assert order.outcome_side == "yes" and order.book_side == "bid"
+
+
+def test_an_order_with_only_a_no_price_decodes_to_no_price_at_all():
+    """`no_price_dollars` is never read: `decode_side_price` is defined on the YES leg, and a
+    second conversion here would sit in front of the echo check's own."""
+    t = FakeTransport(queued=[_ok({"order": {
+        "order_id": "o1", "ticker": "T", "book_side": "ask",
+        "no_price_dollars": "0.4400", "count_fp": "10.00"}})])
+    assert KalshiReader(t).get_order("o1").price is None
+
+
 def test_get_order_percent_encodes_the_order_id():
     t = FakeTransport(queued=[_ok({"order": {
         "order_id": "a/b", "ticker": "T", "outcome_side": "yes"}})])

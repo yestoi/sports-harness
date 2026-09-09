@@ -275,7 +275,36 @@ def _ts_ms(value) -> int | None:
         raise KalshiDecodeError("venue sent a ts_ms that is not an integer") from None
 
 
+def _first_present(payload: dict, *names):
+    """The first of `names` the venue actually sent, or None when it sent none of them.
+
+    The same tolerance fix 23 applied to `/account/limits`, for the same reason: V2 renamed
+    these fields and the endpoints do not all agree on which set they send. Returns the venue's
+    raw value; `dec` is what makes it a Decimal.
+    """
+    for name in names:
+        value = payload.get(name)
+        if value is not None:
+            return value
+    return None
+
+
 def _decode_order(o: dict) -> OrderView:
+    """One V2 order.
+
+    **The two field vocabularies** (fix round 1, Important 1). The single-order GET in the
+    reference sends `yes_price_dollars`, `count_fp`, `remaining_count_fp` and `fill_count_fp`;
+    other endpoints send `price`, `count`, `remaining_count` and `fill_count`. Both are read,
+    current name first, exactly as `get_account_limits` reads both of its vocabularies. The rest
+    of this repo already decodes the `_dollars`/`_fp` names on the public side
+    (`harness/normalize/kalshi.py`, `harness/recorder/ws_sink.py`, `harness/execution/book.py`).
+
+    **`no_price_dollars` is deliberately never read.** `decode_side_price` is defined on the YES
+    leg, and inverting a NO price here would put a second, unpinned conversion in front of the
+    echo check's own. An order that carries only a NO price decodes to `price=None`, which the
+    echo check treats as unconfirmed -- so the order is cancelled and the market frozen, which is
+    the right answer to a price this decoder cannot place on the leg it compares against.
+    """
     outcome_side, book_side = require_side(o)
     return OrderView(
         order_id=o.get("order_id"),
@@ -283,10 +312,10 @@ def _decode_order(o: dict) -> OrderView:
         ticker=o.get("ticker"),
         outcome_side=outcome_side,
         book_side=book_side,
-        price=dec(o.get("price")),
-        count=dec(o.get("count")),
-        remaining_count=dec(o.get("remaining_count")),
-        fill_count=dec(o.get("fill_count")),
+        price=dec(_first_present(o, "price", "yes_price_dollars")),
+        count=dec(_first_present(o, "count", "count_fp")),
+        remaining_count=dec(_first_present(o, "remaining_count", "remaining_count_fp")),
+        fill_count=dec(_first_present(o, "fill_count", "fill_count_fp")),
         status=o.get("status"),
         order_group_id=o.get("order_group_id"),
         expiration_time=_ts(o.get("expiration_time")),
@@ -307,14 +336,6 @@ def _decode_fill(f: dict) -> VenueFillView:
         is_taker=f.get("is_taker"),
         created_time=_ts(f.get("created_time")),
     )
-
-
-def _bucket_capacity(bucket: dict):
-    """One rate bucket's ceiling. The live Trade API sends `bucket_capacity`; `capacity` is the
-    older name and is read only when the current one is absent, so a venue that goes back to it
-    still decodes (fix 23). Returns the venue's raw value -- `dec` is what makes it a Decimal."""
-    value = bucket.get("bucket_capacity")
-    return value if value is not None else bucket.get("capacity")
 
 
 def _decode_position(p: dict) -> PositionView:
@@ -394,9 +415,9 @@ class KalshiReader:
         return Limits(
             tier=body.get("usage_tier") or body.get("tier"),
             read_refill_rate=dec(read.get("refill_rate")),
-            read_capacity=dec(_bucket_capacity(read)),
+            read_capacity=dec(_first_present(read, "bucket_capacity", "capacity")),
             write_refill_rate=dec(write.get("refill_rate")),
-            write_capacity=dec(_bucket_capacity(write)),
+            write_capacity=dec(_first_present(write, "bucket_capacity", "capacity")),
             raw=body,
         )
 
@@ -431,6 +452,14 @@ MAX_PROB = Decimal("0.99")
 
 #: How long the caller freezes the market after the venue echoes something we did not send.
 ECHO_FREEZE_MINUTES = 15
+
+#: How many times the echo check will ask `GET /portfolio/orders/{id}` for the order it just
+#: placed. Two: the first attempt and exactly one immediate retry, no sleep between them (fix
+#: round 1, ruling (b)). A confirming read is not a decision the venue is making, it is a fact
+#: we are asking for, and one transient 500 should not cost a 15-minute freeze -- but a *loop*
+#: here would hold the execution cycle open against a venue that is genuinely not answering,
+#: which is why this is a constant and not a policy.
+CONFIRM_READ_ATTEMPTS = 2
 
 #: Prices are Decimals at 4 places everywhere in this harness (global constraints, units).
 PRICE_QUANTUM = Decimal("0.0001")
@@ -718,14 +747,17 @@ def _decode_cancel(body: dict) -> CancelResult:
     )
 
 
-def _decorative(decode: Callable, value):
-    """A field of this response that nothing decides on, decoded so that a bad one cannot raise.
+def _soft(decode: Callable, value):
+    """A field of this response decoded so that a bad one cannot raise.
 
-    The two counts are decoded strictly, because the echo check's arithmetic rests on them and a
-    count we cannot read is a mismatch. `average_fill_price` and `ts_ms` are neither compared nor
-    stored nor divided by, and raising on one of them would abandon a *placed* order before the
-    check has had the chance to cancel it -- trading a cosmetic field for resting risk. So they
-    decode to None instead, which is what an absent field already decodes to.
+    Every field here goes through this, and the reason is the same for all of them: raising
+    inside this decoder abandons an order the venue has already *accepted*, before the echo
+    check has had the chance to cancel it and freeze the market (fix round 1, Important 2). A
+    garbled count is not a licence to walk away from resting risk -- it is a mismatch, and
+    `_count_mismatch` is what says so once the count arrives here as None.
+
+    `average_fill_price` and `ts_ms` decode the same way for the weaker reason that nothing
+    compares, stores or divides by either of them.
     """
     try:
         return decode(value)
@@ -735,15 +767,16 @@ def _decorative(decode: Callable, value):
 
 def _decode_create_order(body: dict) -> CreateOrderResult:
     """The create/amend response. No `require_side` call and no price: those fields are not in
-    this shape, and asking for them is the bug fix 24 removes."""
+    this shape, and asking for them is the bug fix 24 removes. Nothing here raises -- see
+    `_soft` -- so an accepted order always reaches the echo check's cancel path."""
     payload = _payload(body)
     return CreateOrderResult(
         order_id=payload.get("order_id"),
         client_order_id=payload.get("client_order_id"),
-        fill_count=dec(payload.get("fill_count")),
-        remaining_count=dec(payload.get("remaining_count")),
-        average_fill_price=_decorative(dec, payload.get("average_fill_price")),
-        ts_ms=_decorative(_ts_ms, payload.get("ts_ms")),
+        fill_count=_soft(dec, payload.get("fill_count")),
+        remaining_count=_soft(dec, payload.get("remaining_count")),
+        average_fill_price=_soft(dec, payload.get("average_fill_price")),
+        ts_ms=_soft(_ts_ms, payload.get("ts_ms")),
     )
 
 
@@ -958,7 +991,8 @@ class KalshiWriter:
         result = self._transport.request("POST", path, json=body)
         _check_status(result, "POST", path)
         return self._checked_echo(result, ticker, exchange_index, side, own_prob,
-                                  _as_decimal(contracts))
+                                  _as_decimal(contracts),
+                                  known_order_id=str(order_id))
 
     def cancel(self, order_id: str, ticker: str, exchange_index: int) -> CancelResult:
         """`exchange_index` and `market_ticker` travel in the query, and are therefore outside
@@ -983,7 +1017,8 @@ class KalshiWriter:
     # -- the echo check ---------------------------------------------------------------------------
 
     def _checked_echo(self, result, ticker: str, exchange_index: int, sent_side: str,
-                      sent_prob: Decimal, sent_count: Decimal) -> VenueOrder:
+                      sent_prob: Decimal, sent_count: Decimal,
+                      known_order_id: str | None = None) -> VenueOrder:
         """The venue's answer to a create or an amend, checked in *our* side space.
 
         The answer arrives in two pieces, because V2 sends it in two pieces (fix 24). The
@@ -1006,7 +1041,14 @@ class KalshiWriter:
         of them the order is cancelled and `EchoMismatch` is raised, so the caller freezes the
         market for 15 minutes with reason `echo_mismatch`. Failing closed on a confirming read
         that did not answer is deliberate: an unconfirmed order is resting risk we cannot
-        describe, and the freeze is what stops more of it being added.
+        describe, and the freeze is what stops more of it being added. It gets one immediate
+        retry first (`CONFIRM_READ_ATTEMPTS`), so a single transient failure does not cost a
+        freeze.
+
+        `known_order_id` is the id the caller already addressed -- an amend has one, a place does
+        not. It is the cancel path's fallback when the response itself names no order (fix round
+        1, Minor): an amend that comes back without an `order_id` is still an amend of an order
+        we can name, and cancelling it beats recording that there was nothing to cancel.
         """
         body = result.body if isinstance(result.body, dict) else {}
         created = _decode_create_order(body)
@@ -1019,17 +1061,18 @@ class KalshiWriter:
             return _venue_order(view, _payload(body), side, prob,
                                 created.fill_count, created.remaining_count)
 
+        cancel_id = created.order_id or known_order_id
         cancel_error = None
-        if created.order_id:
+        if cancel_id:
             try:
-                self.cancel(created.order_id, ticker=ticker, exchange_index=exchange_index)
+                self.cancel(cancel_id, ticker=ticker, exchange_index=exchange_index)
             except Exception as exc:      # a failed cancel must not mask the mismatch
                 # The class name only: a transport exception's `.request` holds live signed
                 # headers, so the exception itself is never carried forward (see http.py).
                 cancel_error = type(exc).__name__
         else:
             cancel_error = "no order_id to cancel"
-        raise EchoMismatch(order_id=created.order_id, reason="echo_mismatch",
+        raise EchoMismatch(order_id=cancel_id, reason="echo_mismatch",
                            freeze_minutes=ECHO_FREEZE_MINUTES, field=field,
                            cancel_error=cancel_error)
 
@@ -1043,14 +1086,28 @@ class KalshiWriter:
         ones every other order in this module goes through, and `decode_side_price` puts the
         result back into our side space before anything is compared.
 
-        A read that raises is not an acquittal: the class name of whatever went wrong is kept
-        (a class name, never the exception -- its `.request` may hold live signed headers) and
-        the caller treats it as a mismatch.
+        A read that did not *arrive* -- an API error, a transport failure, a timeout -- gets
+        exactly one immediate retry: no sleep, and no write token, because this is a GET on the
+        reader and the message budget is for messages we send (fix round 1, ruling (b)). Two
+        failures is not an acquittal: the class name of the last one is kept (a class name,
+        never the exception -- its `.request` may hold live signed headers) and the caller
+        treats it as a mismatch. It is bounded at two attempts on purpose; a loop here would
+        hold the execution cycle open against a venue that is not answering.
+
+        A read that arrived and would not *decode* is not retried. The payload is the payload,
+        and asking the same question again spends a request to be told the same thing.
         """
-        try:
-            view = self._reader.get_order(order_id)
-        except Exception as exc:
-            return None, None, None, f"the confirming read ({type(exc).__name__})"
+        view = last_error = None
+        for _ in range(CONFIRM_READ_ATTEMPTS):
+            try:
+                view = self._reader.get_order(order_id)
+                break
+            except KalshiDecodeError as exc:
+                return None, None, None, f"the confirming read ({type(exc).__name__})"
+            except Exception as exc:
+                last_error = type(exc).__name__
+        else:
+            return None, None, None, f"the confirming read ({last_error})"
         book_side = _book_side_of(view)
         if view.price is None:
             return view, None, None, "the confirmed price"

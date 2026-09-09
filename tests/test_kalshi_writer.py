@@ -21,8 +21,8 @@ from harness.venues.kalshi.authed import (
     ORDER_MESSAGES_PER_MINUTE, CancelResult, CreateOrderResult, EchoMismatch, KalshiDecodeError,
     KalshiReader, FeeModelMismatch, KalshiWriter, MessageBudgetExceeded, OrderIntent,
     PreSendInvariantFailed, PriceOffGrid, TokenBucket, VenueOrder, _FACTORY_TOKEN,
-    _decode_create_order, decode_side_price, encode_side_price, fixed_point, grid_steps,
-    snap_intent, snap_to_grid,
+    _decode_create_order, _decode_order, decode_side_price, encode_side_price, fixed_point,
+    grid_steps, snap_intent, snap_to_grid,
 )
 
 from tests.test_kalshi_authed import FakeTransport, _err, _ok
@@ -91,6 +91,29 @@ def _echo_of(price="0.5600", count="10.00", remaining=None, fill="0.00", book_si
         "count": count,
         "remaining_count": count if remaining is None else remaining,
         "fill_count": fill,
+        "status": "resting",
+        "order_group_id": "g1",
+    }
+    order.update(kw)
+    return order
+
+
+def _live_order_of(price="0.5600", count="10.00", remaining=None, fill="0.00",
+                   book_side="bid", order_id="o1", **kw) -> dict:
+    """The single-order GET as the reference actually sends it: `yes_price_dollars`, `count_fp`,
+    `remaining_count_fp`, `fill_count_fp` (fix round 1, Important 1). Same order, other
+    vocabulary -- and `no_price_dollars` is present precisely because the decoder must ignore
+    it."""
+    order = {
+        "order_id": order_id,
+        "client_order_id": "11111111-1111-1111-1111-111111111111",
+        "ticker": "KXNFLGAME-X",
+        "book_side": book_side,
+        "yes_price_dollars": price,
+        "no_price_dollars": str(Decimal("1") - Decimal(price)) if price is not None else None,
+        "count_fp": count,
+        "remaining_count_fp": count if remaining is None else remaining,
+        "fill_count_fp": fill,
         "status": "resting",
         "order_group_id": "g1",
     }
@@ -503,21 +526,10 @@ def test_a_create_response_with_no_order_id_is_a_mismatch_with_nothing_to_cancel
     assert len(t.calls) == 1                    # no cancel, and no confirming read
 
 
-def test_a_confirming_read_that_fails_is_a_mismatch_and_the_order_is_cancelled():
-    # An order we cannot describe is resting risk: it is cancelled and the market is frozen,
-    # rather than returned as though the venue had confirmed it.
-    t = FakeTransport(queued=[
-        _ok(_created(count="10.00")),
-        _err(500),                              # the confirming GET
-        _ok({"order_id": "o1"})])               # the cancel
-    with pytest.raises(EchoMismatch) as exc:
-        _writer(t).place_limit(_intent(contracts=Decimal("10")))
-    assert "the confirming read" in exc.value.field and "KalshiApiError" in exc.value.field
-    assert t.calls[2][0] == "DELETE"
-
-
-def test_a_confirming_read_that_will_not_decode_is_a_mismatch():
-    # A fetched order with no direction anywhere raises KalshiDecodeError in the reader.
+def test_a_confirming_read_that_will_not_decode_is_a_mismatch_and_is_not_retried():
+    """A fetched order with no direction anywhere raises `KalshiDecodeError` in the reader. It
+    is a mismatch, and unlike a read that never arrived it gets no second attempt: the payload
+    would be the same one."""
     order = _echo_of(price="0.5600", count="10.00")
     order.pop("book_side")
     t = FakeTransport(queued=[
@@ -525,6 +537,7 @@ def test_a_confirming_read_that_will_not_decode_is_a_mismatch():
     with pytest.raises(EchoMismatch) as exc:
         _writer(t).place_limit(_intent(contracts=Decimal("10")))
     assert "KalshiDecodeError" in exc.value.field
+    assert [c[0] for c in t.calls] == ["POST", "GET", "DELETE"]      # one GET, not two
 
 
 def test_a_confirmed_order_with_no_price_is_a_mismatch():
@@ -645,11 +658,149 @@ def test_a_mangled_decorative_field_does_not_abandon_a_placed_order():
     assert order.side == "yes" and order.prob == Decimal("0.5600")
 
 
-def test_a_count_the_venue_mangled_is_still_a_mismatch_and_not_a_none():
-    """The other half of the same rule: the counts are decided on, so they stay strict."""
-    t = FakeTransport(queued=[_ok(_created(count="10.00", fill="NaN"))])
-    with pytest.raises(KalshiDecodeError):
+def test_a_count_the_venue_mangled_cancels_and_freezes_rather_than_raising():
+    """Fix round 1, Important 2. A garbled count used to raise `KalshiDecodeError` straight out
+    of the decoder, which left an order the venue had already accepted resting with no cancel
+    and no freeze. It is a mismatch instead: the count arrives as None and `_count_mismatch`
+    says so."""
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00", fill="NaN")), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
         _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert exc.value.field == "the echoed counts"
+    assert t.calls[1][0] == "DELETE" and t.calls[1][1].endswith("/o1")
+
+
+def test_the_live_order_field_names_confirm_a_place_end_to_end():
+    """Fix round 1, Important 1. The single-order GET sends `yes_price_dollars` and the `_fp`
+    counts; the decoder read `price`/`count`/... only, so every confirming read would have come
+    back with a None price and frozen the market on a perfectly good order."""
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _ok({"order": _live_order_of(price="0.5600", count="10.00")})])
+    order = _writer(t).place_limit(_intent(side="yes", prob=Decimal("0.56"),
+                                           contracts=Decimal("10")))
+    assert order.side == "yes" and order.prob == Decimal("0.5600")
+    assert order.contracts == Decimal("10.00") and order.status == "resting"
+    assert [c[0] for c in t.calls] == ["POST", "GET"]        # confirmed, never cancelled
+
+
+def test_the_no_leg_confirms_from_the_yes_price_in_the_live_vocabulary():
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _ok({"order": _live_order_of(price="0.5600", count="10.00", book_side="ask")})])
+    order = _writer(t).place_limit(_intent(side="no", prob=Decimal("0.44"),
+                                           contracts=Decimal("10")))
+    assert order.side == "no" and order.prob == Decimal("0.4400")
+
+
+def test_an_order_carrying_only_a_no_price_stays_unconfirmed_and_is_cancelled():
+    """`decode_side_price` is defined on the YES leg. Inverting `no_price_dollars` here would put
+    a second, unpinned conversion in front of the echo check's own, so the price stays None and
+    the order is cancelled -- the right answer to a price we cannot place on the compared leg."""
+    order = _live_order_of(price="0.5600", count="10.00")
+    order.pop("yes_price_dollars")
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _ok({"order": order}), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert exc.value.field == "the confirmed price"
+    assert t.calls[2][0] == "DELETE"
+
+
+def test_both_order_field_vocabularies_decode_to_the_same_view():
+    old = _decode_order(_echo_of(price="0.5600", count="10.00", remaining="7.00", fill="3.00"))
+    new = _decode_order(_live_order_of(price="0.5600", count="10.00", remaining="7.00",
+                                       fill="3.00"))
+    assert (old.price, old.count, old.remaining_count, old.fill_count) == (
+        new.price, new.count, new.remaining_count, new.fill_count)
+
+
+def test_the_current_field_names_win_when_the_venue_sends_both():
+    order = _live_order_of(price="0.5600", count="10.00")
+    order.update({"price": "0.9900", "count": "99.00"})
+    view = _decode_order(order)
+    assert view.price == Decimal("0.9900") and view.count == Decimal("99.00")
+
+
+# --- the confirming read's one retry (fix round 1, ruling (b)) --------------------------------
+
+
+def test_a_confirming_read_that_fails_once_is_retried_and_confirms_the_order():
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _err(500),                                       # the first confirming GET
+        _ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    order = _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert order.side == "yes" and order.prob == Decimal("0.5600")
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET"]      # no cancel
+    assert [c[1] for c in t.calls[1:]] == ["/portfolio/orders/o1"] * 2
+
+
+def test_a_confirming_read_that_fails_twice_cancels_and_freezes():
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _err(500), _err(500), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert "the confirming read" in exc.value.field and "KalshiApiError" in exc.value.field
+    assert exc.value.freeze_minutes == 15 and exc.value.reason == "echo_mismatch"
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET", "DELETE"]
+
+
+def test_the_confirming_read_is_never_retried_more_than_once():
+    from harness.venues.kalshi.authed import CONFIRM_READ_ATTEMPTS
+    assert CONFIRM_READ_ATTEMPTS == 2
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _err(500), _err(500), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch):
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert sum(1 for c in t.calls if c[0] == "GET") == CONFIRM_READ_ATTEMPTS
+
+
+def test_a_retried_confirming_read_spends_no_write_token():
+    # The retry is a GET on the reader; the 60-a-minute budget is for messages we send.
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _err(500),
+        _ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    w = _writer(t)
+    before = w._bucket.tokens
+    w.place_limit(_intent(contracts=Decimal("10")))
+    assert before - w._bucket.tokens == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_amend_path_retries_its_confirming_read_too():
+    t = FakeTransport(queued=[
+        _ok(_created(count="12.00")), _err(500),
+        _ok({"order": _echo_of(price="0.5700", count="12.00")})])
+    order = _writer(t).amend("o1", Decimal("0.57"), Decimal("12"), "c1", "c2",
+                             ticker="KXNFLGAME-X", side="yes", exchange_index=0,
+                             price_ranges=CENT_RANGES)
+    assert order.prob == Decimal("0.5700")
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET"]
+
+
+# --- the amend knows the id it addressed (fix round 1, Minor) ---------------------------------
+
+
+def test_an_amend_whose_response_names_no_order_cancels_the_id_it_addressed():
+    t = FakeTransport(queued=[
+        _ok(_created(count="12.00", order_id=None)), _ok({"order_id": "ov1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).amend("ov1", Decimal("0.57"), Decimal("12"), "c1", "c2",
+                         ticker="KXNFLGAME-X", side="yes", exchange_index=0,
+                         price_ranges=CENT_RANGES)
+    assert exc.value.field == "order_id"
+    assert exc.value.cancel_error is None and exc.value.order_id == "ov1"
+    assert t.calls[1][0] == "DELETE" and t.calls[1][1].endswith("/ov1")
+
+
+def test_a_place_whose_response_names_no_order_still_has_nothing_to_cancel():
+    # A place has no id of its own to fall back on: it was asking the venue to make one.
+    t = FakeTransport(queued=[_ok(_created(count="10.00", order_id=None))])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t).place_limit(_intent(contracts=Decimal("10")))
+    assert exc.value.cancel_error == "no order_id to cancel"
+    assert len(t.calls) == 1
 
 
 def test_a_create_response_wrapped_in_an_order_key_decodes_the_same_way():
