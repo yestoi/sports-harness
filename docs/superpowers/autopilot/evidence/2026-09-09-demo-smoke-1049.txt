@@ -1,0 +1,19 @@
+ Container sports-harness-postgres-1  Running
+step            ok    detail
+balance         true  balance=249000 payout=none
+market          true  markets=72 chosen=1 parsed_ranges=True
+grid            true  steps=99 low=0.0100 next=0.0200 high=0.9900
+group           true  created=true limit=5
+place           true  prob=0.0100 contracts=1.00 status=resting
+amend           true  prob=0.0200 contracts=2.00 status=resting
+get_order       true  price=0.0200 remaining=2.00 fill=0.00 status=resting
+cancel          true  reduced_by=2.00
+cancel_group    true  cancelled=true
+group_2         true  created=true limit=5
+place_expiring  true  expires_in_s=60 status=resting
+expiry          true  expired=true resting=0
+fills           true  fills=0
+positions       true  positions=0
+cancel_group_2  true  cancelled=true
+unfunded=false exit=0
+smoke exit=0
