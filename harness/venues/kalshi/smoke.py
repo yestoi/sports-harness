@@ -186,8 +186,14 @@ def run_smoke(settings, session_factory, now, sleep=time.sleep, *,
     transport = reader._transport
 
     steps: list[SmokeStep] = []
-    group_id = None
-    group_cancelled = False
+    #: Every order group this run has created and not yet cancelled. `DELETE
+    #: /portfolio/order_groups/{id}` permanently removes a group (ctx7 `/openapi/kalshi_openapi_yaml`,
+    #: read 2026-09-09 09:14 CT: "Deletes an order group and cancels all orders within it. This
+    #: permanently removes the group."), so a group is a one-shot resource: once cancelled it
+    #: cannot take the next order (fix 29; the demo venue answered a reused group's create with
+    #: 404, `docs/superpowers/autopilot/evidence/2026-09-09-demo-smoke-0912.txt`). The failure
+    #: path below best-effort-cancels whichever of these are still live.
+    live_groups: list[str] = []
 
     def record(name: str, detail: str) -> None:
         steps.append(SmokeStep(name=name, ok=True, detail=_detail(detail)))
@@ -220,6 +226,7 @@ def run_smoke(settings, session_factory, now, sleep=time.sleep, *,
 
         # 4. The order group. `contracts_limit` is the venue's own ceiling on the group.
         group_id = writer.create_group(SMOKE_GROUP_CONTRACTS_LIMIT)
+        live_groups.append(group_id)
         record("group", f"created=true limit={SMOKE_GROUP_CONTRACTS_LIMIT}")
 
         # 5. One post-only YES bid at the lowest grid price for one contract. At the bottom
@@ -259,19 +266,26 @@ def run_smoke(settings, session_factory, now, sleep=time.sleep, *,
                             f"fill={_num(fetched.fill_count)} "
                             f"status={_enum(fetched.status)}")
 
-        # 8. Cancel, then cancel the group.
+        # 8. Cancel, then cancel the group. This permanently deletes it (reference above), so
+        #    the expiring order below cannot go into it -- the demo venue answered that reuse
+        #    with a 404 (fix 29, evidence cited above).
         cancelled = writer.cancel(placed.order_id, ticker, 0)
         record("cancel", f"reduced_by={_num(cancelled.reduced_by)}")
         writer.cancel_group(group_id)
-        group_cancelled = True
+        live_groups.remove(group_id)
         record("cancel_group", "cancelled=true")
 
-        # 9. A second order that the venue itself must expire.
+        # 9. A second, fresh order group for the expiring order (fix 29).
+        second_group_id = writer.create_group(SMOKE_GROUP_CONTRACTS_LIMIT)
+        live_groups.append(second_group_id)
+        record("group_2", f"created=true limit={SMOKE_GROUP_CONTRACTS_LIMIT}")
+
+        # 10. A second order that the venue itself must expire.
         expiring = writer.place_limit(OrderIntent(
             client_order_id=str(uuid.uuid4()), ticker=ticker, side="yes", prob=low,
             contracts=SMOKE_CONTRACTS,
             expiration_time=now + timedelta(seconds=SMOKE_EXPIRY_S),
-            exchange_index=0, order_group_id=group_id, price_ranges=price_ranges))
+            exchange_index=0, order_group_id=second_group_id, price_ranges=price_ranges))
         record("place_expiring", f"expires_in_s={SMOKE_EXPIRY_S} "
                                  f"status={_enum(expiring.status)}")
 
@@ -285,11 +299,17 @@ def run_smoke(settings, session_factory, now, sleep=time.sleep, *,
                 "the venue did not expire an expiring order")
         record("expiry", f"expired=true resting={len(resting)}")
 
-        # 10. The two read paths a live executor would reconcile against.
+        # 11. The two read paths a live executor would reconcile against.
         fills = reader.get_fills()
         record("fills", f"fills={len(fills)}")
         positions = reader.get_positions()
         record("positions", f"positions={len(positions)}")
+
+        # 12. Cancel the second group. Nothing should be resting in it by now, but a cancelled
+        #     group is the clean state to leave the demo account in.
+        writer.cancel_group(second_group_id)
+        live_groups.remove(second_group_id)
+        record("cancel_group_2", "cancelled=true")
 
     except Exception as exc:                    # every step failure lands here, named
         name = _next_step_name(steps)
@@ -299,8 +319,8 @@ def run_smoke(settings, session_factory, now, sleep=time.sleep, *,
         steps.append(SmokeStep(name=name, ok=False, detail=detail))
         log.warning("kalshi demo smoke failed at step %s: %s", name, detail)
         _mark_demo_unavailable(session_factory, name, reason, now)
-        if group_id is not None and not group_cancelled:
-            steps.append(_best_effort_cancel_group(writer, group_id))
+        for gid in list(live_groups):
+            steps.append(_best_effort_cancel_group(writer, gid))
 
     return SmokeResult(steps=steps, unfunded=False)
 
@@ -308,7 +328,8 @@ def run_smoke(settings, session_factory, now, sleep=time.sleep, *,
 #: The sequence's step names in order, so a failure is reported against the step that was
 #: running rather than against a generic "error".
 STEP_ORDER = ("balance", "market", "grid", "group", "place", "amend", "get_order", "cancel",
-              "cancel_group", "place_expiring", "expiry", "fills", "positions")
+              "cancel_group", "group_2", "place_expiring", "expiry", "fills", "positions",
+              "cancel_group_2")
 
 
 def _next_step_name(steps: list[SmokeStep]) -> str:

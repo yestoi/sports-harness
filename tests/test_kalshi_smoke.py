@@ -55,12 +55,17 @@ CENT_RANGES = [{"start": 0, "end": 1, "step": 0.01}]
 
 #: The exact order the sequence sends. The methods and the paths are asserted separately, so a
 #: reordering that keeps the same multiset of calls still fails.
+#: Fix 29: `cancel_group` permanently deletes the group (ctx7 `/openapi/kalshi_openapi_yaml`),
+#: so the expiring order gets a second group, created after the first is cancelled and itself
+#: cancelled last, after the read paths (`fills`, `positions`) the venue is otherwise reconciled
+#: against.
 EXPECTED_METHODS = ["GET", "GET", "POST", "POST", "GET", "GET", "GET", "POST", "GET", "GET",
-                    "GET", "DELETE", "DELETE", "POST", "GET", "GET", "GET", "GET"]
+                    "GET", "DELETE", "DELETE", "POST", "POST", "GET", "GET", "GET", "GET",
+                    "DELETE"]
 EXPECTED_PATHS = [
     "/portfolio/balance",
     "/markets",                                   # the nearest open KXNFLGAME market
-    "/portfolio/order_groups/create",             # create_group(5)
+    "/portfolio/order_groups/create",             # create_group(5) -> g1
     "/portfolio/events/orders",                   # place
     "/portfolio/orders/o1",                       # the place's confirming read (fix 24): 404
     "/portfolio/orders/o1",                       # 404 again -- read-after-write lag (fix 27)
@@ -70,12 +75,14 @@ EXPECTED_PATHS = [
     "/portfolio/orders/o1",                       # and now it carries the id the amend assigned
     "/portfolio/orders/o1",                       # get_order, the smoke's own step 7
     "/portfolio/events/orders/o1",                # cancel
-    "/portfolio/order_groups/g1",                 # cancel_group
-    "/portfolio/events/orders",                   # the expiry order
+    "/portfolio/order_groups/g1",                 # cancel_group -- g1 is gone for good (fix 29)
+    "/portfolio/order_groups/create",             # create_group(5) -> g2 (fix 29)
+    "/portfolio/events/orders",                   # the expiry order, in g2
     "/portfolio/orders/o2",                       # its confirming read (fix 24)
     "/portfolio/orders",                          # get_orders(resting)
     "/portfolio/fills",
     "/portfolio/positions",
+    "/portfolio/order_groups/g2",                 # cancel_group_2 (fix 29)
 ]
 
 
@@ -165,10 +172,13 @@ def _created(order_id: str, count: str) -> dict:
 
 
 def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
-    """The eighteen responses the full sequence consumes, in order (fix 24 added the three
+    """The twenty responses the full sequence consumes, in order (fix 24 added the three
     confirming reads; fix 27 added the two 404s the demo venue really answered the first of them
     with, 130 ms and 210 ms after returning 201 for the create; fix 28 added the stale 200 it
-    answers the amend's first confirming read with)."""
+    answers the amend's first confirming read with; fix 29 added the second group -- `DELETE
+    /portfolio/order_groups/{id}` permanently removes a group (ctx7 `/openapi/kalshi_openapi_yaml`),
+    so reusing `g1` after `cancel_group` 404d on the demo venue, evidence
+    docs/superpowers/autopilot/evidence/2026-09-09-demo-smoke-0912.txt)."""
     return [
         _ok({"balance": "250.00"}),
         _ok({"markets": [_market(LATER_TICKER, "2026-09-21T23:00:00Z", price_ranges),
@@ -188,12 +198,14 @@ def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
         _ok(_echo("o1", "0.0200", "2.00")),          # the smoke's own get_order step
         _ok({"order_id": "o1", "client_order_id": "c1", "reduced_by": "2.00",
              "ts_ms": 1789000000000}),
-        _ok({}),
-        _ok(_created("o2", "1.00")),                 # the expiry order
+        _ok({}),                                     # cancel_group(g1)
+        _ok({"order_group_id": "g2"}),               # create_group(5) for the expiring order
+        _ok(_created("o2", "1.00")),                 # the expiry order, in g2
         _ok(_echo("o2", "0.0100", "1.00")),          # its confirming read
         _ok({"orders": resting_after_expiry or [], "cursor": ""}),
         _ok({"fills": [], "cursor": ""}),
         _ok({"market_positions": [], "cursor": ""}),
+        _ok({}),                                     # cancel_group_2(g2), the run's last call
     ]
 
 
@@ -201,6 +213,15 @@ def _script_failing_at_amend() -> list:
     script = _full_demo_script()[:7]              # through the place and its confirming read
     script.append(_err(400, "bad_price"))
     script.append(_ok({}))            # the best-effort cancel_group the failure path runs
+    return script
+
+
+def _script_failing_at_place_expiring() -> list:
+    """Fix 29: by the time the expiring order is placed, `g1` is already deleted (`cancel_group`
+    permanently removes it), so a failure here must cancel only the live group, `g2`."""
+    script = _full_demo_script()[:14]             # through cancel_group(g1) and create_group(g2)
+    script.append(_err(400, "bad_price"))         # place_expiring fails
+    script.append(_ok({}))                        # the best-effort cancel_group(g2)
     return script
 
 
@@ -217,11 +238,12 @@ def _script_with_hostile_strings() -> list:
         "close_time": "2026-09-14T23:00:00Z", "price_ranges": CENT_RANGES,
         "title": HOSTILE}], "cursor": ""})
     script[2] = _ok({"order_group_id": "g1", "note": HOSTILE})
-    for i in (3, 7, 13):                          # the create/amend responses
+    script[13] = _ok({"order_group_id": "g2", "note": HOSTILE})   # create_group(5), fix 29
+    for i in (3, 7, 14):                          # the create/amend responses
         script[i].body["note"] = HOSTILE
     for i in (4, 5):                              # the place's two 404s (fix 27)
         script[i].body["code"] = HOSTILE
-    for i in (6, 8, 9, 10, 14):                   # the order-shaped reads (8 is stale, fix 28)
+    for i in (6, 8, 9, 10, 15):                   # the order-shaped reads (8 is stale, fix 28)
         body = script[i].body
         body["order"]["status"] = HOSTILE
         body["note"] = HOSTILE
@@ -370,6 +392,25 @@ def test_the_amend_moves_one_grid_step_up_and_to_two_contracts(tmp_path):
     assert amend_body["price"] == "0.0200" and amend_body["count"] == "2.00"
 
 
+def test_the_expiring_order_uses_a_second_group_since_the_first_is_deleted(tmp_path):
+    """Fix 29: `DELETE /portfolio/order_groups/{id}` permanently removes the group (ctx7
+    `/openapi/kalshi_openapi_yaml`, read 2026-09-09 09:14 CT), so the expiring order cannot reuse
+    the group `cancel_group` just deleted -- it 404d on the demo venue (evidence
+    docs/superpowers/autopilot/evidence/2026-09-09-demo-smoke-0912.txt). The run's last call
+    cleans up that second group."""
+    t = FakeTransport(env="demo", queued=_full_demo_script())
+    result = run_smoke(_demo_settings(tmp_path), _factory(), NOW, sleep=lambda _s: None,
+                       writer_factory=_injecting(t))
+    assert result.exit_code() == 0
+    create_calls = [c for c in t.calls if c[1] == "/portfolio/order_groups/create"]
+    assert len(create_calls) == 2
+    expiring_body = [c[3] for c in t.calls if c[1] == "/portfolio/events/orders"][1]
+    assert expiring_body["order_group_id"] == "g2"
+    assert t.calls[-1][0] == "DELETE" and t.calls[-1][1] == "/portfolio/order_groups/g2"
+    by_name = {s.name: s for s in result.steps}
+    assert by_name["group_2"].ok and by_name["cancel_group_2"].ok
+
+
 def test_the_expiry_order_carries_now_plus_sixty_seconds(tmp_path):
     t = FakeTransport(env="demo", queued=_full_demo_script())
     run_smoke(_demo_settings(tmp_path), _factory(), NOW, sleep=lambda _s: None,
@@ -497,6 +538,21 @@ def test_the_failure_path_cancels_the_group_it_created(tmp_path, db_session):
     run_smoke(_demo_settings(tmp_path), _factory_for(db_session), NOW, sleep=lambda _s: None,
               writer_factory=_injecting(t))
     assert t.calls[-1][0] == "DELETE" and t.calls[-1][1] == "/portfolio/order_groups/g1"
+
+
+def test_the_failure_path_at_place_expiring_cancels_only_the_second_group(tmp_path, db_session):
+    """Fix 29 (c) mirrored: `g1` is already gone by the time the expiring order is placed, so
+    the failure path must not try to cancel it again -- only `g2`, which is still live."""
+    t = FakeTransport(env="demo", queued=_script_failing_at_place_expiring())
+    result = run_smoke(_demo_settings(tmp_path), _factory_for(db_session), NOW,
+                       sleep=lambda _s: None, writer_factory=_injecting(t))
+    assert result.exit_code() == 1
+    failed = next(s for s in result.steps if not s.ok and s.name != "cleanup")
+    assert failed.name == "place_expiring"
+    cancel_group_deletes = [c for c in t.calls
+                            if c[0] == "DELETE" and c[1].startswith("/portfolio/order_groups/")]
+    assert cancel_group_deletes == [("DELETE", "/portfolio/order_groups/g1", None, None),
+                                    ("DELETE", "/portfolio/order_groups/g2", None, None)]
 
 
 def test_smoke_result_exit_code_is_zero_only_when_every_step_passed():
