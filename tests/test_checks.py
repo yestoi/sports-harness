@@ -2,14 +2,15 @@
 guarantee, and `run_checks`' timeout handling.
 """
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest import mock
 
 import pytest
-from sqlalchemy import event as sa_event
+from sqlalchemy import event as sa_event, text
 
-from harness.db.models import FairValue, JobRun, VenueTrade
+from harness.db.models import FairValue, Intent, JobRun, Order, OrderEvent, Run, VenueTrade
 from harness.ops import checks as checks_mod
 from harness.ops.checks import CHECKS, Check, current_trades_partition, assert_no_tape_reads, run_checks
 
@@ -300,3 +301,142 @@ def test_the_orders_key_index_is_built_concurrently(db_session):
     present = db_session.execute(text(
         "select 1 from pg_indexes where indexname = 'ix_orders_key_placed'")).first()
     assert present is not None, "create_schema did not build ix_orders_key_placed"
+
+
+# --- Phase 4.5, T1 (addendum 0.4): the three corrected definitions. -----------------------
+
+
+def _intent(session, *, created_at, variant_id="v1", venue_market_id=7, side="yes",
+            signal_id=None):
+    row = Intent(id=uuid.uuid4(), signal_id=signal_id or int(created_at.timestamp() * 1000) % 10**9,
+                 variant_id=variant_id, venue="kalshi", venue_market_id=venue_market_id,
+                 ticker="KXNFL-T", side=side, signal_created_at=created_at,
+                 created_at=created_at, replay=False)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _order(session, *, placed_at, status, variant_id="v1", venue_market_id=7, side="yes"):
+    row = Order(intent_id=uuid.uuid4(), variant_id=variant_id, venue="kalshi",
+                client_order_id=str(uuid.uuid4()), ticker="KXNFL-T",
+                venue_market_id=venue_market_id, side=side, prob=Decimal("0.5000"),
+                contracts=Decimal("10.00"), status=status, placed_at=placed_at)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _run_one(session, name, now):
+    job = JobRun(job="settle", started_at=now, status="running", notes={})
+    session.add(job)
+    session.flush()
+    return run_checks(session, now, job_run_id=job.id, checks=[_check(name)])[0]
+
+
+def test_intents_check_excuses_an_intent_whose_key_had_a_working_order(db_session):
+    """The executor's hold path: it considered the intent, saw an order already working on the
+    same (variant, market, side) key, and wrote no event. Not a lost intent."""
+    now = datetime.now(timezone.utc)
+    _order(db_session, placed_at=now - timedelta(hours=3), status="open")
+    _intent(db_session, created_at=now - timedelta(minutes=30))
+
+    assert _run_one(db_session, "intents_without_order_or_skip", now).status == "pass"
+
+
+def test_intents_check_excuses_an_order_cancelled_after_the_intent(db_session):
+    """Working at `created_at` and cancelled later still excuses it: the cancel event's `ts` is
+    after the intent, so the order was resting when the intent was made."""
+    now = datetime.now(timezone.utc)
+    order = _order(db_session, placed_at=now - timedelta(hours=3), status="cancelled")
+    db_session.add(OrderEvent(order_id=order.id, ts=now - timedelta(minutes=10), kind="cancel",
+                              reason="reprice", replay=False))
+    _intent(db_session, created_at=now - timedelta(minutes=30))
+    db_session.flush()
+
+    assert _run_one(db_session, "intents_without_order_or_skip", now).status == "pass"
+
+
+def test_intents_check_still_fails_on_an_order_cancelled_before_the_intent(db_session):
+    """The boundary (ruling B-(c)): a settled or cancelled order from hours earlier must not
+    excuse a real loss."""
+    now = datetime.now(timezone.utc)
+    order = _order(db_session, placed_at=now - timedelta(hours=3), status="cancelled")
+    db_session.add(OrderEvent(order_id=order.id, ts=now - timedelta(hours=2), kind="cancel",
+                              reason="reprice", replay=False))
+    _intent(db_session, created_at=now - timedelta(minutes=30))
+    db_session.flush()
+
+    assert _run_one(db_session, "intents_without_order_or_skip", now).status == "fail"
+
+
+def test_intents_check_still_fails_on_a_key_with_no_order_at_all(db_session):
+    now = datetime.now(timezone.utc)
+    _intent(db_session, created_at=now - timedelta(minutes=30))
+
+    assert _run_one(db_session, "intents_without_order_or_skip", now).status == "fail"
+
+
+def test_intents_check_ignores_an_intent_older_than_24_hours(db_session):
+    now = datetime.now(timezone.utc)
+    _intent(db_session, created_at=now - timedelta(hours=30))
+
+    assert _run_one(db_session, "intents_without_order_or_skip", now).status == "pass"
+
+
+def test_build_sha_drift_ignores_runs_that_predate_the_new_build(db_session):
+    """A deploy day: three runs on the old sha, then the new build's first run. The old rows
+    are before the new build existed, so they are not drift."""
+    now = datetime.now(timezone.utc)
+    for minutes in (240, 180, 120):
+        db_session.add(Run(started_at=now - timedelta(minutes=minutes), status="ok",
+                           notes={}, build_sha="oldsha"))
+    db_session.add(Run(started_at=now - timedelta(minutes=60), status="ok", notes={},
+                       build_sha="newsha"))
+    db_session.flush()
+
+    assert _run_one(db_session, "build_sha_drift", now).status == "pass"
+
+
+def test_build_sha_drift_still_fails_on_a_container_left_behind(db_session):
+    """The failure the check exists for: a run carrying the old sha *after* the new one
+    appeared, i.e. a container still on the old image."""
+    now = datetime.now(timezone.utc)
+    db_session.add(Run(started_at=now - timedelta(minutes=180), status="ok", notes={},
+                       build_sha="oldsha"))
+    db_session.add(Run(started_at=now - timedelta(minutes=120), status="ok", notes={},
+                       build_sha="newsha"))
+    db_session.add(Run(started_at=now - timedelta(minutes=30), status="ok", notes={},
+                       build_sha="oldsha"))
+    db_session.flush()
+
+    assert _run_one(db_session, "build_sha_drift", now).status == "fail"
+
+
+def test_feed_lag_check_is_bounded_to_24_hours(db_session):
+    now = datetime.now(timezone.utc)
+    db_session.add(FairValue(run_id=1, game_id=1, market_type="moneyline",
+                             fair_p=Decimal("0.5500"), fair_source="direct",
+                             feed_lag_s=-4, created_at=now - timedelta(hours=30)))
+    db_session.flush()
+
+    assert _run_one(db_session, "fair_values_negative_feed_lag", now).status == "pass"
+    assert "24 hours" in _check("fair_values_negative_feed_lag").sql
+
+
+def test_a_negative_feed_lag_inside_the_window_still_fails(db_session):
+    now = datetime.now(timezone.utc)
+    db_session.add(FairValue(run_id=1, game_id=1, market_type="moneyline",
+                             fair_p=Decimal("0.5500"), fair_source="direct",
+                             feed_lag_s=-4, created_at=now - timedelta(hours=1)))
+    db_session.flush()
+
+    assert _run_one(db_session, "fair_values_negative_feed_lag", now).status == "fail"
+
+
+def test_the_intents_check_rides_the_orders_key_index(db_session):
+    """T5 builds `ix_orders_key_placed`; this check is why it exists. Without it the correlated
+    lookup is a sequential scan per candidate intent and the check degrades to a daily `skip`."""
+    present = db_session.execute(text(
+        "select 1 from pg_indexes where indexname = 'ix_orders_key_placed'")).first()
+    assert present is not None, "T5's ix_orders_key_placed is missing; this check will time out"

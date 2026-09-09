@@ -114,14 +114,22 @@ CHECKS: list[Check] = [
         "== 0", _zero),
     Check(
         "build_sha_drift",
-        # verify.md's "Build stamp" plausibility band as an invariant: every recorder run in
-        # the last 24h should carry the same build_sha as the newest one, or a container is
-        # still running an old image.
+        # verify.md's "Build stamp" plausibility band as an invariant: a container still running
+        # an old image. Corrected in phase 4.5 (addendum §0.4b): only runs started *after* the
+        # newest build's first appearance can drift, so a deploy day's earlier rows -- which
+        # legitimately carry the previous sha -- are not counted, while a container whose rows
+        # continue with the old sha after the new one appears still is. `runs` is written by the
+        # recorder alone, so this covers app-run only; app-exec's and app-serve's shas are shown
+        # side by side on Pulse's build tile instead.
         """
         select count(*) from runs
         where started_at >= now() - interval '24 hours' and build_sha is not null
           and build_sha <> (select build_sha from runs where build_sha is not null
                             order by id desc limit 1)
+          and started_at >= (select min(started_at) from runs
+                             where build_sha = (select build_sha from runs
+                                                where build_sha is not null
+                                                order by id desc limit 1))
         """,
         "== 0", _zero),
     Check(
@@ -182,12 +190,44 @@ CHECKS: list[Check] = [
         "== 0", _zero),
     Check(
         "intents_without_order_or_skip",
+        # Corrected in phase 4.5 (addendum §0.4a, ruling B-(c)). Two changes, both narrowing:
+        #
+        # 1. Bounded to the last 24 h on the intent side, like every sibling. The `orders` side
+        #    carries no time bound of its own on purpose: a working order may have been placed
+        #    days before the intent, and bounding `placed_at` would re-count the hold path.
+        # 2. An intent whose (variant_id, venue_market_id, side) key had an order *working at
+        #    its own created_at* is excused. That is the executor's hold path, which writes no
+        #    order and no event by design: 2,459 such rows on 2026-09-09, every one with a
+        #    working order on its key, 2,452 superseded by the next pricing run's intent.
+        #
+        # "Working at" is the load-bearing word: placed no later than the intent, and either
+        # still open now or cancelled/expired no earlier than the intent. A settled order from
+        # hours before must not excuse a genuinely lost intent, which is what the boundary test
+        # in tests/test_checks.py pins.
+        #
+        # The correlated lookup rides the additive `ix_orders_key_placed`
+        # (variant_id, venue_market_id, side, placed_at) built CONCURRENTLY in
+        # harness/db/schema.py, which is what keeps it inside the 2000 ms check timeout.
         """
         select count(*) from intents i
-        where i.replay = false and i.created_at < now() - interval '2 minutes'
+        where i.replay = false
+          and i.created_at > now() - interval '24 hours'
+          and i.created_at < now() - interval '2 minutes'
           and not exists (select 1 from orders o where o.intent_id = i.id)
           and not exists (select 1 from order_events e
                           where e.intent_id = i.id and e.kind = 'skipped')
+          and not exists (
+                select 1 from orders o
+                where o.variant_id = i.variant_id
+                  and o.venue_market_id = i.venue_market_id
+                  and o.side = i.side
+                  and o.replay = false
+                  and o.placed_at <= i.created_at
+                  and (o.status in ('open', 'partially_filled')
+                       or exists (select 1 from order_events e2
+                                  where e2.order_id = o.id
+                                    and e2.kind in ('cancel', 'expire')
+                                    and e2.ts >= i.created_at)))
         """,
         "== 0", _zero),
     Check(
@@ -211,7 +251,12 @@ CHECKS: list[Check] = [
         "== 0", _zero),
     Check(
         "fair_values_negative_feed_lag",
-        "select count(*) from fair_values where feed_lag_s < 0",
+        # Corrected in phase 4.5 (addendum §0.4c): this was the one unbounded statement left in
+        # the registry and had been recording `skip` on timeout every day, so the invariant wall
+        # was grey over a check that never ran. The 24 h bound rides `ix_fair_created_brin`,
+        # exactly as fix 16 did for `fair_values_negative_staleness`.
+        "select count(*) from fair_values "
+        "where created_at > now() - interval '24 hours' and feed_lag_s < 0",
         "== 0", _zero),
     Check(
         "benchmarks_source_after_target",
