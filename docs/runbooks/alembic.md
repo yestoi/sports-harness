@@ -41,6 +41,10 @@ path anywhere: `harness/db/migrate.py` builds the `Config` in code, so every ope
 - An index on `raw_responses`, `orderbook_events`, `venue_trades`, `venue_quotes` or
   `odds_snapshots` goes through `concurrent_index` only.
 - Never a view. Views live in `create_schema` as `CREATE OR REPLACE VIEW`.
+- A `create index concurrently` that aborts mid-build (a lock timeout, a killed deploy) leaves
+  an `INVALID` index behind, and `... if not exists` on every later deploy skips it forever
+  rather than rebuilding it; verify's `check_results` row for that index goes `skip` instead of
+  `pass` when this happens. The remedy is `REINDEX INDEX CONCURRENTLY <name>`.
 
 ## Why the baseline looks the way it does
 
