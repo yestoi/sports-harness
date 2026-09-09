@@ -1,6 +1,6 @@
 """The tables of spec §7.2, built over one ISO week's rows.
 
-t1-t8 and t11 are implemented; t7, t9 and t10 are not-collected today.
+t1-t8, t11 and t12 are implemented; t7, t9 and t10 are not-collected today.
 
 Read-only: every function here runs `select`s and returns `Table` values. Nothing writes, and
 nothing imports the executor's or the settler's write paths (addendum ruling 6).
@@ -48,7 +48,9 @@ from harness.report.stats import (
 from harness.settlement.benchmarks import BENCHMARK_TYPES
 from harness.settlement.order_clv import clv_formulas
 
-TABLE_KEYS = ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9", "t10")
+#: Render and persist order. t12 is appended *after t10*, not after t11: t11 sits before t9 and
+#: t10 in this tuple, so "after t11" would insert the new table in the middle (ruling A-I14).
+TABLE_KEYS = ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9", "t10", "t12")
 
 #: What an empty cell prints. Never "" (the brief's `test_render_has_no_empty_cells`).
 PLACEHOLDER = "--"
@@ -1263,6 +1265,135 @@ def _table11(session: Session, window: dict) -> Table:
                  note)
 
 
+# --- table 12: declined candidates (phase 4.5) --------------------------------------------------
+# Spec §2.3 item 9 and §3.7. What the strategy turned down this week, and what it would have been
+# worth. Two branches with two different estimators, which is why the estimator is in the column
+# key rather than in a footnote (ruling B-I5): a rejected signal never became an intent, so it is
+# scored from the market's own outcome at that variant's `price_target`; a skipped intent did,
+# so it is scored from the gap snapshot the intent was made on, at the intent's `target_prob`.
+#
+# The first column is the composite `variant/kind:reason`, not the variant, because `row_key` is
+# the first column and `persist_report` disambiguates repeats with a positional `#N` suffix --
+# which would give the Study surface a row key whose meaning shifts between runs as reasons come
+# and go. The kind is folded in because a rejection label and a skip reason could otherwise land
+# on the same key.
+#
+# Reported, never gated: `harness/report/gate.py` imports only `episode_of` from this module and
+# `criteria_hash` is over CRITERIA alone, so this table cannot reach a gate row.
+
+_T12_COLUMNS = ["variant/reason", "kind", "count", "share",
+                "clv_rejected_gap_outcomes", "clv_rejected_gap_outcomes_kalshi",
+                "clv_skipped_intent_snapshot", "clv_skipped_intent_snapshot_kalshi"]
+
+#: The two benchmarks spec §3.7 names for the counterfactual. The unsuffixed column is the first
+#: of them; `_kalshi` is the second.
+_T12_BENCHMARKS = ("pinnacle_t5", "kalshi_last_trade_pre_kick")
+
+_T12_REJECTED = text("""
+    select s.variant_id, s.rejection_reason as reason, s.side, s.price_target,
+           m.game_id, o.benchmark_type, o.p_bench
+    from signals s
+    join gap_outcomes o on o.gap_snapshot_id = s.gap_snapshot_id
+    join venue_markets m on m.id = s.venue_market_id
+    where s.replay = false and s.created_at >= :start and s.created_at < :end
+      and s.decision = 'rejected' and s.rejection_reason is not null
+      and s.price_target is not null and o.p_bench is not null and m.game_id is not null
+""")
+
+_T12_REJECTED_COUNTS = text("""
+    select variant_id, rejection_reason as reason, count(*) as n
+    from signals
+    where replay = false and created_at >= :start and created_at < :end
+      and decision = 'rejected' and rejection_reason is not null
+    group by variant_id, rejection_reason
+""")
+
+_T12_SKIPPED = text("""
+    select i.variant_id, e.reason as reason, i.side, i.target_prob,
+           m.game_id, o.benchmark_type, o.p_bench
+    from intents i
+    join order_events e on e.intent_id = i.id and e.kind = 'skipped'
+    join signals s on s.id = i.signal_id
+    join gap_outcomes o on o.gap_snapshot_id = s.gap_snapshot_id
+    join venue_markets m on m.id = i.venue_market_id
+    where i.replay = false and i.created_at >= :start and i.created_at < :end
+      and e.reason is not null and i.target_prob is not null
+      and o.p_bench is not null and m.game_id is not null
+""")
+
+_T12_SKIPPED_COUNTS = text("""
+    select i.variant_id, e.reason as reason, count(*) as n
+    from intents i
+    join order_events e on e.intent_id = i.id and e.kind = 'skipped'
+    where i.replay = false and i.created_at >= :start and i.created_at < :end
+      and e.reason is not null
+    group by i.variant_id, e.reason
+""")
+
+
+def _t12_series(session: Session, statement, window: dict, price_column: str) -> dict:
+    """`(variant, reason, benchmark) -> [(clv_net, game_id), ...]`, the counterfactual net-of-fee
+    CLV of a declined chance at the price that variant actually wanted."""
+    series: dict[tuple[str, str, str], list[tuple[float, int]]] = defaultdict(list)
+    for row in session.execute(statement, window):
+        price = getattr(row, price_column)
+        if price is None:
+            continue
+        p_bench = side_p(row.p_bench, row.side)
+        _, clv_net, _ = clv_formulas(p_bench, price)
+        series[(row.variant_id, row.reason, row.benchmark_type)].append(
+            (float(clv_net), row.game_id))
+    return series
+
+
+def _table12(session: Session, window: dict) -> Table:
+    header = ("What the strategy turned down this week, by variant and reason, and what it "
+              "would have been worth. Two estimators, named in the column keys because they "
+              "are not the same measurement: `clv_rejected_gap_outcomes` scores a rejected "
+              "signal from `gap_outcomes` at that variant's own `price_target`; "
+              "`clv_skipped_intent_snapshot` scores a skipped intent from the gap snapshot the "
+              "intent was made on, at the intent's own `target_prob`. The unsuffixed columns "
+              "are against `pinnacle_t5`, the `_kalshi` columns against "
+              "`kalshi_last_trade_pre_kick`. Net of fees, clustered by game. `share` is within "
+              "the row's own kind. Reported, never gated.")
+    counts: dict[tuple[str, str, str], int] = {}
+    for kind, statement in (("rejected", _T12_REJECTED_COUNTS),
+                            ("skipped", _T12_SKIPPED_COUNTS)):
+        for row in session.execute(statement, window):
+            counts[(row.variant_id, kind, row.reason)] = int(row.n)
+    if not counts:
+        return _placeholder_table("Table 12 (t12): declined candidates", header, _T12_COLUMNS,
+                                  "nothing was declined in this week's rows")
+
+    rejected = _t12_series(session, _T12_REJECTED, window, "price_target")
+    skipped = _t12_series(session, _T12_SKIPPED, window, "target_prob")
+    totals = {kind: sum(n for (_, k, _), n in counts.items() if k == kind)
+              for kind in ("rejected", "skipped")}
+
+    rows = []
+    for (variant, kind, reason), n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        source = rejected if kind == "rejected" else skipped
+        cells = []
+        for estimator_kind in ("rejected", "skipped"):
+            for benchmark in _T12_BENCHMARKS:
+                if estimator_kind != kind:
+                    cells.append(PLACEHOLDER)
+                    continue
+                values = source.get((variant, reason, benchmark), [])
+                cells.append(cell(cluster_ci([v for v, _ in values],
+                                             [g for _, g in values])) if values
+                             else PLACEHOLDER)
+        total = totals[kind]
+        # `report_cells.row_key` is String(64) and `rejection_reason` is String(48), so a very
+        # long reason could in principle overflow the key. Truncate from the right, where the
+        # dropped characters are the least identifying: the variant and the kind are what a
+        # reader keys the row on, and today's longest key is 38 characters.
+        row_key = f"{variant}/{kind}:{reason}"[:64]
+        rows.append([row_key, kind, n, (n / total) if total else PLACEHOLDER, *cells])
+    return Table("Table 12 (t12): declined candidates", header, _T12_COLUMNS, rows,
+                 f"rejected signals: {totals['rejected']}; skipped intents: {totals['skipped']}")
+
+
 # --- tables 7, 9, 10: not collected ----------------------------------------------------------------
 
 
@@ -1281,7 +1412,7 @@ _VARIANTS = text("""
 
 
 def weekly_tables(session: Session, year: int, week: int, settings) -> dict[str, Table]:
-    """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t11` (with `t4b`).
+    """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t12` (with `t4b`).
 
     Read-only. Each table is restricted to the week's non-replay rows and each per-variant table
     groups by variant first; a table with nothing in it still answers a placeholder row.
@@ -1302,6 +1433,7 @@ def weekly_tables(session: Session, year: int, week: int, settings) -> dict[str,
         "t11": _table11(session, window),
         "t9": _not_collected("t9", "flow", "H3's flow imbalance is a later phase."),
         "t10": _not_collected("t10", "RFQ", "The combo RFQ listener is a later phase."),
+        "t12": _table12(session, window),
     }
 
 

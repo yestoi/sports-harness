@@ -11,6 +11,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -23,11 +24,13 @@ from harness.db.models import (
     Fill,
     Game,
     GapOutcome,
+    Intent,
     MarketGapSnapshot,
     Markout,
     Order,
     OrderbookEvent,
     OrderClv,
+    OrderEvent,
     Signal,
     StrategyVariant,
     VenueMarket,
@@ -131,10 +134,11 @@ def _gap_outcome(session, gap, benchmark_type="pinnacle_t5", p_bench="0.5600",
 
 
 def _signal(session, gap, market, variant_id, price_target="0.5000", decision="candidate",
-            created_at=None) -> Signal:
+            created_at=None, rejection_reason=None) -> Signal:
     row = Signal(run_id=gap.run_id, variant_id=variant_id, gap_snapshot_id=gap.id,
                  venue_market_id=market.id, side="yes",
-                 price_target=Decimal(price_target), decision=decision, labels={},
+                 price_target=None if price_target is None else Decimal(price_target),
+                 decision=decision, rejection_reason=rejection_reason, labels={},
                  created_at=created_at or WED)
     session.add(row)
     session.flush()
@@ -226,6 +230,45 @@ def _venue_request(session, env="prod", method="GET", ts=None, venue="kalshi",
     return row
 
 
+#: t12's tests read a different ISO week (2026, 37: Mon 2026-09-07 05:00Z to 2026-09-14 05:00Z)
+#: so its fixtures never collide with the week-38 rows the rest of this module seeds.
+T12_WED = datetime(2026, 9, 9, 18, 0, tzinfo=timezone.utc)
+
+
+def _seed_declined_week(session) -> None:
+    """Ruling B-I5/B-I6: two rejected signals for `sharp_direct` (reasons `edge` and
+    `price_band`), each with `gap_outcomes` rows under both benchmarks, and one skipped intent
+    for `sharp_direct` (reason `kickoff`) whose candidate signal also carries `gap_outcomes`."""
+    game = _game(session, kickoff=T12_WED + timedelta(hours=6))
+    market = _market(session, game.id, "T12MKT1")
+
+    def _rejected(reason, price_target):
+        gap = _gap(session, market, created_at=T12_WED)
+        _gap_outcome(session, gap, benchmark_type="pinnacle_t5")
+        _gap_outcome(session, gap, benchmark_type="kalshi_last_trade_pre_kick")
+        _signal(session, gap, market, "sharp_direct", price_target=price_target,
+               decision="rejected", created_at=T12_WED, rejection_reason=reason)
+
+    _rejected("edge", "0.5000")
+    _rejected("price_band", "0.5200")
+
+    gap = _gap(session, market, created_at=T12_WED)
+    _gap_outcome(session, gap, benchmark_type="pinnacle_t5")
+    _gap_outcome(session, gap, benchmark_type="kalshi_last_trade_pre_kick")
+    signal = _signal(session, gap, market, "sharp_direct", price_target="0.5000",
+                     decision="candidate", created_at=T12_WED)
+    intent = Intent(id=uuid.uuid4(), signal_id=signal.id, variant_id="sharp_direct",
+                    venue="kalshi", venue_market_id=market.id, ticker=market.ticker, side="yes",
+                    target_prob=Decimal("0.5100"), signal_created_at=T12_WED,
+                    created_at=T12_WED, replay=False)
+    session.add(intent)
+    session.flush()
+    event = OrderEvent(intent_id=intent.id, ts=T12_WED, kind="skipped", reason="kickoff",
+                       replay=False)
+    session.add(event)
+    session.flush()
+
+
 def _tables(db_session, env_settings):
     return weekly_tables(db_session, YEAR, WEEK, env_settings)
 
@@ -243,7 +286,7 @@ def test_weekly_tables_return_every_key_with_placeholders(db_session, env_settin
     tables = _tables(db_session, env_settings)
     assert list(tables) == list(TABLE_KEYS)
     assert set(TABLE_KEYS) == {"t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9",
-                               "t10"}
+                               "t10", "t12"}
     for key, table in tables.items():
         assert isinstance(table, Table), key
         assert table.title and table.header, key
@@ -866,3 +909,78 @@ def test_table1_stopped_share_ignores_rows_outside_the_week_and_unevaluated_ones
     _equity(db_session, PRIMARY, WED, stop=None)                       # never evaluated
     db_session.flush()
     assert _tables(db_session, env_settings)["t1"].note == "drawdown stop: none"
+
+
+# --- table 12: declined candidates, with both counterfactual estimators ----------------------
+
+
+def test_t12_is_appended_after_t10_and_renders_last():
+    from harness.report.tables import TABLE_KEYS
+
+    assert TABLE_KEYS[-1] == "t12"
+    assert TABLE_KEYS == ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9",
+                          "t10", "t12")
+
+
+def test_t12_row_keys_are_composite_and_unique(db_session, env_settings):
+    """Ruling B-I5: the row key is the row's identity, never a position. Two reasons for one
+    variant must not collide on `sharp_direct` and `sharp_direct#2`."""
+    _seed_declined_week(db_session)
+    tables = weekly_tables(db_session, 2026, 37, env_settings)
+    t12 = tables["t12"]
+    keys = [t12.row_key(row) for row in t12.rows]
+    assert len(keys) == len(set(keys))
+    assert all("/" in key and ":" in key for key in keys)
+    # report_cells.row_key is String(64); persist_report truncates to 60 before its own suffix,
+    # so an over-long key would be silently cut there instead of here.
+    assert all(len(key) <= 64 for key in keys)
+    assert "sharp_direct/rejected:edge" in keys
+
+
+def test_t12_names_its_two_estimators_in_the_column_keys(db_session, env_settings):
+    t12 = weekly_tables(db_session, 2026, 37, env_settings)["t12"]
+    assert t12.columns == ["variant/reason", "kind", "count", "share",
+                           "clv_rejected_gap_outcomes", "clv_rejected_gap_outcomes_kalshi",
+                           "clv_skipped_intent_snapshot", "clv_skipped_intent_snapshot_kalshi"]
+    assert "pinnacle_t5" in t12.header and "kalshi_last_trade_pre_kick" in t12.header
+
+
+def test_a_rejected_row_fills_only_the_rejected_estimator(db_session, env_settings):
+    _seed_declined_week(db_session)
+    t12 = weekly_tables(db_session, 2026, 37, env_settings)["t12"]
+    row = next(r for r in t12.rows if r[0] == "sharp_direct/rejected:edge")
+    columns = dict(zip(t12.columns, row))
+    assert columns["kind"] == "rejected"
+    assert columns["clv_rejected_gap_outcomes"] != PLACEHOLDER
+    assert columns["clv_skipped_intent_snapshot"] == PLACEHOLDER
+
+
+def test_a_skipped_row_fills_only_the_skipped_estimator(db_session, env_settings):
+    _seed_declined_week(db_session)
+    t12 = weekly_tables(db_session, 2026, 37, env_settings)["t12"]
+    row = next(r for r in t12.rows if r[0].startswith("sharp_direct/skipped:"))
+    columns = dict(zip(t12.columns, row))
+    assert columns["kind"] == "skipped"
+    assert columns["clv_skipped_intent_snapshot"] != PLACEHOLDER
+    assert columns["clv_rejected_gap_outcomes"] == PLACEHOLDER
+
+
+def test_t12_shares_sum_to_one_per_kind(db_session, env_settings):
+    _seed_declined_week(db_session)
+    t12 = weekly_tables(db_session, 2026, 37, env_settings)["t12"]
+    for kind in ("rejected", "skipped"):
+        shares = [r[3] for r in t12.rows if r[1] == kind and r[3] != PLACEHOLDER]
+        assert shares and abs(sum(shares) - 1.0) < 1e-9
+
+
+def test_t12_is_a_placeholder_on_a_week_with_nothing_declined(db_session, env_settings):
+    t12 = weekly_tables(db_session, 2026, 37, env_settings)["t12"]
+    assert t12.rows == [[PLACEHOLDER] * len(t12.columns)]
+
+
+def test_t12_is_not_a_gate_input():
+    """R1: adding a table key changes the markdown and the cells and nothing else."""
+    from harness.report import gate
+
+    source = Path(gate.__file__).read_text()
+    assert "TABLE_KEYS" not in source and "t12" not in source

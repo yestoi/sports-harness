@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from harness.db.models import ReportCell, ReportRun
-from harness.report.tables import PLACEHOLDER, Table
-from harness.report.weekly import persist_report
+from harness.report.tables import PLACEHOLDER, Table, weekly_tables
+from harness.report.weekly import build_meta, persist_report
 from harness.settlement.job import Budget, new_ctx, use_ctx
 from harness.settlement.report_wtd import report_wtd_stage
+from tests.test_report import _seed_declined_week
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
 
@@ -104,3 +105,23 @@ def test_report_wtd_cadence_comes_from_the_setting(db_session, env_settings):
         db_session.commit()
         assert result.counts.get("skipped") is not True
         assert db_session.query(ReportRun).count() == 2
+
+
+def test_t12_cells_round_trip_with_their_composite_row_keys(db_session, env_settings):
+    """The cells the Study surface reads are keyed table -> row -> col; a positional row key
+    would make the surface key a row on an index (ruling B-I5)."""
+    _seed_declined_week(db_session)
+    tables = weekly_tables(db_session, 2026, 37, env_settings)
+    meta = build_meta(db_session, env_settings, 2026, 37, now=NOW)
+    run_id = persist_report(db_session, tables, meta, 2026, 37, provisional=False,
+                            markdown="# w37")
+    db_session.flush()
+
+    cells = db_session.query(ReportCell).filter(ReportCell.report_run_id == run_id,
+                                                ReportCell.table_key == "t12").all()
+    assert cells
+    assert not any("#" in c.row_key for c in cells), "a t12 row key was disambiguated by index"
+    keys = {c.row_key for c in cells}
+    assert "sharp_direct/rejected:edge" in keys
+    by_col = {c.col_key for c in cells}
+    assert "clv_rejected_gap_outcomes" in by_col
