@@ -56,7 +56,7 @@ _LIVE_CARDS = text("""
 _LEGS = text("""
     select l.id, l.card_id, l.seq, l.game_id, l.market_type, l.side_team_id, l.side,
            l.threshold, l.dk_american, l.dk_decimal, l.plain_text, l.status,
-           g.home_team_id, g.away_team_id, g.status as game_status
+           g.home_team_id, g.away_team_id
     from parlay_legs l
     left join games g on g.id = l.game_id
     where l.card_id = any(:card_ids)
@@ -88,9 +88,30 @@ _WEEK_STAKED = text("""
     select coalesce(sum(amount), 0) from parlay_ledger
     where kind = 'stake' and year = :year and week = :week
 """)
+#: The season strip is every settled or live ticket, never a card still awaiting a hand
+#: placement -- the same "not proposed" vocabulary `_LIVE_CARDS` reads, plus `void`.
 _STRIP = text("""
     select id, year, week, kind, status, stake, dk_payout_est
-    from parlay_cards order by built_at desc limit 40
+    from parlay_cards
+    where status in ('placed', 'alive', 'cashed', 'busted', 'void')
+    order by built_at desc limit 40
+""")
+#: Spec §2.5 season-strip metric "best hit": the largest amount ever returned on a cashed card.
+_BEST_HIT = text("""
+    select l.card_id, c.week, l.amount
+    from parlay_ledger l
+    join parlay_cards c on c.id = l.card_id
+    where l.kind = 'return' and c.status = 'cashed'
+    order by l.amount desc
+    limit 1
+""")
+#: Spec §2.5 season-strip metric "the current streak": walked in `_season` into a signed run of
+#: consecutive cashed (+) or busted (-) cards, most recent first. A card still `placed` or
+#: `alive` has no verdict yet and does not belong in a streak of verdicts.
+_STREAK_CARDS = text("""
+    select status from parlay_cards
+    where status in ('cashed', 'busted')
+    order by built_at desc
 """)
 
 
@@ -177,14 +198,34 @@ def _leg_spec(leg):
     return LegSpec(leg.market_type, leg.side_team_id, leg.side, leg.threshold)
 
 
+def _best_hit(session: Session) -> dict | None:
+    row = session.execute(_BEST_HIT).first()
+    if row is None:
+        return None
+    return {"card_id": row.card_id, "week": row.week, "amount": _dec(row.amount)}
+
+
+def _streak(session: Session) -> int:
+    """The current run of consecutive verdicts, most recent card first: positive for a run of
+    cashes, negative for a run of busts, 0 when there is no verdict yet."""
+    streak = 0
+    for row in session.execute(_STREAK_CARDS):
+        delta = 1 if row.status == "cashed" else -1
+        if streak != 0 and (streak > 0) != (delta > 0):
+            break
+        streak += delta
+    return streak
+
+
 def _season(session: Session) -> dict:
-    totals = {row.kind: float(row.total) for row in session.execute(_SEASON)}
+    totals = {row.kind: _dec(row.total) for row in session.execute(_SEASON)}
     staked = totals.get("stake", 0.0)
     returned = totals.get("return", 0.0)
     strip = [{"card_id": row.id, "year": row.year, "week": row.week, "kind": row.kind,
               "status": row.status, "stake": _dec(row.stake),
               "payout": _dec(row.dk_payout_est)} for row in session.execute(_STRIP)]
-    return {"staked": staked, "returned": returned, "net": returned - staked, "strip": strip}
+    return {"staked": staked, "returned": returned, "net": returned - staked, "strip": strip,
+            "best_hit": _best_hit(session), "streak": _streak(session)}
 
 
 def _between(session: Session, now: datetime) -> dict:

@@ -27,9 +27,10 @@ def _game(session, *, status="in_progress", kickoff=None):
     return row
 
 
-def _card(session, *, status="alive", legs=(), stake="20.00", rationale="an LSU anchor"):
+def _card(session, *, status="alive", legs=(), stake="20.00", rationale="an LSU anchor",
+          built_at=None):
     card = ParlayCard(year=2026, week=37, sport="ncaaf", kind="smart",
-                      built_at=NOW - timedelta(hours=6), stake=Decimal(stake),
+                      built_at=built_at or NOW - timedelta(hours=6), stake=Decimal(stake),
                       dk_payout_est=Decimal("140.00"), true_prob_est=Decimal("0.101000"),
                       hold_est=Decimal("0.0800"), rationale=rationale, status=status,
                       correlated=False)
@@ -101,6 +102,37 @@ def test_a_cashed_card_reads_as_cashed(db_session, env_settings):
     payload = build_ticket(db_session, NOW, env_settings)
     assert payload["cards"][0]["status"] == "cashed"
     assert payload["season"]["returned"] == 142.0
+
+
+def test_the_season_has_no_best_hit_and_a_zero_streak_with_no_cards(db_session, env_settings):
+    """Spec §2.5 season-strip metrics: best hit and streak, with nothing settled yet."""
+    payload = build_ticket(db_session, NOW, env_settings)
+    assert payload["season"]["best_hit"] is None
+    assert payload["season"]["streak"] == 0
+
+
+def test_the_streak_and_best_hit_read_a_cashed_then_busted_sequence(db_session, env_settings):
+    """The streak is signed and reads only the most recent run of verdicts (+ cashes, - busts);
+    best hit is the largest amount ever returned on a cashed card, whichever week it was."""
+    older_cash = _card(db_session, status="cashed", built_at=NOW - timedelta(days=3))
+    db_session.add(ParlayLedger(ts=NOW - timedelta(days=3), card_id=older_cash.id, kind="return",
+                                amount=Decimal("50.00"), year=2026, week=37))
+    best_cash = _card(db_session, status="cashed", built_at=NOW - timedelta(days=2))
+    db_session.add(ParlayLedger(ts=NOW - timedelta(days=2), card_id=best_cash.id, kind="return",
+                                amount=Decimal("142.00"), year=2026, week=37))
+    _card(db_session, status="busted", built_at=NOW - timedelta(days=1))
+    db_session.flush()
+
+    season = build_ticket(db_session, NOW, env_settings)["season"]
+    assert season["streak"] == -1
+    assert season["best_hit"] == {"card_id": best_cash.id, "week": 37, "amount": 142.0}
+
+
+def test_the_season_strip_excludes_a_card_that_is_still_only_proposed(db_session, env_settings):
+    """A card `parlay_grade`/the builder has not moved past `proposed` is not a ticket yet."""
+    _card(db_session, status="proposed")
+    payload = build_ticket(db_session, NOW, env_settings)
+    assert payload["season"]["strip"] == []
 
 
 def test_one_leg_from_glory(db_session, env_settings):
