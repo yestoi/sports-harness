@@ -1,0 +1,40 @@
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-09 14:12:38,547", "levelname": "WARNING", "name": "harness", "message": "kalshi demo smoke failed at step place_expiring: KalshiApiError status=404 code=none"}
+{"asctime": "2026-09-09 14:12:38,584", "levelname": "WARNING", "name": "harness.execution.venue", "message": "venue kalshi/demo -> unavailable; untrusted venue text: reason='place_expiring: 404: POST /portfolio/events/orders failed with status 404'"}
+step            ok    detail
+balance         true  balance=249000 payout=none
+market          true  markets=72 chosen=1 parsed_ranges=True
+grid            true  steps=99 low=0.0100 next=0.0200 high=0.9900
+group           true  created=true limit=5
+place           true  prob=0.0100 contracts=1.00 status=resting
+amend           true  prob=0.0200 contracts=2.00 status=resting
+get_order       true  price=0.0200 remaining=2.00 fill=0.00 status=resting
+cancel          true  reduced_by=2.00
+cancel_group    true  cancelled=true
+place_expiring  false KalshiApiError status=404 code=none
+unfunded=false exit=1
+smoke exit=1
+ id |              ts               | method |                                path                                 | status | elapsed_ms 
+----+-------------------------------+--------+---------------------------------------------------------------------+--------+------------
+ 85 | 2026-09-09 14:12:34.397796+00 | GET    | /portfolio/balance                                                  |    200 |        273
+ 86 | 2026-09-09 14:12:34.760745+00 | GET    | /markets                                                            |    200 |        171
+ 87 | 2026-09-09 14:12:34.987532+00 | POST   | /portfolio/order_groups/create                                      |    201 |        240
+ 88 | 2026-09-09 14:12:35.275799+00 | POST   | /portfolio/events/orders                                            |    201 |         91
+ 89 | 2026-09-09 14:12:35.422657+00 | GET    | /portfolio/orders/01a08683-6c38-751e-b4c8-2ff1963443cd              |    404 |         90
+ 90 | 2026-09-09 14:12:35.814088+00 | GET    | /portfolio/orders/01a08683-6c38-751e-b4c8-2ff1963443cd              |    404 |         90
+ 91 | 2026-09-09 14:12:36.459437+00 | GET    | /portfolio/orders/01a08683-6c38-751e-b4c8-2ff1963443cd              |    200 |        101
+ 92 | 2026-09-09 14:12:36.615262+00 | POST   | /portfolio/events/orders/01a08683-6c38-751e-b4c8-2ff1963443cd/amend |    200 |         92
+ 93 | 2026-09-09 14:12:36.757009+00 | GET    | /portfolio/orders/01a08683-6c38-751e-b4c8-2ff1963443cd              |    200 |         94
+ 94 | 2026-09-09 14:12:37.152285+00 | GET    | /portfolio/orders/01a08683-6c38-751e-b4c8-2ff1963443cd              |    200 |        104
+ 95 | 2026-09-09 14:12:37.797462+00 | GET    | /portfolio/orders/01a08683-6c38-751e-b4c8-2ff1963443cd              |    200 |         96
+ 96 | 2026-09-09 14:12:37.938903+00 | GET    | /portfolio/orders/01a08683-6c38-751e-b4c8-2ff1963443cd              |    200 |        102
+ 97 | 2026-09-09 14:12:38.091816+00 | DELETE | /portfolio/events/orders/01a08683-6c38-751e-b4c8-2ff1963443cd       |    200 |        101
+ 98 | 2026-09-09 14:12:38.242956+00 | DELETE | /portfolio/order_groups/08b0ca78-7919-4a47-8466-491a72fe786f        |    200 |         97
+ 99 | 2026-09-09 14:12:38.389962+00 | POST   | /portfolio/events/orders                                            |    404 |         92
+(15 rows)
+
+ venue  | env  |   status    |             since             |          updated_at           
+--------+------+-------------+-------------------------------+-------------------------------
+ kalshi | demo | unavailable | 2026-09-09 02:45:51.857649+00 | 2026-09-09 14:12:34.341422+00
+(1 row)
+
