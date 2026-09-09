@@ -19,7 +19,7 @@ const FUN_BADGE = "FUN MONEY · $50/WEEK · PLACED BY HAND";
 const modules = {};
 const state = { surface: "pulse", timer: null, etags: {}, payloads: {}, rendered: {},
                 studyName: null, serving: null,
-                oldest: null, oldestAt: 0 };
+                oldest: null, oldestAt: 0, word: undefined };
 
 export function registerSurface(name, module) { modules[name] = module; }
 
@@ -40,15 +40,40 @@ function storedTheme() {
   try { return localStorage.getItem(THEME_KEY); } catch (error) { return null; }
 }
 
+//: Three states, not two: following the OS is the default and has to stay reachable, or one tap
+//: pins a reader to a theme for good (spec §5 asks for both an OS default and a manual toggle).
+const THEME_CYCLE = { system: "light", light: "dark", dark: "system" };
+const THEME_SAYS = {
+  system: "Theme: following the system. Switch to light.",
+  light: "Theme: light. Switch to dark.",
+  dark: "Theme: dark. Follow the system.",
+};
+
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") || "system";
+}
+
+function storeTheme(theme) {
+  try {
+    if (theme === "system") localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, theme);
+  } catch (error) { /* a browser with site data blocked still gets the theme for this page */ }
+}
+
 function initTheme() {
   applyTheme(storedTheme());
-  document.getElementById("theme-toggle").addEventListener("click", () => {
-    const light = document.documentElement.getAttribute("data-theme") === "light"
-      || (!document.documentElement.hasAttribute("data-theme")
-          && window.matchMedia("(prefers-color-scheme: light)").matches);
-    const next = light ? "dark" : "light";
-    try { localStorage.setItem(THEME_KEY, next); } catch (error) { /* site data blocked */ }
-    applyTheme(next);
+  const button = document.getElementById("theme-toggle");
+  const describe = () => {
+    const says = THEME_SAYS[currentTheme()];
+    button.title = says;
+    button.setAttribute("aria-label", says);
+  };
+  describe();
+  button.addEventListener("click", () => {
+    const next = THEME_CYCLE[currentTheme()];
+    storeTheme(next);
+    applyTheme(next === "system" ? null : next);
+    describe();
   });
 }
 
@@ -79,6 +104,7 @@ function initTabs() {
     // The phone bar is built from the same five buttons, so the two bars can never disagree
     // about which surface is selected.
     const twin = tab.cloneNode(true);
+    twin.id = `phonetab-${surface}`;   // a clone would otherwise duplicate the desktop tab's id
     twin.addEventListener("click", () => { location.hash = `#${surface}`; });
     twin.insertBefore(tabIcon(surface), twin.firstChild);
     phone.appendChild(twin);
@@ -103,6 +129,9 @@ function markTabs(surface) {
     tab.setAttribute("aria-selected", on ? "true" : "false");
     tab.setAttribute("tabindex", on ? "0" : "-1");
   }
+  // The panel is named by the desktop tab whichever bar is on screen: a hidden element referenced
+  // by aria-labelledby still contributes its text, and the two bars always agree.
+  document.getElementById("surface").setAttribute("aria-labelledby", `tab-${surface}`);
   const badge = document.getElementById("shell-badge");
   badge.textContent = surface === "ticket" ? FUN_BADGE : "PAPER";
   badge.className = surface === "ticket" ? "pill fun" : "pill";
@@ -157,8 +186,12 @@ function markBuild(payload) {
   serving.hidden = !drift;
 }
 
+// Several screen readers announce any mutation of a live region rather than a text diff, so
+// replacing this every thirty seconds would read the same word aloud forever.
 function markStatus(pulsePayload) {
   const word = pulsePayload && pulsePayload.status ? pulsePayload.status.status : null;
+  if (word === state.word) return;
+  state.word = word;
   document.getElementById("shell-status")
           .replaceChildren(statusWord(word, { compact: true }));
 }
@@ -209,6 +242,10 @@ function oldestLive(rows, studyName) {
 
 async function pollIndex() {
   const index = await listSnapshots();
+  // A failed read is not an empty index: keep the last known row and let `tickAge` go on ageing
+  // it, the same choice `getSnapshot` makes for a payload. Blanking the banner at the moment the
+  // page becomes most stale is the one reading it exists to prevent.
+  if (index === null) return;
   const rows = index.snapshots || [];
   const found = newestStudy(rows);
   const next = found || isoWeekName(new Date());
@@ -257,6 +294,9 @@ function noModule(root, surface) {
 async function poll(surface, force) {
   const name = snapshotName(surface);
   const result = await getSnapshot(name, state.etags[name]);
+  // `#surface` is the one root every surface renders into, so a request still in flight when the
+  // reader changes tabs would paint the old surface under the new tab's header.
+  if (state.surface !== surface) return PULSE_POLL_MS;
   if (result.status === 200) {
     state.etags[name] = result.etag;
     state.payloads[name] = result.body;
@@ -313,14 +353,23 @@ async function pollPulse() {
 
 async function show(surface) {
   state.surface = SURFACES.includes(surface) ? surface : "pulse";
+  // A bookmarked `#pnl` must not leave the URL claiming one surface while the page shows another.
+  if (surface && surface !== state.surface) {
+    history.replaceState(null, "", `#${state.surface}`);
+  }
   markTabs(state.surface);
   const root = document.getElementById("surface");
   root.replaceChildren();
   if (state.surface === "how") {
     clearTimeout(state.timer);
     const module = modules.how;
-    if (module && typeof module.render === "function") module.render(root);
-    else noModule(root, "How it works");
+    try {
+      if (module && typeof module.render === "function") module.render(root);
+      else noModule(root, "How it works");
+    } catch (error) {
+      console.error("how it works failed to render", error);
+      noModule(root, "How it works");
+    }
     return;
   }
   state.rendered = {};
@@ -349,4 +398,4 @@ async function boot() {
   await show(location.hash.slice(1) || "pulse");
 }
 
-boot();
+boot().catch((error) => { console.error("the shell failed to start", error); });

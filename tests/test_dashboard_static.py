@@ -28,7 +28,12 @@ THEME_KEY = "harness.theme"
 
 
 def _js_files():
-    return sorted((STATIC / "js").glob("*.mjs"))
+    """Everything under `static/js/`, at any depth and whatever the suffix.
+
+    The DOM rule says the three literals appear *nowhere* under this directory, so the grep that
+    enforces it walks the directory rather than globbing one level of `*.mjs`: a file named `.js`,
+    or one in a subdirectory, must not be able to duck it."""
+    return sorted(p for p in (STATIC / "js").rglob("*") if p.is_file())
 
 
 def _all_files():
@@ -49,6 +54,11 @@ def test_the_shell_writes_no_markup_either():
     body = (STATIC / "index.html").read_text()
     for word in FORBIDDEN_DOM:
         assert word not in body
+
+
+def test_the_js_directory_holds_only_es_modules():
+    """The DOM-rule grep walks this directory; a stray `.js` must not be able to duck it."""
+    assert {p.suffix for p in _js_files()} <= {".mjs"}, sorted(p.name for p in _js_files())
 
 
 def test_no_module_writes_to_the_document_stream():
@@ -256,3 +266,28 @@ def test_the_dark_and_light_halves_define_the_same_tokens():
                           if d.strip().startswith("--")}
     colours = {n for n in names(dark.group(1)) if not n.startswith("--font")}
     assert colours == names(manual.group(1))
+
+
+def test_the_staleness_flags_are_two_and_three_times_the_cadence():
+    """Spec §4's 2x/3x, the 30 s Pulse poll and the arrow-key movement are all correct today and
+    all silent if a later edit changes them; this suite is text-level and can pin them cheaply."""
+    body = (STATIC / "js" / "app.mjs").read_text()
+    assert "3 * cadence" in body and "2 * cadence" in body
+    assert "PULSE_POLL_MS = 30000" in body
+    assert "ArrowRight" in body and "ArrowLeft" in body
+
+
+def test_the_tabs_name_the_panel_they_control():
+    """A reader told a tab is selected should also be told what it controls (M4)."""
+    body = (STATIC / "index.html").read_text()
+    for surface in ("pulse", "floor", "study", "gate", "ticket"):
+        assert f'id="tab-{surface}"' in body, surface
+    assert body.count('aria-controls="surface"') == 5
+    assert 'role="tabpanel"' in body and "<main>" in body
+
+
+def test_the_theme_toggle_can_go_back_to_following_the_system():
+    """Two states would pin a reader to a theme for good after one tap (M8)."""
+    body = (STATIC / "js" / "app.mjs").read_text()
+    assert "removeItem(THEME_KEY)" in body
+    assert "THEME_CYCLE" in body and '"system"' in body

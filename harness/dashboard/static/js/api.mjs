@@ -21,21 +21,28 @@ export async function getSnapshot(name, etag) {
   return { status: 200, etag: response.headers.get("ETag"), body: await response.json() };
 }
 
+//: `null` on a failed read, never an empty index: a caller that cannot tell the two apart would
+//: erase the last known snapshot ages the moment the tunnel drops, which is exactly when the page
+//: has most to say about them.
 export async function listSnapshots() {
   try {
     const response = await fetch("/api/snap");
-    return response.ok ? await response.json() : { snapshots: [] };
+    return response.ok ? await response.json() : null;
   } catch (error) {
-    return { snapshots: [] };
+    return null;
   }
 }
 
 export async function servingBuild() {
   // `/ui/` is static, so the shell cannot know its own build from a file: it asks the process
   // that served it and compares that against the sha inside each payload (ruling A-I11).
+  //
+  // The status is deliberately ignored. `/healthz` answers 503 whenever the last run is stale or
+  // errored (`harness/health.py`), and it carries `build` in the body either way; refusing to read
+  // a 503 would turn the build-mismatch flag off on exactly the degraded machine whose operator
+  // needs to know their browser is holding stale modules.
   try {
     const response = await fetch("/healthz");
-    if (!response.ok) return null;
     const body = await response.json();
     return body.build || null;
   } catch (error) {

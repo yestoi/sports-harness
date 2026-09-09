@@ -105,7 +105,10 @@ img, svg { max-width: 100%; }
 
 /* --- the page ------------------------------------------------------------------------------ */
 
-main { padding: 16px 24px 20px; display: grid; gap: 14px; align-content: start; }
+main { padding: 16px 24px 20px; }
+/* The grid is on the panel, not the landmark: `<main>` keeps its landmark role and the
+   element the surface modules render into is the tabpanel the tabs point at. */
+#surface { display: grid; gap: 14px; align-content: start; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
   padding: 14px 16px; min-width: 0; }
 .card > h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em;
