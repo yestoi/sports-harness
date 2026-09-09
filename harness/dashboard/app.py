@@ -9,25 +9,28 @@ into `harness.health.compute_health` rather than re-deriving the staleness/error
 import hmac
 import logging
 import importlib.resources
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Callable
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.responses import Response as StarletteResponse
 
 from harness import telemetry
 from harness.config.settings import Settings
 
+from harness.dashboard import snapshots as snap
 from harness.dashboard.queries import local_day_bounds_utc, recent_run_notes, signals_by_variant_from_notes
-from harness.db.models import (ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Ledger, MetricSample, OddsSnapshot,
-                                Order, OrderbookEvent, OrderEvent, RawResponse, Run, Signal, StrategyVariant, Team,
-                                VenueMarket, VenueQuote)
+from harness.db.models import (DashboardSnapshot, ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Ledger,
+                                MetricSample, OddsSnapshot, Order, OrderbookEvent, OrderEvent, RawResponse, Run,
+                                Signal, StrategyVariant, Team, VenueMarket, VenueQuote)
 from harness.execution.plan import POST_ONLY_REJECT
 from harness.health import HEARTBEAT_WATCH_S, WS_EVENT_BROKEN_S, compute_health
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_model_for
@@ -81,6 +84,29 @@ def _templates_dir():
     # context open for the life of the process is harmless and keeps the path valid for as
     # long as Jinja2Templates needs to read from it.
     return _exit_stack.enter_context(importlib.resources.as_file(ref))
+
+
+def _static_dir():
+    """The packaged `static/` directory, resolved exactly as `_templates_dir` resolves
+    templates, so a wheel install and a checkout behave the same."""
+    ref = importlib.resources.files("harness.dashboard").joinpath("static")
+    return _exit_stack.enter_context(importlib.resources.as_file(ref))
+
+
+class _NoCacheStatic(StaticFiles):
+    """Every static response revalidates (ruling A-I11).
+
+    A phone holding a cached `app.mjs` renders it against a new payload shape and fails quietly,
+    which is the exact failure mode the snapshot design exists to prevent. `no-cache` is not
+    "do not store": the file is still cached, it is just revalidated, which is one cheap 304 per
+    asset per load over the tunnel. The shell also shows the payload's `build_sha` beside its
+    own and flags a mismatch, so a stale client is visible even if a proxy ignores this.
+    """
+
+    def file_response(self, *args, **kwargs) -> StarletteResponse:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _dec(x) -> float | None:
@@ -651,7 +677,41 @@ def build_summary(session: Session, session_factory: sessionmaker, now: datetime
 
 def create_dashboard(session_factory: sessionmaker, settings: Settings,
                      clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> FastAPI:
-    app = FastAPI(title="harness-dashboard")
+    scheduler = None
+    snapshot_engine = None
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """The snapshot scheduler's whole lifetime, and the only place it is started.
+
+        `snapshots_enabled` false means no jobs at all, which is what every test relies on: the
+        suite drives `run_builder` directly and must never have background threads writing to
+        the test database underneath it. The scheduler gets its own engine
+        (`make_snapshot_engine`), never this app's request-path factory.
+        """
+        nonlocal scheduler, snapshot_engine
+        if settings.snapshots_enabled:
+            from harness.dashboard.scheduler import SnapshotScheduler
+
+            snapshot_engine = snap.make_snapshot_engine(settings)
+            scheduler = SnapshotScheduler(
+                sessionmaker(bind=snapshot_engine, expire_on_commit=False), settings)
+            scheduler.start()
+            _app.state.snapshot_scheduler = scheduler
+        else:
+            _app.state.snapshot_scheduler = None
+        try:
+            yield
+        finally:
+            # Jobs first, then the pool. `shutdown(wait=False)` returns while a build may still
+            # be running, and `dispose()` only closes *idle* connections -- a checked-out one is
+            # discarded when it is returned -- so the build in flight still finishes.
+            if scheduler is not None:
+                scheduler.shutdown()
+            if snapshot_engine is not None:
+                snapshot_engine.dispose()
+
+    app = FastAPI(title="harness-dashboard", lifespan=lifespan)
     templates = Jinja2Templates(directory=str(_templates_dir()))
     build = {"sha": settings.build_sha, "time": settings.build_time}
 
@@ -667,6 +727,58 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
         with session_factory() as s:
             return build_summary(s, session_factory, now, settings.odds_monthly_credits,
                                  settings.tz_local, settings.db_budget_gb, build=build)
+
+    @app.get("/api/snap")
+    def api_snap_index() -> dict:
+        """Every snapshot row's name, age and cadence. One sequential read, no builder.
+
+        Named columns plus `payload ->> 'cadence_s'`, never the whole row: this is the endpoint
+        the shell polls to decide what is stale, and `select *` here would deserialize every
+        payload -- Floor's worst case is about 168 KB and each Study week carries a couple of
+        thousand equity points -- to read one integer out of each. The table holds one row per
+        surface plus one per ISO week of the season, so no `limit` is needed once the payloads
+        are left on the server.
+        """
+        now = clock()
+        with session_factory() as s:
+            rows = s.execute(select(
+                DashboardSnapshot.name, DashboardSnapshot.generated_at,
+                DashboardSnapshot.elapsed_ms, DashboardSnapshot.error,
+                DashboardSnapshot.payload["cadence_s"].as_integer().label("cadence_s"),
+            )).all()
+        return {"now": _iso(now), "snapshots": sorted(
+            ({"name": row.name, "generated_at": _iso(row.generated_at),
+              "age_s": (now - row.generated_at).total_seconds(),
+              "cadence_s": row.cadence_s,
+              "elapsed_ms": row.elapsed_ms, "error": row.error} for row in rows),
+            key=lambda r: r["name"])}
+
+    @app.get("/api/snap/{name}")
+    def api_snap(name: str, response: Response,
+                 if_none_match: str | None = Header(None, alias="If-None-Match")):
+        """One snapshot, by primary key. No builder runs here and no other table is read: that
+        is spec §0.3 made structural rather than habitual.
+
+        The name is validated against the anchored pattern before it reaches the table lookup or
+        the ETag header, so nothing but the five builder names and `study:<year>-<week>` can
+        get through (ruling B-(e), item 8).
+        """
+        if not snap.valid_snapshot_name(name):
+            raise HTTPException(status_code=404, detail="unknown snapshot")
+        with session_factory() as s:
+            row = s.get(DashboardSnapshot, name)
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown snapshot")
+        etag = f'"{name}:{row.generated_at.isoformat()}"'
+        if if_none_match == etag:
+            return Response(status_code=304, headers={"ETag": etag,
+                                                      "Cache-Control": "no-cache"})
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = "no-cache"
+        return {"name": row.name, "generated_at": _iso(row.generated_at),
+                "elapsed_ms": row.elapsed_ms,
+                "cadence_s": (row.payload or {}).get("cadence_s"),
+                "payload": row.payload, "error": row.error}
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
@@ -728,5 +840,9 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
             telemetry.event(s, "kill_off", "", ts=now)
             s.commit()
         return {"active": False}
+
+    # `html=True` serves `index.html` for `/ui/`. Root `/`, `/api/summary`, `/healthz`, `/kill`
+    # and `/unkill` are unchanged and are declared above, so nothing here can shadow them.
+    app.mount("/ui", _NoCacheStatic(directory=str(_static_dir()), html=True), name="ui")
 
     return app

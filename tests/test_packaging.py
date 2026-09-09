@@ -54,3 +54,16 @@ def test_wheel_includes_shipped_variant_yaml(tmp_path):
     with zipfile.ZipFile(wheels[0]) as zf:
         names = zf.namelist()
     assert "harness/variants/sharp_direct.yaml" in names, names
+
+
+def test_the_static_files_are_packaged():
+    """The Dockerfile installs the package, so a static file that is not package data is not in
+    the image and `/ui/` 404s on the NAS while passing every test on the Mac."""
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    data = tomllib.loads((root / "pyproject.toml").read_text())
+    patterns = data["tool"]["setuptools"]["package-data"]["harness"]
+    for pattern in ("dashboard/static/*", "dashboard/static/js/*", "dashboard/static/vendor/*"):
+        assert pattern in patterns

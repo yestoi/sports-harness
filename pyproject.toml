@@ -35,7 +35,17 @@ harness = "harness.cli:app"
 include = ["harness*"]
 
 [tool.setuptools.package-data]
-harness = ["matching/*.yaml", "pricing/*.yaml", "variants/*.yaml", "dashboard/templates/*.html"]
+harness = [
+  "matching/*.yaml",
+  "pricing/*.yaml",
+  "variants/*.yaml",
+  "dashboard/templates/*.html",
+  # Phase 4.5. An explicit list, not a recursive glob: the byte budget and the no-external-URL
+  # test are per-file guarantees, and a glob would quietly ship whatever landed in the tree.
+  "dashboard/static/*",
+  "dashboard/static/js/*",
+  "dashboard/static/vendor/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

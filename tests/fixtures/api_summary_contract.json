@@ -1,0 +1,8 @@
+{
+  "top_level_keys": ["now", "build", "health", "kill_switch", "funnel", "match_report",
+                     "signals", "unmatched_markets", "websocket", "data_quality", "executor",
+                     "open_orders", "fills_today", "pnl", "candidates", "skip_reasons",
+                     "db_ceiling", "settlement_health"],
+  "checked_keys": ["build", "health", "kill_switch", "funnel", "match_report", "signals",
+                   "unmatched_markets", "websocket", "data_quality"]
+}

@@ -200,3 +200,19 @@ def test_no_service_mounts_the_age_private_key():
     for name, svc in doc["services"].items():
         for v in svc.get("volumes", []) or []:
             assert "backup_age_key" not in v, name
+
+
+def test_the_app_serve_compose_block_is_unchanged():
+    """Conformance §12.5's second half. This phase adds a scheduler thread *inside* the serving
+    process and never a container, a port, an environment variable or a mount, so the block is
+    pinned whole: a change to it is a change of posture, not a diff nobody reads."""
+    block = yaml.safe_load(COMPOSE.read_text())["services"]["app-serve"]
+    assert block["command"] == ["serve", "--port", "8080"]
+    assert block["ports"] == ["127.0.0.1:${SERVE_PORT:-8080}:8080"]
+    assert sorted(block["environment"]) == ["DASHBOARD_TOKEN_FILE", "ODDS_API_KEY_FILE"]
+    assert sorted(block["volumes"]) == [
+        "./secrets/dashboard_token:/run/secrets/dashboard_token:ro",
+        "./secrets/odds_api_key:/run/secrets/odds_api_key:ro"]
+    assert list(block["depends_on"]) == ["postgres"]
+    assert block["restart"] == "unless-stopped"
+    assert "build" in block and "image" not in block
