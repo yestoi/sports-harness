@@ -815,7 +815,8 @@ def test_four_404s_cancel_the_created_order_and_freeze_naming_the_status_and_cou
         _ok({"order_id": "o1"})])
     with pytest.raises(EchoMismatch) as exc:
         _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
-    assert "404" in exc.value.field and "4" in exc.value.field
+    # The exact text the brief names: "4" alone is satisfied by the "404", so it is pinned whole.
+    assert exc.value.field == "the confirming read (404 after 4 attempts)"
     assert exc.value.order_id == "o1" and exc.value.cancel_error is None
     assert exc.value.freeze_minutes == 15 and exc.value.reason == "echo_mismatch"
     assert slept == [0.25, 0.5, 0.75]                     # 1.5 s of sleeping at the very most
