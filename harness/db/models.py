@@ -114,7 +114,8 @@ class OddsSnapshot(Base):
     price_decimal: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
     book_last_update: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    __table_args__ = (Index("ix_odds_game_type_fetched", "game_id", "market_type", "fetched_at"),)
+    __table_args__ = (Index("ix_odds_game_type_fetched", "game_id", "market_type", "fetched_at"),
+                      Index("ix_odds_fetched_book", "fetched_at", "book", "book_last_update"))
 
 
 class VenueMarket(Base):

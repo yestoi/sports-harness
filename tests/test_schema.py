@@ -426,10 +426,11 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # (Task 12b: metric_samples, operator_events, game_score_events, check_results,
     # report_runs) + 6 phase 4 column ALTERs (equity_snapshots: peak_equity_7d, drawdown_pct,
     # drawdown_stop; orders: venue_order_id, order_group_id, exchange_index_at_place) + 2 phase
-    # 4 indexes (ix_venue_requests_ts, and Task 11 fix round 1's ix_equity_variant_ts) = 62 + 8.
+    # 4 indexes (ix_venue_requests_ts, and Task 11 fix round 1's ix_equity_variant_ts) = 62 + 8
+    # + 1 (fix 25: ix_odds_fetched_book, the odds-staleness covering index) = 71.
     # The three views are unchanged in number: Task 11 widened the `positions` view's fill-method
     # filter in place, which is one `create or replace view` as it always was.
-    assert len(ddl) == 70, [s for s, _, _ in ddl]
+    assert len(ddl) == 71, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.
@@ -717,6 +718,39 @@ def test_equity_snapshots_index_exists(db_session):
     """§9.3's per-variant trailing-window reads run on every pricing tick."""
     assert db_session.execute(text(
         "select 1 from pg_indexes where indexname = 'ix_equity_variant_ts'")).first()
+
+
+def test_odds_fetched_book_index_exists(db_session):
+    """Fix 25: the dashboard's odds-staleness read filters `odds_snapshots` by `fetched_at`
+    alone; this covering index turns it into an index-only range scan."""
+    assert db_session.execute(text(
+        "select 1 from pg_indexes where indexname = 'ix_odds_fetched_book'")).first()
+
+
+def test_create_schema_adds_odds_fetched_book_index_to_a_database_that_predates_it(db_session):
+    """The raw DDL entry (`harness/db/schema.py`), not just the model's `__table_args__`, must
+    add the index to a populated production database on the next `init-db` -- the same way
+    `no_fair_reason` gets added to `market_gap_snapshots` above -- and rerunning create_schema
+    against a database that already has it must be a no-op."""
+    engine = db_session.get_bind()
+
+    def has_index() -> bool:
+        return db_session.execute(text(
+            "select 1 from pg_indexes where indexname = 'ix_odds_fetched_book'")).first() is not None
+
+    assert has_index()  # the db_session fixture already ran create_schema once
+
+    db_session.execute(text("drop index ix_odds_fetched_book"))
+    db_session.commit()
+    assert not has_index()
+
+    create_schema(engine)
+    db_session.commit()
+    assert has_index()
+
+    # idempotent: rerunning again against a database that already has the index is a no-op.
+    create_schema(engine)
+    assert has_index()
 
 
 def test_backup_runs_accepts_a_drill_row(db_session):

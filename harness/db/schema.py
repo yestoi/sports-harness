@@ -187,6 +187,13 @@ _INDEX_DDL = (
     # exec variant per 300 s), so this is about keeping a hot per-tick read off a sort rather
     # than about the table's size (Task 11 fix round 1).
     "create index if not exists ix_equity_variant_ts on equity_snapshots (variant_id, ts)",
+    # Fix 25: the dashboard's odds-staleness read (`_data_quality`) filters odds_snapshots by
+    # fetched_at alone; the only existing index leads with game_id/market_type, so this was a
+    # seq scan. A covering index on (fetched_at, book, book_last_update) turns it into an
+    # index-only range scan. Also declared on OddsSnapshot.__table_args__ so create_all gives
+    # it to fresh databases (including the test database); this entry is what gets it onto the
+    # populated production database on the next init-db.
+    "create index if not exists ix_odds_fetched_book on odds_snapshots (fetched_at, book, book_last_update)",
 )
 
 #: Carried fix 16. BRIN on `fair_values(created_at)` so the bounded staleness check
