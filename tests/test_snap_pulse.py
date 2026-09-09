@@ -10,7 +10,7 @@ from harness.dashboard.snapshots import pulse
 from harness.dashboard.snapshots.pulse import (PULSE_KEYS, RuleResult, build_pulse, gather,
                                                status_word)
 from harness.db.models import (CheckResult, DashboardSnapshot, EquitySnapshot, ExecHeartbeat,
-                               JobRun, KillSwitch, MetricSample, OperatorEvent, Run)
+                               Game, JobRun, KillSwitch, MetricSample, OperatorEvent, Run)
 
 NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
 
@@ -107,6 +107,70 @@ def test_the_heartbeat_rules_use_the_imported_thresholds(db_session, env_setting
     assert rules["heartbeat_broken"].threshold == HEARTBEAT_BROKEN_S
 
 
+def test_the_ws_event_rules_use_the_imported_thresholds(db_session, env_settings):
+    from harness.health import WS_EVENT_BROKEN_S, WS_EVENT_WATCH_S
+
+    _ok_machine(db_session, env_settings)
+    row = db_session.get(ExecHeartbeat, 1)
+    row.ws_last_event_at = NOW - timedelta(seconds=WS_EVENT_WATCH_S + 5)
+    db_session.flush()
+    rules = _rules(db_session, env_settings)
+    assert rules["ws_event_watch"].level == "watch"
+    assert rules["ws_event_watch"].threshold == WS_EVENT_WATCH_S
+    assert rules["ws_event_broken"].level == "fine"
+    assert rules["ws_event_broken"].threshold == WS_EVENT_BROKEN_S
+
+
+def test_a_long_silence_breaks_the_heartbeat_and_the_ws_rules(db_session, env_settings):
+    """The BROKEN tier of both ladders, which the WATCH-tier tests above leave `fine`."""
+    from harness.health import HEARTBEAT_BROKEN_S, WS_EVENT_BROKEN_S
+
+    _ok_machine(db_session, env_settings)
+    row = db_session.get(ExecHeartbeat, 1)
+    row.last_loop_at = NOW - timedelta(seconds=HEARTBEAT_BROKEN_S + 5)
+    row.ws_last_event_at = NOW - timedelta(seconds=WS_EVENT_BROKEN_S + 5)
+    db_session.flush()
+    rules = _rules(db_session, env_settings)
+    assert rules["heartbeat_broken"].level == "broken"
+    assert rules["heartbeat_broken"].threshold == HEARTBEAT_BROKEN_S
+    assert rules["ws_event_broken"].level == "broken"
+    assert rules["ws_event_broken"].threshold == WS_EVENT_BROKEN_S
+    assert build_pulse(db_session, NOW, env_settings)["status"]["status"] == "BROKEN"
+
+
+def test_the_kill_switch_is_broken_while_it_is_active(db_session, env_settings):
+    _ok_machine(db_session, env_settings)
+    db_session.get(KillSwitch, 1).active = True
+    db_session.flush()
+    assert _rules(db_session, env_settings)["kill_switch"].level == "broken"
+    assert build_pulse(db_session, NOW, env_settings)["status"]["status"] == "BROKEN"
+
+
+def test_a_missing_kill_switch_row_is_not_evaluated_rather_than_fine(db_session, env_settings):
+    """The rule that would otherwise render green over a row nobody wrote."""
+    _ok_machine(db_session, env_settings)
+    db_session.query(KillSwitch).delete()
+    db_session.flush()
+    rule = _rules(db_session, env_settings)["kill_switch"]
+    assert rule.level == "not_evaluated" and rule.value is None
+
+
+def test_credits_use_both_imported_fractions(db_session, env_settings):
+    from harness.health import CREDITS_LOW_FRACTION, CREDITS_WATCH_FRACTION
+
+    _ok_machine(db_session, env_settings)
+    budget = env_settings.odds_monthly_credits
+    for remaining, level, threshold in (
+            (budget * CREDITS_WATCH_FRACTION - 1, "watch", CREDITS_WATCH_FRACTION),
+            (budget * CREDITS_LOW_FRACTION - 1, "broken", CREDITS_LOW_FRACTION)):
+        db_session.query(Run).delete()
+        db_session.add(Run(started_at=NOW - timedelta(minutes=2), status="ok", notes={},
+                           odds_remaining=int(remaining), build_sha="abc"))
+        db_session.flush()
+        rule = _rules(db_session, env_settings)["credits_low"]
+        assert rule.level == level and rule.threshold == threshold
+
+
 def test_a_gap_in_the_last_two_hours_is_broken_and_never_reads_orderbook_events(
         db_session, env_settings):
     """Ruling A-I2: the gap rule is `sum(ws.gaps)` over 2 h from metric_samples, which the WS
@@ -174,6 +238,70 @@ def test_a_failing_check_is_broken_and_a_skipped_one_is_a_watch(db_session, env_
     assert rules["check_fail"].level == "fine"
 
 
+def test_a_failed_check_in_the_latest_sweep_is_broken(db_session, env_settings):
+    _ok_machine(db_session, env_settings)
+    job = db_session.query(JobRun).filter(JobRun.job == "settle").first()
+    db_session.add(CheckResult(job_run_id=job.id, ts=NOW - timedelta(hours=1),
+                               check_name="duplicate_trades", status="fail", value=2,
+                               threshold="== 0"))
+    db_session.flush()
+    rules = _rules(db_session, env_settings)
+    assert rules["check_fail"].level == "broken" and rules["check_fail"].value == 1
+    assert rules["check_skipped"].level == "fine"
+    assert build_pulse(db_session, NOW, env_settings)["status"]["status"] == "BROKEN"
+
+
+def test_a_settle_error_is_found_behind_ten_newer_passes(db_session, env_settings):
+    """The window is 24 h and the rule must see all of it. A row cap here used to hide an error
+    twelve hours old behind ten newer passes, which is a missing red -- worse than a wrong one."""
+    _ok_machine(db_session, env_settings)
+    db_session.add(JobRun(job="settle", started_at=NOW - timedelta(hours=12), status="error",
+                          notes={}))
+    for hour in range(11):
+        db_session.add(JobRun(job="settle", started_at=NOW - timedelta(hours=hour, minutes=30),
+                              status="ok", notes={}))
+    db_session.flush()
+    rule = _rules(db_session, env_settings)["settle_error_24h"]
+    assert rule.level == "broken" and rule.value == 1
+    assert build_pulse(db_session, NOW, env_settings)["status"]["status"] == "BROKEN"
+
+
+def test_a_settle_error_older_than_the_window_does_not_fire(db_session, env_settings):
+    _ok_machine(db_session, env_settings)
+    db_session.add(JobRun(job="settle", started_at=NOW - timedelta(hours=25), status="error",
+                          notes={}))
+    db_session.flush()
+    assert _rules(db_session, env_settings)["settle_error_24h"].level == "fine"
+
+
+def test_budget_exhausted_needs_both_of_the_two_newest_settle_runs(db_session, env_settings):
+    _ok_machine(db_session, env_settings)
+    for row in db_session.query(JobRun).filter(JobRun.job == "settle").all():
+        row.budget_exhausted = True
+    db_session.flush()
+    assert _rules(db_session, env_settings)["budget_exhausted"].level == "watch"
+
+    # One healthy run in front of them, so the newest two are no longer both exhausted.
+    db_session.add(JobRun(job="settle", started_at=NOW - timedelta(minutes=5), status="ok",
+                          budget_exhausted=False, notes={}))
+    db_session.flush()
+    assert _rules(db_session, env_settings)["budget_exhausted"].level == "fine"
+
+
+def test_a_dirty_book_is_a_watch_only_while_a_game_is_in_progress(db_session, env_settings):
+    """The only test that pins the conjunction: a distrusted book between games is not a fault."""
+    _ok_machine(db_session, env_settings)
+    db_session.get(ExecHeartbeat, 1).book_dirty_markets = 3
+    db_session.flush()
+    assert _rules(db_session, env_settings)["book_dirty_in_game"].level == "fine"
+
+    db_session.add(Game(sport="nfl", home_team_id=1, away_team_id=2, kickoff_utc=NOW,
+                        status="in_progress"))
+    db_session.flush()
+    rule = _rules(db_session, env_settings)["book_dirty_in_game"]
+    assert rule.level == "watch" and rule.value == 3
+
+
 def test_the_invariant_wall_carries_three_tile_states_with_the_skip_detail(db_session,
                                                                           env_settings):
     _ok_machine(db_session, env_settings)
@@ -208,6 +336,24 @@ def test_the_drawdown_rule_reads_the_risk_module(db_session, env_settings):
     assert rule.value == pytest.approx(-0.2)
 
 
+def test_the_drawdown_value_is_the_newest_reading_not_the_worst_of_the_window(db_session,
+                                                                             env_settings):
+    """Addendum §0.3 asks for the variant's newest `drawdown_pct`. A variant that fell to -0.35
+    and recovered to -0.21 is still stopped, but -0.35 was true last week: showing it as today's
+    reading is the quiet lie this surface exists to refuse."""
+    _ok_machine(db_session, env_settings)
+    for ts, pct in ((NOW - timedelta(days=3), Decimal("-0.3500")),
+                    (NOW - timedelta(minutes=5), Decimal("-0.2100"))):
+        db_session.add(EquitySnapshot(ts=ts, variant_id="sharp_direct", cash=Decimal("790.00"),
+                                      open_stake=Decimal("0.00"), n_open_positions=0,
+                                      n_open_orders=0, peak_equity_7d=Decimal("1000.00"),
+                                      drawdown_pct=pct, drawdown_stop=True))
+    db_session.flush()
+    rule = _rules(db_session, env_settings)["drawdown_stop"]
+    assert rule.level == "watch"
+    assert rule.value == pytest.approx(-0.21)
+
+
 def test_a_snapshot_older_than_twice_its_cadence_is_a_watch_and_three_times_is_broken(
         db_session, env_settings):
     _ok_machine(db_session, env_settings)
@@ -220,7 +366,36 @@ def test_a_snapshot_older_than_twice_its_cadence_is_a_watch_and_three_times_is_b
     assert _rules(db_session, env_settings)["snapshot_stale"].level == "broken"
 
 
+def test_a_closed_study_week_never_makes_the_wall_stale(db_session, env_settings):
+    """Addendum §0.1: a closed week is rebuilt on a new report run, not on a clock, so its age
+    is not a fault. The current week is on a 10-minute cadence and is still judged."""
+    _ok_machine(db_session, env_settings)
+    iso = NOW.isocalendar()
+    db_session.add(DashboardSnapshot(name="study:2026-30", generated_at=NOW - timedelta(days=40),
+                                     elapsed_ms=90, payload={}, error=None))
+    db_session.flush()
+    assert _rules(db_session, env_settings)["snapshot_stale"].level == "fine"
+
+    db_session.add(DashboardSnapshot(name=f"study:{iso.year}-{iso.week}",
+                                     generated_at=NOW - timedelta(seconds=2400),
+                                     elapsed_ms=90, payload={}, error=None))
+    db_session.flush()
+    assert _rules(db_session, env_settings)["snapshot_stale"].level == "broken"
+
+
+def test_the_ages_panel_still_lists_the_closed_week_the_rule_skips(db_session, env_settings):
+    _ok_machine(db_session, env_settings)
+    db_session.add(DashboardSnapshot(name="study:2026-30", generated_at=NOW - timedelta(days=40),
+                                     elapsed_ms=90, payload={}, error=None))
+    db_session.flush()
+    payload = build_pulse(db_session, NOW, env_settings)
+    assert "study:2026-30" in [row["name"] for row in payload["snapshots"]]
+    assert payload["status"]["status"] == "FINE"
+
+
 def test_the_floor_budget_rule_watches_the_p95(db_session, env_settings):
+    from harness.dashboard.snapshots import FLOOR_P95_BUDGET_MS
+
     _ok_machine(db_session, env_settings)
     for i in range(20):
         db_session.add(MetricSample(ts=NOW - timedelta(minutes=i % 9), source="serve",
@@ -228,7 +403,22 @@ def test_the_floor_budget_rule_watches_the_p95(db_session, env_settings):
                                     labels={"name": "floor"}))
     db_session.flush()
     rule = _rules(db_session, env_settings)["snapshot_budget"]
-    assert rule.level == "watch" and rule.threshold == 250
+    assert rule.level == "watch" and rule.threshold == FLOOR_P95_BUDGET_MS
+
+
+def test_the_floor_budget_fires_strictly_above_the_budget(db_session, env_settings):
+    """The scheduler backs off on `p95 > budget`, so the surface must not say WATCH at exactly the
+    budget while the scheduler does nothing. One number, one comparison."""
+    from harness.dashboard.snapshots import FLOOR_P95_BUDGET_MS
+
+    _ok_machine(db_session, env_settings)
+    for i in range(20):
+        db_session.add(MetricSample(ts=NOW - timedelta(minutes=i % 9), source="serve",
+                                    name="serve.snapshot_ms", value=FLOOR_P95_BUDGET_MS,
+                                    labels={"name": "floor"}))
+    db_session.flush()
+    rule = _rules(db_session, env_settings)["snapshot_budget"]
+    assert rule.level == "fine" and rule.value == float(FLOOR_P95_BUDGET_MS)
 
 
 def test_the_build_tile_shows_all_three_shas(db_session, env_settings):

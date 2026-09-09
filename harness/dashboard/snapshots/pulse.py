@@ -20,7 +20,6 @@ Two rules of construction, both from the reviews:
 and `PULSE_KEYS` is asserted by the payload-schema test.
 """
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -30,15 +29,14 @@ from sqlalchemy.orm import Session
 
 from harness.config.settings import Settings
 from harness.dashboard import sentences
-from harness.dashboard.snapshots import base_payload, register_builder, section
-from harness.execution.risk import DRAWDOWN_STOP_PCT, stopped_variants
+from harness.dashboard.snapshots import (FLOOR_P95_BUDGET_MS, base_payload, register_builder,
+                                         section)
+from harness.execution.risk import DRAWDOWN_STOP_PCT, DRAWDOWN_WINDOW, stopped_variants
 from harness.health import (CREDITS_LOW_FRACTION, CREDITS_WATCH_FRACTION, DB_BROKEN_FRACTION,
                             DB_WATCH_FRACTION, DISK_FREE_MIN_FRACTION, HEARTBEAT_BROKEN_S,
                             HEARTBEAT_WATCH_S, STALE_AFTER_S, WS_EVENT_BROKEN_S,
                             WS_EVENT_WATCH_S)
 from harness.telemetry import sanitize_reason
-
-log = logging.getLogger(__name__)
 
 CADENCE_S = 30
 #: The tape strip's window and its bucket size (spec §2.1 item 2).
@@ -47,18 +45,23 @@ TAPE_BUCKET_MIN = 5
 #: The gap rule's window (spec §2.1: "any `gap` row in the last 2 h", re-sourced to
 #: `sum(ws.gaps)` from metric_samples by ruling A-I2).
 GAP_WINDOW = timedelta(hours=2)
-#: The floor builder's own budget, and the window its p95 is taken over (addendum §1, A-I9).
-FLOOR_P95_BUDGET_MS = 250
+#: The window the floor builder's p95 is taken over (addendum §1, A-I9). The budget it is
+#: measured against lives in `harness/dashboard/snapshots/__init__.py`, which T16's scheduler
+#: imports from too: it backs the in-window floor cadence off on the same number, and a surface
+#: that disagreed with the scheduler about it would be worse than either.
 FLOOR_P95_WINDOW = timedelta(minutes=10)
 #: How many operator events the surface shows (spec §2.1 item 6).
 EVENTS_LIMIT = 10
-#: The cadence each snapshot's staleness is judged against, so the rule can say 2x and 3x.
+#: The cadence each snapshot's staleness is *judged* against, so the rule can say 2x and 3x.
 #: Deliberately the *out-of-window* cadence for floor and ticket, not the in-window one: a
 #: scheduler that flips floor to 15 s would otherwise make a healthy 40 s-old snapshot read as
 #: stale the moment a game ended. The cost is that a dead floor job is noticed at 120 s rather
 #: than at 30 s, which is inside the window the recorder's own staleness rule already covers.
-#: `harness/dashboard/scheduler.py` has its own CADENCES: those are the intervals jobs run at.
-CADENCES = {"pulse": 30, "floor": 60, "gate": 60, "ticket": 60, "study": 600}
+#: Named apart from `harness/dashboard/scheduler.py`'s `CADENCES` on purpose: those are the
+#: intervals the jobs actually run at, these are the intervals a snapshot's age is read against,
+#: and the two differ for `floor` and `ticket` by the paragraph above. Neither is the other's
+#: bug to fix.
+JUDGED_CADENCES = {"pulse": 30, "floor": 60, "gate": 60, "ticket": 60, "study": 600}
 
 PULSE_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                         "status", "tape", "vitals", "storage", "invariants",
@@ -70,6 +73,13 @@ _WORDS = {0: "FINE", 1: "WATCH", 2: "BROKEN"}
 
 @dataclass(frozen=True)
 class RuleResult:
+    """One rule's reading. `unit` is what `sentences.pulse_rule_reading` formats the value and the
+    threshold with, and the enumerated set has no millisecond or multiple: `snapshot_budget`
+    (milliseconds) and `snapshot_stale` (a multiple of a cadence) both carry `count`, so their
+    readings print bare numbers. T18 labels those two rules itself rather than the set growing a
+    unit only two rules would use.
+    """
+
     name: str
     level: str              # fine | watch | broken | not_evaluated
     value: float | None
@@ -110,27 +120,23 @@ def _flag(name: str, tripped, level: str, value, threshold, unit: str) -> RuleRe
     return RuleResult(name, level if tripped else "fine", value, threshold, unit)
 
 
-_NEWEST_RUN = text("""
-    select started_at, status, build_sha, odds_remaining, budget_exhausted
-    from runs order by id desc limit 1
-""")
+_NEWEST_RUN = text("select started_at, build_sha from runs order by id desc limit 1")
 _NEWEST_CREDITS = text("""
     select odds_remaining from runs where odds_remaining is not null order by id desc limit 1
 """)
 _HEARTBEAT = text("""
-    select last_loop_at, ws_last_event_at, loops, loops_skipped, open_orders, last_loop_ms,
-           p95_loop_ms, book_dirty_markets, executor_version, last_error
+    select last_loop_at, ws_last_event_at, loops_skipped, p95_loop_ms, book_dirty_markets,
+           executor_version
     from exec_heartbeat where id = 1
 """)
-_KILL = text("select active, reason, set_at from kill_switch where id = 1")
+_KILL = text("select active from kill_switch where id = 1")
 _GAPS_2H = text("""
     select coalesce(sum(value), 0) from metric_samples
     where name = 'ws.gaps' and ts > :since
 """)
 _NEWEST_METRIC = text("""
     select distinct on (name) name, value, ts from metric_samples
-    where name in ('host.disk_free_gb', 'host.disk_total_gb', 'db.size_gb',
-                   'host.mem_available_mb')
+    where name in ('host.disk_free_gb', 'host.disk_total_gb', 'host.mem_available_mb')
       and ts > :since
     order by name, ts desc
 """)
@@ -143,7 +149,7 @@ _TAPE = text("""
     group by 1, 2, 3
 """)
 _VITALS = text("""
-    select name, labels, value, ts from metric_samples
+    select name, value, ts from metric_samples
     where name in ('exec.loop_ms', 'exec.p95_loop_ms', 'exec.loops_skipped',
                    'exec.dirty_markets', 'exec.ws_event_age_s', 'ws.events_per_min',
                    'ws.trades_per_min', 'ws.reconnects', 'recorder.credits_remaining')
@@ -161,10 +167,14 @@ _LATEST_SWEEP = text("""
     where ts = (select max(ts) from check_results)
     order by check_name
 """)
+#: No `limit`: the window is the bound. `Settings.settle_period_s` is 3600, so about 24 rows fall
+#: inside 24 h, read in index order off `ix_job_runs (job, started_at desc)`. A row cap here used
+#: to hide an error twelve hours old behind ten newer passes, which made `settle_error_24h` cover
+#: about ten hours while its name, the spec line and the payload all said twenty-four.
 _SETTLE_RUNS = text("""
-    select status, budget_exhausted, started_at from job_runs
+    select status, budget_exhausted from job_runs
     where job = 'settle' and started_at > :since
-    order by started_at desc limit 10
+    order by started_at desc
 """)
 _HOUSEKEEPING = text("""
     select notes from job_runs where job = 'settle' order by started_at desc limit 30
@@ -174,9 +184,16 @@ _EVENTS = text("""
 """)
 _SNAPSHOT_AGES = text("select name, generated_at, elapsed_ms, error from dashboard_snapshots")
 _GAMES_LIVE = text("select count(*) from games where status = 'in_progress'")
-_WORST_DRAWDOWN = text("""
-    select min(drawdown_pct) from equity_snapshots
-    where ts >= :since and drawdown_stop = true
+#: Each variant's *newest* drawdown reading inside the risk window, mirroring
+#: `harness.execution.risk._NEWEST_VERDICT` so the number beside a stop is the same row the stop
+#: was decided on. Addendum §0.3 asks for the newest reading, not the worst one in the window: a
+#: variant that fell to -0.35 and recovered to -0.21 must render -0.21, because the older figure
+#: was true last Tuesday and presenting it as today's is the kind of quiet lie this surface exists
+#: to refuse. `drawdown_stop is not null` is the same "not evaluated" filter the risk module uses.
+_NEWEST_DRAWDOWN = text("""
+    select distinct on (variant_id) variant_id, drawdown_pct from equity_snapshots
+    where ts >= :since and drawdown_stop is not null
+    order by variant_id, ts desc
 """)
 
 
@@ -223,7 +240,10 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
         "book_dirty_markets": heartbeat.book_dirty_markets if heartbeat else None,
         "executor_version": heartbeat.executor_version if heartbeat else None,
         "heartbeat": dict(heartbeat._mapping) if heartbeat else None,
-        "kill_active": bool(kill.active) if kill else False,
+        # `None`, not `False`, when the singleton row does not exist: the switch's default is off
+        # and `init-db` writes the row, but a rule that renders green over a row nobody wrote is
+        # the pattern this module's docstring refuses. `rule_kill_switch` reports it unevaluated.
+        "kill_active": bool(kill.active) if kill else None,
         "gaps_2h": float(session.execute(
             _GAPS_2H, {"since": now - GAP_WINDOW}).scalar() or 0),
         "disk_free_gb": metrics.get("host.disk_free_gb"),
@@ -237,8 +257,9 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
         "snapshots": snapshots,
         "games_live": int(session.execute(_GAMES_LIVE).scalar() or 0),
         "stopped": sorted(stopped_variants(session, now)),
-        "drawdown_pct": session.execute(
-            _WORST_DRAWDOWN, {"since": now - timedelta(days=7)}).scalar(),
+        "drawdown_by_variant": {row.variant_id: row.drawdown_pct for row in
+                                session.execute(_NEWEST_DRAWDOWN,
+                                                {"since": now - DRAWDOWN_WINDOW})},
     }
 
 
@@ -269,7 +290,8 @@ def rule_tape_gap(v) -> RuleResult:
 
 
 def rule_kill_switch(v) -> RuleResult:
-    return _flag("kill_switch", v["kill_active"], "broken", 1 if v["kill_active"] else 0, 0,
+    active = v["kill_active"]
+    return _flag("kill_switch", active, "broken", None if active is None else int(active), 0,
                  "count")
 
 
@@ -345,21 +367,40 @@ def rule_book_dirty_in_game(v) -> RuleResult:
 
 def rule_drawdown_stop(v) -> RuleResult:
     """Addendum §0.3: WATCH while any variant's newest verdict is a stop; never BROKEN, because
-    in paper the stop is information and the executor keeps placing (phase 4 decision 6)."""
+    in paper the stop is information and the executor keeps placing (phase 4 decision 6).
+
+    The value is the deepest *current* reading among the stopped variants -- each one's newest
+    row, not the worst row of the window -- so the figure beside the stop is the one the stop was
+    decided on. `None` when a stopped variant has no reading, which `pulse_rule_reading` prints as
+    not evaluated rather than inventing a zero.
+    """
     if not v["stopped"]:
         return RuleResult("drawdown_stop", "fine", 0.0, float(DRAWDOWN_STOP_PCT), "fraction")
-    worst = float(v["drawdown_pct"]) if v["drawdown_pct"] is not None else None
-    return RuleResult("drawdown_stop", "watch", worst, float(DRAWDOWN_STOP_PCT), "fraction")
+    current = [float(v["drawdown_by_variant"][name]) for name in v["stopped"]
+               if v["drawdown_by_variant"].get(name) is not None]
+    return RuleResult("drawdown_stop", "watch", min(current) if current else None,
+                      float(DRAWDOWN_STOP_PCT), "fraction")
 
 
 def rule_snapshot_stale(v) -> RuleResult:
     """Two times its own cadence is a WATCH, three times a BROKEN (spec §4). This is also how a
-    dead `app-serve` job is detected: nothing else notices a scheduler that stopped."""
-    if not v["snapshots"]:
+    dead `app-serve` job is detected: nothing else notices a scheduler that stopped.
+
+    Only the surfaces actually on a cadence are judged: the four fixed names plus the current ISO
+    week's `study:` snapshot. A *closed* week is rebuilt when its report run changes, not on a
+    clock (addendum §0.1), so its age is not a fault -- judging it would have put Pulse into a
+    permanent BROKEN from the second week of operation, masking every real BROKEN behind it. The
+    ages panel still lists every row, including the closed weeks.
+    """
+    iso = v["now"].isocalendar()
+    judged = ({n for n in JUDGED_CADENCES if n != "study"}
+              | {f"study:{iso.year}-{iso.week}"})
+    rows = [r for r in v["snapshots"] if r["name"] in judged]
+    if not rows:
         return _absent("snapshot_stale", 2, "count")
     worst_ratio, level = 0.0, "fine"
-    for row in v["snapshots"]:
-        cadence = CADENCES.get(row["name"].split(":")[0], 60)
+    for row in rows:
+        cadence = JUDGED_CADENCES.get(row["name"].split(":")[0], 60)
         ratio = (v["now"] - row["generated_at"]).total_seconds() / cadence
         worst_ratio = max(worst_ratio, ratio)
     if worst_ratio >= 3:
@@ -371,13 +412,19 @@ def rule_snapshot_stale(v) -> RuleResult:
 
 def rule_snapshot_budget(v) -> RuleResult:
     """Addendum §1 / ruling A-I9: the floor builder's p95 over the last 10 minutes against its
-    250 ms share of the 2 s-per-minute CPU budget. The scheduler backs the in-window floor
-    cadence off to 30 s on the same condition; this is the rule that says so out loud."""
+    share of the 2 s-per-minute CPU budget. The scheduler backs the in-window floor cadence off to
+    30 s on the same condition; this is the rule that says so out loud.
+
+    Strictly greater than, not `_ladder`'s `>=`: the scheduler backs off on `p95 > budget`, and at
+    exactly the budget a `>=` here would have made the surface say WATCH while the scheduler did
+    nothing. One number, one comparison.
+    """
     samples = v["floor_ms"]
     if not samples:
         return _absent("snapshot_budget", FLOOR_P95_BUDGET_MS, "count")
-    p95 = samples[min(len(samples) - 1, int(round(0.95 * (len(samples) - 1))))]
-    return _ladder("snapshot_budget", p95, FLOOR_P95_BUDGET_MS, None, "count")
+    p95 = float(samples[min(len(samples) - 1, int(round(0.95 * (len(samples) - 1))))])
+    level = "watch" if p95 > FLOOR_P95_BUDGET_MS else "fine"
+    return RuleResult("snapshot_budget", level, p95, float(FLOOR_P95_BUDGET_MS), "count")
 
 
 RULES: tuple[Callable[[dict], RuleResult], ...] = (
@@ -477,9 +524,11 @@ def _events(session: Session) -> list[dict]:
 
 
 def _snapshots(values: dict) -> list[dict]:
+    """Every row's age, including the closed `study:` weeks `rule_snapshot_stale` does not judge:
+    the ages panel is the place an operator can see that a week was built and when."""
     out = []
     for row in values["snapshots"]:
-        cadence = CADENCES.get(row["name"].split(":")[0], 60)
+        cadence = JUDGED_CADENCES.get(row["name"].split(":")[0], 60)
         out.append({"name": row["name"], "generated_at": row["generated_at"].isoformat(),
                     "age_s": (values["now"] - row["generated_at"]).total_seconds(),
                     "cadence_s": cadence, "elapsed_ms": row["elapsed_ms"],
@@ -508,9 +557,12 @@ def build_pulse(session: Session, now: datetime, settings: Settings) -> dict:
                         "executor_version": values["executor_version"],
                         "serving_build_sha": settings.build_sha,
                         "agree": (values["run_build_sha"] == settings.build_sha)}
+    # `pulse_tape` is handed the section as it stands, error dict included: it reads `sources` with
+    # a default and answers a payload without one with its no-activity line, which is the honest
+    # sentence for a tape section that failed to build.
     payload["sentences"] = {
         "status": sentences.pulse_status(payload["status"]),
-        "tape": sentences.pulse_tape(payload["tape"] if isinstance(payload["tape"], dict) else {}),
+        "tape": sentences.pulse_tape(payload["tape"]),
     }
     payload["readings"] = {"rules": [sentences.pulse_rule_reading(r.as_dict()) for r in rules]}
     return payload

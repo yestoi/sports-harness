@@ -39,6 +39,11 @@ log = logging.getLogger(__name__)
 #: raise.
 SNAPSHOT_STATEMENT_TIMEOUT_MS = 2000
 
+#: The floor builder's share of the 2 s-per-minute CPU budget (addendum §1). One home: the
+#: scheduler backs the in-window floor cadence off above it and Pulse's `snapshot_budget` rule
+#: names it, and a surface that disagreed with the scheduler would be worse than either.
+FLOOR_P95_BUDGET_MS = 250
+
 #: `pool_size=2` with `max_overflow=0`, deliberately: SQLAlchemy's default overflow of 10 would
 #: let "a pool of two" become twelve connections under a scheduler, on a Postgres already shared
 #: with app-run, app-exec, app-ws and the backup sidecar (ruling A-I10). Two is one for the job
