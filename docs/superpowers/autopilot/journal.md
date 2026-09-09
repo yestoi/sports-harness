@@ -917,3 +917,16 @@ Times are America/Chicago.
   - Phase: fix wave implemented 21:11 CT (7661e31..65e8a10; 1729 tests foreground). Ruling: the drill-record tunnel targets the postgres container address (no host port is published) — accepted; the verify.md M3 note is within the phase's own review round — accepted. Scoped re-review dispatched
 - Carried forward: none new (16 closed by Task 2; the roadmap's Carried fixes table is empty after this deploy's verify); user-side: the log-redaction filter does not redact a dict-repr headers mapping (invariant 4: user's call), the replay-tier row e82fcd0a1e99 active
 - Next: `make test` on main, backup-keygen (notify: copy the private key out), deploy, verify, phase report, bundle + push
+
+## 66. deploy - phase 4 attempt 1 FAILED at the backup precheck fallback - 2026-09-08 21:19 CT
+- Orient: Unit: phase step 9 (the phase deploy from `main` a910cd9, `make deploy-nas`; game window 0|0|0 at 21:18 CT; backup-keygen done at 21:17 CT, entry 65)
+- Branch / commits: `main` a910cd9 (phase 4 merged at 41f0a39 + the recipient key commit)
+- Result: FAIL (deploy exit 2; failed deploys today 1 of 2)
+- Dispatches: 0
+- Tests: `main` all dots, exit 0 at 21:17 CT
+- Review: n/a
+- Deploy: push and build ok; `up -d postgres app-backup` ok (app-backup sleeping to 03:30 CT); `backup-precheck` failed (UndefinedTable backup_runs, as the final review predicted); the fallback ran `init-db`, which created the three new tables and then hit `LockNotAvailable: canceling statement due to lock timeout` on `alter table market_gap_snapshots add column if not exists no_fair_reason`; the chain stopped before `dump.sh nightly`; the second precheck failed; ABORT. The old app containers (a193fd0) kept running throughout; `/healthz` build a193fd0; recorder ticking (credits decreasing, last run 21:21 CT); no data lost
+- Verification: n/a
+- Rulings: (1) Cause (inline systematic debugging): `app-exec`'s 15-second steps hold an AccessShareLock on `market_gap_snapshots` for several seconds each (pg_locks at 21:22 CT showed one 9 s old), so the ALTER's ACCESS EXCLUSIVE request loses the 5 s `lock_timeout` race while the old writers run; phase 3's deploys won the same race by luck. (2) Retry once (attempt 2 of the daily 2) after `docker compose stop app-exec app-run` (the deploy recreates both; a few minutes without paper orders and ticks, journaled) so the DDL runs against quiet writers. (3) Carried fix 21: the recipe stops `app-exec` and `app-run` before any DDL step (both the fallback's and the normal `init-db`), with its test; a Makefile-only hotfix after this deploy's verify.
+- Carried forward: 21 (deploy recipe stops the app writers before DDL)
+- Next: deploy attempt 2 (entry 67)
