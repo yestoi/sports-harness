@@ -9,6 +9,7 @@ Paths are anchored on the repository root rather than the process's working dire
 assertions mean the same thing however pytest is invoked.
 """
 
+import json
 import os
 import re
 import shlex
@@ -404,35 +405,138 @@ def test_drill_sh_reads_the_meta_counts_and_never_the_live_database():
     assert "ROWS_MATCH true" in body and "ROWS_MATCH false" in body
 
 
+def test_the_counts_pairs_use_to_json_for_double_quoted_keys():
+    """format('%L', ...) is quote_literal and would emit single-quoted keys ('orders':4212),
+    which is not valid JSON and which drill.sh's double-quote-anchored meta_count can never
+    match. This is exactly the class of defect a hand-typed test sidecar cannot catch, which is
+    why test_drill_meta_count_extraction_reads_a_real_sidecar below builds its counts the way
+    the aggregate actually produces them rather than typing the JSON by hand (C1)."""
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert "format('%L:%s', t, n)" not in body
+    assert "to_json(t)" in body
+
+
+def test_every_write_to_the_snapshot_fifo_is_subshell_wrapped():
+    """A write to fd 8 after the FIFO's reader has already exited raises SIGPIPE in the writing
+    shell itself, which `2>/dev/null || true` cannot catch -- a shell killed by a signal never
+    reaches the `||` to produce a status for it to inspect. Wrapping every such write in a
+    subshell confines the signal to that subshell instead (C2). `trap '' PIPE` is explicitly
+    not the fix: SIG_IGN is inherited by pg_dump, psql, sha256sum and cut, changing their own
+    behaviour."""
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert "trap '' PIPE" not in body
+    # The three writes to fd 8: the begin/timeouts/export-snapshot preamble, the counts
+    # statement, and the final commit.
+    assert body.count(">&8 )") >= 3
+
+
+def test_the_counts_result_is_shape_validated_and_generously_bounded():
+    """60s is not generous for a count(*) over `signals` (the largest dumped table) on the NAS
+    under live ingest; a timed-out or errored wait must not silently write whatever text was
+    last in the output file (the snapshot id itself, on a stall) as if it were the counts (C3)."""
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert "COUNTS_WAIT_S" in body
+    assert body.count('grep -Eq \'^"[^"]+":[0-9]+(,"[^"]+":[0-9]+)*$\'') >= 2
+
+
+def test_the_snapshot_session_has_bounded_statement_and_lock_timeouts():
+    """A count(*) needs only ACCESS SHARE, but anything holding ACCESS EXCLUSIVE blocks it
+    indefinitely with no statement_timeout set, and dump.sh would then never return (I1)."""
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert "set statement_timeout" in body
+    assert "set lock_timeout" in body
+    assert "COUNTS_LOCK_TIMEOUT_MS" in body
+
+
+def test_forever_counts_only_its_own_tables_and_partition_counts_none():
+    """A forever or partition dump does not carry the rest of the database, so counting every
+    table against it (I2) compares a restore to numbers the dump never claimed to match, and
+    would scan the whole database on every one of the (up to eight) partition-archive calls a
+    single run can make (I3)."""
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert '"ledger gate_reports"' in body
+    assert '_counts_snapshot="none"' in body
+
+
+def test_drill_iterates_the_sidecars_own_table_list_not_the_restored_one():
+    """A table the dump carried but the restore is missing entirely must be reported as a
+    mismatch; it can never be found by walking the restored database's own table list, because
+    it is not there to walk to (I4)."""
+    body = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    assert "meta_tables()" in body
+    assert "MISSING_TABLE" in body
+    assert "for t in $(meta_tables)" in body
+
+
+def test_meta_count_matches_the_table_name_as_a_fixed_string():
+    """A quoted Postgres identifier can legally contain '.', '*' or '/' -- all sed regex
+    metacharacters -- so the table name is matched with grep -F (fixed string) rather than
+    interpolated into a sed pattern (M5)."""
+    body = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    assert "grep -F" in body
+
+
+def test_the_growth_comparison_guards_against_a_non_integer_count():
+    """[ "$here" -gt "$there" ] errors under set -e if either side is not a clean integer,
+    aborting the drill with an opaque `sh: bad number` instead of reporting a mismatch (M6)."""
+    body = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    assert "is_int" in body
+
+
+def _pg_counts_pairs(counts: dict) -> str:
+    """Mirrors table_counts_sql's aggregate exactly: string_agg(format('%s:%s', to_json(t), n),
+    ',' order by t). to_json() on a text key double-quotes and JSON-escapes it -- the sidecar
+    this builds is therefore shaped the way the real query produces it, not hand-typed, so this
+    fixture cannot stay green if dump.sh regresses to quote_literal (%L) keys (C1)."""
+    return ",".join(f"{json.dumps(k)}:{v}" for k, v in sorted(counts.items()))
+
+
 def test_drill_meta_count_extraction_reads_a_real_sidecar(tmp_path):
     """The extractor is plain POSIX text handling, so it is testable without a container."""
+    counts_pairs = _pg_counts_pairs({"orders": 4212, "signals": 881033, "ledger": 0})
     meta = tmp_path / "harness-nightly-20260909T033000Z.meta.json"
     meta.write_text(
         '{\n  "kind": "nightly",\n  "stamp": "20260909T033000Z",\n'
         '  "path": "x.dump",\n  "sha256": "ab",\n  "bytes": 12,\n'
         '  "started": "s",\n  "finished": "f",\n  "exit_code": 0,\n'
         '  "tables": {"data_excluded":["raw_responses"],'
-        '"counts":{"orders":4212,"signals":881033,"ledger":0}}\n}\n')
+        f'"counts":{{{counts_pairs}}}}}\n}}\n')
     script = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
-    body = script.split("meta_count()", 1)[1].split("}", 1)[0]
-    assert "counts" in body
+    # _meta_pairs is where the "counts" object is actually parsed; meta_count and meta_tables
+    # both delegate to it rather than each re-parsing the sidecar themselves.
+    pairs_body = script.split("_meta_pairs()", 1)[1].split("}", 1)[0]
+    assert "counts" in pairs_body
 
-    # _meta_count_function always returns text ending in "\n}\n" (the function's closing brace
-    # line), so a leading ";" here would start a shell line with nothing before it -- a POSIX
-    # syntax error regardless of the function body. The extracted text's own trailing newline is
-    # the statement separator, so the next command follows with no ";" of its own.
+    # _shell_function always returns text ending in "\n}\n" (the function's closing brace line),
+    # so the two extracted functions are concatenated directly with no ";" between them --
+    # their own trailing newlines are the statement separators.
+    funcs = _shell_function(script, "_meta_pairs") + _shell_function(script, "meta_count")
     out = subprocess.run(
         ["sh", "-c",
-         f'META_FILE="{meta}"; ' + _meta_count_function(script) +
+         f'META_FILE="{meta}"; ' + funcs +
          'meta_count orders; meta_count signals; meta_count ledger; meta_count nosuch'],
         capture_output=True, text=True, check=True)
     assert out.stdout.split() == ["4212", "881033", "0", ""] or \
            out.stdout.split() == ["4212", "881033", "0"]
 
 
-def _meta_count_function(script: str) -> str:
-    """The `meta_count` shell function lifted out of drill.sh, so the test runs the real code
-    rather than a copy of it."""
-    start = script.index("meta_count()")
+def test_drill_meta_tables_lists_every_counted_table(tmp_path):
+    counts_pairs = _pg_counts_pairs({"orders": 4212, "signals": 881033, "ledger": 0})
+    meta = tmp_path / "harness-nightly-20260909T033000Z.meta.json"
+    meta.write_text(
+        '{"tables": {"data_excluded":["raw_responses"],'
+        f'"counts":{{{counts_pairs}}}}}}}\n')
+    script = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    funcs = _shell_function(script, "_meta_pairs") + _shell_function(script, "meta_tables")
+    out = subprocess.run(
+        ["sh", "-c", f'META_FILE="{meta}"; ' + funcs + 'meta_tables'],
+        capture_output=True, text=True, check=True)
+    assert sorted(out.stdout.split()) == ["ledger", "orders", "signals"]
+
+
+def _shell_function(script: str, name: str) -> str:
+    """One named shell function lifted out of a script, so a test runs the real code rather
+    than a copy of it."""
+    start = script.index(f"{name}()")
     end = script.index("\n}\n", start) + len("\n}\n")
     return script[start:end]

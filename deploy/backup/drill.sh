@@ -30,8 +30,6 @@ MIN_FREE_PCT="${MIN_FREE_PCT:-30}"
 DRILL_DB="${DRILL_DB:-drill}"
 DRILL_USER="${DRILL_USER:-drill}"
 
-BULK="raw_responses orderbook_events venue_trades venue_quotes odds_snapshots"
-
 # The dump-time counts sidecar (addendum §0.7).  The comparison is against these, never against
 # the live database: production keeps recording after the dump, so a live comparison reports a
 # MISMATCH on every busy table and the verdict line means nothing.
@@ -42,14 +40,28 @@ if [ ! -f "$META_FILE" ]; then
     exit 1
 fi
 
-# One table's count out of the sidecar's "counts" object.  Prints nothing when the table is not
-# in it (an excluded table, or a table created after the dump).  POSIX sed and tr only: the
-# throwaway container has no jq and the NAS is not asked to grow one.
-meta_count() {
+# The sidecar's "counts" object, one pair per line ("key":value), computed once so meta_count
+# and meta_tables don't each re-parse the file.  POSIX sed/tr/grep only: the throwaway container
+# has no jq and the NAS is not asked to grow one.
+_meta_pairs() {
     tr -d ' \n' < "$META_FILE" \
         | sed -n 's/.*"counts":{\([^}]*\)}.*/\1/p' \
-        | tr ',' '\n' \
-        | sed -n "s/^\"$1\"://p"
+        | tr ',' '\n'
+}
+
+# One table's count out of the sidecar's "counts" object.  Prints nothing when the table is not
+# in it (an excluded table, or a table created after the dump).  $1 is matched with grep -F
+# (fixed string), not interpolated into a sed regex: a quoted Postgres identifier can legally
+# contain characters -- '.', '*', '/' -- that are regex metacharacters (M5).
+meta_count() {
+    _meta_pairs | grep -F "\"$1\":" | sed 's/^"[^"]*"://'
+}
+
+# Every table name the sidecar recorded a count for -- what the dump actually carried, which is
+# not necessarily every table the restore produced (a table missing from the restore is exactly
+# what this drill exists to catch; see the comparison loop below).
+meta_tables() {
+    _meta_pairs | sed -n 's/^"\([^"]*\)":.*/\1/p'
 }
 
 COUNTS_SNAPSHOT=$(tr -d ' \n' < "$META_FILE" \
@@ -108,32 +120,40 @@ fi
 
 drill_psql() { docker exec "$CID" psql -U "$DRILL_USER" -d "$DRILL_DB" -qAt -c "$1"; }
 
-# Every ordinary, non-partition table the restored dump carries, minus the five bulk tables
-# whose data was deliberately excluded (their schema restores, so they are present and empty).
-tables=$(drill_psql "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace \
-where n.nspname = 'public' and c.relkind = 'r' and c.relispartition = false order by 1")
+# A count comes back as a plain string from both the sidecar and psql; guarding it as a digit
+# string before using it in an arithmetic test avoids an opaque "sh: bad number" abort under
+# `set -e` if either one is ever not a clean integer (M6).
+is_int() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 
+# Iterate the sidecar's own count keys, not the tables the restore happens to produce (I4): a
+# table the dump carried but the restore is missing entirely must be a mismatch, and it can
+# never appear by walking the restored database's own table list -- it is not there to walk to.
 echo "table restored dump_time"
 mismatches=0
 compared=0
 missing=0
-for t in $tables; do
-    skip=0
-    for b in $BULK; do
-        [ "$t" != "$b" ] || skip=1
-    done
-    [ "$skip" -eq 0 ] || continue
-    here=$(drill_psql "select count(*) from public.\"$t\"")
+for t in $(meta_tables); do
     there=$(meta_count "$t")
     if [ -z "$there" ]; then
-        echo "$t $here - NO_DUMP_TIME_COUNT"
+        # Not reachable in practice (t came from the same object meta_count reads), kept as a
+        # defensive branch so a future sidecar shape change fails as NO_COUNT, not silently.
+        echo "$t - - NO_DUMP_TIME_COUNT"
         missing=$((missing + 1))
         continue
     fi
+    _exists=$(drill_psql "select to_regclass('public.$t') is not null")
+    if [ "$_exists" != "t" ]; then
+        echo "$t MISSING $there MISSING_TABLE"
+        compared=$((compared + 1))
+        mismatches=$((mismatches + 1))
+        continue
+    fi
+    here=$(drill_psql "select count(*) from public.\"$t\"")
     compared=$((compared + 1))
     if [ "$here" = "$there" ]; then
         echo "$t $here $there"
-    elif [ "$COUNTS_SNAPSHOT" = "before dump" ] && [ "$here" -gt "$there" ]; then
+    elif [ "$COUNTS_SNAPSHOT" = "before dump" ] && is_int "$here" && is_int "$there" \
+            && [ "$here" -gt "$there" ]; then
         # The labelled fallback: the counts predate the dump's own snapshot, so a busy table
         # legitimately restores with more rows than the sidecar records -- never fewer.
         echo "$t $here $there GREW"
