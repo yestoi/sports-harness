@@ -46,18 +46,28 @@ fi
 # or count is never legitimately space-bearing today, but stripping spaces file-wide is the same
 # mistake that squashed "counts_snapshot"'s content elsewhere in this file, so it is not repeated
 # here even where it happens to be harmless.
+#
+# dump.sh always writes this compactly ("counts":{"orders":4212,...}), but the sidecar is a
+# plain file and nothing stops an operator from re-serialising one through `python3 -m
+# json.tool` or similar while inspecting it by hand -- ordinary JSON spacing (": ", and each
+# pair on its own indented line) must parse the same way (round 3).  " *" after the colons below
+# tolerates that spacing, and every pair is trimmed of the leading/trailing whitespace pretty-
+# printing's indentation leaves behind once newlines are gone, so meta_count's `^"..."` anchor
+# and meta_tables' key extraction still see a clean "key":value (or "key": value) per line.
 _meta_pairs() {
     tr -d '\n' < "$META_FILE" \
-        | sed -n 's/.*"counts":{\([^}]*\)}.*/\1/p' \
-        | tr ',' '\n'
+        | sed -n 's/.*"counts": *{\([^}]*\)}.*/\1/p' \
+        | tr ',' '\n' \
+        | sed 's/^ *//; s/ *$//'
 }
 
 # One table's count out of the sidecar's "counts" object.  Prints nothing when the table is not
 # in it (an excluded table, or a table created after the dump).  $1 is matched with grep -F
 # (fixed string), not interpolated into a sed regex: a quoted Postgres identifier can legally
-# contain characters -- '.', '*', '/' -- that are regex metacharacters (M5).
+# contain characters -- '.', '*', '/' -- that are regex metacharacters (M5).  The trailing " *"
+# strips the optional space a pretty-printed ": " leaves in front of the value (round 3).
 meta_count() {
-    _meta_pairs | grep -F "\"$1\":" | sed 's/^"[^"]*"://'
+    _meta_pairs | grep -F "\"$1\":" | sed 's/^"[^"]*": *//'
 }
 
 # Every table name the sidecar recorded a count for -- what the dump actually carried, which is
@@ -71,9 +81,10 @@ meta_tables() {
 # dump", whose spaces are content, not JSON formatting whitespace.  Stripping spaces here (as an
 # earlier version of this line did) squashed them to "sameasdump"/"beforedump", which never
 # equals the literal "before dump" comparison below -- silently making the labelled fallback's
-# growth-only branch unreachable (N2).
+# growth-only branch unreachable (N2).  " *" between the colon and the opening quote tolerates a
+# pretty-printed ": " (round 3); the captured value itself is untouched either way.
 COUNTS_SNAPSHOT=$(tr -d '\n' < "$META_FILE" \
-    | sed -n 's/.*"counts_snapshot":"\([^"]*\)".*/\1/p')
+    | sed -n 's/.*"counts_snapshot": *"\([^"]*\)".*/\1/p')
 [ -n "$COUNTS_SNAPSHOT" ] || COUNTS_SNAPSHOT="same as dump"
 echo "INFO counts_snapshot=$COUNTS_SNAPSHOT"
 

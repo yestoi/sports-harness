@@ -642,3 +642,54 @@ def _lines_between(script: str, start_marker: str, end_line_marker: str) -> str:
     end = script.index(end_line_marker, start)
     end = script.index("\n", end) + 1
     return script[start:end]
+
+
+def test_drill_parses_a_pretty_printed_sidecar_the_same_as_a_compact_one(tmp_path):
+    """dump.sh always writes the sidecar compactly, but it is a plain file and nothing stops an
+    operator from re-serialising one through `python3 -m json.tool` (or any other JSON writer)
+    while inspecting it by hand -- ordinary JSON spacing (": ", each pair on its own indented
+    line) must parse to the same table counts and the same counts_snapshot value as the compact
+    form (round 3)."""
+    counts_pairs = _pg_counts_pairs({"orders": 4212, "signals": 881033, "ledger": 0})
+    compact = (
+        '{"kind":"nightly","tables":{"data_excluded":["raw_responses"],'
+        f'"counts":{{{counts_pairs}}},"counts_snapshot":"before dump"}}}}'
+    )
+    pretty = subprocess.run(
+        ["python3", "-m", "json.tool"], input=compact, capture_output=True, text=True,
+        check=True).stdout
+    # json.tool's indentation confirms this is genuinely exercising the whitespace-tolerant
+    # patterns, not accidentally re-testing the compact shape.
+    assert '"counts": {\n' in pretty and '"orders": 4212' in pretty
+
+    script = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    funcs = (
+        _shell_function(script, "_meta_pairs")
+        + _shell_function(script, "meta_count")
+        + _shell_function(script, "meta_tables")
+    )
+    snapshot_extraction = _lines_between(
+        script, 'COUNTS_SNAPSHOT=$(tr', 'COUNTS_SNAPSHOT="same as dump"')
+
+    def read_sidecar(text: str, name: str):
+        meta = tmp_path / name
+        meta.write_text(text)
+        counts_and_tables = subprocess.run(
+            ["sh", "-c",
+             f'META_FILE="{meta}"; ' + funcs +
+             'meta_count orders; meta_count signals; meta_count ledger; echo ---; meta_tables'],
+            capture_output=True, text=True, check=True).stdout
+        counts_part, tables_part = counts_and_tables.split("---\n", 1)
+        snapshot = subprocess.run(
+            ["sh", "-c",
+             f'META_FILE="{meta}"; ' + snapshot_extraction + 'echo "$COUNTS_SNAPSHOT"'],
+            capture_output=True, text=True, check=True).stdout.strip()
+        return counts_part.split(), sorted(tables_part.split()), snapshot
+
+    compact_counts, compact_tables, compact_snapshot = read_sidecar(compact, "compact.meta.json")
+    pretty_counts, pretty_tables, pretty_snapshot = read_sidecar(pretty, "pretty.meta.json")
+
+    assert compact_counts == ["4212", "881033", "0"]
+    assert compact_counts == pretty_counts
+    assert compact_tables == pretty_tables == ["ledger", "orders", "signals"]
+    assert compact_snapshot == pretty_snapshot == "before dump"
