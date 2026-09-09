@@ -279,8 +279,11 @@ def _first_present(payload: dict, *names):
     """The first of `names` the venue actually sent, or None when it sent none of them.
 
     The same tolerance fix 23 applied to `/account/limits`, for the same reason: V2 renamed
-    these fields and the endpoints do not all agree on which set they send. Returns the venue's
-    raw value; `dec` is what makes it a Decimal.
+    these fields and the endpoints do not all agree on which set they send. Callers pass the
+    **explicit** name first -- `bucket_capacity` before `capacity`, `yes_price_dollars` before
+    `price` -- because that name states its units, and a payload carrying both with different
+    values must not be decided by the bare legacy one. Returns the venue's raw value; `dec` is
+    what makes it a Decimal.
     """
     for name in names:
         value = payload.get(name)
@@ -295,9 +298,12 @@ def _decode_order(o: dict) -> OrderView:
     **The two field vocabularies** (fix round 1, Important 1). The single-order GET in the
     reference sends `yes_price_dollars`, `count_fp`, `remaining_count_fp` and `fill_count_fp`;
     other endpoints send `price`, `count`, `remaining_count` and `fill_count`. Both are read,
-    current name first, exactly as `get_account_limits` reads both of its vocabularies. The rest
-    of this repo already decodes the `_dollars`/`_fp` names on the public side
-    (`harness/normalize/kalshi.py`, `harness/recorder/ws_sink.py`, `harness/execution/book.py`).
+    the **explicit** name first, exactly as `get_account_limits` reads `bucket_capacity` before
+    `capacity`. The explicit names state their units, and a payload carrying both with different
+    values is a payload where letting the bare legacy one win would freeze the market on every
+    order (fix round 3). The rest of this repo already decodes the `_dollars`/`_fp` names on the
+    public side (`harness/normalize/kalshi.py`, `harness/recorder/ws_sink.py`,
+    `harness/execution/book.py`).
 
     **`no_price_dollars` is deliberately never read.** `decode_side_price` is defined on the YES
     leg, and inverting a NO price here would put a second, unpinned conversion in front of the
@@ -312,10 +318,10 @@ def _decode_order(o: dict) -> OrderView:
         ticker=o.get("ticker"),
         outcome_side=outcome_side,
         book_side=book_side,
-        price=dec(_first_present(o, "price", "yes_price_dollars")),
-        count=dec(_first_present(o, "count", "count_fp")),
-        remaining_count=dec(_first_present(o, "remaining_count", "remaining_count_fp")),
-        fill_count=dec(_first_present(o, "fill_count", "fill_count_fp")),
+        price=dec(_first_present(o, "yes_price_dollars", "price")),
+        count=dec(_first_present(o, "count_fp", "count")),
+        remaining_count=dec(_first_present(o, "remaining_count_fp", "remaining_count")),
+        fill_count=dec(_first_present(o, "fill_count_fp", "fill_count")),
         status=o.get("status"),
         order_group_id=o.get("order_group_id"),
         expiration_time=_ts(o.get("expiration_time")),
@@ -329,9 +335,10 @@ def _decode_fill(f: dict) -> VenueFillView:
     The same two field vocabularies `_decode_order` reads, and for the same reason (fix round 2,
     from round 1's Important 1): `yes_price_dollars` and `count_fp` are what the public side of
     this repo already decodes, and a fill that arrives in that vocabulary would otherwise
-    reconcile with a null price and a null count. Current names first, and `no_price_dollars` is
-    not read here either -- `VenueFillView.price` is a YES-leg price, exactly as `OrderView`'s
-    is. The direction resolution and `is_taker` are untouched.
+    reconcile with a null price and a null count. The explicit name is read first, for the
+    reason `_decode_order` gives, and `no_price_dollars` is not read here either --
+    `VenueFillView.price` is a YES-leg price, exactly as `OrderView`'s is. The direction
+    resolution and `is_taker` are untouched.
 
     Unlike an order, a fill is a record of something that already happened, so a null price is
     not cancelled or frozen; it reaches the reconcile path, whose handling of one is unchanged.
@@ -343,8 +350,8 @@ def _decode_fill(f: dict) -> VenueFillView:
         ticker=f.get("ticker"),
         outcome_side=outcome_side,
         book_side=book_side,
-        price=dec(_first_present(f, "price", "yes_price_dollars")),
-        count=dec(_first_present(f, "count", "count_fp")),
+        price=dec(_first_present(f, "yes_price_dollars", "price")),
+        count=dec(_first_present(f, "count_fp", "count")),
         is_taker=f.get("is_taker"),
         created_time=_ts(f.get("created_time")),
     )

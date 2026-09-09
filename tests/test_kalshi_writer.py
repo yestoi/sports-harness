@@ -647,10 +647,10 @@ def test_an_echo_with_only_an_outcome_side_still_decodes_into_our_space():
     assert placed.side == "yes" and placed.prob == Decimal("0.5600")
 
 
-def test_a_mangled_decorative_field_does_not_abandon_a_placed_order():
+def test_a_mangled_soft_field_does_not_abandon_a_placed_order():
     """`average_fill_price` and `ts_ms` are neither compared nor stored, so a bad one decodes to
-    None. Raising instead would walk away from an order the venue has already accepted, before
-    the echo check has had the chance to cancel it."""
+    None through `_soft`. Raising instead would walk away from an order the venue has already
+    accepted, before the echo check has had the chance to cancel it."""
     t = FakeTransport(queued=_accepted(
         price="0.5600", count="10.00",
         created={"average_fill_price": "NaN", "ts_ms": "not-an-integer"}))
@@ -716,11 +716,16 @@ def test_both_order_field_vocabularies_decode_to_the_same_view():
         new.price, new.count, new.remaining_count, new.fill_count)
 
 
-def test_the_current_field_names_win_when_the_venue_sends_both():
-    order = _live_order_of(price="0.5600", count="10.00")
-    order.update({"price": "0.9900", "count": "99.00"})
+def test_the_explicit_field_names_win_when_the_venue_sends_both():
+    """Fix round 3. `yes_price_dollars` and `count_fp` state their units; `price` and `count` do
+    not. A payload carrying both with different values is one where letting the bare legacy name
+    win would fail the echo check and freeze the market on a good order."""
+    order = _live_order_of(price="0.5600", count="10.00", remaining="7.00", fill="3.00")
+    order.update({"price": "0.9900", "count": "99.00",
+                  "remaining_count": "90.00", "fill_count": "9.00"})
     view = _decode_order(order)
-    assert view.price == Decimal("0.9900") and view.count == Decimal("99.00")
+    assert view.price == Decimal("0.5600") and view.count == Decimal("10.00")
+    assert view.remaining_count == Decimal("7.00") and view.fill_count == Decimal("3.00")
 
 
 # --- the confirming read's one retry (fix round 1, ruling (b)) --------------------------------

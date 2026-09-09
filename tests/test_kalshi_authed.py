@@ -129,11 +129,12 @@ def test_get_fills_decodes_the_dollars_and_fp_names_to_the_same_view():
     assert fills[1].is_taker is False
 
 
-def test_the_current_fill_field_names_win_when_the_venue_sends_both():
+def test_the_explicit_fill_field_names_win_when_the_venue_sends_both():
+    """Fix round 3: the name that states its units wins, as it does for a bucket capacity."""
     t = FakeTransport(queued=[_ok({"fills": [{
         "trade_id": "t1", "ticker": "T", "outcome_side": "yes",
-        "price": "0.4400", "yes_price_dollars": "0.9900",
-        "count": "2.00", "count_fp": "99.00"}], "cursor": ""})])
+        "price": "0.9900", "yes_price_dollars": "0.4400",
+        "count": "99.00", "count_fp": "2.00"}], "cursor": ""})])
     fill = KalshiReader(t).get_fills()[0]
     assert fill.price == Decimal("0.4400") and fill.count == Decimal("2.00")
 
