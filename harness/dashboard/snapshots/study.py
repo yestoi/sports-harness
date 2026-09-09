@@ -23,8 +23,7 @@ shown as stored. The front end's DOM rule is the guard: the document goes into a
 `textContent`, with its `markdown_sha256` beside it, and no renderer is vendored.
 """
 
-import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -32,16 +31,12 @@ from sqlalchemy.orm import Session
 from harness.config.settings import Settings
 from harness.dashboard import sentences
 from harness.dashboard.snapshots import base_payload, current_name, register_builder, section
-from harness.report.tables import week_bounds
+from harness.report.tables import CONTRAST_BENCHMARK, week_bounds
 from harness.telemetry import sanitize_reason
-
-log = logging.getLogger(__name__)
 
 CADENCE_S = 600
 #: Below this share of open contracts valued against a clean book, the marked line is grey.
 MTM_GREY_COVERAGE = 0.5
-#: The first ISO week the season has data for (spec §2.3: "ISO weeks from 37").
-FIRST_WEEK = 37
 
 STUDY_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                         "week", "year", "report_run_id", "provisional", "cell_age_s",
@@ -49,13 +44,13 @@ STUDY_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings"
                         "markdown_sha256", "weeks"})
 
 _NEWEST_FINAL = text("""
-    select id, generated_at, provisional, markdown, markdown_sha256, build_sha, criteria_hash
+    select id, generated_at, provisional, markdown, markdown_sha256
     from report_runs
     where year = :year and week = :week and provisional = false
     order by generated_at desc limit 1
 """)
 _NEWEST_ANY = text("""
-    select id, generated_at, provisional, markdown, markdown_sha256, build_sha, criteria_hash
+    select id, generated_at, provisional, markdown, markdown_sha256
     from report_runs
     where year = :year and week = :week
     order by generated_at desc limit 1
@@ -67,14 +62,25 @@ _CELLS = text("""
 _WEEKS = text("""
     select distinct year, week from report_runs order by year desc, week desc
 """)
-_NEWEST_PER_WEEK = text("""
+_NEWEST_FINAL_PER_WEEK = text("""
     select distinct on (year, week) year, week, id
-    from report_runs order by year, week, generated_at desc, id desc
+    from report_runs where provisional = false
+    order by year, week, generated_at desc, id desc
+""")
+_NEWEST_ANY_ID = text("""
+    select id from report_runs
+    where year = :year and week = :week
+    order by generated_at desc, id desc limit 1
 """)
 _STUDY_SNAPSHOTS = text("""
     select name, payload->>'report_run_id' as run_id from dashboard_snapshots
     where name like 'study:%'
 """)
+#: Bounded by the week, not by a LIMIT: `Settings.equity_sample_s` defaults to 300, so one week
+#: is about 2,016 points per variant and this is by far the largest thing in the Study payload
+#: (fix round 1, M5). Predictable rather than unbounded, but if `/api/snap` ever needs it
+#: trimmed, the trim belongs here with its rule stated -- never in the front end, which computes
+#: nothing.
 _EQUITY = text("""
     select ts, variant_id, cash, mtm_open, mtm_coverage
     from equity_snapshots
@@ -98,22 +104,34 @@ def weeks_available(session: Session) -> list[str]:
     return [f"{row.year}-{row.week}" for row in session.execute(_WEEKS)]
 
 
-def stale_study_names(session: Session) -> list[str]:
-    """Every `study:<year>-<week>` the scheduler should rebuild: a week whose newest
-    `report_runs.id` differs from the `report_run_id` recorded inside its stored payload, and
-    any week with a run and no snapshot at all.
+def stale_study_names(session: Session, now: datetime | None = None) -> list[str]:
+    """Every `study:<year>-<week>` the scheduler should rebuild: a week whose stored payload
+    records a `report_run_id` other than the run `build_study` would pick for it today, and any
+    such week with no snapshot at all.
 
     This is what makes addendum §0.1 hold: a closed week is rebuilt by the scheduler, not on
     demand by a page view, so spec §0.3's "no page view runs a query" has no exception. A week
     with no run has no snapshot, and the surface says so.
+
+    The predicate mirrors `build_study`'s own choice rather than taking the newest run of any
+    kind, and that is the whole point of `now` (fix round 1, I1): a closed week reads the newest
+    **non-provisional** run, so a closed week whose newest run is provisional -- the normal state
+    between the ISO rollover and `harness report` -- has nothing to build and must not be listed
+    on every tick forever. Only the current ISO week takes the newest run of either kind. `now`
+    is optional so the scheduler can call this with the session alone; tests pass it to pin the
+    week rather than depend on the wall clock.
     """
+    current = (now or datetime.now(timezone.utc)).isocalendar()
     stored = {row.name: row.run_id for row in session.execute(_STUDY_SNAPSHOTS)}
-    stale = []
-    for row in session.execute(_NEWEST_PER_WEEK):
-        name = f"study:{row.year}-{row.week}"
-        if stored.get(name) != str(row.id):
-            stale.append(name)
-    return sorted(stale)
+    # name -> the run id `build_study` would pick for that week today. A closed week with no
+    # non-provisional run is simply absent, which is what stops the forever-stale loop.
+    wanted: dict[str, int] = {f"study:{row.year}-{row.week}": row.id
+                              for row in session.execute(_NEWEST_FINAL_PER_WEEK)}
+    row = session.execute(_NEWEST_ANY_ID,
+                          {"year": current.year, "week": current.week}).first()
+    if row is not None:
+        wanted[f"study:{current.year}-{current.week}"] = row.id
+    return sorted(name for name, run_id in wanted.items() if stored.get(name) != str(run_id))
 
 
 def _cells(session: Session, run_id: int) -> dict:
@@ -131,6 +149,25 @@ def _cells(session: Session, run_id: int) -> dict:
             "flags": row.flags or {},
         }
     return out
+
+
+def _stored_number(cell: dict | None) -> float | None:
+    """One cell's number, whether the report stored it as a CI quintet or as a plain value.
+
+    t12's `count` is a plain `int` and its `share` a plain `float`
+    (`harness/report/tables.py`), not the quintet `is_cell` looks for, so
+    `harness/report/weekly.py::_cell_fields` takes its non-cell branch and leaves `estimate`,
+    `n_obs`, `n_clusters`, `lo` and `hi` all None with the number only in `text`. Read it back
+    out of `text`; never recompute it (brief constraint 6).
+    """
+    if not cell:
+        return None
+    if cell.get("estimate") is not None:
+        return cell["estimate"]
+    try:
+        return float(cell["text"])
+    except (TypeError, ValueError):   # PLACEHOLDER "--" when the kind's total is zero
+        return None
 
 
 def _equity(session: Session, start: datetime, end: datetime) -> dict:
@@ -166,8 +203,7 @@ def _ledger_rows(cells: dict) -> list[dict]:
     rows = []
     for row_key, columns in (cells.get("t1") or {}).items():
         clusters = [c["n_clusters"] for c in columns.values() if c["n_clusters"] is not None]
-        rows.append({"row_key": row_key, "n_clusters": max(clusters) if clusters else None,
-                     "text": next(iter(columns.values()))["text"] if columns else None})
+        rows.append({"row_key": row_key, "n_clusters": max(clusters) if clusters else None})
     return rows
 
 
@@ -190,11 +226,10 @@ def _declined_rows(cells: dict) -> list[dict]:
         estimator = ("clv_rejected_gap_outcomes" if kind == "rejected"
                      else "clv_skipped_intent_snapshot")
         cell = columns.get(estimator) or {}
-        count = columns.get("count") or {}
-        share = columns.get("share") or {}
         rows.append({"variant": variant, "kind": kind, "reason": reason,
                      "estimator": estimator,
-                     "count": count.get("estimate"), "share": share.get("estimate"),
+                     "count": _stored_number(columns.get("count")),
+                     "share": _stored_number(columns.get("share")),
                      "estimate": cell.get("estimate"), "lo": cell.get("lo"),
                      "hi": cell.get("hi"), "n_clusters": cell.get("n_clusters")})
     return sorted(rows, key=lambda r: -(r["count"] or 0))
@@ -243,8 +278,9 @@ def build_study(session: Session, now: datetime, settings: Settings) -> dict:
                                           "provisional": payload["provisional"],
                                           "cell_age_s": payload["cell_age_s"],
                                           "rows": _ledger_rows(cells)}),
-        "contrasts": sentences.study_contrasts({"benchmark": "pinnacle_t5",
-                                                "rows": _contrast_rows(cells, "pinnacle_t5")}),
+        "contrasts": sentences.study_contrasts(
+            {"benchmark": CONTRAST_BENCHMARK,
+             "rows": _contrast_rows(cells, CONTRAST_BENCHMARK)}),
         "equity": sentences.study_equity(equity),
         "declined": sentences.study_declined({"rows": declined}),
     }
