@@ -166,5 +166,125 @@
     "plain": "the twelve tests for going live",
     "what": "The fixed set of tests a variant's paper results must pass before trading real money is even considered.",
     "why": "Passing every one of them is necessary, but it is a research threshold, not a decision to trade real money."
+  },
+  "STALE_AFTER_S": {
+    "term": "STALE_AFTER_S",
+    "plain": "how fresh the recorder has to be",
+    "what": "The number of seconds the recorder can go without a run before Pulse calls it broken rather than fine.",
+    "why": "It is the one number that separates a quiet night from a recorder that has actually stopped, so it comes from the same code that enforces it rather than being retyped here."
+  },
+  "exec_heartbeat": {
+    "term": "exec_heartbeat",
+    "plain": "is the executor's loop alive?",
+    "what": "One row the executor writes on every pass of its loop: when it last ran, how long that took, and how many loops it has had to skip.",
+    "why": "A loop that has stopped writing this row has stopped working, whether or not anything else on the page looks fine."
+  },
+  "ws_last_event_at": {
+    "term": "ws_last_event_at",
+    "plain": "last message from the exchange",
+    "what": "The time of the most recent message the exchange's live feed sent, however small.",
+    "why": "A feed that has gone quiet is the earliest sign the recorded tape has stopped being trustworthy."
+  },
+  "ws.gaps": {
+    "term": "ws.gaps",
+    "plain": "gaps in the recorded stream",
+    "what": "A count of moments the live feed's sequence numbers show a message was missed rather than simply quiet.",
+    "why": "A gap means the recorded tape is incomplete for that stretch, which matters to anything replayed against it later."
+  },
+  "db.size_gb": {
+    "term": "db.size_gb",
+    "plain": "how full is the database?",
+    "what": "The database's current size in gigabytes, measured on the same schedule as its ceiling and its growth rate.",
+    "why": "It is what the storage arc and the days-to-ceiling estimate are both built from."
+  },
+  "host.disk_free_gb": {
+    "term": "host.disk_free_gb",
+    "plain": "free space on the disk",
+    "what": "How much disk space is left on the machine the database lives on, in gigabytes.",
+    "why": "The database can be well under its own budget and still be minutes from a full disk if the host itself is nearly out of room."
+  },
+  "check_results": {
+    "term": "check_results",
+    "plain": "the twelve-check sweep",
+    "what": "The newest run of a fixed set of automated checks over the data, each one pass, fail, or unable to run in time.",
+    "why": "It is the wall Pulse shows so a broken assumption anywhere in the data is visible the same day it happens, not months later."
+  },
+  "runs.odds_remaining": {
+    "term": "runs.odds_remaining",
+    "plain": "credits left this month",
+    "what": "How many calls are left on this month's odds-feed budget, as of the most recent recorder run.",
+    "why": "Running out mid-month would silently stop new prices from arriving, which is why it is watched the same way a stale recorder is."
+  },
+  "game_score_events": {
+    "term": "game_score_events",
+    "plain": "live score",
+    "what": "The score, period and clock as the scoreboard feed last reported them for a game.",
+    "why": "It is what turns a kickoff countdown into a live game on the board, and what every ticket leg's live state is read against."
+  },
+  "venue_markets": {
+    "term": "venue_markets",
+    "plain": "markets we can price",
+    "what": "The exchange's own markets for a game, matched to that game well enough to be priced and traded against.",
+    "why": "A game with no matched market is a game nothing here can act on yet, no matter how confident the fair price feels."
+  },
+  "orders": {
+    "term": "orders",
+    "plain": "our resting simulated orders",
+    "what": "Every simulated order the executor has placed and not yet finished with, on the exchange's own recorded book.",
+    "why": "It is the table every queue bar, every fill and every exposure figure on Floor is ultimately drawn from."
+  },
+  "equity_snapshots": {
+    "term": "equity_snapshots",
+    "plain": "simulated cash",
+    "what": "One row per variant, written on a schedule, of its simulated cash and its cash marked to the market's current price.",
+    "why": "It is the only place either number is stored, so every equity curve and exposure tile reads it rather than adding fills up by hand."
+  },
+  "venue_requests": {
+    "term": "venue_requests",
+    "plain": "authenticated calls to the exchange",
+    "what": "A count of every signed call this system made to the exchange's API, by environment and by method.",
+    "why": "In paper mode the count of anything but a read in the production environment should be zero, and this is the number that says so."
+  },
+  "fair_values": {
+    "term": "fair_values",
+    "plain": "edge now",
+    "what": "The newest fair price for a market, compared against a resting order's own price to give that order's edge as of right now.",
+    "why": "An order's edge when it was placed can be stale within minutes; this is what lets a reader tell the two apart."
+  },
+  "edge_at_place": {
+    "term": "edge_at_place",
+    "plain": "edge when we placed it",
+    "what": "The edge a simulated order was judged to have at the moment it came to rest, frozen from then on.",
+    "why": "It is the number the strategy actually decided on, kept alongside the live edge so neither is mistaken for the other."
+  },
+  "report_wtd": {
+    "term": "report_wtd",
+    "plain": "how old these cells are",
+    "what": "The week-to-date job that recomputes the current week's report cells on a schedule while the week is still open.",
+    "why": "It is why a provisional week's numbers can be a few hours old even though the page itself was just rebuilt."
+  },
+  "needs": {
+    "term": "needs",
+    "plain": "what still needs to happen",
+    "what": "A plain sentence, built from the market, the line and the live score, saying exactly what still has to happen for a parlay leg to hit.",
+    "why": "It turns a live score into the one thing a fan watching actually wants to know, without guessing at it."
+  },
+  "sharp_p": {
+    "term": "sharp_p",
+    "plain": "sharps say",
+    "what": "The sharp sportsbooks' own live probability that a parlay leg comes in, updating while the game is played.",
+    "why": "It is the same kind of fair price the research side uses, shown here for a leg to say whether the game is really as close as it feels."
+  },
+  "build_sha": {
+    "term": "build_sha",
+    "plain": "this page's build",
+    "what": "The commit this dashboard's own server process was built from, as opposed to the build that computed the data on screen.",
+    "why": "The two can differ for a moment right after a deploy, and a phone holding an old page is easiest to spot by comparing them."
+  },
+  "exec_heartbeat.executor_version": {
+    "term": "exec_heartbeat.executor_version",
+    "plain": "executor build",
+    "what": "The build the executor process itself was running as of its last heartbeat.",
+    "why": "It is one of the three builds Pulse shows side by side, because the recorder, the executor and the page serving it can each be on a different one for a moment after a deploy."
   }
 }

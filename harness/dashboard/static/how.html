@@ -1,0 +1,107 @@
+# How it works
+
+This page is fixed text, read by the browser and shown as text, never as markup: nothing on it
+came from a database and nothing on it can carry a link or a script.
+
+## The pipeline
+
+Eight steps, in order, run every day the harness is awake.
+
+### record
+The recorder writes every tick from the odds feed and the exchange to the tape, the raw record
+everything else replays.
+
+### match
+Each market is matched to a game and a market type, so a price can be compared to the right
+thing.
+
+### price
+A fair price is built from the sharp books' current quotes, aged by how long ago it was last
+recomputed.
+
+### decide
+The strategy compares the fair price to the market's price and decides whether the edge, after
+fees, clears its bar.
+
+### paper order
+When it decides yes, a simulated order is placed. No money moves and no exchange sees it; it is
+scored against the tape as if it had.
+
+### fill from the recorded tape
+The order is filled by replaying the recorded order book against it, never by guessing: a real
+trade at that price, or the book crossing it, is what fills it.
+
+### settle
+Once a game ends, every open order and position on it is settled against the recorded result.
+
+### judge
+Once a week, and continuously as the week goes on, the settled bets are judged: was the price
+good, not just the outcome.
+
+## The three jobs
+
+One person has three questions, and one surface answers each.
+
+### is it alive and honest
+Pulse. Is the machine running, and is every number on this page one it can actually stand
+behind.
+
+### what is it doing right now
+Floor. What is the executor doing this minute, well enough to see "running but wrong" as clearly
+as "running well".
+
+### is the strategy any good
+Study. The weekly and week-to-date read, with every estimate carrying its interval and its game
+count.
+
+Gate is the decisive read of that same question: the twelve tests a strategy must pass before
+live trading is even considered, evaluated the same way every time. Ticket is the fun money: a
+$50-a-week parlay habit, placed by hand, that lives beside all of this without touching it.
+
+## What paper means
+
+Every order, fill and profit figure on Pulse, Floor and Study is simulated against a recorded
+order book. Nothing was sent to an exchange and no money was risked. It exists so the strategy
+can be watched for months before anyone decides whether to trade it for real, and that decision
+is not made by this software.
+
+## The honesty rules
+
+A handful of rules hold on every surface, so a reader never has to guess how much to trust a
+number.
+
+### no estimate without its interval and its game count
+A number is never shown alone: its honest range and how many separate games it rests on travel
+with it, every time.
+
+### below ten games nothing is claimed
+An estimate resting on fewer than ten separate games is shown grey and unstated, not rounded off
+and presented as if it were solid.
+
+### stored definitions beside stored results
+The exact wording a test or a criterion was defined by is shown beside the number it produced,
+so the two can never quietly drift apart.
+
+### every threshold imported from the code that enforces it
+A number that colours anything on this page is read from the same constant the system itself
+uses to decide, never retyped by hand in a template.
+
+### nothing on any surface acts
+Every one of these pages only shows what already happened. No chart, no table and no button on
+them changes a strategy, a variant, a threshold or a criterion, or moves a single dollar.
+
+## The fun money and the research never mix
+
+Ticket's $50 a week is the owner's own money, placed by hand at a real sportsbook and confirmed
+by hand afterward. It is not a variant, it is not scored for edge, and it is never added to or
+subtracted from anything the research reports. The fun money and the research never mix, on this
+page or anywhere else in this system.
+
+## Source
+
+The visual design for these pages comes from one design canvas, kept for reference:
+https://claude.ai/code/artifact/78f3e81e-bae8-4d69-aa30-2b6697e7dd3b
+
+## Glossary
+
+Every technical name shown anywhere on these pages, listed below.

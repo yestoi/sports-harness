@@ -63,3 +63,21 @@ export async function loadGlossary() {
   }
   return glossary;
 }
+
+//: `how.html` is fixed text (T18), resolved the same way as the glossary and fetched exactly
+//: once. This module stays the only one that calls `fetch`, so how.mjs asks here rather than
+//: reaching the network itself.
+const HOW_URL = new URL("../how.html", import.meta.url).pathname;
+let howText = null;
+
+export async function loadHow() {
+  if (howText === null) {
+    try {
+      const response = await fetch(HOW_URL);
+      howText = response.ok ? await response.text() : "";
+    } catch (error) {
+      howText = "";
+    }
+  }
+  return howText;
+}
