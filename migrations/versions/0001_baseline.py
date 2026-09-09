@@ -381,6 +381,7 @@ def upgrade() -> None:
     if_not_exists=True,
     )
     op.execute("create index if not exists ix_odds_game_type_fetched on odds_snapshots (game_id, market_type, fetched_at)")
+    op.execute("create index if not exists ix_odds_fetched_book on odds_snapshots (fetched_at, book, book_last_update)")
     op.create_table('operator_events',
     sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
     sa.Column('ts', sa.DateTime(timezone=True), nullable=False),
