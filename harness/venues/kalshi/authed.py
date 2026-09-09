@@ -883,8 +883,10 @@ def _venue_order(view: OrderView, raw: dict, side: str, prob: Decimal,
 
     `contracts` is the sum of that same pair (fix 28). The read's own `count` is not the current
     size: the single-order body carries no `count` at all, and its `initial_count_fp` is the
-    size at placement, which does not follow an amend. `view.count` remains the fallback for a
-    venue that sends neither count on the response.
+    size at placement, which does not follow an amend. The `view.count` branch below is a
+    belt-and-braces default only: `_checked_echo` runs `_count_mismatch` first, and a response
+    missing either count raises `the echoed counts` there, so no call reaches this function
+    with a `None` in the pair.
     """
     contracts = (fill_count + remaining_count
                  if fill_count is not None and remaining_count is not None else view.count)
