@@ -147,7 +147,8 @@ def _created(order_id: str, count: str) -> dict:
 
 
 def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
-    """The twelve responses the full sequence consumes, in order."""
+    """The fifteen responses the full sequence consumes, in order (fix 24 added the three
+    confirming reads)."""
     return [
         _ok({"balance": "250.00"}),
         _ok({"markets": [_market(LATER_TICKER, "2026-09-21T23:00:00Z", price_ranges),
