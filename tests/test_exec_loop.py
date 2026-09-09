@@ -925,12 +925,17 @@ def test_a_fresh_executor_resumes_from_the_persisted_cursor(env_settings, db_ses
 
 @contextmanager
 def capture_sql(session):
-    """Every statement the engine actually sends, for the length of the block."""
-    seen: list[str] = []
+    """Every statement the engine actually sends, with its parameters, for the block.
+
+    The parameters are captured as well as the text because the text alone cannot tell a scan
+    that followed the live track from one dragged back to a frozen cursor: both spell the same
+    `id > :cursor`, and only the bound value says which cursor it was.
+    """
+    seen: list[tuple[str, object]] = []
     engine = session.get_bind()
 
     def hook(conn, cursor, statement, parameters, context, executemany):
-        seen.append(statement)
+        seen.append((statement, parameters))
 
     event.listen(engine, "before_cursor_execute", hook)
     try:
@@ -939,11 +944,16 @@ def capture_sql(session):
         event.remove(engine, "before_cursor_execute", hook)
 
 
-def _delta_where(seen: list[str]) -> str:
-    """The `where` clause of the one `orderbook_events` delta read in `seen`."""
-    reads = [q for q in seen if "orderbook_events" in q and "'delta'" in q]
-    assert len(reads) == 1, reads
-    body = reads[0].lower()
+def _delta_read(seen) -> tuple[str, dict]:
+    """The one `orderbook_events` delta read in `seen`, lowercased, with its parameters."""
+    reads = [(q, p) for q, p in seen if "orderbook_events" in q and "'delta'" in q]
+    assert len(reads) == 1, [q for q, _ in reads] or [q for q, _ in seen]
+    return reads[0][0].lower(), reads[0][1]
+
+
+def _delta_where(seen) -> str:
+    """The `where` clause of that read."""
+    body, _ = _delta_read(seen)
     return body.split("where", 1)[1].split("order by", 1)[0]
 
 
@@ -957,24 +967,28 @@ def test_the_live_delta_read_drops_the_ts_bound_once_a_cursor_exists(env_setting
 
     with capture_sql(db_session) as seen:
         store.load_deltas(db_session, T2, 0, lower)
-    first = _delta_where(seen)
-    assert "ts >=" in first
-    assert "limit" in seen[-1].lower()
+    body, params = _delta_read(seen)
+    assert "ts >=" in _delta_where(seen)
+    assert "limit" in body
+    assert params["cursor"] == 0
 
     with capture_sql(db_session) as seen:
         store.load_deltas(db_session, T2, 1234, lower)
+    body, params = _delta_read(seen)
     live = _delta_where(seen)
     assert "ts" not in live
     assert "id >" in live
-    assert "limit" in seen[-1].lower()
+    assert "limit" in body
+    assert params["cursor"] == 1234
 
     # The replay path is untouched: both `ts` bounds, ordered by (ts, id), no limit.
     with capture_sql(db_session) as seen:
         store.load_deltas(db_session, T2, 1234, lower, at=NOW)
+    body, _ = _delta_read(seen)
     replay = _delta_where(seen)
     assert "ts >=" in replay and "ts <=" in replay
-    assert "order by ts, id" in seen[-1].lower()
-    assert "limit" not in seen[-1].lower()
+    assert "order by ts, id" in body
+    assert "limit" not in body
 
 
 def test_a_partial_delta_batch_advances_the_cursor_and_the_next_loop_continues(
@@ -1108,22 +1122,26 @@ def test_a_finished_track_cursor_does_not_drag_the_ticker_scan_back(env_settings
     db_session.commit()
     clock.advance(15)
 
-    working = store.working_orders(db_session, False)
-    with capture_sql(db_session) as seen:
-        executor._tape(db_session, working, clock.now,
-                       {"last_error": None, "tape_lag": []})
-    where = _delta_where(seen)
-    assert "ts" not in where
-    reads = [q for q in seen if "orderbook_events" in q and "'delta'" in q]
-    assert reads, seen
-    refresh(db_session)
-
     executor.step()
     refresh(db_session)
     order = orders_of(db_session)[0]
     assert order.status == "cancelled"
+    # The cancelled track stayed where it stopped; the counterfactual walked on past it. Only
+    # now do the two cursors differ, which is what makes the next assertion able to fail.
     assert order.tape_cursor_event_id == frozen
     assert order.nw_tape_cursor_event_id == later.id
+    assert frozen < later.id
+
+    working = store.working_orders(db_session, False)
+    with capture_sql(db_session) as seen:
+        executor._tape(db_session, working, clock.now,
+                       {"last_error": None, "tape_lag": []})
+    where, params = _delta_where(seen), _delta_read(seen)[1]
+    assert "ts" not in where
+    # The scan starts at the live track's cursor, not at the frozen one it shares the ticker
+    # with. Folding the frozen cursor in would re-read everything between them every loop, and
+    # under `DELTA_BATCH_LIMIT` could hand back a batch the live tracks have already consumed.
+    assert params["cursor"] == later.id
 
 
 def test_gap_and_resubscribe_inside_one_period_re_anchor_the_queue(env_settings, db_session, world):

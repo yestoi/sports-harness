@@ -131,7 +131,9 @@ class ExecStats:
     locked: bool = True
     #: The first failure of the step, the same string the heartbeat's `last_error` carries.
     #: A live loop reads it off the heartbeat; a replay writes no heartbeat and needs the
-    #: message here to fail its own command with it (fix round 1, I2).
+    #: message here to fail its own command with it (fix round 1, I2). Since fix 22 a
+    #: `tape_lag:` note may be appended to it, or stand alone when nothing failed, so a
+    #: non-null value here is no longer by itself an error -- `errors` is.
     last_error: str | None = None
 
 
