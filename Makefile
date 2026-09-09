@@ -59,9 +59,10 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 # exits 0 when it *skips* (below 30 % free, or another dump holds the lock), so trusting the
 # fallback's own exit status would let a migration land on an unbacked database with no error
 # anywhere. A precheck that still fails after the fallback aborts the deploy. -T because ssh has
-# no tty.
+# no tty. Both fallback and the schema step below stop app-exec and app-run first: `add column if
+# not exists` needs an AccessExclusive lock that a running executor loop blocks.
 	@printf "$(GREEN)[DEPLOY]$(NC) Backup precheck (dumps first when the newest nightly is stale)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || { docker compose run --rm app-run init-db && docker compose exec -T app-backup /backup/dump.sh nightly && docker compose run --rm app-run backup-precheck; } || { echo "[DEPLOY] ABORT: no nightly backup_runs row is ok and under 26h, and the fallback dump did not produce one. A SKIP line in: docker compose logs app-backup means /volume1 free is below 30 percent, or another dump held the lock."; exit 1; }'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || { docker compose stop app-exec app-run && docker compose run --rm app-run init-db && docker compose exec -T app-backup /backup/dump.sh nightly && docker compose run --rm app-run backup-precheck; } || { echo "[DEPLOY] ABORT: no nightly backup_runs row is ok and under 26h, and the fallback dump did not produce one. A SKIP line in: docker compose logs app-backup means /volume1 free is below 30 percent, or another dump held the lock."; exit 1; }'
 # The guarded one-time stamp, behind the fresh dump and ahead of init-db. It prints which of its
 # three branches it took: `stamped` (a populated pre-Alembic database, which is what the NAS is on
 # this phase's first deploy: head is recorded, the baseline is never executed), `upgraded` (an
@@ -69,7 +70,7 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 	@printf "$(GREEN)[DEPLOY]$(NC) Alembic ensure (stamp on the pre-Alembic database, upgrade on an empty one)...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run migrate ensure'
 	@printf "$(GREEN)[DEPLOY]$(NC) Schema + teams (idempotent; required after every upgrade)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose stop app-exec app-run && docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register'
 	@printf "$(GREEN)[DEPLOY]$(NC) Starting services...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose up -d'
 	@printf "$(GREEN)[DEPLOY]$(NC) Done. Run: make status-nas\n"
@@ -110,11 +111,13 @@ deploy-nas-app: ## Same push, but restart only app-run/app-serve/app-exec (app-w
 	@ssh $(NAS_USER)@$(NAS_IP) 'test -f $(NAS_STACK)/secrets/dashboard_token || openssl rand -hex 32 > $(NAS_STACK)/secrets/dashboard_token'
 	@ssh $(NAS_USER)@$(NAS_IP) 'chmod 600 $(NAS_STACK)/secrets/*'
 # The image is built before init-db so the schema step runs the pushed code, exactly as in
-# deploy-nas; the build in the final command is then a cache hit.
+# deploy-nas; the build in the final command is then a cache hit. The schema step stops
+# app-exec and app-run first: `add column if not exists` needs an AccessExclusive lock that a
+# running executor loop blocks.
 	@printf "$(GREEN)[DEPLOY]$(NC) Building app image...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build app-run app-serve app-exec'
 	@printf "$(GREEN)[DEPLOY]$(NC) Schema + teams (idempotent; required after every upgrade)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose stop app-exec app-run && docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register'
 	@printf "$(GREEN)[DEPLOY]$(NC) Rebuilding and restarting app-run, app-serve, app-exec only...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build app-run app-serve app-exec && docker compose up -d --no-deps app-run app-serve app-exec'
 	@printf "$(GREEN)[DEPLOY]$(NC) Done (app-ws untouched). Run: make status-nas\n"

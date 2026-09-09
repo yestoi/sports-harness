@@ -215,6 +215,32 @@ def test_the_deploy_recipe_starts_app_backup_with_postgres():
     assert "up -d postgres app-backup" in mk
 
 
+def test_every_init_db_in_both_deploy_recipes_is_preceded_by_stopping_the_app_writers():
+    # Fix 21: `add column if not exists` needs an AccessExclusive lock that a running executor
+    # loop blocks, so every schema step must stop app-exec and app-run first.
+    mk = (ROOT / "Makefile").read_text()
+    deploy_nas = mk.split("deploy-nas:")[1].split("\ndeploy-nas-app:")[0]
+    deploy_nas_app = mk.split("\ndeploy-nas-app:")[1].split("\nstatus-nas:")[0]
+    for name, recipe in [("deploy-nas", deploy_nas), ("deploy-nas-app", deploy_nas_app)]:
+        init_db_count = 0
+        for line in recipe.splitlines():
+            if "app-run init-db" in line:
+                init_db_count += 1
+                assert "docker compose stop app-exec app-run &&" in line, (
+                    f"{name}: init-db not preceded by stopping the writers on: {line}"
+                )
+        assert init_db_count > 0, name
+        assert recipe.count("docker compose stop app-exec app-run &&") == init_db_count, name
+    assert mk.count("app-run init-db") == 3
+    assert mk.count("docker compose stop app-exec app-run &&") == 3
+
+
+def test_the_precheck_runs_before_the_writers_are_stopped():
+    mk = (ROOT / "Makefile").read_text()
+    recipe = mk.split("deploy-nas:")[1].split("\ndeploy-nas-app:")[0]
+    assert recipe.index("backup-precheck") < recipe.index("docker compose stop")
+
+
 # --- the deletion rule, executed ------------------------------------------------------------
 # dump.sh guards its own `main "$@"`, so bash can source it and call prune_units directly. This
 # is the only file-deleting code in the phase; a substring grep is not a regression net for it.
