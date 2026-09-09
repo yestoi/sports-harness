@@ -427,7 +427,9 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # report_runs) + 6 phase 4 column ALTERs (equity_snapshots: peak_equity_7d, drawdown_pct,
     # drawdown_stop; orders: venue_order_id, order_group_id, exchange_index_at_place) + 2 phase
     # 4 indexes (ix_venue_requests_ts, and Task 11 fix round 1's ix_equity_variant_ts) = 62 + 8
-    # + 1 (fix 25: ix_odds_fetched_book, the odds-staleness covering index) = 71.
+    # + 1 (fix 25 round 1: ix_odds_fetched_book, the odds-staleness covering index, run
+    # CONCURRENTLY from _CONCURRENT_INDEX_DDL per F65 -- it still matches the "create index"
+    # prefix filter above, so it counts here the same as a plain one) = 71.
     # The three views are unchanged in number: Task 11 widened the `positions` view's fill-method
     # filter in place, which is one `create or replace view` as it always was.
     assert len(ddl) == 71, [s for s, _, _ in ddl]
@@ -728,10 +730,11 @@ def test_odds_fetched_book_index_exists(db_session):
 
 
 def test_create_schema_adds_odds_fetched_book_index_to_a_database_that_predates_it(db_session):
-    """The raw DDL entry (`harness/db/schema.py`), not just the model's `__table_args__`, must
-    add the index to a populated production database on the next `init-db` -- the same way
-    `no_fair_reason` gets added to `market_gap_snapshots` above -- and rerunning create_schema
-    against a database that already has it must be a no-op."""
+    """The raw DDL entry in `_CONCURRENT_INDEX_DDL` (`harness/db/schema.py`), not just the
+    model's `__table_args__`, must add the index to a populated production database on the next
+    `init-db` -- the same way `no_fair_reason` gets added to `market_gap_snapshots` above -- and
+    rerunning create_schema against a database that already has it must be a no-op. Fix 25 round
+    1: odds_snapshots is a bulk table, so F65 requires this run CONCURRENTLY, no carve-out."""
     engine = db_session.get_bind()
 
     def has_index() -> bool:
