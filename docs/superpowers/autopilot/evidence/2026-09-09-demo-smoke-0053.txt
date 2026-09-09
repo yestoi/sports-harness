@@ -1,0 +1,13 @@
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-09 05:53:33,038", "levelname": "WARNING", "name": "harness", "message": "kalshi demo smoke failed at step amend: EchoMismatch"}
+{"asctime": "2026-09-09 05:53:33,089", "levelname": "WARNING", "name": "harness.execution.venue", "message": "venue kalshi/demo -> unavailable; untrusted venue text: reason=\"amend: venue echo mismatch on prob for order '01a084ba-8378-7fdf-aa57-a5daaaf48b02': cancelled, freeze 15 min\""}
+step            ok    detail
+balance         true  balance=249000 payout=none
+market          true  markets=72 chosen=1 parsed_ranges=True
+grid            true  steps=99 low=0.0100 next=0.0200 high=0.9900
+group           true  created=true limit=5
+place           true  prob=0.0100 contracts=none status=resting
+amend           false EchoMismatch
+cleanup         true  cancelled=true
+unfunded=false exit=1
+smoke exit=1
