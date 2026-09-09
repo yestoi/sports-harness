@@ -480,7 +480,15 @@ main() {
     # open (guarded on `_snap_pid`), so this is safe to fire on every ordinary exit as well as an
     # abnormal one -- a `docker compose down` inside its grace period, or a signal mid-dump,
     # otherwise leaks the FIFO and the two temp files for good.
-    trap close_snapshot EXIT INT TERM
+    #
+    # EXIT alone on the trap below: a signal trap that only runs a handler and returns does not
+    # end the script -- execution resumes right where the signal landed, so an INT or TERM mid-
+    # dump would clean up the snapshot and then carry on into snapshot_counts_json, dump_forever
+    # or prune_units as if nothing happened (N1).  INT and TERM get their own handlers that clean
+    # up and then exit explicitly, with the conventional 128+signal status.
+    trap close_snapshot EXIT
+    trap 'close_snapshot; exit 130' INT
+    trap 'close_snapshot; exit 143' TERM
     lock_or_skip "${1:-dump}" || return 0
     case "${1:-}" in
         nightly)

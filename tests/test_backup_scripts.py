@@ -536,7 +536,109 @@ def test_drill_meta_tables_lists_every_counted_table(tmp_path):
 
 def _shell_function(script: str, name: str) -> str:
     """One named shell function lifted out of a script, so a test runs the real code rather
-    than a copy of it."""
+    than a copy of it. Handles both a one-liner ("name() { ...; }") and a multi-line function
+    (closing brace on its own line)."""
     start = script.index(f"{name}()")
+    line_end = script.index("\n", start)
+    if script[start:line_end].rstrip().endswith("}"):
+        return script[start:line_end + 1]
     end = script.index("\n}\n", start) + len("\n}\n")
+    return script[start:end]
+
+
+def _block_through_fi(script: str, start_marker: str) -> str:
+    """An if/.../fi block lifted out of a script by its opening line, through the matching "fi"
+    on its own line -- used to run a real conditional block against synthetic inputs rather than
+    retyping its logic in the test."""
+    start = script.index(start_marker)
+    end = script.index("\nfi\n", start) + len("\nfi\n")
+    return script[start:end]
+
+
+def test_dump_sh_int_and_term_traps_exit_instead_of_resuming():
+    """A trap that only runs a handler and returns does not end the script -- execution resumes
+    right where the signal landed, so a single `trap close_snapshot EXIT INT TERM` would absorb
+    an INT or TERM mid-dump and carry on into snapshot_counts_json, dump_forever or prune_units
+    as if nothing happened. INT and TERM need their own handlers that clean up and then exit
+    explicitly (N1)."""
+    body = (ROOT / "deploy" / "backup" / "dump.sh").read_text()
+    assert "trap close_snapshot EXIT INT TERM" not in body
+    assert "trap close_snapshot EXIT" in body
+    assert "trap 'close_snapshot; exit 130' INT" in body
+    assert "trap 'close_snapshot; exit 143' TERM" in body
+
+
+def test_drill_counts_snapshot_extraction_keeps_its_internal_spaces(tmp_path):
+    """"counts_snapshot"'s value is the two-word strings "same as dump" and "before dump", whose
+    spaces are content. Stripping all spaces while extracting it (an earlier version of this
+    line did) squashes them to "sameasdump"/"beforedump", which then never equals the literal
+    "before dump" comparison the growth-only branch depends on (N2)."""
+    meta = tmp_path / "harness-nightly-20260909T033000Z.meta.json"
+    meta.write_text('{"tables": {"counts":{"orders":4212},"counts_snapshot":"before dump"}}\n')
+    script = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    extraction = _lines_between(
+        script, 'COUNTS_SNAPSHOT=$(tr', 'COUNTS_SNAPSHOT="same as dump"')
+    out = subprocess.run(
+        ["sh", "-c", f'META_FILE="{meta}"; ' + extraction + 'echo "[$COUNTS_SNAPSHOT]"'],
+        capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "[before dump]"
+
+
+def test_drill_growth_only_branch_matches_on_a_grown_table(tmp_path):
+    """A sidecar labelled "counts_snapshot":"before dump" took its counts immediately before
+    pg_dump started (the labelled fallback), so a busy table can legitimately restore with MORE
+    rows than the sidecar recorded -- that must count as a match, not a mismatch, and the overall
+    verdict must be ROWS_MATCH true (N2's growth-only branch was unreachable before the fix,
+    because the squashed COUNTS_SNAPSHOT value never equalled the literal "before dump")."""
+    counts_pairs = _pg_counts_pairs({"orders": 4212})
+    meta = tmp_path / "harness-nightly-20260909T033000Z.meta.json"
+    meta.write_text(
+        '{"tables": {"data_excluded":["raw_responses"],'
+        f'"counts":{{{counts_pairs}}},"counts_snapshot":"before dump"}}}}\n')
+    script = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+
+    funcs = (
+        _lines_between(script, 'COUNTS_SNAPSHOT=$(tr', 'COUNTS_SNAPSHOT="same as dump"')
+        + _shell_function(script, "_meta_pairs")
+        + _shell_function(script, "meta_count")
+        + _shell_function(script, "is_int")
+        + _shell_function(script, "compare_row")
+    )
+    cmd = (
+        f'META_FILE="{meta}"; ' + funcs +
+        # The table restored with more rows (5000) than the sidecar recorded (4212, from the
+        # real meta_count) -- legitimate growth under the labelled fallback, not a mismatch.
+        'there=$(meta_count orders); here=5000; compared=1; mismatches=0; '
+        'compare_row orders "$here" "$there" || mismatches=$((mismatches + 1)); '
+        'echo "COMPARED $compared MISMATCHES $mismatches"; '
+        'if [ "$compared" -gt 0 ] && [ "$mismatches" -eq 0 ]; then '
+        'echo "ROWS_MATCH true"; else echo "ROWS_MATCH false"; fi'
+    )
+    out = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, check=True)
+    assert "orders 5000 4212 GREW" in out.stdout
+    assert "ROWS_MATCH true" in out.stdout
+
+
+def test_drill_reports_na_when_the_sidecar_took_no_counts():
+    """A partition dump's sidecar records "counts_snapshot":"none" because dump.sh takes no
+    counts for that kind at all (I2/I3): nothing to compare is not the same failure as a
+    mismatch, and ROWS_MATCH false here would read as a failed restore when nothing was ever
+    compared (N3)."""
+    script = (ROOT / "deploy" / "backup" / "drill.sh").read_text()
+    block = _block_through_fi(script, 'if [ "$COUNTS_SNAPSHOT" = "none" ]; then')
+    out = subprocess.run(
+        ["sh", "-c", 'COUNTS_SNAPSHOT="none"; ' + block],
+        capture_output=True, text=True)
+    assert out.returncode == 0
+    assert "COMPARED 0 MISMATCHES 0 NO_COUNT 0" in out.stdout
+    assert "ROWS_MATCH n/a" in out.stdout
+
+
+def _lines_between(script: str, start_marker: str, end_line_marker: str) -> str:
+    """Text from start_marker through the end of the line containing end_line_marker -- used to
+    lift a short, non-function code fragment (like the COUNTS_SNAPSHOT extraction) out of a
+    script for a test to run directly."""
+    start = script.index(start_marker)
+    end = script.index(end_line_marker, start)
+    end = script.index("\n", end) + 1
     return script[start:end]

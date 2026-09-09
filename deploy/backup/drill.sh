@@ -42,9 +42,12 @@ fi
 
 # The sidecar's "counts" object, one pair per line ("key":value), computed once so meta_count
 # and meta_tables don't each re-parse the file.  POSIX sed/tr/grep only: the throwaway container
-# has no jq and the NAS is not asked to grow one.
+# has no jq and the NAS is not asked to grow one.  Newlines only, not spaces (N2): a table name
+# or count is never legitimately space-bearing today, but stripping spaces file-wide is the same
+# mistake that squashed "counts_snapshot"'s content elsewhere in this file, so it is not repeated
+# here even where it happens to be harmless.
 _meta_pairs() {
-    tr -d ' \n' < "$META_FILE" \
+    tr -d '\n' < "$META_FILE" \
         | sed -n 's/.*"counts":{\([^}]*\)}.*/\1/p' \
         | tr ',' '\n'
 }
@@ -64,7 +67,12 @@ meta_tables() {
     _meta_pairs | sed -n 's/^"\([^"]*\)":.*/\1/p'
 }
 
-COUNTS_SNAPSHOT=$(tr -d ' \n' < "$META_FILE" \
+# Newlines only: "counts_snapshot"'s value is the two-word strings "same as dump" and "before
+# dump", whose spaces are content, not JSON formatting whitespace.  Stripping spaces here (as an
+# earlier version of this line did) squashed them to "sameasdump"/"beforedump", which never
+# equals the literal "before dump" comparison below -- silently making the labelled fallback's
+# growth-only branch unreachable (N2).
+COUNTS_SNAPSHOT=$(tr -d '\n' < "$META_FILE" \
     | sed -n 's/.*"counts_snapshot":"\([^"]*\)".*/\1/p')
 [ -n "$COUNTS_SNAPSHOT" ] || COUNTS_SNAPSHOT="same as dump"
 echo "INFO counts_snapshot=$COUNTS_SNAPSHOT"
@@ -120,10 +128,45 @@ fi
 
 drill_psql() { docker exec "$CID" psql -U "$DRILL_USER" -d "$DRILL_DB" -qAt -c "$1"; }
 
+# A partition dump archives one sealed weekly partition and nothing else (ruling I2/I3), so
+# dump.sh takes no counts for it at all and the sidecar says "counts_snapshot":"none".  Nothing
+# to compare is not the same failure as a mismatch: printing COMPARED 0 MISMATCHES 0 and
+# ROWS_MATCH false here would read as a failed drill when the restore above already proved the
+# file is good, so this kind gets its own explicit non-verdict instead (N3).  The restore is
+# still exercised in full above -- only the row-count comparison, which has nothing to compare
+# against, is skipped.
+if [ "$COUNTS_SNAPSHOT" = "none" ]; then
+    echo "INFO this kind takes no dump-time counts (counts_snapshot=none); no row-count verdict"
+    echo "COMPARED 0 MISMATCHES 0 NO_COUNT 0"
+    echo "ROWS_MATCH n/a"
+    exit 0
+fi
+
 # A count comes back as a plain string from both the sidecar and psql; guarding it as a digit
 # string before using it in an arithmetic test avoids an opaque "sh: bad number" abort under
 # `set -e` if either one is ever not a clean integer (M6).
 is_int() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# One table's verdict line, factored out of the loop below so it is a pure function of its three
+# arguments and COUNTS_SNAPSHOT -- no $CID, no docker -- and can be driven directly by a test with
+# synthetic counts (see test_drill_growth_only_branch_matches_on_a_grown_table). Prints the row
+# and returns 1 on a mismatch, 0 otherwise, so the caller tallies without duplicating the decision.
+compare_row() {
+    _t=$1; _here=$2; _there=$3
+    if [ "$_here" = "$_there" ]; then
+        echo "$_t $_here $_there"
+        return 0
+    elif [ "$COUNTS_SNAPSHOT" = "before dump" ] && is_int "$_here" && is_int "$_there" \
+            && [ "$_here" -gt "$_there" ]; then
+        # The labelled fallback: the counts predate the dump's own snapshot, so a busy table
+        # legitimately restores with more rows than the sidecar records -- never fewer.
+        echo "$_t $_here $_there GREW"
+        return 0
+    else
+        echo "$_t $_here $_there MISMATCH"
+        return 1
+    fi
+}
 
 # Iterate the sidecar's own count keys, not the tables the restore happens to produce (I4): a
 # table the dump carried but the restore is missing entirely must be a mismatch, and it can
@@ -150,17 +193,7 @@ for t in $(meta_tables); do
     fi
     here=$(drill_psql "select count(*) from public.\"$t\"")
     compared=$((compared + 1))
-    if [ "$here" = "$there" ]; then
-        echo "$t $here $there"
-    elif [ "$COUNTS_SNAPSHOT" = "before dump" ] && is_int "$here" && is_int "$there" \
-            && [ "$here" -gt "$there" ]; then
-        # The labelled fallback: the counts predate the dump's own snapshot, so a busy table
-        # legitimately restores with more rows than the sidecar records -- never fewer.
-        echo "$t $here $there GREW"
-    else
-        echo "$t $here $there MISMATCH"
-        mismatches=$((mismatches + 1))
-    fi
+    compare_row "$t" "$here" "$there" || mismatches=$((mismatches + 1))
 done
 
 # The verdict is the output, not the exit status.  It is now a real verdict: both numbers are
