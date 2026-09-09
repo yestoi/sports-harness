@@ -176,12 +176,19 @@ def run_builder(session_factory: sessionmaker, name: str, now: datetime, setting
         statement = pg_insert(DashboardSnapshot).values(**values)
         session.execute(statement.on_conflict_do_update(
             index_elements=[DashboardSnapshot.name], set_=update))
+        # The upsert commits on its own, before the metric is even queued. `telemetry.record` is
+        # a bare `session.add`, so the metric's INSERT is not issued until a flush: guarding only
+        # the `record` call would leave the write to a later commit, where a rejected metric row
+        # would roll the snapshot back with it. The row is the report of the build and must
+        # survive a failure of the measurement of the build (ruling 1).
+        session.commit()
         try:
             telemetry.record(session, "serve", "serve.snapshot_ms", elapsed_ms, {"name": name},
                              ts=generated_at)
+            session.commit()
         except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails its caller
             log.exception("recording serve.snapshot_ms for %s failed", name)
-        session.commit()
+            session.rollback()
         row = session.get(DashboardSnapshot, name)
         return {"name": row.name, "generated_at": _iso(row.generated_at),
                 "elapsed_ms": row.elapsed_ms, "cadence_s": cadence_s,

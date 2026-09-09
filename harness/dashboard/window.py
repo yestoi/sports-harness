@@ -4,8 +4,12 @@ The rule is the roadmap's own (and verify.md's "Game window" block): a window is
 matched game is `in_progress`, when a kickoff falls in the last 4 hours or the next 15 minutes,
 or when an NFL kickoff is 60 to 100 minutes away. It is asked per snapshot build rather than
 cached, because the cadence flip is what it decides and a stale answer is a surface running at
-the wrong tempo. `ix_games_sport_kick` (sport, kickoff_utc) serves it; `games` is a few thousand
-rows a season, so this is a small index read, not a scan.
+the wrong tempo.
+
+The three clauses are OR-ed and `status` is unindexed, so Postgres scans `games` rather than
+using `ix_games_sport_kick`. That is deliberate and cheap: `games` holds a few thousand rows a
+season, and `exists` stops at the first match, so the scan is bounded and sits well inside the
+2000 ms snapshot timeout. An index on `status` would buy nothing at this size.
 """
 
 from datetime import datetime, timedelta

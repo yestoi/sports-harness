@@ -129,6 +129,46 @@ def test_run_builder_writes_the_row_and_the_elapsed_metric(db_session, env_setti
     assert samples[0].source == "serve"
 
 
+def test_a_rejected_metric_write_still_leaves_the_snapshot_row_written(
+        db_session, env_settings, monkeypatch):
+    """Ruling 1: telemetry never fails its caller. The trap is that `telemetry.record` is a bare
+    `session.add`, so the metric's INSERT is not issued until a flush -- a metric row Postgres
+    rejects fails at the *commit*, not at the `record` call, and would take the snapshot upsert
+    down with it if the two shared one transaction."""
+    def bad_record(session, source, name, value, labels=None, ts=None):
+        # `metric_samples.source` is String(12); this is rejected by the server on flush.
+        session.add(MetricSample(ts=ts, source="x" * 40, name=name, value=value,
+                                 labels=labels or {}))
+
+    monkeypatch.setattr(snapshots.telemetry, "record", bad_record)
+    snapshots.register_builder("t6probe", lambda session, now, settings: {"n": 1})
+    try:
+        out = run_builder(_factory(db_session), "t6probe", NOW, env_settings, cadence_s=30)
+    finally:
+        snapshots.BUILDERS.pop("t6probe", None)
+
+    assert out["error"] is None and out["payload"] == {"n": 1, "cadence_s": 30}
+    row = db_session.get(DashboardSnapshot, "t6probe")
+    assert row is not None, "a rejected metric write must not roll back the snapshot row"
+    assert db_session.query(MetricSample).count() == 0
+
+
+def test_a_raising_telemetry_call_still_leaves_the_snapshot_row_written(
+        db_session, env_settings, monkeypatch):
+    def boom_record(session, source, name, value, labels=None, ts=None):
+        raise RuntimeError("telemetry is down")
+
+    monkeypatch.setattr(snapshots.telemetry, "record", boom_record)
+    snapshots.register_builder("t6probe", lambda session, now, settings: {"n": 1})
+    try:
+        out = run_builder(_factory(db_session), "t6probe", NOW, env_settings, cadence_s=30)
+    finally:
+        snapshots.BUILDERS.pop("t6probe", None)
+
+    assert out["error"] is None
+    assert db_session.get(DashboardSnapshot, "t6probe") is not None
+
+
 def test_run_builder_sets_the_name_context_var_for_the_build(db_session, env_settings):
     """Study is one builder instantiated per week, and reads its week out of the name (T12).
     Threading the name as a context variable is what keeps the `Builder` signature the same for
