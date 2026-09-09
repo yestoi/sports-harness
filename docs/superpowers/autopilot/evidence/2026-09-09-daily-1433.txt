@@ -1,0 +1,53 @@
+== db size and growth
+ db_size 
+---------
+ 26 GB
+(1 row)
+
+         name          |    value    |              ts               
+-----------------------+-------------+-------------------------------
+ db.growth_gb_per_day  |    3.903649 | 2026-09-09 09:52:44.314055+00
+ db.size_gb            |   23.606600 | 2026-09-09 09:52:44.314055+00
+ host.disk_free_gb     | 3474.878620 | 2026-09-09 09:52:44.314055+00
+ host.mem_available_mb | 1023.902344 | 2026-09-09 09:52:44.314055+00
+(4 rows)
+
+== credits
+ odds_remaining 
+----------------
+        4996582
+(1 row)
+
+      min       |      max       
+----------------+----------------
+ 4996582.000000 | 4998450.000000
+(1 row)
+
+== executor heartbeat
+       age       | last_error | p95_loop_ms | loops_skipped | open_orders 
+-----------------+------------+-------------+---------------+-------------
+ 00:00:15.780033 |            |        4492 |           162 |         150
+(1 row)
+
+== kill switch
+ id | active | reason | set_at 
+----+--------+--------+--------
+(0 rows)
+
+== error messages last 24h (recorder runs)
+ started_at | errors 
+------------+--------
+(0 rows)
+
+== settle job
+  job   | status | budget_exhausted |          finished_at          
+--------+--------+------------------+-------------------------------
+ settle | ok     | f                | 2026-09-09 18:54:26.240993+00
+ settle | ok     | f                | 2026-09-09 17:53:50.637103+00
+ settle | ok     | f                | 2026-09-09 16:53:57.111938+00
+(3 rows)
+
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.4T  69% /volume1
+Mem:            7717        6840         321         653        1962         876
+0
+grep: ERROR: No such file or directory
