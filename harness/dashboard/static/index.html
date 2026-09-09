@@ -1,2 +1,51 @@
 <!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>harness</title>
+<link rel="stylesheet" href="./vendor/uPlot.min.css">
+<link rel="stylesheet" href="./app.css">
+<script>
+/* The stored theme is applied before first paint, so a light-mode phone does not flash the dark
+   ground on every load. `data-theme="dark"` above is the no-script default (the canvas's primary
+   look); with no stored choice the attribute is removed and prefers-color-scheme decides. The key
+   is the same string app.mjs writes, and a test asserts both files name it. */
+try {
+  var stored = localStorage.getItem("harness.theme");
+  if (stored === "light" || stored === "dark") document.documentElement.setAttribute("data-theme", stored);
+  else document.documentElement.removeAttribute("data-theme");
+} catch (e) { /* a browser with site data blocked keeps the markup default */ }
+</script>
+</head>
+<body>
+<header class="shell-header">
+  <span class="brand">HARNESS</span>
+  <nav class="tabs" role="tablist" aria-label="Surfaces">
+    <button class="tab" role="tab" data-surface="pulse" aria-selected="true" tabindex="0">Pulse</button>
+    <button class="tab" role="tab" data-surface="floor" aria-selected="false" tabindex="-1">Floor</button>
+    <button class="tab" role="tab" data-surface="study" aria-selected="false" tabindex="-1">Study</button>
+    <button class="tab" role="tab" data-surface="gate" aria-selected="false" tabindex="-1">Gate</button>
+    <button class="tab tab-fun" role="tab" data-surface="ticket" aria-selected="false" tabindex="-1">Ticket</button>
+  </nav>
+  <span class="links">
+    <a class="ghost" href="#how">How it works</a>
+    <a class="ghost legacy" href="/">Legacy panel</a>
+  </span>
+  <span class="spacer"></span>
+  <span class="status" aria-live="polite" id="shell-status">
+    <span class="dot"></span><span>--</span>
+  </span>
+  <span class="pill" id="shell-badge">PAPER</span>
+  <span class="meta num" id="shell-age" title="age of the oldest snapshot this surface reads">--</span>
+  <span class="meta num" id="shell-build" title="the build the snapshot on screen was made by">build --</span>
+  <span class="meta num" id="shell-serving" hidden title="the build serving this page, shown only when it differs from the snapshot's">--</span>
+  <button class="ghost" id="theme-toggle" type="button" aria-label="Switch between light and dark">Theme</button>
+</header>
+<p class="banner" id="shell-stale" role="status" hidden></p>
+<main id="surface" tabindex="-1"></main>
+<nav class="phone-tabs" role="tablist" aria-label="Surfaces"></nav>
+<script src="./vendor/uPlot.iife.min.js"></script>
+<script type="module" src="./js/app.mjs"></script>
+</body>
+</html>

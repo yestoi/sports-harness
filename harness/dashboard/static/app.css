@@ -1,0 +1,258 @@
+/* The dashboard's one stylesheet. One token set with two values each -- never two stylesheets
+   (spec §5). The dark values are the design canvas's: ground #0b0e13, surfaces #131820, one
+   accent #35c9d9, the seven-slot categorical palette for variants, the Ticket slip on night
+   paper. Every colour a surface module uses is named here as a class, so a module names a class
+   and never a token.
+
+   No font file is vendored (addendum §0.5, D5): each canvas face is preferred by name and falls
+   back to the system stack, and the canvas's proportions are kept with the fallback metrics. */
+
+:root {
+  --ground: #0b0e13; --tile: #0f131a; --card: #131820; --raised: #1a212b;
+  --border: #1f2733; --rule: #171d26; --track: #232b36;
+  --ink: #eef2f6; --ink-2: #aab4c0; --ink-muted: #7c8794;
+  --accent: #35c9d9; --good: #2bc257; --warn: #fab219; --bad: #e05252;
+  --fun: #f5a524;
+  --variant-1: #3987e5; --variant-2: #d95926; --variant-3: #199e70; --variant-4: #c98500;
+  --variant-5: #d55181; --variant-6: #008300; --variant-7: #9085e9;
+  --slip-paper: #2b2517; --slip-ink: #f1e6cf; --slip-muted: #b9ad95;
+  --hit: #4fc46f; --miss: #ef5a6e;
+
+  --font-display: "Space Grotesk", "IBM Plex Sans", system-ui, -apple-system, "Segoe UI",
+                  Roboto, sans-serif;
+  --font-text: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* The light half of the set, written twice on purpose: once for the manual toggle and once for
+   the OS default, because a media query cannot join a selector list. The two blocks are asserted
+   byte-identical by tests/test_dashboard_static.py, so they can only move together. */
+:root[data-theme="light"] {
+  --ground: #f4f3ef; --tile: #fbfaf7; --card: #ffffff; --raised: #ebe9e3;
+  --border: #e2dfd6; --rule: #ecebe6; --track: #dedbd2;
+  --ink: #17191d; --ink-2: #4a525c; --ink-muted: #6b7480;
+  --accent: #0f8e9c; --good: #168a3a; --warn: #b7780f; --bad: #c23b3b;
+  --fun: #8a5a08;
+  --variant-1: #2a78d6; --variant-2: #eb6834; --variant-3: #1baf7a; --variant-4: #eda100;
+  --variant-5: #e87ba4; --variant-6: #008300; --variant-7: #4a3aa7;
+  --slip-paper: #f4ead6; --slip-ink: #1b1a17; --slip-muted: #6b6255;
+  --hit: #1f8a3b; --miss: #c8102e;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+  --ground: #f4f3ef; --tile: #fbfaf7; --card: #ffffff; --raised: #ebe9e3;
+  --border: #e2dfd6; --rule: #ecebe6; --track: #dedbd2;
+  --ink: #17191d; --ink-2: #4a525c; --ink-muted: #6b7480;
+  --accent: #0f8e9c; --good: #168a3a; --warn: #b7780f; --bad: #c23b3b;
+  --fun: #8a5a08;
+  --variant-1: #2a78d6; --variant-2: #eb6834; --variant-3: #1baf7a; --variant-4: #eda100;
+  --variant-5: #e87ba4; --variant-6: #008300; --variant-7: #4a3aa7;
+  --slip-paper: #f4ead6; --slip-ink: #1b1a17; --slip-muted: #6b6255;
+  --hit: #1f8a3b; --miss: #c8102e;
+  }
+}
+
+/* --- the ground ---------------------------------------------------------------------------- */
+
+* { box-sizing: border-box; }
+html { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { color-scheme: light; } }
+
+body { margin: 0; background: var(--ground); color: var(--ink);
+       font-family: var(--font-text); font-size: 13px; line-height: 1.35;
+       -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-decoration: none; }
+.num, td.num, th.num, .val, .tech { font-family: var(--font-num);
+                                    font-variant-numeric: tabular-nums; }
+.display, .brand, .status, .status-word, .team, .payout { font-family: var(--font-display); }
+img, svg { max-width: 100%; }
+
+/* --- the header ---------------------------------------------------------------------------- */
+
+.shell-header { position: sticky; top: 0; z-index: 10; min-height: 56px; display: flex;
+  align-items: center; flex-wrap: wrap; gap: 18px; padding: 0 24px; background: var(--tile);
+  border-bottom: 1px solid var(--border); }
+.brand { font-weight: 700; letter-spacing: 0.14em; font-size: 12px; }
+.spacer { flex: 1; }
+.tabs { display: flex; gap: 2px; }
+.links { display: flex; gap: 12px; align-items: center; }
+.tab { background: none; border: 0; color: var(--ink-2); font: inherit; font-weight: 500;
+  padding: 7px 12px; border-radius: 6px; cursor: pointer; }
+.tab[aria-selected="true"] { background: var(--raised); color: var(--ink); }
+.tab-fun { color: var(--fun); }
+.tab-fun[aria-selected="true"] { color: var(--fun); }
+.ghost { background: none; border: 0; color: var(--ink-muted); font: inherit; font-size: 12px;
+  text-decoration: none; cursor: pointer; padding: 4px 0; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px;
+  border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  border: 1px solid var(--accent); color: var(--accent); white-space: nowrap; }
+.pill.fun { border-color: var(--fun); color: var(--fun); }
+.pill.muted { border-color: var(--border); color: var(--ink-muted); }
+.meta { color: var(--ink-muted); font-size: 12px; white-space: nowrap; }
+.meta.watch { color: var(--warn); } .meta.broken { color: var(--bad); }
+.status { display: flex; align-items: center; gap: 8px; font-weight: 700;
+  letter-spacing: 0.08em; font-size: 13px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--good); flex: none; }
+.dot.watch { background: var(--warn); } .dot.broken { background: var(--bad); }
+.dot.unknown { background: var(--ink-muted); }
+
+/* The staleness flag: the page says so in words rather than only tinting a number, because the
+   number is the thing a stale surface renders convincingly (spec §4, 2x/3x cadence). */
+.banner { margin: 0; padding: 8px 24px; background: var(--raised); color: var(--warn);
+  border-bottom: 1px solid var(--border); font-size: 12px; }
+.banner.broken { color: var(--bad); }
+
+/* --- the page ------------------------------------------------------------------------------ */
+
+main { padding: 16px 24px 20px; display: grid; gap: 14px; align-content: start; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; min-width: 0; }
+.card > h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-muted); font-weight: 600; display: flex;
+  align-items: center; gap: 8px; flex-wrap: wrap; }
+.card > h3 .plain { font-size: 13px; font-weight: 600; color: var(--ink);
+  text-transform: none; letter-spacing: 0; }
+.card > h3 .technical, .card > h3 .tech { text-transform: none; letter-spacing: 0;
+  color: var(--ink-muted); font-weight: 400; font-size: 11px; }
+.card > h3 .tag { font-size: 10px; letter-spacing: 0.06em; color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 4px; padding: 1px 5px; }
+.sentences { margin: 0 0 12px; padding: 0; color: var(--ink); font-size: 14.5px;
+  line-height: 1.5; max-width: 72ch; text-wrap: pretty; }
+.sentences li { margin: 0 0 6px; list-style: none; }
+.sentences li:last-child { margin-bottom: 0; }
+.lead { font-size: 14.5px; line-height: 1.5; margin: 0 0 12px; max-width: 72ch;
+  text-wrap: pretty; }
+.reading { color: var(--ink-2); font-size: 12px; }
+.tile { background: var(--tile); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tile .lbl { font-size: 11px; color: var(--ink-muted); }
+.tile .val { font-size: 20px; font-weight: 600; }
+.tile .val small { font-size: 11px; font-weight: 500; color: var(--ink-muted);
+  margin-left: 4px; }
+.grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.grid2 { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.grid3 { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.grid4 { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.row.spread { justify-content: space-between; }
+.col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.scroll-x { overflow-x: auto; max-width: 100%; }
+table { border-collapse: collapse; width: 100%; }
+th { text-align: left; font-size: 11px; color: var(--ink-muted); font-weight: 600;
+  padding: 6px 8px; border-bottom: 1px solid var(--border); letter-spacing: 0.04em;
+  white-space: nowrap; }
+td { padding: 7px 8px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+td.num, th.num { text-align: right; }
+.track { position: relative; height: 6px; border-radius: 3px; background: var(--track);
+  overflow: hidden; }
+.fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 3px; }
+.fill.warm { background: var(--fun); }
+.grey, .muted { color: var(--ink-muted); }
+.sec { color: var(--ink-2); }
+.n { font-size: 11px; color: var(--ink-muted); }
+.ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+.badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px;
+  font-weight: 600; letter-spacing: 0.04em; }
+.badge.ok { background: var(--raised); color: var(--good); }
+.badge.warn { background: var(--raised); color: var(--warn); }
+.badge.bad { background: var(--raised); color: var(--bad); }
+.badge.dim { background: var(--raised); color: var(--ink-muted); }
+.flag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px;
+  border: 1px solid var(--border); color: var(--ink-2); margin-left: 6px; }
+.interval { display: inline-flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+
+/* Colour is never the only signal: every series is named beside its mark. */
+.swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: 6px; vertical-align: middle; }
+.swatch.good { background: var(--good); } .swatch.warn { background: var(--warn); }
+.swatch.bad { background: var(--bad); } .swatch.grey { background: var(--ink-muted); }
+.swatch.v1 { background: var(--variant-1); } .swatch.v2 { background: var(--variant-2); }
+.swatch.v3 { background: var(--variant-3); } .swatch.v4 { background: var(--variant-4); }
+.swatch.v5 { background: var(--variant-5); } .swatch.v6 { background: var(--variant-6); }
+.swatch.v7 { background: var(--variant-7); }
+
+/* --- the classes the surface modules use, so a module names a class and never a token ------- */
+
+.status-word { display: flex; align-items: center; gap: 14px; font-family: var(--font-display);
+  font-weight: 700; letter-spacing: -0.02em; line-height: 1; font-size: 64px;
+  color: var(--good); }
+.status-word .dot { width: 18px; height: 18px; }
+.status-word.watch { color: var(--warn); } .status-word.broken { color: var(--bad); }
+.status-word.unknown { color: var(--ink-muted); }
+/* The header carries the same word at header scale: one component, two sizes, so the shell and
+   Pulse can never disagree about the word or its colour. */
+.status-word.compact { font-size: 13px; letter-spacing: 0.08em; gap: 8px; }
+.status-word.compact .dot { width: 10px; height: 10px; }
+.tile.good { border-color: var(--good); } .tile.warn { border-color: var(--warn); }
+.tile.bad { border-color: var(--bad); }
+.figure { display: block; width: 100%; height: auto; overflow: visible; }
+.spark { height: 28px; }
+.tape { display: flex; flex-direction: column; gap: 6px; }
+.tape-row { display: flex; align-items: center; gap: 8px; }
+.tape-row .lbl { width: 72px; flex: none; font-size: 11px; color: var(--ink-muted); }
+.tape-row .figure { flex: 1; min-width: 0; height: 14px; }
+.tape-on { fill: var(--accent); } .tape-off { fill: var(--track); }
+.tape-gap { fill: var(--bad); }
+.arc-track { fill: var(--track); } .arc-fill { fill: var(--accent); }
+.axis-line { stroke: var(--border); } .axis-text { fill: var(--ink-muted); font-size: 11px; }
+
+/* Ticket only: warm paper in the dark, cream in the light, status colours stepped for it. */
+.slip { background: var(--slip-paper); color: var(--slip-ink); border-radius: 10px;
+  padding: 14px 16px; }
+.slip .muted { color: var(--slip-muted); }
+.slip .payout { font-size: 40px; font-weight: 700; line-height: 1; }
+.slip .lamp.hit { color: var(--hit); } .slip .lamp.miss { color: var(--miss); }
+.slip .lamp.alive { color: var(--fun); } .slip .lamp.pending { color: var(--slip-muted); }
+
+/* The glossary term is a button, so it opens on tap, click or keyboard focus -- hover alone
+   excludes keyboard and screen-reader users (ruling A-I13). The wrapper is what the panel is
+   positioned against; an absolute panel next to a static button would land against the page. */
+.term-wrap { position: relative; display: inline-block; }
+.term { background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  border-bottom: 1px dotted var(--ink-muted); cursor: help; }
+.term-def { position: absolute; top: 100%; left: 0; z-index: 20; width: max-content;
+  max-width: 280px; background: var(--raised); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; color: var(--ink-2); font-size: 12px;
+  line-height: 1.45; box-shadow: 0 6px 20px rgb(0 0 0 / 0.35); }
+.term-def b { color: var(--ink); }
+
+/* uPlot draws on a canvas; only its legend and axis text are DOM, and they inherit nothing. */
+.u-legend { font-family: var(--font-text); font-size: 11px; color: var(--ink-2); }
+.u-legend .u-marker { border-radius: 2px; }
+.u-select { background: rgb(255 255 255 / 0.07); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* --- the phone: tabs at the bottom, 44 px tap targets (ruling A-I13) ----------------------- */
+
+.phone-tabs { display: none; }
+@media (max-width: 720px) {
+  .shell-header { gap: 10px; padding: 8px 16px; }
+  .tabs { display: none; }
+  /* The two links are the only navigation off this page -- the Legacy panel link is the single
+     control in the whole UI -- so they wrap onto their own row rather than disappearing on a
+     phone. */
+  .links { order: 9; width: 100%; }
+  .spacer { display: none; }
+  /* The Ticket badge is a long sentence; it wraps here rather than pushing the page sideways. */
+  .pill { white-space: normal; }
+  main { padding: 18px 16px 90px; }
+  .banner { padding: 8px 16px; }
+  .status-word { font-size: 48px; }
+  .phone-tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    background: var(--tile); border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom, 0); }
+  .phone-tabs .tab { flex: 1; min-height: 44px; min-width: 44px; border-radius: 0;
+    padding: 9px 4px; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 4px; font-size: 11px; font-weight: 500; }
+  .phone-tabs .tab[aria-selected="true"] { background: none; color: var(--ink);
+    box-shadow: inset 0 2px 0 var(--accent); }
+  .phone-tabs .tab-fun[aria-selected="true"] { box-shadow: inset 0 2px 0 var(--fun); }
+  .phone-tabs svg { width: 20px; height: 20px; stroke: currentColor; fill: none;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
