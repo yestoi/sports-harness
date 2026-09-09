@@ -473,12 +473,32 @@ MAX_PROB = Decimal("0.99")
 ECHO_FREEZE_MINUTES = 15
 
 #: How many times the echo check will ask `GET /portfolio/orders/{id}` for the order it just
-#: placed. Two: the first attempt and exactly one immediate retry, no sleep between them (fix
-#: round 1, ruling (b)). A confirming read is not a decision the venue is making, it is a fact
-#: we are asking for, and one transient 500 should not cost a 15-minute freeze -- but a *loop*
-#: here would hold the execution cycle open against a venue that is genuinely not answering,
-#: which is why this is a constant and not a policy.
+#: placed when the read fails with something that is *not* a 404. Two: the first attempt and
+#: exactly one immediate retry, no sleep between them (fix round 1, ruling (b)). A confirming
+#: read is not a decision the venue is making, it is a fact we are asking for, and one transient
+#: 500 should not cost a 15-minute freeze -- but a *loop* here would hold the execution cycle
+#: open against a venue that is genuinely not answering, which is why this is a constant and not
+#: a policy. A 404 gets the longer, slept schedule below instead (fix 27).
 CONFIRM_READ_ATTEMPTS = 2
+
+#: The sleeps, in seconds, before confirming-read attempts 2, 3 and 4 when the venue answers
+#: `404` -- four attempts in all, at most 1.5 s of sleeping and about 2 s of wall clock.
+#:
+#: A 404 is not the same failure as a 500. It says the order is not readable *yet*, and on the
+#: demo venue it is routinely still saying that a quarter of a second after the create. Measured
+#: on `venue_requests` env='demo', 2026-09-09 05:10 UTC (fix 27):
+#:
+#:     POST   /portfolio/events/orders          201   86 ms   (create, V2)
+#:     GET    /portfolio/orders/01a08492-...    404   88 ms   (confirming read, 130 ms later)
+#:     GET    /portfolio/orders/01a08492-...    404   81 ms   (the immediate retry)
+#:     DELETE /portfolio/events/orders/01a08492 200   88 ms   (the echo check's cancel)
+#:
+#: The cancel on the same id returning 200 is the proof: the order existed the whole time, and
+#: the two immediate reads simply beat the venue's own read-after-write. Sleeping is the only
+#: thing that can fix that, and it is bounded here rather than made a policy for the same
+#: reason `CONFIRM_READ_ATTEMPTS` is: a loop would hold the execution cycle open against a
+#: venue that is genuinely not answering.
+CONFIRM_NOT_FOUND_BACKOFF_S = (0.25, 0.5, 0.75)
 
 #: Prices are Decimals at 4 places everywhere in this harness (global constraints, units).
 PRICE_QUANTUM = Decimal("0.0001")
@@ -888,11 +908,15 @@ class KalshiWriter:
 
     def __init__(self, transport, reader, *, per_bet_cap_dollars: Decimal,
                  contract_cap: Decimal, kill_switch_active: Callable[[], bool],
-                 writes_allowed: bool, _factory_token: object = None) -> None:
+                 writes_allowed: bool, sleep: Callable[[float], None] | None = None,
+                 _factory_token: object = None) -> None:
         if _factory_token is not _FACTORY_TOKEN:
             raise RuntimeError("KalshiWriter is built only by make_writer")
         self._transport = transport
         self._reader = reader
+        # The confirming read's 404 backoff (fix 27). Injectable so tests can assert the
+        # schedule without spending it; production never passes one.
+        self._sleep = time.sleep if sleep is None else sleep
         self._per_bet_cap_dollars = _as_decimal(per_bet_cap_dollars)
         self._contract_cap = _as_decimal(contract_cap)
         self._kill_switch_active = kill_switch_active
@@ -1060,9 +1084,10 @@ class KalshiWriter:
         of them the order is cancelled and `EchoMismatch` is raised, so the caller freezes the
         market for 15 minutes with reason `echo_mismatch`. Failing closed on a confirming read
         that did not answer is deliberate: an unconfirmed order is resting risk we cannot
-        describe, and the freeze is what stops more of it being added. It gets one immediate
-        retry first (`CONFIRM_READ_ATTEMPTS`), so a single transient failure does not cost a
-        freeze.
+        describe, and the freeze is what stops more of it being added. It is retried first, so a
+        single transient failure does not cost a freeze: once immediately for an error that says
+        nothing (`CONFIRM_READ_ATTEMPTS`), and on a backoff for a `404`, which says only that the
+        venue has not caught up with its own create yet (`CONFIRM_NOT_FOUND_BACKOFF_S`, fix 27).
 
         `known_order_id` is the id the caller already addressed -- an amend has one, a place does
         not. It is the cancel path's fallback when the response itself names no order (fix round
@@ -1105,28 +1130,46 @@ class KalshiWriter:
         ones every other order in this module goes through, and `decode_side_price` puts the
         result back into our side space before anything is compared.
 
-        A read that did not *arrive* -- an API error, a transport failure, a timeout -- gets
-        exactly one immediate retry: no sleep, and no write token, because this is a GET on the
-        reader and the message budget is for messages we send (fix round 1, ruling (b)). Two
-        failures is not an acquittal: the class name of the last one is kept (a class name,
-        never the exception -- its `.request` may hold live signed headers) and the caller
-        treats it as a mismatch. It is bounded at two attempts on purpose; a loop here would
-        hold the execution cycle open against a venue that is not answering.
+        A read that did not *arrive* gets retried, on a schedule that depends on what the venue
+        said, and never on a write token: this is a GET on the reader, and the message budget is
+        for messages we send (fix round 1, ruling (b)).
+
+        A `404` is the venue's read-after-write lag, not its refusal -- the order is there, it is
+        not readable yet, and the demo trace behind `CONFIRM_NOT_FOUND_BACKOFF_S` shows two
+        immediate reads losing that race by a quarter of a second. So a 404 is retried with that
+        backoff: four attempts, sleeping 0.25 s, 0.5 s and 0.75 s before attempts 2, 3 and 4.
+
+        Anything else -- a non-404 `KalshiApiError`, a transport failure, a timeout -- keeps the
+        older policy of exactly one immediate retry, because a 500 says nothing about whether
+        waiting would help. Either way the attempts are counted together and capped, so a venue
+        alternating failures cannot stretch the cycle past the same four reads.
+
+        Exhausting either budget is not an acquittal: what failed is named (for a 404, the status
+        and the attempt count; otherwise the class name of the last error -- a class name, never
+        the exception, whose `.request` may hold live signed headers) and the caller treats it as
+        a mismatch and freezes.
 
         A read that arrived and would not *decode* is not retried. The payload is the payload,
         and asking the same question again spends a request to be told the same thing.
         """
-        view = last_error = None
-        for _ in range(CONFIRM_READ_ATTEMPTS):
+        view = None
+        attempts = 0
+        while True:
             try:
                 view = self._reader.get_order(order_id)
                 break
             except KalshiDecodeError as exc:
                 return None, None, None, f"the confirming read ({type(exc).__name__})"
             except Exception as exc:
-                last_error = type(exc).__name__
-        else:
-            return None, None, None, f"the confirming read ({last_error})"
+                attempts += 1
+                if isinstance(exc, KalshiApiError) and exc.status == 404:
+                    if attempts > len(CONFIRM_NOT_FOUND_BACKOFF_S):
+                        return None, None, None, (
+                            f"the confirming read (404 after {attempts} attempts)")
+                    self._sleep(CONFIRM_NOT_FOUND_BACKOFF_S[attempts - 1])
+                    continue
+                if attempts >= CONFIRM_READ_ATTEMPTS:
+                    return None, None, None, f"the confirming read ({type(exc).__name__})"
         book_side = _book_side_of(view)
         if view.price is None:
             return view, None, None, "the confirmed price"

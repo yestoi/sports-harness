@@ -55,14 +55,16 @@ CENT_RANGES = [{"start": 0, "end": 1, "step": 0.01}]
 
 #: The exact order the sequence sends. The methods and the paths are asserted separately, so a
 #: reordering that keeps the same multiset of calls still fails.
-EXPECTED_METHODS = ["GET", "GET", "POST", "POST", "GET", "POST", "GET", "GET", "DELETE",
-                    "DELETE", "POST", "GET", "GET", "GET", "GET"]
+EXPECTED_METHODS = ["GET", "GET", "POST", "POST", "GET", "GET", "GET", "POST", "GET", "GET",
+                    "DELETE", "DELETE", "POST", "GET", "GET", "GET", "GET"]
 EXPECTED_PATHS = [
     "/portfolio/balance",
     "/markets",                                   # the nearest open KXNFLGAME market
     "/portfolio/order_groups/create",             # create_group(5)
     "/portfolio/events/orders",                   # place
-    "/portfolio/orders/o1",                       # the place's confirming read (fix 24)
+    "/portfolio/orders/o1",                       # the place's confirming read (fix 24): 404
+    "/portfolio/orders/o1",                       # 404 again -- read-after-write lag (fix 27)
+    "/portfolio/orders/o1",                       # and now the order is readable
     "/portfolio/events/orders/o1/amend",          # amend
     "/portfolio/orders/o1",                       # the amend's confirming read (fix 24)
     "/portfolio/orders/o1",                       # get_order, the smoke's own step 7
@@ -147,8 +149,9 @@ def _created(order_id: str, count: str) -> dict:
 
 
 def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
-    """The fifteen responses the full sequence consumes, in order (fix 24 added the three
-    confirming reads)."""
+    """The seventeen responses the full sequence consumes, in order (fix 24 added the three
+    confirming reads; fix 27 added the two 404s the demo venue really answered the first of them
+    with, 130 ms and 210 ms after returning 201 for the create)."""
     return [
         _ok({"balance": "250.00"}),
         _ok({"markets": [_market(LATER_TICKER, "2026-09-21T23:00:00Z", price_ranges),
@@ -156,7 +159,9 @@ def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
              "cursor": ""}),
         _ok({"order_group_id": "g1"}),
         _ok(_created("o1", "1.00")),                 # place
-        _ok(_echo("o1", "0.0100", "1.00")),          # its confirming read
+        _err(404, "order_not_found"),                # its confirming read, before the venue
+        _err(404, "order_not_found"),                # has made the order readable (fix 27)
+        _ok(_echo("o1", "0.0100", "1.00")),          # and now it has
         _ok(_created("o1", "2.00")),                 # amend
         _ok(_echo("o1", "0.0200", "2.00")),          # its confirming read
         _ok(_echo("o1", "0.0200", "2.00")),          # the smoke's own get_order step
@@ -172,7 +177,7 @@ def _full_demo_script(price_ranges=None, resting_after_expiry=None) -> list:
 
 
 def _script_failing_at_amend() -> list:
-    script = _full_demo_script()[:5]              # through the place and its confirming read
+    script = _full_demo_script()[:7]              # through the place and its confirming read
     script.append(_err(400, "bad_price"))
     script.append(_ok({}))            # the best-effort cancel_group the failure path runs
     return script
@@ -191,9 +196,11 @@ def _script_with_hostile_strings() -> list:
         "close_time": "2026-09-14T23:00:00Z", "price_ranges": CENT_RANGES,
         "title": HOSTILE}], "cursor": ""})
     script[2] = _ok({"order_group_id": "g1", "note": HOSTILE})
-    for i in (3, 5, 10):                          # the create/amend responses
+    for i in (3, 7, 12):                          # the create/amend responses
         script[i].body["note"] = HOSTILE
-    for i in (4, 6, 7, 11):                       # the order-shaped confirming reads
+    for i in (4, 5):                              # the place's two 404s (fix 27)
+        script[i].body["code"] = HOSTILE
+    for i in (6, 8, 9, 13):                       # the order-shaped confirming reads
         body = script[i].body
         body["order"]["status"] = HOSTILE
         body["note"] = HOSTILE
@@ -204,12 +211,15 @@ def _script_with_hostile_strings() -> list:
 
 def _writer_over(transport) -> KalshiWriter:
     """A writer built the way `harness.venues.kalshi.smoke` builds one, with the smoke's own
-    tiny caps, over the fake transport instead of a real one."""
+    tiny caps, over the fake transport instead of a real one. Its confirming-read backoff is a
+    no-op here (fix 27): the schedule itself is pinned in `tests/test_kalshi_writer.py`, and no
+    test in this file should spend 0.75 s of real time proving the venue was slow."""
     return KalshiWriter(transport, KalshiReader(transport),
                         per_bet_cap_dollars=SMOKE_PER_BET_CAP_DOLLARS,
                         contract_cap=SMOKE_CONTRACT_CAP,
                         kill_switch_active=lambda: False,
-                        writes_allowed=True, _factory_token=_FACTORY_TOKEN)
+                        writes_allowed=True, sleep=lambda _s: None,
+                        _factory_token=_FACTORY_TOKEN)
 
 
 def _injecting(transport):

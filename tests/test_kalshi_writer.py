@@ -784,6 +784,120 @@ def test_the_amend_path_retries_its_confirming_read_too():
     assert [c[0] for c in t.calls] == ["POST", "GET", "GET"]
 
 
+# --- a 404 is read-after-write lag, not a refusal (fix 27) ------------------------------------
+#
+# The demo venue answered the confirming read 404 twice, 130 ms and 210 ms after returning 201
+# for the create, and then answered the cancel on that same id with 200 -- so the order existed
+# throughout and the reads simply lost the race. These tests pin the slept schedule that fixes
+# that, and pin that nothing else changed policy. No test here sleeps: the writer's sleep is
+# injected, and every schedule below is asserted from what it was asked to sleep.
+
+
+def test_a_confirming_read_that_404s_twice_then_answers_confirms_with_the_backoff():
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _err(404, "order_not_found"),                     # 130 ms after the create, as measured
+        _err(404, "order_not_found"),
+        _ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    order = _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert order.side == "yes" and order.prob == Decimal("0.5600")
+    assert slept == [0.25, 0.5]                           # the first two of the schedule, no more
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET", "GET"]      # confirmed, no cancel
+    assert [c[1] for c in t.calls[1:]] == ["/portfolio/orders/o1"] * 3
+
+
+def test_four_404s_cancel_the_created_order_and_freeze_naming_the_status_and_count():
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")),
+        _err(404), _err(404), _err(404), _err(404),
+        _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert "404" in exc.value.field and "4" in exc.value.field
+    assert exc.value.order_id == "o1" and exc.value.cancel_error is None
+    assert exc.value.freeze_minutes == 15 and exc.value.reason == "echo_mismatch"
+    assert slept == [0.25, 0.5, 0.75]                     # 1.5 s of sleeping at the very most
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET", "GET", "GET", "DELETE"]
+    assert t.calls[-1][1] == "/portfolio/events/orders/o1"   # cancelled on the create's id
+
+
+def test_the_404_schedule_is_the_documented_constant():
+    from harness.venues.kalshi.authed import CONFIRM_NOT_FOUND_BACKOFF_S
+    assert CONFIRM_NOT_FOUND_BACKOFF_S == (0.25, 0.5, 0.75)
+    assert sum(CONFIRM_NOT_FOUND_BACKOFF_S) <= 1.5
+
+
+def test_a_non_404_failure_keeps_the_one_immediate_retry_and_never_sleeps():
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _err(500),
+        _ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    order = _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert order.prob == Decimal("0.5600")
+    assert slept == []
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET"]
+
+
+def test_two_non_404_failures_cancel_after_two_attempts_and_never_sleep():
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _err(500), _err(500), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert "KalshiApiError" in exc.value.field and "404" not in exc.value.field
+    assert slept == []
+    assert sum(1 for c in t.calls if c[0] == "GET") == 2
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET", "DELETE"]
+
+
+def test_a_404_retry_spends_no_write_token():
+    # Every retry is a GET on the reader; the 60-a-minute budget is for messages we send.
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _err(404), _err(404),
+        _ok({"order": _echo_of(price="0.5600", count="10.00")})])
+    w = _writer(t, sleep=lambda _s: None)
+    before = w._bucket.tokens
+    w.place_limit(_intent(contracts=Decimal("10")))
+    assert before - w._bucket.tokens == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_amend_path_gets_the_same_404_backoff():
+    slept = []
+    t = FakeTransport(queued=[
+        _ok(_created(count="12.00")), _err(404), _err(404),
+        _ok({"order": _echo_of(price="0.5700", count="12.00")})])
+    order = _writer(t, sleep=slept.append).amend(
+        "o1", Decimal("0.57"), Decimal("12"), "c1", "c2",
+        ticker="KXNFLGAME-X", side="yes", exchange_index=0, price_ranges=CENT_RANGES)
+    assert order.prob == Decimal("0.5700")
+    assert slept == [0.25, 0.5]
+    assert [c[0] for c in t.calls] == ["POST", "GET", "GET", "GET"]
+
+
+def test_a_read_that_will_not_decode_gets_no_backoff_either():
+    # The backoff is for a read that did not arrive. One that arrived and is unreadable is the
+    # payload the venue meant to send, and asking again buys the same answer.
+    slept = []
+    order = _echo_of(price="0.5600", count="10.00")
+    order.pop("book_side")
+    t = FakeTransport(queued=[
+        _ok(_created(count="10.00")), _ok({"order": order}), _ok({"order_id": "o1"})])
+    with pytest.raises(EchoMismatch) as exc:
+        _writer(t, sleep=slept.append).place_limit(_intent(contracts=Decimal("10")))
+    assert "KalshiDecodeError" in exc.value.field
+    assert slept == []
+    assert [c[0] for c in t.calls] == ["POST", "GET", "DELETE"]
+
+
+def test_the_writer_sleeps_with_time_sleep_when_nothing_is_injected():
+    import time
+
+    assert "sleep" in inspect.signature(KalshiWriter.__init__).parameters
+    assert _writer(FakeTransport())._sleep is time.sleep
+
+
 # --- the amend knows the id it addressed (fix round 1, Minor) ---------------------------------
 
 
