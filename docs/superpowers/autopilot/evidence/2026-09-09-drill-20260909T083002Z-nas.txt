@@ -1,0 +1,47 @@
+INFO throwaway container 5725f63640b53a2abdb9dbc4f62e8b33fc938cb8a900813ac2bbda5de9a6dc34
+RESTORE_OK backups/nightly/harness-nightly-20260909T083002Z.dump
+table restored production
+alembic_version 1 1
+backup_runs 5 9 MISMATCH
+benchmarks 414 414
+check_results 27 54 MISMATCH
+config_history 8 8
+equity_snapshots 792 1077 MISMATCH
+exec_heartbeat 1 1
+fair_values 923417 957594 MISMATCH
+fills 18 18
+game_score_events 103 103
+games 459 459
+gap_outcomes 1845 1845
+gate_reports 0 0
+intents 13744 15259 MISMATCH
+job_runs 19 26 MISMATCH
+job_state 2 2
+kill_switch 0 0
+ledger 2 2
+market_gap_snapshots 1173543 1202783 MISMATCH
+markouts 5334 5784 MISMATCH
+metric_samples 31206 41750 MISMATCH
+normalize_state 8 8
+operator_events 118 137 MISMATCH
+order_clv 0 0
+order_events 26662 29210 MISMATCH
+order_watch_samples 41354 55799 MISMATCH
+orderbook_snapshots 9033 9033
+orders 1316 1466 MISMATCH
+report_cells 35802 41858 MISMATCH
+report_runs 6 7 MISMATCH
+runs 6050 6896 MISMATCH
+settlements 98 98
+signals 7103819 7288579 MISMATCH
+source_state 32 34 MISMATCH
+strategy_variants 8 8
+team_aliases 5420 5420
+teams 793 793
+trade_watermarks 2690 2812 MISMATCH
+venue_markets 5822 5872 MISMATCH
+venue_requests 32 125 MISMATCH
+venue_settlements 300 300
+venue_status 1 1
+COMPARED 42 MISMATCHES 21
+ROWS_MATCH false
