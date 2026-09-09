@@ -1,0 +1,15 @@
+readout 00:28:59
+-rwxrwxrwx 1 trey admin 1074547234 Sep  8 21:38 harness-nightly-20260909T022322Z.dump.age
+-rwxrwxrwx 1 trey admin        434 Sep  8 21:27 harness-nightly-20260909T022322Z.meta.json
+-rwxrwxrwx 1 trey admin          0 Sep  8 21:38 harness-nightly-20260909T022322Z.ok
+drill | 5 | drill | babf8d3 | ok | t | {"decrypt_ok": true}
+exec | 00:00:15.203674 | 4433 | 13 | 2633 | 4303 | 153 | 4.4 | 
+loop_ms_20m | 17 | 4303.000000 | 3970.2
+tape_lag_20m | 0.000000
+batch_min_20m | 20000.000000
+ERROR:  column "name" does not exist
+LINE 1: select 'checks', name, status, ran_at from check_results whe...
+                         ^
+0
+
+[exited with code 0]
