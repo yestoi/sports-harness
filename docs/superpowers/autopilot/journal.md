@@ -1097,3 +1097,10 @@ Times are America/Chicago.
 - Waves: 1 T2 T3 T4 T5 T8 T10; 2 T1 T7; 3 T6 T14; 4 T9 T11 T12 T13 T15; 5 T16; 6 T17; 7 T18; 8 T19 (runbooks, verify.md rows, the phase deploy: `make deploy-nas`, full recipe, outside the game window).
 - Carried forward: none. Roadmap 4.5 status -> planned.
 - Next: Unit: phase, branch `phase45-dashboard-surfaces` from `main`, wave 1 with three implementers at a time (ceiling).
+
+## 85. phase start - phase 4.5 dashboard surfaces - 2026-09-09 12:23 CT
+- Orient: rule 5 (roadmap 4.5 `planned`, no unmet gate). Plan `docs/superpowers/plans/2026-09-09-phase4.5-dashboard-surfaces.md` (19 tasks); branch `phase45-dashboard-surfaces` from `main` fd84355; SDD workspace `.superpowers/sdd/2026-09-09-phase4.5-dashboard-surfaces/` (ledger `progress.md` with the pre-flight scan and three rulings).
+- Expected: 19 tasks in 8 waves: 1 T2 T3 T4 T5 T8 T10; 2 T1 T7; 3 T6 T14; 4 T9 T11 T12 T13 T15; 5 T16; 6 T17; 7 T18; 8 T19 (verify.md, runbooks, the phase deploy by `make deploy-nas` from `main` outside the game window; tonight's 19:20 CT kickoff closes the window 18:00-23:20 CT).
+- Model allocation per the plan: opus for T1 T5 T6 T9 T11 T12 T16 T17; sonnet for the rest; T3's reviewer opus (venue path); task reviewers opus under harness/venues, execution, recorder, pricing, settlement, sonnet elsewhere (the dashboard and report builders: sonnet reviewers unless the diff is judgment-heavy).
+- Rulings (ledger): the wave map governs over the plan header's stale "Wave 1" sentence; three implementers at a time, T5 T8 T4 first; T12 shares wave 4; briefs extracted by heading. Every commit during the phase lands on the phase branch (main frozen until the ff merge).
+- Next: wave 1 dispatch 12:24 CT (T5 opus, T8 sonnet, T4 sonnet in `../sports-wt/phase45-t{5,8,4}-*`).
