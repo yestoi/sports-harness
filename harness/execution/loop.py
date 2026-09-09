@@ -50,6 +50,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from psycopg.errors import QueryCanceled
 from sqlalchemy.orm import Session
 
 from harness import execution, telemetry
@@ -203,6 +204,11 @@ class Executor:
         #: cannot anchor yet -- R10's `no_book` case, retried every loop.
         self.books: dict[str, BookState | None] = {}
         self._dirty_tickers: set[str] = set()
+        #: Fix 26: the delta batch size in force per ticker, absent meaning `DELTA_BATCH_LIMIT`.
+        #: It shrinks on a statement timeout and doubles back on a full read, so a cold ticker
+        #: asks for what it can actually finish and a warm one returns to the cap in a few
+        #: loops. Only tickers with a working order are kept; the rest are dropped each loop.
+        self._delta_batch: dict[str, int] = {}
         self._durations: deque[int] = deque(maxlen=DURATION_WINDOW)
         self._last_mono: float | None = None
         # Task 12b telemetry: samplers keyed on this executor's own injected monotonic clock
@@ -320,6 +326,13 @@ class Executor:
             session.close()
         return stats
 
+    def _tape_batch_min(self) -> int:
+        """The smallest per-ticker delta batch in force, `DELTA_BATCH_LIMIT` when none is
+        shrunk (fix 26). Taken from the executor's own state rather than from the heartbeat, so
+        it reports the size the next read will use even on a step that failed before `_tape`."""
+        return min(store.DELTA_BATCH_LIMIT,
+                   min(self._delta_batch.values(), default=store.DELTA_BATCH_LIMIT))
+
     def _write_metric_batch(self, session: Session, now: datetime, stats: ExecStats,
                             heartbeat: dict, open_orders_count: int) -> bool:
         """`exec.*` metric_samples, once every `metric_sample_s` (Sampler("metrics")), never
@@ -341,6 +354,11 @@ class Executor:
             # It is not an error and never touches `last_error`, whose null the verify row
             # depends on.
             ("exec.tape_lag_tickers", len(heartbeat["tape_lag"]), {}),
+            # Fix 26: the smallest delta batch any ticker is reading with, `DELTA_BATCH_LIMIT`
+            # when none has been shrunk. Read beside `tape_lag_tickers` it separates the two
+            # ways of being behind: lag with the batch at the cap is a backlog being walked
+            # off, lag with the batch on the floor is a ticker whose reads keep timing out.
+            ("exec.tape_batch_min", self._tape_batch_min(), {}),
             ("exec.intents_considered", acc.intents_considered, {}),
             ("exec.placed", acc.placed, {}),
             ("exec.filled_contracts", acc.filled_contracts, {}),
@@ -667,9 +685,16 @@ class Executor:
         walk past its deadline, but `has_print` reads the whole print list.
 
         Returns the tape, the set of tickers whose read failed, and the set whose delta read
-        filled `DELTA_BATCH_LIMIT` and so is still behind the tape. Each ticker is read inside
-        its own savepoint, so one ticker's statement timeout rolls back to the savepoint and
-        leaves this transaction -- and every cursor already advanced in this loop -- intact.
+        came back full and so is still behind the tape. Each ticker is read inside its own
+        savepoint, so one ticker's statement timeout rolls back to the savepoint and leaves
+        this transaction -- and every cursor already advanced in this loop -- intact.
+
+        How full is full is per ticker and adapts (fix 26): the read asks for
+        `self._delta_batch[ticker]` rows, quartered down to `DELTA_BATCH_FLOOR` every time the
+        engine's 10 s statement timeout kills the read and doubled back up to
+        `DELTA_BATCH_LIMIT` every time it comes back full. Cold pages, not row count, are what
+        the timeout is really about, so the size a ticker can finish is the only knob that
+        decides whether it makes any progress at all.
         """
         windows: dict[str, tuple[datetime, int | None]] = {}
         for row in working:
@@ -690,10 +715,12 @@ class Executor:
         at = self._at(now)
         for ticker, (placed_at, cursor) in windows.items():
             lower = placed_at - store.PRINT_LOOKBACK
+            limit = self._delta_batch.get(ticker, store.DELTA_BATCH_LIMIT)
             try:
                 with session.begin_nested():
                     prints = store.load_prints(session, ticker, lower, at)
-                    batch = store.load_deltas(session, ticker, cursor or 0, lower, at)
+                    batch = store.load_deltas(session, ticker, cursor or 0, lower, at,
+                                              limit=limit)
             except Exception as exc:  # noqa: BLE001 - one ticker, not the step
                 # The first failure of a loop carries its traceback; the rest of a loop's
                 # failures are almost always the same one repeated, and 55 tracebacks a loop
@@ -701,6 +728,18 @@ class Executor:
                 log.warning("tape read failed for %s: %s", ticker, exc, exc_info=not unread)
                 unread.add(ticker)
                 _note_error(heartbeat, f"tape {ticker}: {type(exc).__name__}: {exc}")
+                if _is_statement_timeout(exc):
+                    # Fix 26: the batch, not the plan, is what this ticker cannot afford. A
+                    # cursor a million ids behind reads cold pages, and 20 000 rows of them do
+                    # not fit in 10 s, so the read dies, the cursor never moves and the watch
+                    # never ends. Quartering converges in a handful of loops (20000 -> 250 in
+                    # five) rather than crawling down one halving at a time, and the floor is
+                    # where it stops: below `DELTA_BATCH_FLOOR` the ticker could not walk off
+                    # its backlog before the market settled even if every read succeeded.
+                    shrunk = max(store.DELTA_BATCH_FLOOR, limit // 4)
+                    self._delta_batch[ticker] = shrunk
+                    log.warning("tape batch for %s shrunk to %d after a statement timeout",
+                                ticker, shrunk)
                 continue
             deltas = batch.deltas
             if batch.truncated:
@@ -711,6 +750,12 @@ class Executor:
                 # advances nothing at all, which is the one case that could sit still forever
                 # and so is exactly the case that must be visible (fix 22 round 1, minor).
                 lagging.add(ticker)
+                # Fix 26: this size came back full and inside the timeout, which is evidence
+                # the ticker can afford more, so it doubles -- capped, never past
+                # `DELTA_BATCH_LIMIT` -- and a ticker warmed by its own catch-up reads climbs
+                # back to the cap in a few loops instead of dragging a 250-row batch through
+                # the rest of the game.
+                self._delta_batch[ticker] = min(store.DELTA_BATCH_LIMIT, limit * 2)
                 if deltas:
                     # Prints past the last delta consumed are held back rather than fed early:
                     # a print applied ahead of the deltas that belong with it is applied
@@ -726,7 +771,17 @@ class Executor:
                 else:
                     log.warning("tape batch for %s filled DELTA_BATCH_LIMIT but yielded no "
                                 "usable delta; its cursor cannot advance this loop", ticker)
+            elif limit >= store.DELTA_BATCH_LIMIT:
+                # Caught up at the full cap: there is nothing left to remember about this
+                # ticker, so it stops costing an entry (fix 26). A shrunk ticker that read
+                # short keeps its size -- one short read says the backlog is gone, not that the
+                # pages are warm, and the next full read is what earns the size back.
+                self._delta_batch.pop(ticker, None)
             out[ticker] = (prints, deltas)
+        for stale in set(self._delta_batch) - set(windows):
+            # A ticker with no working order left is not going to be read again, and its size
+            # would otherwise sit in this dict for the life of the process (fix 26).
+            del self._delta_batch[stale]
         if lagging:
             # INFO, not ERROR: the executor is behind the tape and catching up by design. The
             # count is `exec.tape_lag_tickers`; the names live here (fix 22 round 1, I1).
@@ -1173,6 +1228,27 @@ class Executor:
             with self._factory() as probe:
                 self._engine = probe.get_bind()
         return self._engine
+
+
+def _is_statement_timeout(exc: BaseException) -> bool:
+    """Is this failure the engine's own statement timeout, rather than anything else?
+
+    The executor's engine carries `EXEC_STATEMENT_TIMEOUT_MS = 10_000`, and PostgreSQL reports
+    hitting it as SQLSTATE 57014, which psycopg raises as `QueryCanceled` and SQLAlchemy hands
+    on wrapped in `OperationalError` with the driver's exception on `.orig`. Both shapes are
+    accepted, and the class -- not the message -- is what decides: the wording of "canceling
+    statement due to statement timeout" belongs to the server's locale and version, and a
+    substring match on it would silently stop recognising the one failure this fix reacts to.
+
+    Everything else (a programming error, a serialization failure, a dropped connection) is not
+    a batch that was too big to finish, so it must leave the batch size alone (fix 26).
+    """
+    for err in (exc, getattr(exc, "orig", None)):
+        if err is None:
+            continue
+        if isinstance(err, QueryCanceled) or getattr(err, "sqlstate", None) == "57014":
+            return True
+    return False
 
 
 def _note_error(heartbeat: dict, message: str) -> None:

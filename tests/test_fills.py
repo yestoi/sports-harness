@@ -60,7 +60,7 @@ def run(o, prints=(), deltas=(), bk=None, state=None, fill_method="queue_model",
 
 
 def test_executor_version_is_bumped_for_fills():
-    assert EXECUTOR_VERSION == "4.3"
+    assert EXECUTOR_VERSION == "4.4"
 
 
 def test_price_on_side_and_hits():

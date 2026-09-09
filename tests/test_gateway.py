@@ -125,7 +125,7 @@ def test_executor_in_live_mode_cannot_build_a_gateway(env_settings, db_session):
 
 
 def test_executor_version_bumped():
-    assert EXECUTOR_VERSION == "4.3"      # Task 11 moved it to 4.2, fix 22 to 4.3
+    assert EXECUTOR_VERSION == "4.4"      # Task 11 moved it to 4.2, fix 22 to 4.3, fix 26 to 4.4
 
 
 # --- PaperGateway ---------------------------------------------------------------------

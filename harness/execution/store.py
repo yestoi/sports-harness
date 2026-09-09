@@ -7,9 +7,10 @@ Two rules shape this module and both come from the addendum:
   insert, so the returned row -- not the row count -- is what says whether anything was
   written, and only a returned row moves a counter or a running total. A step that dies
   half-way and is retried therefore writes each row exactly once.
-* **Tape access.** The live path reads deltas by `id` alone (`id > cursor`, capped at
-  `DELTA_BATCH_LIMIT` rows); `id` is the recorder's insertion order and the only monotone
-  quantity on the tape, so a cursor bounds the scan by itself and a `ts` predicate beside it
+* **Tape access.** The live path reads deltas by `id` alone (`id > cursor`, capped at the
+  caller's `limit`, `DELTA_BATCH_LIMIT` by default and as low as `DELTA_BATCH_FLOOR` for a
+  ticker whose reads keep timing out, fix 26); `id` is the recorder's insertion order and the
+  only monotone quantity on the tape, so a cursor bounds the scan by itself and a `ts` beside it
   only buys the planner a second index to AND (fix 22). The `ts >= lower` bound survives on the
   first read of a ticker, where there is no cursor yet. Prints have no cursor at all -- the
   executor rescans them from `placed_at - 60 s` every loop and the simulator's print watermark
@@ -404,6 +405,15 @@ def load_prints(session: Session, ticker: str, lower: datetime,
 #: ticker, so the live path never truncates in steady state; this is the catch-up bound.
 DELTA_BATCH_LIMIT = 20_000
 
+#: The smallest that cap is ever allowed to shrink to when a ticker's read keeps timing out
+#: (fix 26). It is a measurement, not a guess: on the NAS under I/O pressure (a video transcode
+#: holding `/proc/pressure/io` full at 60-70 %) a 500-row read at a cursor a million ids behind
+#: cost 183 disk page reads, so a few hundred rows is what a cold read can finish inside the
+#: executor engine's `EXEC_STATEMENT_TIMEOUT_MS = 10_000`; 20 000 needs thousands of pages and
+#: cannot. Below this floor a lagging ticker would never walk off its backlog before its market
+#: settled, so the floor is where shrinking stops and the read is simply allowed to fail.
+DELTA_BATCH_FLOOR = 250
+
 
 class DeltaBatch(NamedTuple):
     """One live delta read. `truncated` is "the limit was reached, so assume more to come" --
@@ -452,19 +462,21 @@ def _tape_deltas(rows) -> list[TapeDelta]:
 
 
 def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
-                at: datetime | None = None) -> DeltaBatch:
+                at: datetime | None = None, limit: int = DELTA_BATCH_LIMIT) -> DeltaBatch:
     """Deltas after `cursor`; `at` is the replay path's upper bound.
 
     Live orders by `id` with no upper bound -- the head is where the loop's clock is -- and is
-    bounded to `DELTA_BATCH_LIMIT` rows, which is what makes a backlog cost several bounded
-    loops instead of one unbounded read. The `ts >= lower` bound is carried only by the first
+    bounded to `limit` rows (`DELTA_BATCH_LIMIT` unless the caller has shrunk this ticker's
+    batch after a timeout, fix 26), which is what makes a backlog cost several bounded loops
+    instead of one unbounded read. The `ts >= lower` bound is carried only by the first
     read of a ticker (`cursor = 0`), where it is the only bound there is; once a cursor exists
     `id > cursor` is strictly stronger and the `ts` predicate only costs the planner a second
     index (fix 22).
 
     A replay executor stops at its own grid instant and orders by `(ts, id)`, which is the same
     order `_merge_events` re-imposes anyway, so the two paths hand the simulator the same
-    sequence. That path keeps both bounds and takes no limit: it reads a closed range.
+    sequence. That path keeps both bounds and takes no limit at all: it reads a closed range,
+    at its own pace, so `limit` is not its business either.
     """
     if at is not None:
         rows = session.execute(
@@ -472,12 +484,14 @@ def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
         return DeltaBatch(_tape_deltas(rows), False)
     if cursor > 0:
         rows = session.execute(
-            _DELTAS, {"t": ticker, "cursor": cursor, "limit": DELTA_BATCH_LIMIT}).all()
+            _DELTAS, {"t": ticker, "cursor": cursor, "limit": limit}).all()
     else:
         rows = session.execute(
             _DELTAS_FIRST,
-            {"t": ticker, "cursor": cursor, "lower": lower, "limit": DELTA_BATCH_LIMIT}).all()
-    return DeltaBatch(_tape_deltas(rows), len(rows) >= DELTA_BATCH_LIMIT)
+            {"t": ticker, "cursor": cursor, "lower": lower, "limit": limit}).all()
+    # Truncation is measured against the limit this read actually ran with, never against the
+    # cap: a shrunk batch that came back full is exactly the ticker still behind the tape.
+    return DeltaBatch(_tape_deltas(rows), len(rows) >= limit)
 
 
 # --- exposure -------------------------------------------------------------------------

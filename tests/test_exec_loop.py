@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from psycopg.errors import QueryCanceled, UndefinedColumn
 from sqlalchemy import event, func, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker
 from typer.testing import CliRunner
 
@@ -175,7 +177,7 @@ def fills_of(session, order_id=None, method=None):
 
 
 def test_executor_version_is_bumped_for_the_loop():
-    assert EXECUTOR_VERSION == "4.3"
+    assert EXECUTOR_VERSION == "4.4"
 
 
 # --- the gateway seam -----------------------------------------------------------------
@@ -1162,6 +1164,236 @@ def test_a_failed_tape_read_costs_one_ticker_and_keeps_every_other_cursor(
     executor.step()
     refresh(db_session)
     assert orders_of(db_session, T3)[0].filled_contracts == SIZE3
+
+
+# --- fix 26: the delta batch adapts to what a read can finish inside the timeout ------------
+
+
+def _statement_timeout() -> OperationalError:
+    """The engine's 10 s statement timeout exactly as it reaches the loop: psycopg raises
+    `QueryCanceled` (SQLSTATE 57014) and SQLAlchemy hands it on wrapped in `OperationalError`
+    with the driver's exception on `.orig`. Both are constructible without a connection, so no
+    test has to hold a real statement open for ten seconds to produce the failure that matters.
+    """
+    return OperationalError("select ... from orderbook_events", {},
+                            QueryCanceled("canceling statement due to statement timeout"))
+
+
+def _programming_error() -> ProgrammingError:
+    """A failure that is not the timeout: the batch size is not what is wrong with it."""
+    return ProgrammingError("select nope from orderbook_events", {},
+                            UndefinedColumn('column "nope" does not exist'))
+
+
+def _two_working_tickers(env_settings, db_session, clock):
+    """One loop run, T2 and T3 both placed and working, each with a book under it."""
+    keep_only(db_session, {VM2, VM3})
+    signal3 = db_session.query(Signal).filter_by(venue_market_id=VM3).one()
+    signal3.decision, signal3.rejection_reason = "candidate", None
+    _book2(db_session, NOW - timedelta(seconds=5))
+    _book3(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert len(db_session.query(Order).all()) == 2
+    return executor
+
+
+def _read_tape(executor, db_session, clock):
+    """One `_tape` pass over every working order, the way a step makes it."""
+    return executor._tape(db_session, store.working_orders(db_session, False), clock.now,
+                          {"last_error": None, "tape_lag": []})
+
+
+def test_a_statement_timeout_shrinks_that_tickers_batch_alone_and_stops_at_the_floor(
+        env_settings, db_session, world, monkeypatch):
+    """Fix 26 (a). On the NAS five tickers a million ids behind timed out every loop forever:
+    20 000 rows of cold pages cannot be read in 10 s, so the cursor never moved and the watch
+    never ended. The batch is quartered on each timeout until it is small enough to finish, and
+    stops at `DELTA_BATCH_FLOOR` -- below that the ticker could not walk off its backlog before
+    the market settled even if every read succeeded. It is per ticker: the one that timed out
+    is the one that reads less, and a healthy ticker beside it keeps the full cap.
+    """
+    clock = Clock(NOW)
+    executor = _two_working_tickers(env_settings, db_session, clock)
+    real = store.load_deltas
+    asked: list[tuple[str, int]] = []
+
+    def explode(session, ticker, *args, **kwargs):
+        asked.append((ticker, kwargs["limit"]))
+        if ticker == T3:
+            raise _statement_timeout()
+        return real(session, ticker, *args, **kwargs)
+
+    monkeypatch.setattr(store, "load_deltas", explode)
+    sizes = []
+    for _ in range(6):
+        _, unread, _ = _read_tape(executor, db_session, clock)
+        assert unread == {T3}
+        sizes.append(executor._delta_batch[T3])
+
+    assert sizes == [5_000, 1_250, 312, 250, 250, 250]
+    assert store.DELTA_BATCH_FLOOR == 250
+    # Each read asked for what the previous timeout left behind, and the floor is a floor.
+    assert [n for t, n in asked if t == T3] == [20_000, 5_000, 1_250, 312, 250, 250]
+    # T3's trouble never touched T2, which read cleanly at the cap and carries no entry at all.
+    assert T2 not in executor._delta_batch
+    assert [n for t, n in asked if t == T2] == [store.DELTA_BATCH_LIMIT] * 6
+
+
+def test_a_non_timeout_failure_leaves_the_batch_size_alone(env_settings, db_session, world,
+                                                           monkeypatch):
+    """Fix 26 (e). A bad statement, a dropped connection or a serialization failure is not a
+    read that was too big to finish, and shrinking on it would quietly cripple a ticker whose
+    reads were never the problem. The failure is still recorded exactly as before."""
+    clock = Clock(NOW)
+    executor = _two_working_tickers(env_settings, db_session, clock)
+    real = store.load_deltas
+
+    def explode(session, ticker, *args, **kwargs):
+        if ticker == T3:
+            raise _programming_error()
+        return real(session, ticker, *args, **kwargs)
+
+    monkeypatch.setattr(store, "load_deltas", explode)
+    heartbeat = {"last_error": None, "tape_lag": []}
+    _, unread, _ = executor._tape(db_session, store.working_orders(db_session, False),
+                                  clock.now, heartbeat)
+    assert unread == {T3}
+    assert executor._delta_batch == {}
+    assert "ProgrammingError" in heartbeat["last_error"]
+
+    # And a ticker already shrunk by a real timeout keeps the size it earned.
+    executor._delta_batch[T3] = 250
+    executor._tape(db_session, store.working_orders(db_session, False), clock.now,
+                   {"last_error": None, "tape_lag": []})
+    assert executor._delta_batch == {T3: 250}
+
+
+def test_a_full_batch_doubles_a_shrunk_ticker_back_and_never_past_the_cap(
+        env_settings, db_session, world, monkeypatch):
+    """Fix 26 (b). Once the pages are warm the same read costs 6 ms, so a ticker held at the
+    floor for the rest of a game would walk its backlog off far slower than it could. Every
+    read that comes back full -- proof this size finished inside the timeout -- doubles it, so
+    a recovered ticker is back at `DELTA_BATCH_LIMIT` within a few loops and stops there."""
+    clock = Clock(NOW)
+    executor = _two_working_tickers(env_settings, db_session, clock)
+    real = store.load_deltas
+    asked: list[tuple[str, int]] = []
+
+    def full(session, ticker, *args, **kwargs):
+        asked.append((ticker, kwargs["limit"]))
+        # The rows are the real ones; only the "there is more behind this" flag is forced, so
+        # the doubling is exercised without seeding 250 deltas per loop.
+        return store.DeltaBatch(real(session, ticker, *args, **kwargs).deltas, True)
+
+    monkeypatch.setattr(store, "load_deltas", full)
+    executor._delta_batch[T3] = store.DELTA_BATCH_FLOOR
+    sizes = []
+    for _ in range(4):
+        _, _, lagging = _read_tape(executor, db_session, clock)
+        assert T3 in lagging
+        sizes.append(executor._delta_batch[T3])
+    assert sizes == [500, 1_000, 2_000, 4_000]
+    assert [n for t, n in asked if t == T3] == [250, 500, 1_000, 2_000]
+
+    # The cap holds: a full batch one doubling away from it lands on it, not past it.
+    executor._delta_batch[T3] = store.DELTA_BATCH_LIMIT - 1
+    _read_tape(executor, db_session, clock)
+    assert executor._delta_batch[T3] == store.DELTA_BATCH_LIMIT
+    _read_tape(executor, db_session, clock)
+    assert executor._delta_batch[T3] == store.DELTA_BATCH_LIMIT
+
+
+def test_a_caught_up_ticker_at_the_cap_and_a_settled_one_stop_costing_an_entry(
+        env_settings, db_session, world, monkeypatch):
+    """Fix 26: the dict is bounded. A ticker reading short at the full cap has nothing left to
+    remember, and one with no working order will not be read again at all -- a season of
+    tickers would otherwise accumulate in a process that never restarts."""
+    clock = Clock(NOW)
+    executor = _two_working_tickers(env_settings, db_session, clock)
+    executor._delta_batch = {T2: store.DELTA_BATCH_LIMIT, T3: 250, "KXNFL-P-9": 250}
+
+    _read_tape(executor, db_session, clock)
+    # T2 read short at the cap, so its entry is dropped; T3 keeps the size it earned, because
+    # one short read says its backlog is gone, not that its pages are warm; the ticker with no
+    # working order is gone.
+    assert executor._delta_batch == {T3: 250}
+
+
+def _batch_min_samples(session):
+    """`exec.tape_batch_min` in write order, as plain ints."""
+    return [int(r.value) for r in session.query(MetricSample)
+            .filter_by(source="exec", name="exec.tape_batch_min")
+            .order_by(MetricSample.id).all()]
+
+
+def test_tape_batch_min_reports_the_smallest_batch_in_force(env_settings, db_session, world,
+                                                            monkeypatch):
+    """Fix 26 (d). Beside `exec.tape_lag_tickers` this separates the two ways of being behind:
+    lag at the cap is a backlog being walked off, lag on the floor is a ticker whose reads keep
+    timing out. A fresh executor reports the cap, because nothing is shrunk."""
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert _batch_min_samples(db_session) == [store.DELTA_BATCH_LIMIT]
+
+    def explode(session, ticker, *args, **kwargs):
+        raise _statement_timeout()
+
+    monkeypatch.setattr(store, "load_deltas", explode)
+    # `metric_sample_s = 60`: the fourth loop from here is the one that writes the next batch,
+    # and four timeouts have taken the batch 20 000 -> 5 000 -> 1 250 -> 312 -> the floor by
+    # then. The shrink happens in the step's own tape pass, so the batch it reports is the one
+    # this loop settled on, not the one it started with.
+    for _ in range(4):
+        clock.advance(15)
+        executor.step()
+        refresh(db_session)
+    assert executor._delta_batch == {T2: store.DELTA_BATCH_FLOOR}
+    assert _batch_min_samples(db_session) == [store.DELTA_BATCH_LIMIT, 250]
+
+    # The smallest in force, not the newest: a second ticker on the floor is what is reported.
+    executor._delta_batch = {T2: 1_000, T3: store.DELTA_BATCH_FLOOR}
+    assert executor._tape_batch_min() == 250
+    executor._delta_batch = {}
+    assert executor._tape_batch_min() == store.DELTA_BATCH_LIMIT
+
+
+def test_load_deltas_honours_the_limit_it_is_given(env_settings, db_session, world):
+    """Fix 26 (c). The cap is the caller's to choose, `truncated` is measured against the limit
+    the read actually ran with, and the default is still `DELTA_BATCH_LIMIT`."""
+    _book2(db_session, NOW - timedelta(seconds=5))
+    for n in range(1, 5):
+        _delta(db_session, T2, NOW + timedelta(seconds=n), "yes", "0.35", "-1.00", seq=1 + n)
+    db_session.commit()
+    lower = NOW - timedelta(hours=9)
+
+    with capture_sql(db_session) as seen:
+        batch = store.load_deltas(db_session, T2, 0, lower, limit=2)
+    body, params = _delta_read(seen)
+    assert params["limit"] == 2
+    assert len(batch.deltas) == 2
+    assert batch.truncated is True
+
+    with capture_sql(db_session) as seen:
+        batch = store.load_deltas(db_session, T2, 0, lower, limit=500)
+    assert _delta_read(seen)[1]["limit"] == 500
+    assert 0 < len(batch.deltas) < 500
+    assert batch.truncated is False
+
+    with capture_sql(db_session) as seen:
+        store.load_deltas(db_session, T2, 0, lower)
+    assert _delta_read(seen)[1]["limit"] == store.DELTA_BATCH_LIMIT
+
+    # The replay path still reads a closed range and takes no limit at all.
+    with capture_sql(db_session) as seen:
+        assert store.load_deltas(db_session, T2, 0, lower, at=NOW, limit=2).truncated is False
+    assert "limit" not in _delta_read(seen)[0]
 
 
 def test_a_finished_track_cursor_does_not_drag_the_ticker_scan_back(env_settings, db_session,
