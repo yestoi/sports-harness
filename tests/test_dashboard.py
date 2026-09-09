@@ -2,6 +2,7 @@ import re
 import uuid
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import event, insert
@@ -995,3 +996,17 @@ def test_unmatched_markets_no_statement_against_venue_quotes_when_none_unmatched
 
     assert result == []
     assert "venue_quotes" not in "\n".join(statements).lower()
+
+
+# --- Phase 4.5 (addendum §0.9): the legacy page's two thresholds move to harness.health -------
+
+def test_the_legacy_page_imports_its_two_thresholds_and_keeps_their_values():
+    """The legacy page is frozen: same numbers, one home (addendum §0.9)."""
+    from harness.dashboard import app as dash
+    from harness import health
+
+    assert dash.HEARTBEAT_RED_S == health.HEARTBEAT_WATCH_S == 60
+    assert dash.WS_EVENT_RED_S == health.WS_EVENT_BROKEN_S == 120
+    source = (Path(dash.__file__)).read_text()
+    assert "HEARTBEAT_RED_S = 60" not in source
+    assert "WS_EVENT_RED_S = 120" not in source

@@ -24,7 +24,7 @@ from harness.ops.housekeeping import (
     housekeeping_stage,
     match_rates,
     record_housekeeping_metrics,
-    _host_disk_free_gb,
+    _host_disk_gb,
     _host_mem_available_mb,
     _table_sizes_gb,
 )
@@ -188,11 +188,11 @@ def test_table_sizes_roll_up_partition_children_to_the_logical_table_name(db_ses
 
 
 def test_housekeeping_host_metrics_skip_when_paths_absent(db_session):
-    """Ruling 3: `host.disk_free_gb` (no `/pgdata-ro` mount) and `host.mem_available_mb` (no
-    `/proc/meminfo`, i.e. every Mac and every test) are skipped, not errors -- the rest of the
-    batch (db.*, match.*) still writes."""
-    mount, note = _host_disk_free_gb("/no/such/mount")
-    assert mount is None and note
+    """Ruling 3: `host.disk_free_gb`/`host.disk_total_gb` (no `/pgdata-ro` mount) and
+    `host.mem_available_mb` (no `/proc/meminfo`, i.e. every Mac and every test) are skipped, not
+    errors -- the rest of the batch (db.*, match.*) still writes."""
+    free, total, note = _host_disk_gb("/no/such/mount")
+    assert free is None and total is None and note
 
     mem, mem_note = _host_mem_available_mb()
     # This suite runs on the Mac (and any CI without /proc/meminfo); on real Linux this would
@@ -208,9 +208,43 @@ def test_housekeeping_host_metrics_skip_when_paths_absent(db_session):
     names = {r.name for r in db_session.query(MetricSample).filter_by(source="housekeeping").all()}
     assert "db.size_gb" in names
     assert "host.disk_free_gb" not in names  # skipped: no mount
+    assert "host.disk_total_gb" not in names  # skipped together (ruling A-C2)
     if not os.path.exists("/proc/meminfo"):
         assert "host.mem_available_mb" not in names
     assert n == db_session.query(MetricSample).filter_by(source="housekeeping").count()
+
+
+def test_disk_total_is_recorded_beside_disk_free(db_session, monkeypatch):
+    """A percentage is not derivable from free gigabytes alone (ruling A-C2). One additive
+    metric name from the same statvfs call."""
+    from harness.ops import housekeeping as hk
+
+    monkeypatch.setattr(hk, "_host_disk_gb", lambda mount: (250.0, 1000.0, None))
+    now = datetime.now(timezone.utc)
+    hk.record_housekeeping_metrics(db_session, now, {"size_gb": 12.5, "tables_gb": {}},
+                                   {}, pg_data_mount="/pgdata-ro")
+    db_session.flush()
+
+    names = {r.name: float(r.value) for r in db_session.query(MetricSample).all()}
+    assert names["host.disk_free_gb"] == 250.0
+    assert names["host.disk_total_gb"] == 1000.0
+
+
+def test_neither_disk_metric_is_written_when_the_mount_is_absent(db_session, monkeypatch):
+    """Ruling 3: the Mac and every test have no such mount, and that is a skip, not an error --
+    and it must skip *both*, so the Pulse disk rule reads `not evaluated` rather than dividing
+    by a total it does not have."""
+    from harness.ops import housekeeping as hk
+
+    monkeypatch.setattr(hk, "_host_disk_gb", lambda mount: (None, None, "mount absent"))
+    now = datetime.now(timezone.utc)
+    hk.record_housekeeping_metrics(db_session, now, {"size_gb": 12.5, "tables_gb": {}},
+                                   {}, pg_data_mount="/pgdata-ro")
+    db_session.flush()
+
+    names = {r.name for r in db_session.query(MetricSample).all()}
+    assert "host.disk_free_gb" not in names
+    assert "host.disk_total_gb" not in names
 
 
 def test_housekeeping_stage_writes_metrics_and_check_results(db_session, env_settings):

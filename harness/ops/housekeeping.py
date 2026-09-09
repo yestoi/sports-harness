@@ -152,14 +152,24 @@ def match_rates(session: Session, now: datetime) -> dict[str, dict]:
     return out
 
 
-def _host_disk_free_gb(mount) -> tuple[float | None, str | None]:
-    """`os.statvfs` on the Postgres data mount; `skip` with a note when it is absent (ruling 3:
-    the Mac and every test have no such mount, never an error)."""
+def _host_disk_gb(mount) -> tuple[float | None, float | None, str | None]:
+    """`os.statvfs` on the Postgres data mount, as (free_gb, total_gb, note).
+
+    The total is what makes Pulse's 25 % rule (harness.health.DISK_FREE_MIN_FRACTION) a number
+    rather than an opinion: free gigabytes alone cannot be turned into a share (ruling A-C2).
+    Both come from one statvfs, so there is no window in which they disagree.
+
+    `skip` with a note when the mount is absent (ruling 3: the Mac and every test have no such
+    mount, and that is never an error). Both are skipped together: a free reading with no total
+    would let the rule divide by nothing.
+    """
     try:
         st = os.statvfs(mount)
     except (FileNotFoundError, NotADirectoryError, OSError):
-        return None, "mount absent"
-    return (st.f_bavail * st.f_frsize) / BYTES_PER_GB, None
+        return None, None, "mount absent"
+    return ((st.f_bavail * st.f_frsize) / BYTES_PER_GB,
+            (st.f_blocks * st.f_frsize) / BYTES_PER_GB,
+            None)
 
 
 def _host_mem_available_mb() -> tuple[float | None, str | None]:
@@ -185,11 +195,12 @@ def record_housekeeping_metrics(session: Session, now: datetime, counts: dict,
         samples.append(("db.table_gb", gb, {"table": table}))
     if counts.get("growth_gb_per_day") is not None:
         samples.append(("db.growth_gb_per_day", counts["growth_gb_per_day"], {}))
-    disk_free_gb, disk_note = _host_disk_free_gb(pg_data_mount)
-    if disk_free_gb is not None:
+    disk_free_gb, disk_total_gb, disk_note = _host_disk_gb(pg_data_mount)
+    if disk_free_gb is not None and disk_total_gb is not None:
         samples.append(("host.disk_free_gb", disk_free_gb, {}))
+        samples.append(("host.disk_total_gb", disk_total_gb, {}))
     else:
-        log.info("host.disk_free_gb skipped: %s", disk_note)
+        log.info("host.disk_free_gb/host.disk_total_gb skipped: %s", disk_note)
     mem_mb, mem_note = _host_mem_available_mb()
     if mem_mb is not None:
         samples.append(("host.mem_available_mb", mem_mb, {}))

@@ -29,7 +29,7 @@ from harness.db.models import (ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Le
                                 Order, OrderbookEvent, OrderEvent, RawResponse, Run, Signal, StrategyVariant, Team,
                                 VenueMarket, VenueQuote)
 from harness.execution.plan import POST_ONLY_REJECT
-from harness.health import compute_health
+from harness.health import HEARTBEAT_WATCH_S, WS_EVENT_BROKEN_S, compute_health
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_model_for
 from harness.settlement.settle import stale_unsettled
 
@@ -47,8 +47,12 @@ REASONS_LIMIT = 10
 SPORT_PREFIXES = {"nfl": "KXNFL", "ncaaf": "KXNCAAF"}
 
 # --- Task 12: executor, orders/fills, P&L, candidates, skips, database ceiling, data quality --
-HEARTBEAT_RED_S = 60  # executor heartbeat age turns red past this many seconds
-WS_EVENT_RED_S = 120  # the executor's own ws_last_event_at turns red past this many seconds
+# Phase 4.5 (addendum §0.9): the two numbers moved to harness/health.py so this page and the
+# Pulse surface cannot disagree about the same machine. The values are unchanged -- this page
+# turns the heartbeat red at one minute and the WS event red at two -- and the names stay so the
+# template and this module's own tests are untouched.
+HEARTBEAT_RED_S = HEARTBEAT_WATCH_S   # 60
+WS_EVENT_RED_S = WS_EVENT_BROKEN_S    # 120
 OPEN_ORDERS_LIMIT = 100
 FILLS_TODAY_LIMIT = 200
 EXPOSURE_LIMIT = 500  # positions is already one row per (variant, ticker, side); still bounded

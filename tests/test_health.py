@@ -154,3 +154,30 @@ def test_health_venue_limits_survives_a_newer_skipped_heartbeat(db_session):
     _run_with_notes(db_session, {"venue_limits": None}, status="skipped")
     body, _ = compute_health(factory, NOW, credits_budget=5_000_000)
     assert body["venue_limits"]["tier"] == "basic"
+
+
+# --- Phase 4.5 (addendum §0.9, spec §1.1): Pulse's eight thresholds, one home -----------------
+
+def test_every_pulse_threshold_has_one_home_here():
+    """Spec §1.1: a threshold that colours anything is imported from the code that enforces it.
+    Pulse's eight live here beside STALE_AFTER_S and CREDITS_LOW_FRACTION, and nothing restates
+    them -- not the legacy page, not a builder, not the front end."""
+    from harness import health
+
+    assert health.HEARTBEAT_WATCH_S == 60
+    assert health.HEARTBEAT_BROKEN_S == 120
+    assert health.WS_EVENT_WATCH_S == 60
+    assert health.WS_EVENT_BROKEN_S == 120
+    assert health.CREDITS_WATCH_FRACTION == 0.4
+    assert health.DISK_FREE_MIN_FRACTION == 0.25
+    assert health.DB_WATCH_FRACTION == 0.6
+    assert health.DB_BROKEN_FRACTION == 0.8
+
+
+def test_the_watch_levels_sit_below_the_broken_levels():
+    from harness import health
+
+    assert health.HEARTBEAT_WATCH_S < health.HEARTBEAT_BROKEN_S
+    assert health.WS_EVENT_WATCH_S < health.WS_EVENT_BROKEN_S
+    assert health.DB_WATCH_FRACTION < health.DB_BROKEN_FRACTION
+    assert health.CREDITS_LOW_FRACTION < health.CREDITS_WATCH_FRACTION

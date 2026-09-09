@@ -11,6 +11,40 @@ from harness.db.models import Run
 STALE_AFTER_S = 20 * 60
 CREDITS_LOW_FRACTION = 0.2  # U1 2026-09-07: 80% budget alarm, i.e. low below 20% remaining
 
+# --- Pulse's thresholds (phase 4.5, addendum §0.9; spec §1.1) --------------------------------
+# Spec §1.1: "thresholds used to colour anything are imported from the code that enforces them,
+# never restated in the front end". Before this, four of these existed nowhere and two were
+# literals in harness/dashboard/app.py, so the legacy page and the new Pulse surface could
+# disagree about the same machine. This module is the one home; the snapshot payload carries the
+# threshold beside the value, and the front end never restates a number.
+#
+# The values are the spec's own (§2.1) and are not tuned here: WATCH at one minute of silence and
+# BROKEN at two for both the executor's heartbeat and the WebSocket's last event; credits WATCH
+# at 40 % of the monthly budget (BROKEN stays CREDITS_LOW_FRACTION, 20 %); free space on the
+# Postgres data mount below a quarter is BROKEN; the database ceiling turns WATCH at 60 % of
+# db_budget_gb and BROKEN at 80 %.
+
+#: `exec_heartbeat.last_loop_at` older than this many seconds is a WATCH.
+HEARTBEAT_WATCH_S = 60
+#: ... and older than this is a BROKEN.
+HEARTBEAT_BROKEN_S = 120
+#: `exec_heartbeat.ws_last_event_at` older than this many seconds is a WATCH.
+WS_EVENT_WATCH_S = 60
+#: ... and older than this is a BROKEN.
+WS_EVENT_BROKEN_S = 120
+#: Odds API credits remaining below this share of the monthly budget is a WATCH; below
+#: CREDITS_LOW_FRACTION it is a BROKEN.
+CREDITS_WATCH_FRACTION = 0.4
+#: Free space on the Postgres data mount below this share of its total is a BROKEN. Computable
+#: only once housekeeping has recorded both `host.disk_free_gb` and `host.disk_total_gb`; until
+#: then the rule reports `not evaluated`, never FINE.
+DISK_FREE_MIN_FRACTION = 0.25
+#: Database size above this share of `Settings.db_budget_gb` is a WATCH.
+DB_WATCH_FRACTION = 0.6
+#: ... and above this share it is a BROKEN. Same number the legacy page's DB_CEILING_RED_PCT
+#: renders as 80.0.
+DB_BROKEN_FRACTION = 0.8
+
 
 def compute_health(session_factory: sessionmaker, now: datetime, credits_budget: int) -> tuple[dict, int]:
     """Shared by the `/healthz` route and the dashboard's Health section.
