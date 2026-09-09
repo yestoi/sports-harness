@@ -11,11 +11,13 @@ implementation detail, so `_order_action` and `_intent_actions` read line by lin
 the addendum states them and each rule returns rather than falling through:
 
 *Per open order* -- expiry first (R8's guarantee outranks everything, including the kill
-switch, because an expired order is already gone), then the kill switch, then the market's
-identity (`unmatched`), then the dirty-book hold, then fair staleness, the venue's own move,
-edge decay, a rejected newest signal and finally a reprice. Anything else holds. The hold sits
-at position four on purpose: a dirty book is a book we cannot read, so we make no *pricing*
-decision on it, while the three rules above it depend on nothing the book could tell us.
+switch, because an expired order is already gone; its one exception is a ticker whose tape
+read truncated this loop, where the order holds instead -- see `_order_action`), then the kill
+switch, then the market's identity (`unmatched`), then the dirty-book hold, then fair
+staleness, the venue's own move, edge decay, a rejected newest signal and finally a reprice.
+Anything else holds. The hold sits at position four on purpose: a dirty book is a book we
+cannot read, so we make no *pricing* decision on it, while the three rules above it depend on
+nothing the book could tell us.
 
 *Per intent with no order resting* (in descending `edge`, so the ceiling truncates the least
 valuable candidates, F33) -- kill switch, kickoff cutoff, match, fair staleness, dirty book, a
@@ -475,11 +477,19 @@ def _edge_now(order: OpenOrderView, market: MarketNow) -> Decimal | None:
 
 
 def _order_action(order: OpenOrderView, market: MarketNow | None, intent: IntentView | None,
-                  cfg: dict, kill_active: bool, now: datetime,
-                  s: ExecSettings) -> Action | None:
+                  cfg: dict, kill_active: bool, now: datetime, s: ExecSettings,
+                  lagging: frozenset[str] = frozenset()) -> Action | None:
     """The open-order chain. Returns the one action for this order, or None to hold it."""
     if order.expiry is not None and now >= order.expiry:
-        return Expire(order.order_id)
+        # `lagging` is the tickers whose delta read filled its batch limit this loop, so the
+        # tape between the order's cursor and now has not been fed to it yet. Expiring here
+        # would close the track with those fills never simulated -- the replay would find them
+        # and the live record would not -- so the order holds for this loop and expires on the
+        # first one that catches up. It holds rather than falling through the rest of the
+        # chain: R8 says expiry outranks every other reason an order stops resting, and a
+        # `Cancel` picked up further down would close the same track just as early
+        # (fix 22 round 1, I2). `lagging` empties within a few loops by construction.
+        return None if order.ticker in lagging else Expire(order.order_id)
     if kill_active:
         return Cancel(order.order_id, KILL_SWITCH)
     # No `MarketNow` means the market is no longer in the loop's working set at all, which is
@@ -556,14 +566,17 @@ def _copy_state(state: StrategyState | None) -> StrategyState:
 def plan_actions(intents: list[IntentView], open_orders: list[OpenOrderView],
                  markets: dict[int, MarketNow], state_by_variant: dict[str, StrategyState],
                  variant_cfg: dict[str, dict], kill_active: bool, now: datetime,
-                 s: ExecSettings) -> list[Action]:
+                 s: ExecSettings, lagging: frozenset[str] = frozenset()) -> list[Action]:
     """Every action this loop should take, open orders first and then intents by edge.
 
     A `Cancel` therefore always precedes the `Place` that replaces it, which is what makes a
-    reprice one decision rather than two. `variant_cfg` must carry a config for every variant
-    with an intent or a resting order: a missing one raises rather than defaulting, because
-    both defaults available -- cancel everything, or hold everything -- would be a decision
-    nobody asked for.
+    reprice one decision rather than two. `lagging` is the tickers whose delta read truncated
+    this loop; an expired order on one of them is held rather than expired, so its track is
+    never closed over tape it has not been fed (fix 22 round 1, I2).
+
+    `variant_cfg` must carry a config for every variant with an intent or a resting order: a
+    missing one raises rather than defaulting, because both defaults available -- cancel
+    everything, or hold everything -- would be a decision nobody asked for.
     """
     newest = _newest_by_key(intents)
     states = {variant_id: _copy_state(state_by_variant.get(variant_id))
@@ -577,7 +590,7 @@ def plan_actions(intents: list[IntentView], open_orders: list[OpenOrderView],
     for order in open_orders:
         key = _key(order)
         action = _order_action(order, markets.get(order.venue_market_id), newest.get(key),
-                               variant_cfg[order.variant_id], kill_active, now, s)
+                               variant_cfg[order.variant_id], kill_active, now, s, lagging)
         if action is None:
             still_open += 1
             blocked.add(key)

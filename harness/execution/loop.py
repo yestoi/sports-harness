@@ -131,9 +131,9 @@ class ExecStats:
     locked: bool = True
     #: The first failure of the step, the same string the heartbeat's `last_error` carries.
     #: A live loop reads it off the heartbeat; a replay writes no heartbeat and needs the
-    #: message here to fail its own command with it (fix round 1, I2). Since fix 22 a
-    #: `tape_lag:` note may be appended to it, or stand alone when nothing failed, so a
-    #: non-null value here is no longer by itself an error -- `errors` is.
+    #: message here to fail its own command with it (fix round 1, I2). Real failures only:
+    #: a truncated tape read is reported as `exec.tape_lag_tickers` and an INFO log line,
+    #: never here, because verify.md's heartbeat row expects this null (fix 22 round 1, I1).
     last_error: str | None = None
 
 
@@ -268,7 +268,7 @@ class Executor:
                 self._body(session, now, stats, heartbeat, skipped_loops)
                 # A step that survived one order's failure still committed, but a green
                 # heartbeat over a hundred swallowed failures would be a lie.
-                error = _with_tape_lag(heartbeat["last_error"], heartbeat["tape_lag"])
+                error = heartbeat["last_error"]
             except Exception as exc:  # noqa: BLE001 - the loop must survive any one step
                 session.rollback()
                 stats = ExecStats(errors=1)
@@ -334,6 +334,13 @@ class Executor:
             ("exec.loops_skipped", acc.loops_skipped, {}),
             ("exec.open_orders", open_orders_count, {}),
             ("exec.dirty_markets", heartbeat["book_dirty_markets"], {}),
+            # Fix 22 round 1, I1: how many tickers' delta reads hit `DELTA_BATCH_LIMIT` on the
+            # loop this batch was written from -- the executor running behind the tape. It is a
+            # gauge, like `dirty_markets`: a steady non-zero reading is a recorder writing
+            # faster than the executor drains it, a single spike is a backlog being walked off.
+            # It is not an error and never touches `last_error`, whose null the verify row
+            # depends on.
+            ("exec.tape_lag_tickers", len(heartbeat["tape_lag"]), {}),
             ("exec.intents_considered", acc.intents_considered, {}),
             ("exec.placed", acc.placed, {}),
             ("exec.filled_contracts", acc.filled_contracts, {}),
@@ -423,7 +430,8 @@ class Executor:
         state_by_variant = {variant: rebuild_state(open_orders, positions, fills_today, variant)
                             for variant in cfg}
         actions = plan_actions(intents, open_orders, markets, state_by_variant, cfg,
-                               store.kill_active(session), now, s)
+                               store.kill_active(session), now, s,
+                               lagging=frozenset(heartbeat["tape_lag"]))
         self._apply(session, actions, intents, extras, markets, rows, now, stats, heartbeat)
 
         if not self.replay:
@@ -525,7 +533,7 @@ class Executor:
         """
         if not uses_the_simulator(self.gateway):
             return self._venue_fills(session, working, now, stats, heartbeat)
-        tape, unread = self._tape(session, working, now, heartbeat)
+        tape, unread, lagging = self._tape(session, working, now, heartbeat)
         stats.errors += len(unread)
         outcomes: dict[int, tuple[str, Decimal]] = {}
         for row in working:
@@ -540,7 +548,8 @@ class Executor:
             try:
                 with session.begin_nested():
                     outcomes[row.id] = self._simulate_order(session, row, markets, bases,
-                                                            recovering, tape, now, stats)
+                                                            recovering, tape, lagging, now,
+                                                            stats)
             except Exception as exc:  # noqa: BLE001 - one order, not the step
                 log.exception("fill simulation failed for order %s", row.id)
                 stats.errors += 1
@@ -645,7 +654,7 @@ class Executor:
         return status, filled
 
     def _tape(self, session: Session, working, now: datetime,
-              heartbeat: dict) -> tuple[dict[str, tuple[list, list]], set[str]]:
+              heartbeat: dict) -> tuple[dict[str, tuple[list, list]], set[str], set[str]]:
         """One print scan and one delta scan per ticker, shared by every order on it.
 
         Prints have no cursor (§1) and are rescanned from `placed_at - 60 s` every loop; the
@@ -657,7 +666,8 @@ class Executor:
         (fix 22). Both scans stop at `_at(now)` in replay: `simulate_fills` already refuses to
         walk past its deadline, but `has_print` reads the whole print list.
 
-        Returns the tape and the set of tickers whose read failed. Each ticker is read inside
+        Returns the tape, the set of tickers whose read failed, and the set whose delta read
+        filled `DELTA_BATCH_LIMIT` and so is still behind the tape. Each ticker is read inside
         its own savepoint, so one ticker's statement timeout rolls back to the savepoint and
         leaves this transaction -- and every cursor already advanced in this loop -- intact.
         """
@@ -676,7 +686,7 @@ class Executor:
             windows[row.ticker] = (lower, cursor)
         out: dict[str, tuple[list, list]] = {}
         unread: set[str] = set()
-        lagging: list[str] = []
+        lagging: set[str] = set()
         at = self._at(now)
         for ticker, (placed_at, cursor) in windows.items():
             lower = placed_at - store.PRINT_LOOKBACK
@@ -685,28 +695,47 @@ class Executor:
                     prints = store.load_prints(session, ticker, lower, at)
                     batch = store.load_deltas(session, ticker, cursor or 0, lower, at)
             except Exception as exc:  # noqa: BLE001 - one ticker, not the step
-                log.exception("tape read failed for %s", ticker)
+                # The first failure of a loop carries its traceback; the rest of a loop's
+                # failures are almost always the same one repeated, and 55 tracebacks a loop
+                # would bury it (fix 22 round 1, minor).
+                log.warning("tape read failed for %s: %s", ticker, exc, exc_info=not unread)
                 unread.add(ticker)
                 _note_error(heartbeat, f"tape {ticker}: {type(exc).__name__}: {exc}")
                 continue
             deltas = batch.deltas
-            if batch.truncated and deltas:
+            if batch.truncated:
                 # The read stopped at its limit, so this ticker's tape has more behind it than
-                # this loop asked for and the last row we hold is a position, not the head.
-                # Prints past that position are dropped rather than fed early: a print applied
-                # ahead of the deltas that belong with it is applied against the wrong queue,
-                # and the simulator's watermark would then refuse to reconsider it. Nothing is
-                # lost -- prints carry no cursor and the next loop rescans the same window,
-                # by which time the deltas have caught up.
-                covered = deltas[-1].ts
-                prints = [p for p in prints if p.ts <= covered]
-                lagging.append(ticker)
+                # this loop asked for and the last row we hold is a position, not the head. The
+                # flag hangs on the read filling up, never on what survived the row filter: a
+                # full batch whose rows were all dropped for a null side, price or delta
+                # advances nothing at all, which is the one case that could sit still forever
+                # and so is exactly the case that must be visible (fix 22 round 1, minor).
+                lagging.add(ticker)
+                if deltas:
+                    # Prints past the last delta consumed are held back rather than fed early:
+                    # a print applied ahead of the deltas that belong with it is applied
+                    # against the wrong queue, and the simulator's watermark would then refuse
+                    # to reconsider it. Nothing is lost, and the reason is not that prints
+                    # carry no cursor -- they are re-read next loop either way -- but that a
+                    # track on a lagging ticker is not allowed to finish: neither the
+                    # no-watcher `done` below nor `_order_action`'s `Expire` closes one until
+                    # the ticker has caught up, so the held-back tape is always fed to a track
+                    # that is still open to it (fix 22 round 1, I2).
+                    covered = deltas[-1].ts
+                    prints = [p for p in prints if p.ts <= covered]
+                else:
+                    log.warning("tape batch for %s filled DELTA_BATCH_LIMIT but yielded no "
+                                "usable delta; its cursor cannot advance this loop", ticker)
             out[ticker] = (prints, deltas)
         if lagging:
-            heartbeat["tape_lag"] = sorted(lagging)
-        return out, unread
+            # INFO, not ERROR: the executor is behind the tape and catching up by design. The
+            # count is `exec.tape_lag_tickers`; the names live here (fix 22 round 1, I1).
+            log.info("tape lag: %d ticker(s) behind (%s)",
+                     len(lagging), ", ".join(sorted(lagging)))
+        heartbeat["tape_lag"] = sorted(lagging)
+        return out, unread, lagging
 
-    def _simulate_order(self, session: Session, row, markets, bases, recovering, tape,
+    def _simulate_order(self, session: Session, row, markets, bases, recovering, tape, lagging,
                         now: datetime, stats: ExecStats) -> tuple[str, Decimal]:
         s = self.exec_settings
         market = markets.get(row.venue_market_id)
@@ -786,8 +815,13 @@ class Executor:
             track = self._persist_track(session, row, order, result, prints, ledger=False,
                                         crossed_already=crossed_already)
             stats.nw_fills += track.inserted
-            done = ((row.expiry is not None and row.expiry <= now)
-                    or track.filled >= row.contracts)
+            # A track on a ticker whose delta read truncated this loop is not finished, even
+            # at its own expiry: the tape between its cursor and now has not been fed to it
+            # yet, and closing here would leave those fills in the replay and out of the live
+            # record. It closes on the first loop that catches up (fix 22 round 1, I2).
+            done = (row.ticker not in lagging
+                    and ((row.expiry is not None and row.expiry <= now)
+                         or track.filled >= row.contracts))
             updates.update(nw_filled_contracts=track.filled, nw_done=done,
                            **_state_columns("nw_", track.state))
             if track.crossed:
@@ -1145,22 +1179,6 @@ def _note_error(heartbeat: dict, message: str) -> None:
     """Keep the first failure of the step; a later one rarely explains more than the first."""
     if heartbeat["last_error"] is None:
         heartbeat["last_error"] = message[:2000]
-
-
-def _with_tape_lag(error: str | None, lagging: list[str]) -> str | None:
-    """Append the loop's tape lag to whatever it is already reporting.
-
-    A truncated delta read means the executor is behind that ticker's tape and its books are
-    only current to the last row it consumed (fix 22). That is not a failure -- the loop is
-    catching up by design and will close the gap over the next few loops -- so it neither
-    raises nor displaces a real error, but a heartbeat that said nothing about it would let the
-    executor run minutes behind the tape looking perfectly healthy. It is appended rather than
-    written through `_note_error`, which keeps only the first message of a step.
-    """
-    if not lagging:
-        return error
-    note = f"tape_lag: {len(lagging)} ticker(s) behind ({','.join(lagging[:5])})"
-    return note[:2000] if error is None else f"{error}; {note}"[:2000]
 
 
 def _state_of(row, prefix: str) -> SimState:

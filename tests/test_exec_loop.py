@@ -991,6 +991,13 @@ def test_the_live_delta_read_drops_the_ts_bound_once_a_cursor_exists(env_setting
     assert "limit" not in body
 
 
+def _lag_samples(session):
+    """`exec.tape_lag_tickers` in write order, as plain ints."""
+    return [int(r.value) for r in session.query(MetricSample)
+            .filter_by(source="exec", name="exec.tape_lag_tickers")
+            .order_by(MetricSample.id).all()]
+
+
 def test_a_partial_delta_batch_advances_the_cursor_and_the_next_loop_continues(
         env_settings, db_session, world, monkeypatch):
     """A backlog is walked over several bounded loops, each starting where the last stopped.
@@ -1007,38 +1014,99 @@ def test_a_partial_delta_batch_advances_the_cursor_and_the_next_loop_continues(
     executor.step()
     refresh(db_session)
     assert orders_of(db_session)[0].queue_remaining == Decimal("40.00")
+    # The first loop has no working order and so no tape to be behind on.
+    assert _lag_samples(db_session) == [0]
 
-    backlog = [_delta(db_session, T2, NOW + timedelta(seconds=n), "yes", "0.35", "-5.00",
-                      seq=1 + n) for n in range(1, 6)]
+    backlog = [_delta(db_session, T2, NOW + timedelta(seconds=n), "yes", "0.35", "-1.00",
+                      seq=1 + n) for n in range(1, 13)]
     db_session.commit()
 
     clock.advance(15)
     stats = executor.step()
     refresh(db_session)
     order = orders_of(db_session)[0]
-    # Two of the five, and the cursor sits on the last row consumed -- not on the tape's head.
+    # Two of the twelve, and the cursor sits on the last row consumed -- not on the tape's head.
     assert order.tape_cursor_event_id == backlog[1].id
     assert order.nw_tape_cursor_event_id == backlog[1].id
-    assert order.queue_remaining == Decimal("30.00")
-    # A truncated read is the executor running behind the tape, and the heartbeat says so.
-    assert "tape_lag" in stats.last_error
-    assert T2 in stats.last_error
-    heartbeat = db_session.execute(text("select last_error from exec_heartbeat")).scalar()
-    assert "tape_lag" in heartbeat
+    assert order.queue_remaining == Decimal("38.00")
+    # Running behind the tape is not a failure and never reaches `last_error`, whose null
+    # verify.md's heartbeat row depends on (fix 22 round 1, I1).
+    assert stats.last_error is None
+    assert stats.errors == 0
+    assert db_session.execute(text("select last_error from exec_heartbeat")).scalar() is None
 
     clock.advance(15)
     executor.step()
     refresh(db_session)
     order = orders_of(db_session)[0]
     assert order.tape_cursor_event_id == backlog[3].id
-    assert order.queue_remaining == Decimal("20.00")
+    assert order.queue_remaining == Decimal("36.00")
 
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert orders_of(db_session)[0].tape_cursor_event_id == backlog[5].id
+
+    # `metric_sample_s = 60`: this is the loop the second batch is written from, and the
+    # ticker is still four rows behind, so the lag is reported as a metric.
     clock.advance(15)
     stats = executor.step()
     refresh(db_session)
     order = orders_of(db_session)[0]
-    assert order.tape_cursor_event_id == backlog[4].id
-    assert order.queue_remaining == Decimal("15.00")
+    assert order.tape_cursor_event_id == backlog[7].id
+    assert order.queue_remaining == Decimal("32.00")
+    assert _lag_samples(db_session) == [0, 1]
+    assert stats.last_error is None
+    assert db_session.execute(text("select last_error from exec_heartbeat")).scalar() is None
+
+
+def test_a_truncated_loop_does_not_close_a_track_at_its_expiry(env_settings, db_session, world,
+                                                               monkeypatch):
+    """Fix 22 round 1, I2: a track must not finish over tape it has not been fed.
+
+    The order's expiry falls inside a loop whose delta read truncated, so the deltas and prints
+    between its cursor and now are still held back. Closing the track there would put fills in
+    the replay that the live record never saw, so expiry waits for the loop that catches up.
+    """
+    monkeypatch.setattr(store, "DELTA_BATCH_LIMIT", 2)
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    db_session.query(Order).filter_by(id=order.id).update(
+        {"expiry": NOW + timedelta(seconds=10)})
+    db_session.commit()
+
+    # Three deltas, the first of which clears our queue. The print that then fills us is
+    # stamped past where a two-row batch can reach, so it is held back with them.
+    for n, (price, size) in enumerate([("0.35", "-40.00"), ("0.50", "-1.00"),
+                                       ("0.50", "-1.00")], start=1):
+        _delta(db_session, T2, NOW + timedelta(seconds=n), "yes", price, size, seq=1 + n)
+    _print(db_session, T2, NOW + timedelta(seconds=5), "0.35", "500", trade_id="held-back")
+    db_session.commit()
+
+    clock.advance(15)  # now is past the order's expiry
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.queue_remaining == Decimal("0.00")   # the two deltas we did read were applied
+    assert order.status == "open"                     # but neither track is finished
+    assert order.nw_done is False
+    assert events_of(db_session, "expire") == []
+    assert fills_of(db_session, order.id) == []
+
+    # The next loop reads the rest of the tape, so the print is fed to a track still open to it.
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.filled_contracts == SIZE2
+    assert order.nw_filled_contracts == SIZE2
+    assert order.nw_done is True
+    assert order.status == "filled"
 
 
 def test_a_failed_tape_read_costs_one_ticker_and_keeps_every_other_cursor(
@@ -1425,7 +1493,7 @@ def test_exec_writes_metric_batch_every_metric_sample_s_not_every_loop(env_setti
     first_count = db_session.query(MetricSample).filter_by(source="exec").count()
     assert first_count > 0
     names = {r.name for r in db_session.query(MetricSample).filter_by(source="exec").all()}
-    assert {"exec.loop_ms", "exec.open_orders", "exec.dirty_markets",
+    assert {"exec.loop_ms", "exec.open_orders", "exec.dirty_markets", "exec.tape_lag_tickers",
            "exec.intents_considered", "exec.placed", "exec.filled_contracts"} <= names
 
     for _ in range(3):
@@ -1444,7 +1512,7 @@ def _ws_age_samples(env_settings, db_session, clock, ws_last):
     """One `_write_metric_batch` with a hand-built heartbeat, returning the WS-clock pair
     `(exec.ws_event_age_s, exec.ws_event_ahead_s)` it wrote."""
     executor = make_executor(env_settings, db_session, clock)
-    heartbeat = {"book_dirty_markets": 0, "ws_last_event_at": ws_last}
+    heartbeat = {"book_dirty_markets": 0, "ws_last_event_at": ws_last, "tape_lag": []}
     wrote = executor._write_metric_batch(db_session, clock.now, ExecStats(loop_ms=7),
                                          heartbeat, open_orders_count=0)
     assert wrote is True  # the first call of a fresh Sampler is always due
