@@ -1,0 +1,18 @@
+DEPLOY_SHA=417eecd 00:07 CT
+exit=0
+[0;32m[DEPLOY][0m Backup precheck (dumps first when the newest nightly is stale)...
+[0;32m[DEPLOY][0m Alembic ensure (stamp on the pre-Alembic database, upgrade on an empty one)...
+{"asctime": "2026-09-09 05:08:31,030", "levelname": "INFO", "name": "harness", "message": "schema created"}
+[0;32m[DEPLOY][0m Done. Run: make status-nas
+sports-harness-app-backup-1   Up 3 hours
+sports-harness-app-exec-1     Up 2 minutes (healthy)
+sports-harness-app-run-1      Up 2 minutes
+sports-harness-app-serve-1    Up 2 minutes (healthy)
+sports-harness-app-ws-1       Up 2 minutes
+{"status":"ok","last_run_at":"2026-09-09T05:10:18.987215+00:00","last_status":"skipped","seconds_since":29,"credits_remaining":4997756,"credits_budget":5000000,
+exec | 00:00:14.594577 | 4360 | 13 | 3718 | 8726 | 153 | 4.4 | 
+idx | ix_odds_fetched_book | t
+batch_min | 2026-09-09 05:10:18.920371+00 | 20000.000000
+batch_min | 2026-09-09 05:09:03.953645+00 | 20000.000000
+
+[exited with code 0]

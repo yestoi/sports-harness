@@ -1,0 +1,13 @@
+cold /api/summary after restart at 05:09:56Z:
+http=200 time=1.900063s bytes=49779
+warm:
+http=200 time=0.291912s
+build 417eecd ok
+idx | ix_odds_fetched_book | t | 8704 kB
+exec | 00:00:10.732707 | 4357 | 58 | 4376 | 4.4 | 
+-rwxrwxrwx 1 trey admin 1074284762 Sep  8 21:26 harness-nightly-20260909T022322Z.dump
+-rwxrwxrwx 1 trey admin 1074547234 Sep  8 21:38 harness-nightly-20260909T022322Z.dump.age
+-rwxrwxrwx 1 trey admin        434 Sep  8 21:27 harness-nightly-20260909T022322Z.meta.json
+-rwxrwxrwx 1 trey admin          0 Sep  8 21:38 harness-nightly-20260909T022322Z.ok
+-rw------- 1 trey admin   37 Sep  9 00:07 secrets/kalshi_demo_key_id
+-rw------- 1 trey admin 1675 Sep  9 00:07 secrets/kalshi_demo_private_key.pem
