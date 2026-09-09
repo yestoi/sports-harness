@@ -400,9 +400,10 @@ def load_prints(session: Session, ticker: str, lower: datetime,
 #: The most rows one live delta read hands back for one ticker in one loop. A ticker with more
 #: tape than this behind its cursor catches up over successive loops -- each one starting where
 #: the last stopped -- instead of asking for the whole backlog in a single statement that runs
-#: past the 30 s timeout, dies, and leaves the next loop the identical read to fail on
-#: (fix 22, journal 68). 20 000 delta rows is far more than a 15 s loop can accrue on any real
-#: ticker, so the live path never truncates in steady state; this is the catch-up bound.
+#: past the executor engine's 10 s statement timeout, dies, and leaves the next loop the
+#: identical read to fail on (fix 22, journal 68). 20 000 delta rows is far more than a 15 s
+#: loop can accrue on any real ticker, so the live path never truncates in steady state;
+#: this is the catch-up bound.
 DELTA_BATCH_LIMIT = 20_000
 
 #: The smallest that cap is ever allowed to shrink to when a ticker's read keeps timing out

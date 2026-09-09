@@ -769,8 +769,9 @@ class Executor:
                     covered = deltas[-1].ts
                     prints = [p for p in prints if p.ts <= covered]
                 else:
-                    log.warning("tape batch for %s filled DELTA_BATCH_LIMIT but yielded no "
-                                "usable delta; its cursor cannot advance this loop", ticker)
+                    log.warning("tape batch for %s filled its %d-row limit but yielded no "
+                                "usable delta; its cursor cannot advance this loop",
+                                ticker, limit)
             elif limit >= store.DELTA_BATCH_LIMIT:
                 # Caught up at the full cap: there is nothing left to remember about this
                 # ticker, so it stops costing an entry (fix 26). A shrunk ticker that read
