@@ -1010,3 +1010,29 @@ def test_the_legacy_page_imports_its_two_thresholds_and_keeps_their_values():
     source = (Path(dash.__file__)).read_text()
     assert "HEARTBEAT_RED_S = 60" not in source
     assert "WS_EVENT_RED_S = 120" not in source
+
+
+# --- Phase 4.5 (addendum §2): the shared runs.notes read helpers move to harness.dashboard.queries
+
+def test_the_shared_helpers_live_in_queries_and_the_legacy_page_imports_them():
+    """Addendum §2: the Floor builder and the legacy page read `runs.notes` through one module,
+    so the two funnels cannot drift apart. The legacy names stay bound, so nothing that imports
+    them from `app` has to change."""
+    from harness.dashboard import app as dash
+    from harness.dashboard import queries
+
+    assert dash._recent_run_notes is queries.recent_run_notes
+    assert dash._signals_by_variant_from_notes is queries.signals_by_variant_from_notes
+    assert dash._local_day_bounds_utc is queries.local_day_bounds_utc
+
+
+def test_the_moved_helpers_behave_exactly_as_before(db_session, env_settings):
+    from harness.dashboard import queries
+
+    _seed_full(db_session, env_settings)
+    notes = queries.recent_run_notes(db_session, NOW - queries.WINDOW_24H)
+    assert isinstance(notes, list)
+    by_variant = queries.signals_by_variant_from_notes(db_session, notes)
+    assert "tiny" in by_variant and set(by_variant["tiny"]) == {"tier", "candidate", "rejected"}
+    start, end = queries.local_day_bounds_utc(NOW, "America/Chicago")
+    assert start < NOW < end and (end - start) == timedelta(days=1)

@@ -13,7 +13,6 @@ from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Callable
-from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
@@ -25,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from harness import telemetry
 from harness.config.settings import Settings
 
+from harness.dashboard.queries import local_day_bounds_utc, recent_run_notes, signals_by_variant_from_notes
 from harness.db.models import (ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Ledger, MetricSample, OddsSnapshot,
                                 Order, OrderbookEvent, OrderEvent, RawResponse, Run, Signal, StrategyVariant, Team,
                                 VenueMarket, VenueQuote)
@@ -63,6 +63,14 @@ DB_CEILING_RED_PCT = 80.0
 #: with no Sec-Fetch-Site support at all, e.g. curl, sends no header, which is accepted too).
 KILL_ALLOWED_SEC_FETCH_SITE = ("same-origin", "none")
 
+# Phase 4.5 (addendum §2): the three `runs.notes` helpers moved to harness/dashboard/queries.py
+# so the Floor surface's funnel and this page's funnel read them through one implementation. The
+# private names stay bound here: this module's own unit tests and call sites use them, and a
+# rename would be a behaviour-free diff across a frozen page.
+_recent_run_notes = recent_run_notes
+_signals_by_variant_from_notes = signals_by_variant_from_notes
+_local_day_bounds_utc = local_day_bounds_utc
+
 _exit_stack = ExitStack()
 
 
@@ -94,47 +102,6 @@ def _health(session: Session, session_factory: sessionmaker, now: datetime, cred
     body, _ = compute_health(session_factory, now, credits_budget)
     last_run_id = session.execute(select(Run.id).order_by(desc(Run.started_at)).limit(1)).scalar_one_or_none()
     return {**body, "run_id": last_run_id}
-
-
-def _recent_run_notes(session: Session, cutoff: datetime, limit: int | None = None) -> list[dict]:
-    """Every run row's `notes` JSON since `cutoff`, newest first -- the one query `_funnel`,
-    `_candidates` and `_data_quality` scan `runs.notes` through (fix round 1, Minor 3: `_funnel`
-    and `_data_quality` used to run this query twice; fix 17, journal 44/48: `build_summary` now
-    fetches the 24h window once and hands the same list to all three, so none of them call this
-    directly except in their own direct unit tests). `limit`, when given, caps the row count;
-    omit it for a window meant to be read in full -- all three pass no limit as of fix 17 round
-    1: a 500-row cap used to silently truncate a "24h" scan to about 4.2 hours at the default
-    30s heartbeat (fix round 1, Important 2), and `_data_quality`'s `kalshi_trades_normalized`
-    sum needs the same true 24h window `_funnel` and `_candidates` already get. ~2880 rows a day
-    of this ~2MB table is cheap to scan in full.
-    """
-    stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.started_at))
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    return session.execute(stmt).scalars().all()
-
-
-def _signals_by_variant_from_notes(session: Session, run_notes: list[dict]) -> dict:
-    """`{variant_name: {tier, candidate, rejected}}`, seeded with every active variant's `tier`
-    from `strategy_variants` (a small table -- this join stays a live query) and summed from
-    `run_notes`' `pricing.signals` (fix 15, journal 44). Factored out of `_funnel` in fix 17
-    (journal 44/48) so `_candidates` can reuse it instead of issuing its own group-by over
-    `signals`; both callers pass the *same* `run_notes` list so `runs.notes` is scanned once
-    per page, not once per section.
-    """
-    signals_by_variant = {
-        v.name: {"tier": v.tier, "candidate": 0, "rejected": 0}
-        for v in session.execute(
-            select(StrategyVariant).where(StrategyVariant.active.is_(True)).order_by(StrategyVariant.name)
-        ).scalars().all()
-    }
-    for notes in run_notes:
-        pricing = (notes or {}).get("pricing") or {}
-        for variant, counts in (pricing.get("signals") or {}).items():
-            agg = signals_by_variant.setdefault(variant, {"tier": None, "candidate": 0, "rejected": 0})
-            agg["candidate"] += counts.get("candidate", 0) or 0
-            agg["rejected"] += counts.get("rejected", 0) or 0
-    return signals_by_variant
 
 
 def _funnel(session: Session, now: datetime, run_notes_24h: list[dict] | None = None) -> dict:
@@ -457,14 +424,6 @@ def _fee_drift(session: Session) -> dict:
     return {"checked": True, "fetched_at": _iso(fetched_at), "fee_type": fee_type,
             "maker_rate": _dec(model.maker_rate), "taker_rate": _dec(model.taker_rate),
             "multiplier": _dec(model.multiplier), "drift": drift}
-
-
-def _local_day_bounds_utc(now: datetime, tz_local: str) -> tuple[datetime, datetime]:
-    """[local midnight, next local midnight) for `now`'s local calendar day, in UTC."""
-    tz = ZoneInfo(tz_local)
-    start_local = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
-    end_local = start_local + timedelta(days=1)
-    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
 def _executor(session: Session, now: datetime) -> dict:
