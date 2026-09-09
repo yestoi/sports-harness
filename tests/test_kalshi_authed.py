@@ -110,6 +110,46 @@ def test_get_fills_decodes_a_venue_fill():
     assert fill.is_taker is False
 
 
+def test_get_fills_decodes_the_dollars_and_fp_names_to_the_same_view():
+    """Fix round 2. A fill in the `yes_price_dollars` / `count_fp` vocabulary decoded to a null
+    price and a null count, which is what every reconciled fill would have carried if the fills
+    endpoint sends those names. The repo's Kalshi reference shows only the older names for this
+    endpoint, so the fallbacks are inert until it does not."""
+    old_names = {"trade_id": "t1", "order_id": "o1", "ticker": "T", "outcome_side": "yes",
+                 "book_side": "bid", "price": "0.4400", "count": "2.00", "is_taker": False,
+                 "created_time": "2026-09-13T21:00:00Z"}
+    live_names = {"trade_id": "t1", "order_id": "o1", "ticker": "T", "outcome_side": "yes",
+                  "book_side": "bid", "yes_price_dollars": "0.4400",
+                  "no_price_dollars": "0.5600", "count_fp": "2.00", "is_taker": False,
+                  "created_time": "2026-09-13T21:00:00Z"}
+    fills = [KalshiReader(FakeTransport(queued=[_ok({"fills": [f], "cursor": ""})])).get_fills()[0]
+             for f in (old_names, live_names)]
+    assert fills[0] == fills[1]
+    assert fills[1].price == Decimal("0.4400") and fills[1].count == Decimal("2.00")
+    assert fills[1].is_taker is False
+
+
+def test_the_current_fill_field_names_win_when_the_venue_sends_both():
+    t = FakeTransport(queued=[_ok({"fills": [{
+        "trade_id": "t1", "ticker": "T", "outcome_side": "yes",
+        "price": "0.4400", "yes_price_dollars": "0.9900",
+        "count": "2.00", "count_fp": "99.00"}], "cursor": ""})])
+    fill = KalshiReader(t).get_fills()[0]
+    assert fill.price == Decimal("0.4400") and fill.count == Decimal("2.00")
+
+
+def test_a_fill_with_only_a_no_price_decodes_to_a_null_price():
+    """`VenueFillView.price` is a YES-leg price, exactly as `OrderView.price` is. A fill is a
+    record of something that already happened, so the null reaches the reconcile path rather
+    than a cancel; that path's handling of a null price is unchanged."""
+    t = FakeTransport(queued=[_ok({"fills": [{
+        "trade_id": "t1", "ticker": "T", "outcome_side": "no", "book_side": "ask",
+        "no_price_dollars": "0.5600", "count_fp": "2.00"}], "cursor": ""})])
+    fill = KalshiReader(t).get_fills()[0]
+    assert fill.price is None and fill.count == Decimal("2.00")
+    assert fill.outcome_side == "no"
+
+
 def test_get_balance_and_positions_decode_decimals():
     t = FakeTransport(queued=[_ok({"balance": "123.45"}),
                               _ok({"market_positions": [

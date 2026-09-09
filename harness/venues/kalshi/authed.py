@@ -324,6 +324,18 @@ def _decode_order(o: dict) -> OrderView:
 
 
 def _decode_fill(f: dict) -> VenueFillView:
+    """One V2 fill.
+
+    The same two field vocabularies `_decode_order` reads, and for the same reason (fix round 2,
+    from round 1's Important 1): `yes_price_dollars` and `count_fp` are what the public side of
+    this repo already decodes, and a fill that arrives in that vocabulary would otherwise
+    reconcile with a null price and a null count. Current names first, and `no_price_dollars` is
+    not read here either -- `VenueFillView.price` is a YES-leg price, exactly as `OrderView`'s
+    is. The direction resolution and `is_taker` are untouched.
+
+    Unlike an order, a fill is a record of something that already happened, so a null price is
+    not cancelled or frozen; it reaches the reconcile path, whose handling of one is unchanged.
+    """
     outcome_side, book_side = require_side(f)
     return VenueFillView(
         trade_id=f.get("trade_id"),
@@ -331,8 +343,8 @@ def _decode_fill(f: dict) -> VenueFillView:
         ticker=f.get("ticker"),
         outcome_side=outcome_side,
         book_side=book_side,
-        price=dec(f.get("price")),
-        count=dec(f.get("count")),
+        price=dec(_first_present(f, "price", "yes_price_dollars")),
+        count=dec(_first_present(f, "count", "count_fp")),
         is_taker=f.get("is_taker"),
         created_time=_ts(f.get("created_time")),
     )
