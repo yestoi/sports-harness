@@ -271,24 +271,37 @@ def _primary_signals(session: Session, now: datetime) -> list[dict]:
 
 
 def _unmatched_markets(session: Session, now: datetime) -> list[dict]:
+    """Fix 25: `venue_quotes` has no index leading with `fetched_at` alone
+    (`ix_quotes_market_fetched` leads with `venue_market_id`), so a time-only
+    `group_by(venue_market_id) / max(fetched_at)` scan walked the whole table. `venue_markets`
+    is small, so this drives from it first and reads `venue_quotes` only by the resulting
+    market ids, which the existing index serves directly. A market whose latest quote falls
+    inside the window was seen by the same fetch, so filtering on `last_seen_at >= cutoff` here
+    is equivalent to the old time filter for every row that reaches the output; a market with
+    no quote in the window is dropped either way, same as the old inner join."""
     cutoff = now - WINDOW_24H
-    latest = (
-        select(VenueQuote.venue_market_id, func.max(VenueQuote.fetched_at).label("max_fetched"))
-        .where(VenueQuote.fetched_at >= cutoff)
-        .group_by(VenueQuote.venue_market_id)
-        .subquery()
-    )
-    rows = session.execute(
-        select(VenueMarket.ticker, VenueMarket.match_status, VenueMarket.match_reason, VenueQuote.volume_24h)
-        .join(latest, VenueMarket.id == latest.c.venue_market_id)
-        .join(VenueQuote, (VenueQuote.venue_market_id == latest.c.venue_market_id)
-              & (VenueQuote.fetched_at == latest.c.max_fetched))
-        .where(VenueMarket.match_status == "unmatched")
-        .order_by(desc(VenueQuote.volume_24h))
-        .limit(UNMATCHED_LIMIT)
+    unmatched = session.execute(
+        select(VenueMarket.id, VenueMarket.ticker, VenueMarket.match_status, VenueMarket.match_reason)
+        .where(VenueMarket.match_status == "unmatched", VenueMarket.last_seen_at >= cutoff)
     ).all()
-    return [{"ticker": t, "match_status": ms, "match_reason": mr or "", "volume_24h": _dec(v)}
-            for t, ms, mr, v in rows]
+    if not unmatched:
+        return []
+    by_id = {mid: (ticker, match_status, match_reason) for mid, ticker, match_status, match_reason in unmatched}
+
+    latest_quote = select(VenueQuote.venue_market_id, VenueQuote.volume_24h).distinct(
+        VenueQuote.venue_market_id
+    ).where(
+        VenueQuote.venue_market_id.in_(by_id.keys()), VenueQuote.fetched_at >= cutoff
+    ).order_by(VenueQuote.venue_market_id, VenueQuote.fetched_at.desc())
+    quotes = session.execute(latest_quote).all()
+
+    out = []
+    for market_id, volume_24h in quotes:
+        ticker, match_status, match_reason = by_id[market_id]
+        out.append({"ticker": ticker, "match_status": match_status, "match_reason": match_reason or "",
+                    "volume_24h": _dec(volume_24h)})
+    out.sort(key=lambda r: (r["volume_24h"] is None, -(r["volume_24h"] or 0)))
+    return out[:UNMATCHED_LIMIT]
 
 
 def _websocket(session: Session, now: datetime) -> dict:

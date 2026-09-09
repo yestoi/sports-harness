@@ -8,9 +8,10 @@ from sqlalchemy import event, insert
 from sqlalchemy.orm import sessionmaker
 
 from harness.dashboard.app import (WINDOW_24H, _candidates, _data_quality, _executor, _funnel, _recent_run_notes,
-                                    _websocket, create_dashboard)
+                                    _unmatched_markets, _websocket, create_dashboard)
 from harness.db.models import (ExecHeartbeat, Fill, JobRun, KillSwitch, Ledger, MetricSample, OperatorEvent, Order,
-                                OrderEvent, RawResponse, Run, StrategyVariant, VenueSettlement, VenueTrade)
+                                OrderEvent, RawResponse, Run, StrategyVariant, VenueMarket, VenueQuote,
+                                VenueSettlement, VenueTrade)
 from harness.execution.plan import POST_ONLY_REJECT
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
@@ -874,3 +875,123 @@ def test_executor_heartbeat_renders_green_when_not_stale(db_session, env_setting
     fragment = match.group(0)
     assert 'class="badge ok"' in fragment
     assert "badge bad" not in fragment
+
+
+# --- Fix 25: `_unmatched_markets` driven from venue_markets, not a time-only scan of
+# venue_quotes -----------------------------------------------------------------------------
+
+def _vm25(i, match_status="unmatched", last_seen_at=NOW, match_reason=None):
+    return VenueMarket(
+        venue="kalshi",
+        ticker=f"KXNFL-U-{i}",
+        event_ticker="KXNFL-EVT-U",
+        series_ticker="KXNFL",
+        market_type="moneyline",
+        match_confidence=Decimal("0.00") if match_status == "unmatched" else Decimal("1.00"),
+        match_status=match_status,
+        match_reason=match_reason if match_reason is not None else "",
+        first_seen_raw_id=1,
+        last_seen_at=last_seen_at,
+    )
+
+
+def _vq25(raw_id, venue_market_id, fetched_at, volume_24h):
+    return VenueQuote(
+        raw_id=raw_id,
+        run_id=1,
+        venue_market_id=venue_market_id,
+        volume_24h=Decimal(str(volume_24h)) if volume_24h is not None else None,
+        fetched_at=fetched_at,
+    )
+
+
+def test_unmatched_markets_uses_latest_quote_and_excludes_matched_and_stale(db_session, env_settings):
+    """The newest quote inside the 24h window wins per market (by `fetched_at`, not insertion
+    order); a matched market is excluded even with quotes; an unmatched market whose only quote
+    fell outside the window (and whose `last_seen_at` is also stale) is excluded too."""
+    market_a = _vm25(1)  # unmatched: older quote 100, newer quote 200 -> 200 must win
+    market_b = _vm25(2)  # unmatched: older quote 150, newer quote 50 -> 50 must win
+    market_c = _vm25(3, match_status="matched")  # matched: excluded despite quotes
+    market_d = _vm25(4, last_seen_at=NOW - timedelta(hours=30))  # unmatched, only a stale quote
+    db_session.add_all([market_a, market_b, market_c, market_d])
+    db_session.flush()
+
+    db_session.add_all([
+        _vq25(1, market_a.id, NOW - timedelta(hours=20), 100),
+        _vq25(2, market_a.id, NOW - timedelta(hours=1), 200),
+        _vq25(3, market_b.id, NOW - timedelta(hours=22), 150),
+        _vq25(4, market_b.id, NOW - timedelta(hours=2), 50),
+        _vq25(5, market_c.id, NOW - timedelta(hours=1), 999),
+        _vq25(6, market_d.id, NOW - timedelta(hours=30), 10),
+    ])
+    db_session.commit()
+
+    result = _unmatched_markets(db_session, NOW)
+
+    assert [r["ticker"] for r in result] == ["KXNFL-U-1", "KXNFL-U-2"]
+    assert [r["volume_24h"] for r in result] == [200.0, 50.0]
+    assert all(r["match_status"] == "unmatched" for r in result)
+
+
+def test_unmatched_markets_empty_result_short_circuits(db_session, env_settings):
+    """No unmatched markets in the window -> `[]`, and (checked separately by the query-capture
+    test below) no second query against `venue_quotes` at all."""
+    db_session.add(_vm25(1, match_status="matched"))
+    db_session.commit()
+
+    assert _unmatched_markets(db_session, NOW) == []
+
+
+def test_unmatched_markets_issues_no_group_by_and_scopes_by_market_id(db_session, env_settings):
+    """Fix 25: the old query scanned `venue_quotes` by time alone (`group_by` +
+    `fetched_at >= cutoff` with no leading index column). Every statement touching
+    `venue_quotes` must instead carry a `venue_market_id` predicate and none may use `GROUP BY`."""
+    market = _vm25(1)
+    db_session.add(market)
+    db_session.flush()
+    db_session.add(_vq25(1, market.id, NOW - timedelta(hours=1), 42))
+    db_session.commit()
+
+    engine = db_session.get_bind()
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        _unmatched_markets(db_session, NOW)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    quote_statements = [s for s in statements if "venue_quotes" in s.lower()]
+    assert quote_statements, "expected at least one statement against venue_quotes"
+    for s in quote_statements:
+        lowered = s.lower()
+        assert "group by" not in lowered
+        assert "venue_market_id in" in lowered or "venue_market_id =" in lowered
+
+
+def test_unmatched_markets_no_statement_against_venue_quotes_when_none_unmatched(db_session, env_settings):
+    """With no unmatched markets in the window, `_unmatched_markets` must not query
+    `venue_quotes` at all (rule A.1: empty result short-circuits before the second query)."""
+    market = _vm25(1, match_status="matched")
+    db_session.add(market)
+    db_session.flush()
+    db_session.add(_vq25(1, market.id, NOW - timedelta(hours=1), 42))
+    db_session.commit()
+
+    engine = db_session.get_bind()
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        result = _unmatched_markets(db_session, NOW)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert result == []
+    assert "venue_quotes" not in "\n".join(statements).lower()
