@@ -279,7 +279,10 @@ def kalshi_smoke_cmd(
     Demo prices are not evidence and reach no table.
     """
     configure_logging()
-    from harness.venues.kalshi.authed import LiveGuardRefused
+    from harness.venues.kalshi.authed import (
+        KalshiApiError, LiveGuardRefused, PriceOffGrid,
+    )
+    from harness.venues.kalshi.http import VenueTransportError
     from harness.venues.kalshi.smoke import format_steps, run_smoke
 
     if env != "demo":
@@ -293,6 +296,12 @@ def kalshi_smoke_cmd(
         result = run_smoke(s, factory, datetime.now(timezone.utc))
     except LiveGuardRefused as exc:
         print(f"refused: {exc.missing} is missing")
+        raise typer.Exit(1) from None
+    except (KalshiApiError, VenueTransportError, PriceOffGrid) as exc:
+        # `run_smoke` turns every in-sequence failure into a named step, so these can only
+        # arrive from the writer build itself. They are still named outcomes, not tracebacks:
+        # the class name only, never the message, which may quote a response body.
+        print(f"failed before the sequence started: {type(exc).__name__}")
         raise typer.Exit(1) from None
     print(format_steps(result))
     raise typer.Exit(result.exit_code())

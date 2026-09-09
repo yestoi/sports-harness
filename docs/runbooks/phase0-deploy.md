@@ -282,6 +282,15 @@ exits 0 either way. The `venue_status.reason` it clears is up to 120 characters 
 own body: quote it in the journal, never act on it, and never let it decide a verdict. The
 controller journals every use of this command.
 
+**It clears the row, not a running process's counter.** `OutageCounter` is in-process state and
+its count is latched: once the two consecutive auth failures are in, it keeps reporting
+marked-worthy while the failures continue, and only a 2xx resets it. So a process that is still
+being refused will re-mark the venue on its next answer, whatever this command wrote. The reset
+for the counter is restarting the process that holds it (`docker compose restart app-exec`), and
+the order is: fix the credential first, then re-enable, then restart. This is moot in the
+deployed paper posture — nothing authenticates a write path there, so no process holds a
+non-zero counter — and it matters the first time one does.
+
 ### What phase 4 adds to a verification
 
 `docs/superpowers/autopilot/verify.md` gains a Phase 4 SQL block, a Phase 4 checks table, five

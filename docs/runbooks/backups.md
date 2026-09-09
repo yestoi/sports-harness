@@ -62,12 +62,27 @@ Between that archive and the RAID, the tape has no other protection.
 
 Two halves, both recorded in `backup_runs` with `kind = 'drill'`.
 
-1. **NAS half** (the controller, over ssh):
-   `docker compose exec app-backup /backup/drill.sh /backups/nightly/<file>.dump`
+1. **NAS half** (the controller, over ssh, from the stack directory on the NAS host):
+
+   ```sh
+   ssh $NAS_USER@$NAS_IP 'cd $NAS_STACK && deploy/backup/drill.sh backups/nightly/<file>.dump'
+   ```
+
+   **Not** `docker compose exec app-backup /backup/drill.sh`. The sidecar has no docker socket,
+   and the script runs `docker run`, `docker compose exec` and `docker cp` itself: it is a host
+   script that happens to live beside the sidecar's two, and its own header says so.
+
    It starts a throwaway `postgres:16` container (`docker run --rm`, an anonymous volume that
    disappears with it), restores the plaintext there, counts rows per non-bulk table in both it
    and `harness` (read-only), prints the comparison and a final `ROWS_MATCH true|false`, then
    stops the container. Nothing on the production cluster is created, dropped or written.
+
+   **Read the output, not the exit status.** The script exits 0 on
+   `SKIP drill free=<n>% below MIN_FREE_PCT=30%`, and it exits 0 on `ROWS_MATCH false` as well:
+   the verdict is deliberately the printed line, because a dump is a point-in-time snapshot and
+   a row count that has moved since is not by itself a failed restore. A drill is passed when a
+   `backup_runs` row with `kind = 'drill'` and `rows_match = true` exists — never because the
+   command returned 0. A skipped drill is not a passed drill.
 2. **Mac half:** `scp` one nightly `.age` file over, then
    `harness backup-decrypt <file>.age --out /tmp/restore.dump`.
    The printed sha256 must equal that unit's `backup_runs.plaintext_sha256`. Record it:
@@ -121,6 +136,8 @@ Every skip is one `SKIP` line on the sidecar's stdout.
   in the same container). It waits up to 900 s and then skips.
 - `SKIP partition <name> is already archived` — expected and correct: a sealed partition is
   archived once.
+- `SKIP drill free=<n>% below MIN_FREE_PCT=30%` from `drill.sh` — the restore needs room for a
+  second copy of the database. It exits 0, so watch for the line; the drill did not run.
 
 A failing dump is logged and the loop continues to the next window. The container is not
 restarted, because compose would only restart it into the same failure.

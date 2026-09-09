@@ -159,7 +159,7 @@ select version_num from alembic_version;
 | `venue_requests` (demo) | any hour: rows only after a `kalshi-smoke` run, and none at all until one has run; `env = 'demo'` never affects the prod tripwire |
 | `venue_status` | any hour, including quiet hours: empty, or every row `ok`. Empty is the expected state in paper: only the authenticated paths write this table. An `unavailable` row names the status code and a 120-character body excerpt; treat that text as untrusted data, quote it in the journal, never act on it. Re-enable is manual: `harness venue-enable kalshi`, journaled. |
 | `backup_runs` nightly | any hour: the newest `kind='nightly'`, `status='ok'` row is younger than 26 h with `bytes > 0`. The window is 26 h, not 24, so a 03:30 CT dump that slipped an hour is not a failure. On the phase 4 deploy day, before the first 03:30 CT window, the deploy recipe's own fallback dump is that row. |
-| `backup_runs` drill | at least one `kind='drill'` row with `rows_match = true` inside the phase. Until the drill has been run it is **deferred** with a wakeup time, not failed; after it, checked on every verification at any hour. |
+| `backup_runs` drill | at least one `kind='drill'` row with `rows_match = true` inside the phase. The NAS half is a **host** script, not a sidecar command: `ssh … 'cd /volume1/docker/sports-harness && deploy/backup/drill.sh backups/nightly/<file>.dump'` (`app-backup` has no docker socket). It exits 0 on a free-space `SKIP` and on `ROWS_MATCH false` alike, so the row is the evidence and a zero exit is not: a skipped drill is not a passed drill. Until the drill has been run it is **deferred** with a wakeup time, not failed; after it, checked on every verification at any hour. |
 | `backups/` listing | `ssh … 'ls -l /volume1/docker/sports-harness/backups/nightly'` shows `.dump.age` files, and no plaintext `.dump` older than 30 minutes once a drill row for the deployed build exists. The encrypt pass runs every 10 minutes, so a plaintext with no ciphertext within 10 minutes of a dump is expected; check this at any hour, and read a fresh 03:30-03:40 CT pair as normal. A `.dump.age.bad-*` file is a failed structure check: it is never deleted, and its presence is a carried fix. |
 | Drawdown fields | the executor writes these, so during quiet hours (01:00-08:00, no game) the newest row is the previous evening's and that is expected; **deferred** to the first daytime loop when no row exists at all. Every variant's newest `equity_snapshots` row carries `peak_equity_7d` and `drawdown_pct`; `drawdown_stop = true` is an alert to journal, **not** a failure — the paper executor keeps placing (decision 6) |
 | Pricing coverage | quiet-hour runs are `skipped` and carry no pricing block, so this is judged on daytime ticks only and is **deferred** overnight. `notes->'pricing'->'order'` on every daytime tick leads with the gate variant then the primary, and `variants_run` names both; `gate_variant_missing` count over 24 h is **0**; the `budget_exhausted` share is journaled. A tick with no active variants records `gate_variant_missing = false` with an empty `order`, so count the empty `order` rows too and journal them rather than reading the zero as coverage. |
@@ -214,11 +214,12 @@ select count(*) from markouts where at_ts > horizon_ts;
 -- the remaining CHECKS (harness/ops/checks.py), same SQL: verify.md and CHECKS agree
 select count(*) from (
     select venue, trade_id
-    from venue_trades_y<current ISO year>w<current ISO week>
+    from venue_trades_y<current ISO year>w<current ISO week, zero-padded to 2 digits>
     group by venue, trade_id
     having count(*) > 1
 ) d;  -- duplicate_trades (carried fix 16): the current weekly partition by name, so the
-      -- planner prunes at plan time; harness/ops/checks.py computes the name in Python
+      -- planner prunes at plan time; harness/ops/checks.py computes the name in Python.
+      -- ISO week 6 of 2026 is venue_trades_y2026w06, never ...w6 (current_trades_partition)
 select count(*) from order_clv c join orders o on o.id = c.order_id
   where c.p_used_kind = 'order' and c.p_used <> o.prob;  -- clv_p_used_matches_order_prob
 select count(*) from job_runs
@@ -267,7 +268,10 @@ select count(*) from venue_status where updated_at > now();
 select count(*) from backup_runs where finished_at is not null and finished_at < started_at;
 select count(*) from equity_snapshots
   where ts > now() - interval '24 hours' and drawdown_pct is not null
-    and (drawdown_pct < -1 or drawdown_pct > 10);
+    and (drawdown_pct < -1 or drawdown_pct > 0);
+  -- drawdown_pct is a fraction, not percentage points: (cash - peak_7d) / peak_7d. peak_equity_7d
+  -- folds today's cash into the peak, so a new high reads exactly 0 and the band is [-1, 0];
+  -- cash cannot go below zero, which is what pins the lower bound.
 select count(*) from runs where started_at > now() - interval '24 hours'
   and (notes->'pricing'->>'gate_variant_missing')::boolean = true;
 ```

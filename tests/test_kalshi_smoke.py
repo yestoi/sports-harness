@@ -12,12 +12,16 @@ a missing secret file, and the empty *directory* Compose leaves behind for a mis
 """
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 
+import httpx
 import pytest
+import respx
 from sqlalchemy import func, select
 from typer.testing import CliRunner
 
 from harness.cli import app
+from harness.feeds.http import HttpClient
 from harness.config.settings import Settings, get_settings
 from harness.db.models import (
     Fill, Intent, Order, OrderbookEvent, Signal, VenueRequest, VenueStatus, VenueTrade,
@@ -26,13 +30,17 @@ from harness.execution.venue import mark_status, read_status
 from harness.venues.kalshi.authed import (
     _FACTORY_TOKEN, KalshiReader, KalshiWriter, LiveGuardRefused,
 )
-from harness.venues.kalshi.http import session_recorder
+from harness.venues.kalshi.http import KalshiTransport, session_recorder
 from harness.venues.kalshi.smoke import (
-    SMOKE_CONTRACT_CAP, SMOKE_PER_BET_CAP_DOLLARS, SmokeResult, SmokeStep, run_smoke,
+    SMOKE_CONTRACT_CAP, SMOKE_PER_BET_CAP_DOLLARS, SmokeResult, SmokeStep,
+    _default_writer_factory, run_smoke,
 )
 
 from tests.test_kalshi_authed import FakeTransport, _err, _ok
 from tests.test_kalshi_limits import RecordingFakeTransport
+from tests.test_kalshi_transport import KEY_PEM
+
+DEMO = "https://external-api.demo.kalshi.co/trade-api/v2"
 
 runner = CliRunner()
 
@@ -392,6 +400,49 @@ def test_smoke_result_exit_code_is_zero_only_when_every_step_passed():
                       unfunded=False)
     unfunded = SmokeResult(steps=[SmokeStep("balance", True, "demo unfunded")], unfunded=True)
     assert ok.exit_code() == 0 and bad.exit_code() == 1 and unfunded.exit_code() == 0
+
+
+# --- the default writer factory ----------------------------------------------------------------
+
+@respx.mock
+def test_the_default_factory_wires_the_recorder_onto_the_real_transport(monkeypatch, tmp_path,
+                                                                       db_session):
+    """The deployed path, with only `make_writer` faked.
+
+    `run_smoke`'s default factory reaches through `writer.reader._transport._recorder` to attach
+    the session recorder, because `make_writer`'s signature takes none. Three private names, so
+    every sequence test injecting a writer would still pass if any of them were renamed and the
+    deployed smoke silently recorded nothing. This test drives the real `KalshiTransport` over a
+    mocked socket and asserts the row lands.
+    """
+    factory = _factory_for(db_session)
+    route = respx.get(DEMO + "/portfolio/balance").mock(
+        return_value=httpx.Response(200, json={"balance": "250.00"}))
+    captured = {}
+    http = HttpClient(5.0)
+    transport = KalshiTransport(http, DEMO, "demo", "kid", KEY_PEM, timeout_s=5.0,
+                                writes_enabled=True)          # recorder deliberately unset
+
+    def fake_make_writer(settings, env, session=None, **kw):
+        captured.update(env=env, **kw)
+        return _writer_over(transport)
+
+    monkeypatch.setattr("harness.venues.kalshi.smoke.make_writer", fake_make_writer)
+    try:
+        writer = _default_writer_factory(_demo_settings(tmp_path), factory)
+        balance = writer.reader.get_balance()
+    finally:
+        transport.close()
+        http.close()
+
+    assert route.called and balance.balance == Decimal("250.00")
+    assert captured["env"] == "demo"
+    assert captured["per_bet_cap_dollars"] == SMOKE_PER_BET_CAP_DOLLARS
+    assert captured["contract_cap"] == SMOKE_CONTRACT_CAP
+    assert captured["kill_switch_active"]() is False
+    rows = db_session.execute(select(VenueRequest)).scalars().all()
+    assert [(r.venue, r.env, r.method, r.path, r.status) for r in rows] == [
+        ("kalshi", "demo", "GET", "/portfolio/balance", 200)]
 
 
 # --- the CLI -----------------------------------------------------------------------------------
