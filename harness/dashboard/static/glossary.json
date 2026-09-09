@@ -1,0 +1,170 @@
+{
+  "paper": {
+    "term": "paper",
+    "plain": "simulated, no money at risk",
+    "what": "Every order, fill and profit figure on this page was simulated against a recorded order book. Nothing was sent to an exchange.",
+    "why": "It is the whole posture of the system: the research runs for months before anyone decides whether to trade real money, and that decision is not made here."
+  },
+  "fair value": {
+    "term": "fair value",
+    "plain": "the sharp books' fair price",
+    "what": "Our estimate of the true probability, built from the prices sharp sportsbooks are quoting right now.",
+    "why": "It is the number every simulated bet is measured against, so without it there is nothing to compare the market's price to."
+  },
+  "staleness_s": {
+    "term": "staleness_s",
+    "plain": "age of the fair price",
+    "what": "How many seconds have passed since the fair price was last recomputed from a fresh sharp-book quote.",
+    "why": "A fair price that is too old is a stale guess rather than a current one, and the strategy refuses to trade on it past a threshold."
+  },
+  "CLV": {
+    "term": "CLV",
+    "plain": "better than the closing price?",
+    "what": "Closing line value: whether the price we got was better than the price the market settled on right before kickoff.",
+    "why": "It is the cleanest single measure of whether a bet was well-timed, independent of how the game itself turned out."
+  },
+  "pinnacle_t5": {
+    "term": "pinnacle_t5",
+    "plain": "Pinnacle's price 5 min before kickoff",
+    "what": "The price Pinnacle, a sharp sportsbook, was quoting five minutes before the game started.",
+    "why": "It is one of the two closing benchmarks CLV is measured against, chosen because Pinnacle's line is widely treated as sharp."
+  },
+  "consensus_close": {
+    "term": "consensus_close",
+    "plain": "the consensus closing price",
+    "what": "The average closing price across the sharp books we track, rather than any single book's line.",
+    "why": "It smooths out one book's quirks, giving a second, broader benchmark alongside pinnacle_t5."
+  },
+  "kalshi_last_trade_pre_kick": {
+    "term": "kalshi_last_trade_pre_kick",
+    "plain": "Kalshi's last trade before kickoff",
+    "what": "The price of the last trade that actually printed on Kalshi before the game started.",
+    "why": "It is a closing benchmark measured on Kalshi's own market rather than a sportsbook, so it reflects what Kalshi traders themselves believed."
+  },
+  "result": {
+    "term": "result",
+    "plain": "the final result",
+    "what": "How the game actually turned out, recorded after the fact.",
+    "why": "Some scoring methods use the outcome directly and some deliberately do not, so naming it keeps a reader from confusing the two."
+  },
+  "markout": {
+    "term": "markout",
+    "plain": "did the price move our way after the fill?",
+    "what": "Whether the market's price kept moving in our favor for a short window after our simulated order filled.",
+    "why": "It scores execution quality on its own, separate from whether the underlying bet itself eventually won."
+  },
+  "intent": {
+    "term": "intent",
+    "plain": "wanted to bet",
+    "what": "A record that the strategy wanted to place a bet at a certain price, made before any order existed.",
+    "why": "It is the starting point of the funnel: every skip and every simulated order traces back to one of these."
+  },
+  "skip": {
+    "term": "skip",
+    "plain": "passed on",
+    "what": "An intent the executor did not turn into a simulated order, along with the reason it was passed on.",
+    "why": "Skips are where most of the funnel's shrinkage happens, so naming the reason is what keeps the funnel honest."
+  },
+  "queue_ahead_at_place": {
+    "term": "queue_ahead_at_place",
+    "plain": "orders ahead of ours when we placed",
+    "what": "How many contracts of resting size were in front of our simulated order at the moment it was placed.",
+    "why": "It sets the starting point for how much trading has to happen before our order could realistically fill."
+  },
+  "queue_remaining": {
+    "term": "queue_remaining",
+    "plain": "orders still ahead of ours",
+    "what": "How many contracts are still in front of our simulated order right now, after accounting for trades since it was placed.",
+    "why": "Zero means our order would fill on the very next trade at that price, which is exactly what this number makes visible."
+  },
+  "queue_model": {
+    "term": "queue_model",
+    "plain": "filled from the recorded order book",
+    "what": "A fill decided by replaying the recorded order book rather than by actually resting an order on an exchange.",
+    "why": "It is how every fill on this page is simulated, and it is why none of them is real money."
+  },
+  "no_watcher": {
+    "term": "no_watcher",
+    "plain": "would have filled without our watcher",
+    "what": "A simulated fill that the queue model would have produced even if nothing had been watching the book at all.",
+    "why": "It flags fills a naive queue estimate could get right by luck, so they are not overcounted as evidence the model works."
+  },
+  "snapshot_cross": {
+    "term": "snapshot_cross",
+    "plain": "the market crossed our price",
+    "what": "A moment when the recorded best price moved through our simulated order's price, rather than a trade printing exactly at it.",
+    "why": "It is one of two ways a fill gets simulated, and it is the weaker one because no trade is known to have actually happened there."
+  },
+  "has_print": {
+    "term": "has_print",
+    "plain": "a real trade printed at our price",
+    "what": "A moment when a trade is recorded in the tape at exactly our simulated order's price.",
+    "why": "It is the stronger of the two fill signals, because a real trade at that price is direct evidence a fill was possible."
+  },
+  "n_clusters": {
+    "term": "n_clusters",
+    "plain": "games, not bets",
+    "what": "How many separate games the estimate rests on. Several bets on the same game count once.",
+    "why": "Bets in the same game rise and fall together, so counting bets would make a handful of games look like a mountain of evidence."
+  },
+  "honest range": {
+    "term": "honest range",
+    "plain": "cluster-robust 90 % interval",
+    "what": "A 90 percent confidence interval computed by clustering bets that share a game, not by treating every bet as independent.",
+    "why": "Treating correlated bets as independent would understate uncertainty and make thin evidence look far more solid than it is."
+  },
+  "variant": {
+    "term": "variant",
+    "plain": "strategy variant",
+    "what": "One configuration of the strategy: its own rules for which markets to trade and at what price.",
+    "why": "Every table on this page is broken out by variant, because two variants can behave very differently even on the same data."
+  },
+  "gate variant": {
+    "term": "gate variant",
+    "plain": "the one being judged",
+    "what": "The single variant whose results are being measured against the go-live gate's criteria right now.",
+    "why": "The gate evaluates one variant at a time, and naming it stops a reader from assuming the verdict covers every variant."
+  },
+  "primary": {
+    "term": "primary",
+    "plain": "the pre-registered original",
+    "what": "The variant whose rules were fixed and written down before any of this week's data was seen.",
+    "why": "Every other variant is compared against it, because a rule chosen after seeing the data proves nothing on its own."
+  },
+  "kill switch": {
+    "term": "kill switch",
+    "plain": "the stop button: no new orders, cancel everything",
+    "what": "A single operator control that stops the executor from placing new simulated orders and cancels every order it already has open.",
+    "why": "It is one of the only two writes the dashboard keeps; everything else on these pages is read-only evidence."
+  },
+  "order book": {
+    "term": "order book",
+    "plain": "the live list of everyone's orders on Kalshi",
+    "what": "The current list of resting buy and sell orders on a Kalshi market, at every price level.",
+    "why": "It is what a real fill would trade against, which is why the queue model replays a recording of it rather than guessing."
+  },
+  "tape": {
+    "term": "tape",
+    "plain": "the recorded order book",
+    "what": "The order book as it was recorded over time, kept so a fill can be simulated after the fact rather than in real time.",
+    "why": "It is the raw record every simulated fill is built from, and it is one of the tables the nightly backup deliberately excludes."
+  },
+  "dashboard snapshot": {
+    "term": "dashboard snapshot",
+    "plain": "this page's data, computed N seconds ago",
+    "what": "A cached read of the database, computed on a schedule rather than on every page load.",
+    "why": "It keeps a page load fast and the database light, at the cost of the data being a little behind live."
+  },
+  "provisional": {
+    "term": "provisional",
+    "plain": "a week still being counted",
+    "what": "A week whose numbers can still change, because bets from it are still settling.",
+    "why": "It warns a reader not to treat this week's row the way they would treat a finished, closed-out week."
+  },
+  "gate criteria": {
+    "term": "gate criteria",
+    "plain": "the twelve tests for going live",
+    "what": "The fixed set of tests a variant's paper results must pass before trading real money is even considered.",
+    "why": "Passing every one of them is necessary, but it is a research threshold, not a decision to trade real money."
+  }
+}
