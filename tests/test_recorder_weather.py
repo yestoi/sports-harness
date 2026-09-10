@@ -7,7 +7,7 @@ import httpx
 import respx
 from sqlalchemy import text
 
-from harness.db.models import Game, Team, WeatherPoint
+from harness.db.models import Game, WeatherPoint
 from harness.feeds.nws import NwsClient
 from harness.weather.snapshots import games_due, run_weather_source
 
@@ -235,3 +235,43 @@ def test_the_budget_stops_the_pass_between_games(db_session, env_settings, monke
     finally:
         client.close()
     assert counts["fetched"] == 0 and counts["budget_exhausted"] is True
+
+
+@respx.mock
+def test_the_budget_stops_the_pass_after_the_first_game(db_session, env_settings, monkeypatch):
+    """The zero-budget case above never enters the loop body. This one does: the budget is
+    checked before every game, so a pass that runs out after the first one fetches exactly one
+    game and reports itself exhausted rather than spending the tick on the rest."""
+    from harness.weather import snapshots as module
+    from harness.weather.stadiums import Stadium
+
+    class _BudgetFor:
+        """Enough budget for `games` iterations of the loop, then none."""
+
+        def __init__(self, games):
+            self._left = games
+
+        def ok(self):
+            return self._left > 0
+
+        def remaining_s(self):
+            self._left -= 1
+            return 60.0 if self._left >= 0 else 0.0
+
+    monkeypatch.setattr(module, "stadium_for", lambda sport, home, away, day: Stadium(
+        sport, home, "X", "X", 30.0 + home / 1000, -90.0, "open", "https://example.org"))
+    for game_id, team in ((1, 91), (2, 92), (3, 93)):
+        respx.get(f"https://api.weather.gov/points/{30.0 + team / 1000},-90.0").mock(
+            return_value=httpx.Response(200, json=POINTS))
+        _seed_game(db_session, game_id, team, hours_ahead=10)
+    _stub_hourly(POINTS["properties"]["forecastHourly"])
+
+    client = NwsClient(env_settings)
+    try:
+        counts = run_weather_source(db_session, 1, client, env_settings, NOW, _BudgetFor(1), {})
+    finally:
+        client.close()
+    assert counts["due"] == 3
+    assert counts["fetched"] == 1 and counts["budget_exhausted"] is True
+    assert db_session.execute(
+        text("select count(distinct game_id) from weather_snapshots")).scalar() == 1
