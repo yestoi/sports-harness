@@ -310,8 +310,10 @@ def test_a_study_name_resolves_to_the_study_builder(db_session, env_settings):
 
 def test_no_snapshot_module_names_a_forbidden_table():
     """The package-wide half of the forbidden-table rule: whatever builder modules land beside
-    this spine, none of them may read one of the five bulk tables `deploy/backup/dump.sh`
-    excludes from the nightly dump. Each builder task also carries its own copy of this check."""
+    this spine, none of them may read one of the seven forbidden tables -- the five bulk ones
+    `deploy/backup/dump.sh` excludes from the nightly dump, plus the two phase 5 tables that
+    hold venue free text (ruling B-I9). Each builder task also carries its own copy of this
+    check."""
     package = Path(snapshots.__file__).parent
     modules = sorted(package.glob("*.py"))
     assert modules, "the snapshots package has no modules to check"

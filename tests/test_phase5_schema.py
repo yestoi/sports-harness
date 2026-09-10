@@ -114,7 +114,10 @@ def test_one_quote_per_rfq(db_session):
     db_session.flush()
     db_session.add(RfqQuote(rfq_id="rfq_1", computed_at=NOW, legs=2, margin_per_leg=Decimal("0.03"),
                             unmatched_legs=0))
-    with pytest.raises(Exception):
+    # `IntegrityError` and not a bare `Exception`: the refusal under test is
+    # `uq_rfq_quote_rfq`'s unique violation, and a bare `Exception` would also pass on, say, a
+    # NOT NULL violation from a mistyped column.
+    with pytest.raises(IntegrityError):
         db_session.flush()
     db_session.rollback()
 
@@ -149,8 +152,10 @@ def test_housekeeping_never_deletes_from_a_phase_5_table(db_session):
         assert f"truncate {table}" not in body
 
 
-def test_the_other_six_tables_accept_a_row(db_session):
-    """One insert each, so a column that a later task names cannot be missing or misspelled."""
+def test_the_other_five_tables_accept_a_row(db_session):
+    """One insert each for the five tables the tests above do not write -- futures_snapshots,
+    weather_points, weather_snapshots, veto_queue and report_annotations -- so a column that a
+    later task names cannot be missing or misspelled."""
     db_session.add(FuturesSnapshot(
         run_id=1, snapshot_week="2026-W38", series_ticker="KXNFLSB", event_ticker="KXNFLSB-27",
         market_ticker="KXNFLSB-27-KC", title="Super Bowl winner", yes_sub_title="Kansas City",
