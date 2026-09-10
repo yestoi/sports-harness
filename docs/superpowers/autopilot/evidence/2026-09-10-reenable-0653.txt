@@ -1,0 +1,17 @@
+SET
+builders_all|floor|9|58|74|1628|1628
+builders_all|gate|4|1|1|12|12
+builders_all|pulse|17|44|62|678|678
+builders_all|study:2026-37|2|144|144|263|263
+builders_all|ticket|8|3|3|30|30
+builders_after_first_2min|floor|8|163|163
+builders_after_first_2min|gate|3|1|1
+builders_after_first_2min|pulse|14|141|141
+builders_after_first_2min|study:2026-37|1|144|144
+builders_after_first_2min|ticket|7|3|3
+loop_window|14|3839|4474|4474
+pulse_status|WATCH|check_skipped
+ 1  0 4422076 446088  41336 2118224   40    0    50   681 3276 16098  6  1 92  0  0
+ 1  0 4422076 446088  41336 2118224   41    0    66   492 2812 8154  3  1 96  0  0
+load average: 0.40, 0.66, 1.41
+Swap:           9999        4317        5682
