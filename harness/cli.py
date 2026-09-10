@@ -916,5 +916,57 @@ def futures_snapshot_cmd() -> None:
         http.close()
 
 
+parlay_app = typer.Typer(no_args_is_help=True, help="The fun-money parlay slips (real money)")
+app.add_typer(parlay_app, name="parlay")
+
+
+@parlay_app.command("build")
+def parlay_build_cmd(
+    sport: str = typer.Option(..., "--sport", help="cfb or nfl"),
+    week: int = typer.Option(None, "--week", help="ISO week; defaults to this week"),
+    kind: str = typer.Option("smart", "--kind", help="smart or lottery"),
+) -> None:
+    """Propose one parlay card (spec §8.1). Writes rows; places nothing.
+
+    The slip is typed into DraftKings by hand and confirmed with `harness parlay placed`.
+    Exit 2 with `no anchor priced` when no LSU or Saints outcome has a DraftKings price under
+    30 minutes old (D14): a card built on a stale feed has fictional arithmetic on it.
+    """
+    configure_logging()
+    from harness.db.models import OddsSnapshot, ParlayLeg
+    from harness.parlay.build import NoAnchorPriced, build_card
+
+    s = get_settings()
+    normalized = {"cfb": "ncaaf", "ncaaf": "ncaaf", "nfl": "nfl"}.get(sport)
+    if normalized is None:
+        log.error("unknown sport %r; use cfb or nfl", sport)
+        raise typer.Exit(2)
+    now = datetime.now(timezone.utc)
+    iso_week = week if week is not None else now.isocalendar().week
+    factory = make_session_factory(make_engine(s.database_url))
+    with factory() as session:
+        try:
+            card = build_card(session, s, normalized, iso_week, kind, now)
+        except NoAnchorPriced as exc:
+            log.error("%s", exc)
+            raise typer.Exit(2) from exc
+        session.commit()
+        legs = session.query(ParlayLeg).filter_by(card_id=card.id).order_by(ParlayLeg.seq).all()
+        print(f"card {card.id}  {card.sport} week {card.week}  {card.kind}  "
+              f"stake ${card.stake}")
+        for leg in legs:
+            snapshot = session.get(OddsSnapshot, leg.odds_snapshot_id)
+            # Ruling A-M6: every leg prints the age of the price it was built on, so the
+            # operator can see how stale the number is at the moment they type it in.
+            print(f"  {leg.seq}. {leg.plain_text:<40} {leg.dk_american:+5d}  "
+                  f"priced {snapshot.fetched_at.isoformat() if snapshot else '?'}")
+        print(f"estimated payout ${card.dk_payout_est}  our probability "
+              f"{card.true_prob_est}  implied hold {card.hold_est}")
+        if card.correlated:
+            print("  correlated legs: DraftKings will quote lower than this; "
+                  "enter the slip and compare")
+        print(card.rationale or "")
+
+
 if __name__ == "__main__":
     app()

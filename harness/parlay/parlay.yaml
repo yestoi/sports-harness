@@ -1,0 +1,35 @@
+# The fun-money parlay budget. Every number here is the user's (roadmap R:213-218) and none of
+# them is the loop's to tune: a change is a user decision, and the file is where it is recorded.
+#
+# $50 a week, $25 on the smart card, $5 on each of at most three lottery cards. That leaves $10
+# unallocated on purpose (D15): the budget is a ceiling the `placed` command enforces, not an
+# allocation it has to spend.
+weekly_budget: 50
+smart_stake: 25
+lottery_stake: 5
+lottery_cards_max: 3
+
+# Every card carries one of these as its anchor: an LSU or Saints moneyline, spread or total
+# (R:216). Matched against `teams.abbreviation`. "NO" is quoted: unquoted, YAML 1.1 parses it as
+# the boolean False, not the Saints' abbreviation.
+anchors: [LSU, "NO"]
+
+# Spec §8.1: 3-4 legs from different games on the smart card, 6-8 on the lottery card where
+# correlated legs are allowed and labelled.
+smart_legs: [3, 4]
+lottery_legs: [6, 8]
+
+# D14: a leg is priced at the newest DraftKings row for its outcome, no older than this. Older
+# than that and the payout arithmetic is fiction, so the build stops rather than guessing.
+leg_max_age_minutes: 30
+
+# The +EV pool the non-anchor legs come from: candidate signals with a `direct` fair value and an
+# edge over the threshold, inside this window. The addendum says "edge over the threshold" and
+# names no number, so `pool_min_edge` is **this plan's** value, stated once, here, and reported
+# as such by the task. It is a config key precisely so it is the user's to change.
+pool_window_hours: 6
+pool_min_edge: 0.02
+
+# B-C4: a proposed card nobody placed becomes `void` after this many days, with
+# `declined_reason = expired`.
+expiry_days: 7
