@@ -28,7 +28,9 @@ def test_two_rows_under_one_call_id(db_session):
                 results=[_result("claude-opus-5"), _result("claude-sonnet-5", "veto")],
                 created_at=NOW)
     rows = db_session.execute(text(
-        "select model, kind, subject_id, cost_usd, replay, arm, output->>'decision' as decision "
+        "select model, kind, subject_id, effort, prompt_hash, features, snippets, tool_calls, "
+        "usage, cost_usd, latency_ms, request_id, created_at, replay, arm, "
+        "output->>'decision' as decision "
         "from research_notes where call_id = :c order by model"), {"c": call_id}).all()
     assert [r.model for r in rows] == ["claude-opus-5", "claude-sonnet-5"]
     assert {r.kind for r in rows} == {"veto"} and {r.subject_id for r in rows} == {"4242"}
@@ -36,6 +38,19 @@ def test_two_rows_under_one_call_id(db_session):
     assert all(r.replay is False and r.arm is None for r in rows)
     # opus: 1,000 in = $0.005; 100 out = $0.0025; 500 cache reads = $0.00025; 2 searches = $0.02
     assert rows[0].cost_usd == Decimal("0.027750")
+    # Every remaining column carries what the caller and the result gave it: a row that silently
+    # dropped `usage` or `tool_calls` would leave the spend column unreconcilable.
+    assert {r.effort for r in rows} == {"high"}
+    assert {r.prompt_hash for r in rows} == {"a" * 64}
+    assert all(r.features == {"ttk_minutes": 90} for r in rows)
+    assert all(r.snippets == {"items": [], "truncated": False} for r in rows)
+    assert all(r.tool_calls == [{"type": "web_search_x", "name": "web_search", "query": "q"}]
+               for r in rows)
+    assert all(r.usage == {"input_tokens": 1000, "output_tokens": 100,
+                           "cache_read_input_tokens": 500, "cache_creation_input_tokens": 0,
+                           "searches": 2} for r in rows)
+    assert all(r.latency_ms == 9000 and r.request_id == "req_1" for r in rows)
+    assert all(r.created_at == NOW for r in rows)
 
 
 def test_a_replay_row_is_marked_and_carries_its_arm(db_session):

@@ -4,6 +4,7 @@ Every response in this file is one of the two recorded fixtures or a hand-built 
 same shape. Nothing here makes a call, and no test in this file reads `secrets/`.
 """
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from harness.research.client import (PRIMARY_MODEL, SHADOW_MODEL, SNIPPETS_MAX_B
                                      WEB_SEARCH_TOOL_TYPE, ResearchClient, error_from,
                                      output_from, parse_response, prompt_hash, snippets_from,
                                      tool_calls_from, usage_from, web_search_tool)
+from harness.research.spend import Usage, cost_usd
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PROVING = json.loads((FIXTURES / "anthropic_structured_websearch.json").read_text())
@@ -44,6 +46,7 @@ def test_the_second_call_read_the_cache():
     """B-M4: the veto's cache assertion, pinned here against the recording so the veto test can
     assert the same thing over its own call without a second live call."""
     assert CACHED["usage"]["cache_read_input_tokens"] > 0
+    assert usage_from(CACHED).cache_read_tokens == CACHED["usage"]["cache_read_input_tokens"]
 
 
 def test_the_tool_type_string_matches_the_installed_sdk():
@@ -93,7 +96,7 @@ def test_the_web_search_tool_block():
                                   "max_uses": 3}
 
 
-def test_allowed_domains_is_not_set(env_settings):
+def test_allowed_domains_is_not_set():
     """D22: `allowed_domains` is unset. The veto is shadow-only, defaults to proceed, and needs
     quoted evidence for anything else, so an injected page can at worst produce a recorded
     decision that changes nothing. Promotion to enforcing must revisit it."""
@@ -107,16 +110,19 @@ def test_usage_reads_the_four_token_fields():
     payload = {"content": [], "usage": {"input_tokens": 100, "output_tokens": 20,
                                         "cache_read_input_tokens": 30,
                                         "cache_creation_input_tokens": 40}}
-    assert usage_from(payload) == __import__(
-        "harness.research.spend", fromlist=["Usage"]).Usage(100, 20, 30, 40, 0)
+    assert usage_from(payload) == Usage(100, 20, 30, 40, 0)
 
 
 def test_searches_are_counted_from_the_server_tool_use_blocks():
     payload = {"usage": {}, "content": [
+        {"type": "server_tool_use", "name": "code_execution", "input": {"code": "..."}},
         {"type": "server_tool_use", "name": "web_search", "input": {"query": "a"}},
         {"type": "server_tool_use", "name": "web_search", "input": {"query": "b"}},
+        {"type": "code_execution_tool_result", "content": {}},
         {"type": "text", "text": "{}"},
     ]}
+    # The `code_execution` blocks are the ones Opus 5 wraps its searches in (controller
+    # artefacts, 2026-09-10): only `web_search` is billed per search, so only it is counted.
     assert usage_from(payload).searches == 2
 
 
@@ -207,6 +213,10 @@ def test_parse_response_assembles_a_call_result():
     assert result.model == PRIMARY_MODEL
     assert result.latency_ms == 12_345 and result.request_id == "req_abc"
     assert result.error is None and result.output is not None
+    # The recording's own numbers, priced by the spend module: 99 in, 1,239 out, 12,851 cache
+    # reads at 0.1x, 8,233 cache writes at 1.25x and 1 search at $0.01, on Opus 5's $5/$25.
+    assert result.usage == Usage(99, 1_239, 12_851, 8_233, 1)
+    assert cost_usd(PRIMARY_MODEL, result.usage) == Decimal("0.099352")
 
 
 # --- structure ------------------------------------------------------------------------------------
@@ -220,7 +230,7 @@ def test_only_the_client_module_calls_messages_create():
     assert offenders == []
 
 
-def test_the_client_is_built_with_retries_off(env_settings, tmp_path, monkeypatch):
+def test_the_client_is_built_with_retries_off(env_settings, tmp_path):
     """A-C3 hole 3: a retried request is a second billed call the accounting would never see."""
     key = tmp_path / "anthropic_api_key"
     key.write_text("sk-ant-not-a-real-key")
@@ -248,7 +258,7 @@ def test_the_client_refuses_to_build_without_a_key(env_settings):
         ResearchClient(env_settings)
 
 
-def test_prompt_hash_is_stable_and_changes_with_a_byte(env_settings):
+def test_prompt_hash_is_stable_and_changes_with_a_byte():
     a = [{"type": "text", "text": "frozen"}]
     b = [{"type": "text", "text": "frozen "}]
     assert prompt_hash(a) == prompt_hash(a) and len(prompt_hash(a)) == 64
