@@ -428,15 +428,23 @@ def test_pyproject_gains_exactly_one_dependency_per_phase():
 
 
 def test_constraints_pins_every_dependency_this_phase_added():
-    lines = [l for l in (ROOT / "constraints.txt").read_text().splitlines() if l.strip()]
+    # Comment lines are prose (phase 5 explains its pin in a comment block); the pins are the
+    # non-comment lines.
+    lines = [l for l in (ROOT / "constraints.txt").read_text().splitlines()
+             if l.strip() and not l.startswith("#")]
     phase4 = [l for l in lines if l.lower().startswith(("alembic==", "mako=="))]
-    phase5 = [l for l in lines if l.lower().startswith("anthropic==")]
-    assert len(phase4) == 2 and len(phase5) == 1
+    # Phase 5 pins the anthropic SDK plus the six transitive packages it needs (each marked
+    # "transitive pin for anthropic"), seven lines: T2 with the controller's ruling of
+    # 2026-09-10 (the current release needs its own httpx2 transport).
+    phase5 = [l for l in lines
+              if l.lower().startswith("anthropic==") or "transitive pin for anthropic" in l]
+    assert len(phase4) == 2 and len(phase5) == 7
+    assert phase5[0].startswith("anthropic==")
     # Appended below the existing lines, not regenerated: the pre-phase tail is intact and the
     # phases are readable in order.
-    assert lines[-4] == "websocket-client==1.9.2"
-    assert lines[-3:-1] == phase4
-    assert lines[-1:] == phase5
+    assert lines[-10] == "websocket-client==1.9.2"
+    assert lines[-9:-7] == phase4
+    assert lines[-7:] == phase5
 
 
 def test_migrate_is_programmatic_and_assumes_no_binary():
