@@ -92,7 +92,7 @@ Enforcing veto; live RFQ quoting; props at build time; the Novig adapter; H8 mea
 ## 7. Conformance
 
 1. Components map: 1.1 → roadmap (a), H7; 1.2 → (b), H6; 1.3 → (c), §8.1, dashboard §3.9; 1.4 → (d), §7.1, U4, R2, F60, F73; 1.5 → (e), §7.2; 1.6 → (f), §8.2, F64, F71, F72; nothing else.
-2. Dependencies: none new. The Anthropic SDK is already a dependency (F55's redaction shipped; confirm `anthropic` is in `pyproject.toml`, else it is the one addition, pinned in `constraints.txt` with the reason "the research layer's client"). APScheduler's `CronTrigger` is in the pinned package.
+2. Dependencies: **one new**: the `anthropic` Python SDK (verified absent from `pyproject.toml` and `constraints.txt` on 2026-09-10 07:20 CT), pinned to the current release in `constraints.txt`, reason "the research layer's Claude client" (the paid service behind it is pre-decided by U4's caps and the user's provisioned key; the client itself talks only to `api.anthropic.com`, invariant 8). `httpx` and APScheduler (with `CronTrigger`) are already pinned.
 3. Pre-registered ids unchanged; nothing under `harness/variants/` edited; `MAX_PRIMARY`/`MAX_SECONDARY` untouched; no `no_veto` variant (R2).
 4. Schema additive: ten new tables, all `CREATE TABLE IF NOT EXISTS` through `create_schema` and revision 0004; no DROP, RENAME, TRUNCATE, ALTER TYPE, DELETE.
 5. No production write path: the RFQ module has no POST; the transport's `PaperModeViolation` test names `POST /communications/quotes`; the veto never changes an intent (0.1); the parlay CLI writes only the harness's own tables.
