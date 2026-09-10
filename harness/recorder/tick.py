@@ -243,7 +243,44 @@ class _Budget:
         return self._deadline - self._mono()
 
 
+#: Ruling B-I8, and `harness/db/models.py::ParlayLegProb`'s docstring verbatim: "once per
+#: recorder tick while a card is placed or alive and its game is inside the in-progress window".
+#: `book_p` is DraftKings' own live implied probability for the leg's outcome when the feed
+#: carries one, from the same `(game_id, market_type, outcome)` key the leg was priced from. The
+#: `market_type` mapping ("ml" -> "moneyline") cannot be a bind parameter inside the correlated
+#: subquery, so the leg CTE resolves it once and both reads share `leg.mt`.
+_LEG_PROB_ROWS = text("""
+    with leg as (
+        select l.id, l.game_id, l.side_team_id, l.side,
+               case l.market_type when 'ml' then 'moneyline' else l.market_type end as mt
+        from parlay_legs l
+        join parlay_cards c on c.id = l.card_id
+        join games g on g.id = l.game_id
+        where c.status in ('placed', 'alive') and g.status = 'in_progress'
+    )
+    select leg.id as leg_id, f.fair_p as sharp_p,
+           (select 1.0 / o.price_decimal from odds_snapshots o
+             where o.book = 'draftkings' and o.game_id = leg.game_id
+               and o.market_type = leg.mt
+               and o.outcome_team_id is not distinct from leg.side_team_id
+               and o.outcome_side is not distinct from leg.side
+               and o.price_decimal > 0
+             order by o.fetched_at desc limit 1) as book_p
+    from leg
+    join lateral (
+        select fv.fair_p from fair_values fv
+        where fv.game_id = leg.game_id and fv.market_type = leg.mt
+          and fv.outcome_team_id is not distinct from leg.side_team_id
+          and fv.outcome_side is not distinct from leg.side
+        order by fv.created_at desc limit 1
+    ) f on true
+""")
+
+
 class Recorder:
+    #: Class attribute, not a module one, so a test can monkeypatch `Recorder._LEG_PROB_ROWS`.
+    _LEG_PROB_ROWS = _LEG_PROB_ROWS
+
     def __init__(self, settings: Settings, session_factory: sessionmaker, odds: OddsApiClient, espn: EspnClient,
                  kalshi: KalshiPublic, clock: Callable[[], datetime] = utcnow,
                  monotonic: Callable[[], float] = time.monotonic,
@@ -752,6 +789,31 @@ class Recorder:
             ctx["warnings"].append({"weather": repr(e)})
             ctx["weather"] = {"error": type(e).__name__}
 
+    def _leg_probs(self, session: Session, run: Run, now: datetime, ctx: dict) -> None:
+        """"Sharps say NN %" per live parlay leg (spec §2.5 item 1, ruling B-I8).
+
+        One row per leg per tick while the card is placed or alive and its game is in progress.
+        `parlay_leg_probs` is keyed `(leg_id, ts)`, so a repeated tick at the same instant is an
+        upsert rather than a duplicate-key error that would fail the tick. Nothing here can fail
+        a tick: this is the fun-money surface's history bar, not the tape.
+        """
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from harness.db.models import ParlayLegProb
+
+        try:
+            rows = [{"leg_id": r.leg_id, "ts": now, "sharp_p": r.sharp_p, "book_p": r.book_p}
+                    for r in session.execute(self._LEG_PROB_ROWS)]
+            if rows:
+                session.execute(pg_insert(ParlayLegProb).values(rows)
+                                .on_conflict_do_nothing(index_elements=["leg_id", "ts"]))
+            ctx["leg_probs"] = len(rows)
+        except Exception as e:  # noqa: BLE001 - the fun-money bar never fails a tick
+            log.exception("parlay leg probs failed")
+            session.rollback()
+            ctx["warnings"].append({"leg_probs": repr(e)})
+            ctx["leg_probs"] = 0
+
     # ---- entry point -----------------------------------------------------------------
     def _due(self, last: datetime | None, now: datetime, interval: int | None) -> bool:
         # interval=None is the cadence planner's quiet-window "do not fetch": a forced tick never
@@ -817,6 +879,10 @@ class Recorder:
                 # Phase 5: weather takes what is left of the fetch phase and never competes with
                 # the tape. Twice guarded; see `_weather`.
                 self._weather(session, run, now, kickoffs, budget, ctx)
+                self._checkpoint(session, run)
+                # Phase 5c: the live parlay leg-probability writer. Its own try/except never
+                # raises out to this one; the checkpoint just gives it a clean session.
+                self._leg_probs(session, run, now, ctx)
                 self._checkpoint(session, run)
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed")
@@ -887,7 +953,8 @@ class Recorder:
                                     "non_linear_cent": ctx.get("non_linear_cent", 0),
                                     "pricing": ctx.get("pricing", {}),
                                     "venue_limits": ctx.get("venue_limits"),
-                                    "weather": ctx.get("weather")},
+                                    "weather": ctx.get("weather"),
+                                    "leg_probs": ctx.get("leg_probs")},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
                      len(ctx["errors"]), len(ctx["warnings"]))

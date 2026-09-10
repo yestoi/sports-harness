@@ -455,12 +455,13 @@ def test_stages_registered_in_order():
     """
     from harness.settlement.job import STAGE_MODULES
 
-    assert STAGE_MODULES == ["harness.settlement.settle", "harness.settlement.benchmarks",
-                             "harness.settlement.order_clv", "harness.settlement.markouts",
-                             "harness.ops.housekeeping", "harness.settlement.report_wtd"]
+    assert STAGE_MODULES == ["harness.settlement.settle", "harness.settlement.parlay_grade",
+                             "harness.settlement.benchmarks", "harness.settlement.order_clv",
+                             "harness.settlement.markouts", "harness.ops.housekeeping",
+                             "harness.settlement.report_wtd"]
 
     names = [name for name, _ in load_stages()]
-    expected = {"settle", "venue_result", "benchmarks", "result_benchmarks",
+    expected = {"settle", "venue_result", "parlay_grade", "benchmarks", "result_benchmarks",
                "gap_outcomes_drain", "order_clv", "markouts", "housekeeping", "report_wtd"}
     assert set(names) == expected
     assert len(names) == len(expected)  # each registered exactly once
@@ -469,6 +470,7 @@ def test_stages_registered_in_order():
         return names.index(a) < names.index(b)
 
     assert before("settle", "venue_result")
+    assert before("settle", "parlay_grade")
     assert before("benchmarks", "result_benchmarks")
     assert before("gap_outcomes_drain", "order_clv")
     assert set(BENCHMARK_TYPES) >= set(GAP_OUTCOME_TYPES)

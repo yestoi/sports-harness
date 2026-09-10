@@ -521,3 +521,241 @@ def old_placed_card(db_session):
     return _make_parlay_card(db_session, status="placed",
                              built_at=PARLAY_NOW - timedelta(days=8),
                              legs=[(game.id, team.id, Decimal("-3.5"), Decimal("-3.5"))])
+
+
+# --- Task T12: `parlay_grade` and the leg-probability writer's fixtures ------------------------
+#
+# `parlay_grade`'s fixtures each build one `placed` card by hand -- a moneyline leg per game,
+# `side_is_home` choosing which team the leg backs -- plus the `parlay_placements` row and the
+# `parlay_ledger` `stake` row `mark_placed` would already have written by the time a card reaches
+# `placed`. The leg-probability writer's fixtures build the separate shape its own query reads:
+# a `venue_markets` + `fair_values` (`fair_source = 'direct'`) pair per leg, and a DraftKings
+# `odds_snapshots` row unless the fixture's name says there is none.
+
+_GRADE_KICKOFF = PARLAY_NOW - timedelta(hours=3)
+_LEGPROB_PRICED_AT = datetime(2026, 9, 20, 20, 0, tzinfo=timezone.utc)
+
+
+def _make_graded_card(session, *, status: str, built_at: datetime,
+                      stake: Decimal = Decimal("25.00")):
+    """One `parlay_cards` row, no legs yet."""
+    from harness.db.models import ParlayCard
+
+    iso = built_at.isocalendar()
+    card = ParlayCard(year=iso.year, week=iso.week, sport=_PARLAY_SPORT, kind="smart",
+                      built_at=built_at, stake=stake, dk_payout_est=Decimal("100.00"),
+                      true_prob_est=Decimal("0.500000"), hold_est=Decimal("0.0500"),
+                      rationale="test card", status=status, correlated=False)
+    session.add(card)
+    session.flush()
+    return card
+
+
+def _pf_leg(session, card, seq: int, prefix: str, *, home_score: int | None,
+           away_score: int | None, side_is_home: bool = True, status: str = "final",
+           leg_status: str = "alive"):
+    """One team pair, one game with the given final score and status, and one moneyline leg on
+    the card backing the home side (or the away side, when `side_is_home` is False)."""
+    from harness.db.models import Game, ParlayLeg
+
+    home = _make_team(session, f"{prefix}H")
+    away = _make_team(session, f"{prefix}A")
+    game = Game(sport=_PARLAY_SPORT, home_team_id=home.id, away_team_id=away.id,
+               kickoff_utc=_GRADE_KICKOFF, status=status, home_score=home_score,
+               away_score=away_score)
+    session.add(game)
+    session.flush()
+    side_team = home if side_is_home else away
+    session.add(ParlayLeg(card_id=card.id, seq=seq, game_id=game.id, market_type="ml",
+                          side_team_id=side_team.id, side=None, threshold=None,
+                          dk_american=-110, dk_decimal=Decimal("1.9100"),
+                          plain_text=f"leg {seq}", odds_snapshot_id=None, status=leg_status))
+    session.flush()
+    return game
+
+
+def _placement_and_stake(session, card, now: datetime, stake: Decimal | None = None):
+    """The `parlay_placements` row plus the `parlay_ledger` `stake` row `mark_placed` writes."""
+    from harness.db.models import ParlayLedger, ParlayPlacement
+    from harness.research.spend import chicago_day
+
+    stake = stake if stake is not None else card.stake
+    iso = chicago_day(now).isocalendar()
+    session.add(ParlayPlacement(card_id=card.id, placed_at=now, stake_actual=stake,
+                                dk_payout_actual=card.dk_payout_est, dk_odds_actual=100,
+                                note=None))
+    session.add(ParlayLedger(ts=now, card_id=card.id, kind="stake", amount=stake,
+                             year=iso.year, week=iso.week))
+    session.flush()
+
+
+@pytest.fixture
+def placed_card_final(db_session):
+    """Three legs, each on its own final game: one hit, one miss, one push (void)."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "PF1", home_score=24, away_score=17)   # side (home) wins: hit
+    _pf_leg(db_session, card, 2, "PF2", home_score=10, away_score=20)   # side (home) loses: miss
+    _pf_leg(db_session, card, 3, "PF3", home_score=14, away_score=14)   # tied: push -> void
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_push(db_session):
+    """One moneyline leg whose game finished tied."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "PU1", home_score=21, away_score=21)
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_all_hit(db_session):
+    """Two legs, each final, each backing the side that won."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "AH1", home_score=30, away_score=10)
+    _pf_leg(db_session, card, 2, "AH2", home_score=27, away_score=24)
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_one_miss(db_session):
+    """One leg hit, one leg's side lost."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "OM1", home_score=30, away_score=10)   # hit
+    _pf_leg(db_session, card, 2, "OM2", home_score=10, away_score=20)   # miss
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_all_void(db_session):
+    """One tied final game (a push) and one postponed game -- both grade to `void`. The
+    postponed game still carries a score (0-0): `_grade_leg` needs a non-null score to grade a
+    leg at all, postponed included, so a postponed game the harness never saw scored is simply
+    never graded until it is (the same rule a `final` game with a missing score follows)."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "AV1", home_score=14, away_score=14, status="final")
+    _pf_leg(db_session, card, 2, "AV2", home_score=0, away_score=0, status="postponed")
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_one_live(db_session):
+    """One leg whose game is still `in_progress`, with no score yet."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "OL1", home_score=None, away_score=None, status="in_progress")
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def two_placed_cards_final(db_session):
+    """Two independent one-leg cards, both fully final and both hits."""
+    card1 = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card1, 1, "TC1", home_score=30, away_score=10)
+    _placement_and_stake(db_session, card1, PARLAY_NOW)
+
+    card2 = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card2, 1, "TC2", home_score=30, away_score=10)
+    _placement_and_stake(db_session, card2, PARLAY_NOW)
+    return (card1, card2)
+
+
+def _lp_team_game(session, prefix: str, *, status: str):
+    from harness.db.models import Game
+
+    home = _make_team(session, f"{prefix}H")
+    away = _make_team(session, f"{prefix}A")
+    game = Game(sport=_PARLAY_SPORT, home_team_id=home.id, away_team_id=away.id,
+               kickoff_utc=PARLAY_NOW, status=status)
+    session.add(game)
+    session.flush()
+    return home, away, game
+
+
+def _lp_leg_market(session, *, game_id: int, team_id: int, with_dk: bool):
+    """One `venue_markets` row, one `fair_values` row (`fair_source = 'direct'`), and, unless
+    `with_dk` is False, one DraftKings `odds_snapshots` row at `price_decimal = 2.50` -- the
+    shape the leg was priced from."""
+    from harness.db.models import FairValue, VenueMarket
+
+    rid = _next_id()
+    vm = VenueMarket(venue="kalshi", ticker=f"LP-{rid}", event_ticker=f"LPE-{rid}",
+                     series_ticker="S", game_id=game_id, market_type="moneyline",
+                     side_team_id=team_id, side=None, first_seen_raw_id=rid,
+                     last_seen_at=_LEGPROB_PRICED_AT)
+    session.add(vm)
+    fv = FairValue(run_id=rid, game_id=game_id, market_type="moneyline",
+                   outcome_team_id=team_id, outcome_side=None, threshold=None,
+                   fair_p=Decimal("0.5500"), fair_source="direct", created_at=_LEGPROB_PRICED_AT)
+    session.add(fv)
+    session.flush()
+    if with_dk:
+        _make_dk_price(session, game_id=game_id, market_type="moneyline", team_id=team_id,
+                       side=None, price=Decimal("2.50"), fetched_at=_LEGPROB_PRICED_AT)
+    return vm, fv
+
+
+def _make_lp_card(session, *, card_status: str, game, team, with_dk: bool = True):
+    from harness.db.models import ParlayCard, ParlayLeg
+
+    iso = PARLAY_NOW.isocalendar()
+    card = ParlayCard(year=iso.year, week=iso.week, sport=_PARLAY_SPORT, kind="smart",
+                      built_at=PARLAY_NOW, stake=Decimal("25.00"),
+                      dk_payout_est=Decimal("100.00"), true_prob_est=Decimal("0.550000"),
+                      hold_est=Decimal("0.0500"), rationale="test card", status=card_status,
+                      correlated=False)
+    session.add(card)
+    session.flush()
+    _lp_leg_market(session, game_id=game.id, team_id=team.id, with_dk=with_dk)
+    leg = ParlayLeg(card_id=card.id, seq=1, game_id=game.id, market_type="ml",
+                    side_team_id=team.id, side=None, threshold=None, dk_american=-110,
+                    dk_decimal=Decimal("1.9100"), plain_text="leg 1", odds_snapshot_id=None,
+                    status="alive" if card_status in ("placed", "alive") else "pending")
+    session.add(leg)
+    session.flush()
+    return card, leg
+
+
+@pytest.fixture
+def live_card_in_window(db_session):
+    """A `placed` card whose game is `in_progress`: the writer's condition is met."""
+    _home, _away, game = _lp_team_game(db_session, "LW", status="in_progress")
+    card, leg = _make_lp_card(db_session, card_status="placed", game=game, team=_home)
+    return SimpleNamespace(card=card, leg_ids=[leg.id])
+
+
+@pytest.fixture
+def proposed_card_in_window(db_session):
+    """The game is `in_progress`, but the card is still `proposed`: nothing to write."""
+    home, _away, game = _lp_team_game(db_session, "PW", status="in_progress")
+    card, leg = _make_lp_card(db_session, card_status="proposed", game=game, team=home)
+    return SimpleNamespace(card=card, leg_ids=[leg.id])
+
+
+@pytest.fixture
+def live_card_before_kickoff(db_session):
+    """A `placed` card whose game has not started yet: nothing to write."""
+    home, _away, game = _lp_team_game(db_session, "BK", status="scheduled")
+    card, leg = _make_lp_card(db_session, card_status="placed", game=game, team=home)
+    return SimpleNamespace(card=card, leg_ids=[leg.id])
+
+
+@pytest.fixture
+def live_card_final(db_session):
+    """A `placed` card whose game has already gone final: nothing to write."""
+    home, _away, game = _lp_team_game(db_session, "LF", status="final")
+    card, leg = _make_lp_card(db_session, card_status="placed", game=game, team=home)
+    return SimpleNamespace(card=card, leg_ids=[leg.id])
+
+
+@pytest.fixture
+def live_card_no_book(db_session):
+    """The same shape as `live_card_in_window`, priced with no DraftKings row at all."""
+    home, _away, game = _lp_team_game(db_session, "NB", status="in_progress")
+    card, leg = _make_lp_card(db_session, card_status="placed", game=game, team=home,
+                              with_dk=False)
+    return SimpleNamespace(card=card, leg_ids=[leg.id])

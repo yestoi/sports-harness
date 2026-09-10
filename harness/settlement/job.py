@@ -82,7 +82,12 @@ STAGES: list[tuple[str, StageFn]] = []
 #: the first entry. Never import a stage module from here directly: the import happens at run
 #: time so a module that does not exist yet cannot break this one.
 STAGE_MODULES: list[str] = [
-    "harness.settlement.settle", "harness.settlement.benchmarks", "harness.settlement.order_clv",
+    "harness.settlement.settle",
+    # Phase 5 (ruling B-I7): grades against the finals `settle` just resolved, and ahead of the
+    # long-running benchmark and markout stages so a busy Sunday does not starve it. `rfq_grade`
+    # follows it.
+    "harness.settlement.parlay_grade",
+    "harness.settlement.benchmarks", "harness.settlement.order_clv",
     "harness.settlement.markouts", "harness.ops.housekeeping", "harness.settlement.report_wtd",
 ]
 
