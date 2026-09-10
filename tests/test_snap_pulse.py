@@ -79,6 +79,24 @@ def test_every_named_rule_is_evaluated(db_session, env_settings, rule_name):
     assert rule_name in _rules(db_session, env_settings)
 
 
+def test_a_failing_gather_group_leaves_its_rule_not_evaluated_and_the_rest_intact(
+        db_session, env_settings, monkeypatch):
+    """Ruling A-I1: `gather()` runs outside every `section()` guard, and `status` is polled by
+    the shell on every surface at 30 s -- its loss is the most visible failure the snapshot
+    layer can have. A failing query group must cost only the rule(s) that read it, not the
+    payload."""
+    _ok_machine(db_session, env_settings)
+    from sqlalchemy import text
+    monkeypatch.setattr(pulse, "_NEWEST_RUN", text("select * from no_such_table"))
+
+    payload = build_pulse(db_session, NOW, env_settings)
+
+    not_evaluated = {r["name"] for r in payload["status"]["not_evaluated"]}
+    assert "recorder_stale" in not_evaluated
+    assert isinstance(payload["vitals"], dict) and "error" not in payload["vitals"]
+    assert isinstance(payload["invariants"], dict) and "error" not in payload["invariants"]
+
+
 def test_a_stale_recorder_is_broken(db_session, env_settings):
     from harness.health import STALE_AFTER_S
 
@@ -429,6 +447,40 @@ def test_the_build_tile_shows_all_three_shas(db_session, env_settings):
     assert tile["recorder_build_sha"] == "abc"
     assert tile["executor_version"] == "4.2"
     assert tile["serving_build_sha"] == env_settings.build_sha
+
+
+def test_each_vitals_tile_names_the_sparkline_series_it_draws(db_session, env_settings):
+    """Ruling B-C3: `technical` is the glossary key and stays one; `metric` is the separate
+    `metric_samples` name whose sparkline the tile draws, or `None` for the tile with no series
+    of its own (the executor heartbeat tile draws from `exec_heartbeat`, not a metric)."""
+    _ok_machine(db_session, env_settings)
+    tiles = {t["label"]: t for t in build_pulse(db_session, NOW, env_settings)["vitals"]["tiles"]}
+
+    assert tiles["executor heartbeat"]["metric"] is None
+    assert tiles["loop time"]["metric"] == "exec.p95_loop_ms"
+    assert tiles["loops skipped"]["metric"] == "exec.loops_skipped"
+    assert tiles["markets with a book we distrust"]["metric"] == "exec.dirty_markets"
+    assert tiles["last exchange message"]["metric"] == "exec.ws_event_age_s"
+    assert tiles["credits left this month"]["metric"] == "recorder.credits_remaining"
+    # `technical` is unchanged and still the glossary key.
+    assert tiles["loop time"]["technical"] == "exec.p95_loop_ms"
+    assert tiles["executor heartbeat"]["technical"] == "exec_heartbeat.last_loop_at"
+
+
+def test_vitals_sparklines_carry_only_the_names_a_tile_reads(db_session, env_settings):
+    """Ruling B-C3: `exec.loop_ms`, `ws.events_per_min`, `ws.trades_per_min` and `ws.reconnects`
+    used to be collected and serialized into every payload with no tile reading them."""
+    _ok_machine(db_session, env_settings)
+    for name in ("exec.loop_ms", "ws.events_per_min", "ws.trades_per_min", "ws.reconnects",
+                "exec.p95_loop_ms"):
+        db_session.add(MetricSample(ts=NOW - timedelta(minutes=1), source="exec", name=name,
+                                    value=1, labels={}))
+    db_session.flush()
+
+    sparklines = build_pulse(db_session, NOW, env_settings)["vitals"]["sparklines"]
+    assert "exec.p95_loop_ms" in sparklines
+    for dropped in ("exec.loop_ms", "ws.events_per_min", "ws.trades_per_min", "ws.reconnects"):
+        assert dropped not in sparklines
 
 
 def test_no_pulse_sql_names_a_forbidden_table():

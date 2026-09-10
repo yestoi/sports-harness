@@ -20,6 +20,7 @@ Two rules of construction, both from the reviews:
 and `PULSE_KEYS` is asserted by the payload-schema test.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -31,12 +32,18 @@ from harness.config.settings import Settings
 from harness.dashboard import sentences
 from harness.dashboard.snapshots import (FLOOR_P95_BUDGET_MS, base_payload, register_builder,
                                          section)
+from harness.dashboard.snapshots import floor as _floor
+from harness.dashboard.snapshots import gate as _gate
+from harness.dashboard.snapshots import study as _study
+from harness.dashboard.snapshots import ticket as _ticket
 from harness.execution.risk import DRAWDOWN_STOP_PCT, DRAWDOWN_WINDOW, stopped_variants
 from harness.health import (CREDITS_LOW_FRACTION, CREDITS_WATCH_FRACTION, DB_BROKEN_FRACTION,
                             DB_WATCH_FRACTION, DISK_FREE_MIN_FRACTION, HEARTBEAT_BROKEN_S,
                             HEARTBEAT_WATCH_S, STALE_AFTER_S, WS_EVENT_BROKEN_S,
                             WS_EVENT_WATCH_S)
 from harness.telemetry import sanitize_reason
+
+log = logging.getLogger(__name__)
 
 CADENCE_S = 30
 #: The tape strip's window and its bucket size (spec §2.1 item 2).
@@ -61,7 +68,8 @@ EVENTS_LIMIT = 10
 #: intervals the jobs actually run at, these are the intervals a snapshot's age is read against,
 #: and the two differ for `floor` and `ticket` by the paragraph above. Neither is the other's
 #: bug to fix.
-JUDGED_CADENCES = {"pulse": 30, "floor": 60, "gate": 60, "ticket": 60, "study": 600}
+JUDGED_CADENCES = {"pulse": CADENCE_S, "floor": _floor.CADENCE_OUT_S, "gate": _gate.CADENCE_S,
+                   "ticket": _ticket.CADENCE_OUT_S, "study": _study.CADENCE_S}
 
 PULSE_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                         "status", "tape", "vitals", "storage", "invariants",
@@ -148,11 +156,13 @@ _TAPE = text("""
     where name in ('ws.events_per_min', 'recorder.fetched') and ts > :since
     group by 1, 2, 3
 """)
+#: Ruling B-C3: only the names a vitals tile actually reads by its `metric` key. `exec.loop_ms`,
+#: `ws.events_per_min`, `ws.trades_per_min` and `ws.reconnects` used to be collected here too and
+#: serialized into every 30 s payload unread -- no tile's `metric` names them.
 _VITALS = text("""
     select name, value, ts from metric_samples
-    where name in ('exec.loop_ms', 'exec.p95_loop_ms', 'exec.loops_skipped',
-                   'exec.dirty_markets', 'exec.ws_event_age_s', 'ws.events_per_min',
-                   'ws.trades_per_min', 'ws.reconnects', 'recorder.credits_remaining')
+    where name in ('exec.p95_loop_ms', 'exec.loops_skipped', 'exec.dirty_markets',
+                   'exec.ws_event_age_s', 'recorder.credits_remaining')
       and ts > :since
     order by ts
 """)
@@ -207,8 +217,27 @@ def _housekeeping_counts(session: Session) -> dict | None:
     return None
 
 
+def _group(session: Session, name: str, fn: Callable[[], object], default: object = None):
+    """One query group of `gather`, isolated (ruling A-I1). `gather` is called outside every
+    `section()` guard -- its result feeds `status`, which the shell polls on every surface at
+    30 s -- so one slow or broken group must not cost the whole payload the way an unguarded
+    `section` body would. A `DBAPIError` deactivates the session for every later statement, so a
+    failure here rolls back before the next group runs. `default` is the value each group's own
+    consuming rule already treats as absent: `None` where a rule checks `is None`/`if x else`,
+    an empty list or dict where a rule iterates or indexes its group unconditionally (`sweep`,
+    `settle`, `floor_ms`, `snapshots`, `stopped`, `drawdown_by_variant`, `metrics`) so that rule
+    falls through to `_absent` instead of raising past `evaluate()`, which is unguarded too."""
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 - one query group must not cost the whole payload
+        log.warning("pulse gather group %s failed: %s", name, type(exc).__name__)
+        session.rollback()
+        return default
+
+
 def gather(session: Session, now: datetime, settings: Settings) -> dict:
-    """Every value the rules read, one bounded query each.
+    """Every value the rules read, one bounded query each, each isolated by `_group` so a
+    failure in one leaves the rest intact and that group's rule reads `not_evaluated`.
 
     `recorder` is read here rather than through `harness.health.compute_health`, which takes a
     `sessionmaker` and would check out a second connection from a pool of two while a build is
@@ -216,18 +245,36 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
     imported from the same module `compute_health` enforces it in, so the two cannot disagree
     about when a recorder is stale.
     """
-    run = session.execute(_NEWEST_RUN).first()
-    heartbeat = session.execute(_HEARTBEAT).first()
-    kill = session.execute(_KILL).first()
-    metrics = {row.name: float(row.value) for row in
-               session.execute(_NEWEST_METRIC, {"since": now - TAPE_WINDOW})
-               if row.value is not None}
-    sweep = [dict(row._mapping) for row in session.execute(_LATEST_SWEEP)]
-    settle = [dict(row._mapping) for row in
-              session.execute(_SETTLE_RUNS, {"since": now - timedelta(hours=24)})]
-    floor_ms = [float(v) for v in session.execute(
-        _FLOOR_MS, {"since": now - FLOOR_P95_WINDOW}).scalars()]
-    snapshots = [dict(row._mapping) for row in session.execute(_SNAPSHOT_AGES)]
+    run = _group(session, "run", lambda: session.execute(_NEWEST_RUN).first())
+    heartbeat = _group(session, "heartbeat", lambda: session.execute(_HEARTBEAT).first())
+    kill = _group(session, "kill", lambda: session.execute(_KILL).first())
+    metrics = _group(session, "metrics", lambda: {
+        row.name: float(row.value) for row in
+        session.execute(_NEWEST_METRIC, {"since": now - TAPE_WINDOW})
+        if row.value is not None}, default={})
+    sweep = _group(session, "sweep",
+                   lambda: [dict(row._mapping) for row in session.execute(_LATEST_SWEEP)],
+                   default=[])
+    settle = _group(session, "settle", lambda: [
+        dict(row._mapping) for row in
+        session.execute(_SETTLE_RUNS, {"since": now - timedelta(hours=24)})], default=[])
+    floor_ms = _group(session, "floor_ms", lambda: [float(v) for v in session.execute(
+        _FLOOR_MS, {"since": now - FLOOR_P95_WINDOW}).scalars()], default=[])
+    snapshots = _group(session, "snapshots",
+                       lambda: [dict(row._mapping) for row in session.execute(_SNAPSHOT_AGES)],
+                       default=[])
+    gaps_2h = _group(session, "gaps_2h", lambda: float(session.execute(
+        _GAPS_2H, {"since": now - GAP_WINDOW}).scalar() or 0), default=0.0)
+    housekeeping = _group(session, "housekeeping", lambda: _housekeeping_counts(session))
+    credits_remaining = _group(session, "credits_remaining",
+                               lambda: session.execute(_NEWEST_CREDITS).scalar())
+    games_live = _group(session, "games_live",
+                        lambda: int(session.execute(_GAMES_LIVE).scalar() or 0), default=0)
+    stopped = _group(session, "stopped", lambda: sorted(stopped_variants(session, now)),
+                     default=[])
+    drawdown_by_variant = _group(session, "drawdown_by_variant", lambda: {
+        row.variant_id: row.drawdown_pct for row in
+        session.execute(_NEWEST_DRAWDOWN, {"since": now - DRAWDOWN_WINDOW})}, default={})
     return {
         "now": now,
         "settings": settings,
@@ -244,22 +291,19 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
         # and `init-db` writes the row, but a rule that renders green over a row nobody wrote is
         # the pattern this module's docstring refuses. `rule_kill_switch` reports it unevaluated.
         "kill_active": bool(kill.active) if kill else None,
-        "gaps_2h": float(session.execute(
-            _GAPS_2H, {"since": now - GAP_WINDOW}).scalar() or 0),
+        "gaps_2h": gaps_2h,
         "disk_free_gb": metrics.get("host.disk_free_gb"),
         "disk_total_gb": metrics.get("host.disk_total_gb"),
         "mem_available_mb": metrics.get("host.mem_available_mb"),
-        "housekeeping": _housekeeping_counts(session),
-        "credits_remaining": session.execute(_NEWEST_CREDITS).scalar(),
+        "housekeeping": housekeeping,
+        "credits_remaining": credits_remaining,
         "sweep": sweep,
         "settle": settle,
         "floor_ms": floor_ms,
         "snapshots": snapshots,
-        "games_live": int(session.execute(_GAMES_LIVE).scalar() or 0),
-        "stopped": sorted(stopped_variants(session, now)),
-        "drawdown_by_variant": {row.variant_id: row.drawdown_pct for row in
-                                session.execute(_NEWEST_DRAWDOWN,
-                                                {"since": now - DRAWDOWN_WINDOW})},
+        "games_live": games_live,
+        "stopped": stopped,
+        "drawdown_by_variant": drawdown_by_variant,
     }
 
 
@@ -440,10 +484,13 @@ def evaluate(values: dict) -> list[RuleResult]:
     return [rule(values) for rule in RULES]
 
 
-def _tape(session: Session, now: datetime) -> dict:
+def _tape(session: Session, now: datetime, gaps: float) -> dict:
     """The 24 h continuity strip: one bar per source, one bucket per 5 minutes, gaps drawn as
     breaks. `ws.events_per_min` is the socket; `recorder.fetched{source}` is odds, kalshi and
-    espn. Bucket 0 is the most recent."""
+    espn. Bucket 0 is the most recent.
+
+    `gaps` is `gather()`'s own `gaps_2h` (ruling A-M4): `_GAPS_2H` was running a second time
+    here, once per build, for a number `gather` had already read."""
     buckets = int(TAPE_WINDOW.total_seconds() // 60 // TAPE_BUCKET_MIN)
     series: dict[str, list[float]] = {}
     for row in session.execute(_TAPE, {"now": now, "since": now - TAPE_WINDOW,
@@ -453,7 +500,6 @@ def _tape(session: Session, now: datetime) -> dict:
         lane = series.setdefault(key, [0.0] * buckets)
         if 0 <= row.bucket < buckets:
             lane[row.bucket] += float(row.total or 0)
-    gaps = float(session.execute(_GAPS_2H, {"since": now - GAP_WINDOW}).scalar() or 0)
     return {"window_h": int(TAPE_WINDOW.total_seconds() // 3600),
             "bucket_min": TAPE_BUCKET_MIN,
             "sources": [{"source": name, "buckets": lane,
@@ -470,19 +516,29 @@ def _vitals(session: Session, now: datetime, values: dict) -> dict:
     heartbeat = values["heartbeat"] or {}
     return {
         "sparklines": lines,
+        # `technical` stays the glossary key a test checks it as (ruling B-C3); `metric` is the
+        # separate `metric_samples` name whose sparkline the tile draws, or `None` when the tile
+        # has no series of its own. The two used to be the same field doing two jobs: five of
+        # six tiles looked up a `sparklines` key the builder never wrote.
         "tiles": [
             {"label": "executor heartbeat", "technical": "exec_heartbeat.last_loop_at",
+             "metric": None,
              "value": values["heartbeat_age_s"], "unit": "s",
              "threshold": HEARTBEAT_WATCH_S},
             {"label": "loop time", "technical": "exec.p95_loop_ms",
+             "metric": "exec.p95_loop_ms",
              "value": heartbeat.get("p95_loop_ms"), "unit": "ms", "threshold": None},
             {"label": "loops skipped", "technical": "exec_heartbeat.loops_skipped",
+             "metric": "exec.loops_skipped",
              "value": heartbeat.get("loops_skipped"), "unit": "count", "threshold": None},
             {"label": "markets with a book we distrust", "technical": "book_dirty_markets",
+             "metric": "exec.dirty_markets",
              "value": heartbeat.get("book_dirty_markets"), "unit": "count", "threshold": 0},
             {"label": "last exchange message", "technical": "ws_last_event_at",
+             "metric": "exec.ws_event_age_s",
              "value": values["ws_event_age_s"], "unit": "s", "threshold": WS_EVENT_WATCH_S},
             {"label": "credits left this month", "technical": "runs.odds_remaining",
+             "metric": "recorder.credits_remaining",
              "value": (float(values["credits_remaining"])
                        if values["credits_remaining"] is not None else None),
              "unit": "count", "threshold": None},
@@ -547,12 +603,12 @@ def build_pulse(session: Session, now: datetime, settings: Settings) -> dict:
                          "rules": [r.as_dict() for r in fired],
                          "not_evaluated": [r.as_dict() for r in unevaluated],
                          "all": [r.as_dict() for r in rules]}
-    section(payload, "tape", lambda: _tape(session, now))
-    section(payload, "vitals", lambda: _vitals(session, now, values))
-    section(payload, "storage", lambda: _storage(values))
-    section(payload, "invariants", lambda: _invariants(values))
-    section(payload, "operator_events", lambda: _events(session))
-    section(payload, "snapshots", lambda: _snapshots(values))
+    section(session, payload, "tape", lambda: _tape(session, now, values["gaps_2h"]))
+    section(session, payload, "vitals", lambda: _vitals(session, now, values))
+    section(session, payload, "storage", lambda: _storage(values))
+    section(session, payload, "invariants", lambda: _invariants(values))
+    section(session, payload, "operator_events", lambda: _events(session))
+    section(session, payload, "snapshots", lambda: _snapshots(values))
     payload["build"] = {"recorder_build_sha": values["run_build_sha"],
                         "executor_version": values["executor_version"],
                         "serving_build_sha": settings.build_sha,
