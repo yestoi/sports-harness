@@ -216,6 +216,22 @@ def test_declined_counts_come_from_the_stored_text_and_order_the_rows(db_session
     assert "the price snapshot the intent was made on" in readings[1]
 
 
+def test_an_unknown_declined_reason_lands_in_sentences_gaps_sanitized(db_session, env_settings):
+    """Ruling A-I2: a reason code the vocabulary has never seen must not be silently lost."""
+    run = _run(db_session)
+    _cell(db_session, run, "t12", "sharp_direct/rejected:<script>brand_new</script>", "count",
+         text="4")
+    _cell(db_session, run, "t12", "sharp_direct/rejected:<script>brand_new</script>", "share",
+         text="1.0000")
+    payload = _build(db_session, env_settings, "study:2026-37")
+    assert payload["sentences_gaps"] == ["scriptbrand_new/script"]
+
+
+def test_sentences_gaps_is_empty_when_no_report_run_exists(db_session, env_settings):
+    payload = _build(db_session, env_settings, "study:2026-37")
+    assert payload["sentences_gaps"] == []
+
+
 def test_a_declined_share_of_double_dash_reads_as_no_number(db_session, env_settings):
     """`PLACEHOLDER` is "--" when the kind's total is zero. It must read as None, not raise."""
     run = _run(db_session)

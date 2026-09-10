@@ -41,7 +41,7 @@ MTM_GREY_COVERAGE = 0.5
 STUDY_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                         "week", "year", "report_run_id", "provisional", "cell_age_s",
                         "generated_at", "cells", "equity", "annotations", "markdown",
-                        "markdown_sha256", "weeks"})
+                        "markdown_sha256", "weeks", "sentences_gaps"})
 
 _NEWEST_FINAL = text("""
     select id, generated_at, provisional, markdown, markdown_sha256
@@ -240,7 +240,7 @@ def build_study(session: Session, now: datetime, settings: Settings) -> dict:
     year, week = parse_week(name)
     payload = base_payload(name, now, settings, CADENCE_S)
     payload["year"], payload["week"] = year, week
-    payload["weeks"] = weeks_available(session)
+    section(session, payload, "weeks", lambda: weeks_available(session))
 
     current = now.isocalendar()
     is_current = (year, week) == (current.year, current.week)
@@ -256,6 +256,7 @@ def build_study(session: Session, now: datetime, settings: Settings) -> dict:
                                 "equity": sentences.study_equity({}),
                                 "declined": sentences.study_declined({})}
         payload["readings"] = {"declined": []}
+        payload["sentences_gaps"] = []
         return payload
 
     payload["report_run_id"] = run.id
@@ -265,10 +266,10 @@ def build_study(session: Session, now: datetime, settings: Settings) -> dict:
     payload["markdown"] = run.markdown
     payload["markdown_sha256"] = run.markdown_sha256
 
-    section(payload, "cells", lambda: _cells(session, run.id))
+    section(session, payload, "cells", lambda: _cells(session, run.id))
     start, end = week_bounds(year, week, settings.tz_local)
-    section(payload, "equity", lambda: _equity(session, start, end))
-    section(payload, "annotations", lambda: _annotations(session, start, end))
+    section(session, payload, "equity", lambda: _equity(session, start, end))
+    section(session, payload, "annotations", lambda: _annotations(session, start, end))
 
     cells = payload["cells"] if isinstance(payload["cells"], dict) else {}
     equity = payload["equity"] if isinstance(payload["equity"], dict) else {}
@@ -286,6 +287,10 @@ def build_study(session: Session, now: datetime, settings: Settings) -> dict:
     }
     payload["readings"] = {"declined": [sentences.study_declined_reading(row)
                                         for row in declined]}
+    # Ruling A-I2: the reason codes the declined rows just rendered through `reason_phrase`, so
+    # a code outside `REASON_PHRASES` is not silently lost -- the next plan sees it.
+    payload["sentences_gaps"] = sentences.unknown_reason_codes(
+        row.get("reason") for row in declined)
     return payload
 
 
