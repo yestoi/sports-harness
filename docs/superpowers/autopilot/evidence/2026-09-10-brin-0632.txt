@@ -1,0 +1,71 @@
+SET
+Timing is on.
+count_5m_before|12352
+Time: 39600.552 ms (00:39.601)
+summarized_w37|1078
+Time: 5537.373 ms (00:05.537)
+count_5m_after|12337
+Time: 2.826 ms
+brin_settings|ix_trades_ts_brin_legacy|
+brin_settings|raw_responses_y2026w37_fetched_at_idx|
+brin_settings|raw_responses_y2026w38_fetched_at_idx|
+brin_settings|orderbook_events_y2026w37_ts_idx|
+brin_settings|ix_obe_ts_brin_legacy|
+brin_settings|venue_trades_y2026w37_ts_idx|
+brin_settings|orderbook_events_y2026w38_ts_idx|
+brin_settings|venue_trades_y2026w38_ts_idx|
+brin_settings|ix_fair_created_brin|
+Time: 94.720 ms
+fv_24h_before|0
+Time: 25654.313 ms (00:25.654)
+summarized_fv|48
+Time: 117.892 ms
+fv_24h_after|0
+Time: 140.663 ms
+SET
+Timing is on.
+ALTER INDEX
+Time: 244.039 ms
+ALTER INDEX
+Time: 34.406 ms
+ALTER INDEX
+Time: 164.971 ms
+ALTER INDEX
+Time: 20557.847 ms (00:20.558)
+ALTER INDEX
+Time: 0.714 ms
+ALTER INDEX
+Time: 82.733 ms
+ALTER INDEX
+Time: 11.839 ms
+ALTER INDEX
+Time: 63.282 ms
+ALTER INDEX
+Time: 1.137 ms
+sum_trades_w37|17
+Time: 828.554 ms
+sum_trades_legacy|20
+Time: 999.024 ms
+sum_obe_legacy|87
+Time: 4511.615 ms (00:04.512)
+sum_raw_w37|15
+Time: 136.535 ms
+sum_w38|0
+Time: 8.439 ms
+brin_settings|ix_trades_ts_brin_legacy|{autosummarize=on}
+brin_settings|raw_responses_y2026w37_fetched_at_idx|{autosummarize=on}
+brin_settings|orderbook_events_y2026w37_ts_idx|{autosummarize=on}
+brin_settings|ix_obe_ts_brin_legacy|{autosummarize=on}
+brin_settings|venue_trades_y2026w37_ts_idx|{autosummarize=on}
+brin_settings|ix_fair_created_brin|{autosummarize=on}
+brin_settings|raw_responses_y2026w38_fetched_at_idx|{autosummarize=on}
+brin_settings|orderbook_events_y2026w38_ts_idx|{autosummarize=on}
+brin_settings|venue_trades_y2026w38_ts_idx|{autosummarize=on}
+Time: 70.565 ms
+trades_1h|1233
+Time: 793.077 ms
+autovacuum|autovacuum|on
+autovacuum|autovacuum_naptime|60
+autovacuum|autovacuum_vacuum_insert_scale_factor|0.2
+autovacuum|autovacuum_vacuum_insert_threshold|1000
+Time: 231.278 ms
