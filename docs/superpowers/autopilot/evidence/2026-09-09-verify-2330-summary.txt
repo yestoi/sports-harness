@@ -1,0 +1,25 @@
+Traceback (most recent call last):
+  File "/Users/trey/dev/sports/scripts/verify_summary.py", line 127, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/Users/trey/dev/sports/scripts/verify_summary.py", line 87, in main
+    db = sql(host, stack)
+         ^^^^^^^^^^^^^^^^
+  File "/Users/trey/dev/sports/scripts/verify_summary.py", line 43, in sql
+    out = ssh(host, f"cd {stack} && docker compose exec -T postgres psql -U harness -d harness -At -F '|'", stdin=SQL)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/trey/dev/sports/scripts/verify_summary.py", line 36, in ssh
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", host, cmd], input=stdin, capture_output=True, text=True, timeout=180)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/trey/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/trey/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/trey/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/Users/trey/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['ssh', '-o', 'BatchMode=yes', 'trey@192.168.12.228', "cd /volume1/docker/sports-harness && docker compose exec -T postgres psql -U harness -d harness -At -F '|'"]' timed out after 180 seconds
+make: *** [verify-summary] Error 1
