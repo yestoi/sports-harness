@@ -14,6 +14,7 @@ from harness.config.settings import Settings
 from harness.db.models import Game, RawResponse, Run
 from harness.db.schema import ensure_partitions
 from harness.feeds.espn import EspnClient, Kickoff, parse_kickoffs
+from harness.feeds.nws import NwsClient
 from harness.feeds.odds_api import OddsApiClient, parse_credit_headers, parse_event_ids_and_times
 from harness.normalize.runner import normalize_new
 from harness.recorder import store
@@ -21,6 +22,7 @@ from harness.recorder.cadence import (SPORTS, alternates_due, interval_for, is_d
                                       select_trade_tickers)
 from harness.strategy.pipeline import price_and_signal
 from harness.venues.kalshi.public import FOOTBALL_SERIES, KalshiPublic, MarketSummary, parse_market_summaries
+from harness.weather.snapshots import ALLOWED_CADENCES, MIN_TICK_REMAINING_S, run_weather_source
 
 log = logging.getLogger(__name__)
 _ESPN_PATH = {"nfl": "/nfl/scoreboard", "ncaaf": "/college-football/scoreboard"}
@@ -266,6 +268,10 @@ class Recorder:
         self._limits_auth_errors = 0
         # I7: last known-good body per (source, endpoint); avoids re-reading multi-MB JSONB every tick.
         self._last_good: dict[tuple[str, str], dict | list] = {}
+        # Phase 5: the NWS client, built on first use and closed with the recorder. One client
+        # for the life of the process, like every other feed client here; the source itself is
+        # guarded so this is often never built at all.
+        self._nws: NwsClient | None = None
         # A forced tick (deploy verification) ignores every per-source interval for that one tick.
         self._force = False
         # Task 12b: the build_sha deploy check runs once per process, at the first tick.
@@ -384,6 +390,12 @@ class Recorder:
         `harness tick-once` path does, or it leaks a client until exit. Never raises: this runs
         in a `finally` after a tick whose result matters more than the cleanup.
         """
+        if self._nws is not None:
+            try:
+                self._nws.close()
+            except Exception:  # noqa: BLE001
+                log.warning("closing the nws client failed")
+            self._nws = None
         transport = getattr(self._limits_reader, "_transport", None)
         if transport is None:
             return
@@ -699,6 +711,47 @@ class Recorder:
                 log.exception("kalshi orderbook failed")
                 ctx["errors"].append({f"kalshi_orderbook:{ticker}": repr(e)})
 
+    def _weather(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff],
+                 budget: _Budget, ctx: dict) -> None:
+        """The NWS forecast source (addendum §1.2), last in the fetch phase and twice guarded.
+
+        Rulings A-I7 and B-I10. `cadence.py` returns 20 s for NFL 60-100 minutes before kickoff,
+        which is the most valuable recording window the harness has; 120 s applies inside a game
+        window. Twenty seconds of forecast plus a five-second 429 retry in either of those pushes
+        the tick past its cadence and `max_instances=1, coalesce=True` then drops the next tick
+        outright. A 72-hour forecast tolerates the gap; the tape does not.
+
+        Nothing here can fail a tick: the whole call sits inside one `try` and a failure is a
+        warning on the run.
+        """
+        cadence = cadence_in_force(now, kickoffs, self.s.tz_local)
+        if cadence not in ALLOWED_CADENCES:
+            ctx["weather"] = {"skipped": f"cadence {cadence}"}
+            return
+        if budget.remaining_s() < MIN_TICK_REMAINING_S:
+            ctx["weather"] = {"skipped": "tick budget"}
+            return
+        if self._nws is None:
+            self._nws = NwsClient(self.s)
+        source_budget = _Budget(int(min(self.s.nws_budget_s, budget.remaining_s())),
+                                self.monotonic)
+        try:
+            counts = run_weather_source(session, run.id, self._nws, self.s, now,
+                                        source_budget, ctx)
+            ctx["weather"] = counts
+            # Only mark the tick "fetched" when the pass actually reached the network (an
+            # hourly-forecast GET was attempted for at least one game): every other source in
+            # this file sets `ctx["fetched"]` behind its own due/guard check, never
+            # unconditionally, and a due list of nothing-to-fetch (or every game a dome or
+            # missing its stadium) must still leave an otherwise-quiet tick "skipped".
+            if counts.get("fetched", 0) > 0:
+                ctx["fetched"] = True
+        except Exception as e:  # noqa: BLE001 - a forecast never fails a tick
+            log.exception("weather source failed")
+            session.rollback()
+            ctx["warnings"].append({"weather": repr(e)})
+            ctx["weather"] = {"error": type(e).__name__}
+
     # ---- entry point -----------------------------------------------------------------
     def _due(self, last: datetime | None, now: datetime, interval: int | None) -> bool:
         # interval=None is the cadence planner's quiet-window "do not fetch": a forced tick never
@@ -760,6 +813,10 @@ class Recorder:
                     self._kalshi_trades_and_ladders(session, run, now, kickoffs, summaries, budget, ctx)
                 # Commit the tail batch of trades/ladders before normalization so a rollback there
                 # can never discard fetched raw rows.
+                self._checkpoint(session, run)
+                # Phase 5: weather takes what is left of the fetch phase and never competes with
+                # the tape. Twice guarded; see `_weather`.
+                self._weather(session, run, now, kickoffs, budget, ctx)
                 self._checkpoint(session, run)
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed")
@@ -829,7 +886,8 @@ class Recorder:
                                     "kalshi_trades_normalized": ctx.get("kalshi_trades_normalized", 0),
                                     "non_linear_cent": ctx.get("non_linear_cent", 0),
                                     "pricing": ctx.get("pricing", {}),
-                                    "venue_limits": ctx.get("venue_limits")},
+                                    "venue_limits": ctx.get("venue_limits"),
+                                    "weather": ctx.get("weather")},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
                      len(ctx["errors"]), len(ctx["warnings"]))

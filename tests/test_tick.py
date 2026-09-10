@@ -1026,3 +1026,55 @@ def test_run_note_records_a_pricing_budget_capped_by_the_pre_kickoff_cadence(env
 
     assert run.notes["pricing"]["budget_s"] == PRICE_BUDGET_FLOOR_S
     assert run.notes["pricing"]["budget_capped"] is True
+
+
+class _StubBudget:
+    """`_Budget`'s two-method surface, with the remaining time fixed. The real `_Budget` reads
+    a monotonic clock, and these two tests are about the guard, not about the clock."""
+
+    def __init__(self, remaining):
+        self._remaining = remaining
+
+    def ok(self):
+        return self._remaining > 0
+
+    def remaining_s(self):
+        return self._remaining
+
+
+@pytest.mark.parametrize("cadence,ran", [(20, False), (120, False), (300, True), (900, True)])
+def test_the_weather_source_runs_only_on_the_two_slow_cadences(env_settings, db_session,
+                                                               monkeypatch, cadence, ran):
+    """Rulings A-I7 and B-I10. `cadence.py` returns 20 s for NFL 60-100 minutes before kickoff:
+    the single most valuable recording window in the harness, and the one R4 protects with its
+    own deploy exclusion. Twenty seconds of forecast plus a five-second retry there pushes the
+    tick past its cadence and `max_instances=1, coalesce=True` then drops the next tick."""
+    from harness.recorder import tick as tick_module
+
+    calls = []
+    monkeypatch.setattr(tick_module, "cadence_in_force", lambda *a, **k: cadence)
+    monkeypatch.setattr(tick_module, "run_weather_source",
+                        lambda *a, **k: calls.append(True) or {"due": 0})
+    monkeypatch.setattr(tick_module, "NwsClient", lambda settings: object())
+    recorder, _clock = _recorder(env_settings, db_session)
+    run = store.start_run(db_session, NOW)
+    recorder._weather(db_session, run, NOW, [], _StubBudget(60), {"warnings": []})
+    assert bool(calls) is ran
+
+
+def test_the_weather_source_yields_below_twenty_five_seconds_of_tick_budget(env_settings,
+                                                                           db_session,
+                                                                           monkeypatch):
+    from harness.recorder import tick as tick_module
+
+    calls = []
+    monkeypatch.setattr(tick_module, "cadence_in_force", lambda *a, **k: 900)
+    monkeypatch.setattr(tick_module, "run_weather_source",
+                        lambda *a, **k: calls.append(True) or {"due": 0})
+    monkeypatch.setattr(tick_module, "NwsClient", lambda settings: object())
+    recorder, _clock = _recorder(env_settings, db_session)
+    run = store.start_run(db_session, NOW)
+    ctx = {"warnings": []}
+    recorder._weather(db_session, run, NOW, [], _StubBudget(24.0), ctx)
+    assert calls == []
+    assert ctx["weather"] == {"skipped": "tick budget"}
