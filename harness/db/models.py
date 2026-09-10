@@ -1,9 +1,9 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Index, Integer, Numeric, SmallInteger, String, Text,
+    BigInteger, Boolean, Date, DateTime, Index, Integer, Numeric, SmallInteger, String, Text,
     UniqueConstraint, Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -999,3 +999,271 @@ class ParlayLegProb(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     sharp_p: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     book_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: the research layer (addendum §2). Ten additive tables and one view.
+#
+# Every one of them is retained for the season (ruling B-M7): `harness/ops/housekeeping.py`
+# deletes nothing here. Two of them hold free text of outside provenance -- `rfqs.raw` and
+# `research_notes.snippets` -- and both tables are on the snapshot builders' forbidden list
+# (ruling B-I9), so a surface can count them but can never render one.
+#
+# Every index these tables need is raw DDL in harness/db/schema.py (`_INDEX_DDL`), the same
+# convention the telemetry tables use, and ruling B-M13 puts this phase's there by name.
+# ---------------------------------------------------------------------------
+
+
+class FuturesSnapshot(Base):
+    """One Kalshi futures or ladder market as it stood at one weekly pass (addendum §1.1, H7).
+
+    `snapshot_week` is the ISO week the pass ran in, as text (`2026-W38`), because H7's panel is
+    week-over-week drift and a text key is what a report groups on without re-deriving a
+    calendar. `last_price`, `yes_bid` and `yes_ask` are decoded from Kalshi's `*_dollars`
+    fixed-point strings by the phase 4 decoder; `volume` and `open_interest` from the `*_fp`
+    ones. `kalshi_market_type` is the venue's own enum (`binary` or `scalar`) and is kept under
+    its own name so it can never be confused with the harness's `market_type`
+    (moneyline/spread/total), which a futures market does not have (ruling A-M8).
+    """
+    __tablename__ = "futures_snapshots"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    snapshot_week: Mapped[str] = mapped_column(String(8), nullable=False)
+    series_ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    market_ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Venue text. Stored, sanitized at write, never rendered without sanitizing again.
+    title: Mapped[str | None] = mapped_column(String(256))
+    yes_sub_title: Mapped[str | None] = mapped_column(String(200))
+    kalshi_market_type: Mapped[str] = mapped_column(String(8), nullable=False)   # binary|scalar
+    strike_type: Mapped[str | None] = mapped_column(String(16))
+    floor_strike: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    cap_strike: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    yes_bid: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    yes_ask: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    volume: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    open_interest: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    close_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WeatherPoint(Base):
+    """One stadium's resolved NWS gridpoint (addendum §1.2).
+
+    `/points/{lat},{lon}` is resolved once per stadium and the hourly URL kept here. It is
+    **not** cached forever (ruling A-I6): a 404 or 301 on the hourly URL re-resolves `/points`,
+    at most once per stadium per day, and `fetched_at` is what that rule reads. A dome never
+    gets a row at all, which is one of the phase's invariants.
+    """
+    __tablename__ = "weather_points"
+    sport: Mapped[str] = mapped_column(String(8), primary_key=True)
+    team_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    office: Mapped[str] = mapped_column(String(8), nullable=False)
+    grid_x: Mapped[int] = mapped_column(Integer, nullable=False)
+    grid_y: Mapped[int] = mapped_column(Integer, nullable=False)
+    forecast_hourly_url: Mapped[str] = mapped_column(String(256), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WeatherSnapshot(Base):
+    """One hourly NWS forecast period for one outdoor game (addendum §1.2).
+
+    Only the periods from kickoff - 1 h to kickoff + 4 h are kept. `short_forecast` is venue
+    free text: sanitized to 80 characters at write, and placed in the veto's **untrusted block**
+    when it reaches a prompt at all (ruling A-M4). `roof` is the stadium's, copied here so a
+    reader of one row knows whether the number is a retractable-roof game.
+    """
+    __tablename__ = "weather_snapshots"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    game_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    temperature_f: Mapped[int | None] = mapped_column(SmallInteger)
+    wind_mph: Mapped[int | None] = mapped_column(SmallInteger)
+    wind_dir: Mapped[str | None] = mapped_column(String(8))
+    precip_pct: Mapped[int | None] = mapped_column(SmallInteger)
+    short_forecast: Mapped[str | None] = mapped_column(String(80))
+    roof: Mapped[str] = mapped_column(String(11), nullable=False)   # open|dome|retractable
+
+
+class VetoQueue(Base):
+    """One row per signal that produced an intent (addendum 0.2, ruling B-C1).
+
+    One row per **signal**, never one per bucket: a unique index on the bucket key would refuse
+    the second and later signals of a burst and their ids would never be persisted anywhere,
+    which is selection, not attenuation -- the deduped signals are exactly the ones on a moving
+    line. `bucket_start` is a plain column with a non-unique partial index; the worker claims
+    every unclaimed row sharing a `(game_id, market_type, bucket_start)` bucket, makes one paired
+    call for the bucket's trigger and writes a `veto_decisions` row for every signal in it.
+    """
+    __tablename__ = "veto_queue"
+    signal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    game_id: Mapped[int | None] = mapped_column(Integer)
+    market_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    enqueued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ResearchNote(Base):
+    """One model's side of one call (addendum §1.4 "Records", roadmap R:225-229, F73).
+
+    The primary key is `(call_id, model)`: "both models' outputs under one call id" is exactly
+    two rows sharing a `call_id`, and the key makes a third row for the same model impossible.
+
+    `kind` is the discriminator the four writers share (`veto`, `annotate`, `parlay`, `study`);
+    `subject_id` is text because it holds a signal id for `veto`, a `report_run_id` for
+    `annotate`, a card id for `parlay` and a case id for `study`, and it is indexed
+    (`ix_research_notes_subject`). `replay` marks the veto study's frozen no-search re-runs so
+    they can never join into H9, and `arm` names the study arm when there is one.
+
+    `snippets` is capped at 6 KB at write with a `truncated` flag inside the object (ruling
+    B-M9). Snippets are never re-rendered anywhere (F60), and this table is forbidden to every
+    snapshot builder (ruling B-I9).
+    """
+    __tablename__ = "research_notes"
+    call_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    model: Mapped[str] = mapped_column(String(24), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)   # veto|annotate|parlay|study
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    effort: Mapped[str] = mapped_column(String(8), nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    features: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    snippets: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    tool_calls: Mapped[list | dict] = mapped_column(JSONB, default=list, nullable=False)
+    output: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    usage: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    arm: Mapped[str | None] = mapped_column(String(16))
+
+
+class VetoDecision(Base):
+    """One decision per signal (addendum §1.4).
+
+    `decision` holds the **primary's** decision; the shadow's lives in its own `research_notes`
+    row and is never used. `call_id` is null for the two call-less labels
+    (`veto_skipped_budget`, and `veto_error` with `reason_code = 'game_final'`). `from_cache` is
+    false for the bucket's trigger and true for every other signal in the bucket, each carrying
+    its `feature_delta` from the trigger. Both timestamps are recorded (ruling A-I3, B-I1): the
+    lag distribution t7 reports is `decided_at - signal_created_at`.
+    """
+    __tablename__ = "veto_decisions"
+    signal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    call_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: proceed|reduce|veto|veto_skipped_budget|veto_error
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    confidence: Mapped[Decimal | None] = mapped_column(PROB)
+    from_cache: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    feature_delta: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    signal_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(32))
+
+
+class ResearchSpend(Base):
+    """The U4 caps' accounting, one row per (America/Chicago day, kind, model).
+
+    `usd_reserved` is the live reservation `reserve_spend` takes before a call and releases
+    after it; `usd` is what was actually billed. The caps are checked against the **sum** of
+    `usd + usd_reserved` over every row of the day (and of the ISO week), because 0.3 makes the
+    $25 and $150 totals across the primary, the shadow, the annotator and the parlay rationale.
+    `day` is a plain `Date` in America/Chicago, never UTC: the cap resets on the owner's day.
+    """
+    __tablename__ = "research_spend"
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(8), primary_key=True)
+    model: Mapped[str] = mapped_column(String(24), primary_key=True)
+    calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    cache_read_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    searches: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    usd_reserved: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=0, nullable=False)
+    usd: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=0, nullable=False)
+
+
+class ReportAnnotation(Base):
+    """The weekly annotator's surviving bullets for one report run (addendum §1.5).
+
+    One row per `report_runs` row, which is what makes the annotator data-triggered rather than
+    clock-triggered: the worker looks for the newest non-provisional run of the current ISO week
+    that has no row here. `bullets` is a JSON list of strings, each already checked to carry at
+    least one resolving `t<k>[row,col]` citation and no number absent from a cited cell.
+    """
+    __tablename__ = "report_annotations"
+    report_run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    model: Mapped[str] = mapped_column(String(24), nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    bullets: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class Rfq(Base):
+    """One `rfq_created` or `rfq_deleted` frame, persisted **on arrival** (addendum §1.6).
+
+    Quotes have not been queryable after the fact since 2026-06-25 (F71), so the socket is the
+    only record and the row is written the moment the frame lands. `id` is the venue's own RFQ
+    id. `legs` is `mve_selected_legs` normalized; `raw` is the whole `msg`, capped at 8 KB with
+    a `truncated` flag.
+
+    The free text here is **never rendered raw and never placed in a prompt** (F60). The report
+    shows a 120-character quoted excerpt of `market_ticker` and nothing else, and this table is
+    forbidden to every snapshot builder (ruling B-I9).
+    """
+    __tablename__ = "rfqs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    event_ticker: Mapped[str | None] = mapped_column(String(64))
+    market_ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    contracts_fp: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    target_cost_dollars: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    mve_collection_ticker: Mapped[str | None] = mapped_column(String(64))
+    legs: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    raw: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(8), nullable=False)   # open|deleted
+    deleted_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RfqQuote(Base):
+    """The quote we would have sent, computed and stored, **never sent** (addendum §1.6, §8.2).
+
+    Both F72 fee branches are stored so grading can be re-run either way (ruling A-I2):
+    `fee_branch_game` is the game-level independence test the decline rule uses,
+    `fee_branch_event` the event-level one F72 wrote, and the pair of `*_other_branch` bids is
+    what the branch we did not take would have quoted. `declined_reason` is set (and the bids
+    left null) when the RFQ was declined: `same_game`, `no_fair` or `disagreement`.
+
+    Grading (`rfq_grade`) fills `graded_at`, `closing_fair`, `closing_stale` and the two P&L
+    columns. `closing_stale` is true when any leg's closing fair value was stale, and t10
+    reports those quotes separately (ruling B-I6).
+    """
+    __tablename__ = "rfq_quotes"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    rfq_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    legs: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    fair: Mapped[Decimal | None] = mapped_column(PROB)
+    margin_per_leg: Mapped[Decimal] = mapped_column(PROB, nullable=False)
+    yes_bid: Mapped[Decimal | None] = mapped_column(PROB)
+    no_bid: Mapped[Decimal | None] = mapped_column(PROB)
+    fee_branch_game: Mapped[bool | None] = mapped_column(Boolean)
+    fee_branch_event: Mapped[bool | None] = mapped_column(Boolean)
+    fee_subtracted: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    yes_bid_other_branch: Mapped[Decimal | None] = mapped_column(PROB)
+    no_bid_other_branch: Mapped[Decimal | None] = mapped_column(PROB)
+    declined_reason: Mapped[str | None] = mapped_column(String(16))
+    unmatched_legs: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
+    graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closing_fair: Mapped[Decimal | None] = mapped_column(PROB)
+    closing_stale: Mapped[bool | None] = mapped_column(Boolean)
+    pnl_yes: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    pnl_no: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))

@@ -188,6 +188,29 @@ _INDEX_DDL = (
     # exec variant per 300 s), so this is about keeping a hot per-tick read off a sort rather
     # than about the table's size (Task 11 fix round 1).
     "create index if not exists ix_equity_variant_ts on equity_snapshots (variant_id, ts)",
+    # --- phase 5 (addendum §2, ruling B-M13) ------------------------------------------------
+    # H7's panel groups by (series, week), which is exactly how the weekly pass writes and how
+    # a later report table reads.
+    "create index if not exists ix_futures_series_week on futures_snapshots "
+    "(series_ticker, snapshot_week)",
+    # The veto's feature builder asks for "the newest weather snapshot before the signal" per
+    # game, and the tick's fetch order is oldest-snapshot-first per game: both are a head read
+    # off (game_id, fetched_at).
+    "create index if not exists ix_weather_game_fetched on weather_snapshots "
+    "(game_id, fetched_at)",
+    # `subject_id` is the join back to the signal, the report run or the card (R:225-229).
+    "create index if not exists ix_research_notes_subject on research_notes (subject_id)",
+    # The worker's claim reads only unclaimed rows, so the index is partial on exactly that
+    # predicate: the queue's claimed tail grows for the season and must never be scanned.
+    "create index if not exists ix_veto_queue_open on veto_queue "
+    "(bucket_start, game_id, market_type) where claimed_at is null",
+    # t7 and the 24 h verification row read the newest decisions.
+    "create index if not exists ix_veto_decisions_decided on veto_decisions (decided_at desc)",
+    # The report's arrival counts and the verification row read the newest RFQs.
+    "create index if not exists ix_rfqs_received on rfqs (received_at desc)",
+    # One quote per RFQ: the listener computes once, on arrival. This is also what gives the
+    # "no quote without an rfq" invariant a partner that a re-delivery cannot break.
+    "create unique index if not exists uq_rfq_quote_rfq on rfq_quotes (rfq_id)",
 )
 
 #: Carried fix 16. BRIN on `fair_values(created_at)` so the bounded staleness check
@@ -306,7 +329,34 @@ from chain
 group by episode_id, variant_id, venue_market_id, side
 """
 
-_VIEW_DDL = (_POSITIONS_VIEW, _CLV_VIEW, _ORDER_EPISODES_VIEW)
+#: H9's population, defined once (ruling B-M2). t7 and the phase's own invariant read this view
+#: rather than re-deriving its three filters, because every place that re-derived them would be
+#: a place that could quietly disagree: the shadow's row is recorded and never used, the study's
+#: frozen replays must never join into H9, and only the three *decided* labels are outcomes --
+#: `veto_skipped_budget` and `veto_error` are the budget's and the machine's, not the model's.
+_VETO_H9_VIEW = """
+create or replace view veto_h9 as
+select d.signal_id,
+       d.call_id,
+       d.decision,
+       d.confidence,
+       d.from_cache,
+       d.signal_created_at,
+       d.decided_at,
+       n.model,
+       n.effort,
+       n.prompt_hash,
+       n.cost_usd,
+       n.latency_ms
+from veto_decisions d
+join research_notes n on n.call_id = d.call_id
+where n.kind = 'veto'
+  and n.replay = false
+  and n.model = 'claude-opus-5'
+  and d.decision in ('proceed', 'reduce', 'veto')
+"""
+
+_VIEW_DDL = (_POSITIONS_VIEW, _CLV_VIEW, _ORDER_EPISODES_VIEW, _VETO_H9_VIEW)
 
 #: One additive backfill for the rows that predate `match_key`; the matcher writes it going
 #: forward. Composed exactly like the Python side, with NULL parts rendered empty.
@@ -521,5 +571,5 @@ def drop_schema(engine: Engine) -> None:
     never be left behind in a test database."""
     tables = ", ".join(sorted(Base.metadata.tables))
     with engine.begin() as conn:
-        conn.execute(text("drop view if exists positions, clv, order_episodes"))
+        conn.execute(text("drop view if exists positions, clv, order_episodes, veto_h9"))
         conn.execute(text(f"drop table if exists {tables} cascade"))
