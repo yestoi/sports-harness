@@ -1,0 +1,211 @@
+"""The U4 caps as behaviour: the cost model, the reservation, the release, and two workers.
+
+Every price in here is a literal from the addendum, not a value read back out of the module: a
+test that read the constant would pass against any constant at all, and this file is where the
+phase's money arithmetic is pinned.
+"""
+import threading
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
+
+from harness.research.spend import (BudgetRefused, SEARCH_USD, Usage, WORST_CASE_INPUT_TOKENS,
+                                    WORST_CASE_OUTPUT_TOKENS, WORST_CASE_SEARCHES,
+                                    chicago_day, cost_usd, iso_week_bounds, release_spend,
+                                    reserve_spend, spend_state, worst_case_usd)
+
+OPUS, SONNET = "claude-opus-5", "claude-sonnet-5"
+#: 2026-09-15 03:00 UTC is 2026-09-14 22:00 in America/Chicago: the day boundary the caps use is
+#: the owner's, not UTC's, and this instant is on the wrong side of UTC midnight on purpose.
+NOW = datetime(2026, 9, 15, 3, 0, tzinfo=timezone.utc)
+
+
+def _settings(env_settings, daily="25", weekly="150"):
+    return env_settings.model_copy(update={"veto_daily_usd_cap": Decimal(daily),
+                                           "veto_weekly_usd_cap": Decimal(weekly)})
+
+
+# --- the cost model -------------------------------------------------------------------------
+
+def test_the_day_is_an_america_chicago_day():
+    assert chicago_day(NOW) == date(2026, 9, 14)
+    assert chicago_day(datetime(2026, 9, 15, 6, 0, tzinfo=timezone.utc)) == date(2026, 9, 15)
+
+
+def test_the_week_is_the_iso_week_of_that_day():
+    assert iso_week_bounds(date(2026, 9, 16)) == (date(2026, 9, 14), date(2026, 9, 20))
+
+
+def test_opus_list_price():
+    """$5.00 / $25.00 per MTok: 1,000,000 in and 1,000,000 out is $30.00 exactly."""
+    usage = Usage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=0,
+                  cache_write_tokens=0, searches=0)
+    assert cost_usd(OPUS, usage) == Decimal("30.000000")
+
+
+def test_sonnet_list_price():
+    usage = Usage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=0,
+                  cache_write_tokens=0, searches=0)
+    assert cost_usd(SONNET, usage) == Decimal("12.000000")
+
+
+def test_cache_reads_are_a_tenth_and_writes_are_one_and_a_quarter():
+    reads = Usage(0, 0, cache_read_tokens=1_000_000, cache_write_tokens=0, searches=0)
+    writes = Usage(0, 0, cache_read_tokens=0, cache_write_tokens=1_000_000, searches=0)
+    assert cost_usd(OPUS, reads) == Decimal("0.500000")
+    assert cost_usd(OPUS, writes) == Decimal("6.250000")
+
+
+def test_searches_are_billed_on_top_of_tokens():
+    """A token-only cost model under-reports a search call; the searches come from the
+    `server_tool_use` blocks the client counts."""
+    assert cost_usd(OPUS, Usage(0, 0, 0, 0, searches=3)) == Decimal("0.030000")
+    assert SEARCH_USD == Decimal("0.01")
+
+
+def test_an_unknown_model_raises_rather_than_costing_nothing():
+    with pytest.raises(KeyError):
+        cost_usd("claude-made-up", Usage(1, 1, 0, 0, 0))
+
+
+def test_the_worst_case_constants_are_the_addendum_s():
+    assert (WORST_CASE_INPUT_TOKENS, WORST_CASE_OUTPUT_TOKENS, WORST_CASE_SEARCHES) == \
+        (30_000, 2_000, 3)
+    # 30,000 in at $5/MTok = $0.15; 2,000 out at $25/MTok = $0.05; 3 searches = $0.03.
+    assert worst_case_usd(OPUS, 3) == Decimal("0.230000")
+    # 30,000 in at $2/MTok = $0.06; 2,000 out at $10/MTok = $0.02; 3 searches = $0.03.
+    assert worst_case_usd(SONNET, 3) == Decimal("0.110000")
+
+
+# --- the reservation ------------------------------------------------------------------------
+
+def test_a_reservation_writes_usd_reserved_for_every_model(db_session, env_settings):
+    reservation = reserve_spend(db_session, NOW, _settings(env_settings), "veto", [OPUS, SONNET])
+    rows = {(r.kind, r.model): r for r in db_session.execute(
+        text("select kind, model, usd, usd_reserved from research_spend")).all()}
+    assert set(rows) == {("veto", OPUS), ("veto", SONNET)}
+    assert rows[("veto", OPUS)].usd_reserved == Decimal("0.2300")
+    assert rows[("veto", SONNET)].usd_reserved == Decimal("0.1100")
+    assert reservation.day == date(2026, 9, 14)
+    assert reservation.per_model == {OPUS: Decimal("0.230000"), SONNET: Decimal("0.110000")}
+
+
+def test_the_release_swaps_the_reservation_for_the_actual(db_session, env_settings):
+    reservation = reserve_spend(db_session, NOW, _settings(env_settings), "veto", [OPUS, SONNET])
+    actual = release_spend(db_session, reservation, {
+        OPUS: Usage(10_000, 500, 4_000, 0, 2),
+        SONNET: Usage(10_000, 500, 4_000, 0, 2),
+    })
+    rows = {r.model: r for r in db_session.execute(text(
+        "select model, calls, input_tokens, searches, usd, usd_reserved from research_spend")).all()}
+    for row in rows.values():
+        assert row.usd_reserved == Decimal("0")
+        assert row.calls == 1 and row.input_tokens == 10_000 and row.searches == 2
+    # opus: 10,000 in = $0.05; 500 out = $0.0125; 4,000 cache reads = $0.002; 2 searches = $0.02
+    assert rows[OPUS].usd == Decimal("0.0845")
+    # sonnet: $0.02 + $0.005 + $0.0008 + $0.02
+    assert rows[SONNET].usd == Decimal("0.0458")
+    assert actual == Decimal("0.130300")
+
+
+def test_a_failed_call_releases_the_reservation_with_a_zero_usage(db_session, env_settings):
+    """The `finally` path. A reservation that is never released eats the cap for the rest of
+    the day, so a call that raised before it produced a usage still returns its reservation."""
+    reservation = reserve_spend(db_session, NOW, _settings(env_settings), "veto", [OPUS, SONNET])
+    release_spend(db_session, reservation, {})
+    totals = db_session.execute(text(
+        "select coalesce(sum(usd), 0), coalesce(sum(usd_reserved), 0) from research_spend")).first()
+    assert totals == (Decimal("0.0000"), Decimal("0.0000"))
+
+
+def test_the_daily_cap_refuses_the_call_that_would_cross_it(db_session, env_settings):
+    settings = _settings(env_settings, daily="0.30")
+    reserve_spend(db_session, NOW, settings, "veto", [OPUS])       # 0.23 <= 0.30
+    with pytest.raises(BudgetRefused) as caught:
+        reserve_spend(db_session, NOW, settings, "veto", [OPUS])   # 0.46 > 0.30
+    assert caught.value.cap == "daily"
+    assert caught.value.limit == Decimal("0.30")
+
+
+def test_the_weekly_cap_refuses_independently_of_the_daily_one(db_session, env_settings):
+    settings = _settings(env_settings, daily="25", weekly="0.30")
+    reserve_spend(db_session, NOW, settings, "veto", [OPUS])
+    with pytest.raises(BudgetRefused) as caught:
+        reserve_spend(db_session, NOW, settings, "veto", [OPUS])
+    assert caught.value.cap == "weekly"
+
+
+def test_the_cap_covers_every_kind_not_just_the_veto(db_session, env_settings):
+    """0.3: the caps are totals across the primary, the shadow, the annotator and the parlay
+    rationale. An annotator call eats the veto's budget and must."""
+    settings = _settings(env_settings, daily="0.30")
+    reserve_spend(db_session, NOW, settings, "annotate", [OPUS])
+    with pytest.raises(BudgetRefused):
+        reserve_spend(db_session, NOW, settings, "veto", [OPUS])
+
+
+def test_a_refused_reservation_reserves_and_spends_nothing(db_session, env_settings):
+    """`_ensure_rows` runs before the cap check, so a refusal can leave zero-valued rows behind.
+    That is deliberate and harmless -- they are the day's accounting rows and the next
+    reservation needs them -- but the money columns must both be untouched, which is what this
+    asserts. The name says "reserves and spends nothing", not "writes nothing"."""
+    settings = _settings(env_settings, daily="0.10")
+    with pytest.raises(BudgetRefused):
+        reserve_spend(db_session, NOW, settings, "veto", [OPUS, SONNET])
+    totals = db_session.execute(text(
+        "select coalesce(sum(usd_reserved), 0), coalesce(sum(usd), 0) from research_spend")).first()
+    assert totals == (Decimal("0"), Decimal("0"))
+
+
+def test_yesterday_s_spend_does_not_count_against_today(db_session, env_settings):
+    settings = _settings(env_settings, daily="0.30", weekly="150")
+    earlier = datetime(2026, 9, 14, 3, 0, tzinfo=timezone.utc)   # 2026-09-13 CT, the day before
+    release_spend(db_session, reserve_spend(db_session, earlier, settings, "veto", [OPUS]),
+                  {OPUS: Usage(1_000_000, 0, 0, 0, 0)})           # $5.00 on the 13th
+    reserve_spend(db_session, NOW, settings, "veto", [OPUS])      # the 14th is still empty
+    assert spend_state(db_session, NOW, settings).day_reserved == Decimal("0.2300")
+
+
+def test_spend_state_reports_the_day_the_week_and_dormancy(db_session, env_settings):
+    settings = _settings(env_settings, daily="0.30")
+    reserve_spend(db_session, NOW, settings, "veto", [OPUS])
+    state = spend_state(db_session, NOW, settings)
+    assert state.day_reserved == Decimal("0.2300") and state.day_usd == Decimal("0")
+    assert state.daily_cap == Decimal("0.30") and state.weekly_cap == Decimal("150")
+    assert state.dormant is True          # another opus pair would cross the daily cap
+    assert spend_state(db_session, NOW, _settings(env_settings)).dormant is False
+
+
+def test_two_workers_racing_one_slot_produce_exactly_one_reservation(db_session, env_settings):
+    """A-C3 hole 1, as a test. Two sessions on two connections, released together, against a cap
+    that fits exactly one pair. Check-then-act lets both through; the advisory lock does not."""
+    settings = _settings(env_settings, daily="0.25")
+    factory = sessionmaker(bind=db_session.get_bind().engine, expire_on_commit=False)
+    db_session.commit()               # make the empty table visible to the other connections
+    start, outcomes = threading.Barrier(2), []
+
+    def attempt():
+        with factory() as session:
+            start.wait(timeout=10)
+            try:
+                reserve_spend(session, NOW, settings, "veto", [OPUS])
+                session.commit()
+                outcomes.append("reserved")
+            except BudgetRefused:
+                session.rollback()
+                outcomes.append("refused")
+
+    threads = [threading.Thread(target=attempt) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert sorted(outcomes) == ["refused", "reserved"]
+    with factory() as session:
+        assert session.execute(text(
+            "select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == \
+            Decimal("0.2300")
