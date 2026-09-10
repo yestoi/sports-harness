@@ -1,0 +1,2524 @@
+{
+  "series": [
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNEXTTEAM",
+      "title": "Player Next Team"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-PIT",
+      "title": "Pro football wins Pittsburgh"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCUSA",
+      "title": "Conference USA Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-SF",
+      "title": "Pro football wins San Francisco"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEED",
+      "title": "NFL Playoff Seed"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-CAR",
+      "title": "Pro football wins Carolina"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDEPTHPOSITIONCLEQB2",
+      "title": "QB2 CLE"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTIES",
+      "title": "Pro Football Ties"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTQB",
+      "title": "Pro Football Quarterback Drafted"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFIVY",
+      "title": "Ivy League Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1HTEAMTOTAL",
+      "title": "Pro Football 1st Half Team Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMTO",
+      "title": "Pro Football Forced Turnovers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRETIRE",
+      "title": "Pro Football Retirement"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSDET",
+      "title": "Pro football exact wins Detroit"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFFINALIST",
+      "title": "College Football Finalist"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMFIRSTTD",
+      "title": "Pro Football First Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFSEASONTOTAL",
+      "title": "Pro Football Player's Fantasy Season Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTOL",
+      "title": "Pro Football Offensive Line Drafted "
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSTADIUM",
+      "title": "College Football Stadiums"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFTOP",
+      "title": "Top Fantasy Rank"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSBUF",
+      "title": "Pro football exact wins Buffalo"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-WAS",
+      "title": "Pro football wins Washington"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFEQBTTS",
+      "title": "College Football Both Teams to Score in Every Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL3QSPREAD",
+      "title": "Pro Football 3rd Quarter Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPASSYDS",
+      "title": "Pro Football Passing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTRADE",
+      "title": "Pro Football Players Traded"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLONGESTREC",
+      "title": "Longest Reception"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCONTRACTSIZE",
+      "title": "Pro Football Next Contract Size"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFUNDEFEATEDHOME",
+      "title": "College Football Teams to go Undefeated at Home"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMRSHTD",
+      "title": "College Football Team Rushing Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMSACK",
+      "title": "Pro Football Team Sacks"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPASSCOMP",
+      "title": "Pro Football Passing Completions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL4QSPREAD",
+      "title": "Pro Football 4th Quarter Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLGAMETO",
+      "title": "Pro Football Turnovers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEQBTTS",
+      "title": "Pro Football Both Teams to Score in Every Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDIVLEASTWINS",
+      "title": "Pro Football Division with the Most Wins"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSARI",
+      "title": "Pro football exact wins Arizona"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSDAL",
+      "title": "Pro football exact wins Dallas"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLMATCHUP",
+      "title": "Pro Football Matchups"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWPMOTY",
+      "title": "Walter Payton Man of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2HWINNER",
+      "title": "NFL 2nd Half Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL4QTOTAL",
+      "title": "Pro Football 4th Quarter Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFDSTTD",
+      "title": "College Football Defense Special Teams Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNFCEAST",
+      "title": "National Football Conference East Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLONGRSH",
+      "title": "Longest Rush"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCONFMATCHUP",
+      "title": "College Football Conference Championship Matchup"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1QTOTAL",
+      "title": "College Football 1st Quarter Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSCHI",
+      "title": "Pro football exact wins Chicago"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCFPPOLL",
+      "title": "College Football CFP Poll"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLBLOWOUT",
+      "title": "Pro Football Biggest Blowout"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTSPEC",
+      "title": "NFL Team Specials"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2H",
+      "title": "Pro Football 2nd Half"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFPLAYOFF",
+      "title": "College Football Playoff Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTTE",
+      "title": "Pro Football Tight End Drafted"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTLB",
+      "title": "Pro Football Linebacker Drafted"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPRIMETIME",
+      "title": "Pro Football Primetime Games"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSFTY",
+      "title": "Pro Football Safety"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMTOTAL",
+      "title": "College Football Team Total Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBOWLGAME",
+      "title": "College Football Teams to Make a Bowl Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF4Q",
+      "title": "College Football 4th Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLOROTY",
+      "title": "AP Pro Football Offensive Rookie of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPOTM",
+      "title": "NFL Player of the Month"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRSHATT",
+      "title": "Pro Football Rushing Attempts"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-CHI",
+      "title": "Pro football wins Chicago"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEASONRSHTD",
+      "title": "Rushing Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLMOSTRECYDS",
+      "title": "Pro Football Most Receiving Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFQF",
+      "title": "College Football Playoff Quarterfinals Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLAFCSOUTH",
+      "title": "American Football Conference South Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLAFCNORTH",
+      "title": "American Football Conference North Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEASONPASSTDS",
+      "title": "Passing Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFACCQUAL",
+      "title": "College Football ACC Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEASONPASSYDS",
+      "title": "Passing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDROY",
+      "title": "NFL Defensive Rookie of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2HTOTAL",
+      "title": "Pro Football 2nd Half Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMPTS",
+      "title": "Who will most/least points in Regular Season"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRACE",
+      "title": "Pro Football Race to Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSIND",
+      "title": "Pro football exact wins Indianapolis"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-NYG",
+      "title": "Pro football wins New York G"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLGAME",
+      "title": "Professional Football Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSFPRACFIELD",
+      "title": "Practice Field Relocation"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFPREPACKSGP",
+      "title": "MVE NCAAF Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF4QBTTS",
+      "title": "College Football Both Teams to Score in 4th Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLASTPICKPOS",
+      "title": "NFL Last Pick of the Draft Position"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLARGELEAD",
+      "title": "Pro Football Largest Lead"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPREPACK1Q1H",
+      "title": "MVE NFL Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-NE",
+      "title": "Pro football wins New England"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCOACHOUT",
+      "title": "College Football Coaches Out"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-MIA",
+      "title": "Pro football wins Miami"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLROTM",
+      "title": "NFL Rookie of the Month"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF3QSPREAD",
+      "title": "College Football 3rd Quarter Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSCAR",
+      "title": "Pro football exact wins Carolina"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINMARGIN",
+      "title": "Pro Football Win Margin"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLOWNERSTAKE",
+      "title": "Next Pro Football Team to Sell Ownership Stake"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEASONRSHYDS",
+      "title": "Rushing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMSACK",
+      "title": "College Football Team Total Sacks"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTOTALTD",
+      "title": "College Football Total Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLH2HWINS",
+      "title": "Pro Football Head-to-Head Win Totals"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1Q",
+      "title": "Pro Football 1st Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSTEN",
+      "title": "Pro football exact wins Tennessee"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-CLE",
+      "title": "Pro football wins Cleveland"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFAPANY",
+      "title": "College Football AP Rank Anytime in Season"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF2PT",
+      "title": "College Football 2-Point Conversion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFLEADER",
+      "title": "Best in Fantasy By Position"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFFCS",
+      "title": "College Football FCS Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFWINS",
+      "title": "College Football Win Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1YDPASS",
+      "title": "Seattle 1 Yard Pass"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSBMVP",
+      "title": "Pro Football Championship MVP"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFAACQUAL",
+      "title": "College Football American Athletic Conference Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1QTOTAL",
+      "title": "Pro Football 1st Quarter Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPASSINT",
+      "title": "Pro Football Passing Interceptions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEASONRUSHYDS",
+      "title": "Rushing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLREDZONEADS",
+      "title": "NFL Redzone ads"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFPTS",
+      "title": "Pro Football Player Fantasy Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCONFLEAVE",
+      "title": "College Football Conference Leave"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMREC",
+      "title": "College Football Team Total Receptions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFT1ST",
+      "title": "Make the 1st pick in NFL Draft"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPLAYOFF",
+      "title": "Pro Football Playoff Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTPICK",
+      "title": "NFL Draft Pick"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-ARI",
+      "title": "Pro football wins Arizona"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTWR",
+      "title": "Pro Football Wide Receiver Drafted "
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFH2HWINS",
+      "title": "College Football Head-to-Head Regular Season Wins"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSLA",
+      "title": "Pro football exact wins Los Angeles R"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSZNRECORD",
+      "title": "Will single season record be broken?"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMTD",
+      "title": "College Football Team Total Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLT100",
+      "title": "Will player be ranked on Pro Football T100 List"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDIVISIONORDER",
+      "title": "Pro Football Division Exact Order"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFMACQUAL",
+      "title": "College Football Mid-American Conference Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEASONRECTD",
+      "title": "Receiving Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1QWINNER",
+      "title": "Pro Football 1st Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBIGTENLEADER",
+      "title": "College Football Big Ten Stats Leaders"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFMWCQUAL",
+      "title": "College Football Mountain West Conference Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSBMVPDEF",
+      "title": "Defensive Player Championship MVP"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSBAL",
+      "title": "Pro football exact wins Baltimore"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLGAMETD",
+      "title": "Pro Football Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-MIN",
+      "title": "Pro football wins Minnesota"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFANTASYMOST",
+      "title": "Pro Football Most Fantasy Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-JAC",
+      "title": "Pro football wins Jacksonville"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDSTTD",
+      "title": "Pro Football D/ST Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL4DCONV",
+      "title": "Pro Football 4th Down Conversions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDPOTY",
+      "title": "AP Pro Football Defensive Player Of The Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSPREAD",
+      "title": "College Football Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFOT",
+      "title": "College Football Overtime"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-IND",
+      "title": "Pro football wins Indianapolis"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWEEKCOMPETE",
+      "title": "NFL Player to Play in Week"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTOTALTD",
+      "title": "Pro Football Total Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSCIN",
+      "title": "Pro football exact wins Cincinnati"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLHOFINDUCTEES",
+      "title": "Pro Football Hall of Fame Inductees"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLBOTH",
+      "title": "Pro Football Both Teams to Score Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF2Q",
+      "title": "College Football 2nd Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSBELTQUAL",
+      "title": "College Football Sun Belt Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMTO",
+      "title": "College Football Team Total Forced Turnovers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPASSYDSH2H",
+      "title": "Pro Football Head-to-Head Passing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2QTOTAL",
+      "title": "Pro Football 2nd Quarter Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1HFT",
+      "title": "1st Half Fulltime Result"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTRB",
+      "title": "Pro Football Running Back Drafted"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDIVMOSTWINS",
+      "title": "Pro Football Division with the Least Wins"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSKC",
+      "title": "Pro football exact wins Kansas City"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL3QBTTS",
+      "title": "Pro Football Both Teams to Score in 3rd Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTOTAL",
+      "title": "College Football Total Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOTY",
+      "title": "AP Pro Football Coach Of The Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1QSPREAD",
+      "title": "Pro Football 1st Quarter Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSNO",
+      "title": "Pro football exact wins New Orleans"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-SEA",
+      "title": "Pro football wins Seattle"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLOPOY",
+      "title": "NFL Offensive Player of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCPOTY",
+      "title": "AP Pro Football Comeback Player of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFGAME",
+      "title": "College Football Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1QBTTS",
+      "title": "College Football Both Teams to Score in 1st Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFPLAYOFFLEADER",
+      "title": "Fantasy Football Playoffs Leader"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSF",
+      "title": "College Football Playoff Semifinals Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSLV",
+      "title": "Pro football exact wins Las Vegas"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEASONREC",
+      "title": "Receptions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRSHYDS",
+      "title": "Pro Football Rushing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-NYJ",
+      "title": "Pro football wins New York J"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLARGESTLEAD",
+      "title": "Pro Football Largest Lead"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNEXTTD",
+      "title": "Pro Football Next TD scorer"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1HTOTAL",
+      "title": "College Football 1st Half Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCFPCONF",
+      "title": "College Football Playoff Conference Representation"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDROTY",
+      "title": "AP Pro Football Defensive Rookie of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCONFAWARD",
+      "title": "College Football Conference Awards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFAPRANK",
+      "title": "College Football AP Rank"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSDRAFTTOP",
+      "title": "Will player be drafted Top X in Supplemental Draft"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOACHOUT",
+      "title": "NFL Coaches Fired"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-ATL",
+      "title": "Pro football wins Atlanta"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFH2HSEASON",
+      "title": "Season Fantasy Football Head-to-Head"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL53MAN",
+      "title": "Pro Football 53 Man Roster"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF4QTOTAL",
+      "title": "College Football 4th Quarter Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLONGESTTD",
+      "title": "Pro Football Longest Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCSGAME",
+      "title": "College Football FCS Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAM1POS",
+      "title": "What position will Team select with first pick"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTTEAMPOS",
+      "title": "Which team will draft a quarterback in specific round?"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLGAMESACK",
+      "title": "Pro Football Sacks"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOMBO",
+      "title": "NFL COMBO"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF3Q",
+      "title": "College Football 3rd Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFLEADER",
+      "title": "College Football Stats Leaders"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-DAL",
+      "title": "Pro football wins Dallas"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSAFETY",
+      "title": "Pro Football Safeties"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCOTW",
+      "title": "College Football Coach of the Week"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWEEKMOSTPASSYDS",
+      "title": "Weekly Most Passing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFUNDEFEATED",
+      "title": "Undefeated in College Football Regular Season"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLOTWIN",
+      "title": "Pro Football Overtime Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF2HTOTAL",
+      "title": "College Football 2nd Half Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSJAC",
+      "title": "Pro football exact wins Jacksonville"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPROOTY",
+      "title": "Pro Football Protector of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMINT",
+      "title": "College Football Team Total Defensive Interceptions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFPAC12",
+      "title": "Pac-12 Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFF50PTS",
+      "title": "Fantasy Football 50 Point Performances"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFAWARD",
+      "title": "College Football Award Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSLAC",
+      "title": "Pro football exact wins Los Angeles C"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLHALLOFFAME",
+      "title": "Pro Football Hall of Fame"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLENDSTREAK",
+      "title": "When will team end streak"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLROUNDQUAL",
+      "title": "Pro Football Round Qualifier"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFPLAYERHIGH",
+      "title": "Pro Football Player's Highest Scoring Fantasy Performance"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDIVUNDEFEATED",
+      "title": "Team to go undefeated in division"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPREPACKSGP",
+      "title": "MVE NFL Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFPREPACK2ML",
+      "title": "MVE NCAAF Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDPOY",
+      "title": "NFL Defensive Player of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-KC",
+      "title": "Pro football wins Kansas City"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFWEEKTOP",
+      "title": "Weekly Fantasy Football Top Players"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFACCLEADER",
+      "title": "College Football ACC Stats Leaders"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFACCAWARD",
+      "title": "College Football ACC Award Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBB12",
+      "title": "Big 12 Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF4QSPREAD",
+      "title": "College Football 4th Quarter Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSEED",
+      "title": "College Football Playoff Seed"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMRSHATT",
+      "title": "College Football Team Total Rushing Attempts"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL3QTOTAL",
+      "title": "Pro Football 3rd Quarter Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMTD",
+      "title": "Pro Football Team Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFB10",
+      "title": "Big Ten Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLHIGHSCOREQ",
+      "title": "Pro Football Highest Scoring Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSPREAD",
+      "title": "Pro Football Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTDT",
+      "title": "Pro Football Defensive Tackle Drafted"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOMBINE",
+      "title": "NFL Combine"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSMIN",
+      "title": "Pro football exact wins Minnesota"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNFCSOUTH",
+      "title": "National Football Conference South Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-NO",
+      "title": "Pro football wins New Orleans"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF2HSPREAD",
+      "title": "College Football 2nd Half Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2QSPREAD",
+      "title": "Pro Football 2nd Quarter Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-BUF",
+      "title": "Pro football wins Buffalo"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1SEED",
+      "title": "Will team win conference in regular season"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTEDGE",
+      "title": "Pro Football Edge Drafted"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFIRSTTDTEAM",
+      "title": "Pro Football First Team to Score a Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSTB",
+      "title": "Pro football exact wins Tampa Bay"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLGAMEFG",
+      "title": "Pro Football Field Goals"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPROBOWLWIN",
+      "title": "Pro Football Pro Bowl Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSPHI",
+      "title": "Pro football exact wins Philadephia"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSUPDRAFTPICK",
+      "title": "Will Player declare for supplemental draft"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSELLOUT",
+      "title": "Pro Football Sellouts"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSNYJ",
+      "title": "Pro football exact wins New York J"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTOPAPRANK",
+      "title": "College Football AP Poll Top Rank"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSMIA",
+      "title": "Pro football exact wins Miami"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSNYG",
+      "title": "Pro football exact wins New York G"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF2QTOTAL",
+      "title": "College Football 2nd Quarter Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRECYDSRECORD",
+      "title": "NFL Regular Season Receiving Yards Record"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFIRSTTDTIME",
+      "title": "Pro Football First Touchdown Time"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFB12REGTOP",
+      "title": "College Football Big 12 Regular Season Top Finishers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSECREGTOP",
+      "title": "College Football SEC Regular Season Top Finishers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSECLEADER",
+      "title": "College Football SEC Stats Leaders"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDEBUT",
+      "title": "Pro Football Player to Make Debut"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-DEN",
+      "title": "Pro football wins Denver"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNFCCHAMP",
+      "title": "National Football Conference Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLEADCHANGE",
+      "title": "Pro Football Lead Changes"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1HTOTAL",
+      "title": "Pro Football 1st  Half Total Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLHIRECOACH",
+      "title": "NFL hire coach"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLEASTPENALIZED",
+      "title": "Pro Football Least Penalized Team"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNEXTINT",
+      "title": "Pro Football Next Interception"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-DET",
+      "title": "Pro football wins Detroit"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLANYTD",
+      "title": "Pro Football Anytime Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSTADIUM",
+      "title": "Will NFL Stadium Project be complete by date"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLEADERPINT",
+      "title": "Pro Football P INT Leader"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2PTCONV",
+      "title": "Pro Football 2-Point Conversions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPREPACK1HFT",
+      "title": "MVE NFL Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFG",
+      "title": "Pro Football Field Goals"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTTOP",
+      "title": "Pro Football Top Draft"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTEAMPOS",
+      "title": "Will team draft a position across round"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-LA",
+      "title": "Pro football wins Los Angeles R"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBIG12WINS",
+      "title": "College Football Big 12 Teams to Win"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNEXTCOACHOUT",
+      "title": "Next NFL Coach Out"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFIRSTPICK",
+      "title": "First Pick in NFL Draft"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBIG12LEADER",
+      "title": "College Football Big 12 Stats Leaders"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS",
+      "title": "Pro Football Wins"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBIGTENREGTOP",
+      "title": "College Football Big Ten Regular Season Top Finishers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1QBTTS",
+      "title": "Pro Football Both Teams to Score in 1st Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL60YARDFGS",
+      "title": "Pro Football 60+ Yard Field Goals"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLREC",
+      "title": "Pro Football Player Receptions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-LAC",
+      "title": "Pro football wins Los Angeles C"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1H",
+      "title": "College Football 1st Half Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1HFT",
+      "title": "College Football 1st Half Fulltime Result"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSTAGEOFELIM",
+      "title": "Pro Football Stage of Elimination"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFPTSSEASON",
+      "title": "Pro Football Player Fantasy Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWEEKMOSTRSHYDS",
+      "title": "Weekly Most Rushing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1HWINNER",
+      "title": "NFL 1st Half Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCS",
+      "title": "FCS Football Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1Q",
+      "title": "College Football 1st Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBSEC",
+      "title": "SEC Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSSF",
+      "title": "Pro football exact wins San Francisco"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLHIGHSCORE",
+      "title": "Pro Football Highest Scoring Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFACC",
+      "title": "ACC Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOACHOUTFIRST",
+      "title": "First NFL coach out"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFIRSTSTART",
+      "title": "Pro Football First Start"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRECYDSH2H",
+      "title": "Pro Football Head-to-Head Receiving Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLT100TOP",
+      "title": "Will player be ranked Top X on NFL 100"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPASSATT",
+      "title": "Pro Football Passing Attempts"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1HTD",
+      "title": "1st Half Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRECYDS",
+      "title": "Pro Football Receiving Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSBMVPQB",
+      "title": "Non QB Championship MVP"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPLAYOFFHOST",
+      "title": "Team to host a playoff game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL4DOWNCONV",
+      "title": "Pro Football 4th Down Conversions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFQHIGHSCORE",
+      "title": "College Football Highest Scoring Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2Q",
+      "title": "Pro Football 2nd Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLGAMESPECIALS",
+      "title": "Pro Football Game Specials"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOMBINE40",
+      "title": "Pro Football Combine Fastest 40 Time"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPROBOWL",
+      "title": "Pro Football Pro Bowl"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL4QBTTS",
+      "title": "Pro Football Both Teams to Score in 4th Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLAWARDFIN",
+      "title": "Pro Football Award Finalists"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMYDS",
+      "title": "College Football Team Total Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTOPCFPPOLL",
+      "title": "College Football CFP Poll"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLROLE",
+      "title": "Pro Football Role at Event"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFACCREGTOP",
+      "title": "College Football ACC Regular Season Top Finishers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDIVISIONWINS",
+      "title": "Pro Football Division Total Wins"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMRECYDS",
+      "title": "College Football Team Receiving Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLREDZONEBRANDADS",
+      "title": "Redzone week 1 brand ads"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPLAYOFFC",
+      "title": "Will both teams make the NFL Playoffs"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBIGTENAWARD",
+      "title": "College Football Big Ten Award Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSWAS",
+      "title": "Pro football exact wins Washington"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMRECTD",
+      "title": "College Football Team Receiving Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSACK",
+      "title": "Pro Football Sacks"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTDB",
+      "title": "Pro Football Defensive Back Drafted"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-LV",
+      "title": "Pro football wins Las Vegas"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNOSCOREQ",
+      "title": "Pro Football Scoreless Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFPAC10",
+      "title": "Pac-10 Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFPREPACK4ML",
+      "title": "MVE NCAAF Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2QBTTS",
+      "title": "Pro Football Both Teams to Score in 2nd Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEVERYWEEKCOMPETE",
+      "title": "Pro Football Players to Play in Every Week of the Season"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFHIGHSCORE",
+      "title": "Fantasy Football Highest Scoring Performance"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNFCNORTH",
+      "title": "National Football Conference North Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSECWINS",
+      "title": "College Football SEC Teams to Win"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-HOU",
+      "title": "Pro football wins Houston"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBB10",
+      "title": "Big Ten Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLAFCWEST",
+      "title": "American Football Conference West Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSECAWARD",
+      "title": "College Football SEC Award Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-PHI",
+      "title": "Pro football wins Philadelphia"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSBELT",
+      "title": "Sun Belt Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBACC",
+      "title": "ACC Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAM1STDOWNS",
+      "title": "Pro Football Team 1st Downs"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXECOTY",
+      "title": "Pro Football Executive of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPASSTDS",
+      "title": "Pro Football player Passing Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBIG12AWARD",
+      "title": "College Football Big 12 Award Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTOTALFG",
+      "title": "College Football Total Field Goals"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFFTTS",
+      "title": "College Football First Team to Score"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLALLPRO",
+      "title": "Pro Football All-Pro Teams"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWEEKMOSTRECYDS",
+      "title": "Weekly Most Receiving Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCELEBRITYGAME",
+      "title": "Pro Football Celebrity Flag Football Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-ANY",
+      "title": "Pro football wins any team"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLMOSTRSHYDS",
+      "title": "Pro Football Most Rushing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1QSPREAD",
+      "title": "College Football 1st Quarter Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF2QSPREAD",
+      "title": "College Football 2nd Quarter Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSEASONRECYDS",
+      "title": "Receiving Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSPIT",
+      "title": "Pro football exact wins Pittsburgh"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-TEN",
+      "title": "Pro football wins Tennessee"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFB12QUAL",
+      "title": "College Football Big 12 Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRRYDS",
+      "title": "Pro Football Rush and Receiving Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLONGESTFG",
+      "title": "Pro Football Longest Field Goal"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCOACHLEAVE",
+      "title": "College Football Coach Out By"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFD3GAME",
+      "title": "DIII College Football Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFAPCHURN",
+      "title": "College Football AP Poll Churn"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTTEAM",
+      "title": "Pro Football Team Draft"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTCOMPARE",
+      "title": "NFL Draft Comparison"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-BAL",
+      "title": "Pro football wins Baltimore"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSSEA",
+      "title": "Pro football exact wins Seattle"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSATL",
+      "title": "Pro football exact wins Atlanta"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLAFCCHAMP",
+      "title": "American Football Conference Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLAFCEAST",
+      "title": "American Football Conference East Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOACH",
+      "title": "NFL Coach of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-TB",
+      "title": "Pro football wins Tampa Bay"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSNE",
+      "title": "Pro football exact wins New England"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTMATCHUP",
+      "title": "Pro Football Draft Matchup"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL4Q",
+      "title": "Pro Football 4th Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSCLE",
+      "title": "Pro football exact wins Cleveland"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF2H",
+      "title": "College Football 2nd Half Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTOU",
+      "title": "Will Player be drafted before or after pick?"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFB12",
+      "title": "Big 12 Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLGPICKENSCONTRACT",
+      "title": "Pro Football George Picken's Next Contract Size"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPREPACK3ML",
+      "title": "MVE NFL Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMDPTS",
+      "title": "Who will allow the least/most points this season"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSACKRECORD",
+      "title": "NFL Regular Season Sack Record"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFB10QUAL",
+      "title": "College Football Big Ten Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOMEBACK",
+      "title": "Pro Football Comeback"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSDEN",
+      "title": "Pro football exact wins Denver"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1HSPREAD",
+      "title": "College Football 1st Half Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLOT",
+      "title": "Pro Football Overtime"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNFCWEST",
+      "title": "National Football Conference West Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTKL",
+      "title": "Pro Football Tackles"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMRSHYDS",
+      "title": "College Football Team Rushing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLREBOOT",
+      "title": "Reboot Rules"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFBIGTENWINS",
+      "title": "College Football Big Ten Teams to Win"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1HSPREAD",
+      "title": "Pro Football 1st Half Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLOROY",
+      "title": "NFL Offensive Rookie of the Y ear"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSEC",
+      "title": "SEC Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLNONQBPASS",
+      "title": "Pro Football Non-QB Passes"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFMWC",
+      "title": "Mountain West Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFTCAT",
+      "title": "Pro Football Draft Category"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFWEEKLEAD",
+      "title": "Weekly Fantasy Football Leader"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRETURN",
+      "title": "Pro Football Player to Compete"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPREPACK",
+      "title": "MVE NFL Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-GB",
+      "title": "Pro football wins Green Bay"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSHOU",
+      "title": "Pro football exact wins Houston"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF3QTOTAL",
+      "title": "College Football 3rd Quarter Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTOPSEED",
+      "title": "College Football Playoff Top Seed"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL4QWINNER",
+      "title": "Pro Football 4th Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFHIGHSCORE",
+      "title": "College Football Highest Scoring Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTEAMFG",
+      "title": "College Football Team Total Field Goals"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2TD",
+      "title": "Pro Football Multiple Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFTFUT",
+      "title": "Team to Make the College Football Playoffs before 2030"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF2QBTTS",
+      "title": "College Football Both Teams to Score in 2nd Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFPREPACK3ML",
+      "title": "MVE NCAAF Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFMAC",
+      "title": "MAC Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL3QWINNER",
+      "title": "Pro Football 3rd Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSBMVPPOS",
+      "title": "Pro Football Championship MVP Position"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPREPACKSGPSPREAD",
+      "title": "MVE NFL Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCONF",
+      "title": "NCAAF Championship Conference"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL3Q",
+      "title": "Pro Football 3rd Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF1HWINNER",
+      "title": "College Football 1st Half Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFPAC12QUAL",
+      "title": "College Football Pac-12 Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLSHORTESTTD",
+      "title": "Pro Football Shortest Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLVIEWERSHIP",
+      "title": "Pro Football Game Viewership"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLASTTOLOSE",
+      "title": "Pro Football Last Undefeated Team"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLRSHYDSH2H",
+      "title": "Pro Football Head-to-Head Rushing Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLASSCOACH",
+      "title": "NFL Assistant Coach of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINS-CIN",
+      "title": "Pro football wins Cincinnati"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF",
+      "title": "NCAAF Championship"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLINT",
+      "title": "Pro Football Interceptions"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFLEADERTOP",
+      "title": "Top Fantasy"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLDRAFT1",
+      "title": "NFL Draft First Pick"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFACCWINS",
+      "title": "College Football ACC Teams to Win"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCOTY",
+      "title": "College Football Coach of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMFG",
+      "title": "Pro Football Field Goals"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2QWINNER",
+      "title": "Pro Football 2nd Quarter Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLONGFG",
+      "title": "Pro Football Team Longest Field Goal"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAF3QBTTS",
+      "title": "College Football Both Teams to Score in 3rd Quarter"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLEXACTWINSGB",
+      "title": "Pro football exact wins Green Bay"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFFIRSTTDTEAM",
+      "title": "College Football First Team to Score a Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFIRSTTD",
+      "title": "Pro Football First Touchdown"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFD3",
+      "title": "D3 College Football Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWORSTTOFIRST",
+      "title": "Pro Football Worst in Division to First"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLLONGREC",
+      "title": "Longest Reception"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMYDS",
+      "title": "Pro Football Team Yards"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFAAC",
+      "title": "American Athletic Conference Champion"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFCUSAQUAL",
+      "title": "College Football Conference USA Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFSECQ",
+      "title": "College Football SEC Championship Qualifiers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLOPOTY",
+      "title": "AP Pro Football Offensive Player Of The Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTD",
+      "title": "Pro Football Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL1H",
+      "title": "Pro Football 1st Half Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTEAMTOTAL",
+      "title": "Pro Football Team Total Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLCOMPETE",
+      "title": "Will an NFL Player Compete in game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLTOTAL",
+      "title": "Pro Football Total Points"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2HSPREAD",
+      "title": "Pro Football 2nd Half Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFF40PTS",
+      "title": "Fantasy Football 40 Point Performances"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFJOINCONF",
+      "title": "College Football Join Conference"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFL2HTD",
+      "title": "2nd Half Touchdowns"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLPREPACK2ML",
+      "title": "MVE NFL Pre Pack"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINSTREAK",
+      "title": "Pro Football Win Streak"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLWINSWEEK",
+      "title": "NFL wins by week"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLFFH2H",
+      "title": "Weekly Fantasy Football Head-to-Head"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNFLMVP",
+      "title": "AP Pro Football Regular Season MVP"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAFMOSTOT",
+      "title": "College Football Most Amount of Overtimes"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXMLSSPREAD",
+      "title": "MLS Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNEWCOACHNO",
+      "title": "New Orleans Saints new coach"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNBA30COMEBACK",
+      "title": "NBA 3-0 Series Comeback"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXFRASUPERCUPADVANCE",
+      "title": "France Super Cup to Advance"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXITASUPERCUPTOTAL",
+      "title": "Point Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXT20TEAMTOTAL",
+      "title": "T20 Team Total Runs"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXMLBNLCY",
+      "title": "Pro Baseball National League Cy Young"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXLALIGATOP",
+      "title": "La Liga Top Finishers"
+    },
+    {
+      "category": "Entertainment",
+      "ticker": "KXBBCHARTPOSITIONALBUM",
+      "title": "What position will song/album be on the Billboard chart?"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNEXTTEAMMLB",
+      "title": "MLB Player Next Team"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXATPAMT",
+      "title": "ATP Tour Abierto Mexican Telcel presentado por HSBC"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXATPTIEBREAK",
+      "title": "Tiebreak to occur in Match"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXSONICS",
+      "title": "Blazers become Sonics"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXLIGUE1FTTS",
+      "title": "First Team to Score"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXVTCOACH",
+      "title": "Virginia Tech Next Coach"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXCSGOADVANCE",
+      "title": "CSGO Advance"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXSIXKINGSQUARTER",
+      "title": "Six Kings Slam Quarterfinals"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXPGAHOLESCORE",
+      "title": "PGA Hole Score"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNCAAMBCOTY",
+      "title": "Men's College Basketball Naismith Coach of the Year"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNBAPTSLEADER",
+      "title": "Pro Basketball Player Points Leader"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXEUROCUPTOTAL",
+      "title": "EuroCup Basketball Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXF1SPRINTTOP10",
+      "title": "F1 Sprint Race Top 10 Finishers"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXODIMATCH",
+      "title": "Men's ODI Cricket Match"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXEWCPUBGBATTLEG",
+      "title": "PUBG: BATTLEGROUNDS at 2025 Esports World Cup"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXBRASILEIROADVANCE",
+      "title": "To Advance"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXWNBAALLTEAM",
+      "title": "Women's Pro Basketball Teams"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXDENSUPERLIGABTTS",
+      "title": "BTTS"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXGER3LTOTAL",
+      "title": "Point Total"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXFINALISSIMASPREAD",
+      "title": "Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNHLSERIESSPREAD",
+      "title": "NHL Series Game Spread"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXEPLCORNERS",
+      "title": "EPL Corners"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNEWCOACHCHIBEARS",
+      "title": "Chicago Bears new coach"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXPGAHOLEINONE",
+      "title": "PGA Hole in One"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNBAFINALSEXACT",
+      "title": "Pro Basketball Championship Series Score"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXINTLFRIENDLY1H",
+      "title": "1st Half Winner"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXWNBADUNK",
+      "title": "Women's Pro Basketball Player to Dunk"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXNZNBLGAME",
+      "title": "New Zealand NBL Game"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXTACAPORTBTTS",
+      "title": "BTTS"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXWBCHR",
+      "title": "World Baseball Classic Homerun"
+    },
+    {
+      "category": "Sports",
+      "ticker": "KXMLBWINS-SF",
+      "title": "Pro baseball wins San Francisco"
+    }
+  ]
+}

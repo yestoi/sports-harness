@@ -144,9 +144,26 @@ def run() -> None:
             deleted = delete_verified_plaintexts(session, s.backup_dir, s.build_sha, now)
         log.info("backup_encrypt rows=%s deleted_plaintexts=%s", len(encrypted), len(deleted))
 
+    def _futures() -> None:
+        from harness.feeds.http import HttpClient
+        from harness.venues.kalshi.futures import run_futures_snapshot
+        from harness.venues.kalshi.public import KalshiPublic
+
+        http = HttpClient(s.http_timeout_s)
+        kalshi = KalshiPublic(http, s.kalshi_base_url, s.kalshi_sleep_s)
+        factory = make_session_factory(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))
+        try:
+            with factory() as session:
+                job = run_futures_snapshot(session, s, kalshi, datetime.now(timezone.utc),
+                                           trigger="cron")
+                session.commit()
+                log.info("futures snapshot %s week=%s", job.status, job.notes.get("week"))
+        finally:
+            http.close()
+
     sched = build_scheduler(build_recorder(s), s.heartbeat_s, settler=build_settler(s),
                             settle_period_s=s.settle_period_s, backup_encrypt=_backup_encrypt,
-                            backup_period_s=s.backup_encrypt_period_s)
+                            backup_period_s=s.backup_encrypt_period_s, futures=_futures)
     sched.start()
     stop = {"flag": False}
 
@@ -849,6 +866,39 @@ def match_report(sport: str = "all") -> None:
             "select sport || '/' || source || '/' || raw_name from team_aliases where team_id = :s order by 1"),
             {"s": AMBIGUOUS_TEAM_ID}).scalars().all()
         print(f"ambiguous aliases: {len(amb)} (first 10: {amb[:10]})")
+
+
+futures_app = typer.Typer(no_args_is_help=True, help="Weekly Kalshi futures and ladder snapshots")
+app.add_typer(futures_app, name="futures")
+
+
+@futures_app.command("snapshot")
+def futures_snapshot_cmd() -> None:
+    """Run the weekly futures pass by hand (addendum §1.1).
+
+    The scheduled pass runs Tuesdays at 09:00 America/Chicago inside `app-run`; this is the same
+    pass, labelled `manual` in `job_runs.notes.trigger` so the Tuesday 09:30 duty can tell a hand
+    run from the cron's.
+    """
+    configure_logging()
+    from harness.feeds.http import HttpClient
+    from harness.venues.kalshi.futures import run_futures_snapshot
+    from harness.venues.kalshi.public import KalshiPublic
+
+    s = get_settings()
+    http = HttpClient(s.http_timeout_s)
+    factory = make_session_factory(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))
+    try:
+        with factory() as session:
+            job = run_futures_snapshot(session, s, KalshiPublic(http, s.kalshi_base_url,
+                                                                s.kalshi_sleep_s),
+                                       datetime.now(timezone.utc), trigger="manual")
+            session.commit()
+            log.info("futures snapshot %s week=%s series=%s requests=%s", job.status,
+                     job.notes.get("week"), len(job.notes.get("series_reached") or []),
+                     job.notes.get("requests"))
+    finally:
+        http.close()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import logging
 from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from harness.config.settings import Settings
 from harness.db.engine import (
@@ -88,7 +89,8 @@ def build_settler(settings: Settings) -> Settler:
 
 def build_scheduler(recorder: Recorder, heartbeat_s: int, settler: Settler | None = None,
                     settle_period_s: int = 3600, backup_encrypt: Callable[[], None] | None = None,
-                    backup_period_s: int = 0) -> BackgroundScheduler:
+                    backup_period_s: int = 0,
+                    futures: Callable[[], None] | None = None) -> BackgroundScheduler:
     """The recorder's tick, and the settler on its own slot when one is given.
 
     `BackgroundScheduler`'s default executor is a thread pool, so the settlement batch runs
@@ -100,6 +102,8 @@ def build_scheduler(recorder: Recorder, heartbeat_s: int, settler: Settler | Non
     `backup_encrypt` gets its own slot the same way, registered only when both it and
     `backup_period_s` are given -- so the Mac (no backup_dir) and the tests never run it by
     accident just because a period default is nonzero.
+
+    `futures` (addendum §1.1, H7) gets its own weekly cron slot, registered only when given.
     """
     sched = BackgroundScheduler(timezone="UTC")
     sched.add_job(recorder.maybe_tick, "interval", seconds=heartbeat_s, id="maybe_tick",
@@ -110,6 +114,16 @@ def build_scheduler(recorder: Recorder, heartbeat_s: int, settler: Settler | Non
     if backup_encrypt is not None and backup_period_s:
         sched.add_job(backup_encrypt, "interval", seconds=backup_period_s, id="backup_encrypt",
                       max_instances=1, coalesce=True, misfire_grace_time=300)
+    if futures is not None:
+        # Ruling B-M6. This scheduler is built with timezone="UTC", so a bare CronTrigger(hour=9)
+        # would fire at 04:00 in Louisiana and the Tuesday 09:30 CT duty (R:309) would find a
+        # job that ran five hours earlier. The trigger carries its own timezone.
+        # `misfire_grace_time=3600`: a weekly snapshot that starts an hour late is still the
+        # week's snapshot, and a container restarted on Tuesday morning must not skip the week.
+        sched.add_job(futures, CronTrigger(day_of_week="tue", hour=9, minute=0,
+                                           timezone="America/Chicago"),
+                      id="futures_snapshot", max_instances=1, coalesce=True,
+                      misfire_grace_time=3600)
     return sched
 
 

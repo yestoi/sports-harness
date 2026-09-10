@@ -35,8 +35,15 @@ def event_date_from_ticker(event_ticker: str) -> date | None:
         return None
 
 
-def _dec(v) -> Decimal | None:
-    if v is None:
+def decode_fixed_point(v) -> Decimal | None:
+    """A Kalshi `*_dollars` or `*_fp` fixed-point string as a Decimal, or None.
+
+    Public since phase 5: the futures snapshot writer decodes the same strings from the same
+    venue and there is no reason for two copies of the rule in the venue package.
+    `harness/normalize/kalshi.py` keeps its own private copy; the normalizer is not this phase's
+    file and the two are asserted equal by `test_the_dollars_and_fp_strings_are_decoded`.
+    """
+    if v in (None, ""):
         return None
     try:
         return Decimal(str(v))
@@ -62,14 +69,14 @@ def parse_market_summaries(body: dict | list | None) -> list[MarketSummary]:
         event_ticker = m.get("event_ticker", "")
         if not ticker:
             continue
-        vol = _dec(m.get("volume_fp"))
+        vol = decode_fixed_point(m.get("volume_fp"))
         out.append(MarketSummary(
             ticker=ticker,
             event_ticker=event_ticker,
             series_ticker=event_ticker.split("-")[0] if event_ticker else "",
             event_date=event_date_from_ticker(event_ticker),
-            yes_bid=_dec(m.get("yes_bid_dollars")),
-            yes_ask=_dec(m.get("yes_ask_dollars")),
+            yes_bid=decode_fixed_point(m.get("yes_bid_dollars")),
+            yes_ask=decode_fixed_point(m.get("yes_ask_dollars")),
             volume_fp=vol if vol is not None else Decimal("0"),
             close_time=_ts(m.get("close_time")),
         ))
@@ -88,11 +95,14 @@ class KalshiPublic:
             self._sleep(self._sleep_s)
 
     def fetch_markets_all(self, series_ticker: str, max_pages: int = 20, status: str = "open",
-                          min_settled_ts: int | None = None) -> list[FetchResult]:
+                          min_settled_ts: int | None = None,
+                          extra_params: dict | None = None) -> list[FetchResult]:
         """Every page of `GET /markets` for one series at one `status`.
 
         `min_settled_ts` (Unix seconds) is the only timestamp filter Kalshi accepts alongside
         `status="settled"`; it is meaningless for `status="open"`, so callers leave it None there.
+        `extra_params` is merged into the query as-is, so a caller (the futures pass) can add
+        `mve_filter=exclude` without a second method.
         """
         pages: list[FetchResult] = []
         cursor = ""
@@ -100,9 +110,37 @@ class KalshiPublic:
             params = {"series_ticker": series_ticker, "status": status, "limit": "1000"}
             if min_settled_ts is not None:
                 params["min_settled_ts"] = str(min_settled_ts)
+            if extra_params:
+                params.update(extra_params)
             if cursor:
                 params["cursor"] = cursor
             r = self._http.get(f"{self._base}/markets", params=params, redact_params=())
+            pages.append(r)
+            cursor = (r.body or {}).get("cursor", "") if isinstance(r.body, dict) else ""
+            self._pause()
+            if not cursor or r.status != 200:
+                break
+        return pages
+
+    def fetch_tags_by_categories(self) -> FetchResult:
+        """The venue's category-to-tags map (addendum 0.9). `GET /series` has no ticker-prefix
+        filter, so discovery has to enumerate categories, and this is the only endpoint that
+        names them. Read once per futures pass."""
+        r = self._http.get(f"{self._base}/search/tags_by_categories", redact_params=())
+        self._pause()
+        return r
+
+    def fetch_series_all(self, category: str, max_pages: int = 10) -> list[FetchResult]:
+        """Every page of `GET /series` for one category. The response carries no cursor in the
+        documented schema, so `max_pages` is a ceiling this loop never normally reaches; it is
+        here so a venue that starts paging cannot turn the pass into an unbounded walk."""
+        pages: list[FetchResult] = []
+        cursor = ""
+        for _ in range(max_pages):
+            params = {"category": category}
+            if cursor:
+                params["cursor"] = cursor
+            r = self._http.get(f"{self._base}/series", params=params, redact_params=())
             pages.append(r)
             cursor = (r.body or {}).get("cursor", "") if isinstance(r.body, dict) else ""
             self._pause()

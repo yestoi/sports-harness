@@ -32,3 +32,30 @@ def test_build_scheduler_without_a_settler_is_unchanged():
     recorder = SimpleNamespace(maybe_tick=lambda: None)
 
     assert set(_jobs(build_scheduler(recorder, 30))) == {"maybe_tick"}
+
+
+def _recorder():
+    return SimpleNamespace(maybe_tick=lambda: None)
+
+
+def test_the_futures_job_runs_on_tuesdays_at_nine_central():
+    """Ruling B-M6: the scheduler is built with timezone="UTC", so the trigger carries its own
+    or the Tuesday 09:30 CT duty finds a job that ran at 04:00 local."""
+    from harness.scheduler import build_scheduler
+
+    # No `shutdown()`: `build_scheduler` never calls `.start()`, and APScheduler raises
+    # `SchedulerNotRunningError` on a stopped scheduler. The file's two existing tests do the
+    # same thing for the same reason.
+    sched = build_scheduler(_recorder(), heartbeat_s=30, futures=lambda: None)
+    job = sched.get_job("futures_snapshot")
+    assert job is not None
+    assert str(job.trigger.timezone) == "America/Chicago"
+    assert "tue" in str(job.trigger)
+    assert "hour='9'" in str(job.trigger) and "minute='0'" in str(job.trigger)
+
+
+def test_no_futures_job_without_a_callable():
+    from harness.scheduler import build_scheduler
+
+    sched = build_scheduler(_recorder(), heartbeat_s=30)
+    assert sched.get_job("futures_snapshot") is None
