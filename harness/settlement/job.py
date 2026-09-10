@@ -87,6 +87,9 @@ STAGE_MODULES: list[str] = [
     # long-running benchmark and markout stages so a busy Sunday does not starve it. `rfq_grade`
     # follows it.
     "harness.settlement.parlay_grade",
+    # Phase 5 (addendum §1.3, ruling B-I7): after parlay_grade, so the two fun/counterfactual
+    # stages sit together ahead of the long-running benchmark and markout work.
+    "harness.settlement.rfq_grade",
     "harness.settlement.benchmarks", "harness.settlement.order_clv",
     "harness.settlement.markouts", "harness.ops.housekeeping", "harness.settlement.report_wtd",
 ]

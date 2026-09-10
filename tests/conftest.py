@@ -874,3 +874,263 @@ def live_card_no_book(db_session):
     card, leg = _make_lp_card(db_session, card_status="placed", game=game, team=home,
                               with_dk=False)
     return SimpleNamespace(card=card, leg_ids=[leg.id])
+
+
+# --- Task T14: the RFQ quote's fixtures (rfq_created frames + the legs they resolve through) --
+#
+# Every quote fixture seeds the `venue_markets` + `games` + `fair_values` rows its legs resolve
+# through, one `direct` fair per leg, `created_at` inside `resolve_legs`'s `FAIR_MAX_AGE` of
+# `QUOTE_NOW` -- the same moment `tests/test_rfq_quote.py` hands `handle_frame`. `_rfq_game` and
+# `_rfq_market` are reused by the `rfq_grade` fixtures below with their own moment and statuses.
+
+QUOTE_NOW = datetime(2026, 9, 15, 18, 0, tzinfo=timezone.utc)
+_rfq_ids = itertools.count(40001)
+
+
+def _rfq_game(session, prefix: str, *, sport: str = "nfl", status: str = "scheduled",
+             kickoff: datetime | None = None):
+    from harness.db.models import Game
+
+    home = _make_team(session, f"{prefix}H", sport=sport)
+    away = _make_team(session, f"{prefix}A", sport=sport)
+    game = Game(sport=sport, home_team_id=home.id, away_team_id=away.id,
+               kickoff_utc=kickoff or (QUOTE_NOW + timedelta(days=1)), status=status)
+    session.add(game)
+    session.flush()
+    return game
+
+
+def _rfq_market(session, *, ticker: str, event_ticker: str, series_ticker: str,
+                game_id: int | None, fair_p: Decimal | None,
+                disagreement: Decimal = Decimal("0.001"), created_at: datetime,
+                fair_source: str = "direct", market_type: str = "moneyline"):
+    """One `venue_markets` row and (when `fair_p` is given) the `fair_values` row it resolves
+    through, keyed exactly the way `harness.venues.kalshi.rfq_quote.resolve_legs` (and
+    `harness.settlement.rfq_grade`'s closing-leg query) read them."""
+    from harness.db.models import FairValue, VenueMarket
+
+    rid = next(_rfq_ids)
+    vm = VenueMarket(venue="kalshi", ticker=ticker, event_ticker=event_ticker,
+                     series_ticker=series_ticker, game_id=game_id, market_type=market_type,
+                     first_seen_raw_id=rid, last_seen_at=created_at)
+    session.add(vm)
+    session.flush()
+    if fair_p is not None:
+        session.add(FairValue(run_id=rid, game_id=game_id, market_type=market_type,
+                              fair_p=fair_p, fair_source=fair_source, disagreement=disagreement,
+                              created_at=created_at))
+        session.flush()
+    return vm
+
+
+def _rfq_leg(vm) -> dict:
+    return {"market_ticker": vm.ticker, "event_ticker": vm.event_ticker, "side": "yes",
+           "yes_settlement_value_dollars": "1.00"}
+
+
+def _rfq_frame(rfq_id: str, legs: list[dict], *, market_ticker: str | None = None,
+              contracts_fp: str | None = None, target_cost_dollars: str | None = None) -> dict:
+    body = {"id": rfq_id,
+           "market_ticker": market_ticker or (legs[0]["market_ticker"] if legs
+                                              else f"MKT-{rfq_id}"),
+           "event_ticker": legs[0]["event_ticker"] if legs else None,
+           "created_ts": 1789999999, "mve_selected_legs": legs}
+    if contracts_fp is not None:
+        body["contracts_fp"] = contracts_fp
+    if target_cost_dollars is not None:
+        body["target_cost_dollars"] = target_cost_dollars
+    return {"type": "rfq_created", "msg": body}
+
+
+@pytest.fixture
+def two_game_rfq(db_session):
+    """Two legs, two games, two `KXNFLGAME` events: a cross-game combo that quotes clean."""
+    g1, g2 = _rfq_game(db_session, "QA"), _rfq_game(db_session, "QB")
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-QA-T1", event_ticker="KXNFLGAME-QA",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.60"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-QB-T1", event_ticker="KXNFLGAME-QB",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-TWO-GAME", [_rfq_leg(vm1), _rfq_leg(vm2)])
+    return SimpleNamespace(frame=frame)
+
+
+@pytest.fixture
+def same_game_rfq(db_session):
+    """Two legs on the same `game_id` and the same event: the plain same-game case."""
+    g = _rfq_game(db_session, "SG")
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-SG-T1", event_ticker="KXNFLGAME-SG",
+                      series_ticker="KXNFLGAME", game_id=g.id, fair_p=Decimal("0.55"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-SG-T2", event_ticker="KXNFLGAME-SG",
+                      series_ticker="KXNFLGAME", game_id=g.id, fair_p=Decimal("0.45"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-SAME-GAME", [_rfq_leg(vm1), _rfq_leg(vm2)])
+    return SimpleNamespace(frame=frame)
+
+
+@pytest.fixture
+def same_game_two_events_rfq(db_session):
+    """Ruling A-I2: the same `game_id` reached through two different `event_ticker` values --
+    e.g. the game line and the spread line on one game. Still `same_game`."""
+    g = _rfq_game(db_session, "SE")
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-SE-T1", event_ticker="KXNFLGAME-SE",
+                      series_ticker="KXNFLGAME", game_id=g.id, fair_p=Decimal("0.55"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    vm2 = _rfq_market(db_session, ticker="KXNFLSPREAD-SE-T1", event_ticker="KXNFLSPREAD-SE",
+                      series_ticker="KXNFLSPREAD", game_id=g.id, fair_p=Decimal("0.45"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2), market_type="spread")
+    frame = _rfq_frame("RFQ-SAME-GAME-2EV", [_rfq_leg(vm1), _rfq_leg(vm2)])
+    return SimpleNamespace(frame=frame)
+
+
+@pytest.fixture
+def derived_fair_rfq(db_session):
+    """One leg whose only `fair_values` row is `derived`, not `direct`: `resolve_legs` finds no
+    quotable fair for it at all."""
+    g1, g2 = _rfq_game(db_session, "DA"), _rfq_game(db_session, "DB")
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-DA-T1", event_ticker="KXNFLGAME-DA",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.60"),
+                      fair_source="derived", created_at=QUOTE_NOW - timedelta(minutes=2))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-DB-T1", event_ticker="KXNFLGAME-DB",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-DERIVED", [_rfq_leg(vm1), _rfq_leg(vm2)])
+    return SimpleNamespace(frame=frame)
+
+
+@pytest.fixture
+def disagreeing_rfq(db_session):
+    """One leg over `DISAGREEMENT_MAX`."""
+    g1, g2 = _rfq_game(db_session, "GA"), _rfq_game(db_session, "GB")
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GA-T1", event_ticker="KXNFLGAME-GA",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.60"),
+                      disagreement=Decimal("0.05"), created_at=QUOTE_NOW - timedelta(minutes=2))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GB-T1", event_ticker="KXNFLGAME-GB",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-DISAGREE", [_rfq_leg(vm1), _rfq_leg(vm2)])
+    return SimpleNamespace(frame=frame)
+
+
+@pytest.fixture
+def unmatched_leg_rfq(db_session):
+    """One leg's `market_ticker` has no `venue_markets` row at all."""
+    g = _rfq_game(db_session, "UM")
+    vm = _rfq_market(db_session, ticker="KXNFLGAME-UM-T1", event_ticker="KXNFLGAME-UM",
+                     series_ticker="KXNFLGAME", game_id=g.id, fair_p=Decimal("0.60"),
+                     created_at=QUOTE_NOW - timedelta(minutes=2))
+    unmatched_leg = {"market_ticker": "KXNFLGAME-GHOST-T9", "event_ticker": "KXNFLGAME-GHOST",
+                     "side": "yes", "yes_settlement_value_dollars": "1.00"}
+    frame = _rfq_frame("RFQ-UNMATCHED", [_rfq_leg(vm), unmatched_leg])
+    return SimpleNamespace(frame=frame)
+
+
+@pytest.fixture
+def one_leg_rfq(db_session):
+    """A single-market RFQ: an arrival, not a combo."""
+    g = _rfq_game(db_session, "OL")
+    vm = _rfq_market(db_session, ticker="KXNFLGAME-OL-T1", event_ticker="KXNFLGAME-OL",
+                     series_ticker="KXNFLGAME", game_id=g.id, fair_p=Decimal("0.60"),
+                     created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-ONE-LEG", [_rfq_leg(vm)])
+    return SimpleNamespace(frame=frame)
+
+
+@pytest.fixture
+def big_rfq(db_session):
+    """A clean two-game combo whose `target_cost_dollars` is over `rfq_collateral_cap_usd`
+    (the default $50)."""
+    g1, g2 = _rfq_game(db_session, "BA"), _rfq_game(db_session, "BB")
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-BA-T1", event_ticker="KXNFLGAME-BA",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.60"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-BB-T1", event_ticker="KXNFLGAME-BB",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-BIG", [_rfq_leg(vm1), _rfq_leg(vm2)], target_cost_dollars="500.00")
+    return SimpleNamespace(frame=frame)
+
+
+# --- Task T14: the `rfq_grade` fixtures (a stored quote + the legs it grades against) ---------
+
+GRADE_NOW = datetime(2026, 9, 22, 6, 0, tzinfo=timezone.utc)
+
+
+def _graded_rfq(session, *, rfq_id: str, legs: list[dict], yes_bid=None, no_bid=None,
+                declined_reason=None):
+    from harness.db.models import Rfq, RfqQuote
+
+    rfq = Rfq(id=rfq_id, received_at=GRADE_NOW,
+             market_ticker=legs[0]["market_ticker"] if legs else f"MKT-{rfq_id}",
+             legs=legs, raw={"msg": {}, "truncated": False}, status="open")
+    session.add(rfq)
+    session.flush()
+    quote = RfqQuote(rfq_id=rfq_id, computed_at=GRADE_NOW, legs=len(legs),
+                     fair=Decimal("0.3000") if declined_reason is None else None,
+                     margin_per_leg=Decimal("0.03"), yes_bid=yes_bid, no_bid=no_bid,
+                     declined_reason=declined_reason, unmatched_legs=0)
+    session.add(quote)
+    session.flush()
+    return rfq, quote
+
+
+@pytest.fixture
+def settled_quote(db_session):
+    """Two games `final`, both closing fairs written after kickoff: 0.70 x 0.50 = 0.35."""
+    g1 = _rfq_game(db_session, "GS1", status="final", kickoff=GRADE_NOW - timedelta(hours=8))
+    g2 = _rfq_game(db_session, "GS2", status="final", kickoff=GRADE_NOW - timedelta(hours=6))
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GS1-T1", event_ticker="KXNFLGAME-GS1",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
+                      created_at=GRADE_NOW - timedelta(hours=1))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GS2-T1", event_ticker="KXNFLGAME-GS2",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=GRADE_NOW - timedelta(hours=1))
+    rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-SETTLED",
+                             legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
+                             yes_bid=Decimal("0.3000"), no_bid=Decimal("0.6400"))
+    return SimpleNamespace(rfq=rfq, quote=quote)
+
+
+@pytest.fixture
+def stale_closing_quote(db_session):
+    """Same shape, but one leg's newest `fair_values` row predates its kickoff by more than
+    `CLOSING_WINDOW` -- the closing fair simply is not there."""
+    g1 = _rfq_game(db_session, "GT1", status="final", kickoff=GRADE_NOW - timedelta(hours=8))
+    g2 = _rfq_game(db_session, "GT2", status="final", kickoff=GRADE_NOW - timedelta(hours=6))
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GT1-T1", event_ticker="KXNFLGAME-GT1",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
+                      created_at=g1.kickoff_utc - timedelta(hours=8))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GT2-T1", event_ticker="KXNFLGAME-GT2",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=GRADE_NOW - timedelta(hours=1))
+    rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-STALE",
+                             legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
+                             yes_bid=Decimal("0.3000"), no_bid=Decimal("0.6400"))
+    return SimpleNamespace(rfq=rfq, quote=quote)
+
+
+@pytest.fixture
+def declined_quote(db_session):
+    """A declined quote: `declined_reason` set, bids null, never graded."""
+    rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-DECLINED", legs=[],
+                             declined_reason="same_game")
+    return SimpleNamespace(rfq=rfq, quote=quote)
+
+
+@pytest.fixture
+def unsettled_quote(db_session):
+    """One leg's game is still `in_progress`: nothing to grade against yet."""
+    g1 = _rfq_game(db_session, "GU1", status="in_progress", kickoff=GRADE_NOW - timedelta(hours=1))
+    g2 = _rfq_game(db_session, "GU2", status="final", kickoff=GRADE_NOW - timedelta(hours=6))
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GU1-T1", event_ticker="KXNFLGAME-GU1",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
+                      created_at=GRADE_NOW - timedelta(minutes=10))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GU2-T1", event_ticker="KXNFLGAME-GU2",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=GRADE_NOW - timedelta(hours=1))
+    rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-UNSETTLED",
+                             legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
+                             yes_bid=Decimal("0.3000"), no_bid=Decimal("0.6400"))
+    return SimpleNamespace(rfq=rfq, quote=quote)

@@ -73,7 +73,7 @@ def test_a_frame_with_no_legs_still_parses():
 
 # --- storage on arrival ----------------------------------------------------------------------
 
-def test_the_row_is_written_on_arrival(db_session):
+def test_the_row_is_written_on_arrival(db_session, env_settings):
     row = handle_frame(db_session, _created(), NOW)
     assert isinstance(row, Rfq)
     assert row.status == "open" and row.received_at == NOW
@@ -81,7 +81,7 @@ def test_the_row_is_written_on_arrival(db_session):
     assert len(row.legs) == 2
 
 
-def test_a_delete_marks_the_existing_row(db_session):
+def test_a_delete_marks_the_existing_row(db_session, env_settings):
     handle_frame(db_session, _created(), NOW)
     handle_frame(db_session, _deleted(), NOW + timedelta(minutes=30))
     row = db_session.get(Rfq, "rfq_1")
@@ -96,13 +96,13 @@ def test_a_delete_for_an_unseen_rfq_writes_its_own_row(db_session):
     assert row.status == "deleted"
 
 
-def test_a_repeated_create_does_not_duplicate(db_session):
+def test_a_repeated_create_does_not_duplicate(db_session, env_settings):
     handle_frame(db_session, _created(), NOW)
     handle_frame(db_session, _created(), NOW + timedelta(seconds=1))
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
 
 
-def test_the_raw_message_is_stored_capped_with_a_flag(db_session):
+def test_the_raw_message_is_stored_capped_with_a_flag(db_session, env_settings):
     """Ruling B-M9 and D13: the raw message lives in `rfqs.raw` because the report needs the
     legs and no builder may read `raw_responses`. Capped at 8 KB with a flag."""
     frame = _created()
@@ -112,13 +112,13 @@ def test_the_raw_message_is_stored_capped_with_a_flag(db_session):
     assert len(json.dumps(row.raw).encode()) <= RAW_MAX_BYTES
 
 
-def test_a_small_message_is_stored_whole_and_unflagged(db_session):
+def test_a_small_message_is_stored_whole_and_unflagged(db_session, env_settings):
     row = handle_frame(db_session, _created(), NOW)
     assert row.raw["truncated"] is False
     assert row.raw["msg"]["id"] == "rfq_1"
 
 
-def test_hostile_free_text_reaches_no_rendered_string(db_session):
+def test_hostile_free_text_reaches_no_rendered_string(db_session, env_settings):
     """F60: RFQ free text is stored but never rendered raw. The one thing the report shows is a
     120-character quoted excerpt of `market_ticker`, and that excerpt is sanitized."""
     from harness.research.text import sanitize_model_text
@@ -287,7 +287,7 @@ def test_the_listener_connects_to_the_settings_host_and_never_the_fallback(db_se
 
 # --- hostile frames: the cap is a cap, and the listener survives them -----------------------
 
-def test_a_hostile_numeric_is_dropped_rather_than_written(db_session):
+def test_a_hostile_numeric_is_dropped_rather_than_written(db_session, env_settings):
     """`contracts_fp` is `Numeric(14,2)` and `target_cost_dollars` is `Numeric(14,4)`. A venue
     string of `NaN`, `Infinity` or `1E+400` parses as a `Decimal` and then fails at the insert,
     which would take the arrival down with it. Unparseable and out-of-range values become NULL:
@@ -308,7 +308,7 @@ def test_a_hostile_timestamp_is_dropped_rather_than_written(db_session):
         assert parse_rfq_frame(frame).created_ts is None
 
 
-def test_the_raw_cap_holds_for_every_oversized_shape(db_session):
+def test_the_raw_cap_holds_for_every_oversized_shape(db_session, env_settings):
     """The trimmed fallback keeps the documented fields, and two of those are attacker-sized:
     `mve_selected_legs` and any string in it. A cap that only survives an unknown padding key
     is not a cap, so each shape is asserted against the byte budget."""
@@ -335,7 +335,7 @@ def test_the_raw_cap_holds_for_every_oversized_shape(db_session):
         assert len(json.dumps(row.raw).encode()) <= RAW_MAX_BYTES, name
 
 
-def test_a_nul_is_stripped_without_corrupting_a_neighbouring_backslash(db_session):
+def test_a_nul_is_stripped_without_corrupting_a_neighbouring_backslash(db_session, env_settings):
     """Review T13, I3. The six characters JSON writes for a NUL are also the tail of an escaped
     backslash, so stripping them out of the *serialized* document turns a ticker holding the
     literal characters backslash-u-0-0-0-0 followed by `b` into a backspace: the `b` vanishes, a
@@ -366,7 +366,7 @@ def test_a_leg_that_is_not_a_mapping_is_skipped(db_session):
     assert [leg["market_ticker"] for leg in event.legs] == ["KXNFLGAME-26SEP14KCBUF-KC"]
 
 
-def test_an_oversized_identifier_is_cut_to_its_column(db_session):
+def test_an_oversized_identifier_is_cut_to_its_column(db_session, env_settings):
     frame = _created(rfq_id="r" * 400)
     frame["msg"]["event_ticker"] = "e" * 400
     frame["msg"]["mve_collection_ticker"] = "c" * 400

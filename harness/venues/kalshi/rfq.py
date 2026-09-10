@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from harness.db.models import Rfq
@@ -347,12 +348,24 @@ def store_rfq(session: Session, event: RfqEvent, now: datetime) -> Rfq:
 def handle_frame(session: Session, msg, now: datetime) -> Rfq | None:
     """One frame. Returns the stored row, or None when the frame was not an RFQ event.
 
-    T14 extends this to compute and store the counterfactual quote on arrival.
+    The counterfactual quote is computed **on arrival**, beside the row, because that is the only
+    moment the leg fair values are the ones we would actually have quoted against. It is stored
+    and never sent; `harness/venues/kalshi/rfq_quote.py` has no way to send it.
     """
     event = parse_rfq_frame(msg)
     if event is None:
         return None
-    return store_rfq(session, event, now)
+    row = store_rfq(session, event, now)
+    if event.kind == "rfq_created":
+        from harness.config.settings import get_settings
+        from harness.venues.kalshi.rfq_quote import compute_quote
+
+        existing = session.execute(
+            text("select 1 from rfq_quotes where rfq_id = :id"), {"id": row.id}).first()
+        if existing is None:
+            compute_quote(session, get_settings(), row, now)
+            session.flush()
+    return row
 
 
 def _error_code(error_msg) -> int | None:
