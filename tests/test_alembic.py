@@ -42,8 +42,12 @@ BULK_TABLES = ("raw_responses", "orderbook_events", "venue_trades", "venue_quote
 
 #: A migration that contains one of these is a gate, not a ruling: the loop never writes one.
 #: `create_or_replace` is the Alembic op spelling; a view lives in `create_schema` instead.
-FORBIDDEN = ("drop_index", "create_or_replace", "drop view", "alter index",
+#: `alter index` is handled separately, below: fix 32 sanctions exactly one shape of it.
+FORBIDDEN = ("drop_index", "create_or_replace", "drop view",
              "drop table", "drop column", "alter column", "rename")
+
+#: The one sanctioned `alter index`: a storage-parameter flip, never a rebuild, never a drop.
+_ALLOWED_ALTER_INDEX = re.compile(r"alter index (if exists )?\S+ set \(autosummarize = on\)")
 
 
 # --- scratch databases --------------------------------------------------------------------
@@ -293,6 +297,12 @@ def test_no_migration_drops_or_alters_an_existing_object(path):
     body = path.read_text().lower()
     for word in FORBIDDEN:
         assert word not in body, f"{path.name} contains {word!r}"
+    # Scoped to actual DDL (an `op.execute(...)` call), not prose: several migrations now carry
+    # comments explaining *why* an ALTER INDEX is or isn't used, and those legitimately contain
+    # the words "alter index" without being one.
+    for line in body.splitlines():
+        if "alter index" in line and "op.execute(" in line:
+            assert _ALLOWED_ALTER_INDEX.search(line), f"{path.name}: unexpected alter index: {line}"
 
 
 @pytest.mark.parametrize("path", VERSIONS, ids=lambda p: p.name)
@@ -303,8 +313,9 @@ def test_no_migration_creates_a_bulk_index_outside_concurrent_index(path):
             assert table not in match.group(1), f"{path.name}: {table} outside concurrent_index"
 
 
-def test_the_versions_directory_holds_the_baseline_and_phase45():
-    assert [p.name for p in VERSIONS] == ["0001_baseline.py", "0002_phase45.py"]
+def test_the_versions_directory_holds_the_baseline_phase45_and_brin_autosummarize():
+    assert [p.name for p in VERSIONS] == [
+        "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py"]
 
 
 def _load_baseline():
@@ -478,13 +489,10 @@ def _load_revision(filename: str):
     return module
 
 
-def test_phase45_follows_the_baseline_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_phase45_follows_the_baseline():
     module = _load_revision("0002_phase45.py")
     assert module.revision == "0002_phase45"
     assert module.down_revision == "0001_baseline"
-    assert HEAD_REVISION == "0002_phase45"
 
 
 def test_the_phase45_downgrade_is_a_no_op_and_drops_nothing():
@@ -495,6 +503,25 @@ def test_the_phase45_downgrade_is_a_no_op_and_drops_nothing():
     body = (ROOT / "migrations" / "versions" / "0002_phase45.py").read_text().lower()
     for word in ("drop ", "truncate", "delete from"):
         assert word not in body, f"0002_phase45 contains {word!r}"
+
+
+# --- fix 32: revision 0003 ------------------------------------------------------------------
+
+def test_brin_autosummarize_follows_phase45_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0003_brin_autosummarize.py")
+    assert module.revision == "0003_brin_autosummarize"
+    assert module.down_revision == "0002_phase45"
+    assert HEAD_REVISION == "0003_brin_autosummarize"
+
+
+def test_the_brin_autosummarize_downgrade_is_a_no_op_and_drops_nothing():
+    module = _load_revision("0003_brin_autosummarize.py")
+    assert module.downgrade() is None
+    body = (ROOT / "migrations" / "versions" / "0003_brin_autosummarize.py").read_text().lower()
+    for word in ("drop ", "truncate", "delete from"):
+        assert word not in body, f"0003_brin_autosummarize contains {word!r}"
 
 
 def test_ensure_raises_on_a_database_stamped_ahead_of_the_script_directory(scratch_db):

@@ -69,6 +69,16 @@ _TABLE_SIZES = text("""
 
 _DATABASE_SIZE = text("select pg_database_size(current_database())")
 
+#: Every physical BRIN index (never a partitioned parent, `relkind = 'i'` only --
+#: `brin_summarize_new_values` is undefined on a partitioned index's own relation, same
+#: restriction as the `relkind` guard in `harness/db/schema.py`'s autosummarize sweep).
+_BRIN_INDEXES = text("""
+    select c.relname
+    from pg_class c
+    join pg_am am on am.oid = c.relam
+    where am.amname = 'brin' and c.relkind = 'i'
+""")
+
 #: Bounded to `LOOKBACK`: a week of hourly settlement passes is at most a few hundred rows, and
 #: only the ones carrying a (non-skipped) housekeeping note contribute a data point.
 _TRAILING_JOB_RUNS = text("""
@@ -185,11 +195,33 @@ def _host_mem_available_mb() -> tuple[float | None, str | None]:
     return None, "MemAvailable not reported"
 
 
+def _brin_ranges_summarized(session: Session) -> int:
+    """Fix 32: the sum of `brin_summarize_new_values` over every physical BRIN index. Belt and
+    braces alongside `autosummarize` (`harness/db/schema.py`): once autosummarize keeps up this
+    is cheap (nothing left to do, every call returns 0), so it is a fine daily habit even though
+    the failure mode it exists for -- a vacuum that fell behind -- should now be rare.
+
+    Each index is summarized in its own SAVEPOINT so one that was dropped between the catalog
+    read and the call (a weekly partition rotated out from under this) costs that index's
+    contribution to the sum, not the sample, not the stage."""
+    total = 0
+    for name in session.execute(_BRIN_INDEXES).scalars().all():
+        try:
+            with session.begin_nested():
+                total += session.execute(text(
+                    "select brin_summarize_new_values(:name::regclass)"),
+                    {"name": name}).scalar() or 0
+        except Exception:  # noqa: BLE001 - a BRIN dropped between the list and the call
+            log.info("brin_ranges_summarized: skipped %s (no longer exists?)", name)
+    return total
+
+
 def record_housekeeping_metrics(session: Session, now: datetime, counts: dict,
                                 match_by_sport: dict[str, dict], pg_data_mount) -> int:
     """Every `metric_samples` row housekeeping writes (design spec §3.1), as one batch."""
     samples: list[tuple[str, object, dict]] = [
         ("db.size_gb", counts["size_gb"], {}),
+        ("db.brin_ranges_summarized", _brin_ranges_summarized(session), {}),
     ]
     for table, gb in counts.get("tables_gb", {}).items():
         samples.append(("db.table_gb", gb, {"table": table}))

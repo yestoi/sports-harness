@@ -8,8 +8,8 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 
 from harness.db.models import Base
-from harness.db.schema import (PARTITIONED_TABLES, create_schema, drop_schema, ensure_partitions,
-                               week_bounds)
+from harness.db.schema import (BRIN_AUTOSUMMARIZE, PARTITIONED_TABLES, _set_brin_autosummarize,
+                               create_schema, drop_schema, ensure_partitions, week_bounds)
 
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
 
@@ -168,9 +168,13 @@ def test_create_schema_adds_feed_columns(db_session):
 
 def test_create_schema_adds_brin_time_indexes(db_session):
     """Dashboard 'last hour' counts on the append-only event/trade tables must not seq-scan."""
-    names = {r[0] for r in db_session.execute(text(
-        "select indexname from pg_indexes where indexname in ('ix_obe_ts_brin', 'ix_trades_ts_brin')")).all()}
-    assert names == {"ix_obe_ts_brin", "ix_trades_ts_brin"}
+    rows = {r[0]: r[1] for r in db_session.execute(text(
+        "select indexname, indexdef from pg_indexes "
+        "where indexname in ('ix_obe_ts_brin', 'ix_trades_ts_brin')")).all()}
+    assert set(rows) == {"ix_obe_ts_brin", "ix_trades_ts_brin"}
+    # Fix 32: a BRIN bitmap scan returns every *unsummarized* range as a match, so without this
+    # a bounded read on either column walks every page inserted since the last vacuum.
+    assert all("autosummarize" in indexdef.lower() for indexdef in rows.values()), rows
 
 
 def test_create_schema_adds_the_fair_values_created_brin(db_session):
@@ -180,6 +184,143 @@ def test_create_schema_adds_the_fair_values_created_brin(db_session):
     row = db_session.execute(text(
         "select indexdef from pg_indexes where indexname = 'ix_fair_created_brin'")).scalar()
     assert row is not None and "brin" in row.lower() and "created_at" in row.lower()
+    assert "autosummarize" in row.lower()  # fix 32
+
+
+def test_create_schema_adds_the_raw_responses_fetched_brin(db_session):
+    """`ix_raw_fetched_brin` is the fourth of the four BRIN indexes fix 32 covers; the other
+    three (`ix_fair_created_brin`, `ix_obe_ts_brin`, `ix_trades_ts_brin`) have their own tests."""
+    row = db_session.execute(text(
+        "select indexdef from pg_indexes where indexname = 'ix_raw_fetched_brin'")).scalar()
+    assert row is not None and "brin" in row.lower() and "fetched_at" in row.lower()
+    assert "autosummarize" in row.lower()
+
+
+def test_brin_autosummarize_ddl_strings_declare_the_option():
+    """The DDL strings themselves, independent of what a running database reports back --
+    `_INDEX_DDL`, `_CONCURRENT_INDEX_DDL` and `_TAPE_BRIN_DDL` each gain `with (autosummarize =
+    on)` on every `using brin (...)` statement (fix 32)."""
+    from harness.db.schema import _CONCURRENT_INDEX_DDL, _INDEX_DDL, _TAPE_BRIN_DDL
+
+    brin_statements = (
+        [s for s in _INDEX_DDL if "using brin" in s]
+        + [s for s in _CONCURRENT_INDEX_DDL if "using brin" in s]
+        + list(_TAPE_BRIN_DDL["orderbook_events"])
+        + list(_TAPE_BRIN_DDL["venue_trades"])
+    )
+    assert len(brin_statements) == 4
+    assert all("with (autosummarize = on)" in s for s in brin_statements), brin_statements
+    # BRIN_AUTOSUMMARIZE names exactly these four indexes, in the order the statements declare.
+    assert BRIN_AUTOSUMMARIZE == ("ix_raw_fetched_brin", "ix_fair_created_brin",
+                                  "ix_obe_ts_brin", "ix_trades_ts_brin")
+    assert all(name in " ".join(brin_statements) for name in BRIN_AUTOSUMMARIZE)
+
+
+def test_set_brin_autosummarize_retrofits_an_index_created_without_the_option(db_session):
+    """The `pg_class`/`pg_am` sweep (fix 32): a BRIN index built before this fix shipped, or by
+    anything else that does not know the option exists, gets it the next time `create_schema`
+    (and so `_set_brin_autosummarize`) runs -- this is what makes the NAS's nine pre-existing
+    BRIN indexes permanent instead of a one-time hand fix."""
+    engine = db_session.get_bind()
+    db_session.execute(text("drop table if exists brin_probe"))
+    db_session.execute(text("create table brin_probe (ts timestamptz)"))
+    db_session.execute(text("create index ix_brin_probe on brin_probe using brin (ts)"))
+    db_session.commit()
+    before = db_session.execute(text(
+        "select reloptions from pg_class where relname = 'ix_brin_probe'")).scalar()
+    assert not before  # no autosummarize yet
+
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        _set_brin_autosummarize(conn)
+
+    after = db_session.execute(text(
+        "select reloptions from pg_class where relname = 'ix_brin_probe'")).scalar()
+    assert after == ["autosummarize=on"]
+    db_session.execute(text("drop table brin_probe"))
+    db_session.commit()
+
+
+def test_set_brin_autosummarize_is_idempotent_and_logs_nothing_the_second_time(db_session, caplog):
+    """Every deploy runs `create_schema`, so the common case -- everything already has the
+    option -- must alter nothing and log nothing."""
+    import logging
+
+    engine = db_session.get_bind()
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        _set_brin_autosummarize(conn)  # first pass: the db_session fixture already ran create_schema
+        with caplog.at_level(logging.INFO, logger="harness.db.schema"):
+            _set_brin_autosummarize(conn)
+    assert "brin autosummarize set" not in caplog.text
+
+
+def test_set_brin_autosummarize_skips_a_partitioned_index(db_session):
+    """`ALTER INDEX ... SET` on a partitioned BRIN index (what `ix_obe_ts_brin`/
+    `ix_trades_ts_brin` become once `partition-bulk-tables` runs on the NAS) is a Postgres error,
+    not a no-op -- `_set_brin_autosummarize` must never attempt it."""
+    engine = db_session.get_bind()
+    db_session.execute(text("drop table if exists brin_ptab cascade"))
+    db_session.execute(text(
+        "create table brin_ptab (ts timestamptz not null) partition by range (ts)"))
+    db_session.execute(text("create index ix_brin_ptab on brin_ptab using brin (ts)"))
+    db_session.execute(text(
+        "create table brin_ptab_p1 partition of brin_ptab "
+        "for values from ('2026-01-01') to ('2026-01-08')"))
+    db_session.commit()
+
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        _set_brin_autosummarize(conn)  # must not raise WrongObjectType
+
+    # The child, a physical index, got the option; the parent (relkind 'I') is left as-is.
+    child = db_session.execute(text(
+        "select reloptions from pg_class where relname = 'brin_ptab_p1_ts_idx'")).scalar()
+    assert child == ["autosummarize=on"]
+    db_session.execute(text("drop table brin_ptab cascade"))
+    db_session.commit()
+
+
+def test_a_partition_attached_after_the_parent_has_autosummarize_inherits_it(db_session):
+    """Fix 32 item 2: does a new weekly partition inherit the parent BRIN index's
+    `autosummarize` option, or does the weekly creator have to alter it after the fact? It
+    inherits -- `create table ... partition of ...` copies the parent index's reloptions onto the
+    child index it builds, as long as the parent already has the option at attach time (true here
+    because the CREATE statements above declare it directly), so `ensure_partitions` needs no
+    change."""
+    engine = db_session.get_bind()
+    db_session.execute(text("drop table if exists brin_inherit cascade"))
+    db_session.execute(text(
+        "create table brin_inherit (ts timestamptz not null) partition by range (ts)"))
+    db_session.execute(text(
+        "create index ix_brin_inherit on brin_inherit using brin (ts) with (autosummarize = on)"))
+    db_session.execute(text(
+        "create table brin_inherit_p1 partition of brin_inherit "
+        "for values from ('2026-01-01') to ('2026-01-08')"))
+    db_session.commit()
+
+    child = db_session.execute(text(
+        "select reloptions from pg_class where relname = 'brin_inherit_p1_ts_idx'")).scalar()
+    assert child == ["autosummarize=on"]
+    db_session.execute(text("drop table brin_inherit cascade"))
+    db_session.commit()
+
+
+def test_ensure_partitions_brin_inherits_autosummarize_on_the_real_tape(db_session):
+    """The same fact as above, against the actual `orderbook_events`/`venue_trades` weekly
+    partitions `ensure_partitions` builds, not a synthetic table: both tables are
+    `postgresql_partition_by` from their own model, so `ix_obe_ts_brin`/`ix_trades_ts_brin` are
+    partitioned indexes from the moment `create_schema` runs, already carrying the option
+    (`_TAPE_BRIN_DDL`), and every partition `ensure_partitions` creates inherits it -- no code in
+    `ensure_partitions` itself needs to alter anything."""
+    from harness.db.schema import _partition_name, week_bounds
+
+    ensure_partitions(db_session, NOW)  # idempotent: the partition may already exist
+    start, _ = week_bounds(NOW)
+    for table in ("orderbook_events", "venue_trades"):
+        partition = _partition_name(table, start)
+        indexdef = db_session.execute(text(
+            "select indexdef from pg_indexes where indexname = :n"),
+            {"n": f"{partition}_ts_idx"}).scalar()
+        assert indexdef is not None and "brin" in indexdef.lower(), partition
+        assert "autosummarize" in indexdef.lower(), (partition, indexdef)
 
 
 # ---------------------------------------------------------------------------

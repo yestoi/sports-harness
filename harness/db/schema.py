@@ -131,7 +131,8 @@ _COLUMN_DDL = (
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).
 _INDEX_DDL = (
     "create index if not exists ix_raw_source_fetched on raw_responses (source, fetched_at)",
-    "create index if not exists ix_raw_fetched_brin on raw_responses using brin (fetched_at)",
+    "create index if not exists ix_raw_fetched_brin on raw_responses using brin (fetched_at) "
+    "with (autosummarize = on)",
     "create index if not exists ix_raw_run on raw_responses (run_id)",
     "create unique index if not exists uq_odds_snapshot_row on odds_snapshots "
     "(raw_id, book, market_type, coalesce(outcome_team_id, -1), coalesce(outcome_side, ''), coalesce(point, 0))",
@@ -195,7 +196,7 @@ _INDEX_DDL = (
 #: the connection is already AUTOCOMMIT, which is what CONCURRENTLY requires.
 _CONCURRENT_INDEX_DDL = (
     "create index concurrently if not exists ix_fair_created_brin "
-    "on fair_values using brin (created_at)",
+    "on fair_values using brin (created_at) with (autosummarize = on)",
     # Fix 25 (F65: every index on a bulk table -- odds_snapshots included -- is created
     # CONCURRENTLY, no carve-out): the dashboard's odds-staleness read (`_data_quality`)
     # filters odds_snapshots by fetched_at alone; the only existing index leads with
@@ -320,8 +321,10 @@ _BACKFILL_DDL = (
 #: large btree, and is cheap enough to build on a live table (it stores one summary per block
 #: range, not one entry per row), so it is not behind `_takes_new_indexes`.
 _TAPE_BRIN_DDL = {
-    "orderbook_events": ("create index if not exists ix_obe_ts_brin on orderbook_events using brin (ts)",),
-    "venue_trades": ("create index if not exists ix_trades_ts_brin on venue_trades using brin (ts)",),
+    "orderbook_events": ("create index if not exists ix_obe_ts_brin on orderbook_events "
+                         "using brin (ts) with (autosummarize = on)",),
+    "venue_trades": ("create index if not exists ix_trades_ts_brin on venue_trades "
+                     "using brin (ts) with (autosummarize = on)",),
 }
 
 #: Tape-table DDL, run last (see TAPE_TABLES).
@@ -330,6 +333,69 @@ _TAPE_DDL = _TAPE_BRIN_DDL["orderbook_events"] + _TAPE_BRIN_DDL["venue_trades"] 
     "alter table venue_trades add column if not exists taker_outcome_side varchar(4)",
     "alter table venue_trades add column if not exists taker_book_side varchar(4)",
 )
+
+# --- fix 32: every BRIN index autosummarizes ---------------------------------------------
+# None of the nine production BRIN indexes had `autosummarize` set: a BRIN bitmap scan returns
+# every *unsummarized* block range as a match, so a read bounded by a BRIN column walked every
+# page inserted since the last vacuum of that table -- gigabytes on the weekly `orderbook_events`
+# partition. The four CREATE statements above now declare `with (autosummarize = on)`, which
+# covers every database built from here on; this section retrofits one already running.
+
+#: The four BRIN indexes this schema declares by name (the same ones the CREATE statements above
+#: now build `with (autosummarize = on)`). Named so a reader can see exactly what create_schema
+#: means to cover, independent of the `pg_class` sweep below.
+BRIN_AUTOSUMMARIZE = (
+    "ix_raw_fetched_brin",
+    "ix_fair_created_brin",
+    "ix_obe_ts_brin",
+    "ix_trades_ts_brin",
+)
+
+#: Every physical BRIN index (`relkind = 'i'`) still missing the option. Restricted to `'i'`
+#: because a *partitioned* BRIN index (`relkind = 'I'` -- what `ix_obe_ts_brin`/`ix_trades_ts_brin`
+#: become once `partition-bulk-tables` has run) holds no pages of its own: `ALTER INDEX ... SET`
+#: on one is a Postgres error ("not supported for partitioned indexes"), not a no-op. A partitioned
+#: index gets the option from its own CREATE instead (it is set at creation time above and in
+#: `tape_index_ddl`), and that is enough -- a partition attached under `create table ... partition
+#: of ...` inherits its parent index's reloptions automatically. This sweep is what reaches the
+#: indexes a name can't: the weekly partitions PostgreSQL names itself
+#: (`orderbook_events_y2026w37_ts_idx`) and the pre-partition `_legacy` ones.
+_BRIN_SWEEP_SQL = """
+    select c.relname
+    from pg_class c
+    join pg_am am on am.oid = c.relam
+    where am.amname = 'brin'
+      and c.relkind = 'i'
+      and (c.reloptions is null or not (c.reloptions @> array['autosummarize=on']))
+"""
+
+
+def _brin_needs_autosummarize(conn: Connection, name: str) -> bool:
+    """True if `name` is a physical BRIN index (`relkind = 'i'`) that does not already have the
+    option. False for a missing relation (nothing to alter yet, e.g. a fresh database before
+    this call's CREATE statements have run) and for a partitioned index (see `_BRIN_SWEEP_SQL`)."""
+    row = conn.execute(text(
+        "select c.relkind, c.reloptions from pg_class c "
+        "where c.relname = :n"), {"n": name}).first()
+    if row is None or row[0] != "i":
+        return False
+    return "autosummarize=on" not in (row[1] or [])
+
+
+def _set_brin_autosummarize(conn: Connection) -> None:
+    """Alter every BRIN index `BRIN_AUTOSUMMARIZE` names that still needs the option, then sweep
+    `pg_class` for the rest. Idempotent: on a database that already has it set everywhere (the
+    common case on every deploy after the first), this alters nothing and logs nothing."""
+    altered = [name for name in BRIN_AUTOSUMMARIZE if _brin_needs_autosummarize(conn, name)]
+    for name in altered:
+        _execute_ddl(conn, f"alter index if exists {name} set (autosummarize = on)")
+    swept = conn.execute(text(_BRIN_SWEEP_SQL)).scalars().all()
+    for name in swept:
+        _execute_ddl(conn, f'alter index if exists "{name}" set (autosummarize = on)')
+    altered += swept
+    if altered:
+        log.info("brin autosummarize set: %s", ", ".join(altered))
+
 
 #: (name, body) of the btree indexes Task 2b adds to the tape, per table. The phase 3 book loader
 #: reads the newest snapshot per ticker, applies deltas by id and looks for a later gap on the
@@ -447,6 +513,7 @@ def create_schema(engine: Engine) -> None:
                 continue
             for name, body in TAPE_NEW_INDEXES[table]:
                 _execute_ddl(conn, f"create index if not exists {name} {body}")
+        _set_brin_autosummarize(conn)
 
 
 def drop_schema(engine: Engine) -> None:

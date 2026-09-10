@@ -803,7 +803,19 @@ def upgrade() -> None:
 
     # --- the partial, functional and BRIN indexes (create_schema's _INDEX_DDL) -----
     op.execute("create index if not exists ix_raw_source_fetched on raw_responses (source, fetched_at)")
-    op.execute("create index if not exists ix_raw_fetched_brin on raw_responses using brin (fetched_at)")
+    # Fix 32: `with (autosummarize = on)` added directly to this CREATE rather than through a
+    # later revision's ALTER (contrast `ix_fair_created_brin`, altered by 0003_brin_autosummarize).
+    # `raw_responses` is declared `postgresql_partition_by` above -- a partitioned parent from
+    # this very statement, on both this path and `create_schema`'s -- and Postgres refuses
+    # `ALTER INDEX ... SET` on a partitioned index outright ("not supported for partitioned
+    # indexes"), children or none. There is no ALTER that could add the option after the fact,
+    # so the only way this revision's build and `create_schema`'s ever match is if this one
+    # statement carries it from the start. Inert on any database that already ran this
+    # revision -- Alembic never replays an applied step -- so this is additive in effect: only a
+    # database created fresh from here on sees it. `ix_obe_ts_brin`/`ix_trades_ts_brin` below get
+    # the same treatment for the same reason.
+    op.execute("create index if not exists ix_raw_fetched_brin on raw_responses "
+              "using brin (fetched_at) with (autosummarize = on)")
     op.execute("create index if not exists ix_raw_run on raw_responses (run_id)")
     op.execute(
         "create unique index if not exists uq_odds_snapshot_row on odds_snapshots (raw_id, book, "
@@ -930,8 +942,15 @@ group by episode_id, variant_id, venue_market_id, side
         "coalesce(threshold::text, '') where match_key is null and game_id is not null")
 
     # --- the tape: BRIN, the two deprecated-field columns, then the btrees ---------
-    op.execute("create index if not exists ix_obe_ts_brin on orderbook_events using brin (ts)")
-    op.execute("create index if not exists ix_trades_ts_brin on venue_trades using brin (ts)")
+    # Fix 32: `with (autosummarize = on)` added directly to both CREATEs, same reasoning as
+    # `ix_raw_fetched_brin` above -- `orderbook_events`/`venue_trades` are `postgresql_partition_by`
+    # tables from their own `create_table` above, so these are partitioned indexes from the
+    # moment they exist, and `ALTER INDEX ... SET` never works on one (see
+    # 0003_brin_autosummarize, which alters only `ix_fair_created_brin` for exactly this reason).
+    op.execute("create index if not exists ix_obe_ts_brin on orderbook_events "
+              "using brin (ts) with (autosummarize = on)")
+    op.execute("create index if not exists ix_trades_ts_brin on venue_trades "
+              "using brin (ts) with (autosummarize = on)")
     op.execute("alter table venue_trades add column if not exists taker_outcome_side varchar(4)")
     op.execute("alter table venue_trades add column if not exists taker_book_side varchar(4)")
 

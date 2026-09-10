@@ -13,6 +13,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import CheckResult, JobRun, MetricSample
@@ -207,11 +208,40 @@ def test_housekeeping_host_metrics_skip_when_paths_absent(db_session):
 
     names = {r.name for r in db_session.query(MetricSample).filter_by(source="housekeeping").all()}
     assert "db.size_gb" in names
+    assert "db.brin_ranges_summarized" in names  # fix 32
     assert "host.disk_free_gb" not in names  # skipped: no mount
     assert "host.disk_total_gb" not in names  # skipped together (ruling A-C2)
     if not os.path.exists("/proc/meminfo"):
         assert "host.mem_available_mb" not in names
     assert n == db_session.query(MetricSample).filter_by(source="housekeeping").count()
+
+
+# --- fix 32: db.brin_ranges_summarized ----------------------------------------------------
+
+def test_brin_ranges_summarized_counts_real_brin_indexes(db_session):
+    """The schema's own BRIN indexes (autosummarize keeps up, so this is typically 0 -- nothing
+    left to summarize -- but it must run without error against the real catalog)."""
+    from harness.ops.housekeeping import _brin_ranges_summarized
+
+    total = _brin_ranges_summarized(db_session)
+    assert isinstance(total, int)
+    assert total >= 0
+
+
+def test_brin_ranges_summarized_survives_a_dropped_index(db_session, monkeypatch):
+    """A BRIN the catalog read named but that is gone by the time it is summarized -- a weekly
+    partition rotated out from under this -- costs its own contribution, not the whole sample
+    (brief: "housekeeping records the sample and survives a BRIN that no longer exists")."""
+    from harness.ops import housekeeping as hk
+
+    monkeypatch.setattr(hk, "_BRIN_INDEXES", text(
+        "select relname from (values ('ix_raw_fetched_brin'), "
+        "('fix_32_does_not_exist_brin_idx')) as t(relname)"))
+    total = hk._brin_ranges_summarized(db_session)
+    assert isinstance(total, int)
+    assert total >= 0
+    # The savepoint for the missing index rolled back to a live transaction, not a poisoned one.
+    db_session.execute(text("select 1")).scalar()
 
 
 def test_disk_total_is_recorded_beside_disk_free(db_session, monkeypatch):
