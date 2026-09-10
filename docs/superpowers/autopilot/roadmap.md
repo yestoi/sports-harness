@@ -312,6 +312,7 @@ actual contract count is closed by the centicent fee fix (F11), which makes the 
 | Mid-October (user) | Go-live gate review with the legal decision. The loop prepares the gate report and the numbers, never the decision. |
 
 ## User-side TODOs
+- 2026-09-10 (user): a Mac mini is available as the alternate host if NAS performance impairs the experiment. The loop never moves on its own; it flags the trigger (executor loop p95 over 7.5 s for two consecutive game windows with fixes 31-32 in place, a second starvation incident, or sustained swap traffic outside deploys) in the journal and the phase report, and the migration becomes a plan-next item on the user's yes.
 
 - **Odds API: upgrade to the 5M-credit tier before 2026-09-12 (U1), then tell the loop.** Carried fix 10
   stays unflipped until you confirm.
