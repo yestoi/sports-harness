@@ -90,12 +90,15 @@ def test_an_unknown_model_raises_rather_than_costing_nothing():
 
 
 def test_the_worst_case_constants_are_the_addendum_s():
+    """4,096, not the addendum's opening 2,000: raised in review round 1 (Important 4) to the
+    controller's proving-call ceiling, so T10/T15/T18 can pass this same constant as
+    `max_tokens` and the reservation and the request cannot part."""
     assert (WORST_CASE_INPUT_TOKENS, WORST_CASE_OUTPUT_TOKENS, WORST_CASE_SEARCHES) == \
-        (30_000, 2_000, 3)
-    # 30,000 in at $5/MTok = $0.15; 2,000 out at $25/MTok = $0.05; 3 searches = $0.03.
-    assert worst_case_usd(OPUS, 3) == Decimal("0.230000")
-    # 30,000 in at $2/MTok = $0.06; 2,000 out at $10/MTok = $0.02; 3 searches = $0.03.
-    assert worst_case_usd(SONNET, 3) == Decimal("0.110000")
+        (30_000, 4_096, 3)
+    # 30,000 in at $5/MTok = $0.15; 4,096 out at $25/MTok = $0.1024; 3 searches = $0.03.
+    assert worst_case_usd(OPUS, 3) == Decimal("0.282400")
+    # 30,000 in at $2/MTok = $0.06; 4,096 out at $10/MTok = $0.04096; 3 searches = $0.03.
+    assert worst_case_usd(SONNET, 3) == Decimal("0.130960")
 
 
 # --- the reservation ------------------------------------------------------------------------
@@ -105,10 +108,10 @@ def test_a_reservation_writes_usd_reserved_for_every_model(db_session, env_setti
     rows = {(r.kind, r.model): r for r in db_session.execute(
         text("select kind, model, usd, usd_reserved from research_spend")).all()}
     assert set(rows) == {("veto", OPUS), ("veto", SONNET)}
-    assert rows[("veto", OPUS)].usd_reserved == Decimal("0.2300")
-    assert rows[("veto", SONNET)].usd_reserved == Decimal("0.1100")
+    assert rows[("veto", OPUS)].usd_reserved == Decimal("0.2824")
+    assert rows[("veto", SONNET)].usd_reserved == Decimal("0.1310")
     assert reservation.day == date(2026, 9, 14)
-    assert reservation.per_model == {OPUS: Decimal("0.230000"), SONNET: Decimal("0.110000")}
+    assert reservation.per_model == {OPUS: Decimal("0.282400"), SONNET: Decimal("0.130960")}
 
 
 def test_the_release_swaps_the_reservation_for_the_actual(db_session, env_settings):
@@ -184,26 +187,51 @@ def test_yesterday_s_spend_does_not_count_against_today(db_session, env_settings
     release_spend(db_session, reserve_spend(db_session, earlier, settings, "veto", [OPUS]),
                   {OPUS: Usage(1_000_000, 0, 0, 0, 0)})           # $5.00 on the 13th
     reserve_spend(db_session, NOW, settings, "veto", [OPUS])      # the 14th is still empty
-    assert spend_state(db_session, NOW, settings).day_reserved == Decimal("0.2300")
+    assert spend_state(db_session, NOW, settings).day_reserved == Decimal("0.2824")
 
 
 def test_spend_state_reports_the_day_the_week_and_dormancy(db_session, env_settings):
     settings = _settings(env_settings, daily="0.30")
     reserve_spend(db_session, NOW, settings, "veto", [OPUS])
     state = spend_state(db_session, NOW, settings)
-    assert state.day_reserved == Decimal("0.2300") and state.day_usd == Decimal("0")
+    assert state.day_reserved == Decimal("0.2824") and state.day_usd == Decimal("0")
     assert state.daily_cap == Decimal("0.30") and state.weekly_cap == Decimal("150")
     assert state.dormant is True          # another opus pair would cross the daily cap
     assert spend_state(db_session, NOW, _settings(env_settings)).dormant is False
 
 
-def test_two_workers_racing_one_slot_produce_exactly_one_reservation(db_session, env_settings):
-    """A-C3 hole 1, as a test. Two sessions on two connections, released together, against a cap
-    that fits exactly one pair. Check-then-act lets both through; the advisory lock does not."""
-    settings = _settings(env_settings, daily="0.25")
-    factory = sessionmaker(bind=db_session.get_bind().engine, expire_on_commit=False)
-    db_session.commit()               # make the empty table visible to the other connections
-    start, outcomes = threading.Barrier(2), []
+#: Widens the read-then-check window so two racing threads reliably overlap inside it. Without
+#: this, the natural window is microseconds and the two threads never interleave -- the un-widened
+#: version of this test passes even with the lock statement deleted, which means it wasn't
+#: actually testing the lock (review round 1, Important 1).
+#:
+#: `pg_sleep` must be cross-joined in, not tucked into an unreferenced CTE: Postgres prunes a CTE
+#: nothing else refers to -- confirmed with `EXPLAIN`, `with s as (select pg_sleep(0.75)) select
+#: ...` and even `with s as materialized (...)` both return in ~1ms, not 750ms, because the outer
+#: query never scans `s`. A cross join is scanned, so the sleep is unconditionally paid.
+_SLOW_DAY_TOTAL = text("select coalesce(sum(usd + usd_reserved), 0) from research_spend, "
+                       "(select pg_sleep(0.75)) s where day = :day")
+_NOOP_LOCK = text("select 1")
+
+
+def _prewarm(settings, factory):
+    """Create the day's (day, kind, model) row and commit it before the race starts.
+
+    Without this, both threads' first `_ensure_rows` call is an `INSERT ... ON CONFLICT DO
+    NOTHING` racing on the same brand-new key, and Postgres's speculative-insertion protocol
+    makes the second inserter block until the first's transaction resolves -- an incidental
+    serialization that has nothing to do with `_LOCK` and would make the negative-control test
+    pass by accident. Pre-creating and committing the row means both threads' inserts see an
+    already-committed conflict and return immediately, so only the advisory lock (or its
+    deliberate absence) governs the race.
+    """
+    with factory() as session:
+        release_spend(session, reserve_spend(session, NOW, settings, "veto", [OPUS]), {})
+        session.commit()
+
+
+def _race(settings, factory, start):
+    outcomes = []
 
     def attempt():
         with factory() as session:
@@ -221,9 +249,48 @@ def test_two_workers_racing_one_slot_produce_exactly_one_reservation(db_session,
         thread.start()
     for thread in threads:
         thread.join(timeout=20)
+    return outcomes
+
+
+def test_two_workers_racing_one_slot_produce_exactly_one_reservation(
+        db_session, env_settings, monkeypatch):
+    """A-C3 hole 1, as a test. Two sessions on two connections, released together, against a cap
+    that fits exactly one reservation but not two. The day-total read is slowed so the two
+    threads' read-then-check windows overlap; the advisory lock still serializes them and
+    exactly one reservation survives."""
+    import harness.research.spend as spend_module
+    settings = _settings(env_settings, daily="0.30")   # one opus reservation (0.2824) fits, two do not
+    factory = sessionmaker(bind=db_session.get_bind().engine, expire_on_commit=False)
+    db_session.commit()               # make the empty table visible to the other connections
+    _prewarm(settings, factory)
+    monkeypatch.setattr(spend_module, "_DAY_TOTAL", _SLOW_DAY_TOTAL)
+
+    outcomes = _race(settings, factory, threading.Barrier(2))
 
     assert sorted(outcomes) == ["refused", "reserved"]
     with factory() as session:
         assert session.execute(text(
             "select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == \
-            Decimal("0.2300")
+            Decimal("0.2824")
+
+
+def test_without_the_lock_two_workers_both_reserve(db_session, env_settings, monkeypatch):
+    """The negative control for the test above: same widened window, same cap, same pre-warmed
+    row, but the lock statement is a no-op. Both threads read the empty total, both pass the
+    check, and the cap is broken -- proving the lock in the previous test is load-bearing, not
+    coincidental (review round 1, Important 1)."""
+    import harness.research.spend as spend_module
+    settings = _settings(env_settings, daily="0.30")
+    factory = sessionmaker(bind=db_session.get_bind().engine, expire_on_commit=False)
+    db_session.commit()
+    _prewarm(settings, factory)
+    monkeypatch.setattr(spend_module, "_DAY_TOTAL", _SLOW_DAY_TOTAL)
+    monkeypatch.setattr(spend_module, "_LOCK", _NOOP_LOCK)
+
+    outcomes = _race(settings, factory, threading.Barrier(2))
+
+    assert outcomes == ["reserved", "reserved"]
+    with factory() as session:
+        assert session.execute(text(
+            "select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == \
+            Decimal("0.5648")

@@ -10,12 +10,16 @@ both read today's total and both pass will both add. Its sketch is a conditional
 `UPDATE ... RETURNING`, which is atomic for a one-row-per-day table. The addendum's table is
 `(day, kind, model)`, with the caps summed over every row of the day and of the ISO week, and a
 conditional single-row update cannot enforce a sum over several rows. So the reservation takes
-`pg_advisory_xact_lock` on the day key first: the second worker blocks until the first commits,
-then reads the first's reservation and refuses. The lock is released by the transaction, taken
-or refused -- which makes its scope the **caller's** transaction, not this function's. A caller
-that commits as soon as `reserve_spend` returns holds it for one short read-and-update; a caller
-that keeps the transaction open across its Anthropic call holds it for the length of that call
-and blocks every other reservation on the same day meanwhile. See `reserve_spend`.
+`pg_advisory_xact_lock` on the ISO week's Monday first -- the amended key (0.3 amendment, review
+round 1 Important 3): a day key lets two workers on different America/Chicago days of the same
+ISO week serialize on nothing and both pass the weekly check, so the lock is keyed one scope up,
+which subsumes the day key since every day maps to exactly one week. The second worker blocks
+until the first commits, then reads the first's reservation and refuses. The lock is released by
+the transaction, taken or refused -- which makes its scope the **caller's** transaction, not this
+function's. A caller that commits as soon as `reserve_spend` returns holds it for one short
+read-and-update; a caller that keeps the transaction open across its Anthropic call holds it for
+the length of that call and blocks every other reservation on the same ISO week meanwhile. See
+`reserve_spend`.
 
 **The cost model.** Tokens at list price with cache reads at 0.1x the input rate and cache
 writes at 1.25x, plus searches at $0.01 each. Web search is billed **per search on top of
@@ -74,7 +78,11 @@ SEARCH_USD = Decimal("0.01")
 
 #: The opening worst case per model, per call (ruling A-C3). Re-fitted after the first live day.
 WORST_CASE_INPUT_TOKENS = 30_000
-WORST_CASE_OUTPUT_TOKENS = 2_000
+#: 4,096, not the addendum's opening 2,000: the controller's proving call needs a 4,096 ceiling
+#: (thinking + tool blocks + the JSON; 1,024 already truncated one recording), and T10/T15/T18
+#: pass this same constant as `max_tokens` so the reservation and the request cannot part
+#: (review round 1, Important 4).
+WORST_CASE_OUTPUT_TOKENS = 4_096
 WORST_CASE_SEARCHES = 3
 
 
@@ -150,8 +158,11 @@ def cost_usd(model: str, usage: Usage) -> Decimal:
     ).quantize(Decimal("0.000001"))
 
 
-def worst_case_usd(model: str, searches: int = WORST_CASE_SEARCHES) -> Decimal:
-    """What one call on `model` is reserved at before it runs."""
+def worst_case_usd(model: str, searches: int) -> Decimal:
+    """What one call on `model` is reserved at before it runs. No default for `searches`: every
+    caller in this module draws it from `settings.veto_max_searches`, never from
+    `WORST_CASE_SEARCHES`, so a raised cap or a per-kind override is never silently ignored by a
+    stale default (review round 1, Important 2)."""
     return cost_usd(model, Usage(input_tokens=WORST_CASE_INPUT_TOKENS,
                                  output_tokens=WORST_CASE_OUTPUT_TOKENS,
                                  searches=searches))
@@ -159,7 +170,9 @@ def worst_case_usd(model: str, searches: int = WORST_CASE_SEARCHES) -> Decimal:
 
 # --- the gate ---------------------------------------------------------------------------------
 
-_LOCK = text("select pg_advisory_xact_lock(hashtext('research_spend:' || :day))")
+#: Keyed on the ISO week's Monday, not the day: the daily and the weekly check share one lock
+#: (0.3 amendment, review round 1 Important 3). See the module docstring.
+_LOCK = text("select pg_advisory_xact_lock(hashtext('research_spend:week:' || :monday))")
 _DAY_TOTAL = text("select coalesce(sum(usd + usd_reserved), 0) from research_spend "
                   "where day = :day")
 _WEEK_TOTAL = text("select coalesce(sum(usd + usd_reserved), 0) from research_spend "
@@ -197,23 +210,26 @@ def reserve_spend(session: Session, now: datetime, settings, kind: str,
     its cap, having written nothing. The caller then records the call-less label its own
     component defines (`veto_skipped_budget` for the veto) and makes no request.
 
-    `searches` defaults to `WORST_CASE_SEARCHES`; a call with no tools passes `0`, which is what
-    keeps the annotator and the parlay rationale from reserving three searches they cannot make.
+    `searches` defaults to `settings.veto_max_searches`; a call with no tools passes `0`, which
+    is what keeps the annotator and the parlay rationale from reserving searches they cannot
+    make. Never `WORST_CASE_SEARCHES` -- that constant is the addendum's opening value, and a
+    raised `veto_max_searches` must change every projection, this default included (review round
+    1, Important 2).
 
     **Commit as soon as this returns.** The advisory lock lives until the caller's transaction
     ends, so holding the transaction open across the Anthropic call blocks every other
-    reservation on the same America/Chicago day for the length of that call, and
-    `pg_advisory_xact_lock` has no timeout to cut it short.
+    reservation on the same ISO week for the length of that call, and `pg_advisory_xact_lock`
+    has no timeout to cut it short.
     """
     if kind not in KINDS:
         raise ValueError(f"unknown research kind {kind!r}")
     day = chicago_day(now)
     monday, sunday = iso_week_bounds(day)
     per_model = {model: worst_case_usd(
-        model, WORST_CASE_SEARCHES if searches is None else searches) for model in models}
+        model, settings.veto_max_searches if searches is None else searches) for model in models}
     projection = sum(per_model.values(), Decimal("0"))
 
-    session.execute(_LOCK, {"day": day.isoformat()})
+    session.execute(_LOCK, {"monday": monday.isoformat()})
     _ensure_rows(session, day, kind, models)
     day_total = session.execute(_DAY_TOTAL, {"day": day}).scalar() or Decimal("0")
     if day_total + projection > settings.veto_daily_usd_cap:
@@ -269,7 +285,8 @@ def spend_state(session: Session, now: datetime, settings) -> SpendState:
     week_row = session.execute(text(
         "select coalesce(sum(usd), 0), coalesce(sum(usd_reserved), 0) from research_spend "
         "where day between :monday and :sunday"), {"monday": monday, "sunday": sunday}).first()
-    pair = worst_case_usd("claude-opus-5") + worst_case_usd("claude-sonnet-5")
+    pair = (worst_case_usd("claude-opus-5", settings.veto_max_searches)
+            + worst_case_usd("claude-sonnet-5", settings.veto_max_searches))
     day_usd, day_reserved = day_row
     week_usd, week_reserved = week_row
     dormant = (day_usd + day_reserved + pair > settings.veto_daily_usd_cap
