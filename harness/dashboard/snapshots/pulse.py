@@ -262,8 +262,8 @@ _NEWEST_DRAWDOWN = text("""
 #: The decided set (addendum §1.4). Restated nowhere else on this surface.
 _DECIDED = ("proceed", "reduce", "veto")
 
-#: Bound: `decided_at > :since` (24 h). Index: `veto_decisions` has no dedicated timestamp index
-#: yet, so this is a bounded scan; the table is one row per signal and 24 h of signals is small.
+#: Bound: `decided_at > :since` (24 h). Index: `ix_veto_decisions_decided on veto_decisions
+#: (decided_at desc)` (T1's schema), so this is an index range scan, not a table scan.
 _VETO_RATE = text("""
     select count(*) filter (where decision in ('reduce', 'veto')) as vetoed,
            count(*) filter (where decision in ('proceed', 'reduce', 'veto')) as decided
@@ -272,6 +272,15 @@ _VETO_RATE = text("""
 """)
 #: `rfq_quotes` is not forbidden: it holds no venue or model free text, only the harness's own
 #: computed bid. `report_annotations` likewise holds only the surviving bullet count here.
+#:
+#: Bound: `computed_at > :since` (24 h) on `rfq_quotes`, `created_at > :week_start` on
+#: `report_annotations`. Index: `report_annotations` is `TINY_TABLES` (one row a week, keyed by
+#: `report_run_id`), so its scan needs none. `rfq_quotes` is `BOUNDED_TABLES` (grows with the
+#: season) and carries only `uq_rfq_quote_rfq (rfq_id)` today -- no index on `computed_at`, so
+#: this half of the statement is a sequential scan filtered after the fact, not an index range
+#: scan. Small and harmless while the phase ships shadow-only; flagged for a schema follow-up
+#: (`ix_rfq_quotes_computed on rfq_quotes (computed_at desc)`) before the table has a season of
+#: rows behind it.
 _RESEARCH_COUNTS = text("""
     select (select count(*) from rfq_quotes where computed_at > :since) as rfq_quotes_24h,
            (select count(*) from report_annotations where created_at > :week_start)
@@ -359,8 +368,8 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
         row.variant_id: row.drawdown_pct for row in
         session.execute(_NEWEST_DRAWDOWN, {"since": now - DRAWDOWN_WINDOW})}, default={})
     research_spend = _group(session, "research_spend",
-                            lambda: spend_state(session, now, settings), None)
-    veto_rate = _group(session, "veto_rate", lambda: _veto_rate(session, now), None)
+                            lambda: spend_state(session, now, settings), default=None)
+    veto_rate = _group(session, "veto_rate", lambda: _veto_rate(session, now), default=None)
     return {
         "now": now,
         "settings": settings,
