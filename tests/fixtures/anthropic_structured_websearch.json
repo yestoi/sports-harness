@@ -1,0 +1,189 @@
+{
+  "_request_id": "req_011CeuzVaJFFKceo5YAMwgF3",
+  "container": {
+    "expires_at": "2026-09-10T16:26:00.828029Z",
+    "id": "container_014ya4n6sgqEseShUN4zk5oK",
+    "skills": null
+  },
+  "content": [
+    {
+      "signature": "CAIStwMKjgEIERgCKkDDyM6aF04cYyFwTwF644pbhQxEbUSqtkn68Z+FTOyqM5i5F1wbUmZw1HrU3IMk6u/rHkODxCmeJt7PeqckwrrVMg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2WoAf2Xi9UGEgzsWJOcIEtCRiG4+HoaDFy8+dVxncGc8Hr1yCIwCJdVNlRkpTuJ/dk4jwTqrL9qz0FF02qOTGEUFMSBPqCT8hRElvLBON1FgxTEYtVdKtUBM8OOIQiTn1N1Yj19jj1rJApl1fzLu8696VxIz5pIddl6mLEEDjcxBqQx/u7C1YdTCC/T25pBZ5QY5A9p8+sESQAWP/AJQsCKSZVkaREs90KHtuGwU+Fmt8HN05FvylBfrGOly0lVcdi3vvFNpiXVXFmTtNeWiOaUEBEtRq85hmeKNPkjqJJP6zcV3GXPi72sNXCfILP9xa0wssCw78l2Vdc/pd7czgYI01bdIX9ZxEexGBFdnMPQ2g+CT5hYRbWAjTmMUO4CyHnZNEZxUPxuGOwq4q3LGAE=",
+      "thinking": "",
+      "type": "thinking"
+    },
+    {
+      "caller": null,
+      "id": "srvtoolu_01WvKdCTxfqef4L7R4W5JWwp",
+      "input": {
+        "code": "\nimport json\nr = await web_search({\"query\": \"NFL injury news today\"})\ntry:\n    for x in r[:5]:\n        print(x.get(\"type\"), \"|\", x.get(\"title\"), \"|\", x.get(\"url\"), \"|\", x.get(\"page_age\"), \"|\", (x.get(\"content\") or \"\")[:300].replace(\"\\n\",\" \"))\nexcept Exception as e:\n    print(\"ERR\", e, str(r)[:500])\n"
+      },
+      "name": "code_execution",
+      "type": "server_tool_use"
+    },
+    {
+      "caller": {
+        "tool_id": "srvtoolu_01WvKdCTxfqef4L7R4W5JWwp",
+        "type": "code_execution_20260120"
+      },
+      "id": "srvtoolu_01SJr35YjR9SL2C6DZTSL62h",
+      "input": {
+        "query": "NFL injury news today"
+      },
+      "name": "web_search",
+      "type": "server_tool_use"
+    },
+    {
+      "caller": {
+        "tool_id": "srvtoolu_01WvKdCTxfqef4L7R4W5JWwp",
+        "type": "code_execution_20260120"
+      },
+      "content": [
+        {
+          "encrypted_content": "EoYCCioIExgCIiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2USDAp4HWR0k8xkrpz17xoMzv+BCQEezQh53P+rIjAfAoWKIlS0ISRj5OxaJio1AogmC5GGhz/K9KU7vyMTPK+fKACuJoZymj1zbQ2xDvcqiQGuQTHqhzWAby1454ELoKOOQj//dQB+GMJL8yZx0an1fzYiTd//59RLJ3Fd4Q+3j6O3L2DRAFY8ivK2inWKvpVZ9Ttm5pnmNuz6JJ8dV1qAkbfAIrL4wFUND0LF7LbJ7fEl1hzOKE9retBzthSHkESW16U+ixWj9BiIxGn94T4ZwYC/6gTStyFVTRgD",
+          "page_age": null,
+          "title": "NFL Injury News (@NFLInjuryNws) on X",
+          "type": "web_search_result",
+          "url": "https://x.com/NFLInjuryNws?lang=en"
+        },
+        {
+          "encrypted_content": "Eo0HCioIExgCIiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2USDDhyyaDNrH+CPqOKAxoMhbpn2eTknTX+ouUaIjD2n5iA4hcR51sKwEXVXm1grBbZFeCBW3bK4u+bMqJ5ndztHOnfG83YgBX/o721uGwqkAb2LIMbujFkyfHb+KkTzOFjzewVA+5SW2cdcYLwBfPuiDCd6rDVtgPL00yC09ofyloUsVWb2sgxz8f2VYvySdRnph9saHNDazZbwr0Rjbgl4GGYUoLHOVMyJ0HWWdEfpbGM9pM+cA2K+N5Er7r9pXMFbMjuj69DDgVyHTBI4y9OnaQwwJgt/Bprn/7TGjyO7AS5ZTbyM1BrLbwvLSMGvuJRTTxQodc0LstV9VTS1Ld8Gs+dBjDG8m5kST+zeYRBx7Par6CAQlZkyy5pXZQBnYrPYLHc2amUJr/MY+J+tdsrCX6uoUAx9OYWqR9+B1D3ts1US5Yz7cnvFLwz+lkUY7k0TjM0yarM65/hDUgnmNyMPGGgelSVXyZx+4rxnD7lnIgCP5u4L+bA/FGMOGZQ2fXBpyf3tkhSrjUL87n19reOU7VpqBe6LlCucjBBGmXO339n7idqWJBH2CGfugaAQ8kFDsb92pfnDs9xr334vvjRNPxhgnTDTd/djV5csEzU7lazSRWbUD5prFErWefK5dkaO0gH7gp1ztY3JoZgdQanZp2HNsCcIaTdueEubd00bzBkySr7YcPYKRB/Ppv784h8TCvtopFDoh6TwJ7bx6VjiunbGECIM8pROQ/8KrMhPZgxLNiLoNQ+6z27YoF051Yg42NKyTfgGrPAR9X+PVaeyMg2Pms+cDviCRYFEZtku4s9YxiPXZltWYXoUR9Yqg+L8Wqdj/5qWzycC6teJy4kXk/Guc694brgajRXEStHs8lvn6vxgBf1qDfYIIFD/dLZbUH7Myt2i1fuGXT2EthlLBdd/WMt3qFMFTO1qI/oF93M0BBslcY5mBaHuiB9/nwRFwyo0Me0mZaQL/YV67k7AuYIcx4aaMyZ5hDLRtVFi39NVlxcRiO23Ge6QhGrFd807ZlbU3TiSdP1vkWznZ6OMoqOydsnORniEhMOh/yLUsj+to6k9LkMfN1mln+aVJpSad5LS93tssUkTm9owmTKRmX/U21mz0+6VZ0bbXA5KW3ld+m3Ek/1Sp0drbgAK3CQGAM=",
+          "page_age": "1 day ago",
+          "title": "Official Latest NFL Injury Report for Players - Week 1 of the 2026 Season | NFL.com",
+          "type": "web_search_result",
+          "url": "https://www.nfl.com/injuries/"
+        },
+        {
+          "encrypted_content": "EqMECioIExgCIiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2USDAUqAju1+44znGR83BoMiho3xDr17PLEeJA9IjDCAf/kQdf1OJRKFP3FJXaTsutMQ5pjV1a/aKFeIw0CsAcfkk30CFc8qaYr2mTUF/YqpgMTg67Fa0I1tvhtJDHr8LQxScrPWHFJn/HG1wSWbh1bHxFt0YtzLrVExBJuubM0GUvrk7bt/eHw6fm5ykakqA6p9oVZB31/UUu9qsSYKdqM81SVT2EJv3PYSiRQ7aAuYdaidqyUvruuTTrwBMgKI6HxYXS0dNcwxBewjmdqJs93QBQYX4cgf15G4rJeyD1yhCdRBjG+2R64peORCqc2PKvM/aUdPSZ+eC1RCjgJUyA4jc297KCXXSV/S2eO7Md80aQjT2AVLF9F44R1nAAfVthcOAklZqazdB7BPoSDgl8ELnJPqhN1Vy7QIWCH1BIIkVyQS1ZpS4l4RqkeXVeQzNljnkGNdrNtQeKOOxvPYiqYzAzSCRWGJXaV53ThYkYPB6KIFhtdDS433Kd9rlNe9XOZHCSG7UvqPg/6MJTV9yUiXXLpsXw2KDAinZf2W6VjA6K9fR/rawtSrJj7AIMkvvckLJBuqUMkLIrjgOYz9ubbMD51I/T3wcAoLcV0l2U+LJDhx2DfH4uK1WRGBI4t8q1iI3ylJmc3y+iNVsnznHHXWspNM+twdhgD",
+          "page_age": null,
+          "title": "NFL Injury Report: Player Injuries & Status | RotoWire",
+          "type": "web_search_result",
+          "url": "https://www.rotowire.com/football/injury-report.php"
+        },
+        {
+          "encrypted_content": "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",
+          "page_age": "2 days ago",
+          "title": "Ashton Jeanty, Christian McCaffrey and more RB injury updates entering NFL Week 1",
+          "type": "web_search_result",
+          "url": "https://www.thebiglead.com/ashton-jeanty-christian-mccaffrey-rb-injury-updates-nfl-week-1/"
+        },
+        {
+          "encrypted_content": "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",
+          "page_age": "1 week ago",
+          "title": "49ers Injury Report | San Francisco 49ers - 49ers.com",
+          "type": "web_search_result",
+          "url": "https://www.49ers.com/team/injury-report/"
+        },
+        {
+          "encrypted_content": "EuAOCioIExgCIiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2USDA/QjgTXOq2XX7oNTBoM3K+uwYYFRfz+6s4UIjAG6/SDkR1xfDzTnOkuMLeHDuq9zLsqP4y2AeCsOWJrTz4DReC2Pycq3Gg3/JOPblUq4w1jhObbTHx69tQi5ejvNx93pVCziEvw7Jvl2UMlEBon15hAa/8eFknGKT9z429mGo98Wyss6kd+6Yt6gZB/FPuGVtKiH+IIzgIUVm6WyVBIQpLMUlcZjtqtiVs7cvKYn8eyxFRdz0XzIIj4kWw/00VqrNcWw+egPWWWT4XGXkx5sKeUe72J1Gj904j9WFUbjdq5BbwejAyojI/wbjFlWC8oCMz9ZeBQyH4OYGJkAbT2ZR65b/GsiX+hdXgJ71fUAoZTUnNq8bL3IpI80JZ4Z9cp+zsIwZTIHtZDm1AB+QAMROcg0RLJ3YYVnVJjpHFyJwkj4Y2uKJn5S+/MQ84DVsDbFW5c85OU8xIi0hsXUmeiF8v9LTsEGznv5xSlrT2MItdZR7O5ft3DqrwJiAXhONjITl6EcmgPQEV35P0oZCqYuF41+OeygN+zsBJYu6FN8983M1dpHhhyXParTY6ShBA0YVFdKfX8YQ866cV7yW8yM/+1mMO/fq09vux5gF8cMezu56tedEUSaYDHPjPoSbiIBvKQjstRPt6aKIXdy5HkGuFOX2WIJhr3iUsElHQ2DM4mxVmzI23Yl+L5fgtwKWoXTcF9lfrLSjWC8FRklWkmQvyBndUrvQqyDNJxEbnmdUg3k+wlJHP3JWO7dsiIsOPfMk5TZQ1ObJD9o+xL7QHmXUszMOkkTR69iMkY9s5K/4m2F7nSJsPsaGOdUJkotPaSIhkS+5lNmr0VtWLL0xzf1V352SSkFCl9PeERsyREVvMArqGguCYBFUk7g3rQvAxt4DxWo5IU1ZgeJHQ8YgKHuT7QvF+LCUSs/Z1+oHnWY6LS96+p0TlIOwWj409VBAQPsjNaYDWyVj96qLuqCeRrFx/Nu8cjC2wFZZ+zGf4UJIQbn6MlNN5UVHIcVQ1PtiIb4xWzZm2SifItBLuoOwzK2iUIBoShE7uXWVffZpllnIRooc1CVQd21w68c+PwWXf9pEpvBYfDXKiqUYHKcYFOH9lbvtSH0o+qZBMU+hJfZp16tIk6Ti4QiNjQg33oC8A68yDq1sugylnlGP/dJbFiPKInjy5rQ8OSk1Q31O0L3ZisAi3f4b4iyTMlB6X32EnBvc45/oGwjle5aM5zVYa6bRp1gXHKFQMIBttBxXawbrBfiwRZxd3vMPdHAt//jKznhNt/VbdGw0BkJ7Y6KrXZAJysj2CD4dxfq2vn1llAQg1RPMzdpdauYZsKnV2Md5+Q/lKazVpJdKKgsOwsh61eO3k6bdh8TP1UvhcFe98m9JVvrBrOmfwDpDOQsUf4W/GIFFkbB8gHCH45vOuYj+uM9lwmNOZ4EI+pmu7lLaTiIDH2aWXdzfunpODGS+ikuUUTwnhPiRpOjzxnwqq1eBP/voeJLYb5b2VodoBIxi8oGOKtMMCpQV9GpCTUdHeCHiLV74qCPCxQMTjO6nzKqVn7mjgkvZqOWIl84+o5oKNBdigZtTAc+0qv7ugAMfgldJ9uqU3KLlMoRfZKs27PQZiCLfpVRwDcF3tAqgU0NUclEeyZ4chvPKPSCQ7A7VvOrGpzswOCvCS22+jCNkXS8X3PSG6g6t6sQC3+fFTUYXjkXm076gmz3ppLDwm5WPgclwWsSs03dqx/YEYI3o8ReSORwr/VzqLudYhZCeIZfO5JqoTxieuCyAc4PnNHa8kAoBqhDG+da+NWivBNEPTssXXXNTls+RnKNQ91dqwmlakvolztrY1OgtmeSyve+eGuedUlSfvD9HiKWE3XzgMyRS983X5x+P6MTGMUgvbUmPQNj2kWdCGseH10fQ3dp5R8a9lNmTREQWJWLKDg0CH7GI0z+OnjI3B9Pe/igxar9pvIwuwCf9CFt66z3MCKU2vxWZvxLptE2To1DdRLltE28+3bztiviD3k+5rFnPkHgulosnzmMbc190vSkNLb7fO3MZRdlkYyOBS11O1z0EdMXemRE/SJ7VavPhFUY/1yZEpwgpuEW/3IQDX9P0YPNRg0CR5KhrsXk6hLBkPm5rSJCXDLMhnJNTauWrYxT3DopcKrLkkMosX2nu6M2Zf+7QaN7IhRjRInwEjv/Gv+t0qndJM578yuhAS23KGqbFwbPxoyzI4rPHzhdN/x77iK1GdJVHlL7tZZxBGo0jrXfRBtGJCPOAnDQ8umxavxWZMq51b6Wk+JUxIl846Ydbm4QGUOvUFFVkoI5UIxjSr6ZoGgqlN8ADQA3+sx/EX0LXMMjLGSOmzvAw9UdOGNXaCRWoxEpD1JOCH53Q0m25dLAId5UuM8GYFJ9bx1Wn4Hnbv5n2+kpkLLKhfnoKGBOYY4DO3HFmVP2GTbgR1ujzdYKvn10IZdyXO21xgD",
+          "page_age": "3 weeks ago",
+          "title": "NFL Injury Report - Yahoo Sports",
+          "type": "web_search_result",
+          "url": "https://sports.yahoo.com/nfl/injuries/"
+        },
+        {
+          "encrypted_content": "EvoCCioIExgCIiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2USDH3DwKzyO14KRHU0axoMj1anDxdH0HDfflQXIjD9O+nXUdCaXTHTCiB3PU802Qu2JyHASg+zeP1T5R3luN0jwCQLXvnWoqad0DKbtSIq/QEgSm902OgbBAwNvz5rmwbnFez8wWIy1wvz0Ys/SKc3+fPS7pybWi95otSzEN7R0yc7RIL7lNMCvGbwews3rM/wLTGIC2q/4raiw9+jw1nHNjhGH2SOWQfbGtWQHBxWKWrlqFedRm5uZtlrVZ21vxY4aTsb6nWJ+2udmcDYh9Fi04e9L/t0+/zvyR9GxRWbZHQzoCzQOH8ykfsEy43F4HR+nIAhktJXNKYr6yIo+4ZjzNRt26+3rZl2SlbAkJEWc0ujOKTuajjyTyFR7fuTsoG4tetYzbdijLbUeP85+jH2pTikTf7aSaKc2i2Q+hAJA+XmblIREYZrrgQqWPLFGAM=",
+          "page_age": "1 week ago",
+          "title": "NFL Injury Report and Status 2026-27 - CBS Sports",
+          "type": "web_search_result",
+          "url": "https://www.cbssports.com/nfl/injuries/"
+        },
+        {
+          "encrypted_content": "EqILCioIExgCIiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2USDNL1kIoHjrd05ZnbeBoMfXLXuNOue4hbMdCCIjBH1E7rLHIFKhliG8cnGNOsPPpchANdQk0HBCZoHTCyB2PUNCc4NLOGCi4t47KoAAUqpQoiQxPzeN3XlCe+WgDkIcg/E/k+bRMMQ8chwmk2D77zC7RIz5nO2glDjkTmoKyo0Pu45FnNX7LA/kf2pn9aA59qnEHersjvboDO9zy9MWOOvu+UmlcqeYav9EfNGZoyqdkZWWnRYsZRQQ9hcY3teJw9+msfdIsavaahfmQ7CqXI5d7f1V5l8i1odlrGCvjSzPXJxkd/ApQUxkCrJcMuV3icqN+fYcot4luncc58lpr7yfUbwVPZPfJjyEo09MV9LxsKrM1Eg/KXrcu5pbV88vkNvl1PSyFGN+cuh0QCUJux01+1EsqhPEzPwW4wpzaTt8oQm0ncU6cuPJ2PMewr+V9cit06HiICXMt+S3xs51CBL6kg4Hd7ozDpXSUR5CUOxFL+Z8fD6a9CYT0FlI1bTEp3+nH8KqFgwMR8iVe3qS7CEwKuJivu8neMVjtoOE/j25B4DPrKpiYGB8+5tOu1c2rhl0An0YkENCBz3USBpvf7b1hFwuMQa/R9zgZvdUiM8QEIdN0cIgKjSwpR7FAgsBgF6CdhoLvzEQntmd4nB3sUSUKDJ4QpnmkLByxPgRtmXgCd2BfBdh8YxyCue/SEx9YMWfjfbOSw8dRJBay9ilwtEWooAA7oZ0gkyTTQ7/g3JVkjBfx4HeG1hOn0VbztUn/FK5DHBw2wziC1sZy+yZ2e7iBFBynhVr/1iljW9L0UM9CZRjt4/t3nZcElIdbe9vnEV/x3WswYbXomNO/nVRNLJPyxz4vsbtaCmiKqVc4qv5m2JyE2VSI2+w5TLkXI5K52Mve2rYN6664soj+m6rsZc5eUx0Ru2H5ZMTMZAbpNvBz7f/DjAudmJ0C/AGkbfXRQdvjBeWt0j6P3xfwmuXxGzwS8plfHTG2jlm8iNE7sBdGepIh8Nfd5WNpSNy+NPVgiJznXNtMu7O+D1es13G2jIHg/O7ddKAlMnLOPsMPooTpREI/R6EOZFIQuAIrB1O2+aDPVW9MuhpUn2zqFnZ3nyAJapBeWcxzm0fpCI56vAniOsfZ6pMT0ZeDYm+S4X1oupwfZOF4YO48z0RBucXedBkcMWX3aD2D7+Tyn4ZGaqn1Bm5AeDI11eaKADHv00/ew+Zg07otrVH7mm+u4GAelLTzcJL9o7tih6HOhTRWNl61hPEC9/MlnuBNkEKlZYH5hKj3wwf0pV8D9U+V4olTQUe93qopPXZLBPGciw2gGWc09OcJ2WsyOoahDZenMn/qbWogRMiBfJE5+rkJblID/Mhe7+jo1izzopaHed5Wnztkt/V+XreQIlCRi5hFHyL6nM2id61p+CtxmI1+VA/JR8DGqJZKzv470Joua+qxLT+82FJkIvl4JE6ZGIgtLYI1182qxFKff2Ac0llPunJHfqmOrWkgwleZxUzUPYXKQPlMtbkowwQ8A7AVuFZ+i3hokbbvaQZK2Vj9jCke8h0q0pazQppOMJpp8IvGEgofb2BSCIqeyoUbhmpBxfIT8+VLLySSzCvmS9qiZDrGj/oaCZfLpMiWYac7CXKNMFWzCWtzrBuD9z6eLMjCat+4bnHs1f37XnHnOD3o7+GlnhLGXJda8Wa4p9VU3f9CWJpJZF/PvleJ4BPBmvDfHNrxFg+hpaEhRet+cGiT3M+JBSwAsHxynK/cQe4wjJUrbYhFr0NgwGBrl+EkuZjSKqtqgnX8f/wP2jklgjWhImSvmNmENYAWX/2SatRut4+ERvq+01+PTqsp57+/6kDBEnRTCe65Q0SKjTmMYAw==",
+          "page_age": "2 days ago",
+          "title": "NFL Injury Status - 2026 Season - ESPN",
+          "type": "web_search_result",
+          "url": "https://www.espn.com/nfl/injuries"
+        },
+        {
+          "encrypted_content": "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",
+          "page_age": "2 days ago",
+          "title": "NFL Player News: Latest Reports, Injuries, Transactions - Rotoworld - NBC Sports - NBC Sports",
+          "type": "web_search_result",
+          "url": "https://www.nbcsports.com/fantasy/football/player-news"
+        },
+        {
+          "encrypted_content": "EpAICioIExgCIiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2USDCn5A+AABHrd36XN9hoMDJ5XVaoHRynt1eF5IjB9u3M+pbp6BMmaVXKKN64O++KE5Wi4xLmZBEwqKHwtVLYytsOMaw31rfWE7l5x0eUqkwfgQIN/PYICVG0jd0XUlXK32kKq5sJu6mls55tOwSgN43S9VELG8ntTE831VBEwd2TXr4TQioCd0T8Ay+/08sCMyC0zqhnD1/oEKlQ8HriqgjuBQ6z3tiyZpHTbKP5zRJETShyyVCgCtMKbF6mUTrdzP9ui8ty2Pjr3xp+CD86Kfpd3sbZ0eToMjYjMVa4o/1+oFX061/2T4i3unWGAVhz9neXNboHbowyWBZTZ5zHU+JAM0+5hkhIyrZPNCU4SQ872exK9mPGWuas9DiEP9L26v+Wua9ifluHmxU5l4+LGlzfziecTj25oFEBDRdRSHEzxwJoFHdr9tZgWK47Ne8/JHBwlEsNaSZQX6rYnHjCMAEc/NtxmveR1dXqFt3wrvpo83ujX+kbuYqGiFtH8fOm0x5EY9OB9X9zSCiP5j8enMqYyBC3pQejq9dwMCj713vsen7g0/sPDFs0bkV3th6NM2/0mo0ycgE/4pg41XHbSKQHjzh6+gd/GuWFmv3zL1YEXubpkRCtJn4Ag81zVf/haY8c1FA8hGH1kMvQzXA69ktCtjueOZ53nAPjNi09walRWEnEvlT3dBn7OJuCZaLjDFWBOge5e8mwugTjxqnJgyoWIoXBVffAilhPxG7v9OXjEWk79B1CsbaZLFU+dx03iC1Frfd1VeXUfVh6EWnvpdjpaAHFyMqEC+k4DdJHB5o1UZfjO/G8dpNEQAsOhxB5eJEUtgspuVrKdOwhhn23KcaUvBUlkBX5TWl/p66uzXEnT6C2BZh2FMeYJkGc7GwK4biDHImnmoU3qug1PwruL5CKkL26ccdtq9h2Y6EQCi4uzNd6Qyh0YA7YLBId7aDXN2SjbA77OyDRKF6QttDaE4cmFPcP2dW3D21d7JG9xRdNVn+5bF6wzg28UKuW7RnfPqb39jRHRCCiUBEVkMnmFfdgPjUB1suCrsgEm9t0uVJdTt6wbmLfMZsS9x7MQ68ETXThRpPA6BdXoi4Wso3jHtUCoAyM6aC9D3oAWDPnLlTyHoQYjHHZ4pbCg1ngLaF5f44/7XdkfwQhoOsZ3PV7KFp+an5b/P0UrD4qnhudfc/ePPvciHoyAjJFWkddeDs7tDX+d3Q8SnJiQw20vKMXnCBUETbaJLLX95tWhLHwILom7hgO2VXdO9yYTX1gZ2YxqPzb4FspMMRcN7diokFXgonpOSz09XPww89wYDo1vORxtKmgYAw==",
+          "page_age": null,
+          "title": "NFL Injuries | FOX Sports",
+          "type": "web_search_result",
+          "url": "https://www.foxsports.com/nfl/injuries"
+        }
+      ],
+      "tool_use_id": "srvtoolu_01SJr35YjR9SL2C6DZTSL62h",
+      "type": "web_search_tool_result"
+    },
+    {
+      "content": {
+        "content": [],
+        "encrypted_stdout": "Eq0FCioIExgCIiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2USDBE8eimdS+p2W4rVYRoMo4897PJhN4iPDIKJIjBjLiJcfBrFMv5Asz+v+72WO3rqJS2urWAb4nUcU/d1UqxtPz+RgLiUBz8J1TyZJxAqsASIrOQn6TG5YNvEY2sH61FY4gccSO5vu3+Ln0rXlmlzs2yRFOdpmj6gBEFq7EqVrU1YKSgagjx88t2PmXb4BgPJlYGqWo2iw3q98uuIq2hc5QsuJOzapOqFjOZm8TSzcB1LpLi1r1c2cQi6R7fBqnzqb7b36bf6pthkrMStvFFuNOlwraQrtYyB6gti6bTFIuAwb1gtlvfc0JPsqUj10Hkeo7KSqzek8mTFF7iWdPae3F6GJxXY3WXxE/8kp0gkFFG4s6m3DeCvJT04NoEqkfE0lfrXu0Rq4KRs7CGy3agxcFrK8D7IX/z0sUYX2jIAHmJTy5NByIZIWXJuzro+s/DYuXmSVMLqr+sL4RPnO/3TfvTSrluf168dkg0v76D++mZGEBIJi31UZf0rBMQ8/5uhHyUuE9xo21QZV0II0v4KP02Y1qaCBQ/zIVbIVpqW4kSJG+j5VYbVcYbR39VJR+599tUWkzNg9OehHAunVFvoNJI/RUvQiwSl923ddFemgkezBgTBnIM8vGUkrPqKR1HickhAezm6gmEs7cQD439kMUUYQ1PNyfNqu/BojBIc1VCaTa3uZD+SVhF/KgG9Uc4mJvkV9wHXxZZXIp83zMvDLhMJRrlDRJJ82bM3bX8EvRJp7bftX5FRyCBHizbO71jjDS8kTSxTy3bDpC2e2Co/yleUFQty4D8tLGyn/PwCm8G4ZhEIeHRmvRAvgjYXbummfl+4/b1JjG8q4/1Jav4flRgD",
+        "return_code": 0,
+        "stderr": "",
+        "type": "encrypted_code_execution_result"
+      },
+      "tool_use_id": "srvtoolu_01WvKdCTxfqef4L7R4W5JWwp",
+      "type": "code_execution_tool_result"
+    },
+    {
+      "signature": "CAIS1gIKjgEIERgCKkBMGjAxOFswjCZKg1O/A9eIUqdjXamcYy+N3I+bq2Aa/9onchpcMvjjFOgrrNImi7gTZ2Xe29/5ZP1/Ew3DIl8VMg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2WoAYWYi9UGEgwX5RPPAXDg7kEuQiEaDFnxA1lr6FrLgg4FwSIwFn7NI20u89dSVb1gbzPQaVqWzdlTA9M0jh2N/v2hiAg0crPYwVVXhPb3HSt76amjKnWhgnW0gtE5YHF7NNxXIUyCqe+NSpnorGIAa2lUM32gjgRMPhG/y1Dx0eDQo9ZGWRUCammoBM33YHgq/XlQgEdvtxVBKGFLj9AviybEQsP+VkMNSFtzPjLSvno9V51wXg29VNX7XYDppQPBapXI7dJsAru/XcoYAQ==",
+      "thinking": "",
+      "type": "thinking"
+    },
+    {
+      "caller": null,
+      "id": "srvtoolu_01P8MDTNw5SxuW8iQxGCt7wx",
+      "input": {
+        "code": "\nimport json\nres = r if isinstance(r, list) else json.loads(r)\nif res and isinstance(res[0], str):\n    res = [json.loads(s) if isinstance(s,str) else s for s in res]\nitems=[]\nfor x in res:\n    if isinstance(x, list):\n        for y in x: items.append(y)\n    else: items.append(x)\nprint(len(items))\nfor x in items[:8]:\n    print(x.get(\"type\"),\"|\",x.get(\"title\"),\"|\",x.get(\"url\"),\"|\",x.get(\"page_age\"),\"|\",(x.get(\"content\") or \"\")[:250].replace(\"\\n\",\" \"))\n"
+      },
+      "name": "code_execution",
+      "type": "server_tool_use"
+    },
+    {
+      "content": {
+        "abort_reason": null,
+        "content": [],
+        "return_code": 0,
+        "stderr": "",
+        "stdout": "10\nweb_search_result | NFL Injury News (@NFLInjuryNws) on X | https://x.com/NFLInjuryNws?lang=en | None | Bringing you all news surrounding injuries to your favorite #NFL players &amp; teams. Part of the @FantasyPros network.\nweb_search_result | Official Latest NFL Injury Report for Players - Week 1 of the 2026 Season | NFL.com | https://www.nfl.com/injuries/ | 1 day ago | No Injuries Reported \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 news \u00b7 More News \u00b7 The ...  No Injuries Reported \u00b7 news \u00b7 n\nweb_search_result | NFL Injury Report: Player Injuries & Status | RotoWire | https://www.rotowire.com/football/injury-report.php | None | Get real-time player injury updates and estimated return timelines with RotoWire&#x27;s NFL injury report. Information is updated continuously throughout the week and on game day, always providing the latest injury news, right when you need it.  Use \nweb_search_result | Ashton Jeanty, Christian McCaffrey and more RB injury updates entering NFL Week 1 | https://www.thebiglead.com/ashton-jeanty-christian-mccaffrey-rb-injury-updates-nfl-week-1/ | 2 days ago | He suffered a hyperextended knee injury last month, ESPN\u2019s Jeremy Fowler reported. Head coach Ben Johnson has labeled Monangai week to week, and the second-year back has not practiced in a while, according to Bear Report\u2019s Zack Pearson. We did, howev\nweb_search_result | 49ers Injury Report | San Francisco 49ers - 49ers.com | https://www.49ers.com/team/injury-report/ | 1 week ago | The San Francisco 49ers released their latest injury updates headed into the Divisional Round contest against the Seattle Seahawks. Kyle Shanahan shared updates on Fred Warner and George Kittle while outlining the 49ers short-week approach ahead of t\nweb_search_result | NFL Injury Report - Yahoo Sports | https://sports.yahoo.com/nfl/injuries/ | 3 weeks ago | News \u00b7 Patriots vs. Seahawks Live Updates \u00b7 Schedule \u00b7 Scores \u00b7 Stats \u00b7 Standings \u00b7 Teams \u00b7 Players \u00b7 Odds \u00b7 Fantasy Football \u00b7 Death Leagues \u00b7 Playoff Bracket \u00b7 Super Bowl \u00b7 NFL Draft \u00b7 Injuries \u00b7 Football 301 \u00b7 GameChannel \u00b7 ... Fantasy \u00b7 Network \u00b7\nweb_search_result | NFL Injury Report and Status 2026-27 - CBS Sports | https://www.cbssports.com/nfl/injuries/ | 1 week ago | Stay updated with the latest NFL injuries and player statuses on CBS Sports.  site: media | arena: nfl | pageType: injuries | section: | slug: | sport: football | route: player_injuries_by_team | 6-keys: media/spln/nfl/reg/free/injury\nweb_search_result | NFL Injury Status - 2026 Season - ESPN | https://www.espn.com/nfl/injuries | 2 days ago | The 49ers will welcome back two of their biggest stars from significant injuries for their Week 1 matchup against the Rams in Melbourne. ... GAMBLING PROBLEM? CALL 1-800-GAMBLER or 1-800-MY-RESET, (800) 327-5050 or visit gamblinghelplinema.org (MA). \n",
+        "type": "code_execution_result"
+      },
+      "tool_use_id": "srvtoolu_01P8MDTNw5SxuW8iQxGCt7wx",
+      "type": "code_execution_tool_result"
+    },
+    {
+      "signature": "CAIShwUKjgEIERgCKkDf0VszHeVtERlH/HMZXvNkSE7CPllL+3LiiYr8TUD8DStbZ5+0Og0qKihBqTs/HxRFJXg35pBd6FHddrABIIe6Mg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiQ3MGJjZTc0MC1kNGY0LTQwNjYtYWE3MC1lYjJiNzVkOTJkN2WoAYyYi9UGEgyabyI8y58uhQkePDwaDPdi0owEJW6/dNRUBSIwqWd5wnmq7DxMdQLTKhVmHOnUFRex0Cxm0goMULjha5cyNo6u31/fIKTS9Mb2WMFUKqUDQw+KSIsmHa1zIXOVmWm0DbsyrvW4jfVbvVlXq9LthWPJCQkTcK4FMdl1gG06qV9644H/hSe3aNBhZ3baflpAWrH4Mwq6GukNXNbRaUFhdnMdJaWhDqnoLhjUscLWihVwiEGMZ1GlRHhbzdeEv5e4liOXTEzXTX6eBW95EW829ect5rZ5LODilrjUvodqW4BSUeoL93Fu2u9XWUqlkIkven6jmiGFvaOI049kBVBeynNTwIYVSw2Cwl/9tSdHbjMS9mjC9s0pff8pOqsVGwplnT8Wjz/iMqpjetgRXdmuUvs6oXjwEjcuXFFDScDnqvqFokvsVAJU8WoUWUaXsWNMqPfsstiWLkxvaWvWZCek1KVov0snMS4ph0mn0SAslHDGi6rWRqTHXdnL0CpDqEIoW3DooCUKdemGfxU26qU71rOL+P4xr1NPrRMw3cdgG83RhWIUIU5PCW4dPlFUPNoaLwL56XgHLS8PGsrPbWvlbJkGD7vmRwUAztp8e+ses1pkzg1yBKNxBn6afQoFA2D0RYsufapVT34PEX0SHM5tC/19EEL84RgB",
+      "thinking": "",
+      "type": "thinking"
+    },
+    {
+      "citations": null,
+      "text": "{\"decision\":\"reduce\",\"confidence\":0.62,\"reason\":\"The search returned mostly evergreen injury-index pages (NFL.com, ESPN, CBS, Yahoo, RotoWire) rather than dated, player-specific reporting from today, and page ages range from 1 day to 3 weeks. The snippets are also mutually inconsistent about the current point in the calendar: NFL.com and ESPN are labeled Week 1 of the 2026 season (with NFL.com showing 'No Injuries Reported'), while 49ers.com references a Divisional Round game vs. Seattle and Yahoo references a Patriots-Seahawks game. One dated item (thebiglead, 2 days old) offers concrete Week 1 RB updates (Jeanty, McCaffrey, Monangai week-to-week with a hyperextended knee), but it is a secondary aggregator citing other outlets. This supports a hedged, low-specificity summary with explicit recency caveats rather than firm same-day injury claims; a fresh, timestamped official team/beat source should be required before asserting any player's status for today.\",\"evidence_ids\":[\"https://www.nfl.com/injuries/\",\"https://www.espn.com/nfl/injuries\",\"https://www.thebiglead.com/ashton-jeanty-christian-mccaffrey-rb-injury-updates-nfl-week-1/\",\"https://www.49ers.com/team/injury-report/\",\"https://sports.yahoo.com/nfl/injuries/\",\"https://www.cbssports.com/nfl/injuries/\",\"https://www.rotowire.com/football/injury-report.php\",\"https://x.com/NFLInjuryNws?lang=en\"]}",
+      "type": "text"
+    }
+  ],
+  "id": "msg_011CeuzVc7PS9saq4dMFuT3X",
+  "model": "claude-opus-5",
+  "role": "assistant",
+  "stop_details": null,
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "type": "message",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 8233
+    },
+    "cache_creation_input_tokens": 8233,
+    "cache_read_input_tokens": 12851,
+    "inference_geo": "global",
+    "input_tokens": 99,
+    "output_tokens": 1239,
+    "output_tokens_details": {
+      "thinking_tokens": 249
+    },
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 1
+    },
+    "service_tier": "standard"
+  }
+}
