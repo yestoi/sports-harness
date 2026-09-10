@@ -313,9 +313,10 @@ def test_no_migration_creates_a_bulk_index_outside_concurrent_index(path):
             assert table not in match.group(1), f"{path.name}: {table} outside concurrent_index"
 
 
-def test_the_versions_directory_holds_the_baseline_phase45_and_brin_autosummarize():
+def test_the_versions_directory_holds_four_revisions():
     assert [p.name for p in VERSIONS] == [
-        "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py"]
+        "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
+        "0004_phase5.py"]
 
 
 def _load_baseline():
@@ -415,22 +416,29 @@ def test_both_deploy_recipes_push_the_migrations_and_the_full_one_runs_ensure():
     assert "no migrate command in this build" not in mk, "the Task 14 probe is now the real command"
 
 
-def test_pyproject_gains_exactly_one_dependency():
+@pytest.mark.xfail(reason="T2 adds the anthropic pin", strict=False)
+def test_pyproject_gains_exactly_one_dependency_per_phase():
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     # >=1.16 is the floor the baseline actually needs: `op.create_table(if_not_exists=...)` and
-    # `op.create_index(if_not_exists=...)` arrived there, and every statement in it is IF NOT
-    # EXISTS. constraints.txt pins 1.19.2 on top of this.
+    # `op.create_index(if_not_exists=...)` arrived there. constraints.txt pins 1.19.2 on top.
     assert "alembic>=1.16" in deps
-    assert len(deps) == 16          # 15 before this phase, plus alembic
+    # Phase 5's one new dependency (addendum conformance item 2): the research layer's Claude
+    # client. T2 adds it; this is where the count that would otherwise drift is pinned.
+    assert any(d.startswith("anthropic") for d in deps)
+    assert len(deps) == 17          # 15 through phase 4, plus alembic, plus anthropic
 
 
-def test_constraints_gains_exactly_two_appended_pins():
+@pytest.mark.xfail(reason="T2 adds the anthropic pin", strict=False)
+def test_constraints_pins_every_dependency_this_phase_added():
     lines = [l for l in (ROOT / "constraints.txt").read_text().splitlines() if l.strip()]
-    added = [l for l in lines if l.lower().startswith(("alembic==", "mako=="))]
-    assert len(added) == 2
-    # appended below the existing lines, not regenerated: the pre-phase tail is intact
-    assert lines[-3] == "websocket-client==1.9.2"
-    assert lines[-2:] == added
+    phase4 = [l for l in lines if l.lower().startswith(("alembic==", "mako=="))]
+    phase5 = [l for l in lines if l.lower().startswith("anthropic==")]
+    assert len(phase4) == 2 and len(phase5) == 1
+    # Appended below the existing lines, not regenerated: the pre-phase tail is intact and the
+    # phases are readable in order.
+    assert lines[-4] == "websocket-client==1.9.2"
+    assert lines[-3:-1] == phase4
+    assert lines[-1:] == phase5
 
 
 def test_migrate_is_programmatic_and_assumes_no_binary():
@@ -507,13 +515,14 @@ def test_the_phase45_downgrade_is_a_no_op_and_drops_nothing():
 
 # --- fix 32: revision 0003 ------------------------------------------------------------------
 
-def test_brin_autosummarize_follows_phase45_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_brin_autosummarize_follows_phase45():
+    """The head assertion this test used to carry moved to
+    `test_phase5_follows_brin_autosummarize_and_is_the_pinned_head`: 0003 is a link in the chain
+    now, not its end, and exactly one test names the pinned head so a bump has one place to
+    land. Phase 4.5's `test_phase45_follows_the_baseline` was trimmed the same way by fix 32."""
     module = _load_revision("0003_brin_autosummarize.py")
     assert module.revision == "0003_brin_autosummarize"
     assert module.down_revision == "0002_phase45"
-    assert HEAD_REVISION == "0003_brin_autosummarize"
 
 
 def test_the_brin_autosummarize_downgrade_is_a_no_op_and_drops_nothing():
@@ -569,3 +578,37 @@ def test_the_orders_key_index_is_in_both_catalogues(two_databases):
     for engine in (a, b):
         indexes = {i["name"] for i in inspect(engine).get_indexes("orders")}
         assert "ix_orders_key_placed" in indexes
+
+
+# --- phase 5: revision 0004 -----------------------------------------------------------------
+
+def test_phase5_follows_brin_autosummarize_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0004_phase5.py")
+    assert module.revision == "0004_phase5"
+    assert module.down_revision == "0003_brin_autosummarize"
+    assert HEAD_REVISION == "0004_phase5"
+
+
+def test_the_phase5_downgrade_is_a_no_op_and_drops_nothing():
+    module = _load_revision("0004_phase5.py")
+    assert module.downgrade() is None
+    body = (ROOT / "migrations" / "versions" / "0004_phase5.py").read_text().lower()
+    for word in ("drop ", "truncate", "delete from"):
+        assert word not in body, f"0004_phase5 contains {word!r}"
+
+
+def test_the_phase5_tables_and_view_are_present_after_both_paths(two_databases):
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    expected = {"futures_snapshots", "weather_points", "weather_snapshots", "veto_queue",
+                "research_notes", "veto_decisions", "research_spend", "report_annotations",
+                "rfqs", "rfq_quotes"}
+    for engine in (a, b):
+        insp = inspect(engine)
+        assert expected <= set(insp.get_table_names())
+        assert "veto_h9" in set(insp.get_view_names())

@@ -578,7 +578,13 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # fixture has already run create_schema once, so the second run emits nothing for them.
     # The three views are unchanged in number: Task 11 widened the `positions` view's fill-method
     # filter in place, which is one `create or replace view` as it always was.
-    assert len(ddl) == 72, [s for s, _, _ in ddl]
+    # + 8 (phase 5 T1, ruling B-M13: the seven `_INDEX_DDL` entries the ten research-layer
+    # tables need -- ix_futures_series_week, ix_weather_game_fetched, ix_research_notes_subject,
+    # ix_veto_queue_open, ix_veto_decisions_decided, ix_rfqs_received, uq_rfq_quote_rfq -- plus
+    # the fourth view, veto_h9. The ten tables themselves add nothing here: `create_all` emits
+    # `CREATE TABLE`, which this filter does not match, and none of them declares a model-level
+    # index) = 80.
+    assert len(ddl) == 80, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.

@@ -18,10 +18,12 @@ from harness.db.models import DashboardSnapshot, MetricSample
 
 NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
 
-#: The five tables `deploy/backup/dump.sh` excludes from the nightly dump. No snapshot builder
-#: may name one: the surfaces read `metric_samples` and `runs.notes` instead.
+#: The five tables `deploy/backup/dump.sh` excludes from the nightly dump, plus the two phase 5
+#: tables that hold venue free text (`rfqs.raw`, `research_notes.snippets`; addendum ruling
+#: B-I9). No snapshot builder may name one: the surfaces read `rfq_quotes`, `veto_decisions`,
+#: `research_spend` and `report_annotations` instead.
 FORBIDDEN_TABLES = ("orderbook_events", "venue_trades", "raw_responses", "odds_snapshots",
-                    "venue_quotes")
+                    "venue_quotes", "rfqs", "research_notes")
 
 
 def _factory(db_session):
