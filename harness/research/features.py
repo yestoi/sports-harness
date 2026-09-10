@@ -86,6 +86,15 @@ _NEWEST_FAIR = text("""
 #: The status as of the signal. `game_score_events` is the live feed's append-only history and
 #: `games.status` is only its newest value, so the event row is what an as-of read has to use;
 #: the dimension row is the fallback for a game the scoreboard linker has never seen.
+#:
+#: That fallback is the **one** read in this module that A-I3 does not bound, and it is stated
+#: here rather than left to be found. `_GAME` below reads `games` at its current values, so a
+#: game with no score event at or before the signal takes a `status` that may have moved after
+#: it. The window is narrow -- `link_espn_scoreboard` appends a `scheduled` row the first tick
+#: it sees a game, so only a game first linked *after* the signal reaches the fallback at all --
+#: and it is the same limitation `harness/execution/store.py` records for the replay horizon:
+#: the dimension tables keep no history to bound, while this one's history is exactly the query
+#: above. `sport` and `kickoff_utc` are read the same way for the same reason.
 _NEWEST_STATUS = text("""
     select status from game_score_events
     where game_id = :game_id and ts <= :as_of

@@ -44,7 +44,12 @@ POLL_S = 30
 MAX_CONCURRENT_CALLS = 2
 
 #: A pass: one sweep of work, given a session, the instant and the settings, returning a
-#: JSON-able counts dict. It commits nothing itself -- the worker commits after each pass.
+#: JSON-able counts dict. The worker commits after each pass and rolls back when one raises,
+#: so a pass that never commits is retried whole. A pass that **does** commit mid-sweep is
+#: opting out of that: `harness.research.veto` commits the moment `reserve_spend` returns,
+#: because the advisory lock is a transaction lock and must not be held across an Anthropic
+#: call, and its bucket claim rides on that commit. Anything such a pass has already committed
+#: survives the rollback below and is never retried, so it has to be re-drivable by itself.
 PassFn = Callable[[Session, datetime, Settings], dict]
 
 #: The modules `load_passes()` imports. T15 appends "harness.research.veto"; T18 appends
