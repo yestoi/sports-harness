@@ -117,6 +117,22 @@ def _iso(x) -> str | None:
     return x.isoformat() if x is not None else None
 
 
+def _if_none_match_hits(header: str | None, etag: str) -> bool:
+    """Ruling A-M3: an exact string comparison against `If-None-Match` misses a weak validator
+    (`W/"..."`) and a comma-separated list of candidates, both of which a caching proxy or
+    client may legitimately send -- and either would otherwise pay the full payload every poll.
+    Strip a leading `W/` from each comma-separated candidate before comparing."""
+    if not header:
+        return False
+    for candidate in header.split(","):
+        candidate = candidate.strip()
+        if candidate.startswith("W/"):
+            candidate = candidate[2:]
+        if candidate == etag:
+            return True
+    return False
+
+
 def _kill_switch(session: Session) -> dict:
     row = session.get(KillSwitch, 1)
     if row is None:
@@ -770,7 +786,7 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
         if row is None:
             raise HTTPException(status_code=404, detail="unknown snapshot")
         etag = f'"{name}:{row.generated_at.isoformat()}"'
-        if if_none_match == etag:
+        if _if_none_match_hits(if_none_match, etag):
             return Response(status_code=304, headers={"ETag": etag,
                                                       "Cache-Control": "no-cache"})
         response.headers["ETag"] = etag

@@ -83,6 +83,25 @@ def test_a_matching_if_none_match_answers_304_with_no_body(db_session, env_setti
     assert again.status_code == 304 and not again.content
 
 
+def test_a_weak_if_none_match_answers_304(db_session, env_settings, tmp_path):
+    """Ruling A-M3: a caching proxy may send a weak validator; the `W/` prefix must be stripped
+    before comparing, or it never gets a 304."""
+    _row(db_session)
+    client = _client(db_session, _settings(env_settings, tmp_path))
+    etag = client.get("/api/snap/pulse").headers["etag"]
+    again = client.get("/api/snap/pulse", headers={"If-None-Match": f"W/{etag}"})
+    assert again.status_code == 304 and not again.content
+
+
+def test_a_comma_separated_if_none_match_answers_304(db_session, env_settings, tmp_path):
+    """Ruling A-M3: a client may send a list of candidate tags; any match must 304."""
+    _row(db_session)
+    client = _client(db_session, _settings(env_settings, tmp_path))
+    etag = client.get("/api/snap/pulse").headers["etag"]
+    again = client.get("/api/snap/pulse", headers={"If-None-Match": f'"x", {etag}'})
+    assert again.status_code == 304 and not again.content
+
+
 def test_a_stale_if_none_match_answers_200(db_session, env_settings, tmp_path):
     _row(db_session)
     client = _client(db_session, _settings(env_settings, tmp_path))
