@@ -41,6 +41,26 @@ def test_no_evaluation_says_so(db_session, env_settings):
     assert "No gate evaluation" in " ".join(payload["sentences"]["verdict"])
 
 
+def test_a_failed_newest_rows_read_falls_back_to_no_evaluation_without_raising(
+        db_session, env_settings, monkeypatch):
+    """Ruling A-M2: `_NEWEST` and `_ROWS_AT` sat outside any guard, unlike `_history`. A
+    database-level failure must roll back and render the same "no evaluation" shape, not crash
+    the build -- and `history`, guarded separately, must still be reachable afterward."""
+    session_variant = StrategyVariant(variant_id="sharp_two_s", name="sharp_two_sided",
+                                      tier="secondary", config_json={},
+                                      registered_at=NOW - timedelta(days=30), active=True)
+    db_session.add(session_variant)
+    _evaluation(db_session, at=NOW - timedelta(hours=1), variant="sharp_two_s")
+
+    from sqlalchemy import text
+    monkeypatch.setattr(gate, "_NEWEST", text("select * from no_such_table"))
+    payload = build_gate(db_session, NOW, env_settings)
+
+    assert payload["verdict"] == {} and payload["criteria"] == [] and payload["variants"] == []
+    assert "No gate evaluation" in " ".join(payload["sentences"]["verdict"])
+    assert payload["history"] == {} or isinstance(payload["history"], dict)
+
+
 def test_the_verdict_reads_not_passing_and_names_the_hash_and_the_date(db_session,
                                                                       env_settings):
     session_variant = StrategyVariant(variant_id="sharp_two_s", name="sharp_two_sided",

@@ -101,18 +101,34 @@ def _history(session: Session) -> dict:
     return out
 
 
+def _newest_rows(session: Session) -> list[dict] | None:
+    """`_NEWEST` and `_ROWS_AT`, guarded together (ruling A-M2): both read small tables, but a
+    failure of either must not crash the build the way an unguarded query does elsewhere in this
+    module -- only `_history` was wrapped. Returns `None` for both "no evaluation stored yet"
+    and a failed read; the two render identically (no verdict, no criteria, no variants), and
+    the exception is logged either way so a real failure is still diagnosable."""
+    try:
+        at = session.execute(_NEWEST).scalar()
+        if at is None:
+            return None
+        return [dict(row._mapping) for row in session.execute(_ROWS_AT, {"at": at})]
+    except Exception as exc:  # noqa: BLE001 - a read here must not cost the whole build
+        log.warning("gate newest-rows read failed: %s", type(exc).__name__)
+        session.rollback()
+        return None
+
+
 def build_gate(session: Session, now: datetime, settings: Settings) -> dict:
     payload = base_payload("gate", now, settings, CADENCE_S)
     payload["standing_text"] = STANDING_TEXT
-    at = session.execute(_NEWEST).scalar()
-    if at is None:
+    rows = _newest_rows(session)
+    if not rows:
         payload.update({"verdict": {}, "criteria": [], "variants": [], "history": {}})
         payload["sentences"] = {"verdict": sentences.gate_verdict({}),
                                 "criteria": sentences.gate_criterion({})}
         payload["readings"] = {"criteria": []}
         return payload
 
-    rows = [dict(row._mapping) for row in session.execute(_ROWS_AT, {"at": at})]
     gate_row = next((r for r in rows if r["gate_variant"]), rows[0])
     criteria = _criterion_rows(gate_row["criteria_json"])
     payload["criteria"] = criteria
@@ -121,7 +137,7 @@ def build_gate(session: Session, now: datetime, settings: Settings) -> dict:
         # The registered name, never a display name of our own (spec §2.4 never-shown).
         "variant": gate_row["name"] or gate_row["variant_id"],
         "variant_id": gate_row["variant_id"],
-        "evaluated_at": at.isoformat(),
+        "evaluated_at": gate_row["evaluated_at"].isoformat(),
         "criteria_hash": gate_row["criteria_hash"],
         "n_total": len(criteria),
         "n_pass": sum(1 for c in criteria if c["status"] == PASSED),
@@ -134,7 +150,7 @@ def build_gate(session: Session, now: datetime, settings: Settings) -> dict:
         "note": None if r["gate_variant"] else "reported, not gated",
         "criteria": _criterion_rows(r["criteria_json"]),
     } for r in rows]
-    section(payload, "history", lambda: _history(session))
+    section(session, payload, "history", lambda: _history(session))
 
     payload["sentences"] = {"verdict": sentences.gate_verdict(payload["verdict"]),
                             "criteria": sentences.gate_criterion({"criteria": criteria})}
