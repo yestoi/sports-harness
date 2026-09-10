@@ -154,3 +154,23 @@ services:
       retries: 3
     restart: unless-stopped
     stop_grace_period: 60s
+
+  app-research:
+    build: .
+    user: "${APP_UID:-65534}:${APP_GID:-65534}"
+    command: ["research-worker"]
+    env_file: .env
+    # Ruling A-M2: this container mounts the Anthropic key and NOTHING else. No Kalshi key, no
+    # Odds key, no pgdata. It is the one process in the stack that talks to a paid model API,
+    # so it is also the one process with no venue credential in it -- a compromise here can
+    # spend money against the U4 caps and can reach no exchange at all.
+    #
+    # No ports: it serves nothing. `restart: unless-stopped` because a dormant worker (no key)
+    # is a normal state, not a failure, and it must come back up with the stack.
+    volumes:
+      - ./secrets/anthropic_api_key:/run/secrets/anthropic_api_key:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 60s

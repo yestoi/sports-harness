@@ -216,3 +216,41 @@ def test_the_app_serve_compose_block_is_unchanged():
     assert list(block["depends_on"]) == ["postgres"]
     assert block["restart"] == "unless-stopped"
     assert "build" in block and "image" not in block
+
+
+def test_app_research_mounts_the_anthropic_key_and_nothing_else():
+    """Ruling A-M2: `app-research` mounts `secrets/anthropic_api_key` read-only and nothing
+    else. No Kalshi key, no Odds key, no pgdata: the one container that holds the model key is
+    the one container with no venue credential in it."""
+    service = _service("app-research")
+    assert service["volumes"] == [
+        "./secrets/anthropic_api_key:/run/secrets/anthropic_api_key:ro"]
+
+
+def test_app_research_block_is_pinned_whole():
+    service = _service("app-research")
+    assert service["build"] == "."
+    assert service["command"] == ["research-worker"]
+    assert service["env_file"] == ".env"
+    assert service["user"] == "${APP_UID:-65534}:${APP_GID:-65534}"
+    assert service["restart"] == "unless-stopped"
+    assert service["stop_grace_period"] == "60s"
+    assert service["depends_on"] == {"postgres": {"condition": "service_healthy"}}
+    assert "ports" not in service
+
+
+def test_no_service_but_app_research_mounts_the_anthropic_key():
+    doc = yaml.safe_load(COMPOSE.read_text())
+    for name, service in doc["services"].items():
+        if name == "app-research":
+            continue
+        for volume in service.get("volumes", []) or []:
+            assert "anthropic" not in volume, f"{name} mounts the anthropic key"
+
+
+def test_nas_env_documents_both_phase5_switches():
+    """Ruling B-M14: the worker switch is documented with its NAS-side `.env` path, the way
+    `SNAPSHOTS_ENABLED` is, because that file is the one an operator actually edits."""
+    env = (Path(__file__).parent.parent / "deploy" / "nas.env").read_text()
+    assert "RESEARCH_WORKER_ENABLED=1" in env
+    assert "RFQ_LISTENER_ENABLED=1" in env

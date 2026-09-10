@@ -795,6 +795,22 @@ def ws_record() -> None:
     WsRecorder(s, factory, WsSink(factory), http=HttpClient(s.http_timeout_s)).run_forever()
 
 
+@app.command("research-worker")
+def research_worker() -> None:
+    """The `app-research` container's entrypoint: the shadow veto and the weekly annotator.
+
+    Dormant without `secrets/anthropic_api_key` and off when `research_worker_enabled` is false;
+    either way the container starts and idles rather than exiting, so a key that arrives later
+    is picked up on the next sweep without a restart.
+    """
+    configure_logging()
+    from harness.research.worker import ResearchWorker
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    ResearchWorker(s, factory).run_forever()
+
+
 @app.command("match-report")
 def match_report(sport: str = "all") -> None:
     configure_logging()
