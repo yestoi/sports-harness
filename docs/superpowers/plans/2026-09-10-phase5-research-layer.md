@@ -185,12 +185,14 @@ These files are touched by more than one task. The listed tasks never run concur
 | `harness/research/worker.py` | T5 (creates the loop), T15 (adds the veto pass), T18 (adds the annotator pass) — serial, in that order |
 | `harness/settlement/job.py` (`STAGE_MODULES`) | T12 (`parlay_grade`), T14 (`rfq_grade`) — serial, in that order |
 | `harness/report/tables.py` | T19 only |
-| `harness/report/weekly.py` | T18 only (the fenced annotation block) |
+| `harness/report/weekly.py` | T17 (the `format_cell` rename), T18 (the fenced annotation block) — serial, in that order |
 | `harness/health.py`, `harness/dashboard/snapshots/pulse.py` | T16 only |
 | `harness/scheduler.py` | T7 only (the futures cron) |
 | `docker-compose.yml`, `deploy/nas.env`, `tests/test_compose.py` | T5 only |
 | `harness/venues/kalshi/public.py` | T7 only (`fetch_series_all`, `fetch_tags_by_categories`) |
 | `tests/test_snapshot_engine.py` | T1 only (the two new forbidden tables) |
+| `tests/test_alembic.py` | T1 only (the revision list, the phase 5 table/view tests, and the two dependency-counting tests re-stated for this phase); T2 deletes the two `xfail` markers T1 leaves on them and changes nothing else in the file |
+| `tests/test_tick.py` | T9 (the weather guards), T12 (the leg-probability writer) — serial, in that order |
 | `docs/superpowers/autopilot/verify.md` | T20 only |
 | `docs/runbooks/` | T20 only |
 
@@ -221,7 +223,7 @@ Measured against `main` at `e68bab3` at plan time. A task that finds one of thes
 - `harness/logging_setup.py::redact(text)` applies five patterns including `sk-ant-[A-Za-z0-9_\-]+` → `[REDACTED]`. F55's precondition for an Anthropic client is met today.
 - `harness/telemetry.py`: `sanitize_reason(text)` is `sub(r"[^\w \-.,:/()]", "")` then a 200-character cap; `record`, `record_many`, `event(session, kind, summary, ref=None, ts=None)`, `Sampler(period_s, clock=time.monotonic)`.
 - `tests/conftest.py` provides `env_settings` (a `Settings` built from a temp key file) and `db_session` (session-scoped schema, truncate per test) and skips when `DATABASE_URL_TEST` is unset. `tests/fixtures/` is where recorded bodies live.
-- `docker-compose.yml` has five services (`postgres`, `app-backup`, `app-run`, `app-serve`, `app-ws`, `app-exec`); `app-ws` mounts `odds_api_key`, `kalshi_key_id` and `kalshi_private_key.pem`. The `Makefile`'s `deploy-nas` already pushes `secrets/anthropic_api_key` conditionally (`for f in kalshi_demo_key_id kalshi_demo_private_key.pem anthropic_api_key; do ... done`) and tars `harness`, `alembic.ini`, `migrations`, `docs/runbooks` and `deploy/backup`.
+- `docker-compose.yml` has six services (`postgres`, `app-backup`, `app-run`, `app-serve`, `app-ws`, `app-exec`); `app-ws` mounts `odds_api_key`, `kalshi_key_id` and `kalshi_private_key.pem`. The `Makefile`'s `deploy-nas` already pushes `secrets/anthropic_api_key` conditionally (`for f in kalshi_demo_key_id kalshi_demo_private_key.pem anthropic_api_key; do ... done`) and tars `harness`, `alembic.ini`, `migrations`, `docs/runbooks` and `deploy/backup`.
 
 ---
 
@@ -345,8 +347,11 @@ def test_a_budget_skipped_decision_needs_no_call(db_session):
 def test_the_open_queue_index_is_partial_on_unclaimed_rows(db_session):
     indexes = {i["name"]: i for i in inspect(db_session.get_bind()).get_indexes("veto_queue")}
     assert "ix_veto_queue_open" in indexes
-    assert "claimed_at is null" in (
-        indexes["ix_veto_queue_open"].get("dialect_options", {}).get("postgresql_where") or "")
+    # `postgresql_where` is filled verbatim from `pg_get_expr(...)`, which Postgres renders as
+    # `(claimed_at IS NULL)` -- uppercase. Lowercase before the substring test.
+    predicate = (indexes["ix_veto_queue_open"].get("dialect_options", {})
+                 .get("postgresql_where") or "").lower()
+    assert "claimed_at is null" in predicate
 
 
 def test_one_quote_per_rfq(db_session):
@@ -380,6 +385,23 @@ def test_research_spend_is_keyed_by_day_kind_and_model(db_session):
     db_session.flush()
     assert db_session.execute(
         text("select count(*) from research_spend where day = :d"), {"d": day}).scalar() == 4
+
+
+def test_housekeeping_never_deletes_from_a_phase_5_table(db_session):
+    """Ruling B-M7: every one of the ten tables is retained for the season. That holds today
+    only because `harness/ops/housekeeping.py` contains no delete at all, and nothing pinned it.
+    This is the pin: the retention rule is a property of that module's text, so the test reads
+    the text."""
+    from pathlib import Path
+
+    import harness.ops.housekeeping as housekeeping
+
+    body = Path(housekeeping.__file__).read_text().lower()
+    for table in ("futures_snapshots", "weather_points", "weather_snapshots", "veto_queue",
+                  "research_notes", "veto_decisions", "research_spend", "report_annotations",
+                  "rfqs", "rfq_quotes"):
+        assert f"delete from {table}" not in body
+        assert f"truncate {table}" not in body
 
 
 def test_the_other_six_tables_accept_a_row(db_session):
@@ -439,6 +461,43 @@ def test_the_phase5_tables_and_view_are_present_after_both_paths(two_databases):
         assert expected <= set(insp.get_table_names())
         assert "veto_h9" in set(insp.get_view_names())
 ```
+
+**And replace the two dependency-counting tests in the same file.** `tests/test_alembic.py` is
+edited by this task and by no other (Shared-file map), so the counts T2's `anthropic` pin changes
+are re-stated here rather than in T2: a phase whose dependency count is asserted nowhere is a phase
+that can grow one silently, and two tasks editing this file in one wave is exactly the collision
+the wave rule exists to prevent. Replace `test_pyproject_gains_exactly_one_dependency` and
+`test_constraints_gains_exactly_two_appended_pins` with:
+
+```python
+def test_pyproject_gains_exactly_one_dependency_per_phase():
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
+    # >=1.16 is the floor the baseline actually needs: `op.create_table(if_not_exists=...)` and
+    # `op.create_index(if_not_exists=...)` arrived there. constraints.txt pins 1.19.2 on top.
+    assert "alembic>=1.16" in deps
+    # Phase 5's one new dependency (addendum conformance item 2): the research layer's Claude
+    # client. T2 adds it; this is where the count that would otherwise drift is pinned.
+    assert any(d.startswith("anthropic") for d in deps)
+    assert len(deps) == 17          # 15 through phase 4, plus alembic, plus anthropic
+
+
+def test_constraints_pins_every_dependency_this_phase_added():
+    lines = [l for l in (ROOT / "constraints.txt").read_text().splitlines() if l.strip()]
+    phase4 = [l for l in lines if l.lower().startswith(("alembic==", "mako=="))]
+    phase5 = [l for l in lines if l.lower().startswith("anthropic==")]
+    assert len(phase4) == 2 and len(phase5) == 1
+    # Appended below the existing lines, not regenerated: the pre-phase tail is intact and the
+    # phases are readable in order.
+    assert lines[-4] == "websocket-client==1.9.2"
+    assert lines[-3:-1] == phase4
+    assert lines[-1:] == phase5
+```
+
+**These two tests fail until T2 lands** (`len(deps)` is 16 and there is no `anthropic==` pin on
+`main`). T1 and T2 are both wave 1 and merge in either order, so mark them
+`@pytest.mark.xfail(reason="T2 adds the anthropic pin", strict=False)` in this task's commit and
+**delete both xfail markers in T2's Step 4**, which is the step that adds the pin. T2's Step 5
+re-runs `tests/test_alembic.py` and both must then pass strictly.
 
 `test_the_versions_directory_holds_the_baseline_phase45_and_brin_autosummarize` is **replaced** by the four-revision test above; delete the old one. `_load_revision(filename)` already exists in the file (phase 4.5 added it); reuse it as written.
 
@@ -1106,7 +1165,6 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 - Modify: `harness/config/settings.py` (a phase 5 block, `has_anthropic_key()`, `anthropic_api_key()`)
 - Modify: `pyproject.toml` (`dependencies` gains `anthropic`)
 - Modify: `constraints.txt` (the exact pin, appended)
-- Modify: `tests/test_alembic.py` (`test_pyproject_gains_exactly_one_dependency`, `test_constraints_gains_exactly_two_appended_pins` — both count what the previous phase added and must be re-stated, not deleted)
 - Test: `tests/test_phase5_settings.py` (new)
 
 **Interfaces:**
@@ -1128,7 +1186,12 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 
 **Why the caps are `Decimal` and not `float`.** They are money and they are compared against a `Numeric(10,4)` sum. A float cap would make the comparison a float comparison and put the phase's one hard money limit at the mercy of binary rounding.
 
-**Why the two Alembic tests are edited here.** `tests/test_alembic.py::test_pyproject_gains_exactly_one_dependency` asserts `len(deps) == 16` and `test_constraints_gains_exactly_two_appended_pins` asserts the last three lines of `constraints.txt` by value. Both are counts of what phase 4 appended and both break the moment `anthropic` lands. They are re-stated for this phase in the same task that changes the files, because a phase whose dependency count is not asserted anywhere is a phase that can grow one silently.
+**Why this task does not touch `tests/test_alembic.py`.** That file's two counting tests
+(`test_pyproject_gains_exactly_one_dependency`, `test_constraints_gains_exactly_two_appended_pins`)
+break the moment `anthropic` lands, so they have to be re-stated for this phase — but **T1 owns
+that file** (Shared-file map) and T1 and T2 share wave 1, so re-stating them here would put two
+concurrent tasks in one file. T1 carries the replacements, marked `xfail(strict=False)` until this
+task's pin exists; **Step 4 below removes both markers**, which is what makes the pair strict again.
 
 - [ ] **Step 1: Write the failing tests** — create `tests/test_phase5_settings.py`.
 
@@ -1216,32 +1279,6 @@ def test_the_anthropic_sdk_is_importable_and_pinned():
     assert len(pins) == 1
 ```
 
-Replace the two counting tests in `tests/test_alembic.py`:
-
-```python
-def test_pyproject_gains_exactly_one_dependency_per_phase():
-    deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
-    # >=1.16 is the floor the baseline actually needs: `op.create_table(if_not_exists=...)` and
-    # `op.create_index(if_not_exists=...)` arrived there. constraints.txt pins 1.19.2 on top.
-    assert "alembic>=1.16" in deps
-    # Phase 5's one new dependency (addendum conformance item 2): the research layer's Claude
-    # client. constraints.txt pins the exact version on top of this floor.
-    assert any(d.startswith("anthropic") for d in deps)
-    assert len(deps) == 17          # 15 through phase 4, plus alembic, plus anthropic
-
-
-def test_constraints_pins_every_dependency_this_phase_added():
-    lines = [l for l in (ROOT / "constraints.txt").read_text().splitlines() if l.strip()]
-    phase4 = [l for l in lines if l.lower().startswith(("alembic==", "mako=="))]
-    phase5 = [l for l in lines if l.lower().startswith("anthropic==")]
-    assert len(phase4) == 2 and len(phase5) == 1
-    # Appended below the existing lines, not regenerated: the pre-phase tail is intact and the
-    # phases are readable in order.
-    assert lines[-4] == "websocket-client==1.9.2"
-    assert lines[-3:-1] == phase4
-    assert lines[-1:] == phase5
-```
-
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_phase5_settings.py -x -q`
@@ -1270,6 +1307,11 @@ Add to `pyproject.toml`'s `dependencies`, after `"python-multipart",`:
 ```
 
 If the installed version is below `0.40`, write the floor as the installed major/minor instead and say so in the task report. Do **not** upgrade any other pin: regenerating `constraints.txt` is a gate for the loop, not a ruling, and this task appends one line.
+
+**Then delete both `@pytest.mark.xfail` markers** T1 put on
+`tests/test_alembic.py::test_pyproject_gains_exactly_one_dependency_per_phase` and
+`::test_constraints_pins_every_dependency_this_phase_added`. That is the only line this task
+changes in that file, and it is the line that makes the dependency count strictly asserted again.
 
 - [ ] **Step 4: Add the settings block** to `harness/config/settings.py`, after the phase 4 venue block.
 
@@ -1362,7 +1404,7 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 
 **Interfaces:**
 - Consumes: `harness.logging_setup.redact(text) -> str`.
-- Produces: `harness.research.text.sanitize_model_text(text: str | None, limit: int) -> str`, and the two module constants `VETO_REASON_MAX = 300` and `RATIONALE_MAX = 600`. Used by T10 (the parlay rationale), T15 (the veto `reason`), T18 (the annotator bullets) and T14 (the RFQ report excerpt).
+- Produces: `harness.research.text.sanitize_model_text(text: str | None, limit: int) -> str`, and the two module constants `VETO_REASON_MAX = 300` and `RATIONALE_MAX = 600`. Used by T7 (venue titles), T9 (`short_forecast`), T10 (the parlay rationale), T13 (the RFQ market ticker), T15 (the veto `reason`) and T18 (the annotator bullets). The RFQ report excerpt is T19's, in `_table10`.
 
 **Depends on:** none. **Model: sonnet.**
 
@@ -2072,12 +2114,17 @@ def test_the_cap_covers_every_kind_not_just_the_veto(db_session, env_settings):
         reserve_spend(db_session, NOW, settings, "veto", [OPUS])
 
 
-def test_a_refused_reservation_writes_nothing(db_session, env_settings):
+def test_a_refused_reservation_reserves_and_spends_nothing(db_session, env_settings):
+    """`_ensure_rows` runs before the cap check, so a refusal can leave zero-valued rows behind.
+    That is deliberate and harmless -- they are the day's accounting rows and the next
+    reservation needs them -- but the money columns must both be untouched, which is what this
+    asserts. The name says "reserves and spends nothing", not "writes nothing"."""
     settings = _settings(env_settings, daily="0.10")
     with pytest.raises(BudgetRefused):
         reserve_spend(db_session, NOW, settings, "veto", [OPUS, SONNET])
-    assert db_session.execute(text(
-        "select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == Decimal("0")
+    totals = db_session.execute(text(
+        "select coalesce(sum(usd_reserved), 0), coalesce(sum(usd), 0) from research_spend")).first()
+    assert totals == (Decimal("0"), Decimal("0"))
 
 
 def test_yesterday_s_spend_does_not_count_against_today(db_session, env_settings):
@@ -2202,6 +2249,8 @@ class ModelPrice:
 PRICES: dict[str, ModelPrice] = {
     "claude-opus-5": ModelPrice(Decimal("5.00"), Decimal("25.00")),
     "claude-sonnet-5": ModelPrice(Decimal("2.00"), Decimal("10.00")),
+    # No phase 5 caller uses this one: it is the veto study's blind pairwise judge (R:311), a
+    # later phase. It is priced here so that phase's cost model needs no second table.
     "claude-fable-5-1": ModelPrice(Decimal("10.00"), Decimal("50.00")),
 }
 CACHE_READ_MULTIPLIER = Decimal("0.1")
@@ -2413,7 +2462,7 @@ def spend_state(session: Session, now: datetime, settings) -> SpendState:
 - [ ] **Step 4: Run the tests**
 
 Run: `python -m pytest tests/test_research_spend.py -q`
-Expected: PASS, 17 tests. The two-worker test needs two live connections: the default engine pool is large enough, and `db_session.commit()` before the barrier is what makes the empty table visible to them.
+Expected: PASS, 18 tests. The two-worker test needs two live connections: the default engine pool is large enough, and `db_session.commit()` before the barrier is what makes the empty table visible to them.
 
 - [ ] **Step 5: Run the full suite**
 
@@ -2476,11 +2525,22 @@ NOW = datetime(2026, 9, 15, 18, 0, tzinfo=timezone.utc)
 
 @pytest.fixture
 def clean_registry():
-    saved = list(worker_module.PASSES)
+    """Isolate the registry, both halves.
+
+    `PASS_MODULES` is cleared too, not only `PASSES`. `run_once` calls `load_passes()`, which
+    imports every name in `PASS_MODULES`; once T15 and T18 populate that list, a module not yet
+    imported in this pytest session would run its module-level `register_pass` against the
+    freshly cleared `PASSES` and this file's assertions would depend on test file order.
+    """
+    saved_passes = list(worker_module.PASSES)
+    saved_modules = list(worker_module.PASS_MODULES)
     worker_module.PASSES.clear()
+    worker_module.PASS_MODULES.clear()
     yield
     worker_module.PASSES.clear()
-    worker_module.PASSES.extend(saved)
+    worker_module.PASSES.extend(saved_passes)
+    worker_module.PASS_MODULES.clear()
+    worker_module.PASS_MODULES.extend(saved_modules)
 
 
 def _worker(db_session, settings):
@@ -2855,9 +2915,11 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
   - `harness.weather.stadiums.Stadium` — frozen dataclass `(sport, team_id, abbreviation, name, lat, lon, roof, source)`
   - `harness.weather.stadiums.load_stadiums() -> dict[tuple[str, int], Stadium]`
   - `harness.weather.stadiums.load_neutral_sites() -> dict[tuple[str, int, int, date], Stadium]`
+  - `harness.weather.stadiums.load_roster() -> list[tuple[str, int, str, str]]`
+  - `harness.weather.stadiums.load_missing() -> dict[tuple[str, int], str]`
   - `harness.weather.stadiums.stadium_for(sport, home_team_id, away_team_id, kickoff_date) -> Stadium | None`
   - `harness.weather.stadiums.ROOFS = ("open", "dome", "retractable")`, `is_outdoor(stadium) -> bool`
-  - `harness.feeds.nws.NwsClient(settings, clock=...)` with `.get(path_or_url) -> FetchResult` and `.close()`
+  - `harness.feeds.nws.NwsClient(settings, sleep=time.sleep, clock=...)` with `.get(path_or_url) -> FetchResult` and `.close()`; `sleep` is the seam the 429-retry test uses
   - `harness.feeds.nws.POINTS_FIELDS`, `parse_point(body) -> PointGrid | None`, `PointGrid(office, grid_x, grid_y, forecast_hourly_url)`
   - `harness.weather.points.resolve_point(session, client, run_id, stadium, now) -> WeatherPoint | None` and `POINT_RERESOLVE_AFTER = timedelta(days=1)`
 
@@ -3636,7 +3698,7 @@ for name in names:
 PY
 ```
 
-The printed literal (`web_search_20260318`, `web_search_20260209`, or whatever the installed SDK carries) is `WEB_SEARCH_TOOL_TYPE`. Verified-facts D4 records two different candidates from two sources, which is exactly why this is measured and not written from memory.
+The printed literal (`web_search_20260318`, `web_search_20260209`, or whatever the installed SDK carries) is `WEB_SEARCH_TOOL_TYPE`. Verified-facts D4 records two different candidates from two sources, which is exactly why this is measured and not written from memory. **The controller pastes the literal into this task's brief and the implementer substitutes it for the `"<the literal controller step A printed>"` marker in Step 3**, the same way T2's Step 3 substitutes the version `pip show` printed. `test_the_tool_type_string_matches_the_installed_sdk` then pins it, so a marker left unsubstituted fails at the first test run rather than in production.
 
 **Controller step B — the proving call, and its cached repeat.**
 
@@ -3741,6 +3803,10 @@ def test_the_proving_call_returned_structured_output_and_ran_a_search():
     assert error is None
     assert output["decision"] in ("proceed", "reduce", "veto")
     assert set(output) == {"decision", "confidence", "reason", "evidence_ids"}
+    # `>= 1`, not `== 2`: the recorded call runs as many searches as the model chose. Addendum §5
+    # asks for accounting from a response with two searches, and the deterministic two-search
+    # case is `test_searches_are_counted_from_the_server_tool_use_blocks` below. This assertion
+    # is that the recording proves the tool ran at all.
     assert usage_from(PROVING).searches >= 1
 
 
@@ -4377,7 +4443,7 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
   - `harness.venues.kalshi.public.decode_fixed_point(value) -> Decimal | None` (the former `_dec`), `KalshiPublic.fetch_tags_by_categories() -> FetchResult`, `KalshiPublic.fetch_series_all(category, max_pages=10) -> list[FetchResult]`
   - `harness.venues.kalshi.futures.FUTURES_PREFIXES = ("KXNFL", "KXNCAAF")`, `REQUEST_BUDGET = 200`, `PAGE_PAUSE_S = 0.1`, `JOB_NAME = "futures"`, `RESUME_KEY = "futures.resume"`, `CATEGORY_HINT = "sport"`
   - `snapshot_week(now, tz) -> str`
-  - `discover_series(kalshi, ctx) -> list[str]`
+  - `discover_series(session, run_id, kalshi, ctx) -> list[str]`
   - `parse_futures_markets(body) -> list[dict]`
   - `run_futures_snapshot(session, settings, kalshi, now, trigger) -> JobRun`
   - `harness.scheduler.build_scheduler(..., futures=None)` — one more optional slot, registered only when given
@@ -4492,47 +4558,60 @@ def _kalshi():
 
 # --- discovery ---------------------------------------------------------------------------------
 
-def test_discovery_keeps_only_the_two_prefixes():
-    kept = discover_series(_kalshi(), {"n": 0, "errors": [], "categories": []})
+def test_discovery_keeps_only_the_two_prefixes(db_session):
+    kept = discover_series(db_session, 1, _kalshi(), {"n": 0, "errors": [], "categories": []})
     assert "KXNBAFINALS" not in kept
     assert all(t.startswith(FUTURES_PREFIXES) for t in kept)
 
 
-def test_discovery_excludes_the_per_game_series_by_exact_match():
+def test_discovery_excludes_the_per_game_series_by_exact_match(db_session):
     """Ruling A-I9: `FOOTBALL_SERIES` is imported, not restated, and the test is exact match --
     a prefix test would also swallow a future KXNFLGAMEMVP, which is exactly what H7 wants."""
-    kept = discover_series(_kalshi(), {"n": 0, "errors": [], "categories": []})
+    kept = discover_series(db_session, 1, _kalshi(), {"n": 0, "errors": [], "categories": []})
     assert set(kept).isdisjoint(FOOTBALL_SERIES)
     assert kept == ["KXNCAAFCHAMP", "KXNFLSB"]      # sorted, deterministic
 
 
-def test_a_series_whose_ticker_merely_starts_with_a_per_game_name_is_kept():
+def test_a_series_whose_ticker_merely_starts_with_a_per_game_name_is_kept(db_session):
     kalshi = _kalshi()
     kalshi.series_by_category["Sports"].append({"ticker": "KXNFLGAMEMVP"})
-    assert "KXNFLGAMEMVP" in discover_series(kalshi, {"n": 0, "errors": [], "categories": []})
+    assert "KXNFLGAMEMVP" in discover_series(db_session, 1, kalshi,
+                                             {"n": 0, "errors": [], "categories": []})
 
 
-def test_discovery_reads_the_categories_once_per_pass():
+def test_discovery_reads_the_categories_once_per_pass(db_session):
     kalshi = _kalshi()
-    discover_series(kalshi, {"n": 0, "errors": [], "categories": []})
+    discover_series(db_session, 1, kalshi, {"n": 0, "errors": [], "categories": []})
     assert sum(1 for kind, _ in kalshi.asked if kind == "tags") == 1
 
 
-def test_only_the_football_categories_are_walked():
+def test_discovery_stores_every_body_it_reads(db_session):
+    """Addendum §1.1: "raw bodies through `store_raw(source='kalshi_futures')`", and the
+    categories read is "recorded once per pass". Discovery is two thirds of the pass's requests,
+    so a discovery that stored nothing would leave H7's panel unauditable."""
+    discover_series(db_session, 1, _kalshi(), {"n": 0, "errors": [], "categories": []})
+    rows = db_session.execute(text(
+        "select endpoint, count(*) from raw_responses where source = 'kalshi_futures' "
+        "group by 1 order by 1")).all()
+    assert [(r.endpoint, r.count) for r in rows] == [
+        ("/search/tags_by_categories", 1), ("/series", 1)]
+
+
+def test_only_the_football_categories_are_walked(db_session):
     kalshi = _kalshi()
-    discover_series(kalshi, {"n": 0, "errors": [], "categories": []})
+    discover_series(db_session, 1, kalshi, {"n": 0, "errors": [], "categories": []})
     assert [arg for kind, arg in kalshi.asked if kind == "series"] == ["Sports"]
     assert CATEGORY_HINT == "sport"
 
 
-def test_no_matching_category_falls_back_to_every_category():
+def test_no_matching_category_falls_back_to_every_category(db_session):
     """A season where Kalshi renames the category must degrade to a slower pass, never to an
     empty one, and the fallback is recorded in the notes."""
     kalshi = _kalshi()
     kalshi.categories = {"Contests": ["nfl"], "Politics": ["senate"]}
     kalshi.series_by_category = {"Contests": [{"ticker": "KXNFLSB"}]}
     ctx = {"n": 0, "errors": [], "categories": []}
-    assert discover_series(kalshi, ctx) == ["KXNFLSB"]
+    assert discover_series(db_session, 1, kalshi, ctx) == ["KXNFLSB"]
     assert ctx["category_fallback"] is True
 
 
@@ -4594,7 +4673,7 @@ def test_a_pass_writes_rows_a_job_run_and_the_raw_bodies(db_session, env_setting
 
     stored = db_session.execute(text(
         "select count(*) from raw_responses where source = 'kalshi_futures'")).scalar()
-    assert stored >= 3          # the categories, one series page, two market pages
+    assert stored == 4          # the categories, one series page, two market pages
 
 
 def test_a_hand_run_is_labelled_manual(db_session, env_settings):
@@ -4677,26 +4756,22 @@ def test_the_futures_job_runs_on_tuesdays_at_nine_central():
     or the Tuesday 09:30 CT duty finds a job that ran at 04:00 local."""
     from harness.scheduler import build_scheduler
 
+    # No `shutdown()`: `build_scheduler` never calls `.start()`, and APScheduler raises
+    # `SchedulerNotRunningError` on a stopped scheduler. The file's two existing tests do the
+    # same thing for the same reason.
     sched = build_scheduler(_recorder(), heartbeat_s=30, futures=lambda: None)
-    try:
-        job = sched.get_job("futures_snapshot")
-        assert job is not None
-        assert str(job.trigger.timezone) == "America/Chicago"
-        assert job.trigger.fields[job.trigger.FIELD_NAMES.index("day_of_week")].name == "day_of_week"
-        assert "tue" in str(job.trigger)
-        assert "hour='9'" in str(job.trigger) and "minute='0'" in str(job.trigger)
-    finally:
-        sched.shutdown(wait=False)
+    job = sched.get_job("futures_snapshot")
+    assert job is not None
+    assert str(job.trigger.timezone) == "America/Chicago"
+    assert "tue" in str(job.trigger)
+    assert "hour='9'" in str(job.trigger) and "minute='0'" in str(job.trigger)
 
 
 def test_no_futures_job_without_a_callable():
     from harness.scheduler import build_scheduler
 
     sched = build_scheduler(_recorder(), heartbeat_s=30)
-    try:
-        assert sched.get_job("futures_snapshot") is None
-    finally:
-        sched.shutdown(wait=False)
+    assert sched.get_job("futures_snapshot") is None
 ```
 
 `_recorder()` is a bare object with a `maybe_tick` attribute; the existing scheduler tests already build one, so reuse whatever they use.
@@ -4835,11 +4910,18 @@ def snapshot_week(now: datetime, tz: str) -> str:
     return f"{iso.year}-W{iso.week:02d}"
 
 
-def discover_series(kalshi, ctx: dict) -> list[str]:
+def discover_series(session: Session, run_id: int, kalshi, ctx: dict) -> list[str]:
     """Every football futures or ladder series ticker, sorted. Costs one categories read plus
-    one series read per category kept."""
+    one series read per category kept.
+
+    Every body is stored through `store_raw(source='kalshi_futures')`, the categories read once
+    per pass (addendum §1.1): discovery is two thirds of a pass's requests, and a discovery that
+    stored nothing would leave H7's panel unauditable against the venue's own answer.
+    """
     categories_result = kalshi.fetch_tags_by_categories()
     ctx["n"] += 1
+    store.store_raw(session, run_id, "kalshi_futures", "/search/tags_by_categories", {},
+                    categories_result)
     body = categories_result.body if isinstance(categories_result.body, dict) else {}
     names = sorted(body)
     kept = [name for name in names if CATEGORY_HINT in name.lower()]
@@ -4854,6 +4936,8 @@ def discover_series(kalshi, ctx: dict) -> list[str]:
     for category in kept:
         for page in kalshi.fetch_series_all(category):
             ctx["n"] += 1
+            store.store_raw(session, run_id, "kalshi_futures", "/series",
+                            {"category": category}, page)
             page_body = page.body if isinstance(page.body, dict) else {}
             for series in page_body.get("series") or []:
                 ticker = (series or {}).get("ticker")
@@ -4945,7 +5029,7 @@ def run_futures_snapshot(session: Session, settings, kalshi, now: datetime, trig
     exhausted = False
 
     try:
-        series = discover_series(kalshi, ctx)
+        series = discover_series(session, run_id, kalshi, ctx)
     except Exception as exc:  # noqa: BLE001 - a discovery failure is a recorded, finished pass
         log.exception("futures discovery failed")
         job.status, job.finished_at = "error", now
@@ -5495,11 +5579,28 @@ def test_the_budget_stops_the_pass_between_games(db_session, env_settings, monke
     assert counts["fetched"] == 0 and counts["budget_exhausted"] is True
 ```
 
-Add to `tests/test_recorder.py` (or wherever the tick's tests live):
+Append to `tests/test_tick.py` — the tick's tests live there and its one helper is
+`_recorder(env_settings, db_session, now=NOW, monotonic=time.monotonic)`, which returns
+`(Recorder, clock)`. `NOW`, `Run` and `store` are already imported in that file.
 
 ```python
+class _StubBudget:
+    """`_Budget`'s two-method surface, with the remaining time fixed. The real `_Budget` reads
+    a monotonic clock, and these two tests are about the guard, not about the clock."""
+
+    def __init__(self, remaining):
+        self._remaining = remaining
+
+    def ok(self):
+        return self._remaining > 0
+
+    def remaining_s(self):
+        return self._remaining
+
+
 @pytest.mark.parametrize("cadence,ran", [(20, False), (120, False), (300, True), (900, True)])
-def test_the_weather_source_runs_only_on_the_two_slow_cadences(monkeypatch, cadence, ran):
+def test_the_weather_source_runs_only_on_the_two_slow_cadences(env_settings, db_session,
+                                                               monkeypatch, cadence, ran):
     """Rulings A-I7 and B-I10. `cadence.py` returns 20 s for NFL 60-100 minutes before kickoff:
     the single most valuable recording window in the harness, and the one R4 protects with its
     own deploy exclusion. Twenty seconds of forecast plus a five-second retry there pushes the
@@ -5509,22 +5610,28 @@ def test_the_weather_source_runs_only_on_the_two_slow_cadences(monkeypatch, cade
     calls = []
     monkeypatch.setattr(tick_module, "cadence_in_force", lambda *a, **k: cadence)
     monkeypatch.setattr(tick_module, "run_weather_source",
-                        lambda *a, **k: calls.append(True) or {})
-    recorder = _recorder_with_stubs(monkeypatch)          # the file's existing helper
-    recorder._weather(_session(), _run(), NOW, [], _budget(remaining=60), {"warnings": []})
+                        lambda *a, **k: calls.append(True) or {"due": 0})
+    monkeypatch.setattr(tick_module, "NwsClient", lambda settings: object())
+    recorder, _clock = _recorder(env_settings, db_session)
+    run = store.start_run(db_session, NOW)
+    recorder._weather(db_session, run, NOW, [], _StubBudget(60), {"warnings": []})
     assert bool(calls) is ran
 
 
-def test_the_weather_source_yields_below_twenty_five_seconds_of_tick_budget(monkeypatch):
+def test_the_weather_source_yields_below_twenty_five_seconds_of_tick_budget(env_settings,
+                                                                           db_session,
+                                                                           monkeypatch):
     from harness.recorder import tick as tick_module
 
     calls = []
     monkeypatch.setattr(tick_module, "cadence_in_force", lambda *a, **k: 900)
     monkeypatch.setattr(tick_module, "run_weather_source",
-                        lambda *a, **k: calls.append(True) or {})
-    recorder = _recorder_with_stubs(monkeypatch)
+                        lambda *a, **k: calls.append(True) or {"due": 0})
+    monkeypatch.setattr(tick_module, "NwsClient", lambda settings: object())
+    recorder, _clock = _recorder(env_settings, db_session)
+    run = store.start_run(db_session, NOW)
     ctx = {"warnings": []}
-    recorder._weather(_session(), _run(), NOW, [], _budget(remaining=24.0), ctx)
+    recorder._weather(db_session, run, NOW, [], _StubBudget(24.0), ctx)
     assert calls == []
     assert ctx["weather"] == {"skipped": "tick budget"}
 ```
@@ -5845,7 +5952,7 @@ And add one key to the `notes=` dict in `store.finish_run`:
 
 - [ ] **Step 6: Run the tests**
 
-Run: `python -m pytest tests/test_weather_snapshots.py tests/test_recorder_weather.py tests/test_recorder.py -q`
+Run: `python -m pytest tests/test_weather_snapshots.py tests/test_recorder_weather.py tests/test_tick.py -q`
 Expected: PASS.
 
 - [ ] **Step 7: Run the full suite**
@@ -5857,7 +5964,7 @@ Expected: pristine.
 
 ```bash
 git add harness/weather/snapshots.py harness/recorder/tick.py \
-        tests/test_weather_snapshots.py tests/test_recorder_weather.py tests/test_recorder.py
+        tests/test_weather_snapshots.py tests/test_recorder_weather.py tests/test_tick.py
 git commit -m "feat(weather): the NWS hourly forecast source inside the recorder tick
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
@@ -5885,7 +5992,7 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
   - `store_rfq(session, event: RfqEvent, now: datetime) -> Rfq`
   - `handle_frame(session, msg: dict, now: datetime) -> Rfq | None`
   - `idle_reason(status: int | None, error_msg: dict | None) -> str | None`
-  - `harness.venues.kalshi.rfq_socket.RfqListener(settings, session_factory, ws_factory=..., clock=..., sleep=...)` with `.run_forever()`, `.stop()`, `.run_once(ws)` and `SUBSCRIBE_ID = 1`
+  - `harness.venues.kalshi.rfq_socket.RfqListener(settings, session_factory, ws_factory=..., clock=..., sleep=..., sign=None)` with `.run_forever()`, `.stop()`, `.subscribe(ws)`, `.connect()`, `.run_once(ws)` and `SUBSCRIBE_ID = 1`. `sign` is the signing seam: `None` means `harness.venues.kalshi.auth.sign_request` over the settings' key files, and a test passes `lambda *_a, **_k: {}` so it never has to have a key on disk.
 - **T14 extends `handle_frame`** to compute and store the quote; nothing else touches these two modules.
 
 **Depends on:** T1, T2, T3. **Model: opus** (a rejected subscribe must never touch the market tape, and this module is the phase's no-write-path fence). **Reviewer: opus** (it touches `harness/venues/`).
@@ -5954,7 +6061,8 @@ def test_an_rfq_created_frame_parses_into_its_legs():
     assert event.target_cost_dollars == Decimal("12.5000")
     assert [leg["market_ticker"] for leg in event.legs] == [
         "KXNFLGAME-26SEP14DALNYG-DAL", "KXNFLGAME-26SEP14KCBUF-KC"]
-    assert event.created_ts == datetime(2026, 9, 8, 1, 46, 40, tzinfo=timezone.utc)
+    # 1789000000 is 2026-09-10 00:26:40 UTC.
+    assert event.created_ts == datetime(2026, 9, 10, 0, 26, 40, tzinfo=timezone.utc)
 
 
 def test_an_rfq_deleted_frame_parses():
@@ -6101,8 +6209,12 @@ class FakeWs:
 
 def _listener(db_session, env_settings, ws=None, sleeps=None):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    # `sign` is the seam: `env_settings` keeps the container defaults for the two Kalshi key
+    # paths, which do not exist on the Mac, so a real `sign_request` would raise
+    # `FileNotFoundError` before the ws factory was ever reached.
     return RfqListener(env_settings, factory, ws_factory=lambda *a, **k: ws,
-                       clock=lambda: NOW, sleep=(sleeps.append if sleeps is not None else None))
+                       clock=lambda: NOW, sleep=(sleeps.append if sleeps is not None else None),
+                       sign=lambda *_a, **_k: {})
 
 
 def test_the_subscribe_frame_names_only_the_communications_channel(db_session, env_settings):
@@ -6126,6 +6238,9 @@ def test_the_listener_stores_an_arrival_off_the_socket(db_session, env_settings)
     ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}, _created()])
     listener = _listener(db_session, env_settings, ws)
     listener.subscribe(ws)
+    # `subscribe` only sends; it consumes no frame. One `run_once` reads the ack, the second
+    # reads the arrival.
+    listener.run_once(ws)
     listener.run_once(ws)
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
 
@@ -6135,7 +6250,8 @@ def test_a_quote_event_is_counted_and_dropped(db_session, env_settings):
                  {"type": "QuoteCreated", "msg": {"id": "q1"}}])
     listener = _listener(db_session, env_settings, ws)
     listener.subscribe(ws)
-    listener.run_once(ws)
+    listener.run_once(ws)      # the ack
+    listener.run_once(ws)      # the quote event
     assert listener.quote_events_dropped == 1
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 0
 
@@ -6155,7 +6271,8 @@ def test_the_listener_is_off_when_its_setting_is_false(db_session, env_settings)
     settings = env_settings.model_copy(update={"rfq_listener_enabled": False})
     listener = RfqListener(settings, sessionmaker(bind=db_session.get_bind()),
                            ws_factory=lambda *a, **k: pytest.fail("connected"),
-                           clock=lambda: NOW, sleep=lambda *_: None)
+                           clock=lambda: NOW, sleep=lambda *_: None,
+                           sign=lambda *_a, **_k: {})
     listener.run_forever()          # returns immediately
     assert listener.connected is False
 
@@ -6172,7 +6289,8 @@ def test_the_listener_connects_to_the_settings_host_and_never_the_fallback(db_se
         return ws
 
     listener = RfqListener(env_settings, sessionmaker(bind=db_session.get_bind()),
-                           ws_factory=factory, clock=lambda: NOW, sleep=lambda *_: None)
+                           ws_factory=factory, clock=lambda: NOW, sleep=lambda *_: None,
+                           sign=lambda *_a, **_k: {})
     listener.connect()
     assert urls == [env_settings.kalshi_ws_url]
     assert "external-api-ws" not in urls[0]
@@ -6194,11 +6312,15 @@ SOCKET = ROOT / "harness" / "venues" / "kalshi" / "rfq_socket.py"
 
 def test_the_handler_module_contains_no_send_no_post_and_no_quotes_path():
     """The listener module receives parsed frames only and never the socket object, so there is
-    nothing in it that could send anything at all."""
+    nothing in it that could send anything at all.
+
+    The path assertion is the **literal** `communications/quotes`, which is what conformance
+    item 5 names. A bare `quotes` would be tripped by this module's own prose about the venue's
+    quote events and by the `rfq_quotes` table name, neither of which is a submission path."""
     body = HANDLER.read_text()
     assert ".send(" not in body
     assert "POST" not in body.upper().replace("POSTED", "")
-    assert "quotes" not in body.lower()
+    assert "communications/quotes" not in body.lower()
 
 
 def test_the_socket_module_holds_no_rest_transport():
@@ -6207,7 +6329,7 @@ def test_the_socket_module_holds_no_rest_transport():
     body = SOCKET.read_text()
     for forbidden in ("KalshiTransport", "httpx", "authed", "requests", "urllib"):
         assert forbidden not in body, f"rfq_socket.py imports {forbidden}"
-    assert "quotes" not in body.lower()
+    assert "communications/quotes" not in body.lower()
 
 
 def test_the_transport_refuses_the_exact_quote_path(tmp_path):
@@ -6513,12 +6635,17 @@ class RfqListener:
     def __init__(self, settings, session_factory,
                  ws_factory: Callable = websocket.create_connection,
                  clock: Callable[[], datetime] = _utcnow,
-                 sleep: Callable[[float], None] | None = None) -> None:
+                 sleep: Callable[[float], None] | None = None,
+                 sign: Callable[..., dict] | None = None) -> None:
         self.s = settings
         self._factory = session_factory
         self._ws_factory = ws_factory
         self._clock = clock
         self._sleep = sleep or time.sleep
+        # The signing seam. `None` is production: `sign_request` over the two key files
+        # `app-ws` already mounts. A test passes a stub, because `Settings`' defaults point at
+        # `/run/secrets/...` and reading them on the Mac raises before the socket is reached.
+        self._sign = sign
         self._stop = False
         self._backoff = 1.0
         self.connected = False
@@ -6535,8 +6662,12 @@ class RfqListener:
 
     def connect(self):
         ts_ms = int(self._clock().timestamp() * 1000)
-        headers = sign_request(self.s.kalshi_key_id(), self.s.kalshi_private_key_pem(),
-                               "GET", "/trade-api/ws/v2", ts_ms)
+        signer = self._sign
+        if signer is None:
+            headers = sign_request(self.s.kalshi_key_id(), self.s.kalshi_private_key_pem(),
+                                   "GET", "/trade-api/ws/v2", ts_ms)
+        else:
+            headers = signer("GET", "/trade-api/ws/v2", ts_ms)
         # One host, always: `Settings.kalshi_ws_url`. `ws.py`'s FALLBACK_URL is
         # `external-api-ws.kalshi.com`, which is not on roadmap invariant 8's list, and a
         # listener is not a good enough reason to reach a host the invariant does not permit.
@@ -6721,7 +6852,7 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
   - `harness.research.features.feature_delta(trigger: dict, other: dict) -> dict`
   - `harness.research.features.invalidated(trigger: dict, other: dict) -> str | None`
   - `harness.research.prompt.SYSTEM_BLOCKS: list[dict]`, `OUTPUT_SCHEMA: dict`, `EFFORT = "high"`, `MAX_OUTPUT_TOKENS = 1024`, `THINKING = {"type": "adaptive"}`, `render_user(numeric, untrusted) -> str`, `PROMPT_HASH`
-  - `harness.research.veto.DECISIONS`, `DECIDED`, `bucket_start(created_at, minutes) -> datetime`, `claim_bucket(session, now) -> list[QueuedSignal]`, `decide_bucket(session, client, settings, queued, now) -> dict`, `veto_pass(session, now, settings) -> dict`
+  - `harness.research.veto.DECISIONS`, `DECIDED`, `FINAL_STATUSES` (re-exported from `harness.parlay.needs`), `bucket_start(created_at, minutes) -> datetime`, `claim_bucket(session, now) -> list[QueuedSignal]`, `veto_pass(session, now, settings, client=None) -> dict` — `client` is the injection seam the tests use and is built from the settings when it is `None`
   - `harness.execution.store.insert_intents` additionally writes one `veto_queue` row per intent it wrote, non-replay only
 
 **Depends on:** T1, T2, T3, T4, T5, T6. **Model: opus** (the bucket claim, the as-of features, the frozen prompt, the five decision labels and the injection case are the phase's hardest correctness surface).
@@ -6910,7 +7041,9 @@ def test_the_delta_names_only_what_moved():
 
 
 def test_a_two_point_fair_move_invalidates():
-    """Ruling B-I2 and the §6.4 velocity threshold, imported from its home rather than restated."""
+    """Ruling B-I2 and addendum 0.2's two-point rule. The number is this phase's own constant
+    with the addendum as its source: its numeric twin is `velocity_max_pts` under
+    `harness/variants/`, which no task in this phase may edit."""
     assert invalidated(_features(), _features(fair_p=0.5301)) == "fair_move"
     assert invalidated(_features(), _features(fair_p=0.5299)) is None
 
@@ -7344,8 +7477,12 @@ log = logging.getLogger(__name__)
 FEATURE_WINDOW = timedelta(hours=6)
 #: In five-minute buckets, so the vector is at most 72 points however busy the market was.
 BUCKET_MINUTES = 5
-#: The §6.4 velocity threshold, imported from its home rather than restated (ruling B-I2): two
-#: probability points of sharp-fair movement re-calls a bucket early.
+#: Two probability points of sharp-fair movement re-call a bucket early (addendum 0.2, ruling
+#: B-I2). The addendum names it as "the §6.4 velocity threshold", whose numeric home is
+#: `velocity_max_pts: 0.02` in each file under `harness/variants/` -- which this phase may read
+#: but must never edit (roadmap invariant: nothing under `harness/variants/` is touched). It is
+#: therefore **this phase's own constant with the addendum as its source**, stated once, here.
+#: If the variants' velocity threshold is ever re-tuned, this is the second place to change.
 FAIR_MOVE_INVALIDATOR = Decimal("0.02")
 #: Ruling A-M4: a fixed enum, never the venue's own string. `games.status` is kept raw and
 #: lowercased by the scoreboard linker, so anything outside this set becomes `unknown` rather
@@ -7686,6 +7823,10 @@ from harness.research.spend import BudgetRefused, release_spend, reserve_spend
 from harness.research.text import VETO_REASON_MAX, sanitize_model_text
 from harness.research.worker import register_pass
 from harness.db.models import VetoDecision
+# One home, three readers. `harness/parlay/needs.py` defines the list, `parlay_grade` imports it
+# and so does this module. Restating it here would let a postponement be final for a parlay leg
+# and not for a veto decision, on the same game, in the same hour.
+from harness.parlay.needs import FINAL_STATUSES
 
 log = logging.getLogger(__name__)
 
@@ -7693,8 +7834,6 @@ log = logging.getLogger(__name__)
 DECISIONS = ("proceed", "reduce", "veto", "veto_skipped_budget", "veto_error")
 #: "Decided" is the first three -- D19's rate and `veto_h9`'s filter are over exactly this set.
 DECIDED = ("proceed", "reduce", "veto")
-#: The statuses that mean the game is over. Same list `harness/parlay/needs.py` uses.
-FINAL_STATUSES = ("final", "final_ot", "postponed", "canceled")
 
 
 @dataclass(frozen=True)
@@ -8316,7 +8455,9 @@ lottery_legs: [6, 8]
 leg_max_age_minutes: 30
 
 # The +EV pool the non-anchor legs come from: candidate signals with a `direct` fair value and an
-# edge over the threshold, inside this window.
+# edge over the threshold, inside this window. The addendum says "edge over the threshold" and
+# names no number, so `pool_min_edge` is **this plan's** value, stated once, here, and reported
+# as such by the task. It is a config key precisely so it is the user's to change.
 pool_window_hours: 6
 pool_min_edge: 0.02
 
@@ -8488,7 +8629,12 @@ _POOL = text("""
     from signals s
     join venue_markets vm on vm.id = s.venue_market_id
     join games g on g.id = vm.game_id
-    join fair_values f on f.id = s.gap_snapshot_id
+    -- `signals.gap_snapshot_id` is a `market_gap_snapshots` id, not a `fair_values` id. The
+    -- executor's own candidate query hops the same way (`harness/execution/store.py`), and
+    -- joining `fair_values` on it directly would silently return another row's fair_p and
+    -- fair_source -- which is both the payout arithmetic and the `direct` filter.
+    join market_gap_snapshots gs on gs.id = s.gap_snapshot_id
+    join fair_values f on f.id = gs.fair_value_id
     left join teams t on t.sport = g.sport and t.id = vm.side_team_id
     where s.replay = false and s.decision = 'candidate'
       and s.created_at > :since and s.created_at <= :now
@@ -8776,7 +8922,7 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 ### Task T16: Pulse's two research rules and their thresholds' home
 
 **Files:**
-- Modify: `harness/health.py` (`VETO_RATE_WATCH`, `RESEARCH_DORMANT_WATCH`)
+- Modify: `harness/health.py` (`VETO_RATE_WATCH` — the one new constant)
 - Modify: `harness/dashboard/snapshots/pulse.py` (two gather groups, two rules, the `research` section)
 - Modify: `harness/dashboard/sentences.py` (two readings)
 - Test: `tests/test_snap_pulse.py`, `tests/test_health.py`
@@ -8784,7 +8930,7 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 **Interfaces:**
 - Consumes: `harness.research.spend.spend_state`, `SpendState` (T4); `harness.dashboard.snapshots.pulse.RuleResult`, `_absent`, `_ladder`, `_flag`, `_group`, `RULES`, `PULSE_KEYS`.
 - Produces:
-  - `harness.health.VETO_RATE_WATCH = 0.25`, `harness.health.RESEARCH_DORMANT_WATCH = True` (a marker constant, documented below)
+  - `harness.health.VETO_RATE_WATCH = 0.25` — the one new constant. `rule_research_budget` has no threshold constant of its own: it reads `SpendState.dormant`, which `harness/research/spend.py` computes from the two `Settings` caps.
   - `pulse.rule_research_budget(v) -> RuleResult`, `pulse.rule_veto_rate(v) -> RuleResult`, both appended to `RULES`
   - `pulse.gather` gains `research_spend` (a `SpendState` or `None`) and `veto_rate` (a float or `None`)
   - The payload gains a `research` section and `PULSE_KEYS` gains `"research"`
@@ -9088,8 +9234,10 @@ def test_a_provisional_run_is_never_annotated(db_session, seeded_provisional_onl
     assert pending_report(db_session, NOW) is None
 
 
-def test_an_already_annotated_run_is_not_annotated_again(db_session, seeded_reports):
-    annotate_pass(db_session, NOW, _keyed(db_session), client=_client())
+def test_an_already_annotated_run_is_not_annotated_again(db_session, keyed_settings,
+                                                         seeded_reports):
+    annotate_pass(db_session, NOW, keyed_settings,
+                  client=_client(["412 orders on the first row t1[0,1]."]))
     assert pending_report(db_session, NOW) is None
 
 
@@ -9416,7 +9564,19 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 - [ ] **Step 1: Write the failing tests** — create `tests/test_parlay_placement.py`.
 
 ```python
-"""Placement: the weekly cap, the moved-line refusal, and expiry."""
+"""Placement: the weekly cap, the moved-line refusal, and expiry.
+
+**Each fixture seeds** one `teams` row per side, one `games` row inside this ISO week, one
+`venue_markets` row per leg, one `parlay_cards` row and its `parlay_legs`, and one
+`odds_snapshots` row per leg with `book = 'draftkings'`. What distinguishes them:
+`proposed_card` a `proposed` card whose stored `threshold` equals the newest DraftKings `point`;
+`proposed_cards_over_budget` two proposed cards and nothing in `parlay_ledger`;
+`last_week_stake` one `parlay_ledger` `stake` row dated in the previous ISO week;
+`card_with_moved_line` a proposed card whose newest DraftKings row carries a different `point`
+for one leg, returning `(card, moved_seq)`; `placed_card` a card whose `status` is already
+`placed`; `old_proposed_card` a proposed card `built_at` eight days ago; `old_placed_card` the
+same age but `placed`.
+"""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -9803,7 +9963,17 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 - [ ] **Step 1: Write the failing tests** — create `tests/test_parlay_grade.py`.
 
 ```python
-"""Grading a placed card: leg by leg through the push rules, then the card, then the ledger."""
+"""Grading a placed card: leg by leg through the push rules, then the card, then the ledger.
+
+**Each fixture seeds** one `teams` row per side, one `games` row per leg, one `parlay_cards` row
+with `status = 'placed'`, its `parlay_legs` rows with `status = 'alive'`, and one
+`parlay_placements` row plus the `parlay_ledger` `stake` row `mark_placed` would have written.
+What distinguishes them is the games' final scores: `placed_card_final` every game `final` with a
+mix of outcomes; `placed_card_push` one `moneyline` leg whose game finished tied;
+`placed_card_all_hit` every leg's side won; `placed_card_one_miss` one leg's side lost;
+`placed_card_all_void` every leg is a tie or a `postponed` game; `placed_card_one_live` one game
+still `in_progress`; `two_placed_cards_final` two independent cards, both fully final.
+"""
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -9907,76 +10077,101 @@ def test_the_stage_floor():
     assert MIN_BUDGET_S == 30
 ```
 
-Create `tests/test_leg_probs.py`.
+Create `tests/test_leg_probs.py`. It builds its recorder the way `tests/test_tick.py` does —
+`_recorder(env_settings, db_session)` returns `(Recorder, clock)` — rather than inventing a
+fixture, so there is one way to construct a `Recorder` in the suite.
 
 ```python
-"""The leg-probability writer: the model's own condition, and `book_p`."""
+"""The leg-probability writer: the model's own condition, and `book_p`.
+
+**Each fixture seeds** one `teams` row per side, one `games` row with the `status` its name says
+(`in_progress` for the `_in_window` fixtures, `scheduled` for `live_card_before_kickoff`, `final`
+for `live_card_final`), one `venue_markets` row per leg, a `fair_values` row per leg with
+`fair_source = 'direct'`, one `parlay_cards` row with the `status` its name says (`placed` for
+the `live_*` fixtures, `proposed` for `proposed_card_in_window`), its `parlay_legs` rows, and one
+`odds_snapshots` row per leg with `book = 'draftkings'` and `price_decimal = 2.50` — except
+`live_card_no_book`, which seeds no DraftKings row at all. Each returns an object carrying
+`leg_ids`.
+"""
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import text
 
+from harness.recorder import store
+from tests.test_tick import _recorder
+
 NOW = datetime(2026, 9, 20, 23, 30, tzinfo=timezone.utc)
 
 
-def test_the_condition_is_the_models_docstring(db_session, live_card_in_window, recorder):
+def _call(env_settings, db_session, ctx=None):
+    """Build a recorder the one way the suite builds one, start a run, call the writer."""
+    recorder, _clock = _recorder(env_settings, db_session, now=NOW)
+    run = store.start_run(db_session, NOW)
+    recorder._leg_probs(db_session, run, NOW, ctx if ctx is not None else {"warnings": []})
+    return recorder, run
+
+
+def test_the_condition_is_the_models_docstring(env_settings, db_session, live_card_in_window):
     """Ruling B-I8, quoting `harness/db/models.py::ParlayLegProb`: "once per recorder tick while
     a card is placed or alive and its game is inside the in-progress window"."""
-    recorder._leg_probs(db_session, _run(), NOW, {"warnings": []})
+    _call(env_settings, db_session)
     rows = db_session.execute(text(
         "select leg_id, sharp_p, book_p from parlay_leg_probs")).all()
     assert len(rows) == len(live_card_in_window.leg_ids)
     assert all(0 <= r.sharp_p <= 1 for r in rows)
 
 
-def test_a_proposed_card_writes_nothing(db_session, proposed_card_in_window, recorder):
-    recorder._leg_probs(db_session, _run(), NOW, {"warnings": []})
+def test_a_proposed_card_writes_nothing(env_settings, db_session, proposed_card_in_window):
+    _call(env_settings, db_session)
     assert db_session.execute(text("select count(*) from parlay_leg_probs")).scalar() == 0
 
 
-def test_a_card_whose_game_has_not_started_writes_nothing(db_session, live_card_before_kickoff,
-                                                          recorder):
-    recorder._leg_probs(db_session, _run(), NOW, {"warnings": []})
+def test_a_card_whose_game_has_not_started_writes_nothing(env_settings, db_session,
+                                                          live_card_before_kickoff):
+    _call(env_settings, db_session)
     assert db_session.execute(text("select count(*) from parlay_leg_probs")).scalar() == 0
 
 
-def test_a_final_game_writes_nothing(db_session, live_card_final, recorder):
-    recorder._leg_probs(db_session, _run(), NOW, {"warnings": []})
+def test_a_final_game_writes_nothing(env_settings, db_session, live_card_final):
+    _call(env_settings, db_session)
     assert db_session.execute(text("select count(*) from parlay_leg_probs")).scalar() == 0
 
 
-def test_book_p_comes_from_the_draftkings_row_the_leg_was_priced_from(db_session,
-                                                                     live_card_in_window,
-                                                                     recorder):
-    recorder._leg_probs(db_session, _run(), NOW, {"warnings": []})
+def test_book_p_comes_from_the_draftkings_row_the_leg_was_priced_from(env_settings, db_session,
+                                                                      live_card_in_window):
+    _call(env_settings, db_session)
     book_p = db_session.execute(text(
         "select book_p from parlay_leg_probs order by leg_id limit 1")).scalar()
     assert book_p == Decimal("0.4000")      # the fixture's 2.50 decimal price
 
 
-def test_a_leg_with_no_draftkings_row_gets_a_null_book_p(db_session, live_card_no_book,
-                                                         recorder):
-    recorder._leg_probs(db_session, _run(), NOW, {"warnings": []})
+def test_a_leg_with_no_draftkings_row_gets_a_null_book_p(env_settings, db_session,
+                                                         live_card_no_book):
+    _call(env_settings, db_session)
     assert db_session.execute(text("select book_p from parlay_leg_probs")).scalar() is None
 
 
-def test_a_second_tick_in_the_same_second_does_not_duplicate(db_session, live_card_in_window,
-                                                             recorder):
+def test_a_second_tick_in_the_same_second_does_not_duplicate(env_settings, db_session,
+                                                             live_card_in_window):
     """`parlay_leg_probs` is keyed `(leg_id, ts)`, so a repeated tick at the same instant is an
     upsert and never a duplicate-key error that would fail the tick."""
-    recorder._leg_probs(db_session, _run(), NOW, {"warnings": []})
-    recorder._leg_probs(db_session, _run(), NOW, {"warnings": []})
+    _call(env_settings, db_session)
+    _call(env_settings, db_session)
     assert db_session.execute(text("select count(*) from parlay_leg_probs")).scalar() == \
         len(live_card_in_window.leg_ids)
 
 
-def test_the_writer_never_fails_a_tick(db_session, live_card_in_window, recorder, monkeypatch):
+def test_the_writer_never_fails_a_tick(env_settings, db_session, live_card_in_window,
+                                       monkeypatch):
     from harness.recorder import tick as tick_module
 
-    monkeypatch.setattr(tick_module, "_LEG_PROB_ROWS",
+    # The class attribute, not the module one: `_leg_probs` reads `self._LEG_PROB_ROWS`.
+    monkeypatch.setattr(tick_module.Recorder, "_LEG_PROB_ROWS",
                         property(lambda self: (_ for _ in ()).throw(RuntimeError("boom"))))
     ctx = {"warnings": []}
-    recorder._leg_probs(db_session, _run(), NOW, ctx)
+    _call(env_settings, db_session, ctx)
     assert ctx["warnings"]
 ```
 
@@ -10223,7 +10418,7 @@ with `_LEG_PROB_ROWS` assigned as a class attribute on `Recorder` (`_LEG_PROB_RO
 
 - [ ] **Step 5: Run the tests, then the suite, then commit**
 
-Run: `python -m pytest tests/test_parlay_grade.py tests/test_leg_probs.py tests/test_settle.py tests/test_recorder.py -q` → PASS.
+Run: `python -m pytest tests/test_parlay_grade.py tests/test_leg_probs.py tests/test_settle.py tests/test_tick.py -q` → PASS.
 Run: `make test` → pristine.
 
 ```bash
@@ -10249,7 +10444,7 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 **Interfaces:**
 - Consumes: `harness.venues.kalshi.rfq.RfqEvent`, `store_rfq` (T13); `harness.db.models.RfqQuote`, `Rfq`, `VenueMarket`, `FairValue`; `Settings.rfq_margin_per_leg`, `.rfq_collateral_cap_usd` (T2); `harness.settlement.job.register_stage`, `Budget`, `StageResult`; `harness.venues.kalshi.public.FOOTBALL_SERIES`.
 - Produces:
-  - `harness.venues.kalshi.rfq_quote.DECLINE_SAME_GAME = "same_game"`, `DECLINE_NO_FAIR = "no_fair"`, `DECLINE_DISAGREEMENT = "disagreement"`, `DISAGREEMENT_MAX`
+  - `harness.venues.kalshi.rfq_quote.DECLINE_SAME_GAME = "same_game"`, `DECLINE_NO_FAIR = "no_fair"`, `DECLINE_DISAGREEMENT = "disagreement"`, `DECLINE_COLLATERAL = "collateral"`, `DECLINE_SINGLE_LEG = "single_leg"`, `DISAGREEMENT_MAX`, `exposure_usd(rfq, fair) -> Decimal | None`
   - `resolve_legs(session, legs, as_of) -> list[LegFair]` with `LegFair(market_ticker, event_ticker, game_id, fair_p, disagreement, stale)`
   - `nfl_only_independent(legs, key) -> bool` for `key in ("game_id", "event_ticker")`
   - `compute_quote(session, settings, rfq, now) -> RfqQuote`
@@ -10268,7 +10463,20 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 - [ ] **Step 1: Write the failing tests** — create `tests/test_rfq_quote.py`.
 
 ```python
-"""The quote we would have sent: the decline rules, the arithmetic, and both fee branches."""
+"""The quote we would have sent: the decline rules, the arithmetic, and both fee branches.
+
+**Each fixture seeds** the `venue_markets` and `games` rows its legs resolve through and one
+`fair_values` row per leg with `fair_source = 'direct'` and `created_at` inside `FAIR_MAX_AGE`,
+then returns an object carrying `frame` — the `rfq_created` frame `handle_frame` is given. What
+distinguishes them: `two_game_rfq` two legs on two `KXNFLGAME` events and two games, fairs 0.60
+and 0.50; `same_game_rfq` two legs whose `venue_markets.game_id` is the same;
+`same_game_two_events_rfq` the same, across two different `event_ticker` values;
+`derived_fair_rfq` one leg whose only `fair_values` row has `fair_source = 'derived'`;
+`disagreeing_rfq` one leg whose `fair_values.disagreement` is above `DISAGREEMENT_MAX`;
+`unmatched_leg_rfq` one leg whose `market_ticker` has no `venue_markets` row;
+`one_leg_rfq` a single-leg `mve_selected_legs`; `big_rfq` a two-game combo whose
+`target_cost_dollars` is above `rfq_collateral_cap_usd`.
+"""
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -10276,8 +10484,9 @@ import pytest
 from sqlalchemy import text
 
 from harness.venues.kalshi.rfq import handle_frame
-from harness.venues.kalshi.rfq_quote import (DECLINE_DISAGREEMENT, DECLINE_NO_FAIR,
-                                             DECLINE_SAME_GAME, DISAGREEMENT_MAX,
+from harness.venues.kalshi.rfq_quote import (DECLINE_COLLATERAL, DECLINE_DISAGREEMENT,
+                                             DECLINE_NO_FAIR, DECLINE_SAME_GAME,
+                                             DECLINE_SINGLE_LEG, DISAGREEMENT_MAX,
                                              nfl_only_independent, resolve_legs)
 
 NOW = datetime(2026, 9, 15, 18, 0, tzinfo=timezone.utc)
@@ -10364,12 +10573,29 @@ def test_nfl_only_independent_needs_both_halves(key):
     assert nfl_only_independent(repeated, key) is False
 
 
-def test_the_collateral_cap_is_recorded_and_never_exceeded(db_session, env_settings,
-                                                           big_rfq):
+def test_the_collateral_cap_compares_dollars_to_dollars(db_session, env_settings, big_rfq):
+    """`rfqs.contracts_fp` is a contract quantity and `rfq_collateral_cap_usd` is dollars; the
+    two have no common unit. The dollar figure the RFQ carries is `target_cost_dollars`, and
+    `exposure_usd` falls back to `contracts_fp * fair` when the venue sent none."""
     handle_frame(db_session, big_rfq.frame, NOW)
-    quote = db_session.execute(text(
-        "select declined_reason from rfq_quotes")).scalar()
-    assert quote is not None       # declined, not quoted at an uncapped size
+    assert db_session.execute(text(
+        "select declined_reason from rfq_quotes")).scalar() == DECLINE_COLLATERAL
+
+
+def test_a_size_decline_is_never_filed_as_no_fair(db_session, env_settings, big_rfq):
+    """H5's whole question is which RFQs we would and would not have answered and why, so t10's
+    decline mix has to distinguish "we had no price" from "the size was over our cap"."""
+    handle_frame(db_session, big_rfq.frame, NOW)
+    assert db_session.execute(text(
+        "select declined_reason from rfq_quotes")).scalar() != DECLINE_NO_FAIR
+
+
+def test_a_single_leg_rfq_declines_single_leg(db_session, env_settings, one_leg_rfq):
+    """A single-market RFQ is an arrival H5's denominator needs, but it is not a combo. It gets
+    its own reason for the same reason a size decline does."""
+    handle_frame(db_session, one_leg_rfq.frame, NOW)
+    assert db_session.execute(text(
+        "select declined_reason from rfq_quotes")).scalar() == DECLINE_SINGLE_LEG
 
 
 def test_one_quote_per_rfq_even_on_a_repeated_frame(db_session, env_settings, two_game_rfq):
@@ -10391,7 +10617,15 @@ def test_no_module_here_can_send_anything():
 Create `tests/test_rfq_grade.py`.
 
 ```python
-"""Grading a stored quote against the product of closing leg fair values (ruling B-I6)."""
+"""Grading a stored quote against the product of closing leg fair values (ruling B-I6).
+
+**Each fixture seeds** one `rfqs` row with two legs, one `rfq_quotes` row for it, and the
+`venue_markets`, `games` and `fair_values` rows the legs resolve through. What distinguishes
+them: `settled_quote` both games `final` with closing fairs 0.70 and 0.50, written after
+kickoff; `stale_closing_quote` the same, but one leg's newest `fair_values` row predates its
+kickoff by more than `CLOSING_WINDOW`; `declined_quote` a quote whose `declined_reason` is set
+and whose bids are null; `unsettled_quote` one game still `in_progress`.
+"""
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -10431,11 +10665,15 @@ def test_the_scored_side_is_the_creator_taking_our_bid(db_session, settled_quote
     assert row.pnl_yes == (row.closing_fair - row.yes_bid)
 
 
-def test_a_stale_closing_leg_is_flagged_and_still_graded(db_session, stale_closing_quote):
+def test_a_stale_closing_leg_is_flagged_graded_and_carries_no_invented_number(
+        db_session, stale_closing_quote):
+    """Ruling B-I6 asks for separate reporting, not for a substitute value. A fabricated
+    neutral 0.5 would land in `closing_fair` and then in a P&L t10 averages."""
     grade_rfq_quotes(db_session, NOW, _budget())
     row = db_session.execute(text(
-        "select closing_stale, graded_at from rfq_quotes")).first()
+        "select closing_stale, graded_at, closing_fair, pnl_yes, pnl_no from rfq_quotes")).first()
     assert row.closing_stale is True and row.graded_at is not None
+    assert row.closing_fair is None and row.pnl_yes is None and row.pnl_no is None
 
 
 def test_a_declined_quote_is_never_graded(db_session, declined_quote):
@@ -10501,9 +10739,23 @@ log = logging.getLogger(__name__)
 DECLINE_SAME_GAME = "same_game"
 DECLINE_NO_FAIR = "no_fair"
 DECLINE_DISAGREEMENT = "disagreement"
+#: Two reasons beyond §1.6's enumerated set, and the task report states them as this plan's.
+#: H5's question is which RFQs we would and would not have answered **and why**, so filing a size
+#: refusal or a single-market request as `no_fair` would corrupt t10's decline mix with two
+#: outcomes that have nothing to do with having a price. `rfq_quotes.declined_reason` is
+#: `String(16)`; both fit.
+DECLINE_COLLATERAL = "collateral"
+DECLINE_SINGLE_LEG = "single_leg"
 
-#: The §8.2 threshold a leg's fair must be under to be quotable. Same number the strategy's
-#: `disagreement_ok` filter uses; a leg the harness would not act on is not one to quote against.
+#: The §8.2 threshold a leg's `fair_values.disagreement` must be under to be quotable: a leg the
+#: harness would not act on is not one to quote against.
+#:
+#: This is **this phase's own constant**, not a borrowed one. The strategy's `disagreement_ok`
+#: filter is not a fixed probability cap at all -- each variant carries `disagreement_mult`
+#: (1.5 in the shipped set) and multiplies it against its own edge floor -- so there is no
+#: number under `harness/variants/` to import, and this phase may not edit those files anyway.
+#: Two probability points is the same order as the veto's fair-move invalidator, and the task
+#: report states it as a plan-level value.
 DISAGREEMENT_MAX = Decimal("0.02")
 #: How far back a leg's fair value may be and still count as current for a quote computed on
 #: arrival. An RFQ is a live request; a ten-minute-old fair is not a live answer.
@@ -10585,7 +10837,7 @@ def compute_quote(session: Session, settings, rfq, now: datetime) -> RfqQuote:
     unmatched = sum(1 for leg in legs if leg.game_id is None)
 
     if len(legs) < 2:
-        quote = _decline(rfq, now, legs, DECLINE_NO_FAIR, margin, unmatched)
+        quote = _decline(rfq, now, legs, DECLINE_SINGLE_LEG, margin, unmatched)
         session.add(quote)
         return quote
 
@@ -10603,18 +10855,20 @@ def compute_quote(session: Session, settings, rfq, now: datetime) -> RfqQuote:
         quote = _decline(rfq, now, legs, DECLINE_DISAGREEMENT, margin, unmatched)
         session.add(quote)
         return quote
-    # The collateral cap: a request whose worst-case exposure is over the cap is declined rather
-    # than quoted at a size we would not have taken.
-    contracts = Decimal(str(rfq.contracts_fp or 0))
-    if contracts > 0 and contracts > Decimal(str(settings.rfq_collateral_cap_usd)):
-        quote = _decline(rfq, now, legs, DECLINE_NO_FAIR, margin, unmatched)
-        session.add(quote)
-        return quote
-
     fair = Decimal("1")
     for leg in legs:
         fair *= Decimal(str(leg.fair_p))
     fair = fair.quantize(Decimal("0.0001"))
+
+    # The collateral cap, in dollars against dollars. `rfqs.contracts_fp` is a contract quantity
+    # and `rfq_collateral_cap_usd` is money, so the comparison uses `exposure_usd`, and a size
+    # refusal gets its own reason rather than being filed as "we had no price".
+    exposure = exposure_usd(rfq, fair)
+    if exposure is not None and exposure > Decimal(str(settings.rfq_collateral_cap_usd)):
+        quote = _decline(rfq, now, legs, DECLINE_COLLATERAL, margin, unmatched)
+        session.add(quote)
+        return quote
+
     spread = margin * len(legs)
 
     branch_game = nfl_only_independent(legs, "game_id")
@@ -10633,6 +10887,23 @@ def compute_quote(session: Session, settings, rfq, now: datetime) -> RfqQuote:
         declined_reason=None, unmatched_legs=unmatched)
     session.add(quote)
     return quote
+
+
+def exposure_usd(rfq, fair: Decimal) -> Decimal | None:
+    """What answering this RFQ would put at risk, in dollars, or None when it cannot be said.
+
+    `target_cost_dollars` is the venue's own dollar figure and is used when it is there. When it
+    is not, the exposure is the contract count times the combo's fair value, which is what a
+    filled YES side would cost. `contracts_fp` alone is a quantity and is never compared against
+    a dollar cap.
+    """
+    target = getattr(rfq, "target_cost_dollars", None)
+    if target is not None:
+        return Decimal(str(target))
+    contracts = getattr(rfq, "contracts_fp", None)
+    if contracts is None:
+        return None
+    return (Decimal(str(contracts)) * fair).quantize(Decimal("0.0001"))
 
 
 def _clamp(value: Decimal) -> Decimal:
@@ -10682,8 +10953,11 @@ buying YES at our bid and settling at the closing product would have made. `pnl_
 mirror.
 
 **`closing_stale`** marks a quote any of whose legs had no current closing fair value. Those
-quotes are graded and reported separately rather than dropped: dropping them would make the
-panel look better than the week was.
+quotes are **graded and reported separately, with no number invented for them**: `closing_fair`,
+`pnl_yes` and `pnl_no` stay null and only `graded_at` and the flag are written. Ruling B-I6 asks
+for separate reporting, not for a substitute value, and a fabricated neutral 0.5 would land in a
+column t10 averages and read as a measurement of a market. Dropping them instead would make the
+panel look better than the week was, which is the other half of the same rule.
 
 Runs immediately after `parlay_grade`, idempotent, and yields on a spent budget.
 """
@@ -10749,20 +11023,31 @@ def grade_rfq_quotes(session: Session, now: datetime, budget: Budget) -> StageRe
                                          and result.created_at is not None
                                          and result.created_at < result.kickoff_utc
                                          - CLOSING_WINDOW):
+                # No current close for this leg. Nothing is substituted: a fabricated 0.5 would
+                # land in `closing_fair` and then in a P&L that t10 averages, and the row would
+                # read as a measurement of a market instead of an artefact of the substitution.
                 stale = True
-                closing *= Decimal("0.5")     # no current close: the neutral value, flagged
             else:
                 closing *= Decimal(str(result.fair_p))
         if not settled:
             counts["waiting"] += 1
             continue
         quote = session.get(RfqQuote, row.id)
-        quote.closing_fair = closing.quantize(Decimal("0.0001"))
-        quote.closing_stale = stale
-        quote.pnl_yes = (quote.closing_fair - quote.yes_bid) if quote.yes_bid is not None else None
-        quote.pnl_no = ((Decimal("1") - quote.closing_fair) - quote.no_bid
-                        if quote.no_bid is not None else None)
         quote.graded_at = now
+        quote.closing_stale = stale
+        if stale:
+            # Ruling B-I6 asks only that a quote with any stale closing leg be reported
+            # separately. It is: graded, flagged, and with no number invented for it. t10 gives
+            # these their own row and prints the placeholder in the two P&L columns.
+            quote.closing_fair = None
+            quote.pnl_yes = None
+            quote.pnl_no = None
+        else:
+            quote.closing_fair = closing.quantize(Decimal("0.0001"))
+            quote.pnl_yes = (quote.closing_fair - quote.yes_bid
+                             if quote.yes_bid is not None else None)
+            quote.pnl_no = ((Decimal("1") - quote.closing_fair) - quote.no_bid
+                            if quote.no_bid is not None else None)
         counts["graded"] += 1
         counts["stale"] += int(stale)
     session.flush()
@@ -10819,7 +11104,18 @@ Claude-Session: https://claude.ai/code/session_01UtzT1jkHtPo8uQG7tgh1Vy"
 - [ ] **Step 1: Write the failing tests** — create `tests/test_report_t7_t10.py`.
 
 ```python
-"""t7 and t10: what they say about themselves, and what they count."""
+"""t7 and t10: what they say about themselves, and what they count.
+
+**Each fixture seeds** ISO week 38 of 2026. `veto_week`: `games`, `venue_markets`, `signals`,
+`intents`, `orders`, `order_clv` rows at `pinnacle_t5`, and a `veto_decisions` plus a paired
+`research_notes` row per signal, all `kind = 'veto'`, `replay = false`, the primary
+`claude-opus-5`. `veto_week_with_noise`: the same, plus a `claude-sonnet-5`-only call, a
+`replay = true` call, and one `veto_skipped_budget` decision with a null `call_id`; it returns
+`decided_primary_count`. `rfq_week`: `rfqs` rows received in the week with `rfq_quotes` covering
+`quoted`, `same_game`, `no_fair`, `collateral` and `single_leg`. `rfq_week_with_stale`: one more
+quote with `closing_stale = true` and null `closing_fair`/`pnl_yes`/`pnl_no`. `hostile_rfq_week`:
+one `rfqs` row whose `market_ticker` carries markup and a control character.
+"""
 from datetime import datetime, timezone
 
 import pytest
@@ -10882,16 +11178,26 @@ def test_t10_declares_the_counterfactual(db_session, env_settings, rfq_week):
     assert "no fill" in header or "no-fill" in header
 
 
-def test_t10_reports_the_stale_quotes_separately(db_session, env_settings, rfq_week_with_stale):
+def test_t10_reports_the_stale_quotes_separately_with_no_pnl(db_session, env_settings,
+                                                             rfq_week_with_stale):
+    """Ruling B-I6: reported separately, and with no number invented. `rfq_grade` leaves
+    `closing_fair` and both P&L columns null on a stale close, so the row prints the placeholder
+    rather than an average of a substituted value."""
+    from harness.report.tables import PLACEHOLDER
+
     table = _tables(db_session, env_settings)["t10"]
-    rows = {row[0] for row in table.rows}
-    assert "stale close" in rows or any("stale" in str(row[0]) for row in table.rows)
+    stale = [row for row in table.rows if str(row[0]) == "stale close"]
+    assert stale, {str(row[0]) for row in table.rows}
+    assert stale[0][table.columns.index("pnl_yes")] == PLACEHOLDER
+    assert stale[0][table.columns.index("pnl_no")] == PLACEHOLDER
 
 
 def test_t10_counts_arrivals_declines_and_quotes(db_session, env_settings, rfq_week):
+    """The decline mix is H5's question -- which RFQs we would and would not have answered and
+    why -- so `collateral` and `single_leg` are their own groups and not folded into `no_fair`."""
     table = _tables(db_session, env_settings)["t10"]
     labels = {str(row[0]) for row in table.rows}
-    assert {"quoted", "same_game", "no_fair"} & labels
+    assert {"quoted", "same_game", "no_fair", "collateral", "single_leg"} & labels
 
 
 def test_t10_shows_the_margin_distribution(db_session, env_settings, rfq_week):
@@ -10899,7 +11205,10 @@ def test_t10_shows_the_margin_distribution(db_session, env_settings, rfq_week):
 
 
 def test_t10_never_renders_venue_free_text_unquoted(db_session, env_settings, hostile_rfq_week):
-    """F60: the report shows a 120-character quoted excerpt of `market_ticker` and nothing else."""
+    """F60 allows a 120-character quoted excerpt of `market_ticker`; this table renders **less**
+    than that -- its first column is an outcome group (`quoted`, `same_game`, `stale close`) and
+    no ticker reaches a cell at all. The assertion is kept anyway, as the guard that stays true
+    if a later phase adds a per-ticker row."""
     table = _tables(db_session, env_settings)["t10"]
     rendered = " ".join(str(value) for row in table.rows for value in row)
     assert "<script>" not in rendered and "\x00" not in rendered
@@ -11041,7 +11350,10 @@ def _table10(session: Session, window: dict) -> Table:
         "One row per outcome group. The P&L is a COUNTERFACTUAL and an UPPER BOUND: no fill risk "
         "and no adverse selection are modelled, and the scored side is the RFQ's creator taking "
         "our bid on the side the RFQ asked for. `stale close` is quoted RFQs whose closing leg "
-        "fair values were not current; they are reported here rather than dropped.",
+        "fair values were not current: they are reported here rather than dropped, and their "
+        "fair and P&L cells print the placeholder because no value is substituted for a close "
+        "we did not have. `collateral` and `single_leg` are size and shape refusals, kept apart "
+        "from `no_fair` so the decline mix answers H5's question.",
         _T10_COLUMNS, rows or [[PLACEHOLDER] * len(_T10_COLUMNS)], note)
 ```
 
@@ -11131,7 +11443,10 @@ select count(*) from weather_points p
   where p.forecast_hourly_url not like 'https://api.weather.gov/%';
       -- roadmap invariant 8: a stored URL is a stored instruction to connect somewhere
 select count(*) from weather_snapshots where roof = 'dome';
-      -- a dome is never fetched (D2); a row here means the roof table and the fetch disagree
+      -- The addendum's invariant is "no `weather_points` row for a dome". `weather_points` has
+      -- no roof column -- the roof lives in the committed YAML and is copied onto the snapshot
+      -- -- so the checkable form of the same rule is that no snapshot was ever taken for one.
+      -- A dome that reached `weather_points` would have produced a snapshot, so this catches it.
 select count(*) from weather_snapshots where fetched_at > now() or period_start < fetched_at
   - interval '2 hours';                       -- no future reads, no period from before the fetch
 select count(*) from veto_queue where enqueued_at > now();
@@ -11146,8 +11461,13 @@ select count(*) from veto_decisions where decided_at < signal_created_at;
 select count(*) from veto_h9 h join research_notes n on n.call_id = h.call_id
   where n.replay = true;                      -- no replay row inside the H9 view
 select count(*) from research_spend where usd < 0 or usd_reserved < 0;
-select day, sum(usd) from research_spend group by day having sum(usd) > 25;
-      -- usd <= the daily cap, per day (U4, roadmap invariant 7)
+select count(*) from (select day from research_spend group by day having sum(usd) > 25) x;
+      -- usd <= the daily cap, per day (U4, roadmap invariant 7). Wrapped in a count so this
+      -- row obeys the block's own "every query returns 0" rule.
+select count(*) from parlay_legs l
+  where not exists (select 1 from parlay_cards c where c.id = l.card_id);
+      -- no orphan legs (addendum §3). Also asserted in the phase 4.5 block; repeated here
+      -- because phase 5 is the first phase that writes these rows.
 select count(*) from report_annotations where cost_usd < 0 or created_at > now();
 select count(*) from report_annotations a
   where not exists (select 1 from report_runs r where r.id = a.report_run_id);
@@ -11270,12 +11590,15 @@ Two tasks share a wave only when every task they depend on has merged **and** th
 | 3 | **T6, T7, T9** | `research/client.py` + `research/notes.py`; `venues/kalshi/futures.py` + `venues/kalshi/public.py` + `scheduler.py` + `cli.py`; `weather/snapshots.py` + `recorder/tick.py` |
 | 4 | **T13, T15** | `venues/kalshi/rfq.py` + `rfq_socket.py` + `cli.py`; `research/features.py` + `prompt.py` + `veto.py` + `research/worker.py` + `execution/store.py` |
 | 5 | **T10, T16, T18** | `parlay/*` + `cli.py` + `pyproject.toml`; `health.py` + `snapshots/pulse.py` + `sentences.py`; `research/annotate.py` + `research/worker.py` + `report/weekly.py` |
-| 6 | **T11, T12** | `parlay/placement.py` + `cli.py`; `settlement/parlay_grade.py` + `settlement/job.py` + `recorder/tick.py` |
-| 7 | **T14** | alone on `venues/kalshi/rfq_quote.py`, `venues/kalshi/rfq.py`, `settlement/rfq_grade.py` and `settlement/job.py` |
-| 8 | **T19** | alone on `report/tables.py` |
-| 9 | **T20** | alone on `docs/` |
+| 6 | **T11** | alone on `parlay/placement.py` and `cli.py` |
+| 7 | **T12** | alone on `settlement/parlay_grade.py`, `settlement/job.py` and `recorder/tick.py` |
+| 8 | **T14** | alone on `venues/kalshi/rfq_quote.py`, `venues/kalshi/rfq.py`, `settlement/rfq_grade.py` and `settlement/job.py` |
+| 9 | **T19** | alone on `report/tables.py` |
+| 10 | **T20** | alone on `docs/` |
 
-**Why `harness/cli.py` sets the pace.** Five tasks add a command to it: T5 (`research-worker`), T7 (`futures`), T13 (`ws-record`'s listener thread), T10 (`parlay build`) and T11 (`parlay placed`/`show`). One per wave, in that order. Nothing in the phase can compress this: two worktrees adding a `typer` registration to the same file conflict textually even when the commands have nothing to do with each other. Wave 5's T10 and wave 6's T11 could be one task if the controller prefers four waves of parlay work to five, at the cost of a much larger reviewer's gate.
+**Why `harness/cli.py` sets the pace.** Five tasks add a command to it: T5 (`research-worker`), T7 (`futures`), T13 (`ws-record`'s listener thread), T10 (`parlay build`) and T11 (`parlay placed`/`show`). One per wave, in that order. Nothing in the phase can compress this: two worktrees adding a `typer` registration to the same file conflict textually even when the commands have nothing to do with each other.
+
+**Why T12 is alone in wave 7 and not beside T11.** T12 grades cards that `mark_placed` produced: its fixtures seed a placed card and `_settle_card` reads `ParlayPlacement`. The wave rule is that every task a task depends on has **merged**, so T12 follows T11 rather than running beside it.
 
 **Why `harness/research/worker.py` is touched three times.** T5 creates the loop with an empty `PASS_MODULES`; T15 appends `"harness.research.veto"`; T18 appends `"harness.research.annotate"`. That is one line each, and the registry shape is what keeps it one line — it is `harness/settlement/job.py`'s `STAGE_MODULES` pattern, for the same reason.
 
@@ -11304,7 +11627,7 @@ Two tasks share a wave only when every task they depend on has merged **and** th
 
 ## Self-review
 
-**Revision note.** This is revision 1, written from the addendum's revision 2 (which carries every ruling from `review-A.md` and `review-B.md`) and checked against it, against `verified-facts.md`, and against the code on `main` at `e68bab3`.
+**Revision note.** This is **revision 2**. Revision 1 was written from the addendum's revision 2 and checked against it, against `verified-facts.md`, and against the code on `main` at `e68bab3`. Revision 2 applies every Critical and every Important from `.superpowers/sdd/plan-next-phase5/plan-review.md` and judges each Minor; the rulings table at the end of this section lists what changed.
 
 **Spec coverage, addendum §0 to §9.**
 
@@ -11356,7 +11679,35 @@ Two tasks share a wave only when every task they depend on has merged **and** th
 
 **Placeholder scan.** No task says "TBD", "similar to task N", "add appropriate handling" or "write tests for the above". Every code step shows the code and every test step shows the test. **Five values are deliberately measured rather than written**, each with the exact command that produces it and a test that pins it afterwards: T2's `anthropic` version (`pip show`), T6's `WEB_SEARCH_TOOL_TYPE` (introspected off the installed SDK, then asserted against it), T8's roster and its two NWS fixtures (three controller commands, with the field list printed into the brief), T9's `HOURLY_FIELDS` (read out of T8's fixture), and T7's two Kalshi fixtures (recorded live, or hand-written to the documented shape with the substitution declared in the task report). **Three artefacts are the controller's** and are named by path: `harness/weather/roster.txt`, `tests/fixtures/nws_points_lsu.json` + `tests/fixtures/nws_forecast_hourly_lsu.json` (T8), and `tests/fixtures/anthropic_structured_websearch.json` + `tests/fixtures/anthropic_cache_hit.json` (T6). The implementer of each of those tasks has no key and proceeds from the fixture.
 
-**Type consistency.** `Usage`, `cost_usd`, `Reservation`, `reserve_spend`, `release_spend`, `BudgetRefused`, `SpendState`, `spend_state` (T4) are used by T6, T10, T15, T16, T18. `CallResult`, `PRIMARY_MODEL`, `SHADOW_MODEL`, `web_search_tool`, `prompt_hash`, `ResearchClient.call` (T6) by T10, T15, T18. `write_notes(..., effort=...)` (T6) by T10, T15, T18 — every caller passes its own constant, and the parameter exists because `CallResult` carries no effort field. `sanitize_model_text`, `VETO_REASON_MAX`, `RATIONALE_MAX` (T3) by T7, T9, T10, T13, T15, T18. `register_pass`, `PASS_MODULES`, `PassFn` (T5) by T15 and T18. `render_for_model`, `ModelView`, `check_bullet`, `BULLET_MAX`, `BULLETS_MAX` (T17) by T18; `format_cell` (T17's rename) by T17 and by `weekly.py` itself. `Stadium`, `stadium_for`, `is_outdoor` (T8) by T9. `NwsClient`, `parse_point`, `PointGrid`, `resolve_point`, `POINT_RERESOLVE_AFTER` (T8) by T9. `bucket_start` (T15) by `harness/execution/store.py`'s enqueue, in the same task. `RfqEvent`, `parse_rfq_frame`, `store_rfq`, `handle_frame`, `idle_reason` (T13) by T13's socket and by T14. `LegFair`, `resolve_legs`, `nfl_only_independent`, `compute_quote` (T14) by T14's own stage and by T13's extended `handle_frame`. `newest_dk_price`, `LegPrice`, `american` (T10) by T11. `load_config`, `ParlayConfig` (T10) by T11. `VETO_RATE_WATCH` (T16) by `pulse.rule_veto_rate` and by nothing else. The ten model classes (T1) by every task that writes a row. Two names deliberately differ and are not typos: `harness/research/veto.py::FINAL_STATUSES` is imported from `harness/parlay/needs.py`'s list rather than restated — one home, two readers — and `kalshi_market_type` is the venue's `binary|scalar` enum, which is a different column from the harness's `market_type`.
+**Rulings applied, plan review round 1.**
+
+| # | What changed, and where |
+|---|---|
+| **C1** | `tests/test_alembic.py`'s two dependency-counting tests move into **T1** Step 1, marked `xfail(strict=False)` until T2's pin exists; **T2** loses the file from its `Files:` and its Step 4 deletes the two markers. The Shared-file map gains a `tests/test_alembic.py \| T1 only` row. T1 and T2 stay in wave 1 with disjoint `Files:` lines. |
+| **C2** | T1's partial-index assertion lowercases `postgresql_where` before the substring test: Postgres renders the predicate as `(claimed_at IS NULL)`. |
+| **C3** | `discover_series` gains `session` and `run_id` and stores the categories read and each series page through `store_raw(source='kalshi_futures')` (addendum §1.1). Five T7 tests take `db_session`, one new test asserts the two endpoints, and the raw-body count becomes an exact `== 4`. |
+| **C4** | T7's two scheduler tests drop the `try/finally` and the `shutdown()`: `build_scheduler` never starts the scheduler and APScheduler raises on a stopped one. |
+| **C5** | T13's `created_ts` expectation corrected to `2026-09-10 00:26:40+00:00`, which is what `1789000000` is. |
+| **C6, C7** | Both static refusal tests assert the literal `communications/quotes` — what conformance item 5 actually names — instead of the bare word `quotes`, which the handler's own prose about venue quote events and the `rfq_quotes` table name both trip. `.send(`, `POST` and the no-REST-transport assertions are unchanged. |
+| **C8** | T13's two socket tests call `run_once(ws)` twice: `subscribe` consumes no frame, so the first read is the ack. |
+| **C9** | `RfqListener` gains a `sign` seam (`None` means `sign_request` over the settings' key files). The three tests that build a listener pass `lambda *_a, **_k: {}`, so `connect()` no longer reads `/run/secrets/...` on the Mac. Declared in the Interfaces block. |
+| **C10** | T10's `_POOL` hops `market_gap_snapshots` — `join market_gap_snapshots gs on gs.id = s.gap_snapshot_id join fair_values f on f.id = gs.fair_value_id` — the way the executor's own candidate query does. The direct join returned another row's `fair_p` and `fair_source`. |
+| **C11** | T12 gets its own wave. The map is now T11 alone in 6, T12 alone in 7, T14 in 8, T19 in 9, T20 in 10, with a paragraph saying why T12 follows T11 rather than running beside it. |
+| **C12** | T12's tick-failure test patches `tick_module.Recorder._LEG_PROB_ROWS`, the class attribute `_leg_probs` actually reads. |
+| **I1** | Shared-file map: `harness/report/weekly.py` is `T17 (the rename), T18 (the fenced block) — serial`; `tests/test_alembic.py` and `tests/test_tick.py` rows added. |
+| **I2** | T9's two tick tests move to `tests/test_tick.py` and are written in full against its real `_recorder(env_settings, db_session)` helper, with an inline `_StubBudget` and a `store.start_run` row. T12's `tests/test_leg_probs.py` drops its invented `recorder`, `_run` and `_session` helpers for a `_call(env_settings, db_session)` built the same way. Both tasks' run and commit steps name `tests/test_tick.py`. |
+| **I3** | `FINAL_STATUSES` is now **imported** from `harness.parlay.needs` in `harness/research/veto.py`. `FAIR_MOVE_INVALIDATOR` and `DISAGREEMENT_MAX` lose the false "imported from its home" claim and are stated as this phase's own constants with the addendum as their source, each saying why there is nothing to import (`harness/variants/` is untouchable, and `disagreement_ok` is a `disagreement_mult` of 1.5 against a per-variant edge floor, not a fixed 0.02 cap). |
+| **I4** | The collateral cap compares dollars to dollars through a new `exposure_usd(rfq, fair)` (`target_cost_dollars`, falling back to `contracts_fp * fair`), and the refusal is recorded as `collateral`. A single-leg RFQ becomes `single_leg`. Both are stated as this plan's two additions to §1.6's enumerated set, with the reason: filing either as `no_fair` would corrupt the decline mix that is H5's question. Three tests, and t10's group test names both. |
+| **I5** | `rfq_grade` invents nothing for a stale close: `closing_stale = true`, `graded_at` stamped, and `closing_fair`, `pnl_yes`, `pnl_no` left null. The test asserts all three nulls; t10's stale row prints the placeholder and its header says why. |
+| **I6** | `RESEARCH_DORMANT_WATCH` deleted from T16's Interfaces; the block now says `rule_research_budget` reads `SpendState.dormant` and has no constant of its own. |
+| **I7** | T5's `clean_registry` saves, clears and restores `PASS_MODULES` as well as `PASSES`, with the order-dependence spelled out. |
+| **I8** | T11, T12 (both files), T14 and T19 gain the same "each fixture seeds …" paragraph T15 and T10 already carried, naming the tables and the distinguishing column per fixture. |
+| **I9** | The tautological `job.trigger.fields[...].name == "day_of_week"` assertion deleted (it went with C4's rewrite). |
+| **I10** | T15's Interfaces declares `veto_pass(session, now, settings, client=None)`; T8's declares `NwsClient(settings, sleep=time.sleep, clock=...)`. |
+| **I11** | T8's Produces gains `load_roster()` and `load_missing()`, which its own tests import. |
+| **I12** | T18's `_keyed(db_session)` and zero-argument `_client()` replaced with the `keyed_settings` fixture and `_client([...])`. |
+
+**Type consistency.** `Usage`, `cost_usd`, `Reservation`, `reserve_spend`, `release_spend`, `BudgetRefused`, `SpendState`, `spend_state` (T4) are used by T6, T10, T15, T16, T18. `CallResult`, `PRIMARY_MODEL`, `SHADOW_MODEL`, `web_search_tool`, `prompt_hash`, `ResearchClient.call` (T6) by T10, T15, T18. `write_notes(..., effort=...)` (T6) by T10, T15, T18 — every caller passes its own constant, and the parameter exists because `CallResult` carries no effort field. `sanitize_model_text`, `VETO_REASON_MAX`, `RATIONALE_MAX` (T3) by T7, T9, T10, T13, T15, T18. `register_pass`, `PASS_MODULES`, `PassFn` (T5) by T15 and T18. `render_for_model`, `ModelView`, `check_bullet`, `BULLET_MAX`, `BULLETS_MAX` (T17) by T18; `format_cell` (T17's rename) by T17 and by `weekly.py` itself. `Stadium`, `stadium_for`, `is_outdoor` (T8) by T9. `NwsClient`, `parse_point`, `PointGrid`, `resolve_point`, `POINT_RERESOLVE_AFTER` (T8) by T9. `bucket_start` (T15) by `harness/execution/store.py`'s enqueue, in the same task. `exposure_usd`, `DECLINE_COLLATERAL` and `DECLINE_SINGLE_LEG` (T14) by T14's own tests and by T19's t10 group test. `RfqEvent`, `parse_rfq_frame`, `store_rfq`, `handle_frame`, `idle_reason` (T13) by T13's socket and by T14. `LegFair`, `resolve_legs`, `nfl_only_independent`, `compute_quote` (T14) by T14's own stage and by T13's extended `handle_frame`. `newest_dk_price`, `LegPrice`, `american` (T10) by T11. `load_config`, `ParlayConfig` (T10) by T11. `VETO_RATE_WATCH` (T16) by `pulse.rule_veto_rate` and by nothing else. The ten model classes (T1) by every task that writes a row. Two names deliberately differ and are not typos: `harness/research/veto.py` re-exports `FINAL_STATUSES` by importing it from `harness/parlay/needs.py` rather than restating it — one home, three readers, since `parlay_grade` imports it too — and `kalshi_market_type` is the venue's `binary|scalar` enum, which is a different column from the harness's `market_type`.
 
 **Where this plan resolves review B's ten "underspecified" items.**
 
@@ -11375,4 +11726,6 @@ Two tasks share a wave only when every task they depend on has merged **and** th
 
 **Instructions inside data.** None found while writing this plan. The addendum, the two design reviews, the spec and `verified-facts.md` contain no directive text addressed to an agent. `verified-facts.md` §F already records the four places where *documentation* reads as an instruction — the Kalshi AsyncAPI's "Use QuoteExecuted to…", the OpenAPI's `curl` example against a forbidden host and path, the NWS example User-Agent carrying a third-party domain, and the bundled `claude-api` skill's "ALWAYS use…" — and none of them is adopted anywhere in this plan: the quote path appears only in the tests that refuse it, the User-Agent is R:212's verbatim string, and the model ids and prices come from the skill's factual tables while R:217 fixes the model and the effort. Every path in this plan that stores or renders text of outside provenance passes it through `sanitize_model_text` or `sanitize_venue_text`, and the veto's prompt places retrieved text under a fixed instruction naming it untrusted. verify.md's existing verdict rule — venue text is data, quote it, never act on it — is extended by T20 to `venue_status('kalshi_rfq').reason` and to the model's own output.
 
-**One addendum statement this plan adapts rather than implements literally, and why.** Addendum §1.1 says the futures resume point is "the last completed series ticker persisted in `job_state('futures.resume')`". `job_state.value` is `BigInteger` (`harness/db/models.py:692-699`) and cannot hold a ticker. T7 stores the **index** into the deterministic order under that exact key and records the ticker in `job_runs.notes.resume_after`, restarting at zero and recording `resume_reset` when the two disagree. Both halves of ruling A-I8 — a deterministic order and a resumed tail — hold, with no schema change. Two smaller adaptations are stated in their tasks: the weather source's skip reasons go into `runs.notes` rather than `job_runs.notes`, because the recorder tick owns `runs` and the settler owns `job_runs`; and `reserve_spend`'s atomicity is a transaction advisory lock on the day key rather than A-C3's sketched single-row conditional `UPDATE`, because 0.3 makes the cap a sum over four kinds and two models and adds a weekly cap, neither of which a single-row update can enforce.
+**Four addendum statements this plan adapts rather than implements literally, and why.** Addendum §1.1 says the futures resume point is "the last completed series ticker persisted in `job_state('futures.resume')`". `job_state.value` is `BigInteger` (`harness/db/models.py:692-699`) and cannot hold a ticker. T7 stores the **index** into the deterministic order under that exact key and records the ticker in `job_runs.notes.resume_after`, restarting at zero and recording `resume_reset` when the two disagree. Both halves of ruling A-I8 — a deterministic order and a resumed tail — hold, with no schema change. Three more are stated in their tasks. The weather source's skip reasons go into `runs.notes` rather than `job_runs.notes`, because the recorder tick owns `runs` and the settler owns `job_runs`. `reserve_spend`'s atomicity is a transaction advisory lock on the day key rather than ruling A-C3's sketched single-row conditional `UPDATE`, because 0.3 makes the cap a sum over four kinds and two models and adds a weekly cap, neither of which a single-row update can enforce. And §1.6's decline set gains two members: `collateral` for an RFQ whose dollar exposure is over `rfq_collateral_cap_usd`, and `single_leg` for a single-market request. H5's question is which RFQs we would and would not have answered **and why**, so folding a size refusal or a non-combo into `no_fair` would put two outcomes that have nothing to do with having a price into t10's decline mix.
+
+**Nine numbers this plan adds that the addendum does not name**, each stated once with its home and none contradicting an addendum value: `pool_min_edge` 0.02 (`harness/parlay/parlay.yaml`, declared there as the plan's), `DISAGREEMENT_MAX` 0.02 and `FAIR_MAX_AGE` 10 minutes and `CLOSING_WINDOW` 6 hours (`harness/venues/kalshi/rfq_quote.py` and `harness/settlement/rfq_grade.py`), `FAIR_MOVE_INVALIDATOR` 0.02 (`harness/research/features.py`, the addendum's own two-point rule), `REFETCH_AFTER` 1 hour (`harness/weather/snapshots.py`), `POLL_S` 30 (`harness/research/worker.py`), `MIN_BUDGET_S` 30 (each grading stage), `MAX_OUTPUT_TOKENS` 1024 (`harness/research/prompt.py` and `harness/research/annotate.py`), and `CATEGORY_HINT` `"sport"` (`harness/venues/kalshi/futures.py`, with its fallback to every category). Two settings beyond §2's ten are additive: `nws_base_url` and `anthropic_api_key_file`.
