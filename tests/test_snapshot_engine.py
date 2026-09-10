@@ -266,12 +266,18 @@ def test_a_study_name_resolves_to_the_study_builder(db_session, env_settings):
         seen["called"] = True
         return {"n": 2}
 
+    # Save and restore rather than pop: the real study builder registers itself at import, and a
+    # pop would unregister it for every later test in the process (order-dependent breakage).
+    previous = snapshots.BUILDERS.get("study")
     snapshots.register_builder("study", study)
     try:
         out = run_builder(_factory(db_session), "study:2026-37", NOW, env_settings,
                           cadence_s=600)
     finally:
-        snapshots.BUILDERS.pop("study", None)
+        if previous is None:
+            snapshots.BUILDERS.pop("study", None)
+        else:
+            snapshots.BUILDERS["study"] = previous
 
     assert seen["called"] and out["payload"]["n"] == 2
     assert db_session.get(DashboardSnapshot, "study:2026-37") is not None
