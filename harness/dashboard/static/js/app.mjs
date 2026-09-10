@@ -177,6 +177,31 @@ function markAge(name, ageS, cadenceS) {
   }
 }
 
+//: A capitalised surface name for a sentence, never a lookup table: the five names are already
+//: lower-case ASCII words, so `.charAt(0).toUpperCase()` is the whole job.
+function titleCase(word) {
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+// A build that keeps failing writes a fresh `generated_at` over a stale `payload` (the
+// crash-loop case the runbook warns about), so the age-based staleness flag can never catch it
+// -- the age is genuinely near zero. `/api/snap/{name}` carries the failure as its own `error`
+// field, independent of age, and this is the one place that reads it. Reuses the existing
+// `shell-stale` banner rather than a new node: it already is a `role="status"` region.
+function markBuildError(surface, body) {
+  const banner = document.getElementById("shell-stale");
+  if (body.error) {
+    const when = (body.payload && body.payload.now) || "--";
+    banner.textContent = `${titleCase(surface)}'s last build failed (${body.error}); `
+      + `showing the build from ${when}.`;
+    banner.className = "banner broken";
+    banner.hidden = false;
+  } else {
+    banner.textContent = "";
+    banner.hidden = true;
+  }
+}
+
 // The shell's own build and the payload's, side by side: a phone holding a cached module against
 // a new payload shape is visible rather than quietly wrong (ruling A-I11). The serving sha is
 // shown only when the two differ, so the header stays quiet in the ordinary case.
@@ -293,7 +318,9 @@ function missing(root, name) {
 
 // Distinct from `missing`: the snapshot is there and the surface module is not, which is a
 // deploy problem rather than a scheduler one and should not read as "no data".
-function noModule(root, surface) {
+// Exported so `how.mjs` can reach for the same message on its own fetch failure (B-M6): its
+// render is the one in the whole shell that runs outside `poll`'s try/catch.
+export function noModule(root, surface) {
   root.replaceChildren(el("p", { class: "lead" },
     `The ${surface} surface did not load in this browser. `
     + "Its snapshot is being built; reload the page, and if it persists the build serving this "
@@ -322,6 +349,7 @@ async function poll(surface, force) {
   }
   const cadenceS = body.cadence_s || (body.payload && body.payload.cadence_s) || DEFAULT_CADENCE_S;
   markBuild(body.payload);
+  markBuildError(surface, body);
   // Re-render only when the payload actually changed: a 304 that redrew the surface would throw
   // away every chart, scroll position and open glossary panel for nothing.
   const stamp = state.etags[name] || body.generated_at;
@@ -337,6 +365,10 @@ async function poll(surface, force) {
 async function loop() {
   clearTimeout(state.timer);
   const surface = state.surface;
+  // A phone left open on a hidden tab has nothing to show and every unchanged poll is a 304
+  // anyway, so the fetch itself is skipped rather than only the render; `visibilitychange`
+  // (registered in `boot`) restarts the loop the moment the tab is looked at again.
+  if (document.hidden) return;
   let wait = PULSE_POLL_MS;
   try {
     wait = await poll(surface, state.rendered[snapshotName(surface)] === undefined);
@@ -403,6 +435,9 @@ async function boot() {
     }
   }
   window.addEventListener("hashchange", () => { show(location.hash); });
+  // `loop()` skips its own fetch while hidden (M1); this is what resumes it, immediately rather
+  // than waiting out whatever `wait` a stale timer was left holding.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) loop(); });
   await pollPulse();
   setInterval(pollPulse, PULSE_POLL_MS);
   await pollIndex();

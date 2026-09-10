@@ -19,7 +19,12 @@ UPLOT_SHA256 = {
 #: Spec §5's asset budget, uncompressed, vendor included.
 ASSET_BUDGET_BYTES = 300 * 1024
 
-FORBIDDEN_DOM = ("innerHTML", "outerHTML", "insertAdjacentHTML")
+#: `eval(`/`new Function` are the other two ways a string becomes code; `srcdoc` is a third
+#: markup sink beside the original three (an `<iframe>` attribute, not a DOM method); and
+#: `setAttribute("on` catches an event handler assigned from a computed name, which the
+#: `on*=`-as-attribute-literal case below does not (B-M2).
+FORBIDDEN_DOM = ("innerHTML", "outerHTML", "insertAdjacentHTML", "eval(", "new Function",
+                 "srcdoc", 'setAttribute("on')
 
 #: The one localStorage key the theme is remembered under. The shell sets it before first paint
 #: in an inline script and the router reads it, so a drift between the two would show as a

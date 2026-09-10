@@ -7,6 +7,7 @@
 // on every surface.
 
 import { loadGlossary, loadHow } from "./api.mjs";
+import { noModule } from "./app.mjs";
 import { el } from "./components.mjs";
 
 // How it works carries no plain/technical pairs of its own: it is the page that already defines
@@ -40,10 +41,14 @@ function glossaryEntry(term, entry) {
 }
 
 export function render(root) {
+  // `app.mjs`'s `try/catch` around this call only catches a synchronous throw; a rejection here
+  // would otherwise be unhandled. It is safe today only because `loadHow`/`loadGlossary` swallow
+  // their own failures (`api.mjs`) -- this `.catch` makes that independent of api.mjs staying
+  // that way.
   Promise.all([loadHow(), loadGlossary()]).then(([raw, glossary]) => {
     const blocks = parseHow(raw).map((block) => el(block.tag, { text: block.text }));
     const terms = Object.keys(glossary).sort((a, b) => a.localeCompare(b));
     const entries = terms.map((term) => glossaryEntry(term, glossary[term]));
     root.replaceChildren(...blocks, ...entries);
-  });
+  }).catch(() => noModule(root, "How it works"));
 }

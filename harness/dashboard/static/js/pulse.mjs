@@ -100,7 +100,11 @@ function vitalsCard(payload) {
   const vitals = payload.vitals || {};
   const grid = el("div", { class: "grid" });
   for (const tile of vitals.tiles || []) {
-    const points = (vitals.sparklines || {})[tile.technical] || [];
+    // `tile.technical` is the glossary key (checked by `test_dashboard_surfaces.py`'s `_labels`)
+    // and does double duty as nothing else: the sparkline series is keyed by `tile.metric`, the
+    // `metric_samples` name the builder writes separately (`pulse.py`'s `_vitals`), which is
+    // `None` for a tile with no collected series.
+    const points = (vitals.sparklines || {})[tile.metric] || [];
     const holder = el("div", { class: "spark" });
     const node = statTile({ label: tile.label, technical: tile.technical,
                             value: tile.unit === "s" ? fmtAge(tile.value) : tile.value,
@@ -112,7 +116,15 @@ function vitalsCard(payload) {
 }
 
 function storageCard(payload) {
-  const storage = payload.storage || {};
+  const section = payload.storage;
+  // A number the machine did not earn is never drawn as one: a failed read and a read that ran
+  // before housekeeping ever counted a table (`storage.measured === false`, `pulse.py`'s
+  // `"measured": bool(counts)`) both say "not evaluated" rather than an arc clamped to 0 %.
+  if (sectionFailed(section) || section?.measured === false) {
+    return el("div", { class: "card" }, el("h3", { text: "Storage" }),
+      el("p", { class: "grey", text: "not evaluated" }));
+  }
+  const storage = section || {};
   const grid = el("div", { class: "grid" }, storageArc(storage),
     statTile({ label: "Free space on the disk", technical: "host.disk_free_gb",
                value: storage.disk_free_gb, threshold: storage.disk_min_fraction }),

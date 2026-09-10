@@ -39,6 +39,18 @@ function section(key) {
   };
 }
 
+//: A guarded section (`snapshots/__init__.py`'s `section()`) writes `{"error": "<ClassName>"}`
+//: on a timeout -- a normal outcome under the venue tripwire's 2 s statement timeout, not a
+//: rarity -- and `section(key)` above collapses that to `null` indistinguishably from "nothing
+//: to show yet". This is the one place that keeps the two apart, mirroring `pulse.mjs` and
+//: `ticket.mjs`, so a failed read renders "unavailable" rather than a quiet empty state.
+const sectionFailed = (value) => Boolean(value) && !Array.isArray(value) && value.error;
+
+function unavailableCard(title) {
+  return el("div", { class: "card" }, el("h3", { text: title }),
+    el("p", { class: "grey", text: "unavailable" }));
+}
+
 const board = section("board");
 const funnelData = section("funnel");
 const orders = section("orders");
@@ -70,6 +82,7 @@ function gameCard(game) {
 }
 
 function gameBoard(payload) {
+  if (sectionFailed(payload.board)) return unavailableCard("Game board");
   const data = board(payload);
   const games = (data && data.games) || [];
   return el("div", { class: "card" },
@@ -133,6 +146,7 @@ function leakRow(entries, y, style) {
 }
 
 function funnelSection(payload) {
+  if (sectionFailed(payload.funnel)) return unavailableCard("Funnel");
   const data = funnelData(payload) || {};
   const counts = { ticks: data.ticks || 0, gaps: data.gaps || 0,
                    candidates: data.candidates || 0, intents: data.intents || 0,
@@ -209,6 +223,12 @@ function orderRow(order) {
 }
 
 function openOrders(payload) {
+  if (sectionFailed(payload.orders)) {
+    return el("div", { class: "card" },
+      el("h3", {}, "Open simulated orders",
+         el("span", { class: "technical" }, " · "), glossaryTerm("queue_remaining", "queue")),
+      el("p", { class: "grey", text: "unavailable" }));
+  }
   const data = orders(payload) || {};
   const rows = data.orders || [];
   const built = rows.map(orderRow);
@@ -239,6 +259,7 @@ function fillMethodLabel(method) {
 }
 
 function fillsStream(payload) {
+  if (sectionFailed(payload.fills)) return unavailableCard("Fills, today");
   const data = fills(payload) || {};
   const rows = (data.fills || []).map((fill) => [
     fill.filled_at,
@@ -281,13 +302,16 @@ function exposureLane(lane) {
 }
 
 function exposureLanes(payload) {
-  const data = exposure(payload) || {};
-  const lanes = data.lanes || [];
   // Spec §1.1: every monetary or contract figure sits under the word "paper" in the same visual
   // unit as the figure -- the shell's header pill is a different unit, so the card carries its
   // own badge too.
-  return el("div", { class: "card" },
-    el("h3", {}, "Exposure, by variant", el("span", { class: "badge dim", text: "PAPER" })),
+  const head = el("h3", {}, "Exposure, by variant", el("span", { class: "badge dim", text: "PAPER" }));
+  if (sectionFailed(payload.exposure)) {
+    return el("div", { class: "card" }, head, el("p", { class: "grey", text: "unavailable" }));
+  }
+  const data = exposure(payload) || {};
+  const lanes = data.lanes || [];
+  return el("div", { class: "card" }, head,
     lanes.length ? el("div", { class: "grid3" }, lanes.map(exposureLane))
                  : el("p", { class: "grey", text: "no lane reporting yet" }));
 }
@@ -295,6 +319,7 @@ function exposureLanes(payload) {
 // --- 6. executor vitals strip ------------------------------------------------------------------
 
 function vitalsStrip(payload) {
+  if (sectionFailed(payload.vitals)) return unavailableCard("Executor vitals");
   const data = vitals(payload) || {};
   const lines = data.sparklines || {};
   const names = Object.keys(lines);
@@ -311,8 +336,17 @@ function vitalsStrip(payload) {
 // --- 7. venue tile -----------------------------------------------------------------------------
 
 function venueTile(payload) {
+  if (sectionFailed(payload.venue)) {
+    return el("div", { class: "card" },
+      el("h3", {}, "Venue calls", el("span", { class: "technical" }, " · "),
+         glossaryTerm("venue_requests", "venue_requests")),
+      el("p", { class: "grey", text: "unavailable" }));
+  }
   const data = venue(payload) || {};
-  const ok = data.tripwire_ok !== false;
+  // A production-order tripwire must never read "no control breach" from no measurement: `ok`
+  // is true only when the section actually ran and said so (a timed-out or absent read is
+  // caught by the `sectionFailed` branch above, never reaches here as a quiet `undefined`).
+  const ok = data.tripwire_ok === true;
   const rows = (data.by_env_method || []).map((r) => [r.env, r.method, r.count]);
   const statusRows = (data.status || []).map((r) => [r.env, r.status, r.reason || "--"]);
   return el("div", { class: "card" },

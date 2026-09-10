@@ -197,7 +197,14 @@ function heatCell(cell) {
     : `background:${est >= 0 ? "var(--good)" : "var(--bad)"};` +
       `opacity:${Math.min(1, Math.abs(est) * 4 + 0.15).toFixed(2)}`;
   const outline = flags.flagged ? ";outline:1px dashed var(--warn);outline-offset:-1px" : "";
-  return el("span", { class: "badge", style: tone + outline, text: cell.text ?? "--" });
+  // Spec §2.3's never-shown line is "a mean without its interval and cluster count"; every
+  // other Study cell carries the count through `intervalMark`, and the heatmap is the one place
+  // that draws a bare mean. `title` rather than a second visible line: `<abbr>`-style detail
+  // that a screen reader still announces and a hover still shows, with no extra badge to lay out.
+  const clusters = cell.n_clusters !== undefined && cell.n_clusters !== null
+    ? cell.n_clusters : "--";
+  return el("span", { class: "badge", style: tone + outline, title: `n=${clusters} games`,
+                      text: cell.text ?? "--" });
 }
 
 // The brief asks for t4's `header` note under the grid. It is not in the payload: `report_cells`
