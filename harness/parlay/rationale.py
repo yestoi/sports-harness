@@ -9,10 +9,23 @@ was busy is a bug.
 The text goes through `sanitize_model_text(text, 600)`. 600 because `parlay_cards.rationale` is
 `String(600)` (ruling B-M11); `sanitize_model_text` rather than `sanitize_reason` because the
 latter caps at 200 and strips the apostrophe out of the fan voice §8.1 asks for (ruling A-I5).
+
+**The reservation runs on its own session, committed immediately.** `reserve_spend`'s own
+docstring is explicit that its caller must "commit as soon as this returns": the advisory lock it
+takes is scoped to the caller's transaction, and a caller that holds that transaction open across
+the live Anthropic call blocks every other reservation on the same ISO week for the length of
+that call (up to `REQUEST_TIMEOUT_S`, 120 s). `build_card` never commits its own session until
+the whole card is built, so reserving on that session and only releasing after the call would
+hold the week's lock for the whole request. A short-lived session bound to the same engine
+(review round 1, Important 2) reserves, commits (dropping the lock before the call is even
+made), then releases and writes the note in its own transaction after the call returns --
+`build_card`'s own session and its uncommitted card/legs are never touched.
 """
 import logging
 import uuid
 from datetime import datetime
+
+from sqlalchemy.orm import sessionmaker
 
 from harness.research.client import PRIMARY_MODEL, ResearchClient, prompt_hash
 from harness.research.notes import write_notes
@@ -57,29 +70,41 @@ def write_rationale(session, settings, card, legs, now: datetime, client=None) -
         except RuntimeError:
             return fallback
 
-    try:
-        reservation = reserve_spend(session, now, settings, "parlay", [PRIMARY_MODEL],
-                                    searches=0)
-    except BudgetRefused as refused:
-        log.info("parlay rationale skipped on budget: %s", refused)
-        return fallback
+    # A short-lived session on the same engine, never `session` itself: `reserve_spend`'s
+    # advisory lock lives for the caller's transaction, and `session` (build_card's) does not
+    # commit until the whole card is built. Reserving there and releasing only after the call
+    # would hold the ISO week's lock for the length of the live request (review round 1,
+    # Important 2).
+    spend_factory = sessionmaker(bind=session.get_bind())
+    with spend_factory() as spend_session:
+        try:
+            reservation = reserve_spend(spend_session, now, settings, "parlay", [PRIMARY_MODEL],
+                                        searches=0)
+            spend_session.commit()
+        except BudgetRefused as refused:
+            spend_session.rollback()
+            log.info("parlay rationale skipped on budget: %s", refused)
+            return fallback
 
-    user = ("CARD\n" + "\n".join(
-        f"{leg.seq}. {leg.plain_text} at {leg.dk_american:+d} "
-        f"(priced {leg.odds_snapshot_id})" for leg in legs)
-        + f"\nstake ${card.stake}, estimated payout ${card.dk_payout_est}, "
-          f"correlated {'yes' if card.correlated else 'no'}")
-    result = None
-    try:
-        result = client.call(model=PRIMARY_MODEL, system=_SYSTEM, user=user, schema=_SCHEMA,
-                             effort=EFFORT, max_output_tokens=MAX_OUTPUT_TOKENS, tools=())
-    finally:
-        release_spend(session, reservation,
-                      {PRIMARY_MODEL: result.usage} if result is not None else {})
+        user = ("CARD\n" + "\n".join(
+            f"{leg.seq}. {leg.plain_text} at {leg.dk_american:+d} "
+            f"(priced {leg.odds_snapshot_id})" for leg in legs)
+            + f"\nstake ${card.stake}, estimated payout ${card.dk_payout_est}, "
+              f"correlated {'yes' if card.correlated else 'no'}")
+        result = None
+        try:
+            result = client.call(model=PRIMARY_MODEL, system=_SYSTEM, user=user, schema=_SCHEMA,
+                                 effort=EFFORT, max_output_tokens=MAX_OUTPUT_TOKENS, tools=())
+        finally:
+            release_spend(spend_session, reservation,
+                          {PRIMARY_MODEL: result.usage} if result is not None else {})
+            spend_session.commit()
 
-    write_notes(session, call_id=uuid.uuid4(), kind="parlay", subject_id=str(card.id),
-                effort=EFFORT, prompt_hash=PROMPT_HASH, features={"card_id": card.id},
-                results=[result], created_at=now)
+        write_notes(spend_session, call_id=uuid.uuid4(), kind="parlay", subject_id=str(card.id),
+                    effort=EFFORT, prompt_hash=PROMPT_HASH, features={"card_id": card.id},
+                    results=[result], created_at=now)
+        spend_session.commit()
+
     if result.error is not None or not isinstance(result.output, dict):
         log.info("parlay rationale fell back to the template: %s", result.error)
         return fallback

@@ -38,7 +38,8 @@ class NoAnchorPriced(RuntimeError):
 _POOL = text("""
     select distinct on (g.id, vm.market_type, vm.side_team_id, vm.side)
            g.id as game_id, g.sport, vm.market_type, vm.side_team_id, vm.side, vm.threshold,
-           f.fair_p, s.edge, s.created_at, t.abbreviation
+           f.fair_p, s.edge, s.created_at, t.abbreviation,
+           th.abbreviation as home_abbr, ta.abbreviation as away_abbr
     from signals s
     join venue_markets vm on vm.id = s.venue_market_id
     join games g on g.id = vm.game_id
@@ -49,6 +50,12 @@ _POOL = text("""
     join market_gap_snapshots gs on gs.id = s.gap_snapshot_id
     join fair_values f on f.id = gs.fair_value_id
     left join teams t on t.sport = g.sport and t.id = vm.side_team_id
+    -- A `total` row's `side_team_id` is always NULL (over/under has no side team), so `t` above
+    -- never matches one. Design 1.3/D14 name the anchor as an LSU or Saints moneyline, spread
+    -- *or total*, so a total leg's eligibility comes from the game itself -- home and away --
+    -- never from the venue market's side (review round 1, Important 1).
+    left join teams th on th.sport = g.sport and th.id = g.home_team_id
+    left join teams ta on ta.sport = g.sport and ta.id = g.away_team_id
     where s.replay = false and s.decision = 'candidate'
       and s.created_at > :since and s.created_at <= :now
       and s.edge >= :min_edge
@@ -77,8 +84,12 @@ def build_card(session: Session, settings, sport: str, week: int, kind: str, now
                                 row.side, now, max_age)
         if market is None or price is None:
             continue
-        priced.append({"row": row, "market": market, "price": price,
-                       "is_anchor": (row.abbreviation or "") in config.anchors})
+        if row.market_type == "total":
+            # No side team on a total: the anchor is whichever team is playing this game.
+            is_anchor = (row.home_abbr in config.anchors) or (row.away_abbr in config.anchors)
+        else:
+            is_anchor = (row.abbreviation or "") in config.anchors
+        priced.append({"row": row, "market": market, "price": price, "is_anchor": is_anchor})
 
     anchors = [item for item in priced if item["is_anchor"]]
     if not anchors:

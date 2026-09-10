@@ -63,6 +63,18 @@ def test_a_call_error_falls_back_to_the_template(db_session, keyed_settings, bui
     assert out and "Let us cook" not in out
 
 
+def test_no_advisory_lock_is_held_during_the_call(db_session, keyed_settings, built_card,
+                                                  lock_checking_client):
+    """Review round 1, Important 2: `reserve_spend`'s ISO-week advisory lock must not still be
+    held while the live call is in flight, or a manual `parlay build` would block the veto
+    worker's own reservations for the length of the request. The client double takes the exact
+    same lock key on a separate connection from inside its own `call(...)`; free means the
+    reservation already committed and dropped it before the call was ever made."""
+    write_rationale(db_session, keyed_settings, built_card.card, built_card.legs, NOW,
+                    client=lock_checking_client)
+    assert lock_checking_client.lock_was_free is True
+
+
 def test_the_text_is_sanitized_at_six_hundred_not_two_hundred(db_session, keyed_settings,
                                                               built_card, wordy_client):
     """Ruling A-I5 and B-M11: `sanitize_model_text(text, 600)`, and the apostrophe survives --

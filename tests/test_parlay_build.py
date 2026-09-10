@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from harness.parlay.build import NoAnchorPriced, build_card
-from harness.parlay.pricing import american, newest_dk_price
+from harness.parlay.pricing import american, decimal_from, newest_dk_price
 
 NOW = datetime(2026, 9, 18, 20, 0, tzinfo=timezone.utc)
 
@@ -14,6 +14,14 @@ def test_american_odds_round_trip():
     assert american(Decimal("2.50")) == 150
     assert american(Decimal("1.50")) == -200
     assert american(Decimal("2.00")) == 100
+
+
+def test_decimal_from_converts_whatever_the_driver_returns():
+    """The brief's Produces list declares `decimal_from`; `newest_dk_price` calls it rather than
+    inlining `Decimal(str(...))` (review round 1, Important 3)."""
+    assert decimal_from(Decimal("1.909")) == Decimal("1.909")
+    assert decimal_from("1.909") == Decimal("1.909")
+    assert decimal_from(1.5) == Decimal("1.5")
 
 
 def test_a_price_older_than_thirty_minutes_is_not_a_price(db_session, seeded_dk_prices):
@@ -49,6 +57,16 @@ def test_the_smart_card_is_anchored_on_lsu_or_the_saints(db_session, env_setting
     anchor = db_session.get(type(_legs(db_session, card.id)[0]), card.anchor_leg_id)
     assert anchor is not None and anchor.card_id == card.id
     assert anchor.market_type in ("ml", "spread", "total")
+
+
+def test_a_total_leg_qualifies_as_the_anchor_via_the_games_home_and_away_teams(
+        db_session, env_settings, seeded_total_anchor_pool):
+    """Design 1.3/D14: the anchor is an LSU or Saints moneyline, spread **or total**. A total
+    row's `side_team_id` is always NULL, so eligibility has to come from the game's own home and
+    away teams, not the venue market's side (review round 1, Important 1)."""
+    card = build_card(db_session, env_settings, sport="ncaaf", week=38, kind="smart", now=NOW)
+    anchor = db_session.get(type(_legs(db_session, card.id)[0]), card.anchor_leg_id)
+    assert anchor is not None and anchor.market_type == "total"
 
 
 def test_an_anchor_with_no_priced_row_ends_the_build(db_session, env_settings, seeded_pool_no_anchor):

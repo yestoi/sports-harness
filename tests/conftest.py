@@ -197,6 +197,29 @@ def seeded_pool(db_session):
 
 
 @pytest.fixture
+def seeded_total_anchor_pool(db_session):
+    """A priced LSU **total** leg -- LSU is the home team, and there is no LSU moneyline or
+    spread anywhere in the pool -- plus three more +EV legs on their own games. `vm.side_team_id`
+    is always NULL on a total row, so this fixture is what exercises the game's home/away teams
+    as the anchor's own source of truth (review round 1, Important 1)."""
+    kickoff = PARLAY_NOW + timedelta(days=2)
+    lsu = _make_team(db_session, "LSU")
+    opp0 = _make_team(db_session, "OPP0")
+    game = _make_game(db_session, lsu.id, opp0.id, kickoff)
+    _make_leg(db_session, game_id=game.id, market_type="total", side_team_id=None, side="over",
+             threshold=Decimal("55.5"), fair_p=Decimal("0.55"), edge=Decimal("0.05"),
+             created_at=PARLAY_NOW - timedelta(hours=1))
+    _make_dk_price(db_session, game_id=game.id, market_type="total", team_id=None, side="over",
+                   price=Decimal("1.91"), fetched_at=PARLAY_NOW - timedelta(minutes=5),
+                   point=Decimal("55.5"))
+    for i in range(1, 4):
+        _pool_leg(db_session, team_abbr=f"OPP{i}", opp_abbr=f"OTH{i}", market_type="moneyline",
+                 edge=Decimal("0.04") - Decimal(i) * Decimal("0.005"), kickoff=kickoff,
+                 price=Decimal("1.90"))
+    return None
+
+
+@pytest.fixture
 def seeded_pool_no_anchor(db_session):
     """+EV legs with no LSU or Saints outcome anywhere in the pool: `build_card` must raise
     before it ever gets to counting legs."""
@@ -318,3 +341,49 @@ def erroring_client():
 @pytest.fixture
 def wordy_client():
     return _FakeResearchClient(text_out=("LSU's defense " * 60).strip())
+
+
+class _LockCheckingClient:
+    """The same `call(...)` signature as `ResearchClient.call`, except that the call itself, on
+    a fresh connection, tries to take the exact ISO-week advisory lock `reserve_spend` used for
+    this card's reservation. If `write_rationale` is still holding it (the pre-fix behaviour --
+    the reservation and the call sharing one uncommitted transaction), the `pg_try_advisory_xact_lock`
+    below returns false; once the reservation commits before the call is made, it is free and
+    this returns true (review round 1, Important 2)."""
+
+    def __init__(self, engine, monday, text_out: str):
+        self.engine = engine
+        self.monday = monday
+        self.text_out = text_out
+        self.calls: list[dict] = []
+        self.lock_was_free: bool | None = None
+
+    def call(self, *, model, system, user, schema, effort, max_output_tokens=None, tools=(),
+             thinking=None):
+        from sqlalchemy import text as sql_text
+
+        from harness.research.client import CallResult
+        from harness.research.spend import Usage
+
+        with self.engine.connect() as conn:
+            self.lock_was_free = bool(conn.execute(sql_text(
+                "select pg_try_advisory_xact_lock(hashtext('research_spend:week:' || :monday))"),
+                {"monday": self.monday}).scalar())
+            conn.rollback()      # release the probe's own hold immediately either way
+        self.calls.append({"model": model, "system": system, "user": user, "schema": schema,
+                           "effort": effort, "max_output_tokens": max_output_tokens,
+                           "tools": tools})
+        usage = Usage(input_tokens=500, output_tokens=80, cache_read_tokens=0,
+                     cache_write_tokens=0, searches=0)
+        return CallResult(model=model, output={"text": self.text_out}, usage=usage,
+                          stop_reason="end_turn", request_id="req_fake", latency_ms=5,
+                          tool_calls=[], snippets={"items": [], "truncated": False}, error=None)
+
+
+@pytest.fixture
+def lock_checking_client(db_session):
+    from harness.research.spend import chicago_day, iso_week_bounds
+
+    monday, _sunday = iso_week_bounds(chicago_day(PARLAY_NOW))
+    return _LockCheckingClient(db_session.get_bind(), monday,
+                               "LSU and the Saints on the same slip. Let us cook.")

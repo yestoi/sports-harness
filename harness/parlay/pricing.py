@@ -29,10 +29,18 @@ class LegPrice:
 
 def american(decimal_odds: Decimal) -> int:
     """Decimal odds as American. 2.00 is +100 by convention on both sides of the pick-em."""
-    odds = Decimal(str(decimal_odds))
+    odds = decimal_from(decimal_odds)
     if odds >= 2:
         return int(((odds - 1) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     return int((-100 / (odds - 1)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def decimal_from(price_decimal) -> Decimal:
+    """A price as a `Decimal`, whatever numeric type it arrived as (a driver-returned `Decimal`,
+    a `float`, a plain string). Always through `str()` first: `Decimal(0.1)` is
+    `0.1000000000000000055511151231257827021181583404541015625`, and a price column is never a
+    binary float's rounding error."""
+    return Decimal(str(price_decimal))
 
 
 _NEWEST = text("""
@@ -55,7 +63,7 @@ def newest_dk_price(session: Session, game_id: int, market_type: str, team_id: i
                                     "side": side, "now": now}).first()
     if row is None or now - row.fetched_at > max_age:
         return None
-    price = Decimal(str(row.price_decimal))
+    price = decimal_from(row.price_decimal)
     if price <= 1:
         return None
     return LegPrice(odds_snapshot_id=row.id, dk_decimal=price, dk_american=american(price),
