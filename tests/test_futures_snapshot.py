@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
 from sqlalchemy import text
 
 from harness.db.models import JobState

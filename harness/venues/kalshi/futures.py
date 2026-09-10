@@ -174,6 +174,10 @@ def run_futures_snapshot(session: Session, settings, kalshi, now: datetime, trig
     something to read."""
     if trigger not in ("cron", "manual"):
         raise ValueError(f"unknown futures trigger {trigger!r}")
+    # The pass sets the client's own pause rather than sleeping itself, so the 0.1 s falls
+    # between *pages* inside `fetch_markets_all` too, not only between series. Safe because every
+    # caller (`harness/cli.py`'s `_futures` and `futures snapshot`) builds this client for this
+    # pass alone; handing in a shared client would repace that client for good.
     kalshi._sleep_s = PAGE_PAUSE_S
     job = JobRun(job=JOB_NAME, started_at=now, status="running", notes={})
     session.add(job)

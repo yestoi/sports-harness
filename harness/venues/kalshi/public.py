@@ -40,8 +40,9 @@ def decode_fixed_point(v) -> Decimal | None:
 
     Public since phase 5: the futures snapshot writer decodes the same strings from the same
     venue and there is no reason for two copies of the rule in the venue package.
-    `harness/normalize/kalshi.py` keeps its own private copy; the normalizer is not this phase's
-    file and the two are asserted equal by `test_the_dollars_and_fp_strings_are_decoded`.
+    `harness/normalize/kalshi.py::_dec` is a third, behaviourally identical copy, left alone
+    because the normalizer is not this phase's file; nothing asserts the two stay in step, so a
+    change here is a change to make there by hand.
     """
     if v in (None, ""):
         return None
