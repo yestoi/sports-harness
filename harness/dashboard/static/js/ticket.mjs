@@ -48,7 +48,7 @@ function legRow(leg) {
   }
   const stamp = leg.status === "hit" ? el("span", { class: "badge ok", text: "HIT" })
     : leg.status === "miss" ? el("span", { class: "badge bad", text: "torn" }) : null;
-  return el("div", { class: "row spread" },
+  return el("div", { class: "leg row spread" },
     el("span", { class: `lamp ${leg.status}`, "aria-hidden": "true", text: glyph }),
     el("span", { class: "n", text: leg.status }),
     el("span", { class: "row" },
@@ -85,7 +85,11 @@ function cardFooter(card) {
 function ticketSlip(card) {
   const dim = card.legs_remaining > 0 && card.legs?.length
     ? Math.max(0.4, card.legs_remaining / card.legs.length) : 1;
+  // The diagonal stamp (spec §2.5) is the card's own result, drawn once as a rotated overlay
+  // rather than a small badge in the payout row -- the "diagonal CASHED or BUSTED stamp" the
+  // spec and the artboard both ask for, not a chip beside the number.
   const stampWord = card.status === "cashed" ? "CASHED" : card.status === "busted" ? "BUSTED" : null;
+  const stampClass = card.status === "cashed" ? "cashed" : "busted";
   // Spec §2.5's lottery correlation note -- "DraftKings will quote lower than this" -- shown as
   // written, only on a card the builder actually flagged correlated.
   const correlationNote = card.kind === "lottery" && card.correlated && card.rationale
@@ -97,13 +101,12 @@ function ticketSlip(card) {
     el("div", { class: "row spread" },
       el("span", { class: "payout", style: `opacity:${dim.toFixed(2)}`,
                    text: String(card.payout ?? "--") }),
-      el("span", { class: "muted n", text: `stake ${card.stake ?? "--"}` }),
-      stampWord ? el("span", { class: `badge ${card.status === "cashed" ? "ok" : "bad"}`,
-                                text: stampWord }) : null),
+      el("span", { class: "muted n", text: `stake ${card.stake ?? "--"}` })),
     el("div", { class: "col" }, (card.legs || []).map(legRow)),
     correlationNote,
     cardFooter(card),
-    perforation(360));
+    perforation(360),
+    stampWord ? el("div", { class: `stamp ${stampClass}`, text: stampWord }) : null);
 }
 
 function liveTickets(payload) {

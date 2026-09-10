@@ -200,13 +200,43 @@ td.num, th.num { text-align: right; }
 .arc-track { fill: var(--track); } .arc-fill { fill: var(--accent); }
 .axis-line { stroke: var(--border); } .axis-text { fill: var(--ink-muted); font-size: 11px; }
 
-/* Ticket only: warm paper in the dark, cream in the light, status colours stepped for it. */
-.slip { background: var(--slip-paper); color: var(--slip-ink); border-radius: 10px;
-  padding: 14px 16px; }
+/* Ticket only: warm paper in the dark, cream in the light, status colours stepped for it.
+   `position: relative` is what the diagonal stamp positions itself against; `overflow: hidden`
+   keeps the stamp's rotated corners from spilling past the card's own rounded edge. */
+.slip { position: relative; overflow: hidden; background: var(--slip-paper);
+  color: var(--slip-ink); border-radius: 10px; padding: 14px 16px; }
 .slip .muted { color: var(--slip-muted); }
 .slip .payout { font-size: 40px; font-weight: 700; line-height: 1; }
-.slip .lamp.hit { color: var(--hit); } .slip .lamp.miss { color: var(--miss); }
-.slip .lamp.alive { color: var(--fun); } .slip .lamp.pending { color: var(--slip-muted); }
+.slip .lamp.hit { color: var(--hit); animation: lamp-hit 0.6s ease-out; }
+.slip .lamp.miss { color: var(--miss); }
+.slip .lamp.alive { color: var(--fun); animation: lamp-alive 1.6s ease-in-out infinite; }
+.slip .lamp.pending { color: var(--slip-muted); }
+/* Spec §2.5: motion is allowed here and nowhere else in this quantity -- a lamp lighting (the
+   pulse on `.alive`, the one-shot burst on `.hit`) and a stamp landing. All three are plain
+   `animation` declarations, so the global `prefers-reduced-motion` rule at the foot of this file
+   turns every one of them off without a second rule here. */
+@keyframes lamp-alive { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes lamp-hit { 0% { transform: scale(1); } 40% { transform: scale(1.7); }
+  100% { transform: scale(1); } }
+
+/* The diagonal CASHED/BUSTED stamp: a rubber stamp landing once on the card's own result, never
+   on a lamp -- a lamp only ever plays its own leg's state. */
+.stamp { position: absolute; top: 46%; left: 50%;
+  transform: translate(-50%, -50%) rotate(-14deg); font-family: var(--font-display);
+  font-weight: 800; font-size: 34px; letter-spacing: 0.06em; padding: 4px 16px;
+  border: 4px solid currentColor; border-radius: 6px; opacity: 0.85; pointer-events: none;
+  animation: stamp-land 0.5s ease-out; }
+.stamp.cashed { color: var(--hit); }
+.stamp.busted { color: var(--miss); }
+@keyframes stamp-land {
+  0% { transform: translate(-50%, -50%) rotate(-14deg) scale(2.4); opacity: 0; }
+  70% { transform: translate(-50%, -50%) rotate(-14deg) scale(0.92); opacity: 0.9; }
+  100% { transform: translate(-50%, -50%) rotate(-14deg) scale(1); opacity: 0.85; }
+}
+
+/* Each leg wraps onto its own lines rather than fighting `.row.spread`'s single line once the
+   card gets narrow; the phone override below stacks it outright. */
+.slip .leg { flex-wrap: wrap; row-gap: 6px; column-gap: 16px; }
 
 /* The glossary term is a button, so it opens on tap, click or keyboard focus -- hover alone
    excludes keyboard and screen-reader users (ruling A-I13). The wrapper is what the panel is
@@ -254,6 +284,14 @@ td.num, th.num { text-align: right; }
   .phone-tabs .tab-fun[aria-selected="true"] { box-shadow: inset 0 2px 0 var(--fun); }
   .phone-tabs svg { width: 20px; height: 20px; stroke: currentColor; fill: none;
     stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  /* A leg's six pieces (lamp, description, score, what's needed, sharps' read, a stamp) do not
+     fit one line at phone width; `.row.spread`'s single-line layout is what made them run into
+     each other. Stacked, each is its own full-width line instead. */
+  .slip .leg { flex-direction: column; align-items: flex-start; justify-content: flex-start;
+    row-gap: 4px; padding: 8px 0;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+  .slip .leg:last-child { border-bottom: none; }
+  .stamp { font-size: 24px; padding: 3px 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
