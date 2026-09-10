@@ -54,7 +54,10 @@ DISAGREEMENT_MAX = Decimal("0.02")
 #: How far back a leg's fair value may be and still count as current for a quote computed on
 #: arrival. An RFQ is a live request; a ten-minute-old fair is not a live answer.
 FAIR_MAX_AGE = timedelta(minutes=10)
-#: F72's family test. A combo of only these prefixes is "NFL-only".
+#: F72's family test: a combo whose every component event ticker starts with this one
+#: prefix is "NFL-only". Deliberately narrower than `harness.venues.kalshi.public`'s
+#: `FOOTBALL_SERIES`, which also carries the three `KXNCAAF*` series -- F72 says NFL, and a
+#: college leg makes the combo not independent.
 _NFL_PREFIX = "KXNFL"
 
 
