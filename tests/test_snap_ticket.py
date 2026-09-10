@@ -92,6 +92,23 @@ def test_a_live_card_with_a_missed_leg_is_busted_and_says_so(db_session, env_set
     assert "Ouch" in " ".join(shown["sentences"])
 
 
+def test_a_score_row_with_a_home_score_and_no_away_score_still_builds(db_session, env_settings):
+    """Ruling A-I4: `game_score_events.home_score` and `away_score` are independently nullable
+    -- a live game with a home score recorded and no away score yet must not blank the whole
+    `cards` section with a `TypeError`."""
+    game = _game(db_session)
+    db_session.add(GameScoreEvent(game_id=game.id, ts=NOW - timedelta(minutes=2),
+                                  status="in_progress", period=2, clock="5:00",
+                                  home_score=10, away_score=None))
+    _card(db_session, status="alive", legs=[(game.id, "LSU to win", "alive")])
+    db_session.flush()
+
+    shown = build_ticket(db_session, NOW, env_settings)["cards"][0]
+    assert shown["legs"][0]["home_score"] == 10
+    assert shown["legs"][0]["away_score"] is None
+    assert shown["legs"][0]["needs"] == "no score yet"
+
+
 def test_a_cashed_card_reads_as_cashed(db_session, env_settings):
     game = _game(db_session, status="final")
     card = _card(db_session, status="cashed", legs=[(game.id, "LSU to win", "hit")])

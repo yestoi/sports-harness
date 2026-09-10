@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from harness.config.settings import Settings
 from harness.dashboard import sentences
 from harness.dashboard.snapshots import base_payload, register_builder, section
-from harness.parlay.needs import needs, ScoreState
+from harness.parlay.needs import needs, score_state
 from harness.telemetry import sanitize_reason
 
 log = logging.getLogger(__name__)
@@ -141,12 +141,10 @@ def _cards(session: Session, now: datetime) -> list[dict]:
     by_card: dict[int, list] = {}
     for leg in legs:
         score = scores.get(leg.game_id)
-        state = None
-        if score is not None and score.home_score is not None:
-            state = ScoreState(status=score.status, home_team_id=leg.home_team_id,
-                               away_team_id=leg.away_team_id,
-                               home_score=int(score.home_score),
-                               away_score=int(score.away_score))
+        # `home_score` and `away_score` are independently nullable (ruling A-I4): `score_state`
+        # already checks both, unlike the hand-rolled `ScoreState` this replaced, which raised
+        # `TypeError` on a row with a home score and no away score.
+        state = score_state(leg, score) if score is not None else None
         prob = probs.get(leg.id)
         by_card.setdefault(leg.card_id, []).append({
             "leg_id": leg.id, "seq": leg.seq, "game_id": leg.game_id,
@@ -245,9 +243,9 @@ def _between(session: Session, now: datetime) -> dict:
 def build_ticket(session: Session, now: datetime, settings: Settings) -> dict:
     payload = base_payload("ticket", now, settings, CADENCE_OUT_S)
     payload["badge"] = BADGE
-    section(payload, "cards", lambda: _cards(session, now))
-    section(payload, "season", lambda: _season(session))
-    section(payload, "between", lambda: _between(session, now))
+    section(session, payload, "cards", lambda: _cards(session, now))
+    section(session, payload, "season", lambda: _season(session))
+    section(session, payload, "between", lambda: _between(session, now))
     between = payload["between"] if isinstance(payload["between"], dict) else {}
     payload["sentences"] = {"between": sentences.ticket_between(between)}
     payload["readings"] = {}
