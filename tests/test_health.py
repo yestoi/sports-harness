@@ -181,3 +181,15 @@ def test_the_watch_levels_sit_below_the_broken_levels():
     assert health.WS_EVENT_WATCH_S < health.WS_EVENT_BROKEN_S
     assert health.DB_WATCH_FRACTION < health.DB_BROKEN_FRACTION
     assert health.CREDITS_LOW_FRACTION < health.CREDITS_WATCH_FRACTION
+
+
+# --- Phase 5 (addendum §1.4, D19): the research layer's one new threshold ---------------------
+
+def test_the_research_thresholds_have_one_home():
+    from harness import health
+
+    assert health.VETO_RATE_WATCH == 0.25
+    # The caps themselves are Settings values, deliberately: they are the user's money, they are
+    # read through SpendState, and a second copy here could disagree with the code that enforces
+    # them. This module holds only the thresholds that *colour* something.
+    assert not hasattr(health, "VETO_DAILY_USD_CAP")

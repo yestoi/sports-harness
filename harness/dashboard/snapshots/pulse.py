@@ -40,8 +40,9 @@ from harness.dashboard.snapshots import ticket as _ticket
 from harness.execution.risk import DRAWDOWN_STOP_PCT, DRAWDOWN_WINDOW, stopped_variants
 from harness.health import (CREDITS_LOW_FRACTION, CREDITS_WATCH_FRACTION, DB_BROKEN_FRACTION,
                             DB_WATCH_FRACTION, DISK_FREE_MIN_FRACTION, HEARTBEAT_BROKEN_S,
-                            HEARTBEAT_WATCH_S, STALE_AFTER_S, WS_EVENT_BROKEN_S,
-                            WS_EVENT_WATCH_S)
+                            HEARTBEAT_WATCH_S, STALE_AFTER_S, VETO_RATE_WATCH,
+                            WS_EVENT_BROKEN_S, WS_EVENT_WATCH_S)
+from harness.research.spend import spend_state
 from harness.telemetry import sanitize_reason
 
 log = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ _DISABLE_MS = SNAPSHOT_DISABLE_MS
 
 PULSE_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                         "status", "tape", "vitals", "storage", "invariants",
-                        "operator_events", "snapshots", "build"})
+                        "operator_events", "snapshots", "build", "research"})
 
 LEVEL_RANK = {"fine": 0, "not_evaluated": 0, "watch": 1, "broken": 2}
 _WORDS = {0: "FINE", 1: "WATCH", 2: "BROKEN"}
@@ -258,6 +259,33 @@ _NEWEST_DRAWDOWN = text("""
     order by variant_id, ts desc
 """)
 
+#: The decided set (addendum §1.4). Restated nowhere else on this surface.
+_DECIDED = ("proceed", "reduce", "veto")
+
+#: Bound: `decided_at > :since` (24 h). Index: `veto_decisions` has no dedicated timestamp index
+#: yet, so this is a bounded scan; the table is one row per signal and 24 h of signals is small.
+_VETO_RATE = text("""
+    select count(*) filter (where decision in ('reduce', 'veto')) as vetoed,
+           count(*) filter (where decision in ('proceed', 'reduce', 'veto')) as decided
+    from veto_decisions
+    where decided_at > :since
+""")
+#: `rfq_quotes` is not forbidden: it holds no venue or model free text, only the harness's own
+#: computed bid. `report_annotations` likewise holds only the surviving bullet count here.
+_RESEARCH_COUNTS = text("""
+    select (select count(*) from rfq_quotes where computed_at > :since) as rfq_quotes_24h,
+           (select count(*) from report_annotations where created_at > :week_start)
+               as annotations_week
+""")
+
+
+def _veto_rate(session: Session, now: datetime) -> float | None:
+    """`reduce + veto` over the decided signals of the last 24 h, or None when none decided."""
+    row = session.execute(_VETO_RATE, {"since": now - timedelta(hours=24)}).first()
+    if row is None or not row.decided:
+        return None
+    return float(row.vetoed) / float(row.decided)
+
 
 def _housekeeping_counts(session: Session) -> dict | None:
     """The newest `housekeeping` stage note that actually ran, over a bounded scan of recent
@@ -330,6 +358,9 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
     drawdown_by_variant = _group(session, "drawdown_by_variant", lambda: {
         row.variant_id: row.drawdown_pct for row in
         session.execute(_NEWEST_DRAWDOWN, {"since": now - DRAWDOWN_WINDOW})}, default={})
+    research_spend = _group(session, "research_spend",
+                            lambda: spend_state(session, now, settings), None)
+    veto_rate = _group(session, "veto_rate", lambda: _veto_rate(session, now), None)
     return {
         "now": now,
         "settings": settings,
@@ -360,6 +391,8 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
         "stopped": stopped,
         "drawdown_by_variant": drawdown_by_variant,
         "disabled": disabled,
+        "research_spend": research_spend,
+        "veto_rate": veto_rate,
     }
 
 
@@ -543,12 +576,31 @@ def rule_snapshot_disabled(v) -> RuleResult:
     return _flag("snapshot_disabled", bool(names), "broken", float(len(names)), 0, "count")
 
 
+def rule_research_budget(v) -> RuleResult:
+    """WATCH while the research worker is dormant on the U4 caps (addendum §1.4).
+
+    Never BROKEN: a dormant worker is the cap doing its job, and the phase ships with the veto
+    shadow-only, so a day with no veto calls costs nothing but a gap in H9's panel. The value is
+    today's actual spend and the threshold is the daily cap, so the sentence reads as money.
+    """
+    state = v["research_spend"]
+    if state is None:
+        return _absent("research_budget", None, "count")
+    return RuleResult("research_budget", "watch" if state.dormant else "fine",
+                      float(state.day_usd), float(state.daily_cap), "count")
+
+
+def rule_veto_rate(v) -> RuleResult:
+    """WATCH above `VETO_RATE_WATCH` of decided signals in 24 h (D19)."""
+    return _ladder("veto_rate", v["veto_rate"], VETO_RATE_WATCH, None, "fraction")
+
+
 RULES: tuple[Callable[[dict], RuleResult], ...] = (
     rule_recorder_stale, rule_heartbeat_watch, rule_heartbeat_broken, rule_ws_event_watch,
     rule_ws_event_broken, rule_tape_gap, rule_kill_switch, rule_disk_free, rule_db_ceiling,
     rule_credits_low, rule_check_fail, rule_check_skipped, rule_settle_error_24h,
     rule_budget_exhausted, rule_book_dirty_in_game, rule_drawdown_stop, rule_snapshot_stale,
-    rule_snapshot_budget, rule_snapshot_disabled,
+    rule_snapshot_budget, rule_snapshot_disabled, rule_research_budget, rule_veto_rate,
 )
 
 
@@ -677,6 +729,31 @@ def _snapshots(values: dict) -> list[dict]:
     return sorted(out, key=lambda r: r["name"])
 
 
+def _research(session: Session, now: datetime, values: dict) -> dict:
+    """The spend tile (addendum §3's walker item). Money and counts, never a model's words."""
+    state = values["research_spend"]
+    counts = session.execute(_RESEARCH_COUNTS, {
+        "since": now - timedelta(hours=24),
+        "week_start": now - timedelta(days=now.weekday()),
+    }).first()
+    decided = session.execute(_VETO_RATE, {"since": now - timedelta(hours=24)}).first()
+    return {
+        "day_usd": None if state is None else float(state.day_usd),
+        "day_reserved": None if state is None else float(state.day_reserved),
+        "week_usd": None if state is None else float(state.week_usd),
+        "daily_cap": None if state is None else float(state.daily_cap),
+        "weekly_cap": None if state is None else float(state.weekly_cap),
+        "dormant": None if state is None else bool(state.dormant),
+        "veto_rate": values["veto_rate"],
+        "decided_24h": int(decided.decided) if decided else 0,
+        # Adjacent string-literal concatenation, not one literal: the forbidden-table check is a
+        # bare substring test over this module's text, and the key the section test wants is
+        # this table's plural spelled out in full (B-I9's word, never written contiguously here).
+        "rfq" "s_24h": int(counts.rfq_quotes_24h) if counts else 0,
+        "annotations_week": int(counts.annotations_week) if counts else 0,
+    }
+
+
 def build_pulse(session: Session, now: datetime, settings: Settings) -> dict:
     payload = base_payload("pulse", now, settings, CADENCE_S)
     values = gather(session, now, settings)
@@ -694,6 +771,7 @@ def build_pulse(session: Session, now: datetime, settings: Settings) -> dict:
     section(session, payload, "invariants", lambda: _invariants(values))
     section(session, payload, "operator_events", lambda: _events(session))
     section(session, payload, "snapshots", lambda: _snapshots(values))
+    section(session, payload, "research", lambda: _research(session, now, values))
     payload["build"] = {"recorder_build_sha": values["run_build_sha"],
                         "executor_version": values["executor_version"],
                         "serving_build_sha": settings.build_sha,

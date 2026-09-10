@@ -211,6 +211,25 @@ def pulse_tape(section: dict) -> list[str]:
     return lines
 
 
+def research_reading(section: dict) -> str:
+    """The spend tile in one sentence. Money is printed with its cap beside it, never alone: a
+    figure with no ceiling next to it is not a reading."""
+    if section.get("day_usd") is None:
+        return "Research spend: not evaluated, because nothing has been recorded yet."
+    dormant = " The worker is dormant until tomorrow." if section.get("dormant") else ""
+    return (f"Research spend today: ${section['day_usd']:.2f} of ${section['daily_cap']:.2f}, "
+            f"with ${section['day_reserved']:.2f} reserved. This week: "
+            f"${section['week_usd']:.2f} of ${section['weekly_cap']:.2f}.{dormant}")
+
+
+def veto_reading(section: dict) -> str:
+    if section.get("veto_rate") is None:
+        return "Veto rate: not evaluated, because no signal has been decided in 24 hours."
+    return (f"The veto reduced or vetoed {fmt_pct(section['veto_rate'])} of "
+            f"{fmt_int(section['decided_24h'])} decided signals in 24 hours. "
+            "Decisions are post-hoc and change nothing that was placed.")
+
+
 # --- Floor ---------------------------------------------------------------------------------------
 
 def floor_board(section: dict) -> list[str]:

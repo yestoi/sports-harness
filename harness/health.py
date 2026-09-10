@@ -45,6 +45,18 @@ DB_WATCH_FRACTION = 0.6
 #: renders as 80.0.
 DB_BROKEN_FRACTION = 0.8
 
+# --- phase 5: the research layer's two Pulse rules (addendum §1.4, D19) -----------------------
+# One home, imported by the builder and never restated in a sentence or in the front end. The
+# spend *caps* are deliberately not here: they are `Settings.veto_daily_usd_cap` and
+# `.veto_weekly_usd_cap`, they are the user's money, `harness/research/spend.py` enforces them,
+# and a second copy in this module could disagree with the code that does the enforcing. What
+# lives here is the threshold that colours something.
+
+#: D19: more than this share of *decided* signals vetoed or reduced in 24 h is a WATCH. Decided
+#: is `proceed | reduce | veto`; `veto_skipped_budget` and `veto_error` are the budget's and the
+#: machine's, and counting them would make a dormant day look like a calm one.
+VETO_RATE_WATCH = 0.25
+
 
 def compute_health(session_factory: sessionmaker, now: datetime, credits_budget: int) -> tuple[dict, int]:
     """Shared by the `/healthz` route and the dashboard's Health section.

@@ -3,6 +3,7 @@ that an absent input is `not evaluated` rather than fine."""
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,9 +11,60 @@ from harness.dashboard.snapshots import pulse
 from harness.dashboard.snapshots.pulse import (PULSE_KEYS, RuleResult, build_pulse, gather,
                                                status_word)
 from harness.db.models import (CheckResult, DashboardSnapshot, EquitySnapshot, ExecHeartbeat,
-                               Game, JobRun, KillSwitch, MetricSample, OperatorEvent, Run)
+                               Game, JobRun, KillSwitch, MetricSample, OperatorEvent, Run,
+                               VetoDecision)
 
 NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
+
+
+def _absent_values() -> dict:
+    """Every rule's input, absent, so a test can call `rule(_absent_values())` for any rule in
+    `RULES` with no database and no real `gather()`. Mirrors `gather()`'s own keys and the
+    absent-safe defaults its `_group` calls already fall back to."""
+    return {
+        "now": NOW,
+        "settings": SimpleNamespace(db_budget_gb=2000, odds_monthly_credits=5_000_000),
+        "run_age_s": None,
+        "run_build_sha": None,
+        "heartbeat_age_s": None,
+        "ws_event_age_s": None,
+        "book_dirty_markets": None,
+        "executor_version": None,
+        "heartbeat": None,
+        "kill_active": None,
+        "gaps_2h": 0.0,
+        "disk_free_gb": None,
+        "disk_total_gb": None,
+        "mem_available_mb": None,
+        "housekeeping": None,
+        "credits_remaining": None,
+        "sweep": [],
+        "settle": [],
+        "floor_ms": [],
+        "snapshots": [],
+        "games_live": 0,
+        "stopped": [],
+        "drawdown_by_variant": {},
+        "disabled": [],
+        "research_spend": None,
+        "veto_rate": None,
+    }
+
+
+def _seed_decisions(session, *, proceed=0, reduce=0, veto=0, skipped=0, errored=0):
+    """`proceed + reduce + veto` decided signals, plus `skipped` (`veto_skipped_budget`) and
+    `errored` (`veto_error`) ones that must not count toward the denominator (D19)."""
+    signal_id = 0
+    for decision, count in (("proceed", proceed), ("reduce", reduce), ("veto", veto),
+                            ("veto_skipped_budget", skipped), ("veto_error", errored)):
+        for _ in range(count):
+            signal_id += 1
+            session.add(VetoDecision(
+                signal_id=signal_id, call_id=None, decision=decision, confidence=None,
+                from_cache=False, feature_delta={},
+                signal_created_at=NOW - timedelta(minutes=5), decided_at=NOW - timedelta(hours=1),
+                reason_code=None))
+    session.flush()
 
 
 def _ok_machine(session, settings):
@@ -73,7 +125,7 @@ RULE_NAMES = [
     "ws_event_broken", "tape_gap", "kill_switch", "disk_free", "db_ceiling",
     "check_fail", "check_skipped", "settle_error_24h", "snapshot_stale",
     "credits_low", "budget_exhausted", "book_dirty_in_game", "drawdown_stop",
-    "snapshot_budget", "snapshot_disabled",
+    "snapshot_budget", "snapshot_disabled", "research_budget", "veto_rate",
 ]
 
 
@@ -604,3 +656,87 @@ def test_a_disabled_study_builder_flags_every_one_of_its_weeks(db_session, env_s
         assert rows["study:2026-35"]["disabled"] and rows["study:2026-36"]["disabled"]
     finally:
         snapshots.reset_disabled_builders()
+
+
+# --- Phase 5 (addendum §1.4, D19): the research layer's two Pulse rules -----------------------
+
+def test_the_two_research_rules_are_registered():
+    from harness.dashboard.snapshots.pulse import RULES
+
+    names = [rule(_absent_values()).name for rule in RULES]
+    assert "research_budget" in names and "veto_rate" in names
+
+
+def test_research_budget_is_fine_with_room_and_watch_when_dormant():
+    from harness.dashboard.snapshots.pulse import rule_research_budget
+    from harness.research.spend import SpendState
+
+    room = SpendState(Decimal("1"), Decimal("0"), Decimal("5"), Decimal("0"),
+                      Decimal("25"), Decimal("150"), dormant=False)
+    out = SpendState(Decimal("24.9"), Decimal("0"), Decimal("40"), Decimal("0"),
+                     Decimal("25"), Decimal("150"), dormant=True)
+    assert rule_research_budget({"research_spend": room}).level == "fine"
+    watch = rule_research_budget({"research_spend": out})
+    assert watch.level == "watch" and watch.value == 24.9 and watch.threshold == 25.0
+
+
+def test_research_budget_is_not_evaluated_before_anything_spent():
+    """A wall that reads green over a measurement nobody took is the failure Pulse exists to
+    prevent: no research_spend row at all is `not evaluated`, never `fine`."""
+    from harness.dashboard.snapshots.pulse import rule_research_budget
+
+    assert rule_research_budget({"research_spend": None}).level == "not_evaluated"
+
+
+@pytest.mark.parametrize("rate,level", [(0.10, "fine"), (0.25, "watch"), (0.40, "watch")])
+def test_veto_rate_watches_at_a_quarter_of_decided_signals(rate, level):
+    from harness.dashboard.snapshots.pulse import rule_veto_rate
+    from harness.health import VETO_RATE_WATCH
+
+    assert VETO_RATE_WATCH == 0.25
+    result = rule_veto_rate({"veto_rate": rate})
+    assert result.level == level and result.threshold == VETO_RATE_WATCH
+    assert result.unit == "fraction"
+
+
+def test_veto_rate_is_not_evaluated_with_no_decided_signals():
+    from harness.dashboard.snapshots.pulse import rule_veto_rate
+
+    assert rule_veto_rate({"veto_rate": None}).level == "not_evaluated"
+
+
+def test_the_veto_rate_denominator_is_the_decided_set(db_session):
+    """D19: the rate is over `proceed | reduce | veto`. `veto_skipped_budget` and `veto_error`
+    are the budget's and the machine's, not the model's, and counting them would make a dormant
+    day look like a calm one."""
+    from harness.dashboard.snapshots.pulse import _veto_rate
+
+    _seed_decisions(db_session, proceed=6, reduce=1, veto=1, skipped=20, errored=20)
+    assert _veto_rate(db_session, NOW) == pytest.approx(0.25)
+
+
+def test_the_research_section_shows_the_spend_and_the_caps(db_session, env_settings):
+    from harness.dashboard.snapshots.pulse import build_pulse
+
+    payload = build_pulse(db_session, NOW, env_settings)
+    section = payload["research"]
+    assert set(section) >= {"day_usd", "day_reserved", "week_usd", "daily_cap", "weekly_cap",
+                            "dormant", "veto_rate", "decided_24h", "rfqs_24h",
+                            "annotations_week"}
+
+
+def test_the_pulse_payload_keys_gain_research():
+    from harness.dashboard.snapshots.pulse import PULSE_KEYS
+
+    assert "research" in PULSE_KEYS
+
+
+def test_no_pulse_query_names_a_forbidden_table():
+    """Ruling B-I9 as it lands on this surface: `research_notes` and `rfqs` hold model and venue
+    free text and are forbidden to every builder. Pulse counts `rfq_quotes` instead."""
+    from pathlib import Path
+
+    body = Path(__import__("harness.dashboard.snapshots.pulse",
+                           fromlist=["__file__"]).__file__).read_text().lower()
+    for table in ("research_notes", "rfqs "):
+        assert table not in body

@@ -40,11 +40,13 @@ MODULES = (pulse, floor, study, gate, ticket, scheduler_mod, window_mod)
 
 #: Grows with the season. The first thirteen are the fix-31 brief's own list; `operator_events`
 #: and `venue_requests` are appended because they are append-only logs with the same property,
-#: and every read of them here is already bounded.
+#: and every read of them here is already bounded. Phase 5 (addendum §1.4, §1.6) adds
+#: `veto_decisions` (one row per decided signal, indefinitely) and `rfq_quotes` (one row per
+#: computed quote, indefinitely); both are read here bounded on their own timestamp.
 BOUNDED_TABLES = frozenset({
     "orderbook_events", "venue_trades", "fair_values", "intents", "orders", "fills", "signals",
     "runs", "job_runs", "metric_samples", "equity_snapshots", "order_watch_samples",
-    "game_score_events", "operator_events", "venue_requests",
+    "game_score_events", "operator_events", "venue_requests", "veto_decisions", "rfq_quotes",
 })
 
 #: Bounded by the shape of the system, not by its age:
@@ -60,10 +62,12 @@ BOUNDED_TABLES = frozenset({
 #:   dashboard_snapshots   -- one row per surface, plus one per ISO week
 #:   report_runs           -- one final run a week and one provisional every six hours
 #:   report_cells          -- keyed by `report_run_id`, the leading column of its primary key
+#:   report_annotations    -- keyed by `report_run_id` (§1.5), fewer than `report_runs` itself:
+#:                            only the week's one *final* run ever gets a row
 TINY_TABLES = frozenset({
     "games", "teams", "venue_markets", "strategy_variants", "gate_reports", "check_results",
     "exec_heartbeat", "kill_switch", "venue_status", "dashboard_snapshots", "report_runs",
-    "report_cells",
+    "report_cells", "report_annotations",
 })
 
 #: Not a table: SQL keywords that follow `from`/`join` in these statements.
@@ -84,9 +88,12 @@ _INTERVAL = re.compile(r"\binterval\b", re.I)
 #: its own `now`, or a literal `now()`. This is what "a `now() - interval` predicate on the BRIN
 #: or leading-index column" looks like once the instant is injected rather than read from the
 #: transaction clock, which every builder does so a test can pin the window.
+#: `decided_at` and `computed_at` are phase 5's additions (addendum §1.4, §1.6): the veto
+#: worker's own decision timestamp and the RFQ quoter's own compute timestamp.
 _TIME_BOUND = re.compile(
     r"\b(ts|created_at|filled_at|placed_at|started_at|generated_at|fetched_at|built_at|"
-    r"evaluated_at|last_loop_at|kickoff_utc|updated_at|signal_created_at)\s*"
+    r"evaluated_at|last_loop_at|kickoff_utc|updated_at|signal_created_at|decided_at|"
+    r"computed_at)\s*"
     r"(>=|>|<=|<|between)\s*(:\w+|%\(\w+\)s|now\s*\(\s*\))", re.I)
 
 
