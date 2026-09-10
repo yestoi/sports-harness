@@ -38,9 +38,9 @@ fault.
 If every surface is stale at once, the scheduler inside `app-serve` is not running: check
 `docker compose logs app-serve` for the `snapshot scheduler started: [...]` line, and restart
 `app-serve` if it is missing. If one surface is stale while the others are fresh, that one
-builder is wedged or crash-looping; its row's `error` field (an exception class name, `NAS
-half`'s `app-serve` logs carry the traceback) is the next place to look. `/api/snap` lists every
-row's `age_s`, `cadence_s` and `error` in one read.
+builder is wedged or crash-looping; its row's `error` field is an exception class name only, and
+`app-serve`'s own logs carry the traceback, which is the next place to look. `/api/snap` lists
+every row's `age_s`, `cadence_s` and `error` in one read.
 
 A snapshot stale on one surface with an `error` beside it in `/api/snap` means that builder is
 failing on its own schedule while the others keep running: the `error` is the exception's class
