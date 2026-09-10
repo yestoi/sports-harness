@@ -69,13 +69,42 @@ def test_the_snapshot_engine_carries_the_timeout_into_postgres(env_settings):
         engine.dispose()
 
 
-def test_a_failing_section_marks_only_itself_and_records_a_class_name():
+def test_a_failing_section_marks_only_itself_and_records_a_class_name(db_session):
     payload = {}
-    section(payload, "good", lambda: {"n": 1})
-    section(payload, "bad", lambda: (_ for _ in ()).throw(ZeroDivisionError("1/0 secret sql")))
+    section(db_session, payload, "good", lambda: {"n": 1})
+    section(db_session, payload, "bad",
+            lambda: (_ for _ in ()).throw(ZeroDivisionError("1/0 secret sql")))
     assert payload["good"] == {"n": 1}
     assert payload["bad"] == {"error": "ZeroDivisionError"}
     assert "secret sql" not in repr(payload)
+
+
+def test_a_database_level_section_failure_rolls_back_and_leaves_the_sibling_and_the_row(
+        db_session, env_settings):
+    """Ruling A-C1: a `DBAPIError` deactivates the SQLAlchemy session, so every later statement
+    on it raises until it is rolled back. `section` must roll back in its own handler (mirroring
+    `app.py:633`'s legacy `_section`) so a section after the failed one -- and the upsert itself
+    -- can still run."""
+    def builder(session, now, settings):
+        payload = {}
+        section(session, payload, "bad", lambda: session.execute(text("select * from no_such_table")))
+        section(session, payload, "good", lambda: {"n": 1})
+        return payload
+
+    snapshots.register_builder("t6dbfail", builder)
+    try:
+        out = run_builder(_factory(db_session), "t6dbfail", NOW, env_settings, cadence_s=30)
+    finally:
+        snapshots.BUILDERS.pop("t6dbfail", None)
+
+    assert out["payload"]["good"] == {"n": 1}
+    assert out["payload"]["bad"] == {"error": "ProgrammingError"}
+    assert out["error"] is None
+    row = db_session.get(DashboardSnapshot, "t6dbfail")
+    db_session.refresh(row)
+    assert row.error is None
+    assert row.payload["good"] == {"n": 1}
+    assert row.payload["bad"] == {"error": "ProgrammingError"}
 
 
 def test_the_name_pattern_is_anchored_and_accepts_only_the_five_shapes():

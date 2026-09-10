@@ -113,15 +113,22 @@ def base_payload(name: str, now: datetime, settings: Settings, cadence_s: int) -
             "readings": {}}
 
 
-def section(payload: dict, key: str, fn: Callable[[], object]) -> None:
+def section(session: Session, payload: dict, key: str, fn: Callable[[], object]) -> None:
     """One section of a payload, guarded. A failure marks that key `{"error": <class name>}` and
     leaves every other section intact -- the `_section` semantics the legacy page has used since
     fix round 1, with the same catch list (a malformed `runs.notes` raises Python shapes, not
-    only SQLAlchemy ones) and the same rule that the class name is all that is recorded."""
+    only SQLAlchemy ones) and the same rule that the class name is all that is recorded.
+
+    A database-level exception (a statement timeout, a bad query) deactivates the SQLAlchemy
+    session: every later statement on it raises until it is rolled back. `app.py:633`'s legacy
+    `_section` has always rolled back in its handler; this one dropped that line, which let one
+    poisoned section fail every section after it, and then the upsert itself, so a failed build
+    wrote no row at all (ruling A-C1)."""
     try:
         payload[key] = fn()
     except Exception as exc:  # noqa: BLE001 - one section must not cost the surface
         log.warning("snapshot section %s failed: %s", key, type(exc).__name__)
+        session.rollback()
         payload[key] = {"error": type(exc).__name__}
 
 
@@ -178,6 +185,10 @@ def run_builder(session_factory: sessionmaker, name: str, now: datetime, setting
             update["payload"] = payload
         else:
             values["payload"] = {}
+        # A build that poisoned the session by some route other than a guarded section (or
+        # whose last section's rollback happened before a later commit-adjacent statement) must
+        # still be able to write its row: the row is the report of the failure (ruling A-C1).
+        session.rollback()
         statement = pg_insert(DashboardSnapshot).values(**values)
         session.execute(statement.on_conflict_do_update(
             index_elements=[DashboardSnapshot.name], set_=update))
