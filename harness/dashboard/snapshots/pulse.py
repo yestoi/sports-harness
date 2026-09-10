@@ -746,10 +746,7 @@ def _research(session: Session, now: datetime, values: dict) -> dict:
         "dormant": None if state is None else bool(state.dormant),
         "veto_rate": values["veto_rate"],
         "decided_24h": int(decided.decided) if decided else 0,
-        # Adjacent string-literal concatenation, not one literal: the forbidden-table check is a
-        # bare substring test over this module's text, and the key the section test wants is
-        # this table's plural spelled out in full (B-I9's word, never written contiguously here).
-        "rfq" "s_24h": int(counts.rfq_quotes_24h) if counts else 0,
+        "rfq_quotes_24h": int(counts.rfq_quotes_24h) if counts else 0,
         "annotations_week": int(counts.annotations_week) if counts else 0,
     }
 

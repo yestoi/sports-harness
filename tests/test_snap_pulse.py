@@ -721,7 +721,7 @@ def test_the_research_section_shows_the_spend_and_the_caps(db_session, env_setti
     payload = build_pulse(db_session, NOW, env_settings)
     section = payload["research"]
     assert set(section) >= {"day_usd", "day_reserved", "week_usd", "daily_cap", "weekly_cap",
-                            "dormant", "veto_rate", "decided_24h", "rfqs_24h",
+                            "dormant", "veto_rate", "decided_24h", "rfq_quotes_24h",
                             "annotations_week"}
 
 
