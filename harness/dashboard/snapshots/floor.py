@@ -12,31 +12,39 @@ on market and `ix_signal_variant_created` leads on variant, and neither can serv
 `created_at` predicate. Under this phase's statement timeout that section would be permanently
 `{"error": ...}` -- the centre panel of the surface, dead on every game day.
 
-Only `intents`, `order_events`, `orders` and `fills` are read directly here, and each is
-bounded by **size**, not by an index. Of the four, only `fills` has a time-leading index
-(`ix_fills_filled_at`): `intents` carries `ix_intents_key` alone, `order_events` only its two
-partial unique indexes, and `orders` has nothing on `placed_at`. All four take thousands of
-rows a day, so a 6 h aggregate over any of them scans comfortably inside the statement timeout.
-No index is added here -- that would be a second decision -- and the Floor `serve.snapshot_ms`
-row in verify.md is what watches the assumption rather than an index that does not exist.
+**Every read here is bounded, and the bound rides an index (fix 31).** The measurement that
+made this non-negotiable is on the NAS, not on a laptop: 2026-09-10 04:26-04:37Z, with the
+snapshot scheduler on, the executor's `exec.loop_ms` went from 5,275 ms to 54,653 ms average
+while `serve.snapshot_ms` hit 12,537 ms for this builder and eight sections hit the 2 s
+statement timeout. The NAS has 1.0-1.4 GB of free memory against a 34 GB database, so a read
+that walks cold pages of a large table does not merely cost its own milliseconds -- it evicts
+the executor's working set from a page cache that cannot hold both. A read bounded only "by
+size" is a read that scans, and a scan is the failure. So each query below states its bound and
+the index that serves it, and the four that used to scan a raw event table were re-sourced.
 
-**The one read that is not bounded, and why.** `_EXPOSURE` reads the `positions` view, which
-aggregates every money fill of every order that has not settled. Measured against twice a
-season's volume (270,000 orders, 135,000 fills) it costs 26 ms with a hundred orders still
-unsettled, 63 ms with 2,700, and 103 ms in the pathological case where settlement has stalled
-and nothing has dropped out of the view at all. What it scales with is the *unsettled* set, not
-the season, because `o.status <> 'settled'` is the view's own bound.
+**What was re-sourced, and to what.** `_INTENTS`, `_SKIPS`, `_CANCELS` and `_ORDERS_COUNT` were
+`count(*)`/`group by` over `intents`, `order_events` and `orders`. None of those three tables
+carries a time-leading index -- `intents` has `ix_intents_key` (leading `variant_id`),
+`order_events` only its two partial unique indexes, `orders` nothing on `placed_at` -- so each
+was a sequential scan of a table with hundreds of thousands of rows, four times a minute. They
+are now one read of `metric_samples` (`_FUNNEL_COUNTS`) off `ix_metric_samples_name_ts`, which
+is the same move fix 17 made for `kalshi_trades_normalized` and fix 19 for `ws_trades_1h`: the
+executor already writes `exec.placed`, `exec.skipped{reason}` and `exec.cancelled{reason}` once
+per `metric_sample_s` (60 s) from its own exact per-period tallies, so the counts come off one
+row per minute instead of one row per event. Two things narrow in the trade, and both are
+stated where they are read: `expire` events are not in `exec.cancelled` (the executor counts a
+cancel *decision*, and an expiry is not one), and the intents number is now the intents that
+reached a decision rather than the intents that were written.
 
-It is left unbounded deliberately, and every candidate bound was rejected for a reason:
-restricting to games that are not final drops the window between the whistle and settlement,
-when the position is still held and is exactly what an exposure display must not hide;
-restricting by order status means restating a status vocabulary that has no canonical constant
-to import; and a predicate on the view's own output columns cannot reach inside its aggregate.
-Above all, the view is the *shared* definition of which fills are real, and
-`harness/db/schema.py`'s `_POSITIONS_VIEW` and `harness.execution.store._POSITIONS` are required
-not to diverge on that. So `serve.snapshot_ms` is the watch on this one read. `_EQUITY` **is**
-bounded, because there the bound is exact and turns a 56 ms sort that spills 5.5 MB to disk into
-a 4 ms one that does not: see `EQUITY_WINDOW`.
+**`_EXPOSURE` no longer reads the `positions` view.** The view aggregates every money fill of
+every unsettled order with no time bound of any kind: `o.status <> 'settled'` is a status
+predicate, not a bound, and on a database where settlement has ever stalled it walks the season.
+The ruling that left it unbounded (phase 4.5, T11 fix round 1) is reversed by the incident
+above. It is now the same aggregate driven from `fills` under `f.filled_at >= :since`
+(`ix_fills_filled_at`), joined to `orders` by primary key and filtered on the view's own two
+predicates, so the answer is the view's answer for every position taken inside
+`EXPOSURE_WINDOW`. `_EQUITY` was already bounded, and for the same shape of reason: see
+`EQUITY_WINDOW`.
 
 **Never shown here.** CLV, markouts or any figure that judges the strategy. Floor shows
 activity, not quality, so that a good afternoon of fills is never mistaken for edge.
@@ -63,15 +71,36 @@ from harness.telemetry import sanitize_reason
 
 log = logging.getLogger(__name__)
 
-#: 15 s inside a game window, 60 s outside; the scheduler decides which and passes it in through
-#: `base_payload`, so the UI's staleness flags are measured against the cadence actually in use.
-#: T16's scheduler imports these rather than restating 15 and 60 in a second home.
-CADENCE_IN_WINDOW_S = 15
-CADENCE_OUT_S = 60
+#: 30 s inside a game window, 120 s outside; the scheduler decides which and passes it in
+#: through `base_payload`, so the UI's staleness flags are measured against the cadence actually
+#: in use. The scheduler imports these rather than restating 30 and 120 in a second home.
+#:
+#: Halved from 15/60 by fix 31. Floor is the most expensive of the five builders and was
+#: rebuilding four times a minute out of window on a NAS with 1.0-1.4 GB free against a 34 GB
+#: database; the surface it feeds is read by one person on a phone, who cannot tell 30 s from
+#: 15 s, while the executor could tell the difference to the tune of ten times its loop time.
+CADENCE_IN_WINDOW_S = 30
+CADENCE_OUT_S = 120
 
 FUNNEL_WINDOW = WINDOW_6H
+#: `_funnel`'s `runs.notes` row cap (fix 31). The recorder writes one `runs` row per tick at a
+#: 30 s heartbeat, so a 6 h window is about 720 rows; this is roughly triple that, which is the
+#: margin a game-day tick rate needs, and it is what makes the read stop rather than fall
+#: through to a scan of every run of the season. `recent_run_notes` reads newest-first off the
+#: primary key, so the cap drops the *oldest* rows of the window, never the newest.
+FUNNEL_NOTES_LIMIT = 2000
 BOARD_WINDOW = timedelta(hours=24)
 BOARD_LOOKBACK = timedelta(hours=4)
+#: How far back `_SCORES` looks for a board game's newest score row. A game on the board either
+#: kicks off inside `BOARD_WINDOW` or kicked off inside `BOARD_LOOKBACK`, so twelve hours covers
+#: the longest game and its overtime with room to spare, and it is what turns the per-game
+#: `distinct on` from "walk this game's whole history" into a bounded range on
+#: `ix_game_score_events_game_ts (game_id, ts desc)`.
+SCORES_WINDOW = timedelta(hours=12)
+#: The bound on `_BOARD`'s per-game open-order count. An order still open on a game that has not
+#: kicked off yet was placed in the last two days; anything older is a stuck row, not exposure a
+#: board tile should be counting.
+BOARD_ORDERS_WINDOW = timedelta(hours=48)
 WATCH_WINDOW = timedelta(hours=2)
 #: How far back a fair value still counts as "current" for an open order's live edge.
 FAIR_WINDOW = timedelta(hours=2)
@@ -84,6 +113,21 @@ VENUE_WINDOW = timedelta(hours=24)
 #: enough that a lane only disappears if the executor has written no equity row for a week,
 #: which is a far louder failure than a stale lane.
 EQUITY_WINDOW = timedelta(days=7)
+#: The bound on `_EXPOSURE` and `_OPEN_STAKE` (fix 31). Fourteen days is far longer than the gap
+#: between a fill and its settlement -- the settler runs hourly -- so in normal operation the
+#: window drops nothing at all. What it buys is that a database on which settlement has stalled
+#: costs this builder a bounded read rather than a walk of the season, and a position held for
+#: two weeks without settling is a louder failure than a missing exposure lane. It rides
+#: `ix_fills_filled_at` on the fills side and `ix_orders_status` on the orders side.
+EXPOSURE_WINDOW = timedelta(days=14)
+#: The bound on `_OPEN_ORDERS`. An order that has been resting for a week is not a resting order
+#: any more, and the surface's own `age_s` column would say so if one ever appeared.
+OPEN_ORDERS_WINDOW = timedelta(days=7)
+#: `_VITALS`' row cap. `VITALS_WINDOW` at `metric_sample_s` = 60 is about 120 rows per name and
+#: four names, so 2,000 is an order of magnitude of headroom; it exists so a sampler that ever
+#: runs hot cannot hand this section an unbounded sort. Rows come back newest-first and are
+#: reversed in `_vitals`, so the cap drops the oldest points of the window.
+VITALS_LIMIT = 2000
 #: The smoke note is written once per deploy, so "no smoke recorded" means none in a month. The
 #: bound is what keeps that branch from walking the whole index on a database that has none.
 SMOKE_WINDOW = timedelta(days=30)
@@ -111,8 +155,12 @@ _BOARD = text("""
            h.display_name as home_name, a.display_name as away_name,
            (select count(*) from venue_markets m
             where m.game_id = g.id and m.match_status = any(:matched)) as matched_markets,
+           -- Bound: `o.placed_at >= :orders_since` (`BOARD_ORDERS_WINDOW`, 48 h). Index:
+           -- `ix_orders_game (game_id)` seeks the game; the `placed_at` predicate is what stops
+           -- a game whose orders go back weeks from being counted row by row (fix 31).
            (select count(*) from orders o
             where o.game_id = g.id and o.replay = false
+              and o.placed_at >= :orders_since
               and o.status = any(:open_statuses)) as open_orders
     from games g
     left join teams h on h.sport = g.sport and h.id = g.home_team_id
@@ -123,46 +171,65 @@ _BOARD = text("""
     limit :limit
 """)
 
+#: Bound: `ts >= :since` (`SCORES_WINDOW`, 12 h). Index: `ix_game_score_events_game_ts
+#: (game_id, ts desc)` -- the game ids seek, the `ts` predicate prunes inside each game's range
+#: so the `distinct on` reads the head of a bounded run rather than the head of a game's whole
+#: history (fix 31).
 _SCORES = text("""
     select distinct on (game_id) game_id, ts, status, period, clock, home_score, away_score
     from game_score_events
-    where game_id = any(:game_ids)
+    where game_id = any(:game_ids) and ts >= :since
     order by game_id, ts desc
 """)
 
-_INTENTS = text("""
-    select count(*) from intents
-    where replay = false and created_at >= :since
+#: The funnel's placed / skipped / cancelled counts, from the executor's own per-minute tallies
+#: instead of three scans of `intents`, `orders` and `order_events` (fix 31; module docstring).
+#: Bound: `ts >= :since` (`FUNNEL_WINDOW`, 6 h). Index: `ix_metric_samples_name_ts (name, ts
+#: desc)`, one index range per name. `labels->>'reason'` is not indexed and does not need to be:
+#: the range is 6 h of `exec.*` samples at one row per reason per minute.
+#:
+#: `harness/execution/loop.py` writes these from `_MetricsAcc`, which is reset on every write,
+#: so summing the window is the exact count of what the executor did in it -- with one gap, the
+#: same shape of gap fix 19 accepted for `ws_trades_1h`: a sample write that failed is silently
+#: undercounted rather than retried (ruling 1, telemetry never fails its caller), and the
+#: partial minute at each edge is in or out by its own `ts` rather than pro-rated.
+#:
+#: **`exec.cancelled` is cancels, not cancels and expiries.** The replaced `_CANCELS` read
+#: `kind in ('cancel', 'expire')`; `_apply_one` increments the accumulator on a `Cancel` and not
+#: on an `Expire`, so an expired order no longer appears in this list. That is the honest line
+#: to draw anyway -- an expiry is an order reaching its own `expiry`, not a decision to pull it
+#: -- but it is a narrowing and is stated here rather than discovered.
+_FUNNEL_COUNTS = text("""
+    select name, labels->>'reason' as reason, coalesce(sum(value), 0) as n
+    from metric_samples
+    where name in ('exec.placed', 'exec.skipped', 'exec.cancelled') and ts >= :since
+    group by 1, 2
 """)
-_SKIPS = text("""
-    select reason, count(*) as n from order_events
-    where kind = 'skipped' and replay = false and ts >= :since and reason is not null
-    group by reason order by n desc limit :limit
-""")
-_CANCELS = text("""
-    select reason, count(*) as n from order_events
-    where kind in ('cancel', 'expire') and replay = false and ts >= :since
-      and reason is not null
-    group by reason order by n desc limit :limit
-""")
-_ORDERS_COUNT = text("""
-    select count(*) from orders where replay = false and placed_at >= :since
-""")
+#: Bound: `filled_at >= :since` (`FUNNEL_WINDOW`, 6 h). Index: `ix_fills_filled_at`. This one
+#: stays an exact `count(*)` of the table, because unlike the three above it already rides a
+#: time-leading index of its own.
 _FILLS_COUNT = text("""
     select count(*) from fills where replay = false and filled_at >= :since
 """)
 
+#: Bound: `o.placed_at >= :since` (`OPEN_ORDERS_WINDOW`, 7 d) and `limit :limit`
+#: (`ORDERS_LIMIT`). Index: `ix_orders_status (status, replay)` selects the open set, which is
+#: tens of rows in normal operation; the `placed_at` predicate is what keeps a database full of
+#: stuck open rows from turning that into a sort of thousands (fix 31).
 _OPEN_ORDERS = text("""
     select o.id, o.variant_id, o.ticker, o.side, o.prob, o.contracts, o.filled_contracts,
            o.queue_ahead_at_place, o.queue_remaining, o.book_source, o.dirty_minutes,
            o.placed_at, o.venue_market_id, o.edge_at_place
     from orders o
     where o.replay = false and o.status = any(:open_statuses)
+      and o.placed_at >= :since
     order by o.queue_remaining nulls last, o.placed_at desc
     limit :limit
 """)
 #: Spec §2.2 layout (3) wants our price read against the book, so the newest sample's
-#: `best_bid`/`best_ask` ride along with the queue history.
+#: `best_bid`/`best_ask` ride along with the queue history. Bound: `ts >= :since`
+#: (`WATCH_WINDOW`, 2 h) under an `order_id` list of at most `ORDERS_LIMIT`. Index: the table's
+#: own primary key `(order_id, ts)` -- the ids seek and the `ts` predicate prunes inside each.
 _WATCH = text("""
     select order_id, ts, queue_remaining, best_bid, best_ask
     from order_watch_samples
@@ -206,13 +273,29 @@ _FILLS = text("""
     order by f.filled_at desc
     limit :limit
 """)
+#: Bound: `filled_at` between the local day's two midnights, plus `limit :limit` (`FILLS_LIMIT`).
+#: Index: `ix_fills_filled_at`.
 
-#: Deliberately unbounded; see the module docstring. `open_contracts` is the only column the
-#: lane needs, so nothing else is selected.
+#: The `positions` view's own aggregate, bounded (fix 31; module docstring). Bound:
+#: `f.filled_at >= :since` and `o.placed_at >= :since` (`EXPOSURE_WINDOW`, 14 d). Index:
+#: `ix_fills_filled_at` drives it and the join to `orders` is by primary key.
+#:
+#: The three predicates after the bound are `_POSITIONS_VIEW`'s three, in its own vocabulary:
+#: `fill_method` from `store.MONEY_FILL_METHODS` (imported, never restated -- the view and
+#: `store._POSITIONS` are required not to diverge on which fills are real), `o.replay = false`
+#: and `o.status <> 'settled'`. `f.replay` is deliberately not filtered, because the view does
+#: not filter it either: a replay fill belongs to a replay order, and the order is where the
+#: flag is read.
 _EXPOSURE = text("""
-    select variant_id, sum(open_contracts) as contracts
-    from positions group by variant_id
+    select o.variant_id, sum(f.contracts) as contracts
+    from fills f
+    join orders o on o.id = f.order_id
+    where f.filled_at >= :since and f.fill_method = any(:methods)
+      and o.replay = false and o.status <> 'settled'
+      and o.placed_at >= :since
+    group by o.variant_id
 """)
+#: Bound: `ts >= :since` (`EQUITY_WINDOW`, 7 d). Index: `ix_equity_variant_ts (variant_id, ts)`.
 _EQUITY = text("""
     select distinct on (variant_id) variant_id, ts, cash, open_stake, mtm_open, mtm_coverage,
            n_open_positions, n_open_orders
@@ -226,14 +309,22 @@ _EQUITY = text("""
 #: that is the flag the enforcer measures the cap against; the fills *stream* above filters
 #: `f.replay` because that is what the brief's own read does. The two agree in practice -- a
 #: replay fill belongs to a replay order -- and each mirrors its own authority.
+#: Bound: `o.placed_at >= :since` (`EXPOSURE_WINDOW`, 14 d). Index: `ix_orders_status (status,
+#: replay)` selects the open set; `intents` is reached by primary key off `o.intent_id` and is
+#: never scanned. The bound matters for the same reason it does on `_EXPOSURE`: without it a
+#: backlog of stuck open orders turns a read of tens of rows into a read of thousands, each one
+#: a primary-key seek into a second large table (fix 31).
 _OPEN_STAKE = text("""
     select o.variant_id, count(*) as n,
            sum(coalesce(i.stake, o.prob * o.contracts)) as stake
     from orders o
     left join intents i on i.id = o.intent_id
     where o.replay = false and o.status = any(:open_statuses)
+      and o.placed_at >= :since
     group by o.variant_id
 """)
+#: Bound: `f.filled_at` between the local day's two midnights. Index: `ix_fills_filled_at`; the
+#: join to `orders` is by primary key.
 _FILLS_TODAY = text("""
     select o.variant_id, count(*) as n, sum(f.contracts * f.prob) as stake
     from fills f
@@ -243,13 +334,18 @@ _FILLS_TODAY = text("""
     group by o.variant_id
 """)
 
+#: Bound: `ts >= :since` (`VITALS_WINDOW`, 2 h) and `limit :limit` (`VITALS_LIMIT`). Index:
+#: `ix_metric_samples_name_ts (name, ts desc)`, one range per name. Ordered *descending* so the
+#: cap drops the oldest points rather than the newest; `_vitals` reverses each lane (fix 31).
 _VITALS = text("""
     select name, labels, value, ts from metric_samples
     where name in ('exec.loop_ms', 'exec.dirty_markets', 'exec.skipped', 'ws.events_per_min')
       and ts >= :since
-    order by ts
+    order by ts desc
+    limit :limit
 """)
 
+#: Bound: `ts >= :since` (`VENUE_WINDOW`, 24 h) on both. Index: `ix_venue_requests_ts (ts desc)`.
 _VENUE_COUNTS = text("""
     select env, method, count(*) as n from venue_requests
     where ts >= :since group by env, method order by env, method
@@ -258,10 +354,14 @@ _VENUE_PROD_NON_GET = text("""
     select count(*) from venue_requests
     where ts >= :since and env = 'prod' and method <> 'GET'
 """)
+#: `venue_status` holds one row per env (two), so the `distinct on` is over the whole table by
+#: design; there is no window to bound and nothing to prune.
 _VENUE_STATUS = text("""
     select distinct on (env) env, status, reason, since, updated_at
     from venue_status order by env, updated_at desc
 """)
+#: Bound: `ts >= :since` (`SMOKE_WINDOW`, 30 d) and `limit 1`. Index: `ix_operator_events_ts
+#: (ts desc)` -- the scan walks newest-first and stops at the first match or at the window edge.
 _LAST_SMOKE = text("""
     select summary, ts from operator_events
     where ts >= :since and summary like 'demo smoke%' order by ts desc limit 1
@@ -281,10 +381,12 @@ def _board(session: Session, now: datetime) -> dict:
                                          "to_ts": now + BOARD_WINDOW,
                                          "matched": list(MATCHED_STATUSES),
                                          "open_statuses": list(OPEN_STATUSES),
+                                         "orders_since": now - BOARD_ORDERS_WINDOW,
                                          "limit": BOARD_LIMIT}))
     ids = [row.id for row in rows]
     scores = {row.game_id: row for row in
-              session.execute(_SCORES, {"game_ids": ids})} if ids else {}
+              session.execute(_SCORES, {"game_ids": ids,
+                                        "since": now - SCORES_WINDOW})} if ids else {}
     games = []
     for row in rows:
         score = scores.get(row.id)
@@ -310,9 +412,34 @@ def _board(session: Session, now: datetime) -> dict:
     return {"games": games}
 
 
+def _reason_rows(counts: dict[str, float]) -> list[dict]:
+    """One `{reason, count, plain}` row per reason, largest first, capped at `REASON_LIMIT`.
+
+    The cap used to be the SQL's `limit` on a `group by reason`; the counts now arrive already
+    grouped from `_FUNNEL_COUNTS`, so the ordering and the cap moved here rather than a second
+    query being issued to do them. Ruling A-M6 still holds: the raw code is our own vocabulary,
+    but it is the only string in this payload that travels both raw and sanitized, so it takes
+    one sanitize call for consistency with `plain`.
+    """
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:REASON_LIMIT]
+    return [{"reason": sanitize_reason(reason), "count": int(count),
+             "plain": sentences.reason_phrase(reason)} for reason, count in top]
+
+
 def _funnel(session: Session, now: datetime) -> dict:
+    """Ticks, gaps, candidates and rejections out of `runs.notes`; placed, skipped and cancelled
+    out of the executor's own per-minute `metric_samples`; fills out of `fills` itself.
+
+    `intents` is the number that changed meaning in fix 31, and the change is worth stating in
+    the payload's own terms: it was `count(*) from intents`, every intent the executor *wrote*
+    in the window, and it is now every intent that reached a decision -- placed plus skipped.
+    The two agree except for intents still inside their TTL with no verdict yet, which the
+    replaced query counted and this one does not. `exec.intents_considered` is not usable for
+    the old meaning and was not used: `load_intents` re-reads the newest intent per key on every
+    loop, so that gauge counts one intent once per loop it survives, not once.
+    """
     since = now - FUNNEL_WINDOW
-    notes = recent_run_notes(session, since)
+    notes = recent_run_notes(session, since, limit=FUNNEL_NOTES_LIMIT)
     by_variant = signals_by_variant_from_notes(session, notes)
     ticks = gaps = 0
     for note in notes:
@@ -324,24 +451,33 @@ def _funnel(session: Session, now: datetime) -> dict:
     candidates = sum(v["candidate"] for v in by_variant.values())
     rejected = sum(v["rejected"] for v in by_variant.values())
     window = {"since": since}
-    reasons = {"since": since, "limit": REASON_LIMIT}
-    # Ruling A-M6: the raw code is our own vocabulary, but it is the only string in this payload
-    # that travels both raw and sanitized -- one sanitize call for consistency with `plain`.
-    skips = [{"reason": sanitize_reason(row.reason), "count": int(row.n),
-              "plain": sentences.reason_phrase(row.reason)}
-             for row in session.execute(_SKIPS, reasons)]
-    cancels = [{"reason": sanitize_reason(row.reason), "count": int(row.n),
-                "plain": sentences.reason_phrase(row.reason)}
-               for row in session.execute(_CANCELS, reasons)]
+
+    placed = skipped_total = 0.0
+    skips: dict[str, float] = {}
+    cancels: dict[str, float] = {}
+    for row in session.execute(_FUNNEL_COUNTS, window):
+        count = float(row.n or 0)
+        if row.name == "exec.placed":
+            placed += count
+        elif row.name == "exec.skipped":
+            # The total counts every skip; the leak rows below name only the ones that carry a
+            # reason, since a reason-labelled metric arriving without its label is a writer bug
+            # and not a category the surface should invent a nameless row for.
+            skipped_total += count
+            if row.reason:
+                skips[row.reason] = skips.get(row.reason, 0.0) + count
+        elif row.reason:
+            cancels[row.reason] = cancels.get(row.reason, 0.0) + count
     return {
         "window_h": int(FUNNEL_WINDOW.total_seconds() // 3600),
         "ticks": ticks, "gaps": gaps, "candidates": candidates,
         "rejected_total": rejected,
         "by_variant": by_variant,
-        "intents": int(session.execute(_INTENTS, window).scalar() or 0),
-        "orders": int(session.execute(_ORDERS_COUNT, window).scalar() or 0),
+        "intents": int(placed + skipped_total),
+        "orders": int(placed),
         "fills": int(session.execute(_FILLS_COUNT, window).scalar() or 0),
-        "skipped": skips, "cancelled": cancels,
+        "skipped": _reason_rows(skips),
+        "cancelled": _reason_rows(cancels),
     }
 
 
@@ -384,6 +520,7 @@ def _orders(session: Session, now: datetime) -> dict:
     whichever it shows.
     """
     rows = list(session.execute(_OPEN_ORDERS, {"open_statuses": list(OPEN_STATUSES),
+                                               "since": now - OPEN_ORDERS_WINDOW,
                                                "limit": ORDERS_LIMIT}))
     ids = [row.id for row in rows]
     market_ids = sorted({row.venue_market_id for row in rows})
@@ -459,9 +596,11 @@ def _exposure(session: Session, now: datetime, settings: Settings) -> dict:
     `harness/execution/plan.py` measures `cap_daily` against -- never a number written here.
     """
     start, end = local_day_bounds_utc(now, settings.tz_local)
-    positions = {row.variant_id: row for row in session.execute(_EXPOSURE)}
+    held_since = now - EXPOSURE_WINDOW
+    positions = {row.variant_id: row for row in session.execute(
+        _EXPOSURE, {"since": held_since, "methods": list(MONEY_FILL_METHODS)})}
     open_stake = {row.variant_id: row for row in session.execute(
-        _OPEN_STAKE, {"open_statuses": list(OPEN_STATUSES)})}
+        _OPEN_STAKE, {"open_statuses": list(OPEN_STATUSES), "since": held_since})}
     today = {row.variant_id: row for row in session.execute(
         _FILLS_TODAY, {"methods": list(MONEY_FILL_METHODS), "start": start, "end": end})}
     configs = {row.variant_id: (row.config_json or {}) for row in session.execute(
@@ -500,11 +639,15 @@ def _exposure(session: Session, now: datetime, settings: Settings) -> dict:
 
 
 def _vitals(session: Session, now: datetime) -> dict:
+    """The executor's sparklines. `_VITALS` returns newest-first so its `limit` drops the oldest
+    points of the window; each lane is reversed here so the series still reads left to right."""
     lines: dict[str, list] = {}
-    for row in session.execute(_VITALS, {"since": now - VITALS_WINDOW}):
+    for row in session.execute(_VITALS, {"since": now - VITALS_WINDOW, "limit": VITALS_LIMIT}):
         key = row.name if not (row.labels or {}).get("reason") else \
             f"{row.name}:{sanitize_reason(str(row.labels['reason']))}"
         lines.setdefault(key, []).append([row.ts.isoformat(), _dec(row.value)])
+    for lane in lines.values():
+        lane.reverse()
     return {"window_h": int(VITALS_WINDOW.total_seconds() // 3600), "sparklines": lines}
 
 

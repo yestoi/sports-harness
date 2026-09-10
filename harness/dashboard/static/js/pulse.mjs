@@ -190,15 +190,20 @@ function buildCard(payload) {
 
 function snapshotsCard(payload) {
   const section = payload.snapshots;
+  // `disabled` is the scheduler having stopped that builder because three builds in a row cost
+  // more than `disabled_over_ms` (fix 31). It is not an error, so it does not belong in the
+  // error column: the row's numbers are the last good ones and the age is growing on purpose.
+  // Only a restart of app-serve starts it again, which is what the cell says.
   const rows = listOf(section).map((row) =>
     [row.name, fmtAge(row.age_s), `${row.cadence_s} s`, `${row.elapsed_ms} ms`,
+     row.disabled ? `stopped over ${row.disabled_over_ms} ms · restart app-serve` : "",
      row.error || ""]);
   return el("div", { class: "card" },
     el("h3", {}, "How fresh is each page's data?",
        el("span", { class: "technical" }, " · "),
        glossaryTerm("dashboard snapshot", "snapshot")),
     sectionFailed(section) ? el("div", { class: "grey", text: "unavailable" })
-      : table(["surface", "age", "cadence", "build time", "error"], rows,
+      : table(["surface", "age", "cadence", "build time", "state", "error"], rows,
               { label: "Snapshot ages" }));
 }
 

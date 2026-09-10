@@ -10,10 +10,9 @@ import pytest
 
 from harness.dashboard.snapshots import floor
 from harness.dashboard.snapshots.floor import FLOOR_KEYS, QUEUE_HISTORY_LIMIT, build_floor
-from harness.db.models import (EquitySnapshot, FairValue, Fill, Game, GameScoreEvent, Intent,
-                               MetricSample, OperatorEvent, Order, OrderEvent, OrderWatchSample,
-                               Run, StrategyVariant, Team, VenueMarket, VenueRequest,
-                               VenueStatus)
+from harness.db.models import (EquitySnapshot, FairValue, Fill, Game, GameScoreEvent,
+                               MetricSample, OperatorEvent, Order, OrderWatchSample, Run,
+                               StrategyVariant, Team, VenueMarket, VenueRequest, VenueStatus)
 
 NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
 #: NOW is 13:00 in America/Chicago, so the local day opened at 05:00 UTC on the same date.
@@ -55,40 +54,55 @@ def test_no_section_reports_an_error_on_an_empty_database(db_session, env_settin
     assert errored == {}
 
 
-def test_the_funnel_sums_the_run_notes_and_reads_the_small_tables_directly(db_session,
-                                                                          env_settings):
+def _exec_metric(db_session, name, value, reason=None, minutes=60):
+    """One `exec.*` sample of the kind `harness/execution/loop.py` writes once per
+    `metric_sample_s`. Fix 31: the funnel's placed, skipped and cancelled counts come off these
+    instead of scanning `intents`, `orders` and `order_events`."""
+    db_session.add(MetricSample(ts=NOW - timedelta(minutes=minutes), source="exec", name=name,
+                                value=value, labels={} if reason is None
+                                else {"reason": reason}))
+
+
+def test_the_funnel_sums_the_run_notes_and_the_executors_own_per_minute_counts(db_session,
+                                                                               env_settings):
+    """Ticks, gaps, candidates and rejections out of `runs.notes`; placed, skipped and cancelled
+    out of `metric_samples`; `intents` is placed plus skipped, the intents that reached a
+    decision (fix 31)."""
     db_session.add(Run(started_at=NOW - timedelta(hours=1), status="ok", build_sha="abc",
                        notes={"pricing": {"ticks": 40, "gaps": 900, "fair_direct": 30,
                                           "signals": {"sharp_direct": {"candidate": 12,
                                                                        "rejected": 88}}}}))
-    intent = Intent(signal_id=1, variant_id="sharp_direct", venue="kalshi", venue_market_id=1,
-                    ticker="KXNFL-T", side="yes", signal_created_at=NOW - timedelta(hours=1),
-                    created_at=NOW - timedelta(hours=1), replay=False)
-    db_session.add(intent)
-    db_session.flush()
-    db_session.add(OrderEvent(intent_id=intent.id, ts=NOW - timedelta(hours=1), kind="skipped",
-                              reason="kickoff", replay=False))
+    _exec_metric(db_session, "exec.placed", 3)
+    _exec_metric(db_session, "exec.placed", 2, minutes=30)
+    _exec_metric(db_session, "exec.skipped", 1, reason="kickoff")
+    _exec_metric(db_session, "exec.cancelled", 4, reason="reprice")
     db_session.flush()
 
     funnel = build_floor(db_session, NOW, env_settings)["funnel"]
     assert funnel["gaps"] == 900 and funnel["ticks"] == 40
     assert funnel["candidates"] == 12 and funnel["rejected_total"] == 88
-    assert funnel["intents"] == 1
+    assert funnel["orders"] == 5
+    assert funnel["intents"] == 6
     assert {"reason": "kickoff", "count": 1, "plain": "too close to kickoff"} in \
         funnel["skipped"]
+    assert [row["reason"] for row in funnel["cancelled"]] == ["reprice"]
+
+
+def test_the_funnel_counts_only_the_window(db_session, env_settings):
+    """The 6 h `FUNNEL_WINDOW` is the bound on `_FUNNEL_COUNTS`, and it rides
+    `ix_metric_samples_name_ts`. A sample outside it is not a smaller number, it is no number."""
+    _exec_metric(db_session, "exec.placed", 7, minutes=60)
+    _exec_metric(db_session, "exec.placed", 99, minutes=60 * 7)
+    db_session.flush()
+
+    assert build_floor(db_session, NOW, env_settings)["funnel"]["orders"] == 7
 
 
 def test_an_unknown_skip_reason_lands_in_sentences_gaps_sanitized(db_session, env_settings):
     """Ruling A-I2: a reason code the vocabulary has never seen must not be silently lost."""
     db_session.add(Run(started_at=NOW - timedelta(hours=1), status="ok", build_sha="abc",
                        notes={"pricing": {}}))
-    intent = Intent(signal_id=1, variant_id="sharp_direct", venue="kalshi", venue_market_id=1,
-                    ticker="KXNFL-T", side="yes", signal_created_at=NOW - timedelta(hours=1),
-                    created_at=NOW - timedelta(hours=1), replay=False)
-    db_session.add(intent)
-    db_session.flush()
-    db_session.add(OrderEvent(intent_id=intent.id, ts=NOW - timedelta(hours=1), kind="skipped",
-                              reason="<script>brand_new_reason</script>", replay=False))
+    _exec_metric(db_session, "exec.skipped", 1, reason="<script>brand_new_reason</script>")
     db_session.flush()
 
     payload = build_floor(db_session, NOW, env_settings)
@@ -493,3 +507,106 @@ def test_the_payload_carries_sentences_for_every_section(db_session, env_setting
     payload = build_floor(db_session, NOW, env_settings)
     assert set(payload["sentences"]) == {"board", "funnel", "orders"}
     assert all(payload["sentences"][k] for k in payload["sentences"])
+
+
+# --- fix 31: the bounds themselves ----------------------------------------------------------
+
+def test_the_exposure_lane_reads_the_bounded_aggregate_and_not_the_positions_view(db_session,
+                                                                                 env_settings):
+    """Fix 31 reverses the phase 4.5 ruling that left `_EXPOSURE` on the `positions` view. The
+    view aggregates every money fill of every unsettled order with no time bound of any kind, so
+    on a database where settlement has stalled it walks the season; here the same aggregate is
+    driven from `fills` under `EXPOSURE_WINDOW` off `ix_fills_filled_at`.
+
+    The bound drops a position only when settlement has been stalled for a fortnight, which is a
+    louder failure than a missing lane and is watched by its own invariant.
+    """
+    db_session.add(StrategyVariant(variant_id="capped", name="constrained_t", tier="secondary",
+                                   config_json={}, registered_at=NOW, active=True))
+    db_session.add(EquitySnapshot(ts=NOW - timedelta(minutes=5), variant_id="capped",
+                                  cash=Decimal(3000), open_stake=Decimal("0.00"),
+                                  n_open_positions=1, n_open_orders=1))
+    game = _game_with_market(db_session)
+    order = _open_order(db_session, venue_market_id=game.market_id, prob=Decimal("0.4500"),
+                        variant_id="capped", game_id=game.id)
+    inside = NOW - floor.EXPOSURE_WINDOW + timedelta(hours=1)
+    db_session.add(Fill(order_id=order.id, prob=Decimal("0.4500"), contracts=Decimal("7.00"),
+                        fee=Decimal("0.0400"), filled_at=inside, fill_method="queue_model",
+                        tape_source="ws", replay=False))
+    db_session.flush()
+    lane = build_floor(db_session, NOW, env_settings)["exposure"]["lanes"][0]
+    assert lane["open_contracts"] == pytest.approx(7.0)
+
+    outside = NOW - floor.EXPOSURE_WINDOW - timedelta(hours=1)
+    db_session.add(Fill(order_id=order.id, prob=Decimal("0.4500"), contracts=Decimal("500.00"),
+                        fee=Decimal("0.0400"), filled_at=outside, fill_method="queue_model",
+                        source_trade_id="stale", tape_source="ws", replay=False))
+    db_session.flush()
+    lane = build_floor(db_session, NOW, env_settings)["exposure"]["lanes"][0]
+    assert lane["open_contracts"] == pytest.approx(7.0), "the window is the bound"
+
+
+def test_a_settled_or_replay_order_is_still_excluded_from_exposure(db_session, env_settings):
+    """The bound is new; the three predicates under it are `_POSITIONS_VIEW`'s own, and the
+    replacement has to agree with the view on which fills are real."""
+    db_session.add(StrategyVariant(variant_id="capped", name="constrained_t", tier="secondary",
+                                   config_json={}, registered_at=NOW, active=True))
+    db_session.add(EquitySnapshot(ts=NOW - timedelta(minutes=5), variant_id="capped",
+                                  cash=Decimal(3000), open_stake=Decimal("0.00"),
+                                  n_open_positions=0, n_open_orders=0))
+    game = _game_with_market(db_session)
+    settled = _open_order(db_session, venue_market_id=game.market_id, prob=Decimal("0.4500"),
+                          variant_id="capped", status="settled", game_id=game.id)
+    live = _open_order(db_session, venue_market_id=game.market_id, prob=Decimal("0.4500"),
+                       variant_id="capped", game_id=game.id)
+    for order, method in ((settled, "queue_model"), (live, "no_watcher")):
+        db_session.add(Fill(order_id=order.id, prob=Decimal("0.4500"),
+                            contracts=Decimal("11.00"), fee=Decimal("0.0400"),
+                            filled_at=NOW - timedelta(hours=1), fill_method=method,
+                            tape_source="ws", replay=False))
+    db_session.flush()
+    lane = build_floor(db_session, NOW, env_settings)["exposure"]["lanes"][0]
+    assert lane["open_contracts"] == pytest.approx(0.0)
+
+
+def test_the_funnel_caps_the_run_notes_it_reads(db_session, env_settings, monkeypatch):
+    """`runs` carries no index on `started_at`, so the window alone never stopped the read: it
+    was a sequential scan of every run of the season with its `notes` JSONB. The cap is what
+    makes it stop, and `recent_run_notes` now reads newest-first off the primary key so the cap
+    drops the oldest rows of the window rather than the newest."""
+    seen = {}
+
+    def _spy(session, cutoff, limit=None):
+        seen["limit"] = limit
+        return []
+
+    monkeypatch.setattr(floor, "recent_run_notes", _spy)
+    build_floor(db_session, NOW, env_settings)
+    assert seen["limit"] == floor.FUNNEL_NOTES_LIMIT
+
+
+def test_the_board_score_read_is_bounded_to_its_own_window(db_session, env_settings):
+    """A score row older than `SCORES_WINDOW` is not this game's live score; the predicate is
+    what prunes inside each game's range of `ix_game_score_events_game_ts`."""
+    db_session.add(Team(sport="nfl", id=1, display_name="Saints", location="New Orleans",
+                        name="Saints", abbreviation="NO", short_display_name="Saints"))
+    db_session.add(Team(sport="nfl", id=2, display_name="Falcons", location="Atlanta",
+                        name="Falcons", abbreviation="ATL", short_display_name="Falcons"))
+    game = Game(sport="nfl", home_team_id=1, away_team_id=2, status="in_progress",
+                kickoff_utc=NOW - timedelta(minutes=30))
+    db_session.add(game)
+    db_session.flush()
+    db_session.add(GameScoreEvent(game_id=game.id, ts=NOW - floor.SCORES_WINDOW
+                                  - timedelta(hours=1), status="in_progress", period=1,
+                                  clock="10:00", home_score=3, away_score=0))
+    db_session.flush()
+
+    board = build_floor(db_session, NOW, env_settings)["board"]["games"][0]
+    assert board["home_score"] is None and board["score_age_s"] is None
+
+    db_session.add(GameScoreEvent(game_id=game.id, ts=NOW - timedelta(minutes=1),
+                                  status="in_progress", period=2, clock="02:00",
+                                  home_score=17, away_score=10))
+    db_session.flush()
+    board = build_floor(db_session, NOW, env_settings)["board"]["games"][0]
+    assert board["home_score"] == 17

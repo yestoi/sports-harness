@@ -45,6 +45,47 @@ SNAPSHOT_STATEMENT_TIMEOUT_MS = 2000
 #: names it, and a surface that disagreed with the scheduler would be worse than either.
 FLOOR_P95_BUDGET_MS = 250
 
+#: How many times its own budget a builder has to cost, on how many consecutive builds, before
+#: the scheduler stops running it (fix 31). Ten times 250 ms is 2.5 s, which is past the
+#: statement timeout: a builder reading that is not slow, it is a builder whose work no longer
+#: fits the machine, and on 2026-09-10 the answer to that was a person noticing twelve minutes
+#: later. Three consecutive samples, not one: a single 2.5 s build is a checkpoint or a backup
+#: sidecar, and pausing a surface over one of those would be its own outage.
+SNAPSHOT_DISABLE_BUDGET_MULTIPLE = 10
+SNAPSHOT_DISABLE_SAMPLES = 3
+SNAPSHOT_DISABLE_MS = FLOOR_P95_BUDGET_MS * SNAPSHOT_DISABLE_BUDGET_MULTIPLE
+
+#: The builder keys the scheduler has stopped running in *this process*. Process-wide rather
+#: than a row in a table, and that is the whole re-enable rule: `app-serve` is the one process
+#: that both schedules the builds and builds Pulse, so a set here is visible to both, and a
+#: restart of that container is the only thing that clears it. A person restarts a container
+#: deliberately; nothing else does, which is exactly the property a guard that silently turns a
+#: surface off needs. Reads and writes are a `set.add` and a `frozenset` copy, so no lock: under
+#: CPython each is a single bytecode against the interpreter lock, and the two scheduler threads
+#: never race for anything but the same name twice.
+_disabled_builders: set[str] = set()
+
+
+def disable_builder(key: str) -> bool:
+    """Stop running `key` for the life of this process. Returns whether this call is the one
+    that disabled it, so a caller can write its operator event exactly once."""
+    if key in _disabled_builders:
+        return False
+    _disabled_builders.add(key)
+    return True
+
+
+def disabled_builders() -> frozenset[str]:
+    """The builder keys currently disabled. Pulse reads this to name them on its own surface."""
+    return frozenset(_disabled_builders)
+
+
+def reset_disabled_builders() -> None:
+    """Clear the set. Production has exactly one way to do this and it is a restart; this exists
+    so a test that trips the guard does not leak a disabled builder into the next test."""
+    _disabled_builders.clear()
+
+
 #: `pool_size=2` with `max_overflow=0`, deliberately: SQLAlchemy's default overflow of 10 would
 #: let "a pool of two" become twelve connections under a scheduler, on a Postgres already shared
 #: with app-run, app-exec, app-ws and the backup sidecar (ruling A-I10). Two is one for the job

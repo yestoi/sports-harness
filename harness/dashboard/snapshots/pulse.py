@@ -30,8 +30,9 @@ from sqlalchemy.orm import Session
 
 from harness.config.settings import Settings
 from harness.dashboard import sentences
-from harness.dashboard.snapshots import (FLOOR_P95_BUDGET_MS, base_payload, register_builder,
-                                         section)
+from harness.dashboard.snapshots import (FLOOR_P95_BUDGET_MS, SNAPSHOT_DISABLE_MS,
+                                         base_payload, builder_key, disabled_builders,
+                                         register_builder, section)
 from harness.dashboard.snapshots import floor as _floor
 from harness.dashboard.snapshots import gate as _gate
 from harness.dashboard.snapshots import study as _study
@@ -45,7 +46,11 @@ from harness.telemetry import sanitize_reason
 
 log = logging.getLogger(__name__)
 
-CADENCE_S = 30
+#: 60 s, halved from 30 by fix 31. Pulse is the status word every other surface's header
+#: borrows, so it stays the fastest of the five; what it does not need is to re-read
+#: `metric_samples` twice a minute on a NAS whose page cache cannot hold the executor's working
+#: set alongside it.
+CADENCE_S = 60
 #: The tape strip's window and its bucket size (spec §2.1 item 2).
 TAPE_WINDOW = timedelta(hours=24)
 TAPE_BUCKET_MIN = 5
@@ -59,17 +64,31 @@ GAP_WINDOW = timedelta(hours=2)
 FLOOR_P95_WINDOW = timedelta(minutes=10)
 #: How many operator events the surface shows (spec §2.1 item 6).
 EVENTS_LIMIT = 10
+#: `_VITALS`' row cap (fix 31). `TAPE_WINDOW` at `metric_sample_s` = 60 is about 1,440 rows per
+#: name across five names, so this is a little over twice the expected size: enough that the
+#: sparklines are never trimmed in normal operation, and low enough that a sampler running hot
+#: cannot hand this section an unbounded sort. Rows come back newest-first and are reversed in
+#: `_vitals`, so the cap drops the oldest points of the window rather than the newest.
+VITALS_LIMIT = 10_000
 #: The cadence each snapshot's staleness is *judged* against, so the rule can say 2x and 3x.
 #: Deliberately the *out-of-window* cadence for floor and ticket, not the in-window one: a
-#: scheduler that flips floor to 15 s would otherwise make a healthy 40 s-old snapshot read as
-#: stale the moment a game ended. The cost is that a dead floor job is noticed at 120 s rather
-#: than at 30 s, which is inside the window the recorder's own staleness rule already covers.
+#: scheduler that flips floor to 30 s would otherwise make a healthy 80 s-old snapshot read as
+#: stale the moment a game ended. The cost is that a dead floor job is noticed at 240 s rather
+#: than at 60 s, which is inside the window the recorder's own staleness rule already covers.
+#: Fix 31 doubled every cadence these read, so the ladder moved with them and no threshold here
+#: is written down twice.
 #: Named apart from `harness/dashboard/scheduler.py`'s `CADENCES` on purpose: those are the
 #: intervals the jobs actually run at, these are the intervals a snapshot's age is read against,
 #: and the two differ for `floor` and `ticket` by the paragraph above. Neither is the other's
 #: bug to fix.
 JUDGED_CADENCES = {"pulse": CADENCE_S, "floor": _floor.CADENCE_OUT_S, "gate": _gate.CADENCE_S,
                    "ticket": _ticket.CADENCE_OUT_S, "study": _study.CADENCE_S}
+
+#: The builder keys the scheduler has stopped running, and the number a builder had to cost to
+#: earn that. Imported, not restated: `harness/dashboard/scheduler.py` disables on exactly this
+#: threshold, and a surface that named a different one would be describing a guard that does not
+#: exist. See `harness/dashboard/snapshots/__init__.py` for why the set is process-local.
+_DISABLE_MS = SNAPSHOT_DISABLE_MS
 
 PULSE_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                         "status", "tape", "vitals", "storage", "invariants",
@@ -128,9 +147,24 @@ def _flag(name: str, tripped, level: str, value, threshold, unit: str) -> RuleRe
     return RuleResult(name, level if tripped else "fine", value, threshold, unit)
 
 
+#: Bound: `limit 1` in primary-key order. Index: the `runs` primary key, read backwards.
 _NEWEST_RUN = text("select started_at, build_sha from runs order by id desc limit 1")
+#: Final review M7, fixed by fix 31. This was `select odds_remaining from runs where
+#: odds_remaining is not null order by id desc limit 1`: a backward walk of the `runs` primary
+#: key through every credit-less row until it found one, with no bound at all on how far it
+#: would walk. `compute_health` runs the same read under the legacy page's 10 s budget; here the
+#: budget is 2 s and the machine has no page cache to spare.
+#:
+#: The recorder already writes the same number as `recorder.credits_remaining` once per tick,
+#: which is what Pulse's own credits tile draws its sparkline from -- so this is one row per
+#: minute off `ix_metric_samples_name_ts (name, ts desc)`, bounded to `TAPE_WINDOW`, instead of
+#: an unbounded walk of a table with a row per tick per season. A month-old credit reading is
+#: not a reading; absent, `rule_credits_low` reports `not evaluated`, which is the honest word
+#: for a recorder that has not run in a day.
 _NEWEST_CREDITS = text("""
-    select odds_remaining from runs where odds_remaining is not null order by id desc limit 1
+    select value from metric_samples
+    where name = 'recorder.credits_remaining' and value is not null and ts > :since
+    order by ts desc limit 1
 """)
 _HEARTBEAT = text("""
     select last_loop_at, ws_last_event_at, loops_skipped, p95_loop_ms, book_dirty_markets,
@@ -138,16 +172,22 @@ _HEARTBEAT = text("""
     from exec_heartbeat where id = 1
 """)
 _KILL = text("select active from kill_switch where id = 1")
+#: Bound: `ts > :since` (`GAP_WINDOW`, 2 h). Index: `ix_metric_samples_name_ts (name, ts desc)`.
 _GAPS_2H = text("""
     select coalesce(sum(value), 0) from metric_samples
     where name = 'ws.gaps' and ts > :since
 """)
+#: Bound: `ts > :since` (`TAPE_WINDOW`, 24 h). Index: `ix_metric_samples_name_ts (name, ts
+#: desc)` -- `order by name, ts desc` is the index's own order, so the `distinct on` takes the
+#: head of each name's range and stops.
 _NEWEST_METRIC = text("""
     select distinct on (name) name, value, ts from metric_samples
     where name in ('host.disk_free_gb', 'host.disk_total_gb', 'host.mem_available_mb')
       and ts > :since
     order by name, ts desc
 """)
+#: Bound: `ts > :since` (`TAPE_WINDOW`, 24 h). Index: `ix_metric_samples_name_ts (name, ts
+#: desc)`, one range per name; the bucket arithmetic groups what the range returns.
 _TAPE = text("""
     select name, labels->>'source' as source,
            floor(extract(epoch from (:now - ts)) / (:bucket * 60))::int as bucket,
@@ -159,13 +199,20 @@ _TAPE = text("""
 #: Ruling B-C3: only the names a vitals tile actually reads by its `metric` key. `exec.loop_ms`,
 #: `ws.events_per_min`, `ws.trades_per_min` and `ws.reconnects` used to be collected here too and
 #: serialized into every 30 s payload unread -- no tile's `metric` names them.
+#: Bound: `ts > :since` (`TAPE_WINDOW`, 24 h) and `limit :limit` (`VITALS_LIMIT`). Index:
+#: `ix_metric_samples_name_ts (name, ts desc)`, one range per name. Ordered *descending* so the
+#: cap drops the oldest points rather than the newest; `_vitals` reverses each lane (fix 31).
 _VITALS = text("""
     select name, value, ts from metric_samples
     where name in ('exec.p95_loop_ms', 'exec.loops_skipped', 'exec.dirty_markets',
                    'exec.ws_event_age_s', 'recorder.credits_remaining')
       and ts > :since
-    order by ts
+    order by ts desc
+    limit :limit
 """)
+#: Bound: `ts > :since` (`FLOOR_P95_WINDOW`, 10 min). Index: `ix_metric_samples_name_ts (name,
+#: ts desc)`; `labels->>'name'` is unindexed and does not need to be, since the range it filters
+#: is ten minutes of one metric name.
 _FLOOR_MS = text("""
     select value from metric_samples
     where name = 'serve.snapshot_ms' and labels->>'name' = 'floor' and ts > :since
@@ -189,6 +236,7 @@ _SETTLE_RUNS = text("""
 _HOUSEKEEPING = text("""
     select notes from job_runs where job = 'settle' order by started_at desc limit 30
 """)
+#: Bound: `limit :limit` (`EVENTS_LIMIT`). Index: `ix_operator_events_ts (ts desc)`.
 _EVENTS = text("""
     select ts, kind, summary from operator_events order by ts desc limit :limit
 """)
@@ -200,6 +248,8 @@ _GAMES_LIVE = text("select count(*) from games where status = 'in_progress'")
 #: variant that fell to -0.35 and recovered to -0.21 must render -0.21, because the older figure
 #: was true last Tuesday and presenting it as today's is the kind of quiet lie this surface exists
 #: to refuse. `drawdown_stop is not null` is the same "not evaluated" filter the risk module uses.
+#: Bound: `ts >= :since` (`DRAWDOWN_WINDOW`, 7 d). Index: `ix_equity_variant_ts (variant_id,
+#: ts)` -- the window prunes and the per-variant heads are taken from what it returns.
 _NEWEST_DRAWDOWN = text("""
     select distinct on (variant_id) variant_id, drawdown_pct from equity_snapshots
     where ts >= :since and drawdown_stop is not null
@@ -266,12 +316,15 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
     gaps_2h = _group(session, "gaps_2h", lambda: float(session.execute(
         _GAPS_2H, {"since": now - GAP_WINDOW}).scalar() or 0), default=0.0)
     housekeeping = _group(session, "housekeeping", lambda: _housekeeping_counts(session))
-    credits_remaining = _group(session, "credits_remaining",
-                               lambda: session.execute(_NEWEST_CREDITS).scalar())
+    credits_remaining = _group(session, "credits_remaining", lambda: session.execute(
+        _NEWEST_CREDITS, {"since": now - TAPE_WINDOW}).scalar())
     games_live = _group(session, "games_live",
                         lambda: int(session.execute(_GAMES_LIVE).scalar() or 0), default=0)
     stopped = _group(session, "stopped", lambda: sorted(stopped_variants(session, now)),
                      default=[])
+    # No query and no `_group`: this is a set in this process, written by the scheduler thread
+    # that disabled the builder, and it cannot fail or be absent (fix 31).
+    disabled = sorted(disabled_builders())
     drawdown_by_variant = _group(session, "drawdown_by_variant", lambda: {
         row.variant_id: row.drawdown_pct for row in
         session.execute(_NEWEST_DRAWDOWN, {"since": now - DRAWDOWN_WINDOW})}, default={})
@@ -304,6 +357,7 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
         "games_live": games_live,
         "stopped": stopped,
         "drawdown_by_variant": drawdown_by_variant,
+        "disabled": disabled,
     }
 
 
@@ -471,12 +525,28 @@ def rule_snapshot_budget(v) -> RuleResult:
     return RuleResult("snapshot_budget", level, p95, float(FLOOR_P95_BUDGET_MS), "count")
 
 
+def rule_snapshot_disabled(v) -> RuleResult:
+    """BROKEN while the scheduler has stopped running any builder (fix 31).
+
+    Never `not_evaluated`: an empty set is a real reading -- nothing has been disabled -- rather
+    than a measurement nobody took, which is the distinction the whole module turns on. The
+    value is how many builders are off; *which* ones is in the `snapshots` section, one flagged
+    row per builder, because that is where a reader is already looking at their ages.
+
+    The re-enable is a restart of `app-serve` and nothing else, so this rule stays BROKEN until
+    a person acts. That is the intent: a surface quietly frozen on its last payload is the
+    failure this whole phase was written against.
+    """
+    names = v["disabled"]
+    return _flag("snapshot_disabled", bool(names), "broken", float(len(names)), 0, "count")
+
+
 RULES: tuple[Callable[[dict], RuleResult], ...] = (
     rule_recorder_stale, rule_heartbeat_watch, rule_heartbeat_broken, rule_ws_event_watch,
     rule_ws_event_broken, rule_tape_gap, rule_kill_switch, rule_disk_free, rule_db_ceiling,
     rule_credits_low, rule_check_fail, rule_check_skipped, rule_settle_error_24h,
     rule_budget_exhausted, rule_book_dirty_in_game, rule_drawdown_stop, rule_snapshot_stale,
-    rule_snapshot_budget,
+    rule_snapshot_budget, rule_snapshot_disabled,
 )
 
 
@@ -508,11 +578,16 @@ def _tape(session: Session, now: datetime, gaps: float) -> dict:
 
 
 def _vitals(session: Session, now: datetime, values: dict) -> dict:
-    """The stat tiles and their 24 h sparklines, from `metric_samples` alone."""
+    """The stat tiles and their 24 h sparklines, from `metric_samples` alone.
+
+    `_VITALS` returns newest-first so its `limit` drops the oldest points of the window; each
+    lane is reversed here so the series still reads left to right (fix 31)."""
     lines: dict[str, list[list]] = {}
-    for row in session.execute(_VITALS, {"since": now - TAPE_WINDOW}):
+    for row in session.execute(_VITALS, {"since": now - TAPE_WINDOW, "limit": VITALS_LIMIT}):
         lines.setdefault(row.name, []).append(
             [row.ts.isoformat(), float(row.value) if row.value is not None else None])
+    for lane in lines.values():
+        lane.reverse()
     heartbeat = values["heartbeat"] or {}
     return {
         "sparklines": lines,
@@ -581,14 +656,22 @@ def _events(session: Session) -> list[dict]:
 
 def _snapshots(values: dict) -> list[dict]:
     """Every row's age, including the closed `study:` weeks `rule_snapshot_stale` does not judge:
-    the ages panel is the place an operator can see that a week was built and when."""
+    the ages panel is the place an operator can see that a week was built and when.
+
+    `disabled` is the row's own answer to "why has this stopped moving": the scheduler stopped
+    running that builder, and the age beside it is growing for that reason rather than because a
+    job crashed. It is per row, keyed on the builder, so every `study:` week reads disabled when
+    Study is (fix 31)."""
+    disabled = set(values["disabled"])
     out = []
     for row in values["snapshots"]:
         cadence = JUDGED_CADENCES.get(row["name"].split(":")[0], 60)
         out.append({"name": row["name"], "generated_at": row["generated_at"].isoformat(),
                     "age_s": (values["now"] - row["generated_at"]).total_seconds(),
                     "cadence_s": cadence, "elapsed_ms": row["elapsed_ms"],
-                    "error": row["error"]})
+                    "error": row["error"],
+                    "disabled": builder_key(row["name"]) in disabled,
+                    "disabled_over_ms": _DISABLE_MS})
     return sorted(out, key=lambda r: r["name"])
 
 

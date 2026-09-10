@@ -35,8 +35,17 @@ def recent_run_notes(session: Session, cutoff: datetime, limit: int | None = Non
     30s heartbeat (fix round 1, Important 2), and `_data_quality`'s `kalshi_trades_normalized`
     sum needs the same true 24h window `_funnel` and `_candidates` already get. ~2880 rows a day
     of this ~2MB table is cheap to scan in full.
+
+    **Ordered by `id`, not by `started_at` (fix 31).** `runs` carries no index on `started_at`,
+    so `order by started_at desc` was a sequential scan of every run of the season plus a sort
+    of its `notes` JSONB, and a `limit` on top of that capped the rows *returned* without
+    capping the rows *read*. `id` is the primary key and is assigned in insertion order by the
+    one writer that inserts here, the recorder, so newest-first by id is newest-first by time;
+    reading in primary-key order backwards means a `limit` stops the read itself. The `cutoff`
+    predicate is unchanged and still bounds a caller that passes no limit. Callers that do pass
+    one now get what the parameter has always claimed: the newest N rows of the window.
     """
-    stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.started_at))
+    stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.id))
     if limit is not None:
         stmt = stmt.limit(limit)
     return session.execute(stmt).scalars().all()

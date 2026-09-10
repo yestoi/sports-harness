@@ -31,6 +31,9 @@ def _ok_machine(session, settings):
     for name, value, labels in (("ws.gaps", 0, {}), ("host.disk_free_gb", 800.0, {}),
                                 ("host.disk_total_gb", 2000.0, {}),
                                 ("ws.events_per_min", 900, {}),
+                                # Fix 31 (final review M7): the credits reading is the
+                                # recorder's own per-tick sample, not a backward walk of `runs`.
+                                ("recorder.credits_remaining", 4_000_000, {}),
                                 ("recorder.fetched", 12, {"source": "odds"})):
         session.add(MetricSample(ts=NOW - timedelta(minutes=1), source="ws", name=name,
                                  value=value, labels=labels))
@@ -65,18 +68,29 @@ def test_the_payload_carries_only_the_allowed_keys_and_no_money(db_session, env_
         assert banned not in payload
 
 
-@pytest.mark.parametrize("rule_name", [
+RULE_NAMES = [
     "recorder_stale", "heartbeat_watch", "heartbeat_broken", "ws_event_watch",
     "ws_event_broken", "tape_gap", "kill_switch", "disk_free", "db_ceiling",
     "check_fail", "check_skipped", "settle_error_24h", "snapshot_stale",
     "credits_low", "budget_exhausted", "book_dirty_in_game", "drawdown_stop",
-    "snapshot_budget",
-])
+    "snapshot_budget", "snapshot_disabled",
+]
+
+
+@pytest.mark.parametrize("rule_name", RULE_NAMES)
 def test_every_named_rule_is_evaluated(db_session, env_settings, rule_name):
     """Spec §2.1: "every rule has a name and the fired list shows it. This is the whole list;
     a red that is not one of these is a bug." So the set is pinned here."""
     _ok_machine(db_session, env_settings)
     assert rule_name in _rules(db_session, env_settings)
+
+
+def test_the_pinned_list_is_the_whole_list(db_session, env_settings):
+    """"This is the whole list" only means something if the list is closed at both ends: the
+    parametrized test above catches a rule that was removed, and this one catches a rule that
+    was added without being named here."""
+    _ok_machine(db_session, env_settings)
+    assert set(_rules(db_session, env_settings)) == set(RULE_NAMES)
 
 
 def test_a_failing_gather_group_leaves_its_rule_not_evaluated_and_the_rest_intact(
@@ -181,12 +195,35 @@ def test_credits_use_both_imported_fractions(db_session, env_settings):
     for remaining, level, threshold in (
             (budget * CREDITS_WATCH_FRACTION - 1, "watch", CREDITS_WATCH_FRACTION),
             (budget * CREDITS_LOW_FRACTION - 1, "broken", CREDITS_LOW_FRACTION)):
-        db_session.query(Run).delete()
-        db_session.add(Run(started_at=NOW - timedelta(minutes=2), status="ok", notes={},
-                           odds_remaining=int(remaining), build_sha="abc"))
+        db_session.query(MetricSample).filter(
+            MetricSample.name == "recorder.credits_remaining").delete()
+        db_session.add(MetricSample(ts=NOW - timedelta(minutes=1), source="recorder",
+                                    name="recorder.credits_remaining", value=int(remaining),
+                                    labels={}))
         db_session.flush()
         rule = _rules(db_session, env_settings)["credits_low"]
         assert rule.level == level and rule.threshold == threshold
+
+
+def test_credits_come_from_the_recorders_metric_and_not_from_a_walk_of_runs(db_session,
+                                                                           env_settings):
+    """Final review M7, fixed in fix 31. `select odds_remaining from runs where odds_remaining
+    is not null order by id desc` walked the primary key backwards through every credit-less row
+    with no bound at all. The number the recorder writes per tick answers the same question off
+    `ix_metric_samples_name_ts`, bounded to 24 h -- so a `runs` row with credits and no metric
+    beside it is now `not evaluated`, which is the honest word for a recorder that has not run.
+    """
+    _ok_machine(db_session, env_settings)
+    db_session.query(MetricSample).filter(
+        MetricSample.name == "recorder.credits_remaining").delete()
+    db_session.flush()
+    assert _rules(db_session, env_settings)["credits_low"].level == "not_evaluated"
+
+    db_session.add(MetricSample(ts=NOW - timedelta(days=2), source="recorder",
+                                name="recorder.credits_remaining", value=4_000_000, labels={}))
+    db_session.flush()
+    assert _rules(db_session, env_settings)["credits_low"].level == "not_evaluated", \
+        "a reading older than the 24 h window is not a reading"
 
 
 def test_a_gap_in_the_last_two_hours_is_broken_and_never_reads_orderbook_events(
@@ -374,12 +411,15 @@ def test_the_drawdown_value_is_the_newest_reading_not_the_worst_of_the_window(db
 
 def test_a_snapshot_older_than_twice_its_cadence_is_a_watch_and_three_times_is_broken(
         db_session, env_settings):
+    from harness.dashboard.snapshots.pulse import JUDGED_CADENCES
+
     _ok_machine(db_session, env_settings)
+    cadence = JUDGED_CADENCES["pulse"]
     row = db_session.get(DashboardSnapshot, "pulse")
-    row.generated_at = NOW - timedelta(seconds=75)      # 2.5 x a 30 s cadence
+    row.generated_at = NOW - timedelta(seconds=cadence * 2.5)
     db_session.flush()
     assert _rules(db_session, env_settings)["snapshot_stale"].level == "watch"
-    row.generated_at = NOW - timedelta(seconds=200)
+    row.generated_at = NOW - timedelta(seconds=cadence * 3.5)
     db_session.flush()
     assert _rules(db_session, env_settings)["snapshot_stale"].level == "broken"
 
@@ -516,3 +556,51 @@ def test_operator_event_summaries_are_sanitized(db_session, env_settings):
     db_session.flush()
     events = build_pulse(db_session, NOW, env_settings)["operator_events"]
     assert all("<" not in e["summary"] and ">" not in e["summary"] for e in events)
+
+
+def test_a_disabled_builder_is_broken_and_named_in_the_snapshot_ages(db_session, env_settings):
+    """Fix 31. The scheduler stops a builder that costs ten times its budget three builds
+    running; the surface has to say so, because a row frozen on its last payload with a growing
+    age looks exactly like a healthy one to anybody not watching the clock."""
+    from harness.dashboard import snapshots
+
+    _ok_machine(db_session, env_settings)
+    db_session.add(DashboardSnapshot(name="floor", generated_at=NOW - timedelta(seconds=5),
+                                     elapsed_ms=9000, payload={}, error=None))
+    db_session.flush()
+    try:
+        assert _rules(db_session, env_settings)["snapshot_disabled"].level == "fine", \
+            "an empty set is a reading, not an absent one"
+
+        snapshots.disable_builder("floor")
+        rule = _rules(db_session, env_settings)["snapshot_disabled"]
+        assert rule.level == "broken" and rule.value == 1
+
+        payload = build_pulse(db_session, NOW, env_settings)
+        rows = {row["name"]: row for row in payload["snapshots"]}
+        assert rows["floor"]["disabled"] is True
+        assert rows["pulse"]["disabled"] is False
+        assert rows["floor"]["disabled_over_ms"] == snapshots.SNAPSHOT_DISABLE_MS
+        assert payload["status"]["status"] == "BROKEN"
+        assert "snapshot_disabled" in [r["name"] for r in payload["status"]["rules"]]
+    finally:
+        snapshots.reset_disabled_builders()
+
+
+def test_a_disabled_study_builder_flags_every_one_of_its_weeks(db_session, env_settings):
+    """The guard is keyed on the builder, and `study:2026-35` and `study:2026-36` are two rows
+    of one builder on one job. Both stopped; both say so."""
+    from harness.dashboard import snapshots
+
+    _ok_machine(db_session, env_settings)
+    for week in (35, 36):
+        db_session.add(DashboardSnapshot(name=f"study:2026-{week}", generated_at=NOW,
+                                         elapsed_ms=10, payload={}, error=None))
+    db_session.flush()
+    try:
+        snapshots.disable_builder("study")
+        rows = {row["name"]: row for row in build_pulse(db_session, NOW,
+                                                        env_settings)["snapshots"]}
+        assert rows["study:2026-35"]["disabled"] and rows["study:2026-36"]["disabled"]
+    finally:
+        snapshots.reset_disabled_builders()

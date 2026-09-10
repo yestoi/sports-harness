@@ -32,7 +32,10 @@ from harness.report.gate import FAILED, INSUFFICIENT, PASSED
 
 log = logging.getLogger(__name__)
 
-CADENCE_S = 60
+#: 300 s, up from 60 by fix 31. `harness gate` writes at most one evaluation a day, so a
+#: minute's freshness was never worth anything the surface could show; five minutes is still far
+#: inside the staleness ladder and costs the machine a fifth of the reads.
+CADENCE_S = 300
 #: How far back the per-criterion history reaches (spec §2.4 item 2).
 HISTORY_LIMIT = 200
 
@@ -46,7 +49,11 @@ STANDING_TEXT = (
 )
 
 #: Reads only from gate_reports and from strategy_variants -- the two tables spec §2.4 names,
-#: never one of the five forbidden tape tables or any order/fill/signal table.
+#: never one of the five forbidden tape tables or any order/fill/signal table. Neither takes a
+#: time bound and neither needs one: `harness gate` appends at most one evaluation a day and
+#: `strategy_variants` holds one row per registered variant, so both are tens to hundreds of
+#: rows for a season. `_HISTORY` carries the only cap here, `HISTORY_LIMIT`, because it is the
+#: one read whose row count grows with every evaluation rather than with the variant list.
 _NEWEST = text("select max(evaluated_at) from gate_reports")
 _ROWS_AT = text("""
     select g.variant_id, g.gate_variant, g.passed, g.criteria_json, g.criteria_hash,

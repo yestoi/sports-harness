@@ -29,8 +29,11 @@ from harness.telemetry import sanitize_reason
 
 log = logging.getLogger(__name__)
 
-CADENCE_IN_WINDOW_S = 15
-CADENCE_OUT_S = 60
+#: 30 s inside a game window while a card is live, 120 s otherwise. Halved from 15/60 by fix
+#: 31: a parlay leg's score and its "sharps say NN %" move on the recorder's own tick, which is
+#: 30 s, so polling twice a tick only ever re-read the same rows.
+CADENCE_IN_WINDOW_S = 30
+CADENCE_OUT_S = 120
 #: The owner's weekly fun budget (v2 spec §8.1, roadmap phase 5c). Real money.
 WEEKLY_BUDGET = Decimal("50.00")
 #: The badge, in place of PAPER, on this surface and no other.
@@ -39,6 +42,13 @@ BADGE = "FUN MONEY - $50/WEEK - PLACED BY HAND"
 PROB_WINDOW = timedelta(hours=6)
 #: The standing rule for what a card must carry (spec §2.5 item 3).
 ANCHOR_RULE = "every card carries an LSU or Saints leg"
+#: How far back `_SCORES` looks for a leg's newest score row (fix 31). A leg on a live or placed
+#: card belongs to a game of this week, and twelve hours covers the longest one; it is what
+#: prunes inside each game's range of `ix_game_score_events_game_ts` instead of walking it.
+SCORES_WINDOW = timedelta(hours=12)
+#: The cap on the streak walk (fix 31). A season is about twenty cards, so a streak longer than
+#: this cannot exist; the cap is what keeps the read from growing with the table year on year.
+STREAK_LIMIT = 60
 
 TICKET_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                          "badge", "cards", "season", "between"})
@@ -62,9 +72,12 @@ _LEGS = text("""
     where l.card_id = any(:card_ids)
     order by l.card_id, l.seq
 """)
+#: Bound: `ts >= :since` (`SCORES_WINDOW`, 12 h). Index: `ix_game_score_events_game_ts
+#: (game_id, ts desc)` -- the game ids seek, the `ts` predicate prunes inside each game's range
+#: so the `distinct on` reads the head of a bounded run (fix 31).
 _SCORES = text("""
     select distinct on (game_id) game_id, ts, status, period, clock, home_score, away_score
-    from game_score_events where game_id = any(:game_ids)
+    from game_score_events where game_id = any(:game_ids) and ts >= :since
     order by game_id, ts desc
 """)
 _LEG_PROBS = text("""
@@ -112,6 +125,7 @@ _STREAK_CARDS = text("""
     select status from parlay_cards
     where status in ('cashed', 'busted')
     order by built_at desc
+    limit :limit
 """)
 
 
@@ -128,7 +142,8 @@ def _cards(session: Session, now: datetime) -> list[dict]:
     game_ids = sorted({leg.game_id for leg in legs if leg.game_id is not None})
     leg_ids = [leg.id for leg in legs]
     scores = {row.game_id: row for row in
-              session.execute(_SCORES, {"game_ids": game_ids})} if game_ids else {}
+              session.execute(_SCORES, {"game_ids": game_ids,
+                                        "since": now - SCORES_WINDOW})} if game_ids else {}
     probs = {row.leg_id: row for row in
              session.execute(_LEG_PROBS, {"leg_ids": leg_ids})} if leg_ids else {}
     prob_history: dict[int, list] = {}
@@ -207,7 +222,7 @@ def _streak(session: Session) -> int:
     """The current run of consecutive verdicts, most recent card first: positive for a run of
     cashes, negative for a run of busts, 0 when there is no verdict yet."""
     streak = 0
-    for row in session.execute(_STREAK_CARDS):
+    for row in session.execute(_STREAK_CARDS, {"limit": STREAK_LIMIT}):
         delta = 1 if row.status == "cashed" else -1
         if streak != 0 and (streak > 0) != (delta > 0):
             break

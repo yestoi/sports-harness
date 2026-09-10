@@ -35,9 +35,24 @@ from harness.dashboard.snapshots import base_payload, current_name, register_bui
 from harness.report.tables import CONTRAST_BENCHMARK, week_bounds
 from harness.telemetry import sanitize_reason
 
+#: 600 s, unchanged by fix 31: it was already the slowest of the five, and what made Study
+#: expensive on the NAS was building every stale week in one tick, which the scheduler's own
+#: per-tick cap now bounds instead.
 CADENCE_S = 600
 #: Below this share of open contracts valued against a clean book, the marked line is grey.
 MTM_GREY_COVERAGE = 0.5
+#: How many weeks the surface's week picker offers (fix 31). Two seasons: a picker cannot show
+#: more usefully, and it is what stops the list growing with the table year on year.
+WEEKS_LIMIT = 104
+#: `_EQUITY`'s row cap. One ISO week at `equity_sample_s` = 300 is about 2,016 points per
+#: variant, so six exec variants come to roughly 12,000; this is a little over that. It is a
+#: backstop against a sampler running hot, not a trim of the normal case -- the week itself is
+#: the bound that matters, and the payload-size question the module docstring raises is still
+#: open and still belongs here rather than in the front end.
+EQUITY_LIMIT = 20_000
+#: `_ANNOTATIONS`' row cap. Operator events run to tens a week, so this is two orders of
+#: magnitude of headroom and exists for the same reason as `EQUITY_LIMIT`.
+ANNOTATIONS_LIMIT = 500
 
 STUDY_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                         "week", "year", "report_run_id", "provisional", "cell_age_s",
@@ -60,8 +75,10 @@ _CELLS = text("""
     select table_key, row_key, col_key, estimate, n_obs, n_clusters, lo, hi, text, flags
     from report_cells where report_run_id = :run_id
 """)
+#: Bound: `limit :limit` (`WEEKS_LIMIT`). Index: `ix_report_runs_week (year, week, generated_at
+#: desc)` serves both the distinct and the ordering.
 _WEEKS = text("""
-    select distinct year, week from report_runs order by year desc, week desc
+    select distinct year, week from report_runs order by year desc, week desc limit :limit
 """)
 _NEWEST_FINAL_PER_WEEK = text("""
     select distinct on (year, week) year, week, id
@@ -77,20 +94,28 @@ _STUDY_SNAPSHOTS = text("""
     select name, payload->>'report_run_id' as run_id from dashboard_snapshots
     where name like 'study:%'
 """)
-#: Bounded by the week, not by a LIMIT: `Settings.equity_sample_s` defaults to 300, so one week
-#: is about 2,016 points per variant and this is by far the largest thing in the Study payload
-#: (fix round 1, M5). Predictable rather than unbounded, but if `/api/snap` ever needs it
-#: trimmed, the trim belongs here with its rule stated -- never in the front end, which computes
-#: nothing.
+#: Bound: `ts` inside the ISO week's own two boundaries, plus `limit :limit` (`EQUITY_LIMIT`).
+#: Index: `ix_equity_variant_ts (variant_id, ts)`. `Settings.equity_sample_s` defaults to 300,
+#: so one week is about 2,016 points per variant and this is by far the largest thing in the
+#: Study payload (fix round 1, M5).
+#:
+#: Ordered `ts desc` rather than `(variant_id, ts)` (fix 31) so that the cap, if it is ever
+#: reached, drops the oldest points of *every* lane instead of dropping the last variants
+#: entirely -- a curve with a short head is a curve; a variant with no curve is a missing
+#: variant. `_equity` reverses each lane, so the points still read left to right.
 _EQUITY = text("""
     select ts, variant_id, cash, mtm_open, mtm_coverage
     from equity_snapshots
     where ts >= :start and ts < :end
-    order by variant_id, ts
+    order by ts desc
+    limit :limit
 """)
+#: Bound: `ts` inside the ISO week, plus `limit :limit` (`ANNOTATIONS_LIMIT`). Index:
+#: `ix_operator_events_ts (ts desc)`. Newest-first for the same reason as `_EQUITY`, reversed in
+#: `_annotations`.
 _ANNOTATIONS = text("""
     select ts, kind, summary from operator_events
-    where ts >= :start and ts < :end order by ts
+    where ts >= :start and ts < :end order by ts desc limit :limit
 """)
 
 
@@ -102,7 +127,8 @@ def parse_week(name: str) -> tuple[int, int]:
 
 
 def weeks_available(session: Session) -> list[str]:
-    return [f"{row.year}-{row.week}" for row in session.execute(_WEEKS)]
+    return [f"{row.year}-{row.week}"
+            for row in session.execute(_WEEKS, {"limit": WEEKS_LIMIT})]
 
 
 def stale_study_names(session: Session, now: datetime | None = None) -> list[str]:
@@ -188,7 +214,8 @@ def _stored_number(cell: dict | None) -> float | None:
 
 def _equity(session: Session, start: datetime, end: datetime) -> dict:
     lanes: dict[str, dict] = {}
-    for row in session.execute(_EQUITY, {"start": start, "end": end}):
+    for row in session.execute(_EQUITY, {"start": start, "end": end,
+                                         "limit": EQUITY_LIMIT}):
         lane = lanes.setdefault(row.variant_id, {"variant": row.variant_id, "points": [],
                                                  "min_coverage": None})
         cash = float(row.cash)
@@ -200,6 +227,9 @@ def _equity(session: Session, start: datetime, end: datetime) -> dict:
             lane["min_coverage"] = (coverage if lane["min_coverage"] is None
                                     else min(lane["min_coverage"], coverage))
     for lane in lanes.values():
+        # `_EQUITY` reads newest-first so its cap drops the oldest points; reversed here so the
+        # curve reads left to right and `cash` below is still the lane's newest reading.
+        lane["points"].reverse()
         lane["cash"] = lane["points"][-1][1] if lane["points"] else None
         lane["mtm_grey"] = (lane["min_coverage"] is not None
                             and lane["min_coverage"] < MTM_GREY_COVERAGE)
@@ -208,9 +238,11 @@ def _equity(session: Session, start: datetime, end: datetime) -> dict:
 
 
 def _annotations(session: Session, start: datetime, end: datetime) -> list[dict]:
+    rows = session.execute(_ANNOTATIONS, {"start": start, "end": end,
+                                          "limit": ANNOTATIONS_LIMIT}).all()
     return [{"ts": row.ts.isoformat(), "kind": row.kind,
              "summary": sanitize_reason(row.summary or "")}
-            for row in session.execute(_ANNOTATIONS, {"start": start, "end": end})]
+            for row in reversed(rows)]
 
 
 def _ledger_rows(cells: dict) -> list[dict]:
