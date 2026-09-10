@@ -126,6 +126,46 @@ class Settings(BaseSettings):
     mode: str = Field(default="paper", validation_alias="HARNESS_MODE")
     live_trading: int = Field(default=0, validation_alias="LIVE_TRADING")
 
+    # --- phase 5: the research layer ---------------------------------------------------------
+    #: Whether the `app-research` container runs its worker loop at all. True in production and
+    #: documented in `deploy/nas.env` beside `SNAPSHOTS_ENABLED`, which is the NAS-side switch
+    #: an operator actually flips (ruling B-M14). Off, the container starts and idles; the
+    #: dormancy the *key* controls is separate and is reported differently.
+    research_worker_enabled: bool = True
+    #: Whether `app-ws` opens the second socket for the `communications` channel (ruling B-M3).
+    #: Off is the reversal for decision D6: the market tape is unaffected either way, because
+    #: the listener owns its own connection.
+    rfq_listener_enabled: bool = True
+    #: U4, roadmap invariant 7. **Totals across the primary, the shadow, the annotator and the
+    #: parlay rationale** (addendum 0.3), not per model and not per kind. Decimal, not float:
+    #: they are compared against a Numeric(10,4) sum and a float cap would put the phase's one
+    #: hard money limit at the mercy of binary rounding. The day is an America/Chicago day and
+    #: the week is its ISO week; `harness/research/spend.py` is the only enforcement point.
+    veto_daily_usd_cap: Decimal = Decimal("25")
+    veto_weekly_usd_cap: Decimal = Decimal("150")
+    #: R:218's cap on `web_search`, passed straight through as the tool's `max_uses`.
+    veto_max_searches: int = 3
+    #: Addendum 0.2: a **tumbling** 30-minute bucket on (game_id, market_type), not a sliding
+    #: window. Two signals two minutes apart across a bucket edge get two calls, which is the
+    #: rule the boundary case is decided by.
+    veto_bucket_minutes: int = 30
+    #: §8.2's default combo margin, three cents a leg, and the per-RFQ collateral cap. Neither
+    #: reaches a venue: the quote is computed and stored and never sent.
+    rfq_margin_per_leg: Decimal = Decimal("0.03")
+    rfq_collateral_cap_usd: Decimal = Decimal("50")
+    #: The National Weather Service. `nws_user_agent` is fixed verbatim by R:212 and is a
+    #: **user gate** if the service ever rejects or blocklists it -- never an edit by the loop
+    #: (ruling A-M11). `nws_budget_s` is the recorder tick's allowance for the whole weather
+    #: source; the source additionally refuses to run below a 25 s remaining tick budget and on
+    #: any cadence tighter than 300 s (rulings A-I7, B-I10).
+    nws_base_url: str = "https://api.weather.gov"
+    nws_user_agent: str = "sports-harness/1 (self-hosted research harness)"
+    nws_budget_s: int = 20
+    #: The Anthropic key. Already provisioned on the NAS and already pushed by the Makefile's
+    #: existing conditional loop, so this phase adds **no new secret file**. Mounted read-only
+    #: into `app-research` and into no other container (ruling A-M2).
+    anthropic_api_key_file: Path = Path("/run/secrets/anthropic_api_key")
+
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()
 
@@ -157,6 +197,17 @@ class Settings(BaseSettings):
 
     def dashboard_token(self) -> str:
         return self.dashboard_token_file.read_text().strip()
+
+    def has_anthropic_key(self) -> bool:
+        """Whether the research layer's features are live. `is_file()`, not `exists()`: Compose
+        creates an empty *directory* on the host for a missing bind source, so `exists()` would
+        be True with no key behind it and `anthropic_api_key()` would raise `IsADirectoryError`
+        inside the worker instead of the worker reporting `research: dormant, no key`. Same rule
+        as `has_kalshi_credentials` and `backup_recipient_file`."""
+        return self.anthropic_api_key_file.is_file()
+
+    def anthropic_api_key(self) -> str:
+        return self.anthropic_api_key_file.read_text().strip()
 
 
 @lru_cache
