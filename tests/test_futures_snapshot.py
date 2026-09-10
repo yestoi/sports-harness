@@ -144,7 +144,7 @@ def test_discovery_unwraps_the_live_response_shape(db_session):
 # --- parsing -----------------------------------------------------------------------------------
 
 def test_the_dollars_and_fp_strings_are_decoded():
-    rows = parse_futures_markets({"markets": [_market("KXNFLSB-27-KC")]})
+    rows = parse_futures_markets({"markets": [_market("KXNFLSB-27-KC")]}, "KXNFLSB")
     assert rows[0]["yes_bid"] == Decimal("0.12")
     assert rows[0]["last_price"] == Decimal("0.13")
     assert rows[0]["volume"] == Decimal("1000.00")
@@ -156,7 +156,8 @@ def test_the_dollars_and_fp_strings_are_decoded():
 def test_the_venue_market_type_is_kept_under_its_own_name():
     """Ruling A-M8: `market_type` in Kalshi's vocabulary is binary|scalar and has nothing to do
     with the harness's moneyline|spread|total. Two names, so they can never be confused."""
-    rows = parse_futures_markets({"markets": [_market("KXNFLSB-27-KC", market_type="scalar")]})
+    rows = parse_futures_markets({"markets": [_market("KXNFLSB-27-KC", market_type="scalar")]},
+                                 "KXNFLSB")
     assert rows[0]["kalshi_market_type"] == "scalar"
     assert "market_type" not in rows[0]
 
@@ -165,16 +166,30 @@ def test_the_titles_are_sanitized():
     """Venue free text in a stored column. Ruling B-M8 puts `title` and `yes_sub_title` in the
     table; F60 keeps them out of a raw render, and the sanitizer is applied at write."""
     rows = parse_futures_markets({"markets": [
-        _market("KXNFLSB-27-KC", title="<b>Super</b> Bowl\x00", yes_sub_title="KC\x07")]})
+        _market("KXNFLSB-27-KC", title="<b>Super</b> Bowl\x00", yes_sub_title="KC\x07")]},
+        "KXNFLSB")
     assert rows[0]["title"] == "Super Bowl" and rows[0]["yes_sub_title"] == "KC"
 
 
 def test_a_market_without_a_ticker_is_dropped():
-    assert parse_futures_markets({"markets": [{"event_ticker": "X"}]}) == []
+    assert parse_futures_markets({"markets": [{"event_ticker": "X"}]}, "KXNFLSB") == []
 
 
 def test_an_unparseable_body_yields_no_rows():
-    assert parse_futures_markets(None) == [] and parse_futures_markets({"markets": "x"}) == []
+    assert parse_futures_markets(None, "KXNFLSB") == []
+    assert parse_futures_markets({"markets": "x"}, "KXNFLSB") == []
+
+
+def test_the_series_ticker_is_the_one_being_walked_not_derived_from_the_event_ticker():
+    """Fix round 1, Important 1: `event_ticker.split("-")[0]` can never reproduce a series ticker
+    that itself contains a hyphen -- every `KXNFL*WINS-<TEAM>` win-total ladder, the "ladders"
+    half of H7. The loop already knows the series it is walking; that value is what is stored,
+    never a re-derivation from the event ticker."""
+    rows = parse_futures_markets(
+        {"markets": [_market("KXNFLWINS-PIT-25-T15", event="KXNFLWINS-PIT-25")]},
+        "KXNFLWINS-PIT")
+    assert rows[0]["series_ticker"] == "KXNFLWINS-PIT"
+    assert rows[0]["event_ticker"] == "KXNFLWINS-PIT-25"
 
 
 # --- the pass ------------------------------------------------------------------------------------
@@ -253,6 +268,17 @@ def test_a_changed_series_set_restarts_rather_than_resuming_into_the_wrong_serie
     assert second.notes["resume_reset"] is True
 
 
+def test_two_complete_passes_in_a_row_do_not_reset(db_session, env_settings):
+    """Fix round 1, Important 3: a pass that finishes the whole panel must store resume index 0,
+    not `len(series)` -- the latter reads back out of range and falsely reports `resume_reset`
+    the following week even though nothing about the discovery set changed."""
+    kalshi = _kalshi()
+    first = run_futures_snapshot(db_session, env_settings, kalshi, NOW, trigger="cron")
+    assert first.budget_exhausted is False
+    second = run_futures_snapshot(db_session, env_settings, kalshi, NOW, trigger="cron")
+    assert second.notes["resume_reset"] is False
+
+
 def test_a_failing_series_does_not_stop_the_pass(db_session, env_settings):
     class Broken(FakeKalshi):
         def fetch_markets_all(self, series_ticker, **kwargs):
@@ -266,6 +292,45 @@ def test_a_failing_series_does_not_stop_the_pass(db_session, env_settings):
     assert job.status == "degraded"
     assert job.notes["errors"] and "KXNFLSB" in json.dumps(job.notes["errors"])
     assert db_session.execute(text("select count(*) from futures_snapshots")).scalar() == 1
+
+
+def test_a_429_markets_page_stops_the_pass(db_session, env_settings):
+    """Fix round 1, Important 2: a non-200 response is a definite venue refusal, not an empty
+    page -- the transport already retried a 429 once, honouring `Retry-After`. Verified before
+    the fix: the job reported `ok` with both series in `series_reached` and zero rows."""
+    class RateLimited(FakeKalshi):
+        def fetch_markets_all(self, series_ticker, **kwargs):
+            self.asked.append(("markets", series_ticker))
+            return [_result({"error": "slow down"}, status=429)]
+
+    base = _kalshi()
+    kalshi = RateLimited(base.categories, base.series_by_category, base.markets_by_series)
+    job = run_futures_snapshot(db_session, env_settings, kalshi, NOW, trigger="cron")
+    assert job.status == "error"
+    assert job.notes["series_reached"] == []
+    err = job.notes["errors"][0]
+    assert err["endpoint"] == "/markets" and err["status"] == 429 and err["rate_limited"] is True
+    assert db_session.execute(text("select count(*) from futures_snapshots")).scalar() == 0
+
+
+def test_a_500_categories_read_stops_the_pass(db_session, env_settings):
+    """Fix round 1, Important 2: before the fix, an unreadable categories body fell through the
+    rename fallback into "walk all zero categories" and reported `ok` with `series_discovered: 0`
+    -- a silent empty panel."""
+    class Kalshi500(FakeKalshi):
+        def fetch_tags_by_categories(self):
+            self.asked.append(("tags", None))
+            return _result({"error": "boom"}, status=500)
+
+    base = _kalshi()
+    kalshi = Kalshi500(base.categories, base.series_by_category, base.markets_by_series)
+    job = run_futures_snapshot(db_session, env_settings, kalshi, NOW, trigger="cron")
+    assert job.status == "error"
+    err = job.notes["errors"][0]
+    assert err["endpoint"] == "/search/tags_by_categories" and err["status"] == 500
+    assert "boom" in err["body"]
+    assert job.notes["series_discovered"] == 0
+    assert db_session.execute(text("select count(*) from futures_snapshots")).scalar() == 0
 
 
 def test_the_page_pause_is_a_tenth_of_a_second(db_session, env_settings):
