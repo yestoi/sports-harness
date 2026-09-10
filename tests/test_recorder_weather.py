@@ -217,6 +217,132 @@ def test_a_404_on_the_hourly_url_re_resolves_points_once(db_session, env_setting
 
 
 @respx.mock
+def test_a_schema_pin_failure_is_skipped_with_its_reason(db_session, env_settings, monkeypatch):
+    """Important 1: a body the pinned schema no longer holds for is not just a log line -- it
+    reaches `runs.notes["weather"]` the same way "dome" and "no stadium" already do."""
+    from harness.weather import snapshots as module
+    from harness.weather.stadiums import Stadium
+
+    lsu = Stadium("ncaaf", 99, "LSU", "Tiger Stadium", 30.4118, -91.1836, "open",
+                  "https://example.org")
+    monkeypatch.setattr(module, "stadium_for", lambda *a, **k: lsu)
+    respx.get("https://api.weather.gov/points/30.4118,-91.1836").mock(
+        return_value=httpx.Response(200, json=POINTS))
+    celsius = json.loads(json.dumps(HOURLY))
+    for period in celsius["properties"]["periods"]:
+        period["temperatureUnit"] = "C"
+    respx.get(POINTS["properties"]["forecastHourly"]).mock(
+        return_value=httpx.Response(200, json=celsius))
+    _seed_game(db_session, 1, 99, hours_ahead=10)
+
+    client = NwsClient(env_settings)
+    try:
+        counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
+    finally:
+        client.close()
+    assert counts["skipped"] == {"1": "schema pin"}
+    assert counts["fetched"] == 1 and counts["written"] == 0
+
+
+@respx.mock
+def test_a_non_200_forecast_is_skipped_with_its_http_status(db_session, env_settings,
+                                                             monkeypatch):
+    """Important 1, "for the same price": a non-200 that is not a 404/301 (so never reaches the
+    re-resolve branch) still leaves a reason behind, not a silent `written: 0`."""
+    from harness.weather import snapshots as module
+    from harness.weather.stadiums import Stadium
+
+    lsu = Stadium("ncaaf", 99, "LSU", "Tiger Stadium", 30.4118, -91.1836, "open",
+                  "https://example.org")
+    monkeypatch.setattr(module, "stadium_for", lambda *a, **k: lsu)
+    respx.get("https://api.weather.gov/points/30.4118,-91.1836").mock(
+        return_value=httpx.Response(200, json=POINTS))
+    respx.get(POINTS["properties"]["forecastHourly"]).mock(return_value=httpx.Response(500))
+    _seed_game(db_session, 1, 99, hours_ahead=10)
+
+    client = NwsClient(env_settings)
+    try:
+        counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
+    finally:
+        client.close()
+    assert counts["skipped"] == {"1": "http 500"}
+    assert counts["fetched"] == 1
+
+
+@respx.mock
+def test_a_persistent_points_failure_is_skipped_and_still_counts_as_fetched(
+        db_session, env_settings, monkeypatch):
+    """Important 1 + Minor 1: a gridpoint that never resolves gets a "points" reason, and the
+    `/points` GET that failed is still real network work this pass did -- it must not leave an
+    otherwise-quiet tick reading as "skipped"."""
+    from harness.weather import snapshots as module
+    from harness.weather.stadiums import Stadium
+
+    lsu = Stadium("ncaaf", 99, "LSU", "Tiger Stadium", 30.4118, -91.1836, "open",
+                  "https://example.org")
+    monkeypatch.setattr(module, "stadium_for", lambda *a, **k: lsu)
+    respx.get("https://api.weather.gov/points/30.4118,-91.1836").mock(
+        return_value=httpx.Response(500))
+    _seed_game(db_session, 1, 99, hours_ahead=10)
+
+    client = NwsClient(env_settings)
+    try:
+        counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
+    finally:
+        client.close()
+    assert counts["skipped"] == {"1": "points"}
+    assert counts["fetched"] == 1
+    assert respx.calls.call_count == 1
+
+
+@respx.mock
+def test_the_budget_is_checked_before_the_re_resolve_retry(db_session, env_settings,
+                                                            monkeypatch):
+    """Minor 3: the budget is checked before the second round of network calls a 404/301 would
+    trigger (a `/points` re-resolve plus a retry GET), not only once per game -- a tick already
+    down to its last seconds takes the 404 as final."""
+    from harness.weather import snapshots as module
+    from harness.weather.stadiums import Stadium
+
+    class _BudgetOnce:
+        """Enough remaining budget for the outer per-game guard's one check, then none -- so the
+        in-game retry guard (Minor 3) sees an exhausted budget on its own, later check."""
+
+        def __init__(self):
+            self._calls = 0
+
+        def ok(self):
+            return True
+
+        def remaining_s(self):
+            self._calls += 1
+            return 60.0 if self._calls == 1 else 0.0
+
+    lsu = Stadium("ncaaf", 99, "LSU", "Tiger Stadium", 30.4118, -91.1836, "open",
+                  "https://example.org")
+    monkeypatch.setattr(module, "stadium_for", lambda *a, **k: lsu)
+    points = respx.get("https://api.weather.gov/points/30.4118,-91.1836").mock(
+        return_value=httpx.Response(200, json=POINTS))
+    hourly = respx.get(POINTS["properties"]["forecastHourly"]).mock(
+        return_value=httpx.Response(404))
+    _seed_game(db_session, 1, 99, hours_ahead=10)
+    db_session.add(WeatherPoint(sport="ncaaf", team_id=99, office="LIX", grid_x=1, grid_y=1,
+                                forecast_hourly_url=POINTS["properties"]["forecastHourly"],
+                                fetched_at=NOW - timedelta(days=2)))
+    db_session.flush()
+
+    client = NwsClient(env_settings)
+    try:
+        counts = run_weather_source(db_session, 1, client, env_settings, NOW, _BudgetOnce(), {})
+    finally:
+        client.close()
+    assert points.call_count == 0          # the re-resolve GET never happened
+    assert hourly.call_count == 1           # only the first, already-budgeted GET did
+    assert counts["reresolved"] == 0
+    assert counts["skipped"] == {"1": "http 404"}
+
+
+@respx.mock
 def test_the_budget_stops_the_pass_between_games(db_session, env_settings, monkeypatch):
     from harness.weather import snapshots as module
     from harness.weather.stadiums import Stadium

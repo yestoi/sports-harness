@@ -70,6 +70,24 @@ def test_the_short_forecast_is_sanitized_and_capped():
     assert len(row["short_forecast"]) == SHORT_FORECAST_MAX
 
 
+def test_a_null_short_forecast_stays_null_not_an_empty_string():
+    """Minor 4: `sanitize_model_text(None, ...)` returns `""`, but a period NWS did not supply a
+    phrase for is a different fact from one it supplied as blank, and the column is nullable so
+    that distinction can be stored."""
+    body = json.loads(json.dumps(HOURLY))
+    body["properties"]["periods"][0]["shortForecast"] = None
+    assert parse_hourly(body)[0]["short_forecast"] is None
+
+
+def test_a_celsius_body_parses_to_none():
+    """Important 2: `temperatureUnit` is pinned, not just present. `temperature_f` assumes
+    Fahrenheit, and a body that ever answers in Celsius must be a recorded refusal, not a column
+    quietly full of numbers that are wrong by a factor of 1.8."""
+    body = json.loads(json.dumps(HOURLY))
+    body["properties"]["periods"][0]["temperatureUnit"] = "C"
+    assert parse_hourly(body) is None
+
+
 def test_only_the_kickoff_window_is_kept():
     kickoff = datetime(2026, 9, 19, 23, 30, tzinfo=timezone.utc)
     rows = [{"period_start": kickoff + timedelta(hours=h)} for h in range(-4, 9)]

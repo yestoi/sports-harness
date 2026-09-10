@@ -40,8 +40,11 @@ from harness.weather.stadiums import is_outdoor, stadium_for
 log = logging.getLogger(__name__)
 
 #: Pinned from `tests/fixtures/nws_forecast_hourly_lsu.json` (addendum 0.10). If the installed
-#: recording carries different names, these are the recording's, not these.
-HOURLY_FIELDS = ("startTime", "temperature", "windSpeed", "windDirection",
+#: recording carries different names, these are the recording's, not these. `temperatureUnit` is
+#: pinned too, not just present: `temperature_f` assumes Fahrenheit, and a body in Celsius would
+#: otherwise fill the column with plausible wrong numbers -- the same failure class a missing
+#: field is, which is exactly what the pin exists to catch.
+HOURLY_FIELDS = ("startTime", "temperature", "temperatureUnit", "windSpeed", "windDirection",
                  "probabilityOfPrecipitation", "shortForecast")
 
 #: Rulings A-I7 and B-I10: the two cadences the source may run on, and the tick budget it needs.
@@ -116,12 +119,17 @@ def parse_hourly(body) -> list[dict] | None:
     for period in periods:
         if not isinstance(period, dict) or any(f not in period for f in HOURLY_FIELDS):
             return None
+        if period["temperatureUnit"] != "F":
+            # The pin, not a conversion: `temperature_f` is Fahrenheit by name, and a body that
+            # ever answered in Celsius is a recorded refusal, never a silently wrong number.
+            return None
         try:
             start = datetime.fromisoformat(str(period["startTime"]).replace("Z", "+00:00"))
         except ValueError:
             return None
         wind_match = _WIND.search(str(period["windSpeed"] or ""))
         precip = period["probabilityOfPrecipitation"]
+        raw_short = period["shortForecast"]
         rows.append({
             "period_start": start,
             "temperature_f": _int(period["temperature"]),
@@ -130,7 +138,11 @@ def parse_hourly(body) -> list[dict] | None:
             # A null probability and a zero probability are different facts, and a feature block
             # that collapsed them would tell a model it knows something it does not.
             "precip_pct": _int(precip.get("value")) if isinstance(precip, dict) else _int(precip),
-            "short_forecast": sanitize_model_text(period["shortForecast"], SHORT_FORECAST_MAX),
+            # Same distinction for the phrase itself: a null forecast is a fact NWS did not
+            # supply one, not the empty string `sanitize_model_text(None, ...)` would otherwise
+            # produce, and the column is nullable precisely so this can be stored, not guessed.
+            "short_forecast": (sanitize_model_text(raw_short, SHORT_FORECAST_MAX)
+                               if raw_short is not None else None),
         })
     return rows
 
@@ -168,42 +180,56 @@ def run_weather_source(session: Session, run_id: int, client, settings, now: dat
             counts["skipped"][str(game.game_id)] = "dome"
             continue
         try:
-            written, fetched, reresolved = _one_game(session, run_id, client, game, venue, now)
+            _one_game(session, run_id, client, game, venue, now, budget, counts)
         except Exception as exc:  # noqa: BLE001 - one stadium must not cost the pass
             log.warning("nws pass failed for game %s: %s", game.game_id, type(exc).__name__)
             counts["errors"].append({str(game.game_id): type(exc).__name__})
             continue
-        counts["written"] += written
-        counts["fetched"] += fetched
-        counts["reresolved"] += reresolved
     return counts
 
 
-def _one_game(session: Session, run_id: int, client, game: GameVenue, venue,
-              now: datetime) -> tuple[int, int, int]:
+def _one_game(session: Session, run_id: int, client, game: GameVenue, venue, now: datetime,
+              budget, counts: dict) -> None:
+    """One game's pass. Mutates `counts` directly -- `fetched`/`written`/`reresolved` tallies,
+    and, for every terminal outcome that is not a write, a `counts["skipped"][game_id]` reason
+    (design §1.2 / addendum 0.10: a schema-pin refusal, a failed gridpoint, or a non-200 all
+    belong in `runs.notes["weather"]`, the same as "dome" and "no stadium" already are)."""
     point = resolve_point(session, client, run_id, venue, now)
     if point is None:
-        return 0, 0, 0
+        # `resolve_point` returns None only after it has itself made and failed a `/points` GET
+        # (a cached point is handed back without ever reaching the network), so this is real
+        # network work done this pass, not nothing: it counts as a fetch attempt so an
+        # otherwise-quiet tick is not marked "skipped" (Minor 1).
+        counts["fetched"] += 1
+        counts["skipped"][str(game.game_id)] = "points"
+        return
     result = client.get(point.forecast_hourly_url)
     store.store_raw(session, run_id, "nws", "/forecast/hourly",
                     {"game_id": game.game_id, "team": venue.abbreviation}, result)
-    reresolved = 0
-    if result.status in (301, 404):
-        # Ruling A-I6: the gridpoint moved. Re-resolve once, at most once a day, and try again.
+    counts["fetched"] += 1
+    if result.status in (301, 404) and budget.remaining_s() > 0:
+        # Ruling A-I6: the gridpoint moved. Re-resolve once, at most once a day, and try again --
+        # but only if the budget can still afford a second round of network calls (Minor 3): a
+        # tick already down to its last seconds takes the 404 as final rather than spend more of
+        # a cadence the loop cannot get back.
         point = resolve_point(session, client, run_id, venue, now, force=True)
-        reresolved = 1
+        counts["reresolved"] += 1
         if point is None:
-            return 0, 1, reresolved
+            counts["skipped"][str(game.game_id)] = "points"
+            return
         result = client.get(point.forecast_hourly_url)
         store.store_raw(session, run_id, "nws", "/forecast/hourly",
                         {"game_id": game.game_id, "team": venue.abbreviation, "retry": True},
                         result)
+        counts["fetched"] += 1
     if result.status != 200:
-        return 0, 1, reresolved
+        counts["skipped"][str(game.game_id)] = f"http {result.status}"
+        return
     parsed = parse_hourly(result.body)
     if parsed is None:
         log.warning("nws hourly body for game %s did not match the pinned schema", game.game_id)
-        return 0, 1, reresolved
+        counts["skipped"][str(game.game_id)] = "schema pin"
+        return
 
     stored = {r.period_start: dict(r._mapping)
               for r in session.execute(_NEWEST_PERIODS, {"game_id": game.game_id})}
@@ -220,4 +246,4 @@ def _one_game(session: Session, run_id: int, client, game: GameVenue, venue,
         # transaction -- the recorder tick's own checkpoint, or a second pass in the same run --
         # must see rows this pass just wrote, not wait on a later commit elsewhere.
         session.flush()
-    return written, 1, reresolved
+    counts["written"] += written
