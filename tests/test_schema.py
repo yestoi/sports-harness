@@ -584,7 +584,9 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # the fourth view, veto_h9. The ten tables themselves add nothing here: `create_all` emits
     # `CREATE TABLE`, which this filter does not match, and none of them declares a model-level
     # index) = 80.
-    assert len(ddl) == 80, [s for s, _, _ in ddl]
+    # + 1 (phase 5 T16 fix round 1: ix_rfq_quotes_computed, the bound Pulse's research section
+    # reads through) = 81.
+    assert len(ddl) == 81, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.
