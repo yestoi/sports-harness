@@ -46,6 +46,11 @@ CONTRAST_KEY = ("variant", "benchmark_type")
 CONFIRMATION_NOTE = ("confirmation set: restricted to the cells and contrasts selected in the "
                      "week-38 freeze; nothing outside that set is evaluated here.")
 
+#: R:232-234: the bullets live inside a fenced block that says what they are. The Monday duty
+#: acts on the tables, never on the bullets, and the fence is what makes that visible on the page
+#: rather than only in a runbook.
+ANNOTATION_HEADER = "## Model notes (model-written, unverified)"
+
 
 # --- rendering ------------------------------------------------------------------------------
 
@@ -116,6 +121,15 @@ def render_markdown(tables: dict[str, Table], meta: dict) -> str:
     if meta.get("confirmation"):
         lines.append(f"- {CONFIRMATION_NOTE}")
     lines.append("")
+    annotation = meta.get("annotation")
+    if annotation:
+        lines += [ANNOTATION_HEADER, "",
+                  "Written by `claude-opus-5` from the tables below. Every bullet cites a cell "
+                  "and no number in one is absent from a cited cell, but nothing here has been "
+                  "checked by a person. The Monday duty acts on the tables, never on these.",
+                  "", "```"]
+        lines += [f"- {bullet}" for bullet in annotation]
+        lines += ["```", ""]
     for key in TABLE_KEYS:
         table = tables.get(key)
         if table is not None:
