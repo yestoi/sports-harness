@@ -54,7 +54,7 @@ from harness.research.prompt import (EFFORT, MAX_OUTPUT_TOKENS, OUTPUT_SCHEMA, P
                                      SYSTEM_BLOCKS, THINKING, render_user)
 from harness.research.spend import BudgetRefused, release_spend, reserve_spend
 from harness.research.text import VETO_REASON_MAX, sanitize_model_text
-from harness.research.worker import register_pass
+from harness.research.worker import register_closer, register_pass
 
 log = logging.getLogger(__name__)
 
@@ -63,8 +63,16 @@ DECISIONS = ("proceed", "reduce", "veto", "veto_skipped_budget", "veto_error")
 #: "Decided" is the first three -- D19's rate and `veto_h9`'s filter are over exactly this set.
 DECIDED = ("proceed", "reduce", "veto")
 
-__all__ = ["DECISIONS", "DECIDED", "FINAL_STATUSES", "QueuedSignal", "bucket_start",
-           "claim_bucket", "veto_pass"]
+#: How long a claim is believed before the row is treated as stranded (review round 1, Important
+#: 1). The reservation commit carries the claim, so a pass that claims a bucket and then raises
+#: leaves it claimed while `ResearchWorker.run_once` rolls the rest back -- and those signals
+#: would leave H9's population silently, which is the selection ruling B-C1 exists to prevent.
+#: Ten minutes is well clear of the 10-30 s a paired Opus call with web search takes plus the
+#: client's own 120 s timeout, so a reclaim never races a call that is still in flight.
+STALE_CLAIM = timedelta(minutes=10)
+
+__all__ = ["DECISIONS", "DECIDED", "FINAL_STATUSES", "STALE_CLAIM", "QueuedSignal",
+           "bucket_start", "claim_bucket", "close_client", "veto_pass"]
 
 
 @dataclass(frozen=True)
@@ -98,20 +106,35 @@ def bucket_start(created_at: datetime, minutes: int) -> datetime:
     return floored - timedelta(minutes=floored.minute % minutes)
 
 
-_OLDEST_BUCKET = text("""
-    select game_id, market_type, bucket_start from veto_queue
-    where claimed_at is null
-    order by bucket_start, game_id nulls last, market_type
+#: A row is claimable when it has never been claimed, or when its claim is older than
+#: `STALE_CLAIM` and the signal still has no decision. The guard is **per row**, not per bucket:
+#: signals arrive throughout the 30-minute window, so a bucket can be claimed before its last
+#: signal lands, and a bucket-wide "no decisions anywhere" test would strand every late arrival
+#: behind its neighbours' decisions. It also means a crash between two signals of one bucket
+#: re-claims exactly the ones that never decided.
+_CLAIMABLE = """
+    (q.claimed_at is null
+     or (q.claimed_at < :stale_before
+         and not exists (select 1 from veto_decisions d where d.signal_id = q.signal_id)))
+"""
+
+_OLDEST_BUCKET = text(f"""
+    select q.game_id, q.market_type, q.bucket_start from veto_queue q
+    where {_CLAIMABLE}
+    order by q.bucket_start, q.game_id nulls last, q.market_type
     limit 1
 """)
 
-#: One statement, so two workers cannot both take the bucket: the loser's UPDATE matches no rows.
-_CLAIM = text("""
+#: One statement, so two workers cannot both take the bucket: the loser's UPDATE re-reads the row
+#: the winner just wrote, finds `claimed_at = :now` rather than null or stale, and matches
+#: nothing. That holds for a reclaim as well as a first claim, because the winner's `claimed_at`
+#: is never older than the loser's `stale_before`.
+_CLAIM = text(f"""
     update veto_queue q set claimed_at = :now
-    where q.claimed_at is null
-      and q.game_id is not distinct from :game_id
+    where q.game_id is not distinct from :game_id
       and q.market_type = :market_type
       and q.bucket_start = :bucket_start
+      and {_CLAIMABLE}
     returning q.signal_id
 """)
 
@@ -135,11 +158,16 @@ _GAME_STATUS = text("""
 
 
 def claim_bucket(session: Session, now: datetime) -> list[QueuedSignal]:
-    """Claim every unclaimed row of the oldest bucket, and return its signals in arrival order."""
-    head = session.execute(_OLDEST_BUCKET).first()
+    """Claim every claimable row of the oldest bucket, and return its signals in arrival order.
+
+    Claimable is unclaimed, or claimed longer than `STALE_CLAIM` ago and still undecided.
+    """
+    stale_before = now - STALE_CLAIM
+    head = session.execute(_OLDEST_BUCKET, {"stale_before": stale_before}).first()
     if head is None:
         return []
-    claimed = session.execute(_CLAIM, {"now": now, "game_id": head.game_id,
+    claimed = session.execute(_CLAIM, {"now": now, "stale_before": stale_before,
+                                       "game_id": head.game_id,
                                        "market_type": head.market_type,
                                        "bucket_start": head.bucket_start}).scalars().all()
     if not claimed:
@@ -264,6 +292,17 @@ def _shared_client(settings) -> ResearchClient:
     return _CLIENT
 
 
+def close_client() -> None:
+    """Drop the process-wide client and its HTTP pool. Registered as the worker loop's teardown,
+    and safe to call twice or with no client ever built. Clearing the global also means the next
+    sweep rebuilds from whatever `Settings` it is handed, so a restarted loop is never wired to a
+    stale key path (review round 1, minor)."""
+    global _CLIENT
+    client, _CLIENT = _CLIENT, None
+    if client is not None:
+        client.close()
+
+
 def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
     """One sweep: claim the oldest bucket and decide every signal in it.
 
@@ -308,6 +347,11 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
             call_id, primary, _shadow = _call_pair(session, client, settings, item, numeric,
                                                    untrusted, now)
         except BudgetRefused as refused:
+            # `reserve_spend` raised while holding the ISO-week advisory lock, which lives until
+            # this transaction ends. Ending it here releases the lock on the error path instead
+            # of at the worker's post-pass commit, and keeps the accounting rows and every
+            # decision this pass has already written (review round 1, minor).
+            session.commit()
             log.warning("veto skipped on budget: %s", refused)
             _record(session, item, now, decision="veto_skipped_budget", call_id=None,
                     confidence=None, from_cache=False, delta={}, reason_code=refused.cap)
@@ -331,3 +375,4 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
 
 
 register_pass("veto", lambda session, now, settings: veto_pass(session, now, settings))
+register_closer("veto", close_client)

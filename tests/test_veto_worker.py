@@ -11,7 +11,8 @@ from sqlalchemy import text
 from harness.db.models import Intent, OrderEvent
 from harness.research.client import CallResult
 from harness.research.spend import Usage
-from harness.research.veto import DECIDED, DECISIONS, claim_bucket, veto_pass
+from harness.research.veto import (DECIDED, DECISIONS, STALE_CLAIM, claim_bucket,
+                                   veto_pass)
 from tests.veto_fixtures import enqueue, seed_game, seed_history, seed_signal, seed_weather
 
 NOW = datetime(2026, 9, 19, 22, 30, tzinfo=timezone.utc)
@@ -166,6 +167,71 @@ def test_the_oldest_bucket_is_claimed_first(db_session, two_queued_buckets):
 
 def test_a_claim_on_an_empty_queue_is_no_work(db_session):
     assert claim_bucket(db_session, NOW) == []
+
+
+# --- the stranded-bucket reclaim (review round 1, Important 1) ----------------------------------
+
+def test_a_stranded_bucket_is_reclaimed(db_session, queued_bucket):
+    """A pass that claims a bucket and then raises leaves the claim committed -- the reservation
+    commit carries it -- while `run_once` rolls the rest back. Without a reclaim those signals
+    leave H9's population silently, which is the selection ruling B-C1 exists to prevent."""
+    claimed = claim_bucket(db_session, NOW)
+    assert [q.signal_id for q in claimed] == sorted(queued_bucket.signal_ids)
+    again = claim_bucket(db_session, NOW + STALE_CLAIM + timedelta(minutes=1))
+    assert [q.signal_id for q in again] == sorted(queued_bucket.signal_ids)
+
+
+def test_a_fresh_claim_is_not_reclaimed(db_session, queued_bucket):
+    """The window is what keeps a reclaim from racing the call it is waiting on: an Opus call
+    with web search takes 10-30 s, so a bucket two minutes old is in flight, not stranded."""
+    claim_bucket(db_session, NOW)
+    assert claim_bucket(db_session, NOW + timedelta(minutes=2)) == []
+
+
+def test_a_decided_bucket_is_never_reclaimed(db_session, env_settings, queued_bucket):
+    """The decision row is the proof the claim was honoured. However old the claim gets, a signal
+    that has decided must never be paid for twice."""
+    veto_pass(db_session, NOW, env_settings, client=FakeClient())
+    assert db_session.execute(text("select count(*) from veto_decisions")).scalar() == 3
+    assert claim_bucket(db_session, NOW + STALE_CLAIM + timedelta(hours=4)) == []
+
+
+def test_a_reclaimed_bucket_decides(db_session, env_settings, queued_bucket):
+    """The point of the reclaim: the stranded signals reach a decision on the next sweep."""
+    claim_bucket(db_session, NOW)
+    later = NOW + STALE_CLAIM + timedelta(minutes=1)
+    counts = veto_pass(db_session, later, env_settings, client=FakeClient())
+    assert counts["calls"] == 1 and counts["decided"] == 3
+    assert db_session.execute(text("select count(*) from veto_decisions")).scalar() == 3
+
+
+def test_a_signal_enqueued_into_a_decided_bucket_still_claims(db_session, env_settings,
+                                                              queued_bucket):
+    """Signals arrive throughout the 30-minute window, so a bucket can be claimed before the last
+    one lands. The newcomer is unclaimed and claimable on its own, whatever its neighbours have
+    already decided -- the decision guard applies to the row it protects, not to the bucket."""
+    veto_pass(db_session, NOW, env_settings, client=FakeClient())
+    late = seed_signal(db_session, market=queued_bucket.market,
+                       created_at=BUCKET + timedelta(minutes=20))
+    enqueue(db_session, signal=late, game=queued_bucket.game, bucket_start=BUCKET,
+            enqueued_at=late.created_at)
+    claimed = claim_bucket(db_session, NOW + timedelta(minutes=1))
+    assert [q.signal_id for q in claimed] == [late.id]
+
+
+def test_a_partially_decided_stale_bucket_reclaims_only_the_undecided(db_session, env_settings,
+                                                                      queued_bucket):
+    """A crash between two signals of one bucket. The guard is per row, exactly as the review
+    wrote it, so the signals that decided stay decided and only the rest are paid for again."""
+    claim_bucket(db_session, NOW)
+    decided = sorted(queued_bucket.signal_ids)[0]
+    db_session.execute(text(
+        "insert into veto_decisions (signal_id, decision, from_cache, feature_delta, "
+        "signal_created_at, decided_at) values (:s, 'proceed', false, '{}', :t, :t)"),
+        {"s": decided, "t": NOW})
+    db_session.flush()
+    again = claim_bucket(db_session, NOW + STALE_CLAIM + timedelta(minutes=1))
+    assert [q.signal_id for q in again] == sorted(queued_bucket.signal_ids)[1:]
 
 
 # --- one call, one decision per signal ---------------------------------------------------------
@@ -441,6 +507,56 @@ def test_a_dormant_pass_claims_nothing(db_session, env_settings, queued_bucket):
     veto_pass(db_session, NOW, env_settings, client=None)
     assert db_session.execute(text(
         "select count(*) from veto_queue where claimed_at is null")).scalar() == 3
+
+
+def test_the_refused_reservation_does_not_keep_the_week_lock(db_session, env_settings,
+                                                             queued_bucket):
+    """Review round 1, minor: `reserve_spend` raises while holding the ISO-week advisory lock,
+    which lives until the transaction ends. Held past the refusal it would block every other
+    reservation on the week for the rest of the pass."""
+    settings = env_settings.model_copy(update={"veto_daily_usd_cap": Decimal("0.01")})
+    veto_pass(db_session, NOW, settings, client=FakeClient())
+    held = db_session.execute(text(
+        "select count(*) from pg_locks where locktype = 'advisory' "
+        "and pid = pg_backend_pid()")).scalar()
+    assert held == 0
+
+
+def test_the_client_is_closed_when_the_loop_stops(db_session, env_settings):
+    """Review round 1, minor: the process-wide client wraps an HTTP connection pool, and the
+    worker loop is what owns its lifetime."""
+    from harness.research import veto as veto_module
+    from harness.research import worker
+
+    class Closable:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    stub = Closable()
+    saved, veto_module._CLIENT = veto_module._CLIENT, stub
+    try:
+        worker.close_passes()
+    finally:
+        if veto_module._CLIENT is not None:      # pragma: no cover - only on a failed close
+            veto_module._CLIENT = saved
+    assert stub.closed is True
+    assert veto_module._CLIENT is None
+
+
+def test_closing_twice_with_no_client_is_fine():
+    from harness.research.veto import close_client
+
+    close_client()
+    close_client()
+
+
+def test_the_closer_is_registered():
+    from harness.research import worker
+
+    assert "veto" in [name for name, _ in worker.CLOSERS]
 
 
 def test_the_pass_is_registered():

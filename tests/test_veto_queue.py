@@ -98,16 +98,50 @@ def test_the_enqueue_never_fails_the_executor(db_session, env_settings, seeded_c
     assert db_session.execute(text("select count(*) from intents")).scalar() == 3
 
 
+def test_the_market_type_is_looked_up_once_for_the_batch(db_session, env_settings,
+                                                         seeded_candidates):
+    """Review round 1, minor: the executor's loop ceiling is 7.5 s and a burst is exactly when
+    both the row count and the contention are highest, so the lookup is one statement for the
+    batch rather than one per intent."""
+    from harness.execution import store
+
+    seen = []
+    real = store._market_types_of
+    monkey = lambda session, rows: (seen.append(len(rows)), real(session, rows))[1]
+    original, store._market_types_of = store._market_types_of, monkey
+    try:
+        store.insert_intents(db_session, seeded_candidates, NOW, replay=False)
+    finally:
+        store._market_types_of = original
+    assert seen == [3]
+
+
+def test_no_lookup_happens_when_nothing_is_written(db_session, env_settings, seeded_candidates):
+    """The lookup is lazy, so a loop whose candidates all conflict pays for nothing."""
+    from harness.execution import store
+
+    store.insert_intents(db_session, seeded_candidates, NOW, replay=False)
+    calls = []
+    original, store._market_types_of = store._market_types_of, (
+        lambda session, rows: calls.append(1) or {})
+    try:
+        assert store.insert_intents(db_session, seeded_candidates, NOW, replay=False) == 0
+    finally:
+        store._market_types_of = original
+    assert calls == []
+
+
 def test_a_failed_enqueue_leaves_the_intent_committed(db_session, env_settings,
                                                       seeded_candidates, monkeypatch):
     """The guard is a savepoint, so the failed queue write rolls back on its own and the intent
     that shares the transaction survives it."""
     from harness.execution import store
 
-    def _explode(session, row, now):
+    def _explode(session, row, now, market_types):
         session.execute(text("insert into veto_queue (signal_id, market_type, bucket_start, "
-                             "enqueued_at) values (:s, 'moneyline', :b, :n)"),
-                        {"s": row.signal_id, "b": bucket_start(row.created_at, 30), "n": now})
+                             "enqueued_at) values (:s, :m, :b, :n)"),
+                        {"s": row.signal_id, "m": market_types[row.venue_market_id],
+                         "b": bucket_start(row.created_at, 30), "n": now})
         raise RuntimeError("boom")
 
     monkeypatch.setattr(store, "_enqueue_veto", _explode)

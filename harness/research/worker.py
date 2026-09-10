@@ -60,6 +60,28 @@ PASS_MODULES: list[str] = ["harness.research.veto"]
 #: Every registered pass, in registration order.
 PASSES: list[tuple[str, PassFn]] = []
 
+#: What `close_passes()` runs when the loop stops. A pass that owns a resource for the life of
+#: the process -- the veto's `ResearchClient`, which wraps an HTTP connection pool -- registers
+#: its teardown here rather than rebuilding the resource every sweep (review round 1, minor).
+CLOSERS: list[tuple[str, Callable[[], None]]] = []
+
+
+def register_closer(name: str, fn: Callable[[], None]) -> None:
+    """Append one teardown, under the same register-once rule as `register_pass`."""
+    if any(existing == name for existing, _ in CLOSERS):
+        return
+    CLOSERS.append((name, fn))
+
+
+def close_passes() -> None:
+    """Run every registered teardown. A raising one is logged by the class name of its exception
+    and never stops the others: this runs on the way out, and there is nothing left to save."""
+    for name, fn in CLOSERS:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - one teardown must not block the rest
+            log.warning("research closer %s failed: %s", name, type(exc).__name__)
+
 
 def register_pass(name: str, fn: PassFn) -> None:
     """Append one pass. Registering a name twice is a no-op, so a module imported again (or a
@@ -133,4 +155,5 @@ class ResearchWorker:
                 if self._stop:
                     break
                 self._sleep(1)
+        close_passes()
         log.info("research worker stopped")

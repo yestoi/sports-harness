@@ -159,16 +159,24 @@ def candidate_signals(session: Session, variant_ids: Sequence[str], lower: datet
     return session.execute(stmt, params).all()
 
 
-_MARKET_TYPE = text("select market_type from venue_markets where id = :id")
+_MARKET_TYPES = text("select id, market_type from venue_markets where id = any(:ids)")
 
 
-def _market_type_of(session: Session, venue_market_id: int) -> str:
-    """The queued signal's market type. `veto_queue.market_type` is NOT NULL and part of the
-    bucket key, and `candidate_signals` does not select it, so it is read here."""
-    return session.execute(_MARKET_TYPE, {"id": venue_market_id}).scalar() or "unknown"
+def _market_types_of(session: Session, rows: Sequence) -> dict[int, str]:
+    """Every candidate's market type, in one statement.
+
+    `veto_queue.market_type` is NOT NULL and part of the bucket key, and `candidate_signals` does
+    not select it, so it is read here -- once for the batch rather than once per intent. The
+    executor's loop ceiling is 7.5 s and a burst is exactly when both the row count and the
+    contention are highest, which is the wrong moment for an N+1 (review round 1, minor).
+    """
+    ids = sorted({row.venue_market_id for row in rows})
+    if not ids:
+        return {}
+    return {r.id: r.market_type for r in session.execute(_MARKET_TYPES, {"ids": ids})}
 
 
-def _enqueue_veto(session: Session, row, now: datetime) -> None:
+def _enqueue_veto(session: Session, row, now: datetime, market_types: dict[int, str]) -> None:
     """One `veto_queue` row per intent this call wrote (addendum 0.2, ruling B-C1).
 
     One row per **signal**, never one per bucket: a unique index on the bucket key would refuse
@@ -186,7 +194,7 @@ def _enqueue_veto(session: Session, row, now: datetime) -> None:
     minutes = get_settings().veto_bucket_minutes
     session.execute(insert(VetoQueue).values(
         signal_id=row.signal_id, game_id=row.game_id,
-        market_type=_market_type_of(session, row.venue_market_id),
+        market_type=market_types.get(row.venue_market_id) or "unknown",
         bucket_start=bucket_start(row.created_at, minutes),
         enqueued_at=now, claimed_at=None,
     ).on_conflict_do_nothing(index_elements=["signal_id"]))
@@ -199,6 +207,8 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
     the insert is `on conflict do nothing` on `signal_id` and only a returned row counts.
     """
     written = 0
+    # Resolved lazily, so a loop whose candidates all conflict pays for no lookup at all.
+    market_types: dict[int, str] | None = None
     for row in rows:
         stmt = insert(Intent).values(
             signal_id=row.signal_id, variant_id=row.variant_id, venue=row.venue,
@@ -216,8 +226,10 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
                 # the executor an intent, so it is guarded by a savepoint and its failure is a
                 # log line. A replay writes nothing: H9 is measured on live signals only.
                 try:
+                    if market_types is None:
+                        market_types = _market_types_of(session, rows)
                     with session.begin_nested():
-                        _enqueue_veto(session, row, now)
+                        _enqueue_veto(session, row, now, market_types)
                 except Exception:  # noqa: BLE001
                     log.exception("veto enqueue failed for signal %s", row.signal_id)
     return written
