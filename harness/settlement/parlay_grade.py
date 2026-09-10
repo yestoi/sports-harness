@@ -68,6 +68,15 @@ def _grade_leg(session: Session, leg: ParlayLeg, now: datetime) -> str:
 
 
 def grade_parlays(session: Session, now: datetime, budget: Budget) -> StageResult:
+    """The stage. One pass over every `placed` or `alive` card, oldest first.
+
+    A card is visited once per pass: its ungraded legs are graded against their games' finals,
+    and a card whose every leg has landed is settled and paid. A card still carrying an ungraded
+    leg is left `alive` for the next hour, which is also what makes the pass resumable -- the
+    budget is checked between cards, never inside one, so a card is never left half-graded.
+
+    `counts` goes into `job_runs.notes` verbatim, so every value here is an int.
+    """
     counts = {"cards": 0, "legs": 0, "cashed": 0, "busted": 0, "void": 0}
     exhausted = False
     for card_id in session.execute(_LIVE_CARDS).scalars().all():
