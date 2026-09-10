@@ -561,8 +561,8 @@ def _pf_leg(session, card, seq: int, prefix: str, *, home_score: int | None,
     home = _make_team(session, f"{prefix}H")
     away = _make_team(session, f"{prefix}A")
     game = Game(sport=_PARLAY_SPORT, home_team_id=home.id, away_team_id=away.id,
-               kickoff_utc=_GRADE_KICKOFF, status=status, home_score=home_score,
-               away_score=away_score)
+                kickoff_utc=_GRADE_KICKOFF, status=status, home_score=home_score,
+                away_score=away_score)
     session.add(game)
     session.flush()
     side_team = home if side_is_home else away
@@ -681,7 +681,7 @@ def _lp_team_game(session, prefix: str, *, status: str):
     home = _make_team(session, f"{prefix}H")
     away = _make_team(session, f"{prefix}A")
     game = Game(sport=_PARLAY_SPORT, home_team_id=home.id, away_team_id=away.id,
-               kickoff_utc=PARLAY_NOW, status=status)
+                kickoff_utc=PARLAY_NOW, status=status)
     session.add(game)
     session.flush()
     return home, away, game
