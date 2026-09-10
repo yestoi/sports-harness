@@ -1,0 +1,794 @@
+ncaaf	2	AUB	Auburn Tigers
+ncaaf	5	UAB	UAB Blazers
+ncaaf	6	USA	South Alabama Jaguars
+ncaaf	7	AMH	Amherst Mammoths
+ncaaf	8	ARK	Arkansas Razorbacks
+ncaaf	9	ASU	Arizona State Sun Devils
+ncaaf	11	COMU	Colorado Mesa Mavericks
+ncaaf	12	ARIZ	Arizona Wildcats
+ncaaf	13	CP	Cal Poly Mustangs
+ncaaf	16	SAC	Sacramento State Hornets
+ncaaf	17	CMS	Claremont Mudd Scripps Stags
+ncaaf	18	BRIS	Bridgewater State Bears
+ncaaf	21	SDSU	San Diego State Aztecs
+ncaaf	23	SJSU	San José State Spartans
+ncaaf	24	STAN	Stanford Cardinal
+ncaaf	25	CAL	California Golden Bears
+ncaaf	26	UCLA	UCLA Bruins
+ncaaf	29	REDL	Redlands Bulldogs
+ncaaf	30	USC	USC Trojans
+ncaaf	32	CRU	Carroll (WI) Pioneers
+ncaaf	33	CLBY	Colby White Mules
+ncaaf	36	CSU	Colorado State Rams
+ncaaf	38	COLO	Colorado Buffaloes
+ncaaf	40	CC	Curry Colonels
+ncaaf	41	CONN	UConn Huskies
+ncaaf	43	YALE	Yale Bulldogs
+ncaaf	46	GTWN	Georgetown Hoyas
+ncaaf	47	HOW	Howard Bison
+ncaaf	48	DEL	Delaware Blue Hens
+ncaaf	49	DBQ	Dubuque Spartans
+ncaaf	50	FAMU	Florida A&M Rattlers
+ncaaf	52	FSU	Florida State Seminoles
+ncaaf	55	JXST	Jacksonville State Gamecocks
+ncaaf	56	STET	Stetson Hatters
+ncaaf	57	FLA	Florida Gators
+ncaaf	58	USF	South Florida Bulls
+ncaaf	59	GT	Georgia Tech Yellow Jackets
+ncaaf	60	MRHO	Morehouse Maroon Tigers
+ncaaf	61	UGA	Georgia Bulldogs
+ncaaf	62	HAW	Hawai'i Rainbow Warriors
+ncaaf	63	BVU	Buena Vista Beavers
+ncaaf	65	GRNL	Grinnell Pioneers
+ncaaf	66	ISU	Iowa State Cyclones
+ncaaf	67	LUTH	Luther Norse
+ncaaf	68	BOIS	Boise State Broncos
+ncaaf	70	IDHO	Idaho Vandals
+ncaaf	72	ELMH	Elmhurst Bluejays
+ncaaf	74	MILK	Millikin Big Blue
+ncaaf	75	NPU	North Park Vikings
+ncaaf	77	NU	Northwestern Wildcats
+ncaaf	79	SIU	Southern Illinois Salukis
+ncaaf	80	CHI	Chicago Maroons
+ncaaf	81	SPR	Springfield Pride
+ncaaf	83	DPU	DePauw Tigers
+ncaaf	84	IU	Indiana Hoosiers
+ncaaf	86	RHIT	Rose Hulman Fightin' Engineers
+ncaaf	87	ND	Notre Dame Fighting Irish
+ncaaf	89	WAB	Wabash Little Giants
+ncaaf	90	PTSU	Pittsburg State Gorillas
+ncaaf	93	MUR	Murray State Racers
+ncaaf	95	PIKEV	Pikeville Bears
+ncaaf	96	UK	Kentucky Wildcats
+ncaaf	97	LOU	Louisville Cardinals
+ncaaf	98	WKU	Western Kentucky Hilltoppers
+ncaaf	99	LSU	LSU Tigers
+ncaaf	101	ERKA	Eureka Red Devils
+ncaaf	103	BC	Boston College Eagles
+ncaaf	107	HC	Holy Cross Crusaders
+ncaaf	108	HARV	Harvard Crimson
+ncaaf	109	MIT	MIT Engineers
+ncaaf	110	MMT	Mass Maritime Buccaneers
+ncaaf	112	TUFT	Tufts Jumbos
+ncaaf	113	MASS	Massachusetts Minutemen
+ncaaf	114	FBSU	Fitchburg State Falcons
+ncaaf	118	JHU	Johns Hopkins Blue Jays
+ncaaf	119	TOW	Towson Tigers
+ncaaf	120	MD	Maryland Terrapins
+ncaaf	121	BATE	Bates Bobcats
+ncaaf	124	AUGS	Augsburg Auggies
+ncaaf	125	GVSU	Grand Valley State Lakers
+ncaaf	126	KALC	Kalamazoo Hornets
+ncaaf	127	MSU	Michigan State Spartans
+ncaaf	128	NMI	Northern Michigan Wildcats
+ncaaf	129	SVSU	Saginaw Valley State Cardinals
+ncaaf	130	MICH	Michigan Wolverines
+ncaaf	131	WSMI	Wayne State (MI) Warriors
+ncaaf	132	BST	Bemidji State Beavers
+ncaaf	133	OLAF	St. Olaf Oles
+ncaaf	134	UMD	Minnesota Duluth Bulldogs
+ncaaf	135	MINN	Minnesota Golden Gophers
+ncaaf	137	MOWE	Missouri Western Griffons
+ncaaf	138	MWMO	Northwest Missouri State Bearcats
+ncaaf	142	MIZ	Missouri Tigers
+ncaaf	143	WUMO	Washington St. Louis Bears
+ncaaf	145	MISS	Ole Miss Rebels
+ncaaf	146	GRO	Grove City Wolverines
+ncaaf	147	MTST	Montana State Bobcats
+ncaaf	149	MONT	Montana Grizzlies
+ncaaf	150	DUKE	Duke Blue Devils
+ncaaf	151	ECU	East Carolina Pirates
+ncaaf	152	NCSU	NC State Wolfpack
+ncaaf	153	UNC	North Carolina Tar Heels
+ncaaf	154	WAKE	Wake Forest Demon Deacons
+ncaaf	155	UND	North Dakota Fighting Hawks
+ncaaf	158	NEB	Nebraska Cornhuskers
+ncaaf	159	DART	Dartmouth Big Green
+ncaaf	160	UNH	New Hampshire Wildcats
+ncaaf	162	HMLN	Hamline Pipers
+ncaaf	163	PRIN	Princeton Tigers
+ncaaf	164	RUTG	Rutgers Scarlet Knights
+ncaaf	166	NMSU	New Mexico State Aggies
+ncaaf	167	UNM	New Mexico Lobos
+ncaaf	171	COLU	Columbia Lions
+ncaaf	172	COR	Cornell Big Red
+ncaaf	173	HRTW	Hartwick Hawks
+ncaaf	174	HBRT	Hobart Statesmen
+ncaaf	175	ITH	Ithaca Bombers
+ncaaf	183	SYR	Syracuse Orange
+ncaaf	184	URNY	Rochester (NY) Yellow Jackets
+ncaaf	188	BW	Baldwin Wallace Yellow Jackets
+ncaaf	189	BGSU	Bowling Green Falcons
+ncaaf	190	DEF	Defiance College Yellow Jackets
+ncaaf	191	HDBG	Heidelberg Student Princes
+ncaaf	193	M-OH	Miami (OH) RedHawks
+ncaaf	194	OSU	Ohio State Buckeyes
+ncaaf	195	OHIO	Ohio Bobcats
+ncaaf	196	NESU	Northeastern State RiverHawks
+ncaaf	197	OKST	Oklahoma State Cowboys
+ncaaf	199	SEOK	Southeastern Oklahoma State Savage Storm
+ncaaf	200	SNU	Southern Nazarene Crimson Storm
+ncaaf	201	OU	Oklahoma Sooners
+ncaaf	202	TLSA	Tulsa Golden Hurricane
+ncaaf	203	LINF	Linfield Wildcats
+ncaaf	204	ORST	Oregon State Beavers
+ncaaf	205	PCOR	Pacific (OR) Boxers
+ncaaf	209	LHU	Lock Haven Bald Eagles
+ncaaf	210	MILL	Millersville Marauders
+ncaaf	213	PSU	Penn State Nittany Lions
+ncaaf	215	SRU	Slippery Rock The Rock
+ncaaf	216	SUSQ	Susquehanna River Hawks
+ncaaf	218	TEM	Temple Owls
+ncaaf	219	PENN	Pennsylvania Quakers
+ncaaf	221	PITT	Pittsburgh Panthers
+ncaaf	222	VILL	Villanova Wildcats
+ncaaf	223	WCHT	West Chester Golden Rams
+ncaaf	225	BRWN	Brown Bears
+ncaaf	227	URI	Rhode Island Rams
+ncaaf	228	CLEM	Clemson Tigers
+ncaaf	231	FUR	Furman Paladins
+ncaaf	233	SDAK	South Dakota Coyotes
+ncaaf	235	MEM	Memphis Tigers
+ncaaf	236	UTC	Chattanooga Mocs
+ncaaf	237	UNNY	Union Garnet Chargers
+ncaaf	238	VAN	Vanderbilt Commodores
+ncaaf	239	BAY	Baylor Bears
+ncaaf	241	MCM	McMurry War Hawks
+ncaaf	242	RICE	Rice Owls
+ncaaf	245	TA&M	Texas A&M Aggies
+ncaaf	246	JUN	Juniata Eagles
+ncaaf	247	KNGS	King's Monarchs
+ncaaf	248	HOU	Houston Cougars
+ncaaf	249	UNT	North Texas Mean Green
+ncaaf	251	TEX	Texas Longhorns
+ncaaf	252	BYU	BYU Cougars
+ncaaf	253	SUU	Southern Utah Thunderbirds
+ncaaf	254	UTAH	Utah Utes
+ncaaf	255	KNOX	Knox Prairie Fire
+ncaaf	256	JMU	James Madison Dukes
+ncaaf	257	RICH	Richmond Spiders
+ncaaf	258	UVA	Virginia Cavaliers
+ncaaf	259	VT	Virginia Tech Hokies
+ncaaf	262	LFC	Lake Forest Foresters
+ncaaf	263	LOR	Loras Duhawks
+ncaaf	264	WASH	Washington Huskies
+ncaaf	265	WSU	Washington State Cougars
+ncaaf	266	BELO	Beloit Buccaneers
+ncaaf	267	SEU	Southeastern Fires
+ncaaf	268	LAW	Lawrence Vikings
+ncaaf	271	UWO	Wisconsin Oshkosh Titans
+ncaaf	272	UWP	Wisconsin Platteville Pioneers
+ncaaf	274	UMMA	Maine Maritime Mariners
+ncaaf	275	WIS	Wisconsin Badgers
+ncaaf	276	MRSH	Marshall Thundering Herd
+ncaaf	277	WVU	West Virginia Mountaineers
+ncaaf	278	FRES	Fresno State Bulldogs
+ncaaf	282	INST	Indiana State Sycamores
+ncaaf	284	STO	Stonehill Skyhawks
+ncaaf	286	NCW	North Carolina Wesleyan Battling Bishops
+ncaaf	290	GASO	Georgia Southern Eagles
+ncaaf	291	MU	Methodist Monarchs
+ncaaf	293	VTSC	Vermont State Castleton Spartans
+ncaaf	295	ODU	Old Dominion Monarchs
+ncaaf	297	HSC	Hampden Sydney Tigers
+ncaaf	301	USD	San Diego Toreros
+ncaaf	302	UCD	UC Davis Aggies
+ncaaf	304	IDST	Idaho State Bengals
+ncaaf	306	ILWU	Illinois Wesleyan Titans
+ncaaf	308	ASH	Ashland Eagles
+ncaaf	309	UL	Louisiana Ragin' Cajuns
+ncaaf	311	ME	Maine Black Bears
+ncaaf	316	DIC	Dickinson State University Blue Hawks
+ncaaf	317	MRTT	Marietta Pioneers
+ncaaf	319	OKBU	Oklahoma Baptist Bison
+ncaaf	322	LAF	Lafayette Leopards
+ncaaf	323	MOR	Moravian Greyhounds
+ncaaf	324	CCU	Coastal Carolina Chanticleers
+ncaaf	326	TXST	Texas State Bobcats
+ncaaf	328	USU	Utah State Aggies
+ncaaf	330	VSU	Virginia State Trojans
+ncaaf	331	EWU	Eastern Washington Eagles
+ncaaf	332	MSK	Muskingum Fighting Muskies
+ncaaf	333	ALA	Alabama Crimson Tide
+ncaaf	336	WSCT	Wesleyan (CT) Cardinals
+ncaaf	338	KENN	Kennesaw State Owls
+ncaaf	340	BOW	Bowdoin Polar Bears
+ncaaf	341	FSTU	Frostburg State Bobcats
+ncaaf	344	MSST	Mississippi State Bulldogs
+ncaaf	348	HAM	Hamilton Continentals
+ncaaf	349	ARMY	Army Black Knights
+ncaaf	351	WINU	Wingate Bulldogs
+ncaaf	352	KNY	Kenyon Owls
+ncaaf	354	UOO	Olivet Comets
+ncaaf	356	ILL	Illinois Fighting Illini
+ncaaf	359	OTTB	Otterbein Cardinals
+ncaaf	365	ALFR	Alfred Saxons
+ncaaf	366	FC	Ferrum Panthers
+ncaaf	367	GANN	Gannon Golden Knights
+ncaaf	374	STJF	St. John Fisher Cardinals
+ncaaf	375	CSS	St. Scholastica Saints
+ncaaf	379	MDAR	UMass Dartmouth Corsairs
+ncaaf	386	TUTX	Trinity (TX) Tigers
+ncaaf	388	LVC	Lebanon Valley Flying Dutchmen
+ncaaf	389	UIU	Upper Iowa Peacocks
+ncaaf	390	UTIC	Utica Pioneers
+ncaaf	391	OBE	Oberlin Yeomen
+ncaaf	396	WCIL	Wheaton (IL) Thunder
+ncaaf	398	WILK	Wilkes Colonels
+ncaaf	399	UALB	UAlbany Great Danes
+ncaaf	402	WORC	Worcester State Lancers
+ncaaf	409	CUW	Concordia (WI) Falcons
+ncaaf	411	CHAP	Chapman Panthers
+ncaaf	415	GFU	George Fox Bruins
+ncaaf	417	GLDT	Gallaudet Bison
+ncaaf	418	HDX	Hendrix Warriors
+ncaaf	424	CAPU	Capital Comets
+ncaaf	425	NSU	Northern State Wolves
+ncaaf	426	UMU	Mount Union Purple Raiders
+ncaaf	427	OHNU	Ohio Northern Polar Bears
+ncaaf	433	WCMO	Westminster (MO) Blue Jays
+ncaaf	437	LKER	Lake Erie Storm
+ncaaf	446	MLC	Martin Luther Knights
+ncaaf	452	ENDC	Endicott Gulls
+ncaaf	455	WVWC	West Virginia Wesleyan Bobcats
+ncaaf	471	STVS	Stevenson Mustangs
+ncaaf	488	BAK	Baker University Baker
+ncaaf	490	BEN	Benedict Tigers
+ncaaf	492	BETHA	Bethany (Ks)
+ncaaf	495	BLU	BLUEFIELD Ramblin' Rams
+ncaaf	507	CONCONE	Concordia University Nebraska Clippers
+ncaaf	509	CRWN	Crown Polars
+ncaaf	510	CULVE	Culver-Stockton College Wildcats
+ncaaf	511	CMBS	Cumberlands Indians
+ncaaf	512	DAKOT	Dakota State University Trojans
+ncaaf	513	DWU	Dakota Wesleyan Tigers
+ncaaf	527	FRIE	Friends University Friends
+ncaaf	530	GRC	Graceland University Graceland
+ncaaf	535	HASKELL	Haskell Indian Nations Univ Jayhawks
+ncaaf	547	KANSA	Kansas Wesleyan Ks Wesleyan
+ncaaf	548	LGC	LaGrange Panthers
+ncaaf	559	MARY	University of Mary Marauders
+ncaaf	561	MYSU	Mayville State Comets
+ncaaf	565	MIDL	Midland MIDLAND LUTHERAN
+ncaaf	568	MINS	Minot State Beavers
+ncaaf	583	UNW	Northwestern (MN) Eagles
+ncaaf	599	RSVT	Roosevelt Lakers
+ncaaf	611	SEHI	Seton Hill Griffins
+ncaaf	613	SDMT	South Dakota Mines Hardrockers
+ncaaf	616	SWKS	Southwestern (KS) Moundbuilders
+ncaaf	618	STLG	Sterling STERLING KS
+ncaaf	620	TLRU	Taylor Trojans
+ncaaf	628	VCSU	Valley City State Vikings
+ncaaf	630	WYBU	Wayland Baptist Pioneers
+ncaaf	2000	ACU	Abilene Christian Wildcats
+ncaaf	2001	ADSU	Adams State Grizzlies
+ncaaf	2003	ADR	Adrian Bulldogs
+ncaaf	2005	AF	Air Force Falcons
+ncaaf	2006	AKR	Akron Zips
+ncaaf	2010	AAMU	Alabama A&M Bulldogs
+ncaaf	2011	ALST	Alabama State Hornets
+ncaaf	2013	ABSU	Albany State Golden Rams
+ncaaf	2015	ALBR	Albright Lions
+ncaaf	2016	ALCN	Alcorn State Braves
+ncaaf	2018	ALLG	Allegheny Gators
+ncaaf	2019	ALNU	Allen Yellow Jackets
+ncaaf	2022	AIC	American International Yellow Jackets
+ncaaf	2023	ANIN	Anderson (IN) Ravens
+ncaaf	2025	AGSU	Angelo State Rams
+ncaaf	2026	APP	App State Mountaineers
+ncaaf	2028	UAM	Arkansas Monticello Boll Weevils
+ncaaf	2029	UAPB	Arkansas-Pine Bluff Golden Lions
+ncaaf	2032	ARST	Arkansas State Red Wolves
+ncaaf	2033	ARTE	Arkansas Tech Wonder Boys
+ncaaf	2038	ASP	Assumption Greyhounds
+ncaaf	2042	AUGC	Augustana (IL) Vikings
+ncaaf	2043	AUSD	Augustana (SD) Vikings
+ncaaf	2044	AUR	Aurora Spartans
+ncaaf	2045	AUS	Austin 'Roos
+ncaaf	2046	APSU	Austin Peay Governors
+ncaaf	2047	AVER	Averett Cougars
+ncaaf	2048	AVILA	Avila University Eagles
+ncaaf	2049	APU	Azusa Pacific Cougars
+ncaaf	2050	BALL	Ball State Cardinals
+ncaaf	2056	BELH	Belhaven Blazers
+ncaaf	2060	BENT	Bentley Falcons
+ncaaf	2062	BCWV	Bethany (WV) Bison
+ncaaf	2064	BETHTN	Bethel University Tennessee Wildcats
+ncaaf	2065	BCU	Bethune-Cookman Wildcats
+ncaaf	2069	BHSU	Black Hills State Yellow Jackets
+ncaaf	2071	BBU	Bloomsburg Huskies
+ncaaf	2074	BLF	Bluffton Beavers
+ncaaf	2075	BOWE	Bowie State Bulldogs
+ncaaf	2079	BRI	Bridgewater Eagles
+ncaaf	2080	BBM	British Columbia British Col
+ncaaf	2083	BUCK	Bucknell Bison
+ncaaf	2084	BUF	Buffalo Bulls
+ncaaf	2085	BSU	Buffalo State Bengals
+ncaaf	2086	BTLR	Butler Bulldogs
+ncaaf	2094	CLU	Cal Lutheran Kingsmen
+ncaaf	2097	CAM	Campbell Fighting Camels
+ncaaf	2098	CMPBVIL	Campbellsville University Tigers
+ncaaf	2101	CAR	Carleton Knights
+ncaaf	2102	CGMU	Carnegie Mellon Tartans
+ncaaf	2105	CN	Carson Newman Eagles
+ncaaf	2106	CCW	Carthage Firebirds
+ncaaf	2107	CAT	Catawba Indians
+ncaaf	2108	CATH	Catholic Cardinals
+ncaaf	2110	CARK	Central Arkansas Bears
+ncaaf	2115	CCSU	Central Connecticut Blue Devils
+ncaaf	2116	UCF	UCF Knights
+ncaaf	2117	CMU	Central Michigan Chippewas
+ncaaf	2118	UCM	Central Missouri Mules
+ncaaf	2119	CNSU	Central State Marauders
+ncaaf	2120	CWAU	Central Washington Wildcats
+ncaaf	2121	CCO	Centre Colonels
+ncaaf	2122	UCO	Central Oklahoma Bronchos
+ncaaf	2123	CHAD	Chadron State Eagles
+ncaaf	2127	CHSO	Charleston Southern Buccaneers
+ncaaf	2128	UCWV	Charleston (WV) Golden Eagles
+ncaaf	2130	CHST	Chicago State Cougars
+ncaaf	2132	CIN	Cincinnati Bearcats
+ncaaf	2134	CLRN	Clarion Golden Eagles
+ncaaf	2141	COE	Coe Kohawks
+ncaaf	2142	COLG	Colgate Raiders
+ncaaf	2146	CMIN	Colorado School of Mines Orediggers
+ncaaf	2148	CONC	Concord Mountain Lions
+ncaaf	2151	CUC	Concordia Chicago Cougars
+ncaaf	2152	CCMN	Concordia (MN) Cobbers
+ncaaf	2155	CNIA	Cornell (IA) Rams
+ncaaf	2161	CUMBTN	Cumberland (TN) Bulldogs
+ncaaf	2166	DAV	Davidson Wildcats
+ncaaf	2168	DAY	Dayton Flyers
+ncaaf	2169	DSU	Delaware State Hornets
+ncaaf	2170	DLST	Delta State Statesmen
+ncaaf	2171	DSN	Denison Big Red
+ncaaf	2175	DKSN	Dickinson Red Devils
+ncaaf	2181	DRKE	Drake Bulldogs
+ncaaf	2184	DUQ	Duquesne Dukes
+ncaaf	2188	ESU	East Stroudsburg Warriors
+ncaaf	2191	ECNU	East Central Tigers
+ncaaf	2193	ETSU	East Tennessee State Buccaneers
+ncaaf	2194	ETBU	East Texas Baptist Tigers
+ncaaf	2197	EIU	Eastern Illinois Panthers
+ncaaf	2198	EKU	Eastern Kentucky Colonels
+ncaaf	2199	EMU	Eastern Michigan Eagles
+ncaaf	2201	ENMU	Eastern New Mexico Greyhounds
+ncaaf	2202	EORE	Eastern Oregon
+ncaaf	2205	EDBR	Edinboro Fighting Scots
+ncaaf	2206	EDW	Edward Waters Tigers
+ncaaf	2207	ECSU	Elizabeth City State Vikings
+ncaaf	2210	ELON	Elon Phoenix
+ncaaf	2213	EHC	Emory & Henry Wasps
+ncaaf	2214	EMSU	Emporia State Hornets
+ncaaf	2219	FAULKNER	Faulkner University Eagles
+ncaaf	2220	FAYU	Fayetteville State Broncos
+ncaaf	2221	FDUF	FDU Florham Devils
+ncaaf	2222	FRST	Ferris State Bulldogs
+ncaaf	2224	UF	Findlay Oilers
+ncaaf	2226	FAU	Florida Atlantic Owls
+ncaaf	2229	FIU	Florida International Panthers
+ncaaf	2230	FOR	Fordham Rams
+ncaaf	2231	FHSU	Fort Hays Tigers
+ncaaf	2232	FVSU	Fort Valley State Wildcats
+ncaaf	2233	FRKL	Franklin Grizzlies
+ncaaf	2234	FMC	Franklin & Marshall Diplomats
+ncaaf	2237	FLWC	Fort Lewis Skyhawks
+ncaaf	2241	GWEB	Gardner-Webb Runnin' Bulldogs
+ncaaf	2242	GEN	Geneva Golden Tornadoes
+ncaaf	2244	GMU	George Mason University Patriots
+ncaaf	2245	GTKY	Georgetown (KY) Tigers
+ncaaf	2247	GAST	Georgia State Panthers
+ncaaf	2248	GTYB	Gettysburg Bullets
+ncaaf	2249	GVLS	Glenville State Pioneers
+ncaaf	2254	GRANDVIEW	Des Moines Vikings
+ncaaf	2256	GRNB	Greensboro Pride
+ncaaf	2257	GRNV	Greenville Panthers
+ncaaf	2258	GLFD	Guilford Quakers
+ncaaf	2261	HAMP	Hampton Pirates
+ncaaf	2262	HNVR	Hanover Panthers
+ncaaf	2264	HARD	Harding Bisons
+ncaaf	2271	HSTU	Henderson State Reddies
+ncaaf	2273	HLDL	Hillsdale Chargers
+ncaaf	2274	HIRM	Hiram Terriers
+ncaaf	2277	HCU	Houston Christian Huskies
+ncaaf	2280	HUSS	Husson Eagles
+ncaaf	2283	BNIL	Benedictine (IL) Eagles
+ncaaf	2286	ILLC	Illinois College Blueboys
+ncaaf	2287	ILST	Illinois State Redbirds
+ncaaf	2291	IUP	IU Pennsylvania Crimson Hawks
+ncaaf	2292	INDY	Indianapolis Greyhounds
+ncaaf	2294	IOWA	Iowa Hawkeyes
+ncaaf	2296	JKST	Jackson State Tigers
+ncaaf	2302	JCU	John Carroll Blue Streaks
+ncaaf	2304	JCSU	Johnson C. Smith Golden Bulls
+ncaaf	2305	KU	Kansas Jayhawks
+ncaaf	2306	KSU	Kansas State Wildcats
+ncaaf	2309	KENT	Kent State Golden Flashes
+ncaaf	2310	KYSU	Kentucky State Thorobreds
+ncaaf	2315	KUTZ	Kutztown Golden Bears
+ncaaf	2316	KWC	Kentucky Wesleyan Panthers
+ncaaf	2318	ULV	La Verne Leopards
+ncaaf	2320	LAM	Lamar Cardinals
+ncaaf	2323	LANE	Lane College Dragons
+ncaaf	2324	LNGT	Langston Lions
+ncaaf	2329	LEH	Lehigh Mountain Hawks
+ncaaf	2331	LENR	Lenoir Rhyne Bears
+ncaaf	2333	LC	Lewis & Clark River Otters
+ncaaf	2335	LIB	Liberty Flames
+ncaaf	2339	LNPA	Lincoln (PA) Lions
+ncaaf	2341	LIU	Long Island University Sharks
+ncaaf	2347	LCHR	Louisiana Christian Wildcats
+ncaaf	2348	LT	Louisiana Tech Bulldogs
+ncaaf	2354	LYCO	Lycoming Warriors
+ncaaf	2355	VUL	Virginia Lynchburg Dragons
+ncaaf	2359	MAC	Macalester Scots
+ncaaf	2362	MNCH	Manchester Spartans
+ncaaf	2364	MNST	Minnesota State Mavericks
+ncaaf	2365	MNFD	Mansfield Mountaineers
+ncaaf	2366	MUIN	Marian (IN) MARIAN
+ncaaf	2368	MRST	Marist Red Foxes
+ncaaf	2369	MHU	Mars Hill Lions
+ncaaf	2371	MHB	Mary Hardin Baylor Crusaders
+ncaaf	2373	MCTN	Maryville (TN) Scots
+ncaaf	2377	MCN	McNeese Cowboys
+ncaaf	2382	MER	Mercer Bears
+ncaaf	2383	MMA	Merchant Marine Mariners
+ncaaf	2385	MERC	Mercyhurst Lakers
+ncaaf	2390	MIA	Miami Hurricanes
+ncaaf	2392	MTU	Michigan Tech Huskies
+ncaaf	2393	MTSU	Middle Tennessee Blue Raiders
+ncaaf	2394	MIDB	Middlebury Panthers
+ncaaf	2395	MWSU	Midwestern State Mustangs
+ncaaf	2396	MILE	Miles Golden Bears
+ncaaf	2398	MLSP	Millsaps Majors
+ncaaf	2399	MNMO	Minnesota Morris Cougars
+ncaaf	2400	MVSU	Mississippi Valley State Delta Devils
+ncaaf	2402	MS&T	Missouri S&T Miners
+ncaaf	2403	MSSU	Missouri Southern State Lions
+ncaaf	2405	MONM	Monmouth Hawks
+ncaaf	2413	MORE	Morehead State Eagles
+ncaaf	2415	MORG	Morgan State Bears
+ncaaf	2416	MNGS	Morningside Chiefs
+ncaaf	2419	MSJ	Mount St Joseph Lions
+ncaaf	2422	MUHL	Muhlenberg Mules
+ncaaf	2424	NMHU	New Mexico Highlands Cowboys
+ncaaf	2426	NAVY	Navy Midshipmen
+ncaaf	2428	NCCU	North Carolina Central Eagles
+ncaaf	2429	CLT	Charlotte 49ers
+ncaaf	2433	ULM	UL Monroe Warhawks
+ncaaf	2438	NEBK	Nebraska Kearney Lopers
+ncaaf	2439	UNLV	UNLV Rebels
+ncaaf	2440	NEV	Nevada Wolf Pack
+ncaaf	2441	NHVN	New Haven Chargers
+ncaaf	2442	TCNJ	The College of New Jersey Lions
+ncaaf	2444	NBRY	Newberry Wolves
+ncaaf	2447	NICH	Nicholls Colonels
+ncaaf	2448	NCAT	North Carolina A&T Aggies
+ncaaf	2449	NDSU	North Dakota State Bison
+ncaaf	2450	NORF	Norfolk State Spartans
+ncaaf	2453	UNA	North Alabama Lions
+ncaaf	2458	UNCO	Northern Colorado Bears
+ncaaf	2459	NIU	Northern Illinois Huskies
+ncaaf	2460	UNI	Northern Iowa Panthers
+ncaaf	2464	NAU	Northern Arizona Lumberjacks
+ncaaf	2466	NWST	Northwestern State Demons
+ncaaf	2467	NWCH	Norwich Cadets
+ncaaf	2477	OHDU	Ohio Dominican Panthers
+ncaaf	2483	ORE	Oregon Ducks
+ncaaf	2486	PCLT	Pacific Lutheran Lutes
+ncaaf	2487	PACE	Pace Setters
+ncaaf	2502	PRST	Portland State Vikings
+ncaaf	2504	PV	Prairie View A&M Panthers
+ncaaf	2506	PRES	Presbyterian Blue Hose
+ncaaf	2508	PUG	Puget Sound Loggers
+ncaaf	2509	PUR	Purdue Boilermakers
+ncaaf	2516	RMC	Randolph Macon Yellow Jackets
+ncaaf	2519	RHDS	Rhodes Lynx
+ncaaf	2523	RMU	Robert Morris Colonials
+ncaaf	2524	RFU	Rockford Regents
+ncaaf	2528	RPI	Rensselaer Engineers
+ncaaf	2529	SHU	Sacred Heart Pioneers
+ncaaf	2532	SAL	Salisbury Sea Gulls
+ncaaf	2534	SHSU	Sam Houston Bearkats
+ncaaf	2535	SAM	Samford Bulldogs
+ncaaf	2542	SAV	Savannah State Tigers
+ncaaf	2545	SELA	SE Louisiana Lions
+ncaaf	2546	SEMO	Southeast Missouri State Redhawks
+ncaaf	2551	SHAW	Shaw Bears
+ncaaf	2553	SEWA	Sewanee Tigers
+ncaaf	2557	USCG	Coast Guard Bears
+ncaaf	2559	SHIP	Shippensburg Raiders
+ncaaf	2560	SHOU	Shorter Hawks
+ncaaf	2562	SHTU	Siena Heights Saints
+ncaaf	2564	SCIA	Simpson (IA) Storm
+ncaaf	2567	SMU	SMU Mustangs
+ncaaf	2568	SAR	Southern Arkansas Muleriders
+ncaaf	2569	SCST	South Carolina State Bulldogs
+ncaaf	2570	CSUP	CSU Pueblo ThunderWolves
+ncaaf	2571	SDST	South Dakota State Jackrabbits
+ncaaf	2572	USM	Southern Miss Golden Eagles
+ncaaf	2579	SC	South Carolina Gamecocks
+ncaaf	2582	SOU	Southern Jaguars
+ncaaf	2583	SCTS	Southern Connecticut State Owls
+ncaaf	2584	SOR	Southern Oregon Raiders
+ncaaf	2586	SWBU	Southwest Baptist Bearcats
+ncaaf	2587	SWMS	Southwest Minnesota State Mustangs
+ncaaf	2588	SWU	Southwestern U Pirates
+ncaaf	2591	STAM	St. Ambrose Fighting Bees
+ncaaf	2595	SFIL	St. Francis (IL) Fighting Saints
+ncaaf	2598	SFPA	Saint Francis Red Flash
+ncaaf	2600	STJM	Saint John's (MN) Johnnies
+ncaaf	2614	SVC	Saint Vincent Bearcats
+ncaaf	2615	STX	Saint Xavier Cougars
+ncaaf	2617	SFA	Stephen F. Austin Lumberjacks
+ncaaf	2619	STBK	Stony Brook Seawolves
+ncaaf	2623	MOST	Missouri State Bears
+ncaaf	2627	TAR	Tarleton State Texans
+ncaaf	2628	TCU	TCU Horned Frogs
+ncaaf	2630	UTM	UT Martin Skyhawks
+ncaaf	2633	TENN	Tennessee Volunteers
+ncaaf	2634	TNST	Tennessee State Tigers
+ncaaf	2635	TNTC	Tennessee Tech Golden Eagles
+ncaaf	2636	UTSA	UTSA Roadrunners
+ncaaf	2637	TXCL	Texas College Steers
+ncaaf	2638	UTEP	UTEP Miners
+ncaaf	2639	TXLU	Texas Lutheran Bulldogs
+ncaaf	2640	TXSO	Texas Southern Tigers
+ncaaf	2641	TTU	Texas Tech Red Raiders
+ncaaf	2643	CIT	The Citadel Bulldogs
+ncaaf	2644	THI	Thiel Tomcats
+ncaaf	2646	TMOR	Thomas More Saints
+ncaaf	2649	TOL	Toledo Rockets
+ncaaf	2651	TRNE	Trine Thunder
+ncaaf	2653	TROY	Troy Trojans
+ncaaf	2654	TRST	Truman State Bulldogs
+ncaaf	2655	TULN	Tulane Green Wave
+ncaaf	2657	TUSK	Tuskegee Golden Tigers
+ncaaf	2658	TAMK	Texas A&M-Kingsville Javelinas
+ncaaf	2667	URSN	Ursinus Bears
+ncaaf	2673	VALD	Valdosta State Blazers
+ncaaf	2674	VAL	Valparaiso Beacons
+ncaaf	2676	VUU	Virginia Union Panthers
+ncaaf	2678	VMI	VMI Keydets
+ncaaf	2681	WAG	Wagner Seahawks
+ncaaf	2682	WLSH	Walsh Cavaliers
+ncaaf	2683	WRNR	Warner Royals
+ncaaf	2685	WTBG	Wartburg Knights
+ncaaf	2686	W&J	Washington & Jefferson Presidents
+ncaaf	2687	WSBN	Washburn Ichabods
+ncaaf	2688	W&L	Washington and Lee Generals
+ncaaf	2691	WINT	Webber International Warriors
+ncaaf	2692	WEB	Weber State Wildcats
+ncaaf	2695	UWA	West Alabama Tigers
+ncaaf	2698	WGA	West Georgia Wolves
+ncaaf	2699	WLU	West Liberty Hilltoppers
+ncaaf	2700	MCD	McDaniel Green Terror
+ncaaf	2701	UMW	Montana Western Bulldogs
+ncaaf	2702	WNE	Western New England Golden Bears
+ncaaf	2703	WNMU	Western New Mexico Mustangs
+ncaaf	2704	WTAM	West Texas Buffaloes
+ncaaf	2706	WVUT	WVU Tech Golden Bears
+ncaaf	2707	WVSU	West Virginia State Yellow Jackets
+ncaaf	2710	WIU	Western Illinois Leathernecks
+ncaaf	2711	WMU	Western Michigan Broncos
+ncaaf	2714	WCOL	Western Colorado Mountaineers
+ncaaf	2717	WCU	Western Carolina Catamounts
+ncaaf	2721	WHIW	Whitworth Pirates
+ncaaf	2723	UWRF	Wisconsin River Falls Falcons
+ncaaf	2725	WIDE	Widener Pride
+ncaaf	2729	W&M	William & Mary Tribe
+ncaaf	2731	WLM	Williams Ephs
+ncaaf	2733	WCOH	Wilmington (OH) Fightin' Quakers
+ncaaf	2736	WSSU	Winston-Salem State Rams
+ncaaf	2738	UWEC	Wisconsin Eau Claire Blugolds
+ncaaf	2740	UWL	Wisconsin La Crosse Eagles
+ncaaf	2741	WLC	Wisconsin Lutheran Warriors
+ncaaf	2743	UWSP	Wisconsin Stevens Point Pointers
+ncaaf	2744	UWST	Wisconsin Stout Blue Devils
+ncaaf	2745	UWW	Wisconsin Whitewater Warhawks
+ncaaf	2746	WITT	Wittenberg Tigers
+ncaaf	2747	WOF	Wofford Terriers
+ncaaf	2748	WOO	Wooster Fighting Scots
+ncaaf	2749	WPI	WPI Engineers
+ncaaf	2751	WYO	Wyoming Cowboys
+ncaaf	2754	YSU	Youngstown State Penguins
+ncaaf	2755	GRAM	Grambling Tigers
+ncaaf	2757	BERR	Berry Vikings
+ncaaf	2758	HWPU	Howard Payne Yellow Jackets
+ncaaf	2770	MB	MANITOBA
+ncaaf	2771	MRMK	Merrimack Warriors
+ncaaf	2776	SALV	Salve Regina Seahawks
+ncaaf	2779	USL	St. Lawrence Saints
+ncaaf	2781	BRO	Brockport Golden Eagles
+ncaaf	2782	NYCL	SUNY Cortland Red Dragons
+ncaaf	2790	ALBI	Albion Britons
+ncaaf	2800	ALMA	Alma Scots
+ncaaf	2802	BUMN	Bethel (MN) Royals
+ncaaf	2803	BRY	Bryant Bulldogs
+ncaaf	2804	CWAN	Chowan Hawks
+ncaaf	2805	CKGA	Clark Atlanta Panthers
+ncaaf	2808	DVU	Delaware Valley Aggies
+ncaaf	2810	HSU	Hardin Simmons Cowboys
+ncaaf	2812	HOPE	Hope Flying Dutchmen
+ncaaf	2815	LIN	Lindenwood Lions
+ncaaf	2816	MCK	McKendree Bearcats
+ncaaf	2817	MSUM	Minnesota St Moorhead Dragons
+ncaaf	2818	MCST	Montclair State Red Hawks
+ncaaf	2822	NGU	North Greenville Trailblazers
+ncaaf	2823	NWOK	Northwestern (OK) Rangers
+ncaaf	2824	OPSU	Oklahoma Panhandle OK PANHANDLE ST
+ncaaf	2825	QUI	Quincy Hawks
+ncaaf	2827	ROW	Rowan Profs
+ncaaf	2828	SHEN	Shenandoah Hornets
+ncaaf	2830	SANS	Saint Anselm Hawks
+ncaaf	2831	SFIN	Saint Francis (IN) Cougars
+ncaaf	2832	STNC	St. Norbert Green Knights
+ncaaf	2834	SRST	Sul Ross State Lobos
+ncaaf	2837	ETAM	East Texas A&M Lions
+ncaaf	2838	TIFF	Tiffin Dragons
+ncaaf	2839	TUSC	Tusculum Pioneers
+ncaaf	2842	UVAW	UVA Wise Cavaliers
+ncaaf	2843	WCSU	Western Connecticut State Wolves
+ncaaf	2844	WSNE	Wayne State (NE) Wildcats
+ncaaf	2845	WAYN	Waynesburg Yellow Jackets
+ncaaf	2848	WORU	Western Oregon Wolves
+ncaaf	2849	WCPA	Westminster (PA) Titans
+ncaaf	2850	WHTR	Whittier Poets
+ncaaf	2851	WNST	Winona State Warriors
+ncaaf	2858	CAPA	California (PA) Vulcans
+ncaaf	2860	CDF	Central Methodist Eagles
+ncaaf	2865	EVA	Evangel University Crusaders
+ncaaf	2871	KEAN	Kean Cougars
+ncaaf	2876	LNMO	Lincoln (MO) Blue Tigers
+ncaaf	2877	LWU	Lindsey Wilson LINDSEY
+ncaaf	2880	MOBU	Missouri Baptist Spartans
+ncaaf	2882	UNCP	UNC Pembroke Braves
+ncaaf	2884	NICC	Nichols Bison
+ncaaf	2886	NWD	Northwood Timberwolves
+ncaaf	2888	OBU	Ouachita Baptist Tigers
+ncaaf	2890	RHDT	Reinhardt Eagles
+ncaaf	2891	RIP	Ripon Red Hawks
+ncaaf	2894	SFU	Sioux Falls Cougars
+ncaaf	2896	SOVA	Southern Virginia Knights
+ncaaf	2900	STMN	St. Thomas Tommies
+ncaaf	2904	NEL	Nelson (TX) Lions
+ncaaf	2909	WFST	Westfield State Owls
+ncaaf	2911	WJC	William Jewell Cardinals
+ncaaf	2912	WPEN	William Penn Statesmen
+ncaaf	2913	BRE	Brevard Tornados
+ncaaf	2916	UIW	Incarnate Word Cardinals
+ncaaf	2919	MNIL	Monmouth (IL) Fighting Scots
+ncaaf	2923	POPI	Pomona Pitzer Sagehens
+ncaaf	2927	SOSU	Southwestern Oklahoma State Bulldogs
+ncaaf	2930	WLMT	Willamette Bearcats
+ncaaf	2938	HNTC	Huntingdon Hawks
+ncaaf	2939	UJ	Jamestown Jimmies
+ncaaf	2940	LIV	Livingstone Blue Bears
+ncaaf	2951	NYMT	SUNY Maritime Privateers
+ncaaf	2963	CWRU	Case Western Reserve Spartans
+ncaaf	2964	CNTC	Central College Dutch
+ncaaf	2967	FRSU	Framingham State Rams
+ncaaf	2968	GAC	Gustavus Adolphus Golden Gusties
+ncaaf	2969	MISE	Misericordia Cougars
+ncaaf	2970	WPU	William Paterson Pioneers
+ncaaf	2972	PLYM	Plymouth State Panthers
+ncaaf	2974	SHEP	Shepherd Rams
+ncaaf	2977	TCCT	Trinity (CT) Bantams
+ncaaf	2980	OWU	Ohio Wesleyan Battling Bishops
+ncaaf	2985	CONCMI	Concordia-Michigan Cardinals
+ncaaf	2986	FMSU	Fairmont State Falcons
+ncaaf	3066	CSP	Concordia St. Paul Golden Bears
+ncaaf	3071	NCC	North Central College Cardinals
+ncaaf	3077	KYCHR	Kentucky Christian Knights
+ncaaf	3080	WLDF	Waldorf Warriors
+ncaaf	3100	MITE	Monterrey Tech Borregos
+ncaaf	3101	UTU	Utah Tech Trailblazers
+ncaaf	3110	NYMS	SUNY Morrisville Mustangs
+ncaaf	3111	APPRE	Apprentice School Builders
+ncaaf	3112	CNU	Christopher Newport Captains
+ncaaf	3130	WMSN	Williamson Mechanics
+ncaaf	3161	OSU	Ohio State Newark Titans
+ncaaf	3162	AFST	Alfred State Pioneers
+ncaaf	3178	AVE M	Ave Maria University Gyrenes
+ncaaf	3179	POINT	Point University Skyhawks
+ncaaf	3209	LINB	Lindenwood Belleville Lynx
+ncaaf	3210	COLE	Cole College Jaguars
+ncaaf	3211	FAI	West Memphis Crusaders
+ncaaf	3212	UNAM	University of Mexico MEXICO U
+ncaaf	3214	TBIB	Trinity Bible Lions
+ncaaf	3236	NYER	SUNY Erie Kats
+ncaaf	3237	HVCC	Troy Vikings
+ncaaf	3253	COLLE	Charlotte Saints
+ncaaf	3254	UFFL	St. Petersburg Glory Eagles
+ncaaf	6353	LKLD	Lakeland Muskies
+ncaaf	6845	NWU	Nebraska Wesleyan Prairie Wolves
+ncaaf	16111	BENC	Benedictine College Ravens
+ncaaf	101161	LYON	Lyon Scots
+ncaaf	101442	CTLA	Centenary (LA) Gentlemen
+ncaaf	101784	ERSK	Erskine Flying Fleet
+ncaaf	108354	HOL	Holland College Hurricanes
+ncaaf	108358	AZCH	Arizona Christian Firestorm
+ncaaf	108382	COI	College of Idaho Yotes
+ncaaf	110242	UWF	West Florida Argonauts
+ncaaf	110243	UTPB	UT Permian Basin Falcons
+ncaaf	110438	DEAN	Dean Bulldogs
+ncaaf	111610	STAU	St. Andrews Knights
+ncaaf	111674	ALVR	Alvernia Golden Wolves
+ncaaf	111675	UNE	New England Nor'easters
+ncaaf	111756	INWESL	Indiana Wesleyan Wildcats
+ncaaf	112334	FP	Franklin Pierce Ravens
+ncaaf	112335	WHLG	Wheeling Cardinals
+ncaaf	122666	BART	Barton Bulldogs
+ncaaf	122774	KYSN	Keystone Giants
+ncaaf	122775	JUDSO	Elgin Eagles
+ncaaf	123086	NAMU	North American Stallions
+ncaaf	124179	LNCA	Lincoln (CA) Oaklanders
+ncaaf	124180	BLUS	Bluefield State Big Blue
+ncaaf	124386	ARBA	Arkansas Baptist Buffaloes
+ncaaf	125762	FMU	Florida Memorial Lions
+ncaaf	125974	HLBT	Hilbert Hawks
+ncaaf	126086	POST	Post Eagles
+ncaaf	126110	KEISER	Keiser University Keiser
+ncaaf	126146	MDNN	MADONNA
+ncaaf	127954	EU	Eastern Eagles
+ncaaf	127991	RSVT	Roosevelt Lakers
+ncaaf	129469	ANSC	Anderson (SC) Trojans
+ncaaf	129738	CALU	Calvin Knights
+ncaaf	129741	WLWD	William Woods Owls
+ncaaf	129758	SUCA	Simpson (CA) Red Hawks
+ncaaf	134000	THO	Thomas Night Hawks
+ncaaf	134001	MON	Monroe Mustangs
+ncaaf	134002	AND	Andrew Fighting Tigers
+ncaaf	134087	WES	Westgate Christian University Ravens
+nfl	1	ATL	Atlanta Falcons
+nfl	2	BUF	Buffalo Bills
+nfl	3	CHI	Chicago Bears
+nfl	4	CIN	Cincinnati Bengals
+nfl	5	CLE	Cleveland Browns
+nfl	6	DAL	Dallas Cowboys
+nfl	7	DEN	Denver Broncos
+nfl	8	DET	Detroit Lions
+nfl	9	GB	Green Bay Packers
+nfl	10	TEN	Tennessee Titans
+nfl	11	IND	Indianapolis Colts
+nfl	12	KC	Kansas City Chiefs
+nfl	13	LV	Las Vegas Raiders
+nfl	14	LAR	Los Angeles Rams
+nfl	15	MIA	Miami Dolphins
+nfl	16	MIN	Minnesota Vikings
+nfl	17	NE	New England Patriots
+nfl	18	NO	New Orleans Saints
+nfl	19	NYG	New York Giants
+nfl	20	NYJ	New York Jets
+nfl	21	PHI	Philadelphia Eagles
+nfl	22	ARI	Arizona Cardinals
+nfl	23	PIT	Pittsburgh Steelers
+nfl	24	LAC	Los Angeles Chargers
+nfl	25	SF	San Francisco 49ers
+nfl	26	SEA	Seattle Seahawks
+nfl	27	TB	Tampa Bay Buccaneers
+nfl	28	WSH	Washington Commanders
+nfl	29	CAR	Carolina Panthers
+nfl	30	JAX	Jacksonville Jaguars
+nfl	33	BAL	Baltimore Ravens
+nfl	34	HOU	Houston Texans
