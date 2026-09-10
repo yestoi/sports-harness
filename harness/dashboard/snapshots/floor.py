@@ -83,11 +83,19 @@ CADENCE_IN_WINDOW_S = 30
 CADENCE_OUT_S = 120
 
 FUNNEL_WINDOW = WINDOW_6H
-#: `_funnel`'s `runs.notes` row cap (fix 31). The recorder writes one `runs` row per tick at a
-#: 30 s heartbeat, so a 6 h window is about 720 rows; this is roughly triple that, which is the
-#: margin a game-day tick rate needs, and it is what makes the read stop rather than fall
-#: through to a scan of every run of the season. `recent_run_notes` reads newest-first off the
-#: primary key, so the cap drops the *oldest* rows of the window, never the newest.
+#: `_funnel`'s `runs.notes` row cap (fix 31, corrected round 1). `runs` has no index on
+#: `started_at`, so this cap is the only thing that stops the read: `recent_run_notes` sends the
+#: limit *without* the window predicate and applies the window in Python, precisely because a
+#: predicate beside a limit lets the backward primary-key walk run to the start of the table
+#: looking for matches it will never need (see that function's docstring).
+#:
+#: Sizing it is therefore a real decision in both directions. Too low and the funnel silently
+#: reports a shorter window than it claims; too high and the cap costs more rows than the window
+#: holds. A 6 h window measured 400-700 rows on the deployed recorder (ids 5391-5405 in 12 min,
+#: verify evidence 2026-09-08), and the theoretical ceiling at the 30 s heartbeat is 720. This
+#: is about triple the measured count and well above the ceiling, so it binds as a backstop and
+#: not as a trim. Rows come back newest-first, so if it ever does bind it drops the oldest of
+#: the window, never the newest.
 FUNNEL_NOTES_LIMIT = 2000
 BOARD_WINDOW = timedelta(hours=24)
 BOARD_LOOKBACK = timedelta(hours=4)
@@ -113,12 +121,13 @@ VENUE_WINDOW = timedelta(hours=24)
 #: enough that a lane only disappears if the executor has written no equity row for a week,
 #: which is a far louder failure than a stale lane.
 EQUITY_WINDOW = timedelta(days=7)
-#: The bound on `_EXPOSURE` and `_OPEN_STAKE` (fix 31). Fourteen days is far longer than the gap
-#: between a fill and its settlement -- the settler runs hourly -- so in normal operation the
-#: window drops nothing at all. What it buys is that a database on which settlement has stalled
-#: costs this builder a bounded read rather than a walk of the season, and a position held for
-#: two weeks without settling is a louder failure than a missing exposure lane. It rides
-#: `ix_fills_filled_at` on the fills side and `ix_orders_status` on the orders side.
+#: The bound on `_EXPOSURE`'s `f.filled_at` and on `_OPEN_STAKE`'s `o.placed_at` (fix 31).
+#: Fourteen days is far longer than the gap between a fill and its settlement -- the settler runs
+#: hourly -- so in normal operation the window drops nothing at all. What it buys is that a
+#: database on which settlement has stalled costs this builder a bounded read rather than a walk
+#: of the season, and a fill still counted as a position a fortnight after it printed is a louder
+#: failure than a missing exposure lane. It rides `ix_fills_filled_at` on the fills side and
+#: `ix_orders_status` on the orders side.
 EXPOSURE_WINDOW = timedelta(days=14)
 #: The bound on `_OPEN_ORDERS`. An order that has been resting for a week is not a resting order
 #: any more, and the surface's own `age_s` column would say so if one ever appeared.
@@ -285,8 +294,16 @@ _FILLS = text("""
 #: Index: `ix_fills_filled_at`.
 
 #: The `positions` view's own aggregate, bounded (fix 31; module docstring). Bound:
-#: `f.filled_at >= :since` and `o.placed_at >= :since` (`EXPOSURE_WINDOW`, 14 d). Index:
+#: `f.filled_at >= :since` (`EXPOSURE_WINDOW`, 14 d) and nothing else. Index:
 #: `ix_fills_filled_at` drives it and the join to `orders` is by primary key.
+#:
+#: Round 1 took `and o.placed_at >= :since` back out. It bounded nothing: `orders` is reached by
+#: primary key from the fills the window already selected, so the predicate saved no IO. What it
+#: did do was narrow the answer -- a position whose order was placed before the window but whose
+#: fill is inside it dropped out of the lane -- and give the planner a reason to prefer a
+#: sequential scan of `orders` as the hash side, which is the exact shape this fix exists to
+#: remove. The bound stays on `_OPEN_STAKE`, where `ix_orders_status` is the driving index and
+#: the predicate does real work.
 #:
 #: The three predicates after the bound are `_POSITIONS_VIEW`'s three, in its own vocabulary:
 #: `fill_method` from `store.MONEY_FILL_METHODS` (imported, never restated -- the view and
@@ -300,7 +317,6 @@ _EXPOSURE = text("""
     join orders o on o.id = f.order_id
     where f.filled_at >= :since and f.fill_method = any(:methods)
       and o.replay = false and o.status <> 'settled'
-      and o.placed_at >= :since
     group by o.variant_id
 """)
 #: Bound: `ts >= :since` (`EQUITY_WINDOW`, 7 d). Index: `ix_equity_variant_ts (variant_id,
@@ -322,10 +338,17 @@ _EQUITY = text("""
 #: `f.replay` because that is what the brief's own read does. The two agree in practice -- a
 #: replay fill belongs to a replay order -- and each mirrors its own authority.
 #: Bound: `o.placed_at >= :since` (`EXPOSURE_WINDOW`, 14 d). Index: `ix_orders_status (status,
-#: replay)` selects the open set; `intents` is reached by primary key off `o.intent_id` and is
-#: never scanned. The bound matters for the same reason it does on `_EXPOSURE`: without it a
-#: backlog of stuck open orders turns a read of tens of rows into a read of thousands, each one
-#: a primary-key seek into a second large table (fix 31).
+#: replay)` drives it and selects the open set; `intents` is reached by primary key off
+#: `o.intent_id` and is never scanned. Unlike `_EXPOSURE`'s, this predicate does real work:
+#: `orders` is the driving table here, so without it a backlog of stuck open rows turns a read
+#: of tens of rows into a read of thousands, each one a primary-key seek into a second large
+#: table (fix 31).
+#:
+#: It also makes `daily_exposure` disagree, in that pathological case only, with the enforcer
+#: `harness/execution/plan.py` measures `cap_daily` with, which counts every open order whatever
+#: its age. An open order a fortnight old is a stuck row rather than exposure, but the surface
+#: and the enforcer would then be answering slightly different questions -- worth knowing if one
+#: is ever seen (review of fix 31, round 1).
 _OPEN_STAKE = text("""
     select o.variant_id, count(*) as n,
            sum(coalesce(i.stake, o.prob * o.contracts)) as stake

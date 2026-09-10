@@ -570,10 +570,11 @@ def test_a_settled_or_replay_order_is_still_excluded_from_exposure(db_session, e
 
 
 def test_the_funnel_caps_the_run_notes_it_reads(db_session, env_settings, monkeypatch):
-    """`runs` carries no index on `started_at`, so the window alone never stopped the read: it
-    was a sequential scan of every run of the season with its `notes` JSONB. The cap is what
-    makes it stop, and `recent_run_notes` now reads newest-first off the primary key so the cap
-    drops the oldest rows of the window rather than the newest."""
+    """`runs` carries no index on `started_at`, so the window predicate never stopped the read:
+    it was a sequential scan of every run of the season with its `notes` JSONB. The cap is what
+    stops it, which is why `recent_run_notes` sends the limit without the predicate and applies
+    the window in Python -- a predicate beside a limit lets the backward primary-key walk run to
+    the start of the table looking for matches it will never need."""
     seen = {}
 
     def _spy(session, cutoff, limit=None):
@@ -583,6 +584,20 @@ def test_the_funnel_caps_the_run_notes_it_reads(db_session, env_settings, monkey
     monkeypatch.setattr(floor, "recent_run_notes", _spy)
     build_floor(db_session, NOW, env_settings)
     assert seen["limit"] == floor.FUNNEL_NOTES_LIMIT
+
+
+def test_the_funnel_still_counts_only_its_own_window_of_runs(db_session, env_settings):
+    """The window moved from the SQL into Python for a capped caller, so it has to be asserted
+    on the real read: a run older than `FUNNEL_WINDOW` comes back from the database inside the
+    limit and must still be discarded before its ticks are summed."""
+    db_session.add(Run(started_at=NOW - timedelta(hours=1), status="ok", build_sha="abc",
+                       notes={"pricing": {"ticks": 40, "gaps": 5}}))
+    db_session.add(Run(started_at=NOW - floor.FUNNEL_WINDOW - timedelta(hours=1), status="ok",
+                       build_sha="abc", notes={"pricing": {"ticks": 999, "gaps": 999}}))
+    db_session.flush()
+
+    funnel = build_floor(db_session, NOW, env_settings)["funnel"]
+    assert funnel["ticks"] == 40 and funnel["gaps"] == 5
 
 
 def test_the_board_score_read_is_bounded_to_its_own_window(db_session, env_settings):

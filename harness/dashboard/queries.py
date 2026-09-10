@@ -36,19 +36,34 @@ def recent_run_notes(session: Session, cutoff: datetime, limit: int | None = Non
     sum needs the same true 24h window `_funnel` and `_candidates` already get. ~2880 rows a day
     of this ~2MB table is cheap to scan in full.
 
-    **Ordered by `id`, not by `started_at` (fix 31).** `runs` carries no index on `started_at`,
-    so `order by started_at desc` was a sequential scan of every run of the season plus a sort
-    of its `notes` JSONB, and a `limit` on top of that capped the rows *returned* without
-    capping the rows *read*. `id` is the primary key and is assigned in insertion order by the
-    one writer that inserts here, the recorder, so newest-first by id is newest-first by time;
-    reading in primary-key order backwards means a `limit` stops the read itself. The `cutoff`
-    predicate is unchanged and still bounds a caller that passes no limit. Callers that do pass
-    one now get what the parameter has always claimed: the newest N rows of the window.
+    **Ordered by `id`, and a caller with a limit filters on `started_at` in Python** (fix 31,
+    round 1). `runs` carries no index on `started_at`, which makes every shape of this read a
+    full scan of the table -- the question is only what stops it. `order by started_at desc` was
+    a full scan *plus* a sort of the `notes` JSONB, and a `limit` on top of it capped the rows
+    returned without capping the rows read. `order by id desc` removes the sort, because `id` is
+    the primary key and is assigned in insertion order by the one writer that inserts here, so
+    newest-first by id is newest-first by time. But a `where started_at >= :cutoff` *beside* a
+    `limit` does not stop the scan either: PostgreSQL walks the primary key backwards discarding
+    rows that fail the predicate until it has `limit` matches, and a limit set above the
+    window's true row count is never reached -- a 6 h window holds 400-700 rows against a limit
+    of 2,000, so the backward walk ran to the start of the table on every Floor build.
+
+    So the predicate and the limit do not travel together. With a limit, the SQL carries the
+    limit alone and the read stops at exactly N rows; `started_at` comes back beside `notes` and
+    the window is applied here, which is free on N rows already in memory. Without one, the SQL
+    carries the predicate alone, which is what the legacy page's uncapped 24 h funnel wants and
+    is unchanged from before fix 31 apart from the ordering.
+
+    The cost of the limited form is that a limit *below* the window's row count silently returns
+    the newest N rather than the whole window -- the same truncation fix 17 round 1 removed for
+    the uncapped callers. That is why `FUNNEL_NOTES_LIMIT` is set at about triple the expected
+    count and why it is documented where it is set, not here.
     """
-    stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.id))
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    return session.execute(stmt).scalars().all()
+    if limit is None:
+        stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.id))
+        return session.execute(stmt).scalars().all()
+    stmt = select(Run.started_at, Run.notes).order_by(desc(Run.id)).limit(limit)
+    return [notes for started_at, notes in session.execute(stmt).all() if started_at >= cutoff]
 
 
 def signals_by_variant_from_notes(session: Session, run_notes: list[dict]) -> dict:

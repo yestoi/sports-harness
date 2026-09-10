@@ -23,10 +23,14 @@ person to read a new table here has to say which kind it is.
 
 import ast
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from sqlalchemy.dialects import postgresql
+
+from harness.dashboard import queries as queries_mod
 from harness.dashboard import scheduler as scheduler_mod
 from harness.dashboard import window as window_mod
 from harness.dashboard.snapshots import floor, gate, pulse, study, ticket
@@ -71,6 +75,11 @@ _TINY_PREFIXES = ("parlay_",)
 _TABLE = re.compile(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)", re.I)
 _LIMIT = re.compile(r"\blimit\b", re.I)
 _INTERVAL = re.compile(r"\binterval\b", re.I)
+#: `%(name)s` is what a bind parameter renders as once a SQLAlchemy Core statement is compiled
+#: for PostgreSQL, which is how `queries.py`'s statements reach this file; `:name` is what a
+#: `text()` literal carries. Both are the same thing -- a bound the builder computed from its
+#: own `now` -- so the pattern below accepts either.
+#:
 #: A comparison of a time column against a bound -- a bind parameter the builder computed from
 #: its own `now`, or a literal `now()`. This is what "a `now() - interval` predicate on the BRIN
 #: or leading-index column" looks like once the instant is injected rather than read from the
@@ -78,7 +87,7 @@ _INTERVAL = re.compile(r"\binterval\b", re.I)
 _TIME_BOUND = re.compile(
     r"\b(ts|created_at|filled_at|placed_at|started_at|generated_at|fetched_at|built_at|"
     r"evaluated_at|last_loop_at|kickoff_utc|updated_at|signal_created_at)\s*"
-    r"(>=|>|<=|<|between)\s*(:\w+|now\s*\(\s*\))", re.I)
+    r"(>=|>|<=|<|between)\s*(:\w+|%\(\w+\)s|now\s*\(\s*\))", re.I)
 
 
 def _is_text_call(node) -> bool:
@@ -122,16 +131,57 @@ def _bounded(sql: str) -> bool:
     return bool(_LIMIT.search(body) or _INTERVAL.search(body) or _TIME_BOUND.search(body))
 
 
+class _RecordingSession:
+    """Enough of a `Session` for `queries.py` to build and issue its statements against.
+
+    `harness/dashboard/queries.py` is the one module in this file's remit that does not use
+    `text()`: it builds its reads through SQLAlchemy Core, so the source scanner above cannot
+    see them, and it is also the module holding the read the fix-31 brief singled out as
+    unindexed. Rather than exempt it, its statements are captured here as they are issued and
+    compiled to the SQL PostgreSQL would receive, then put through the same two checks.
+    """
+
+    def __init__(self) -> None:
+        self.statements = []
+
+    def execute(self, statement, *args, **kwargs):
+        self.statements.append(statement)
+        return self
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
+
+def _orm_statements() -> list[tuple[str, str]]:
+    session = _RecordingSession()
+    now = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
+    # Both shapes of the funnel read: the capped one the Floor builder issues, and the uncapped
+    # one the legacy page still issues. They are different statements and only one has a limit.
+    queries_mod.recent_run_notes(session, now - queries_mod.WINDOW_6H, limit=2000)
+    queries_mod.recent_run_notes(session, now - queries_mod.WINDOW_24H)
+    queries_mod.signals_by_variant_from_notes(session, [])
+    return [(f"<compiled {i}>", str(stmt.compile(dialect=postgresql.dialect())))
+            for i, stmt in enumerate(session.statements)]
+
+
 ALL_STATEMENTS = [(module.__name__.rsplit(".", 1)[-1], name, sql)
                   for module in MODULES for name, sql in _statements(module)]
+ALL_STATEMENTS += [("queries", name, sql) for name, sql in _orm_statements()]
 
 
 def test_the_scan_finds_every_builders_statements():
     """A guard on the guard: an extraction that silently found nothing would pass every
     assertion below while checking nothing at all."""
     by_module = {module for module, _, _ in ALL_STATEMENTS}
-    assert by_module == {"pulse", "floor", "study", "gate", "ticket", "scheduler", "window"}
+    assert by_module == {"pulse", "floor", "study", "gate", "ticket", "scheduler", "window",
+                         "queries"}
     assert len(ALL_STATEMENTS) > 30
+    # Three statements, not two: the capped funnel read and the uncapped legacy one are
+    # different SQL, and the whole point of the round 1 change is that only one carries a limit.
+    assert len([s for m, _, s in ALL_STATEMENTS if m == "queries"]) == 3
 
 
 @pytest.mark.parametrize("module,name,sql", ALL_STATEMENTS,
@@ -156,18 +206,34 @@ def test_every_statement_on_a_growing_table_carries_a_bound(module, name, sql):
         "and it costs the executor its page cache, not just itself.")
 
 
+def test_the_capped_run_notes_read_sends_its_limit_without_the_window_predicate():
+    """Round 1. `runs` has no index on `started_at`, so a `where started_at >= :cutoff` beside a
+    `limit` does not stop the read: PostgreSQL walks the primary key backwards discarding rows
+    that fail the predicate until it has `limit` matches, and a limit above the window's true
+    row count is never reached. The capped form therefore carries the limit alone and applies
+    the window in Python; the uncapped legacy form carries the predicate alone."""
+    capped, uncapped = [sql for module, _, sql in ALL_STATEMENTS if module == "queries"][:2]
+
+    assert _LIMIT.search(_code(capped))
+    assert "started_at >=" not in _code(capped).lower().replace("runs.", "")
+    assert "runs.started_at" in capped, "the caller needs the column to apply the window itself"
+
+    assert not _LIMIT.search(_code(uncapped))
+    assert _TIME_BOUND.search(_code(uncapped))
+
+
 def test_the_positions_view_is_not_read_by_any_builder():
     """Fix 31 reverses the phase 4.5 ruling that left `_EXPOSURE` on the `positions` view. The
     view has no time bound of any kind -- `o.status <> 'settled'` is a status predicate, not a
     bound -- so on a database where settlement has ever stalled it walks the season."""
-    for module in MODULES:
+    for module in MODULES + (queries_mod,):
         body = Path(module.__file__).read_text().lower()
         assert "from positions" not in body, module.__name__
 
 
 def test_no_builder_sql_names_a_forbidden_table():
     """The five tape tables stay forbidden to every builder, not only to Floor (spec §0.3)."""
-    for module in MODULES:
+    for module in MODULES + (queries_mod,):
         body = Path(module.__file__).read_text().lower()
         for table in ("orderbook_events", "venue_trades", "raw_responses", "odds_snapshots",
                       "venue_quotes"):
