@@ -254,12 +254,16 @@ def test_an_error_frame_idles_rather_than_reconnecting(db_session, env_settings)
 
 
 def test_the_listener_is_off_when_its_setting_is_false(db_session, env_settings):
+    """`connected` is False before `run_forever` too, so the assertion that carries the claim is
+    the signing seam and the factory: a disabled listener reads no key and opens no socket."""
     settings = env_settings.model_copy(update={"rfq_listener_enabled": False})
+    calls = []
     listener = RfqListener(settings, sessionmaker(bind=db_session.get_bind()),
-                           ws_factory=lambda *a, **k: pytest.fail("connected"),
+                           ws_factory=lambda *a, **k: calls.append("ws_factory"),
                            clock=lambda: NOW, sleep=lambda *_: None,
-                           sign=lambda *_a, **_k: {})
+                           sign=lambda *_a, **_k: calls.append("sign"))
     listener.run_forever()          # returns immediately
+    assert calls == []
     assert listener.connected is False
 
 
