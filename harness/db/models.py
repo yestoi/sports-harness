@@ -1248,7 +1248,10 @@ class RfqQuote(Base):
     `fee_branch_game` is the game-level independence test the decline rule uses,
     `fee_branch_event` the event-level one F72 wrote, and the pair of `*_other_branch` bids is
     what the branch we did not take would have quoted. `declined_reason` is set (and the bids
-    left null) when the RFQ was declined: `same_game`, `no_fair` or `disagreement`.
+    left null) when the RFQ was declined. The five reasons `harness.venues.kalshi.rfq_quote`
+    writes are `same_game`, `no_fair`, `disagreement`, `collateral` and `single_leg`: a size
+    refusal and a single-market request are kept apart from "we had no price", because H5 asks
+    which RFQs we would not have answered **and why**.
 
     Grading (`rfq_grade`) fills `graded_at`, `closing_fair`, `closing_stale` and the two P&L
     columns. `closing_stale` is true when any leg's closing fair value was stale, and t10
