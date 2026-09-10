@@ -220,14 +220,15 @@ td.num, th.num { text-align: right; }
   100% { transform: scale(1); } }
 
 /* The diagonal CASHED/BUSTED stamp: a rubber stamp landing once on the card's own result, never
-   on a lamp -- a lamp only ever plays its own leg's state. */
-.stamp { position: absolute; top: 46%; left: 50%;
+   on a lamp -- a lamp only ever plays its own leg's state. Scoped under `.slip`, like `.lamp`,
+   so the class name stays Ticket-only rather than a bare one another surface could collide with. */
+.slip .stamp { position: absolute; top: 46%; left: 50%;
   transform: translate(-50%, -50%) rotate(-14deg); font-family: var(--font-display);
   font-weight: 800; font-size: 34px; letter-spacing: 0.06em; padding: 4px 16px;
   border: 4px solid currentColor; border-radius: 6px; opacity: 0.85; pointer-events: none;
   animation: stamp-land 0.5s ease-out; }
-.stamp.cashed { color: var(--hit); }
-.stamp.busted { color: var(--miss); }
+.slip .stamp.cashed { color: var(--hit); }
+.slip .stamp.busted { color: var(--miss); }
 @keyframes stamp-land {
   0% { transform: translate(-50%, -50%) rotate(-14deg) scale(2.4); opacity: 0; }
   70% { transform: translate(-50%, -50%) rotate(-14deg) scale(0.92); opacity: 0.9; }
@@ -291,7 +292,7 @@ td.num, th.num { text-align: right; }
     row-gap: 4px; padding: 8px 0;
     border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
   .slip .leg:last-child { border-bottom: none; }
-  .stamp { font-size: 24px; padding: 3px 12px; }
+  .slip .stamp { font-size: 24px; padding: 3px 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
