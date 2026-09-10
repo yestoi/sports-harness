@@ -115,6 +115,26 @@ def test_pulse_status_says_so_when_a_rule_could_not_be_evaluated():
     assert "FINE" in text and "disk_free" in text and "not evaluated" in text
 
 
+def test_research_reading_prints_the_spend_beside_its_cap():
+    out = s.research_reading({"day_usd": 24.9, "day_reserved": 0.0, "week_usd": 40.0,
+                              "daily_cap": 25.0, "weekly_cap": 150.0, "dormant": True})
+    assert "24.90" in out and "25.00" in out and "40.00" in out and "150.00" in out
+    assert "dormant" in out
+
+
+def test_research_reading_is_not_evaluated_when_nothing_spent():
+    assert "not evaluated" in s.research_reading({"day_usd": None})
+
+
+def test_veto_reading_names_the_rate_and_the_decided_count():
+    out = s.veto_reading({"veto_rate": 0.25, "decided_24h": 8})
+    assert "25" in out and "8" in out
+
+
+def test_veto_reading_is_not_evaluated_with_no_decided_signals():
+    assert "not evaluated" in s.veto_reading({"veto_rate": None})
+
+
 def test_a_reading_is_one_sentence_per_row():
     reading = s.gate_criterion_reading({"name": "clv_positive", "status": "insufficient",
                                         "value": None, "threshold": "> 0", "n": 6})
