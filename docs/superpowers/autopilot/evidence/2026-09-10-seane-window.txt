@@ -1,0 +1,7 @@
+SET
+pulse_not_evaluated|kill_switch|WATCH
+seane_window_loop|210|4885|7956|10929
+seane_dirty_max|114
+seane_orders|434|0
+seane_fills|75|1471.42
+seane_intents|11631
