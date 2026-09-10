@@ -31,7 +31,9 @@ from harness.settlement.job import Budget, StageResult, register_stage
 log = logging.getLogger(__name__)
 
 MIN_BUDGET_S = 30
-#: How far after a leg's game a closing fair value may be and still count as the close.
+#: How far **before kickoff** a leg's newest `direct` fair value may have been written and
+#: still count as that leg's close. The test is `created_at < kickoff - CLOSING_WINDOW`, so
+#: it bounds how *early* the fair may be and places no bound on how late.
 CLOSING_WINDOW = timedelta(hours=6)
 
 _UNGRADED = text("""
