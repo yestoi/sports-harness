@@ -48,7 +48,7 @@ def test_two_rows_under_one_call_id(db_session):
                for r in rows)
     assert all(r.usage == {"input_tokens": 1000, "output_tokens": 100,
                            "cache_read_input_tokens": 500, "cache_creation_input_tokens": 0,
-                           "searches": 2} for r in rows)
+                           "searches": 2, "code_execution_calls": 0} for r in rows)
     assert all(r.latency_ms == 9000 and r.request_id == "req_1" for r in rows)
     assert all(r.created_at == NOW for r in rows)
 
@@ -80,3 +80,40 @@ def test_an_errored_call_still_writes_its_row(db_session):
         "select output, request_id from research_notes where call_id = :c"), {"c": call_id}).first()
     assert row.output == {"error": "pause_turn", "stop_reason": "pause_turn"}
     assert row.request_id == "req_2"
+
+
+def test_usage_json_carries_the_code_execution_call_count(db_session):
+    """Review round 1 minor: no schema change -- `code_execution_calls` lives inside the JSONB
+    `usage` column, counted from `tool_calls` rather than from `Usage` (T4's dataclass is shared
+    and carries no field for it)."""
+    call_id = uuid.uuid4()
+    result = CallResult(model="claude-opus-5", output={"decision": "proceed", "confidence": 0.8,
+                                                        "reason": "ok", "evidence_ids": []},
+                        usage=Usage(500, 50, 0, 0, 1), stop_reason="end_turn",
+                        request_id="req_ce", latency_ms=5000,
+                        tool_calls=[{"name": "code_execution", "code": "import json"},
+                                    {"type": "web_search_x", "name": "web_search", "query": "q"},
+                                    {"name": "code_execution", "code": "print(1)"}],
+                        snippets={"items": [], "truncated": False}, error=None)
+    write_notes(db_session, call_id=call_id, kind="veto", subject_id="1", effort="high",
+                prompt_hash="d" * 64, features={}, results=[result], created_at=NOW)
+    row = db_session.execute(text(
+        "select usage from research_notes where call_id = :c"), {"c": call_id}).first()
+    assert row.usage["code_execution_calls"] == 2
+    assert row.usage["searches"] == 1
+
+
+def test_a_schema_failure_stores_the_raw_text_alongside_the_error(db_session):
+    """Review round 1 Important 3: the note's `output` carries the sanitized raw text on a
+    `schema` failure, so it is distinguishable from a `pause_turn` or a `refusal`."""
+    call_id = uuid.uuid4()
+    failed = CallResult(model="claude-opus-5", output=None, usage=Usage(800, 300, 0, 0, 0),
+                        stop_reason="end_turn", request_id="req_trunc", latency_ms=8000,
+                        tool_calls=[], snippets={"items": [], "truncated": False},
+                        error="schema", raw="{\"decision\": \"proceed\", \"confidence\":")
+    write_notes(db_session, call_id=call_id, kind="veto", subject_id="1", effort="high",
+                prompt_hash="e" * 64, features={}, results=[failed], created_at=NOW)
+    row = db_session.execute(text(
+        "select output from research_notes where call_id = :c"), {"c": call_id}).first()
+    assert row.output == {"error": "schema", "stop_reason": "end_turn",
+                          "raw": "{\"decision\": \"proceed\", \"confidence\":"}

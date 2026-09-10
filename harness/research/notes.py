@@ -29,6 +29,15 @@ def write_notes(session: Session, *, call_id: uuid.UUID, kind: str, subject_id: 
     study's arms are selected by.
     """
     for result in results:
+        error_body: dict = {"error": result.error, "stop_reason": result.stop_reason}
+        if result.raw is not None:
+            error_body["raw"] = result.raw
+        # `code_execution_calls` is no schema change -- it is a key inside the JSONB `usage`
+        # column, sourced from `tool_calls` rather than from `Usage` (T4's dataclass is shared
+        # and carries no field for it). Opus 5 wraps its searches in a `code_execution` sandbox
+        # on this tool version, and the day-one worst-case re-fit reads these notes, so the
+        # sandbox rounds it actually ran have to be visible here (review round 1 minor).
+        code_execution_calls = sum(1 for c in result.tool_calls if c.get("name") == "code_execution")
         session.add(ResearchNote(
             call_id=call_id,
             model=result.model,
@@ -39,13 +48,13 @@ def write_notes(session: Session, *, call_id: uuid.UUID, kind: str, subject_id: 
             features=features,
             snippets=result.snippets,
             tool_calls=result.tool_calls,
-            output=result.output if result.error is None else {
-                "error": result.error, "stop_reason": result.stop_reason},
+            output=result.output if result.error is None else error_body,
             usage={"input_tokens": result.usage.input_tokens,
                    "output_tokens": result.usage.output_tokens,
                    "cache_read_input_tokens": result.usage.cache_read_tokens,
                    "cache_creation_input_tokens": result.usage.cache_write_tokens,
-                   "searches": result.usage.searches},
+                   "searches": result.usage.searches,
+                   "code_execution_calls": code_execution_calls},
             cost_usd=cost_usd(result.model, result.usage),
             latency_ms=result.latency_ms,
             request_id=result.request_id,

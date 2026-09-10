@@ -32,11 +32,17 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
-from harness.research.spend import Usage
+from harness.research.spend import WORST_CASE_OUTPUT_TOKENS, Usage
+from harness.research.text import sanitize_model_text
 
 log = logging.getLogger(__name__)
+
+#: The Anthropic client's request timeout, in seconds. `reserve_spend`'s advisory lock is held
+#: only around the reservation, never across the call itself (T4's docstring), so this bounds a
+#: single slow request rather than anything shared -- generous because the veto's own latency is
+#: already 10-30 s and a three-search call re-bills context on every round.
+REQUEST_TIMEOUT_S = 120.0
 
 #: The exact model id strings. Never a date suffix (verified-facts D4).
 PRIMARY_MODEL = "claude-opus-5"
@@ -58,6 +64,11 @@ class CallResult:
 
     `error` is `None`, or one of `pause_turn`, `refusal`, `search_error`, `schema`, or the class
     name of a transport exception. `output` is the parsed structured output, or `None`.
+
+    `raw` is `None` except on a `schema` failure, where it carries the first text block's own
+    text, sanitized: the controller's own proving run hit exactly this shape (a `max_tokens`
+    truncation), and without the text there is no way to tell a truncation from a genuine
+    preamble the model wrote before its JSON.
     """
 
     model: str
@@ -69,6 +80,7 @@ class CallResult:
     tool_calls: list[dict]
     snippets: dict
     error: str | None
+    raw: str | None = None
 
 
 def web_search_tool(max_uses: int) -> dict:
@@ -136,18 +148,51 @@ def snippets_from(payload: dict) -> dict:
                           "title": str(result.get("title") or ""),
                           "page_age": str(result.get("page_age") or "")})
     truncated = False
-    while items and len(json.dumps({"items": items, "truncated": True}).encode()) > SNIPPETS_MAX_BYTES:
+    # Measured with `"truncated": False` -- one byte *longer* than the `true` serialization --
+    # so the ceiling holds for whichever flag the returned object actually carries. Measuring
+    # with `True` instead let an untruncated result land one byte over 6 KB (review round 1).
+    while items and len(json.dumps({"items": items, "truncated": False}).encode()) > SNIPPETS_MAX_BYTES:
         items.pop()
         truncated = True
     return {"items": items, "truncated": truncated}
 
 
+#: `tool_calls_from`'s code-execution entries carry at most this many characters of the model's
+#: own sandbox code (review round 1 minor): enough to see what ran, never the whole script.
+_CODE_EXCERPT_CHARS = 200
+
+
 def tool_calls_from(payload: dict) -> list[dict]:
-    """What the model asked the server tool for, with the pinned type recorded (ruling B-M5)."""
-    return [{"type": WEB_SEARCH_TOOL_TYPE, "name": "web_search",
-             "query": str((block.get("input") or {}).get("query") or "")}
-            for block in _blocks(payload)
-            if block.get("type") == "server_tool_use" and block.get("name") == "web_search"]
+    """What the model asked a server tool for.
+
+    `web_search` calls carry the pinned type string and the query (ruling B-M5). Opus 5 routes
+    its searches through a `code_execution` sandbox on this tool version (controller artefacts,
+    2026-09-10), so every other `server_tool_use` block is recorded too, under its own name, with
+    an excerpt of its code run through `sanitize_model_text` -- it is model-authored text landing
+    in a stored column, so F60's sanitizer applies to it exactly as it does to any other.
+    """
+    calls: list[dict] = []
+    for block in _blocks(payload):
+        if block.get("type") != "server_tool_use":
+            continue
+        name = block.get("name")
+        if name == "web_search":
+            calls.append({"type": WEB_SEARCH_TOOL_TYPE, "name": "web_search",
+                          "query": str((block.get("input") or {}).get("query") or "")})
+        else:
+            code = str((block.get("input") or {}).get("code") or "")
+            calls.append({"name": str(name),
+                          "code": sanitize_model_text(code, _CODE_EXCERPT_CHARS)})
+    return calls
+
+
+def _first_text(payload: dict) -> str | None:
+    """The first text block's own text, unparsed -- what `parse_response` sanitizes and carries
+    as `CallResult.raw` on a `schema` failure. `None` when there is no text block at all."""
+    for block in _blocks(payload):
+        if block.get("type") == "text":
+            return block.get("text")
+    return None
 
 
 def output_from(payload: dict) -> tuple[dict | None, str | None]:
@@ -179,14 +224,24 @@ def error_from(payload: dict) -> str | None:
     return output_from(payload)[1]
 
 
+#: F60: the sanitizer's cap for the raw text a schema failure carries. Generous relative to the
+#: 300-character veto reason -- this is a diagnostic field, not prose meant to be read whole.
+RAW_TEXT_MAX_CHARS = 2000
+
+
 def parse_response(model: str, payload: dict, latency_ms: int,
                    request_id: str | None) -> CallResult:
     error = error_from(payload)
     output, _ = output_from(payload)
+    raw = None
+    if error == "schema":
+        text = _first_text(payload)
+        if text is not None:
+            raw = sanitize_model_text(text, RAW_TEXT_MAX_CHARS)
     return CallResult(model=model, output=None if error else output, usage=usage_from(payload),
                       stop_reason=payload.get("stop_reason"), request_id=request_id,
                       latency_ms=latency_ms, tool_calls=tool_calls_from(payload),
-                      snippets=snippets_from(payload), error=error)
+                      snippets=snippets_from(payload), error=error, raw=raw)
 
 
 # --- the client -----------------------------------------------------------------------------------
@@ -198,8 +253,7 @@ class ResearchClient:
     keeps every test in this repository from needing a key.
     """
 
-    def __init__(self, settings, clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 factory: Callable | None = None) -> None:
+    def __init__(self, settings, factory: Callable | None = None) -> None:
         if not settings.has_anthropic_key():
             raise RuntimeError("no anthropic key: research features are dormant")
         if factory is None:
@@ -207,16 +261,24 @@ class ResearchClient:
 
             factory = anthropic.Anthropic
         self.s = settings
-        self._clock = clock
-        self._client = factory(api_key=settings.anthropic_api_key(), max_retries=0)
+        self._client = factory(api_key=settings.anthropic_api_key(), max_retries=0,
+                               timeout=REQUEST_TIMEOUT_S)
 
     def call(self, *, model: str, system: list[dict], user: str, schema: dict, effort: str,
-             max_output_tokens: int, tools: tuple[dict, ...] = (),
+             max_output_tokens: int = WORST_CASE_OUTPUT_TOKENS, tools: tuple[dict, ...] = (),
              thinking: dict | None = None) -> CallResult:
         """One request. Never retries, never resumes a paused turn, never raises on a venue
         error: a transport failure comes back as a `CallResult` whose `error` is the exception's
         class name, so the caller's `finally` still releases the reservation.
+
+        `max_output_tokens` defaults to `WORST_CASE_OUTPUT_TOKENS` and may never exceed it
+        (design 0.3): `reserve_spend`'s projection is priced at that same constant, so a caller
+        that requested more tokens than it reserved would be billed against a reservation that
+        was never large enough to cover it.
         """
+        if max_output_tokens > WORST_CASE_OUTPUT_TOKENS:
+            raise ValueError(f"max_output_tokens {max_output_tokens} exceeds the reserved "
+                             f"worst case {WORST_CASE_OUTPUT_TOKENS}")
         started = time.monotonic()
         kwargs = {
             "model": model,

@@ -9,15 +9,36 @@ from pathlib import Path
 
 import pytest
 
-from harness.research.client import (PRIMARY_MODEL, SHADOW_MODEL, SNIPPETS_MAX_BYTES,
-                                     WEB_SEARCH_TOOL_TYPE, ResearchClient, error_from,
-                                     output_from, parse_response, prompt_hash, snippets_from,
-                                     tool_calls_from, usage_from, web_search_tool)
-from harness.research.spend import Usage, cost_usd
+from harness.research.client import (PRIMARY_MODEL, RAW_TEXT_MAX_CHARS, REQUEST_TIMEOUT_S,
+                                     SHADOW_MODEL, SNIPPETS_MAX_BYTES, WEB_SEARCH_TOOL_TYPE,
+                                     ResearchClient, error_from, output_from, parse_response,
+                                     prompt_hash, snippets_from, tool_calls_from, usage_from,
+                                     web_search_tool)
+from harness.research.spend import WORST_CASE_OUTPUT_TOKENS, Usage, cost_usd
+from harness.research.text import sanitize_model_text
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PROVING = json.loads((FIXTURES / "anthropic_structured_websearch.json").read_text())
 CACHED = json.loads((FIXTURES / "anthropic_cache_hit.json").read_text())
+
+
+class _FakeResponse:
+    """What `response.model_dump(mode="json")` and `response._request_id` look like, built from
+    a plain payload dict -- so a fake `messages.create` can return exactly what a real one would
+    hand to `parse_response`."""
+
+    def __init__(self, payload: dict, request_id: str | None) -> None:
+        self._payload = payload
+        self._request_id = request_id
+
+    def model_dump(self, mode="json"):
+        return self._payload
+
+
+def _keyed_settings(env_settings, tmp_path, key_text="sk-ant-not-a-real-key"):
+    key = tmp_path / "anthropic_api_key"
+    key.write_text(key_text)
+    return env_settings.model_copy(update={"anthropic_api_key_file": key})
 
 
 # --- the recorded proof (ruling B-I11) --------------------------------------------------------
@@ -180,6 +201,18 @@ def test_tool_calls_record_the_pinned_type_and_the_query():
         {"type": WEB_SEARCH_TOOL_TYPE, "name": "web_search", "query": "lsu injury"}]
 
 
+def test_tool_calls_record_code_execution_blocks_with_a_sanitized_excerpt():
+    """Review round 1 minor: Opus 5 wraps its searches in a `code_execution` sandbox on this
+    tool version, and the record must show it, not only the `web_search` blocks."""
+    code = "import json\n" + "x" * 400
+    payload = {"usage": {}, "content": [
+        {"type": "server_tool_use", "name": "code_execution", "input": {"code": code}}]}
+    calls = tool_calls_from(payload)
+    assert calls == [{"name": "code_execution", "code": sanitize_model_text(code, 200)}]
+    assert len(calls[0]["code"]) <= 200
+    assert "type" not in calls[0]      # the pinned type string is only ever recorded for search
+
+
 # --- the five error shapes ----------------------------------------------------------------------
 
 @pytest.mark.parametrize("payload,expected", [
@@ -217,6 +250,28 @@ def test_parse_response_assembles_a_call_result():
     # reads at 0.1x, 8,233 cache writes at 1.25x and 1 search at $0.01, on Opus 5's $5/$25.
     assert result.usage == Usage(99, 1_239, 12_851, 8_233, 1)
     assert cost_usd(PRIMARY_MODEL, result.usage) == Decimal("0.099352")
+    assert result.raw is None       # no schema failure here -- nothing to carry
+
+
+def test_a_schema_failure_carries_the_raw_text_through_the_sanitizer():
+    """Review round 1 Important 3: the controller's own proving run hit exactly this shape (a
+    `max_tokens` truncation); without the raw text a truncation is indistinguishable from a
+    genuine preamble. `sanitize_model_text` runs first (F60), so control characters are gone and
+    the text is capped at `RAW_TEXT_MAX_CHARS`."""
+    text = "\x00" + '{"decision": "proceed", "confidence": 0.8, "reason": "no news f' + "z" * 3000
+    payload = {"stop_reason": "end_turn", "usage": {}, "content": [
+        {"type": "text", "text": text}]}
+    result = parse_response(PRIMARY_MODEL, payload, latency_ms=100, request_id="req_trunc")
+    assert result.error == "schema" and result.output is None
+    assert result.raw == sanitize_model_text(text, RAW_TEXT_MAX_CHARS)
+    assert len(result.raw) <= RAW_TEXT_MAX_CHARS
+    assert "\x00" not in result.raw
+
+
+def test_raw_is_none_when_there_is_no_text_block_at_all():
+    result = parse_response(PRIMARY_MODEL, {"stop_reason": "end_turn", "usage": {}, "content": []},
+                            latency_ms=1, request_id="r")
+    assert result.error == "schema" and result.raw is None
 
 
 # --- structure ------------------------------------------------------------------------------------
@@ -232,9 +287,7 @@ def test_only_the_client_module_calls_messages_create():
 
 def test_the_client_is_built_with_retries_off(env_settings, tmp_path):
     """A-C3 hole 3: a retried request is a second billed call the accounting would never see."""
-    key = tmp_path / "anthropic_api_key"
-    key.write_text("sk-ant-not-a-real-key")
-    settings = env_settings.model_copy(update={"anthropic_api_key_file": key})
+    settings = _keyed_settings(env_settings, tmp_path)
     captured = {}
 
     class FakeAnthropic:
@@ -249,6 +302,157 @@ def test_the_client_is_built_with_retries_off(env_settings, tmp_path):
     try:
         assert captured["max_retries"] == 0
         assert captured["api_key"] == "sk-ant-not-a-real-key"
+        # Review round 1 minor: `reserve_spend`'s advisory lock is held only around the
+        # reservation, never across the call (T4's docstring), so a bounded per-request timeout
+        # is the client's own concern rather than something the lock already limits.
+        assert captured["timeout"] == REQUEST_TIMEOUT_S
+    finally:
+        client.close()
+
+
+def test_call_sends_the_request_shape_max_tokens_output_config_tools_and_thinking(
+        env_settings, tmp_path):
+    """Review round 1 Important 1: `ResearchClient.call` was never exercised by a test, so
+    nothing pinned the request shape -- `max_tokens`, `output_config.format`/`effort`, the system
+    blocks (the `cache_control` breakpoint rides on that passthrough), `tools`, `thinking`."""
+    settings = _keyed_settings(env_settings, tmp_path)
+    captured = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeResponse(PROVING, "req_live")
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    system = [{"type": "text", "text": "frozen", "cache_control": {"type": "ephemeral"}}]
+    schema = {"type": "object", "properties": {}}
+    tool = web_search_tool(3)
+    thinking = {"type": "adaptive"}
+    try:
+        result = client.call(model=PRIMARY_MODEL, system=system, user="what happened today",
+                             schema=schema, effort="high", max_output_tokens=4096,
+                             tools=(tool,), thinking=thinking)
+    finally:
+        client.close()
+
+    assert captured["model"] == PRIMARY_MODEL
+    assert captured["max_tokens"] == 4096
+    assert captured["system"] == system
+    assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert captured["messages"] == [{"role": "user", "content": "what happened today"}]
+    assert captured["output_config"] == {"format": {"type": "json_schema", "schema": schema},
+                                         "effort": "high"}
+    assert captured["tools"] == [tool]
+    assert captured["thinking"] == thinking
+    assert result.request_id == "req_live" and result.error is None
+
+
+def test_a_call_with_no_tools_or_thinking_omits_those_keys(env_settings, tmp_path):
+    settings = _keyed_settings(env_settings, tmp_path)
+    captured = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeResponse(PROVING, "req_live")
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    try:
+        client.call(model=PRIMARY_MODEL, system=[], user="hi", schema={}, effort="low")
+    finally:
+        client.close()
+    assert "tools" not in captured and "thinking" not in captured
+
+
+def test_a_raising_create_returns_a_labelled_call_result_not_an_exception(env_settings, tmp_path):
+    """Review round 1 Important 1: a transport failure must still hand the caller a `CallResult`
+    -- never raise -- so the caller's `finally` still releases the reservation."""
+    settings = _keyed_settings(env_settings, tmp_path)
+
+    class RateLimitError(Exception):
+        pass
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            raise RateLimitError("429 too many requests")
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    try:
+        result = client.call(model=PRIMARY_MODEL, system=[], user="hi", schema={}, effort="high")
+    finally:
+        client.close()
+    assert result.error == "RateLimitError"
+    assert result.usage == Usage()
+    assert result.request_id is None
+    assert result.output is None
+
+
+def test_max_output_tokens_defaults_to_the_worst_case(env_settings, tmp_path):
+    """Review round 1 Important 2: design 0.3 -- the reservation and the request ceiling are the
+    same constant, so a caller that passes nothing still requests exactly what was reserved."""
+    settings = _keyed_settings(env_settings, tmp_path)
+    captured = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeResponse(PROVING, "req_live")
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    try:
+        client.call(model=PRIMARY_MODEL, system=[], user="hi", schema={}, effort="high")
+    finally:
+        client.close()
+    assert captured["max_tokens"] == WORST_CASE_OUTPUT_TOKENS
+
+
+def test_max_output_tokens_above_the_worst_case_raises(env_settings, tmp_path):
+    settings = _keyed_settings(env_settings, tmp_path)
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            raise AssertionError("must not be reached: the ceiling check runs first")
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    try:
+        with pytest.raises(ValueError, match="exceeds the reserved worst case"):
+            client.call(model=PRIMARY_MODEL, system=[], user="hi", schema={}, effort="high",
+                        max_output_tokens=WORST_CASE_OUTPUT_TOKENS + 1)
     finally:
         client.close()
 
