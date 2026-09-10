@@ -59,6 +59,29 @@ def test_the_cap_is_per_iso_week(db_session, proposed_card, last_week_stake):
     assert week_staked(db_session, NOW.year, NOW.isocalendar().week) == Decimal("25.00")
 
 
+#: Sunday 2026-09-13 20:00 in America/Chicago -- still ISO week 37 there -- is Monday 2026-09-14
+#: 01:00 in UTC, already into ISO week 38. Fix round 1: `mark_placed` used to key the cap off a
+#: raw `now.isocalendar()` on the UTC timestamp, which would attribute a stake placed at this
+#: moment (as late as 7 p.m. Central on a Sunday, for about five hours) to next week's budget
+#: instead of the week the operator was actually in.
+CT_WEEK_BOUNDARY_UTC = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
+
+
+def test_the_cap_is_keyed_to_the_chicago_week_not_a_raw_utc_isocalendar(
+        db_session, proposed_cards_over_budget):
+    """A raw `isocalendar()` on a UTC `now` would put this Sunday-night stake in next week's
+    cap, five hours early. It has to land in the Chicago week the operator was actually
+    placing in (2026-W37), not the UTC calendar's week (2026-W38)."""
+    first, second = proposed_cards_over_budget
+    mark_placed(db_session, first.id, payout_american=1450, stake=Decimal("45"),
+                now=CT_WEEK_BOUNDARY_UTC)
+    with pytest.raises(BudgetExceeded):
+        mark_placed(db_session, second.id, payout_american=900, stake=Decimal("10"),
+                    now=CT_WEEK_BOUNDARY_UTC)
+    assert week_staked(db_session, 2026, 37) == Decimal("45.00")
+    assert week_staked(db_session, 2026, 38) == Decimal("0")
+
+
 def test_a_moved_line_is_refused_without_a_leg_line(db_session, card_with_moved_line):
     """Ruling A-M7: a moved line is a different bet. Confirming it silently would put a card in
     the ledger that is not the card that was placed."""

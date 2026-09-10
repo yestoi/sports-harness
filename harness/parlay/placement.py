@@ -6,7 +6,10 @@ and the two refusals here exist so that what the harness records is what they ac
 
 * **The weekly cap is hard** (D15). $50 an ISO week against `parlay_ledger`, and a card that
   would cross it is refused rather than trimmed. The $10 the allocation leaves over stays
-  unspent, deliberately.
+  unspent, deliberately. The week is keyed to America/Chicago, not UTC: `now.isocalendar()` on a
+  raw UTC timestamp attributes Sunday-night activity (as late as 7 p.m. Central, 01:00 UTC
+  Monday) to next week's cap for about five hours, which is wrong for a budget the operator
+  thinks of as running Sunday's slate through Saturday's.
 * **A moved line is refused** (ruling A-M7). If the newest DraftKings row's `point` differs from
   the card's for any leg, the operator has to say `--leg-line <seq>=<point>` for it. A moved line
   is a different bet, and confirming it silently would put a card in the ledger that is not the
@@ -26,6 +29,7 @@ from sqlalchemy.orm import Session
 from harness.db.models import ParlayCard, ParlayLedger, ParlayLeg, ParlayPlacement
 from harness.parlay.config import load_config
 from harness.parlay.pricing import newest_dk_price
+from harness.research.spend import chicago_day
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +82,7 @@ def mark_placed(session: Session, card_id: int, payout_american: int, stake: Dec
         raise CardNotPlaceable(
             f"card {card_id} is {'absent' if card is None else card.status}, not proposed")
 
-    iso = now.isocalendar()
+    iso = chicago_day(now).isocalendar()
     stake = Decimal(str(stake)).quantize(Decimal("0.01"))
     already = week_staked(session, iso.year, iso.week)
     if already + stake > config.weekly_budget:
@@ -150,7 +154,7 @@ _SHOW = text("""
 def show_cards(session: Session, now: datetime) -> list[dict]:
     """The recent cards and this week's remaining budget, for `harness parlay show`."""
     config = load_config()
-    iso = now.isocalendar()
+    iso = chicago_day(now).isocalendar()
     remaining = config.weekly_budget - week_staked(session, iso.year, iso.week)
     rows = []
     for row in session.execute(_SHOW):

@@ -1015,6 +1015,7 @@ def parlay_placed_cmd(
 def parlay_show_cmd() -> None:
     """The recent cards and this week's remaining fun-money budget."""
     configure_logging()
+    from harness.parlay.config import load_config
     from harness.parlay.placement import expire_cards, show_cards
 
     s = get_settings()
@@ -1029,7 +1030,8 @@ def parlay_show_cmd() -> None:
         for row in rows:
             print(f"{row['card_id']:>5}  {row['sport']:<5} W{row['week']:<3} {row['kind']:<7} "
                   f"{row['status']:<8} ${row['stake']:>6}  est ${row['payout_est']}")
-        print(f"this week: ${rows[0]['week_remaining'] if rows else '50.00'} left of the budget")
+        remaining = rows[0]["week_remaining"] if rows else load_config().weekly_budget
+        print(f"this week: ${remaining} left of the budget")
 
 
 if __name__ == "__main__":
