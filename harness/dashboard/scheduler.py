@@ -8,12 +8,27 @@ Every job is `max_instances=1` and `coalesce=True`, with `misfire_grace_time` eq
 cadence: a build that overruns is never overlapped by the next one, and a scheduler that fell
 behind catches up with one run rather than a queue of them.
 
-Two cadences are decided per run rather than fixed. **Floor** is 15 s inside a game window and
-60 s outside, from `game_window_open`, and backs off to 30 s in-window when its own p95 over the
-last ten minutes exceeds its share of the CPU budget -- 250 ms, being 2 s per minute across
+Two cadences are decided per run rather than fixed. **Floor** is 30 s inside a game window and
+120 s outside, from `game_window_open`, and backs off to 60 s in-window when its own p95 over
+the last ten minutes exceeds its share of the CPU budget -- 250 ms, being 2 s per minute across
 about eight builds a minute (spec §6, ruling A-I9). Pulse names that back-off out loud through
-its `snapshot_budget` rule. **Ticket** is 15 s in a game window while a card is placed or alive,
-and 60 s otherwise, because between cards there is nothing to update.
+its `snapshot_budget` rule. **Ticket** is 30 s in a game window while a card is placed or alive,
+and 120 s otherwise, because between cards there is nothing to update.
+
+Three things here exist because of the 2026-09-10 incident, in which these jobs took the
+executor's loop time from 5.3 s to 54.7 s on a NAS with 1.0-1.4 GB free against a 34 GB
+database, and a person had to switch the whole layer off twelve minutes later.
+
+* **The cadences are half what they were** (`pulse.CADENCE_S` and the four in `floor` and
+  `ticket`), which is the cheapest possible fix and the first one to reach for.
+* **The jobs start staggered** rather than all at `t+0`. Five builders firing together on a cold
+  page cache is the worst minute the machine ever sees, and it is the minute right after a
+  deploy, when someone is watching and about to judge the deploy by it.
+* **A builder that keeps costing ten times its budget is stopped** by `_note_timing` below,
+  without waiting for a person. The three timings and the builder's name go to
+  `operator_events`, Pulse names it, and only a restart of `app-serve` starts it again -- the
+  guard is deliberately not self-clearing, because a builder that tripped it needs a change, not
+  another chance.
 
 Every cadence number and the p95 budget are *imported*, never restated: the builder module that
 puts the cadence in its own payload is the one home for it, and `FLOOR_P95_BUDGET_MS` lives in
@@ -27,16 +42,19 @@ per-builder tests would still pass because each imports its own module.
 """
 
 import logging
-from datetime import datetime, timezone
+from collections import deque
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from harness import telemetry
 from harness.config.settings import Settings
 from harness.dashboard import snapshots
-from harness.dashboard.snapshots import FLOOR_P95_BUDGET_MS
+from harness.dashboard.snapshots import (FLOOR_P95_BUDGET_MS, SNAPSHOT_DISABLE_MS,
+                                         SNAPSHOT_DISABLE_SAMPLES)
 # All five, for their `register_builder` side effect as much as for the cadences read below: a
 # serving process that imported only some of them would raise on the first tick of the rest.
 from harness.dashboard.snapshots import floor as _floor
@@ -64,6 +82,19 @@ TICKET_OUT_S = _ticket.CADENCE_OUT_S
 FLOOR_BACKOFF_S = FLOOR_IN_WINDOW_S * 2
 #: Two threads: one for the job that is running, one for the job that is due.
 EXECUTOR_THREADS = 2
+#: How many stale closed weeks `run_study` rebuilds per tick, beside the current one (final
+#: review M8). Unbounded, the first tick after a boot rebuilt every week of the season at once,
+#: each one a full week of `equity_snapshots`; three builds a tick clears a twenty-week backlog
+#: in under two hours and costs one tick no more than three weeks of reading.
+STUDY_STALE_PER_TICK = 2
+#: The first runs are spread across this many seconds instead of all firing at `t+0`, in this
+#: order. Pulse first because every surface's header borrows its status word, and Floor second
+#: because the brief for this fix says so and because it is the expensive one: it should meet a
+#: page cache that Pulse has already warmed rather than race it for one.
+STARTUP_SPREAD_S = 120
+STARTUP_ORDER = ("pulse", "floor", "gate", "ticket", "study")
+STARTUP_OFFSETS = {name: round(i * STARTUP_SPREAD_S / (len(STARTUP_ORDER) - 1))
+                   for i, name in enumerate(STARTUP_ORDER)}
 
 #: The starting cadence of each job. Floor and Ticket start at their *out-of-window* rate and
 #: are rescheduled by their first run: starting slow and speeding up costs one late build,
@@ -105,6 +136,11 @@ class SnapshotScheduler:
             executors={"default": ThreadPoolExecutor(EXECUTOR_THREADS)},
             timezone=timezone.utc)
         self._cadences: dict[str, int] = {}
+        #: builder key -> its last `SNAPSHOT_DISABLE_SAMPLES` build times, in milliseconds. The
+        #: same numbers `serve.snapshot_ms` records; kept in memory rather than read back out of
+        #: `metric_samples` because a guard against reads costing too much must not itself be a
+        #: read, and because `run_builder` has just measured them.
+        self._recent: dict[str, deque] = {}
 
     # -- cadence -------------------------------------------------------------------------
 
@@ -138,6 +174,56 @@ class SnapshotScheduler:
                 else TICKET_OUT_S
         return CADENCES[name]
 
+    # -- the self-guard ------------------------------------------------------------------
+
+    def _note_timing(self, name: str, elapsed_ms: int | None) -> None:
+        """Record one build's cost and disable the builder if the last
+        `SNAPSHOT_DISABLE_SAMPLES` all exceeded `SNAPSHOT_DISABLE_MS`.
+
+        Keyed on the *builder*, not the snapshot name, so the three samples that stop `study`
+        are three Study builds whatever weeks they were for, and stopping it pauses the one job
+        that builds them all.
+        """
+        if elapsed_ms is None:
+            return
+        key = snapshots.builder_key(name)
+        samples = self._recent.setdefault(key, deque(maxlen=SNAPSHOT_DISABLE_SAMPLES))
+        samples.append(int(elapsed_ms))
+        if len(samples) < SNAPSHOT_DISABLE_SAMPLES:
+            return
+        if any(value <= SNAPSHOT_DISABLE_MS for value in samples):
+            return
+        self._disable(key, list(samples))
+
+    def _disable(self, key: str, timings: list[int]) -> None:
+        """Pause `key`'s job, record the operator event, and leave it off until a restart.
+
+        Never raises, and each half is guarded on its own: a builder this expensive must stop
+        even if the event cannot be written, and the event is worth writing even if the job has
+        already gone during a shutdown. The row it was building keeps its last payload -- the
+        client's staleness banner is what tells the reader the numbers have stopped moving.
+        """
+        if not snapshots.disable_builder(key):
+            return
+        log.error("snapshot builder %s disabled after %s ms builds, all over %s ms",
+                  key, timings, SNAPSHOT_DISABLE_MS)
+        try:
+            self._scheduler.pause_job(key)
+        except Exception:  # noqa: BLE001 - the job may have gone during shutdown
+            log.warning("pausing the disabled snapshot job %s failed", key)
+        try:
+            with self._factory() as session:
+                telemetry.event(
+                    session, "snapshot_disabled",
+                    f"{key} snapshot disabled: last {len(timings)} builds "
+                    f"{', '.join(str(v) for v in timings)} ms, all over {SNAPSHOT_DISABLE_MS} "
+                    f"ms; re-enable by restarting app-serve",
+                    ref={"builder": key, "elapsed_ms": timings,
+                         "threshold_ms": SNAPSHOT_DISABLE_MS})
+                session.commit()
+        except Exception:  # noqa: BLE001 - the guard must fire whether or not it can say so
+            log.exception("recording the snapshot_disabled event for %s failed", key)
+
     # -- jobs ----------------------------------------------------------------------------
 
     def _reschedule(self, name: str, cadence: int) -> None:
@@ -160,6 +246,11 @@ class SnapshotScheduler:
         cadence flipped. Never raises: `run_builder` records a failure as the row's `error` and
         a scheduler thread that dies takes the surface with it."""
         now = now or datetime.now(timezone.utc)
+        if snapshots.builder_key(name) in snapshots.disabled_builders():
+            # The job is paused, so this is a build that lost a race with `_disable`. Its row
+            # keeps its last payload either way; running it would be the one thing the guard
+            # exists to stop.
+            return {}
         try:
             with self._factory() as session:
                 cadence = self.cadence_for(name, session, now)
@@ -171,42 +262,72 @@ class SnapshotScheduler:
         except Exception:  # noqa: BLE001 - a job must outlive one bad build
             log.exception("snapshot job %s failed outside run_builder", name)
             return {}
-        self._reschedule(name, cadence)
+        self._note_timing(name, result.get("elapsed_ms"))
+        # Only if that build did not just trip the guard: `_reschedule` calls `reschedule_job`,
+        # which computes a new `next_run_time` and so would resume the job `_disable` has this
+        # moment paused.
+        if snapshots.builder_key(name) not in snapshots.disabled_builders():
+            self._reschedule(name, cadence)
         return result
 
     def run_study(self, now: datetime | None = None) -> list[str]:
-        """The current ISO week, plus every week whose stored snapshot predates its newest
-        report run (addendum §0.1). This is what makes "no page view runs a query" hold without
-        exception: a closed week's snapshot is the scheduler's job, not a request's."""
+        """The current ISO week, plus at most `STUDY_STALE_PER_TICK` stale closed weeks
+        (addendum §0.1, final review M8). This is what makes "no page view runs a query" hold
+        without exception: a closed week's snapshot is the scheduler's job, not a request's.
+
+        The cap is what makes that affordable on the first tick after a boot, when every week
+        with a final report run is stale at once and each build reads a whole week of
+        `equity_snapshots`. The weeks are taken in `stale_study_names`' own order, which is
+        sorted by name. That is deterministic rather than oldest-first -- an unpadded ISO week
+        sorts `2026-1`, `2026-10`, `2026-2` -- and deterministic is the property that
+        matters: every tick takes the same first two of whatever is still stale, so a backlog
+        drains in a fixed order instead of two weeks being rebuilt while a third never is.
+        """
         now = now or datetime.now(timezone.utc)
+        if "study" in snapshots.disabled_builders():
+            return []
         iso = now.isocalendar()
         # Unpadded, matching `SNAPSHOT_NAME_RE`, `stale_study_names` and the Pulse rule.
         names = [f"study:{iso.year}-{iso.week}"]
         try:
             with self._factory() as session:
-                names.extend(n for n in stale_study_names(session, now) if n not in names)
+                stale = [n for n in stale_study_names(session, now) if n not in names]
+                names.extend(stale[:STUDY_STALE_PER_TICK])
         except Exception:  # noqa: BLE001 - the current week is still worth building
             log.exception("listing the stale study weeks failed")
         for name in names:
             try:
-                snapshots.run_builder(self._factory, name, now, self._settings, STUDY_S)
+                result = snapshots.run_builder(self._factory, name, now, self._settings, STUDY_S)
             except Exception:  # noqa: BLE001
                 log.exception("study snapshot %s failed", name)
+                continue
+            self._note_timing(name, result.get("elapsed_ms"))
+            if "study" in snapshots.disabled_builders():
+                break
         return names
 
     # -- lifecycle -----------------------------------------------------------------------
 
     def start(self) -> None:
+        """Register the five jobs, each with its first run staggered by `STARTUP_OFFSETS`.
+
+        `next_run_time` is what carries the stagger: APScheduler counts the interval from the
+        first run, so a job that starts 90 s late stays 90 s offset from its neighbours for the
+        life of the process, which is the point. The alternative -- all five at `t+0` -- is five
+        cold-cache builds in the same second, every time `app-serve` restarts.
+        """
         started_at = datetime.now(timezone.utc)
         for name in SIMPLE_JOBS:
             cadence = CADENCES[name]
             self._cadences[name] = cadence
-            self._scheduler.add_job(self.run_once, "interval", seconds=cadence, args=[name],
-                                    id=name, max_instances=1, coalesce=True,
-                                    misfire_grace_time=cadence, next_run_time=started_at)
-        self._scheduler.add_job(self.run_study, "interval", seconds=STUDY_S, id="study",
-                                max_instances=1, coalesce=True, misfire_grace_time=STUDY_S,
-                                next_run_time=started_at)
+            self._scheduler.add_job(
+                self.run_once, "interval", seconds=cadence, args=[name], id=name,
+                max_instances=1, coalesce=True, misfire_grace_time=cadence,
+                next_run_time=started_at + timedelta(seconds=STARTUP_OFFSETS[name]))
+        self._scheduler.add_job(
+            self.run_study, "interval", seconds=STUDY_S, id="study", max_instances=1,
+            coalesce=True, misfire_grace_time=STUDY_S,
+            next_run_time=started_at + timedelta(seconds=STARTUP_OFFSETS["study"]))
         self._cadences["study"] = STUDY_S
         self._scheduler.start()
         log.info("snapshot scheduler started: %s", sorted(self._cadences))

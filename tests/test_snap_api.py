@@ -9,10 +9,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
+from harness.dashboard import snapshots
 from harness.dashboard.app import create_dashboard
 from harness.dashboard.scheduler import (FLOOR_BACKOFF_S, FLOOR_IN_WINDOW_S, FLOOR_OUT_S,
                                          SnapshotScheduler)
-from harness.db.models import DashboardSnapshot, Game, MetricSample
+from harness.db.models import DashboardSnapshot, Game, MetricSample, OperatorEvent
 
 NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,15 @@ def _settings(env_settings, tmp_path, snapshots=False):
 def _client(db_session, settings):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     return TestClient(create_dashboard(factory, settings, clock=lambda: NOW))
+
+
+@pytest.fixture(autouse=True)
+def _no_disabled_builder_leaks():
+    """The disabled set lives for the life of the process, which is exactly right in production
+    -- only a restart of `app-serve` clears it -- and exactly wrong between two tests."""
+    snapshots.reset_disabled_builders()
+    yield
+    snapshots.reset_disabled_builders()
 
 
 def _row(db_session, name="pulse", **fields):
@@ -301,8 +311,9 @@ def test_run_once_writes_a_row_for_every_registered_name(db_session, env_setting
     assert {"pulse", "floor", "gate", "ticket"} <= names
 
 
-def test_the_study_job_builds_the_current_week_and_every_stale_week(db_session, env_settings,
-                                                                   tmp_path):
+def test_the_study_job_builds_the_current_week(db_session, env_settings, tmp_path):
+    """The current ISO week is built on the clock whatever else is stale; the cap on the stale
+    closed weeks beside it is asserted separately below."""
     from harness.db.models import ReportRun
 
     db_session.add(ReportRun(year=2026, week=37, generated_at=NOW - timedelta(days=3),
@@ -315,3 +326,148 @@ def test_the_study_job_builds_the_current_week_and_every_stale_week(db_session, 
     names = {row.name for row in db_session.query(DashboardSnapshot).all()}
     assert "study:2026-37" in names
     assert f"study:{NOW.isocalendar().year}-{NOW.isocalendar().week}" in names
+
+
+# --- fix 31: the cadences, the self-guard, the Study cap and the startup stagger -------------
+
+def test_every_cadence_comes_from_the_builder_that_writes_it_into_its_own_payload():
+    """One home per number. The scheduler imports each cadence from the builder module whose
+    payload states it, and Pulse judges staleness against the same constants -- so the interval
+    a job runs at, the `cadence_s` a surface reads, and the ladder a rule fires on cannot drift.
+
+    The literals are asserted too, because `docs/runbooks/dashboard.md` and the Phase 4.5 block
+    of `docs/superpowers/autopilot/verify.md` state them in prose to a person reading at 2 a.m.,
+    and a doc that disagrees with the code is worse than no doc.
+    """
+    from harness.dashboard import scheduler as sched
+    from harness.dashboard.snapshots import floor as floor_mod
+    from harness.dashboard.snapshots import gate as gate_mod
+    from harness.dashboard.snapshots import pulse as pulse_mod
+    from harness.dashboard.snapshots import study as study_mod
+    from harness.dashboard.snapshots import ticket as ticket_mod
+
+    assert (sched.PULSE_S, sched.GATE_S, sched.STUDY_S) == (
+        pulse_mod.CADENCE_S, gate_mod.CADENCE_S, study_mod.CADENCE_S)
+    assert (sched.FLOOR_IN_WINDOW_S, sched.FLOOR_OUT_S) == (
+        floor_mod.CADENCE_IN_WINDOW_S, floor_mod.CADENCE_OUT_S)
+    assert (sched.TICKET_IN_WINDOW_S, sched.TICKET_OUT_S) == (
+        ticket_mod.CADENCE_IN_WINDOW_S, ticket_mod.CADENCE_OUT_S)
+    # Fix 31's numbers: out of window Pulse 60, Floor 120, Ticket 120, Gate 300, Study 600; in a
+    # game window Floor and Ticket 30; the back-off is half the in-window rate, never a third
+    # number to tune.
+    assert sched.CADENCES == {"pulse": 60, "floor": 120, "gate": 300, "ticket": 120,
+                              "study": 600}
+    assert sched.FLOOR_IN_WINDOW_S == sched.TICKET_IN_WINDOW_S == 30
+    assert sched.FLOOR_BACKOFF_S == sched.FLOOR_IN_WINDOW_S * 2
+    assert pulse_mod.JUDGED_CADENCES == {"pulse": 60, "floor": 120, "gate": 300,
+                                         "ticket": 120, "study": 600}
+
+
+def test_the_first_runs_are_spread_over_two_minutes_with_pulse_before_floor(env_settings,
+                                                                           tmp_path):
+    """Five builders firing in the same second is the worst minute the machine sees, and it is
+    the minute right after a deploy. Pulse goes first because every surface's header borrows its
+    status word; Floor goes second so the expensive builder meets a cache Pulse has warmed."""
+    from harness.dashboard.scheduler import STARTUP_OFFSETS, STARTUP_SPREAD_S
+
+    assert STARTUP_OFFSETS["pulse"] == 0
+    assert STARTUP_OFFSETS["floor"] > STARTUP_OFFSETS["pulse"]
+    assert sorted(STARTUP_OFFSETS.values()) == sorted(set(STARTUP_OFFSETS.values()))
+    assert max(STARTUP_OFFSETS.values()) == STARTUP_SPREAD_S
+
+    scheduler = SnapshotScheduler(sessionmaker(), _settings(env_settings, tmp_path))
+    scheduler._scheduler.start = lambda *a, **k: None
+    scheduler.start()
+    try:
+        jobs = {job.id: job for job in scheduler._scheduler.get_jobs()}
+        first = {name: job.next_run_time for name, job in jobs.items()}
+        base = min(first.values())
+        offsets = {name: round((when - base).total_seconds()) for name, when in first.items()}
+        assert offsets == STARTUP_OFFSETS
+    finally:
+        scheduler.shutdown()
+
+
+def test_a_builder_over_ten_times_its_budget_three_times_running_is_disabled(db_session,
+                                                                            env_settings,
+                                                                            tmp_path):
+    """Two samples are a checkpoint or a backup sidecar; three in a row is a builder whose work
+    no longer fits the machine. On 2026-09-10 the answer to that was a person noticing twelve
+    minutes later, which is what this guard replaces."""
+    from harness.dashboard.snapshots import SNAPSHOT_DISABLE_MS
+
+    settings = _settings(env_settings, tmp_path)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    scheduler = SnapshotScheduler(factory, settings)
+    scheduler._scheduler.start = lambda *a, **k: None
+    scheduler.start()
+    try:
+        scheduler._note_timing("floor", SNAPSHOT_DISABLE_MS + 1)
+        scheduler._note_timing("floor", SNAPSHOT_DISABLE_MS + 1)
+        assert snapshots.disabled_builders() == frozenset()
+
+        scheduler._note_timing("floor", SNAPSHOT_DISABLE_MS + 1)
+        assert snapshots.disabled_builders() == frozenset({"floor"})
+        assert {job.id for job in scheduler._scheduler.get_jobs()
+                if job.next_run_time is None} == {"floor"}, "the job is paused, not merely slow"
+    finally:
+        scheduler.shutdown()
+
+    event = db_session.query(OperatorEvent).filter(
+        OperatorEvent.kind == "snapshot_disabled").one()
+    assert "floor" in event.summary and str(SNAPSHOT_DISABLE_MS) in event.summary
+    assert event.ref["builder"] == "floor"
+    assert event.ref["elapsed_ms"] == [SNAPSHOT_DISABLE_MS + 1] * 3
+    # A disabled builder does not build, even if a job fires before the pause lands.
+    assert scheduler.run_once("floor", now=NOW) == {}
+
+
+def test_one_build_inside_the_budget_clears_the_run(db_session, env_settings, tmp_path):
+    """The three samples must be *consecutive*. A slow build between two fast ones is the
+    machine being busy, and pausing a surface over that would be its own outage."""
+    from harness.dashboard.snapshots import SNAPSHOT_DISABLE_MS
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    scheduler = SnapshotScheduler(factory, _settings(env_settings, tmp_path))
+    for elapsed in (SNAPSHOT_DISABLE_MS + 1, SNAPSHOT_DISABLE_MS + 1, SNAPSHOT_DISABLE_MS,
+                    SNAPSHOT_DISABLE_MS + 1, SNAPSHOT_DISABLE_MS + 1):
+        scheduler._note_timing("floor", elapsed)
+    assert snapshots.disabled_builders() == frozenset()
+
+
+def test_the_guard_is_keyed_on_the_builder_so_three_study_weeks_trip_it(db_session,
+                                                                       env_settings, tmp_path):
+    """`study:2026-35`, `study:2026-36` and `study:2026-37` are three builds of one builder on
+    one job, and it is the job that has to stop."""
+    from harness.dashboard.snapshots import SNAPSHOT_DISABLE_MS
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    scheduler = SnapshotScheduler(factory, _settings(env_settings, tmp_path))
+    for week in (35, 36, 37):
+        scheduler._note_timing(f"study:2026-{week}", SNAPSHOT_DISABLE_MS + 1)
+    assert snapshots.disabled_builders() == frozenset({"study"})
+    assert scheduler.run_study(now=NOW) == []
+
+
+def test_the_study_job_builds_the_current_week_and_at_most_two_stale_ones(db_session,
+                                                                         env_settings,
+                                                                         tmp_path):
+    """Final review M8. Unbounded, the first tick after a boot rebuilt every week with a final
+    report run at once, each one a whole week of `equity_snapshots`."""
+    from harness.dashboard.scheduler import STUDY_STALE_PER_TICK
+    from harness.db.models import ReportRun
+
+    for week in (30, 31, 32, 33, 34):
+        db_session.add(ReportRun(year=2026, week=week, generated_at=NOW - timedelta(days=30),
+                                 provisional=False, build_sha="abc", criteria_hash="h",
+                                 config_hashes=[], markdown=f"# w{week}", markdown_sha256="s"))
+    db_session.commit()
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    names = SnapshotScheduler(factory, _settings(env_settings, tmp_path)).run_study(now=NOW)
+
+    current = f"study:{NOW.isocalendar().year}-{NOW.isocalendar().week}"
+    assert names[0] == current
+    assert len(names) == 1 + STUDY_STALE_PER_TICK
+    built = {row.name for row in db_session.query(DashboardSnapshot).all()}
+    assert set(names) <= built
+    assert len(built) == 1 + STUDY_STALE_PER_TICK
