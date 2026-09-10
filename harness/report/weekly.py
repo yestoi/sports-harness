@@ -50,8 +50,14 @@ CONFIRMATION_NOTE = ("confirmation set: restricted to the cells and contrasts se
 # --- rendering ------------------------------------------------------------------------------
 
 
-def _format_cell(value: Any) -> str:
-    """One cell as Markdown. Never empty: an empty cell in a scored table reads as a zero."""
+def format_cell(value: Any) -> str:
+    """One cell as Markdown. Never empty: an empty cell in a scored table reads as a zero.
+
+    Public since phase 5: `harness/report/render_for_model.py` renders the same cells for the
+    weekly annotator, and the annotator's citation check compares a bullet's numbers against a
+    cell's rendered text. Two formatters would let the model be checked against a string the
+    reader never sees, so there is one.
+    """
     if value is None:
         return PLACEHOLDER
     if isinstance(value, tuple) and len(value) == 5:
@@ -77,7 +83,7 @@ def _render_table(table: Table) -> list[str]:
     lines.append("| " + " | ".join(table.columns) + " |")
     lines.append("|" + "|".join("---" for _ in table.columns) + "|")
     for row in table.rows:
-        lines.append("| " + " | ".join(_format_cell(value) for value in row) + " |")
+        lines.append("| " + " | ".join(format_cell(value) for value in row) + " |")
     if table.note:
         lines += ["", f"_{table.note}_"]
     return lines + [""]
@@ -242,11 +248,11 @@ def _cell_fields(value: Any) -> dict:
     if is_cell(value):
         estimate, n_obs, n_clusters, lo, hi = value
         return {"estimate": estimate, "n_obs": n_obs, "n_clusters": n_clusters, "lo": lo,
-               "hi": hi, "text": _format_cell(value)[:64],
+               "hi": hi, "text": format_cell(value)[:64],
                "flags": {"greyed": is_grey(value), "flagged": is_flagged(value),
                         "not_collected": False}}
     return {"estimate": None, "n_obs": None, "n_clusters": None, "lo": None, "hi": None,
-           "text": _format_cell(value)[:64],
+           "text": format_cell(value)[:64],
            "flags": {"greyed": False, "flagged": False, "not_collected": value == NOT_COLLECTED}}
 
 
