@@ -804,12 +804,27 @@ def ws_record() -> None:
     if not s.has_kalshi_credentials():
         log.info("kalshi credentials absent; ws recorder disabled")
         return
+    import threading
+
     from harness.feeds.http import HttpClient
     from harness.recorder.ws_sink import WsSink
+    from harness.venues.kalshi.rfq_socket import RfqListener
     from harness.venues.kalshi.ws import WsRecorder
 
     factory = make_session_factory(make_engine(s.database_url))
-    WsRecorder(s, factory, WsSink(factory), http=HttpClient(s.http_timeout_s)).run_forever()
+    # Phase 5, ruling A-C1: the combo RFQ listener runs beside the market recorder inside this
+    # container, on its **own** connection and its own thread. It shares the key `app-ws`
+    # already mounts (0.7, F64) and nothing else -- not the socket, not the sids, not the
+    # reconnect state, and not this engine. A refused `communications` subscribe idles the
+    # listener for an hour and leaves the tape alone, which is the whole reason it is a second
+    # socket.
+    listener = RfqListener(s, make_session_factory(make_engine(s.database_url)))
+    thread = threading.Thread(target=listener.run_forever, name="rfq-listener", daemon=True)
+    thread.start()
+    try:
+        WsRecorder(s, factory, WsSink(factory), http=HttpClient(s.http_timeout_s)).run_forever()
+    finally:
+        listener.stop()
 
 
 @app.command("research-worker")
