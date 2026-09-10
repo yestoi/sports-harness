@@ -30,7 +30,7 @@ from harness.settlement.benchmarks import (
     insert_result_benchmarks,
     kickoff_moved,
 )
-from harness.settlement.job import Budget, load_stages, new_ctx, use_ctx
+from harness.settlement.job import Budget, new_ctx, use_ctx
 
 NOW = datetime(2026, 9, 12, 3, 0, tzinfo=timezone.utc)
 HOME, AWAY = 14, 19
@@ -452,7 +452,23 @@ def test_stages_registered_in_order():
     together -- a property of running tests together, not of the registration code, and not
     what `Settler.run()` actually sees in production (there, `load_stages()` is the first thing
     to import these modules, so it gets `STAGE_MODULES`' order exactly).
+
+    T12 fix round 1: `parlay_grade.py` no longer imports anything from `settle.py` (it grades
+    through `harness.parlay.needs.leg_outcome` now), so `settle`'s stage is no longer guaranteed
+    to register before `parlay_grade`'s as a side effect of that import. A test file that
+    imports `harness.settlement.parlay_grade` directly (`test_parlay_grade.py`, to reach
+    `grade_parlays`) can therefore get `parlay_grade` registered into the live `STAGES` registry
+    at *collection* time, ahead of `settle` -- and by then it is too late for a plain
+    `importlib.import_module(...)` here to change the registry's order: Python's import cache
+    makes that a no-op for a module already imported. So this rebuilds the registry from
+    scratch, via `importlib.reload` in `STAGE_MODULES`' own order, the same "nothing imported
+    yet" state `load_stages()` sees on a fresh process -- and restores the registry it found
+    before returning, so this test leaves no trace of the rebuild for any test that runs after
+    it.
     """
+    import importlib
+
+    from harness.settlement import job as job_module
     from harness.settlement.job import STAGE_MODULES
 
     assert STAGE_MODULES == ["harness.settlement.settle", "harness.settlement.parlay_grade",
@@ -460,7 +476,16 @@ def test_stages_registered_in_order():
                              "harness.settlement.markouts", "harness.ops.housekeeping",
                              "harness.settlement.report_wtd"]
 
-    names = [name for name, _ in load_stages()]
+    saved_stages = list(job_module.STAGES)
+    try:
+        job_module.STAGES.clear()
+        for module_name in STAGE_MODULES:
+            importlib.reload(importlib.import_module(module_name))
+        names = [name for name, _ in job_module.STAGES]
+    finally:
+        job_module.STAGES.clear()
+        job_module.STAGES.extend(saved_stages)
+
     expected = {"settle", "venue_result", "parlay_grade", "benchmarks", "result_benchmarks",
                "gap_outcomes_drain", "order_clv", "markouts", "housekeeping", "report_wtd"}
     assert set(names) == expected
