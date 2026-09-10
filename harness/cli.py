@@ -968,5 +968,69 @@ def parlay_build_cmd(
         print(card.rationale or "")
 
 
+@parlay_app.command("placed")
+def parlay_placed_cmd(
+    card_id: int = typer.Argument(..., help="The card id from `harness parlay build`"),
+    payout: int = typer.Option(..., "--payout", help="The DraftKings American odds you got"),
+    stake: str = typer.Option(..., "--stake", help="The stake in dollars"),
+    leg_line: list[str] = typer.Option(None, "--leg-line",
+                                       help="Confirm a moved line: <seq>=<point>"),
+) -> None:
+    """Confirm a slip you placed by hand (addendum §1.3).
+
+    Refuses when this ISO week's stakes plus yours would exceed the weekly budget, and when a
+    leg's DraftKings line has moved and you have not confirmed it with `--leg-line` (ruling
+    A-M7): a moved line is a different bet.
+    """
+    configure_logging()
+    from decimal import Decimal
+
+    from harness.parlay.placement import (BudgetExceeded, CardNotPlaceable, LineMoved,
+                                          mark_placed)
+
+    lines = {}
+    for entry in leg_line or []:
+        seq, _, point = entry.partition("=")
+        try:
+            lines[int(seq)] = Decimal(point)
+        except (ValueError, ArithmeticError) as exc:
+            log.error("bad --leg-line %r; use <seq>=<point>", entry)
+            raise typer.Exit(2) from exc
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    with factory() as session:
+        try:
+            placement = mark_placed(session, card_id, payout, Decimal(stake),
+                                    datetime.now(timezone.utc), leg_lines=lines or None)
+        except (CardNotPlaceable, BudgetExceeded, LineMoved) as exc:
+            log.error("%s", exc)
+            raise typer.Exit(2) from exc
+        session.commit()
+        print(f"card {card_id} placed: ${placement.stake_actual} at {placement.dk_odds_actual:+d}"
+              f" to return ${placement.dk_payout_actual}")
+
+
+@parlay_app.command("show")
+def parlay_show_cmd() -> None:
+    """The recent cards and this week's remaining fun-money budget."""
+    configure_logging()
+    from harness.parlay.placement import expire_cards, show_cards
+
+    s = get_settings()
+    factory = make_session_factory(make_engine(s.database_url))
+    now = datetime.now(timezone.utc)
+    with factory() as session:
+        expired = expire_cards(session, now)
+        session.commit()
+        rows = show_cards(session, now)
+        if expired:
+            print(f"({expired} proposed card(s) older than a week voided)")
+        for row in rows:
+            print(f"{row['card_id']:>5}  {row['sport']:<5} W{row['week']:<3} {row['kind']:<7} "
+                  f"{row['status']:<8} ${row['stake']:>6}  est ${row['payout_est']}")
+        print(f"this week: ${rows[0]['week_remaining'] if rows else '50.00'} left of the budget")
+
+
 if __name__ == "__main__":
     app()

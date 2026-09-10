@@ -387,3 +387,137 @@ def lock_checking_client(db_session):
     monday, _sunday = iso_week_bounds(chicago_day(PARLAY_NOW))
     return _LockCheckingClient(db_session.get_bind(), monday,
                                "LSU and the Saints on the same slip. Let us cook.")
+
+
+# --- Task T11: `harness parlay placed` / `show` fixtures ---------------------------------------
+#
+# Each fixture seeds one `teams` row per side, one `games` row inside this ISO week, one
+# `venue_markets` row per leg, one `parlay_cards` row and its `parlay_legs`, and one
+# `odds_snapshots` row per leg with `book = 'draftkings'` -- exactly the shape `mark_placed`
+# reads (`newest_dk_price` off `odds_snapshots`, the card and its legs off `parlay_cards` /
+# `parlay_legs`). Every leg here is a spread, so `card_threshold` and `dk_point` line up with
+# `ParlayLeg.threshold` and `odds_snapshots.point` respectively. `_PLACEMENT_PRICED_AT` is when
+# the DK price fixtures are stamped `fetched_at` -- close to `test_parlay_placement.py`'s own
+# `NOW` (2026-09-18 21:00 UTC) rather than tied to `built_at`, so `mark_placed`'s 30-minute D14
+# freshness check sees a live row regardless of how old the card itself is.
+
+_PLACEMENT_PRICED_AT = datetime(2026, 9, 18, 20, 55, tzinfo=timezone.utc)
+
+
+def _one_leg_game(session, prefix: str):
+    team = _make_team(session, f"{prefix}A")
+    opp = _make_team(session, f"{prefix}B")
+    game = _make_game(session, team.id, opp.id, PARLAY_NOW + timedelta(days=2))
+    return team, game
+
+
+def _make_placement_leg(session, *, game_id, team_id, threshold: Decimal, point: Decimal,
+                        fetched_at: datetime, price: Decimal = Decimal("1.9100")):
+    """One `venue_markets` row plus the `odds_snapshots` row `newest_dk_price` reads. `threshold`
+    is what the card's own leg will store; `point` is what the newest DraftKings row carries --
+    equal for an untouched line, different for a moved one."""
+    from harness.db.models import VenueMarket
+
+    rid = _next_id()
+    vm = VenueMarket(venue="kalshi", ticker=f"PT-{rid}", event_ticker=f"PE-{rid}",
+                     series_ticker="S", game_id=game_id, market_type="spread",
+                     threshold=threshold, side_team_id=team_id, side=None,
+                     first_seen_raw_id=rid, last_seen_at=fetched_at)
+    session.add(vm)
+    session.flush()
+    snapshot = _make_dk_price(session, game_id=game_id, market_type="spread", team_id=team_id,
+                              side=None, price=price, fetched_at=fetched_at, point=point)
+    return vm, snapshot
+
+
+def _make_parlay_card(session, *, status: str, built_at: datetime, legs: list[tuple]):
+    """`legs` is a list of `(game_id, team_id, card_threshold, dk_point)`."""
+    from harness.db.models import ParlayCard, ParlayLeg
+
+    iso = built_at.isocalendar()
+    card = ParlayCard(year=iso.year, week=iso.week, sport=_PARLAY_SPORT, kind="smart",
+                      built_at=built_at, stake=Decimal("25.00"), dk_payout_est=Decimal("100.00"),
+                      true_prob_est=Decimal("0.500000"), hold_est=Decimal("0.0500"),
+                      rationale="test card", status=status, correlated=False)
+    session.add(card)
+    session.flush()
+    for seq, (game_id, team_id, card_threshold, dk_point) in enumerate(legs, start=1):
+        _, snapshot = _make_placement_leg(session, game_id=game_id, team_id=team_id,
+                                          threshold=card_threshold, point=dk_point,
+                                          fetched_at=_PLACEMENT_PRICED_AT)
+        session.add(ParlayLeg(card_id=card.id, seq=seq, game_id=game_id, market_type="spread",
+                              side_team_id=team_id, side=None, threshold=card_threshold,
+                              dk_american=-110, dk_decimal=Decimal("1.9100"),
+                              plain_text=f"leg {seq}", odds_snapshot_id=snapshot.id,
+                              status="pending"))
+    session.flush()
+    return card
+
+
+@pytest.fixture
+def proposed_card(db_session):
+    """A `proposed` card whose stored `threshold` equals the newest DraftKings `point`."""
+    team, game = _one_leg_game(db_session, "PC")
+    return _make_parlay_card(db_session, status="proposed", built_at=PARLAY_NOW,
+                             legs=[(game.id, team.id, Decimal("-3.5"), Decimal("-3.5"))])
+
+
+@pytest.fixture
+def proposed_cards_over_budget(db_session):
+    """Two proposed cards and nothing in `parlay_ledger`."""
+    team1, game1 = _one_leg_game(db_session, "OB1")
+    team2, game2 = _one_leg_game(db_session, "OB2")
+    first = _make_parlay_card(db_session, status="proposed", built_at=PARLAY_NOW,
+                              legs=[(game1.id, team1.id, Decimal("-3.5"), Decimal("-3.5"))])
+    second = _make_parlay_card(db_session, status="proposed", built_at=PARLAY_NOW,
+                               legs=[(game2.id, team2.id, Decimal("-3.5"), Decimal("-3.5"))])
+    return first, second
+
+
+@pytest.fixture
+def last_week_stake(db_session, proposed_card):
+    """One `parlay_ledger` `stake` row dated in the previous ISO week."""
+    from harness.db.models import ParlayLedger
+
+    last_week = PARLAY_NOW - timedelta(days=7)
+    iso = last_week.isocalendar()
+    db_session.add(ParlayLedger(ts=last_week, card_id=proposed_card.id, kind="stake",
+                                amount=Decimal("50.00"), year=iso.year, week=iso.week))
+    db_session.flush()
+    return None
+
+
+@pytest.fixture
+def card_with_moved_line(db_session):
+    """A proposed card whose newest DraftKings row carries a different `point` for one leg.
+    Returns `(card, moved_seq)`."""
+    team, game = _one_leg_game(db_session, "ML")
+    card = _make_parlay_card(db_session, status="proposed", built_at=PARLAY_NOW,
+                             legs=[(game.id, team.id, Decimal("-3.5"), Decimal("-4.5"))])
+    return SimpleNamespace(card=card, moved_seq=1)
+
+
+@pytest.fixture
+def placed_card(db_session):
+    """A card whose `status` is already `placed`."""
+    team, game = _one_leg_game(db_session, "PL")
+    return _make_parlay_card(db_session, status="placed", built_at=PARLAY_NOW,
+                             legs=[(game.id, team.id, Decimal("-3.5"), Decimal("-3.5"))])
+
+
+@pytest.fixture
+def old_proposed_card(db_session):
+    """A proposed card `built_at` eight days ago."""
+    team, game = _one_leg_game(db_session, "OP")
+    return _make_parlay_card(db_session, status="proposed",
+                             built_at=PARLAY_NOW - timedelta(days=8),
+                             legs=[(game.id, team.id, Decimal("-3.5"), Decimal("-3.5"))])
+
+
+@pytest.fixture
+def old_placed_card(db_session):
+    """The same age as `old_proposed_card`, but `placed`."""
+    team, game = _one_leg_game(db_session, "OPL")
+    return _make_parlay_card(db_session, status="placed",
+                             built_at=PARLAY_NOW - timedelta(days=8),
+                             legs=[(game.id, team.id, Decimal("-3.5"), Decimal("-3.5"))])
