@@ -220,6 +220,8 @@ def upgrade() -> None:
                "(decided_at desc)")
     op.execute("create index if not exists ix_rfqs_received on rfqs (received_at desc)")
     op.execute("create unique index if not exists uq_rfq_quote_rfq on rfq_quotes (rfq_id)")
+    op.execute("create index if not exists ix_rfq_quotes_computed on rfq_quotes "
+               "(computed_at desc)")
 
     # --- the view (create_schema's _VIEW_DDL) --------------------------------------------
     op.execute("""

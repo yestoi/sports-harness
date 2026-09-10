@@ -276,11 +276,8 @@ _VETO_RATE = text("""
 #: Bound: `computed_at > :since` (24 h) on `rfq_quotes`, `created_at > :week_start` on
 #: `report_annotations`. Index: `report_annotations` is `TINY_TABLES` (one row a week, keyed by
 #: `report_run_id`), so its scan needs none. `rfq_quotes` is `BOUNDED_TABLES` (grows with the
-#: season) and carries only `uq_rfq_quote_rfq (rfq_id)` today -- no index on `computed_at`, so
-#: this half of the statement is a sequential scan filtered after the fact, not an index range
-#: scan. Small and harmless while the phase ships shadow-only; flagged for a schema follow-up
-#: (`ix_rfq_quotes_computed on rfq_quotes (computed_at desc)`) before the table has a season of
-#: rows behind it.
+#: season) and its `computed_at` half is served by `ix_rfq_quotes_computed on rfq_quotes
+#: (computed_at desc)` (T1's schema), so this is an index range scan, not a table scan.
 _RESEARCH_COUNTS = text("""
     select (select count(*) from rfq_quotes where computed_at > :since) as rfq_quotes_24h,
            (select count(*) from report_annotations where created_at > :week_start)

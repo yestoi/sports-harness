@@ -211,6 +211,9 @@ _INDEX_DDL = (
     # One quote per RFQ: the listener computes once, on arrival. This is also what gives the
     # "no quote without an rfq" invariant a partner that a re-delivery cannot break.
     "create unique index if not exists uq_rfq_quote_rfq on rfq_quotes (rfq_id)",
+    # Pulse's research section bounds on this column (review T16 Important 1): without this,
+    # `rfq_quotes`, a BOUNDED_TABLES table, is filtered on `computed_at` after a sequential scan.
+    "create index if not exists ix_rfq_quotes_computed on rfq_quotes (computed_at desc)",
 )
 
 #: Carried fix 16. BRIN on `fair_values(created_at)` so the bounded staleness check
