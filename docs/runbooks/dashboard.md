@@ -88,8 +88,13 @@ the loop never stamps backwards.
 
 ## Turning the scheduler off
 
-Set `SNAPSHOTS_ENABLED=0` in `deploy/nas.env` and restart `app-serve`. No scheduler job starts
-at all; the API and `/ui/` keep serving whatever rows are already in `dashboard_snapshots`, with
-their ages visibly growing on every surface. This is the switch to reach for if a builder ever
-costs more CPU than its budget (`serve.snapshot_ms`'s per-minute sum, budgeted at 2 s per
-minute) — it stops all five jobs, not one, because there is no per-builder switch.
+Edit `SNAPSHOTS_ENABLED=0` into `/volume1/docker/sports-harness/.env` on the NAS and run
+`docker compose restart app-serve` there. `app-serve`'s compose block loads `env_file: .env`,
+and only `make deploy-nas`/`make deploy-nas-app` copy `deploy/nas.env` onto that file — editing
+`deploy/nas.env` on the Mac and restarting the NAS container changes nothing until the next
+deploy. Put the same line in `deploy/nas.env` too, so the next deploy does not silently turn the
+scheduler back on. No scheduler job starts at all; the API and `/ui/` keep serving whatever rows
+are already in `dashboard_snapshots`, with their ages visibly growing on every surface. This is
+the switch to reach for if a builder ever costs more CPU than its budget (`serve.snapshot_ms`'s
+per-minute sum, budgeted at 2 s per minute) — it stops all five jobs, not one, because there is
+no per-builder switch.

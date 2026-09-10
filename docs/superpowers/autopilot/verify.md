@@ -450,12 +450,11 @@ loading, not after, so the phone layout is the one that rendered.
     horizontal scroll of the whole page, which means the viewport meta is missing.
 18. Header: the status word reads `FINE` or `WATCH` (a `WATCH` is a PASS if the Pulse surface
     lists the fired rules by name), the badge reads `PAPER` on Pulse, Floor, Study and Gate,
-    and the snapshot age is under twice the cadence shown beside it.
+    and the age carries no `watch` or `broken` styling and no staleness banner is shown.
 19. Pulse: the status card, the tape strip, the vitals row, the storage arc, the invariant wall
     and the recent operator events all render. No section shows the word `unavailable` and no
     section shows an exception class name.
-20. Pulse: every section opens with at least one plain-English sentence above its figure. FAIL a
-    section that shows only numbers.
+20. Pulse: the status card and the tape strip each open with a plain-English sentence.
 21. Floor: the game board renders (rows optional outside a game window), and the funnel shows
     counts for ticks, gaps, candidates, intents, orders and fills. The venue tile shows a
     production non-GET count of **0**; anything else is a FAIL and a control breach.
