@@ -67,6 +67,18 @@ def test_an_unknown_code_renders_as_itself_and_is_sanitized():
     assert s.reason_phrase("<script>alert(1)</script>") == "scriptalert(1)/script"
 
 
+def test_unknown_reason_codes_collects_sorts_dedupes_and_sanitizes():
+    """Ruling A-I2: the builder-facing half of the unknown-code passthrough -- what a builder
+    writes into `payload["sentences_gaps"]` so the next plan sees the vocabulary's blind spots."""
+    codes = s.unknown_reason_codes(
+        ["kickoff", "brand_new_reason", "<script>alert(1)</script>", "brand_new_reason", None, ""])
+    assert codes == ["brand_new_reason", "scriptalert(1)/script"]
+
+
+def test_unknown_reason_codes_is_empty_when_every_code_is_known():
+    assert s.unknown_reason_codes(["kickoff", "reprice"]) == []
+
+
 def test_every_vocabulary_row_has_a_glossary_entry():
     glossary = s.load_glossary()
     for term in ("paper", "fair value", "staleness_s", "CLV", "pinnacle_t5", "consensus_close",

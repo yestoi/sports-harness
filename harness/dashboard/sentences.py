@@ -149,6 +149,15 @@ def reason_phrase(code: str) -> str:
     return REASON_PHRASES.get(code) or sanitize_reason(code)
 
 
+def unknown_reason_codes(codes) -> list[str]:
+    """The subset of `codes` outside `REASON_PHRASES`, sorted, deduplicated and sanitized --
+    what a builder writes into `payload["sentences_gaps"]` so the next plan sees the vocabulary's
+    blind spots (ruling A-I2, spec §1.2, ruling B-(e) item 9). Falsy codes are dropped: an empty
+    or missing reason already renders as "no reason recorded" and is not a gap in the vocabulary."""
+    return sorted({sanitize_reason(code) for code in codes
+                   if code and code not in REASON_PHRASES})
+
+
 # --- Pulse -------------------------------------------------------------------------------------
 
 def pulse_status(section: dict) -> list[str]:
