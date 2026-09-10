@@ -59,7 +59,7 @@ _LIVE_CARDS = text("""
            p.placed_at, p.stake_actual, p.dk_payout_actual, p.dk_odds_actual
     from parlay_cards c
     left join parlay_placements p on p.card_id = c.id
-    where c.status in ('placed', 'alive', 'cashed', 'busted')
+    where c.status in ('placed', 'alive', 'cashed', 'busted', 'void')
     order by case when c.status in ('placed', 'alive') then 0 else 1 end, c.built_at desc
     limit 10
 """)
@@ -234,11 +234,14 @@ def _season(session: Session) -> dict:
     totals = {row.kind: _dec(row.total) for row in session.execute(_SEASON)}
     staked = totals.get("stake", 0.0)
     returned = totals.get("return", 0.0)
+    # A refund is not a loss (fix round 1, ruling I3): a `void` ledger row hands the stake back,
+    # so it adds into `net` rather than sitting uncounted while `staked` still carries it.
+    voided = totals.get("void", 0.0)
     strip = [{"card_id": row.id, "year": row.year, "week": row.week, "kind": row.kind,
               "status": row.status, "stake": _dec(row.stake),
               "payout": _dec(row.dk_payout_est)} for row in session.execute(_STRIP)]
-    return {"staked": staked, "returned": returned, "net": returned - staked, "strip": strip,
-            "best_hit": _best_hit(session), "streak": _streak(session)}
+    return {"staked": staked, "returned": returned, "net": returned + voided - staked,
+            "strip": strip, "best_hit": _best_hit(session), "streak": _streak(session)}
 
 
 def _between(session: Session, now: datetime) -> dict:

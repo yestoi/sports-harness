@@ -154,3 +154,64 @@ def needs(leg: LegSpec, score: ScoreState | None) -> str:
         return "no score yet"
     rule = _RULES.get(leg.market_type)
     return rule(leg, score) if rule is not None else "no rule for this bet"
+
+
+def leg_outcome(leg: LegSpec, score: ScoreState | None) -> str | None:
+    """The settled result of one leg: `"hit"`, `"miss"`, `"push"`, `"void"`, or `None` while
+    there is nothing to grade yet (T12 fix round 1, rulings C1/C2/I1).
+
+    Shares `_margin` and the side handling with the sentence functions above, so the grade a
+    card settles on and the "needs" text a live card renders can never disagree.
+    `parlay_legs.threshold` is DraftKings' own handicap (`-7.0` means that team must win by more
+    than seven) and, for a total, `leg.side` says which way the leg points -- neither is the
+    convention `harness.settlement.settle.resolve_market` speaks (a Kalshi series market's
+    margin-bar threshold, over-only, with no `side` at all), so grading a parlay leg never
+    delegates to it.
+
+    `None` means "not settled yet": no score, or a status that has not reached
+    `FINAL_STATUSES`, or a `final`/`final_ot` game whose score has not been recorded (`score` is
+    only ever `None` or fully populated -- see `score_state`). `postponed`/`canceled` voids on
+    status alone, score or not: a void needs no result. Raises `ValueError` for a leg grading
+    cannot resolve at all -- an unrecognized market type, a spread/total leg with no threshold,
+    or a side team in neither side of the game -- data the caller should isolate and count as an
+    error, never mistake for "not settled yet".
+    """
+    if score is None or not _final(score):
+        return None
+    if score.status in ("postponed", "canceled"):
+        return "void"
+    if leg.market_type == "ml":
+        margin = _margin(leg, score)
+        if margin is None:
+            raise ValueError(
+                f"moneyline leg's side team {leg.side_team_id!r} is in neither side of the game")
+        if margin > 0:
+            return "hit"
+        return "push" if margin == 0 else "miss"
+    if leg.market_type == "spread":
+        if leg.threshold is None:
+            raise ValueError("spread leg has no threshold")
+        margin = _margin(leg, score)
+        if margin is None:
+            raise ValueError(
+                f"spread leg's side team {leg.side_team_id!r} is in neither side of the game")
+        over = Decimal(margin) + leg.threshold
+        if over > 0:
+            return "hit"
+        return "push" if over == 0 else "miss"
+    if leg.market_type == "total":
+        if leg.threshold is None:
+            raise ValueError("total leg has no threshold")
+        if leg.side not in ("over", "under"):
+            raise ValueError(f"total leg has no side (over/under), got {leg.side!r}")
+        total = Decimal(score.home_score + score.away_score)
+        line = leg.threshold
+        if leg.side == "over":
+            if total > line:
+                return "hit"
+            return "push" if total == line else "miss"
+        #: under
+        if total < line:
+            return "hit"
+        return "push" if total == line else "miss"
+    raise ValueError(f"cannot grade market type {leg.market_type!r}")

@@ -8,9 +8,21 @@ stage placed last is the one that never runs on a busy Sunday.
 rows are written once per card, and a spent budget yields with `budget_exhausted` so the next
 hour picks up where this one stopped.
 
-**The push rules are `resolve_market`'s**, not a second copy. A tied moneyline pays half a
-contract in the paper book; on a slip a refund is not a win, so a leg that resolves to a half
-pays `void`, and a card whose every leg voids returns its stake.
+**Every leg grades through `harness.parlay.needs.leg_outcome`** (fix round 1, rulings C1/C2/I1),
+not `harness.settlement.settle.resolve_market`. That function speaks the Kalshi series
+convention -- threshold as the venue's own margin bar, over-only totals, half-point lines -- and
+a parlay leg speaks DraftKings': `threshold` is the handicap stored from the odds row's `point`,
+a total names an explicit `side`, and a whole-number line pushes. `leg_outcome` shares its
+helpers with the sentence functions the slip surface renders from, so the grade and the "needs"
+text can never disagree. A refund is not a win: a `push` (or a `postponed`/`canceled` game's
+`void`) pays `void` on the leg, and a card whose every leg lands there returns its stake.
+
+**One card at a time, in its own savepoint** (fix round 1, ruling I2). A leg with an unknown
+market type, a spread/total leg with no threshold, or a side team that matches neither side of
+its game is data the harness cannot grade -- `leg_outcome` raises rather than guessing, and
+`grade_parlays` catches it per card: the card is left untouched for the next pass, the failure is
+counted in `counts["errors"]`, and every other card in the pass still grades. A raise from one
+game must never cost the pass every card it already settled.
 
 **The vocabulary is `parlay_cards.status`'s own**: `cashed | busted | void`. Never `won | lost`
 -- the shipped Ticket builder filters on that vocabulary in five places and a card outside it
@@ -24,17 +36,14 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from harness.db.models import ParlayCard, ParlayLedger, ParlayLeg, ParlayPlacement
-from harness.parlay.needs import FINAL_STATUSES
+from harness.parlay.needs import ScoreState, leg_outcome, leg_spec
 from harness.research.spend import chicago_day
 from harness.settlement.job import Budget, StageResult, register_stage
-from harness.settlement.settle import HALF, ONE, resolve_market
 
 log = logging.getLogger(__name__)
 
 #: The stage yields below this many seconds of the settler's shared budget.
 MIN_BUDGET_S = 30
-#: `parlay_legs.market_type` back to the harness's own names, for `resolve_market`.
-_BACK = {"ml": "moneyline", "spread": "spread", "total": "total"}
 
 _LIVE_CARDS = text("""
     select c.id from parlay_cards c
@@ -45,24 +54,34 @@ _GAME = text("select status, home_team_id, away_team_id, home_score, away_score 
              "from games where id = :game_id")
 
 
+def _score_state(game) -> ScoreState | None:
+    """A `_GAME` row as a `ScoreState`, or `None` while there is nothing to grade against yet.
+
+    `postponed`/`canceled` builds a `ScoreState` even with no recorded score -- `leg_outcome`
+    never reads its score fields for that branch, it only needs the status -- so a game that
+    will never be played (or never finish) voids on that status alone. `final`/`final_ot` needs
+    an actual score: "never guess a result" holds for those, so a missing one stays `None` and
+    the leg stays ungraded for the next pass.
+    """
+    if game.status in ("postponed", "canceled"):
+        return ScoreState(status=game.status, home_team_id=game.home_team_id,
+                          away_team_id=game.away_team_id, home_score=0, away_score=0)
+    if game.home_score is None or game.away_score is None:
+        return None
+    return ScoreState(status=game.status, home_team_id=game.home_team_id,
+                      away_team_id=game.away_team_id, home_score=int(game.home_score),
+                      away_score=int(game.away_score))
+
+
 def _grade_leg(session: Session, leg: ParlayLeg, now: datetime) -> str:
     game = session.execute(_GAME, {"game_id": leg.game_id}).first()
     if game is None:
         return leg.status
-    if game.status in ("postponed", "canceled"):
-        # A void needs no result: the game will never be played (or never finish), score or no
-        # score, and a card left `alive` for it would sit on the weekly cap forever.
-        leg.status, leg.graded_at = "void", now
+    outcome = leg_outcome(leg_spec(leg), _score_state(game))
+    if outcome is None:
         return leg.status
-    if game.status not in FINAL_STATUSES or game.home_score is None:
-        # Only `final`/`final_ot` reach here (postponed/canceled are handled above), and there
-        # "never guess a result" still holds: no score yet means the leg stays ungraded.
-        return leg.status
-    payout = resolve_market(_BACK[leg.market_type], leg.threshold, leg.side_team_id,
-                            game.home_team_id, game.away_team_id,
-                            int(game.home_score), int(game.away_score))
-    # A refund is not a win: `HALF` is the paper book's tie, and on a slip it is a push.
-    leg.status = "hit" if payout == ONE else ("void" if payout == HALF else "miss")
+    # A refund is not a win: `push` and `void` both land on the leg as `void`.
+    leg.status = "void" if outcome in ("push", "void") else outcome
     leg.graded_at = now
     return leg.status
 
@@ -75,28 +94,42 @@ def grade_parlays(session: Session, now: datetime, budget: Budget) -> StageResul
     leg is left `alive` for the next hour, which is also what makes the pass resumable -- the
     budget is checked between cards, never inside one, so a card is never left half-graded.
 
+    Each card grades inside its own savepoint (`session.begin_nested()`) and commits on its own:
+    a card that raises rolls back to its own savepoint, alone, and is counted in
+    `counts["errors"]` rather than costing the pass every card already settled.
+
     `counts` goes into `job_runs.notes` verbatim, so every value here is an int.
     """
-    counts = {"cards": 0, "legs": 0, "cashed": 0, "busted": 0, "void": 0}
+    counts = {"cards": 0, "legs": 0, "cashed": 0, "busted": 0, "void": 0, "errors": 0}
     exhausted = False
     for card_id in session.execute(_LIVE_CARDS).scalars().all():
         if budget.remaining_s() < MIN_BUDGET_S:
             exhausted = True
             break
-        card = session.get(ParlayCard, card_id)
-        legs = session.query(ParlayLeg).filter_by(card_id=card.id).order_by(ParlayLeg.seq).all()
-        for leg in legs:
-            if leg.status in ("hit", "miss", "void"):
-                continue
-            if _grade_leg(session, leg, now) in ("hit", "miss", "void"):
-                counts["legs"] += 1
-        counts["cards"] += 1
-        if any(leg.status not in ("hit", "miss", "void") for leg in legs):
-            card.status = "alive"
-            continue
-        _settle_card(session, card, legs, now, counts)
-    session.flush()
+        try:
+            with session.begin_nested():
+                _grade_card(session, card_id, now, counts)
+            session.commit()
+        except Exception as exc:  # noqa: BLE001 - one card must not cost the pass
+            session.rollback()
+            log.exception("grading parlay card %s failed", card_id)
+            counts["errors"] += 1
     return StageResult(name="parlay_grade", counts=counts, budget_exhausted=exhausted)
+
+
+def _grade_card(session: Session, card_id: int, now: datetime, counts: dict) -> None:
+    card = session.get(ParlayCard, card_id)
+    legs = session.query(ParlayLeg).filter_by(card_id=card.id).order_by(ParlayLeg.seq).all()
+    for leg in legs:
+        if leg.status in ("hit", "miss", "void"):
+            continue
+        if _grade_leg(session, leg, now) in ("hit", "miss", "void"):
+            counts["legs"] += 1
+    counts["cards"] += 1
+    if any(leg.status not in ("hit", "miss", "void") for leg in legs):
+        card.status = "alive"
+        return
+    _settle_card(session, card, legs, now, counts)
 
 
 def _settle_card(session: Session, card: ParlayCard, legs, now: datetime, counts: dict) -> None:
@@ -109,21 +142,31 @@ def _settle_card(session: Session, card: ParlayCard, legs, now: datetime, counts
         card.status = "busted"
         counts["busted"] += 1
         return
-    live = [leg for leg in legs if leg.status == "hit"]
-    if not live:
-        # Every leg pushed: the book refunds the stake.
+    hit_legs = [leg for leg in legs if leg.status == "hit"]
+    pushed = any(leg.status == "void" for leg in legs)
+    if not hit_legs:
+        # Every leg pushed (or voided): the book refunds the stake.
         card.status = "void"
         counts["void"] += 1
         _pay(session, card, "void", stake, iso, now)
         return
     card.status = "cashed"
     counts["cashed"] += 1
-    payout = placement.dk_payout_actual if placement is not None else card.dk_payout_est
-    if payout is None:
-        # A card with no recorded payout still cashed; the ledger records the stake back and the
-        # task report says so, rather than inventing a number the book never quoted.
+    if pushed:
+        # DraftKings drops a pushed leg and re-prices the slip off the surviving legs' own
+        # odds (fix round 1, ruling I4): `dk_payout_actual` was quoted at placement over every
+        # leg, including the one that no longer counts.
         payout = stake
-    _pay(session, card, "return", Decimal(str(payout)), iso, now)
+        for leg in hit_legs:
+            payout *= leg.dk_decimal
+    else:
+        payout = placement.dk_payout_actual if placement is not None else card.dk_payout_est
+        if payout is None:
+            # A card with no recorded payout still cashed; the ledger records the stake back and
+            # the task report says so, rather than inventing a number the book never quoted.
+            payout = stake
+        payout = Decimal(str(payout))
+    _pay(session, card, "return", payout, iso, now)
 
 
 def _pay(session: Session, card: ParlayCard, kind: str, amount: Decimal, iso, now) -> None:

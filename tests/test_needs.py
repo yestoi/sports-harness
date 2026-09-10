@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from harness.parlay.needs import LegSpec, ScoreState, needs
+from harness.parlay.needs import LegSpec, ScoreState, leg_outcome, needs
 
 HOME, AWAY = 1, 2
 
@@ -96,3 +96,68 @@ def test_the_function_is_pure_and_touches_no_database():
     body = Path(module.__file__).read_text().lower()
     for word in ("session", "select", "sqlalchemy", "text("):
         assert word not in body
+
+
+# --- T12 fix round 1: `leg_outcome`, rulings C1/C2/I1 -------------------------------------------
+
+
+def test_leg_outcome_agrees_with_the_sentence_it_renders_beside():
+    """A grid of final cases: `needs` and `leg_outcome` share `_margin`, so they can never
+    disagree -- "already done" <-> hit, "did not happen" <-> miss, "push, refunded" <-> push."""
+    cases = [
+        (_ml(), _score(24, 17, status="final"), "already done", "hit"),
+        (_ml(), _score(17, 24, status="final"), "did not happen", "miss"),
+        (_ml(), _score(17, 17, status="final"), "push, refunded", "push"),
+        (_spread(line="-7.0"), _score(24, 10, status="final"), "already done", "hit"),
+        (_spread(line="-7.0"), _score(14, 10, status="final"), "did not happen", "miss"),
+        (_spread(line="-7.0"), _score(17, 10, status="final"), "push, refunded", "push"),
+        (_total("over", "55.5"), _score(30, 30, status="final"), "already done", "hit"),
+        (_total("under", "55.5"), _score(30, 30, status="final"), "did not happen", "miss"),
+        (_total("over", "55"), _score(28, 27, status="final"), "push, refunded", "push"),
+        (_total("under", "55"), _score(28, 27, status="final"), "push, refunded", "push"),
+    ]
+    for leg, score, sentence, outcome in cases:
+        assert needs(leg, score) == sentence
+        assert leg_outcome(leg, score) == outcome
+
+
+def test_leg_outcome_is_none_before_a_result_exists():
+    assert leg_outcome(_ml(), None) is None
+    assert leg_outcome(_ml(), _score(17, 10)) is None                    # in_progress
+    assert leg_outcome(_ml(), _score(17, 10, status="halftime")) is None  # not FINAL_STATUSES
+
+
+def test_leg_outcome_voids_a_postponed_or_canceled_game_on_status_alone():
+    """Review I2 ruling: a void needs no result, score or not."""
+    assert leg_outcome(_ml(), _score(0, 0, status="postponed")) == "void"
+    assert leg_outcome(_spread(), _score(0, 0, status="canceled")) == "void"
+
+
+def test_leg_outcome_raises_on_an_unrecognized_market_type():
+    with pytest.raises(ValueError):
+        leg_outcome(LegSpec("parlay", None, None, None), _score(0, 0, status="final"))
+
+
+def test_leg_outcome_raises_on_a_spread_or_total_with_no_threshold():
+    with pytest.raises(ValueError):
+        leg_outcome(LegSpec("spread", HOME, None, None), _score(24, 10, status="final"))
+    with pytest.raises(ValueError):
+        leg_outcome(LegSpec("total", None, "over", None), _score(24, 10, status="final"))
+
+
+def test_leg_outcome_the_favourite_that_covers_by_less_than_the_line_misses():
+    """Review C1: a favourite laying seven that wins by three is a miss, not a hit --
+    `resolve_market`'s inverted sign would have said the opposite."""
+    assert leg_outcome(_spread(line="-7.0"), _score(24, 21, status="final")) == "miss"
+
+
+def test_leg_outcome_the_underdog_that_loses_by_less_than_the_line_hits():
+    """Review C1: an underdog taking seven that loses by three is a hit, not a miss."""
+    dog = LegSpec("spread", AWAY, None, Decimal("7.0"))
+    assert leg_outcome(dog, _score(24, 21, status="final")) == "hit"
+
+
+def test_leg_outcome_reads_the_total_s_own_side():
+    """Review C2: an under leg is graded by its own side, never as an over."""
+    assert leg_outcome(_total("under", "44"), _score(20, 17, status="final")) == "hit"    # 37
+    assert leg_outcome(_total("over", "44"), _score(22, 22, status="final")) == "push"    # 44

@@ -553,9 +553,13 @@ def _make_graded_card(session, *, status: str, built_at: datetime,
 
 def _pf_leg(session, card, seq: int, prefix: str, *, home_score: int | None,
            away_score: int | None, side_is_home: bool = True, status: str = "final",
-           leg_status: str = "alive"):
-    """One team pair, one game with the given final score and status, and one moneyline leg on
-    the card backing the home side (or the away side, when `side_is_home` is False)."""
+           leg_status: str = "alive", market_type: str = "ml", side: str | None = None,
+           threshold: Decimal | None = None, dk_decimal: Decimal = Decimal("1.9100")):
+    """One team pair, one game with the given final score and status, and one leg on the card.
+    Defaults to a moneyline backing the home side (or the away side, when `side_is_home` is
+    False); pass `market_type="spread"` with `threshold` for a spread leg on the same side
+    convention, or `market_type="total"` with `side` ("over"/"under") and `threshold` for a
+    total, which carries no `side_team_id` at all."""
     from harness.db.models import Game, ParlayLeg
 
     home = _make_team(session, f"{prefix}H")
@@ -565,10 +569,10 @@ def _pf_leg(session, card, seq: int, prefix: str, *, home_score: int | None,
                 away_score=away_score)
     session.add(game)
     session.flush()
-    side_team = home if side_is_home else away
-    session.add(ParlayLeg(card_id=card.id, seq=seq, game_id=game.id, market_type="ml",
-                          side_team_id=side_team.id, side=None, threshold=None,
-                          dk_american=-110, dk_decimal=Decimal("1.9100"),
+    side_team_id = None if market_type == "total" else (home.id if side_is_home else away.id)
+    session.add(ParlayLeg(card_id=card.id, seq=seq, game_id=game.id, market_type=market_type,
+                          side_team_id=side_team_id, side=side, threshold=threshold,
+                          dk_american=-110, dk_decimal=dk_decimal,
                           plain_text=f"leg {seq}", odds_snapshot_id=None, status=leg_status))
     session.flush()
     return game
@@ -673,6 +677,106 @@ def two_placed_cards_final(db_session):
     _pf_leg(db_session, card2, 1, "TC2", home_score=30, away_score=10)
     _placement_and_stake(db_session, card2, PARLAY_NOW)
     return (card1, card2)
+
+
+# --- T12 fix round 1: spread/total grading fixtures (review C1, C2, I1, I4, I5) ----------------
+
+
+@pytest.fixture
+def placed_card_favourite_covers_by_three(db_session):
+    """Favourite -7 wins by 3: covers by -4, a miss (review C1 -- `resolve_market`'s inverted
+    sign would have called this a hit)."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "FC1", home_score=24, away_score=21, side_is_home=True,
+           market_type="spread", threshold=Decimal("-7.0"))
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_underdog_covers(db_session):
+    """Underdog +7 loses by 3: covers by 4, a hit (review C1)."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "UC1", home_score=24, away_score=21, side_is_home=False,
+           market_type="spread", threshold=Decimal("7.0"))
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_spread_push(db_session):
+    """Favourite -3 wins by exactly 3: a push (review I1 -- a whole-number line can land on the
+    number)."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "SP1", home_score=24, away_score=21, side_is_home=True,
+           market_type="spread", threshold=Decimal("-3.0"))
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_under_hits(db_session):
+    """Under 44, final total 37: a hit (review C2 -- an under leg must be graded by its own
+    side, never as an over)."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "UH1", home_score=20, away_score=17, market_type="total",
+           side="under", threshold=Decimal("44"))
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_total_push(db_session):
+    """Over 44, final total exactly 44: a push."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "TP1", home_score=22, away_score=22, market_type="total",
+           side="over", threshold=Decimal("44"))
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_hit_and_push(db_session):
+    """One leg hits, one pushes (a tied moneyline): the card cashes, but the return is
+    re-priced off the surviving leg's own `dk_decimal` rather than the quoted
+    `dk_payout_actual` (review I4 -- DraftKings drops a pushed leg and re-prices)."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "HP1", home_score=24, away_score=17,
+           dk_decimal=Decimal("1.9100"))                        # hit
+    _pf_leg(db_session, card, 2, "HP2", home_score=14, away_score=14,
+           dk_decimal=Decimal("2.5000"))                        # push -> void
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_malformed_beside_a_good_one(db_session):
+    """One card with a spread leg that has no `threshold` (data the stage cannot grade) beside
+    one ordinary final moneyline card (review I2): the malformed card must not cost the good one
+    its grade.
+
+    Committed, not just flushed: `grade_parlays` rolls back its own transaction when a card
+    fails, and in production the cards it reads were already durable from an earlier pass (a
+    prior `mark_placed`) -- a fixture that left this pair merely flushed in the same transaction
+    `grade_parlays` runs in would have that rollback erase the good card too, which is an
+    artifact of the test session, not the behavior under test."""
+    from harness.db.models import ParlayLeg
+
+    bad = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    game = _pf_leg(db_session, bad, 1, "BC1", home_score=24, away_score=17,
+                  market_type="spread", threshold=Decimal("1.0"))
+    # Overwrite the threshold to NULL after the fact: `_pf_leg` always sets one for a spread,
+    # and this is the shape review I2 asks the stage to isolate rather than raise out of.
+    leg = db_session.query(ParlayLeg).filter_by(card_id=bad.id, seq=1).one()
+    leg.threshold = None
+    db_session.flush()
+    _placement_and_stake(db_session, bad, PARLAY_NOW)
+
+    good = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, good, 1, "GC1", home_score=24, away_score=17)
+    _placement_and_stake(db_session, good, PARLAY_NOW)
+    db_session.commit()
+    return SimpleNamespace(bad=bad, good=good, game=game)
 
 
 def _lp_team_game(session, prefix: str, *, status: str):

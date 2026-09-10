@@ -152,6 +152,24 @@ def test_the_season_strip_excludes_a_card_that_is_still_only_proposed(db_session
     assert payload["season"]["strip"] == []
 
 
+def test_a_voided_card_appears_in_the_card_list_and_its_refund_is_not_a_loss(db_session,
+                                                                             env_settings):
+    """Review I3: a void needs no result, and the ledger's refund is not a loss. `_LIVE_CARDS`
+    treats `void` exactly as `cashed`/`busted` are treated, so the card leaves the live list
+    together with the strip (`_STRIP` already carried `void`); the season `net` adds the refund
+    back rather than counting the stake as gone."""
+    card = _card(db_session, status="void")
+    db_session.add(ParlayLedger(ts=NOW - timedelta(hours=1), card_id=card.id, kind="stake",
+                                amount=Decimal("20.00"), year=2026, week=37))
+    db_session.add(ParlayLedger(ts=NOW, card_id=card.id, kind="void",
+                                amount=Decimal("20.00"), year=2026, week=37))
+    db_session.flush()
+
+    payload = build_ticket(db_session, NOW, env_settings)
+    assert payload["cards"][0]["status"] == "void"
+    assert payload["season"]["net"] == 0.0
+
+
 def test_one_leg_from_glory(db_session, env_settings):
     game = _game(db_session)
     db_session.add(GameScoreEvent(game_id=game.id, ts=NOW - timedelta(minutes=1),
