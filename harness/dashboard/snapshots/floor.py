@@ -100,7 +100,8 @@ REASON_LIMIT = 20
 QUEUE_HISTORY_LIMIT = 30
 
 FLOOR_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
-                        "board", "funnel", "orders", "fills", "exposure", "vitals", "venue"})
+                        "board", "funnel", "orders", "fills", "exposure", "vitals", "venue",
+                        "sentences_gaps"})
 
 #: `matched`, `fuzzy` and `manual`, imported rather than restated: the pricing path owns this
 #: vocabulary (`harness.pricing.fair`), and the board must count a market as matched on exactly
@@ -324,10 +325,12 @@ def _funnel(session: Session, now: datetime) -> dict:
     rejected = sum(v["rejected"] for v in by_variant.values())
     window = {"since": since}
     reasons = {"since": since, "limit": REASON_LIMIT}
-    skips = [{"reason": row.reason, "count": int(row.n),
+    # Ruling A-M6: the raw code is our own vocabulary, but it is the only string in this payload
+    # that travels both raw and sanitized -- one sanitize call for consistency with `plain`.
+    skips = [{"reason": sanitize_reason(row.reason), "count": int(row.n),
               "plain": sentences.reason_phrase(row.reason)}
              for row in session.execute(_SKIPS, reasons)]
-    cancels = [{"reason": row.reason, "count": int(row.n),
+    cancels = [{"reason": sanitize_reason(row.reason), "count": int(row.n),
                 "plain": sentences.reason_phrase(row.reason)}
                for row in session.execute(_CANCELS, reasons)]
     return {
@@ -529,13 +532,13 @@ def _venue(session: Session, now: datetime) -> dict:
 
 def build_floor(session: Session, now: datetime, settings: Settings) -> dict:
     payload = base_payload("floor", now, settings, CADENCE_IN_WINDOW_S)
-    section(payload, "board", lambda: _board(session, now))
-    section(payload, "funnel", lambda: _funnel(session, now))
-    section(payload, "orders", lambda: _orders(session, now))
-    section(payload, "fills", lambda: _fills(session, now, settings))
-    section(payload, "exposure", lambda: _exposure(session, now, settings))
-    section(payload, "vitals", lambda: _vitals(session, now))
-    section(payload, "venue", lambda: _venue(session, now))
+    section(session, payload, "board", lambda: _board(session, now))
+    section(session, payload, "funnel", lambda: _funnel(session, now))
+    section(session, payload, "orders", lambda: _orders(session, now))
+    section(session, payload, "fills", lambda: _fills(session, now, settings))
+    section(session, payload, "exposure", lambda: _exposure(session, now, settings))
+    section(session, payload, "vitals", lambda: _vitals(session, now))
+    section(session, payload, "venue", lambda: _venue(session, now))
 
     def _dict(key):
         value = payload.get(key)
@@ -545,6 +548,12 @@ def build_floor(session: Session, now: datetime, settings: Settings) -> dict:
                             "funnel": sentences.floor_funnel(_dict("funnel")),
                             "orders": sentences.floor_orders(_dict("orders"))}
     payload["readings"] = {}
+    # Ruling A-I2: the skip and cancel reason codes the funnel just rendered, so a code outside
+    # `REASON_PHRASES` is not silently lost -- the next plan sees it.
+    funnel = _dict("funnel")
+    codes = [row["reason"] for row in funnel.get("skipped", [])]
+    codes += [row["reason"] for row in funnel.get("cancelled", [])]
+    payload["sentences_gaps"] = sentences.unknown_reason_codes(codes)
     return payload
 
 

@@ -78,6 +78,23 @@ def test_the_funnel_sums_the_run_notes_and_reads_the_small_tables_directly(db_se
         funnel["skipped"]
 
 
+def test_an_unknown_skip_reason_lands_in_sentences_gaps_sanitized(db_session, env_settings):
+    """Ruling A-I2: a reason code the vocabulary has never seen must not be silently lost."""
+    db_session.add(Run(started_at=NOW - timedelta(hours=1), status="ok", build_sha="abc",
+                       notes={"pricing": {}}))
+    intent = Intent(signal_id=1, variant_id="sharp_direct", venue="kalshi", venue_market_id=1,
+                    ticker="KXNFL-T", side="yes", signal_created_at=NOW - timedelta(hours=1),
+                    created_at=NOW - timedelta(hours=1), replay=False)
+    db_session.add(intent)
+    db_session.flush()
+    db_session.add(OrderEvent(intent_id=intent.id, ts=NOW - timedelta(hours=1), kind="skipped",
+                              reason="<script>brand_new_reason</script>", replay=False))
+    db_session.flush()
+
+    payload = build_floor(db_session, NOW, env_settings)
+    assert payload["sentences_gaps"] == ["scriptbrand_new_reason/script"]
+
+
 def test_the_game_board_carries_the_live_score_with_its_age_and_sanitized_team_text(
         db_session, env_settings):
     """Ruling A-I6 / B-I2: ESPN team text and scoreboard text are the feed's, not ours."""
