@@ -89,6 +89,52 @@ def test_cells_are_carried_verbatim_and_never_recomputed(db_session, env_setting
     assert "cluster_ci" not in body and "mean(" not in body
 
 
+def test_a_non_finite_lo_or_hi_reads_as_none_and_the_upsert_survives(db_session, env_settings):
+    """2026-09-10 incident (build f851128, first phase 4.5 deploy): `harness/report/stats.py`'s
+    `NAN = float("nan")` lands in `report_cells.lo`/`hi` for a cell whose interval cannot be
+    computed (one cluster) -- PostgreSQL's `numeric` type stores `NaN` without complaint. Reading
+    it back with plain `float()` carried the NaN into the payload; Python's `json` module
+    serialises it, PostgreSQL's `jsonb` does not accept it, and the upsert raised *outside*
+    `run_builder`'s section guards, so no `study:*` row was ever written. `_finite` must map a
+    non-finite `lo`/`hi` to `None`, `n_clusters` must stay as stored, and the real upsert -- not
+    a mock -- must succeed.
+
+    `hi` is exercised as `float("inf")` directly against `_finite`, not through a stored
+    `ReportCell`: `report_cells.lo`/`hi` is `Numeric(14, 6)`, a *bounded* column, and PostgreSQL
+    rejects an infinite value there regardless of the NaN support the type itself has -- infinity
+    genuinely cannot reach this table, only NaN can (which is exactly what production hit)."""
+    from sqlalchemy.orm import sessionmaker
+
+    from harness.db.models import DashboardSnapshot
+
+    assert study._finite(float("inf")) is None
+    assert study._finite(float("-inf")) is None
+    assert study._finite(float("nan")) is None
+    assert study._finite(None) is None
+    assert study._finite(Decimal("1.5")) == 1.5
+
+    run = _run(db_session)
+    _cell(db_session, run, "t1", "sharp_direct", "clv", estimate=Decimal("0.000000"), n_obs=6,
+          n_clusters=1, lo=Decimal("NaN"), hi=Decimal("2.000000"), text="0.0 [--, --]")
+    # `run_builder` opens its own session from the factory -- a separate connection from
+    # `db_session`'s -- so the seeded row must be committed, not merely flushed, to be visible.
+    db_session.commit()
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    out = snapshots.run_builder(factory, "study:2026-37", NOW, env_settings, cadence_s=600)
+
+    assert out["error"] is None
+    cell = out["payload"]["cells"]["t1"]["sharp_direct"]["clv"]
+    assert cell["lo"] is None and cell["hi"] == 2.0
+    assert cell["n_clusters"] == 1
+
+    row = db_session.get(DashboardSnapshot, "study:2026-37")
+    db_session.refresh(row)
+    assert row.error is None
+    stored = row.payload["cells"]["t1"]["sharp_direct"]["clv"]
+    assert stored["lo"] is None and stored["hi"] == 2.0 and stored["n_clusters"] == 1
+
+
 def test_a_cell_text_is_shown_as_stored_and_never_sanitized(db_session, env_settings):
     """Ruling A-I5: the sanitizer strips %, +, $, [ and ], so applying it to a stored cell would
     corrupt the string spec §1.1 requires be shown exactly as the report printed it."""

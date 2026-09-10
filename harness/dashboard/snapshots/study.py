@@ -23,6 +23,7 @@ shown as stored. The front end's DOM rule is the guard: the document goes into a
 `textContent`, with its `markdown_sha256` beside it, and no renderer is vendored.
 """
 
+import math
 from datetime import datetime, timezone
 
 from sqlalchemy import text
@@ -134,15 +135,30 @@ def stale_study_names(session: Session, now: datetime | None = None) -> list[str
     return sorted(name for name, run_id in wanted.items() if stored.get(name) != str(run_id))
 
 
+def _finite(x) -> float | None:
+    """A cell's `estimate`/`lo`/`hi` as a plain float, or `None` if it is absent or not finite.
+
+    `harness/report/stats.py:31`'s `NAN = float("nan")` lands in a cell whose interval cannot be
+    computed (one cluster), and the report stores it in `report_cells.lo`/`hi`. A `NaN` or `inf`
+    reaching the payload here would abort the whole snapshot upsert (PostgreSQL's jsonb rejects
+    the literal), so it is mapped to `None` at the read, exactly like an absent interval: the
+    client already greys a `None` cell, and `n_clusters` stays as stored so the row still shows
+    why."""
+    if x is None:
+        return None
+    value = float(x)
+    return value if math.isfinite(value) else None
+
+
 def _cells(session: Session, run_id: int) -> dict:
     out: dict[str, dict] = {}
     for row in session.execute(_CELLS, {"run_id": run_id}):
         table = out.setdefault(row.table_key, {}).setdefault(row.row_key, {})
         table[row.col_key] = {
-            "estimate": float(row.estimate) if row.estimate is not None else None,
+            "estimate": _finite(row.estimate),
             "n_obs": row.n_obs, "n_clusters": row.n_clusters,
-            "lo": float(row.lo) if row.lo is not None else None,
-            "hi": float(row.hi) if row.hi is not None else None,
+            "lo": _finite(row.lo),
+            "hi": _finite(row.hi),
             # Shown as stored (spec §1.1): never sanitized, or the report's own "+3.1 %" and
             # "[-0.2, +6.4]" would come back mangled (ruling A-I5).
             "text": row.text,

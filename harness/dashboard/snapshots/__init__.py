@@ -18,6 +18,7 @@ Three failure rules, all inherited by every builder:
 
 import contextvars
 import logging
+import math
 import re
 import time
 from collections.abc import Callable
@@ -136,6 +137,27 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _json_safe(obj):
+    """`obj` with every non-finite float (`NaN`, `+inf`, `-inf`) replaced by `None`, recursively
+    through dicts, lists and tuples; everything else is returned unchanged.
+
+    Defence in depth, not a substitute for a builder reading its numbers cleanly: this incident
+    (2026-09-10, build f851128) was `harness/report/stats.py`'s `NAN = float("nan")` reaching a
+    Study cell's `lo`/`hi` and surviving into the payload. Python's `json` module serialises
+    `NaN` without complaint; PostgreSQL's `jsonb` does not, so the upsert below raised *outside*
+    every `section` guard and no `study:*` row was ever written -- the one failure `run_builder`
+    exists to prevent (module docstring, "a failed build leaves the previous payload alone").
+    `study.py`'s own `_finite` fixes the read that caused this one; `_json_safe` is the backstop
+    so no builder, present or future, can ever abort its own row on a value jsonb refuses."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {key: _json_safe(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(value) for value in obj]
+    return obj
+
+
 def run_builder(session_factory: sessionmaker, name: str, now: datetime, settings: Settings,
                 cadence_s: int) -> dict:
     """Build one snapshot and upsert its row. Returns the row as a dict.
@@ -176,6 +198,7 @@ def run_builder(session_factory: sessionmaker, name: str, now: datetime, setting
             # this number: a healthy 60 s Floor snapshot whose payload still said 15 would read
             # as four times stale.
             payload["cadence_s"] = cadence_s
+            payload = _json_safe(payload)
 
         values = {"name": name, "generated_at": generated_at, "elapsed_ms": elapsed_ms,
                   "error": error}

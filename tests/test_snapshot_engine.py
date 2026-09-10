@@ -254,6 +254,29 @@ def test_a_builder_that_raises_keeps_the_previous_payload_and_records_a_class_na
     assert "secret" not in (row.error or "")
 
 
+def test_run_builder_replaces_non_finite_floats_with_none_before_the_upsert(
+        db_session, env_settings):
+    """Defence in depth for the 2026-09-10 incident (build f851128): a builder returning a
+    Python `NaN` or `inf` anywhere in its payload must not abort its own row -- PostgreSQL's
+    jsonb rejects the literal outside every `section` guard. `_json_safe` walks the payload
+    recursively (dicts, lists, tuples) and swaps any non-finite float for `None`; a finite float
+    beside it is left untouched."""
+    snapshots.register_builder(
+        "t6nan",
+        lambda session, now, settings: {"x": float("nan"), "l": [1.0, float("inf")]})
+    try:
+        out = run_builder(_factory(db_session), "t6nan", NOW, env_settings, cadence_s=30)
+    finally:
+        snapshots.BUILDERS.pop("t6nan", None)
+
+    assert out["error"] is None
+    assert out["payload"] == {"x": None, "l": [1.0, None], "cadence_s": 30}
+    row = db_session.get(DashboardSnapshot, "t6nan")
+    db_session.refresh(row)
+    assert row.error is None
+    assert row.payload == {"x": None, "l": [1.0, None], "cadence_s": 30}
+
+
 def test_run_builder_refuses_an_unregistered_name(db_session, env_settings):
     with pytest.raises(KeyError):
         run_builder(_factory(db_session), "nosuch", NOW, env_settings, cadence_s=30)
