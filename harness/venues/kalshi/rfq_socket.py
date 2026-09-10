@@ -30,10 +30,12 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import websocket
 
-from harness.execution.venue import STATUS_OK, STATUS_UNAVAILABLE, mark_status
+from harness.execution.venue import (STATUS_OK, STATUS_UNAVAILABLE, mark_status,
+                                     sanitize_venue_text)
 from harness.venues.kalshi.auth import sign_request
 from harness.venues.kalshi.rfq import CHANNEL, ENV, IDLE_S, VENUE, handle_frame, idle_reason
 from harness.venues.kalshi.ws import RECV_TIMEOUT_S, is_stale, should_reconnect
@@ -79,14 +81,18 @@ class RfqListener:
         self._sid: int | None = None
         self._subscribed_at: float = 0.0
         self._timeouts = 0
+        # The signing clock offset, carried across reconnects. It only ever moves on a 401 that
+        # came back with a usable `Date`; there is no HTTP client here to ask for the time.
+        self._offset_ms = 0
 
     # -- lifecycle -----------------------------------------------------------------------
 
     def stop(self, *_) -> None:
         self._stop = True
 
-    def connect(self):
-        ts_ms = int(self._clock().timestamp() * 1000)
+    def _open(self, offset_ms: int):
+        """One signed handshake at one host, and nothing else."""
+        ts_ms = int(self._clock().timestamp() * 1000) + offset_ms
         signer = self._sign
         if signer is None:
             headers = sign_request(self.s.kalshi_key_id(), self.s.kalshi_private_key_pem(),
@@ -101,6 +107,46 @@ class RfqListener:
                               timeout=RECV_TIMEOUT_S)
         self.connected = True
         return ws
+
+    def _offset_from_response_date(self, resp_headers: dict | None) -> int | None:
+        """The signing offset implied by the refused handshake's own `Date` header.
+
+        The recorder's 401 recovery (`ws.py:151-186`) needs no HTTP client either: the venue
+        tells us its clock in the response that refused us. So the listener can do the same
+        while still holding no transport at all.
+        """
+        if not resp_headers:
+            return None
+        date_header = resp_headers.get("date") or resp_headers.get("Date")
+        if not date_header:
+            return None
+        try:
+            server_dt = parsedate_to_datetime(date_header)
+        except (TypeError, ValueError):
+            return None
+        if server_dt.tzinfo is None:
+            server_dt = server_dt.replace(tzinfo=timezone.utc)
+        return int((server_dt - self._clock()).total_seconds() * 1000)
+
+    def connect(self):
+        """The handshake, with one retry on a 401 that carried a usable `Date`.
+
+        A clock skew and a refusal are different failures and must not read the same in
+        `venue_status`. Only a 401 we cannot explain by the clock -- or a second one after the
+        correction -- reaches the caller, and 0.8 idles on that unchanged.
+        """
+        try:
+            return self._open(self._offset_ms)
+        except websocket.WebSocketBadStatusException as exc:
+            if getattr(exc, "status_code", None) != 401:
+                raise
+            offset = self._offset_from_response_date(getattr(exc, "resp_headers", None))
+            if offset is None:
+                raise
+            log.info("rfq listener handshake 401; retrying once with a server-derived offset "
+                     "of %d ms", offset)
+            self._offset_ms = offset
+            return self._open(offset)
 
     def subscribe(self, ws) -> None:
         """One frame, one channel, no market tickers and no sids (ruling A-I1)."""
@@ -132,7 +178,8 @@ class RfqListener:
             return True
         kind = msg.get("type") if isinstance(msg, dict) else None
         if kind == "subscribed":
-            self._sid = (msg.get("msg") or {}).get("sid", msg.get("sid"))
+            body = msg.get("msg")
+            self._sid = body.get("sid") if isinstance(body, dict) else msg.get("sid")
             self._backoff = 1.0
             self._mark(STATUS_OK, None)
             log.info("rfq listener subscribed to %s, sid=%s", CHANNEL, self._sid)
@@ -149,7 +196,8 @@ class RfqListener:
             # Quote events reach a quote's creator or an RFQ's creator. We are neither, so this
             # is a fact about the account and not about a position: counted and dropped.
             self.quote_events_dropped += 1
-            log.info("rfq listener dropped a quote event of type %s", kind[:32])
+            log.info("rfq listener dropped a quote event; untrusted venue text: type=%r",
+                     sanitize_venue_text(kind, 32))
             return True
         with self._factory() as session:
             row = handle_frame(session, msg, self._clock())

@@ -389,11 +389,15 @@ _VENUE_PROD_NON_GET = text("""
     select count(*) from venue_requests
     where ts >= :since and env = 'prod' and method <> 'GET'
 """)
-#: `venue_status` holds one row per env (two), so the `distinct on` is over the whole table by
-#: design; there is no window to bound and nothing to prune.
+#: `venue_status` holds one row per `(venue, env)`, and this tile is the **gateway's** health,
+#: so the venue is named rather than assumed. Phase 5's RFQ listener writes `('kalshi_rfq',
+#: 'prod')` -- it marks `ok` on every subscribe ack, so without the filter it would usually be
+#: the newest prod row and Floor would show the listener's status where the gateway's belongs,
+#: including an `ok` over a real `unavailable` (review T13, I2). There is no window to bound and
+#: nothing to prune.
 _VENUE_STATUS = text("""
     select distinct on (env) env, status, reason, since, updated_at
-    from venue_status order by env, updated_at desc
+    from venue_status where venue = 'kalshi' order by env, updated_at desc
 """)
 #: Bound: `ts >= :since` (`SMOKE_WINDOW`, 30 d) and `limit 1`. Index: `ix_operator_events_ts
 #: (ts desc)` -- the scan walks newest-first and stops at the first match or at the window edge.

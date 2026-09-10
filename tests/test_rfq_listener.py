@@ -193,14 +193,13 @@ class FakeWs:
         pass
 
 
-def _listener(db_session, env_settings, ws=None, sleeps=None):
+def _listener(db_session, env_settings, ws=None):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     # `sign` is the seam: `env_settings` keeps the container defaults for the two Kalshi key
     # paths, which do not exist on the Mac, so a real `sign_request` would raise
     # `FileNotFoundError` before the ws factory was ever reached.
     return RfqListener(env_settings, factory, ws_factory=lambda *a, **k: ws,
-                       clock=lambda: NOW, sleep=(sleeps.append if sleeps is not None else None),
-                       sign=lambda *_a, **_k: {})
+                       clock=lambda: NOW, sleep=lambda *_: None, sign=lambda *_a, **_k: {})
 
 
 def test_the_subscribe_frame_names_only_the_communications_channel(db_session, env_settings):
@@ -321,7 +320,12 @@ def test_the_raw_cap_holds_for_every_oversized_shape(db_session):
         "one_huge_string": lambda m: m.update({"market_ticker": "z" * 60_000}),
         "huge_number": lambda m: m.update({"created_ts": 10 ** 9000}),
         "deep_nesting": lambda m: m.update({"mve_selected_legs": _nest(20, "x" * 20_000)}),
+        # Review T13, I1: a documented key arriving as a nested document rather than a number.
+        # `_cut` bounds each level and not their product, so this stored 508,154 bytes with a
+        # `truncated` flag on top until the collapse was added.
+        "nested_scalar": lambda m: m.update({"contracts_fp": [["y" * 120] * 64] * 64}),
     }
+    assert RAW_MAX_BYTES == 8_192
     for name, mutate in shapes.items():
         frame = _created(rfq_id=f"rfq_{name}")
         mutate(frame["msg"])
@@ -329,6 +333,23 @@ def test_the_raw_cap_holds_for_every_oversized_shape(db_session):
         assert row is not None, name
         assert row.raw["truncated"] is True, name
         assert len(json.dumps(row.raw).encode()) <= RAW_MAX_BYTES, name
+
+
+def test_a_nul_is_stripped_without_corrupting_a_neighbouring_backslash(db_session):
+    """Review T13, I3. The six characters JSON writes for a NUL are also the tail of an escaped
+    backslash, so stripping them out of the *serialized* document turns a ticker holding the
+    literal characters backslash-u-0-0-0-0 followed by `b` into a backspace: the `b` vanishes, a
+    control character appears, and `truncated` stays false. The strip walks the decoded
+    structure, so the literal survives and only the real NUL goes."""
+    frame = _created(rfq_id="rfq_backslash")
+    frame["msg"]["mve_collection_ticker"] = "a\\u0000b"
+    frame["msg"]["creator_id"] = "c\x00d"
+    frame["msg"]["\x00key"] = "value"
+    row = handle_frame(db_session, frame, NOW)
+    assert row.raw["msg"]["mve_collection_ticker"] == "a\\u0000b"
+    assert row.raw["msg"]["creator_id"] == "cd"
+    assert "key" in row.raw["msg"] and row.raw["truncated"] is False
+    assert row.mve_collection_ticker == "a\\u0000b"
 
 
 def _nest(depth, leaf):
@@ -439,3 +460,111 @@ def test_store_rfq_keeps_the_first_arrival(db_session):
     first = store_rfq(db_session, parse_rfq_frame(_created()), NOW)
     again = store_rfq(db_session, parse_rfq_frame(_created()), NOW + timedelta(hours=1))
     assert first.received_at == again.received_at == NOW
+
+
+# --- the 401 handshake: a clock skew and a refusal are different failures ----------------------
+
+def _bad_status(status: int, date: str | None = None):
+    headers = {"Date": date} if date else {}
+    return websocket.WebSocketBadStatusException("handshake %s", status, resp_headers=headers)
+
+
+def _http_date(when):
+    return when.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+
+def _signed_at(env_settings, factory_bind, outcomes):
+    """A listener whose ws factory replays `outcomes` and whose signer records its timestamps."""
+    stamps = []
+    calls = []
+
+    def factory(url, **kwargs):
+        calls.append(url)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    listener = RfqListener(env_settings, sessionmaker(bind=factory_bind), ws_factory=factory,
+                           clock=lambda: NOW, sleep=lambda *_: None,
+                           sign=lambda _m, _p, ts_ms: stamps.append(ts_ms) or {})
+    return listener, stamps, calls
+
+
+def test_a_401_carrying_a_date_is_retried_once_with_the_server_s_offset(db_session,
+                                                                       env_settings):
+    """Review T13's ruling. The recorder's own 401 recovery reads the `Date` header off the
+    refused handshake and needs no HTTP client, so the listener can do it while still holding no
+    transport. A recoverable clock skew must not cost an hour of blindness."""
+    ws = FakeWs([])
+    listener, stamps, calls = _signed_at(
+        env_settings, db_session.get_bind(),
+        [_bad_status(401, _http_date(NOW + timedelta(seconds=90))), ws])
+    assert listener.connect() is ws
+    assert len(calls) == 2
+    # The second signature is stamped 90 s ahead of ours, which is where the venue's clock is.
+    assert stamps[1] - stamps[0] == 90_000
+
+
+def test_a_second_401_is_raised_rather_than_retried_again(db_session, env_settings):
+    """One retry, never a loop: a 401 that survives the correction is a refusal, and 0.8 idles
+    on it unchanged."""
+    listener, _stamps, calls = _signed_at(
+        env_settings, db_session.get_bind(),
+        [_bad_status(401, _http_date(NOW + timedelta(seconds=90))), _bad_status(401)])
+    with pytest.raises(websocket.WebSocketBadStatusException):
+        listener.connect()
+    assert len(calls) == 2
+
+
+def test_a_401_without_a_usable_date_is_not_retried(db_session, env_settings):
+    listener, _stamps, calls = _signed_at(env_settings, db_session.get_bind(),
+                                          [_bad_status(401)])
+    with pytest.raises(websocket.WebSocketBadStatusException):
+        listener.connect()
+    assert len(calls) == 1
+
+
+def test_a_403_is_never_retried(db_session, env_settings):
+    """Only a 401 is a clock question. A 403 is an answer about the account."""
+    listener, _stamps, calls = _signed_at(
+        env_settings, db_session.get_bind(),
+        [_bad_status(403, _http_date(NOW + timedelta(seconds=90)))])
+    with pytest.raises(websocket.WebSocketBadStatusException):
+        listener.connect()
+    assert len(calls) == 1
+
+
+def test_a_handshake_that_stays_refused_idles_for_an_hour(db_session, env_settings, tmp_path):
+    """The other half of the ruling: the retry does not weaken 0.8. A 401 that survives the
+    offset correction still idles the listener and marks `venue_status`."""
+    key_id, key_pem = tmp_path / "key_id", tmp_path / "key.pem"
+    key_id.write_text("unused")           # the signer is stubbed; these exist only so that
+    key_pem.write_bytes(b"unused")        # `has_kalshi_credentials()` is true.
+    settings = env_settings.model_copy(update={"kalshi_key_id_file": key_id,
+                                               "kalshi_private_key_file": key_pem})
+    listener = None
+
+    def factory(url, **kwargs):
+        raise _bad_status(401, _http_date(NOW + timedelta(seconds=90)))
+
+    def sleep(_seconds):
+        listener.stop()                   # one idle sleep is enough to prove the window
+
+    listener = RfqListener(settings, sessionmaker(bind=db_session.get_bind()),
+                           ws_factory=factory, clock=lambda: NOW, sleep=sleep,
+                           sign=lambda *_a, **_k: {})
+    listener.run_forever()
+    assert listener.idle_until == NOW + timedelta(seconds=IDLE_S)
+    row = db_session.execute(text("select status, reason from venue_status where venue = :v"),
+                             {"v": VENUE}).first()
+    assert row.status == "unavailable" and "401" in row.reason
+
+
+def test_a_subscribed_frame_with_a_hostile_msg_does_not_raise(db_session, env_settings):
+    """A non-dict `msg` on an ack used to raise `AttributeError` into the broad handler and a
+    backoff loop; every path in the handler module already guards this shape."""
+    ws = FakeWs([{"type": "subscribed", "msg": "not-a-dict", "sid": 7}])
+    listener = _listener(db_session, env_settings, ws)
+    assert listener.run_once(ws) is True
+    assert listener._sid == 7

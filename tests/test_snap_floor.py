@@ -208,6 +208,22 @@ def test_a_venue_status_reason_is_sanitized(db_session, env_settings):
     assert "<" not in tile["status"][0]["reason"]
 
 
+def test_the_venue_tile_reads_the_gateway_row_not_the_rfq_listener(db_session, env_settings):
+    """Review T13, I2. Phase 5's RFQ listener writes `('kalshi_rfq', 'prod')` and marks it `ok`
+    on every subscribe ack, so it is usually the newest prod row. This tile is the gateway's
+    health: a healthy listener must never paint over a venue that is actually unavailable."""
+    db_session.add(VenueStatus(venue="kalshi", env="prod", status="unavailable",
+                               reason="401 twice", since=NOW - timedelta(hours=2),
+                               updated_at=NOW - timedelta(hours=2)))
+    db_session.add(VenueStatus(venue="kalshi_rfq", env="prod", status="ok", reason=None,
+                               since=NOW, updated_at=NOW))
+    db_session.flush()
+    status = build_floor(db_session, NOW, env_settings)["venue"]["status"]
+    prod = [row for row in status if row["env"] == "prod"]
+    assert len(prod) == 1
+    assert prod[0]["status"] == "unavailable"
+
+
 def test_open_orders_carry_a_queue_bar_and_a_sparkline(db_session, env_settings):
     order = Order(intent_id=uuid.uuid4(), variant_id="sharp_direct",
                   venue="kalshi", client_order_id="c1", ticker="KXNFL-T", venue_market_id=1,

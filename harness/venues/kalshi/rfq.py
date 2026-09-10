@@ -211,53 +211,84 @@ def _cut(value, depth: int = 0):
     return str(value)[:EXCERPT_MAX]
 
 
-def _scrub(msg: dict) -> tuple[dict, bool]:
-    """The message with every NUL byte gone, and whether it could be rendered at all.
+def _strip_nul(value):
+    """Every NUL byte gone, walked over the **decoded** structure.
 
-    One round trip through `json` reaches strings this module never names -- keys, nested leg
-    fields, an undocumented key -- which a field-by-field pass would miss, and a missed NUL
-    fails the insert for the whole arrival. A message that cannot be rendered *comes back
-    unchanged with False*, never emptied: the trimming path bounds exactly the shapes that get
-    here (an integer too wide for CPython to render, a document too deep for the encoder), and
-    an arrival is not something to silently replace with an empty object.
+    Not over the serialized text: the six characters JSON writes for a NUL are also the tail of
+    an escaped backslash, so deleting them from the encoded document turns a ticker holding the
+    literal characters `\\u0000b` into `\\b`, which is a backspace. That corrupts `raw` while
+    leaving `truncated` false. Keys are walked as well as values, because a key is a string the
+    venue chose too.
     """
-    try:
-        text = json.dumps(msg, default=str)
-    except (TypeError, ValueError, RecursionError):
-        return msg, False
-    if "\\u0000" not in text:
-        return msg, True
-    try:
-        return json.loads(text.replace("\\u0000", "")), True
-    except (ValueError, RecursionError):
-        return msg, False
+    if isinstance(value, str):
+        return _no_nul(value)
+    if isinstance(value, dict):
+        return {(_no_nul(k) if isinstance(k, str) else k): _strip_nul(v)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nul(item) for item in value]
+    return value
+
+
+def _collapse(trimmed: dict) -> dict:
+    """The last resort: every kept key reduced to a bounded scalar.
+
+    `_cut` bounds each level of a value but not the product of them, so a documented key that
+    arrived as a nested document rather than a number is still large after it. Nine bounded
+    scalars and their key names are under two kilobytes whatever they held.
+    """
+    out = {}
+    for key, value in trimmed.items():
+        if value is None or isinstance(value, (int, float, bool)):
+            out[key] = value
+        elif isinstance(value, str):
+            out[key] = _no_nul(value)[:EXCERPT_MAX]
+        else:
+            out[key] = "..."
+    return out
 
 
 def _capped_raw(msg: dict) -> dict:
     """The whole message, or as much of it as fits, with the flag inside the object.
 
     The cap is a real cap and not a hope: whatever arrives, what is returned fits in
-    `RAW_MAX_BYTES`. First the message whole. Then the documented fields with every scalar
-    bounded -- which alone is under a kilobyte -- and the leg list halved until the object fits.
-    The loop cannot run away: it terminates at an empty leg list, whose size is the bounded
-    scalars alone.
+    `RAW_MAX_BYTES`. First the message whole. Then the documented fields with every level of
+    every value bounded, the leg list halved until the object fits, and finally -- for a
+    documented key that arrived as a nested document -- every kept value collapsed to a scalar.
+    That last step is what makes the guarantee unconditional rather than a claim about the
+    shapes we happened to think of.
     """
-    msg, whole = _scrub(msg)
+    whole = True
+    try:
+        msg = _strip_nul(msg)
+    except RecursionError:
+        # Deeper than this interpreter will walk. It cannot be stored whole, and the trimming
+        # path below caps depth at `_RAW_MAX_DEPTH` and strips NULs as it goes.
+        whole = False
     if whole:
         payload = {"msg": msg, "truncated": False}
-        try:
-            if _raw_size(payload) <= RAW_MAX_BYTES:
-                return payload
-        except (TypeError, ValueError, RecursionError):
-            pass
+        if _fits(payload):
+            return payload
     trimmed = {k: _cut(v) for k, v in msg.items() if k in _RAW_KEEP}
     legs = trimmed.pop("mve_selected_legs", None)
     legs = legs if isinstance(legs, list) else []
     while True:
         payload = {"msg": {**trimmed, "mve_selected_legs": legs}, "truncated": True}
-        if not legs or _raw_size(payload) <= RAW_MAX_BYTES:
+        if _fits(payload):
             return payload
-        legs = legs[:len(legs) // 2]
+        if legs:
+            legs = legs[:len(legs) // 2]
+            continue
+        return {"msg": {**_collapse(trimmed), "mve_selected_legs": []}, "truncated": True}
+
+
+def _fits(payload: dict) -> bool:
+    """Whether this payload is inside the budget. A payload that cannot be rendered at all does
+    not fit, which sends the caller to the next, smaller shape."""
+    try:
+        return _raw_size(payload) <= RAW_MAX_BYTES
+    except (TypeError, ValueError, RecursionError):
+        return False
 
 
 def parse_rfq_frame(msg) -> RfqEvent | None:
