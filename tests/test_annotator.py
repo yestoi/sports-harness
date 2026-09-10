@@ -16,6 +16,11 @@ from harness.research.spend import Usage
 
 NOW = datetime(2026, 9, 21, 15, 0, tzinfo=timezone.utc)   # Monday of ISO week 39
 
+#: Review round 1: the week rolls over on America/Chicago's clock, not UTC's. 04:30 UTC Monday
+#: is still 23:30 CT Sunday (week 38); 05:30 UTC Monday is 00:30 CT Monday (week 39).
+NOW_SUNDAY_CT = datetime(2026, 9, 21, 4, 30, tzinfo=timezone.utc)
+NOW_MONDAY_CT = datetime(2026, 9, 21, 5, 30, tzinfo=timezone.utc)
+
 
 # --- fixtures ---------------------------------------------------------------------------------
 #
@@ -101,6 +106,13 @@ def seeded_last_week_only(db_session):
     _run(db_session, 2026, 38, False, datetime(2026, 9, 14, 9, 0, tzinfo=timezone.utc))
 
 
+@pytest.fixture
+def seeded_sunday_final(db_session) -> ReportRun:
+    """One final report for week 38, generated Sunday evening CT -- the boundary review round 1
+    flagged: for about five hours UTC has rolled to Monday while America/Chicago has not."""
+    return _run(db_session, 2026, 38, False, datetime(2026, 9, 20, 22, 0, tzinfo=timezone.utc))
+
+
 # --- the trigger --------------------------------------------------------------------------------
 
 
@@ -124,6 +136,20 @@ def test_an_already_annotated_run_is_not_annotated_again(db_session, keyed_setti
 
 def test_last_week_s_report_is_not_annotated_this_week(db_session, seeded_last_week_only):
     assert pending_report(db_session, NOW) is None
+
+
+def test_a_sunday_evening_ct_final_report_is_found_before_midnight_ct(db_session,
+                                                                      seeded_sunday_final):
+    """Review round 1: at Sunday 23:30 CT (04:30 UTC Monday) the week is still 38 in Chicago,
+    so the just-written week-38 final report is still "this week"."""
+    run = pending_report(db_session, NOW_SUNDAY_CT)
+    assert run is not None and run.id == seeded_sunday_final.id
+
+
+def test_the_same_report_is_not_found_after_midnight_ct(db_session, seeded_sunday_final):
+    """At Monday 00:30 CT (05:30 UTC) the Chicago week has turned to 39; the week-38 report is
+    behind "current" for good and needs a week-39 report of its own to be found."""
+    assert pending_report(db_session, NOW_MONDAY_CT) is None
 
 
 # --- the checks and the store --------------------------------------------------------------------

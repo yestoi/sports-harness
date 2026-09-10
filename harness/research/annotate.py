@@ -29,7 +29,7 @@ from harness.report.render_for_model import (BULLET_MAX, BULLETS_MAX, check_bull
 from harness.report.tables import weekly_tables
 from harness.research.client import PRIMARY_MODEL, ResearchClient, prompt_hash
 from harness.research.notes import write_notes
-from harness.research.spend import BudgetRefused, cost_usd, release_spend, reserve_spend
+from harness.research.spend import BudgetRefused, chicago_day, cost_usd, release_spend, reserve_spend
 from harness.research.text import sanitize_model_text
 from harness.research.worker import register_pass
 
@@ -71,8 +71,18 @@ _PENDING = text("""
 
 
 def pending_report(session: Session, now: datetime) -> ReportRun | None:
-    """The current ISO week's newest final report that has no annotation yet."""
-    iso = now.isocalendar()
+    """The current ISO week's newest final report that has no annotation yet.
+
+    "Current" is America/Chicago's week, not UTC's (review round 1): `spend.py`'s
+    `chicago_day` is the same conversion `reserve_spend` already anchors its own week-lock to,
+    and reusing it keeps this pass and the budget gate agreeing on when a week turns over. In
+    the ~5 h window where UTC has rolled to Monday but Chicago has not (00:00-05:00 UTC
+    Monday, i.e. Sunday evening/night CT), a raw `now.isocalendar()` would look for next week's
+    number while a just-written Sunday-slate final report still carries this week's -- and once
+    Chicago also rolls over, that report's week is behind "current" for good, so it would never
+    be annotated.
+    """
+    iso = chicago_day(now).isocalendar()
     row = session.execute(_PENDING, {"year": iso.year, "week": iso.week}).first()
     return session.get(ReportRun, row.id) if row is not None else None
 
