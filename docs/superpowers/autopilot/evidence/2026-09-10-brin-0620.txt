@@ -69,3 +69,5 @@ autovacuum|autovacuum_naptime|60
 autovacuum|autovacuum_vacuum_insert_scale_factor|0.2
 autovacuum|autovacuum_vacuum_insert_threshold|1000
 Time: 231.278 ms
+summary 200 4.107849s
+page 200 0.214021s
