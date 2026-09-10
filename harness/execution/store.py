@@ -159,8 +159,45 @@ def candidate_signals(session: Session, variant_ids: Sequence[str], lower: datet
     return session.execute(stmt, params).all()
 
 
+_MARKET_TYPE = text("select market_type from venue_markets where id = :id")
+
+
+def _market_type_of(session: Session, venue_market_id: int) -> str:
+    """The queued signal's market type. `veto_queue.market_type` is NOT NULL and part of the
+    bucket key, and `candidate_signals` does not select it, so it is read here."""
+    return session.execute(_MARKET_TYPE, {"id": venue_market_id}).scalar() or "unknown"
+
+
+def _enqueue_veto(session: Session, row, now: datetime) -> None:
+    """One `veto_queue` row per intent this call wrote (addendum 0.2, ruling B-C1).
+
+    One row per **signal**, never one per bucket: a unique index on the bucket key would refuse
+    the second and later signals of a burst and their ids would never be persisted anywhere,
+    which is selection rather than attenuation -- the deduped signals are exactly the ones on a
+    moving line.
+
+    `bucket_start` is a plain column with a partial index; the worker claims every unclaimed row
+    of a bucket at once.
+    """
+    from harness.config.settings import get_settings
+    from harness.db.models import VetoQueue
+    from harness.research.veto import bucket_start
+
+    minutes = get_settings().veto_bucket_minutes
+    session.execute(insert(VetoQueue).values(
+        signal_id=row.signal_id, game_id=row.game_id,
+        market_type=_market_type_of(session, row.venue_market_id),
+        bucket_start=bucket_start(row.created_at, minutes),
+        enqueued_at=now, claimed_at=None,
+    ).on_conflict_do_nothing(index_elements=["signal_id"]))
+
+
 def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool) -> int:
-    """One intent per candidate signal; returns how many rows this call actually wrote."""
+    """One intent per candidate signal; returns how many rows this call actually wrote.
+
+    Phase 5 hangs the veto queue off this loop, because it is already exactly once per signal:
+    the insert is `on conflict do nothing` on `signal_id` and only a returned row counts.
+    """
     written = 0
     for row in rows:
         stmt = insert(Intent).values(
@@ -174,6 +211,15 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
         ).on_conflict_do_nothing(index_elements=["signal_id"]).returning(Intent.id)
         if session.execute(stmt).first() is not None:
             written += 1
+            if not replay:
+                # Phase 5: the veto queue. Advisory and post-hoc -- a queue write must never cost
+                # the executor an intent, so it is guarded by a savepoint and its failure is a
+                # log line. A replay writes nothing: H9 is measured on live signals only.
+                try:
+                    with session.begin_nested():
+                        _enqueue_veto(session, row, now)
+                except Exception:  # noqa: BLE001
+                    log.exception("veto enqueue failed for signal %s", row.signal_id)
     return written
 
 
