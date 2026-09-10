@@ -42,8 +42,12 @@ def test_the_scored_side_is_the_creator_taking_our_bid(db_session, settled_quote
     asked for. `pnl_yes` is what we would have made buying YES at `yes_bid` and settling at the
     closing fair; `pnl_no` the mirror."""
     grade_rfq_quotes(db_session, NOW, _budget())
-    row = db_session.execute(text("select yes_bid, closing_fair, pnl_yes from rfq_quotes")).first()
+    row = db_session.execute(text(
+        "select yes_bid, no_bid, closing_fair, pnl_yes, pnl_no from rfq_quotes")).first()
     assert row.pnl_yes == (row.closing_fair - row.yes_bid)
+    # The mirror, asserted rather than assumed: NO settles at `1 - closing_fair`, so a formula
+    # that dropped the complement (or the sign) would pass on `pnl_yes` alone.
+    assert row.pnl_no == (Decimal("1") - row.closing_fair) - row.no_bid
 
 
 def test_a_stale_closing_leg_is_flagged_graded_and_carries_no_invented_number(
