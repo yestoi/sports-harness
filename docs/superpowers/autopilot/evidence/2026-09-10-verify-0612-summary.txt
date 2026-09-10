@@ -1,0 +1,2 @@
+ssh failed (curl -s --max-time 30 -w '\n%{time_total}' http://...): 
+make: *** [verify-summary] Error 1

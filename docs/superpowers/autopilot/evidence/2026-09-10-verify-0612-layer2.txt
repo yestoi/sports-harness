@@ -1,0 +1,95 @@
+SET
+checks_latest|2026-09-10 09:25:41.888771+00
+ERROR:  column "check_results.status" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select 'checks', status, count(*) from check_results where t...
+                         ^
+ERROR:  column "name" does not exist
+LINE 1: select 'check_detail', name, status, left(detail, 60) from c...
+                               ^
+loop_hourly|2026-09-09 23:00:00|33|25147|216472|171104
+loop_hourly|2026-09-10 00:00:00|52|5521|11450|9551
+loop_hourly|2026-09-10 01:00:00|53|4937|7935|5864
+loop_hourly|2026-09-10 02:00:00|53|4801|7537|7145
+loop_hourly|2026-09-10 03:00:00|50|6278|73550|6137
+loop_hourly|2026-09-10 04:00:00|53|4360|16645|4931
+loop_hourly|2026-09-10 05:00:00|52|4454|30793|6224
+loop_hourly|2026-09-10 06:00:00|10|3709|4137|4137
+heartbeat_age_s|7
+snap_rows|gate|-|23692
+snap_rows|pulse|-|23692
+snap_rows|floor|-|23692
+snap_rows|ticket|-|23691
+ERROR:  column "operator_events.kind" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select 'operator_events_6h', kind, count(*) from operator_ev...
+                                     ^
+ERROR:  relation "gate_evaluations" does not exist
+LINE 1: ...te_evaluations', count(*), max(evaluated_at) from gate_evalu...
+                                                             ^
+Mem:            7717        6718         401         639        1989         998
+Swap:           9999        4665        5334
+ 1  0 4777124 404928  55044 1982480    3    0    15   532 3073 8345  3  1 96  0  0
+load average: 1.14, 0.99, 1.79
+SET
+checks|pass|24
+checks|skip|3
+check_detail|duplicate_trades|skip|timeout
+check_detail|fair_values_negative_feed_lag|skip|timeout
+check_detail|fair_values_negative_staleness|skip|timeout
+operator_events_7h|ws_disconnect|40
+operator_events_7h|ws_connect|23
+operator_events_7h|budget_exhausted|9
+operator_events_7h|deploy|1
+operator_events_7h|verify_pass|1
+ERROR:  canceling statement due to statement timeout
+cold 200 49.571086s
+warm 200 34.650433s
+page 200 39.767310s
+SET
+hit_ratio|96.5|83908498|2324878973|
+metric_samples|14 MB|77674|0|2026-09-10 09:03:11.338381+00
+top_tables|orderbook_events_legacy|15 GB|29721859|0
+top_tables|orderbook_events_y2026w37|9525 MB|16458600|43
+top_tables|signals|6054 MB|10045726|0
+top_tables|fair_values|1081 MB|1667187|0
+top_tables|raw_responses_y2026w37|747 MB|94427|0
+top_tables|odds_snapshots|521 MB|2204078|0
+top_tables|venue_quotes|465 MB|2197022|0
+top_tables|market_gap_snapshots|452 MB|1590375|794
+checkpoints|572|3|2948578|7521102
+13062 VmRSS: 2656  13062 VmSwap: 2432  
+13354 VmRSS: 2944  13354 VmSwap: 2304  
+13355 VmRSS: 1536  13355 VmSwap: 2432  
+13507 VmRSS: 1416  13507 VmSwap: 2304  
+13508 VmRSS: 2556  13508 VmSwap: 2304  
+13509 VmRSS: 1932  13509 VmSwap: 2560  
+1418 VmRSS: 5296  1418 VmSwap: 2048  
+1428 VmRSS: 2920  1428 VmSwap: 2048  
+1429 VmRSS: 1812  1429 VmSwap: 1920  
+1431 VmRSS: 2236  1431 VmSwap: 1792  
+1432 VmRSS: 2968  1432 VmSwap: 2048  
+1433 VmRSS: 1972  1433 VmSwap: 2432  
+
+3716 MB postgres
+388 MB harness
+154 MB containerd-shim
+142 MB Radarr
+141 MB jellyfin
+126 MB uwsgi
+120 MB Sonarr
+104 MB Prowlarr
+95 MB celery
+93 MB node
+91 MB dockerd
+87 MB python3
+
+MemTotal:        7902308 kB
+MemFree:          396540 kB
+MemAvailable:    1366392 kB
+Buffers:           18408 kB
+Cached:          2163828 kB
+SwapTotal:      10239976 kB
+SwapFree:        5131748 kB
+Dirty:              4448 kB
+Shmem:            664288 kB
+ShmemHugePages:     8192 kB
+ShmemPmdMapped:        0 kB
