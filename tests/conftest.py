@@ -632,12 +632,23 @@ def placed_card_one_miss(db_session):
 @pytest.fixture
 def placed_card_all_void(db_session):
     """One tied final game (a push) and one postponed game -- both grade to `void`. The
-    postponed game still carries a score (0-0): `_grade_leg` needs a non-null score to grade a
-    leg at all, postponed included, so a postponed game the harness never saw scored is simply
-    never graded until it is (the same rule a `final` game with a missing score follows)."""
+    postponed leg carries no score at all: a void needs no result (a postponed game will never
+    be played), so it voids on its status alone."""
     card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
     _pf_leg(db_session, card, 1, "AV1", home_score=14, away_score=14, status="final")
-    _pf_leg(db_session, card, 2, "AV2", home_score=0, away_score=0, status="postponed")
+    _pf_leg(db_session, card, 2, "AV2", home_score=None, away_score=None, status="postponed")
+    _placement_and_stake(db_session, card, PARLAY_NOW)
+    return card
+
+
+@pytest.fixture
+def placed_card_postponed_and_unscored_final(db_session):
+    """One postponed leg with no score at all, and one `final` leg whose score has not been
+    recorded. The postponed leg voids on its status alone; the `final` leg stays ungraded --
+    `final`/`final_ot` are the only statuses "never guess a result" still applies to."""
+    card = _make_graded_card(db_session, status="placed", built_at=PARLAY_NOW)
+    _pf_leg(db_session, card, 1, "PU1", home_score=None, away_score=None, status="postponed")
+    _pf_leg(db_session, card, 2, "PU2", home_score=None, away_score=None, status="final")
     _placement_and_stake(db_session, card, PARLAY_NOW)
     return card
 

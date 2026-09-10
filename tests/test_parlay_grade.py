@@ -74,6 +74,18 @@ def test_a_card_whose_every_leg_voids_is_void_and_the_stake_comes_back(db_sessio
         "select kind from parlay_ledger where kind = 'void'")).scalar() == "void"
 
 
+def test_a_postponed_leg_voids_with_no_score_but_a_final_leg_without_one_stays_ungraded(
+        db_session, placed_card_postponed_and_unscored_final):
+    """A void needs no result: a postponed game will never be played, so its leg voids on
+    status alone. `final`/`final_ot` are the only statuses "never guess a result" still applies
+    to, so a final leg with no recorded score yet stays ungraded."""
+    grade_parlays(db_session, NOW, _budget())
+    statuses = {row.seq: row.status for row in db_session.execute(text(
+        "select seq, status from parlay_legs order by seq"))}
+    assert statuses[1] == "void"
+    assert statuses[2] not in ("hit", "miss", "void")
+
+
 def test_a_card_with_an_ungraded_leg_stays_alive(db_session, placed_card_one_live):
     grade_parlays(db_session, NOW, _budget())
     assert db_session.execute(text("select status from parlay_cards")).scalar() == "alive"

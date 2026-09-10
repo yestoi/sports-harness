@@ -47,10 +47,16 @@ _GAME = text("select status, home_team_id, away_team_id, home_score, away_score 
 
 def _grade_leg(session: Session, leg: ParlayLeg, now: datetime) -> str:
     game = session.execute(_GAME, {"game_id": leg.game_id}).first()
-    if game is None or game.status not in FINAL_STATUSES or game.home_score is None:
+    if game is None:
         return leg.status
     if game.status in ("postponed", "canceled"):
+        # A void needs no result: the game will never be played (or never finish), score or no
+        # score, and a card left `alive` for it would sit on the weekly cap forever.
         leg.status, leg.graded_at = "void", now
+        return leg.status
+    if game.status not in FINAL_STATUSES or game.home_score is None:
+        # Only `final`/`final_ot` reach here (postponed/canceled are handled above), and there
+        # "never guess a result" still holds: no score yet means the leg stays ungraded.
         return leg.status
     payout = resolve_market(_BACK[leg.market_type], leg.threshold, leg.side_team_id,
                             game.home_team_id, game.away_team_id,
