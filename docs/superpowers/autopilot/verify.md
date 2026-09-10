@@ -164,9 +164,9 @@ select version_num from alembic_version;
 | Drawdown fields | the executor writes these, so during quiet hours (01:00-08:00, no game) the newest row is the previous evening's and that is expected; **deferred** to the first daytime loop when no row exists at all. Every variant's newest `equity_snapshots` row carries `peak_equity_7d` and `drawdown_pct`; `drawdown_stop = true` is an alert to journal, **not** a failure — the paper executor keeps placing (decision 6) |
 | Pricing coverage | quiet-hour runs are `skipped` and carry no pricing block, so this is judged on daytime ticks only and is **deferred** overnight. `notes->'pricing'->'order'` on every daytime tick leads with the gate variant then the primary, and `variants_run` names both; `gate_variant_missing` count over 24 h is **0**; the `budget_exhausted` share is journaled. A tick with no active variants records `gate_variant_missing = false` with an empty `order`, so count the empty `order` rows too and journal them rather than reading the zero as coverage. |
 | Pricing budget | `notes->'pricing'->'budget_s'` is numeric on every non-skipped tick, and `budget_capped` is journaled. Inside a game window, watch `recorder.tick_ms` in `metric_samples` beside `budget_capped`: a capped budget with a rising tick time is the pricing pass losing its window. |
-| `check_results` (fix 16) | all `pass` in the last 25 h. `duplicate_trades` and `fair_values_negative_staleness` must be `pass`, not `skip`: both were bounded in phase 4 Task 2 and a `skip` means the bound regressed. |
-| `alembic_version` | any hour, from the first phase 4 deploy onward: exactly one row, `version_num = '0001_baseline'` |
-| Demo smoke | run once per phase deploy and outside a game window (R4), never on the quiet-hour verifications. **Only when `secrets/kalshi_demo_key_id` and `secrets/kalshi_demo_private_key.pem` both exist on the NAS** (`ls -l`, never `cat`). No service mounts them, so the controller supplies the mount for one run, and each `-v` source must be an **absolute host path** -- `docker compose run` reads a relative `./secrets/...` as a *volume name* and refuses it: `ssh … 'cd /volume1/docker/sports-harness && docker compose run --rm -T -v /volume1/docker/sports-harness/secrets/kalshi_demo_key_id:/run/secrets/kalshi_demo_key_id:ro -v /volume1/docker/sports-harness/secrets/kalshi_demo_private_key.pem:/run/secrets/kalshi_demo_private_key.pem:ro app-run kalshi-smoke --env demo'`. Exits 0 and prints the step table. A zero balance prints "demo unfunded" and still exits 0. A venue rejection of the off-grid leg is a named failing step with the grid it used (`steps=`, `low=`, `next=`, `high=`), journaled, not a crash. Demo prices are not evidence and reach no table. When the files are absent the row is **skipped**, not failed. |
+| `check_results` (fix 16) | all `pass` in the last 25 h. `duplicate_trades`, `fair_values_negative_staleness`, `intents_without_order_or_skip`, `build_sha_drift` and `fair_values_negative_feed_lag` must be `pass`, not `skip`: the first two were bounded in phase 4 Task 2, the last three in phase 4.5, and a `skip` on any of them means the bound regressed. |
+| `alembic_version` | any hour, from the first phase 4 deploy through the last phase 4.5-only deploy: exactly one row, `version_num = '0001_baseline'`. From the first phase 4.5 **full** deploy onward this row is superseded by the Phase 4.5 block's `alembic_version` row below, which expects `0002_phase45`. |
+| Demo smoke | run once per phase deploy and outside a game window (R4), never on the quiet-hour verifications. **Only when `secrets/kalshi_demo_key_id` and `secrets/kalshi_demo_private_key.pem` both exist on the NAS** (`ls -l`, never `cat`). No service mounts them, so the controller supplies the mount for one run, and each `-v` source must be an **absolute host path** -- `docker compose run` reads a relative `./secrets/...` as a *volume name* and refuses it: `ssh … 'cd /volume1/docker/sports-harness && docker compose run --rm -T -v /volume1/docker/sports-harness/secrets/kalshi_demo_key_id:/run/secrets/kalshi_demo_key_id:ro -v /volume1/docker/sports-harness/secrets/kalshi_demo_private_key.pem:/run/secrets/kalshi_demo_private_key.pem:ro app-run kalshi-smoke --env demo'`. Exits 0 and prints the step table. A zero balance prints "demo unfunded" and still exits 0. A venue rejection of the off-grid leg is a named failing step with the grid it used (`steps=`, `low=`, `next=`, `high=`), journaled, not a crash. Demo prices are not evidence and reach no table. When the files are absent the row is **skipped**, not failed. After a run that exits 0, whatever its step table says, write the result so Floor's venue tile stops saying "no smoke recorded": `docker compose run --rm -T app-run note --kind verify_pass "demo smoke <n>/<m> on <sha>"`, where `<n>/<m>` is the count of steps that passed out of the total and `<sha>` is `DEPLOY_SHA`. The venue tile reads the newest `operator_events` row whose `summary` starts with `demo smoke`. |
 | `backups/` ownership | checked on the first verification after the phase 4 deploy, and after that only when the `backups/` listing row above fails. `ssh … 'ls -ld /volume1/docker/sports-harness/backups /volume1/docker/sports-harness/backups/nightly'` shows the same uid the app containers run as (`APP_UID`/`APP_GID` in `deploy/nas.env`, 1000:10). The deploy recipe runs no `chown`, so a mismatch here means the tree predates the recipe: fix it by hand once and journal it. |
 | Limits read | judged on the newest **non-skipped** run, so it is **deferred** through quiet hours, when every run is `skipped`; the read itself is hourly, so consecutive ticks inside one hour legitimately carry the same block. `runs.notes->'venue_limits'` on the newest non-skipped run carries a `tier` and a numeric `read_refill_rate`, and `/healthz` shows the same block. A `null` means either that `has_kalshi_credentials()` was False in `app-run` or that the read itself failed: check the two key mounts first, because without them nothing writes a `venue_requests` row and the tripwire row above is vacuous. |
 | Demo secrets push | checked on the first verification after a deploy, and skipped otherwise: if the demo secrets exist on the Mac but not on the NAS, the Makefile's conditional push loop did not run: re-run `make deploy-nas` and journal it |
@@ -183,6 +183,29 @@ The first is the `backups/` size §8 asks for; the second is §4.3's count of un
 plaintext and no ciphertext. A count that rises across two consecutive verifications is a
 carried fix: either the encrypt job is not running, or the recipient is missing and every pass
 is recording `skipped: no recipient`.
+
+### Phase 4.5 additions (after the dashboard surfaces ship)
+
+This block runs from the first phase 4.5 deploy onward, on every verification.
+
+| Check | Expected |
+|---|---|
+| `/api/snap` names | any hour: the four fixed builder names (`pulse`, `floor`, `gate`, `ticket`) plus at least one `study:<year>-<week>` are present, and no row carries an `error`. An `error` is an exception class name and the payload beside it is the last good one, so the surface still has numbers: journal the class name and the snapshot, and treat two consecutive verifications with the same `error` as a carried fix. |
+| `/api/snap` ages | every row's `age_s` is under twice its own `cadence_s`. Over twice is a WATCH and over three times a BROKEN, which is also what Pulse's `snapshot_stale` rule reports; a whole-table staleness means the scheduler in `app-serve` is not running (`docker compose logs app-serve` for "snapshot scheduler started"). |
+| Snapshot CPU budget | over a game-day hour, `select date_trunc('minute', ts) m, sum(value) from metric_samples where name = 'serve.snapshot_ms' and ts > now() - interval '1 hour' group by 1 order by 2 desc limit 5` has a top per-minute sum **under 2000 ms** (spec §6: 2 s of builder CPU per minute). Journal the top three minutes. |
+| Floor builder p95 | `select percentile_disc(0.95) within group (order by value) from metric_samples where name = 'serve.snapshot_ms' and labels->>'name' = 'floor' and ts > now() - interval '1 hour'` is **under 250 ms**. Over it, the scheduler backs the in-window cadence off to 30 s on its own and Pulse fires `snapshot_budget`: journal both rather than treating the back-off as a failure. |
+| `/ui/` first paint | under 1 s over the tunnel, measured from the walker's own load. Deferred when the tunnel is not up. |
+| Legacy page and `/api/summary` | unchanged: `/` renders in about 0.6 s and `/api/summary`'s top-level keys equal `tests/fixtures/api_summary_contract.json`. This phase adds surfaces and never reshapes the page other tooling reads. |
+| `alembic_version` | any hour, from the first phase 4.5 **full** deploy onward: exactly one row, `version_num = '0002_phase45'`. After a mid-phase `deploy-nas-app` it legitimately still reads `0001_baseline`, because that recipe runs `init-db` and never `migrate ensure`; the tables are present either way. |
+| `check_results` | all `pass` in the last 25 h, and **no `skip`**. The three corrected checks (`intents_without_order_or_skip`, `build_sha_drift`, `fair_values_negative_feed_lag`) must be `pass`, not `skip`: a `skip` on the feed-lag check means its 24 h bound regressed, and a `skip` on the intents check means `ix_orders_key_placed` is missing. |
+| Pulse status word | `select payload->'status'->>'status' from dashboard_snapshots where name = 'pulse'` reads `FINE` or `WATCH`. A `WATCH` is acceptable only when `payload->'status'->'rules'` names the rules: journal each name, its value and its threshold. `BROKEN` is a FAIL. |
+| Pulse not-evaluated rules | `payload->'status'->'not_evaluated'` is empty after the first housekeeping run following the deploy. `disk_free` sitting there before that run is expected and is **deferred**, not failed: `host.disk_total_gb` does not exist until housekeeping writes it. |
+| `dashboard_snapshots` invariant | `select count(*) from dashboard_snapshots where generated_at > now()` = 0 |
+| `parlay_ledger` invariant | `select count(*) from parlay_ledger l where not exists (select 1 from parlay_placements p where p.card_id = l.card_id)` = 0. Vacuously true until phase 5c writes a card; check it anyway, because it is the row that catches a ledger entry for a card nobody placed. |
+| `parlay_leg_probs` invariant | `select count(*) from parlay_leg_probs where sharp_p < 0 or sharp_p > 1` = 0 |
+| `parlay_legs` invariant | `select count(*) from parlay_legs l where not exists (select 1 from parlay_cards c where c.id = l.card_id)` = 0 |
+| Restore drill rows | the `kind='drill'` row's `rows_match` now comes from the dump-time counts in the sidecar, not from the live database. `deploy/backup/drill.sh` prints `COMPARED n MISMATCHES m NO_COUNT k` before its `ROWS_MATCH` line: a non-zero `MISMATCHES` is a real failure of the restore, and a non-zero `NO_COUNT` means a table in the restore had no dump-time count and was excluded from the verdict. Journal all three numbers. |
+| Report table t12 | the newest `report_runs` row has `report_cells` rows with `table_key = 't12'`, and none of their `row_key` values contains `#`: a positional row key means the composite first column regressed. |
 
 ## Layer 2b: invariants and plausibility bands
 
@@ -358,6 +381,7 @@ FAIL of the dashboard, not of the data.
 | Candidates per variant (funnel, 24 h) vs `select variant_id, count(*) from signals where decision='candidate' and replay=false and created_at > now()-interval '24 hours' group by 1` | within 5 % |
 | Database size vs `pg_size_pretty(pg_database_size('harness'))` | within 2 % |
 | Executor heartbeat age (page) vs `exec_heartbeat` | both under 60 s |
+| Pulse status word vs the latest sweep | `FINE`/`WATCH` on the page agrees with `select status, count(*) from check_results where ts = (select max(ts) from check_results) group by 1`: any `fail` and the page must read `BROKEN` |
 
 Walker prompt (Agent tool, `model: sonnet`, substitute `<...>`):
 
@@ -394,6 +418,11 @@ Pulse rule and item 7 makes `venue_requests` a Floor tile, and both are phase 4.
 facts a walker could otherwise have looked for are checked deterministically in Layers 2 and 2b
 above.
 
+**Phase 4.5 adds items 17 to 26**, which are run **twice**: once with the browser window at
+**390 px** wide and once at **1440 px**. Open `http://localhost:8180/ui/` in a new tab for
+these; items 1 to 16 stay on the legacy page at `http://localhost:8180/`. Resize before
+loading, not after, so the phone layout is the one that rendered.
+
 
 1. Header shows `build <DEPLOY_SHA>`; otherwise return FRESHNESS-FAILED and stop.
 2. Health: status badge `ok`; `Credits remaining` numeric; kill switch badge `off`.
@@ -415,6 +444,34 @@ above.
 15. No section shows `unavailable:` or an exception name; the page loaded in under 10 s.
 16. The skip-reason table renders, and `no_book` is not the only reason present within three
     hours of a kickoff.
+17. `/ui/` loads at 390 px and again at 1440 px. At 390 px the tab bar is at the **bottom** of
+    the viewport and no content is cut off horizontally: the page body must not scroll
+    sideways, though a table may scroll inside its own container. FAIL a layout that needs a
+    horizontal scroll of the whole page, which means the viewport meta is missing.
+18. Header: the status word reads `FINE` or `WATCH` (a `WATCH` is a PASS if the Pulse surface
+    lists the fired rules by name), the badge reads `PAPER` on Pulse, Floor, Study and Gate,
+    and the snapshot age is under twice the cadence shown beside it.
+19. Pulse: the status card, the tape strip, the vitals row, the storage arc, the invariant wall
+    and the recent operator events all render. No section shows the word `unavailable` and no
+    section shows an exception class name.
+20. Pulse: every section opens with at least one plain-English sentence above its figure. FAIL a
+    section that shows only numbers.
+21. Floor: the game board renders (rows optional outside a game window), and the funnel shows
+    counts for ticks, gaps, candidates, intents, orders and fills. The venue tile shows a
+    production non-GET count of **0**; anything else is a FAIL and a control breach.
+22. Study: a week can be chosen; the ledger renders interval marks with a game count beside
+    each; the week's markdown appears as plain text in a collapsed block with a hash beside it.
+    FAIL if the markdown renders as formatted HTML, which would mean a renderer was added.
+23. Gate: one word, `PASSING` or `NOT PASSING`, with an evaluation date and a criteria hash, and
+    twelve criteria rows each showing a stored definition and threshold.
+24. Ticket: the badge reads `FUN MONEY · $50/WEEK · PLACED BY HAND` and the page shows the
+    between-cards state (next build day, the anchor rule, the budget left). No paper figure and
+    no research variant appears anywhere on it.
+25. Keyboard: tab to a dotted-underlined term and confirm its definition opens **on focus**,
+    without a mouse. Then press the right arrow on the tab bar and confirm the next surface is
+    selected. FAIL if either needs a pointer.
+26. No control: there is no form, no button that submits, and no Kill or Unkill anywhere under
+    `/ui/`. The only link that leaves the surfaces is "Legacy panel".
 
 Evidence. The controller copies each returned path into
 `docs/superpowers/autopilot/evidence/` with `cp -n` (never overwrite a re-run) as

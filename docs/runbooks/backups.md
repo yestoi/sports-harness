@@ -52,6 +52,59 @@ That prints `COPY` plus tab-separated rows. For true CSV, restore the dump into 
 container the drill starts and run
 `COPY (SELECT * FROM ledger) TO STDOUT WITH (FORMAT csv, HEADER true)` there.
 
+## The `.meta.json` sidecar
+
+`dump.sh` writes one `.meta.json` beside each `.dump`, before the plaintext is renamed into
+place (`scan_units` ignores both while the `.tmp` name is still in use). This is the exact
+object it writes:
+
+```json
+{
+  "kind": "nightly",
+  "stamp": "20260909T033000Z",
+  "path": "/backups/nightly/harness-nightly-20260909T033000Z.dump",
+  "sha256": "<64 hex>",
+  "bytes": 1234567,
+  "started": "2026-09-09T03:30:00Z",
+  "finished": "2026-09-09T03:34:12Z",
+  "exit_code": 0,
+  "tables": {
+    "data_excluded": ["raw_responses", "orderbook_events", "venue_trades", "venue_quotes",
+                      "odds_snapshots"],
+    "counts": {"orders": 4212, "signals": 881033, "ledger": 0},
+    "counts_snapshot": "same as dump"
+  }
+}
+```
+
+`kind`, `stamp`, `path`, `sha256`, `bytes`, `started`, `finished` and `exit_code` describe the
+dump itself. `tables.data_excluded` is the fixed list of the five bulk tables this kind's dump
+carries no data for (empty for `kind = "forever"`, which only ever dumps `ledger` and
+`gate_reports`). `tables.counts` and `tables.counts_snapshot` are the drill's evidence:
+
+- **`counts` is the row count at dump time**, one entry per dumped, non-excluded,
+  non-partition-child table. The five excluded tables above are absent from `counts` because
+  their data is not in the dump at all — counting them would record a number the restore can
+  never match. A `kind = "partition"` dump (one sealed weekly partition) takes no counts at all:
+  `counts` is `{}` and `counts_snapshot` is `"none"`.
+- **`counts_snapshot` says how trustworthy `counts` is**, one of three values. `"same as dump"`
+  means the counts were read from the same Postgres snapshot `pg_dump` used, so the numbers are
+  exactly what the dump carries. `"before dump"` means the counts were read immediately *before*
+  `pg_dump` started (the exported-snapshot path was unavailable), so a busy table can legitimately
+  restore with **more** rows than `counts` records — never fewer; `drill.sh`'s `compare_row`
+  treats that case as `GREW`, not a mismatch. `"none"` means this kind takes no counts at all
+  (`kind = "partition"`); `drill.sh` skips the row-count verdict entirely for those and says so.
+- **`drill.sh` compares against `counts`, never against the live database.** Production keeps
+  recording after a dump is taken, so a live comparison would report a MISMATCH on every busy
+  table and the `ROWS_MATCH` line would mean nothing. A table present in the restore with no
+  entry in `counts` is reported as `NO_COUNT` and excluded from the verdict rather than silently
+  passed — `drill.sh` prints `COMPARED n MISMATCHES n NO_COUNT n` before its `ROWS_MATCH`
+  line, and a table the dump carried that the restore is missing entirely is reported as
+  `MISSING_TABLE` and counted as a mismatch.
+
+The counts cost one scan of `signals`, the largest dumped table, per night, inside the same
+03:30 CT window the dump itself runs in.
+
 ## The tape has one archive and no other protection
 
 On Mondays at 04:00 CT each sealed weekly partition of `orderbook_events` and `venue_trades`
