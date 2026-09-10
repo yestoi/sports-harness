@@ -23,9 +23,26 @@ export const LABELS = [
   { plain: "The twelve-check sweep", technical: "check_results" },
   { plain: "Credits left this month", technical: "runs.odds_remaining" },
   { plain: "This page's data, computed N s ago", technical: "dashboard snapshot" },
+  // The six technical names the build tile and the vitals row actually render in small type
+  // (review-T18-notes.md I3): the recorder's own build sha, the day-over-day growth rate beside
+  // the days-to-ceiling figure, and the four `vitals.tiles` names the payload supplies.
+  { plain: "Recorder build", technical: "runs.build_sha" },
+  { plain: "Days until the ceiling", technical: "db.growth_gb_per_day" },
+  { plain: "Executor heartbeat", technical: "exec_heartbeat.last_loop_at" },
+  { plain: "Loop time", technical: "exec.p95_loop_ms" },
+  { plain: "Loops skipped", technical: "exec_heartbeat.loops_skipped" },
+  { plain: "Markets with a book we distrust", technical: "book_dirty_markets" },
+  { plain: "Memory free on the NAS", technical: "host.mem_available_mb" },
 ];
 
 const LEVEL_CLASS = { broken: "bad", watch: "warn", fine: "good", not_evaluated: "grey" };
+
+//: A guarded section (`snapshots/__init__.py`'s `section()`) writes `{"error": "<ClassName>"}` on
+//: a timeout, which is a normal outcome under a 2 s statement timeout, not a rarity. `.map`/
+//: `.filter` on that dict throws before `render` ever calls `replaceChildren`, which blanks the
+//: whole surface rather than the one section that failed.
+const listOf = (value) => (Array.isArray(value) ? value : []);
+const sectionFailed = (value) => Boolean(value) && !Array.isArray(value) && value.error;
 
 //: `table()` builds one `<tr>`/`<td>` per row from an array of cell values; a row helper must
 //: hand back that array, never a pre-built `<tr>` of its own, or the cell winds up nested a
@@ -53,6 +70,19 @@ function statusCard(payload) {
     card.appendChild(table(["rule", "value", "threshold", "what it means"],
                            fired.map((rule) => ruleRow(rule, byName[rule.name])),
                            { label: "Fired rules" }));
+  }
+  // `status.all` carries every rule's value and threshold, fired or not -- on a healthy machine
+  // `fired` is empty and, without this, no rule's value is visible anywhere on the page. Fired
+  // rules stay in their own table above; everything else sits behind a disclosure so a fine
+  // machine's Pulse is still a one-glance page.
+  const firedNames = new Set(fired.map((rule) => rule.name));
+  const rest = (status.all || []).filter((rule) => !firedNames.has(rule.name));
+  if (rest.length) {
+    card.appendChild(el("details", {},
+      el("summary", { text: "Every rule, including the ones that are fine" }),
+      table(["rule", "value", "threshold", "what it means"],
+            rest.map((rule) => ruleRow(rule, byName[rule.name])),
+            { label: "Every rule" })));
   }
   return card;
 }
@@ -87,20 +117,38 @@ function storageCard(payload) {
     statTile({ label: "Free space on the disk", technical: "host.disk_free_gb",
                value: storage.disk_free_gb, threshold: storage.disk_min_fraction }),
     statTile({ label: "Days until the ceiling", technical: "db.growth_gb_per_day",
-               value: storage.days_to_ceiling, threshold: null }));
-  return el("div", { class: "card" }, el("h3", { text: "Storage" }), grid);
+               value: storage.days_to_ceiling, threshold: null }),
+    statTile({ label: "Memory free on the NAS", technical: "host.mem_available_mb",
+               value: storage.mem_available_mb, threshold: null }));
+  const tables = Object.entries(storage.tables_gb || {})
+    .sort((a, b) => b[1] - a[1]).slice(0, 6);
+  return el("div", { class: "card" }, el("h3", { text: "Storage" }), grid,
+    tables.length ? el("details", {},
+      el("summary", { text: "The six largest tables" }),
+      table(["table", "GB"], tables, { label: "Largest tables" })) : null);
 }
 
 function invariantWall(payload) {
-  const wall = payload.invariants || {};
+  const section = payload.invariants;
+  if (sectionFailed(section)) {
+    return el("div", { class: "card" },
+      el("h3", {}, "Did every invariant hold?",
+         el("span", { class: "technical" }, " · check_results")),
+      el("div", { class: "grey", text: "unavailable" }));
+  }
+  const wall = section || {};
   const tiles = (wall.tiles || []).map((tile) => {
     const cls = tile.status === "pass" ? "good" : tile.status === "fail" ? "bad" : "warn";
     // Three tile states, not two: a `skip` is a check that timed out or raised, and a wall
     // that drew it green would be reporting on a measurement nobody took (ruling B-I1).
-    const node = el("button", { class: `tile ${cls}`, type: "button",
-                                "aria-label": `${tile.check_name}: ${tile.status}` },
+    // A `<div>`, not a button: spec §2.1's "tap for value and SQL name" wants the value on
+    // screen, not behind a handler-less control that only ever looked tappable.
+    const node = el("div", { class: `tile ${cls}` },
       el("span", { class: "lbl", text: tile.check_name }),
-      el("span", { class: "val", text: tile.status }));
+      el("div", { class: "row spread" },
+        el("span", { class: "val", text: tile.status }),
+        tile.value !== null && tile.value !== undefined
+          ? el("span", { class: "val num", text: String(tile.value) }) : null));
     if (tile.detail) node.appendChild(el("span", { class: "meta", text: tile.detail }));
     if (tile.threshold !== null && tile.threshold !== undefined) {
       node.appendChild(el("span", { class: "meta", text: String(tile.threshold) }));
@@ -129,22 +177,26 @@ function buildCard(payload) {
 }
 
 function snapshotsCard(payload) {
-  const rows = (payload.snapshots || []).map((row) =>
+  const section = payload.snapshots;
+  const rows = listOf(section).map((row) =>
     [row.name, fmtAge(row.age_s), `${row.cadence_s} s`, `${row.elapsed_ms} ms`,
      row.error || ""]);
   return el("div", { class: "card" },
     el("h3", {}, "How fresh is each page's data?",
        el("span", { class: "technical" }, " · "),
        glossaryTerm("dashboard snapshot", "snapshot")),
-    table(["surface", "age", "cadence", "build time", "error"], rows,
-          { label: "Snapshot ages" }));
+    sectionFailed(section) ? el("div", { class: "grey", text: "unavailable" })
+      : table(["surface", "age", "cadence", "build time", "error"], rows,
+              { label: "Snapshot ages" }));
 }
 
 function eventsCard(payload) {
-  const rows = (payload.operator_events || []).map((event) =>
+  const section = payload.operator_events;
+  const rows = listOf(section).map((event) =>
     [fmtAge((Date.now() - Date.parse(event.ts)) / 1000), event.kind, event.summary]);
   return el("div", { class: "card" }, el("h3", { text: "Recent operator events" }),
-            table(["when", "kind", "what"], rows, { label: "Operator events" }));
+            sectionFailed(section) ? el("div", { class: "grey", text: "unavailable" })
+              : table(["when", "kind", "what"], rows, { label: "Operator events" }));
 }
 
 export function render(root, payload) {

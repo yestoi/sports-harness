@@ -18,8 +18,14 @@ const FUN_BADGE = "FUN MONEY · $50/WEEK · PLACED BY HAND";
 
 const modules = {};
 const state = { surface: "pulse", timer: null, etags: {}, payloads: {}, rendered: {},
-                studyName: null, serving: null,
+                studyName: null, studyPinned: null, serving: null,
                 oldest: null, oldestAt: 0, word: undefined };
+
+//: "#study/2026-37" pins one week; any other hash keeps the newest week the index reports.
+function routeOf(hash) {
+  const [name, week] = String(hash || "").replace(/^#/, "").split("/");
+  return { name, week: /^\d{4}-\d{1,2}$/.test(week || "") ? week : null };
+}
 
 export function registerSurface(name, module) { modules[name] = module; }
 
@@ -251,7 +257,9 @@ async function pollIndex() {
   const next = found || isoWeekName(new Date());
   if (next !== state.studyName) {
     state.studyName = next;
-    if (state.surface === "study") await loop();
+    // A pinned week (`#study/2026-37`) must not be yanked back to the newest week just because
+    // the index moved: the pin is the reader's own choice and only a hash change should undo it.
+    if (state.surface === "study" && !state.studyPinned) await loop();
   }
   state.oldest = oldestLive(rows, state.studyName);
   state.oldestAt = Date.now();
@@ -272,6 +280,7 @@ function tickAge() {
 
 function snapshotName(surface) {
   if (surface !== "study") return surface;
+  if (state.studyPinned) return `study:${state.studyPinned}`;
   return state.studyName || isoWeekName(new Date());
 }
 
@@ -351,10 +360,14 @@ async function pollPulse() {
   markStatus(body ? body.payload : null);
 }
 
-async function show(surface) {
-  state.surface = SURFACES.includes(surface) ? surface : "pulse";
+async function show(hash) {
+  const route = routeOf(hash);
+  state.surface = SURFACES.includes(route.name) ? route.name : "pulse";
+  // Only Study reads a pinned week; any other surface ignores a stray `/2026-37` in its hash.
+  state.studyPinned = state.surface === "study" ? route.week : null;
   // A bookmarked `#pnl` must not leave the URL claiming one surface while the page shows another.
-  if (surface && surface !== state.surface) {
+  // A valid `#study/2026-37` is left alone, so the pinned week survives a reload.
+  if (route.name && route.name !== state.surface) {
     history.replaceState(null, "", `#${state.surface}`);
   }
   markTabs(state.surface);
@@ -389,13 +402,13 @@ async function boot() {
       console.error(`surface module ${name} did not load`, error);
     }
   }
-  window.addEventListener("hashchange", () => { show(location.hash.slice(1)); });
+  window.addEventListener("hashchange", () => { show(location.hash); });
   await pollPulse();
   setInterval(pollPulse, PULSE_POLL_MS);
   await pollIndex();
   setInterval(pollIndex, INDEX_POLL_MS);
   setInterval(tickAge, AGE_TICK_MS);
-  await show(location.hash.slice(1) || "pulse");
+  await show(location.hash || "#pulse");
 }
 
 boot().catch((error) => { console.error("the shell failed to start", error); });

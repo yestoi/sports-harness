@@ -286,5 +286,47 @@
     "plain": "executor build",
     "what": "The build the executor process itself was running as of its last heartbeat.",
     "why": "It is one of the three builds Pulse shows side by side, because the recorder, the executor and the page serving it can each be on a different one for a moment after a deploy."
+  },
+  "runs.build_sha": {
+    "term": "runs.build_sha",
+    "plain": "recorder build",
+    "what": "The commit the recorder process was built from, as of its most recent run.",
+    "why": "It is the first of the three builds Pulse shows side by side, so a recorder still running an old commit is visible without reading a log."
+  },
+  "db.growth_gb_per_day": {
+    "term": "db.growth_gb_per_day",
+    "plain": "how fast the database is growing",
+    "what": "The database's average growth in gigabytes per day, measured the same way its size and its ceiling are.",
+    "why": "It is what the days-to-ceiling figure is computed from, so a reader can see the pace behind that number rather than trusting it blind."
+  },
+  "exec_heartbeat.last_loop_at": {
+    "term": "exec_heartbeat.last_loop_at",
+    "plain": "is the executor's loop alive?",
+    "what": "How long ago the executor last finished a pass of its main loop.",
+    "why": "A loop that has stopped writing this is a loop that has stopped, whatever the rest of the page shows."
+  },
+  "exec.p95_loop_ms": {
+    "term": "exec.p95_loop_ms",
+    "plain": "loop time",
+    "what": "How long, in milliseconds, the slowest one loop in twenty took to run.",
+    "why": "The 95th percentile catches an occasional slow loop that an average would hide, and a slow loop is how a backlog starts."
+  },
+  "exec_heartbeat.loops_skipped": {
+    "term": "exec_heartbeat.loops_skipped",
+    "plain": "loops skipped",
+    "what": "How many loops the executor has had to skip rather than run on schedule.",
+    "why": "A skipped loop is a moment the executor was not watching the market at all, which matters even if it catches up a second later."
+  },
+  "book_dirty_markets": {
+    "term": "book_dirty_markets",
+    "plain": "markets with a book we distrust",
+    "what": "How many markets the executor currently considers too unreliable to trade against, based on its own read of the order book.",
+    "why": "Trading against a book that cannot be trusted is worse than not trading, so this count is what stands between the two."
+  },
+  "host.mem_available_mb": {
+    "term": "host.mem_available_mb",
+    "plain": "memory free on the NAS",
+    "what": "How much memory is available on the machine the database and every job run on, in megabytes.",
+    "why": "It is the other resource, beside disk space, that can quietly run out before anything on this page turns red."
   }
 }

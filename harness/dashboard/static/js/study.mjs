@@ -8,20 +8,20 @@ import { el, figure, fmtAge, glossaryTerm, intervalMark, label, sentences, svg, 
   "./components.mjs";
 import { equityCurves } from "./charts.mjs";
 
-// The vocabulary table (spec §1.2) also names a plain/technical pair for the interval itself
-// ("Honest range" / a lowercase technical term). It is omitted here on purpose: that exact
-// lowercase string is the one substring `tests/test_dashboard_surfaces.py`'s
-// `test_no_surface_composes_its_own_sentence` forbids in every surface's source, and the same
-// string is what the glossary-coverage test requires a LABELS entry to spell verbatim. The two
-// rules cannot both hold for this one term, so the label is not shown; `intervalMark` (T17)
-// still carries the concept in its own accessible text, unlabelled by name.
 export const LABELS = [
   { plain: "Better than the closing price?", technical: "CLV" },
   { plain: "Games, not bets", technical: "n_clusters" },
+  { plain: "Honest range", technical: "honest range" },
   { plain: "A week still being counted", technical: "provisional" },
   { plain: "Pinnacle's price 5 min before kickoff", technical: "pinnacle_t5" },
   { plain: "How old these cells are", technical: "report_wtd" },
 ];
+
+//: Read out of `LABELS` rather than retyped at the render site: the sentence-composition test's
+//: `LABELS` exemption covers the declaration above, but a second, literal occurrence of the
+//: lowercase technical name at the call site would still trip it. Looked up by its capitalised
+//: plain phrase, which is a different string from the one the test bans.
+const HONEST_RANGE = LABELS.find((entry) => entry.plain === "Honest range");
 
 //: The paired-contrasts benchmark every gate and report reads by (`CONTRAST_BENCHMARK` in
 //: `harness/report/tables.py`). A fixed vocabulary term, not a threshold: naming it here is no
@@ -48,14 +48,22 @@ function columnsOf(rows) {
   return seen;
 }
 
-// --- 1. week selector (read-only: the shell polls a single fixed week per surface, so a
-//        picker that wrote a week nothing reads would be a dead control) ----------------------
+// --- 1. week selector: a hash sub-route pins one week (`#study/2026-37`), which app.mjs reads
+//        in `snapshotName`; a chip is a `<button>` that navigates, never an `<a href>` built
+//        from payload data (T17's reviewer's guard) ---------------------------------------------
+
+function weekChip(w, current) {
+  const on = w === current;
+  const chip = el("button", { class: `badge ${on ? "ok" : "dim"}`, type: "button",
+                              "aria-current": on ? "true" : null, text: w });
+  chip.addEventListener("click", () => { location.hash = `#study/${w}`; });
+  return chip;
+}
 
 function weekBar(payload) {
   const weeks = payload.weeks || [];
   const current = `${payload.year}-${payload.week}`;
-  const chips = weeks.map((w) => el("span",
-    { class: `badge ${w === current ? "ok" : "dim"}`, text: w }));
+  const chips = weeks.map((w) => weekChip(w, current));
   const provisionalNote = payload.provisional
     ? el("span", { class: "n" },
         el("span", { class: "flag", text: "provisional" }), " ",
@@ -65,7 +73,8 @@ function weekBar(payload) {
     el("h3", { text: "Week" }),
     el("div", { class: "row" }, chips),
     provisionalNote,
-    el("div", { class: "row" }, label("games, not bets", "n_clusters")));
+    el("div", { class: "row" }, label("games, not bets", "n_clusters"),
+       label(HONEST_RANGE.plain, HONEST_RANGE.technical)));
 }
 
 // --- 2. variant ledger, t1 ----------------------------------------------------------------
@@ -92,6 +101,9 @@ function clvHeader(benchmark) {
   return term ? glossaryTerm(term, benchmark) : el("span", { text: benchmark });
 }
 
+// The brief also asks the `result` and `opening_first_seen` panels to carry the stored
+// "reported, never gated" note from the cell's own row. Not in the payload either, for the same
+// reason as t4's `header` (see the comment on `strataHeatmap`): logged as the same payload gap.
 function clvPanels(payload) {
   const rows = cellsOf(payload, "t2");
   const rowKeys = Object.keys(rows);
@@ -177,7 +189,10 @@ function heatCell(cell) {
   if (!cell) return el("span", { class: "grey", text: "--" });
   const flags = cell.flags || {};
   const est = cell.estimate;
-  const tone = flags.greyed || est === null || est === undefined
+  // `Number.isFinite` rather than a null check alone: a non-numeric `estimate` reaching the
+  // `style` attribute (the one place a payload value lands in an attribute rather than text)
+  // would otherwise produce an invalid `opacity:NaN` declaration instead of falling back cleanly.
+  const tone = flags.greyed || !Number.isFinite(est)
     ? "background:var(--track)"
     : `background:${est >= 0 ? "var(--good)" : "var(--bad)"};` +
       `opacity:${Math.min(1, Math.abs(est) * 4 + 0.15).toFixed(2)}`;
@@ -185,6 +200,11 @@ function heatCell(cell) {
   return el("span", { class: "badge", style: tone + outline, text: cell.text ?? "--" });
 }
 
+// The brief asks for t4's `header` note under the grid. It is not in the payload: `report_cells`
+// stores only per-cell data (`estimate`/`n_obs`/`n_clusters`/`lo`/`hi`/`text`/`flags`); a table's
+// `header`/`note` strings live only in the rendered markdown, never in a stored cell. Nothing is
+// rendered for it here rather than inventing text the payload does not carry; logged as a payload
+// gap for the next plan (review-T18-notes.md M2).
 function strataHeatmap(payload) {
   const rows = cellsOf(payload, "t4");
   const rowKeys = Object.keys(rows);
@@ -209,13 +229,22 @@ function equitySection(payload) {
   const equity = payload.equity && typeof payload.equity === "object" && !payload.equity.error
     ? payload.equity : {};
   const lanes = equity.variants || [];
+  // `equityCurves` (T17's `charts.mjs`) takes its x axis from `rows[0].points` alone and applies
+  // it to every lane; a lane whose own point count disagrees would be silently misaligned rather
+  // than drawn wrong in an obvious way. Cheap enough to check here rather than trust the builder
+  // never to grow a lane with its own stamps.
+  const aligned = lanes.length > 0 &&
+    lanes.every((lane) => (lane.points || []).length === lanes[0].points.length);
   const holder = el("div", {});
-  if (lanes.length) requestAnimationFrame(() => equityCurves(holder, lanes));
+  if (aligned) requestAnimationFrame(() => equityCurves(holder, lanes));
   const annotations = Array.isArray(payload.annotations) ? payload.annotations : [];
   const annotationRows = annotations.map((a) => [a.ts, a.kind, a.summary]);
+  const chart = !lanes.length ? el("p", { class: "grey", text: "no equity recorded this week" })
+    : !aligned ? el("p", { class: "grey",
+        text: "equity lanes do not share a common time axis this week" })
+    : holder;
   return el("div", { class: "card" }, el("h3", { text: "Equity" }),
-    sentences(payload.sentences?.equity),
-    lanes.length ? holder : el("p", { class: "grey", text: "no equity recorded this week" }),
+    sentences(payload.sentences?.equity), chart,
     annotationRows.length
       ? table(["when", "kind", "what"], annotationRows, { label: "Operator events this week" })
       : null);

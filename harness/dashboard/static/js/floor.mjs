@@ -24,6 +24,7 @@ export const LABELS = [
   { plain: "A real trade printed at our price", technical: "has_print" },
   { plain: "Simulated cash", technical: "equity_snapshots" },
   { plain: "Authenticated calls to the exchange", technical: "venue_requests" },
+  { plain: "Best bid and ask", technical: "order book" },
 ];
 
 //: `fill_method` values that already carry a glossary entry from the vocabulary table; a value
@@ -139,19 +140,30 @@ function funnelSection(payload) {
   const max = Math.max(1, ...Object.values(counts));
   const skipped = data.skipped || [];
   const cancelled = data.cancelled || [];
-  const leakRows = (skipped.length ? 1 : 0) + (cancelled.length ? 1 : 0);
-  const height = FLOW_H + (leakRows ? leakRows * (LEAK_H + LEAK_GAP) + LEAK_GAP : 0);
+  // `rejected_total` (spec §2.2 item 2's third leak: "signals rejected") has no per-reason split
+  // in the payload -- unlike skips and cancels, `runs.notes` only carries the sum -- so it draws
+  // as one bar rather than a broken-out table.
+  const rejectedTotal = data.rejected_total || 0;
+  const rejected = rejectedTotal > 0
+    ? [{ reason: "rejected", count: rejectedTotal, plain: "signals rejected" }] : [];
+  const leakGroups = [{ entries: skipped, style: "fill:var(--warn)" },
+                      { entries: cancelled, style: "fill:var(--bad)" },
+                      { entries: rejected, style: "fill:var(--ink-muted)" }]
+    .filter((g) => g.entries.length);
+  const height = FLOW_H + (leakGroups.length
+    ? leakGroups.length * (LEAK_H + LEAK_GAP) + LEAK_GAP : 0);
   const width = FUNNEL_STAGES.length * (BAR_W + BAR_GAP);
-  const rows = [];
-  if (skipped.length) rows.push(leakRow(skipped, FLOW_H + LEAK_GAP, "fill:var(--warn)"));
-  if (cancelled.length) {
-    const y = FLOW_H + LEAK_GAP + (skipped.length ? LEAK_H + LEAK_GAP : 0);
-    rows.push(leakRow(cancelled, y, "fill:var(--bad)"));
-  }
+  const rows = leakGroups.map((g, i) =>
+    leakRow(g.entries, FLOW_H + LEAK_GAP + i * (LEAK_H + LEAK_GAP), g.style));
   const fig = figure({ title: payload.sentences?.funnel?.[0] || "The funnel over the window.",
                        viewBox: `0 0 ${width} ${height}` },
     ...funnelBars(counts, max), ...rows.flat());
-  const countRows = FUNNEL_STAGES.map((stage) => [stage.plain, counts[stage.key]]);
+  // Candidates by variant (spec §2.2 item 2: "candidates (by variant)"), one row per registered
+  // variant beside the funnel's own total.
+  const variantRows = Object.entries(data.by_variant || {})
+    .map(([variant, v]) => [`candidates -- ${variant}`, v.candidate ?? 0]);
+  const countRows = [...FUNNEL_STAGES.map((stage) => [stage.plain, counts[stage.key]]),
+                     ["signals rejected", rejectedTotal], ...variantRows];
   const reasonRows = [
     ...skipped.map((s) => [s.plain || s.reason, s.reason, s.count]),
     ...cancelled.map((s) => [s.plain || s.reason, s.reason, s.count]),
@@ -183,8 +195,15 @@ function orderRow(order) {
          el("span", { class: "val num", text: String(order.edge_at_place ?? "--") }));
   const queueCell = el("div", {}, bar, el("div", { class: "n", text:
     `${order.queue_remaining ?? "--"} of ${order.queue_ahead_at_place ?? "--"}` }), holder);
+  // Spec §2.2 item 3: "our price against best bid and ask" -- the newest watch sample's book,
+  // beside how old that read of the book is.
+  const book = order.best_bid !== null && order.best_bid !== undefined
+    ? el("span", { class: "row" },
+         el("span", { class: "val num", text: `${order.best_bid} / ${order.best_ask}` }),
+         el("span", { class: "n", text: fmtAge(order.book_age_s) }))
+    : el("span", { class: "grey", text: "--" });
   const cells = [el("span", { class: "n", text: order.ticker }), order.side,
-                 order.prob ?? "--", queueCell, edge, fmtAge(order.age_s),
+                 order.prob ?? "--", book, queueCell, edge, fmtAge(order.age_s),
                  order.book_source || "--", order.dirty_minutes ?? "--", order.variant || "--"];
   return { cells, holder };
 }
@@ -194,8 +213,9 @@ function openOrders(payload) {
   const rows = data.orders || [];
   const built = rows.map(orderRow);
   const body = table(
-    [label("orders ahead of ours", "queue_ahead_at_place"), "side", "prob", "queue", "edge",
-     "age", "book", "dirty min", "variant"],
+    [label("orders ahead of ours", "queue_ahead_at_place"), "side", "prob",
+     label("best bid / ask", "order book"), "queue", "edge",
+     "age", "book source", "dirty min", "variant"],
     built.map((row) => row.cells), { label: "Open simulated orders" });
   // The queue history sparkline draws once the holder is attached and laid out, matching how
   // Pulse's vitals tiles size their own sparklines.
@@ -221,12 +241,17 @@ function fillMethodLabel(method) {
 function fillsStream(payload) {
   const data = fills(payload) || {};
   const rows = (data.fills || []).map((fill) => [
-    fill.filled_at, fill.ticker, fill.side, String(fill.prob ?? "--"),
-    String(fill.contracts ?? "--"), fillMethodLabel(fill.fill_method),
+    fill.filled_at,
+    fill.home && fill.away ? `${fill.away} at ${fill.home}` : "--",
+    fill.ticker, fill.side, String(fill.prob ?? "--"), String(fill.contracts ?? "--"),
+    fillMethodLabel(fill.fill_method),
+    fill.through ? "through" : "at",
+    fill.tape_source || "--",
     fill.has_print ? el("span", { class: "badge ok", text: "printed" }) : "--",
   ]);
   return el("div", { class: "card" }, el("h3", { text: "Fills, today" }),
-            table(["filled at", "ticker", "side", "prob", "contracts", "method",
+            table(["filled at", "game", "ticker", "side", "prob", "contracts", "method",
+                   "through / at", "tape source",
                    label("a real trade printed at our price", "has_print")],
                   rows, { label: "Fills" }));
 }
@@ -234,6 +259,8 @@ function fillsStream(payload) {
 // --- 5. exposure lanes -----------------------------------------------------------------------
 
 function exposureLane(lane) {
+  const capUse = lane.caps_enforced && lane.cap_use !== null && lane.cap_use !== undefined
+    ? `${Math.round(lane.cap_use * 100)} %` : "not enforced";
   return el("div", { class: "tile" },
     el("div", { class: "row spread" }, el("span", { class: "badge dim", text: lane.variant })),
     el("div", { class: "row spread" }, el("span", { class: "n", text: "open stake" }),
@@ -242,6 +269,11 @@ function exposureLane(lane) {
       el("span", { class: "val num", text: String(lane.open_contracts ?? "--") })),
     el("div", { class: "row spread" }, el("span", { class: "n", text: "open orders" }),
       el("span", { class: "val num", text: String(lane.n_open_orders ?? "--") })),
+    el("div", { class: "row spread" }, el("span", { class: "n", text: "fills today" }),
+      el("span", { class: "val num",
+                   text: `${lane.fills_today ?? "--"} · ${lane.fills_today_stake ?? "--"}` })),
+    el("div", { class: "row spread" }, el("span", { class: "n", text: "daily cap use" }),
+      el("span", { class: "val num", text: capUse })),
     el("div", { class: "row spread" },
       label("simulated cash", "equity_snapshots"),
       el("span", { class: "val num", text: String(lane.cash ?? "--") }),
@@ -251,7 +283,11 @@ function exposureLane(lane) {
 function exposureLanes(payload) {
   const data = exposure(payload) || {};
   const lanes = data.lanes || [];
-  return el("div", { class: "card" }, el("h3", { text: "Exposure, by variant" }),
+  // Spec §1.1: every monetary or contract figure sits under the word "paper" in the same visual
+  // unit as the figure -- the shell's header pill is a different unit, so the card carries its
+  // own badge too.
+  return el("div", { class: "card" },
+    el("h3", {}, "Exposure, by variant", el("span", { class: "badge dim", text: "PAPER" })),
     lanes.length ? el("div", { class: "grid3" }, lanes.map(exposureLane))
                  : el("p", { class: "grey", text: "no lane reporting yet" }));
 }

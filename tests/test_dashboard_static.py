@@ -92,6 +92,13 @@ def test_the_how_page_links_only_the_canvas():
         assert url.startswith("https://claude.ai/code/artifact/"), url
 
 
+def test_the_how_page_holds_no_markup():
+    """`how.html` is served directly at `/ui/how.html` and is fixed text, not HTML: `how.mjs`
+    fetches it and builds nodes from it by plain string rules, never by parsing it as markup
+    (review-T18-notes.md M7)."""
+    assert "<" not in (STATIC / "how.html").read_text()
+
+
 def test_the_asset_budget_holds():
     total = sum(p.stat().st_size for p in _all_files())
     assert total < ASSET_BUDGET_BYTES, f"static/ is {total} bytes, over {ASSET_BUDGET_BYTES}"

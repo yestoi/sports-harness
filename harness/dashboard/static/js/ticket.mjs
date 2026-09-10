@@ -18,6 +18,12 @@ export const LABELS = [
 
 const LAMP_GLYPH = { pending: "○", alive: "●", hit: "●", miss: "●" };
 
+//: A guarded section can arrive as `{"error": "<ClassName>"}` rather than a list; `.filter` or
+//: `.length` on that dict throws before `render` ever replaces the surface's children. The two
+//: helpers keep "nothing is live" and "the read failed" from being said in the same words.
+const listOf = (value) => (Array.isArray(value) ? value : []);
+const sectionFailed = (value) => Boolean(value) && !Array.isArray(value) && value.error;
+
 function perforation(width) {
   const dots = [];
   const step = 10;
@@ -49,18 +55,44 @@ function legRow(leg) {
       el("span", { text: leg.plain_text }),
       el("span", { class: "n", text: String(leg.dk_american ?? "--") })),
     el("span", { class: "n", text: score }),
-    el("span", { class: "n", text: leg.needs || "--" }),
-    el("span", {}, label("sharps say", "sharp_p"), el("span", { class: "val num", text: sharp }),
-       historyHolder),
+    el("span", { class: "row" }, label("what still needs to happen", "needs"),
+       el("span", { class: "n", text: leg.needs || "--" })),
+    el("span", { class: "row" }, label("sharps say", "sharp_p"),
+       el("span", { class: "val num", text: sharp }), historyHolder),
     stamp);
+}
+
+function cardHeader(card) {
+  return el("div", { class: "row spread" },
+    el("span", { class: "badge dim",
+                 text: card.kind === "smart" ? "SMART CARD" : "LOTTERY CARD" }),
+    el("span", { class: "n", text: `legs · ${card.legs_remaining ?? "--"} to go` }));
+}
+
+//: The footer spec §2.5 item 1 asks for: the sharp books' own chance every leg hits, beside
+//: what the sportsbook pays as if that chance were true, and the hold between the two.
+function cardFooter(card) {
+  const sharp = card.true_prob_est !== null && card.true_prob_est !== undefined
+    ? `${(card.true_prob_est * 100).toFixed(1)} %` : "--";
+  const hold = card.hold_est !== null && card.hold_est !== undefined
+    ? `${(card.hold_est * 100).toFixed(1)} %` : "--";
+  return el("div", { class: "row spread" },
+    el("span", { class: "n", text: `sharps: ${sharp} chance every leg hits` }),
+    el("span", { class: "n", text: `DraftKings pays as if ${card.dk_odds_actual ?? "--"}` }),
+    el("span", { class: "n", text: `hold ${hold}` }));
 }
 
 function ticketSlip(card) {
   const dim = card.legs_remaining > 0 && card.legs?.length
     ? Math.max(0.4, card.legs_remaining / card.legs.length) : 1;
   const stampWord = card.status === "cashed" ? "CASHED" : card.status === "busted" ? "BUSTED" : null;
+  // Spec §2.5's lottery correlation note -- "DraftKings will quote lower than this" -- shown as
+  // written, only on a card the builder actually flagged correlated.
+  const correlationNote = card.kind === "lottery" && card.correlated && card.rationale
+    ? el("div", { class: "n muted", text: card.rationale }) : null;
   return el("div", { class: "slip" },
     perforation(360),
+    cardHeader(card),
     sentences(card.sentences),
     el("div", { class: "row spread" },
       el("span", { class: "payout", style: `opacity:${dim.toFixed(2)}`,
@@ -69,11 +101,17 @@ function ticketSlip(card) {
       stampWord ? el("span", { class: `badge ${card.status === "cashed" ? "ok" : "bad"}`,
                                 text: stampWord }) : null),
     el("div", { class: "col" }, (card.legs || []).map(legRow)),
+    correlationNote,
+    cardFooter(card),
     perforation(360));
 }
 
 function liveTickets(payload) {
-  const cards = payload.cards || [];
+  if (sectionFailed(payload.cards)) {
+    return el("div", { class: "card" }, el("h3", { text: "Live tickets" }),
+      el("p", { class: "grey", text: "unavailable" }));
+  }
+  const cards = listOf(payload.cards);
   const smart = cards.filter((c) => c.kind === "smart");
   const rest = cards.filter((c) => c.kind !== "smart");
   const ordered = [...smart, ...rest];
@@ -117,11 +155,13 @@ function betweenCards(payload) {
 }
 
 export function render(root, payload, _envelope) {
-  const cards = payload.cards || [];
+  const cards = listOf(payload.cards);
   // Unlike `el`'s own children, `replaceChildren` does not filter falsy arguments -- it
   // stringifies whatever it is given, so a bare `null` here would show up as the literal text
-  // "null" rather than simply being skipped.
+  // "null" rather than simply being skipped. "Between cards" only replaces a genuinely empty
+  // list, never a failed read -- `liveTickets` already says "unavailable" for that case, and
+  // stacking "nothing is live" under it would be saying two different things at once.
   const children = [liveTickets(payload), seasonStrip(payload)];
-  if (!cards.length) children.push(betweenCards(payload));
+  if (!cards.length && !sectionFailed(payload.cards)) children.push(betweenCards(payload));
   root.replaceChildren(...children);
 }

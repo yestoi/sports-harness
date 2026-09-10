@@ -19,6 +19,9 @@ function verdictCard(payload) {
   const passing = verdict.passing === true;
   const known = "passing" in verdict;
   const word = known ? (passing ? "PASSING" : "NOT PASSING") : "--";
+  // `app.css` defines `.status-word.watch`/`.broken`/`.unknown`; there is no `.fine` because the
+  // base `.status-word` rule already is the fine/passing colour, so a passing, known verdict
+  // carries no modifier class at all rather than a name that would match nothing.
   return el("div", { class: "card" },
     el("h3", {}, "Is the gate variant passing?",
        el("span", { class: "technical" }, " · "),
@@ -27,6 +30,11 @@ function verdictCard(payload) {
     el("div", { class: `status-word${known && !passing ? " broken" : ""}` +
                         `${known ? "" : " unknown"}` },
        el("span", { text: word })),
+    el("div", { class: "row" },
+      el("span", { class: "n", text: `${verdict.n_pass ?? "--"} pass` }),
+      el("span", { class: "n", text: `${verdict.n_fail ?? "--"} fail` }),
+      el("span", { class: "n", text: `${verdict.n_insufficient ?? "--"} insufficient` }),
+      el("span", { class: "n", text: `of ${verdict.n_total ?? "--"}` })),
     el("div", { class: "row" },
       el("span", { class: "n", text: `evaluated ${verdict.evaluated_at || "--"}` }),
       el("span", { class: "n", text: `criteria hash ${verdict.criteria_hash || "--"}` }),
@@ -64,6 +72,7 @@ function criteriaSection(payload) {
   const criteria = payload.criteria || [];
   const readings = payload.readings?.criteria || [];
   return el("div", { class: "card" }, el("h3", { text: "The twelve criteria" }),
+    sentences(payload.sentences?.criteria),
     criteria.length ? criteriaTable(payload, criteria, readings)
                     : el("p", { class: "grey", text: "no criteria stored yet" }));
 }
@@ -86,11 +95,13 @@ function variantBlock(title, note, criteria) {
 function variantsSection(payload) {
   const variants = payload.variants || [];
   const gate = variants.find((v) => v.gate_variant);
-  const primary = variants.find((v) => !v.gate_variant);
+  // Every stored variant beside the gate variant, not only the first: `gate_reports` can carry
+  // more than one reported-not-gated row, and dropping the rest would be a silent omission.
+  const others = variants.filter((v) => !v.gate_variant);
   const blocks = [];
   if (gate) blocks.push(variantBlock(`Gate variant: ${gate.name}`, null, gate.criteria || []));
-  if (primary) {
-    blocks.push(variantBlock(`${primary.name}`, primary.note, primary.criteria || []));
+  for (const other of others) {
+    blocks.push(variantBlock(other.name, other.note, other.criteria || []));
   }
   return el("div", {}, blocks);
 }

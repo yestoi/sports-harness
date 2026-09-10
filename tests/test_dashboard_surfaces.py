@@ -40,13 +40,22 @@ def test_no_surface_writes_markup(name):
         assert word not in body
 
 
+def _without_labels(body: str) -> str:
+    """`LABELS` is a declaration of vocabulary, not a composed sentence: the ban below is about
+    the client building prose, and the label pair for the interval spells the very phrase
+    (review-T18-notes.md C2)."""
+    head, _, rest = body.partition("export const LABELS")
+    return head + rest.partition("];")[2]
+
+
 @pytest.mark.parametrize("name", ("pulse", "floor", "study", "gate", "ticket"))
 def test_no_surface_composes_its_own_sentence(name):
     """Spec §1.2: sentences are written server-side by templates and rendered verbatim. A
     surface that built one in the browser could drift from the evidence under it."""
     body = (STATIC / "js" / f"{name}.mjs").read_text()
     assert "payload.sentences" in body
-    assert "confidence_phrase" not in body and "honest range" not in body
+    assert "confidence_phrase" not in _without_labels(body)
+    assert "honest range" not in _without_labels(body)
 
 
 def test_the_pulse_module_renders_every_section_of_its_payload():

@@ -66,8 +66,14 @@ export function fmtAge(seconds) {
 // Two-level labels everywhere: the plain question first, the technical name beside it in small
 // muted type, so the surface can be cross-referenced with the reports (spec §1.2).
 export function label(plain, technical) {
+  // A non-empty technical name is routed through `glossaryTerm` here, once, rather than every
+  // caller wrapping its own `label()` calls in one: this is what gives every two-level label a
+  // tap target, not only the handful of calls a surface wrote `glossaryTerm` around by hand
+  // (spec §1.2, review-T18-notes.md I9).
   return el("span", { class: "lbl" }, plain,
-            technical ? el("span", { class: "technical tech" }, ` · ${technical}`) : null);
+            technical ? el("span", { class: "technical tech" }, " · ",
+                           glossaryTerm(technical, technical))
+                      : null);
 }
 
 export function sentences(lines) {
