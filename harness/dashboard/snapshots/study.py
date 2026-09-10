@@ -95,7 +95,10 @@ _STUDY_SNAPSHOTS = text("""
     where name like 'study:%'
 """)
 #: Bound: `ts` inside the ISO week's own two boundaries, plus `limit :limit` (`EQUITY_LIMIT`).
-#: Index: `ix_equity_variant_ts (variant_id, ts)`. `Settings.equity_sample_s` defaults to 300,
+#: Index: `ix_equity_variant_ts (variant_id, ts)`, with `ts` as its *second* column: nothing
+#: leads on `ts`, so the week is an index filter over a full scan of that index and the
+#: order below is a sort of what it returns, not a walk of the index in its own order.
+#: `Settings.equity_sample_s` defaults to 300,
 #: so one week is about 2,016 points per variant and this is by far the largest thing in the
 #: Study payload (fix round 1, M5).
 #:

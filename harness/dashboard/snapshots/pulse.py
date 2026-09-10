@@ -249,7 +249,9 @@ _GAMES_LIVE = text("select count(*) from games where status = 'in_progress'")
 #: was true last Tuesday and presenting it as today's is the kind of quiet lie this surface exists
 #: to refuse. `drawdown_stop is not null` is the same "not evaluated" filter the risk module uses.
 #: Bound: `ts >= :since` (`DRAWDOWN_WINDOW`, 7 d). Index: `ix_equity_variant_ts (variant_id,
-#: ts)` -- the window prunes and the per-variant heads are taken from what it returns.
+#: ts)`, with `ts` as its *second* column -- nothing leads on `ts`, so the window is an index
+#: filter over a full scan of that index, and the per-variant heads are sorted out of what
+#: it returns. Seven days is what keeps both to a bounded size.
 _NEWEST_DRAWDOWN = text("""
     select distinct on (variant_id) variant_id, drawdown_pct from equity_snapshots
     where ts >= :since and drawdown_stop is not null

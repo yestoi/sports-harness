@@ -199,6 +199,14 @@ _SCORES = text("""
 #: on an `Expire`, so an expired order no longer appears in this list. That is the honest line
 #: to draw anyway -- an expiry is an order reaching its own `expiry`, not a decision to pull it
 #: -- but it is a narrowing and is stated here rather than discovered.
+#:
+#: **One skip is not in `exec.skipped` either.** `_place` writes a `skipped/no_book`
+#: `order_events` row after a successful placement, and increments no accumulator, so
+#: `no_book` -- which the replaced `_SKIPS` counted -- no longer appears in the leak list.
+#: Every other skip does: `_apply_one` increments the accumulator only when
+#: `store.insert_event` actually wrote a row, which `uq_skip_once` already deduplicates per
+#: `(intent_id, kind, reason)`, so the sum over the window equals the row count the
+#: replaced query returned.
 _FUNNEL_COUNTS = text("""
     select name, labels->>'reason' as reason, coalesce(sum(value), 0) as n
     from metric_samples
@@ -295,7 +303,11 @@ _EXPOSURE = text("""
       and o.placed_at >= :since
     group by o.variant_id
 """)
-#: Bound: `ts >= :since` (`EQUITY_WINDOW`, 7 d). Index: `ix_equity_variant_ts (variant_id, ts)`.
+#: Bound: `ts >= :since` (`EQUITY_WINDOW`, 7 d). Index: `ix_equity_variant_ts (variant_id,
+#: ts)`, with `ts` as its *second* column: there is no index leading on `ts`, so the bound
+#: is an index filter over a full scan of that index rather than a range seek, and the
+#: `distinct on` sorts what it returns. The window is what keeps the heap fetches and the
+#: sort to a week; see `EQUITY_WINDOW` for the two measurements.
 _EQUITY = text("""
     select distinct on (variant_id) variant_id, ts, cash, open_stake, mtm_open, mtm_coverage,
            n_open_positions, n_open_orders
