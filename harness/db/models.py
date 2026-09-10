@@ -1099,7 +1099,11 @@ class VetoQueue(Base):
     call for the bucket's trigger and writes a `veto_decisions` row for every signal in it.
     """
     __tablename__ = "veto_queue"
-    signal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The `signals.id` this row queues, copied, never generated: `autoincrement=False` keeps
+    #: SQLAlchemy's default for a single-column integer primary key from making this a BIGSERIAL,
+    #: which would turn an insert that forgot the id into a row pointing at a signal that does
+    #: not exist instead of a NotNullViolation (T1 fix round 1, concern 3).
+    signal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     game_id: Mapped[int | None] = mapped_column(Integer)
     market_type: Mapped[str] = mapped_column(String(16), nullable=False)
     bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -1154,7 +1158,9 @@ class VetoDecision(Base):
     lag distribution t7 reports is `decided_at - signal_created_at`.
     """
     __tablename__ = "veto_decisions"
-    signal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The `signals.id` this decision is about, copied, never generated. See `VetoQueue.signal_id`
+    #: for why `autoincrement=False` is load-bearing (T1 fix round 1, concern 3).
+    signal_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     call_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     #: proceed|reduce|veto|veto_skipped_budget|veto_error
     decision: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -1198,7 +1204,9 @@ class ReportAnnotation(Base):
     least one resolving `t<k>[row,col]` citation and no number absent from a cited cell.
     """
     __tablename__ = "report_annotations"
-    report_run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The `report_runs.id` these bullets annotate, copied, never generated. See
+    #: `VetoQueue.signal_id` for why `autoincrement=False` is load-bearing (T1 fix round 1).
+    report_run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     model: Mapped[str] = mapped_column(String(24), nullable=False)
     prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     bullets: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)

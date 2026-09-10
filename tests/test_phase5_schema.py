@@ -11,6 +11,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError, SAWarning
 
 from harness.db.models import (FuturesSnapshot, ReportAnnotation, ResearchNote, ResearchSpend,
                                Rfq, RfqQuote, VetoDecision, VetoQueue, WeatherPoint,
@@ -168,3 +169,57 @@ def test_the_other_six_tables_accept_a_row(db_session):
     db_session.add(ReportAnnotation(report_run_id=1, model="claude-opus-5", prompt_hash="b" * 64,
                                     bullets=[], cost_usd=Decimal("0.05"), created_at=NOW))
     db_session.flush()
+
+
+# --- fix round 1: the three foreign-id primary keys are never generated ----------------------
+# `veto_queue.signal_id` and `veto_decisions.signal_id` are copies of `signals.id`, and
+# `report_annotations.report_run_id` a copy of `report_runs.id`. SQLAlchemy makes a single-column
+# integer primary key a BIGSERIAL unless told not to, and a sequence on one of these would turn
+# an insert that forgot the id into a row pointing at a signal or a run that does not exist --
+# silently, and only discoverable later as an orphan. `autoincrement=False` on all three (and on
+# their columns in `0004_phase5`) is what makes the omission an error at write time instead.
+
+@pytest.mark.parametrize("table, column", [
+    ("veto_queue", "signal_id"),
+    ("veto_decisions", "signal_id"),
+    ("report_annotations", "report_run_id"),
+])
+def test_the_foreign_id_primary_keys_carry_no_sequence(db_session, table, column):
+    """No default at all on the column: `pg_get_serial_sequence` is null for a plain BIGINT
+    primary key and names a sequence for a BIGSERIAL one."""
+    sequence = db_session.execute(
+        text("select pg_get_serial_sequence(:t, :c)"), {"t": table, "c": column}).scalar()
+    assert sequence is None, f"{table}.{column} is a serial: {sequence}"
+
+
+#: Both halves of the refusal, asserted together. SQLAlchemy warns at flush time that a primary
+#: key column has no generator and no value -- which is the ORM saying out loud what
+#: `autoincrement=False` bought us -- and Postgres then raises NotNullViolation, which SQLAlchemy
+#: wraps as IntegrityError. `pytest.warns` both pins the warning and consumes it, so the suite
+#: stays free of warnings.
+_REFUSED = "is marked as a member of the primary key"
+
+
+def test_a_queue_row_without_its_signal_id_is_refused(db_session):
+    db_session.add(VetoQueue(game_id=1, market_type="moneyline", bucket_start=NOW,
+                             enqueued_at=NOW, claimed_at=None))
+    with pytest.warns(SAWarning, match=_REFUSED), pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
+
+
+def test_a_decision_without_its_signal_id_is_refused(db_session):
+    db_session.add(VetoDecision(call_id=None, decision="veto_skipped_budget", confidence=None,
+                                from_cache=False, feature_delta={}, signal_created_at=NOW,
+                                decided_at=NOW, reason_code=None))
+    with pytest.warns(SAWarning, match=_REFUSED), pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
+
+
+def test_an_annotation_without_its_report_run_id_is_refused(db_session):
+    db_session.add(ReportAnnotation(model="claude-opus-5", prompt_hash="c" * 64, bullets=[],
+                                    cost_usd=Decimal("0.05"), created_at=NOW))
+    with pytest.warns(SAWarning, match=_REFUSED), pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()

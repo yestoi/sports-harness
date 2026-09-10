@@ -86,7 +86,10 @@ def upgrade() -> None:
     )
 
     op.create_table('veto_queue',
-    sa.Column('signal_id', sa.BigInteger(), nullable=False),
+    # autoincrement=False on all three of these foreign-id primary keys (veto_queue.signal_id,
+    # veto_decisions.signal_id, report_annotations.report_run_id): they are copies of signals.id
+    # and report_runs.id, never generated, and without it both builders emit a BIGSERIAL.
+    sa.Column('signal_id', sa.BigInteger(), autoincrement=False, nullable=False),
     sa.Column('game_id', sa.Integer(), nullable=True),
     sa.Column('market_type', sa.String(length=16), nullable=False),
     sa.Column('bucket_start', sa.DateTime(timezone=True), nullable=False),
@@ -119,7 +122,7 @@ def upgrade() -> None:
     )
 
     op.create_table('veto_decisions',
-    sa.Column('signal_id', sa.BigInteger(), nullable=False),
+    sa.Column('signal_id', sa.BigInteger(), autoincrement=False, nullable=False),
     sa.Column('call_id', sa.Uuid(), nullable=True),
     sa.Column('decision', sa.String(length=20), nullable=False),
     sa.Column('confidence', sa.Numeric(precision=6, scale=4), nullable=True),
@@ -149,7 +152,7 @@ def upgrade() -> None:
     )
 
     op.create_table('report_annotations',
-    sa.Column('report_run_id', sa.BigInteger(), nullable=False),
+    sa.Column('report_run_id', sa.BigInteger(), autoincrement=False, nullable=False),
     sa.Column('model', sa.String(length=24), nullable=False),
     sa.Column('prompt_hash', sa.String(length=64), nullable=False),
     sa.Column('bullets', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
