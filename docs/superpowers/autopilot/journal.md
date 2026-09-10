@@ -1247,3 +1247,9 @@ Times are America/Chicago.
 - Controller artefacts recorded (39b52ee): `harness/weather/roster.txt` (794 rows), `tests/fixtures/nws_points_lsu.json` (gridpoints LIX/25,107), `tests/fixtures/nws_forecast_hourly_lsu.json` (156 periods; fields pinned). The Anthropic proving fixtures are recorded at wave 3 with the SDK version T2 pins.
 - Waves: 1 T1 T2 T3 T17; 2 T4 T5 T8; 3 T6 T7 T9; 4 T13 T15; 5 T10 T16 T18; 6 T11; 7 T12; 8 T14; 9 T19; 10 T20 (verify block, runbooks, the controller's full `make deploy-nas`). Models: opus T1 T13 T15; opus reviewers T4 T6 T13 T14; sonnet elsewhere.
 - Dispatches: research 1, design reviewers 2, plan writer 1 (+1 resume), plan reviewer 1, re-reviewer 1. Wall clock 07:05-08:56 CT. Roadmap 5 -> planned. Next: Unit: phase (branch `phase5-research-layer` from `main`).
+
+## 100. phase start - phase 5 research layer - 2026-09-10 08:57 CT
+- Orient: rule 5 (roadmap 5 `planned`, no unmet gate). Plan `docs/superpowers/plans/2026-09-10-phase5-research-layer.md` (20 tasks, 10 waves); branch `phase5-research-layer` from `main` 66c178a; SDD workspace `.superpowers/sdd/2026-09-10-phase5-research-layer/` (ledger `progress.md` with the shared-file scan; the plan review was the deep scan).
+- Expected: waves 1 T1 T2 T3 T17; 2 T4 T5 T8; 3 T6 T7 T9; 4 T13 T15; 5 T10 T16 T18; 6 T11; 7 T12; 8 T14; 9 T19; 10 T20 (verify block, runbooks, the controller's full `make deploy-nas` outside a game window). Models: opus T1 T13 T15; opus reviewers T4 T6 T13 T14; sonnet elsewhere. Three implementers at a time.
+- Deploy timing: LAR-SF tonight 19:35 CT (window 17:55-18:35 and 19:20 to about 23:35 CT); merges continue through the day; no deploy until the phase's last task, outside a window.
+- Next: wave 1 dispatch (T1 opus in `../sports-wt/phase5-t1-schema`, T2 and T3 sonnet).
