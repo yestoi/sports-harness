@@ -1,0 +1,24 @@
+?column?|now
+now_utc|2026-09-10 03:05:11.727909+00
+(1 row)
+?column?|max|max
+exec_heartbeat|2026-09-10 03:05:01.310386+00|162
+(1 row)
+?column?|name|count|round|round|round
+loop_ms_3h|exec.dirty_markets|158|104|117|114
+loop_ms_3h|exec.loop_ms|158|4668|10929|7849
+loop_ms_3h|exec.loops_skipped|158|0|0|0
+loop_ms_3h|exec.p95_loop_ms|158|6594|8026|7818
+loop_ms_3h|exec.ws_event_age_s|158|5|221|26
+(5 rows)
+?column?|status|count
+(0 rows)
+ERROR:  relation "order_intents" does not exist
+LINE 1: ...intents_3h', coalesce(outcome,'?'), count(*) from order_inte...
+                                                             ^
+?column?|count
+games_in_progress|1
+(1 row)
+ERROR:  column "run_at" does not exist
+LINE 1: ...s_latest_fail', count(*) from check_results where run_at = (...
+                                                             ^
