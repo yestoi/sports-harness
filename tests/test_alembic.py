@@ -416,7 +416,6 @@ def test_both_deploy_recipes_push_the_migrations_and_the_full_one_runs_ensure():
     assert "no migrate command in this build" not in mk, "the Task 14 probe is now the real command"
 
 
-@pytest.mark.xfail(reason="T2 adds the anthropic pin", strict=False)
 def test_pyproject_gains_exactly_one_dependency_per_phase():
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
     # >=1.16 is the floor the baseline actually needs: `op.create_table(if_not_exists=...)` and
@@ -428,7 +427,6 @@ def test_pyproject_gains_exactly_one_dependency_per_phase():
     assert len(deps) == 17          # 15 through phase 4, plus alembic, plus anthropic
 
 
-@pytest.mark.xfail(reason="T2 adds the anthropic pin", strict=False)
 def test_constraints_pins_every_dependency_this_phase_added():
     lines = [l for l in (ROOT / "constraints.txt").read_text().splitlines() if l.strip()]
     phase4 = [l for l in lines if l.lower().startswith(("alembic==", "mako=="))]
