@@ -1,0 +1,2020 @@
+# Stadium coordinates and roof type, one row per team on harness/weather/roster.txt.
+#
+# Written from public sources; `source` is the page the coordinates came from and is part of
+# the row, not a comment, so a later reader can check one number without re-deriving the table.
+#
+# NFL rows (nfl:<team_id>) are hand-verified against each stadium's Wikipedia article.
+# NCAAF rows (ncaaf:<team_id>) are bulk-sourced from a maintained public geocoded dataset of
+# FBS/FCS stadiums (Geoff Boeing's ncaa-football-stadiums repository, itself built from public
+# team/venue pages), with two hand overrides: UNLV (the dataset's row is the stadium UNLV
+# vacated in 2020) and Idaho/North Dakota's roof (both play in an enclosed arena the dataset
+# does not classify).
+#
+# `roof` decides whether the game is fetched at all (addendum §1.2, D2):
+#   open        -- fetched
+#   retractable -- fetched and labelled, because a closed roof over a 40-degree forecast is a
+#                  different game from an open one and only the label distinguishes them
+#   dome        -- never fetched, and never given a weather_points row
+#
+# A team that plays at a shared or a rotating site, or whose coordinates could not be
+# established, belongs in stadiums_missing.txt with a reason instead. Neutral-site games
+# override this table per game in neutral_sites.yaml.
+nfl:1:
+  abbreviation: ATL
+  name: Mercedes-Benz Stadium
+  lat: 33.7554
+  lon: -84.4008
+  roof: retractable
+  source: https://en.wikipedia.org/wiki/Mercedes-Benz_Stadium
+nfl:2:
+  abbreviation: BUF
+  name: Highmark Stadium
+  lat: 42.7738
+  lon: -78.7869
+  roof: open
+  source: https://en.wikipedia.org/wiki/Highmark_Stadium
+nfl:3:
+  abbreviation: CHI
+  name: Soldier Field
+  lat: 41.8623
+  lon: -87.6167
+  roof: open
+  source: https://en.wikipedia.org/wiki/Soldier_Field
+nfl:4:
+  abbreviation: CIN
+  name: Paycor Stadium
+  lat: 39.0954
+  lon: -84.516
+  roof: open
+  source: https://en.wikipedia.org/wiki/Paycor_Stadium
+nfl:5:
+  abbreviation: CLE
+  name: Huntington Bank Field
+  lat: 41.5061
+  lon: -81.6995
+  roof: open
+  source: https://en.wikipedia.org/wiki/Huntington_Bank_Field
+nfl:6:
+  abbreviation: DAL
+  name: AT&T Stadium
+  lat: 32.7473
+  lon: -97.0945
+  roof: retractable
+  source: https://en.wikipedia.org/wiki/AT%26T_Stadium
+nfl:7:
+  abbreviation: DEN
+  name: Empower Field at Mile High
+  lat: 39.7439
+  lon: -105.0201
+  roof: open
+  source: https://en.wikipedia.org/wiki/Empower_Field_at_Mile_High
+nfl:8:
+  abbreviation: DET
+  name: Ford Field
+  lat: 42.34
+  lon: -83.0456
+  roof: dome
+  source: https://en.wikipedia.org/wiki/Ford_Field
+nfl:9:
+  abbreviation: GB
+  name: Lambeau Field
+  lat: 44.5013
+  lon: -88.0622
+  roof: open
+  source: https://en.wikipedia.org/wiki/Lambeau_Field
+nfl:10:
+  abbreviation: TEN
+  name: Nissan Stadium
+  lat: 36.1665
+  lon: -86.7713
+  roof: open
+  source: https://en.wikipedia.org/wiki/Nissan_Stadium
+nfl:11:
+  abbreviation: IND
+  name: Lucas Oil Stadium
+  lat: 39.7601
+  lon: -86.1639
+  roof: retractable
+  source: https://en.wikipedia.org/wiki/Lucas_Oil_Stadium
+nfl:12:
+  abbreviation: KC
+  name: Arrowhead Stadium
+  lat: 39.0489
+  lon: -94.4839
+  roof: open
+  source: https://en.wikipedia.org/wiki/Arrowhead_Stadium
+nfl:13:
+  abbreviation: LV
+  name: Allegiant Stadium
+  lat: 36.0909
+  lon: -115.1833
+  roof: dome
+  source: https://en.wikipedia.org/wiki/Allegiant_Stadium
+nfl:14:
+  abbreviation: LAR
+  name: SoFi Stadium
+  lat: 33.9535
+  lon: -118.3392
+  roof: dome
+  source: https://en.wikipedia.org/wiki/SoFi_Stadium
+nfl:15:
+  abbreviation: MIA
+  name: Hard Rock Stadium
+  lat: 25.958
+  lon: -80.2389
+  roof: open
+  source: https://en.wikipedia.org/wiki/Hard_Rock_Stadium
+nfl:16:
+  abbreviation: MIN
+  name: U.S. Bank Stadium
+  lat: 44.9737
+  lon: -93.2577
+  roof: dome
+  source: https://en.wikipedia.org/wiki/U.S._Bank_Stadium
+nfl:17:
+  abbreviation: NE
+  name: Gillette Stadium
+  lat: 42.0909
+  lon: -71.2643
+  roof: open
+  source: https://en.wikipedia.org/wiki/Gillette_Stadium
+nfl:18:
+  abbreviation: NO
+  name: Caesars Superdome
+  lat: 29.9511
+  lon: -90.0812
+  roof: dome
+  source: https://en.wikipedia.org/wiki/Caesars_Superdome
+nfl:19:
+  abbreviation: NYG
+  name: MetLife Stadium
+  lat: 40.8135
+  lon: -74.0745
+  roof: open
+  source: https://en.wikipedia.org/wiki/MetLife_Stadium
+nfl:20:
+  abbreviation: NYJ
+  name: MetLife Stadium
+  lat: 40.8135
+  lon: -74.0745
+  roof: open
+  source: https://en.wikipedia.org/wiki/MetLife_Stadium
+nfl:21:
+  abbreviation: PHI
+  name: Lincoln Financial Field
+  lat: 39.9008
+  lon: -75.1675
+  roof: open
+  source: https://en.wikipedia.org/wiki/Lincoln_Financial_Field
+nfl:22:
+  abbreviation: ARI
+  name: State Farm Stadium
+  lat: 33.5276
+  lon: -112.2626
+  roof: retractable
+  source: https://en.wikipedia.org/wiki/State_Farm_Stadium
+nfl:23:
+  abbreviation: PIT
+  name: Acrisure Stadium
+  lat: 40.4468
+  lon: -80.0158
+  roof: open
+  source: https://en.wikipedia.org/wiki/Acrisure_Stadium
+nfl:24:
+  abbreviation: LAC
+  name: SoFi Stadium
+  lat: 33.9535
+  lon: -118.3392
+  roof: dome
+  source: https://en.wikipedia.org/wiki/SoFi_Stadium
+nfl:25:
+  abbreviation: SF
+  name: Levi's Stadium
+  lat: 37.4033
+  lon: -121.9694
+  roof: open
+  source: https://en.wikipedia.org/wiki/Levi%27s_Stadium
+nfl:26:
+  abbreviation: SEA
+  name: Lumen Field
+  lat: 47.5952
+  lon: -122.3316
+  roof: open
+  source: https://en.wikipedia.org/wiki/Lumen_Field
+nfl:27:
+  abbreviation: TB
+  name: Raymond James Stadium
+  lat: 27.9759
+  lon: -82.5033
+  roof: open
+  source: https://en.wikipedia.org/wiki/Raymond_James_Stadium
+nfl:28:
+  abbreviation: WSH
+  name: Northwest Stadium
+  lat: 38.9078
+  lon: -76.8645
+  roof: open
+  source: https://en.wikipedia.org/wiki/Northwest_Stadium
+nfl:29:
+  abbreviation: CAR
+  name: Bank of America Stadium
+  lat: 35.2258
+  lon: -80.8528
+  roof: open
+  source: https://en.wikipedia.org/wiki/Bank_of_America_Stadium
+nfl:30:
+  abbreviation: JAX
+  name: EverBank Stadium
+  lat: 30.3239
+  lon: -81.6373
+  roof: open
+  source: https://en.wikipedia.org/wiki/EverBank_Stadium
+nfl:33:
+  abbreviation: BAL
+  name: M&T Bank Stadium
+  lat: 39.278
+  lon: -76.6227
+  roof: open
+  source: https://en.wikipedia.org/wiki/M%26T_Bank_Stadium
+nfl:34:
+  abbreviation: HOU
+  name: NRG Stadium
+  lat: 29.6847
+  lon: -95.4107
+  roof: retractable
+  source: https://en.wikipedia.org/wiki/NRG_Stadium
+ncaaf:2:
+  abbreviation: AUB
+  name: Jordan–Hare Stadium
+  lat: 32.6024
+  lon: -85.4889
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:6:
+  abbreviation: USA
+  name: Ladd Peebles Stadium
+  lat: 30.6742
+  lon: -88.0756
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:8:
+  abbreviation: ARK
+  name: Donald W. Reynolds Razorback Stadium
+  lat: 36.0679
+  lon: -94.1788
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:9:
+  abbreviation: ASU
+  name: Sun Devil Stadium Frank Kush Field
+  lat: 33.4264
+  lon: -111.9326
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:12:
+  abbreviation: ARIZ
+  name: Arizona Stadium
+  lat: 32.2283
+  lon: -110.949
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:13:
+  abbreviation: CP
+  name: Alex G. Spanos Stadium
+  lat: 35.2985
+  lon: -120.6651
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:16:
+  abbreviation: SAC
+  name: Hornet Stadium
+  lat: 38.5552
+  lon: -121.4221
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:21:
+  abbreviation: SDSU
+  name: Qualcomm Stadium
+  lat: 32.7831
+  lon: -117.1196
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:23:
+  abbreviation: SJSU
+  name: Spartan Stadium
+  lat: 37.3201
+  lon: -121.8681
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:24:
+  abbreviation: STAN
+  name: Stanford Stadium
+  lat: 37.4347
+  lon: -122.161
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:25:
+  abbreviation: CAL
+  name: California Memorial Stadium
+  lat: 37.8707
+  lon: -122.2507
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:26:
+  abbreviation: UCLA
+  name: Rose Bowl
+  lat: 34.1616
+  lon: -118.1676
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:30:
+  abbreviation: USC
+  name: Los Angeles Memorial Coliseum
+  lat: 34.014
+  lon: -118.2879
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:36:
+  abbreviation: CSU
+  name: Sonny Lubick Field at Hughes Stadium
+  lat: 40.5617
+  lon: -105.1398
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:38:
+  abbreviation: COLO
+  name: Folsom Field
+  lat: 40.0094
+  lon: -105.2669
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:41:
+  abbreviation: CONN
+  name: Rentschler Field
+  lat: 41.7599
+  lon: -72.6189
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:43:
+  abbreviation: YALE
+  name: Yale Bowl
+  lat: 41.3121
+  lon: -72.9602
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:46:
+  abbreviation: GTWN
+  name: Cooper Field
+  lat: 38.908
+  lon: -77.0754
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:47:
+  abbreviation: HOW
+  name: William H. Greene Stadium
+  lat: 38.9257
+  lon: -77.0212
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:48:
+  abbreviation: DEL
+  name: Delaware Stadium
+  lat: 39.6617
+  lon: -75.7488
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:50:
+  abbreviation: FAMU
+  name: Bragg Memorial Stadium
+  lat: 30.4261
+  lon: -84.2914
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:52:
+  abbreviation: FSU
+  name: Bobby Bowden Field at Doak Campbell Stadium
+  lat: 30.4375
+  lon: -84.3045
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:55:
+  abbreviation: JXST
+  name: JSU Stadium
+  lat: 33.8203
+  lon: -85.7665
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:56:
+  abbreviation: STET
+  name: Spec Martin Municipal Stadium
+  lat: 29.0195
+  lon: -81.3003
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:57:
+  abbreviation: FLA
+  name: Ben Hill Griffin Stadium
+  lat: 29.6499
+  lon: -82.3487
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:58:
+  abbreviation: USF
+  name: Raymond James Stadium
+  lat: 27.976
+  lon: -82.5033
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:59:
+  abbreviation: GT
+  name: Bobby Dodd Stadium at Historic Grant Field
+  lat: 33.7726
+  lon: -84.3929
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:61:
+  abbreviation: UGA
+  name: Sanford Stadium
+  lat: 33.9498
+  lon: -83.3734
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:62:
+  abbreviation: HAW
+  name: Aloha Stadium
+  lat: 21.3728
+  lon: -157.93
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:66:
+  abbreviation: ISU
+  name: Jack Trice Stadium
+  lat: 42.014
+  lon: -93.6358
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:68:
+  abbreviation: BOIS
+  name: Albertsons Stadium
+  lat: 43.6027
+  lon: -116.1959
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:70:
+  abbreviation: IDHO
+  name: Kibbie Dome
+  lat: 46.7263
+  lon: -117.0176
+  roof: dome
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:77:
+  abbreviation: NU
+  name: Ryan Field
+  lat: 42.0654
+  lon: -87.6925
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:79:
+  abbreviation: SIU
+  name: Saluki Stadium
+  lat: 37.7085
+  lon: -89.217
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:84:
+  abbreviation: IU
+  name: Memorial Stadium
+  lat: 39.1809
+  lon: -86.5256
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:87:
+  abbreviation: ND
+  name: Notre Dame Stadium
+  lat: 41.6984
+  lon: -86.2338
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:93:
+  abbreviation: MUR
+  name: Roy Stewart Stadium
+  lat: 36.6184
+  lon: -88.3166
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:96:
+  abbreviation: UK
+  name: Commonwealth Stadium
+  lat: 38.0226
+  lon: -84.5052
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:97:
+  abbreviation: LOU
+  name: Papa John's Cardinal Stadium
+  lat: 38.2054
+  lon: -85.7581
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:98:
+  abbreviation: WKU
+  name: Houchens Industries–L. T. Smith Stadium
+  lat: 36.9849
+  lon: -86.459
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:99:
+  abbreviation: LSU
+  name: Tiger Stadium
+  lat: 30.412
+  lon: -91.1838
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:103:
+  abbreviation: BC
+  name: Alumni Stadium
+  lat: 42.3351
+  lon: -71.1665
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:107:
+  abbreviation: HC
+  name: Fitton Field
+  lat: 42.241
+  lon: -71.8114
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:108:
+  abbreviation: HARV
+  name: Harvard Stadium
+  lat: 42.367
+  lon: -71.1268
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:119:
+  abbreviation: TOW
+  name: Johnny Unitas Stadium
+  lat: 39.3885
+  lon: -76.616
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:120:
+  abbreviation: MD
+  name: Byrd Stadium
+  lat: 38.9912
+  lon: -76.9473
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:127:
+  abbreviation: MSU
+  name: Spartan Stadium
+  lat: 42.7282
+  lon: -84.4849
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:130:
+  abbreviation: MICH
+  name: Michigan Stadium
+  lat: 42.2659
+  lon: -83.7487
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:135:
+  abbreviation: MINN
+  name: TCF Bank Stadium
+  lat: 44.9765
+  lon: -93.2246
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:142:
+  abbreviation: MIZ
+  name: Faurot Field
+  lat: 38.9359
+  lon: -92.3331
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:145:
+  abbreviation: MISS
+  name: Vaught–Hemingway Stadium
+  lat: 34.3622
+  lon: -89.5341
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:147:
+  abbreviation: MTST
+  name: Bobcat Stadium
+  lat: 45.6589
+  lon: -111.0496
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:149:
+  abbreviation: MONT
+  name: Washington–Grizzly Stadium
+  lat: 46.8639
+  lon: -113.9821
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:150:
+  abbreviation: DUKE
+  name: Wallace Wade Stadium
+  lat: 35.9953
+  lon: -78.9417
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:151:
+  abbreviation: ECU
+  name: Dowdy–Ficklen Stadium
+  lat: 35.5964
+  lon: -77.3652
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:152:
+  abbreviation: NCSU
+  name: Carter–Finley Stadium
+  lat: 35.8008
+  lon: -78.7195
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:153:
+  abbreviation: UNC
+  name: Kenan Memorial Stadium
+  lat: 35.907
+  lon: -79.0479
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:154:
+  abbreviation: WAKE
+  name: BB&T Field
+  lat: 36.0918
+  lon: -80.2553
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:155:
+  abbreviation: UND
+  name: Alerus Center
+  lat: 47.9113
+  lon: -97.0905
+  roof: dome
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:158:
+  abbreviation: NEB
+  name: Memorial Stadium
+  lat: 40.8205
+  lon: -96.7057
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:159:
+  abbreviation: DART
+  name: Memorial Field
+  lat: 43.7013
+  lon: -72.2848
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:160:
+  abbreviation: UNH
+  name: Cowell Stadium
+  lat: 43.1387
+  lon: -70.9392
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:163:
+  abbreviation: PRIN
+  name: Princeton University Stadium
+  lat: 40.3482
+  lon: -74.6591
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:164:
+  abbreviation: RUTG
+  name: High Point Solutions Stadium
+  lat: 40.5138
+  lon: -74.465
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:166:
+  abbreviation: NMSU
+  name: Aggie Memorial Stadium
+  lat: 32.2797
+  lon: -106.7411
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:167:
+  abbreviation: UNM
+  name: University Stadium
+  lat: 35.0676
+  lon: -106.6281
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:171:
+  abbreviation: COLU
+  name: Lawrence A. Wien Stadium
+  lat: 40.8723
+  lon: -73.9157
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:172:
+  abbreviation: COR
+  name: Schoellkopf Field
+  lat: 42.444
+  lon: -76.4787
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:183:
+  abbreviation: SYR
+  name: Carrier Dome
+  lat: 43.0361
+  lon: -76.1365
+  roof: dome
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:189:
+  abbreviation: BGSU
+  name: Doyt Perry Stadium
+  lat: 41.3781
+  lon: -83.6225
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:193:
+  abbreviation: M-OH
+  name: Yager Stadium
+  lat: 39.5194
+  lon: -84.7334
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:194:
+  abbreviation: OSU
+  name: Ohio Stadium
+  lat: 40.0017
+  lon: -83.0197
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:195:
+  abbreviation: OHIO
+  name: Peden Stadium
+  lat: 39.3213
+  lon: -82.1034
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:197:
+  abbreviation: OKST
+  name: Boone Pickens Stadium
+  lat: 36.1257
+  lon: -97.0665
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:201:
+  abbreviation: OU
+  name: Gaylord Family Oklahoma Memorial Stadium
+  lat: 35.2059
+  lon: -97.4426
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:202:
+  abbreviation: TLSA
+  name: Skelly Field at H. A. Chapman Stadium
+  lat: 36.1489
+  lon: -95.9436
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:204:
+  abbreviation: ORST
+  name: Reser Stadium
+  lat: 44.5595
+  lon: -123.2814
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:213:
+  abbreviation: PSU
+  name: Beaver Stadium
+  lat: 40.8122
+  lon: -77.8562
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:218:
+  abbreviation: TEM
+  name: Lincoln Financial Field
+  lat: 39.9007
+  lon: -75.1675
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:219:
+  abbreviation: PENN
+  name: Franklin Field
+  lat: 39.9499
+  lon: -75.1898
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:221:
+  abbreviation: PITT
+  name: Heinz Field
+  lat: 40.4468
+  lon: -80.0158
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:222:
+  abbreviation: VILL
+  name: Villanova Stadium
+  lat: 40.033
+  lon: -75.3367
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:225:
+  abbreviation: BRWN
+  name: Brown Stadium
+  lat: 41.8421
+  lon: -71.3946
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:227:
+  abbreviation: URI
+  name: Meade Stadium
+  lat: 41.4881
+  lon: -71.5345
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:228:
+  abbreviation: CLEM
+  name: Memorial Stadium
+  lat: 34.6787
+  lon: -82.8432
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:231:
+  abbreviation: FUR
+  name: Paladin Stadium
+  lat: 34.9198
+  lon: -82.4378
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:233:
+  abbreviation: SDAK
+  name: DakotaDome
+  lat: 42.7911
+  lon: -96.9275
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:235:
+  abbreviation: MEM
+  name: Liberty Bowl Memorial Stadium
+  lat: 35.1209
+  lon: -89.9781
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:236:
+  abbreviation: UTC
+  name: Finley Stadium
+  lat: 35.036
+  lon: -85.3158
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:238:
+  abbreviation: VAN
+  name: Vanderbilt Stadium
+  lat: 36.1436
+  lon: -86.8088
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:239:
+  abbreviation: BAY
+  name: McLane Stadium
+  lat: 31.5587
+  lon: -97.1156
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:242:
+  abbreviation: RICE
+  name: Rice Stadium
+  lat: 29.7162
+  lon: -95.4093
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:245:
+  abbreviation: TA&M
+  name: Kyle Field
+  lat: 30.6101
+  lon: -96.3407
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:248:
+  abbreviation: HOU
+  name: TDECU Stadium
+  lat: 29.7218
+  lon: -95.3491
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:249:
+  abbreviation: UNT
+  name: Apogee Stadium
+  lat: 33.2039
+  lon: -97.1592
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:251:
+  abbreviation: TEX
+  name: Darrell K Royal–Texas Memorial Stadium
+  lat: 30.2836
+  lon: -97.7323
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:252:
+  abbreviation: BYU
+  name: LaVell Edwards Stadium
+  lat: 40.2575
+  lon: -111.6544
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:253:
+  abbreviation: SUU
+  name: Eccles Coliseum
+  lat: 37.6757
+  lon: -113.0775
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:254:
+  abbreviation: UTAH
+  name: Rice-Eccles Stadium
+  lat: 40.7599
+  lon: -111.8488
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:256:
+  abbreviation: JMU
+  name: Bridgeforth Stadium
+  lat: 38.4351
+  lon: -78.8734
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:257:
+  abbreviation: RICH
+  name: E. Claiborne Robins Stadium
+  lat: 37.5779
+  lon: -77.544
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:258:
+  abbreviation: UVA
+  name: Scott Stadium
+  lat: 38.0311
+  lon: -78.5137
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:259:
+  abbreviation: VT
+  name: Lane Stadium
+  lat: 37.22
+  lon: -80.4181
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:264:
+  abbreviation: WASH
+  name: Husky Stadium
+  lat: 47.6504
+  lon: -122.3029
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:265:
+  abbreviation: WSU
+  name: Martin Stadium
+  lat: 46.732
+  lon: -117.1606
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:275:
+  abbreviation: WIS
+  name: Camp Randall Stadium
+  lat: 43.0699
+  lon: -89.4127
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:276:
+  abbreviation: MRSH
+  name: Joan C. Edwards Stadium
+  lat: 38.4249
+  lon: -82.4219
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:277:
+  abbreviation: WVU
+  name: Mountaineer Field at Milan Puskar Stadium
+  lat: 39.6522
+  lon: -79.9552
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:278:
+  abbreviation: FRES
+  name: Bulldog Stadium
+  lat: 36.8143
+  lon: -119.7581
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:282:
+  abbreviation: INST
+  name: Memorial Stadium
+  lat: 39.4744
+  lon: -87.3674
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:290:
+  abbreviation: GASO
+  name: Paulson Stadium
+  lat: 32.4122
+  lon: -81.7832
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:295:
+  abbreviation: ODU
+  name: Foreman Field
+  lat: 36.8888
+  lon: -76.3057
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:301:
+  abbreviation: USD
+  name: Torero Stadium
+  lat: 32.7735
+  lon: -117.1838
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:302:
+  abbreviation: UCD
+  name: Aggie Stadium
+  lat: 38.5366
+  lon: -121.7633
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:304:
+  abbreviation: IDST
+  name: Holt Arena
+  lat: 42.87
+  lon: -112.4285
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:309:
+  abbreviation: UL
+  name: Cajun Field
+  lat: 30.2158
+  lon: -92.0163
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:311:
+  abbreviation: ME
+  name: Alfond Stadium
+  lat: 44.9045
+  lon: -68.6736
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:322:
+  abbreviation: LAF
+  name: Fisher Field
+  lat: 40.7007
+  lon: -75.2102
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:324:
+  abbreviation: CCU
+  name: Brooks Stadium
+  lat: 33.7928
+  lon: -79.017
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:326:
+  abbreviation: TXST
+  name: Bobcat Stadium
+  lat: 29.8913
+  lon: -97.9253
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:328:
+  abbreviation: USU
+  name: Romney Stadium
+  lat: 41.7515
+  lon: -111.8121
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:331:
+  abbreviation: EWU
+  name: Roos Field
+  lat: 47.4927
+  lon: -117.5881
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:333:
+  abbreviation: ALA
+  name: Bryant–Denny Stadium
+  lat: 33.2075
+  lon: -87.5504
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:338:
+  abbreviation: KENN
+  name: Fifth Third Bank Stadium
+  lat: 34.0234
+  lon: -84.6155
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:344:
+  abbreviation: MSST
+  name: Davis Wade Stadium
+  lat: 33.4562
+  lon: -88.7934
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:349:
+  abbreviation: ARMY
+  name: Michie Stadium
+  lat: 41.3871
+  lon: -73.9641
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:356:
+  abbreviation: ILL
+  name: Memorial Stadium
+  lat: 40.0993
+  lon: -88.236
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:379:
+  abbreviation: MDAR
+  name: Warren McGuirk Alumni Stadium
+  lat: 42.3775
+  lon: -72.5356
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:399:
+  abbreviation: UALB
+  name: Bob Ford Field
+  lat: 42.6815
+  lon: -73.8277
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2000:
+  abbreviation: ACU
+  name: Shotwell Stadium
+  lat: 32.4338
+  lon: -99.6974
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2005:
+  abbreviation: AF
+  name: Falcon Stadium
+  lat: 38.9969
+  lon: -104.8437
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2006:
+  abbreviation: AKR
+  name: Summa Field at InfoCision Stadium
+  lat: 41.0726
+  lon: -81.5084
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2010:
+  abbreviation: AAMU
+  name: Louis Crews Stadium
+  lat: 34.7832
+  lon: -86.5793
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2011:
+  abbreviation: ALST
+  name: Hornet Stadium
+  lat: 32.3807
+  lon: -86.3114
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2016:
+  abbreviation: ALCN
+  name: Jack Spinks Stadium
+  lat: 31.8732
+  lon: -91.1363
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2026:
+  abbreviation: APP
+  name: Kidd Brewer Stadium
+  lat: 36.2115
+  lon: -81.6855
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2029:
+  abbreviation: UAPB
+  name: Golden Lion Stadium
+  lat: 34.2528
+  lon: -92.0218
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2032:
+  abbreviation: ARST
+  name: Centennial Bank Stadium
+  lat: 35.849
+  lon: -90.6677
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2046:
+  abbreviation: APSU
+  name: Governors Stadium
+  lat: 36.5358
+  lon: -87.3529
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2050:
+  abbreviation: BALL
+  name: Scheumann Stadium
+  lat: 40.216
+  lon: -85.4177
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2065:
+  abbreviation: BCU
+  name: Municipal Stadium
+  lat: 29.1731
+  lon: -81.1178
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2083:
+  abbreviation: BUCK
+  name: Christy Mathewson–Memorial Stadium
+  lat: 40.9521
+  lon: -76.8857
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2084:
+  abbreviation: BUF
+  name: UB Stadium
+  lat: 42.9991
+  lon: -78.7775
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2086:
+  abbreviation: BTLR
+  name: Butler Bowl
+  lat: 39.8443
+  lon: -86.1662
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2097:
+  abbreviation: CAM
+  name: Barker–Lane Stadium
+  lat: 35.4047
+  lon: -78.743
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2110:
+  abbreviation: CARK
+  name: Estes Stadium
+  lat: 35.0803
+  lon: -92.4601
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2115:
+  abbreviation: CCSU
+  name: Arute Field
+  lat: 41.6951
+  lon: -72.7614
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2116:
+  abbreviation: UCF
+  name: Bright House Networks Stadium
+  lat: 28.608
+  lon: -81.193
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2117:
+  abbreviation: CMU
+  name: Kelly/Shorts Stadium
+  lat: 43.5776
+  lon: -84.7708
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2127:
+  abbreviation: CHSO
+  name: Buccaneer Field
+  lat: 32.9784
+  lon: -80.0685
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2132:
+  abbreviation: CIN
+  name: Nippert Stadium
+  lat: 39.1313
+  lon: -84.5163
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2142:
+  abbreviation: COLG
+  name: Andy Kerr Stadium
+  lat: 42.8165
+  lon: -75.5458
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2166:
+  abbreviation: DAV
+  name: Richardson Stadium
+  lat: 35.4996
+  lon: -80.8435
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2168:
+  abbreviation: DAY
+  name: Welcome Stadium
+  lat: 39.7369
+  lon: -84.1988
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2169:
+  abbreviation: DSU
+  name: Alumni Stadium
+  lat: 39.1888
+  lon: -75.5435
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2181:
+  abbreviation: DRKE
+  name: Drake Stadium
+  lat: 41.605
+  lon: -93.655
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2184:
+  abbreviation: DUQ
+  name: Arthur J. Rooney Athletic Field
+  lat: 40.4356
+  lon: -79.9902
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2193:
+  abbreviation: ETSU
+  name: Kermit Tipton Stadium
+  lat: 36.3271
+  lon: -82.3769
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2197:
+  abbreviation: EIU
+  name: O'Brien Stadium
+  lat: 39.4806
+  lon: -88.1812
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2198:
+  abbreviation: EKU
+  name: Roy Kidd Stadium
+  lat: 37.7345
+  lon: -84.2981
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2199:
+  abbreviation: EMU
+  name: Rynearson Stadium
+  lat: 42.2558
+  lon: -83.6478
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2210:
+  abbreviation: ELON
+  name: Rhodes Stadium
+  lat: 36.1099
+  lon: -79.5077
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2226:
+  abbreviation: FAU
+  name: FAU Stadium
+  lat: 26.3755
+  lon: -80.1017
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2229:
+  abbreviation: FIU
+  name: FIU Stadium
+  lat: 25.7525
+  lon: -80.3779
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2230:
+  abbreviation: FOR
+  name: Coffey Field
+  lat: 40.8612
+  lon: -73.8833
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2241:
+  abbreviation: GWEB
+  name: Ernest W. Spangler Stadium
+  lat: 35.2457
+  lon: -81.6737
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2247:
+  abbreviation: GAST
+  name: Georgia Dome
+  lat: 33.7576
+  lon: -84.4011
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2261:
+  abbreviation: HAMP
+  name: Armstrong Stadium
+  lat: 37.0207
+  lon: -76.334
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2277:
+  abbreviation: HCU
+  name: Husky Stadium
+  lat: 29.7523
+  lon: -95.3523
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2287:
+  abbreviation: ILST
+  name: Hancock Stadium
+  lat: 40.512
+  lon: -88.9963
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2294:
+  abbreviation: IOWA
+  name: Kinnick Stadium
+  lat: 41.6584
+  lon: -91.5515
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2296:
+  abbreviation: JKST
+  name: Mississippi Veterans Memorial Stadium
+  lat: 32.3296
+  lon: -90.1798
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2305:
+  abbreviation: KU
+  name: Memorial Stadium
+  lat: 38.9629
+  lon: -95.2463
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2306:
+  abbreviation: KSU
+  name: Bill Snyder Family Football Stadium
+  lat: 39.2019
+  lon: -96.5938
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2309:
+  abbreviation: KENT
+  name: Dix Stadium
+  lat: 41.1391
+  lon: -81.3134
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2320:
+  abbreviation: LAM
+  name: Provost Umphrey Stadium
+  lat: 30.0432
+  lon: -94.0699
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2329:
+  abbreviation: LEH
+  name: Goodman Stadium
+  lat: 40.5891
+  lon: -75.3555
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2335:
+  abbreviation: LIB
+  name: Williams Stadium
+  lat: 37.3544
+  lon: -79.175
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2348:
+  abbreviation: LT
+  name: Joe Aillet Stadium
+  lat: 32.5322
+  lon: -92.656
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2368:
+  abbreviation: MRST
+  name: Leonidoff Field
+  lat: 41.7189
+  lon: -73.9326
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2377:
+  abbreviation: MCN
+  name: Cowboy Stadium
+  lat: 30.1737
+  lon: -93.2107
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2382:
+  abbreviation: MER
+  name: Moye Complex
+  lat: 32.8343
+  lon: -83.6269
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2390:
+  abbreviation: MIA
+  name: Sun Life Stadium
+  lat: 25.9579
+  lon: -80.2388
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2393:
+  abbreviation: MTSU
+  name: Johnny "Red" Floyd Stadium
+  lat: 35.8511
+  lon: -86.3684
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2400:
+  abbreviation: MVSU
+  name: Rice–Totten Field
+  lat: 33.5093
+  lon: -90.3438
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2405:
+  abbreviation: MONM
+  name: Kessler Field
+  lat: 40.2793
+  lon: -74.0095
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2413:
+  abbreviation: MORE
+  name: Jayne Stadium
+  lat: 38.1919
+  lon: -83.4254
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2415:
+  abbreviation: MORG
+  name: Hughes Stadium
+  lat: 39.278
+  lon: -76.6227
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2426:
+  abbreviation: NAVY
+  name: Navy–Marine Corps Memorial Stadium
+  lat: 38.9848
+  lon: -76.5071
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2428:
+  abbreviation: NCCU
+  name: O'Kelly–Riddick Stadium
+  lat: 35.9739
+  lon: -78.8969
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2429:
+  abbreviation: CLT
+  name: Jerry Richardson Stadium
+  lat: 35.3103
+  lon: -80.7405
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2433:
+  abbreviation: ULM
+  name: Malone Stadium
+  lat: 32.5311
+  lon: -92.0664
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2439:
+  abbreviation: UNLV
+  name: Allegiant Stadium
+  lat: 36.0909
+  lon: -115.1833
+  roof: dome
+  source: https://en.wikipedia.org/wiki/Allegiant_Stadium
+ncaaf:2440:
+  abbreviation: NEV
+  name: Mackay Stadium
+  lat: 39.5469
+  lon: -119.8176
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2447:
+  abbreviation: NICH
+  name: John L. Guidry Stadium
+  lat: 29.7867
+  lon: -90.8036
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2448:
+  abbreviation: NCAT
+  name: Aggie Stadium
+  lat: 36.0813
+  lon: -79.7701
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2449:
+  abbreviation: NDSU
+  name: Fargodome
+  lat: 46.9029
+  lon: -96.8015
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2450:
+  abbreviation: NORF
+  name: William "Dick" Price Stadium
+  lat: 36.8467
+  lon: -76.2605
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2458:
+  abbreviation: UNCO
+  name: Nottingham Field
+  lat: 40.4033
+  lon: -104.7052
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2459:
+  abbreviation: NIU
+  name: Huskie Stadium
+  lat: 41.934
+  lon: -88.7782
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2460:
+  abbreviation: UNI
+  name: UNI-Dome
+  lat: 42.5155
+  lon: -92.4674
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2464:
+  abbreviation: NAU
+  name: Walkup Skydome
+  lat: 35.1804
+  lon: -111.653
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2466:
+  abbreviation: NWST
+  name: Harry Turpin Stadium
+  lat: 31.7474
+  lon: -93.0965
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2483:
+  abbreviation: ORE
+  name: Autzen Stadium
+  lat: 44.0583
+  lon: -123.0685
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2502:
+  abbreviation: PRST
+  name: Providence Park
+  lat: 45.5216
+  lon: -122.6917
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2504:
+  abbreviation: PV
+  name: Blackshear Field
+  lat: 30.0912
+  lon: -95.9944
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2506:
+  abbreviation: PRES
+  name: Bailey Memorial Stadium
+  lat: 34.4606
+  lon: -81.862
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2509:
+  abbreviation: PUR
+  name: Ross–Ade Stadium
+  lat: 40.4343
+  lon: -86.9185
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2523:
+  abbreviation: RMU
+  name: Joe Walton Stadium
+  lat: 40.5212
+  lon: -80.2163
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2529:
+  abbreviation: SHU
+  name: Campus Field
+  lat: 41.2195
+  lon: -73.2456
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2534:
+  abbreviation: SHSU
+  name: Bowers Stadium
+  lat: 30.7139
+  lon: -95.5419
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2535:
+  abbreviation: SAM
+  name: Seibert Stadium
+  lat: 33.4634
+  lon: -86.7953
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2542:
+  abbreviation: SAV
+  name: Ted Wright Stadium
+  lat: 32.0273
+  lon: -81.0693
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2546:
+  abbreviation: SEMO
+  name: Houck Stadium
+  lat: 37.3092
+  lon: -89.5315
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2567:
+  abbreviation: SMU
+  name: Gerald J. Ford Stadium
+  lat: 32.8377
+  lon: -96.7827
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2569:
+  abbreviation: SCST
+  name: Oliver C. Dawson Stadium
+  lat: 33.4988
+  lon: -80.8449
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2571:
+  abbreviation: SDST
+  name: Coughlin–Alumni Stadium
+  lat: 44.321
+  lon: -96.7802
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2572:
+  abbreviation: USM
+  name: M. M. Roberts Stadium
+  lat: 31.329
+  lon: -89.3313
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2579:
+  abbreviation: SC
+  name: Williams-Brice Stadium
+  lat: 33.9726
+  lon: -81.0202
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2582:
+  abbreviation: SOU
+  name: Ace W. Mumford Stadium
+  lat: 30.522
+  lon: -91.1895
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2598:
+  abbreviation: SFPA
+  name: DeGol Field
+  lat: 40.5064
+  lon: -78.637
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2617:
+  abbreviation: SFA
+  name: Homer Bryce Stadium
+  lat: 31.6254
+  lon: -94.645
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2619:
+  abbreviation: STBK
+  name: Kenneth P. LaValle Stadium
+  lat: 40.9183
+  lon: -73.124
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2623:
+  abbreviation: MOST
+  name: Plaster Sports Complex
+  lat: 37.1976
+  lon: -93.28
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2628:
+  abbreviation: TCU
+  name: Amon G. Carter Stadium
+  lat: 32.7099
+  lon: -97.368
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2630:
+  abbreviation: UTM
+  name: Graham Stadium
+  lat: 36.3447
+  lon: -88.8612
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2633:
+  abbreviation: TENN
+  name: Neyland Stadium
+  lat: 35.9547
+  lon: -83.9253
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2634:
+  abbreviation: TNST
+  name: LP Field
+  lat: 36.1669
+  lon: -86.7715
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2635:
+  abbreviation: TNTC
+  name: Tucker Stadium
+  lat: 36.1776
+  lon: -85.5065
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2636:
+  abbreviation: UTSA
+  name: Alamodome
+  lat: 29.4169
+  lon: -98.4789
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2638:
+  abbreviation: UTEP
+  name: Sun Bowl Stadium
+  lat: 31.7733
+  lon: -106.5079
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2640:
+  abbreviation: TXSO
+  name: BBVA Compass Stadium
+  lat: 29.7523
+  lon: -95.3523
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2641:
+  abbreviation: TTU
+  name: Jones AT&T Stadium
+  lat: 33.591
+  lon: -101.8729
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2643:
+  abbreviation: CIT
+  name: Johnson Hagood Stadium
+  lat: 32.7933
+  lon: -79.9564
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2649:
+  abbreviation: TOL
+  name: Glass Bowl
+  lat: 41.6574
+  lon: -83.614
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2653:
+  abbreviation: TROY
+  name: Veterans Memorial Stadium
+  lat: 31.7995
+  lon: -85.9522
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2655:
+  abbreviation: TULN
+  name: Benson Field at Yulman Stadium
+  lat: 29.9459
+  lon: -90.1152
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2674:
+  abbreviation: VAL
+  name: Brown Field
+  lat: 41.4652
+  lon: -87.0478
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2678:
+  abbreviation: VMI
+  name: Alumni Memorial Field
+  lat: 37.7887
+  lon: -79.435
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2681:
+  abbreviation: WAG
+  name: Wagner College Stadium
+  lat: 40.6173
+  lon: -74.0954
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2692:
+  abbreviation: WEB
+  name: Stewart Stadium
+  lat: 41.192
+  lon: -111.9408
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2710:
+  abbreviation: WIU
+  name: Hanson Field
+  lat: 40.4684
+  lon: -90.6842
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2711:
+  abbreviation: WMU
+  name: Waldo Stadium
+  lat: 42.2858
+  lon: -85.601
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2717:
+  abbreviation: WCU
+  name: E. J. Whitmire Stadium
+  lat: 35.3047
+  lon: -83.1826
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2729:
+  abbreviation: W&M
+  name: Zable Stadium
+  lat: 37.2731
+  lon: -76.7142
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2747:
+  abbreviation: WOF
+  name: Gibbs Stadium
+  lat: 34.9619
+  lon: -81.9335
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2751:
+  abbreviation: WYO
+  name: War Memorial Stadium
+  lat: 41.3119
+  lon: -105.5691
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2754:
+  abbreviation: YSU
+  name: Stambaugh Stadium
+  lat: 41.1095
+  lon: -80.65
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2755:
+  abbreviation: GRAM
+  name: Eddie Robinson Stadium
+  lat: 32.5209
+  lon: -92.7214
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2803:
+  abbreviation: BRY
+  name: Bulldog Stadium
+  lat: 41.924
+  lon: -71.538
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+ncaaf:2916:
+  abbreviation: UIW
+  name: Gayle and Tom Benson Stadium
+  lat: 29.4673
+  lon: -98.4699
+  roof: open
+  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+# The two rows below are hand-added: current FBS program UAB and FBS independent UMass, which
+# the bulk dataset above does not carry, each verified against its own Wikipedia article.
+# (Delaware and Liberty are also current FBS programs, but the bulk dataset already carries
+# both -- their rows are above, in team_id order.)
+ncaaf:5:
+  abbreviation: UAB
+  name: Protective Stadium
+  lat: 33.5278
+  lon: -86.8092
+  roof: open
+  source: https://en.wikipedia.org/wiki/Protective_Stadium
+ncaaf:113:
+  abbreviation: MASS
+  name: Warren McGuirk Alumni Stadium
+  lat: 42.3773
+  lon: -72.536
+  roof: open
+  source: https://en.wikipedia.org/wiki/Warren_McGuirk_Alumni_Stadium

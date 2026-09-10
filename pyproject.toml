@@ -49,6 +49,10 @@ harness = [
   "dashboard/static/*",
   "dashboard/static/js/*",
   "dashboard/static/vendor/*",
+  # Phase 5: the stadium geography the NWS source reads. `games` has no venue column, so these
+  # are the table, and they have to reach the image the way the matching and pricing YAMLs do.
+  "weather/*.yaml",
+  "weather/*.txt",
 ]
 
 [tool.pytest.ini_options]

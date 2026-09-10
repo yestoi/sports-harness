@@ -1,0 +1,15 @@
+# Per-game stadium overrides for neutral sites: bowl games, Week 0 kickoff games, and the
+# occasional regular-season game moved off campus. Keyed by the game, not by the team, because
+# the home team is still the home team on the schedule -- it is only the venue that moved.
+#
+# The value takes exactly the same seven keys as a stadiums.yaml row.
+#
+# 2026 Aflac Kickoff Game: Auburn (designated home) vs Baylor, Mercedes-Benz Stadium, Atlanta,
+# 2026-09-05. https://en.wikipedia.org/wiki/Aflac_Kickoff_Game
+ncaaf:2:239:2026-09-05:
+  abbreviation: AUB
+  name: Mercedes-Benz Stadium
+  lat: 33.7554
+  lon: -84.4008
+  roof: retractable
+  source: https://en.wikipedia.org/wiki/Mercedes-Benz_Stadium
