@@ -1,0 +1,59 @@
+# T2 dump.sh exercise on the Mac, postgres:16 container, 2026-09-09 13:21 CT, branch phase45-t2-drill-counts b8a102b
+## run 1 (snapshot session)
+OK nightly /backups/nightly/harness-nightly-20260909T182039Z.dump bytes=13055 sha256=126e6af0483f0cca58eabc8b21bbca60fee92ba0483ebffcc1f81701792bbb48
+OK forever /backups/forever/harness-forever-20260909T182040Z.dump bytes=1275 sha256=50b92f697ba9dd465a61afa82d554727d593d6899ee040dbb3324a2ac917a84b
+## sidecar
+{
+    "kind": "nightly",
+    "stamp": "20260909T182039Z",
+    "path": "/backups/nightly/harness-nightly-20260909T182039Z.dump",
+    "sha256": "126e6af0483f0cca58eabc8b21bbca60fee92ba0483ebffcc1f81701792bbb48",
+    "bytes": 13055,
+    "started": "2026-09-09T18:20:39Z",
+    "finished": "2026-09-09T18:20:40Z",
+    "exit_code": 0,
+    "tables": {
+        "data_excluded": [
+            "raw_responses",
+            "orderbook_events",
+            "venue_trades",
+            "venue_quotes",
+            "odds_snapshots"
+        ],
+        "counts": {
+            "backup_runs": 0,
+            "ledger": 0,
+            "orders": 4212,
+            "signals": 100
+        },
+        "counts_snapshot": "same as dump"
+    }
+}
+## run 2 (TMPDIR=/nonexistent -> fallback)
+mktemp: failed to create file via template ‘/nonexistent/tmp.XXXXXXXXXX’: No such file or directory
+mkfifo: cannot create fifo '/nonexistent/tmp.u5LeHe2Jhg': No such file or directory
+OK nightly /backups/nightly/harness-nightly-20260909T182043Z.dump bytes=13293 sha256=4f69e8f6c6d6482cb84ae46f0bf1d5afd80a158b018fe9c0a7e3065ace51a933
+mktemp: failed to create file via template ‘/nonexistent/tmp.XXXXXXXXXX’: No such file or directory
+mkfifo: cannot create fifo '/nonexistent/tmp.OCZ2EO80L8': No such file or directory
+OK forever /backups/forever/harness-forever-20260909T182043Z.dump bytes=1275 sha256=59cbd340bc35c9125a88c8f1d6a608c282ece7b5483a2f779ca473bcb7c00813
+        "counts_snapshot": "before dump"
+## drill.sh on the run-1 dump
+INFO counts_snapshot=sameasdump
+INFO throwaway container be67bf30bd8064ec84295a9747ecf7637ab641e903ad789c992b20ab3b4a5504
+RESTORE_OK /tmp/t2backups/nightly/harness-nightly-20260909T182039Z.dump
+table restored dump_time
+backup_runs 0 0
+ledger 0 0
+orders 4212 4212
+signals 100 100
+COMPARED 4 MISMATCHES 0 NO_COUNT 0
+ROWS_MATCH true
+# T2 exercise 2 on eb37aee, 13:58 CT
+OK nightly /backups/nightly/harness-nightly-20260909T185825Z.dump bytes=13055 sha256=7571a454eb6adeff0e765797662a20a90106b4ba9ba113ec5267ea7a035129ec
+OK forever /backups/forever/harness-forever-20260909T185827Z.dump bytes=1275 sha256=a4d649699cf72d10116751cf306894b6815939ae2bb4d4360c6d14a2bb70bd08
+## drill exercise on eb37aee (compact sidecars as write_meta emits them), 14:05 CT
+same as dump: INFO counts_snapshot=same as dump / COMPARED 4 MISMATCHES 0 NO_COUNT 0 / ROWS_MATCH true
+before dump (orders sidecar 4200 vs restored 4212): backup_runs 2 0 GREW / orders 4212 4200 GREW / COMPARED 4 MISMATCHES 0 / ROWS_MATCH true
+none (partition-style): INFO this kind takes no dump-time counts / COMPARED 0 MISMATCHES 0 NO_COUNT 0 / ROWS_MATCH n/a
+finding: a sidecar with JSON whitespace after ':' parses as no counts (sent to the round-2 re-reviewer; round 3)
+## drill on a json.tool-pretty-printed sidecar, cac3708, 14:12 CT: INFO counts_snapshot=same as dump / COMPARED 4 MISMATCHES 0 NO_COUNT 0 / ROWS_MATCH true
