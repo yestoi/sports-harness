@@ -850,8 +850,8 @@ ncaaf:233:
   name: DakotaDome
   lat: 42.7911
   lon: -96.9275
-  roof: open
-  source: https://github.com/gboeing/data-visualization/blob/main/ncaa-football-stadiums/data/stadiums-geocoded.csv
+  roof: dome
+  source: https://en.wikipedia.org/wiki/DakotaDome  # enclosed, fixed roof (controller correction at the T8 review; coordinates from the geocoded dataset)
 ncaaf:235:
   abbreviation: MEM
   name: Liberty Bowl Memorial Stadium
