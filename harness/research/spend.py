@@ -12,7 +12,10 @@ both read today's total and both pass will both add. Its sketch is a conditional
 conditional single-row update cannot enforce a sum over several rows. So the reservation takes
 `pg_advisory_xact_lock` on the day key first: the second worker blocks until the first commits,
 then reads the first's reservation and refuses. The lock is released by the transaction, taken
-or refused, and its scope is one short read-and-update.
+or refused -- which makes its scope the **caller's** transaction, not this function's. A caller
+that commits as soon as `reserve_spend` returns holds it for one short read-and-update; a caller
+that keeps the transaction open across its Anthropic call holds it for the length of that call
+and blocks every other reservation on the same day meanwhile. See `reserve_spend`.
 
 **The cost model.** Tokens at list price with cache reads at 0.1x the input rate and cache
 writes at 1.25x, plus searches at $0.01 each. Web search is billed **per search on top of
@@ -196,6 +199,11 @@ def reserve_spend(session: Session, now: datetime, settings, kind: str,
 
     `searches` defaults to `WORST_CASE_SEARCHES`; a call with no tools passes `0`, which is what
     keeps the annotator and the parlay rationale from reserving three searches they cannot make.
+
+    **Commit as soon as this returns.** The advisory lock lives until the caller's transaction
+    ends, so holding the transaction open across the Anthropic call blocks every other
+    reservation on the same America/Chicago day for the length of that call, and
+    `pg_advisory_xact_lock` has no timeout to cut it short.
     """
     if kind not in KINDS:
         raise ValueError(f"unknown research kind {kind!r}")
@@ -237,11 +245,11 @@ def release_spend(session: Session, reservation: Reservation,
         session.execute(_RELEASE, {
             "reserved": reserved, "actual": actual,
             "calls": 1 if usage is not None else 0,
-            "input_tokens": usage.input_tokens if usage else 0,
-            "output_tokens": usage.output_tokens if usage else 0,
-            "cache_read_tokens": usage.cache_read_tokens if usage else 0,
-            "cache_write_tokens": usage.cache_write_tokens if usage else 0,
-            "searches": usage.searches if usage else 0,
+            "input_tokens": usage.input_tokens if usage is not None else 0,
+            "output_tokens": usage.output_tokens if usage is not None else 0,
+            "cache_read_tokens": usage.cache_read_tokens if usage is not None else 0,
+            "cache_write_tokens": usage.cache_write_tokens if usage is not None else 0,
+            "searches": usage.searches if usage is not None else 0,
             "day": reservation.day, "kind": reservation.kind, "model": model})
     return total
 

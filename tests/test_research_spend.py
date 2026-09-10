@@ -35,6 +35,24 @@ def test_the_day_is_an_america_chicago_day():
     assert chicago_day(datetime(2026, 9, 15, 6, 0, tzinfo=timezone.utc)) == date(2026, 9, 15)
 
 
+def test_the_day_flips_at_america_chicago_midnight_in_both_offsets():
+    """23:59 and 00:01 CT, once in CDT and once in CST.
+
+    The pair above straddles CT midnight by hours, so a fixed -5 or -6 offset would satisfy it
+    just as well as the zone. These four are one minute either side of the flip, and the two
+    seasons disagree about what 05:00-06:00 UTC means: only a real America/Chicago zone puts
+    both winter instants and both summer instants on the right day.
+    """
+    utc = timezone.utc
+    # CDT, UTC-5: 2026-09-14 23:59 CT and 2026-09-15 00:01 CT.
+    assert chicago_day(datetime(2026, 9, 15, 4, 59, tzinfo=utc)) == date(2026, 9, 14)
+    assert chicago_day(datetime(2026, 9, 15, 5, 1, tzinfo=utc)) == date(2026, 9, 15)
+    # CST, UTC-6: 2026-01-15 23:59 CT and 2026-01-16 00:01 CT. 05:59 UTC is still the 15th here
+    # and was already the 15th's *next* day in September, which is the assertion that bites.
+    assert chicago_day(datetime(2026, 1, 16, 5, 59, tzinfo=utc)) == date(2026, 1, 15)
+    assert chicago_day(datetime(2026, 1, 16, 6, 1, tzinfo=utc)) == date(2026, 1, 16)
+
+
 def test_the_week_is_the_iso_week_of_that_day():
     assert iso_week_bounds(date(2026, 9, 16)) == (date(2026, 9, 14), date(2026, 9, 20))
 
