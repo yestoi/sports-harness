@@ -1286,3 +1286,7 @@ Times are America/Chicago.
 - `main` fast-forwarded to b579374 (phase done entry) then 4293802 (state); branch `phase5-research-layer` deleted; SDD workspace removed; per-branch test databases dropped; `make test` on `main` running detached (the deploy precondition; result in the next entry).
 - R5 bundle: `/tmp/sports-2026-09-10.bundle` (7,908,527 bytes, verified) copied to `/volume1/docker/sports-harness/repo-backup/` beside the phase 4 and 4.5 bundles. U7 push: `git push origin main` 66c178a..4293802, main level with origin.
 - Deploy still HELD (journal 103): the user's word on the host, and the game window. NAS on 3ca32dd.
+
+## 105. verify - `make test` on `main` after the phase 5 merge - 2026-09-10 21:21 CT
+
+- `make test` on `main` (harness_test_main) at 4293802: pristine, 0 failure markers, 2,831 tests by dot count. Deploy precondition met on the code side; the deploy stays HELD for the user's word on the host and for the game window.
