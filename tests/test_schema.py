@@ -883,6 +883,71 @@ def test_model_index_loop_never_touches_the_tape_tables(db_session):
     assert set(schema_module.TAPE_TABLES) <= declared
 
 
+def test_model_index_loop_never_rebuilds_a_concurrent_index():
+    """Fix 42 round 1 (review Important 1). `_model_index_ddl` runs before
+    `_CONCURRENT_INDEX_DDL` and issues a plain `create index`. For an index declared on a model
+    *and* listed in that tuple, the plain create would win on a populated database -- holding a
+    ShareLock against the recorder for the whole build on a 773 MB bulk table, and leaving the
+    CONCURRENTLY statement a no-op. `_model_indexes` subtracts the tuple's names, so neither
+    fix 42's `ix_quotes_run_market` nor fix 25's `ix_odds_fetched_book` reaches that loop."""
+    from harness.db import schema as schema_module
+
+    names = {index.name for index in schema_module._model_indexes()}
+    assert "ix_quotes_run_market" not in names
+    assert "ix_odds_fetched_book" not in names
+    assert not names & schema_module._CONCURRENT_INDEX_NAMES, sorted(
+        names & schema_module._CONCURRENT_INDEX_NAMES)
+    # The subtraction is narrow: `venue_quotes`' and `odds_snapshots`' other model indexes are
+    # untouched, so this did not silently stop building them.
+    assert "ix_quotes_market_fetched" in names
+    assert "ix_odds_game_type_fetched" in names
+
+
+def test_the_concurrent_index_names_are_parsed_from_the_statements():
+    """The set is derived, not a second hand-maintained list: every entry contributes its name,
+    and it is read through fix 37's `ddl_target` rather than a second parser of the same shape."""
+    from harness.db import schema as schema_module
+
+    assert schema_module._CONCURRENT_INDEX_NAMES == {
+        "ix_fair_created_brin", "ix_odds_fetched_book", "ix_orders_key_placed",
+        "ix_fair_leg_lookup", "ix_quotes_run_market"}
+    assert len(schema_module._CONCURRENT_INDEX_NAMES) == len(schema_module._CONCURRENT_INDEX_DDL)
+    assert {ddl_target(s) for s in schema_module._CONCURRENT_INDEX_DDL} == {
+        ("index", name) for name in schema_module._CONCURRENT_INDEX_NAMES}
+
+
+@pytest.mark.parametrize("statement", [
+    # `ddl_target` reads it, but without CONCURRENTLY it is the plain create F65 forbids on a
+    # bulk table -- and silently keeping its name would tell `_model_indexes` to skip an index
+    # nothing then builds concurrently.
+    "create index if not exists ix_nope on venue_quotes (run_id)",
+    # `ddl_target` does not read it at all (no `if not exists`), so there is no name to take.
+    "create index concurrently ix_nope on venue_quotes (run_id)",
+    "alter table venue_quotes add column if not exists nope integer",
+])
+def test_a_concurrent_index_entry_in_another_shape_raises(monkeypatch, statement):
+    from harness.db import schema as schema_module
+
+    monkeypatch.setattr(schema_module, "_CONCURRENT_INDEX_DDL", (statement,))
+    with pytest.raises(ValueError, match="create index concurrently if not exists"):
+        schema_module._concurrent_index_names()
+
+
+def test_create_schema_still_ends_with_both_concurrent_bulk_indexes(db_session):
+    """The subtraction removes a builder, not the index. `create_schema` has already run against
+    this database (the `db_session` fixture) and runs again here, and both indexes that the
+    models and `_CONCURRENT_INDEX_DDL` both name are present afterwards, built by the
+    CONCURRENTLY path. `test_the_quotes_run_index_is_in_both_catalogues` in `tests/test_alembic.py`
+    is the same assertion on a database created from nothing."""
+    from sqlalchemy import inspect
+
+    engine = db_session.get_bind()
+    create_schema(engine)                       # idempotent, and the second run is the real test
+    insp = inspect(engine)
+    assert "ix_quotes_run_market" in {i["name"] for i in insp.get_indexes("venue_quotes")}
+    assert "ix_odds_fetched_book" in {i["name"] for i in insp.get_indexes("odds_snapshots")}
+
+
 def test_fixture_truncates_between_tests_a(db_session):
     from harness.db.models import Run
 

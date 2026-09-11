@@ -6,6 +6,7 @@ database built by `upgrade_head` must be the same database. No `pg_dump` -- the 
 so the comparison is the SQLAlchemy `inspect()` catalogue, with the partitions `ensure_partitions`
 creates excluded through `pg_inherits` on both sides.
 """
+import ast
 import importlib.util
 import os
 import re
@@ -305,12 +306,114 @@ def test_no_migration_drops_or_alters_an_existing_object(path):
             assert _ALLOWED_ALTER_INDEX.search(line), f"{path.name}: unexpected alter index: {line}"
 
 
+#: A create-index statement, with its optional CONCURRENTLY and the table it lands on. Applied
+#: to whitespace-collapsed SQL, so a statement the source line-wraps across adjacent string
+#: literals still reads as one (Python has already joined those by the time we see them).
+_CREATE_INDEX = re.compile(
+    r"create index\s+(?P<concurrently>concurrently\s+)?(?:if not exists\s+)?\S+\s+on\s+(?P<table>\w+)",
+    re.I)
+
+
+def _executable_strings(path: Path) -> list[str]:
+    """Every string literal in a revision that is not a docstring -- i.e. the SQL it can actually
+    run. Parsed rather than grepped for two reasons: `op.execute` of a module-level constant puts
+    the statement nowhere near the call (both 0005 and 0006 are written that way, which is the
+    gap review Important 3 found), and the prose in these docstrings quotes SQL it does not run.
+    """
+    tree = ast.parse(path.read_text())
+    docstrings = {id(node.body[0].value) for node in ast.walk(tree)
+                  if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                       ast.AsyncFunctionDef))
+                  and ast.get_docstring(node, clean=False) is not None}
+    return [node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and id(node) not in docstrings]
+
+
+def _tables_created(path: Path) -> frozenset[str]:
+    """The tables a revision creates itself, from its `op.create_table("name", ...)` calls."""
+    tree = ast.parse(path.read_text())
+    return frozenset(
+        node.args[0].value.lower()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "create_table" and node.args
+        and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str))
+
+
+def _assert_bulk_indexes_are_concurrent(name: str, statements, created=frozenset()) -> None:
+    """Every create-index statement landing on a bulk table must say CONCURRENTLY (F65, fix 25:
+    no carve-out), unless the same revision creates that table.
+
+    The carve-out for `created` is the baseline's, and it is not a softening of F65: a plain
+    CREATE INDEX is only dangerous on a *populated* table with a writer attached, and a table
+    this revision has just made in the same transaction is empty and unreachable. `0001_baseline`
+    builds every table and then indexes it that way.
+
+    Factored out of the parametrized test so a bad statement can be fed to it directly -- that
+    test only ever sees revisions that pass.
+    """
+    for statement in statements:
+        flat = " ".join(statement.split())
+        for match in _CREATE_INDEX.finditer(flat):
+            table = match.group("table").lower()
+            if table not in BULK_TABLES or table in created:
+                continue
+            assert match.group("concurrently"), (
+                f"{name}: index on bulk table {table} without CONCURRENTLY: {flat}")
+
+
 @pytest.mark.parametrize("path", VERSIONS, ids=lambda p: p.name)
 def test_no_migration_creates_a_bulk_index_outside_concurrent_index(path):
+    """Review Important 3: this used to grep `op.create_index(...)` only, and both 0005 and 0006
+    build a bulk index from a raw `op.execute` of a module-level string, which that regex could
+    not see. Both forms are checked now."""
     src = path.read_text()
     for table in BULK_TABLES:
         for match in re.finditer(r"op\.create_index\((.*?)\)", src, re.S):
             assert table not in match.group(1), f"{path.name}: {table} outside concurrent_index"
+    _assert_bulk_indexes_are_concurrent(path.name, _executable_strings(path),
+                                        _tables_created(path))
+
+
+def test_the_bulk_index_check_rejects_a_non_concurrent_statement():
+    """The check above is only worth having if it fails on the thing it is looking for. Asserted
+    at the string level rather than through a throwaway revision file, so no test writes into
+    `migrations/versions/` (where the parametrized tests would then pick it up)."""
+    good = "create index concurrently if not exists ix_quotes_run_market on venue_quotes (run_id)"
+    _assert_bulk_indexes_are_concurrent("good", [good])                   # no raise
+
+    bad = "create index if not exists ix_quotes_run_market on venue_quotes (run_id)"
+    with pytest.raises(AssertionError, match="without CONCURRENTLY"):
+        _assert_bulk_indexes_are_concurrent("bad", [bad])
+    # Wrapped across source lines, the shape both 0005 and 0006 are written in.
+    with pytest.raises(AssertionError, match="without CONCURRENTLY"):
+        _assert_bulk_indexes_are_concurrent(
+            "bad", ["create index if not exists ix_odds_fetched_book\n  on odds_snapshots "
+                    "(fetched_at, book)"])
+    # A non-bulk table is not this rule's business.
+    _assert_bulk_indexes_are_concurrent("orders", [
+        "create index if not exists ix_orders_game on orders (game_id)"])
+    # Nor is a bulk table the same revision has just created, which is the baseline's whole shape.
+    _assert_bulk_indexes_are_concurrent("baseline-like", [bad], frozenset({"venue_quotes"}))
+
+
+def test_the_baseline_is_the_only_revision_exempted_by_creating_its_own_tables():
+    """The `created` carve-out is meant for `0001_baseline` alone. If a later revision ever
+    creates a bulk table, this says so out loud rather than letting the exemption spread
+    silently."""
+    creators = {p.name: _tables_created(p) & set(BULK_TABLES) for p in VERSIONS}
+    assert {name for name, tables in creators.items() if tables} == {"0001_baseline.py"}
+    assert creators["0001_baseline.py"] == set(BULK_TABLES)
+
+
+def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
+    """`_executable_strings` must see `0006`'s `_INDEX_DDL` -- the statement `op.execute` runs --
+    and must not see the SQL its docstring quotes while explaining the outage."""
+    strings = _executable_strings(ROOT / "migrations" / "versions" / "0006_quotes_run_index.py")
+    assert any("create index concurrently if not exists ix_quotes_run_market" in s
+               for s in strings)
+    assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
 def test_the_versions_directory_holds_six_revisions():
@@ -714,6 +817,11 @@ def test_the_quotes_run_index_is_in_both_catalogues(two_databases):
     for engine in (a, b):
         indexes = {i["name"] for i in inspect(engine).get_indexes("venue_quotes")}
         assert "ix_quotes_run_market" in indexes
+    # Round 1 (review Important 1) took this index, and fix 25's `ix_odds_fetched_book`, out of
+    # `_model_indexes` so the plain `create index` can never beat the CONCURRENTLY one to it.
+    # On a database created from nothing that leaves `create_all` and the CONCURRENTLY statement
+    # as the builders, and both indexes are still here afterwards.
+    assert "ix_odds_fetched_book" in {i["name"] for i in inspect(a).get_indexes("odds_snapshots")}
 
 
 def test_the_quotes_run_index_ddl_agrees_between_schema_and_migration():
@@ -736,18 +844,20 @@ def test_the_quotes_run_index_is_never_built_without_concurrently():
     """F65 (fix 25): neither `_INDEX_DDL` nor the revision carries a plain `create index` for
     this index -- both written copies are CONCURRENTLY.
 
-    The model declaration is not as exempt as it looks: `create_all` only builds indexes for
-    tables it is creating, but `create_schema` then calls `_model_index_ddl`, which issues a
-    plain `index.create(..., checkfirst=True)` for every model index outside `TAPE_TABLES`, and
-    `venue_quotes` is a bulk table that is not a tape table. So a *populated* database that
-    lacks this index would take a plain, table-locking create there, before the CONCURRENTLY
-    entry it would have made a no-op. That hazard predates fix 42 (fix 25's `ix_odds_fetched_book`
-    on `odds_snapshots` has the same shape) and is deferred to 6E; the NAS is not exposed because
-    the index was built there by hand. Do not read this test as proof that path cannot happen."""
-    from harness.db.schema import _CONCURRENT_INDEX_DDL, _INDEX_DDL
+    The model declaration used to be the hole this docstring warned about: `create_all` only
+    builds indexes for tables it is creating, but `create_schema` then called `_model_index_ddl`
+    for every model index outside `TAPE_TABLES`, and `venue_quotes` is a bulk table that is not a
+    tape table -- so a *populated* database lacking this index would have taken a plain,
+    table-locking create there first, leaving the CONCURRENTLY entry a no-op. Round 1 (review
+    Important 1) closed it: `_model_indexes` subtracts every name `_CONCURRENT_INDEX_DDL` builds,
+    which covers fix 25's `ix_odds_fetched_book` on `odds_snapshots` too.
+    `test_model_index_loop_never_rebuilds_a_concurrent_index` in `tests/test_schema.py` is the
+    assertion on that helper; this one covers the written statements."""
+    from harness.db.schema import _CONCURRENT_INDEX_NAMES, _CONCURRENT_INDEX_DDL, _INDEX_DDL
 
     assert not any("ix_quotes_run_market" in s for s in _INDEX_DDL)
     stmt = next(s for s in _CONCURRENT_INDEX_DDL if "ix_quotes_run_market" in s)
     assert stmt.startswith("create index concurrently if not exists")
+    assert "ix_quotes_run_market" in _CONCURRENT_INDEX_NAMES
     src = (ROOT / "migrations" / "versions" / "0006_quotes_run_index.py").read_text()
     assert "autocommit_block" in src

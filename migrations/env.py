@@ -77,7 +77,15 @@ def include_object(obj, name, type_, reflected, compare_to) -> bool:
 
 
 def concurrent_index(name: str, table: str, cols: list[str], using: str | None = None) -> None:
-    """The only way a migration may build an index on a bulk table.
+    """The convenience path for building an index on a bulk table.
+
+    Not the only path, despite what this line used to say: `0005_rfq_lookup` and
+    `0006_quotes_run_index` each keep their statement as a module-level string so
+    `tests/test_alembic.py` can compare it against `harness/db/schema.py`'s copy, and issue it
+    with the same `autocommit_block` directly. What is actually required of every one of them --
+    this helper included -- is CONCURRENTLY, and
+    `test_no_migration_creates_a_bulk_index_outside_concurrent_index` enforces that over the
+    statements a revision executes, whichever way it spells them (review Important 3).
 
     `autocommit_block` takes the statement out of the migration's transaction, which is what
     CREATE INDEX CONCURRENTLY requires. Note that Postgres 16 cannot build an index

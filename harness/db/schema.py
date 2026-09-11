@@ -290,9 +290,10 @@ _CONCURRENT_INDEX_DDL = (
     # `_model_index_ddl` runs before this tuple and would issue a plain, table-locking
     # `create index` for the model declaration on a populated database that lacks the index,
     # since it excludes only `TAPE_TABLES` and `venue_quotes` is a bulk table that is not a tape
-    # table (fix 25's `ix_odds_fetched_book` has the same shape; narrowing that helper to the
-    # bulk tables is deferred to 6E). The NAS is not exposed: this index was built there by hand
-    # on 2026-09-11 before the deploy, so both paths find it present.
+    # table. Fix 42 round 1 (review Important 1) closes that: `_model_indexes` now skips any
+    # index this tuple builds, so on a populated database the only statement that creates this
+    # index -- or fix 25's `ix_odds_fetched_book`, which had the same shape -- is the
+    # CONCURRENTLY one here.
     # `migrations/versions/0006_quotes_run_index.py` mirrors it, and the two must land together
     # or the catalogue diff fails.
     "create index concurrently if not exists ix_quotes_run_market "
@@ -642,16 +643,55 @@ def _execute_ddl(conn: Connection, statement: str) -> bool:
     return False
 
 
+def _concurrent_index_names() -> frozenset[str]:
+    """The index names `_CONCURRENT_INDEX_DDL` builds, read out of the statements themselves
+    through fix 37's `ddl_target` so there is one parser here and no second list to keep in step.
+
+    `_model_indexes` subtracts these. An index declared on a model *and* listed in that tuple
+    (fix 25's `ix_odds_fetched_book`, fix 42's `ix_quotes_run_market`) would otherwise be built
+    twice on one `create_schema` run, and the first of the two is `_model_index_ddl`'s plain
+    `create index`, which holds a ShareLock against the recorder for the whole build on a
+    populated bulk table -- exactly what CONCURRENTLY is there to avoid, and it would leave the
+    CONCURRENTLY statement a no-op (review Important 1, fix 42 round 1). A fresh database is
+    unaffected: `create_all` builds a model index as part of creating its table, before any of
+    this runs.
+
+    Strict on purpose, twice over. An entry `ddl_target` does not read as an index, or one
+    written without CONCURRENTLY, raises at import rather than dropping out of this set and
+    re-opening the hazard for the index it names.
+    """
+    names = set()
+    for statement in _CONCURRENT_INDEX_DDL:
+        target = ddl_target(statement)
+        normalized = " ".join(statement.split()).lower()
+        if target is None or target[0] != "index" or " concurrently " not in normalized:
+            raise ValueError(
+                f"_CONCURRENT_INDEX_DDL entry is not a `create index concurrently if not "
+                f"exists` statement: {statement!r}")
+        names.add(target[1])
+    return frozenset(names)
+
+
+_CONCURRENT_INDEX_NAMES = _concurrent_index_names()
+
+
 def _model_indexes() -> list[Index]:
     """The model indexes create_schema builds (F47): create_all only builds indexes for tables it
     creates, so a database that predates a model index never gets it.
 
-    The tape tables are excluded. Their indexes are Task 2b's and must be built CONCURRENTLY:
-    a non-concurrent CREATE INDEX on a populated orderbook_events or venue_trades locks out the
-    WebSocket sink for as long as the build takes.
+    Two exclusions, both for the same reason -- a plain CREATE INDEX on a populated bulk table
+    holds a ShareLock against the writer for the whole build:
+
+    * The tape tables. Their indexes are Task 2b's and are built CONCURRENTLY further down
+      `create_schema`.
+    * Any index `_CONCURRENT_INDEX_DDL` already builds. `ix_odds_fetched_book` (fix 25) and
+      `ix_quotes_run_market` (fix 42) are declared on their models *and* listed there, and this
+      loop runs first, so without the subtraction the plain create would win the race and the
+      CONCURRENTLY statement would find the index already present (review Important 1, fix 42
+      round 1).
     """
     return [index for table in Base.metadata.sorted_tables if table.name not in TAPE_TABLES
-            for index in table.indexes]
+            for index in table.indexes if index.name not in _CONCURRENT_INDEX_NAMES]
 
 
 def _model_index_ddl(conn: Connection) -> None:
