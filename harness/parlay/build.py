@@ -24,8 +24,24 @@ from sqlalchemy.orm import Session
 from harness.db.models import ParlayCard, ParlayLeg
 from harness.parlay.config import load_config
 from harness.parlay.pricing import newest_dk_price
+from harness.research.spend import chicago_day
 
 log = logging.getLogger(__name__)
+
+
+def resolve_iso_week(now: datetime, week: int | None) -> tuple[int, int]:
+    """The Chicago ISO `(year, week)` a card built at `now` belongs to (fix round 2, I4).
+
+    `parlay_ledger`'s cap and `parlay_cards.week` must agree: `mark_placed`, `show_cards` and
+    `parlay_grade._settle_card` all key the $50 cap and the ledger to
+    `chicago_day(now).isocalendar()`. A raw `now.isocalendar()` disagrees with that for up to
+    five hours a week (19:00-23:59 CT Sunday, where UTC has already rolled to Monday) and near
+    the turn of the year the calendar `year` and the ISO `year` can disagree too. `week` is the
+    operator's own `--week` override when given; `year` always follows Chicago, since a card is
+    never built for a week outside the one it is paid out of.
+    """
+    iso = chicago_day(now).isocalendar()
+    return iso.year, week if week is not None else iso.week
 
 #: The harness's market types, and the two-to-six-character names `parlay_legs.market_type` holds.
 _MARKET_NAMES = {"moneyline": "ml", "spread": "spread", "total": "total"}
@@ -67,8 +83,14 @@ _POOL = text("""
 
 
 def build_card(session: Session, settings, sport: str, week: int, kind: str, now: datetime,
-               client=None) -> ParlayCard:
-    """One proposed card. Raises `NoAnchorPriced` when no anchor outcome has a fresh price."""
+               client=None, year: int | None = None) -> ParlayCard:
+    """One proposed card. Raises `NoAnchorPriced` when no anchor outcome has a fresh price.
+
+    `year` is the card's `parlay_cards.year` -- the Chicago ISO year `resolve_iso_week` computed
+    (fix round 2, I4), not `now.year`, which disagreed with the ledger and the cap for up to five
+    hours a week. Callers that do not pass one get the same Chicago-anchored value by default,
+    so a caller that only fixes `week` cannot still leave `year` wrong.
+    """
     if kind not in ("smart", "lottery"):
         raise ValueError(f"unknown card kind {kind!r}")
     config = load_config()
@@ -120,7 +142,8 @@ def build_card(session: Session, settings, sport: str, week: int, kind: str, now
         true_p *= Decimal(str(item["row"].fair_p))
     correlated = len({item["row"].game_id for item in chosen}) < len(chosen)
 
-    card = ParlayCard(year=now.year, week=week, sport=sport, kind=kind, built_at=now,
+    card_year = year if year is not None else chicago_day(now).isocalendar().year
+    card = ParlayCard(year=card_year, week=week, sport=sport, kind=kind, built_at=now,
                       stake=stake.quantize(Decimal("0.01")),
                       dk_payout_est=payout.quantize(Decimal("0.01")),
                       true_prob_est=true_p.quantize(Decimal("0.000001")),

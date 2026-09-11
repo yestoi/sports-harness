@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from harness.parlay.build import NoAnchorPriced, build_card
+from harness.parlay.build import NoAnchorPriced, build_card, resolve_iso_week
 from harness.parlay.pricing import american, decimal_from, newest_dk_price
 
 NOW = datetime(2026, 9, 18, 20, 0, tzinfo=timezone.utc)
@@ -14,6 +14,24 @@ def test_american_odds_round_trip():
     assert american(Decimal("2.50")) == 150
     assert american(Decimal("1.50")) == -200
     assert american(Decimal("2.00")) == 100
+
+
+def test_resolve_iso_week_uses_chicago_not_utc():
+    """Fix round 2, I4: a card built Sunday evening CT, where UTC has already rolled to Monday,
+    must still resolve to the Chicago week -- the same week `mark_placed`, `show_cards` and
+    `parlay_grade._settle_card` key the cap and the ledger to."""
+    # Sunday 2026-09-13 20:00 CT (CDT, UTC-5) is Monday 2026-09-14 01:00 UTC. Raw UTC
+    # isocalendar() gives (2026, 38); the Chicago date gives (2026, 37), which is correct.
+    now = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
+    assert now.isocalendar()[:2] == (2026, 38)
+    assert resolve_iso_week(now, None) == (2026, 37)
+
+
+def test_resolve_iso_week_honors_an_explicit_week_but_not_an_explicit_year():
+    """An operator's `--week` override picks the week; the year still follows Chicago, since a
+    card is never built for a week outside the one it is paid out of."""
+    now = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
+    assert resolve_iso_week(now, 40) == (2026, 40)
 
 
 def test_decimal_from_converts_whatever_the_driver_returns():
@@ -50,6 +68,16 @@ def test_a_smart_card_has_three_or_four_legs_from_different_games(db_session, en
     assert len({leg.game_id for leg in legs}) == len(legs)
     assert card.stake == Decimal("25.00") and card.status == "proposed"
     assert card.correlated is False
+
+
+def test_the_card_s_year_follows_chicago_not_a_passed_explicit_one(db_session, env_settings,
+                                                                   seeded_pool):
+    """Fix round 2, I4: `build_card` stores whichever `year` it is given rather than deriving
+    `now.year` itself, which is what let the two disagree near a year boundary or in the
+    Sunday-evening-CT window where UTC has already rolled over."""
+    card = build_card(db_session, env_settings, sport="ncaaf", week=38, kind="smart", now=NOW,
+                      year=2031)
+    assert card.year == 2031
 
 
 def test_the_smart_card_is_anchored_on_lsu_or_the_saints(db_session, env_settings, seeded_pool):

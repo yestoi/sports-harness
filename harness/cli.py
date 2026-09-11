@@ -934,7 +934,7 @@ def parlay_build_cmd(
     """
     configure_logging()
     from harness.db.models import OddsSnapshot, ParlayLeg
-    from harness.parlay.build import NoAnchorPriced, build_card
+    from harness.parlay.build import NoAnchorPriced, build_card, resolve_iso_week
 
     s = get_settings()
     normalized = {"cfb": "ncaaf", "ncaaf": "ncaaf", "nfl": "nfl"}.get(sport)
@@ -942,11 +942,15 @@ def parlay_build_cmd(
         log.error("unknown sport %r; use cfb or nfl", sport)
         raise typer.Exit(2)
     now = datetime.now(timezone.utc)
-    iso_week = week if week is not None else now.isocalendar().week
+    # Chicago's ISO week, not UTC's (fix round 2, I4): `mark_placed`, `show_cards` and
+    # `parlay_grade._settle_card` all key the $50 cap and the ledger to
+    # `chicago_day(now).isocalendar()`, and a raw `now.isocalendar()` disagreed with that for up
+    # to five hours a week.
+    iso_year, iso_week = resolve_iso_week(now, week)
     factory = make_session_factory(make_engine(s.database_url))
     with factory() as session:
         try:
-            card = build_card(session, s, normalized, iso_week, kind, now)
+            card = build_card(session, s, normalized, iso_week, kind, now, year=iso_year)
         except NoAnchorPriced as exc:
             log.error("%s", exc)
             raise typer.Exit(2) from exc
