@@ -1255,7 +1255,10 @@ class RfqQuote(Base):
 
     Grading (`rfq_grade`) fills `graded_at`, `closing_fair`, `closing_stale` and the two P&L
     columns. `closing_stale` is true when any leg's closing fair value was stale, and t10
-    reports those quotes separately (ruling B-I6).
+    reports those quotes separately (ruling B-I6). `voided` is true when any leg's game was
+    `postponed` or `canceled`: the combo can never settle, so it is graded once, flagged, and
+    never re-read (ruling I4) rather than sitting in the ungraded queue for the rest of the
+    season with no number and no signal that it never will have one.
     """
     __tablename__ = "rfq_quotes"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -1278,3 +1281,6 @@ class RfqQuote(Base):
     closing_stale: Mapped[bool | None] = mapped_column(Boolean)
     pnl_yes: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     pnl_no: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    #: Ruling I4: a postponed/canceled leg voids the whole combo. Graded once (`graded_at` set)
+    #: and never re-read, distinct from `closing_stale` (a pricing gap on a game that did play).
+    voided: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

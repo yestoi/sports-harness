@@ -200,6 +200,7 @@ def upgrade() -> None:
     sa.Column('closing_stale', sa.Boolean(), nullable=True),
     sa.Column('pnl_yes', sa.Numeric(precision=12, scale=4), nullable=True),
     sa.Column('pnl_no', sa.Numeric(precision=12, scale=4), nullable=True),
+    sa.Column('voided', sa.Boolean(), nullable=False),
     sa.PrimaryKeyConstraint('id'),
     if_not_exists=True,
     )

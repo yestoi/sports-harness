@@ -351,20 +351,29 @@ def handle_frame(session: Session, msg, now: datetime) -> Rfq | None:
     The counterfactual quote is computed **on arrival**, beside the row, because that is the only
     moment the leg fair values are the ones we would actually have quoted against. It is stored
     and never sent; `harness/venues/kalshi/rfq_quote.py` has no way to send it.
+
+    Review I2: the arrival is the fact H5 counts and the socket is the only record of it (F71);
+    the quote is a counterfactual computed beside it. `compute_quote` runs inside its own
+    savepoint, so anything it raises rolls back only the quote attempt -- never the `rfqs` row
+    already written above, and never out of this function to take the caller's socket loop down
+    with it. The row is returned either way.
     """
     event = parse_rfq_frame(msg)
     if event is None:
         return None
     row = store_rfq(session, event, now)
     if event.kind == "rfq_created":
-        from harness.config.settings import get_settings
-        from harness.venues.kalshi.rfq_quote import compute_quote
-
         existing = session.execute(
             text("select 1 from rfq_quotes where rfq_id = :id"), {"id": row.id}).first()
         if existing is None:
-            compute_quote(session, get_settings(), row, now)
-            session.flush()
+            try:
+                with session.begin_nested():
+                    from harness.config.settings import get_settings
+                    from harness.venues.kalshi.rfq_quote import compute_quote
+
+                    compute_quote(session, get_settings(), row, now)
+            except Exception:  # noqa: BLE001 - the arrival must survive a quote failure
+                log.exception("computing the counterfactual quote for rfq %s failed", row.id)
     return row
 
 

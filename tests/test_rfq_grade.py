@@ -71,6 +71,42 @@ def test_an_ungraded_leg_leaves_the_quote_alone(db_session, unsettled_quote):
     assert db_session.execute(text("select graded_at from rfq_quotes")).scalar() is None
 
 
+def test_a_postponed_leg_voids_the_quote_rather_than_leaving_it_waiting(
+        db_session, postponed_leg_quote):
+    """Review I4: a postponed/canceled leg means this combo can never settle. Voided -- graded
+    once and flagged -- rather than left in the ungraded queue for the rest of the season."""
+    result = grade_rfq_quotes(db_session, NOW, _budget())
+    assert result.counts["voided"] == 1
+    row = db_session.execute(text(
+        "select graded_at, voided, closing_fair, pnl_yes, pnl_no from rfq_quotes")).first()
+    assert row.graded_at is not None and row.voided is True
+    assert row.closing_fair is None and row.pnl_yes is None and row.pnl_no is None
+
+
+def test_a_final_game_with_no_score_stays_ungraded(db_session, final_no_score_quote):
+    """Review I4: "never guess a result" holds here the way it holds
+    `harness.settlement.parlay_grade`'s `_score_state` -- a `final` game with no recorded score
+    is not settled yet, the same as an `in_progress` or `scheduled` one."""
+    grade_rfq_quotes(db_session, NOW, _budget())
+    assert db_session.execute(text("select graded_at from rfq_quotes")).scalar() is None
+
+
+def test_a_malformed_quote_is_isolated_and_the_good_quote_still_grades(
+        db_session, malformed_quote_beside_a_good_one):
+    """Review I1: a quote whose stored `legs` holds something `grade_rfq_quotes` cannot read is
+    isolated in its own savepoint, counted as an error, and left untouched for the next pass;
+    the other quote in the same pass still grades."""
+    result = grade_rfq_quotes(db_session, NOW, _budget())
+    assert result.counts["errors"] == 1
+    fixtures = malformed_quote_beside_a_good_one
+    bad = db_session.execute(text(
+        "select graded_at from rfq_quotes where id = :id"), {"id": fixtures.bad.id}).scalar()
+    good = db_session.execute(text(
+        "select graded_at from rfq_quotes where id = :id"), {"id": fixtures.good.id}).scalar()
+    assert bad is None            # untouched, left for the next pass
+    assert good is not None       # graded despite the other quote's failure
+
+
 def test_grading_twice_is_idempotent(db_session, settled_quote):
     grade_rfq_quotes(db_session, NOW, _budget())
     first = db_session.execute(text("select graded_at from rfq_quotes")).scalar()

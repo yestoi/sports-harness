@@ -81,6 +81,18 @@ def test_an_unresolvable_leg_falls_back_to_event_distinctness_and_is_counted(
     assert quote.unmatched_legs == 1
 
 
+def test_a_leg_with_two_priced_lines_uses_its_own_threshold(db_session, env_settings,
+                                                            wrong_line_rfq):
+    """Review C1: `venue_markets.threshold` is part of a leg's identity everywhere else in the
+    harness (the `fair_values` unique key, `match_key`, the settlement/report joins). Without it
+    in the lateral join, this game's more recently priced -7.5 line would win over the leg's own
+    -3.5 line, and the quote would be built on the wrong number."""
+    handle_frame(db_session, wrong_line_rfq.frame, NOW)
+    quote = db_session.execute(text("select fair, declined_reason from rfq_quotes")).first()
+    assert quote.declined_reason is None
+    assert quote.fair == Decimal("0.2750")     # 0.55 (the leg's own line) * 0.50
+
+
 def test_both_fee_branches_are_stored(db_session, env_settings, two_game_rfq):
     """F72 and ruling A-I2. `fee_branch_game` is the game-level independence answer the decline
     rule uses, `fee_branch_event` the event-level one F72 wrote, and the other branch's bids are

@@ -81,6 +81,11 @@ _LEG = text("""
         where fv.game_id = vm.game_id and fv.market_type = vm.market_type
           and fv.outcome_team_id is not distinct from vm.side_team_id
           and fv.outcome_side is not distinct from vm.side
+          -- Review C1: `threshold` is part of the shape's identity everywhere else in the
+          -- harness (the fair_values unique key, venue_markets.match_key, the settlement/report
+          -- joins). Without it, a game with two spread strikes or two total lines returns
+          -- whichever line was priced most recently, not the leg's own line.
+          and fv.threshold is not distinct from vm.threshold
           and fv.fair_source = 'direct' and fv.created_at <= :as_of
         order by fv.created_at desc limit 1
     ) f on true

@@ -888,13 +888,15 @@ _rfq_ids = itertools.count(40001)
 
 
 def _rfq_game(session, prefix: str, *, sport: str = "nfl", status: str = "scheduled",
-             kickoff: datetime | None = None):
+             kickoff: datetime | None = None, home_score: int | None = None,
+             away_score: int | None = None):
     from harness.db.models import Game
 
     home = _make_team(session, f"{prefix}H", sport=sport)
     away = _make_team(session, f"{prefix}A", sport=sport)
     game = Game(sport=sport, home_team_id=home.id, away_team_id=away.id,
-               kickoff_utc=kickoff or (QUOTE_NOW + timedelta(days=1)), status=status)
+               kickoff_utc=kickoff or (QUOTE_NOW + timedelta(days=1)), status=status,
+               home_score=home_score, away_score=away_score)
     session.add(game)
     session.flush()
     return game
@@ -903,22 +905,24 @@ def _rfq_game(session, prefix: str, *, sport: str = "nfl", status: str = "schedu
 def _rfq_market(session, *, ticker: str, event_ticker: str, series_ticker: str,
                 game_id: int | None, fair_p: Decimal | None,
                 disagreement: Decimal = Decimal("0.001"), created_at: datetime,
-                fair_source: str = "direct", market_type: str = "moneyline"):
+                fair_source: str = "direct", market_type: str = "moneyline",
+                threshold: Decimal | None = None):
     """One `venue_markets` row and (when `fair_p` is given) the `fair_values` row it resolves
     through, keyed exactly the way `harness.venues.kalshi.rfq_quote.resolve_legs` (and
-    `harness.settlement.rfq_grade`'s closing-leg query) read them."""
+    `harness.settlement.rfq_grade`'s closing-leg query) read them. `threshold` is part of that
+    shape's identity (review C1) alongside `game_id`/`market_type`/`side_team_id`/`side`."""
     from harness.db.models import FairValue, VenueMarket
 
     rid = next(_rfq_ids)
     vm = VenueMarket(venue="kalshi", ticker=ticker, event_ticker=event_ticker,
                      series_ticker=series_ticker, game_id=game_id, market_type=market_type,
-                     first_seen_raw_id=rid, last_seen_at=created_at)
+                     threshold=threshold, first_seen_raw_id=rid, last_seen_at=created_at)
     session.add(vm)
     session.flush()
     if fair_p is not None:
         session.add(FairValue(run_id=rid, game_id=game_id, market_type=market_type,
-                              fair_p=fair_p, fair_source=fair_source, disagreement=disagreement,
-                              created_at=created_at))
+                              threshold=threshold, fair_p=fair_p, fair_source=fair_source,
+                              disagreement=disagreement, created_at=created_at))
         session.flush()
     return vm
 
@@ -1053,6 +1057,32 @@ def big_rfq(db_session):
     return SimpleNamespace(frame=frame)
 
 
+@pytest.fixture
+def wrong_line_rfq(db_session):
+    """Review C1: one leg's game carries two `fair_values` rows at different thresholds -- its
+    own line, and a second, wrong one primed more recently. Without `threshold` in the lateral
+    join's match, `order by created_at desc limit 1` would return the wrong line."""
+    from harness.db.models import FairValue
+
+    g1, g2 = _rfq_game(db_session, "WA"), _rfq_game(db_session, "WB")
+    vm1 = _rfq_market(db_session, ticker="KXNFLSPREAD-WA-T1", event_ticker="KXNFLSPREAD-WA",
+                      series_ticker="KXNFLSPREAD", game_id=g1.id, market_type="spread",
+                      threshold=Decimal("-3.5"), fair_p=Decimal("0.55"),
+                      created_at=QUOTE_NOW - timedelta(minutes=5))
+    # The wrong line: same game and market type, a different threshold, primed more recently --
+    # the row `order by created_at desc limit 1` would pick without the fix.
+    db_session.add(FairValue(run_id=next(_rfq_ids), game_id=g1.id, market_type="spread",
+                             threshold=Decimal("-7.5"), fair_p=Decimal("0.90"),
+                             fair_source="direct", disagreement=Decimal("0.001"),
+                             created_at=QUOTE_NOW - timedelta(minutes=1)))
+    db_session.flush()
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-WB-T1", event_ticker="KXNFLGAME-WB",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-WRONG-LINE", [_rfq_leg(vm1), _rfq_leg(vm2)])
+    return SimpleNamespace(frame=frame)
+
+
 # --- Task T14: the `rfq_grade` fixtures (a stored quote + the legs it grades against) ---------
 
 GRADE_NOW = datetime(2026, 9, 22, 6, 0, tzinfo=timezone.utc)
@@ -1062,8 +1092,8 @@ def _graded_rfq(session, *, rfq_id: str, legs: list[dict], yes_bid=None, no_bid=
                 declined_reason=None):
     from harness.db.models import Rfq, RfqQuote
 
-    rfq = Rfq(id=rfq_id, received_at=GRADE_NOW,
-             market_ticker=legs[0]["market_ticker"] if legs else f"MKT-{rfq_id}",
+    first_ticker = legs[0].get("market_ticker") if legs and isinstance(legs[0], dict) else None
+    rfq = Rfq(id=rfq_id, received_at=GRADE_NOW, market_ticker=first_ticker or f"MKT-{rfq_id}",
              legs=legs, raw={"msg": {}, "truncated": False}, status="open")
     session.add(rfq)
     session.flush()
@@ -1078,15 +1108,19 @@ def _graded_rfq(session, *, rfq_id: str, legs: list[dict], yes_bid=None, no_bid=
 
 @pytest.fixture
 def settled_quote(db_session):
-    """Two games `final`, both closing fairs written after kickoff: 0.70 x 0.50 = 0.35."""
-    g1 = _rfq_game(db_session, "GS1", status="final", kickoff=GRADE_NOW - timedelta(hours=8))
-    g2 = _rfq_game(db_session, "GS2", status="final", kickoff=GRADE_NOW - timedelta(hours=6))
+    """Two games `final` with scores recorded, both closing fairs written before kickoff
+    (review I3: `_CLOSING_LEG` bounds the close to `created_at <= kickoff_utc`, so a "closing"
+    fair written after kickoff is not one): 0.70 x 0.50 = 0.35."""
+    g1 = _rfq_game(db_session, "GS1", status="final", kickoff=GRADE_NOW - timedelta(hours=8),
+                   home_score=24, away_score=17)
+    g2 = _rfq_game(db_session, "GS2", status="final", kickoff=GRADE_NOW - timedelta(hours=6),
+                   home_score=20, away_score=13)
     vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GS1-T1", event_ticker="KXNFLGAME-GS1",
                       series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
-                      created_at=GRADE_NOW - timedelta(hours=1))
+                      created_at=g1.kickoff_utc - timedelta(minutes=10))
     vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GS2-T1", event_ticker="KXNFLGAME-GS2",
                       series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
-                      created_at=GRADE_NOW - timedelta(hours=1))
+                      created_at=g2.kickoff_utc - timedelta(minutes=10))
     rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-SETTLED",
                              legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
                              yes_bid=Decimal("0.3000"), no_bid=Decimal("0.6400"))
@@ -1097,14 +1131,16 @@ def settled_quote(db_session):
 def stale_closing_quote(db_session):
     """Same shape, but one leg's newest `fair_values` row predates its kickoff by more than
     `CLOSING_WINDOW` -- the closing fair simply is not there."""
-    g1 = _rfq_game(db_session, "GT1", status="final", kickoff=GRADE_NOW - timedelta(hours=8))
-    g2 = _rfq_game(db_session, "GT2", status="final", kickoff=GRADE_NOW - timedelta(hours=6))
+    g1 = _rfq_game(db_session, "GT1", status="final", kickoff=GRADE_NOW - timedelta(hours=8),
+                   home_score=24, away_score=17)
+    g2 = _rfq_game(db_session, "GT2", status="final", kickoff=GRADE_NOW - timedelta(hours=6),
+                   home_score=20, away_score=13)
     vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GT1-T1", event_ticker="KXNFLGAME-GT1",
                       series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
                       created_at=g1.kickoff_utc - timedelta(hours=8))
     vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GT2-T1", event_ticker="KXNFLGAME-GT2",
                       series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
-                      created_at=GRADE_NOW - timedelta(hours=1))
+                      created_at=g2.kickoff_utc - timedelta(minutes=10))
     rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-STALE",
                              legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
                              yes_bid=Decimal("0.3000"), no_bid=Decimal("0.6400"))
@@ -1122,15 +1158,87 @@ def declined_quote(db_session):
 @pytest.fixture
 def unsettled_quote(db_session):
     """One leg's game is still `in_progress`: nothing to grade against yet."""
-    g1 = _rfq_game(db_session, "GU1", status="in_progress", kickoff=GRADE_NOW - timedelta(hours=1))
-    g2 = _rfq_game(db_session, "GU2", status="final", kickoff=GRADE_NOW - timedelta(hours=6))
+    g1 = _rfq_game(db_session, "GU1", status="in_progress",
+                   kickoff=GRADE_NOW - timedelta(hours=1))
+    g2 = _rfq_game(db_session, "GU2", status="final", kickoff=GRADE_NOW - timedelta(hours=6),
+                   home_score=20, away_score=13)
     vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GU1-T1", event_ticker="KXNFLGAME-GU1",
                       series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
-                      created_at=GRADE_NOW - timedelta(minutes=10))
+                      created_at=g1.kickoff_utc - timedelta(minutes=10))
     vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GU2-T1", event_ticker="KXNFLGAME-GU2",
                       series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
-                      created_at=GRADE_NOW - timedelta(hours=1))
+                      created_at=g2.kickoff_utc - timedelta(minutes=10))
     rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-UNSETTLED",
                              legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
                              yes_bid=Decimal("0.3000"), no_bid=Decimal("0.6400"))
     return SimpleNamespace(rfq=rfq, quote=quote)
+
+
+@pytest.fixture
+def postponed_leg_quote(db_session):
+    """Review I4: one leg's game is `postponed` -- this combo can never settle, so the quote is
+    voided rather than left waiting forever."""
+    g1 = _rfq_game(db_session, "GP1", status="postponed",
+                   kickoff=GRADE_NOW - timedelta(hours=8))
+    g2 = _rfq_game(db_session, "GP2", status="final", kickoff=GRADE_NOW - timedelta(hours=6),
+                   home_score=20, away_score=13)
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GP1-T1", event_ticker="KXNFLGAME-GP1",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
+                      created_at=g1.kickoff_utc - timedelta(minutes=10))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GP2-T1", event_ticker="KXNFLGAME-GP2",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=g2.kickoff_utc - timedelta(minutes=10))
+    rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-POSTPONED",
+                             legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
+                             yes_bid=Decimal("0.3000"), no_bid=Decimal("0.6400"))
+    return SimpleNamespace(rfq=rfq, quote=quote)
+
+
+@pytest.fixture
+def final_no_score_quote(db_session):
+    """Review I4: a `final` game with no recorded score is not settled -- "never guess a
+    result" holds for `rfq_grade` the same way `harness.settlement.parlay_grade`'s
+    `_score_state` holds it for a leg."""
+    g1 = _rfq_game(db_session, "GN1", status="final", kickoff=GRADE_NOW - timedelta(hours=8))
+    g2 = _rfq_game(db_session, "GN2", status="final", kickoff=GRADE_NOW - timedelta(hours=6),
+                   home_score=20, away_score=13)
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GN1-T1", event_ticker="KXNFLGAME-GN1",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
+                      created_at=g1.kickoff_utc - timedelta(minutes=10))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GN2-T1", event_ticker="KXNFLGAME-GN2",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=g2.kickoff_utc - timedelta(minutes=10))
+    rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-NO-SCORE",
+                             legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
+                             yes_bid=Decimal("0.3000"), no_bid=Decimal("0.6400"))
+    return SimpleNamespace(rfq=rfq, quote=quote)
+
+
+@pytest.fixture
+def malformed_quote_beside_a_good_one(db_session):
+    """One quote whose stored `legs` holds an element that is not a mapping (review I1) beside
+    an ordinary settled quote: the malformed quote must not cost the good one its grade.
+
+    Committed, not just flushed, for the same reason `placed_card_malformed_beside_a_good_one`
+    (T12's fixture, above) is: `grade_rfq_quotes` rolls back its own savepoint when a quote
+    fails, and a fixture that left this pair merely flushed in the outer transaction would have
+    that rollback erase the good quote too."""
+    bad_rfq, bad_quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-MALFORMED",
+                                     legs=["not-a-dict"], yes_bid=Decimal("0.30"),
+                                     no_bid=Decimal("0.64"))
+
+    g1 = _rfq_game(db_session, "GG1", status="final", kickoff=GRADE_NOW - timedelta(hours=8),
+                   home_score=24, away_score=17)
+    g2 = _rfq_game(db_session, "GG2", status="final", kickoff=GRADE_NOW - timedelta(hours=6),
+                   home_score=20, away_score=13)
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-GG1-T1", event_ticker="KXNFLGAME-GG1",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.70"),
+                      created_at=g1.kickoff_utc - timedelta(minutes=10))
+    vm2 = _rfq_market(db_session, ticker="KXNFLGAME-GG2-T1", event_ticker="KXNFLGAME-GG2",
+                      series_ticker="KXNFLGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=g2.kickoff_utc - timedelta(minutes=10))
+    good_rfq, good_quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-GOOD",
+                                       legs=[_rfq_leg(vm1), _rfq_leg(vm2)],
+                                       yes_bid=Decimal("0.30"), no_bid=Decimal("0.64"))
+    db_session.commit()
+    return SimpleNamespace(bad=bad_quote, good=good_quote)
