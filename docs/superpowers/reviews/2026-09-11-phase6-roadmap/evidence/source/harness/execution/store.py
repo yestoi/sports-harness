@@ -1,0 +1,828 @@
+"""Every statement the executor loop runs. The loop itself holds no SQL.
+
+Two rules shape this module and both come from the addendum:
+
+* **Idempotency.** Every insert has a unique key and goes in as
+  `on conflict do nothing ... returning id`. psycopg3 reports `rowcount = -1` for a conflict
+  insert, so the returned row -- not the row count -- is what says whether anything was
+  written, and only a returned row moves a counter or a running total. A step that dies
+  half-way and is retried therefore writes each row exactly once.
+* **Tape access.** The live path reads deltas by `id` alone (`id > cursor`, capped at the
+  caller's `limit`, `DELTA_BATCH_LIMIT` by default and as low as `DELTA_BATCH_FLOOR` for a
+  ticker whose reads keep timing out, fix 26); `id` is the recorder's insertion order and the
+  only monotone quantity on the tape, so a cursor bounds the scan by itself and a `ts` beside it
+  only buys the planner a second index to AND (fix 22). The `ts >= lower` bound survives on the
+  first read of a ticker, where there is no cursor yet. Prints have no cursor at all -- the
+  executor rescans them from `placed_at - 60 s` every loop and the simulator's print watermark
+  absorbs the re-feed.
+* **The past instant (`at`).** A replay executor's clock is a grid instant days in the past, so
+  every read it makes has to stop there: the tape at its head, the signals of a later run, a gap
+  snapshot priced an hour afterwards would all be information the live loop could not have had.
+  Each reader below therefore takes an `at: datetime | None` -- None is the live path and reads
+  the head, a value is the replay path and bounds the read on `ts <= at` (`created_at <= at` for
+  the pricing tables), ordered by `(ts, id)` for the tape (Task 13, ruling 2).
+
+  The horizon reaches every table that has a history to bound. It cannot reach the dimension
+  tables: `venue_markets.match_status` / `match_key` and `games.kickoff_utc` are read at their
+  current values, so a market matched (or a kickoff moved) *after* the replayed instant reads
+  that way in the replay. Bounding those would need a history the schema does not keep, so this
+  is a stated limitation of a replay rather than something the reader can fix (review M7).
+
+Reads return frozen views from `harness.execution.plan` wherever the decision chain consumes
+them, so the loop never passes a raw `Row` into a pure function.
+"""
+
+import logging
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Iterable, NamedTuple, Sequence
+
+from sqlalchemy import text, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
+
+from harness.db.models import EquitySnapshot, Fill, Intent, Ledger, Order, OrderEvent, OrderWatchSample
+from harness.execution.fills import TapeDelta, TapePrint
+from harness.execution.plan import FillView, IntentView, PositionView
+from harness.strategy.variants import with_defaults
+
+log = logging.getLogger(__name__)
+
+#: The advisory lock the single live executor holds for the length of one step. `hashtext` is
+#: stable for a given string across a cluster's lifetime, which is all this needs.
+LOCK_KEY = "harness.exec"
+#: A replay executor's own key. It writes only `replay = true` rows, so it races nothing the
+#: live loop owns -- and sharing one key would let an operator's `replay --execute` and the
+#: service take turns skipping each other's steps for the length of a replayed day.
+REPLAY_LOCK_KEY = "harness.exec.replay"
+
+#: The prints a fill simulation rescans on every loop, measured back from `placed_at` (§1).
+PRINT_LOOKBACK = timedelta(seconds=60)
+
+OPEN_STATUSES = ("open", "partially_filled")
+
+
+# --- the advisory lock ----------------------------------------------------------------
+
+
+def try_lock(conn, key: str = LOCK_KEY) -> bool:
+    """Take the executor's session-level advisory lock, or report that someone else has it."""
+    return bool(conn.execute(text("select pg_try_advisory_lock(hashtext(:k))"),
+                             {"k": key}).scalar())
+
+
+def unlock(conn, key: str = LOCK_KEY) -> None:
+    conn.execute(text("select pg_advisory_unlock(hashtext(:k))"), {"k": key})
+
+
+# --- variants -------------------------------------------------------------------------
+
+
+def resolve_variants(session: Session, names: Sequence[str]) -> list[str]:
+    """`Settings.exec_variants` holds variant *names*; signals carry the 12-hex `variant_id`.
+
+    An id is accepted too, so an operator can pin one registered configuration by hash.
+    """
+    if not names:
+        return []
+    rows = session.execute(text(
+        "select variant_id from strategy_variants where name = any(:n) or variant_id = any(:n)"),
+        {"n": list(names)}).scalars().all()
+    return sorted(rows)
+
+
+def variant_configs(session: Session, variant_ids: Iterable[str]) -> dict[str, dict]:
+    """Every named variant's config, defaults filled in (Task 5 ruling 3).
+
+    A DB-loaded config carries only the keys the YAML spelled out, and `plan_actions` raises on
+    a missing key by design; `with_defaults` is what keeps the loop away from that raise.
+    """
+    ids = sorted(set(variant_ids))
+    if not ids:
+        return {}
+    rows = session.execute(text(
+        "select variant_id, config_json from strategy_variants where variant_id = any(:v)"),
+        {"v": ids}).all()
+    return {row.variant_id: with_defaults(row.config_json) for row in rows}
+
+
+def kill_active(session: Session) -> bool:
+    return bool(session.execute(text(
+        "select active from kill_switch order by id limit 1")).scalar())
+
+
+# --- intake ---------------------------------------------------------------------------
+
+
+def _live_and_at(sql: str, bound: str) -> tuple:
+    """The live and past-instant forms of one statement, both compiled once at import.
+
+    `sql` carries a `{at}` placeholder in its `where`: the live form drops it, the `at` form
+    fills it with `bound`. Building the two up front rather than per call keeps SQLAlchemy's
+    compiled-statement cache working, which a `text()` made inside the loop would defeat.
+    """
+    return text(sql.format(at="")), text(sql.format(at=bound))
+
+
+_CANDIDATES, _CANDIDATES_AT = _live_and_at("""
+select s.id as signal_id, s.variant_id, s.venue_market_id, s.side, s.price_target, s.contracts,
+       s.edge, s.edge_min, s.fair_p, s.stake, s.created_at, s.as_estimate, s.gap_snapshot_id,
+       m.ticker, m.venue, m.game_id, g.kickoff_utc, gs.fair_value_id
+from signals s
+join venue_markets m on m.id = s.venue_market_id
+left join games g on g.id = m.game_id
+left join market_gap_snapshots gs on gs.id = s.gap_snapshot_id
+left join intents i on i.signal_id = s.id
+where s.decision = 'candidate' and s.replay = :replay and s.variant_id = any(:variants)
+  and s.created_at >= :lower{at} and i.signal_id is null
+order by s.id
+""", " and s.created_at <= :at")
+
+
+def candidate_signals(session: Session, variant_ids: Sequence[str], lower: datetime,
+                      replay: bool, at: datetime | None = None) -> list:
+    """Candidate signals of the executed variants inside the intent TTL that have no intent yet.
+
+    Nothing is filtered out beyond that (§1): whether the loop can act on the signal is the
+    decision chain's business, and the intent row is the record that it was offered one.
+
+    `at` is a replay executor's grid instant: a replayed range holds every run's signals from
+    the first step, and acting at 19:00 on a signal a 19:30 run produced would be the one thing
+    a replay must never do.
+    """
+    if not variant_ids:
+        return []
+    params = {"replay": replay, "variants": list(variant_ids), "lower": lower}
+    stmt = _CANDIDATES
+    if at is not None:
+        stmt, params = _CANDIDATES_AT, params | {"at": at}
+    return session.execute(stmt, params).all()
+
+
+_MARKET_TYPES = text("select id, market_type from venue_markets where id = any(:ids)")
+
+
+def _market_types_of(session: Session, rows: Sequence) -> dict[int, str]:
+    """Every candidate's market type, in one statement.
+
+    `veto_queue.market_type` is NOT NULL and part of the bucket key, and `candidate_signals` does
+    not select it, so it is read here -- once for the batch rather than once per intent. The
+    executor's loop ceiling is 7.5 s and a burst is exactly when both the row count and the
+    contention are highest, which is the wrong moment for an N+1 (review round 1, minor).
+    """
+    ids = sorted({row.venue_market_id for row in rows})
+    if not ids:
+        return {}
+    return {r.id: r.market_type for r in session.execute(_MARKET_TYPES, {"ids": ids})}
+
+
+def _queue_values(row, now: datetime, market_types: dict[int, str], minutes: int) -> dict:
+    """One `veto_queue` row's values for one intent this call wrote (addendum 0.2, ruling B-C1).
+
+    One row per **signal**, never one per bucket: a unique index on the bucket key would refuse
+    the second and later signals of a burst and their ids would never be persisted anywhere,
+    which is selection rather than attenuation -- the deduped signals are exactly the ones on a
+    moving line.
+
+    `bucket_start` is a plain column with a partial index; the worker claims every unclaimed row
+    of a bucket at once. Pure -- no session, no I/O -- so building the whole batch's values
+    cannot itself be the thing a savepoint has to guard against (fix round 2, I2).
+    """
+    from harness.research.veto import bucket_start
+
+    return dict(signal_id=row.signal_id, game_id=row.game_id,
+               market_type=market_types.get(row.venue_market_id) or "unknown",
+               bucket_start=bucket_start(row.created_at, minutes),
+               enqueued_at=now, claimed_at=None)
+
+
+def _write_queue_batch(session: Session, queue_values: list[dict]) -> None:
+    """The whole batch's `veto_queue` rows, one insert."""
+    from harness.db.models import VetoQueue
+
+    session.execute(insert(VetoQueue).values(queue_values)
+                    .on_conflict_do_nothing(index_elements=["signal_id"]))
+
+
+def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool) -> int:
+    """One intent per candidate signal; returns how many rows this call actually wrote.
+
+    Phase 5 hangs the veto queue off this loop, because it is already exactly once per signal:
+    the insert is `on conflict do nothing` on `signal_id` and only a returned row counts.
+    """
+    from harness.config.settings import get_settings
+
+    written = 0
+    # Collected here, not queued yet: building the batch (the market-type lookup included) has
+    # to sit inside the same guard as the write, or a lookup that raises -- a statement timeout
+    # under contention, say -- escapes this function and costs every intent this call wrote
+    # (fix round 3, guarding `_market_types_of` too). A replay writes nothing: H9 is measured on
+    # live signals only.
+    written_rows: list = []
+    for row in rows:
+        stmt = insert(Intent).values(
+            signal_id=row.signal_id, variant_id=row.variant_id, venue=row.venue,
+            venue_market_id=row.venue_market_id, ticker=row.ticker, side=row.side,
+            target_prob=row.price_target,
+            target_contracts=None if row.contracts is None else Decimal(row.contracts),
+            edge=row.edge, edge_min=row.edge_min, fair_p=row.fair_p,
+            fair_row_id=row.fair_value_id, game_id=row.game_id, kickoff_utc=row.kickoff_utc,
+            stake=row.stake, signal_created_at=row.created_at, created_at=now, replay=replay,
+        ).on_conflict_do_nothing(index_elements=["signal_id"]).returning(Intent.id)
+        if session.execute(stmt).first() is not None:
+            written += 1
+            if not replay:
+                written_rows.append(row)
+    if written_rows:
+        # Phase 5: the veto queue, built and written together in one savepoint (fix round 2, I2;
+        # fix round 3 folds the market-type lookup into the same guard). `candidate_signals` has
+        # no LIMIT, so a recorder/executor gap can put well over sixty-four intents through the
+        # loop above in one transaction, and PostgreSQL's `pg_subtrans` SLRU overflows past 64
+        # subtransactions -- a cost every concurrent reader pays, cluster-wide, on a 2 GB
+        # Postgres. One savepoint around the lookup and the batched insert buys the isolation
+        # the comment above promises (a queue failure, of any kind, never costs an intent) at one
+        # subtransaction regardless of batch size.
+        try:
+            with session.begin_nested():
+                minutes = get_settings().veto_bucket_minutes
+                market_types = _market_types_of(session, written_rows)
+                queue_values = [_queue_values(row, now, market_types, minutes)
+                               for row in written_rows]
+                _write_queue_batch(session, queue_values)
+        except Exception:  # noqa: BLE001
+            log.exception("veto enqueue failed for a batch of %d intent(s)", len(written_rows))
+    return written
+
+
+_NEWEST_INTENTS, _NEWEST_INTENTS_AT = _live_and_at("""
+select distinct on (i.variant_id, i.venue_market_id, i.side)
+       i.id, i.signal_id, i.variant_id, i.venue_market_id, i.ticker, i.side, i.target_prob,
+       i.target_contracts, i.edge, i.edge_min, i.fair_p, i.fair_row_id, i.game_id,
+       i.kickoff_utc, i.stake, i.signal_created_at, i.venue,
+       s.as_estimate, s.gap_snapshot_id
+from intents i
+left join signals s on s.id = i.signal_id
+where i.replay = :replay and i.variant_id = any(:variants)
+  and i.signal_created_at >= :lower{at}
+order by i.variant_id, i.venue_market_id, i.side, i.signal_created_at desc, i.created_at desc,
+         i.signal_id desc, i.id desc
+""", " and i.signal_created_at <= :at")
+
+_NEWEST_DECISIONS, _NEWEST_DECISIONS_AT = _live_and_at("""
+select distinct on (s.variant_id, s.venue_market_id, s.side)
+       s.variant_id, s.venue_market_id, s.side, s.decision
+from signals s
+where s.replay = :replay and s.variant_id = any(:variants) and s.created_at >= :lower{at}
+order by s.variant_id, s.venue_market_id, s.side, s.created_at desc, s.id desc
+""", " and s.created_at <= :at")
+
+
+def load_intents(session: Session, variant_ids: Sequence[str], lower: datetime,
+                 replay: bool, at: datetime | None = None) -> tuple[list[IntentView], dict]:
+    """The intents the decision chain sees, plus the placement context they carry.
+
+    The newest intent per `(variant_id, venue_market_id, side)` inside the TTL. The kickoff
+    cutoff is deliberately *not* applied here: `plan_actions`' own `kickoff` rule is what
+    declines an intent too close to kickoff, and filtering it out first would leave that
+    decision with no record (F34, R8). `signal_id desc` breaks a timestamp tie, since
+    `intents.id` is a uuid and orders nothing meaningful.
+
+    `latest_decision` is read separately, from the newest *signal* on the same key whatever its
+    decision, which is how an order placed by an intent whose signal has since been rejected
+    gets cancelled.
+    """
+    if not variant_ids:
+        return [], {}
+    params = {"replay": replay, "variants": list(variant_ids), "lower": lower}
+    intents_stmt, decisions_stmt = _NEWEST_INTENTS, _NEWEST_DECISIONS
+    if at is not None:
+        # The `at` bound belongs on both halves: a decision a later run reversed must not
+        # cancel an order the replayed instant had every reason to still be holding.
+        intents_stmt, decisions_stmt = _NEWEST_INTENTS_AT, _NEWEST_DECISIONS_AT
+        params = params | {"at": at}
+    decisions = {(r.variant_id, r.venue_market_id, r.side): r.decision
+                 for r in session.execute(decisions_stmt, params).all()}
+    views: list[IntentView] = []
+    extras: dict = {}
+    for row in session.execute(intents_stmt, params).all():
+        key = (row.variant_id, row.venue_market_id, row.side)
+        views.append(IntentView(
+            intent_id=row.id, signal_id=row.signal_id, variant_id=row.variant_id,
+            venue_market_id=row.venue_market_id, ticker=row.ticker, side=row.side,
+            target_prob=row.target_prob, target_contracts=row.target_contracts, edge=row.edge,
+            edge_min=row.edge_min, fair_p=row.fair_p, game_id=row.game_id,
+            kickoff_utc=row.kickoff_utc, stake=row.stake,
+            signal_created_at=row.signal_created_at,
+            latest_decision=decisions.get(key, "candidate")))
+        extras[row.id] = {"venue": row.venue, "as_estimate": row.as_estimate,
+                          "gap_snapshot_id": row.gap_snapshot_id}
+    return views, extras
+
+
+# --- orders, markets and the tape -----------------------------------------------------
+
+_WORKING_ORDERS = text("""
+select o.id, o.intent_id, o.variant_id, o.ticker, o.venue_market_id, o.side, o.prob,
+       o.contracts, o.filled_contracts, o.status, o.placed_at, o.expiry, o.fair_p_at_place,
+       o.venue_mid_at_place, o.edge_min_at_place, o.as_at_place, o.kickoff_utc, o.game_id,
+       coalesce(i.stake, o.prob * o.contracts) as stake,
+       o.match_key, o.queue_ahead_at_place, o.queue_remaining, o.traded_at_price,
+       o.tape_cursor_event_id, o.crossed, o.last_print_ts, o.last_print_ids,
+       o.nw_filled_contracts, o.nw_queue_remaining, o.nw_traded_at_price,
+       o.nw_tape_cursor_event_id, o.nw_crossed, o.nw_last_print_ts, o.nw_last_print_ids,
+       o.nw_done, o.book_source, o.dirty_seconds, o.worst_case_fill
+from orders o
+left join intents i on i.id = o.intent_id
+where o.replay = :replay and (o.status in ('open', 'partially_filled') or o.nw_done = false)
+order by o.id
+""")
+
+
+def working_orders(session: Session, replay: bool) -> list:
+    """Orders the fill step still has something to say about: open ones, plus every order whose
+    no-watcher counterfactual has not reached its own expiry.
+
+    `orders` has no stake column of its own, so the exposure the caps are measured against comes
+    off the intent that placed the order -- the same number the strategy sized with. An order
+    whose intent has been pruned falls back to its own cost basis.
+    """
+    return session.execute(_WORKING_ORDERS, {"replay": replay}).all()
+
+
+_MARKETS, _MARKETS_AT = _live_and_at("""
+select m.id as venue_market_id, m.ticker, m.venue, m.match_status, m.match_key, m.game_id,
+       m.side_team_id, g.sport, g.kickoff_utc,
+       gap.id as gap_snapshot_id, gap.fair_p, gap.fair_value_id, gap.staleness_s,
+       gap.stale_allowance_s, gap.feed_kind, gap.best_bid, gap.best_ask, gap.venue_mid,
+       fv.created_at as fair_ts
+from venue_markets m
+left join games g on g.id = m.game_id
+left join lateral (
+    select s.* from market_gap_snapshots s
+    where s.venue_market_id = m.id{at} order by s.created_at desc, s.id desc limit 1
+) gap on true
+left join fair_values fv on fv.id = gap.fair_value_id
+where m.id = any(:ids)
+""", " and s.created_at <= :at")
+
+
+def market_rows(session: Session, venue_market_ids: Iterable[int],
+                at: datetime | None = None) -> dict[int, object]:
+    """One row per market: its identity plus its newest gap snapshot and that snapshot's fair
+    value. `fair_ts` is the fair value's own `created_at`, never the snapshot's.
+
+    `at` picks the newest snapshot the replayed instant could have seen. Without it every
+    market in a replay would be priced off the last snapshot of the whole range, which is the
+    one number the decision chain must not be given."""
+    ids = sorted(set(venue_market_ids))
+    if not ids:
+        return {}
+    params = {"ids": ids}
+    stmt = _MARKETS
+    if at is not None:
+        stmt, params = _MARKETS_AT, params | {"at": at}
+    return {row.venue_market_id: row for row in session.execute(stmt, params).all()}
+
+
+# The live statement with the instant added, bounded below as well as above (final review I2).
+# `orderbook_events` is weekly-partitioned on `ts` with a per-partition PK of `(id, ts)`, so
+# `ts <= :at` alone prunes only the partitions that start after the instant: inside the one
+# holding it, the plan was a backward walk by `id` that filtered every row taped *after* the
+# instant before it reached one at or before it. Replaying a Sunday game day is a walk over
+# most of that week's tape, once per 15 s grid step, under the executor's own 10 s statement
+# timeout -- a hard failure of the Monday replay duty rather than a slow query. A lower `ts`
+# bound is answered off `ix_obe_ts_brin`, and the loop's question ("is the tape's newest row
+# older than `book_max_age_s`") never needs to look further back than the first window.
+# `(ts desc, id desc)` rather than `id desc`: the question is which row is newest by the
+# recorder's clock, not which was inserted last.
+_NEWEST_EVENT_AT = text(
+    "select ts from orderbook_events where ts <= :at and ts > :lower "
+    "order by ts desc, id desc limit 1")
+
+#: The bounded tape lookback and its one widening. 10 minutes is five times `book_max_age_s`,
+#: so any answer the loop would act on differently is inside it; 24 h is the backstop for a
+#: replay that starts after a long recorder outage. Nothing older than that can read as
+#: anything but a dead recorder, so the second empty answer is `None` rather than a third,
+#: unbounded scan.
+TAPE_WINDOW = timedelta(minutes=10)
+TAPE_WINDOW_WIDE = timedelta(hours=24)
+
+
+def newest_event_ts(session: Session, at: datetime | None = None) -> datetime | None:
+    """The `ts` of the tape's newest row -- the recorder's own liveness signal.
+
+    Live reads the head by `id`, the tape's insertion order. A replay executor asks the same
+    question of its own instant instead, so a recorder outage inside the replayed range still
+    reads as one (F36) rather than being papered over by rows taped hours later.
+
+    The instant-bounded read looks back `TAPE_WINDOW`, then once more over `TAPE_WINDOW_WIDE`,
+    and answers `None` beyond that -- which `Executor._body` already treats exactly as it
+    treats a row older than `book_max_age_s`: `dead_recorder`.
+    """
+    if at is not None:
+        for window in (TAPE_WINDOW, TAPE_WINDOW_WIDE):
+            got = session.execute(_NEWEST_EVENT_AT, {"at": at, "lower": at - window}).scalar()
+            if got is not None:
+                return got
+        return None
+    return session.execute(text(
+        "select ts from orderbook_events order by id desc limit 1")).scalar()
+
+
+def event_ts(session: Session, event_id: int) -> datetime | None:
+    return session.execute(text("select ts from orderbook_events where id = :i"),
+                           {"i": event_id}).scalar()
+
+
+_PRINTS = text("""
+select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,
+       source
+from venue_trades where ticker = :t and ts >= :lower order by ts, trade_id
+""")
+
+_PRINTS_AT = text("""
+select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,
+       source
+from venue_trades where ticker = :t and ts >= :lower and ts <= :at order by ts, trade_id
+""")
+
+
+def load_prints(session: Session, ticker: str, lower: datetime,
+                at: datetime | None = None) -> list[TapePrint]:
+    """Prints for one ticker since `lower`, deduplicated by `trade_id`.
+
+    The same trade reaches us from the WebSocket and from REST, and `venue_trades` is
+    partitioned on `ts` -- so `ts` is part of its primary key and cannot deduplicate a pair of
+    rows a millisecond apart. The first row per `trade_id` in `ts` order wins.
+
+    `at` bounds the scan at a replay executor's own instant. `simulate_fills` already drops a
+    print past its deadline, but `has_print` does not: it scans the whole list, so an unbounded
+    replay would explain a fill with a trade printed after the instant that produced it.
+    """
+    seen: set[str] = set()
+    out: list[TapePrint] = []
+    params = {"t": ticker, "lower": lower}
+    stmt = _PRINTS
+    if at is not None:
+        stmt, params = _PRINTS_AT, params | {"at": at}
+    for row in session.execute(stmt, params).all():
+        if row.trade_id in seen:
+            continue
+        seen.add(row.trade_id)
+        out.append(TapePrint(trade_id=row.trade_id, ts=row.ts, yes_price=row.yes_price,
+                             count=row.count, taker_side=row.taker_side, source=row.source))
+    return out
+
+
+#: The most rows one live delta read hands back for one ticker in one loop. A ticker with more
+#: tape than this behind its cursor catches up over successive loops -- each one starting where
+#: the last stopped -- instead of asking for the whole backlog in a single statement that runs
+#: past the executor engine's 10 s statement timeout, dies, and leaves the next loop the
+#: identical read to fail on (fix 22, journal 68). 20 000 delta rows is far more than a 15 s
+#: loop can accrue on any real ticker, so the live path never truncates in steady state;
+#: this is the catch-up bound.
+DELTA_BATCH_LIMIT = 20_000
+
+#: The smallest that cap is ever allowed to shrink to when a ticker's read keeps timing out
+#: (fix 26). It is a measurement, not a guess: on the NAS under I/O pressure (a video transcode
+#: holding `/proc/pressure/io` full at 60-70 %) a 500-row read at a cursor a million ids behind
+#: cost 183 disk page reads, so a few hundred rows is what a cold read can finish inside the
+#: executor engine's `EXEC_STATEMENT_TIMEOUT_MS = 10_000`; 20 000 needs thousands of pages and
+#: cannot. Below this floor a lagging ticker would never walk off its backlog before its market
+#: settled, so the floor is where shrinking stops and the read is simply allowed to fail.
+DELTA_BATCH_FLOOR = 250
+
+
+class DeltaBatch(NamedTuple):
+    """One live delta read. `truncated` is "the limit was reached, so assume more to come" --
+    the caller must treat the last row as a tape position it is still behind, never as the head
+    of the tape."""
+
+    deltas: list[TapeDelta]
+    truncated: bool
+
+
+# The live scan once a cursor exists: `(ticker, id)` alone, no `ts` predicate. `id` is the
+# recorder's insertion order and is monotone, so every row past the cursor is also past the
+# cursor's `ts` and the `ts >= :lower` bound adds nothing but work. On the production tape it
+# added a great deal of it: `EXPLAIN` showed the planner ANDing a bitmap of the `ts` index
+# (1 668 859 estimated rows for a 9-hour lower bound) with `(ticker, id)` to return 3 349 rows,
+# once per open-order ticker per loop -- 30-140 s loops, rising `loops_skipped`, and finally
+# the 30 s statement timeout (fix 22, journal 68).
+_DELTAS = text("""
+select id, ts, side, price, delta, sid, seq from orderbook_events
+where ticker = :t and kind = 'delta' and id > :cursor
+order by id limit :limit
+""")
+
+# The first read of a ticker, where `cursor = 0` bounds nothing and `ts >= :lower` is the only
+# thing keeping a newly placed order off the whole season's tape.
+_DELTAS_FIRST = text("""
+select id, ts, side, price, delta, sid, seq from orderbook_events
+where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower
+order by id limit :limit
+""")
+
+# The past-instant scan (`ix_obe_ticker_ts`), matching `book._DELTAS_BY_TS`: bounded on `ts` at
+# both ends and ordered by `(ts, id)`, never by `(sid, seq)`. Unchanged by fix 22 -- a replay
+# reads a closed range at its own pace and has no loop deadline to miss.
+_DELTAS_AT = text("""
+select id, ts, side, price, delta, sid, seq from orderbook_events
+where ticker = :t and kind = 'delta' and id > :cursor and ts >= :lower and ts <= :at
+order by ts, id
+""")
+
+
+def _tape_deltas(rows) -> list[TapeDelta]:
+    return [TapeDelta(event_id=r.id, ts=r.ts, side=r.side, price=r.price, delta=r.delta,
+                      sid=r.sid, seq=r.seq)
+            for r in rows if r.side is not None and r.price is not None and r.delta is not None]
+
+
+def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
+                at: datetime | None = None, limit: int = DELTA_BATCH_LIMIT) -> DeltaBatch:
+    """Deltas after `cursor`; `at` is the replay path's upper bound.
+
+    Live orders by `id` with no upper bound -- the head is where the loop's clock is -- and is
+    bounded to `limit` rows (`DELTA_BATCH_LIMIT` unless the caller has shrunk this ticker's
+    batch after a timeout, fix 26), which is what makes a backlog cost several bounded loops
+    instead of one unbounded read. The `ts >= lower` bound is carried only by the first
+    read of a ticker (`cursor = 0`), where it is the only bound there is; once a cursor exists
+    `id > cursor` is strictly stronger and the `ts` predicate only costs the planner a second
+    index (fix 22).
+
+    A replay executor stops at its own grid instant and orders by `(ts, id)`, which is the same
+    order `_merge_events` re-imposes anyway, so the two paths hand the simulator the same
+    sequence. That path keeps both bounds and takes no limit at all: it reads a closed range,
+    at its own pace, so `limit` is not its business either.
+    """
+    if at is not None:
+        rows = session.execute(
+            _DELTAS_AT, {"t": ticker, "cursor": cursor, "lower": lower, "at": at}).all()
+        return DeltaBatch(_tape_deltas(rows), False)
+    if cursor > 0:
+        rows = session.execute(
+            _DELTAS, {"t": ticker, "cursor": cursor, "limit": limit}).all()
+    else:
+        rows = session.execute(
+            _DELTAS_FIRST,
+            {"t": ticker, "cursor": cursor, "lower": lower, "limit": limit}).all()
+    # Truncation is measured against the limit this read actually ran with, never against the
+    # cap: a shrunk batch that came back full is exactly the ticker still behind the tape.
+    return DeltaBatch(_tape_deltas(rows), len(rows) >= limit)
+
+
+# --- exposure -------------------------------------------------------------------------
+
+#: The fill methods that are *money*: one the queue model inferred against the recorded tape,
+#: and one the venue reported. Every exposure read in this module takes both (Task 11 ruling,
+#: widened to the position reads in fix round 1, Important 2). `no_watcher` and
+#: `snapshot_cross` are excluded because they are counterfactuals, never a trade of ours:
+#: `no_watcher` is what an order would have done if we had left it alone, and `snapshot_cross`
+#: is a book crossing.
+#:
+#: Leaving `venue` out would put the two halves of the exposure story out of step -- the daily
+#: cap counting a live fill while `cap_per_game`, `max_open` and `open_stake` saw no position
+#: at all -- and would let the live path spend the paper path's caps a second time. Nothing
+#: changes in the deployed posture: `fill_method = 'venue'` rows exist only in live mode, which
+#: is dormant, so every paper and replay number is byte-identical.
+MONEY_FILL_METHODS = ("queue_model", "venue")
+
+_POSITIONS = text("""
+select o.variant_id, o.game_id, m.side_team_id, o.side,
+       sum(f.contracts * f.prob) as stake, max(o.edge_at_place) as edge
+from fills f
+join orders o on o.id = f.order_id
+join venue_markets m on m.id = o.venue_market_id
+where f.fill_method = any(:methods) and o.replay = :replay and o.status <> 'settled'
+group by o.variant_id, o.game_id, m.side_team_id, o.side
+""")
+
+_FILLS_TODAY = text("""
+select o.variant_id, sum(f.contracts * f.prob) as stake
+from fills f join orders o on o.id = f.order_id
+where f.fill_method = any(:methods) and o.replay = :replay and f.filled_at >= :since
+group by o.variant_id
+""")
+
+
+def load_positions(session: Session, replay: bool) -> list[PositionView]:
+    """Unsettled positions, keyed `(game_id, side_team_id, side)` (Task 4b ruling): NO on A and
+    YES on B are two positions, never one."""
+    return [PositionView(variant_id=r.variant_id, game_id=r.game_id,
+                         side_team_id=r.side_team_id, side=r.side,
+                         stake=r.stake or Decimal("0"), edge=r.edge)
+            for r in session.execute(
+                _POSITIONS, {"replay": replay,
+                             "methods": list(MONEY_FILL_METHODS)}).all()]
+
+
+def load_fills_today(session: Session, replay: bool, since: datetime) -> list[FillView]:
+    """Every watched fill since local midnight, settled or not (Task 5 ruling), on either fill
+    method that is money: the queue model's and the venue's own (`MONEY_FILL_METHODS`)."""
+    return [FillView(variant_id=r.variant_id, stake=r.stake or Decimal("0"))
+            for r in session.execute(
+                _FILLS_TODAY, {"replay": replay, "since": since,
+                               "methods": list(MONEY_FILL_METHODS)}).all()]
+
+
+def local_midnight(now: datetime, tz) -> datetime:
+    """00:00 of `now`'s local day, back in UTC. The daily cap's day boundary (amendment 2)."""
+    local = now.astimezone(tz)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+
+# --- writes ---------------------------------------------------------------------------
+
+
+def orders_for_intent(session: Session, intent_id) -> int:
+    """How many orders this intent has already placed -- the `n` in its client order id."""
+    return int(session.execute(text("select count(*) from orders where intent_id = :i"),
+                               {"i": intent_id}).scalar() or 0)
+
+
+def insert_order(session: Session, values: dict) -> int | None:
+    """Insert one paper order, keyed on its client order id. None means it was already there."""
+    stmt = (insert(Order).values(**values)
+            .on_conflict_do_nothing(index_elements=["client_order_id"])
+            .returning(Order.id))
+    row = session.execute(stmt).first()
+    return None if row is None else row[0]
+
+
+def insert_event(session: Session, **values) -> int | None:
+    """One `order_events` row. `uq_order_event` keys a placement/cancel on `(order, kind, ts)`
+    and `uq_skip_once` keys a skip or cap gate on `(intent, kind, reason)` (F35)."""
+    stmt = insert(OrderEvent).values(**values).on_conflict_do_nothing().returning(OrderEvent.id)
+    row = session.execute(stmt).first()
+    return None if row is None else row[0]
+
+
+def insert_fill(session: Session, **values) -> int | None:
+    """One `fills` row, keyed by `uq_fill_source` on its own tape row, so the same print or
+    crossing delta cannot be counted twice -- including by the other track."""
+    stmt = insert(Fill).values(**values).on_conflict_do_nothing().returning(Fill.id)
+    row = session.execute(stmt).first()
+    return None if row is None else row[0]
+
+
+def insert_ledger_fill(session: Session, **values) -> int | None:
+    """The cash movement of one watched fill; `uq_ledger_fill` keys it on `(fill_id, kind)`."""
+    stmt = insert(Ledger).values(**values).on_conflict_do_nothing().returning(Ledger.id)
+    row = session.execute(stmt).first()
+    return None if row is None else row[0]
+
+
+def update_order(session: Session, order_id: int, values: dict) -> None:
+    """Write back one order's columns through the model, so the JSONB and Numeric ones are
+    bound with their real types rather than whatever psycopg would infer from a Python value."""
+    if not values:
+        return
+    session.execute(update(Order).where(Order.id == order_id).values(**values))
+
+
+def add_dirty_seconds(session: Session, order_id: int, seconds: int) -> None:
+    """A dirty book buys the order nothing this loop but the record that it happened (D6).
+
+    `dirty_minutes` is an integer column and one 15 s loop is a quarter of a minute, so the
+    seconds are what accumulate and the minutes are derived from them here.
+    """
+    session.execute(text(
+        "update orders set dirty_seconds = dirty_seconds + :s, "
+        "dirty_minutes = (dirty_seconds + :s) / 60 where id = :i"),
+        {"s": int(seconds), "i": order_id})
+
+
+def cancel_order(session: Session, order_id: int, reason: str, now: datetime) -> bool:
+    """Cancel a resting order; False when it was not resting, so a re-applied cancel is a no-op.
+
+    Bounded on the open statuses for the same reason every insert is bounded on a unique key: a
+    retried step must not move a counter twice or overwrite a cancel reason already recorded.
+    """
+    stmt = (update(Order)
+            .where(Order.id == order_id, Order.status.in_(OPEN_STATUSES))
+            .values(status="cancelled", cancel_reason=reason, cancelled_at=now)
+            .returning(Order.id))
+    return session.execute(stmt).first() is not None
+
+
+def expire_order(session: Session, order_id: int) -> bool:
+    """Expire a resting order; False when it was not resting (R8's guarantee, applied once)."""
+    stmt = (update(Order)
+            .where(Order.id == order_id, Order.status.in_(OPEN_STATUSES))
+            .values(status="expired")
+            .returning(Order.id))
+    return session.execute(stmt).first() is not None
+
+
+def count_open_orders(session: Session, replay: bool) -> int:
+    return int(session.execute(text(
+        "select count(*) from orders where status = any(:st) and replay = :r"),
+        {"st": list(OPEN_STATUSES), "r": replay}).scalar() or 0)
+
+
+_HEARTBEAT = text("""
+insert into exec_heartbeat (id, last_loop_at, loops, open_orders, last_error, last_loop_ms,
+                            p95_loop_ms, loops_skipped, book_dirty_markets, ws_last_event_at,
+                            executor_version)
+values (1, :last_loop_at, 1, :open_orders, :last_error, :last_loop_ms, :p95_loop_ms,
+        :loops_skipped, :book_dirty_markets, :ws_last_event_at, :executor_version)
+on conflict (id) do update set
+    last_loop_at = excluded.last_loop_at,
+    loops = exec_heartbeat.loops + 1,
+    open_orders = excluded.open_orders,
+    last_error = excluded.last_error,
+    last_loop_ms = excluded.last_loop_ms,
+    p95_loop_ms = excluded.p95_loop_ms,
+    loops_skipped = exec_heartbeat.loops_skipped + excluded.loops_skipped,
+    book_dirty_markets = excluded.book_dirty_markets,
+    ws_last_event_at = excluded.ws_last_event_at,
+    executor_version = excluded.executor_version
+""")
+
+
+def write_heartbeat(session: Session, **values) -> None:
+    """The single row the dashboard reads to tell a stalled executor from an idle one.
+
+    `loops` and `loops_skipped` accumulate in the statement rather than in the process, so a
+    restart continues the count instead of resetting it.
+    """
+    session.execute(_HEARTBEAT, values)
+
+
+def read_heartbeat(session: Session):
+    return session.execute(text(
+        "select last_loop_at, extract(epoch from (now() - last_loop_at)) as age_s, loops, "
+        "last_error from exec_heartbeat where id = 1")).first()
+
+
+# --- Task 12b telemetry -----------------------------------------------------------------
+
+
+def read_heartbeat_executor_version(session: Session) -> str | None:
+    """The `EXECUTOR_VERSION` the last process to write the heartbeat ran, or None before the
+    first heartbeat ever lands."""
+    return session.execute(text(
+        "select executor_version from exec_heartbeat where id = 1")).scalar()
+
+
+def newest_open_order_config_hash(session: Session, variant_id: str) -> str | None:
+    """The `config_hash` of `variant_id`'s newest currently-open non-replay order, or None
+    when it has none (nothing to compare a startup config change against)."""
+    return session.execute(text(
+        "select config_hash from orders where variant_id = :v and replay = false "
+        "and status = any(:st) order by placed_at desc limit 1"),
+        {"v": variant_id, "st": list(OPEN_STATUSES)}).scalar()
+
+
+_ORDER_STATUS_SNAPSHOT = text(
+    "select id, status, queue_remaining, nw_queue_remaining from orders where id = any(:ids)")
+
+
+def order_status_snapshot(session: Session, order_ids) -> dict[int, tuple]:
+    """Each order's current `(status, queue_remaining, nw_queue_remaining)`, read fresh after
+    this step's fills and actions have already been applied in the same transaction."""
+    ids = list(order_ids)
+    if not ids:
+        return {}
+    rows = session.execute(_ORDER_STATUS_SNAPSHOT, {"ids": ids}).all()
+    return {r.id: (r.status, r.queue_remaining, r.nw_queue_remaining) for r in rows}
+
+
+def insert_order_watch_samples(session: Session, rows: list[dict]) -> int:
+    """One `order_watch_samples` row per dict, as one `INSERT ... VALUES` batch. `(order_id,
+    ts)` is the primary key, so a retried step cannot double-sample the same order the same
+    instant."""
+    if not rows:
+        return 0
+    session.execute(insert(OrderWatchSample).values(rows).on_conflict_do_nothing())
+    return len(rows)
+
+
+def ledger_cash_delta(session: Session, variant_id: str) -> Decimal:
+    """One variant's all-time non-replay cash movement -- the whole of `equity_snapshots.cash`
+    beyond its starting bankroll."""
+    return session.execute(text(
+        "select coalesce(sum(cash_delta), 0) from ledger where variant_id = :v and replay = false"),
+        {"v": variant_id}).scalar() or Decimal("0")
+
+
+_POSITIONS_FOR_VARIANT = text(
+    "select ticker, side, open_contracts, avg_price from positions where variant_id = :v")
+
+
+def positions_for_variant(session: Session, variant_id: str):
+    """One variant's open positions, from the `positions` view (`harness/db/schema.py`)."""
+    return session.execute(_POSITIONS_FOR_VARIANT, {"v": variant_id}).all()
+
+
+def count_variant_open_orders(session: Session, variant_id: str, replay: bool) -> int:
+    return int(session.execute(text(
+        "select count(*) from orders where variant_id = :v and status = any(:st) and replay = :r"),
+        {"v": variant_id, "st": list(OPEN_STATUSES), "r": replay}).scalar() or 0)
+
+
+def insert_equity_snapshot(session: Session, **values) -> None:
+    """One `equity_snapshots` row; `(ts, variant_id)` is the primary key, so a retried step
+    cannot double-sample the same variant the same instant."""
+    session.execute(insert(EquitySnapshot).values(**values).on_conflict_do_nothing())

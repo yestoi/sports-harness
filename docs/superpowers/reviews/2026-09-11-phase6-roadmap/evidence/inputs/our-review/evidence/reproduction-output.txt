@@ -1,0 +1,6 @@
+Complete multiplexed stream [1,2,3], A sees [1,3]: {'dirty': True}
+Rejected intent, no order: [Place(intent_id=UUID('00000000-0000-0000-0000-000000000001'), side='yes', prob=Decimal('0.4500'), contracts=Decimal('20.00'), expiry=datetime.datetime(2026, 9, 13, 20, 50, tzinfo=datetime.timezone.utc), no_book=False)]
+Rejected intent, existing order: [Cancel(order_id=1, reason='signal_rejected')]
+Watched deadline=now, expiry=+10s: [('fill_seconds', 11.0, 'contracts', Decimal('10.00'))]
+One trade=3, matching delta=-3, queue initially=5: {'fills': ['1.00'], 'remaining_queue': '0.00'}
+Week-3 confirmation, only two games: confirmation set: restricted to the cells and contrasts selected in the week-38 freeze; nothing outside that set is evaluated here. 1 selected cell(s) evaluated; 1 whose posterior interval excludes zero (§9.6 needs 3).

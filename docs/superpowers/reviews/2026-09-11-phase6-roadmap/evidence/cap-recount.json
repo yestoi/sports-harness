@@ -1,0 +1,6 @@
+{
+  "rows": 53,
+  "hours_max150": 36,
+  "hours_mean150": 4,
+  "method": "Parsed the saved evidence D3 table; an hourly maximum indicates a cap touch, not continuous saturation."
+}
