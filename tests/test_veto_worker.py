@@ -455,6 +455,65 @@ def test_the_reason_is_capped_at_three_hundred_and_stripped(db_session, env_sett
     assert len(stored) <= 300 and "<" not in stored and "\x00" not in stored
 
 
+def test_confidence_over_one_is_clamped_to_one(db_session, env_settings, queued_bucket):
+    """Fix 39: the schema's own `minimum`/`maximum` are not sent to the API any more (not in the
+    supported structured-output subset), so an out-of-range confidence has to be clamped in
+    code. `_sanitized` clamps it before `_grade` or `_record`'s own `Numeric(6,4)` conversion
+    ever see it."""
+    class Overconfident(FakeClient):
+        def call(self, **kwargs):
+            result = super().call(**kwargs)
+            return result.__class__(**{**result.__dict__,
+                                       "output": {"decision": "proceed", "confidence": 1.7,
+                                                  "reason": "no material news",
+                                                  "evidence_ids": []}})
+
+    veto_pass(db_session, NOW, env_settings, client=Overconfident())
+    stored_note = db_session.execute(text(
+        "select output->>'confidence' from research_notes "
+        "where model = 'claude-opus-5'")).scalar()
+    assert float(stored_note) == 1.0
+    stored_decision = db_session.execute(text(
+        "select confidence from veto_decisions")).scalar()
+    assert stored_decision == Decimal("1.0000")
+
+
+def test_a_negative_confidence_is_clamped_to_zero(db_session, env_settings, queued_bucket):
+    class Underconfident(FakeClient):
+        def call(self, **kwargs):
+            result = super().call(**kwargs)
+            return result.__class__(**{**result.__dict__,
+                                       "output": {"decision": "proceed", "confidence": -0.3,
+                                                  "reason": "no material news",
+                                                  "evidence_ids": []}})
+
+    veto_pass(db_session, NOW, env_settings, client=Underconfident())
+    stored_decision = db_session.execute(text(
+        "select confidence from veto_decisions")).scalar()
+    assert stored_decision == Decimal("0.0000")
+
+
+def test_evidence_ids_are_capped_at_eight(db_session, env_settings, queued_bucket):
+    """Fix 39: the schema's own `maxItems` is not sent to the API any more; `_sanitized` caps
+    `evidence_ids` at `VETO_EVIDENCE_IDS_MAX` (8) before the notes row is written."""
+    many_ids = [f"s{i}" for i in range(1, 12)]        # 11 ids, only "s1" resolves
+
+    class Verbose(FakeClient):
+        def call(self, **kwargs):
+            result = super().call(**kwargs)
+            return result.__class__(**{**result.__dict__,
+                                       "output": {"decision": "veto", "confidence": 0.9,
+                                                  "reason": "many sources",
+                                                  "evidence_ids": many_ids}})
+
+    veto_pass(db_session, NOW, env_settings, client=Verbose())
+    stored = db_session.execute(text(
+        "select output->'evidence_ids' from research_notes "
+        "where model = 'claude-opus-5'")).scalar()
+    assert stored == many_ids[:8]
+    assert len(stored) == 8
+
+
 def test_the_injection_case(db_session, env_settings, queued_bucket):
     """Addendum 1.4 "Injection case", F60. A snippet carrying an instruction to change the
     decision yields `proceed`, with no evidence id pointing at it, and a reason free of markup

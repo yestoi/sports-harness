@@ -72,13 +72,23 @@ SYSTEM_BLOCKS: list[dict] = [
 #: `reason`'s ceiling is `VETO_REASON_MAX`, imported rather than restated: F60's 300 is one
 #: number, and a schema that asked for more than the sanitizer keeps would have the model write
 #: prose that is silently cut on the way into the column.
+#:
+#: Fix 39 (journal 110): `minimum`/`maximum`/`maxLength`/`maxItems` are not in the structured-
+#: output subset the API accepts -- the first live veto call came back HTTP 400 on exactly this
+#: schema. The ranges and lengths move into the descriptions below and are enforced in code
+#: instead: `harness/research/veto.py`'s `_sanitized` clamps `confidence` to [0, 1], truncates
+#: `reason` to `VETO_REASON_MAX` and `evidence_ids` to 8, all before `_grade` ever reads the
+#: output. `tests/test_research_client.py` walks this schema recursively and asserts no key
+#: outside the supported set.
 OUTPUT_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "decision": {"type": "string", "enum": ["proceed", "reduce", "veto"]},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        "reason": {"type": "string", "maxLength": VETO_REASON_MAX},
-        "evidence_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+        "confidence": {"type": "number", "description": "0 to 1."},
+        "reason": {"type": "string",
+                  "description": f"At most {VETO_REASON_MAX} characters of plain text."},
+        "evidence_ids": {"type": "array", "items": {"type": "string"},
+                         "description": "At most 8 ids."},
     },
     "required": ["decision", "confidence", "reason", "evidence_ids"],
     "additionalProperties": False,

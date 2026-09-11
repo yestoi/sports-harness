@@ -30,6 +30,11 @@ def write_notes(session: Session, *, call_id: uuid.UUID, kind: str, subject_id: 
     """
     for result in results:
         error_body: dict = {"error": result.error, "stop_reason": result.stop_reason}
+        if result.error_detail is not None:
+            # Fix 39: the API's own message for an `anthropic.APIStatusError`, sanitized and
+            # capped by the client already -- `error` stays the class name (ruling: the error
+            # field is the class), and this is the diagnosable detail beside it.
+            error_body["error_detail"] = result.error_detail
         if result.raw is not None:
             error_body["raw"] = result.raw
         # `code_execution_calls` is no schema change -- it is a key inside the JSONB `usage`

@@ -42,7 +42,12 @@ def test_the_schema_is_closed_and_names_the_four_fields():
     assert set(OUTPUT_SCHEMA["properties"]) == {"decision", "confidence", "reason",
                                                 "evidence_ids"}
     assert OUTPUT_SCHEMA["properties"]["decision"]["enum"] == ["proceed", "reduce", "veto"]
-    assert OUTPUT_SCHEMA["properties"]["reason"]["maxLength"] == 300
+    # Fix 39: `maxLength` is not in the structured-output subset the API accepts -- the first
+    # live veto call used exactly this schema and came back HTTP 400. The 300-character cap is
+    # named in the description instead and enforced by `harness/research/veto.py`'s
+    # `_sanitized`; `tests/test_research_client.py`'s schema-keyword walk pins the absence.
+    assert "maxLength" not in OUTPUT_SCHEMA["properties"]["reason"]
+    assert "300" in OUTPUT_SCHEMA["properties"]["reason"]["description"]
     assert set(OUTPUT_SCHEMA["required"]) == set(OUTPUT_SCHEMA["properties"])
 
 
@@ -70,9 +75,10 @@ def test_the_output_budget_is_the_reserved_worst_case():
     assert MAX_OUTPUT_TOKENS == WORST_CASE_OUTPUT_TOKENS == 4096
 
 
-def test_the_reason_cap_in_the_schema_is_the_sanitizer_s():
-    """F60's 300 is one number with one home. A schema that asked for more than the sanitizer
-    keeps would make the model write prose that is silently cut at storage."""
+def test_the_reason_cap_named_in_the_schema_is_the_sanitizer_s():
+    """F60's 300 is one number with one home. The schema no longer states it as a keyword (fix
+    39: `maxLength` is not sent to the API), but the description names the same constant the
+    sanitizer enforces, imported rather than restated, so the two cannot drift apart."""
     from harness.research.text import VETO_REASON_MAX
 
-    assert OUTPUT_SCHEMA["properties"]["reason"]["maxLength"] == VETO_REASON_MAX
+    assert str(VETO_REASON_MAX) in OUTPUT_SCHEMA["properties"]["reason"]["description"]

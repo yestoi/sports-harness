@@ -44,8 +44,14 @@ _SYSTEM = [{"type": "text", "text":
             "give betting advice, do not predict a result as certain, and do not invent a number "
             "that is not in the card. Answer only with the JSON object the schema describes.",
             "cache_control": {"type": "ephemeral"}}]
-_SCHEMA = {"type": "object", "properties": {"text": {"type": "string", "maxLength": 600}},
-           "required": ["text"], "additionalProperties": False}
+#: Fix 39 (journal 110): `maxLength` is not in the structured-output subset the API accepts; the
+#: 600-character ceiling moves into the description and is enforced, as it already was, by
+#: `sanitize_model_text(result.output.get("text"), RATIONALE_MAX)` below.
+#: `tests/test_research_client.py` walks this schema (and the annotator's and the veto's)
+#: recursively and asserts no key outside the supported set.
+_SCHEMA = {"type": "object",
+          "properties": {"text": {"type": "string", "description": "At most 600 characters."}},
+          "required": ["text"], "additionalProperties": False}
 PROMPT_HASH = prompt_hash(_SYSTEM)
 
 

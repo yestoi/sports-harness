@@ -63,6 +63,11 @@ DECISIONS = ("proceed", "reduce", "veto", "veto_skipped_budget", "veto_error")
 #: "Decided" is the first three -- D19's rate and `veto_h9`'s filter are over exactly this set.
 DECIDED = ("proceed", "reduce", "veto")
 
+#: Fix 39 (journal 110): the schema's own `maxItems` is not in the structured-output subset the
+#: API accepts, so `evidence_ids` is capped here instead, in `_sanitized`, alongside the
+#: `confidence` clamp -- both before `_grade` ever reads the output.
+VETO_EVIDENCE_IDS_MAX = 8
+
 #: How long a claim is believed before the row is treated as stranded (review round 1, Important
 #: 1). The reservation commit carries the claim, so a pass that claims a bucket and then raises
 #: leaves it claimed while `ResearchWorker.run_once` rolls the rest back -- and those signals
@@ -235,12 +240,30 @@ def _grade(output: dict | None, snippets: dict) -> tuple[str, object, str | None
     return decision, confidence, None
 
 
+def _clamp_confidence(value):
+    """`confidence` into [0, 1] (fix 39): the schema's own `minimum`/`maximum` are not in the
+    structured-output subset the API accepts, so a model that returns an out-of-range number is
+    clamped here, before `_grade` or `_record`'s own `_confidence` (the `Numeric(6,4)`
+    conversion) ever sees it. Left untouched when the model did not return a number at all --
+    `_confidence`'s own conversion already turns that into a stored `None`, exactly as before."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    return max(0.0, min(1.0, float(value)))
+
+
 def _sanitized(result):
-    """The model's `reason` through the F60 rule before it is stored anywhere."""
+    """The model's `reason`, `confidence` and `evidence_ids` through the F60 rule and the
+    schema's former range/length keywords (fix 39: `minimum`, `maximum` and `maxItems` are not
+    in the supported structured-output subset, so they are enforced here instead) before the
+    result is stored anywhere."""
     if not isinstance(result.output, dict):
         return result
     output = dict(result.output)
     output["reason"] = sanitize_model_text(output.get("reason"), VETO_REASON_MAX)
+    output["confidence"] = _clamp_confidence(output.get("confidence"))
+    evidence_ids = output.get("evidence_ids")
+    if isinstance(evidence_ids, list):
+        output["evidence_ids"] = evidence_ids[:VETO_EVIDENCE_IDS_MAX]
     return type(result)(**{**result.__dict__, "output": output})
 
 

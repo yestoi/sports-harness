@@ -4,16 +4,25 @@ Every response in this file is one of the two recorded fixtures or a hand-built 
 same shape. Nothing here makes a call, and no test in this file reads `secrets/`.
 """
 import json
+import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import anthropic
+import httpx2
 import pytest
+from sqlalchemy import text
 
-from harness.research.client import (PRIMARY_MODEL, RAW_TEXT_MAX_CHARS, REQUEST_TIMEOUT_S,
-                                     SHADOW_MODEL, SNIPPETS_MAX_BYTES, WEB_SEARCH_TOOL_TYPE,
-                                     ResearchClient, error_from, output_from, parse_response,
-                                     prompt_hash, snippets_from, tool_calls_from, usage_from,
-                                     web_search_tool)
+from harness.parlay.rationale import _SCHEMA as RATIONALE_SCHEMA
+from harness.research.annotate import OUTPUT_SCHEMA as ANNOTATE_SCHEMA
+from harness.research.client import (ERROR_DETAIL_MAX_CHARS, PRIMARY_MODEL, RAW_TEXT_MAX_CHARS,
+                                     REQUEST_TIMEOUT_S, SHADOW_MODEL, SNIPPETS_MAX_BYTES,
+                                     WEB_SEARCH_TOOL_TYPE, CallResult, ResearchClient,
+                                     error_from, output_from, parse_response, prompt_hash,
+                                     snippets_from, tool_calls_from, usage_from, web_search_tool)
+from harness.research.notes import write_notes
+from harness.research.prompt import OUTPUT_SCHEMA as VETO_SCHEMA
 from harness.research.spend import WORST_CASE_OUTPUT_TOKENS, Usage, cost_usd
 from harness.research.text import sanitize_model_text
 
@@ -472,3 +481,199 @@ def test_prompt_hash_is_stable_and_changes_with_a_byte():
 def test_the_model_ids_are_the_exact_strings():
     assert PRIMARY_MODEL == "claude-opus-5" and SHADOW_MODEL == "claude-sonnet-5"
     assert "-2026" not in PRIMARY_MODEL and "-2026" not in SHADOW_MODEL
+
+
+# --- the structured-output schemas (fix 39, journal 110) ---------------------------------------
+#
+# The first live annotator call returned HTTP 400: the SDK's own `parse` helper strips
+# `minimum`/`maximum`/`maxLength`/`maxItems` before a request ever leaves the process (the API's
+# structured-output subset rejects them), but a raw dict through `output_config` -- what
+# `ResearchClient.call` sends -- reaches the API unstripped. This walk asserts every schema the
+# client can be asked to send uses only the supported keyword subset, so a future schema edit
+# that reintroduces one of the stripped keywords fails here rather than at the next live call.
+
+#: `type`, `properties`, `required`, `additionalProperties`, `items`, `enum`, `description` and
+#: `anyOf` -- the structured-output subset the API accepts (fix 39 brief).
+_ALLOWED_SCHEMA_KEYWORDS = {"type", "properties", "required", "additionalProperties", "items",
+                           "enum", "description", "anyOf"}
+
+
+def _schema_nodes(schema: dict):
+    """Every schema object nested inside `schema` -- itself, every property's schema, the
+    `items` schema and every `anyOf` branch -- so the keyword check looks only at genuine
+    JSON-schema keyword keys and never at a `properties` dict's own property names (which are
+    arbitrary strings, not keywords, and must not be constrained to this set)."""
+    yield schema
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for prop_schema in properties.values():
+            if isinstance(prop_schema, dict):
+                yield from _schema_nodes(prop_schema)
+    items = schema.get("items")
+    if isinstance(items, dict):
+        yield from _schema_nodes(items)
+    for branch in schema.get("anyOf") or []:
+        if isinstance(branch, dict):
+            yield from _schema_nodes(branch)
+
+
+@pytest.mark.parametrize("schema", [ANNOTATE_SCHEMA, VETO_SCHEMA, RATIONALE_SCHEMA],
+                        ids=["annotate", "veto", "rationale"])
+def test_schema_uses_only_the_supported_keyword_subset(schema):
+    for node in _schema_nodes(schema):
+        offenders = set(node) - _ALLOWED_SCHEMA_KEYWORDS
+        assert not offenders, f"{offenders} not in the supported subset (node={node})"
+
+
+@pytest.mark.parametrize("schema", [ANNOTATE_SCHEMA, VETO_SCHEMA, RATIONALE_SCHEMA],
+                        ids=["annotate", "veto", "rationale"])
+def test_schema_still_forbids_additional_properties(schema):
+    """The keyword walk above only removes keywords; it must not have removed the contract that
+    keeps the model from inventing fields."""
+    assert schema["additionalProperties"] is False
+
+
+# --- the API's own error message (fix 39, journal 110) ------------------------------------------
+
+def _bad_request_error(message: str, api_message: str | None) -> anthropic.BadRequestError:
+    """A `BadRequestError` shaped like a real 400: an `httpx2.Response` carrying the API's own
+    `{"error": {"type": ..., "message": ...}}` body, built the way the SDK's own tests build one
+    rather than a bare `Exception` -- so `ResearchClient.call`'s `except anthropic.APIStatusError`
+    branch, and `_error_detail`'s reading of `exc.body`, both run against the real shape."""
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": api_message}}
+    response = httpx2.Response(400, json=body, request=request,
+                               headers={"request-id": "req_bad"})
+    return anthropic.BadRequestError(message, response=response, body=body)
+
+
+def test_a_bad_request_error_yields_a_sanitized_error_detail(env_settings, tmp_path):
+    """The brief's own incident shape: a schema the API rejects. `error` stays the class name
+    (ruling: the error field is the class); `error_detail` is the new, diagnosable field."""
+    settings = _keyed_settings(env_settings, tmp_path)
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            raise _bad_request_error(
+                "Error code: 400 - {'error': {'message': 'unsupported keyword: maxItems'}}",
+                "schema.bullets: unsupported keyword maxItems")
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    try:
+        result = client.call(model=PRIMARY_MODEL, system=[], user="hi", schema={},
+                             effort="high")
+    finally:
+        client.close()
+    assert result.error == "BadRequestError"
+    assert result.error_detail == "schema.bullets: unsupported keyword maxItems"
+    assert result.output is None
+
+
+def test_the_error_detail_is_sanitized_and_capped(env_settings, tmp_path):
+    """F60 applies to this field exactly as it does to any other model/venue-provenance string
+    that lands in a stored column, even though it is the API's text and not the model's."""
+    settings = _keyed_settings(env_settings, tmp_path)
+    long_message = "<b>bad schema</b>\x00" + "z" * 400
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            raise _bad_request_error("Error code: 400 - {...}", long_message)
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    try:
+        result = client.call(model=PRIMARY_MODEL, system=[], user="hi", schema={},
+                             effort="high")
+    finally:
+        client.close()
+    assert result.error_detail == sanitize_model_text(long_message, ERROR_DETAIL_MAX_CHARS)
+    assert len(result.error_detail) <= ERROR_DETAIL_MAX_CHARS
+    assert "<" not in result.error_detail and "\x00" not in result.error_detail
+
+
+def test_a_status_error_with_no_structured_body_carries_no_detail(env_settings, tmp_path):
+    """`_make_status_error_from_response` falls back to the raw response text when the body is
+    not JSON; that text is not the API's `message` field and must not be guessed at."""
+    settings = _keyed_settings(env_settings, tmp_path)
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx2.Response(400, text="upstream timeout", request=request)
+    exc = anthropic.BadRequestError("Error code: 400 - upstream timeout", response=response,
+                                    body="upstream timeout")
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            raise exc
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    try:
+        result = client.call(model=PRIMARY_MODEL, system=[], user="hi", schema={},
+                             effort="high")
+    finally:
+        client.close()
+    assert result.error == "BadRequestError"
+    assert result.error_detail is None
+
+
+def test_a_transport_exception_with_no_status_carries_no_detail(env_settings, tmp_path):
+    """The general `except Exception` branch (any non-`APIStatusError` failure -- a connection
+    error, a timeout) never has a status code or a structured body to read, and must keep
+    reporting only the class name, exactly as before this fix."""
+    settings = _keyed_settings(env_settings, tmp_path)
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            raise ConnectionError("boom")
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = FakeMessages()
+
+        def close(self):
+            pass
+
+    client = ResearchClient(settings, factory=FakeAnthropic)
+    try:
+        result = client.call(model=PRIMARY_MODEL, system=[], user="hi", schema={},
+                             effort="high")
+    finally:
+        client.close()
+    assert result.error == "ConnectionError"
+    assert result.error_detail is None
+
+
+def test_the_notes_row_carries_the_error_detail(db_session):
+    """`write_notes` stores `error_detail` under `output.error_detail`; `output.error` stays the
+    class name."""
+    result = CallResult(model=PRIMARY_MODEL, output=None, usage=Usage(), stop_reason=None,
+                        request_id=None, latency_ms=42, tool_calls=[],
+                        snippets={"items": [], "truncated": False}, error="BadRequestError",
+                        error_detail="schema.bullets: unsupported keyword maxItems")
+    write_notes(db_session, call_id=uuid.uuid4(), kind="veto", subject_id="1", effort="high",
+               prompt_hash="x" * 64, features={}, results=[result],
+               created_at=datetime(2026, 9, 11, tzinfo=timezone.utc))
+    db_session.flush()
+    row = db_session.execute(text(
+        "select output ->> 'error' as error, output ->> 'error_detail' as detail "
+        "from research_notes where subject_id = '1'")).first()
+    assert row.error == "BadRequestError"
+    assert row.detail == "schema.bullets: unsupported keyword maxItems"

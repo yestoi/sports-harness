@@ -112,10 +112,20 @@ SYSTEM_BLOCKS: list[dict] = [{
     "cache_control": {"type": "ephemeral"},
 }]
 
+#: Fix 39 (journal 110): the structured-output subset the API accepts does not include
+#: `maxItems`/`maxLength` -- the SDK's own `parse` helper silently strips them, but a raw dict
+#: through `output_config` (what `ResearchClient.call` sends) reaches the API unstripped and the
+#: first live call came back HTTP 400. The limits move into the descriptions below and are
+#: enforced in code instead: `annotate_pass` keeps at most `BULLETS_MAX` bullets and
+#: `sanitize_model_text(bullet, BULLET_MAX)` truncates each one before `check_bullet` ever sees
+#: it. `tests/test_research_client.py` walks this schema (and the veto's and the rationale's)
+#: recursively and asserts no key outside the supported subset, so a future edit cannot regress.
 OUTPUT_SCHEMA: dict = {
     "type": "object",
-    "properties": {"bullets": {"type": "array", "maxItems": BULLETS_MAX,
-                               "items": {"type": "string", "maxLength": BULLET_MAX}}},
+    "properties": {"bullets": {"type": "array",
+                               "description": f"At most {BULLETS_MAX} bullets.",
+                               "items": {"type": "string",
+                                         "description": f"At most {BULLET_MAX} characters."}}},
     "required": ["bullets"],
     "additionalProperties": False,
 }

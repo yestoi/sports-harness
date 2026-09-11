@@ -37,6 +37,44 @@ exception, or a captured model-call error) backs that report off an hour, escala
 after three failed attempts in a row, so a report that keeps failing is not retried every sweep.
 The backoff lives in `job_state` under `annotate:<report_run_id>`.
 
+## The structured-output schemas
+
+Fix 39 (journal 110): the three schemas sent through `output_config` (`harness/research/annotate.py`'s
+`OUTPUT_SCHEMA`, `harness/research/prompt.py`'s `OUTPUT_SCHEMA`, `harness/parlay/rationale.py`'s
+`_SCHEMA`) use only `type`, `properties`, `required`, `additionalProperties`, `items`, `enum`,
+`description` and `anyOf` -- the structured-output subset the API actually accepts. `minimum`,
+`maximum`, `maxLength` and `maxItems` are not in it; the SDK's own `parse` helper silently strips
+them, but the raw dict `ResearchClient.call` sends through `output_config` reaches the API
+unstripped, and the first live call to use a schema with one of them comes back HTTP 400. Every
+length and range limit the schemas used to state is instead a sentence in the property's
+`description` and is enforced after the response parses:
+
+- the annotator keeps at most `BULLETS_MAX` bullets and truncates each to `BULLET_MAX` characters
+  (`sanitize_model_text`, `harness/research/annotate.py`);
+- the veto's `_sanitized` (`harness/research/veto.py`) clamps `confidence` to `[0, 1]` and
+  truncates `reason` to `VETO_REASON_MAX` and `evidence_ids` to `VETO_EVIDENCE_IDS_MAX`, all
+  before `_grade` reads the output;
+- the parlay rationale truncates `text` to 600 characters (`sanitize_model_text(text,
+  RATIONALE_MAX)`, `harness/parlay/rationale.py`).
+
+`tests/test_research_client.py` walks all three schemas recursively and asserts no key falls
+outside the supported set, so a future schema edit that reintroduces one of these keywords fails
+in CI rather than at the next live call.
+
+On an `anthropic.APIStatusError` (any 4xx/5xx), `ResearchClient.call` logs the status code and
+the API's own `message` field at WARNING beside the exception's class name, and returns it as
+`CallResult.error_detail` -- `write_notes` stores it under `research_notes.output.error_detail`.
+`output.error` stays the class name; `error_detail` is what makes a rejected request
+diagnosable from the row without a live repro:
+
+```sql
+select model, output->>'error' as error, output->>'error_detail' as detail
+from research_notes
+where output ? 'error_detail'
+order by created_at desc
+limit 20;
+```
+
 ## Reading the spend
 
 ```sql

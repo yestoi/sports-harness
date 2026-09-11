@@ -13,7 +13,7 @@ import harness.research.annotate as annotate_module
 from harness.db.models import ReportRun
 from harness.report.tables import Table
 from harness.report.weekly import persist_report
-from harness.research.annotate import (BACKOFF_LONG, BACKOFF_SHORT, BACKOFF_STRIKES,
+from harness.research.annotate import (BACKOFF_LONG, BACKOFF_SHORT, BACKOFF_STRIKES, BULLET_MAX,
                                        BULLETS_MAX, EFFORT, PROMPT_HASH, annotate_pass,
                                        pending_report)
 from harness.research.client import CallResult
@@ -254,6 +254,24 @@ def test_at_most_five_bullets_survive(db_session, keyed_settings, seeded_reports
     bullets = [f"412 orders t1[0,1]. #{i}" for i in range(9)]
     counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(bullets))
     assert counts["bullets"] == BULLETS_MAX == 5
+
+
+def test_an_over_long_bullet_is_truncated_to_the_cap(db_session, keyed_settings, seeded_reports):
+    """Fix 39: the schema's own `maxLength` is not sent to the API any more (not in the
+    structured-output subset), so `BULLET_MAX` has to be enforced entirely in code now.
+    `sanitize_model_text` truncates before `check_bullet` ever sees the text, so a reply longer
+    than the old schema keyword would have allowed still survives on whichever prefix fits, with
+    its citation intact."""
+    prefix = "412 orders on the first row t1[0,1]. "
+    bullet = prefix + "x" * 300
+    assert len(bullet) > BULLET_MAX
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client([bullet]))
+    assert counts == {"annotated": 1, "bullets": 1, "dropped": 0, "backed_off": 0,
+                     "tables_omitted": 0}
+    stored = db_session.execute(text("select bullets from report_annotations")).scalar()
+    assert len(stored) == 1
+    assert len(stored[0]) == BULLET_MAX
+    assert stored[0].startswith(prefix.strip())
 
 
 def test_the_prompt_carries_no_row_key(db_session, keyed_settings, seeded_reports):

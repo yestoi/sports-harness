@@ -33,6 +33,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import anthropic
+
 from harness.research.spend import WORST_CASE_OUTPUT_TOKENS, Usage
 from harness.research.text import sanitize_model_text
 
@@ -69,6 +71,12 @@ class CallResult:
     text, sanitized: the controller's own proving run hit exactly this shape (a `max_tokens`
     truncation), and without the text there is no way to tell a truncation from a genuine
     preamble the model wrote before its JSON.
+
+    `error_detail` is `None` except on an `anthropic.APIStatusError` (fix 39, journal 110): the
+    API's own `message` field for the rejected request -- never the request, never the SDK's own
+    `.message` (which echoes the whole decoded body back) -- sanitized and capped like every
+    other stored string, so a 400 is diagnosable from the notes row instead of carrying only the
+    exception's class name.
     """
 
     model: str
@@ -81,6 +89,7 @@ class CallResult:
     snippets: dict
     error: str | None
     raw: str | None = None
+    error_detail: str | None = None
 
 
 def web_search_tool(max_uses: int) -> dict:
@@ -228,6 +237,28 @@ def error_from(payload: dict) -> str | None:
 #: 300-character veto reason -- this is a diagnostic field, not prose meant to be read whole.
 RAW_TEXT_MAX_CHARS = 2000
 
+#: Fix 39: the cap for the API's own error message, stored in `CallResult.error_detail` and
+#: `research_notes.output.error_detail`. Sized like the veto's own reason (F60's 300) rather than
+#: `RAW_TEXT_MAX_CHARS`: this is one sentence naming what was wrong with the request, not prose
+#: that might run long.
+ERROR_DETAIL_MAX_CHARS = 300
+
+
+def _error_detail(exc: anthropic.APIStatusError) -> str | None:
+    """The API's own `message` field for a 4xx/5xx response, sanitized and capped -- never
+    `exc.message`, which the SDK builds as `f"Error code: {status} - {body}"` and so echoes the
+    whole decoded body back rather than naming the one field a person needs to diagnose a
+    rejected schema (the brief's own distinction: "not the request, not the body's echo of it").
+    `None` when the body was not the structured `{"error": {"message": ...}}` shape the API sends
+    for a normal 4xx/5xx -- an unparsed body (`_make_status_error_from_response` falls back to
+    the raw response text when it is not JSON) carries nothing this can safely single out.
+    """
+    body = getattr(exc, "body", None)
+    message = body.get("error") if isinstance(body, dict) else None
+    message = message.get("message") if isinstance(message, dict) else None
+    return sanitize_model_text(message, ERROR_DETAIL_MAX_CHARS) if isinstance(message, str) \
+        else None
+
 
 def parse_response(model: str, payload: dict, latency_ms: int,
                    request_id: str | None) -> CallResult:
@@ -257,8 +288,6 @@ class ResearchClient:
         if not settings.has_anthropic_key():
             raise RuntimeError("no anthropic key: research features are dormant")
         if factory is None:
-            import anthropic
-
             factory = anthropic.Anthropic
         self.s = settings
         self._client = factory(api_key=settings.anthropic_api_key(), max_retries=0,
@@ -294,6 +323,19 @@ class ResearchClient:
             kwargs["thinking"] = thinking
         try:
             response = self._client.messages.create(**kwargs)
+        except anthropic.APIStatusError as exc:
+            # Fix 39 (journal 110): the first live annotator call returned HTTP 400 and the old
+            # `except Exception` branch below logged only the class name, leaving nothing to
+            # diagnose it with. Caught ahead of the general branch so every 4xx/5xx also carries
+            # the API's own message into the log and the returned result.
+            detail = _error_detail(exc)
+            log.warning("anthropic call failed on %s: %s (status %s): %s", model,
+                       type(exc).__name__, exc.status_code, detail)
+            return CallResult(model=model, output=None, usage=Usage(), stop_reason=None,
+                              request_id=None,
+                              latency_ms=int((time.monotonic() - started) * 1000),
+                              tool_calls=[], snippets={"items": [], "truncated": False},
+                              error=type(exc).__name__, error_detail=detail)
         except Exception as exc:  # noqa: BLE001 - the caller must still release its reservation
             log.warning("anthropic call failed on %s: %s", model, type(exc).__name__)
             return CallResult(model=model, output=None, usage=Usage(), stop_reason=None,
