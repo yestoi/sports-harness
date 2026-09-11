@@ -77,8 +77,10 @@ def test_a_real_missing_subscription_frame_still_writes_a_gap_row():
     Computed independently: `_check_seq` remembers the last seq per subscription, so a complete
     stream 1, 2, 3 -- whichever tickers those frames addressed -- never skips a number and
     records nothing. A stream 1, 3 with no frame 2 anywhere on the subscription skipped one, and
-    exactly one gap row is due, carrying `sid` and the exposing ticker. 6B may not make case 1a
-    green by weakening this.
+    exactly one gap row is due. That row carries `sid` and, in `raw`, the expected and received
+    seq plus `exposed_by`; its own `ticker` column is `""`, the whole-subscription sentinel,
+    because a gap invalidates every ticker on the sid and not just the one whose frame exposed
+    it (`harness/recorder/ws_sink.py:84-95`). 6B may not make case 1a green by weakening this.
     """
     complete, rows = _sink()
     complete._check_seq(SID, 1, "A", at(0))
@@ -171,7 +173,10 @@ def test_recovery_takes_no_fill_from_a_trade_inside_the_gap():
     recovered queue would subtract those 3 a second time, taking 2 to -1 and paying us 1
     contract we were never in line for. The recovery snapshot is the queue; the trade that
     produced it is spent. The probe captured `actual_fill 1.00` with the print watermark left
-    at the trade's own timestamp while the delta cursor had moved to the recovery anchor.
+    at the trade's own timestamp while the delta cursor had moved to the recovery anchor. The
+    asymmetry is visible in `harness/execution/loop.py`: the no-book branch resets both the
+    cursor (line 822) and the print watermark (line 823), while the recovery branch at line 828
+    advances only the cursor (line 835) and leaves `last_print_ts` where it was.
     """
     recovered = BookState.from_levels("A", [[".30", "2"]], [[".60", "5"]], sid=SID, seq=3,
                                       as_of=at(20), source="ws", anchor_id=3)
