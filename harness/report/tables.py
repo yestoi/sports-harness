@@ -1575,8 +1575,9 @@ def _not_collected(key: str, title: str, what: str) -> Table:
 # pricing table by `run_id`, no query puts a predicate on `runs.started_at`, and every
 # runs-derived count comes from `runs.notes` through `recent_run_notes`' cap-then-filter form,
 # the shape Floor's `_funnel` already uses (`harness/dashboard/snapshots/floor.py:480-491`).
-# t13 is built wherever `weekly_tables` runs, which includes the hourly provisional `report_wtd`
-# stage, so it is sized for that cadence: notes and small indexed tables only (ruling I8).
+# t13 is built wherever `weekly_tables` runs, which includes the provisional `report_wtd` stage
+# -- six-hourly by default and settable down to hourly (`report_wtd_period_s = 21_600`, final
+# review I6) -- so it is sized for that cadence: notes and small indexed tables only (ruling I8).
 
 #: The first paper order. The cumulative fill counts are bounded below by this date so they ride
 #: `ix_fills_filled_at` rather than walking the whole table; `ix_orders_status` is
