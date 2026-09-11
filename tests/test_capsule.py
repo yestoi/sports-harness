@@ -171,3 +171,120 @@ def test_an_unknown_order_raises(db_session):
     """A capsule of an order that does not exist is an operator error, not an empty capsule."""
     with pytest.raises(ValueError, match="order 999"):
         order_slices(db_session, 999)
+
+
+def test_period_slices_stay_inside_the_window_and_name_their_tickers(db_session):
+    """No row outside `[lower, upper]` and no ticker outside the named list reaches a file.
+
+    The tape reads are per ticker; the gap read is not, because gap detection is
+    subscription-level and a gap row carries `ticker = ''` as its whole-subscription sentinel
+    (`harness/recorder/ws_sink.py:94`, review C1). It is bounded by `ts` alone, through the BRIN
+    index, which is the same read verify.md's tape-continuity row makes.
+    """
+    from harness.db.models import MetricSample, OperatorEvent
+
+    _seed_order(db_session)
+    _event(db_session, TICKER, LOWER - timedelta(hours=6), "snapshot")
+    _event(db_session, TICKER, NOW, "delta", seq=2)
+    _event(db_session, TICKER, UPPER + timedelta(hours=2), "delta", seq=3)
+    _event(db_session, OTHER, NOW, "delta", seq=4)
+    _trade(db_session, TICKER, NOW, "inside")
+    _trade(db_session, TICKER, UPPER + timedelta(hours=2), "outside")
+    _trade(db_session, OTHER, NOW, "other-ticker")
+    # The restart and recovery events the addendum requires in every period capsule, and the
+    # loop metrics beside them -- one of each inside the window and one outside, so the window
+    # bound on both reads is exercised rather than assumed.
+    db_session.add(OperatorEvent(ts=NOW, kind="ws_disconnect", summary="inside", ref={}))
+    db_session.add(OperatorEvent(ts=NOW + timedelta(minutes=1), kind="ws_connect",
+                                 summary="inside", ref={}))
+    db_session.add(OperatorEvent(ts=UPPER + timedelta(hours=2), kind="ws_disconnect",
+                                 summary="outside", ref={}))
+    db_session.add(MetricSample(ts=NOW, source="exec", name="exec.loop_ms",
+                                labels={}, value=Decimal("900")))
+    db_session.add(MetricSample(ts=UPPER + timedelta(hours=2), source="exec",
+                                name="exec.loop_ms", labels={}, value=Decimal("30000")))
+    # A name outside CAPSULE_METRIC_NAMES, inside the window: the explicit list is a filter, not
+    # a prefix, so this row must not be taken.
+    db_session.add(MetricSample(ts=NOW, source="exec", name="report.rows",
+                                labels={}, value=Decimal("1")))
+    db_session.flush()
+
+    slices = {s.table: s for s in period_slices(db_session, [TICKER], LOWER, UPPER)}
+
+    events = slices["orderbook_events"].rows
+    # The anchoring snapshot is deliberately outside the window -- a book anchors on the newest
+    # snapshot at or before the window's start -- so the bound is asserted on the deltas.
+    assert all(LOWER <= r["ts"] <= UPPER for r in events if r["kind"] == "delta")
+    assert [r["ts"] for r in events if r["kind"] == "snapshot"] == [LOWER - timedelta(hours=6)]
+    assert {r["ticker"] for r in events} == {TICKER}
+    trades = slices["venue_trades"].rows
+    assert [r["trade_id"] for r in trades] == ["inside"]
+    assert all(LOWER <= r["ts"] <= UPPER for r in trades)
+    assert {r["ticker"] for r in trades} == {TICKER}
+    assert all(LOWER <= r["placed_at"] <= UPPER for r in slices["orders"].rows)
+    assert {r["ticker"] for r in slices["venue_markets"].rows} == {TICKER}
+
+    operator = slices["operator_events"].rows
+    assert sorted(r["kind"] for r in operator) == ["ws_connect", "ws_disconnect"]
+    assert all(LOWER <= r["ts"] <= UPPER for r in operator)
+    assert "outside" not in {r["summary"] for r in operator}
+
+    metrics = slices["metric_samples"].rows
+    assert [r["name"] for r in metrics] == ["exec.loop_ms"]
+    assert all(LOWER <= r["ts"] <= UPPER for r in metrics)
+
+    assert slices["metric_samples"].index_note.startswith("ix_metric_samples_name_ts")
+    assert all(s.index_note for s in slices.values())
+
+
+def test_a_gap_row_in_the_window_makes_the_slice_unverifiable(db_session):
+    """A window whose subscription lost a frame cannot be replayed from its own tape.
+
+    The capsule keeps it and marks it, rather than dropping it: U8's rule is "a slice without
+    tape or transitions is marked unverifiable". The entry carries the `sid` and the `ts`,
+    because the gap invalidates every ticker on that subscription, not only the one that
+    exposed it.
+    """
+    _event(db_session, TICKER, LOWER - timedelta(hours=6), "snapshot")
+    _event(db_session, "", NOW, "gap", sid=7, seq=9,
+           raw={"sid": 7, "expected": 8, "got": 9, "exposed_by": TICKER})
+    slices = period_slices(db_session, [TICKER], LOWER, UPPER)
+    entries = unverifiable(slices, [TICKER])
+    assert [e["reason"] for e in entries] == ["gap"]
+    assert entries[0]["sid"] == 7 and entries[0]["ts"] == NOW
+
+
+def test_a_ticker_with_no_anchoring_snapshot_is_unverifiable(db_session):
+    """No snapshot within two days of the window's start means no book to start from."""
+    _event(db_session, TICKER, NOW, "delta", seq=2)
+    slices = period_slices(db_session, [TICKER], LOWER, UPPER)
+    entries = unverifiable(slices, [TICKER])
+    assert [(e["ticker"], e["reason"]) for e in entries] == [(TICKER, "no anchor")]
+
+
+def test_merge_slices_takes_each_row_once(db_session):
+    """The order path's two selectors overlap, and the capsule must not carry the overlap twice.
+
+    An order capsule reads its own order by id and then reads the window's orders by
+    `placed_at` — and its own order is inside its own window, as are its fills, its events, its
+    ledger rows and its market. Concatenating the two selectors would give every one of those
+    rows twice, in a file whose manifest count and sha256 faithfully attest to the duplication.
+    The period read stays on the order path: 6B wants the ticker's tape and the other orders
+    working the same window, which only that selector brings.
+    """
+    from harness.capsule import merge_slices, order_window
+
+    _seed_order(db_session)
+    _event(db_session, TICKER, LOWER - timedelta(hours=6), "snapshot")
+    _event(db_session, TICKER, NOW, "delta", seq=2)
+    own = order_slices(db_session, 1)
+    rows = {s.table: s.rows for s in own}
+    lower, upper = order_window(rows["orders"][0], rows["fills"])
+    merged = {s.table: s.rows for s in merge_slices(
+        own + period_slices(db_session, [TICKER], lower, upper))}
+
+    assert [r["id"] for r in merged["orders"]] == [1]
+    assert len(merged["fills"]) == len({r["id"] for r in merged["fills"]}) == 2
+    assert len(merged["venue_markets"]) == 1
+    for table in ("order_events", "ledger"):
+        assert len(merged[table]) == len({r["id"] for r in merged[table]})
