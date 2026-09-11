@@ -542,6 +542,7 @@ def gate_cmd() -> None:
     configure_logging()
     from harness import telemetry
     from harness.report.gate import (
+        Eligibility,
         evaluate_all,
         exec_variant_ids,
         registered_variants,
@@ -549,6 +550,9 @@ def gate_cmd() -> None:
     )
 
     s = get_settings()
+    # Both settings default to None, so this is the dormant object and every query below runs
+    # exactly the SQL it ran before this milestone (design addendum §0.4).
+    eligibility = Eligibility(s.gate_eligible_from_order_id, s.gate_eligible_from_run_id)
     factory = make_session_factory(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))
     now = datetime.now(timezone.utc)
     with factory() as session:
@@ -557,12 +561,12 @@ def gate_cmd() -> None:
             log.error("no active registered variant to evaluate; run `harness variants register`")
             raise typer.Exit(1)
         rows = registered_variants(session)
-        results = evaluate_all(session, now, variant_ids, s.gate_variant)
+        results = evaluate_all(session, now, variant_ids, s.gate_variant, eligibility)
         telemetry.event(session, "gate_evaluated", f"gate evaluated for {len(results)} variant(s)",
                         ref={"criteria_hash": results[0].criteria_hash if results else None}, ts=now)
         session.commit()
         document = render_gate(results, {r.variant_id: r.name for r in rows},
-                               {r.variant_id: r.tier for r in rows})
+                               {r.variant_id: r.tier for r in rows}, eligibility)
     print(document)
     log.info("gate evaluated at %s for %d variant(s)", now.isoformat(), len(results))
 

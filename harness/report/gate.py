@@ -198,6 +198,83 @@ def criteria_hash(criteria: tuple[Criterion, ...] | None = None) -> str:
     return hashlib.sha256("\n".join(definitions).encode("utf-8")).hexdigest()
 
 
+# --- eligibility (dormant by default; addendum §0.4) -----------------------------------------
+#
+# U8: "an epoch label alone does not exclude historical rows". The mechanism that would exclude
+# them is built, reviewed and verified here, and it is off. With both settings `None` -- the
+# default, and the state this milestone deploys -- `eligible_sql` returns its input unchanged,
+# every query keeps `replay = false` and no other filter, and `criteria_json` carries no
+# `eligibility` key. Switching it on is a dated user decision under R1; the loop never sets it.
+
+#: Where a predicate may be inserted. A marker sits on its own line inside a `where` clause,
+#: after the last unconditional predicate, with the alias it names in scope.
+_MARKER_ORDER = "-- eligibility:order"
+_MARKER_RUN = "-- eligibility:run"
+_PREDICATE_ORDER = "and o.id >= :eligible_from_order"
+_PREDICATE_RUN = "and s.run_id >= :eligible_from_run"
+
+
+@dataclass(frozen=True)
+class Eligibility:
+    """The measurement boundary: the first order and the first run a gate evaluation counts.
+
+    Two ids rather than one instant, because an order and a signal are numbered on different
+    clocks and the criteria split the same way -- eleven read `orders`, one reads `signals`.
+    """
+
+    from_order_id: int | None = None
+    from_run_id: int | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.from_order_id is not None or self.from_run_id is not None
+
+    def params(self) -> dict:
+        """The bind values the rewritten SQL needs, and nothing when it was not rewritten."""
+        if not self.active:
+            return {}
+        return {"eligible_from_order": self.from_order_id,
+                "eligible_from_run": self.from_run_id}
+
+    def as_json(self) -> dict:
+        return {"from_order_id": self.from_order_id, "from_run_id": self.from_run_id}
+
+
+def eligible_sql(sql: str, from_order: int | None, from_run: int | None) -> str:
+    """One criterion's SQL with the eligibility predicates inserted at its markers.
+
+    Pure, and the identity function when both bounds are `None`: the dormant path returns the
+    same string object's value, so a default-off evaluation runs byte-for-byte today's query.
+    A marker whose bound is `None` keeps its comment, so the text still shows where the
+    insertion point is.
+    """
+    if from_order is None and from_run is None:
+        return sql
+    if from_order is not None:
+        sql = sql.replace(_MARKER_ORDER, _PREDICATE_ORDER)
+    if from_run is not None:
+        sql = sql.replace(_MARKER_RUN, _PREDICATE_RUN)
+    return sql
+
+
+def _stmt(stmt, eligibility: "Eligibility | None"):
+    """The statement a criterion should run: the module constant itself while dormant.
+
+    Returning the original `text()` object on the default path keeps the compiled-statement
+    cache warm and makes "unchanged in behaviour" literally true rather than argued.
+    """
+    if eligibility is None or not eligibility.active:
+        return stmt
+    return text(eligible_sql(stmt.text, eligibility.from_order_id, eligibility.from_run_id))
+
+
+def _bind(eligibility: "Eligibility | None", params: dict) -> dict:
+    """A criterion's own parameters plus the eligibility bounds, when there are any."""
+    if eligibility is None or not eligibility.active:
+        return params
+    return dict(params, **eligibility.params())
+
+
 # --- helpers ---------------------------------------------------------------------------------
 
 
@@ -252,6 +329,7 @@ _VARIANT_ORDERS = """
     from orders o
     left join games g on g.id = o.game_id
     where o.variant_id = :variant and o.replay = false and o.placed_at <= :now
+      -- eligibility:order
 """
 
 _FILL_EVENTS = text(f"""
@@ -264,10 +342,11 @@ _FILL_EVENTS = text(f"""
 # --- the criteria ----------------------------------------------------------------------------
 
 
-def fill_events(session: Session, now: datetime, variant: str,
-                criterion: Criterion) -> CriterionResult:
+def fill_events(session: Session, now: datetime, variant: str, criterion: Criterion,
+                eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 1: the fill count, its game and sport coverage, and the clean-book share."""
-    rows = session.execute(_FILL_EVENTS, {"variant": variant, "now": now}).all()
+    rows = session.execute(_stmt(_FILL_EVENTS, eligibility),
+                           _bind(eligibility, {"variant": variant, "now": now})).all()
     n = len(rows)
     games = {r.game_id for r in rows if r.game_id is not None}
     sports = {r.sport for r in rows if r.sport}
@@ -280,10 +359,11 @@ def fill_events(session: Session, now: datetime, variant: str,
                     "ws_clean_share": share, "min_games": 40, "min_ws_clean_share": 0.80})
 
 
-def marquee_share(session: Session, now: datetime, variant: str,
-                  criterion: Criterion) -> CriterionResult:
+def marquee_share(session: Session, now: datetime, variant: str, criterion: Criterion,
+                  eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 2: the share of fill events on NFL, or on NCAAF inside a 4c book."""
-    rows = session.execute(_FILL_EVENTS, {"variant": variant, "now": now}).all()
+    rows = session.execute(_stmt(_FILL_EVENTS, eligibility),
+                           _bind(eligibility, {"variant": variant, "now": now})).all()
     n = len(rows)
     marquee = 0
     for row in rows:
@@ -306,6 +386,7 @@ _CLV_FILL_EVENTS = text(f"""
     join orders o on o.id = c.order_id
     left join games g on g.id = o.game_id
     where o.variant_id = :variant and o.replay = false and o.placed_at <= :now
+      -- eligibility:order
       and o.game_id is not null and c.stale = false and c.clv_p_net is not null
       and c.benchmark_type = any(:benchmarks)
       {_FILL_EVENT} {_NOT_MOVED}
@@ -313,7 +394,9 @@ _CLV_FILL_EVENTS = text(f"""
 
 
 def _clv_by_benchmark(session: Session, now: datetime, variant: str,
-                      benchmarks: tuple[str, ...]) -> dict[str, list[tuple[float, int]]]:
+                      benchmarks: tuple[str, ...],
+                      eligibility: "Eligibility | None" = None
+                      ) -> dict[str, list[tuple[float, int]]]:
     """`(clv_p_net, game_id)` per benchmark type over the variant's fill events.
 
     `order_clv`, never `gap_outcomes`: the gap outcome is the counterfactual for a market
@@ -321,9 +404,9 @@ def _clv_by_benchmark(session: Session, now: datetime, variant: str,
     (addendum §0.7). Stale benchmark rows are excluded here, once, for all three.
     """
     out: dict[str, list[tuple[float, int]]] = {b: [] for b in benchmarks}
-    for row in session.execute(_CLV_FILL_EVENTS,
-                               {"variant": variant, "now": now,
-                                "benchmarks": list(benchmarks)}):
+    for row in session.execute(_stmt(_CLV_FILL_EVENTS, eligibility),
+                               _bind(eligibility, {"variant": variant, "now": now,
+                                                   "benchmarks": list(benchmarks)})):
         out[row.benchmark_type].append((float(row.clv_p_net), row.game_id))
     return out
 
@@ -332,10 +415,10 @@ def _ci(pairs: list[tuple[float, int]]) -> CI:
     return cluster_ci([v for v, _ in pairs], [c for _, c in pairs], level=LEVEL)
 
 
-def clv_pinnacle_lb(session: Session, now: datetime, variant: str,
-                    criterion: Criterion) -> CriterionResult:
+def clv_pinnacle_lb(session: Session, now: datetime, variant: str, criterion: Criterion,
+                    eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 3: the 90 % cluster-robust lower bound of mean net CLV against Pinnacle."""
-    pairs = _clv_by_benchmark(session, now, variant, (PINNACLE,))[PINNACLE]
+    pairs = _clv_by_benchmark(session, now, variant, (PINNACLE,), eligibility)[PINNACLE]
     ci = _ci(pairs)
     passed = _finite(ci.lo) and ci.lo > criterion.threshold
     return _result(criterion, ci.lo if _finite(ci.lo) else None, passed, ci.n_obs,
@@ -350,22 +433,24 @@ _MARKOUTS = text(f"""
     join orders o on o.id = k.order_id
     left join games g on g.id = o.game_id
     where o.variant_id = :variant and o.replay = false and o.placed_at <= :now
+      -- eligibility:order
       and o.game_id is not null and k.anchor = :anchor and k.horizon = :horizon
       {_NOT_MOVED}
 """)
 
 
-def markout_30m(session: Session, now: datetime, variant: str,
-                criterion: Criterion) -> CriterionResult:
+def markout_30m(session: Session, now: datetime, variant: str, criterion: Criterion,
+                eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 4: the 30 m markout off the no-watcher fill, net of the maker fee.
 
     On `fair_changed` rows only: an unchanged fair carries no information about how the order
     aged and averaging those structural zeros in pulls the estimate toward zero (spec F15). The
     share it excludes is printed beside the verdict, which is what the definition asks for.
     """
-    rows = session.execute(_MARKOUTS, {"variant": variant, "now": now,
-                                       "anchor": MARKOUT_ANCHOR,
-                                       "horizon": MARKOUT_HORIZON}).all()
+    rows = session.execute(_stmt(_MARKOUTS, eligibility),
+                           _bind(eligibility, {"variant": variant, "now": now,
+                                              "anchor": MARKOUT_ANCHOR,
+                                              "horizon": MARKOUT_HORIZON})).all()
     unchanged = sum(1 for r in rows if not r.fair_changed)
     changed = [r for r in rows if r.fair_changed]
     # A NULL price or fee makes the markout undefined, not zero: substituting zero would report
@@ -391,22 +476,25 @@ _DRIFT = text(f"""
     join orders o on o.id = k.order_id
     left join games g on g.id = o.game_id
     where o.variant_id = :variant and o.replay = false and o.placed_at <= :now
+      -- eligibility:order
       and o.game_id is not null and o.fair_p_at_place is not null
       and k.anchor = :anchor and k.horizon = :horizon
       {_FILL_EVENT} {_NOT_MOVED}
 """)
 
 
-def adverse_drift(session: Session, now: datetime, variant: str,
-                  criterion: Criterion) -> CriterionResult:
+def adverse_drift(session: Session, now: datetime, variant: str, criterion: Criterion,
+                  eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 5: how far the fair moved between placement and the fill, in the order's side.
 
     `markouts.fair_p` is already in the order's own side space (the settler passes it through
     `side_p` before storing it), so only `fair_p_at_place` -- a YES-space column -- is
     converted here. Positive means the fair moved our way.
     """
-    rows = session.execute(_DRIFT, {"variant": variant, "now": now, "anchor": MARKOUT_ANCHOR,
-                                    "horizon": DRIFT_HORIZON}).all()
+    rows = session.execute(_stmt(_DRIFT, eligibility),
+                           _bind(eligibility, {"variant": variant, "now": now,
+                                              "anchor": MARKOUT_ANCHOR,
+                                              "horizon": DRIFT_HORIZON})).all()
     usable = [r for r in rows if r.fair_p is not None]
     pairs = [(float(r.fair_p - side_p(r.fair_p_at_place, r.side)), r.game_id)
              for r in usable if r.fair_changed]
@@ -435,13 +523,14 @@ _EPISODE_ORDERS = text(f"""
     left join order_clv c on c.order_id = o.id and c.benchmark_type = :benchmark
                          and c.stale = false
     where o.variant_id = :variant and o.replay = false and o.placed_at <= :now
+      -- eligibility:order
       and o.game_id is not null
       {_NOT_MOVED}
 """)
 
 
-def filled_vs_unfilled(session: Session, now: datetime, variant: str,
-                       criterion: Criterion) -> CriterionResult:
+def filled_vs_unfilled(session: Session, now: datetime, variant: str, criterion: Criterion,
+                       eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 6: an equivalence bound on unfilled-minus-filled CLV, per episode.
 
     The bound is `cluster_diff_ci`, the two-sample clustered difference in means: its influence
@@ -452,7 +541,8 @@ def filled_vs_unfilled(session: Session, now: datetime, variant: str,
     which fails.
     """
     rows = [dict(r._mapping) for r in session.execute(
-        _EPISODE_ORDERS, {"variant": variant, "now": now, "benchmark": PINNACLE})]
+        _stmt(_EPISODE_ORDERS, eligibility),
+        _bind(eligibility, {"variant": variant, "now": now, "benchmark": PINNACLE}))]
     episodes = episode_of(rows)
     grouped: dict[int, dict] = {}
     for row in rows:
@@ -484,14 +574,14 @@ def filled_vs_unfilled(session: Session, now: datetime, variant: str,
                    detail)
 
 
-def clv_every_benchmark(session: Session, now: datetime, variant: str,
-                        criterion: Criterion) -> CriterionResult:
+def clv_every_benchmark(session: Session, now: datetime, variant: str, criterion: Criterion,
+                        eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 7: mean net CLV at or above zero under each of the seven gated benchmarks.
 
     A type with no non-stale row is `insufficient`, not a pass: a benchmark that never resolved
     is a benchmark this variant was never measured against.
     """
-    series = _clv_by_benchmark(session, now, variant, GATE_BENCHMARKS)
+    series = _clv_by_benchmark(session, now, variant, GATE_BENCHMARKS, eligibility)
     means, counts, games = {}, {}, set()
     for benchmark, pairs in series.items():
         ci = _ci(pairs)
@@ -518,13 +608,15 @@ _STALENESS = text("""
     join fair_values v on v.id = gs.fair_value_id
     where s.variant_id = :variant and s.replay = false and s.decision = 'candidate'
       and s.created_at <= :now and v.staleness_s is not null
+      -- eligibility:run
 """)
 
 
-def staleness_median(session: Session, now: datetime, variant: str,
-                     criterion: Criterion) -> CriterionResult:
+def staleness_median(session: Session, now: datetime, variant: str, criterion: Criterion,
+                     eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 8: the median pricing-time staleness behind the variant's candidate signals."""
-    row = session.execute(_STALENESS, {"variant": variant, "now": now}).one()
+    row = session.execute(_stmt(_STALENESS, eligibility),
+                          _bind(eligibility, {"variant": variant, "now": now})).one()
     median = None if row.median is None else int(row.median)
     passed = median is not None and median < criterion.threshold
     return _result(criterion, median, passed, int(row.n or 0), int(row.games or 0),
@@ -560,8 +652,8 @@ _SETTLEMENT_COVERAGE = text(f"""
 """)
 
 
-def settlement(session: Session, now: datetime, variant: str,
-               criterion: Criterion) -> CriterionResult:
+def settlement(session: Session, now: datetime, variant: str, criterion: Criterion,
+               eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 9: no derived-vs-venue disagreement, and the venue's own result on 90 % of the
     settled markets this variant was filled in.
 
@@ -569,7 +661,8 @@ def settlement(session: Session, now: datetime, variant: str,
     the check cannot pass vacuously (R11).
     """
     mismatches = int(session.execute(_SETTLEMENT_MISMATCHES, {"now": now}).scalar() or 0)
-    row = session.execute(_SETTLEMENT_COVERAGE, {"variant": variant, "now": now}).one()
+    row = session.execute(_stmt(_SETTLEMENT_COVERAGE, eligibility),
+                          _bind(eligibility, {"variant": variant, "now": now})).one()
     markets, with_venue = int(row.markets or 0), int(row.with_venue or 0)
     coverage = with_venue / markets if markets else None
     passed = (mismatches == 0 and coverage is not None and coverage >= criterion.threshold)
@@ -585,31 +678,33 @@ _MISMATCHED = text(f"""
     from orders o
     join venue_markets m on m.id = o.venue_market_id
     where o.variant_id = :variant and o.replay = false and o.placed_at <= :now
+      -- eligibility:order
 """)
 
 
-def mismatched_markets(session: Session, now: datetime, variant: str,
-                       criterion: Criterion) -> CriterionResult:
+def mismatched_markets(session: Session, now: datetime, variant: str, criterion: Criterion,
+                       eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 10: no order whose market's `match_key` has moved since placement.
 
     A variant with no order fails: zero orders is zero evidence, and a criterion that passes on
     an empty table would let the gate's tenth item be satisfied by never trading.
     """
-    row = session.execute(_MISMATCHED, {"variant": variant, "now": now}).one()
+    row = session.execute(_stmt(_MISMATCHED, eligibility),
+                          _bind(eligibility, {"variant": variant, "now": now})).one()
     orders, mismatched = int(row.orders or 0), int(row.mismatched or 0)
     passed = orders > 0 and mismatched == 0
     return _result(criterion, mismatched, passed, orders, int(row.games or 0),
                    {"n_orders": orders})
 
 
-def legal_decision(session: Session, now: datetime, variant: str,
-                   criterion: Criterion) -> CriterionResult:
+def legal_decision(session: Session, now: datetime, variant: str, criterion: Criterion,
+                   eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 11: the user's documented legal decision. False by construction in phase 3."""
     return _result(criterion, False, False, 0, 0, {"manual": True})
 
 
-def live_trading_env(session: Session, now: datetime, variant: str,
-                     criterion: Criterion) -> CriterionResult:
+def live_trading_env(session: Session, now: datetime, variant: str, criterion: Criterion,
+                     eligibility: "Eligibility | None" = None) -> CriterionResult:
     """Criterion 12: `LIVE_TRADING=1` plus the config flag. False by construction in phase 3."""
     return _result(criterion, False, False, 0, 0, {"manual": True})
 
@@ -633,9 +728,15 @@ _FUNCTIONS = {
 # --- evaluation ------------------------------------------------------------------------------
 
 
-def evaluate_gate(session: Session, now: datetime, variant_id: str) -> GateResult:
-    """Every criterion for one variant, as of `now`. Writes nothing."""
-    criteria = {c.name: _FUNCTIONS[c.fn](session, now, variant_id, c) for c in CRITERIA}
+def evaluate_gate(session: Session, now: datetime, variant_id: str,
+                  eligibility: "Eligibility | None" = None) -> GateResult:
+    """Every criterion for one variant, as of `now`. Writes nothing.
+
+    `eligibility` defaults to `None`, which is the whole paper run: the gate window has never
+    been anything else and this milestone does not change it.
+    """
+    criteria = {c.name: _FUNCTIONS[c.fn](session, now, variant_id, c, eligibility)
+                for c in CRITERIA}
     return GateResult(variant_id=variant_id, gate_variant=False, criteria=criteria,
                       criteria_hash=criteria_hash(),
                       passed=all(r.passed for r in criteria.values()))
@@ -686,8 +787,8 @@ def gate_row_variant(session: Session, variant_ids: list[str], gate_variant: str
     return None
 
 
-def evaluate_all(session: Session, now: datetime, variant_ids: list[str],
-                 gate_variant: str) -> list[GateResult]:
+def evaluate_all(session: Session, now: datetime, variant_ids: list[str], gate_variant: str,
+                 eligibility: "Eligibility | None" = None) -> list[GateResult]:
     """Evaluate every variant and store one `gate_reports` row each, marking the gate row.
 
     An evaluation is one `evaluated_at` shared by its rows, and `uq_gate_report` keys the table
@@ -699,14 +800,21 @@ def evaluate_all(session: Session, now: datetime, variant_ids: list[str],
     marked = gate_row_variant(session, variant_ids, gate_variant)
     results = []
     for variant_id in variant_ids:
-        result = evaluate_gate(session, now, variant_id)
+        result = evaluate_gate(session, now, variant_id, eligibility)
         result = replace(result, gate_variant=variant_id == marked)
         results.append(result)
+        criteria_json = {name: r.as_json() for name, r in result.criteria.items()}
+        if eligibility is not None and eligibility.active:
+            # Only when set: verification row (ii) is
+            # `select count(*) from gate_reports where criteria_json ? 'eligibility'` = 0 until
+            # a dated user decision, and a key written unconditionally would break that
+            # invariant on the first evaluation after this deploys.
+            criteria_json["eligibility"] = eligibility.as_json()
         stored = session.execute(
             insert(GateReport)
             .values(evaluated_at=now, variant_id=result.variant_id,
                     gate_variant=result.gate_variant,
-                    criteria_json={name: r.as_json() for name, r in result.criteria.items()},
+                    criteria_json=criteria_json,
                     criteria_hash=result.criteria_hash, passed=result.passed)
             .on_conflict_do_nothing(index_elements=["evaluated_at", "variant_id"])
             .returning(GateReport.id)).first()
@@ -731,7 +839,8 @@ def _format(value) -> str:
 
 
 def render_gate(results: list[GateResult], names: dict[str, str],
-                tiers: dict[str, str]) -> str:
+                tiers: dict[str, str],
+                eligibility: "Eligibility | None" = None) -> str:
     """The compact summary `harness gate` prints: one block per variant, one line per criterion.
 
     Pure. The gate row is marked `[gate]` and the primary is labelled beside it, so a reader
@@ -748,4 +857,7 @@ def render_gate(results: list[GateResult], names: dict[str, str],
                          f"vs {_format(row.threshold):<8} "
                          f"n={row.n_obs:<6} games={row.n_clusters:<5} {row.status}")
     lines.append(f"criteria_hash={results[0].criteria_hash if results else criteria_hash()}")
+    if eligibility is not None and eligibility.active:
+        lines.append(f"eligibility=from_order_id:{eligibility.from_order_id} "
+                     f"from_run_id:{eligibility.from_run_id}")
     return "\n".join(lines)

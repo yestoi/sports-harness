@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     #: U5/D1: the one variant the phase gate is judged on. The Task 4b deploy flips it to
     #: "sharp_two_sided"; falls back to the active primary when the named variant is unregistered.
     gate_variant: str = "sharp_direct"
+    #: The measurement boundary a gate evaluation counts from (design addendum §0.4). Both
+    #: `None` means the whole paper run, which is what the gate has always measured and what
+    #: this milestone deploys. Setting either one is a dated user decision under R1: it changes
+    #: which rows every criterion sees, and the loop never sets it.
+    gate_eligible_from_order_id: int | None = None
+    gate_eligible_from_run_id: int | None = None
 
     # --- phase 4.5: dashboard surfaces ------------------------------------------------------
     #: Whether `app-serve`'s lifespan starts the snapshot scheduler. True in production; the
