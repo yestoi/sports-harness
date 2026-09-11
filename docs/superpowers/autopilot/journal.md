@@ -1449,3 +1449,12 @@ Times are America/Chicago.
 - Decisions taken on the user's behalf: addendum §8 D1-D11.
 - Carried forward: none
 - Next: phase 6C (T1 now; T2, T4, T5 as slots free); hotfix wave (37 review, 42, 43); 6A T1 review; wakeup 22:45 CT checkpoint to be armed at the next boundary
+
+## 121. phase start - phase 6C trustworthy reports - 2026-09-11 14:37 CT
+
+- Orient: rule 5 (6C `planned`) under U8's deadline exception; runs beside 6A (T1 in review), the hotfix wave (37 in review, 42/43 implementing).
+- Branch / commits: `phase6c-trustworthy-reports` from main b2b477f; ledger `.superpowers/sdd/2026-09-11-phase6c-trustworthy-reports/progress.md` (pre-flight scan: no conflict beyond the declared serializations).
+- Result: started; expected 11 tasks; wave map 1A T1,T2,T4,T5 -> 1B T3 -> 1C T6 (deploy) -> 2A T7,T9 -> 2B T8,T10 -> 2C T11.
+- Dispatches: 1 so far (T1 implementer sonnet)
+- Rulings: (1) standing: T6's deploy runs from `main` via the mid-phase path with fix 37's recipe, after the window query; trailers this session's. (2) T1 takes the last implementer slot now; T2, T4, T5 as fixes 42/43 free theirs - cost if wrong: wave 1 finishes about an hour later, inside the Friday-night window.
+- Next: T1 in flight; wakeup 22:45 CT (the Friday-night window checkpoint) armed at the next boundary
