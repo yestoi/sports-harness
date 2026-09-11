@@ -75,7 +75,7 @@ class Correction:
 #
 #   select variant_id, name from strategy_variants;
 #
-VARIANT_IDS_C0: tuple[str, ...] = ()
+VARIANT_IDS_C0: tuple[str, ...] = ("ff363c8ac08d", "e549e693e117", "64ba3ef09642", "f259ca109084", "49af716f8708", "c2bc45377328", "5632da729fa7")  # filled 2026-09-11 18:55 CT from strategy_variants (the eighth row, e82fcd0a1e99, is a tier=replay artifact of a phase 3 replay command, journal 60-61, not a registered id)
 
 # The distinct executor configurations the paper run placed orders under: `orders.config_hash`,
 # 64 hex characters each (`harness/execution/plan.py:118`), six values across the run. Not
@@ -85,7 +85,14 @@ VARIANT_IDS_C0: tuple[str, ...] = ()
 #
 #   select distinct config_hash from orders where replay = false;
 #
-CONFIG_HASHES_C0: tuple[str, ...] = ()
+CONFIG_HASHES_C0: tuple[str, ...] = (
+    "15a491be8fad9588d9d5465d5a159a6cef8b32642afea11680ba71d36c5d176b",
+    "51afb46a112c5d930d2156985bda3ebe92966609828f43c8e1b6538fb3631139",
+    "776b1ccac8d4e903f0e2cd0b9a18d17c38540317a0d5da1d39de55fa6a789f66",
+    "82768f6793c9318b0aabb067f26eef4b052c2bc724120cbe9d047b6256b2ce75",
+    "d6962419ca950dd003f7f8283bc12ab01c36b9fd40e5654901353780d9a9cb9f",
+    "ef06087f4af152a62a85ca59aef4efbe08c9ca6ce24fbf1277562e28938267bd",
+)  # filled 2026-09-11 18:55 CT from select distinct config_hash from orders where replay = false
 # ----------------------------------------------------------------------------------------------
 
 CORRECTIONS: tuple[Correction, ...] = (

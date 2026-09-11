@@ -65,6 +65,7 @@ def test_variant_ids_are_registered_variant_ids():
     to this test in the same commit (T3 step 9). The loop runs in both states, so an entry of
     the wrong width fails the moment it is pasted in.
     """
+    assert len(VARIANT_IDS_C0) == 7
     for value in VARIANT_IDS_C0:
         assert re.fullmatch(r"[0-9a-f]{12}", value), value
 
@@ -83,6 +84,7 @@ def test_config_hashes_are_executor_config_hashes():
     `assert len(CONFIG_HASHES_C0) == 6` to this test in the same commit (T3 step 9). The loop
     runs in both states, so an entry of the wrong width fails the moment it is pasted in.
     """
+    assert len(CONFIG_HASHES_C0) == 6
     for value in CONFIG_HASHES_C0:
         assert re.fullmatch(r"[0-9a-f]{64}", value), value
 
