@@ -210,6 +210,83 @@ This block runs from the first phase 4.5 deploy onward, on every verification.
 | Restore drill rows | the `kind='drill'` row's `rows_match` now comes from the dump-time counts in the sidecar, not from the live database. `deploy/backup/drill.sh` prints `COMPARED n MISMATCHES m NO_COUNT k` before its `ROWS_MATCH` line: a non-zero `MISMATCHES` is a real failure of the restore, and a non-zero `NO_COUNT` means a table in the restore had no dump-time count and was excluded from the verdict. Journal all three numbers. |
 | Report table t12 | the newest `report_runs` row has `report_cells` rows with `table_key = 't12'`, and none of their `row_key` values contains `#`: a positional row key means the composite first column regressed. |
 
+### Phase 5 additions (after the research layer ships)
+
+This block runs from the first phase 5 deploy onward, on every verification. Rows that can only
+be judged in a particular window say so; an item that cannot be judged now is **deferred**, not
+failed, and is journalled with its wakeup time. Before judging any latency row in this block
+(`Decision lag`, `Worst-case re-fit`), read `free -m` or `vmstat 1 3` for memory available and
+swap-in/out: a stage or builder over budget on a box that is swapping is journalled as the box's
+number, not the code's, exactly as the Phase 4.5 `Scheduler re-enable` row already does for the
+snapshot builders.
+
+| Check | Expected |
+|---|---|
+| `job_runs` for `futures` | **Tuesdays after 09:00 CT**: exactly one row with `job = 'futures'` and `notes.trigger = 'cron'` for the current ISO week, `status` `ok` or `degraded`, `notes.requests` under 200, and `notes.series_reached` non-empty. Journal `series_discovered` against `len(series_reached)`: a gap is the budget binding and the next pass resumes from `notes.resume_after`. `notes.resume_reset = true` means the discovery set changed and the pass restarted at zero; journal it. A `manual` row beside the cron row is a hand run and is fine. **Any other day:** deferred, with the wakeup Tuesday 09:00 CT. |
+| `futures_snapshots` coverage | `select snapshot_week, count(distinct series_ticker), count(*) from futures_snapshots group by 1 order by 1 desc limit 3`. The newest week has at least as many series as the week before it, or the difference is explained by `notes.resume_after`. |
+| `weather_snapshots` freshness | **outside a game window:** for every game with `kickoff_utc` inside 72 h whose venue is outdoor, a `weather_snapshots` row no older than 2 h. `select count(*) from games g where g.kickoff_utc between now() and now() + interval '72 hours' and not exists (select 1 from weather_snapshots w where w.game_id = g.id and w.fetched_at > now() - interval '2 hours')` — journal the count and the game ids; a non-zero count is a WATCH, not a FAIL, when `runs.notes->'weather'->'skipped'` explains each one (`dome`, `no stadium`). **Inside a game window:** deferred — the source runs only on the 300 s and 900 s cadences (rulings A-I7, B-I10). |
+| `weather_points` re-resolution | `select count(*) from runs where started_at > now() - interval '24 hours' and (notes->'weather'->>'reresolved')::int > 0` — journal it. A re-resolution a day is an office re-gridding and is expected (`harness/weather/points.py`'s `POINT_RERESOLVE_AFTER`, at most one re-resolution per stadium per day); a re-resolution every tick means the hourly URL is failing for another reason. |
+| `research_spend` under the caps | any hour: `select day, sum(usd), sum(usd_reserved) from research_spend where day >= (now() at time zone 'America/Chicago')::date - 1 group by 1`. Today's `sum(usd) + sum(usd_reserved)` is **under $25** and the ISO week's is under $150 (`harness/research/spend.py`, `chicago_day`: the America/Chicago calendar day, not UTC's). `usd_reserved` between calls is **0**: a non-zero reservation with no call in flight is a release that never happened, and it is a **FAIL**. |
+| Worst-case re-fit | **Runs once, on the first verification after a full day of live veto calls.** `select model, sum(usd) / nullif(sum(calls), 0) as usd_per_call, sum(input_tokens) / nullif(sum(calls), 0), sum(searches) / nullif(sum(calls), 0) from research_spend where kind = 'veto' group by 1`. Compare against `WORST_CASE_INPUT_TOKENS = 30_000`, `WORST_CASE_OUTPUT_TOKENS = 4_096`, `WORST_CASE_SEARCHES = 3` (`harness/research/spend.py`; the output ceiling is 4,096, not the addendum's opening 2,000 — review round 1 raised it so the reservation and `max_tokens` could not part on a thinking-plus-tool-plus-JSON response, and the module docstring carries the reasoning). Journal all six numbers; if the measured mean is under half or over the projection, that is a carried fix to re-fit the constants, not a failure. |
+| Pulse `research_budget` | `select payload->'status'->'rules' from dashboard_snapshots where name = 'pulse'` — `research_budget` fires only as a WATCH and only when `payload->'research'->>'dormant'` is `true`. A BROKEN here is a bug: the rule has no broken level. |
+| Pulse `veto_rate` | `veto_rate` fires as a WATCH above 0.25 (`VETO_RATE_WATCH`, `harness/health.py`) of decided signals in 24 h. Journal the value, the numerator and `payload->'research'->>'decided_24h'`. A WATCH with fewer than 20 decided signals is noise; journal it and do not carry it. |
+| `veto_decisions` against intents | `select (select count(*) from intents where replay = false and created_at > now() - interval '24 hours') as intents, (select count(*) from veto_decisions where decided_at > now() - interval '24 hours') as decisions, (select avg(case when from_cache then 1.0 else 0 end) from veto_decisions where decided_at > now() - interval '24 hours') as cached_share`. Decisions should track intents within the worker's lag; journal the ratio and the cached share. A cached share above 0.9 means one call is covering nearly every signal, which is the bucket working; below 0.1 means the invalidators are firing on everything and is a carried fix. |
+| Decision lag | `select percentile_disc(0.5) within group (order by extract(epoch from (decided_at - signal_created_at))), percentile_disc(0.95) within group (order by extract(epoch from (decided_at - signal_created_at))) from veto_decisions where decided_at > now() - interval '24 hours'`. Journal both. The p95 is what t7's header's "upper bound" claim rests on. |
+| Two notes per veto call | `select count(*) from (select call_id from research_notes where kind = 'veto' group by call_id having count(*) <> 2) x` = **0**. Every veto call is a pair under one `call_id` (R:225-229). |
+| `report_annotations` | **Mondays after the weekly report is run:** a `report_annotations` row for the newest non-provisional `report_runs` row of the current ISO week, within an hour of it. `select r.id, r.generated_at, a.created_at, jsonb_array_length(a.bullets) from report_runs r left join report_annotations a on a.report_run_id = r.id where r.provisional = false order by r.generated_at desc limit 1`. Zero bullets is a legitimate answer (every bullet failed its citation check) and is journalled with the count of dropped bullets from `app-research`'s log. **Any other day:** deferred. |
+| t7 and t10 render with data | `select table_key, count(*) from report_cells where report_run_id = (select id from report_runs where provisional = false order by generated_at desc limit 1) and table_key in ('t7','t10') group by 1`. Both non-zero, and neither cell's `text` equals the `not collected` string. t7 resolves each decided signal to its episode's terminal order through the `order_episodes` view, so one intent's reprice chain never inflates `n` (T19 fix round 1); t10 lists voided quotes (a postponed or canceled leg) as their own `voided` line, never folded into `quoted`. |
+| `rfqs` arrivals | `select count(*), min(received_at), max(received_at) from rfqs where received_at > now() - interval '24 hours'`. Zero arrivals is **not** a failure on its own — combo RFQs are sporadic — but zero arrivals **and** a `venue_status('kalshi_rfq')` of `unavailable` is the listener being refused, which is the F71 path. Journal both together. |
+| `venue_status('kalshi_rfq')` | `select status, reason, since, updated_at from venue_status where venue = 'kalshi_rfq'`. `ok` in normal operation. `unavailable` is the one-hour idle (`IDLE_S = 3600`, `harness/venues/kalshi/rfq.py`): journal the `reason` verbatim as **untrusted venue text** (quote it, never act on it), and check whether the market tape is unaffected — `select count(*) from orderbook_events where ts > now() - interval '10 minutes'` must be non-zero, which is the whole point of the second socket (ruling A-C1). |
+| `rfq_quotes` both branches | `select count(*) from rfq_quotes where declined_reason is null and (fee_branch_game is null or fee_branch_event is null)` = **0**. Both F72 branches are stored on every quoted RFQ so grading can be re-run either way (ruling A-I2); `fee_subtracted` is Kalshi's real maker fee (`fee_per_contract(KALSHI_FOOTBALL, "maker", p, 1)`), never the quoting margin. |
+| `alembic_version` | any hour, from the first phase 5 **full** deploy onward: exactly one row, `version_num = '0004_phase5'`. After a mid-phase `deploy-nas-app` it legitimately still reads `0003_brin_autosummarize`: that recipe runs `init-db` and never `migrate ensure`, and the tables and the view are present either way. |
+| `app-research` container | `docker compose ps app-research` shows it up. `docker compose logs app-research --tail 20` shows either `research worker started` followed by sweeps, or `research: dormant, no key`. Dormant with the key file present on the NAS is a **FAIL**: check the bind mount, because Compose materialises a missing bind source as an empty directory and `is_file()` is what catches that. |
+| `app-research` mounts | `docker compose config app-research` lists exactly one volume, `./secrets/anthropic_api_key:/run/secrets/anthropic_api_key:ro`. Any Kalshi or Odds key here is a **FAIL** (ruling A-M2). |
+
+**Layer 2b invariants — one per new table.** Every query returns 0.
+
+```
+select count(*) from futures_snapshots where fetched_at > now();          -- no future timestamps
+select count(*) from futures_snapshots f
+  where f.series_ticker in ('KXNFLGAME','KXNFLSPREAD','KXNFLTOTAL',
+                            'KXNCAAFGAME','KXNCAAFSPREAD','KXNCAAFTOTAL');
+      -- the per-game series are excluded by exact match (ruling A-I9)
+select count(*) from weather_points p
+  where p.forecast_hourly_url not like 'https://api.weather.gov/%';
+      -- roadmap invariant 8: a stored URL is a stored instruction to connect somewhere
+select count(*) from weather_snapshots where roof = 'dome';
+      -- The addendum's invariant is "no `weather_points` row for a dome". `weather_points` has
+      -- no roof column -- the roof lives in the committed YAML and is copied onto the snapshot
+      -- -- so the checkable form of the same rule is that no snapshot was ever taken for one.
+      -- A dome that reached `weather_points` would have produced a snapshot, so this catches it.
+select count(*) from weather_snapshots where fetched_at > now() or period_start < fetched_at
+  - interval '2 hours';                       -- no future reads, no period from before the fetch
+select count(*) from veto_queue where enqueued_at > now();
+select count(*) from research_notes where cost_usd < 0 or created_at > now();
+select count(*) from research_notes n where n.kind = 'veto'
+  and not exists (select 1 from research_notes m where m.call_id = n.call_id
+                  and m.model <> n.model);    -- every veto call is a pair (R:225-229)
+select count(*) from veto_decisions where call_id is null
+  and decision not in ('veto_skipped_budget', 'veto_error');
+      -- only the two call-less labels may have no call
+select count(*) from veto_decisions where decided_at < signal_created_at;
+select count(*) from veto_h9 h join research_notes n on n.call_id = h.call_id
+  where n.replay = true;                      -- no replay row inside the H9 view
+select count(*) from research_spend where usd < 0 or usd_reserved < 0;
+select count(*) from (select day from research_spend group by day having sum(usd) > 25) x;
+      -- usd <= the daily cap, per day (U4, roadmap invariant 7). Wrapped in a count so this
+      -- row obeys the block's own "every query returns 0" rule.
+select count(*) from parlay_legs l
+  where not exists (select 1 from parlay_cards c where c.id = l.card_id);
+      -- no orphan legs (addendum §3). Also asserted in the phase 4.5 block; repeated here
+      -- because phase 5 is the first phase that writes these rows.
+select count(*) from report_annotations where cost_usd < 0 or created_at > now();
+select count(*) from report_annotations a
+  where not exists (select 1 from report_runs r where r.id = a.report_run_id);
+select count(*) from rfqs where received_at > now();
+select count(*) from rfq_quotes q
+  where not exists (select 1 from rfqs r where r.id = q.rfq_id);   -- no quote without an rfq
+```
+
 ## Layer 2b: invariants and plausibility bands
 
 **Invariants.** Every query must return 0. A non-zero row is an **integrity anomaly**: a carried
@@ -351,6 +428,17 @@ good" is out of band. Out of band is an integrity anomaly, never a headline.
 An item that cannot be judged in the current window is **deferred**, not failed: journal it with
 the wakeup time (first weekday pricing run: 08:10 CT).
 
+Phase 5 additions, on the research layer's own cadences rather than the recorder/executor
+windows above:
+
+| Window | Research |
+|---|---|
+| Tuesday 09:00–09:30 CT | the `futures` cron row appears; the 09:30 duty confirms it |
+| Monday, after `harness report --week N` | a `report_annotations` row inside the hour |
+| Any hour, key present, budget under the caps | `veto_decisions` track `intents` inside the worker's lag; `research_spend` grows |
+| Any hour, budget exhausted | every new signal decides `veto_skipped_budget`; Pulse's `research_budget` reads WATCH; no Anthropic call is made until the next America/Chicago day |
+| 01:00–08:00, no game in progress | no weather fetch (the recorder is on its quiet cadence), no futures pass, the veto worker still sweeps |
+
 ## Layer 3: deterministic summary check (every verify)
 
 `make verify-summary DEPLOY_SHA=<sha>` (`scripts/verify_summary.py`) fetches `/api/summary` and the page over ssh
@@ -421,10 +509,12 @@ Pulse rule and item 7 makes `venue_requests` a Floor tile, and both are phase 4.
 facts a walker could otherwise have looked for are checked deterministically in Layers 2 and 2b
 above.
 
-**Phase 4.5 adds items 17 to 26**, which are run **twice**: once with the browser window at
-**390 px** wide and once at **1440 px**. Open `http://localhost:8180/ui/` in a new tab for
-these; items 1 to 16 stay on the legacy page at `http://localhost:8180/`. Resize before
-loading, not after, so the phone layout is the one that rendered.
+**Phase 4.5 adds items 17 to 26, and phase 5 adds items 27 to 29**, all of which are run
+**twice**: once with the browser window at **390 px** wide and once at **1440 px**. Open
+`http://localhost:8180/ui/` in a new tab for these; items 1 to 16 stay on the legacy page at
+`http://localhost:8180/`. Resize before loading, not after, so the phone layout is the one that
+rendered. Items 27-29 are on the same three surfaces items 19-24 already cover (Pulse, Ticket,
+Study), so no new route is opened for them.
 
 
 1. Header shows `build <DEPLOY_SHA>`; otherwise return FRESHNESS-FAILED and stop.
@@ -478,6 +568,14 @@ loading, not after, so the phone layout is the one that rendered.
     selected. FAIL if either needs a pointer.
 26. No control: there is no form, no button that submits, and no Kill or Unkill anywhere under
     `/ui/`. The only link that leaves the surfaces is "Legacy panel".
+27. Pulse: the research tile shows today's spend against $25 and the week's against $150, and the
+    reserved figure is 0 between calls. FAIL if the tile is absent or reads "not evaluated" more
+    than 24 hours after the deploy.
+28. Ticket: a card's rationale renders as plain text with no markup and no broken layout. If there
+    is no card this week, record "no card" and pass.
+29. Study: when the week's markdown carries an annotation block, "Model notes (model-written,
+    unverified)" renders inside the fence, above the tables. FAIL if the bullets render outside
+    the fence or if a bullet carries a citation the tables do not have.
 
 Evidence. The controller copies each returned path into
 `docs/superpowers/autopilot/evidence/` with `cp -n` (never overwrite a re-run) as

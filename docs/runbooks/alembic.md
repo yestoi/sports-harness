@@ -21,6 +21,19 @@ path anywhere: `harness/db/migrate.py` builds the `Config` in code, so every ope
     harness migrate upgrade    # apply what is unapplied
     harness migrate stamp      # record head without executing it
 
+## Revisions
+
+| Revision | Follows | Adds | `downgrade()` |
+|---|---|---|---|
+| `0004_phase5` | `0003_brin_autosummarize` | the research layer's ten tables (`futures_snapshots`, `weather_points`, `weather_snapshots`, `veto_queue`, `research_notes`, `veto_decisions`, `research_spend`, `report_annotations`, `rfqs`, `rfq_quotes`) and the `veto_h9` view | `pass` (additive only, roadmap invariant 5; see the module docstring for why rolling one of these back is never a schema operation) |
+
+The stamp moves from `0003_brin_autosummarize` to `0004_phase5` only under the **full**
+`make deploy-nas` recipe, whose `harness migrate ensure` step is the only place `upgrade_head`
+runs. A `make deploy-nas-app` deploy during the phase legitimately leaves `alembic_version`
+reading `0003_brin_autosummarize`: that recipe runs `init-db` and never `migrate ensure`, and the
+ten tables and the view are created (or already exist) either way, since `create_schema` and the
+migration are additive mirrors of each other.
+
 ## Rolling back
 
 1. Confirm no game window is open (verify.md, Game window).
