@@ -14,7 +14,15 @@ row with a `popularity_tier`", and `popularity_tier` is defaulted to 0 by the se
 nothing in the codebase, so it cannot be read as a filter without inventing one. The set that can
 ever host a game the harness prices is the NFL clubs and the FBS programmes, and committing it
 makes coverage a reviewable fact instead of a property of whichever database the test ran against.
+
+The three geography loaders (`load_stadiums`, `load_neutral_sites`, `load_missing`) are
+`functools.lru_cache`d: the files are read-only at run time, `stadium_for` calls the first two on
+every due game, and re-parsing a 2,020-line YAML per game was spending a growing share of the
+weather source's deliberately small 20 s budget on a file that never changes (fix round 2, I3).
+A test that rewrites one of these files under `stadiums`'s package path must call the loader's
+own `.cache_clear()` first.
 """
+import functools
 import importlib.resources
 from dataclasses import dataclass
 from datetime import date
@@ -67,6 +75,7 @@ def load_roster() -> list[tuple[str, int, str, str]]:
     return rows
 
 
+@functools.lru_cache(maxsize=1)
 def load_stadiums() -> dict[tuple[str, int], Stadium]:
     parsed = yaml.safe_load(_read("stadiums.yaml")) or {}
     out: dict[tuple[str, int], Stadium] = {}
@@ -76,6 +85,7 @@ def load_stadiums() -> dict[tuple[str, int], Stadium]:
     return out
 
 
+@functools.lru_cache(maxsize=1)
 def load_neutral_sites() -> dict[tuple[str, int, int, date], Stadium]:
     parsed = yaml.safe_load(_read("neutral_sites.yaml")) or {}
     out: dict[tuple[str, int, int, date], Stadium] = {}
@@ -86,6 +96,7 @@ def load_neutral_sites() -> dict[tuple[str, int, int, date], Stadium]:
     return out
 
 
+@functools.lru_cache(maxsize=1)
 def load_missing() -> dict[tuple[str, int], str]:
     out: dict[tuple[str, int], str] = {}
     for line in _read("stadiums_missing.txt").splitlines():
