@@ -775,3 +775,19 @@ def test_the_judged_study_week_is_the_chicago_week(db_session, env_settings):
     # week-38 row is five days old and would dominate if the judged set read UTC's week.
     assert result.level == "broken"
     assert result.value == pytest.approx(4.0)
+
+
+def test_the_ages_panel_carries_the_study_cell_age(db_session, env_settings):
+    """Addendum 0.5: a `study:` row's build cadence and the age of the report cells under it
+    are two different numbers, and the ages panel is where an operator sees both."""
+    db_session.add(DashboardSnapshot(name="study:2026-37", generated_at=NOW - timedelta(minutes=2),
+                                     payload={"cell_age_s": 5400.0}, elapsed_ms=12, error=None))
+    db_session.add(DashboardSnapshot(name="pulse", generated_at=NOW - timedelta(seconds=30),
+                                     payload={}, elapsed_ms=9, error=None))
+    db_session.flush()
+
+    rows = {row["name"]: row for row in build_pulse(db_session, NOW, env_settings)["snapshots"]}
+    assert rows["study:2026-37"]["age_s"] == pytest.approx(120, abs=2)
+    assert rows["study:2026-37"]["cell_age_s"] == pytest.approx(5400)
+    # A surface with no report cells under it has no cell age, and says None rather than 0.
+    assert rows["pulse"]["cell_age_s"] is None

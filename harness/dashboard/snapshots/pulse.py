@@ -242,7 +242,14 @@ _HOUSEKEEPING = text("""
 _EVENTS = text("""
     select ts, kind, summary from operator_events order by ts desc limit :limit
 """)
-_SNAPSHOT_AGES = text("select name, generated_at, elapsed_ms, error from dashboard_snapshots")
+#: Addendum 0.5: `cell_age_s` rides along with the row's own age so the ages panel can show the
+#: two apart. It is a key of the *stored payload*, so a surface that does not carry one (every
+#: surface but Study) reads SQL NULL and the row says `None` rather than a zero it did not earn.
+_SNAPSHOT_AGES = text("""
+    select name, generated_at, elapsed_ms, error,
+           (payload->>'cell_age_s')::float as cell_age_s
+    from dashboard_snapshots
+""")
 _GAMES_LIVE = text("select count(*) from games where status = 'in_progress'")
 #: Each variant's *newest* drawdown reading inside the risk window, mirroring
 #: `harness.execution.risk._NEWEST_VERDICT` so the number beside a stop is the same row the stop
@@ -732,7 +739,8 @@ def _snapshots(values: dict) -> list[dict]:
                     "cadence_s": cadence, "elapsed_ms": row["elapsed_ms"],
                     "error": row["error"],
                     "disabled": builder_key(row["name"]) in disabled,
-                    "disabled_over_ms": _DISABLE_MS})
+                    "disabled_over_ms": _DISABLE_MS,
+                    "cell_age_s": row.get("cell_age_s")})
     return sorted(out, key=lambda r: r["name"])
 
 

@@ -275,14 +275,21 @@ def floor_orders(section: dict) -> list[str]:
 # --- Study -----------------------------------------------------------------------------------------
 
 def study_ledger(section: dict) -> list[str]:
+    """Addendum 0.5: the snapshot's build time and the age of the report cells under it are two
+    different numbers, and this layer states the second one on every week rather than only on a
+    provisional one. It never calls a cell age "fresh": a cell's age is a fact about when the
+    report ran, and "fresh" is a judgement the reader makes, not a word the surface supplies.
+    """
     rows = section.get("rows") or []
     week = section.get("week") or "this week"
     if not rows:
         return [f"No report has been stored for {week} yet."]
     lines = [f"{week}: {fmt_int(len(rows))} strategy variants were scored."]
     if section.get("provisional"):
-        lines.append("This week is still being counted, so every number here is provisional"
-                     f"; the cells were computed {fmt_age(section.get('cell_age_s'))} ago.")
+        lines.append("This week is still being counted, so every number here is provisional.")
+    if section.get("cell_age_s") is not None:
+        lines.append("These numbers come from the report run, not from this page: the cells "
+                     f"were computed {fmt_age(section.get('cell_age_s'))} ago.")
     best = max(rows, key=lambda r: (r.get("n_clusters") or 0))
     lines.append(f"The best-sampled row is {best.get('row_key', '?')}: "
                  f"{confidence_phrase(best.get('n_clusters'))}.")

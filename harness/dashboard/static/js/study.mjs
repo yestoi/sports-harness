@@ -60,19 +60,28 @@ function weekChip(w, current) {
   return chip;
 }
 
+// Addendum 0.5: two labelled times, never one. `payload.now` is when this snapshot was built
+// (`base_payload`); `payload.generated_at` is when the report run that produced these cells
+// ran. A page that showed only the first would call an eight-hour-old cell two minutes old.
+function freshnessPair(payload) {
+  const built = payload.now ? String(payload.now) : "--";
+  const cells = payload.generated_at ? String(payload.generated_at) : "--";
+  return el("div", { class: "row" },
+    el("span", { class: "n", text: `snapshot built ${built}` }),
+    el("span", { class: "n" },
+       label("report cells from", "report_wtd"), " ", cells,
+       ` (${fmtAge(payload.cell_age_s)})`),
+    payload.provisional ? el("span", { class: "flag", text: "provisional" }) : null);
+}
+
 function weekBar(payload) {
   const weeks = payload.weeks || [];
   const current = `${payload.year}-${payload.week}`;
   const chips = weeks.map((w) => weekChip(w, current));
-  const provisionalNote = payload.provisional
-    ? el("span", { class: "n" },
-        el("span", { class: "flag", text: "provisional" }), " ",
-        label("how old these cells are", "report_wtd"), " ", fmtAge(payload.cell_age_s))
-    : null;
   return el("div", { class: "card" },
     el("h3", { text: "Week" }),
     el("div", { class: "row" }, chips),
-    provisionalNote,
+    freshnessPair(payload),
     el("div", { class: "row" }, label("games, not bets", "n_clusters"),
        label(HONEST_RANGE.plain, HONEST_RANGE.technical)));
 }

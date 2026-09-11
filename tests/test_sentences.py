@@ -165,3 +165,21 @@ def test_the_formatters_are_the_ones_the_evidence_uses():
     assert s.fmt_age(3) == "3 s"
     assert s.fmt_pct(0.62) == "62 %"
     assert s.fmt_prob(None) == "--" and s.fmt_money(None) == "--" and s.fmt_int(None) == "--"
+
+
+def test_the_study_ledger_states_the_cell_age_on_every_week():
+    """Addendum 0.5: the sentence layer never calls a cell age "fresh", and it states the age on
+    a closed week too -- a Monday report read on Thursday is three days old and should say so."""
+    from harness.dashboard import sentences
+
+    lines = " ".join(sentences.study_ledger({
+        "week": "2026-37", "provisional": False, "cell_age_s": 259200,
+        "rows": [{"row_key": "sharp_direct", "n_clusters": 42}]}))
+    assert "fresh" not in lines.lower()
+    assert "computed" in lines and "3 d" in lines
+
+    provisional = " ".join(sentences.study_ledger({
+        "week": "2026-38", "provisional": True, "cell_age_s": 600,
+        "rows": [{"row_key": "sharp_direct", "n_clusters": 42}]}))
+    assert "provisional" in provisional
+    assert "10 min" in provisional

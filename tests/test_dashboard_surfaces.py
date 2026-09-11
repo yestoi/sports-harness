@@ -157,3 +157,19 @@ def test_pulses_storage_card_never_draws_an_arc_it_did_not_earn():
     body = (STATIC / "js" / "pulse.mjs").read_text()
     assert "measured === false" in body
     assert "not evaluated" in body
+
+
+def test_study_labels_the_snapshot_build_time_apart_from_the_cell_time():
+    """Addendum 0.5 and §3's deterministic stand-in for the Chrome walker: the two label
+    strings the verify row greps for in the served module have to be in the module."""
+    body = (STATIC / "js" / "study.mjs").read_text()
+    assert "snapshot built" in body
+    assert "report cells from" in body
+    # Both halves come from the payload, not from the browser's own clock.
+    assert "payload.now" in body and "payload.generated_at" in body and "payload.cell_age_s" in body
+
+
+def test_pulse_shows_the_study_cell_age_in_its_ages_panel():
+    body = (STATIC / "js" / "pulse.mjs").read_text()
+    assert "cell_age_s" in body
+    assert "cells from" in body

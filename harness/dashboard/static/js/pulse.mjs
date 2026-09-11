@@ -199,7 +199,9 @@ function snapshotsCard(payload) {
   // error column: the row's numbers are the last good ones and the age is growing on purpose.
   // Only a restart of app-serve starts it again, which is what the cell says.
   const rows = listOf(section).map((row) =>
-    [row.name, fmtAge(row.age_s), `${row.cadence_s} s`, `${row.elapsed_ms} ms`,
+    [row.name, fmtAge(row.age_s),
+     row.cell_age_s === null || row.cell_age_s === undefined ? "--" : fmtAge(row.cell_age_s),
+     `${row.cadence_s} s`, `${row.elapsed_ms} ms`,
      row.disabled ? `stopped over ${row.disabled_over_ms} ms · restart app-serve` : "",
      row.error || ""]);
   return el("div", { class: "card" },
@@ -207,7 +209,7 @@ function snapshotsCard(payload) {
        el("span", { class: "technical" }, " · "),
        glossaryTerm("dashboard snapshot", "snapshot")),
     sectionFailed(section) ? el("div", { class: "grey", text: "unavailable" })
-      : table(["surface", "age", "cadence", "build time", "state", "error"], rows,
+      : table(["surface", "age", "cells from", "cadence", "build time", "state", "error"], rows,
               { label: "Snapshot ages" }));
 }
 
