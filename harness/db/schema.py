@@ -286,7 +286,13 @@ _CONCURRENT_INDEX_DDL = (
     # built CONCURRENTLY with no carve-out; the connection is already AUTOCOMMIT, which is what
     # CONCURRENTLY requires. Also declared on `VenueQuote.__table_args__` so `create_all` gives
     # it to fresh databases (the test database included); this entry is what gets it onto the
-    # populated production database on the next init-db.
+    # populated production database on the next init-db -- with one caveat a reader needs:
+    # `_model_index_ddl` runs before this tuple and would issue a plain, table-locking
+    # `create index` for the model declaration on a populated database that lacks the index,
+    # since it excludes only `TAPE_TABLES` and `venue_quotes` is a bulk table that is not a tape
+    # table (fix 25's `ix_odds_fetched_book` has the same shape; narrowing that helper to the
+    # bulk tables is deferred to 6E). The NAS is not exposed: this index was built there by hand
+    # on 2026-09-11 before the deploy, so both paths find it present.
     # `migrations/versions/0006_quotes_run_index.py` mirrors it, and the two must land together
     # or the catalogue diff fails.
     "create index concurrently if not exists ix_quotes_run_market "
