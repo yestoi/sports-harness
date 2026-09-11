@@ -347,8 +347,8 @@ def store_rfq(session: Session, event: RfqEvent, now: datetime) -> Rfq:
 
 
 def handle_frame(session: Session, msg, now: datetime,
-                  on_replay: Callable[[], None] | None = None,
-                  allow_quote: bool = True) -> Rfq | None:
+                 on_replay: Callable[[], None] | None = None,
+                 allow_quote: bool = True) -> Rfq | None:
     """One frame. Returns the stored row, or None when the frame was not an RFQ event.
 
     The counterfactual quote is computed **on arrival**, beside the row, because that is the only

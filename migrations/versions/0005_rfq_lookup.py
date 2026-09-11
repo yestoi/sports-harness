@@ -42,8 +42,8 @@ depends_on: str | Sequence[str] | None = None
 #: compares the two Python string values (not the raw file text either copy happens to be
 #: line-wrapped as) so a hand-edit to one copy cannot drift from the other unnoticed.
 _INDEX_DDL = ("create index concurrently if not exists ix_fair_leg_lookup "
-             "on fair_values (game_id, market_type, outcome_team_id, outcome_side, threshold, "
-             "created_at desc) where fair_source = 'direct'")
+              "on fair_values (game_id, market_type, outcome_team_id, outcome_side, threshold, "
+              "created_at desc) where fair_source = 'direct'")
 
 
 def upgrade() -> None:

@@ -286,7 +286,7 @@ def test_the_replay_cap_stores_every_arrival_and_quotes_at_most_the_cap(db_sessi
     monkeypatch.setattr(rfq_socket_mod, "RFQ_REPLAY_MAX", 3)
     n = 6
     frames = ([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}]
-             + [_created(rfq_id=f"rfq_replay_cap_{i}", legs=[]) for i in range(n)])
+              + [_created(rfq_id=f"rfq_replay_cap_{i}", legs=[]) for i in range(n)])
     ws = FakeWs(frames)
     listener = _listener(db_session, env_settings, ws)
     listener.subscribe(ws)

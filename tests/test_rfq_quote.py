@@ -82,7 +82,7 @@ def test_a_non_football_leg_declines_no_fair_without_touching_fair_values(
 
 
 def test_same_game_declines_before_any_fair_read(db_session, env_settings, same_game_rfq,
-                                                  monkeypatch):
+                                                 monkeypatch):
     """Fix 35: `same_game` needs only `venue_markets`, so it must decline before `resolve_legs`
     ever runs -- not just before the `no_fair` check that used to follow it."""
     def _boom(*_a, **_k):
