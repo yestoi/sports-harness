@@ -263,10 +263,19 @@ def period_slices(session: Session, tickers: list[str], lower: datetime, upper: 
         prints.extend(dict(row, ticker=ticker) for row in tape["prints"])
         deltas_capped = deltas_capped or tape["truncated"]["deltas"]
         prints_capped = prints_capped or tape["truncated"]["prints"]
+    # The bookmark is the highest delta id actually taken, never a snapshot: `events` is built
+    # deltas-then-snapshot per ticker, so `events[-1]` is always a snapshot -- usually the
+    # *oldest* row in the slice, since a book anchors on the newest snapshot at or before the
+    # window's start. A resume from a snapshot's id would re-read every delta already taken
+    # (review I2). One integer also cannot bookmark several tickers' independent truncation
+    # points, so it is None whenever more than one ticker fed this file; the `truncated` flag
+    # alone then drives the retake.
+    delta_ids = [e["id"] for e in events if e["kind"] == "delta"]
+    last_delta_id = max(delta_ids) if delta_ids and len(tickers) == 1 else None
     out.append(Slice("orderbook_events", events, _tape_sql(cap),
                      "ix_obe_ticker_ts (ticker, ts) for deltas; ix_obe_snapshot "
                      "(ticker, ts desc) where kind = 'snapshot' for the anchor",
-                     deltas_capped, events[-1]["id"] if events else None))
+                     deltas_capped, last_delta_id))
     out.append(Slice("venue_trades", prints, " ".join(_capped(_WS_PRINTS, cap).text.split()),
                      "ix_trades_ticker_ts (ticker, ts) -- the _WS_PRINTS projection, not "
                      "select *: trade_id, ts, yes_price, count, taker_side, is_block, source",
@@ -451,43 +460,65 @@ def _jsonl_gz(rows: list[dict]) -> bytes:
     return buf.getvalue()
 
 
-def write_capsule(slices: list[Slice], out: str, meta: dict) -> dict:
+def write_capsule(slices: list[Slice], out: str, meta: dict, *,
+                  cap: int = CAPSULE_ROW_CAP) -> dict:
     """Write one capsule to a directory, or as a tar stream on stdout when `out` is `-`.
 
     The manifest lands last and names every file with its row count, its sha256, the SQL that
     produced it, the index it rode and whether it hit the cap.
+
+    `cap` must be the ceiling the reads actually ran under (review I1): the caller passes the
+    same value it gave `order_slices`/`period_slices`, and the manifest records that number
+    under `row_cap` rather than the module default, so a `--cap 1` capsule's one-row `fills`
+    file is not read beside a claimed 150,000-row ceiling.
+
+    Each slice is gzipped, written, and its bytes dropped before the next slice is gzipped
+    (review I3): holding every member's gzipped bytes at once, on the tar path as well as the
+    directory path, meant peak footprint was every slice's materialized rows *plus* every
+    slice's gzipped bytes, hundreds of megabytes for a multi-ticker period capsule at the row
+    cap. The manifest still lands last, once every member is on disk (or in the tar) and its
+    sha256 known.
     """
+    tar = tarfile.open(fileobj=sys.stdout.buffer, mode="w|") if out == "-" else None
+    directory = None
+    if tar is None:
+        directory = Path(out)
+        directory.mkdir(parents=True, exist_ok=True)
     files: list[dict] = []
-    payloads: dict[str, bytes] = {}
-    for s in slices:
-        name = f"{s.table}.jsonl.gz"
-        body = _jsonl_gz(s.rows)
-        payloads[name] = body
-        files.append({"name": name, "table": s.table, "rows": len(s.rows),
-                      "sha256": hashlib.sha256(body).hexdigest(), "sql": s.sql,
-                      "index_note": s.index_note, "truncated": s.truncated,
-                      "last_id": s.last_id})
-    manifest = dict(meta)
-    manifest.update({
-        "kind": "capsule",
-        "extracted_at": datetime.now(timezone.utc).isoformat(),
-        "row_cap": CAPSULE_ROW_CAP,
-        "statement_timeout_ms": CAPSULE_STATEMENT_TIMEOUT_MS,
-        "files": files,
-        "counts": {f["table"]: f["rows"] for f in files},
-        "truncated": [f["table"] for f in files if f["truncated"]],
-    })
-    body = (json.dumps(manifest, cls=_Encoder, indent=1, sort_keys=True) + "\n").encode("utf-8")
-    if out == "-":
-        with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as tar:
-            for name, payload in list(payloads.items()) + [("manifest.json", body)]:
+    try:
+        for s in slices:
+            name = f"{s.table}.jsonl.gz"
+            body = _jsonl_gz(s.rows)
+            files.append({"name": name, "table": s.table, "rows": len(s.rows),
+                          "sha256": hashlib.sha256(body).hexdigest(), "sql": s.sql,
+                          "index_note": s.index_note, "truncated": s.truncated,
+                          "last_id": s.last_id})
+            if tar is not None:
                 info = tarfile.TarInfo(name)
-                info.size = len(payload)
-                tar.addfile(info, io.BytesIO(payload))
-        return manifest
-    directory = Path(out)
-    directory.mkdir(parents=True, exist_ok=True)
-    for name, payload in payloads.items():
-        (directory / name).write_bytes(payload)
-    (directory / "manifest.json").write_bytes(body)
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+            else:
+                (directory / name).write_bytes(body)
+            del body  # one member's bytes at a time; nothing here outlives its own iteration
+        manifest = dict(meta)
+        manifest.update({
+            "kind": "capsule",
+            "extracted_at": datetime.now(timezone.utc).isoformat(),
+            "row_cap": cap,
+            "statement_timeout_ms": CAPSULE_STATEMENT_TIMEOUT_MS,
+            "files": files,
+            "counts": {f["table"]: f["rows"] for f in files},
+            "truncated": [f["table"] for f in files if f["truncated"]],
+        })
+        manifest_body = (json.dumps(manifest, cls=_Encoder, indent=1, sort_keys=True) + "\n"
+                        ).encode("utf-8")
+        if tar is not None:
+            info = tarfile.TarInfo("manifest.json")
+            info.size = len(manifest_body)
+            tar.addfile(info, io.BytesIO(manifest_body))
+        else:
+            (directory / "manifest.json").write_bytes(manifest_body)
+    finally:
+        if tar is not None:
+            tar.close()
     return manifest

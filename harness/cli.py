@@ -858,12 +858,16 @@ def capsule_cmd(
             "identity": {"main_sha": main_sha, "healthz_build": healthz_build,
                          "worktrees": worktrees,
                          # A capsule taken on a build other than the one the identity check
-                         # named is marked, never silently accepted (§0.7).
-                         "build_mismatch": bool(main_sha and main_sha != s.build_sha)},
+                         # named is marked, never silently accepted (§0.7). Checked against both
+                         # the sha of `main` and what `/healthz` itself reported, so a container
+                         # whose env and its own `/healthz` disagree is caught too (review M1).
+                         "build_mismatch": bool(
+                             (main_sha and main_sha != s.build_sha) or
+                             (healthz_build and healthz_build != s.build_sha))},
             "period_note": period_note,
             "unverifiable_slices": unverifiable(slices, tickers),
         }
-        manifest = write_capsule(slices, out, meta)
+        manifest = write_capsule(slices, out, meta, cap=row_cap)
     if manifest["truncated"]:
         log.error("capsule truncated: %s hit the %d-row cap; narrow the window and retake",
                   ", ".join(manifest["truncated"]), row_cap)

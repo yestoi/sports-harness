@@ -48,9 +48,11 @@ def _partitions(session):
 
 def _event(session, ticker, ts, kind, *, sid=7, seq=1, raw=None):
     _partitions(session)
-    session.add(OrderbookEvent(ticker=ticker, ts=ts, sid=sid, seq=seq, kind=kind,
-                               raw=raw if raw is not None else {}))
+    row = OrderbookEvent(ticker=ticker, ts=ts, sid=sid, seq=seq, kind=kind,
+                         raw=raw if raw is not None else {})
+    session.add(row)
     session.flush()
+    return row.id
 
 
 def _trade(session, ticker, ts, trade_id):
@@ -84,7 +86,7 @@ def test_the_tape_anchor_read_is_bounded_below(db_session):
     assert fresh["snapshot"] is not None and fresh["snapshot"]["raw"] == {"old": False}
 
 
-def _seed_order(session, *, order_id=1, ticker=TICKER):
+def _seed_order(session, *, order_id=1, ticker=TICKER, ts=NOW):
     """One order with a queue-model fill, a no-watcher fill, two events, a watch sample and a
     ledger row, plus the signal -> gap snapshot -> fair value chain behind it.
 
@@ -92,7 +94,9 @@ def _seed_order(session, *, order_id=1, ticker=TICKER):
     below): the dependent rows (venue market, signal, gap snapshot, intent) are keyed off
     `order_id` so a second call gets its own primary keys rather than colliding with the first.
     `config_history` is the one exception -- both orders share the strategy variant "v1", so its
-    row is inserted only once.
+    row is inserted only once. `ts` defaults to `NOW` but can be moved outside a test's window,
+    so the period test can seed a whole order (and its fills) that a window bound must exclude
+    (review M5).
     """
     from harness.db.models import (
         ConfigHistory, Fill, Intent, Ledger, MarketGapSnapshot, Order, OrderEvent,
@@ -110,29 +114,29 @@ def _seed_order(session, *, order_id=1, ticker=TICKER):
                             series_ticker="S", game_id=5, market_type="moneyline",
                             first_seen_raw_id=1, last_seen_at=NOW, match_key=f"k{order_id}"))
     session.add(Signal(id=signal_id, run_id=3, variant_id="v1", venue_market_id=vm_id, side="yes",
-                       decision="candidate", labels={}, replay=False, created_at=NOW,
+                       decision="candidate", labels={}, replay=False, created_at=ts,
                        gap_snapshot_id=gap_id))
     session.add(MarketGapSnapshot(id=gap_id, run_id=3, venue_market_id=vm_id, fair_value_id=None,
-                                 n_groups=1, dow=4, hour_ct=12, created_at=NOW))
+                                 n_groups=1, dow=4, hour_ct=12, created_at=ts))
     intent_id = uuid.UUID(int=7 * order_id)
     session.add(Intent(id=intent_id, signal_id=signal_id, variant_id="v1", venue="kalshi",
                        venue_market_id=vm_id, ticker=ticker, side="yes",
-                       signal_created_at=NOW, created_at=NOW, replay=False))
+                       signal_created_at=ts, created_at=ts, replay=False))
     session.add(Order(id=order_id, intent_id=intent_id, variant_id="v1", venue="kalshi",
                       client_order_id=f"client-{order_id}",
                       venue_market_id=vm_id, ticker=ticker, side="yes", prob=Decimal("0.30"),
-                      contracts=Decimal(10), status="cancelled", placed_at=NOW,
+                      contracts=Decimal(10), status="cancelled", placed_at=ts,
                       replay=False, game_id=5, match_key=f"k{order_id}", config_hash="a" * 64))
-    session.add(OrderEvent(order_id=order_id, kind="place", ts=NOW))
+    session.add(OrderEvent(order_id=order_id, kind="place", ts=ts))
     session.add(Fill(order_id=order_id, prob=Decimal("0.30"), contracts=Decimal(1),
-                     fee=Decimal("0.01"), filled_at=NOW, simulated=True,
+                     fee=Decimal("0.01"), filled_at=ts, simulated=True,
                      fill_method="queue_model", replay=False))
     session.add(Fill(order_id=order_id, prob=Decimal("0.30"), contracts=Decimal(2),
-                     fee=Decimal("0.02"), filled_at=NOW, simulated=True,
+                     fee=Decimal("0.02"), filled_at=ts, simulated=True,
                      fill_method="no_watcher", replay=False))
-    session.add(OrderWatchSample(order_id=order_id, ts=NOW,
+    session.add(OrderWatchSample(order_id=order_id, ts=ts,
                                 queue_remaining=Decimal(4), book_dirty=False))
-    session.add(Ledger(ts=NOW, variant_id="v1", kind="fill", order_id=order_id,
+    session.add(Ledger(ts=ts, variant_id="v1", kind="fill", order_id=order_id,
                        ticker=ticker, side="yes", cash_delta=Decimal("-0.31"), replay=False))
     session.flush()
 
@@ -181,9 +185,29 @@ def test_period_slices_stay_inside_the_window_and_name_their_tickers(db_session)
     (`harness/recorder/ws_sink.py:94`, review C1). It is bounded by `ts` alone, through the BRIN
     index, which is the same read verify.md's tape-continuity row makes.
     """
-    from harness.db.models import MetricSample, OperatorEvent
+    from harness.db.models import FairValue, MarketGapSnapshot, MetricSample, OperatorEvent
 
     _seed_order(db_session)
+    # A whole second order outside the window -- its own placed_at, fills, gap snapshot and
+    # signal are all outside [LOWER, UPPER] -- so the orders/fills bound assertions below have
+    # an actual candidate to exclude rather than passing vacuously (review M5).
+    _seed_order(db_session, order_id=2, ticker=OTHER, ts=UPPER + timedelta(hours=2))
+    # A second gap snapshot on TICKER's own market (venue_market_id=1, same as order 1's),
+    # outside the window: `_GAPS_BY_MARKET` is a `created_at` range on that market, and without
+    # this row the "one gap snapshot" assertion below would hold even with no bound at all.
+    # uq_gap_run_market keys on (run_id, venue_market_id), not created_at, so this row needs its
+    # own run_id to coexist with order 1's gap snapshot (run_id=3) on the same market.
+    db_session.add(MarketGapSnapshot(id=99, run_id=4, venue_market_id=1, fair_value_id=None,
+                                     n_groups=1, dow=4, hour_ct=12,
+                                     created_at=UPPER + timedelta(hours=2)))
+    # Two fair_values rows on TICKER's own game/market_type (game_id=5, "moneyline", from
+    # _seed_order's venue market): one inside the window, one outside. uq_fair_value_row keys on
+    # (run_id, game_id, market_type, outcome_team_id, outcome_side, threshold, fair_source), not
+    # created_at, so the two rows need distinct run_ids to coexist.
+    db_session.add(FairValue(run_id=3, game_id=5, market_type="moneyline", fair_p=Decimal("0.55"),
+                             fair_source="model", created_at=NOW))
+    db_session.add(FairValue(run_id=4, game_id=5, market_type="moneyline", fair_p=Decimal("0.60"),
+                             fair_source="model", created_at=UPPER + timedelta(hours=2)))
     _event(db_session, TICKER, LOWER - timedelta(hours=6), "snapshot")
     _event(db_session, TICKER, NOW, "delta", seq=2)
     _event(db_session, TICKER, UPPER + timedelta(hours=2), "delta", seq=3)
@@ -221,8 +245,23 @@ def test_period_slices_stay_inside_the_window_and_name_their_tickers(db_session)
     assert [r["trade_id"] for r in trades] == ["inside"]
     assert all(LOWER <= r["ts"] <= UPPER for r in trades)
     assert {r["ticker"] for r in trades} == {TICKER}
+    # Order 2 (placed_at outside the window) must not reach either file: an "all()" bound alone
+    # would hold even with no filter at all if nothing outside the window existed to exclude
+    # (review M5).
+    assert [r["id"] for r in slices["orders"].rows] == [1]
     assert all(LOWER <= r["placed_at"] <= UPPER for r in slices["orders"].rows)
+    assert {r["order_id"] for r in slices["fills"].rows} == {1}
+    assert len(slices["fills"].rows) == 2
     assert {r["ticker"] for r in slices["venue_markets"].rows} == {TICKER}
+
+    # TICKER's own market has two gap snapshots, one inside the window (id 20, from
+    # _seed_order) and one outside (id 99); only the inside one reaches the file.
+    assert [r["id"] for r in slices["market_gap_snapshots"].rows] == [20]
+    assert all(LOWER <= r["created_at"] <= UPPER for r in slices["market_gap_snapshots"].rows)
+    # Two fair_values rows share TICKER's game/market_type; only the in-window one reaches the
+    # file.
+    assert len(slices["fair_values"].rows) == 1
+    assert all(LOWER <= r["created_at"] <= UPPER for r in slices["fair_values"].rows)
 
     operator = slices["operator_events"].rows
     assert sorted(r["kind"] for r in operator) == ["ws_connect", "ws_disconnect"]
@@ -290,6 +329,36 @@ def test_merge_slices_takes_each_row_once(db_session):
         assert len(merged[table]) == len({r["id"] for r in merged[table]})
 
 
+def test_the_orderbook_events_bookmark_is_the_highest_delta_not_the_snapshot(db_session):
+    """`last_id` must point at a delta row: a resume reads deltas from it, never a snapshot.
+
+    `events` is built deltas-then-snapshot per ticker, so the naive `events[-1]["id"]` is always
+    the snapshot -- usually the *oldest* row in the slice, since a book anchors on the newest
+    snapshot at or before the window's start (review I2). Seeded so the snapshot's id is lower
+    than both deltas', which the naive bookmark would still misreport regardless of insertion
+    order, since it always picks the last-appended element of a deltas-then-snapshot list.
+    """
+    _event(db_session, TICKER, LOWER - timedelta(hours=6), "snapshot")
+    _event(db_session, TICKER, NOW, "delta", seq=2)
+    last_delta_id = _event(db_session, TICKER, NOW + timedelta(minutes=1), "delta", seq=3)
+
+    slices = {s.table: s for s in period_slices(db_session, [TICKER], LOWER, UPPER)}
+    assert slices["orderbook_events"].last_id == last_delta_id
+
+
+def test_the_orderbook_events_bookmark_is_none_across_several_tickers(db_session):
+    """One integer cannot bookmark two tickers' independent truncation points (review I2): a
+    resume from either ticker's own last id would silently skip the other's remaining deltas.
+    """
+    _event(db_session, TICKER, LOWER - timedelta(hours=6), "snapshot")
+    _event(db_session, TICKER, NOW, "delta", seq=2)
+    _event(db_session, OTHER, LOWER - timedelta(hours=6), "snapshot")
+    _event(db_session, OTHER, NOW, "delta", seq=2)
+
+    slices = {s.table: s for s in period_slices(db_session, [TICKER, OTHER], LOWER, UPPER)}
+    assert slices["orderbook_events"].last_id is None
+
+
 def test_write_capsule_hashes_and_counts_every_file(db_session, tmp_path):
     """The manifest is the capsule's own audit: counts and digests must match the bytes.
 
@@ -326,8 +395,70 @@ def test_a_capped_file_is_marked_truncated_with_its_last_id(db_session, tmp_path
     slices = order_slices(db_session, 1, cap=1)
     fills = next(s for s in slices if s.table == "fills")
     assert fills.truncated is True and fills.rows and fills.last_id is not None
-    manifest = write_capsule(slices, str(tmp_path / "c"), {"selector": {"order": 1}})
+    manifest = write_capsule(slices, str(tmp_path / "c"), {"selector": {"order": 1}}, cap=1)
     assert "fills" in manifest["truncated"]
+    assert manifest["row_cap"] == 1
+
+
+def test_the_manifest_records_the_cap_actually_in_force_not_the_module_default(db_session,
+                                                                               tmp_path):
+    """`row_cap` must be the cap the reads ran under, or a reader concludes the wrong ceiling
+    was hit (review I1): a one-row file under `--cap 1` must not be reported beside `150000`.
+    """
+    from harness.capsule import write_capsule
+
+    _seed_order(db_session)
+    slices = order_slices(db_session, 1, cap=1)
+    manifest = write_capsule(slices, str(tmp_path / "capped"), {"selector": {"order": 1}}, cap=1)
+    assert manifest["row_cap"] == 1
+
+    slices = order_slices(db_session, 1)
+    manifest = write_capsule(slices, str(tmp_path / "default"), {"selector": {"order": 1}})
+    assert manifest["row_cap"] == CAPSULE_ROW_CAP
+
+
+def test_write_capsule_streams_one_member_at_a_time(db_session, tmp_path, monkeypatch):
+    """The writer must not hold every slice's gzipped bytes before writing any of them
+    (review I3): the cap bounds one slice, not the capsule, and a period capsule over several
+    tickers can hold hundreds of megabytes if every member is gzipped before the first is
+    written.
+
+    Instruments `_jsonl_gz` and the per-file write to record call order. A batching
+    implementation calls `_jsonl_gz` for every slice before writing any of them; a streaming one
+    interleaves gz(A), write(A), gz(B), write(B), ... -- each gzip call immediately followed by
+    its own write, never by another gzip call.
+    """
+    import harness.capsule as capsule_mod
+
+    _seed_order(db_session)
+    slices = order_slices(db_session, 1)
+    assert len(slices) > 3  # the order chain has several tables; the order matters
+
+    calls: list[str] = []
+    real_jsonl_gz = capsule_mod._jsonl_gz
+
+    def spy_jsonl_gz(rows):
+        calls.append("gz")
+        return real_jsonl_gz(rows)
+
+    monkeypatch.setattr(capsule_mod, "_jsonl_gz", spy_jsonl_gz)
+
+    from pathlib import Path
+    real_write_bytes = Path.write_bytes
+
+    def spy_write_bytes(self, data):
+        if self.suffix == ".gz":
+            calls.append("write")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", spy_write_bytes)
+
+    capsule_mod.write_capsule(slices, str(tmp_path / "stream"), {"selector": {"order": 1}})
+
+    assert calls, "the spies never fired"
+    # Every "gz" must be immediately followed by its own "write": never two "gz" calls in a row.
+    pairs = [calls[i:i + 2] for i in range(0, len(calls), 2)]
+    assert all(pair == ["gz", "write"] for pair in pairs)
 
 
 def test_capsule_command_writes_a_directory_and_exits_zero(monkeypatch, env_settings,
@@ -357,6 +488,30 @@ def test_capsule_command_writes_a_directory_and_exits_zero(monkeypatch, env_sett
         get_settings.cache_clear()
 
 
+def test_capsule_command_flags_a_healthz_build_mismatch(monkeypatch, env_settings,
+                                                         db_session, tmp_path):
+    """`build_mismatch` must catch a `/healthz` disagreement too, not only `--main-sha`
+    (review M1): the container's env and its own `/healthz` should agree by construction, but a
+    capsule taken while they do not must not be marked clean."""
+    from harness.config.settings import get_settings
+
+    _seed_order(db_session)
+    db_session.commit()
+    monkeypatch.setenv("DATABASE_URL", db_session.get_bind().url.render_as_string(
+        hide_password=False))
+    monkeypatch.setenv("BUILD_SHA", "abc1234")
+    get_settings.cache_clear()
+    try:
+        out = tmp_path / "order-1-healthz-mismatch"
+        result = runner.invoke(app, ["capsule", "--order", "1", "--out", str(out),
+                                     "--main-sha", "abc1234", "--healthz-build", "def5678"])
+        assert result.exit_code == 0, result.output
+        manifest = json.loads((out / "manifest.json").read_text())
+        assert manifest["identity"]["build_mismatch"] is True
+    finally:
+        get_settings.cache_clear()
+
+
 def test_capsule_command_exits_two_when_a_file_hits_the_cap(monkeypatch, env_settings,
                                                             db_session, tmp_path):
     """Exit 2 is the signal to narrow the window, not a crash: the files are still written."""
@@ -373,6 +528,9 @@ def test_capsule_command_exits_two_when_a_file_hits_the_cap(monkeypatch, env_set
         assert result.exit_code == 2, result.output
         manifest = json.loads((out / "manifest.json").read_text())
         assert "fills" in manifest["truncated"]
+        # The manifest must record the cap actually in force, not the module default
+        # (review I1): a one-row file under --cap 1 must not be reported beside 150000.
+        assert manifest["row_cap"] == 1
     finally:
         get_settings.cache_clear()
 
@@ -386,6 +544,53 @@ def test_capsule_command_exits_one_on_an_unknown_order(monkeypatch, env_settings
     get_settings.cache_clear()
     try:
         result = runner.invoke(app, ["capsule", "--order", "999",
+                                     "--out", str(tmp_path / "x")])
+        assert result.exit_code == 1
+    finally:
+        get_settings.cache_clear()
+
+
+def test_capsule_command_period_branch_writes_the_selector_and_window(monkeypatch, env_settings,
+                                                                       db_session, tmp_path):
+    """The `--period` branch end to end: argument validation, `_utc` instant parsing, and the
+    selector shape task 5's runbook and task 6's verification row both read (review I4). All
+    three CLI tests before this one exercise only `--order`.
+    """
+    from harness.config.settings import get_settings
+
+    _event(db_session, TICKER, LOWER - timedelta(hours=6), "snapshot")
+    _event(db_session, TICKER, NOW, "delta", seq=2)
+    db_session.commit()
+    monkeypatch.setenv("DATABASE_URL", db_session.get_bind().url.render_as_string(
+        hide_password=False))
+    get_settings.cache_clear()
+    try:
+        out = tmp_path / "period-clean"
+        result = runner.invoke(app, ["capsule", "--period", "clean",
+                                     "--from", LOWER.isoformat(), "--to", UPPER.isoformat(),
+                                     "--ticker", TICKER, "--out", str(out)])
+        assert result.exit_code == 0, result.output
+        manifest = json.loads((out / "manifest.json").read_text())
+        assert manifest["selector"] == {"period": "clean", "from": LOWER.isoformat(),
+                                        "to": UPPER.isoformat(), "tickers": [TICKER]}
+        assert manifest["window"] == {"from": LOWER.isoformat(), "to": UPPER.isoformat()}
+        assert manifest["counts"]["orderbook_events"] >= 1
+    finally:
+        get_settings.cache_clear()
+
+
+def test_capsule_command_period_without_a_ticker_exits_one(monkeypatch, env_settings,
+                                                            db_session, tmp_path):
+    """`--period` needs `--from`, `--to` and at least one `--ticker`; a run missing `--ticker`
+    is an operator error, not an empty capsule (review I4)."""
+    from harness.config.settings import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", db_session.get_bind().url.render_as_string(
+        hide_password=False))
+    get_settings.cache_clear()
+    try:
+        result = runner.invoke(app, ["capsule", "--period", "clean",
+                                     "--from", LOWER.isoformat(), "--to", UPPER.isoformat(),
                                      "--out", str(tmp_path / "x")])
         assert result.exit_code == 1
     finally:
