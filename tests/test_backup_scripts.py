@@ -257,6 +257,30 @@ def test_every_stop_of_the_app_writers_restores_them_before_exiting_on_failure()
     assert mk.count("docker compose start app-exec app-run app-serve") >= 3
 
 
+def test_every_restore_before_exit_is_followed_by_an_abort_message():
+    # Fix round 1 Important 1: `{ }` is not a subshell, so an `exit 1` inside a nested `{ ... }`
+    # terminates the whole remote shell immediately and never reaches an enclosing
+    # `|| { ...; echo "[DEPLOY] ABORT..."; exit 1; }` -- the fallback's inner restore-then-exit
+    # branch used to leave an operator staring at exit code 1 with no diagnostic at all. Every
+    # restore must be followed, before its own `exit 1`, by an ABORT line of its own.
+    mk = (ROOT / "Makefile").read_text()
+    checked = 0
+    for line in mk.splitlines():
+        if "docker compose start app-exec app-run app-serve" not in line:
+            continue
+        for m in re.finditer(r"exit 1", line):
+            exit_pos = m.start()
+            start_pos = line.rfind("docker compose start app-exec app-run app-serve", 0, exit_pos)
+            if start_pos == -1:
+                continue  # an `exit 1` on this line unrelated to a restore branch
+            checked += 1
+            assert '[DEPLOY] ABORT' in line[start_pos:exit_pos], (
+                f"restore not followed by an ABORT message before its exit 1: {line}")
+    # One restore-then-exit branch in each schema step (deploy-nas, deploy-nas-app) plus two in
+    # the backup-precheck fallback (init-db's own, and the outer no-good-dump abort).
+    assert checked == 4
+
+
 def test_the_precheck_runs_before_the_writers_are_stopped():
     mk = (ROOT / "Makefile").read_text()
     recipe = mk.split("deploy-nas:")[1].split("\ndeploy-nas-app:")[0]

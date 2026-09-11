@@ -69,7 +69,7 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 # no tty. Both fallback and the schema step below stop app-exec and app-run first: `add column if
 # not exists` needs an AccessExclusive lock that a running executor loop blocks.
 	@printf "$(GREEN)[DEPLOY]$(NC) Backup precheck (dumps first when the newest nightly is stale)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || { docker compose stop app-exec app-run app-serve && { docker compose run --rm app-run init-db || { docker compose start app-exec app-run app-serve; exit 1; }; } && docker compose exec -T app-backup /backup/dump.sh nightly && docker compose run --rm app-run backup-precheck; } || { docker compose start app-exec app-run app-serve; echo "[DEPLOY] ABORT: no nightly backup_runs row is ok and under 26h, and the fallback dump did not produce one. A SKIP line in: docker compose logs app-backup means /volume1 free is below 30 percent, or another dump held the lock."; exit 1; }'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run backup-precheck || { docker compose stop app-exec app-run app-serve && { docker compose run --rm app-run init-db || { docker compose start app-exec app-run app-serve; echo "[DEPLOY] ABORT: init-db failed while bootstrapping the schema ahead of the fallback dump; see the output above."; exit 1; }; } && docker compose exec -T app-backup /backup/dump.sh nightly && docker compose run --rm app-run backup-precheck; } || { docker compose start app-exec app-run app-serve; echo "[DEPLOY] ABORT: no nightly backup_runs row is ok and under 26h, and the fallback dump did not produce one. A SKIP line in: docker compose logs app-backup means /volume1 free is below 30 percent, or another dump held the lock."; exit 1; }'
 # The guarded one-time stamp, behind the fresh dump and ahead of init-db. It prints which of its
 # three branches it took: `stamped` (a populated pre-Alembic database, which is what the NAS is on
 # this phase's first deploy: head is recorded, the baseline is never executed), `upgraded` (an
@@ -77,7 +77,7 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 	@printf "$(GREEN)[DEPLOY]$(NC) Alembic ensure (stamp on the pre-Alembic database, upgrade on an empty one)...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose run --rm app-run migrate ensure'
 	@printf "$(GREEN)[DEPLOY]$(NC) Schema + teams (idempotent; required after every upgrade)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose stop app-exec app-run app-serve && { docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register || { docker compose start app-exec app-run app-serve; exit 1; }; }'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose stop app-exec app-run app-serve && { docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register || { docker compose start app-exec app-run app-serve; echo "[DEPLOY] ABORT: init-db or variants register failed during the schema step; see the output above."; exit 1; }; }'
 	@printf "$(GREEN)[DEPLOY]$(NC) Starting services...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose up -d'
 	@printf "$(GREEN)[DEPLOY]$(NC) Done. Run: make status-nas\n"
@@ -124,7 +124,7 @@ deploy-nas-app: ## Same push, but restart only app-run/app-serve/app-exec/app-re
 	@printf "$(GREEN)[DEPLOY]$(NC) Building app image...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build $(APP_SERVICES)'
 	@printf "$(GREEN)[DEPLOY]$(NC) Schema + teams (idempotent; required after every upgrade)...\n"
-	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose stop app-exec app-run app-serve && { docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register || { docker compose start app-exec app-run app-serve; exit 1; }; }'
+	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose stop app-exec app-run app-serve && { docker compose run --rm app-run init-db && { docker compose run --rm app-run seed-teams || echo "[DEPLOY] WARNING: seed-teams failed; teams unchanged"; } && docker compose run --rm app-run variants register || { docker compose start app-exec app-run app-serve; echo "[DEPLOY] ABORT: init-db or variants register failed during the schema step; see the output above."; exit 1; }; }'
 	@printf "$(GREEN)[DEPLOY]$(NC) Rebuilding and restarting app-run, app-serve, app-exec, app-research (app-ws too with WITH_WS=1)...\n"
 	@ssh $(NAS_USER)@$(NAS_IP) 'cd $(NAS_STACK) && docker compose build $(APP_SERVICES) && docker compose up -d --no-deps $(APP_SERVICES)'
 	@printf "$(GREEN)[DEPLOY]$(NC) Done (app-ws $(if $(filter 1,$(WITH_WS)),rebuilt,untouched)). Run: make status-nas\n"
