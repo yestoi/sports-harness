@@ -217,6 +217,34 @@ def test_a_budget_refusal_writes_no_annotation_and_leaves_the_trigger_pending(
     assert pending_report(db_session, NOW) is not None
 
 
+def test_the_refused_reservation_does_not_keep_the_week_lock(db_session, keyed_settings,
+                                                             seeded_reports):
+    """Fix round 2, I1, same shape as the veto's own
+    `test_the_refused_reservation_does_not_keep_the_week_lock`: `reserve_spend` takes the
+    ISO-week advisory lock before it checks the caps, so a refusal must still end the
+    transaction, or the lock outlives the pass and blocks every other reservation on the week."""
+    settings = keyed_settings.model_copy(update={"veto_daily_usd_cap": Decimal("0.001")})
+    annotate_pass(db_session, NOW, settings, client=_client(["412 orders t1[0,1]."]))
+    held = db_session.execute(text(
+        "select count(*) from pg_locks where locktype = 'advisory' "
+        "and pid = pg_backend_pid()")).scalar()
+    assert held == 0
+
+
+def test_the_reservation_does_not_keep_the_week_lock_across_the_call(db_session, keyed_settings,
+                                                                     seeded_reports):
+    """Fix round 2, I1: once a week, the annotator's reservation used to hold the ISO-week
+    advisory lock for as long as the live call took (up to `REQUEST_TIMEOUT_S`), blocking any
+    other `reserve_spend` on the week -- in practice `harness parlay build`, an operator sitting
+    at a terminal watching nothing happen. `annotate_pass` now commits the instant the
+    reservation returns, so no lock survives even a successful call."""
+    annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 orders t1[0,1]."]))
+    held = db_session.execute(text(
+        "select count(*) from pg_locks where locktype = 'advisory' "
+        "and pid = pg_backend_pid()")).scalar()
+    assert held == 0
+
+
 def test_the_pass_is_dormant_without_a_key(db_session, env_settings, seeded_reports):
     assert annotate_pass(db_session, NOW, env_settings, client=None) == {
         "annotated": 0, "bullets": 0, "dropped": 0}

@@ -103,10 +103,19 @@ def annotate_pass(session: Session, now: datetime, settings, client=None) -> dic
         reservation = reserve_spend(session, now, settings, "annotate", [PRIMARY_MODEL],
                                     searches=0)
     except BudgetRefused as refused:
+        # `reserve_spend` raised while holding the ISO-week advisory lock, which lives until
+        # this transaction ends -- ending it here releases the lock on the error path too,
+        # exactly as `veto_pass`'s own `BudgetRefused` handler does (fix round 2, I1).
+        session.commit()
         # Deliberately leaves the report pending: the annotator is weekly and the budget resets
         # tomorrow, so a refusal today is a delay and not a loss.
         log.info("annotator skipped on budget: %s", refused)
         return counts
+    # The advisory lock lives until this transaction ends, so it is ended immediately: holding it
+    # across the Anthropic call would block every other reservation on the ISO week for as long
+    # as the call takes (fix round 2, I1). `harness/research/veto.py`'s `_call_pair` commits at
+    # exactly this point for the same reason.
+    session.commit()
 
     result = None
     try:
