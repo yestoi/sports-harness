@@ -1412,3 +1412,12 @@ Times are America/Chicago.
 - Decisions taken on the user's behalf: addendum §8 D1-D8.
 - Carried forward: none
 - Next: phase 6A (T1 now), plan-next 6C's plan review when the writer reports, hotfix 37 review; wakeup none (agents in flight)
+
+## 118. phase start - phase 6A preserve and define - 2026-09-11 13:57 CT
+
+- Orient: rule 5 (6A `planned`, gate none) under U8's parallel-milestone exception; runs beside the 6C plan review and hotfix 37.
+- Branch / commits: `phase6a-preserve-and-define` from main 962863a; ledger `.superpowers/sdd/2026-09-11-phase6a-preserve-and-define/progress.md` (pre-flight scan: no conflict beyond the serialized `harness/cli.py` hunks of T2/T3/T4).
+- Result: started; expected 6 tasks; wave map T1+T2 -> T3+T5 -> T4 -> T6.
+- Dispatches: 1 so far (T1 implementer sonnet)
+- Rulings: (1) standing: deploys run from `main` via the mid-phase path; trailers are this session's. (2) T1 first, T2 when a slot frees behind 6C's wave 1 (journal 117 r1). (3) T1's reviewer is `opus` although the diff is tests only: the expected values are the milestone's "failing economic/protocol cases" evidence and sit on the execution path - cost if wrong: one opus review of a test file.
+- Next: T1 in flight; 6C plan review; hotfix 37 review; wakeup none
