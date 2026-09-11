@@ -641,3 +641,133 @@ def test_the_board_score_read_is_bounded_to_its_own_window(db_session, env_setti
     db_session.flush()
     board = build_floor(db_session, NOW, env_settings)["board"]["games"][0]
     assert board["home_score"] == 17
+
+
+def _spread_market(session, game, *, threshold, ticker):
+    market = VenueMarket(venue="kalshi", ticker=ticker, event_ticker="E", series_ticker="KXNFL",
+                         game_id=game.id, market_type="spread",
+                         threshold=Decimal(str(threshold)), side_team_id=1, side="yes",
+                         match_status="matched", first_seen_raw_id=1, last_seen_at=NOW)
+    session.add(market)
+    session.flush()
+    return market
+
+
+def test_an_open_order_reads_the_fair_for_its_own_contract_not_its_games(db_session,
+                                                                        env_settings):
+    """Design review I3/I4: `fair_values` is keyed `(game_id, market_type)` *plus* `threshold`,
+    `outcome_team_id` and `outcome_side`, and `venue_markets` spells the same three `threshold`,
+    `side_team_id` and `side`. Joining on the first two alone hands a -3.5 order the -7.5 fair.
+    """
+    game = Game(sport="nfl", home_team_id=1, away_team_id=2,
+                kickoff_utc=NOW + timedelta(hours=2), status="scheduled")
+    db_session.add(game)
+    db_session.flush()
+    minus_three = _spread_market(db_session, game, threshold=-3.5, ticker="KXNFL-S-35")
+    minus_seven = _spread_market(db_session, game, threshold=-7.5, ticker="KXNFL-S-75")
+    _open_order(db_session, venue_market_id=minus_three.id, prob=Decimal("0.4500"))
+    _open_order(db_session, venue_market_id=minus_seven.id, prob=Decimal("0.4500"))
+    # The -7.5 fair is written *last*, so a join that takes the newest row for the game and
+    # market type hands it to both orders.
+    db_session.add(FairValue(run_id=1, game_id=game.id, market_type="spread",
+                             outcome_team_id=1, outcome_side="yes", threshold=Decimal("-3.5"),
+                             fair_p=Decimal("0.5200"), fair_source="direct", staleness_s=40,
+                             created_at=NOW - timedelta(minutes=6)))
+    db_session.add(FairValue(run_id=2, game_id=game.id, market_type="spread",
+                             outcome_team_id=1, outcome_side="yes", threshold=Decimal("-7.5"),
+                             fair_p=Decimal("0.3100"), fair_source="direct", staleness_s=40,
+                             created_at=NOW - timedelta(minutes=3)))
+    db_session.flush()
+
+    shown = build_floor(db_session, NOW, env_settings)["orders"]["orders"]
+    assert len(shown) == 2
+    # The order payload carries the ticker, not the market id, and `_open_order` gives each
+    # order its own random ticker -- so the two are matched up through `id` on the stored rows.
+    fairs = {order["id"]: order["fair_p"] for order in shown}
+    by_market = {row.venue_market_id: row.id for row in db_session.query(Order).all()}
+    assert fairs[by_market[minus_three.id]] == pytest.approx(0.52)
+    assert fairs[by_market[minus_seven.id]] == pytest.approx(0.31)
+
+
+def test_a_moneyline_order_reads_its_own_teams_fair(db_session, env_settings):
+    """Design review I3: `fair_values.outcome_team_id` is what distinguishes the two sides of
+    one `(game_id, 'moneyline')` pair. Without it the home order can read the away fair."""
+    game = Game(sport="nfl", home_team_id=1, away_team_id=2,
+                kickoff_utc=NOW + timedelta(hours=2), status="scheduled")
+    db_session.add(game)
+    db_session.flush()
+    home = VenueMarket(venue="kalshi", ticker="KXNFL-ML-HOME", event_ticker="E",
+                       series_ticker="KXNFL", game_id=game.id, market_type="moneyline",
+                       side_team_id=1, match_status="matched", first_seen_raw_id=1,
+                       last_seen_at=NOW)
+    away = VenueMarket(venue="kalshi", ticker="KXNFL-ML-AWAY", event_ticker="E",
+                       series_ticker="KXNFL", game_id=game.id, market_type="moneyline",
+                       side_team_id=2, match_status="matched", first_seen_raw_id=1,
+                       last_seen_at=NOW)
+    db_session.add_all([home, away])
+    db_session.flush()
+    _open_order(db_session, venue_market_id=home.id, prob=Decimal("0.4500"))
+    db_session.add(FairValue(run_id=1, game_id=game.id, market_type="moneyline",
+                             outcome_team_id=1, fair_p=Decimal("0.6000"), fair_source="direct",
+                             staleness_s=40, created_at=NOW - timedelta(minutes=6)))
+    db_session.add(FairValue(run_id=2, game_id=game.id, market_type="moneyline",
+                             outcome_team_id=2, fair_p=Decimal("0.4000"), fair_source="direct",
+                             staleness_s=40, created_at=NOW - timedelta(minutes=3)))
+    db_session.flush()
+
+    order = build_floor(db_session, NOW, env_settings)["orders"]["orders"][0]
+    assert order["fair_p"] == pytest.approx(0.60)
+
+
+def test_a_null_keyed_fair_matches_only_a_null_keyed_market(db_session, env_settings):
+    """D10: the three predicates are `is not distinct from`, so NULL matches NULL -- which is
+    what keeps a moneyline market with no `side_team_id` (and every older, unkeyed fair row)
+    inside the join instead of silently dropping out of it."""
+    game = _game_with_market(db_session)          # no side_team_id, no side, no threshold
+    _open_order(db_session, venue_market_id=game.market_id, prob=Decimal("0.4500"))
+    db_session.add(FairValue(run_id=1, game_id=game.id, market_type="moneyline",
+                             outcome_team_id=None, outcome_side=None, threshold=None,
+                             fair_p=Decimal("0.5200"), fair_source="direct", staleness_s=40,
+                             created_at=NOW - timedelta(minutes=3)))
+    db_session.flush()
+
+    order = build_floor(db_session, NOW, env_settings)["orders"]["orders"][0]
+    assert order["fair_p"] == pytest.approx(0.52)
+
+
+def test_a_no_orders_live_edge_uses_one_minus_the_fair_and_the_book_is_not_converted_twice(
+        db_session, env_settings):
+    """Design review I2: Floor already converts through `side_p` (`floor.py:547`) and the
+    executor already writes `best_bid`/`best_ask` in the order's own side (`loop.py:1110-1111`),
+    so this pins the existing conversions and forbids a second one. At a YES-space fair of 0.62
+    a NO order resting at 0.40 has 1 - 0.62 = 0.38 of fair, so 0.38 - 0.40 - 0.0042 = -0.0242 --
+    never the 0.2158 an unconverted fair would give.
+    """
+    game = _game_with_market(db_session)
+    order = _open_order(db_session, venue_market_id=game.market_id, prob=Decimal("0.4000"),
+                        side="no")
+    db_session.add(FairValue(run_id=1, game_id=game.id, market_type="moneyline",
+                             fair_p=Decimal("0.6200"), fair_source="direct", staleness_s=40,
+                             created_at=NOW - timedelta(minutes=3)))
+    db_session.add(OrderWatchSample(order_id=order.id, ts=NOW - timedelta(minutes=1),
+                                    queue_remaining=Decimal("5"), book_dirty=False,
+                                    best_bid=Decimal("0.3900"), best_ask=Decimal("0.4100")))
+    db_session.flush()
+
+    shown = build_floor(db_session, NOW, env_settings)["orders"]["orders"][0]
+    assert shown["side"] == "no"
+    assert shown["edge_live"] == pytest.approx(-0.0242, abs=1e-9)
+    # `best_bid`/`best_ask` come off the newest watch sample, which the executor writes as
+    # `book.best_bid(row.side)` (`loop.py:1110-1111`) -- already in this order's own side space.
+    # They are carried through unchanged, and converting them here would be the double
+    # conversion I2 warns about.
+    assert shown["best_bid"] == pytest.approx(0.39)
+    assert shown["best_ask"] == pytest.approx(0.41)
+
+
+def test_floor_selects_no_placement_mid_to_convert(db_session, env_settings):
+    """Design review I2, as a structural test: `_OPEN_ORDERS` never selects
+    `venue_mid_at_place` and `_BOARD` carries no mids, so there is no second quantity in YES
+    space for a future edit to convert by mistake."""
+    body = Path(floor.__file__).read_text()
+    assert "venue_mid_at_place" not in body

@@ -256,11 +256,22 @@ _WATCH = text("""
 #: Spec §2.2: "current fair and edge per open order -- `fair_values` newest per market (bounded
 #: by open orders)". The translation is the load-bearing part: `fair_values` is keyed
 #: `(game_id, market_type)` while an order is keyed `venue_market_id`, so the join goes through
-#: `venue_markets`. The lateral takes the newest row per market inside the fair window, which is
-#: what lets `ix_fair_game_type_created (game_id, market_type, created_at)` serve it as an index
-#: seek per market -- at most `ORDERS_LIMIT` markets, so a hundred seeks, never the scan fix 15
-#: removed. `fee_type` and `fee_multiplier` come off `m`, which the lateral is already keyed on,
-#: so the live edge can carry the same fee its placement edge did.
+#: `venue_markets`.
+#:
+#: **Exact-contract (addendum 0.10, design review I3-I5).** `(game_id, market_type)` alone is
+#: not a contract: a game has several spread lines and several totals, and one
+#: `(game_id, 'moneyline')` pair has two sides. Joining on it returned the newest fair for the
+#: *game and type*, which for a spread or total is the wrong line and for a moneyline can be the
+#: other team's price. The three identity pairs are spelled differently on the two tables --
+#: `fair_values` has `outcome_team_id`, `outcome_side`, `threshold` (`models.py:243-245`) and
+#: `venue_markets` has `side_team_id`, `side`, `threshold` -- and all six columns are nullable,
+#: so the comparison is `is not distinct from`: a NULL-keyed fair matches a NULL-keyed market
+#: and nothing else, which keeps older unkeyed rows in the join instead of dropping them.
+#:
+#: Cost (I5): the seek still leads on `ix_fair_game_type_created (game_id, market_type,
+#: created_at)` and still terminates at `created_at >= :since` (`FAIR_WINDOW`), so it stays a
+#: bounded index seek per market -- at most `ORDERS_LIMIT` of them. What changes is that inside
+#: that window it now filters rather than stopping at the first row. No index, no migration.
 _FAIR_FOR_ORDERS = text("""
     select m.id as venue_market_id, m.fee_type, m.fee_multiplier,
            f.fair_p, f.staleness_s, f.created_at
@@ -269,6 +280,9 @@ _FAIR_FOR_ORDERS = text("""
         select fair_p, staleness_s, created_at from fair_values f
         where f.game_id = m.game_id and f.market_type = m.market_type
           and f.created_at >= :since
+          and f.outcome_team_id is not distinct from (m.side_team_id)
+          and f.outcome_side is not distinct from (m.side)
+          and f.threshold is not distinct from (m.threshold)
         order by f.created_at desc limit 1
     ) f on true
     where m.id = any(:market_ids)
