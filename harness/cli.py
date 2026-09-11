@@ -875,6 +875,19 @@ def capsule_cmd(
     log.info("capsule written: %s", json.dumps(manifest["counts"], sort_keys=True))
 
 
+@app.command("manifest")
+def manifest_cmd() -> None:
+    """Print the correction manifest as JSON (design addendum §0.3).
+
+    Reads nothing and writes nothing: the manifest is code, so this works in any container, with
+    or without a database. `measurement_version` is read off `harness.execution` at call time,
+    so the printed value is the one this process would stamp on an order.
+    """
+    from harness.corrections import as_json
+
+    print(json.dumps(as_json(), indent=1, sort_keys=True))
+
+
 def _utc(value: str) -> datetime:
     """One ISO-8601 instant off the command line. The record is all UTC (F2), so a bare
     timestamp is read as UTC rather than as whatever the operator's box is set to.
