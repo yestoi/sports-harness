@@ -402,7 +402,9 @@ def test_a_raw_statement_error_at_the_insert_still_backs_off(db_session, keyed_s
     assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
                      "tables_omitted": 0}
 
-    assert db_session.execute(text("select count(*) from research_notes")).scalar() == 1
+    # This pass's own note, not merely some row: the audit of the call that was paid for.
+    note = db_session.execute(text("select kind, subject_id from research_notes")).all()
+    assert [(r.kind, r.subject_id) for r in note] == [("annotate", str(run_id))]
     assert _job_state_value(db_session, f"annotate:{run_id}") is not None
     row = db_session.execute(text("select usd_reserved, usd from research_spend")).first()
     assert row.usd_reserved == Decimal("0.0000")
@@ -427,7 +429,9 @@ def test_an_orm_flush_violation_at_the_insert_still_backs_off(db_session, keyed_
     assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
                      "tables_omitted": 0}
 
-    assert db_session.execute(text("select count(*) from research_notes")).scalar() == 1
+    # This pass's own note, not merely some row: the audit of the call that was paid for.
+    note = db_session.execute(text("select kind, subject_id from research_notes")).all()
+    assert [(r.kind, r.subject_id) for r in note] == [("annotate", str(run_id))]
     assert _job_state_value(db_session, f"annotate:{run_id}") is not None
     row = db_session.execute(text("select usd_reserved, usd from research_spend")).first()
     assert row.usd_reserved == Decimal("0.0000")

@@ -233,6 +233,9 @@ def test_render_from_cells_omits_a_table_with_no_mapped_identity_column(monkeypa
     assert "t9" not in view.columns
     assert "t9" not in view.cells
     assert "== t9 ==" not in view.text
+    # The property that actually matters, asserted here as it already is for the renamed-column
+    # form below: the row key this table could not hide reaches the prompt nowhere at all.
+    assert "row-a" not in view.text
     assert view.tables_omitted == 1
 
 
