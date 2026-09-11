@@ -1399,6 +1399,18 @@ def _table12(session: Session, window: dict) -> Table:
 _T7_COLUMNS = ["decision", "n", "clusters", "clv_pinnacle_t5", "lag_p50_s", "lag_p95_s",
                "cached_share"]
 
+#: T19 fix round 1 (Critical): `orders.intent_id` is not unique -- a reprice cancels an order and
+#: places another, and `orders_for_intent` (`harness/execution/store.py`) and `order_episodes`
+#: (`harness/db/schema.py`) both exist because one intent routinely carries more than one order
+#: over its life. An unguarded `orders o on o.intent_id = i.id` would multiply a decided signal
+#: by its reprice count and blend the reprice's CLV into the mean, exactly the problem
+#: `order_episodes`/`episode_of` already solve for table 3 and `harness/report/gate.py`'s
+#: `filled_vs_unfilled`. Rather than writing a second resolution rule, this joins to the same
+#: view: `order_episodes.last_order_id` is unique across every order (an order id is the primary
+#: key it is grouped to, in exactly one episode), so restricting the order join to "this order is
+#: its episode's terminal order" resolves an intent's whole reprice chain down to the one order
+#: that stood -- a bare order with no reprice is trivially its own chain's only, and therefore
+#: last, order, so this changes nothing for the common case of one order per intent.
 _T7 = text("""
     select h.decision,
            count(*) as n,
@@ -1412,6 +1424,8 @@ _T7 = text("""
     from veto_h9 h
     join intents i on i.signal_id = h.signal_id and i.replay = false
     left join orders o on o.intent_id = i.id and o.replay = false
+                        and exists (select 1 from order_episodes oe
+                                    where oe.last_order_id = o.id)
     left join order_clv c on c.order_id = o.id and c.benchmark_type = :benchmark
     where h.signal_created_at >= :start and h.signal_created_at < :end
     group by h.decision
@@ -1430,7 +1444,10 @@ def _table7(session: Session, window: dict) -> Table:
     """H9: the CLV of proceeded signals against vetoed and reduced ones.
 
     The population is the `veto_h9` view -- the primary model's rows, no replays, the three
-    decided labels -- so the filters are defined once and never re-derived in a query.
+    decided labels -- so the filters are defined once and never re-derived in a query. One
+    decided signal is one row, whatever its intent's reprice count: the order join is resolved
+    to the episode's terminal order (`order_episodes`, T19 fix round 1), so a repriced intent's
+    earlier, superseded orders never inflate `n` or blend their CLV into the mean.
 
     The header carries the honesty this table exists to preserve. The decisions are **post-hoc**
     (addendum 0.1): the executor's decision stood and the veto judged the signal afterwards from

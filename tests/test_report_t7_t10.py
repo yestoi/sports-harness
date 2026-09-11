@@ -5,7 +5,10 @@
 `research_notes` row per signal, all `kind = 'veto'`, `replay = false`, the primary
 `claude-opus-5`. `veto_week_with_noise`: the same, plus a `claude-sonnet-5`-only call, a
 `replay = true` call, and one `veto_skipped_budget` decision with a null `call_id`; it returns
-`decided_primary_count`. `rfq_week`: `rfqs` rows received in the week with `rfq_quotes` covering
+`decided_primary_count`. `veto_signal_with_reprice_chain` (T19 fix round 1): one decided signal
+whose intent carries two orders, linked as a `reprice` chain, each with its own `order_clv` row.
+`veto_week_two_games_one_decision` (T19 fix round 1): three decided `proceed` signals, two on one
+game and one on another. `rfq_week`: `rfqs` rows received in the week with `rfq_quotes` covering
 `quoted`, `same_game`, `no_fair`, `collateral` and `single_leg`. `rfq_week_with_stale`: one more
 quote with `closing_stale = true` and null `closing_fair`/`pnl_yes`/`pnl_no`. `hostile_rfq_week`:
 one `rfqs` row whose `market_ticker` carries markup and a control character.
@@ -76,10 +79,13 @@ def _signal(session, market, created_at=None) -> Signal:
 
 
 def _intent(session, signal, market, created_at=None) -> Intent:
+    # T19 fix round 1 (Important): `game_id` is a real, populated-in-production column
+    # (`harness/execution/store.py`) that t7's `clusters` column (`count(distinct i.game_id)`)
+    # reads. Leaving it unset made every `clusters` cell a silent 0 in this module's tests.
     i = Intent(id=uuid.uuid4(), signal_id=signal.id, variant_id="v_base", venue="kalshi",
               venue_market_id=market.id, ticker=market.ticker, side="yes",
-              target_prob=Decimal("0.4800"), signal_created_at=created_at or WED,
-              created_at=created_at or WED, replay=False)
+              target_prob=Decimal("0.4800"), game_id=market.game_id,
+              signal_created_at=created_at or WED, created_at=created_at or WED, replay=False)
     session.add(i)
     session.flush()
     return i
@@ -190,6 +196,48 @@ def veto_week_with_noise(db_session, veto_week):
                    reason_code="daily_cap")
 
     return SimpleNamespace(decided_primary_count=3)
+
+
+@pytest.fixture
+def veto_signal_with_reprice_chain(db_session):
+    """One decided `proceed` signal whose intent was repriced once: the executor cancelled the
+    first order for `reprice` and placed a second under the same intent (the shape
+    `order_episodes`/`episode_of` exist for -- see `harness/db/schema.py`'s
+    `_ORDER_EPISODES_VIEW` and `harness/report/gate.py`'s `filled_vs_unfilled`). Both orders
+    carry their own `order_clv` row with deliberately different `clv_p_net` values, so a query
+    that joined every order under the intent (rather than resolving to the episode's terminal
+    order) would count this one decided signal twice and blend the superseded order's CLV into
+    the mean (T19 fix round 1, Critical)."""
+    game = _game(db_session)
+    market = _market(db_session, game.id, "VETOMKT-REPRICE")
+    signal = _signal(db_session, market, created_at=WED)
+    intent = _intent(db_session, signal, market, created_at=WED)
+    first = _order(db_session, intent, market, placed_at=WED)
+    first.status = "cancelled"
+    first.cancel_reason = "reprice"
+    first.cancelled_at = WED + timedelta(minutes=1)
+    db_session.flush()
+    _order_clv(db_session, first, clv_p_net="0.9000")     # the superseded order: must not surface
+    second = _order(db_session, intent, market, placed_at=WED + timedelta(minutes=2))
+    _order_clv(db_session, second, clv_p_net="0.0300")    # the episode's resolved order
+    call_id = uuid.uuid4()
+    _veto_decision(db_session, signal, decision="proceed", call_id=call_id)
+    _research_note(db_session, call_id=call_id, subject_id=signal.id, model="claude-opus-5")
+    return SimpleNamespace(resolved_clv=Decimal("0.0300"))
+
+
+@pytest.fixture
+def veto_week_two_games_one_decision(db_session):
+    """Two decided `proceed` signals on one game and a third on a second game: `clusters`
+    counts distinct games, not signals, so this decision's row must read 2, never 3."""
+    game1 = _game(db_session)
+    market1 = _market(db_session, game1.id, "VETOMKT-CLUSTER-A")
+    game2 = _game(db_session)
+    market2 = _market(db_session, game2.id, "VETOMKT-CLUSTER-B")
+    _seed_veto_signal(db_session, market1, decision="proceed", clv_p_net="0.0100")
+    _seed_veto_signal(db_session, market1, decision="proceed", clv_p_net="0.0200")
+    _seed_veto_signal(db_session, market2, decision="proceed", clv_p_net="0.0300")
+    return SimpleNamespace()
 
 
 # --- RFQ fixtures (t10, H5) ---------------------------------------------------------------------
@@ -308,6 +356,28 @@ def test_t7_excludes_the_shadow_and_the_replays(db_session, env_settings, veto_w
 def test_t7_notes_the_two_call_less_labels(db_session, env_settings, veto_week_with_noise):
     note = _tables(db_session, env_settings)["t7"].note or ""
     assert "veto_skipped_budget" in note and "veto_error" in note
+
+
+def test_t7_resolves_a_repriced_intent_to_its_episode_terminal_order(
+        db_session, env_settings, veto_signal_with_reprice_chain):
+    """T19 fix round 1 (Critical): one decided signal is one row, whatever its intent's reprice
+    count. The superseded order's CLV (0.90) must never surface or blend into an average; only
+    the episode's resolved (terminal) order's CLV (0.03) does."""
+    table = _tables(db_session, env_settings)["t7"]
+    row = next(r for r in table.rows if r[0] == "proceed")
+    assert row[table.columns.index("n")] == 1
+    assert row[table.columns.index("clv_pinnacle_t5")] == \
+        float(veto_signal_with_reprice_chain.resolved_clv)
+
+
+def test_t7_clusters_counts_distinct_games_not_signals(
+        db_session, env_settings, veto_week_two_games_one_decision):
+    """T19 fix round 1 (Important): three decided `proceed` signals, but only two distinct
+    games -- `clusters` must read 2, not 3 and not 0."""
+    table = _tables(db_session, env_settings)["t7"]
+    row = next(r for r in table.rows if r[0] == "proceed")
+    assert row[table.columns.index("n")] == 3
+    assert row[table.columns.index("clusters")] == 2
 
 
 def test_t10_is_no_longer_a_placeholder(db_session, env_settings, rfq_week):

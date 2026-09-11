@@ -206,6 +206,12 @@ _INDEX_DDL = (
     "(bucket_start, game_id, market_type) where claimed_at is null",
     # t7 and the 24 h verification row read the newest decisions.
     "create index if not exists ix_veto_decisions_decided on veto_decisions (decided_at desc)",
+    # T19 fix round 1: t7's window filter reads `veto_decisions.signal_created_at` (through the
+    # `veto_h9` view, which carries no time filter of its own), and this is the only column that
+    # bounds it -- without an index here, every weekly report does a sequential scan of the
+    # whole, ever-growing table.
+    "create index if not exists ix_veto_decisions_signal_created on veto_decisions "
+    "(signal_created_at desc)",
     # The report's arrival counts and the verification row read the newest RFQs.
     "create index if not exists ix_rfqs_received on rfqs (received_at desc)",
     # One quote per RFQ: the listener computes once, on arrival. This is also what gives the

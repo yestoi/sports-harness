@@ -219,6 +219,9 @@ def upgrade() -> None:
                "(bucket_start, game_id, market_type) where claimed_at is null")
     op.execute("create index if not exists ix_veto_decisions_decided on veto_decisions "
                "(decided_at desc)")
+    # T19 fix round 1: t7's window filter reads `signal_created_at`, unindexed until now.
+    op.execute("create index if not exists ix_veto_decisions_signal_created on veto_decisions "
+               "(signal_created_at desc)")
     op.execute("create index if not exists ix_rfqs_received on rfqs (received_at desc)")
     op.execute("create unique index if not exists uq_rfq_quote_rfq on rfq_quotes (rfq_id)")
     op.execute("create index if not exists ix_rfq_quotes_computed on rfq_quotes "
