@@ -26,7 +26,7 @@ from harness.execution.loop import ExecStats, Executor, _TrackResult
 from harness.execution.plan import Place, plan_actions
 from harness.recorder.ws_sink import WsSink
 from harness.report.gate import CRITERIA, fill_events
-from tests.test_exec_plan import KICKOFF, NOW, S, cfg, intent, market
+from tests.test_exec_plan import NOW, S, cfg, intent, market
 from tests.test_fills import DEADLINE, T0, at, order, run, tdelta, tprint
 
 #: The subscription every case 1 book and frame belongs to.
