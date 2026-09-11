@@ -68,7 +68,7 @@ def report_wtd_stage(session: Session, now: datetime, budget: Budget) -> StageRe
     # Addendum 0.1 / Amendment 5: the provisional run's week is the America/Chicago ISO week.
     # A raw `now.isocalendar()` stamped a Sunday-evening rebuild with the *next* week's number.
     year, week = chicago_iso_week(now)
-    tables = weekly_tables(session, year, week, settings)
+    tables = weekly_tables(session, year, week, settings, now=now)
     meta = build_meta(session, settings, year, week, now=now)
     report_run_id = persist_report(session, tables, meta, year, week,
                                    provisional=True, markdown=None)

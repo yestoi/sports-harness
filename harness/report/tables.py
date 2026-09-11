@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from harness.dashboard.queries import recent_runs
+from harness.dashboard.queries import recent_runs_pricing
 from harness.execution.book import BookState, side_p
 from harness.pricing.fees import KALSHI_FOOTBALL
 from harness.report.audits import ORDER_AUDITS
@@ -1588,9 +1588,9 @@ FIRST_PAPER_ORDER_AT = datetime(2026, 9, 8, tzinfo=ZoneInfo("UTC"))
 #: runs, so this is roughly a 25 % margin -- the same shape of margin `FUNNEL_NOTES_LIMIT`
 #: carries for its own window. The cap, not a `started_at` predicate, is what stops the read
 #: (design review C1); the week's two ends are then applied in Python (plan review C1), the
-#: lower one by `recent_runs` itself and the upper one by `_t13_coverage`. When the cap binds,
-#: the coverage rows describe the newest `T13_NOTES_LIMIT` runs rather than the whole week, and
-#: the `notes read` and `runs after the window` rows say so out loud.
+#: lower one by `recent_runs_pricing` itself and the upper one by `_t13_coverage`. When the cap
+#: binds, the coverage rows describe the newest `T13_NOTES_LIMIT` runs rather than the whole
+#: week, and the `notes read` and `runs after the window` rows say so out loud.
 T13_NOTES_LIMIT = 25_000
 
 _T13_COLUMNS = ["item", "value", "unit", "note"]
@@ -1611,12 +1611,17 @@ _T13_ORDER_FILLS = text("""
 """)
 
 #: Bound and index as above. Fill *rows* by method, which is a different unit from orders and
-#: gets its own rows rather than being folded into one number.
+#: gets its own rows rather than being folded into one number. Scoped to the gate variant like
+#: every order-unit row above it (design review I3): without `o.variant_id = :variant_id` this
+#: pooled every variant's fills while its neighbours were gate-variant only, so the two would
+#: silently diverge the first week a second variant fills. `:variant_id` is bound to
+#: `PLACEHOLDER` when there is no gate variant, which matches no real `variant_id` and so reads
+#: zero rows rather than branching in Python.
 _T13_FILL_ROWS = text("""
     select f.fill_method, count(*) as n
     from fills f
     join orders o on o.id = f.order_id
-    where f.replay = false and o.replay = false
+    where f.replay = false and o.replay = false and o.variant_id = :variant_id
       and f.filled_at >= :start and f.filled_at < :end
     group by 1
 """)
@@ -1657,27 +1662,34 @@ _T13_NEWEST_FINAL = text("""
 
 
 def _t13_gate_variant(variants: list[dict], settings) -> dict | None:
-    """The one variant t13's gate rows are about, by `harness/report/gate.py`'s own rule
-    (`gate_row_variant`): `Settings.gate_variant` names it, and the active primary stands in
-    when that name is not registered. Resolved from the `variants` list `weekly_tables` already
-    loaded rather than by importing the gate, which would make this module depend on it."""
-    named = next((v for v in variants if v["name"] == settings.gate_variant), None)
+    """The one variant t13's gate rows are about, close to `harness/report/gate.py`'s own rule
+    (`gate_row_variant`): `Settings.gate_variant` names it when that variant is registered and
+    active, and the active primary stands in otherwise. Resolved from the `variants` list
+    `weekly_tables` already loaded rather than by importing the gate, which would make this
+    module depend on it -- so unlike `gate_row_variant`, this cannot also require that the named
+    variant was actually evaluated (design review I1); both branches still require `active`,
+    which `_VARIANTS` now selects, so a deactivated variant is never named here even when its
+    name still matches `Settings.gate_variant` or it is a deactivated primary."""
+    named = next((v for v in variants if v["name"] == settings.gate_variant and v["active"]),
+                None)
     if named is not None:
         return named
-    return next((v for v in variants if v["tier"] == "primary"), None)
+    return next((v for v in variants if v["tier"] == "primary" and v["active"]), None)
 
 
 def _t13_coverage(session: Session, window: dict, gate_name: str | None) -> dict:
     """The runs block, entirely out of `runs.notes` (design review C1), over a two-sided window
     (plan review C1).
 
-    `recent_runs` caps the read at `T13_NOTES_LIMIT` rows walking the primary key backwards and
-    applies the week's **lower** bound; the **upper** bound is applied here. Both ends are
-    needed because the cap is what stops the read, not a predicate: filtered on the week's start
-    alone, a Monday-morning report of the previous week counts about 33 hours of the following
-    week's runs among its own, and a report of an older week describes the wrong week entirely.
-    A run read but dated on or after the week's end is counted only in `after_window`, which is
-    what makes a cap that lands past a closed week visible rather than silent.
+    `recent_runs_pricing` caps the read at `T13_NOTES_LIMIT` rows walking the primary key
+    backwards, projects `notes['pricing']` in SQL rather than the whole `notes` document
+    (design review I4, since this is the only part of `notes` t13 reads), and applies the
+    week's **lower** bound; the **upper** bound is applied here. Both ends are needed because
+    the cap is what stops the read, not a predicate: filtered on the week's start alone, a
+    Monday-morning report of the previous week counts about 33 hours of the following week's
+    runs among its own, and a report of an older week describes the wrong week entirely. A run
+    read but dated on or after the week's end is counted only in `after_window`, which is what
+    makes a cap that lands past a closed week visible rather than silent.
 
     "No fair, gap or signal count" is the notes' own reading, not a table-level truth: a run
     whose `pricing` block carries none of `ticks`, `gaps` or `signals` produced no pricing
@@ -1685,12 +1697,12 @@ def _t13_coverage(session: Session, window: dict, gate_name: str | None) -> dict
     """
     counts = {"notes_read": 0, "after_window": 0, "pricing_runs": 0, "gate_scored": 0,
               "no_counts": 0, "budget_exhausted": 0}
-    for started_at, note in recent_runs(session, window["start"], limit=T13_NOTES_LIMIT):
+    for started_at, note in recent_runs_pricing(session, window["start"], limit=T13_NOTES_LIMIT):
         if started_at >= window["end"]:
             counts["after_window"] += 1
             continue
         counts["notes_read"] += 1
-        pricing = (note or {}).get("pricing") or {}
+        pricing = note or {}
         if not pricing:
             counts["no_counts"] += 1
             continue
@@ -1730,7 +1742,9 @@ def _table13(session: Session, window: dict, variants: list[dict], settings,
     mine = [r for r in per_order if gate_id is not None and r["variant_id"] == gate_id]
     actual = [r for r in mine if r["has_queue_model"]]
     counterfactual = [r for r in mine if not r["has_queue_model"] and r["has_no_watcher"]]
-    fill_rows = {r.fill_method: int(r.n) for r in session.execute(_T13_FILL_ROWS, window)}
+    fill_rows_params = {**window, "variant_id": gate_id if gate_id is not None else PLACEHOLDER}
+    fill_rows = {r.fill_method: int(r.n)
+                for r in session.execute(_T13_FILL_ROWS, fill_rows_params)}
 
     cumulative = None
     if gate_id is not None:
@@ -1772,9 +1786,9 @@ def _table13(session: Session, window: dict, variants: list[dict], settings,
         ["counterfactual orders, week", len(counterfactual), "orders",
          "orders whose only fills are `no_watcher`: what would have filled without a watcher"],
         ["fill rows, queue_model, week", fill_rows.get("queue_model", 0), "fill rows",
-         "rows, not orders: one order can carry several"],
+         "the gate variant's rows, not orders: one order can carry several"],
         ["fill rows, no_watcher, week", fill_rows.get("no_watcher", 0), "fill rows",
-         "rows, not orders"],
+         "the gate variant's rows, not orders"],
         ["pricing runs, week", coverage["pricing_runs"], "runs",
          "runs whose `notes.pricing` block is non-empty"],
         ["runs scoring the gate variant", coverage["gate_scored"], "runs",
@@ -1790,12 +1804,8 @@ def _table13(session: Session, window: dict, variants: list[dict], settings,
         ["tape gaps", _total("ws.gaps"), "gap events",
          "sum of `ws.gaps`; there is no gap table (design review I1)"],
     ]
-    for order_id in sorted(ORDER_AUDITS):
-        audit = ORDER_AUDITS[order_id]
-        rows.append([f"order audit {order_id}", audit.status, "audit status",
-                     f"{audit.note} (since {audit.since})"])
     rows += [
-        ["fill events under audit", audited_and_filled, "orders",
+        ["orders under audit", audited_and_filled, "orders",
          "the gate variant's actual filled orders in the register with a non-`validated` "
          "status; the gate criterion itself is untouched (R1)"],
         ["this run generated at", now.isoformat(), "timestamp", "the report being rendered"],
@@ -1814,6 +1824,14 @@ def _table13(session: Session, window: dict, variants: list[dict], settings,
          "read by the cap but dated on or after the week's end; counted in no row above. A "
          "count near the cap means the read did not reach far enough back into this week"],
     ]
+    # Design review M6: the register goes last, not beside the counts it feeds
+    # ("orders under audit" stays above), so fix 41's ROWS_MAX cap -- if it ever binds at 39+
+    # register entries -- drops audit rows rather than the freshness pair, the week key and
+    # the two cap rows, which would be the worst possible truncation for a diagnostic.
+    for order_id in sorted(ORDER_AUDITS):
+        audit = ORDER_AUDITS[order_id]
+        rows.append([f"order audit {order_id}", audit.status, "audit status",
+                     f"{audit.note} (since {audit.since})"])
     note = ("The coverage rows are what `runs.notes` can say, not a table-level truth (design "
             "review C1). The audit rows label and never exclude: no gate criterion reads them.")
     return Table("Table 13 (t13): operational diagnostic", header, _T13_COLUMNS, rows, note)
@@ -1822,7 +1840,7 @@ def _table13(session: Session, window: dict, variants: list[dict], settings,
 # --- entry point --------------------------------------------------------------------------------
 
 _VARIANTS = text("""
-    select variant_id, name, tier from strategy_variants
+    select variant_id, name, tier, active from strategy_variants
     order by case when tier = 'primary' then 0 else 1 end, name
 """)
 

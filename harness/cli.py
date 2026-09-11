@@ -482,13 +482,18 @@ def report_cmd(
 
     s = get_settings()
     factory = make_session_factory(make_engine(s.database_url, BATCH_STATEMENT_TIMEOUT_MS))
+    # One instant for both the tables' freshness pair and the provenance block's `generated_at`
+    # (design review I2): `weekly_tables` and `build_meta` used to each take their own default,
+    # so t13's "this run generated at" could disagree with the `- Generated:` line and the
+    # persisted `report_runs.generated_at` by however long the render took.
+    now = datetime.now(timezone.utc)
     with factory() as session:
         try:
-            tables = weekly_tables(session, year, week, s)
+            tables = weekly_tables(session, year, week, s, now=now)
         except ValueError as exc:  # an ISO week that does not exist in that year
             log.error("%s", exc)
             raise typer.Exit(1) from exc
-        meta = build_meta(session, s, year, week, confirmation=confirm is not None)
+        meta = build_meta(session, s, year, week, now=now, confirmation=confirm is not None)
         # The selection is computed from the unrestricted tables: a confirmation run reports on
         # a frozen set, it never selects a new one.
         if selected_out is not None:
@@ -508,7 +513,6 @@ def report_cmd(
         # weekly report for that week. So it persists nothing at all; the confirmation's only
         # output is the markdown file/stdout, exactly as before this task.
         if confirm is None:
-            now = datetime.now(timezone.utc)
             report_run_id = persist_report(session, tables, meta, year, week,
                                            provisional=False, markdown=document)
             telemetry.event(

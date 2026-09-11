@@ -1105,7 +1105,7 @@ def test_t13_reports_the_audit_register_and_the_orders_under_audit(db_session, e
     assert rows["order audit 999999"][0] == "validated"
     # Only the pending one is a fill event under audit, and only because its order actually
     # filled: the validated row and the order that is not in the register are not counted.
-    assert rows["fill events under audit"] == (1, "orders", rows["fill events under audit"][2])
+    assert rows["orders under audit"] == (1, "orders", rows["orders under audit"][2])
 
 
 def test_t13_reads_coverage_from_runs_notes_only(db_session, env_settings):
@@ -1204,7 +1204,7 @@ def test_t13_on_an_empty_week_is_zeros_with_units_never_not_collected(db_session
     for item in ("filled orders, week", "distinct games filled, week",
                  "counterfactual orders, week", "fill rows, queue_model, week",
                  "pricing runs, week", "runs scoring the gate variant",
-                 "runs with budget_exhausted", "tape gaps", "fill events under audit",
+                 "runs with budget_exhausted", "tape gaps", "orders under audit",
                  "notes read", "runs after the window"):
         value, unit, _note = rows[item]
         assert value == 0, item

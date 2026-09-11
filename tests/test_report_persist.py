@@ -107,6 +107,25 @@ def test_report_wtd_cadence_comes_from_the_setting(db_session, env_settings):
         assert db_session.query(ReportRun).count() == 2
 
 
+def test_report_wtd_stamps_t13_with_the_run_s_own_generated_at(db_session, env_settings):
+    """Design review I2: `report_wtd_stage` used to call `weekly_tables` with no `now`, so
+    t13's "this run generated at" row was `datetime.now(timezone.utc)` taken inside
+    `weekly_tables`, not the injected clock the stage and `build_meta` were run under -- an
+    injected clock makes the two disagree by months rather than by however long the render
+    took. `weekly_tables` and `build_meta` now share the one `now` the stage passes in, so the
+    persisted `report_runs.generated_at` and t13's own row read the same instant back."""
+    with use_ctx(new_ctx(settings=env_settings)):
+        result = report_wtd_stage(db_session, NOW, Budget(300, lambda: 0.0))
+        db_session.commit()
+
+    run = db_session.get(ReportRun, result.counts["report_run_id"])
+    assert run.generated_at == NOW
+    cell = db_session.query(ReportCell).filter_by(
+        report_run_id=run.id, table_key="t13", row_key="this run generated at",
+        col_key="value").one()
+    assert cell.text == run.generated_at.isoformat() == NOW.isoformat()
+
+
 def test_t12_cells_round_trip_with_their_composite_row_keys(db_session, env_settings):
     """The cells the Study surface reads are keyed table -> row -> col; a positional row key
     would make the surface key a row on an index (ruling B-I5)."""

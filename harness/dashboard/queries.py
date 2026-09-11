@@ -92,6 +92,31 @@ def recent_runs(session: Session, cutoff: datetime,
             if started_at >= cutoff]
 
 
+def recent_runs_pricing(session: Session, cutoff: datetime,
+                        limit: int | None = None) -> list[tuple[datetime, dict | None]]:
+    """`recent_runs`' own projection: `(started_at, notes['pricing'])` instead of the whole
+    `notes` document (design review I4).
+
+    `notes` also carries `normalized`, `leg_probs`, `weather`, `odds_dropped`,
+    `unresolved_teams`, the errors and warnings lists and a per-variant `signals` block written
+    directly under `notes` (a different thing from `notes['pricing']['signals']`,
+    `harness/recorder/tick.py:946-961`). A caller that reads only `notes['pricing']` -- t13's
+    `_t13_coverage` is the one today -- does not need the rest of that JSONB document
+    deserialised into Python at up to `T13_NOTES_LIMIT` rows, 12.5x Floor's own comparable cap
+    (`FUNNEL_NOTES_LIMIT`, `harness/dashboard/snapshots/floor.py:99`). Projecting
+    `notes['pricing']` in SQL keeps `recent_runs`' plan, cap and cap-then-filter shape exactly --
+    `Index Scan Backward using runs_pkey`, `Limit N`, no predicate -- and drops the transferred
+    payload to the one part the caller reads.
+    """
+    if limit is None:
+        stmt = (select(Run.started_at, Run.notes["pricing"])
+                .where(Run.started_at >= cutoff).order_by(desc(Run.id)))
+        return [(started_at, pricing) for started_at, pricing in session.execute(stmt).all()]
+    stmt = select(Run.started_at, Run.notes["pricing"]).order_by(desc(Run.id)).limit(limit)
+    return [(started_at, pricing) for started_at, pricing in session.execute(stmt).all()
+            if started_at >= cutoff]
+
+
 def signals_by_variant_from_notes(session: Session, run_notes: list[dict]) -> dict:
     """`{variant_name: {tier, candidate, rejected}}`, seeded with every active variant's `tier`
     from `strategy_variants` (a small table -- this join stays a live query) and summed from
