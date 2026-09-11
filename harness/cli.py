@@ -1,5 +1,6 @@
 import contextlib
 import importlib.resources
+import json
 import logging
 import signal
 import time
@@ -775,6 +776,99 @@ def export_fixture_cmd(
             log.error("%s", exc)
             raise typer.Exit(1) from exc
     write_export(doc, out)
+
+
+@app.command("capsule")
+def capsule_cmd(
+    order: int = typer.Option(None, "--order", help="One order id and everything about it"),
+    period: str = typer.Option(None, "--period", help="A named period: clean | interleaved | "
+                                                      "gap_recovery | delayed_loop | "
+                                                      "capacity_bound"),
+    from_ts: str = typer.Option(None, "--from", help="ISO-8601 instant, UTC if no offset"),
+    to_ts: str = typer.Option(None, "--to", help="ISO-8601 instant, UTC if no offset"),
+    ticker: list[str] = typer.Option(None, "--ticker", help="Repeatable; required with --period"),
+    cap: int = typer.Option(None, "--cap", help="Rows per file (default CAPSULE_ROW_CAP)"),
+    main_sha: str = typer.Option(None, "--main-sha", help="git rev-parse --short main, from the "
+                                                          "controller's identity check"),
+    healthz_build: str = typer.Option(None, "--healthz-build", help="the /healthz build"),
+    worktrees: str = typer.Option(None, "--worktrees", help="git worktree list, verbatim"),
+    period_note: str = typer.Option(None, "--period-note", help="the selection query and its "
+                                                                "result, recorded verbatim"),
+    out: str = typer.Option(..., "--out", help="Directory to write, or '-' for a tar on stdout"),
+) -> None:
+    """Extract one bounded evidence capsule (design addendum §0.1).
+
+    Read-only. Every query carries a time bound or an id list and a `limit`, and the session
+    runs under a 60 s `statement_timeout`, so no selector here can turn into an audit scan. A
+    file that hits the row cap is written, marked `truncated` in the manifest with the last id
+    it took, and the command exits 2 -- the signal to narrow the window and take it again.
+
+    The identity options are the controller's recheck of the deployed diff (§0.7): the sha of
+    `main`, the build `/healthz` reports and the live worktrees, all journaled before the
+    extraction. The manifest records them beside the container's own `build_sha` and marks a
+    capsule taken on a different build.
+    """
+    configure_logging()
+    from harness.capsule import (
+        CAPSULE_ROW_CAP,
+        CAPSULE_STATEMENT_TIMEOUT_MS,
+        merge_slices,
+        order_slices,
+        order_window,
+        period_slices,
+        unverifiable,
+        write_capsule,
+    )
+    from harness.execution import EXECUTOR_VERSION
+
+    s = get_settings()
+    row_cap = CAPSULE_ROW_CAP if cap is None else cap
+    engine = make_engine(s.database_url, CAPSULE_STATEMENT_TIMEOUT_MS)
+    tickers = list(ticker or [])
+    with make_session_factory(engine)() as session:
+        try:
+            if order is not None:
+                slices = order_slices(session, order, cap=row_cap)
+                rows = {sl.table: sl.rows for sl in slices}
+                lower, upper = order_window(rows["orders"][0], rows["fills"])
+                tickers = [rows["orders"][0]["ticker"]]
+                # An order capsule carries its ticker's tape over the order's own window, so the
+                # two selectors overlap on several tables; `merge_slices` keeps one file per
+                # table with every statement that fed it recorded in the manifest.
+                slices = merge_slices(
+                    slices + period_slices(session, tickers, lower, upper, cap=row_cap))
+                selector = {"order": order}
+            elif period is not None:
+                if not from_ts or not to_ts or not tickers:
+                    raise ValueError("--period needs --from, --to and at least one --ticker")
+                lower, upper = _utc(from_ts), _utc(to_ts)
+                slices = period_slices(session, tickers, lower, upper, cap=row_cap)
+                selector = {"period": period, "from": lower.isoformat(),
+                            "to": upper.isoformat(), "tickers": tickers}
+            else:
+                raise ValueError("capsule needs --order or --period")
+        except ValueError as exc:
+            log.error("%s", exc)
+            raise typer.Exit(1) from exc
+        meta = {
+            "selector": selector,
+            "build": s.build_sha,
+            "executor_version": EXECUTOR_VERSION,
+            "window": {"from": lower.isoformat(), "to": upper.isoformat()},
+            "identity": {"main_sha": main_sha, "healthz_build": healthz_build,
+                         "worktrees": worktrees,
+                         # A capsule taken on a build other than the one the identity check
+                         # named is marked, never silently accepted (§0.7).
+                         "build_mismatch": bool(main_sha and main_sha != s.build_sha)},
+            "period_note": period_note,
+            "unverifiable_slices": unverifiable(slices, tickers),
+        }
+        manifest = write_capsule(slices, out, meta)
+    if manifest["truncated"]:
+        log.error("capsule truncated: %s hit the %d-row cap; narrow the window and retake",
+                  ", ".join(manifest["truncated"]), row_cap)
+        raise typer.Exit(2)
+    log.info("capsule written: %s", json.dumps(manifest["counts"], sort_keys=True))
 
 
 def _utc(value: str) -> datetime:

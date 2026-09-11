@@ -328,3 +328,65 @@ def test_a_capped_file_is_marked_truncated_with_its_last_id(db_session, tmp_path
     assert fills.truncated is True and fills.rows and fills.last_id is not None
     manifest = write_capsule(slices, str(tmp_path / "c"), {"selector": {"order": 1}})
     assert "fills" in manifest["truncated"]
+
+
+def test_capsule_command_writes_a_directory_and_exits_zero(monkeypatch, env_settings,
+                                                           db_session, tmp_path):
+    """The whole command over one order, on the test database."""
+    from harness.config.settings import get_settings
+
+    _seed_order(db_session)
+    db_session.commit()
+    monkeypatch.setenv("DATABASE_URL", db_session.get_bind().url.render_as_string(
+        hide_password=False))
+    monkeypatch.setenv("BUILD_SHA", "abc1234")
+    get_settings.cache_clear()
+    try:
+        out = tmp_path / "order-1"
+        result = runner.invoke(app, ["capsule", "--order", "1", "--out", str(out),
+                                     "--main-sha", "abc1234",
+                                     "--healthz-build", "abc1234",
+                                     "--worktrees", "/Users/trey/dev/sports  abc1234 [main]"])
+        assert result.exit_code == 0, result.output
+        manifest = json.loads((out / "manifest.json").read_text())
+        assert manifest["selector"] == {"order": 1}
+        assert manifest["identity"]["main_sha"] == "abc1234"
+        assert manifest["identity"]["build_mismatch"] is False
+        assert manifest["counts"]["orders"] == 1
+    finally:
+        get_settings.cache_clear()
+
+
+def test_capsule_command_exits_two_when_a_file_hits_the_cap(monkeypatch, env_settings,
+                                                            db_session, tmp_path):
+    """Exit 2 is the signal to narrow the window, not a crash: the files are still written."""
+    from harness.config.settings import get_settings
+
+    _seed_order(db_session)
+    db_session.commit()
+    monkeypatch.setenv("DATABASE_URL", db_session.get_bind().url.render_as_string(
+        hide_password=False))
+    get_settings.cache_clear()
+    try:
+        out = tmp_path / "capped"
+        result = runner.invoke(app, ["capsule", "--order", "1", "--out", str(out), "--cap", "1"])
+        assert result.exit_code == 2, result.output
+        manifest = json.loads((out / "manifest.json").read_text())
+        assert "fills" in manifest["truncated"]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_capsule_command_exits_one_on_an_unknown_order(monkeypatch, env_settings,
+                                                       db_session, tmp_path):
+    from harness.config.settings import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", db_session.get_bind().url.render_as_string(
+        hide_password=False))
+    get_settings.cache_clear()
+    try:
+        result = runner.invoke(app, ["capsule", "--order", "999",
+                                     "--out", str(tmp_path / "x")])
+        assert result.exit_code == 1
+    finally:
+        get_settings.cache_clear()
