@@ -21,12 +21,15 @@ is the other constructor: it builds the same `ModelView` from `report_cells`, th
 `harness/report/weekly.py::persist_report` already wrote when the report was generated, so the
 annotator renders what was published rather than recomputing it.
 """
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from harness.report.tables import PLACEHOLDER, TABLE_KEYS, Table
 from harness.report.weekly import format_cell
+
+log = logging.getLogger(__name__)
 
 #: Addendum §1.5: at most five bullets, each at most 240 characters.
 BULLETS_MAX = 5
@@ -75,12 +78,15 @@ class ModelView:
 
     `text` is the prompt's data block. `columns[table_key]` is that table's column names in
     order, and `cells[table_key][row][col]` is one cell's rendered text -- the same string
-    `format_cell` puts in the Markdown a person reads.
+    `format_cell` puts in the Markdown a person reads. `tables_omitted` (fix round 2, new defect
+    2) is how many of `TABLE_KEYS` `render_from_cells` left out because it could not recover
+    their identity column -- always `0` for `render_for_model`, which has no such failure mode.
     """
 
     text: str
     columns: dict[str, list[str]]
     cells: dict[str, list[list[str]]]
+    tables_omitted: int = 0
 
 
 def render_for_model(tables: dict[str, Table]) -> ModelView:
@@ -139,10 +145,18 @@ def render_from_cells(cells: Sequence[Any],
     builder, unconditional and never data-dependent, so the table key is enough to know it.
     That column's value is folded into a synthetic column 0 (`row_key`'s own value, kept in
     `cells` and never printed, exactly like `render_for_model`'s column 0) and dropped from the
-    printed "every other cell" list. A table key `IDENTITY_COLUMNS` does not name hides nothing
-    rather than guessing -- it should not happen for any key in `TABLE_KEYS` (the module
-    constant is tested against it), and a table this function does not otherwise recognise is
-    worth a person's attention, not a silent guess.
+    printed "every other cell" list.
+
+    **Fails closed (fix round 2, new defect 2).** A table key `IDENTITY_COLUMNS` does not name,
+    or whose mapped column name is not among that table's actual stored `col_key`s, is left out
+    of `columns`, `cells` and the printed text entirely -- its `== <key> ==` block never
+    appears, and its identity value is never rendered, anywhere. This should not happen for a
+    real `report_cells` row of any key in `TABLE_KEYS` (`IDENTITY_COLUMNS` is tested against
+    `tables.py`'s own literals), which is exactly why it fails closed rather than open: the
+    previous version of this function, when it could not find the identity column, rendered the
+    table with every column visible -- including the one it should have hidden -- and F60/B-I5
+    is a hard rule, not a best effort. Each omission is logged once at ERROR with the table key
+    and counted in the returned `ModelView.tables_omitted`.
 
     `titles`, keyed by table key, is `(title, header, note)`; omitted (the default) because
     `harness/report/tables.py` keeps those as literals inside each table builder rather than in
@@ -160,14 +174,22 @@ def render_from_cells(cells: Sequence[Any],
     lines = [_PREAMBLE]
     columns: dict[str, list[str]] = {}
     cells_out: dict[str, list[list[str]]] = {}
+    omitted = 0
     for key in TABLE_KEYS:
         state = tables.get(key)
         if state is None:
             continue
-        row_keys = sorted(state["rows"])
         identity_col = IDENTITY_COLUMNS.get(key)
+        if identity_col is None or identity_col not in state["cols"]:
+            # Fails closed: the identity column (F60/B-I5's hidden row key) cannot be
+            # recovered, so the table is left out entirely rather than shown with it visible.
+            log.error("render_from_cells: table %s's identity column is unrecoverable; "
+                     "omitting the table rather than risk printing its row key", key)
+            omitted += 1
+            continue
+        row_keys = sorted(state["rows"])
         other_cols = [c for c in state["cols"] if c != identity_col]
-        columns[key] = [identity_col or "row_key", *other_cols]
+        columns[key] = [identity_col, *other_cols]
         rendered = [[row_key, *(state["rows"][row_key].get(c, PLACEHOLDER) for c in other_cols)]
                    for row_key in row_keys]
         cells_out[key] = rendered
@@ -184,7 +206,8 @@ def render_from_cells(cells: Sequence[Any],
         if meta is not None and meta[2]:
             lines.append(f"note: {meta[2]}")
         lines.append("")
-    return ModelView(text="\n".join(lines), columns=columns, cells=cells_out)
+    return ModelView(text="\n".join(lines), columns=columns, cells=cells_out,
+                     tables_omitted=omitted)
 
 
 #: `_render_table` (`harness/report/weekly.py`) always writes a table's heading as

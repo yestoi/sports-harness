@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
+import harness.report.render_for_model as render_module
 import harness.report.tables as tables_module
 import harness.research.annotate as annotate_module
 from harness.db.models import ReportRun
@@ -25,7 +26,8 @@ NOW = datetime(2026, 9, 21, 15, 0, tzinfo=timezone.utc)   # Monday of ISO week 3
 NOW_SUNDAY_CT = datetime(2026, 9, 21, 4, 30, tzinfo=timezone.utc)
 NOW_MONDAY_CT = datetime(2026, 9, 21, 5, 30, tzinfo=timezone.utc)
 
-_EMPTY_COUNTS = {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 0}
+_EMPTY_COUNTS = {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 0,
+                 "tables_omitted": 0}
 
 
 # --- fixtures ---------------------------------------------------------------------------------
@@ -226,7 +228,8 @@ def test_a_run_with_no_cells_is_skipped_and_left_pending(db_session, keyed_setti
 def test_a_surviving_bullet_is_stored(db_session, keyed_settings, seeded_reports):
     counts = annotate_pass(db_session, NOW, keyed_settings,
                            client=_client(["412 orders on the first row t1[0,1]."]))
-    assert counts == {"annotated": 1, "bullets": 1, "dropped": 0, "backed_off": 0}
+    assert counts == {"annotated": 1, "bullets": 1, "dropped": 0, "backed_off": 0,
+                     "tables_omitted": 0}
     row = db_session.execute(text(
         "select model, prompt_hash, bullets, cost_usd from report_annotations")).first()
     assert row.model == "claude-opus-5" and row.prompt_hash == PROMPT_HASH
@@ -302,7 +305,8 @@ def test_a_raising_call_backs_the_report_off_without_raising(db_session, keyed_s
     even a rollback nothing here triggers on this path any more."""
     run_id = seeded_reports.final_this_week
     counts = annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
-    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
+                     "tables_omitted": 0}
     db_session.rollback()   # proves the backoff below does not depend on a caller's own commit
 
     until = _job_state_value(db_session, f"annotate:{run_id}")
@@ -315,7 +319,8 @@ def test_the_next_sweep_skips_a_backed_off_report(db_session, keyed_settings, se
     annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
     assert pending_report(db_session, NOW) is None
     counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
-    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
+                     "tables_omitted": 0}
 
 
 def test_a_report_is_no_longer_backed_off_once_its_hour_is_up(db_session, keyed_settings,
@@ -356,7 +361,8 @@ def test_a_failure_after_the_call_still_backs_off_and_leaks_no_reservation(
     run_id = seeded_reports.final_this_week
 
     counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
-    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
+                     "tables_omitted": 0}
 
     assert _job_state_value(db_session, f"annotate:{run_id}") is not None
     row = db_session.execute(text(
@@ -369,8 +375,81 @@ def test_a_failure_after_the_call_still_backs_off_and_leaks_no_reservation(
     monkeypatch.undo()
     client = _client(["412 t1[0,1]."])
     counts = annotate_pass(db_session, NOW, keyed_settings, client=client)
-    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
+                     "tables_omitted": 0}
     assert client.calls == []
+
+
+def test_a_raw_statement_error_at_the_insert_still_backs_off(db_session, keyed_settings,
+                                                              seeded_reports, monkeypatch):
+    """Fix round 2, new defect 1. The round-1 fix left a gap: a *database* failure -- not a
+    plain Python exception like the `RuntimeError` above, but one that aborts the session's own
+    transaction -- left `_record_failure`'s own SQL running inside that aborted transaction, so
+    it raised in turn and escaped with no backoff written at all. `cost_usd` is monkeypatched to
+    run a real failing statement (`select 1/0`, a genuine `DivisionByZero` from Postgres) on the
+    same session `annotate_pass` uses, from inside the annotation-insert stage -- the exact
+    shape the re-review reproduced, just moved one stage later since `write_notes` already has
+    its own coverage above. `write_notes` itself already committed by this point, so its row
+    survives."""
+    run_id = seeded_reports.final_this_week
+
+    def _bad_statement(*_a, **_k):
+        db_session.execute(text("select 1/0"))
+        return Decimal("0")   # unreached; the statement above always raises
+
+    monkeypatch.setattr(annotate_module, "cost_usd", _bad_statement)
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
+                     "tables_omitted": 0}
+
+    assert db_session.execute(text("select count(*) from research_notes")).scalar() == 1
+    assert _job_state_value(db_session, f"annotate:{run_id}") is not None
+    row = db_session.execute(text("select usd_reserved, usd from research_spend")).first()
+    assert row.usd_reserved == Decimal("0.0000")
+    assert row.usd > 0
+    assert db_session.execute(text("select count(*) from report_annotations")).scalar() == 0
+
+    monkeypatch.undo()
+    client = _client(["412 t1[0,1]."])
+    annotate_pass(db_session, NOW, keyed_settings, client=client)
+    assert client.calls == []
+
+
+def test_an_orm_flush_violation_at_the_insert_still_backs_off(db_session, keyed_settings,
+                                                               seeded_reports, monkeypatch):
+    """Fix round 2, new defect 1's other trigger: a real ORM flush violation, here a NOT NULL
+    constraint on `report_annotations.cost_usd` rather than the raw statement error above, from
+    inside the same annotation-insert stage."""
+    run_id = seeded_reports.final_this_week
+    monkeypatch.setattr(annotate_module, "cost_usd", lambda *_a, **_k: None)
+
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
+                     "tables_omitted": 0}
+
+    assert db_session.execute(text("select count(*) from research_notes")).scalar() == 1
+    assert _job_state_value(db_session, f"annotate:{run_id}") is not None
+    row = db_session.execute(text("select usd_reserved, usd from research_spend")).first()
+    assert row.usd_reserved == Decimal("0.0000")
+    assert row.usd > 0
+    assert db_session.execute(text("select count(*) from report_annotations")).scalar() == 0
+
+    monkeypatch.undo()
+    client = _client(["412 t1[0,1]."])
+    annotate_pass(db_session, NOW, keyed_settings, client=client)
+    assert client.calls == []
+
+
+def test_a_failed_insert_still_reports_bullets_already_dropped_this_sweep(
+        db_session, keyed_settings, seeded_reports, monkeypatch):
+    """Fix round 2, new defect 3: the failure return used to build a fresh, zeroed `counts`
+    literal, discarding a real `dropped` count this same sweep had already, correctly,
+    produced."""
+    monkeypatch.setattr(annotate_module, "cost_usd", lambda *_a, **_k: None)
+    bullets = ["412 t1[0,1].", "Fill rates improved this week."]   # the second has no citation
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(bullets))
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 1, "backed_off": 1,
+                     "tables_omitted": 0}
 
 
 def test_a_captured_model_error_backs_off_without_writing_an_annotation(
@@ -378,7 +457,8 @@ def test_a_captured_model_error_backs_off_without_writing_an_annotation(
     """A `veto_error`-class outcome (`result.error` set, e.g. a `pause_turn`) is a failure that
     must retry later, not a success recorded as zero bullets forever."""
     counts = annotate_pass(db_session, NOW, keyed_settings, client=_ErrorClient())
-    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
+                     "tables_omitted": 0}
     assert db_session.execute(text("select count(*) from report_annotations")).scalar() == 0
     assert pending_report(db_session, NOW) is None
 
@@ -412,6 +492,22 @@ def test_success_clears_a_prior_backoff(db_session, keyed_settings, seeded_repor
 def test_no_pending_report_is_not_counted_as_a_backoff(db_session, keyed_settings,
                                                         seeded_provisional_only):
     assert annotate_pass(db_session, NOW, keyed_settings, client=_client([])) == _EMPTY_COUNTS
+
+
+def test_a_table_omitted_for_an_unrecoverable_identity_column_is_counted_in_the_sweep(
+        db_session, keyed_settings, seeded_reports, monkeypatch):
+    """Fix round 2, new defect 2: `render_from_cells`'s per-table omission (fail closed, not
+    open) reaches the sweep's own counts, not only `ModelView.tables_omitted`. The pass still
+    completes -- an omitted table is not a failure, just a smaller view -- so this is a
+    successful sweep that also reports one table left out."""
+    monkeypatch.setitem(render_module.IDENTITY_COLUMNS, "t1", "not_the_real_column")
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
+    assert counts["tables_omitted"] == 1
+    assert counts["annotated"] == 1
+    # t1 is the only table this fixture stores, and it is the one omitted -- so the bullet's
+    # citation resolves against nothing and it is dropped, never stored.
+    assert counts["dropped"] == 1
+    assert counts["bullets"] == 0
 
 
 # --- spend ----------------------------------------------------------------------------------------

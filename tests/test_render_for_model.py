@@ -218,18 +218,40 @@ def test_render_from_cells_accepts_titles():
     assert "note: a note" in view.text
 
 
-def test_render_from_cells_falls_back_to_no_hidden_column_for_an_unmapped_table(monkeypatch):
-    """A table key `IDENTITY_COLUMNS` does not name (should not happen for anything in
-    `TABLE_KEYS` -- `test_identity_columns_match_every_table_s_real_first_column` guards that)
-    hides nothing rather than guessing."""
+def test_render_from_cells_omits_a_table_with_no_mapped_identity_column(monkeypatch):
+    """Fix round 2, new defect 2: a table key `IDENTITY_COLUMNS` does not name (should not
+    happen for anything in `TABLE_KEYS` --
+    `test_identity_columns_match_every_table_s_real_first_column` guards that) is left out of
+    the view entirely -- fails closed -- rather than shown with every column visible, including
+    the one it should have hidden."""
     monkeypatch.delitem(render_module.IDENTITY_COLUMNS, "t9")
     cells = [
         _Cell("t9", "row-a", "alpha", "10"),
         _Cell("t9", "row-a", "beta", "20"),
     ]
     view = render_from_cells(cells)
-    assert view.columns["t9"] == ["row_key", "alpha", "beta"]
-    assert view.cells["t9"][0] == ["row-a", "10", "20"]
+    assert "t9" not in view.columns
+    assert "t9" not in view.cells
+    assert "== t9 ==" not in view.text
+    assert view.tables_omitted == 1
+
+
+def test_render_from_cells_omits_a_table_whose_stored_column_was_renamed():
+    """Fix round 2, new defect 2's other form: `IDENTITY_COLUMNS["t1"]` is `"variant"`, and this
+    table's stored `col_key` is `"variant_renamed"` instead -- a table builder renamed after
+    `IDENTITY_COLUMNS` last updated, the case the review reproduced. Fails closed: the table (and
+    the value that would have leaked) is absent from the view, not shown with every column
+    visible."""
+    cells = [
+        _Cell("t1", "sharp_direct", "variant_renamed", "sharp_direct"),
+        _Cell("t1", "sharp_direct", "orders", "412"),
+    ]
+    view = render_from_cells(cells)
+    assert "t1" not in view.columns
+    assert "t1" not in view.cells
+    assert "== t1 ==" not in view.text
+    assert "sharp_direct" not in view.text
+    assert view.tables_omitted == 1
 
 
 def test_render_from_cells_treats_a_null_stored_text_as_the_placeholder():
@@ -248,11 +270,12 @@ def test_render_from_cells_treats_a_null_stored_text_as_the_placeholder():
 def test_render_from_cells_orders_tables_by_table_keys_not_by_input_order():
     """`TABLE_KEYS` orders `t9` before `t10`, the opposite of their alphabetical (and thus SQL
     `order by table_key`) order -- a real query's own row order, so this is what a caller's
-    `_CELLS`-shaped query actually hands the function."""
+    `_CELLS`-shaped query actually hands the function. Real identity column names (`item` for
+    t9, `group` for t10), so neither table is omitted (fails closed otherwise, fix round 2)."""
     cells = [
-        _Cell("t10", "row-a", "row-a", "row-a"),
+        _Cell("t10", "row-a", "group", "row-a"),
         _Cell("t10", "row-a", "n", "1"),
-        _Cell("t9", "row-a", "row-a", "row-a"),
+        _Cell("t9", "row-a", "item", "row-a"),
         _Cell("t9", "row-a", "n", "2"),
     ]
     view = render_from_cells(cells)

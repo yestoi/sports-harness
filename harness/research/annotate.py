@@ -58,6 +58,20 @@ that:
 Also fixed: `render_from_cells` is now passed `titles` recovered from the run's own
 `report_runs.markdown` (`render_for_model.titles_from_markdown`) rather than none at all, so the
 model reads the same title, header and note lines a person does.
+
+**Fix round 2.** Round 1's single failure domain was still one transaction: a *database*
+failure -- `write_notes` or the annotation insert raising a `DataError` or similar, both
+flushing writes -- left the session's transaction aborted, and `_record_failure`'s own SQL then
+ran inside that aborted transaction and raised in turn, escaping with no backoff written at all
+and the report retried, and re-paid for, every sweep regardless of round 1's fix. Each write
+worth keeping now commits as soon as it lands (reserve, release, `write_notes`), and the shared
+failure handler (`_fail`, inside `annotate_pass`) always rolls the session back before
+`_record_failure` runs, putting its writes on a clean transaction rather than one still holding
+a prior statement's error. Also: `render_from_cells`'s identity-column recovery now fails closed
+(a table it cannot recover the identity column for is omitted from the view entirely, logged at
+ERROR and counted in `ModelView.tables_omitted` and the sweep's own counts) rather than open,
+and a failure past the point bullets have been checked now reports the real `"dropped"` count
+instead of a fresh, zeroed one.
 """
 import logging
 import uuid
@@ -231,16 +245,23 @@ def _pending_with_backoff_status(session: Session, now: datetime) -> tuple[Repor
 
 
 def annotate_pass(session: Session, now: datetime, settings, client=None) -> dict:
-    """One sweep. Returns `{"annotated", "bullets", "dropped", "backed_off"}`.
+    """One sweep. Returns `{"annotated", "bullets", "dropped", "backed_off", "tables_omitted"}`.
 
-    Everything from here to the `report_annotations` write is one failure domain (fix round 1,
-    Critical 2): any exception in it -- `client.call`'s own, or one from `write_notes`, the
-    bullet checks or the insert -- records the backoff and is swallowed, never re-raised.
-    Re-raising used to leave the reservation's release sitting uncommitted in this same session,
-    so `ResearchWorker.run_once`'s rollback on the raising pass silently restored it as a
-    phantom, un-released reservation that the next sweep paid for again.
+    **Fix round 2: every valuable write commits before anything that can still fail.** Round 1's
+    single failure domain (reserve through the annotation insert, one `try/except`) left a gap a
+    re-review found: a *database* failure between the call and the insert -- `write_notes` or
+    the insert itself, both flushing writes, a `DataError` on an over-long field or a JSONB
+    serialization failure being the obvious triggers -- aborts the transaction, and
+    `_record_failure`'s own SQL then runs inside that aborted transaction and raises in turn,
+    escaping with no backoff written at all. So each stage below commits as soon as its write is
+    worth keeping (reserve, release, `write_notes`), and only the last stage -- the bullet
+    checks and the `report_annotations` insert, which have nothing worth keeping if they fail --
+    is left uncommitted going in. `_fail` below always calls `session.rollback()` before
+    `_record_failure`: safe by construction, since nothing still uncommitted at the point it is
+    called is worth keeping, and it puts `_record_failure`'s own writes on a clean transaction
+    rather than one still holding a prior statement's error.
     """
-    counts = {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 0}
+    counts = {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 0, "tables_omitted": 0}
     run, skipped_backoff = _pending_with_backoff_status(session, now)
     # Set unconditionally, not only when nothing else is pending (fix round 1, Minor): a week
     # with two unannotated final runs where the newer is backed off and the older gets annotated
@@ -254,20 +275,42 @@ def annotate_pass(session: Session, now: datetime, settings, client=None) -> dic
             return counts
         client = ResearchClient(settings)
 
+    # Captured now, not read off `run` again after a rollback below: SQLAlchemy expires ORM
+    # objects on rollback, and re-reading `run.id`/`run.year`/`run.week` would cost a needless
+    # round trip for values that cannot have changed since they were read here.
+    run_id, run_year, run_week, run_markdown = run.id, run.year, run.week, run.markdown
+
     # One bounded query on `report_cells`' `report_run_id` index -- never `weekly_tables`, whose
     # recomputation is what locked the research worker into a query stream it could not finish
     # (fix 36; journal 109). A report with no stored cells (should not happen for a final run,
     # but the annotator must not crash a sweep on it) is skipped and logged, not rendered.
-    cells = session.execute(_CELLS, {"run_id": run.id}).all()
+    cells = session.execute(_CELLS, {"run_id": run_id}).all()
     if not cells:
-        log.info("annotator skipping report %s: no stored cells", run.id)
+        log.info("annotator skipping report %s: no stored cells", run_id)
         return counts
     # `titles_from_markdown` reads the run's own stored Markdown for each table's title, header
     # and note (fix round 1, Important 1); a run with no markdown (should not happen for a
     # `provisional = false` run -- `harness report` always writes one) falls back to the bare
     # `== <key> ==` rendering `render_from_cells` already supports.
-    titles = titles_from_markdown(run.markdown) if run.markdown else None
+    titles = titles_from_markdown(run_markdown) if run_markdown else None
     view = render_from_cells(cells, titles=titles)
+    # Fix round 2, new defect 2: a table `render_from_cells` could not recover the identity
+    # column for is left out of the view entirely (fails closed) rather than shown with it
+    # visible; carried into the sweep's own counts so an operator can see it happened.
+    counts["tables_omitted"] = view.tables_omitted
+
+    def _fail(exc: Exception) -> dict:
+        """The one way this pass ends unhappily past this point: roll back whatever this stage
+        left uncommitted, back the report off on the now-clean session, and return `counts` as
+        it actually stands -- fix round 2, new defect 3: a fresh `{"dropped": 0, ...}` literal
+        here used to discard bullets this same sweep had already, correctly, counted as
+        dropped."""
+        log.exception("annotator failed for report %s", run_id)
+        session.rollback()
+        _record_failure(session, now, run_id, exc)
+        counts["annotated"] = 0
+        counts["backed_off"] = 1
+        return counts
 
     try:
         reservation = reserve_spend(session, now, settings, "annotate", [PRIMARY_MODEL],
@@ -288,41 +331,52 @@ def annotate_pass(session: Session, now: datetime, settings, client=None) -> dic
     # exactly this point for the same reason.
     session.commit()
 
-    # Everything from the call to the annotation write is one failure domain (fix round 1,
-    # Critical 2): the outer `try` catches an exception from any of it, `client.call` included,
-    # so a failure anywhere in here goes through the same backoff below rather than only the
-    # call's own raising. Nothing in this block re-raises past that `except`.
     result = None
+    call_exc: Exception | None = None
     try:
+        result = client.call(model=PRIMARY_MODEL, system=SYSTEM_BLOCKS, user=view.text,
+                             schema=OUTPUT_SCHEMA, effort=EFFORT,
+                             max_output_tokens=MAX_OUTPUT_TOKENS, tools=())
+    except Exception as exc:  # noqa: BLE001 - handled by `_fail` below, once release is tried
+        call_exc = exc
+    finally:
+        # Always, and committed here, immediately, before anything downstream can fail: a
+        # reservation committed (above) and then rolled back without its release eats the U4
+        # cap for the rest of the America/Chicago day, shared across `veto`, `parlay` and
+        # `study` too. `harness/research/veto.py`'s `_call_pair` releases and commits at exactly
+        # this point, in its own nested `try`, for the same reason.
         try:
-            result = client.call(model=PRIMARY_MODEL, system=SYSTEM_BLOCKS, user=view.text,
-                                 schema=OUTPUT_SCHEMA, effort=EFFORT,
-                                 max_output_tokens=MAX_OUTPUT_TOKENS, tools=())
-        finally:
-            # Always, and committed here, immediately, before anything downstream can fail: a
-            # reservation committed (above) and then rolled back without its release eats the
-            # U4 cap for the rest of the America/Chicago day, shared across `veto`, `parlay` and
-            # `study` too. `harness/research/veto.py`'s `_call_pair` releases and commits at
-            # exactly this point, in its own nested `try`, for the same reason.
-            try:
-                release_spend(session, reservation,
-                              {PRIMARY_MODEL: result.usage} if result is not None else {})
-                session.commit()
-            except Exception:  # noqa: BLE001 - a lost release must not lose the failure below
-                log.exception("annotator could not release its reservation for report %s",
-                              run.id)
+            release_spend(session, reservation,
+                          {PRIMARY_MODEL: result.usage} if result is not None else {})
+            session.commit()
+        except Exception:  # noqa: BLE001 - a lost release must not lose the failure below
+            log.exception("annotator could not release its reservation for report %s", run_id)
 
-        write_notes(session, call_id=uuid.uuid4(), kind="annotate", subject_id=str(run.id),
+    if call_exc is not None:
+        return _fail(call_exc)
+
+    # `write_notes` is the audit of a call that has already been paid for, and it must survive
+    # any later failure in this pass -- so it commits immediately, on its own, rather than
+    # riding on the annotation insert's commit at the end (fix round 2, new defect 1). A failure
+    # here (or in the insert below) rolls back only itself: nothing since the release above was
+    # uncommitted going in.
+    try:
+        write_notes(session, call_id=uuid.uuid4(), kind="annotate", subject_id=str(run_id),
                     effort=EFFORT, prompt_hash=PROMPT_HASH,
-                    features={"year": run.year, "week": run.week}, results=[result],
+                    features={"year": run_year, "week": run_week}, results=[result],
                     created_at=now)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        return _fail(exc)
 
-        if result.error is not None:
-            # A captured model-call error (veto.py's `veto_error` shape): recorded and retried
-            # later, never written as a zero-bullet annotation -- that would satisfy
-            # `pending_report` forever on a report the model never actually read.
-            raise _ModelCallFailed(result.error)
+    if result.error is not None:
+        # A captured model-call error (veto.py's `veto_error` shape): recorded and retried
+        # later, never written as a zero-bullet annotation -- that would satisfy
+        # `pending_report` forever on a report the model never actually read. `write_notes`
+        # above already committed, so the record of the call survives this.
+        return _fail(_ModelCallFailed(result.error))
 
+    try:
         kept: list[str] = []
         if isinstance(result.output, dict):
             for bullet in (result.output.get("bullets") or [])[:BULLETS_MAX * 2]:
@@ -336,17 +390,15 @@ def annotate_pass(session: Session, now: datetime, settings, client=None) -> dic
                 if len(kept) == BULLETS_MAX:
                     break
 
-        session.add(ReportAnnotation(report_run_id=run.id, model=PRIMARY_MODEL,
+        session.add(ReportAnnotation(report_run_id=run_id, model=PRIMARY_MODEL,
                                      prompt_hash=PROMPT_HASH, bullets=kept,
                                      cost_usd=cost_usd(PRIMARY_MODEL, result.usage),
                                      created_at=now))
         session.flush()
-        _clear_backoff(session, run.id)
-    except Exception as exc:  # noqa: BLE001 - fix round 1, Critical 2: any failure past the
-                              # pending run is found backs off; none of them re-raise
-        log.exception("annotator failed for report %s", run.id)
-        _record_failure(session, now, run.id, exc)
-        return {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+        _clear_backoff(session, run_id)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        return _fail(exc)
 
     counts["annotated"] = 1
     counts["bullets"] = len(kept)
