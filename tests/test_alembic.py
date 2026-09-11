@@ -313,10 +313,10 @@ def test_no_migration_creates_a_bulk_index_outside_concurrent_index(path):
             assert table not in match.group(1), f"{path.name}: {table} outside concurrent_index"
 
 
-def test_the_versions_directory_holds_five_revisions():
+def test_the_versions_directory_holds_six_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
-        "0004_phase5.py", "0005_rfq_lookup.py"]
+        "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py"]
 
 
 def _load_baseline():
@@ -635,13 +635,13 @@ def test_the_veto_h9_view_definition_agrees_between_schema_and_migration():
 
 # --- fix 35: revision 0005 -------------------------------------------------------------------
 
-def test_rfq_lookup_follows_phase5_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_rfq_lookup_follows_phase5():
+    """The head assertion this test used to carry moved to
+    `test_quotes_run_index_follows_rfq_lookup_and_is_the_pinned_head`: 0005 is a link in the
+    chain now, not its end, the same trim fix 32 gave 0003 and phase 5 gave 0004."""
     module = _load_revision("0005_rfq_lookup.py")
     assert module.revision == "0005_rfq_lookup"
     assert module.down_revision == "0004_phase5"
-    assert HEAD_REVISION == "0005_rfq_lookup"
 
 
 def test_the_rfq_lookup_downgrade_is_a_no_op_and_drops_nothing():
@@ -680,3 +680,67 @@ def test_the_rfq_lookup_ddl_agrees_between_schema_and_migration():
     schema_stmt = next(s for s in _CONCURRENT_INDEX_DDL if "ix_fair_leg_lookup" in s)
     module = _load_revision("0005_rfq_lookup.py")
     assert module._INDEX_DDL == schema_stmt
+
+
+# --- fix 42: revision 0006 -------------------------------------------------------------------
+
+def test_quotes_run_index_follows_rfq_lookup_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0006_quotes_run_index.py")
+    assert module.revision == "0006_quotes_run_index"
+    assert module.down_revision == "0005_rfq_lookup"
+    assert HEAD_REVISION == "0006_quotes_run_index"
+
+
+def test_the_quotes_run_index_downgrade_is_a_no_op_and_drops_nothing():
+    module = _load_revision("0006_quotes_run_index.py")
+    assert module.downgrade() is None
+    body = (ROOT / "migrations" / "versions" / "0006_quotes_run_index.py").read_text().lower()
+    for word in ("drop ", "truncate", "delete from"):
+        assert word not in body, f"0006_quotes_run_index contains {word!r}"
+
+
+def test_the_quotes_run_index_is_in_both_catalogues(two_databases):
+    """Fix 42 adds `ix_quotes_run_market` to `VenueQuote.__table_args__`, to `create_schema`'s
+    `_CONCURRENT_INDEX_DDL` and to this revision in one commit: the catalogue diff fails if any
+    half lands without the others, the same shape
+    `test_the_rfq_lookup_index_is_in_both_catalogues` checks for fix 35's `ix_fair_leg_lookup`."""
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        indexes = {i["name"] for i in inspect(engine).get_indexes("venue_quotes")}
+        assert "ix_quotes_run_market" in indexes
+
+
+def test_the_quotes_run_index_ddl_agrees_between_schema_and_migration():
+    """The two copies (`harness/db/schema.py`'s `_CONCURRENT_INDEX_DDL` entry and this
+    revision's `_INDEX_DDL`) must be the identical statement. Compared as the Python string
+    values each module actually executes, not as raw file text -- the two are free to line-wrap
+    differently and still agree. Exactly one entry in the tuple names the index, which is also
+    what makes a second `create index` on a re-run of `create_schema` impossible: both copies
+    carry `if not exists`, and there is no plain-`create` third copy anywhere."""
+    from harness.db.schema import _CONCURRENT_INDEX_DDL
+
+    matches = [s for s in _CONCURRENT_INDEX_DDL if "ix_quotes_run_market" in s]
+    assert len(matches) == 1, matches
+    module = _load_revision("0006_quotes_run_index.py")
+    assert module._INDEX_DDL == matches[0]
+    assert "concurrently if not exists" in matches[0]
+
+
+def test_the_quotes_run_index_is_never_built_without_concurrently():
+    """F65 (fix 25): `venue_quotes` is a bulk table, so every copy of this index's DDL that a
+    populated database can reach is CONCURRENTLY. The model declaration is the exception by
+    construction -- `create_all` only builds indexes for tables it is creating, so a fresh
+    database gets it inside the table's own creation and a populated one never sees that path."""
+    from harness.db.schema import _CONCURRENT_INDEX_DDL, _INDEX_DDL
+
+    assert not any("ix_quotes_run_market" in s for s in _INDEX_DDL)
+    stmt = next(s for s in _CONCURRENT_INDEX_DDL if "ix_quotes_run_market" in s)
+    assert stmt.startswith("create index concurrently if not exists")
+    src = (ROOT / "migrations" / "versions" / "0006_quotes_run_index.py").read_text()
+    assert "autocommit_block" in src

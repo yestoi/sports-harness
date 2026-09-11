@@ -55,6 +55,12 @@ def build_gap_snapshots(
     popularity = load_popularity()
 
     window_start = now - timedelta(hours=4)
+    # `venue_quotes` is scanned through `ix_quotes_run_market (run_id, venue_market_id)` (fix 42):
+    # `run_id` is the scan key and `venue_market_id` the join column, so a run's quotes are one
+    # index scan. Before that index existed this was a nested loop over the matched markets, each
+    # one walking `ix_quotes_market_fetched (venue_market_id, fetched_at)` with `run_id` only a
+    # filter -- every quote ever recorded for the market read to keep the handful of this run --
+    # and on 2026-09-11 it went past the 30 s statement timeout on every pricing run.
     rows = session.execute(
         select(VenueQuote, VenueMarket, Game)
         .join(VenueMarket, VenueMarket.id == VenueQuote.venue_market_id)

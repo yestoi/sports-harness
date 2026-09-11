@@ -167,8 +167,18 @@ class VenueQuote(Base):
     open_interest: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     updated_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # `ix_quotes_run_market` is fix 42: the pricing read (`harness/pricing/gaps.py`) selects a
+    # whole run's quotes by `run_id`, and none of the other three indexes leads with it, so on
+    # the NAS's 3.58 M rows the planner walked `ix_quotes_market_fetched` once per matched
+    # market with `run_id` as a filter -- every quote ever recorded for the market read to keep
+    # the handful of this run. Declared here so `create_all` gives it to fresh databases (the
+    # test database included); `_CONCURRENT_INDEX_DDL` in `harness/db/schema.py` and
+    # `migrations/versions/0006_quotes_run_index.py` carry the CONCURRENTLY copy that gets it
+    # onto the populated production database. A bulk table takes no plain `create index`
+    # (fix 25's F65), which is why those two copies exist.
     __table_args__ = (UniqueConstraint("raw_id", "venue_market_id", name="uq_quote_raw_market"),
-                      Index("ix_quotes_market_fetched", "venue_market_id", "fetched_at"))
+                      Index("ix_quotes_market_fetched", "venue_market_id", "fetched_at"),
+                      Index("ix_quotes_run_market", "run_id", "venue_market_id"))
 
 
 class OrderbookSnapshot(Base):

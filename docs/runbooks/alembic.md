@@ -27,13 +27,15 @@ path anywhere: `harness/db/migrate.py` builds the `Config` in code, so every ope
 |---|---|---|---|
 | `0004_phase5` | `0003_brin_autosummarize` | the research layer's ten tables (`futures_snapshots`, `weather_points`, `weather_snapshots`, `veto_queue`, `research_notes`, `veto_decisions`, `research_spend`, `report_annotations`, `rfqs`, `rfq_quotes`) and the `veto_h9` view | `pass` (additive only, roadmap invariant 5; see the module docstring for why rolling one of these back is never a schema operation) |
 | `0005_rfq_lookup` | `0004_phase5` | `ix_fair_leg_lookup` on `fair_values (game_id, market_type, coalesce(outcome_team_id, -1), coalesce(outcome_side, ''), coalesce(threshold, -9999), created_at desc) where fair_source = 'direct'`, built CONCURRENTLY — the covering index the RFQ quote's `_LEG` lookup and `rfq_grade`'s `_CLOSING_LEG` lateral both read (fix 35, journal 109's incident; the `coalesce(...)` columns are a round 1 correction, review Important 1 — the bare columns compared with `is not distinct from` were never chosen by the planner; see `docs/runbooks/research.md`'s "Fix 35: cheap quotes and the quote rate limit") | `pass` (additive only, roadmap invariant 5) |
+| `0006_quotes_run_index` | `0005_rfq_lookup` | `ix_quotes_run_market` on `venue_quotes (run_id, venue_market_id)`, built CONCURRENTLY — the index the pricing read (`build_gap_snapshots` in `harness/pricing/gaps.py`) rides to fetch a run's quotes. Fix 42: from 13:03 CT on 2026-09-11 no index on this 3.58 M row bulk table led with `run_id`, so the planner walked `ix_quotes_market_fetched` once per matched market with `run_id` as a filter, past the 30 s statement timeout on every run — `runs.status = degraded` and no fair values. `if not exists` matters: the controller built the index by hand on the NAS at 14:15 CT, so the revision and `init-db` both find it present | `pass` (additive only, roadmap invariant 5) |
 
-The stamp moves from `0003_brin_autosummarize` to `0004_phase5`, and from `0004_phase5` to
-`0005_rfq_lookup`, only under the **full** `make deploy-nas` recipe, whose `harness migrate
-ensure` step is the only place `upgrade_head` runs. A `make deploy-nas-app` deploy during a phase
-legitimately leaves `alembic_version` reading the prior revision: that recipe runs `init-db` and
-never `migrate ensure`, and whatever the revision adds is created (or already exists) either way,
-since `create_schema` and the migration are additive mirrors of each other.
+The stamp moves from `0003_brin_autosummarize` to `0004_phase5`, from `0004_phase5` to
+`0005_rfq_lookup`, and from `0005_rfq_lookup` to `0006_quotes_run_index`, only under the
+**full** `make deploy-nas` recipe, whose `harness migrate ensure` step is the only place
+`upgrade_head` runs. A `make deploy-nas-app` deploy during a phase legitimately leaves
+`alembic_version` reading the prior revision: that recipe runs `init-db` and never
+`migrate ensure`, and whatever the revision adds is created (or already exists) either way, since
+`create_schema` and the migration are additive mirrors of each other.
 
 ## Rolling back
 

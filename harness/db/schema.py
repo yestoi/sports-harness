@@ -272,6 +272,25 @@ _CONCURRENT_INDEX_DDL = (
     "on fair_values (game_id, market_type, coalesce(outcome_team_id, -1), "
     "coalesce(outcome_side, ''), coalesce(threshold, -9999), created_at desc) "
     "where fair_source = 'direct'",
+    # Fix 42 (the 13:03 CT 2026-09-11 pricing outage): `build_gap_snapshots`
+    # (`harness/pricing/gaps.py`) reads a whole run's quotes -- `venue_quotes.run_id = :run_id`
+    # joined to the matched markets of games kicking off inside the window -- and no index on
+    # this 3.58 M row, 773 MB table led with `run_id` (`pkey`, `uq_quote_raw_market` and
+    # `ix_quotes_market_fetched` are the other three). The live plan was a nested loop: an index
+    # scan of `ix_quotes_market_fetched` for each of the 1,871 matched markets with `run_id` only
+    # a *filter*, so every quote ever recorded for the market was walked to keep the ~3 of this
+    # run -- cost 52,000, past the 30 s statement timeout on every run, `runs.status = degraded`
+    # and no fair values at all. `(run_id, venue_market_id)` makes `run_id` the scan key.
+    # CONCURRENTLY because `venue_quotes` is a bulk table taking the recorder's inserts and
+    # init-db runs on every deploy -- fix 25's F65 rule is that every index on a bulk table is
+    # built CONCURRENTLY with no carve-out; the connection is already AUTOCOMMIT, which is what
+    # CONCURRENTLY requires. Also declared on `VenueQuote.__table_args__` so `create_all` gives
+    # it to fresh databases (the test database included); this entry is what gets it onto the
+    # populated production database on the next init-db.
+    # `migrations/versions/0006_quotes_run_index.py` mirrors it, and the two must land together
+    # or the catalogue diff fails.
+    "create index concurrently if not exists ix_quotes_run_market "
+    "on venue_quotes (run_id, venue_market_id)",
 )
 
 #: Open contracts and their average price per variant, from the fills of live orders that have

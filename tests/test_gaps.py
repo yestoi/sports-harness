@@ -4,6 +4,8 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import text
+
 from harness.db.models import FairValue, Game, MarketGapSnapshot, OddsSnapshot, Run, VenueMarket, VenueQuote
 from harness.matching.teams import seed_teams_from_espn
 from harness.pricing.fair import compute_fair_values
@@ -304,3 +306,84 @@ def test_gap_copies_feed_columns(db_session, env_settings):
     assert no_fair_row.feed_kind is None
     assert no_fair_row.feed_lag_s is None
     assert no_fair_row.stale_allowance_s is None
+
+
+# --- fix 42: the pricing read must ride an index on run_id -----------------------------------
+#
+# 2026-09-11 13:03 CT: every pricing run on the NAS failed. `venue_quotes` (3.58 M rows, 773 MB)
+# carried no index leading with `run_id`, so `build_gap_snapshots`' select became a nested loop
+# that walked `ix_quotes_market_fetched` once per matched market, `run_id` a filter rather than a
+# scan key -- every quote ever recorded for the market read to keep the ~3 of this run. Cost
+# 52,000, over the 30 s statement timeout on every run, so `runs.status = degraded`, no fair
+# values, no signals. `ix_quotes_run_market (run_id, venue_market_id)` is the scan key.
+
+def _index_names(node) -> set[str]:
+    """Every `Index Name` anywhere in an `explain (format json)` plan tree."""
+    names: set[str] = set()
+    if isinstance(node, list):
+        for item in node:
+            names |= _index_names(item)
+    elif isinstance(node, dict):
+        if "Index Name" in node:
+            names.add(node["Index Name"])
+        if "Plan" in node:
+            names |= _index_names(node["Plan"])
+        if "Plans" in node:
+            names |= _index_names(node["Plans"])
+    return names
+
+
+def _capture_quote_select(db_session, run_id):
+    """The exact statement `build_gap_snapshots` issues against `venue_quotes`, with its bound
+    parameters, captured off the connection rather than rebuilt here -- a copy of the select in
+    this file could drift from the one that actually runs, which is the whole failure mode."""
+    from sqlalchemy import event
+
+    captured = []
+
+    def before(conn, cursor, statement, parameters, context, executemany):
+        if "venue_quotes" in statement and "market_gap_snapshots" not in statement:
+            captured.append((statement, parameters))
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", before)
+    try:
+        build_gap_snapshots(db_session, run_id, NOW, TZ, fee_model=KALSHI_FOOTBALL)
+    finally:
+        event.remove(bind, "before_cursor_execute", before)
+    assert captured, "build_gap_snapshots issued no statement over venue_quotes"
+    return captured[0]
+
+
+def test_ix_quotes_run_market_is_chosen_for_the_gap_select(db_session, env_settings):
+    """The plan, not just the index's presence: without a scan key on `run_id` the planner has
+    `ix_quotes_market_fetched` to walk per market, which is exactly what timed out on the NAS.
+
+    Seeded the shape that makes the difference visible -- one run's quotes among many runs' over
+    the same markets, so `run_id` is the selective predicate -- and `enable_seqscan` off, so a
+    sequential scan cannot stand in for the index winning on its own merits (fix 35's
+    `test_ix_fair_leg_lookup_is_chosen_for_the_leg_query` is the precedent for both)."""
+    _, run, markets = _seed(db_session)
+    compute_fair_values(db_session, run.id, NOW, env_settings)
+
+    # 60 earlier runs' quotes over the same markets: `run_id` is what narrows 549 rows to 9.
+    raw_id = 50_000
+    for older in range(60):
+        for m in markets:
+            db_session.add(VenueQuote(
+                raw_id=raw_id, run_id=800_000 + older, venue_market_id=m.id,
+                yes_bid=Decimal("0.50"), yes_ask=Decimal("0.52"),
+                fetched_at=NOW - timedelta(minutes=older + 5)))
+            raw_id += 1
+    db_session.flush()
+    _add_quotes(db_session, run.id, markets, raw_id_start=1000, fetched_at=NOW)
+    db_session.execute(text("analyze venue_quotes"))
+
+    # `build_gap_snapshots` commits, so `set local` has to come after the capture, not before.
+    statement, parameters = _capture_quote_select(db_session, run.id)
+    db_session.execute(text("set local enable_seqscan = off"))
+    raw = db_session.connection().connection
+    with raw.cursor() as cur:
+        cur.execute(f"explain (format json) {statement}", parameters)
+        plan = cur.fetchone()[0]
+    assert "ix_quotes_run_market" in _index_names(plan), plan
