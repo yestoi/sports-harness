@@ -9,6 +9,7 @@ and `pg_total_relation_size` are properties of the actual database, not of the P
 them.
 """
 
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -365,16 +366,79 @@ def test_prune_rfqs_is_bounded_to_one_batch_per_run(db_session, monkeypatch):
     assert db_session.query(Rfq).count() == 2
 
 
-def test_prune_rfqs_metric_is_recorded(db_session):
-    """`db.rfqs_pruned` carries however many rows this run actually deleted, through the same
-    `record_housekeeping_metrics` batch every other housekeeping metric goes through."""
-    db_session.add(_rfq_row("RFQ-METRIC-OLD", NOW - timedelta(days=RFQ_RETENTION_DAYS, hours=1)))
-    db_session.flush()
-
+def test_record_housekeeping_metrics_carries_a_given_rfqs_pruned_count(db_session):
+    """Round 1 (review I1): `rfqs_pruned` is supplied by the caller now -- `_prune_rfqs` is no
+    longer called from inside `record_housekeeping_metrics` at all, so this pins the value
+    through unchanged rather than pinning that the function computes it."""
     record_housekeeping_metrics(db_session, NOW, {"size_gb": 1.0, "tables_gb": {}}, {},
-                                pg_data_mount="/no/such/mount")
+                                pg_data_mount="/no/such/mount", rfqs_pruned=3)
     db_session.flush()
 
     row = db_session.query(MetricSample).filter_by(
         source="housekeeping", name="db.rfqs_pruned").one()
-    assert float(row.value) == 1.0
+    assert float(row.value) == 3.0
+
+
+def test_record_housekeeping_metrics_omits_rfqs_pruned_when_none(db_session):
+    """`rfqs_pruned=None` -- the retention step failed, or was never run -- omits the sample
+    rather than recording a `0` that would read as "ran, found nothing to prune"."""
+    record_housekeeping_metrics(db_session, NOW, {"size_gb": 1.0, "tables_gb": {}}, {},
+                                pg_data_mount="/no/such/mount")
+    db_session.flush()
+
+    names = {r.name for r in db_session.query(MetricSample).all()}
+    assert "db.rfqs_pruned" not in names
+
+
+def test_a_prune_failure_costs_only_the_prune(db_session, monkeypatch, caplog):
+    """Round 1 (review I1): a lock wait, the engine's statement timeout, or a deadlock in the
+    prune must cost only the prune -- one WARNING naming the exception's class, `db.rfqs_pruned`
+    simply absent from the batch, and every other metric in the same run still written. The
+    prune's own savepoint failing must never roll back `db.size_gb` and the rest."""
+    from harness.ops import housekeeping as hk
+
+    def _boom(session, now):
+        raise RuntimeError("simulated lock wait")
+
+    monkeypatch.setattr(hk, "_prune_rfqs", _boom)
+
+    with caplog.at_level(logging.WARNING):
+        result = hk.housekeeping_stage(db_session, NOW, budget=None)
+    db_session.flush()
+
+    assert result.counts.get("skipped") is not True
+    warnings = [r for r in caplog.records
+               if r.levelno == logging.WARNING and "rfqs prune failed" in r.message]
+    assert len(warnings) == 1
+    assert "RuntimeError" in warnings[0].getMessage()
+    names = {r.name for r in db_session.query(MetricSample).filter_by(
+        source="housekeeping").all()}
+    assert "db.size_gb" in names
+    assert "db.rfqs_pruned" not in names
+    # The failure did not leave the session's transaction poisoned.
+    db_session.execute(text("select 1")).scalar()
+
+
+def test_a_later_metrics_failure_does_not_undo_a_successful_prune(db_session, monkeypatch):
+    """Round 1 (review I1), the other direction: the prune's savepoint is a sibling of the
+    metrics batch's savepoint, not nested inside it, so a failure in `match_rates` (raised after
+    the prune's own savepoint already released) must not roll the prune itself back -- only the
+    metrics batch that would have recorded `db.rfqs_pruned` for it."""
+    from harness.ops import housekeeping as hk
+
+    db_session.add(_rfq_row("RFQ-SURVIVES-METRICS-FAILURE",
+                            NOW - timedelta(days=RFQ_RETENTION_DAYS, hours=1)))
+    db_session.flush()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("simulated telemetry failure")
+
+    monkeypatch.setattr(hk, "match_rates", _boom)
+
+    result = hk.housekeeping_stage(db_session, NOW, budget=None)
+
+    assert result.counts.get("skipped") is not True
+    assert db_session.query(Rfq).filter_by(id="RFQ-SURVIVES-METRICS-FAILURE").count() == 0
+    names = {r.name for r in db_session.query(MetricSample).filter_by(
+        source="housekeeping").all()}
+    assert "db.rfqs_pruned" not in names   # the batch that would have recorded it rolled back

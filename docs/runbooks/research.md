@@ -245,11 +245,18 @@ shares a process with. The controller switched the listener off at 05:33 CT
   `RFQ_QUOTE_RATE_MAX` per `RFQ_QUOTE_RATE_WINDOW_S`, and which frames it turns away — is
   unchanged.
 - **Retention.** Housekeeping (`harness/ops/housekeeping.py`, `_prune_rfqs`) deletes `rfqs` rows
-  older than `RFQ_RETENTION_DAYS` (7 days) with no `rfq_quotes` row, in one bounded batch of
-  `RFQ_PRUNE_BATCH` (5,000) per daily run, and records `db.rfqs_pruned`. A quoted row is never in
-  scope (F71: the row is the record of what would have been answered). This is how the flood's
-  own 74,608 rows leave the table — no one-time cleanup, just ordinary attrition once each row
-  passes seven days old, the same way it prunes anything written after this fix too.
+  older than `RFQ_RETENTION_DAYS` (21 days — round 1, review I2: 7 days was too short against the
+  weekly report's own reach into `rfqs`, `_T10_ARRIVALS`'s H5 denominator; 21 covers a Monday
+  render or a re-render of the prior ISO week with margin) with no `rfq_quotes` row, in one
+  bounded batch of `RFQ_PRUNE_BATCH` (5,000) per daily run, and records `db.rfqs_pruned`. A
+  quoted row is never in scope (F71: the row is the record of what would have been answered).
+  This is how the flood's own 74,608 rows leave the table — no one-time cleanup, just ordinary
+  attrition once each row passes the retention window, the same way it prunes anything written
+  after this fix too. Round 1 (review I1): the prune runs in `housekeeping_stage` in its own
+  savepoint, separate from the metrics batch's — a lock wait, statement timeout or deadlock in
+  the prune logs one WARNING naming the exception's class and simply omits `db.rfqs_pruned` from
+  that day's batch, never rolling back `db.size_gb` and the rest; a later, unrelated metrics
+  failure likewise can never undo a prune that already succeeded.
 
 Re-enabling the listener after fix 38, same as fix 35: `RFQ_LISTENER_ENABLED=1` in
 `deploy/nas.env`, then `docker compose restart app-ws`.

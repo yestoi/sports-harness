@@ -54,7 +54,19 @@ BYTES_PER_GB = 1024 ** 3
 #: Fix 38 (journal 110): how long an unquoted `rfqs` row is kept. The flood that incident wrote
 #: (74,608 rows in seven minutes) ages out of the table this way rather than through a one-time
 #: cleanup -- there is nothing here that treats today's rows differently from any other day's.
-RFQ_RETENTION_DAYS = 7
+#:
+#: Round 1 (review I2): 7 days was too short against the weekly report's own reach. `rfqs` is
+#: read outside this module and the listener in exactly one place, `_T10_ARRIVALS`
+#: (`harness/report/tables.py`) -- H5's own arrivals denominator, "arrivals N (M later deleted),
+#: L legs" -- over the ISO week `[Monday 00:00 America/Chicago, next Monday 00:00)`, i.e.
+#: starting Monday 05:00 UTC. `DUE_HOUR_UTC = 9` meant a Monday render for the week just ended
+#: ran after a prune whose cutoff was already past that week's start, and `build_meta`'s
+#: explicit support for a re-render of an older week could lose proportionally more of it. The
+#: rows this removes are precisely the unquoted arrivals -- a declined RFQ still writes an
+#: `rfq_quotes` row after fix 38, so an unquoted `rfqs` row is one the rate limiter turned away
+#: or whose `compute_quote` raised, exactly the arrivals H5 most wants counted. 21 days covers a
+#: Monday render or a re-render of the prior ISO week with two weeks of margin either way.
+RFQ_RETENTION_DAYS = 21
 #: Deleted in batches this size, one batch per housekeeping run -- the same reason every bulk
 #: write in this codebase is bounded rather than run whole: a single unbounded `DELETE` against
 #: a table the flood left at 128 MB (and, unpruned, growing) is a lock a settlement pass cannot
@@ -250,9 +262,15 @@ def _prune_rfqs(session: Session, now: datetime) -> int:
     have answered), so `_PRUNE_RFQS`'s `not exists` guard means this rule can never touch one --
     only an arrival that was declined or never reached `compute_quote` at all. The flood the
     incident wrote (74,608 rows, most never quoted) ages out through this rule once each row
-    passes seven days old; there is no one-time cleanup, and after fix 38's boundary filter a
-    non-football frame never reaches `rfqs` in the first place, so what this prunes going
-    forward is ordinary attrition, not a backlog.
+    passes `RFQ_RETENTION_DAYS` old; there is no one-time cleanup, and after fix 38's boundary
+    filter a non-football frame never reaches `rfqs` in the first place, so what this prunes
+    going forward is ordinary attrition, not a backlog.
+
+    Round 1 (review I1): this raises on its own -- a lock wait, the engine's statement timeout,
+    a deadlock -- exactly like any other `session.execute`; it no longer swallows anything
+    itself. `housekeeping_stage` is what gives it a savepoint of its own, separate from (and a
+    sibling of, not nested inside) the metrics batch's savepoint, so a prune failure costs only
+    this delete and a later, unrelated telemetry failure can never roll a successful prune back.
     """
     cutoff = now - timedelta(days=RFQ_RETENTION_DAYS)
     result = session.execute(_PRUNE_RFQS, {"cutoff": cutoff, "batch": RFQ_PRUNE_BATCH})
@@ -260,13 +278,23 @@ def _prune_rfqs(session: Session, now: datetime) -> int:
 
 
 def record_housekeeping_metrics(session: Session, now: datetime, counts: dict,
-                                match_by_sport: dict[str, dict], pg_data_mount) -> int:
-    """Every `metric_samples` row housekeeping writes (design spec §3.1), as one batch."""
+                                match_by_sport: dict[str, dict], pg_data_mount,
+                                rfqs_pruned: int | None = None) -> int:
+    """Every `metric_samples` row housekeeping writes (design spec §3.1), as one batch.
+
+    Round 1 (review I1): `rfqs_pruned` is a value the caller already computed, in its own
+    savepoint, before this function ever runs -- `_prune_rfqs` is not called from here any more,
+    so a failure anywhere in this batch's own savepoint (a `telemetry.record_many` error, a
+    `match_rates` failure) can never roll back a prune that already succeeded in its own. `None`
+    (the retention step failed, or has not run yet) omits `db.rfqs_pruned` from the batch rather
+    than recording a `0` that would read as "ran, found nothing to prune".
+    """
     samples: list[tuple[str, object, dict]] = [
         ("db.size_gb", counts["size_gb"], {}),
         ("db.brin_ranges_summarized", _brin_ranges_summarized(session), {}),
-        ("db.rfqs_pruned", _prune_rfqs(session, now), {}),
     ]
+    if rfqs_pruned is not None:
+        samples.append(("db.rfqs_pruned", rfqs_pruned, {}))
     for table, gb in counts.get("tables_gb", {}).items():
         samples.append(("db.table_gb", gb, {"table": table}))
     if counts.get("growth_gb_per_day") is not None:
@@ -315,6 +343,15 @@ def housekeeping_stage(session: Session, now: datetime, budget: Budget) -> Stage
     Task 12b additions, all best-effort (ruling 1: a telemetry failure must never fail this
     stage): the `metric_samples` batch, the Layer 2b check registry (`check_results`, one row
     per check) and one `operator_events(check_failed)` row per failing check.
+
+    Round 1 (review I1): the `rfqs` prune runs in its own savepoint, before and separate from
+    the metrics batch's savepoint -- a sibling, not a parent -- the same containment
+    `_brin_ranges_summarized` already gives each BRIN index. A prune failure (a lock wait, the
+    engine's statement timeout, a deadlock) costs only the prune: it logs one WARNING naming the
+    exception's class, `db.rfqs_pruned` is simply omitted from today's batch, and every other
+    metric still gets written. Doing it first, in its own already-committed savepoint, also
+    means a *later* metrics-batch failure can never undo a prune that already succeeded --
+    rolling back a savepoint only ever undoes what happened inside it.
     """
     del budget
     last = get_source_state(session, JOB_STATE_KEY)
@@ -328,10 +365,18 @@ def housekeeping_stage(session: Session, now: datetime, budget: Budget) -> Stage
     counts = housekeeping(session, now, db_budget_gb)
     set_source_state(session, JOB_STATE_KEY, now)
 
+    rfqs_pruned = None
+    try:
+        with session.begin_nested():
+            rfqs_pruned = _prune_rfqs(session, now)
+    except Exception as exc:  # noqa: BLE001 - retention must never fail this stage
+        log.warning("housekeeping: rfqs prune failed: %s", type(exc).__name__)
+
     try:
         with session.begin_nested():
             match_by_sport = match_rates(session, now)
-            record_housekeeping_metrics(session, now, counts, match_by_sport, pg_data_mount)
+            record_housekeeping_metrics(session, now, counts, match_by_sport, pg_data_mount,
+                                        rfqs_pruned=rfqs_pruned)
     except Exception:  # noqa: BLE001 - telemetry must never fail this stage
         log.exception("housekeeping metrics failed")
 
