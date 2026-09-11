@@ -107,9 +107,16 @@ def export_day(session: Session, from_run: int, to_run: int, tick_budget_s: floa
     return doc
 
 
+#: How far before a tape window's start the anchoring snapshot may be. Bounded above only, this
+#: read opened every weekly partition of `orderbook_events` (review I3); two days is one
+#: partition back at worst, so the planner prunes to two. A ticker whose newest snapshot is
+#: older than this has no anchor for the window, which the capsule records rather than hides.
+ANCHOR_LOOKBACK = timedelta(days=2)
+
 _WS_SNAPSHOT = text("""
 select id, ts, sid, seq, raw from orderbook_events
-where ticker = :t and kind = 'snapshot' and ts <= :upper order by ts desc, id desc limit 1
+where ticker = :t and kind = 'snapshot' and ts <= :upper and ts >= :anchor_lower
+order by ts desc, id desc limit 1
 """)
 
 _WS_DELTAS = text("""
@@ -124,7 +131,19 @@ from venue_trades where ticker = :t and ts >= :lower and ts <= :upper order by t
 """)
 
 
-def export_ws_tape(session: Session, ticker: str, lower: datetime, upper: datetime) -> dict:
+def _capped(stmt, cap: int | None):
+    """The statement with a row ceiling, or the statement itself when there is none.
+
+    `_WS_DELTAS` and `_WS_PRINTS` are unbounded in rows: a one-ticker window is a fine bound for
+    a fixture and no bound at all for a capsule, whose `_rows` materializes everything it reads
+    (design review I-f). The capsule passes a cap; `export-fixture` passes none and runs exactly
+    the statement it ran before.
+    """
+    return stmt if cap is None else text(stmt.text.rstrip() + "\nlimit :cap")
+
+
+def export_ws_tape(session: Session, ticker: str, lower: datetime, upper: datetime, *,
+                   cap: int | None = None) -> dict:
     """One ticker's snapshot, deltas and prints over `[lower, upper]` (the Task 4 tape shape).
 
     The snapshot is the newest one at or before `upper`, which is what a book anchors on; as in
@@ -134,10 +153,14 @@ def export_ws_tape(session: Session, ticker: str, lower: datetime, upper: dateti
     if lower > upper:
         raise ValueError(f"--from {lower.isoformat()} is after --to {upper.isoformat()}")
     params = {"t": ticker, "lower": lower, "upper": upper}
-    snapshot = session.execute(_WS_SNAPSHOT, {"t": ticker, "upper": upper}).first()
-    deltas = _rows(session, _WS_DELTAS, params)
-    prints = _rows(session, _WS_PRINTS, params)
-    return {
+    if cap is not None:
+        params["cap"] = cap
+    snapshot = session.execute(
+        _WS_SNAPSHOT, {"t": ticker, "upper": upper, "anchor_lower": lower - ANCHOR_LOOKBACK}
+    ).first()
+    deltas = _rows(session, _capped(_WS_DELTAS, cap), params)
+    prints = _rows(session, _capped(_WS_PRINTS, cap), params)
+    doc = {
         "kind": "ws-tape",
         "ticker": ticker,
         "exported_at": datetime.now(timezone.utc),
@@ -147,6 +170,9 @@ def export_ws_tape(session: Session, ticker: str, lower: datetime, upper: dateti
         "prints": prints,
         "counts": {"deltas": len(deltas), "prints": len(prints)},
     }
+    if cap is not None:
+        doc["truncated"] = {"deltas": len(deltas) >= cap, "prints": len(prints) >= cap}
+    return doc
 
 
 def write_export(doc: dict, out: str) -> None:
