@@ -4,8 +4,9 @@
 `harness report --week N` is a hand-run command and the only path that writes a `report_runs` row
 with `provisional = false`. A 09:15 wall-clock trigger would race a person -- fire before the
 operator runs the report and it annotates last week's row or none at all; fire after a re-run and
-it cites a superseded rendering. So the pass looks for the newest non-provisional run of the
-current ISO week that has no annotation, and annotates that.
+it cites a superseded rendering. So the pass looks for the newest-week non-provisional run with no
+annotation inside a bounded backlog window (addendum 0.6, `pending_report` below), and annotates
+that.
 
 **The model sees indices, never keys** (ruling B-I5). `harness/report/render_for_model.py` builds
 the view; several tables key their rows on a ticker or a variant name, and F60 keeps venue text
