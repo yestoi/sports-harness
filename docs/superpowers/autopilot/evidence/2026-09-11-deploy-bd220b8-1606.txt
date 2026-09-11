@@ -1,0 +1,855 @@
+[0;32m[DEPLOY][0m Pushing to trey@192.168.12.228:/volume1/docker/sports-harness
+[0;32m[DEPLOY][0m build bd220b8 2026-09-11T21:06:12Z
+[0;32m[DEPLOY][0m Building image and starting postgres + the backup sidecar...
+#0 building with "default" instance using docker driver
+
+#1 [app-exec internal] load build definition from Dockerfile
+#1 DONE 0.0s
+
+#2 [app-ws internal] load build definition from Dockerfile
+#2 DONE 0.0s
+
+#3 [app-run internal] load build definition from Dockerfile
+#3 DONE 0.0s
+
+#4 [app-research internal] load build definition from Dockerfile
+#4 DONE 0.0s
+
+#5 [app-serve internal] load build definition from Dockerfile
+#5 transferring dockerfile: 54B 0.0s
+#5 transferring dockerfile: 1.12kB 0.2s done
+#5 DONE 0.6s
+
+#1 [app-exec internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.12kB 0.2s done
+#1 DONE 0.5s
+
+#3 [app-run internal] load build definition from Dockerfile
+#3 transferring dockerfile: 1.12kB 0.2s done
+#3 DONE 0.6s
+
+#4 [app-research internal] load build definition from Dockerfile
+#4 transferring dockerfile: 1.12kB 0.2s done
+#4 DONE 0.5s
+
+#2 [app-ws internal] load build definition from Dockerfile
+#2 transferring dockerfile: 1.12kB 0.2s done
+#2 DONE 0.6s
+
+#6 [app-run internal] load metadata for docker.io/library/python:3.12-slim
+#6 DONE 1.1s
+
+#7 [app-ws internal] load .dockerignore
+#7 transferring context: 101B 0.0s done
+#7 DONE 0.1s
+
+#8 [app-research internal] load .dockerignore
+#8 transferring context: 101B done
+#8 DONE 0.1s
+
+#9 [app-research internal] load build context
+#9 DONE 0.0s
+
+#10 [app-research 1/9] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+#10 DONE 0.0s
+
+#11 [app-exec internal] load .dockerignore
+#11 transferring context: 101B 0.0s done
+#11 DONE 0.2s
+
+#10 [app-ws 1/9] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+#10 DONE 0.0s
+
+#12 [app-serve internal] load .dockerignore
+#12 transferring context: 101B 0.1s done
+#12 DONE 0.4s
+
+#13 [app-run internal] load .dockerignore
+#13 transferring context: 101B done
+#13 DONE 0.3s
+
+#10 [app-serve 1/9] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+#10 DONE 0.0s
+
+#14 [app-run internal] load build context
+#14 transferring context: 348.45kB 1.4s done
+#14 ...
+
+#15 [app-ws internal] load build context
+#15 transferring context: 211.83kB 1.1s done
+#15 DONE 2.2s
+
+#16 [app-serve internal] load build context
+#16 transferring context: 211.83kB 1.1s done
+#16 DONE 2.2s
+
+#17 [app-exec internal] load build context
+#17 transferring context: 348.45kB 1.1s done
+#17 DONE 2.3s
+
+#14 [app-run internal] load build context
+#14 DONE 2.3s
+
+#9 [app-research internal] load build context
+#9 transferring context: 211.83kB 1.5s done
+#9 DONE 2.3s
+
+#18 [app-ws 2/9] RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+#18 CACHED
+
+#19 [app-ws 3/9] WORKDIR /app
+#19 CACHED
+
+#20 [app-ws 4/9] COPY pyproject.toml ./
+#20 CACHED
+
+#21 [app-research 5/9] COPY constraints.txt ./
+#21 CACHED
+
+#21 [app-run 5/9] COPY constraints.txt ./
+#21 CACHED
+
+#22 [app-research 5/9] COPY constraints.txt ./
+#22 CACHED
+
+#18 [app-research 2/9] RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+#18 CACHED
+
+#19 [app-research 3/9] WORKDIR /app
+#19 CACHED
+
+#23 [app-research 4/9] COPY pyproject.toml ./
+#23 CACHED
+
+#24 [app-serve 6/9] COPY harness ./harness
+#24 ...
+
+#25 [app-research 6/9] COPY harness ./harness
+#25 DONE 2.3s
+
+#18 [app-run 2/9] RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+#18 CACHED
+
+#19 [app-run 3/9] WORKDIR /app
+#19 CACHED
+
+#26 [app-run 4/9] COPY pyproject.toml ./
+#26 CACHED
+
+#27 [app-run 5/9] COPY constraints.txt ./
+#27 CACHED
+
+#28 [app-run 6/9] COPY harness ./harness
+#28 CACHED
+
+#29 [app-research 7/9] COPY alembic.ini ./
+#29 DONE 0.5s
+
+#30 [app-research 7/9] COPY alembic.ini ./
+#30 CACHED
+
+#31 [app-run 8/9] COPY migrations ./migrations
+#31 ...
+
+#24 [app-serve 6/9] COPY harness ./harness
+#24 DONE 3.2s
+
+#32 [app-ws 7/9] COPY alembic.ini ./
+#32 ...
+
+#31 [app-run 8/9] COPY migrations ./migrations
+#31 DONE 0.7s
+
+#32 [app-serve 7/9] COPY alembic.ini ./
+#32 DONE 0.4s
+
+#33 [app-research 8/9] COPY migrations ./migrations
+#33 DONE 0.7s
+
+#34 [app-exec 8/9] COPY migrations ./migrations
+#34 DONE 0.8s
+
+#35 [app-ws 9/9] RUN pip install -c constraints.txt .
+#35 6.250 Processing /app
+#35 6.264   Installing build dependencies: started
+#35 8.761   Installing build dependencies: finished with status 'done'
+#35 8.761   Getting requirements to build wheel: started
+#35 9.104   Getting requirements to build wheel: finished with status 'done'
+#35 9.106   Preparing metadata (pyproject.toml): started
+#35 ...
+
+#36 [app-run 9/9] RUN pip install -c constraints.txt .
+#36 7.026 Processing /app
+#36 7.031   Installing build dependencies: started
+#36 9.947   Installing build dependencies: finished with status 'done'
+#36 9.948   Getting requirements to build wheel: started
+#36 ...
+
+#37 [app-research 9/9] RUN pip install -c constraints.txt .
+#37 7.005 Processing /app
+#37 7.012   Installing build dependencies: started
+#37 9.886   Installing build dependencies: finished with status 'done'
+#37 9.887   Getting requirements to build wheel: started
+#37 ...
+
+#36 [app-run 9/9] RUN pip install -c constraints.txt .
+#36 10.26   Getting requirements to build wheel: finished with status 'done'
+#36 10.26   Preparing metadata (pyproject.toml): started
+#36 10.54   Preparing metadata (pyproject.toml): finished with status 'done'
+#36 10.76 Collecting httpx>=0.27 (from harness==0.0.1)
+#36 10.89   Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+#36 11.28 Collecting sqlalchemy>=2.0 (from harness==0.0.1)
+#36 11.31   Downloading sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (9.6 kB)
+#36 11.38 Collecting psycopg>=3.1 (from psycopg[binary]>=3.1->harness==0.0.1)
+#36 11.40   Downloading psycopg-3.3.5-py3-none-any.whl.metadata (4.3 kB)
+#36 11.56 Collecting pydantic>=2.7 (from harness==0.0.1)
+#36 11.60   Downloading pydantic-2.13.5-py3-none-any.whl.metadata (110 kB)
+#36 11.72 Collecting pydantic-settings>=2.3 (from harness==0.0.1)
+#36 11.76   Downloading pydantic_settings-2.15.0-py3-none-any.whl.metadata (3.9 kB)
+#36 11.82 Collecting apscheduler<4,>=3.10 (from harness==0.0.1)
+#36 11.86   Downloading apscheduler-3.11.3-py3-none-any.whl.metadata (6.5 kB)
+#36 11.97 Collecting fastapi>=0.111 (from harness==0.0.1)
+#36 12.01   Downloading fastapi-0.141.1-py3-none-any.whl.metadata (27 kB)
+#36 12.09 Collecting uvicorn>=0.30 (from harness==0.0.1)
+#36 12.13   Downloading uvicorn-0.52.4-py3-none-any.whl.metadata (6.6 kB)
+#36 12.17 Collecting python-json-logger>=2.0 (from harness==0.0.1)
+#36 12.20   Downloading python_json_logger-4.2.0-py3-none-any.whl.metadata (2.9 kB)
+#36 12.26 Collecting typer>=0.12 (from harness==0.0.1)
+#36 12.31   Downloading typer-0.27.2-py3-none-any.whl.metadata (16 kB)
+#36 12.37 Collecting pyyaml>=6 (from harness==0.0.1)
+#36 12.40   Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+#36 12.65 Collecting cryptography>=42 (from harness==0.0.1)
+#36 12.74   Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl.metadata (4.3 kB)
+#36 12.83 Collecting alembic>=1.16 (from harness==0.0.1)
+#36 12.86   Downloading alembic-1.19.2-py3-none-any.whl.metadata (7.3 kB)
+#36 12.92 Collecting websocket-client>=1.8 (from harness==0.0.1)
+#36 12.96   Downloading websocket_client-1.9.2-py3-none-any.whl.metadata (8.3 kB)
+#36 13.02 Collecting jinja2>=3.1 (from harness==0.0.1)
+#36 13.06   Downloading jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+#36 13.13 Collecting python-multipart (from harness==0.0.1)
+#36 13.16   Downloading python_multipart-0.0.32-py3-none-any.whl.metadata (2.1 kB)
+#36 13.24 Collecting anthropic>=0.40 (from harness==0.0.1)
+#36 13.29   Downloading anthropic-1.4.0-py3-none-any.whl.metadata (3.3 kB)
+#36 13.36 Collecting Mako (from alembic>=1.16->harness==0.0.1)
+#36 13.39   Downloading mako-1.4.1-py3-none-any.whl.metadata (2.9 kB)
+#36 13.48 Collecting typing-extensions>=4.12 (from alembic>=1.16->harness==0.0.1)
+#36 13.52   Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+#36 13.57 Collecting anyio<5,>=3.5.0 (from anthropic>=0.40->harness==0.0.1)
+#36 13.62   Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+#36 13.66 Collecting docstring-parser<1,>=0.15 (from anthropic>=0.40->harness==0.0.1)
+#36 13.69   Downloading docstring_parser-0.18.0-py3-none-any.whl.metadata (3.5 kB)
+#36 13.73 Collecting httpx2<3,>=2.0.0 (from anthropic>=0.40->harness==0.0.1)
+#36 13.76   Downloading httpx2-2.12.0-py3-none-any.whl.metadata (9.5 kB)
+#36 13.87 Collecting jiter<1,>=0.4.0 (from anthropic>=0.40->harness==0.0.1)
+#36 13.94   Downloading jiter-0.16.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (5.2 kB)
+#36 13.99 Collecting sniffio<2,>=1 (from anthropic>=0.40->harness==0.0.1)
+#36 14.03   Downloading sniffio-1.3.1-py3-none-any.whl.metadata (3.9 kB)
+#36 14.09 Collecting tzlocal>=3.0 (from apscheduler<4,>=3.10->harness==0.0.1)
+#36 14.13   Downloading tzlocal-5.4.4-py3-none-any.whl.metadata (7.7 kB)
+#36 14.28 Collecting cffi>=2.0.0 (from cryptography>=42->harness==0.0.1)
+#36 14.31   Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.5 kB)
+#36 14.40 Collecting starlette>=0.46.0 (from fastapi>=0.111->harness==0.0.1)
+#36 14.44   Downloading starlette-1.6.0-py3-none-any.whl.metadata (6.4 kB)
+#36 14.50 Collecting typing-inspection>=0.4.2 (from fastapi>=0.111->harness==0.0.1)
+#36 14.56   Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+#36 14.60 Collecting annotated-doc>=0.0.2 (from fastapi>=0.111->harness==0.0.1)
+#36 14.63   Downloading annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+#36 14.69 Collecting certifi (from httpx>=0.27->harness==0.0.1)
+#36 14.73   Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+#36 14.78 Collecting httpcore==1.* (from httpx>=0.27->harness==0.0.1)
+#36 14.82   Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+#36 14.89 Collecting idna (from httpx>=0.27->harness==0.0.1)
+#36 14.93   Downloading idna-3.19-py3-none-any.whl.metadata (9.2 kB)
+#36 14.97 Collecting h11>=0.16 (from httpcore==1.*->httpx>=0.27->harness==0.0.1)
+#36 15.00   Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+#36 15.09 Collecting MarkupSafe>=2.0 (from jinja2>=3.1->harness==0.0.1)
+#36 15.12   Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)
+#36 15.31 Collecting psycopg-binary==3.3.5 (from psycopg[binary]>=3.1->harness==0.0.1)
+#36 15.36   Downloading psycopg_binary-3.3.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.7 kB)
+#36 15.39 Collecting annotated-types>=0.6.0 (from pydantic>=2.7->harness==0.0.1)
+#36 15.43   Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+#36 16.09 Collecting pydantic-core==2.46.5 (from pydantic>=2.7->harness==0.0.1)
+#36 16.13   Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+#36 16.17 Collecting python-dotenv>=0.21.0 (from pydantic-settings>=2.3->harness==0.0.1)
+#36 16.21   Downloading python_dotenv-1.2.3-py3-none-any.whl.metadata (29 kB)
+#36 16.37 Collecting greenlet>=1 (from sqlalchemy>=2.0->harness==0.0.1)
+#36 16.41   Downloading greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (3.8 kB)
+#36 16.45 Collecting shellingham>=1.3.0 (from typer>=0.12->harness==0.0.1)
+#36 16.48   Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+#36 16.56 Collecting rich>=13.8.0 (from typer>=0.12->harness==0.0.1)
+#36 16.59   Downloading rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+#36 16.66 Collecting click>=7.0 (from uvicorn>=0.30->harness==0.0.1)
+#36 16.70   Downloading click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+#36 16.76 Collecting pycparser (from cffi>=2.0.0->cryptography>=42->harness==0.0.1)
+#36 16.80   Downloading pycparser-3.0-py3-none-any.whl.metadata (8.2 kB)
+#36 16.86 Collecting httpcore2==2.12.0 (from httpx2<3,>=2.0.0->anthropic>=0.40->harness==0.0.1)
+#36 16.90   Downloading httpcore2-2.12.0-py3-none-any.whl.metadata (25 kB)
+#36 16.98 Collecting truststore>=0.10 (from httpx2<3,>=2.0.0->anthropic>=0.40->harness==0.0.1)
+#36 17.01   Downloading truststore-0.10.4-py3-none-any.whl.metadata (4.4 kB)
+#36 17.10 Collecting markdown-it-py>=2.2.0 (from rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#36 17.14   Downloading markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+#36 17.19 Collecting pygments<3.0.0,>=2.13.0 (from rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#36 17.24   Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+#36 17.31 Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#36 17.35   Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+#36 17.39 Downloading alembic-1.19.2-py3-none-any.whl (267 kB)
+#36 17.62 Downloading anthropic-1.4.0-py3-none-any.whl (1.3 MB)
+#36 17.96    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 3.4 MB/s eta 0:00:00
+#36 18.01 Downloading apscheduler-3.11.3-py3-none-any.whl (66 kB)
+#36 18.08 Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl (4.7 MB)
+#36 18.93    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.7/4.7 MB 5.5 MB/s eta 0:00:00
+#36 18.97 Downloading fastapi-0.141.1-py3-none-any.whl (131 kB)
+#36 19.02 Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+#36 19.20 Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+#36 19.26 Downloading jinja2-3.1.6-py3-none-any.whl (134 kB)
+#36 19.34 Downloading psycopg-3.3.5-py3-none-any.whl (213 kB)
+#36 19.39 Downloading psycopg_binary-3.3.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (5.2 MB)
+#36 ...
+
+#35 [app-ws 9/9] RUN pip install -c constraints.txt .
+#35 9.396   Preparing metadata (pyproject.toml): finished with status 'done'
+#35 9.578 Collecting httpx>=0.27 (from harness==0.0.1)
+#35 9.716   Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+#35 10.11 Collecting sqlalchemy>=2.0 (from harness==0.0.1)
+#35 10.14   Downloading sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (9.6 kB)
+#35 10.20 Collecting psycopg>=3.1 (from psycopg[binary]>=3.1->harness==0.0.1)
+#35 10.24   Downloading psycopg-3.3.5-py3-none-any.whl.metadata (4.3 kB)
+#35 10.41 Collecting pydantic>=2.7 (from harness==0.0.1)
+#35 10.44   Downloading pydantic-2.13.5-py3-none-any.whl.metadata (110 kB)
+#35 10.56 Collecting pydantic-settings>=2.3 (from harness==0.0.1)
+#35 10.60   Downloading pydantic_settings-2.15.0-py3-none-any.whl.metadata (3.9 kB)
+#35 10.66 Collecting apscheduler<4,>=3.10 (from harness==0.0.1)
+#35 10.70   Downloading apscheduler-3.11.3-py3-none-any.whl.metadata (6.5 kB)
+#35 10.82 Collecting fastapi>=0.111 (from harness==0.0.1)
+#35 10.87   Downloading fastapi-0.141.1-py3-none-any.whl.metadata (27 kB)
+#35 10.95 Collecting uvicorn>=0.30 (from harness==0.0.1)
+#35 10.99   Downloading uvicorn-0.52.4-py3-none-any.whl.metadata (6.6 kB)
+#35 11.04 Collecting python-json-logger>=2.0 (from harness==0.0.1)
+#35 11.09   Downloading python_json_logger-4.2.0-py3-none-any.whl.metadata (2.9 kB)
+#35 11.15 Collecting typer>=0.12 (from harness==0.0.1)
+#35 11.19   Downloading typer-0.27.2-py3-none-any.whl.metadata (16 kB)
+#35 11.27 Collecting pyyaml>=6 (from harness==0.0.1)
+#35 11.30   Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+#35 11.59 Collecting cryptography>=42 (from harness==0.0.1)
+#35 11.63   Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl.metadata (4.3 kB)
+#35 11.69 Collecting alembic>=1.16 (from harness==0.0.1)
+#35 11.73   Downloading alembic-1.19.2-py3-none-any.whl.metadata (7.3 kB)
+#35 11.81 Collecting websocket-client>=1.8 (from harness==0.0.1)
+#35 11.84   Downloading websocket_client-1.9.2-py3-none-any.whl.metadata (8.3 kB)
+#35 11.89 Collecting jinja2>=3.1 (from harness==0.0.1)
+#35 11.98   Downloading jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+#35 12.06 Collecting python-multipart (from harness==0.0.1)
+#35 12.10   Downloading python_multipart-0.0.32-py3-none-any.whl.metadata (2.1 kB)
+#35 12.18 Collecting anthropic>=0.40 (from harness==0.0.1)
+#35 12.22   Downloading anthropic-1.4.0-py3-none-any.whl.metadata (3.3 kB)
+#35 12.29 Collecting Mako (from alembic>=1.16->harness==0.0.1)
+#35 12.33   Downloading mako-1.4.1-py3-none-any.whl.metadata (2.9 kB)
+#35 12.40 Collecting typing-extensions>=4.12 (from alembic>=1.16->harness==0.0.1)
+#35 12.44   Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+#35 12.51 Collecting anyio<5,>=3.5.0 (from anthropic>=0.40->harness==0.0.1)
+#35 12.54   Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+#35 12.59 Collecting docstring-parser<1,>=0.15 (from anthropic>=0.40->harness==0.0.1)
+#35 12.63   Downloading docstring_parser-0.18.0-py3-none-any.whl.metadata (3.5 kB)
+#35 12.69 Collecting httpx2<3,>=2.0.0 (from anthropic>=0.40->harness==0.0.1)
+#35 12.72   Downloading httpx2-2.12.0-py3-none-any.whl.metadata (9.5 kB)
+#35 12.85 Collecting jiter<1,>=0.4.0 (from anthropic>=0.40->harness==0.0.1)
+#35 12.89   Downloading jiter-0.16.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (5.2 kB)
+#35 12.96 Collecting sniffio<2,>=1 (from anthropic>=0.40->harness==0.0.1)
+#35 13.00   Downloading sniffio-1.3.1-py3-none-any.whl.metadata (3.9 kB)
+#35 13.06 Collecting tzlocal>=3.0 (from apscheduler<4,>=3.10->harness==0.0.1)
+#35 13.09   Downloading tzlocal-5.4.4-py3-none-any.whl.metadata (7.7 kB)
+#35 13.29 Collecting cffi>=2.0.0 (from cryptography>=42->harness==0.0.1)
+#35 13.32   Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.5 kB)
+#35 13.40 Collecting starlette>=0.46.0 (from fastapi>=0.111->harness==0.0.1)
+#35 13.43   Downloading starlette-1.6.0-py3-none-any.whl.metadata (6.4 kB)
+#35 13.52 Collecting typing-inspection>=0.4.2 (from fastapi>=0.111->harness==0.0.1)
+#35 13.56   Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+#35 13.61 Collecting annotated-doc>=0.0.2 (from fastapi>=0.111->harness==0.0.1)
+#35 13.65   Downloading annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+#35 13.70 Collecting certifi (from httpx>=0.27->harness==0.0.1)
+#35 13.74   Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+#35 13.80 Collecting httpcore==1.* (from httpx>=0.27->harness==0.0.1)
+#35 13.83   Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+#35 13.89 Collecting idna (from httpx>=0.27->harness==0.0.1)
+#35 13.93   Downloading idna-3.19-py3-none-any.whl.metadata (9.2 kB)
+#35 13.97 Collecting h11>=0.16 (from httpcore==1.*->httpx>=0.27->harness==0.0.1)
+#35 14.01   Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+#35 14.09 Collecting MarkupSafe>=2.0 (from jinja2>=3.1->harness==0.0.1)
+#35 14.13   Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)
+#35 14.31 Collecting psycopg-binary==3.3.5 (from psycopg[binary]>=3.1->harness==0.0.1)
+#35 14.34   Downloading psycopg_binary-3.3.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.7 kB)
+#35 14.37 Collecting annotated-types>=0.6.0 (from pydantic>=2.7->harness==0.0.1)
+#35 14.42   Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+#35 15.03 Collecting pydantic-core==2.46.5 (from pydantic>=2.7->harness==0.0.1)
+#35 15.08   Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+#35 15.14 Collecting python-dotenv>=0.21.0 (from pydantic-settings>=2.3->harness==0.0.1)
+#35 15.18   Downloading python_dotenv-1.2.3-py3-none-any.whl.metadata (29 kB)
+#35 15.38 Collecting greenlet>=1 (from sqlalchemy>=2.0->harness==0.0.1)
+#35 15.42   Downloading greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (3.8 kB)
+#35 15.47 Collecting shellingham>=1.3.0 (from typer>=0.12->harness==0.0.1)
+#35 15.51   Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+#35 15.61 Collecting rich>=13.8.0 (from typer>=0.12->harness==0.0.1)
+#35 15.64   Downloading rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+#35 15.70 Collecting click>=7.0 (from uvicorn>=0.30->harness==0.0.1)
+#35 15.75   Downloading click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+#35 15.83 Collecting pycparser (from cffi>=2.0.0->cryptography>=42->harness==0.0.1)
+#35 15.88   Downloading pycparser-3.0-py3-none-any.whl.metadata (8.2 kB)
+#35 15.95 Collecting httpcore2==2.12.0 (from httpx2<3,>=2.0.0->anthropic>=0.40->harness==0.0.1)
+#35 15.99   Downloading httpcore2-2.12.0-py3-none-any.whl.metadata (25 kB)
+#35 16.05 Collecting truststore>=0.10 (from httpx2<3,>=2.0.0->anthropic>=0.40->harness==0.0.1)
+#35 16.13   Downloading truststore-0.10.4-py3-none-any.whl.metadata (4.4 kB)
+#35 16.22 Collecting markdown-it-py>=2.2.0 (from rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#35 16.26   Downloading markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+#35 16.32 Collecting pygments<3.0.0,>=2.13.0 (from rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#35 16.38   Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+#35 16.45 Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#35 16.48   Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+#35 16.55 Downloading alembic-1.19.2-py3-none-any.whl (267 kB)
+#35 16.82 Downloading anthropic-1.4.0-py3-none-any.whl (1.3 MB)
+#35 17.77    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 1.4 MB/s eta 0:00:00
+#35 17.81 Downloading apscheduler-3.11.3-py3-none-any.whl (66 kB)
+#35 17.90 Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl (4.7 MB)
+#35 19.24    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.7/4.7 MB 3.6 MB/s eta 0:00:00
+#35 19.33 Downloading fastapi-0.141.1-py3-none-any.whl (131 kB)
+#35 19.39 Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+#35 ...
+
+#37 [app-research 9/9] RUN pip install -c constraints.txt .
+#37 10.28   Getting requirements to build wheel: finished with status 'done'
+#37 10.28   Preparing metadata (pyproject.toml): started
+#37 10.47   Preparing metadata (pyproject.toml): finished with status 'done'
+#37 10.66 Collecting httpx>=0.27 (from harness==0.0.1)
+#37 10.79   Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+#37 11.36 Collecting sqlalchemy>=2.0 (from harness==0.0.1)
+#37 11.40   Downloading sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (9.6 kB)
+#37 11.48 Collecting psycopg>=3.1 (from psycopg[binary]>=3.1->harness==0.0.1)
+#37 11.52   Downloading psycopg-3.3.5-py3-none-any.whl.metadata (4.3 kB)
+#37 11.67 Collecting pydantic>=2.7 (from harness==0.0.1)
+#37 11.70   Downloading pydantic-2.13.5-py3-none-any.whl.metadata (110 kB)
+#37 11.84 Collecting pydantic-settings>=2.3 (from harness==0.0.1)
+#37 11.88   Downloading pydantic_settings-2.15.0-py3-none-any.whl.metadata (3.9 kB)
+#37 11.94 Collecting apscheduler<4,>=3.10 (from harness==0.0.1)
+#37 12.00   Downloading apscheduler-3.11.3-py3-none-any.whl.metadata (6.5 kB)
+#37 12.11 Collecting fastapi>=0.111 (from harness==0.0.1)
+#37 12.15   Downloading fastapi-0.141.1-py3-none-any.whl.metadata (27 kB)
+#37 12.25 Collecting uvicorn>=0.30 (from harness==0.0.1)
+#37 12.30   Downloading uvicorn-0.52.4-py3-none-any.whl.metadata (6.6 kB)
+#37 12.36 Collecting python-json-logger>=2.0 (from harness==0.0.1)
+#37 12.40   Downloading python_json_logger-4.2.0-py3-none-any.whl.metadata (2.9 kB)
+#37 12.50 Collecting typer>=0.12 (from harness==0.0.1)
+#37 12.55   Downloading typer-0.27.2-py3-none-any.whl.metadata (16 kB)
+#37 12.62 Collecting pyyaml>=6 (from harness==0.0.1)
+#37 12.73   Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+#37 13.13 Collecting cryptography>=42 (from harness==0.0.1)
+#37 13.17   Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl.metadata (4.3 kB)
+#37 13.24 Collecting alembic>=1.16 (from harness==0.0.1)
+#37 13.28   Downloading alembic-1.19.2-py3-none-any.whl.metadata (7.3 kB)
+#37 13.35 Collecting websocket-client>=1.8 (from harness==0.0.1)
+#37 13.38   Downloading websocket_client-1.9.2-py3-none-any.whl.metadata (8.3 kB)
+#37 13.45 Collecting jinja2>=3.1 (from harness==0.0.1)
+#37 13.49   Downloading jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+#37 13.55 Collecting python-multipart (from harness==0.0.1)
+#37 13.59   Downloading python_multipart-0.0.32-py3-none-any.whl.metadata (2.1 kB)
+#37 13.67 Collecting anthropic>=0.40 (from harness==0.0.1)
+#37 13.70   Downloading anthropic-1.4.0-py3-none-any.whl.metadata (3.3 kB)
+#37 13.79 Collecting Mako (from alembic>=1.16->harness==0.0.1)
+#37 13.83   Downloading mako-1.4.1-py3-none-any.whl.metadata (2.9 kB)
+#37 13.89 Collecting typing-extensions>=4.12 (from alembic>=1.16->harness==0.0.1)
+#37 13.93   Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+#37 14.03 Collecting anyio<5,>=3.5.0 (from anthropic>=0.40->harness==0.0.1)
+#37 14.07   Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+#37 14.11 Collecting docstring-parser<1,>=0.15 (from anthropic>=0.40->harness==0.0.1)
+#37 14.15   Downloading docstring_parser-0.18.0-py3-none-any.whl.metadata (3.5 kB)
+#37 14.20 Collecting httpx2<3,>=2.0.0 (from anthropic>=0.40->harness==0.0.1)
+#37 14.23   Downloading httpx2-2.12.0-py3-none-any.whl.metadata (9.5 kB)
+#37 14.42 Collecting jiter<1,>=0.4.0 (from anthropic>=0.40->harness==0.0.1)
+#37 14.45   Downloading jiter-0.16.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (5.2 kB)
+#37 14.51 Collecting sniffio<2,>=1 (from anthropic>=0.40->harness==0.0.1)
+#37 14.55   Downloading sniffio-1.3.1-py3-none-any.whl.metadata (3.9 kB)
+#37 14.63 Collecting tzlocal>=3.0 (from apscheduler<4,>=3.10->harness==0.0.1)
+#37 14.66   Downloading tzlocal-5.4.4-py3-none-any.whl.metadata (7.7 kB)
+#37 14.83 Collecting cffi>=2.0.0 (from cryptography>=42->harness==0.0.1)
+#37 14.87   Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.5 kB)
+#37 14.94 Collecting starlette>=0.46.0 (from fastapi>=0.111->harness==0.0.1)
+#37 14.97   Downloading starlette-1.6.0-py3-none-any.whl.metadata (6.4 kB)
+#37 15.03 Collecting typing-inspection>=0.4.2 (from fastapi>=0.111->harness==0.0.1)
+#37 15.06   Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+#37 15.10 Collecting annotated-doc>=0.0.2 (from fastapi>=0.111->harness==0.0.1)
+#37 15.13   Downloading annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+#37 15.22 Collecting certifi (from httpx>=0.27->harness==0.0.1)
+#37 15.25   Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+#37 15.30 Collecting httpcore==1.* (from httpx>=0.27->harness==0.0.1)
+#37 15.34   Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+#37 15.40 Collecting idna (from httpx>=0.27->harness==0.0.1)
+#37 15.43   Downloading idna-3.19-py3-none-any.whl.metadata (9.2 kB)
+#37 15.47 Collecting h11>=0.16 (from httpcore==1.*->httpx>=0.27->harness==0.0.1)
+#37 15.51   Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+#37 15.66 Collecting MarkupSafe>=2.0 (from jinja2>=3.1->harness==0.0.1)
+#37 15.70   Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)
+#37 15.91 Collecting psycopg-binary==3.3.5 (from psycopg[binary]>=3.1->harness==0.0.1)
+#37 15.95   Downloading psycopg_binary-3.3.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.7 kB)
+#37 16.01 Collecting annotated-types>=0.6.0 (from pydantic>=2.7->harness==0.0.1)
+#37 16.05   Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+#37 16.82 Collecting pydantic-core==2.46.5 (from pydantic>=2.7->harness==0.0.1)
+#37 16.86   Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+#37 16.92 Collecting python-dotenv>=0.21.0 (from pydantic-settings>=2.3->harness==0.0.1)
+#37 16.95   Downloading python_dotenv-1.2.3-py3-none-any.whl.metadata (29 kB)
+#37 17.14 Collecting greenlet>=1 (from sqlalchemy>=2.0->harness==0.0.1)
+#37 17.19   Downloading greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (3.8 kB)
+#37 17.24 Collecting shellingham>=1.3.0 (from typer>=0.12->harness==0.0.1)
+#37 17.29   Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+#37 17.36 Collecting rich>=13.8.0 (from typer>=0.12->harness==0.0.1)
+#37 17.52   Downloading rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+#37 17.58 Collecting click>=7.0 (from uvicorn>=0.30->harness==0.0.1)
+#37 17.64   Downloading click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+#37 17.72 Collecting pycparser (from cffi>=2.0.0->cryptography>=42->harness==0.0.1)
+#37 17.76   Downloading pycparser-3.0-py3-none-any.whl.metadata (8.2 kB)
+#37 17.95 Collecting httpcore2==2.12.0 (from httpx2<3,>=2.0.0->anthropic>=0.40->harness==0.0.1)
+#37 18.00   Downloading httpcore2-2.12.0-py3-none-any.whl.metadata (25 kB)
+#37 18.07 Collecting truststore>=0.10 (from httpx2<3,>=2.0.0->anthropic>=0.40->harness==0.0.1)
+#37 18.21   Downloading truststore-0.10.4-py3-none-any.whl.metadata (4.4 kB)
+#37 18.27 Collecting markdown-it-py>=2.2.0 (from rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#37 18.34   Downloading markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+#37 18.53 Collecting pygments<3.0.0,>=2.13.0 (from rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#37 18.58   Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+#37 18.68 Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=13.8.0->typer>=0.12->harness==0.0.1)
+#37 18.73   Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+#37 18.78 Downloading alembic-1.19.2-py3-none-any.whl (267 kB)
+#37 18.98 Downloading anthropic-1.4.0-py3-none-any.whl (1.3 MB)
+#37 19.92    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 1.4 MB/s eta 0:00:00
+#37 19.97 Downloading apscheduler-3.11.3-py3-none-any.whl (66 kB)
+#37 20.07 Downloading cryptography-50.0.1-cp311-abi3-manylinux_2_34_x86_64.whl (4.7 MB)
+#37 ...
+
+#35 [app-ws 9/9] RUN pip install -c constraints.txt .
+#35 19.58 Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+#35 19.66 Downloading jinja2-3.1.6-py3-none-any.whl (134 kB)
+#35 19.76 Downloading psycopg-3.3.5-py3-none-any.whl (213 kB)
+#35 19.85 Downloading psycopg_binary-3.3.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (5.2 MB)
+#35 20.73    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 6.1 MB/s eta 0:00:00
+#35 20.77 Downloading pydantic-2.13.5-py3-none-any.whl (472 kB)
+#35 20.90 Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+#35 21.21    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 6.4 MB/s eta 0:00:00
+#35 21.27 Downloading pydantic_settings-2.15.0-py3-none-any.whl (69 kB)
+#35 21.35 Downloading python_json_logger-4.2.0-py3-none-any.whl (14 kB)
+#35 21.38 Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+#35 21.45    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 14.0 MB/s eta 0:00:00
+#35 21.49 Downloading sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (3.4 MB)
+#35 21.88    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 8.7 MB/s eta 0:00:00
+#35 21.93 Downloading typer-0.27.2-py3-none-any.whl (123 kB)
+#35 21.99 Downloading uvicorn-0.52.4-py3-none-any.whl (79 kB)
+#35 22.13 Downloading websocket_client-1.9.2-py3-none-any.whl (95 kB)
+#35 22.22 Downloading python_multipart-0.0.32-py3-none-any.whl (30 kB)
+#35 22.33 Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+#35 22.38 Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+#35 22.44 Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+#35 22.51 Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)
+#35 22.60 Downloading click-8.5.0-py3-none-any.whl (125 kB)
+#35 22.70 Downloading docstring_parser-0.18.0-py3-none-any.whl (22 kB)
+#35 22.76 Downloading greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (621 kB)
+#35 22.93    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 621.4/621.4 kB 3.7 MB/s eta 0:00:00
+#35 22.99 Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+#35 23.08 Downloading httpx2-2.12.0-py3-none-any.whl (95 kB)
+#35 23.12 Downloading httpcore2-2.12.0-py3-none-any.whl (83 kB)
+#35 23.24 Downloading idna-3.19-py3-none-any.whl (68 kB)
+#35 23.29 Downloading jiter-0.16.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (343 kB)
+#35 23.40 Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)
+#35 23.47 Downloading python_dotenv-1.2.3-py3-none-any.whl (22 kB)
+#35 23.52 Downloading rich-15.0.0-py3-none-any.whl (310 kB)
+#35 23.61 Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+#35 23.65 Downloading sniffio-1.3.1-py3-none-any.whl (10 kB)
+#35 23.69 Downloading starlette-1.6.0-py3-none-any.whl (75 kB)
+#35 23.79 Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+#35 23.84 Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+#35 23.90 Downloading tzlocal-5.4.4-py3-none-any.whl (18 kB)
+#35 23.93 Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+#35 23.98 Downloading mako-1.4.1-py3-none-any.whl (80 kB)
+#35 24.14 Downloading markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+#35 24.22 Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+#35 24.33    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 13.8 MB/s eta 0:00:00
+#35 24.38 Downloading truststore-0.10.4-py3-none-any.whl (18 kB)
+#35 24.44 Downloading pycparser-3.0-py3-none-any.whl (48 kB)
+#35 24.51 Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+#35 24.57 Building wheels for collected packages: harness
+#35 24.58   Building wheel for harness (pyproject.toml): started
+#35 24.95   Building wheel for harness (pyproject.toml): finished with status 'done'
+#35 24.95   Created wheel for harness: filename=harness-0.0.1-py3-none-any.whl size=704216 sha256=5669600e1ebf6eb6ca2746b9c06e7be5f1cbb18a0efe9255fbc0520c72c7c212
+#35 24.95   Stored in directory: /tmp/pip-ephem-wheel-cache-3juc78kq/wheels/54/1b/b7/aa63e25c8f14f4f2ae7b04e6097bdecb770e455c5c1ee0a600
+#35 24.96 Successfully built harness
+#35 25.03 Installing collected packages: websocket-client, tzlocal, typing-extensions, truststore, sniffio, shellingham, pyyaml, python-multipart, python-json-logger, python-dotenv, pygments, pycparser, psycopg-binary, mdurl, MarkupSafe, jiter, idna, h11, greenlet, docstring-parser, click, certifi, annotated-types, annotated-doc, uvicorn, typing-inspection, sqlalchemy, pydantic-core, psycopg, markdown-it-py, Mako, jinja2, httpcore2, httpcore, cffi, apscheduler, anyio, starlette, rich, pydantic, httpx2, httpx, cryptography, alembic, typer, pydantic-settings, fastapi, anthropic, harness
+#35 ...
+
+#37 [app-research 9/9] RUN pip install -c constraints.txt .
+#37 21.76    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.7/4.7 MB 3.0 MB/s eta 0:00:00
+#37 21.80 Downloading fastapi-0.141.1-py3-none-any.whl (131 kB)
+#37 21.95 Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+#37 22.01 Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+#37 22.10 Downloading jinja2-3.1.6-py3-none-any.whl (134 kB)
+#37 22.19 Downloading psycopg-3.3.5-py3-none-any.whl (213 kB)
+#37 22.32 Downloading psycopg_binary-3.3.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (5.2 MB)
+#37 23.24    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 5.4 MB/s eta 0:00:00
+#37 23.30 Downloading pydantic-2.13.5-py3-none-any.whl (472 kB)
+#37 23.38 Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+#37 23.68    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 7.1 MB/s eta 0:00:00
+#37 23.74 Downloading pydantic_settings-2.15.0-py3-none-any.whl (69 kB)
+#37 23.83 Downloading python_json_logger-4.2.0-py3-none-any.whl (14 kB)
+#37 23.94 Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+#37 24.00    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 9.9 MB/s eta 0:00:00
+#37 24.04 Downloading sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (3.4 MB)
+#37 24.36    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 12.0 MB/s eta 0:00:00
+#37 24.39 Downloading typer-0.27.2-py3-none-any.whl (123 kB)
+#37 24.46 Downloading uvicorn-0.52.4-py3-none-any.whl (79 kB)
+#37 24.54 Downloading websocket_client-1.9.2-py3-none-any.whl (95 kB)
+#37 24.59 Downloading python_multipart-0.0.32-py3-none-any.whl (30 kB)
+#37 24.64 Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+#37 24.68 Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+#37 24.73 Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+#37 24.89 Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)
+#37 24.97 Downloading click-8.5.0-py3-none-any.whl (125 kB)
+#37 25.04 Downloading docstring_parser-0.18.0-py3-none-any.whl (22 kB)
+#37 25.10 Downloading greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (621 kB)
+#37 25.15    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 621.4/621.4 kB 15.3 MB/s eta 0:00:00
+#37 25.21 Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+#37 25.26 Downloading httpx2-2.12.0-py3-none-any.whl (95 kB)
+#37 25.31 Downloading httpcore2-2.12.0-py3-none-any.whl (83 kB)
+#37 25.43 Downloading idna-3.19-py3-none-any.whl (68 kB)
+#37 25.50 Downloading jiter-0.16.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (343 kB)
+#37 25.62 Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)
+#37 25.68 Downloading python_dotenv-1.2.3-py3-none-any.whl (22 kB)
+#37 25.72 Downloading rich-15.0.0-py3-none-any.whl (310 kB)
+#37 25.77 Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+#37 25.81 Downloading sniffio-1.3.1-py3-none-any.whl (10 kB)
+#37 25.85 Downloading starlette-1.6.0-py3-none-any.whl (75 kB)
+#37 25.90 Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+#37 26.03 Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+#37 26.09 Downloading tzlocal-5.4.4-py3-none-any.whl (18 kB)
+#37 26.14 Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+#37 26.68 Downloading mako-1.4.1-py3-none-any.whl (80 kB)
+#37 26.77 Downloading markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+#37 26.89 Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+#37 27.07    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 7.8 MB/s eta 0:00:00
+#37 27.12 Downloading truststore-0.10.4-py3-none-any.whl (18 kB)
+#37 27.18 Downloading pycparser-3.0-py3-none-any.whl (48 kB)
+#37 27.24 Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+#37 27.39 Building wheels for collected packages: harness
+#37 27.42   Building wheel for harness (pyproject.toml): started
+#37 28.00   Building wheel for harness (pyproject.toml): finished with status 'done'
+#37 28.00   Created wheel for harness: filename=harness-0.0.1-py3-none-any.whl size=704216 sha256=f76d2ffbe55ca08e2693f51351c99bb64acd16a4b60e3644f8e78c3058b5d8ec
+#37 28.00   Stored in directory: /tmp/pip-ephem-wheel-cache-2qut5bry/wheels/54/1b/b7/aa63e25c8f14f4f2ae7b04e6097bdecb770e455c5c1ee0a600
+#37 28.00 Successfully built harness
+#37 28.07 Installing collected packages: websocket-client, tzlocal, typing-extensions, truststore, sniffio, shellingham, pyyaml, python-multipart, python-json-logger, python-dotenv, pygments, pycparser, psycopg-binary, mdurl, MarkupSafe, jiter, idna, h11, greenlet, docstring-parser, click, certifi, annotated-types, annotated-doc, uvicorn, typing-inspection, sqlalchemy, pydantic-core, psycopg, markdown-it-py, Mako, jinja2, httpcore2, httpcore, cffi, apscheduler, anyio, starlette, rich, pydantic, httpx2, httpx, cryptography, alembic, typer, pydantic-settings, fastapi, anthropic, harness
+#37 ...
+
+#36 [app-run 9/9] RUN pip install -c constraints.txt .
+#36 20.56    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 4.4 MB/s eta 0:00:00
+#36 20.61 Downloading pydantic-2.13.5-py3-none-any.whl (472 kB)
+#36 20.79 Downloading pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+#36 21.17    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 4.9 MB/s eta 0:00:00
+#36 21.21 Downloading pydantic_settings-2.15.0-py3-none-any.whl (69 kB)
+#36 21.33 Downloading python_json_logger-4.2.0-py3-none-any.whl (14 kB)
+#36 21.37 Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+#36 21.50    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 6.5 MB/s eta 0:00:00
+#36 21.53 Downloading sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (3.4 MB)
+#36 22.21    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 5.2 MB/s eta 0:00:00
+#36 22.25 Downloading typer-0.27.2-py3-none-any.whl (123 kB)
+#36 22.34 Downloading uvicorn-0.52.4-py3-none-any.whl (79 kB)
+#36 22.38 Downloading websocket_client-1.9.2-py3-none-any.whl (95 kB)
+#36 22.48 Downloading python_multipart-0.0.32-py3-none-any.whl (30 kB)
+#36 22.58 Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+#36 22.64 Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+#36 22.69 Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+#36 22.77 Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)
+#36 22.92 Downloading click-8.5.0-py3-none-any.whl (125 kB)
+#36 22.98 Downloading docstring_parser-0.18.0-py3-none-any.whl (22 kB)
+#36 23.09 Downloading greenlet-3.5.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (621 kB)
+#36 23.18    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 621.4/621.4 kB 4.0 MB/s eta 0:00:00
+#36 23.24 Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+#36 23.31 Downloading httpx2-2.12.0-py3-none-any.whl (95 kB)
+#36 23.38 Downloading httpcore2-2.12.0-py3-none-any.whl (83 kB)
+#36 23.45 Downloading idna-3.19-py3-none-any.whl (68 kB)
+#36 23.52 Downloading jiter-0.16.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (343 kB)
+#36 23.75 Downloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)
+#36 23.85 Downloading python_dotenv-1.2.3-py3-none-any.whl (22 kB)
+#36 23.95 Downloading rich-15.0.0-py3-none-any.whl (310 kB)
+#36 24.00 Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+#36 24.05 Downloading sniffio-1.3.1-py3-none-any.whl (10 kB)
+#36 24.12 Downloading starlette-1.6.0-py3-none-any.whl (75 kB)
+#36 24.18 Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+#36 24.26 Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+#36 24.33 Downloading tzlocal-5.4.4-py3-none-any.whl (18 kB)
+#36 24.38 Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+#36 24.44 Downloading mako-1.4.1-py3-none-any.whl (80 kB)
+#36 24.55 Downloading markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+#36 24.60 Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+#36 24.81    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 5.4 MB/s eta 0:00:00
+#36 24.90 Downloading truststore-0.10.4-py3-none-any.whl (18 kB)
+#36 24.98 Downloading pycparser-3.0-py3-none-any.whl (48 kB)
+#36 25.04 Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+#36 25.12 Building wheels for collected packages: harness
+#36 25.12   Building wheel for harness (pyproject.toml): started
+#36 25.49   Building wheel for harness (pyproject.toml): finished with status 'done'
+#36 25.49   Created wheel for harness: filename=harness-0.0.1-py3-none-any.whl size=704216 sha256=0a4622a4bcc839720b39306e6f2e4212451d56ed5192b46bd54fd1c88328d40a
+#36 25.49   Stored in directory: /tmp/pip-ephem-wheel-cache-010n4fod/wheels/54/1b/b7/aa63e25c8f14f4f2ae7b04e6097bdecb770e455c5c1ee0a600
+#36 25.50 Successfully built harness
+#36 25.57 Installing collected packages: websocket-client, tzlocal, typing-extensions, truststore, sniffio, shellingham, pyyaml, python-multipart, python-json-logger, python-dotenv, pygments, pycparser, psycopg-binary, mdurl, MarkupSafe, jiter, idna, h11, greenlet, docstring-parser, click, certifi, annotated-types, annotated-doc, uvicorn, typing-inspection, sqlalchemy, pydantic-core, psycopg, markdown-it-py, Mako, jinja2, httpcore2, httpcore, cffi, apscheduler, anyio, starlette, rich, pydantic, httpx2, httpx, cryptography, alembic, typer, pydantic-settings, fastapi, anthropic, harness
+#36 33.57 Successfully installed Mako-1.4.1 MarkupSafe-3.0.3 alembic-1.19.2 annotated-doc-0.0.5 annotated-types-0.8.0 anthropic-1.4.0 anyio-4.15.1 apscheduler-3.11.3 certifi-2026.7.22 cffi-2.1.1 click-8.5.0 cryptography-50.0.1 docstring-parser-0.18.0 fastapi-0.141.1 greenlet-3.5.5 h11-0.16.0 harness-0.0.1 httpcore-1.0.9 httpcore2-2.12.0 httpx-0.28.1 httpx2-2.12.0 idna-3.19 jinja2-3.1.6 jiter-0.16.0 markdown-it-py-4.2.0 mdurl-0.1.2 psycopg-3.3.5 psycopg-binary-3.3.5 pycparser-3.0 pydantic-2.13.5 pydantic-core-2.46.5 pydantic-settings-2.15.0 pygments-2.21.0 python-dotenv-1.2.3 python-json-logger-4.2.0 python-multipart-0.0.32 pyyaml-6.0.3 rich-15.0.0 shellingham-1.5.4 sniffio-1.3.1 sqlalchemy-2.0.52 starlette-1.6.0 truststore-0.10.4 typer-0.27.2 typing-extensions-4.16.0 typing-inspection-0.4.4 tzlocal-5.4.4 uvicorn-0.52.4 websocket-client-1.9.2
+#36 33.57 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#36 33.86 
+#36 33.86 [notice] A new release of pip is available: 25.0.1 -> 26.2.1
+#36 33.86 [notice] To update, run: pip install --upgrade pip
+#36 ...
+
+#35 [app-ws 9/9] RUN pip install -c constraints.txt .
+#35 33.32 Successfully installed Mako-1.4.1 MarkupSafe-3.0.3 alembic-1.19.2 annotated-doc-0.0.5 annotated-types-0.8.0 anthropic-1.4.0 anyio-4.15.1 apscheduler-3.11.3 certifi-2026.7.22 cffi-2.1.1 click-8.5.0 cryptography-50.0.1 docstring-parser-0.18.0 fastapi-0.141.1 greenlet-3.5.5 h11-0.16.0 harness-0.0.1 httpcore-1.0.9 httpcore2-2.12.0 httpx-0.28.1 httpx2-2.12.0 idna-3.19 jinja2-3.1.6 jiter-0.16.0 markdown-it-py-4.2.0 mdurl-0.1.2 psycopg-3.3.5 psycopg-binary-3.3.5 pycparser-3.0 pydantic-2.13.5 pydantic-core-2.46.5 pydantic-settings-2.15.0 pygments-2.21.0 python-dotenv-1.2.3 python-json-logger-4.2.0 python-multipart-0.0.32 pyyaml-6.0.3 rich-15.0.0 shellingham-1.5.4 sniffio-1.3.1 sqlalchemy-2.0.52 starlette-1.6.0 truststore-0.10.4 typer-0.27.2 typing-extensions-4.16.0 typing-inspection-0.4.4 tzlocal-5.4.4 uvicorn-0.52.4 websocket-client-1.9.2
+#35 33.32 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#35 33.53 
+#35 33.53 [notice] A new release of pip is available: 25.0.1 -> 26.2.1
+#35 33.53 [notice] To update, run: pip install --upgrade pip
+#35 ...
+
+#36 [app-run 9/9] RUN pip install -c constraints.txt .
+#36 DONE 35.2s
+
+#35 [app-ws 9/9] RUN pip install -c constraints.txt .
+#35 DONE 34.5s
+
+#38 [app-run] exporting to image
+#38 exporting layers
+#38 ...
+
+#37 [app-research 9/9] RUN pip install -c constraints.txt .
+#37 35.46 Successfully installed Mako-1.4.1 MarkupSafe-3.0.3 alembic-1.19.2 annotated-doc-0.0.5 annotated-types-0.8.0 anthropic-1.4.0 anyio-4.15.1 apscheduler-3.11.3 certifi-2026.7.22 cffi-2.1.1 click-8.5.0 cryptography-50.0.1 docstring-parser-0.18.0 fastapi-0.141.1 greenlet-3.5.5 h11-0.16.0 harness-0.0.1 httpcore-1.0.9 httpcore2-2.12.0 httpx-0.28.1 httpx2-2.12.0 idna-3.19 jinja2-3.1.6 jiter-0.16.0 markdown-it-py-4.2.0 mdurl-0.1.2 psycopg-3.3.5 psycopg-binary-3.3.5 pycparser-3.0 pydantic-2.13.5 pydantic-core-2.46.5 pydantic-settings-2.15.0 pygments-2.21.0 python-dotenv-1.2.3 python-json-logger-4.2.0 python-multipart-0.0.32 pyyaml-6.0.3 rich-15.0.0 shellingham-1.5.4 sniffio-1.3.1 sqlalchemy-2.0.52 starlette-1.6.0 truststore-0.10.4 typer-0.27.2 typing-extensions-4.16.0 typing-inspection-0.4.4 tzlocal-5.4.4 uvicorn-0.52.4 websocket-client-1.9.2
+#37 35.46 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#37 35.64 
+#37 35.64 [notice] A new release of pip is available: 25.0.1 -> 26.2.1
+#37 35.64 [notice] To update, run: pip install --upgrade pip
+#37 DONE 37.6s
+
+#39 [app-serve] exporting to image
+#39 ...
+
+#40 [app-research] exporting to image
+#40 exporting layers 5.1s done
+#40 writing image sha256:79f179c1034283bf30b1efec8eec9426d0c0da4a6d6e782ddf89b067d4d4bb33 0.1s done
+#40 naming to docker.io/library/sports-harness-app-research
+#40 naming to docker.io/library/sports-harness-app-research 0.3s done
+#40 DONE 5.8s
+
+#41 [app-exec] exporting to image
+#41 ...
+
+#39 [app-serve] exporting to image
+#39 exporting layers 9.9s done
+#39 ...
+
+#41 [app-exec] exporting to image
+#41 exporting layers 9.9s done
+#41 writing image sha256:a2942e4cc8c4870a67d27aa7a5c281f5f69d6782eab34836f2f287e5edf65c0b 0.0s done
+#41 naming to docker.io/library/sports-harness-app-exec 0.1s done
+#41 DONE 10.0s
+
+#39 [app-serve] exporting to image
+#39 writing image sha256:4431f0461f7b4033be07c465d3dd3d4a1bd904a765ae6fde1eb1d8d493cc4116 0.0s done
+#39 naming to docker.io/library/sports-harness-app-serve 0.1s done
+#39 ...
+
+#42 [app-ws] exporting to image
+#42 exporting layers 9.9s done
+#42 writing image sha256:d10154dbad2719aed1e4a909671ad308e020815a26dbf6c6fd9ee606f65d8979 0.0s done
+#42 naming to docker.io/library/sports-harness-app-ws 0.1s done
+#42 ...
+
+#39 [app-serve] exporting to image
+#39 DONE 10.2s
+
+#42 [app-ws] exporting to image
+#42 DONE 10.2s
+
+#38 [app-run] exporting to image
+#38 exporting layers 12.2s done
+#38 writing image sha256:5a454a72a155967d5480b0e7cb2d207b3b70f7d74a650ff38c32ffb0ea3f059a
+#38 writing image sha256:5a454a72a155967d5480b0e7cb2d207b3b70f7d74a650ff38c32ffb0ea3f059a done
+#38 naming to docker.io/library/sports-harness-app-run done
+#38 DONE 12.4s
+ Container sports-harness-postgres-1  Running
+ Container sports-harness-app-backup-1  Running
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Healthy
+[0;32m[DEPLOY][0m Backup precheck (dumps first when the newest nightly is stale)...
+ Container sports-harness-postgres-1  Running
+ok backup_run=15 finished_at=2026-09-11 08:45:19+00:00
+[0;32m[DEPLOY][0m Alembic ensure (stamp on the pre-Alembic database, upgrade on an empty one)...
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-11 21:07:25,413", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.schemas"}
+{"asctime": "2026-09-11 21:07:25,413", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.tables"}
+{"asctime": "2026-09-11 21:07:25,413", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.types"}
+{"asctime": "2026-09-11 21:07:25,413", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.constraints"}
+{"asctime": "2026-09-11 21:07:25,413", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.defaults"}
+{"asctime": "2026-09-11 21:07:25,413", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.autogenerate.comments"}
+{"asctime": "2026-09-11 21:07:25,413", "levelname": "INFO", "name": "alembic.runtime.plugins", "message": "setup plugin alembic.ext.checkconstraint_byname"}
+{"asctime": "2026-09-11 21:07:25,623", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Context impl PostgresqlImpl."}
+{"asctime": "2026-09-11 21:07:25,623", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Will assume transactional DDL."}
+{"asctime": "2026-09-11 21:07:25,828", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Context impl PostgresqlImpl."}
+{"asctime": "2026-09-11 21:07:25,828", "levelname": "INFO", "name": "alembic.runtime.migration", "message": "Will assume transactional DDL."}
+current
+{"asctime": "2026-09-11 21:07:25,832", "levelname": "INFO", "name": "harness.db.migrate", "message": "alembic: at 0005_rfq_lookup"}
+[0;32m[DEPLOY][0m Schema + teams (idempotent; required after every upgrade)...
+ Container sports-harness-app-serve-1  Stopping
+ Container sports-harness-app-exec-1  Stopping
+ Container sports-harness-app-run-1  Stopping
+ Container sports-harness-app-serve-1  Stopped
+ Container sports-harness-app-exec-1  Stopped
+ Container sports-harness-app-run-1  Stopped
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-11 21:08:37,373", "levelname": "INFO", "name": "harness.db.schema", "message": "init-db: 78 no-op DDL statements skipped"}
+{"asctime": "2026-09-11 21:08:37,374", "levelname": "INFO", "name": "harness", "message": "schema created"}
+ Container sports-harness-postgres-1  Running
+{"asctime": "2026-09-11 21:08:39,934", "levelname": "INFO", "name": "harness", "message": "seeded 32 teams from https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams?limit=100"}
+{"asctime": "2026-09-11 21:08:44,842", "levelname": "INFO", "name": "harness", "message": "seeded 762 teams from https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=1000&groups=80"}
+{"asctime": "2026-09-11 21:08:44,872", "levelname": "INFO", "name": "harness", "message": "manual aliases loaded: 28"}
+ Container sports-harness-postgres-1  Running
+added=0 unchanged=7 deactivated=0
+name                    tier        variant_id    active
+constrained             secondary   ff363c8ac08d  True
+nfl_only                secondary   e549e693e117  True
+no_velocity             secondary   64ba3ef09642  True
+sharp_direct            primary     f259ca109084  True
+sharp_plus_derived      secondary   49af716f8708  True
+sharp_two_sided         secondary   5632da729fa7  True
+wide_band               secondary   c2bc45377328  True
+[0;32m[DEPLOY][0m Starting services...
+ Container sports-harness-postgres-1  Running
+ Container sports-harness-app-run-1  Recreate
+ Container sports-harness-app-exec-1  Recreate
+ Container sports-harness-app-backup-1  Running
+ Container sports-harness-app-research-1  Recreate
+ Container sports-harness-app-ws-1  Recreate
+ Container sports-harness-app-serve-1  Recreate
+ Container sports-harness-app-serve-1  Recreated
+ Container sports-harness-app-run-1  Recreated
+ Container sports-harness-app-exec-1  Recreated
+ Container sports-harness-app-ws-1  Recreated
+ Container sports-harness-app-research-1  Recreated
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Waiting
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-app-ws-1  Starting
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-app-research-1  Starting
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-app-serve-1  Starting
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-app-run-1  Starting
+ Container sports-harness-postgres-1  Healthy
+ Container sports-harness-app-exec-1  Starting
+ Container sports-harness-app-ws-1  Started
+ Container sports-harness-app-run-1  Started
+ Container sports-harness-app-research-1  Started
+ Container sports-harness-app-exec-1  Started
+ Container sports-harness-app-serve-1  Started
+[0;32m[DEPLOY][0m Done. Run: make status-nas
