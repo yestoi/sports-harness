@@ -122,9 +122,13 @@ class RfqListener:
         #: rate window (`RFQ_QUOTE_RATE_MAX` per `RFQ_QUOTE_RATE_WINDOW_S`) had no room left --
         #: stored as an arrival like any other, never quoted.
         self.quotes_skipped_rate = 0
-        #: Fix 38 (journal 110): every frame that reached the boundary decision (an
-        #: `rfq_created` or `rfq_deleted`, whatever it turned out to be) -- the denominator
-        #: `frames_stored` is measured against.
+        #: Fix 38 (journal 110): every frame handed to `handle_frame` -- the denominator
+        #: `frames_stored` is measured against. That is every frame left after the ack, error
+        #: and quote-event branches above, so it counts an `rfq_created` or `rfq_deleted`
+        #: whatever the boundary filter then decides, and also a frame `parse_rfq_frame`
+        #: rejects outright (an undocumented `type`, a body that is not an object). Those last
+        #: are neither stored nor counted as a drop, so the four counters do not sum to this
+        #: one; it is a denominator, not a partition.
         self.frames_seen = 0
         #: Fix 38: every frame that cleared the boundary filter and was written, replays and
         #: unmatched deletes included -- the same event `self.arrivals` already counts, kept
