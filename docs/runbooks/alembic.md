@@ -38,9 +38,14 @@ migration are additive mirrors of each other.
 
 1. Confirm no game window is open (verify.md, Game window).
 2. `git checkout <previous sha>` on the Mac.
-3. `make deploy-nas`. The additive schema makes this safe: the new tables and columns are simply
-   ignored by the old code, and `alembic_version` is inert to it.
-4. `init-db` re-runs harmlessly.
+3. `make deploy-nas-app`, never `make deploy-nas`: the app-only recipe skips the migrate step, and
+   the full recipe would abort there because `alembic_version` is already stamped ahead of the
+   older code's `HEAD_REVISION` (`ensure` raises rather than no-ops on a stamp it does not know).
+   The additive schema makes the app-only rollback safe: the new tables and columns are simply
+   ignored by the old code. A later *full* deploy on the rolled-back sha needs a hand stamp back
+   to that sha's revision first, which is the user's command, never the loop's.
+4. `init-db` is not run by the app-only recipe; the old `create_schema` is a subset of the live
+   schema anyway.
 5. Do **not** run `alembic downgrade`. The baseline's `downgrade()` raises: a rollback here is a
    code rollback, never a schema one. A migration that took an object away would not be
    rollback-safe, which is why writing one is a gate.
