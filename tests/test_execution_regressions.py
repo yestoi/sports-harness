@@ -6,8 +6,12 @@ decoration: without it a changed signature or a failed import would be swallowed
 failure and the defect would look documented when nothing ran (review I-d). 6B removes a marker
 when it repairs the defect; a strict XPASS is a hard failure, which is how the suite notices.
 
-Beside them sit passing guards -- behaviours a repair must not break. Case 1b is the guard for
-case 1a: a repair that simply stops detecting gaps would turn 1a green and 1b red.
+Beside them sit passing guards -- behaviours a repair must not break. Case 1b exercises
+`WsSink._check_seq`, not `BookState.apply_delta` where case 1a's defect lives; it guards the
+subscription-level input a sid-level replacement for the per-book check would depend on, and it
+does not itself flip when 1a does. The naive repair -- deleting the per-object dirty flag with
+nothing at the subscription level to replace it -- is instead caught by `tests/test_book.py:84`
+(`test_seq_gap_marks_dirty`) turning red, not by 1b.
 
 No database. Every case is either a pure object, the real `_simulate_order` with persistence
 mocked (as the probe runs it), the real `plan_actions`, or the real `fill_events` over a fake
@@ -44,6 +48,13 @@ def test_multiplexed_subscription_sequence_does_not_dirty_the_book():
     its ladders are the anchor plus its own delta, and no level of A is stale. A book is dirty
     only when a message that would have changed it was lost, and none was. The captured probe
     output is `actual_dirty true`.
+
+    `tests/test_book.py:84` (`test_seq_gap_marks_dirty`) pins the opposite outcome on the same
+    method and the same call shape: `apply_delta` with a real per-ticker seq gap, asserting
+    `dirty is True`. 6B cannot unmark this case by deleting the per-object check at
+    `harness/execution/book.py:273-274` alone -- that turns `test_book.py:84` red. The repair
+    has to move gap detection to the subscription level (where `_check_seq` already lives) and
+    retire or rewrite that test to match, not just remove the per-book flag.
     """
     a = BookState.from_levels("A", [[".30", "5"]], [[".60", "5"]], sid=SID, seq=1,
                               as_of=at(0), source="ws", anchor_id=1)
@@ -80,7 +91,10 @@ def test_a_real_missing_subscription_frame_still_writes_a_gap_row():
     exactly one gap row is due. That row carries `sid` and, in `raw`, the expected and received
     seq plus `exposed_by`; its own `ticker` column is `""`, the whole-subscription sentinel,
     because a gap invalidates every ticker on the sid and not just the one whose frame exposed
-    it (`harness/recorder/ws_sink.py:84-95`). 6B may not make case 1a green by weakening this.
+    it (`harness/recorder/ws_sink.py:84-95`). The sentinel is load-bearing, not cosmetic: a
+    sid-level consumer meaning to invalidate every ticker on the subscription can only do that
+    by reading gap rows on `ticker == ""`, and a row scoped to the exposing ticker would tell
+    it to invalidate just that one. 6B may not make case 1a green by weakening this.
     """
     complete, rows = _sink()
     complete._check_seq(SID, 1, "A", at(0))
@@ -93,6 +107,7 @@ def test_a_real_missing_subscription_frame_still_writes_a_gap_row():
     lossy._check_seq(SID, 3, "A", at(2))
     assert len(rows) == 1
     assert rows[0].kind == "gap" and rows[0].sid == SID
+    assert rows[0].ticker == ""
     assert rows[0].raw["expected"] == 2 and rows[0].raw["got"] == 3
 
 
