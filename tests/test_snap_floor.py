@@ -7,12 +7,16 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from harness.dashboard.snapshots import floor
 from harness.dashboard.snapshots.floor import FLOOR_KEYS, QUEUE_HISTORY_LIMIT, build_floor
 from harness.db.models import (EquitySnapshot, FairValue, Fill, Game, GameScoreEvent,
                                MetricSample, OperatorEvent, Order, OrderWatchSample, Run,
                                StrategyVariant, Team, VenueMarket, VenueRequest, VenueStatus)
+from harness.pricing.fair import compute_fair_values
+from tests.test_fair import NOW as FAIR_NOW
+from tests.test_fair import _seed as _seed_priced_game
 
 NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
 #: NOW is 13:00 in America/Chicago, so the local day opened at 05:00 UTC on the same date.
@@ -782,9 +786,176 @@ def test_a_no_orders_live_edge_uses_one_minus_the_fair_and_the_book_is_not_conve
     assert shown["best_ask"] == pytest.approx(0.41)
 
 
-def test_floor_selects_no_placement_mid_to_convert(db_session, env_settings):
+def test_floor_selects_no_placement_mid_to_convert():
     """Design review I2, as a structural test: `_OPEN_ORDERS` never selects
     `venue_mid_at_place` and `_BOARD` carries no mids, so there is no second quantity in YES
     space for a future edit to convert by mistake."""
     body = Path(floor.__file__).read_text()
     assert "venue_mid_at_place" not in body
+
+
+def test_a_total_orders_side_discriminates_over_from_a_null_sided_decoy(db_session,
+                                                                        env_settings):
+    """Design review I1: `outcome_side` is the one identity predicate no existing test covers --
+    the spread test above discriminates on `threshold`, the moneyline test on `outcome_team_id`,
+    and deleting `floor.py`'s `f.outcome_side is not distinct from (m.side)` line leaves the
+    whole file green. A total is the only market type where `fair_values.outcome_side` is ever
+    non-NULL (`harness/pricing/fair.py:117`, `over` always), so this seeds an `over` market
+    beside a NULL-sided decoy fair sharing its game, market type and threshold -- the shape an
+    older, unkeyed row would have. The decoy is written *last*, so a join that drops this
+    predicate hands the order the decoy instead of its own `over` fair.
+    """
+    game = Game(sport="nfl", home_team_id=1, away_team_id=2,
+                kickoff_utc=NOW + timedelta(hours=2), status="scheduled")
+    db_session.add(game)
+    db_session.flush()
+    over = VenueMarket(venue="kalshi", ticker="KXNFL-TOT-OVER", event_ticker="E",
+                       series_ticker="KXNFL", game_id=game.id, market_type="total",
+                       threshold=Decimal("44.5"), side="over",
+                       match_status="matched", first_seen_raw_id=1, last_seen_at=NOW)
+    db_session.add(over)
+    db_session.flush()
+    _open_order(db_session, venue_market_id=over.id, prob=Decimal("0.4500"))
+    db_session.add(FairValue(run_id=1, game_id=game.id, market_type="total",
+                             outcome_team_id=None, outcome_side="over", threshold=Decimal("44.5"),
+                             fair_p=Decimal("0.5500"), fair_source="direct", staleness_s=40,
+                             created_at=NOW - timedelta(minutes=6)))
+    # NULL-sided decoy: same game, market type and threshold, written last.
+    db_session.add(FairValue(run_id=2, game_id=game.id, market_type="total",
+                             outcome_team_id=None, outcome_side=None, threshold=Decimal("44.5"),
+                             fair_p=Decimal("0.3500"), fair_source="direct", staleness_s=40,
+                             created_at=NOW - timedelta(minutes=3)))
+    db_session.flush()
+
+    order = build_floor(db_session, NOW, env_settings)["orders"]["orders"][0]
+    assert order["fair_p"] == pytest.approx(0.55)
+
+
+def test_the_join_agrees_with_the_real_writer_for_every_market_shape(db_session, env_settings):
+    """Design review I2: the three identity predicates in `_FAIR_FOR_ORDERS` are a third,
+    independent copy of the shape mapping `harness.pricing.fair._shapes_for_game` writes and
+    `harness.normalize.kalshi` / `harness.matching.kalshi` produce on `venue_markets` -- a
+    future change to either side would silently empty the lateral for the affected market type,
+    and per the test above, no test would fail (the visible symptom is a null `fair_p` that
+    reads as "no fair yet" rather than as a bug). Rather than hand-build a `FairValue` row the
+    way every test above does, this seeds a game through the same fixture
+    `tests/test_fair.py`'s own tests seed and runs the real writer, `compute_fair_values`, then
+    checks one order of each shape -- moneyline, spread, total -- reads back exactly the fair
+    row that writer produced for its own market.
+    """
+    game, run = _seed_priced_game(db_session)
+    compute_fair_values(db_session, run.id, FAIR_NOW, env_settings)
+
+    markets = {m.ticker: m for m in
+              db_session.query(VenueMarket).filter_by(game_id=game.id).all()}
+    picks = {
+        "moneyline": markets["KXNFL-1"],  # side_team_id=HOME, side=None, threshold=None
+        "spread": markets["KXNFL-3"],     # side_team_id=HOME, side=None, threshold=3.5
+        "total": markets["KXNFL-6"],      # side_team_id=None, side="over", threshold=44.5
+    }
+    orders = {}
+    for key, market in picks.items():
+        order = Order(intent_id=uuid.uuid4(), variant_id="sharp_direct", venue="kalshi",
+                      client_order_id=str(uuid.uuid4()), ticker=f"{market.ticker}-ORD",
+                      venue_market_id=market.id, side="yes", prob=Decimal("0.4500"),
+                      contracts=Decimal("20.00"), status="open", game_id=game.id,
+                      placed_at=FAIR_NOW - timedelta(minutes=20),
+                      edge_at_place=Decimal("0.0300"))
+        db_session.add(order)
+        orders[key] = order
+    db_session.flush()
+
+    expected = {
+        key: db_session.query(FairValue).filter_by(
+            run_id=run.id, game_id=game.id, market_type=market.market_type,
+            outcome_team_id=market.side_team_id, outcome_side=market.side,
+            threshold=market.threshold).one()
+        for key, market in picks.items()
+    }
+
+    shown = {order["id"]: order["fair_p"]
+            for order in build_floor(db_session, FAIR_NOW, env_settings)["orders"]["orders"]}
+    for key, order in orders.items():
+        assert shown[order.id] == pytest.approx(float(expected[key].fair_p)), key
+
+
+def _plan_nodes(node, relation=None):
+    """Every plan node (recursively) in an `explain (format json)` result, optionally narrowed
+    to the nodes reading `relation`."""
+    nodes = []
+    if isinstance(node, list):
+        for item in node:
+            nodes.extend(_plan_nodes(item, relation))
+    elif isinstance(node, dict):
+        if relation is None or node.get("Relation Name") == relation:
+            nodes.append(node)
+        if "Plan" in node:
+            nodes.extend(_plan_nodes(node["Plan"], relation))
+        if "Plans" in node:
+            nodes.extend(_plan_nodes(node["Plans"], relation))
+    return nodes
+
+
+def test_the_lateral_leads_on_ix_fair_game_type_created_and_filters_the_rest(db_session,
+                                                                            env_settings):
+    """Design review I3: the cost note at `floor.py:271-283` was asserted, not measured, and
+    `rfq_grade.py:64-67` already records this repo's answer for the identical shape -- three
+    `is not distinct from` predicates over `(outcome_team_id, outcome_side, threshold)` are not
+    indexable, so the planner can only ever place them in a heap `Filter`, never an
+    `Index Cond`, while still leading the scan on `ix_fair_game_type_created` for
+    `(game_id, market_type, created_at)`. Modelled on
+    `tests/test_rfq_quote.py::test_ix_fair_leg_lookup_is_chosen_for_the_leg_query`: seed enough
+    rows sharing `(game_id, market_type)` that leading on the index is the obviously cheaper
+    plan, force the planner off a sequential scan the way that test does, and read the actual
+    plan instead of repeating the claim.
+    """
+    game = Game(sport="nfl", home_team_id=1, away_team_id=2,
+                kickoff_utc=NOW + timedelta(hours=2), status="scheduled")
+    db_session.add(game)
+    db_session.flush()
+    market = VenueMarket(venue="kalshi", ticker="KXNFL-ML-EXPLAIN", event_ticker="E",
+                         series_ticker="KXNFL", game_id=game.id, market_type="moneyline",
+                         side_team_id=1, match_status="matched", first_seen_raw_id=1,
+                         last_seen_at=NOW)
+    db_session.add(market)
+    db_session.flush()
+
+    base = NOW - timedelta(hours=1)
+    for i in range(300):
+        db_session.add(FairValue(run_id=800_000 + i, game_id=game.id, market_type="moneyline",
+                                 outcome_team_id=100 + i, outcome_side=None, threshold=None,
+                                 fair_p=Decimal("0.5000"), fair_source="direct", staleness_s=40,
+                                 created_at=base + timedelta(seconds=i)))
+    # The one row this market's contract actually matches, newest of all.
+    db_session.add(FairValue(run_id=899_999, game_id=game.id, market_type="moneyline",
+                             outcome_team_id=1, outcome_side=None, threshold=None,
+                             fair_p=Decimal("0.6100"), fair_source="direct", staleness_s=40,
+                             created_at=base + timedelta(seconds=301)))
+    db_session.flush()
+    db_session.execute(text("analyze fair_values"))
+    db_session.execute(text("set local enable_seqscan = off"))
+    # `enable_seqscan` alone is not enough: on this small synthetic table the planner reaches
+    # for `ix_fair_created_brin` via a `Bitmap Heap Scan` instead, which is the "small-synthetic
+    # -table artifact" I3 warns about -- not the plan this test means to pin. Ruling out bitmap
+    # scans too leaves the b-tree `ix_fair_game_type_created` as the only usable access path,
+    # which is what production's much larger, much less BRIN-friendly table also chooses.
+    db_session.execute(text("set local enable_bitmapscan = off"))
+
+    since = NOW - floor.FAIR_WINDOW
+    plan = db_session.execute(
+        text("explain (format json) " + floor._FAIR_FOR_ORDERS.text),
+        {"since": since, "market_ids": [market.id]},
+    ).scalar()
+
+    fair_nodes = _plan_nodes(plan, relation="fair_values")
+    assert fair_nodes, plan
+    node = fair_nodes[0]
+    assert node.get("Index Name") == "ix_fair_game_type_created", plan
+    index_cond = node.get("Index Cond", "")
+    filt = node.get("Filter", "")
+    assert "outcome_team_id" not in index_cond, plan
+    assert "outcome_side" not in index_cond, plan
+    assert "threshold" not in index_cond, plan
+    assert "outcome_team_id" in filt, plan
+    assert "outcome_side" in filt, plan
+    assert "threshold" in filt, plan
