@@ -38,7 +38,7 @@ import websocket
 from harness.execution.venue import (STATUS_OK, STATUS_UNAVAILABLE, mark_status,
                                      sanitize_venue_text)
 from harness.venues.kalshi.auth import sign_request
-from harness.venues.kalshi.rfq import (CHANNEL, DROP_NONFOOTBALL, ENV, IDLE_S, VENUE,
+from harness.venues.kalshi.rfq import (CHANNEL, DROP_NOT_ALL_FOOTBALL, ENV, IDLE_S, VENUE,
                                        handle_frame, idle_reason)
 from harness.venues.kalshi.ws import RECV_TIMEOUT_S, is_stale, should_reconnect
 
@@ -135,9 +135,10 @@ class RfqListener:
         #: under this name too since it is what the burst/periodic summary and the verify row
         #: name.
         self.frames_stored = 0
-        #: Fix 38: an `rfq_created` counted and dropped before `store_rfq` because no leg (and
-        #: not the RFQ's own top-level ticker) touched a football series.
-        self.dropped_nonfootball = 0
+        #: Fix 38, strengthened by fix 40 (journal 112): an `rfq_created` counted and dropped
+        #: before `store_rfq` because not every leg (or, for a single-market RFQ, its own
+        #: top-level ticker) resolved to a football series.
+        self.dropped_not_all_football = 0
         #: Fix 38: an `rfq_deleted` counted and dropped before `store_rfq` because its id was
         #: never stored here -- the flood's other three quarters (journal 110).
         self.dropped_unknown_delete = 0
@@ -170,7 +171,7 @@ class RfqListener:
         self._burst_skipped_rate = 0
         self._burst_frames_seen = 0
         self._burst_frames_stored = 0
-        self._burst_dropped_nonfootball = 0
+        self._burst_dropped_not_all_football = 0
         self._burst_dropped_unknown_delete = 0
         self._burst_last_frame_at: float = 0.0
         self._last_summary_at: float = 0.0
@@ -257,7 +258,7 @@ class RfqListener:
         # release log is not a reason to log again immediately.)
         self._burst_replayed = self._burst_quoted = self._burst_skipped_rate = 0
         self._burst_frames_seen = self._burst_frames_stored = 0
-        self._burst_dropped_nonfootball = self._burst_dropped_unknown_delete = 0
+        self._burst_dropped_not_all_football = self._burst_dropped_unknown_delete = 0
         self._burst_last_frame_at = self._monotonic()
         self._last_summary_at = self._monotonic()
 
@@ -333,10 +334,10 @@ class RfqListener:
     def _count_dropped(self, reason: str) -> None:
         """Fix 38 (journal 110): a frame counted and dropped at the boundary, before
         `store_rfq` -- never stored, never quoted, and (the whole point at flood volume) never
-        logged per frame. `reason` is `rfq.DROP_NONFOOTBALL` or `rfq.DROP_UNKNOWN_DELETE`."""
-        if reason == DROP_NONFOOTBALL:
-            self.dropped_nonfootball += 1
-            self._burst_dropped_nonfootball += 1
+        logged per frame. `reason` is `rfq.DROP_NOT_ALL_FOOTBALL` or `rfq.DROP_UNKNOWN_DELETE`."""
+        if reason == DROP_NOT_ALL_FOOTBALL:
+            self.dropped_not_all_football += 1
+            self._burst_dropped_not_all_football += 1
         else:
             self.dropped_unknown_delete += 1
             self._burst_dropped_unknown_delete += 1
@@ -396,7 +397,7 @@ class RfqListener:
         """
         counts = (self._burst_replayed, self._burst_quoted, self._burst_skipped_rate,
                  self._burst_frames_seen, self._burst_frames_stored,
-                 self._burst_dropped_nonfootball, self._burst_dropped_unknown_delete)
+                 self._burst_dropped_not_all_football, self._burst_dropped_unknown_delete)
         if not any(counts):
             return
         now = self._monotonic()
@@ -405,9 +406,9 @@ class RfqListener:
         if not (silent or due):
             return
         log.info("rfq listener: replayed=%d quoted=%d skipped_rate=%d frames_seen=%d "
-                 "frames_stored=%d dropped_nonfootball=%d dropped_unknown_delete=%d", *counts)
+                 "frames_stored=%d dropped_not_all_football=%d dropped_unknown_delete=%d", *counts)
         (self._burst_replayed, self._burst_quoted, self._burst_skipped_rate,
-        self._burst_frames_seen, self._burst_frames_stored, self._burst_dropped_nonfootball,
+        self._burst_frames_seen, self._burst_frames_stored, self._burst_dropped_not_all_football,
         self._burst_dropped_unknown_delete) = (0, 0, 0, 0, 0, 0, 0)
         self._last_summary_at = now
 

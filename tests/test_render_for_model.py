@@ -11,7 +11,7 @@ import pytest
 
 import harness.report.render_for_model as render_module
 from harness.report.render_for_model import (BULLET_MAX, BULLETS_MAX, CITATION_RE,
-                                             IDENTITY_COLUMNS, ModelView, check_bullet,
+                                             IDENTITY_COLUMNS, ROWS_MAX, ModelView, check_bullet,
                                              numbers_in, render_for_model, render_from_cells,
                                              resolve_citation, titles_from_markdown)
 from harness.report.tables import TABLE_KEYS, Table
@@ -91,6 +91,23 @@ def test_a_missing_table_is_simply_absent():
     view = render_for_model({})
     assert view.text.strip() != ""      # the preamble still renders
     assert view.cells == {}
+
+
+def test_render_for_model_caps_a_heavy_table_at_rows_max():
+    """Fix 41 (journal 112): a heavy table used to grow the prompt -- and the reservation it has
+    to fit inside -- without bound. A 200-row table renders only the first `ROWS_MAX` (60), by
+    `table.rows`'s own order, with `(140 more rows omitted)` appended to that table's block, and
+    `columns`/`cells` keep only the rows actually rendered so a citation index always resolves."""
+    assert ROWS_MAX == 60
+    heavy = Table(title="Table 1 (t1): order lifecycle", header="h",
+                 columns=["variant", "orders"],
+                 rows=[[f"v{i}", i] for i in range(200)])
+    view = render_for_model({"t1": heavy})
+    assert len(view.cells["t1"]) == 60
+    assert view.cells["t1"][0] == ["v0", "0"] and view.cells["t1"][59] == ["v59", "59"]
+    assert "(140 more rows omitted)" in view.text
+    assert resolve_citation(view, "t1[59,0]") == "v59"
+    assert resolve_citation(view, "t1[60,0]") is None      # row 60 was cut
 
 
 @pytest.mark.parametrize("citation,expected", [
@@ -201,6 +218,21 @@ def test_render_from_cells_keeps_the_row_key_out_of_the_rendered_line():
 def test_render_from_cells_skips_missing_tables_in_table_keys_order():
     view = render_from_cells(_stored_cells(_cell_tables()))
     assert list(view.columns) == ["t1"]
+
+
+def test_render_from_cells_caps_a_heavy_table_at_rows_max():
+    """Fix 41 (journal 112), the `render_from_cells` half of the same cap: the first `ROWS_MAX`
+    (60) rows by ascending `row_key` -- the order this constructor already renders in -- with
+    `(140 more rows omitted)` appended to the table's block."""
+    heavy = {"t1": Table(title="Table 1 (t1): order lifecycle", header="h",
+                        columns=["variant", "orders"],
+                        rows=[[f"v{i:03d}", i] for i in range(200)])}
+    view = render_from_cells(_stored_cells(heavy))
+    assert len(view.cells["t1"]) == 60
+    assert view.cells["t1"][0] == ["v000", "0"] and view.cells["t1"][59] == ["v059", "59"]
+    assert "(140 more rows omitted)" in view.text
+    assert resolve_citation(view, "t1[59,0]") == "v059"
+    assert resolve_citation(view, "t1[60,0]") is None      # row 60 was cut
 
 
 def test_render_from_cells_defaults_to_no_title_or_header():

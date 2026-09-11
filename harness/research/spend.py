@@ -76,8 +76,12 @@ CACHE_READ_MULTIPLIER = Decimal("0.1")
 CACHE_WRITE_MULTIPLIER = Decimal("1.25")
 SEARCH_USD = Decimal("0.01")
 
-#: The opening worst case per model, per call (ruling A-C3). Re-fitted after the first live day.
-WORST_CASE_INPUT_TOKENS = 30_000
+#: The opening worst case per model, per call (ruling A-C3). Re-fitted after the first live day
+#: -- and re-fitted again by fix 41 (journal 112): the first live annotator calls on fix 39's
+#: corrected schema measured 46,528 input tokens, well past this opening 30,000, and the
+#: reservation this constant prices under-covered the call it was meant to price. 60,000 is
+#: margin over the measured figure, not the figure itself.
+WORST_CASE_INPUT_TOKENS = 60_000
 #: 4,096, not the addendum's opening 2,000: the controller's proving call needs a 4,096 ceiling
 #: (thinking + tool blocks + the JSON; 1,024 already truncated one recording), and T10/T15/T18
 #: pass this same constant as `max_tokens` so the reservation and the request cannot part

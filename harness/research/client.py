@@ -64,19 +64,23 @@ SNIPPETS_MAX_BYTES = 6 * 1024
 class CallResult:
     """One model's side of one call, whatever happened.
 
-    `error` is `None`, or one of `pause_turn`, `refusal`, `search_error`, `schema`, or the class
-    name of a transport exception. `output` is the parsed structured output, or `None`.
+    `error` is `None`, or one of `pause_turn`, `refusal`, `search_error`, `schema`, `max_tokens`,
+    or the class name of a transport exception. `output` is the parsed structured output, or
+    `None`.
 
     `raw` is `None` except on a `schema` failure, where it carries the first text block's own
-    text, sanitized: the controller's own proving run hit exactly this shape (a `max_tokens`
-    truncation), and without the text there is no way to tell a truncation from a genuine
-    preamble the model wrote before its JSON.
+    text, sanitized: without the text there is no way to tell a genuinely malformed response
+    from a preamble the model wrote before JSON it never got to write.
 
-    `error_detail` is `None` except on an `anthropic.APIStatusError` (fix 39, journal 110): the
-    API's own `message` field for the rejected request -- never the request, never the SDK's own
-    `.message` (which echoes the whole decoded body back) -- sanitized and capped like every
-    other stored string, so a 400 is diagnosable from the notes row instead of carrying only the
-    exception's class name.
+    `error_detail` is `None` except on an `anthropic.APIStatusError` (fix 39, journal 110) or a
+    `max_tokens` response (fix 41, journal 112). For the former it is the API's own `message`
+    field for the rejected request -- never the request, never the SDK's own `.message` (which
+    echoes the whole decoded body back). For the latter it names the output token count the
+    response actually stopped at (fix 41: the controller's own proving run, and the first live
+    annotator calls on the corrected schema, both hit exactly this shape -- a response accepted
+    with HTTP 200 whose JSON never completed because `max_output_tokens` ran out first). Both are
+    sanitized and capped like every other stored string, so either failure is diagnosable from
+    the notes row instead of carrying only the exception's class name or an unparsed truncation.
     """
 
     model: str
@@ -224,7 +228,12 @@ def output_from(payload: dict) -> tuple[dict | None, str | None]:
 def error_from(payload: dict) -> str | None:
     """Which of the recorded failure shapes this response is, or None."""
     stop_reason = payload.get("stop_reason")
-    if stop_reason in ("pause_turn", "refusal"):
+    if stop_reason in ("pause_turn", "refusal", "max_tokens"):
+        # Fix 41 (journal 112): a `max_tokens` response used to fall through to the `schema`
+        # branch below -- its JSON is truncated and so never parses -- and be indistinguishable
+        # from a genuinely malformed response. It is its own failure shape now: the response
+        # itself says why the JSON is incomplete, and `parse_response` records that reason
+        # rather than guessing at it from a parse failure.
         return stop_reason
     for block in _blocks(payload):
         if block.get("type") == "web_search_tool_result" and not isinstance(
@@ -264,15 +273,23 @@ def parse_response(model: str, payload: dict, latency_ms: int,
                    request_id: str | None) -> CallResult:
     error = error_from(payload)
     output, _ = output_from(payload)
+    usage = usage_from(payload)
     raw = None
+    error_detail = None
     if error == "schema":
         text = _first_text(payload)
         if text is not None:
             raw = sanitize_model_text(text, RAW_TEXT_MAX_CHARS)
-    return CallResult(model=model, output=None if error else output, usage=usage_from(payload),
+    elif error == "max_tokens":
+        # Fix 41 (journal 112): the count is the diagnosable fact here -- it is what tells a
+        # reader whether the response stopped at the caller's own `max_output_tokens` (a budget
+        # too low for this prompt) or somewhere short of it (a different problem).
+        error_detail = f"stopped at {usage.output_tokens} output tokens"
+    return CallResult(model=model, output=None if error else output, usage=usage,
                       stop_reason=payload.get("stop_reason"), request_id=request_id,
                       latency_ms=latency_ms, tool_calls=tool_calls_from(payload),
-                      snippets=snippets_from(payload), error=error, raw=raw)
+                      snippets=snippets_from(payload), error=error, raw=raw,
+                      error_detail=error_detail)
 
 
 # --- the client -----------------------------------------------------------------------------------

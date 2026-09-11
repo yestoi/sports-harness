@@ -85,14 +85,23 @@ from harness.report.render_for_model import (BULLET_MAX, BULLETS_MAX, check_bull
                                              render_from_cells, titles_from_markdown)
 from harness.research.client import PRIMARY_MODEL, ResearchClient, prompt_hash
 from harness.research.notes import write_notes
-from harness.research.spend import BudgetRefused, chicago_day, cost_usd, release_spend, reserve_spend
+from harness.research.spend import (BudgetRefused, WORST_CASE_OUTPUT_TOKENS, chicago_day,
+                                    cost_usd, release_spend, reserve_spend)
 from harness.research.text import sanitize_model_text
 from harness.research.worker import register_pass
 
 log = logging.getLogger(__name__)
 
-EFFORT = "high"
-MAX_OUTPUT_TOKENS = 1024
+#: Fix 41 (journal 112): the first calls on fix 39's corrected schema returned HTTP 200 with
+#: `stop_reason = "max_tokens"` -- 46,528 input tokens, exactly `MAX_OUTPUT_TOKENS` (1,024) out,
+#: the JSON never completed. `EFFORT` was `"high"`, and adaptive thinking under high effort
+#: spends output budget before the model ever reaches the bullets, so the ceiling was too low
+#: for the effort spent reaching it, not just for the JSON itself. Dropped to `"medium"` and the
+#: ceiling raised to `WORST_CASE_OUTPUT_TOKENS` (4,096, `harness/research/spend.py`) -- the
+#: client already refuses a `max_output_tokens` above that, so this is the reserved worst case,
+#: not a new number the reservation has to catch up to.
+EFFORT = "medium"
+MAX_OUTPUT_TOKENS = WORST_CASE_OUTPUT_TOKENS
 
 #: A report's first backoff, and what three failed attempts escalate to (fix 36).
 BACKOFF_SHORT = timedelta(hours=1)

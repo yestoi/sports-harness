@@ -75,6 +75,46 @@ order by created_at desc
 limit 20;
 ```
 
+### Fix 41: the annotator's budget matches its prompt
+
+The first calls on fix 39's corrected schema (journal 112) came back HTTP 200 with
+`stop_reason = "max_tokens"`: 46,528 input tokens, exactly the annotator's old 1,024-token output
+ceiling, 15 s, $0.26 each — accepted calls the client was recording as a `schema` failure,
+because a response truncated mid-JSON never parses. Four numbers were wrong together, not one:
+
+- **The annotator's own ceiling.** `harness/research/annotate.py`'s `MAX_OUTPUT_TOKENS` is now
+  `WORST_CASE_OUTPUT_TOKENS` (4,096, `harness/research/spend.py`) instead of a bare 1,024 — the
+  client already refuses a `max_output_tokens` above that constant, so this is the reserved
+  worst case, not a new number the reservation has to catch up to. `EFFORT` dropped from `"high"`
+  to `"medium"`: adaptive thinking under high effort was spending output budget before the model
+  ever reached the bullets, so the ceiling was too low for the effort spent reaching it, not
+  just for the JSON itself.
+- **The reservation.** `WORST_CASE_INPUT_TOKENS` is now 60,000 (from 30,000) — see "Re-fitting
+  the worst case" above.
+- **The prompt itself.** `render_from_cells` and `render_for_model`
+  (`harness/report/render_for_model.py`) now cap each table at `ROWS_MAX` (60) rows in the
+  rendered block, keeping the first 60 by stored order and appending a
+  `(<n> more rows omitted)` line to that table's block — a heavy week's table no longer grows
+  the prompt (and the reservation it has to fit inside) without bound.
+- **The failure shape.** `ResearchClient.parse_response` now records a `stop_reason ==
+  "max_tokens"` response as `error = "max_tokens"`, not `"schema"` — the truncated JSON is a
+  symptom of running out of output budget, not a malformed response, and the two need different
+  fixes. `error_detail` names the output token count the response actually stopped at, the same
+  `write_notes` path fix 39 already wired up:
+
+```sql
+select model, output->>'error' as error, output->>'error_detail' as detail
+from research_notes
+where output->>'error' = 'max_tokens'
+order by created_at desc
+limit 20;
+```
+
+`harness/research/veto.py`'s own `max_output_tokens` (via `harness/research/prompt.py`'s
+`MAX_OUTPUT_TOKENS`) was already `WORST_CASE_OUTPUT_TOKENS` (4,096) before this fix and needed no
+change — the veto runs with adaptive thinking and a web-search tool round, which also consume
+output budget, and 4,096 already covers it.
+
 ## Reading the spend
 
 ```sql
@@ -102,8 +142,9 @@ Pulse's `research_budget` rule reads WATCH — never BROKEN — while this is tr
 ## Re-fitting the worst case
 
 After the first full live day, run the "Worst-case re-fit" row in `docs/superpowers/autopilot/verify.md`'s
-Phase 5 block and journal the six numbers. The constants — `WORST_CASE_INPUT_TOKENS = 30_000`,
-`WORST_CASE_OUTPUT_TOKENS = 4_096`, `WORST_CASE_SEARCHES = 3` — live in
+Phase 5 block and journal the six numbers. The constants — `WORST_CASE_INPUT_TOKENS = 60_000`
+(fix 41, journal 112: raised from the opening 30,000 after the first live annotator calls
+measured 46,528), `WORST_CASE_OUTPUT_TOKENS = 4_096`, `WORST_CASE_SEARCHES = 3` — live in
 `harness/research/spend.py`. Changing them is a code change with a test, not a config edit; the
 weekly report's t7 table and the Pulse tile both read the module directly, so a change there is
 the one place that moves them everywhere.
@@ -213,29 +254,33 @@ shares a process with. The controller switched the listener off at 05:33 CT
 (`RFQ_LISTENER_ENABLED=0`, same switch as above).
 
 - **Filter before storing.** `handle_frame` (`harness/venues/kalshi/rfq.py`) now decides, before
-  `store_rfq` ever runs: an `rfq_created` frame is stored only when at least one leg's
-  `event_ticker` (or, for a single-market RFQ with no `mve_selected_legs`, the RFQ's own
-  top-level ticker) resolves to a series in `FOOTBALL_SERIES` — a string check
-  (`event_ticker.split("-")[0]`, the same derivation `harness/venues/kalshi/public.py` uses for
-  `MarketSummary.series_ticker`), never a `venue_markets` lookup, because there is no session at
-  this point and a per-leg DB probe on every one of 11,000-14,000 frames a minute is exactly the
-  cost fix 35 already removed from the quote path. This is deliberately weaker than fix 35's own
-  `no_fair` decline (`_is_football` in `rfq_quote.py`, "every leg is football, DB-resolved"): a
-  combo with even one football leg still stores and reaches the normal quote/decline path; only
-  a combo (or single market) touching *no* football series at all is dropped. An `rfq_deleted`
+  `store_rfq` ever runs: an `rfq_created` frame is stored only when every leg's `event_ticker`
+  (or, for a single-market RFQ with no `mve_selected_legs`, the RFQ's own top-level ticker)
+  resolves to a series in `FOOTBALL_SERIES` — a string check (`event_ticker.split("-")[0]`, the
+  same derivation `harness/venues/kalshi/public.py` uses for `MarketSummary.series_ticker`),
+  never a `venue_markets` lookup, because there is no session at this point and a per-leg DB
+  probe on every one of 11,000-14,000 frames a minute is exactly the cost fix 35 already removed
+  from the quote path. **Fix 38's original rule was "at least one leg"**, which stored every
+  cross-category combo mixing one football leg with legs on other markets — fix 40 (journal 112)
+  tightened it to "every leg" after those mixed combos turned out to be the flood's other
+  quotable-looking third: 1,837 `no_fair` and 163 `same_game` declines in six minutes, zero
+  quotable, because `rfq_quote.py`'s own stronger, DB-resolved `_is_football` gate declines any
+  combo with a non-football leg anyway. The boundary now matches the population this harness can
+  ever quote exactly, rather than storing a wider one it can only ever decline. An `rfq_deleted`
   frame is applied only when its id is already a stored row; otherwise it is counted and dropped
   too — before fix 38 a delete for an unseen id wrote its own row (F71: "the socket is the only
   record"), which is exactly the incident's other three quarters. Either drop is counted, never
   logged per frame.
 - **Four new counters, one summary.** The listener counts `frames_seen`, `frames_stored`,
-  `dropped_nonfootball` and `dropped_unknown_delete` alongside fix 35's `replayed`, `quoted` and
+  `dropped_not_all_football` (renamed by fix 40 from `dropped_nonfootball` to match the
+  strengthened rule) and `dropped_unknown_delete` alongside fix 35's `replayed`, `quoted` and
   `quotes_skipped_rate`, in the same one-line INFO summary
   (`replayed=<n> quoted=<n> skipped_rate=<n> frames_seen=<n> frames_stored=<n>
-  dropped_nonfootball=<n> dropped_unknown_delete=<n>`). The flood that started this fix never
-  goes quiet, so the summary no longer waits only on `RFQ_BURST_SILENCE_S` (5 s) of silence — it
-  also flushes after `RFQ_SUMMARY_PERIOD_S` (60 s) of continuous flow, whichever comes first, so
-  it logs at least once a minute while frames are arriving instead of staying dark until the
-  connection eventually goes quiet.
+  dropped_not_all_football=<n> dropped_unknown_delete=<n>`). The flood that started this fix
+  never goes quiet, so the summary no longer waits only on `RFQ_BURST_SILENCE_S` (5 s) of
+  silence — it also flushes after `RFQ_SUMMARY_PERIOD_S` (60 s) of continuous flow, whichever
+  comes first, so it logs at least once a minute while frames are arriving instead of staying
+  dark until the connection eventually goes quiet.
 - **The rate-limit log no longer flaps.** The incident also showed the quote rate limiter's
   engage/release log pair firing 100 ms apart at the window boundary — a real state transition
   every time, so the old transition-only guard logged every one of them. Each direction

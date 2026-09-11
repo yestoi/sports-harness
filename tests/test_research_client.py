@@ -232,6 +232,10 @@ def test_tool_calls_record_code_execution_blocks_with_a_sanitized_excerpt():
      "search_error"),
     ({"stop_reason": "end_turn", "usage": {}, "content": [
         {"type": "text", "text": "not json at all"}]}, "schema"),
+    # Fix 41 (journal 112): a genuine `max_tokens` truncation is its own shape, not `schema` --
+    # even though the JSON here would also fail to parse, `stop_reason` alone decides it.
+    ({"stop_reason": "max_tokens", "usage": {"output_tokens": 1024}, "content": [
+        {"type": "text", "text": "{\"bullets\": [\"incomplete"}]}, "max_tokens"),
     ({"stop_reason": "end_turn", "usage": {}, "content": [
         {"type": "text", "text": "{\"ok\": 1}"}]}, None),
 ])
@@ -281,6 +285,21 @@ def test_raw_is_none_when_there_is_no_text_block_at_all():
     result = parse_response(PRIMARY_MODEL, {"stop_reason": "end_turn", "usage": {}, "content": []},
                             latency_ms=1, request_id="r")
     assert result.error == "schema" and result.raw is None
+
+
+def test_a_max_tokens_response_is_its_own_error_not_schema():
+    """Fix 41 (journal 112, the incident): the first live annotator calls on the corrected
+    schema returned HTTP 200 with `stop_reason=max_tokens`, output truncated at the caller's own
+    `max_output_tokens` -- the client used to record that as a `schema` failure because the
+    truncated JSON never parses. It is now its own failure shape, and `error_detail` names the
+    output token count so a truncation is diagnosable from the row without a live repro."""
+    payload = {"stop_reason": "max_tokens", "usage": {"output_tokens": 1024}, "content": [
+        {"type": "text", "text": '{"bullets": ["no news for the'}]}
+    result = parse_response(PRIMARY_MODEL, payload, latency_ms=15_000, request_id="req_trunc")
+    assert result.error == "max_tokens" and result.output is None
+    assert result.error_detail == "stopped at 1024 output tokens"
+    assert result.usage.output_tokens == 1024
+    assert result.raw is None      # the raw text is only carried on a `schema` failure
 
 
 # --- structure ------------------------------------------------------------------------------------

@@ -14,8 +14,8 @@ from harness.db.models import ReportRun
 from harness.report.tables import Table
 from harness.report.weekly import persist_report
 from harness.research.annotate import (BACKOFF_LONG, BACKOFF_SHORT, BACKOFF_STRIKES, BULLET_MAX,
-                                       BULLETS_MAX, EFFORT, PROMPT_HASH, annotate_pass,
-                                       pending_report)
+                                       BULLETS_MAX, EFFORT, MAX_OUTPUT_TOKENS, PROMPT_HASH,
+                                       annotate_pass, pending_report)
 from harness.research.client import CallResult
 from harness.research.spend import Usage
 
@@ -304,11 +304,25 @@ def test_the_prompt_never_carries_a_row_key_over_60_characters(db_session, keyed
     assert key[:60] not in client.calls[0]["user"]
 
 
-def test_the_call_is_high_effort_and_toolless(db_session, keyed_settings, seeded_reports):
+def test_the_call_is_medium_effort_and_toolless(db_session, keyed_settings, seeded_reports):
     client = _client(["412 orders t1[0,1]."])
     annotate_pass(db_session, NOW, keyed_settings, client=client)
-    assert client.calls[0]["effort"] == EFFORT == "high"
+    assert client.calls[0]["effort"] == EFFORT == "medium"
     assert client.calls[0]["tools"] == ()
+
+
+def test_the_call_s_output_ceiling_is_the_reserved_worst_case(db_session, keyed_settings,
+                                                               seeded_reports):
+    """Fix 41 (journal 112): the first live calls on the corrected schema returned HTTP 200 with
+    `stop_reason=max_tokens` at the old 1,024-token ceiling. `MAX_OUTPUT_TOKENS` is now
+    `WORST_CASE_OUTPUT_TOKENS` (4,096) -- the reserved worst case the client already enforces as
+    a ceiling, not a smaller number the reservation has to catch up to."""
+    from harness.research.spend import WORST_CASE_OUTPUT_TOKENS
+
+    client = _client(["412 orders t1[0,1]."])
+    annotate_pass(db_session, NOW, keyed_settings, client=client)
+    assert client.calls[0]["max_output_tokens"] == MAX_OUTPUT_TOKENS == WORST_CASE_OUTPUT_TOKENS \
+        == 4096
 
 
 # --- backoff (fix 36) ---------------------------------------------------------------------------

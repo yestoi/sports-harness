@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import Rfq
-from harness.venues.kalshi.rfq import (CHANNEL, DROP_NONFOOTBALL, DROP_UNKNOWN_DELETE, ENV,
+from harness.venues.kalshi.rfq import (CHANNEL, DROP_NOT_ALL_FOOTBALL, DROP_UNKNOWN_DELETE, ENV,
                                        EXCERPT_MAX, IDLE_ERROR_CODES, IDLE_S, RAW_MAX_BYTES,
                                        VENUE, handle_frame, idle_reason, parse_rfq_frame,
                                        store_rfq)
@@ -135,22 +135,22 @@ def test_a_repeated_create_does_not_duplicate(db_session, env_settings):
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
 
 
-# --- fix 38: the boundary filter (journal 110) -----------------------------------------------
+# --- fix 38 / fix 40: the boundary filter (journal 110, journal 112) --------------------------
 
 def test_a_non_football_rfq_created_is_counted_and_not_stored(db_session):
-    """The incident's own shape: a combo with no football leg at all is counted and dropped
-    before `store_rfq` -- never written, never quoted."""
+    """The incident's own shape: a combo touching no football market at all is counted and
+    dropped before `store_rfq` -- never written, never quoted."""
     dropped = []
     row = handle_frame(db_session, _non_football_created(), NOW, on_dropped=dropped.append)
     assert row is None
-    assert dropped == [DROP_NONFOOTBALL]
+    assert dropped == [DROP_NOT_ALL_FOOTBALL]
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 0
     assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 0
 
 
-def test_a_football_leg_combo_is_stored_and_quoted_as_before(db_session, env_settings):
+def test_an_all_football_two_game_combo_is_stored_and_quoted_as_before(db_session, env_settings):
     """The ordinary case, unaffected: every leg is `KXNFLGAME`, so the filter passes it straight
-    through to storage and the quote path exactly as before fix 38."""
+    through to storage and the quote path exactly as before fix 38/40."""
     dropped = []
     row = handle_frame(db_session, _created(), NOW, on_dropped=dropped.append)
     assert row is not None and dropped == []
@@ -158,13 +158,14 @@ def test_a_football_leg_combo_is_stored_and_quoted_as_before(db_session, env_set
     assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
 
 
-def test_a_combo_with_one_football_leg_and_one_non_football_leg_still_stores(db_session,
-                                                                             env_settings):
-    """Fix 38's filter is 'at least one leg', not 'every leg' -- the stronger, all-legs test is
-    `rfq_quote.py`'s own `no_fair` decline (fix 35), downstream and unaffected by this fix. A
-    mixed combo still reaches storage here, top-level ticker deliberately non-football too, so
-    only the leg-level check can be what lets it through; `compute_quote` is what later declines
-    it, not the boundary filter."""
+def test_a_combo_with_one_football_leg_and_one_non_football_leg_is_dropped(db_session,
+                                                                           env_settings):
+    """Fix 40 (journal 112): the incident's own shape -- fix 38's original filter was 'at least
+    one leg', which let a mixed combo like this one reach storage and then `no_fair` decline it
+    downstream (`rfq_quote.py`'s `_is_football`), 1,837 `no_fair` declines and zero quotable in
+    six minutes. The boundary now requires every leg to be football, so a mixed combo -- top
+    -level ticker deliberately non-football too, so only the leg-level check is what could have
+    let it through -- is counted and dropped before it is ever written."""
     frame = _created(rfq_id="rfq_mixed", legs=[
         {"event_ticker": "KXNFLGAME-26SEP14DALNYG",
          "market_ticker": "KXNFLGAME-26SEP14DALNYG-DAL", "side": "yes",
@@ -175,8 +176,10 @@ def test_a_combo_with_one_football_leg_and_one_non_football_leg_still_stores(db_
     frame["msg"]["event_ticker"] = "KXMVECROSSCATEGORY-SHARD1"
     dropped = []
     row = handle_frame(db_session, frame, NOW, on_dropped=dropped.append)
-    assert row is not None and dropped == []
-    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
+    assert row is None
+    assert dropped == [DROP_NOT_ALL_FOOTBALL]
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 0
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 0
 
 
 def test_a_non_football_single_market_rfq_is_dropped(db_session):
@@ -188,8 +191,25 @@ def test_a_non_football_single_market_rfq_is_dropped(db_session):
     frame["msg"]["market_ticker"] = "KXMVECROSSCATEGORY-SHARD1-A"
     dropped = []
     row = handle_frame(db_session, frame, NOW, on_dropped=dropped.append)
-    assert row is None and dropped == [DROP_NONFOOTBALL]
+    assert row is None and dropped == [DROP_NOT_ALL_FOOTBALL]
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 0
+
+
+def test_a_single_leg_football_frame_is_stored_and_declines_single_leg(db_session, env_settings):
+    """A single-market RFQ on a football ticker clears the (now all-legs) boundary filter same as
+    always -- it has no legs to fail the 'every leg' check, and its own top-level ticker is
+    football -- and is stored; the counterfactual quote then declines it downstream for an
+    unrelated reason (`rfq_quote.py`'s `single_leg`, fewer than two resolved legs), not by the
+    boundary filter, which never looks at leg count at all."""
+    frame = _created(rfq_id="rfq_single_football", legs=[])
+    dropped = []
+    row = handle_frame(db_session, frame, NOW, on_dropped=dropped.append)
+    assert row is not None and dropped == []
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
+    quote = db_session.execute(text(
+        "select declined_reason from rfq_quotes where rfq_id = :id"),
+        {"id": "rfq_single_football"}).first()
+    assert quote is not None and quote.declined_reason == "single_leg"
 
 
 # --- fix 35: cheap quotes -------------------------------------------------------------------
@@ -572,10 +592,10 @@ def test_the_burst_summary_logs_once_after_silence_not_once_per_frame(db_session
 
 
 def test_the_burst_summary_carries_the_four_new_counters(db_session, env_settings, caplog):
-    """Fix 38 (journal 110): `frames_seen`, `frames_stored`, `dropped_nonfootball` and
-    `dropped_unknown_delete` ride the same one-per-burst summary the replayed/quoted/
-    skipped_rate trio already used -- one stored frame, one non-football drop and one
-    unknown-delete drop, each counted once."""
+    """Fix 38 (journal 110), counter renamed by fix 40 (journal 112): `frames_seen`,
+    `frames_stored`, `dropped_not_all_football` and `dropped_unknown_delete` ride the same
+    one-per-burst summary the replayed/quoted/skipped_rate trio already used -- one stored
+    frame, one not-all-football drop and one unknown-delete drop, each counted once."""
     from harness.venues.kalshi import rfq_socket as rfq_socket_mod
 
     stored_frame = _created(rfq_id="rfq_summary_stored", legs=[])
@@ -590,7 +610,7 @@ def test_the_burst_summary_carries_the_four_new_counters(db_session, env_setting
     with caplog.at_level(logging.INFO, logger=RFQ_SOCKET_LOGGER):
         listener.run_once(ws)      # the ack
         listener.run_once(ws)      # stored
-        listener.run_once(ws)      # dropped: nonfootball
+        listener.run_once(ws)      # dropped: not all football
         listener.run_once(ws)      # dropped: unknown delete
         clock[0] += rfq_socket_mod.RFQ_BURST_SILENCE_S + 1
         ws._frames.append({"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 99}})
@@ -601,10 +621,10 @@ def test_the_burst_summary_carries_the_four_new_counters(db_session, env_setting
     message = summaries[0].message
     assert "frames_seen=3" in message
     assert "frames_stored=1" in message
-    assert "dropped_nonfootball=1" in message
+    assert "dropped_not_all_football=1" in message
     assert "dropped_unknown_delete=1" in message
     assert (listener.frames_seen, listener.frames_stored) == (3, 1)
-    assert (listener.dropped_nonfootball, listener.dropped_unknown_delete) == (1, 1)
+    assert (listener.dropped_not_all_football, listener.dropped_unknown_delete) == (1, 1)
 
 
 def test_the_burst_summary_also_flushes_periodically_during_continuous_flow(db_session,
@@ -717,8 +737,11 @@ def test_the_raw_cap_holds_for_every_oversized_shape(db_session, env_settings):
     is not a cap, so each shape is asserted against the byte budget."""
     shapes = {
         "padding": lambda m: m.update({"padding": "x" * 20_000}),
+        # Fix 40: every leg's `event_ticker` has to resolve to a football series or the boundary
+        # filter drops the frame before any of this trimming ever runs -- the attacker-sized
+        # string still has to carry the `KXNFLGAME-` prefix `_series_ticker` reads.
         "many_legs": lambda m: m.update({"mve_selected_legs": [
-            {"event_ticker": "E" * 200, "market_ticker": "M" * 200, "side": "yes",
+            {"event_ticker": "KXNFLGAME-" + "E" * 190, "market_ticker": "M" * 200, "side": "yes",
              "yes_settlement_value_dollars": "1"} for _ in range(400)]}),
         "one_huge_string": lambda m: m.update({"market_ticker": "z" * 60_000}),
         "huge_number": lambda m: m.update({"created_ts": 10 ** 9000}),

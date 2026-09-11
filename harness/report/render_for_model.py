@@ -20,6 +20,11 @@ timeout locked the worker into a heavy query stream forever (journal 109). `rend
 is the other constructor: it builds the same `ModelView` from `report_cells`, the rows
 `harness/report/weekly.py::persist_report` already wrote when the report was generated, so the
 annotator renders what was published rather than recomputing it.
+
+Fix 41 (journal 112). Both constructors cap each table at `ROWS_MAX` rows in the rendered
+block, because the prompt this builds has to fit inside the reservation
+`harness/research/spend.py`'s `WORST_CASE_INPUT_TOKENS` prices, and a heavy week's table is
+otherwise unbounded.
 """
 import logging
 import re
@@ -34,6 +39,17 @@ log = logging.getLogger(__name__)
 #: Addendum §1.5: at most five bullets, each at most 240 characters.
 BULLETS_MAX = 5
 BULLET_MAX = 240
+
+#: Fix 41 (journal 112): a heavy week's table used to grow the prompt -- and the reservation
+#: (`WORST_CASE_INPUT_TOKENS`, `harness/research/spend.py`) it has to fit inside -- without
+#: bound. Both constructors below keep only the first `ROWS_MAX` rows of each table in the
+#: rendered block, by the same order they would otherwise render in full (`table.rows`'s own
+#: order for `render_for_model`, ascending `row_key` for `render_from_cells`), and append a
+#: `(<n> more rows omitted)` line to that table's block when any were cut. `columns`/`cells` on
+#: the returned `ModelView` keep only the rows actually rendered, so a bullet's `t<k>[<row>,...]`
+#: citation always resolves to a real, shown row -- `check_bullet`'s own contract (ruling B-I4)
+#: never has to know this cap exists.
+ROWS_MAX = 60
 
 #: `Table.columns[0]` for every table key `TABLE_KEYS` names (fix round 1, Critical 1) -- the
 #: row-key column `render_for_model` keeps out of the printed line (F60/B-I5). `report_cells`
@@ -100,7 +116,8 @@ def render_for_model(tables: dict[str, Table]) -> ModelView:
         if table is None:
             continue
         columns[key] = list(table.columns)
-        rendered = [[format_cell(value) for value in row] for row in table.rows]
+        all_rendered = [[format_cell(value) for value in row] for row in table.rows]
+        rendered = all_rendered[:ROWS_MAX]
         cells[key] = rendered
         lines.append(f"== {key} ==")
         lines.append(table.title)
@@ -112,6 +129,9 @@ def render_for_model(tables: dict[str, Table]) -> ModelView:
             # it is the row key, which for several tables is a ticker or a variant name.
             body = " ".join(f"{i}={value}" for i, value in enumerate(row) if i > 0)
             lines.append(f"[{index}] {body}")
+        omitted_rows = len(all_rendered) - len(rendered)
+        if omitted_rows > 0:
+            lines.append(f"({omitted_rows} more rows omitted)")
         if table.note:
             lines.append(f"note: {table.note}")
         lines.append("")
@@ -187,7 +207,8 @@ def render_from_cells(cells: Sequence[Any],
                      "omitting the table rather than risk printing its row key", key)
             omitted += 1
             continue
-        row_keys = sorted(state["rows"])
+        all_row_keys = sorted(state["rows"])
+        row_keys = all_row_keys[:ROWS_MAX]
         other_cols = [c for c in state["cols"] if c != identity_col]
         columns[key] = [identity_col, *other_cols]
         rendered = [[row_key, *(state["rows"][row_key].get(c, PLACEHOLDER) for c in other_cols)]
@@ -203,6 +224,9 @@ def render_from_cells(cells: Sequence[Any],
         for index, row in enumerate(rendered):
             body = " ".join(f"{i}={value}" for i, value in enumerate(row) if i > 0)
             lines.append(f"[{index}] {body}")
+        omitted_rows = len(all_row_keys) - len(row_keys)
+        if omitted_rows > 0:
+            lines.append(f"({omitted_rows} more rows omitted)")
         if meta is not None and meta[2]:
             lines.append(f"note: {meta[2]}")
         lines.append("")

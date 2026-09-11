@@ -1086,16 +1086,26 @@ def wrong_line_rfq(db_session):
 @pytest.fixture
 def non_football_leg_rfq(db_session):
     """Fix 35: one football leg with a `direct` fair, one leg on a series this harness never
-    prices -- `KXMVECROSSCATEGORY-SHARD1-...`, the incident's own shape (journal 109). The leg
-    still resolves in `venue_markets` (a game_id and all), it simply cannot have a fair: the
-    combo must decline `no_fair` from the cheap `venue_markets`-only check alone, without
-    `resolve_legs` ever touching `fair_values` for either leg."""
+    prices -- `KXMVECROSSCATEGORY-SHARD1-...`, the incident's own shape (journal 109).
+
+    Fix 40 (journal 112) tightened `rfq.py`'s own boundary filter (`handle_frame`, upstream of
+    `compute_quote`) to require every leg's own claimed `event_ticker` to name a football
+    series, which this fixture must not trip -- this test is about `rfq_quote.py`'s own
+    DB-resolved check, not the cheap boundary one, so the two have to disagree on purpose. The
+    second leg's claimed `event_ticker` (`KXNFLGAME-NFB`, what the boundary filter reads off the
+    untrusted frame) names a football series and clears fix 40's boundary unchanged; its
+    `venue_markets` row -- what `rfq_quote.py`'s `_is_football` actually resolves through by
+    `market_ticker`, independent of the claimed `event_ticker` -- is on
+    `KXMVECROSSCATEGORY-SHARD1-...` and cannot have a fair. The combo must still decline
+    `no_fair` from the cheap `venue_markets`-only check alone, without `resolve_legs` ever
+    touching `fair_values` for either leg -- exactly the defense-in-depth the boundary filter's
+    own docstring describes: a venue-claimed ticker is never trusted past this point."""
     g1, g2 = _rfq_game(db_session, "NFA"), _rfq_game(db_session, "NFB")
     vm1 = _rfq_market(db_session, ticker="KXNFLGAME-NFA-T1", event_ticker="KXNFLGAME-NFA",
                       series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.60"),
                       created_at=QUOTE_NOW - timedelta(minutes=2))
     vm2 = _rfq_market(db_session, ticker="KXMVECROSSCATEGORY-SHARD1-NFB",
-                      event_ticker="KXMVECROSSCATEGORY-SHARD1",
+                      event_ticker="KXNFLGAME-NFB",
                       series_ticker="KXMVECROSSCATEGORY", game_id=g2.id, fair_p=None,
                       created_at=QUOTE_NOW - timedelta(minutes=2))
     frame = _rfq_frame("RFQ-NON-FOOTBALL", [_rfq_leg(vm1), _rfq_leg(vm2)])

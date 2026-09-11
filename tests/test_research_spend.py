@@ -92,13 +92,18 @@ def test_an_unknown_model_raises_rather_than_costing_nothing():
 def test_the_worst_case_constants_are_the_addendum_s():
     """4,096, not the addendum's opening 2,000: raised in review round 1 (Important 4) to the
     controller's proving-call ceiling, so T10/T15/T18 can pass this same constant as
-    `max_tokens` and the reservation and the request cannot part."""
+    `max_tokens` and the reservation and the request cannot part.
+
+    60,000, not the addendum's opening 30,000 (fix 41, journal 112): the first live annotator
+    calls on the corrected schema measured 46,528 input tokens, past the old 30,000 the
+    reservation was priced against.
+    """
     assert (WORST_CASE_INPUT_TOKENS, WORST_CASE_OUTPUT_TOKENS, WORST_CASE_SEARCHES) == \
-        (30_000, 4_096, 3)
-    # 30,000 in at $5/MTok = $0.15; 4,096 out at $25/MTok = $0.1024; 3 searches = $0.03.
-    assert worst_case_usd(OPUS, 3) == Decimal("0.282400")
-    # 30,000 in at $2/MTok = $0.06; 4,096 out at $10/MTok = $0.04096; 3 searches = $0.03.
-    assert worst_case_usd(SONNET, 3) == Decimal("0.130960")
+        (60_000, 4_096, 3)
+    # 60,000 in at $5/MTok = $0.30; 4,096 out at $25/MTok = $0.1024; 3 searches = $0.03.
+    assert worst_case_usd(OPUS, 3) == Decimal("0.432400")
+    # 60,000 in at $2/MTok = $0.12; 4,096 out at $10/MTok = $0.04096; 3 searches = $0.03.
+    assert worst_case_usd(SONNET, 3) == Decimal("0.190960")
 
 
 # --- the reservation ------------------------------------------------------------------------
@@ -108,10 +113,10 @@ def test_a_reservation_writes_usd_reserved_for_every_model(db_session, env_setti
     rows = {(r.kind, r.model): r for r in db_session.execute(
         text("select kind, model, usd, usd_reserved from research_spend")).all()}
     assert set(rows) == {("veto", OPUS), ("veto", SONNET)}
-    assert rows[("veto", OPUS)].usd_reserved == Decimal("0.2824")
-    assert rows[("veto", SONNET)].usd_reserved == Decimal("0.1310")
+    assert rows[("veto", OPUS)].usd_reserved == Decimal("0.4324")
+    assert rows[("veto", SONNET)].usd_reserved == Decimal("0.1910")
     assert reservation.day == date(2026, 9, 14)
-    assert reservation.per_model == {OPUS: Decimal("0.282400"), SONNET: Decimal("0.130960")}
+    assert reservation.per_model == {OPUS: Decimal("0.432400"), SONNET: Decimal("0.190960")}
 
 
 def test_the_release_swaps_the_reservation_for_the_actual(db_session, env_settings):
@@ -143,16 +148,16 @@ def test_a_failed_call_releases_the_reservation_with_a_zero_usage(db_session, en
 
 
 def test_the_daily_cap_refuses_the_call_that_would_cross_it(db_session, env_settings):
-    settings = _settings(env_settings, daily="0.30")
-    reserve_spend(db_session, NOW, settings, "veto", [OPUS])       # 0.23 <= 0.30
+    settings = _settings(env_settings, daily="0.50")
+    reserve_spend(db_session, NOW, settings, "veto", [OPUS])       # 0.4324 <= 0.50
     with pytest.raises(BudgetRefused) as caught:
-        reserve_spend(db_session, NOW, settings, "veto", [OPUS])   # 0.46 > 0.30
+        reserve_spend(db_session, NOW, settings, "veto", [OPUS])   # 0.8648 > 0.50
     assert caught.value.cap == "daily"
-    assert caught.value.limit == Decimal("0.30")
+    assert caught.value.limit == Decimal("0.50")
 
 
 def test_the_weekly_cap_refuses_independently_of_the_daily_one(db_session, env_settings):
-    settings = _settings(env_settings, daily="25", weekly="0.30")
+    settings = _settings(env_settings, daily="25", weekly="0.50")
     reserve_spend(db_session, NOW, settings, "veto", [OPUS])
     with pytest.raises(BudgetRefused) as caught:
         reserve_spend(db_session, NOW, settings, "veto", [OPUS])
@@ -162,7 +167,7 @@ def test_the_weekly_cap_refuses_independently_of_the_daily_one(db_session, env_s
 def test_the_cap_covers_every_kind_not_just_the_veto(db_session, env_settings):
     """0.3: the caps are totals across the primary, the shadow, the annotator and the parlay
     rationale. An annotator call eats the veto's budget and must."""
-    settings = _settings(env_settings, daily="0.30")
+    settings = _settings(env_settings, daily="0.50")
     reserve_spend(db_session, NOW, settings, "annotate", [OPUS])
     with pytest.raises(BudgetRefused):
         reserve_spend(db_session, NOW, settings, "veto", [OPUS])
@@ -182,20 +187,20 @@ def test_a_refused_reservation_reserves_and_spends_nothing(db_session, env_setti
 
 
 def test_yesterday_s_spend_does_not_count_against_today(db_session, env_settings):
-    settings = _settings(env_settings, daily="0.30", weekly="150")
+    settings = _settings(env_settings, daily="0.50", weekly="150")
     earlier = datetime(2026, 9, 14, 3, 0, tzinfo=timezone.utc)   # 2026-09-13 CT, the day before
     release_spend(db_session, reserve_spend(db_session, earlier, settings, "veto", [OPUS]),
                   {OPUS: Usage(1_000_000, 0, 0, 0, 0)})           # $5.00 on the 13th
     reserve_spend(db_session, NOW, settings, "veto", [OPUS])      # the 14th is still empty
-    assert spend_state(db_session, NOW, settings).day_reserved == Decimal("0.2824")
+    assert spend_state(db_session, NOW, settings).day_reserved == Decimal("0.4324")
 
 
 def test_spend_state_reports_the_day_the_week_and_dormancy(db_session, env_settings):
-    settings = _settings(env_settings, daily="0.30")
+    settings = _settings(env_settings, daily="0.50")
     reserve_spend(db_session, NOW, settings, "veto", [OPUS])
     state = spend_state(db_session, NOW, settings)
-    assert state.day_reserved == Decimal("0.2824") and state.day_usd == Decimal("0")
-    assert state.daily_cap == Decimal("0.30") and state.weekly_cap == Decimal("150")
+    assert state.day_reserved == Decimal("0.4324") and state.day_usd == Decimal("0")
+    assert state.daily_cap == Decimal("0.50") and state.weekly_cap == Decimal("150")
     assert state.dormant is True          # another opus pair would cross the daily cap
     assert spend_state(db_session, NOW, _settings(env_settings)).dormant is False
 
@@ -259,7 +264,7 @@ def test_two_workers_racing_one_slot_produce_exactly_one_reservation(
     threads' read-then-check windows overlap; the advisory lock still serializes them and
     exactly one reservation survives."""
     import harness.research.spend as spend_module
-    settings = _settings(env_settings, daily="0.30")   # one opus reservation (0.2824) fits, two do not
+    settings = _settings(env_settings, daily="0.50")   # one opus reservation (0.4324) fits, two do not
     factory = sessionmaker(bind=db_session.get_bind().engine, expire_on_commit=False)
     db_session.commit()               # make the empty table visible to the other connections
     _prewarm(settings, factory)
@@ -271,7 +276,7 @@ def test_two_workers_racing_one_slot_produce_exactly_one_reservation(
     with factory() as session:
         assert session.execute(text(
             "select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == \
-            Decimal("0.2824")
+            Decimal("0.4324")
 
 
 def test_without_the_lock_two_workers_both_reserve(db_session, env_settings, monkeypatch):
@@ -280,7 +285,7 @@ def test_without_the_lock_two_workers_both_reserve(db_session, env_settings, mon
     check, and the cap is broken -- proving the lock in the previous test is load-bearing, not
     coincidental (review round 1, Important 1)."""
     import harness.research.spend as spend_module
-    settings = _settings(env_settings, daily="0.30")
+    settings = _settings(env_settings, daily="0.50")
     factory = sessionmaker(bind=db_session.get_bind().engine, expire_on_commit=False)
     db_session.commit()
     _prewarm(settings, factory)
@@ -293,4 +298,4 @@ def test_without_the_lock_two_workers_both_reserve(db_session, env_settings, mon
     with factory() as session:
         assert session.execute(text(
             "select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == \
-            Decimal("0.5648")
+            Decimal("0.8648")

@@ -6,11 +6,13 @@ statically. That is the whole of conformance item 5 for this component: not "we 
 quote" but "there is nothing here that could".
 
 **Storage is on arrival, but only for a frame that clears the boundary filter** (fix 38, journal
-110). The venue's `communications` channel is every RFQ create and delete on the exchange, not
-the sporadic combo trickle earlier phases assumed -- 11,000-14,000 frames a minute sustained,
-almost all on combos with no football leg. `handle_frame` counts and drops those, and an
-`rfq_deleted` for an id never stored, before either ever reaches `store_rfq`; see its docstring
-for the exact rule. What follows in this docstring is about the frame that does get stored.
+110; strengthened to require every leg by fix 40, journal 112). The venue's `communications`
+channel is every RFQ create and delete on the exchange, not the sporadic combo trickle earlier
+phases assumed -- 11,000-14,000 frames a minute sustained, almost all on combos touching no
+football market at all, or mixing one football leg with legs on others that this harness can
+never quote. `handle_frame` counts and drops those, and an `rfq_deleted` for an id never stored,
+before either ever reaches `store_rfq`; see its docstring for the exact rule. What follows in
+this docstring is about the frame that does get stored.
 
 **Storage is on arrival** (R:243, F71). Quotes have not been queryable after the fact since
 2026-06-25, so the socket is the only record and the row is written the moment the frame lands.
@@ -109,10 +111,11 @@ class RfqEvent:
     raw: dict
 
 
-#: Fix 38 (journal 110): the two reasons a frame is counted and dropped at the boundary, before
-#: `store_rfq` ever runs. Passed to `handle_frame`'s `on_dropped` callback so a caller counting
-#: them (the listener) never has to duplicate the decision.
-DROP_NONFOOTBALL = "nonfootball"
+#: Fix 38 (journal 110), strengthened by fix 40 (journal 112): the two reasons a frame is
+#: counted and dropped at the boundary, before `store_rfq` ever runs. Passed to `handle_frame`'s
+#: `on_dropped` callback so a caller counting them (the listener) never has to duplicate the
+#: decision.
+DROP_NOT_ALL_FOOTBALL = "not_all_football"
 DROP_UNKNOWN_DELETE = "unknown_delete"
 
 
@@ -126,27 +129,34 @@ def _series_ticker(event_ticker: str | None) -> str:
     return (event_ticker or "").split("-", 1)[0]
 
 
-def _has_football_leg(event: RfqEvent) -> bool:
-    """Fix 38: whether this arrival touches a football market at all -- checked at the boundary,
-    before anything is written. `harness.venues.kalshi.public.FOOTBALL_SERIES` is the one place
-    the six series this harness prices are named, the same membership fix 35's `_is_football`
-    (`harness/venues/kalshi/rfq_quote.py`) gates the counterfactual quote on; this checks it
-    against the ticker string rather than a `venue_markets` row, since there is no session at
-    this point and nothing here may cost a DB round trip per leg.
+def _all_legs_football(event: RfqEvent) -> bool:
+    """Fix 40 (journal 112): whether every market this arrival touches is football -- checked at
+    the boundary, before anything is written. `harness.venues.kalshi.public.FOOTBALL_SERIES` is
+    the one place the six series this harness prices are named, the same membership fix 35's
+    `_is_football` (`harness/venues/kalshi/rfq_quote.py`) gates the counterfactual quote on;
+    this checks it against the ticker string rather than a `venue_markets` row, since there is
+    no session at this point and nothing here may cost a DB round trip per leg.
 
-    Both the RFQ's own top-level `event_ticker` and every leg's count: a single-market RFQ (no
-    `mve_selected_legs`) is not a combo and carries no legs at all, and its top-level ticker is
-    the only market it names, so checking legs alone would drop every single-market arrival
-    regardless of what it is on. A combo's top-level ticker is typically its MVE collection id
-    rather than any priced series (the incident's own `KXMVECROSSCATEGORY-SHARD1-...` shape), so
-    for a combo this check degrades to exactly "at least one leg is football" -- the incident's
-    own rule (journal 110: "when at least one leg's event_ticker belongs to
-    ... FOOTBALL_SERIES"). A combo with even one football leg still passes here and is stored
-    and quoted (or declined `no_fair`, `single_leg`, etc.) downstream exactly as before; only a
-    combo -- or single market -- touching no football series at all is dropped.
+    Fix 38's original rule was "at least one leg is football", on the reasoning that a combo
+    with even one football leg might still be quotable. Journal 112 found that wrong: the
+    venue's cross-category combos mix a football leg with legs on other markets, and
+    `compute_quote`'s own stronger, DB-resolved "every leg is football" gate (`_is_football`,
+    `rfq_quote.py`) declines every one of them `no_fair` -- 1,837 `no_fair` and 163
+    `same_game` in six minutes, zero quotable, out of the mixed combos fix 38 let through. The
+    only population this harness can ever quote is a combo whose every leg is football, so the
+    boundary now matches that exactly rather than storing a population it can only ever decline.
+
+    A single-market RFQ (no `mve_selected_legs`) is not a combo and carries no legs at all, so
+    it is checked against its own top-level `event_ticker`, the only market it names, rather
+    than against an empty leg list (which `all()` would vacuously pass). A combo is checked leg
+    by leg, and its own top-level ticker is not consulted at all: a combo's top-level ticker is
+    typically its MVE collection id rather than any priced series (the incident's own
+    `KXMVECROSSCATEGORY-SHARD1-...` shape), so it says nothing about whether the combo itself is
+    all-football.
     """
-    tickers = [event.event_ticker] + [leg.get("event_ticker") for leg in event.legs]
-    return any(_series_ticker(t) in FOOTBALL_SERIES for t in tickers if t)
+    if not event.legs:
+        return _series_ticker(event.event_ticker) in FOOTBALL_SERIES
+    return all(_series_ticker(leg.get("event_ticker")) in FOOTBALL_SERIES for leg in event.legs)
 
 
 def _dec(value, quantum: Decimal, ceiling: Decimal) -> Decimal | None:
@@ -416,14 +426,17 @@ def handle_frame(session: Session, msg, now: datetime,
     already written above, and never out of this function to take the caller's socket loop down
     with it. The row is returned either way.
 
-    **Fix 38 (journal 110): the boundary filter.** The venue's `communications` channel is every
-    RFQ create and delete on the exchange -- 11,000-14,000 frames a minute sustained, three
-    quarters `rfq_deleted`, almost all on combos with no football leg. Neither kind reaches
-    `store_rfq` unless it clears its own cheap, DB-free check first: an `rfq_created` only when
-    `_has_football_leg` finds at least one leg (or the RFQ's own top-level ticker, for a
-    single-market RFQ) on a series `store_rfq`'s caller actually prices; an `rfq_deleted` only
-    when its id is already a row here (`session.get`, the same primary-key probe `store_rfq`
-    itself makes). Either drop is counted through `on_dropped` (`DROP_NONFOOTBALL` /
+    **Fix 38 (journal 110), strengthened by fix 40 (journal 112): the boundary filter.** The
+    venue's `communications` channel is every RFQ create and delete on the exchange --
+    11,000-14,000 frames a minute sustained, three quarters `rfq_deleted`, almost all on combos
+    touching no football market at all. Neither kind reaches `store_rfq` unless it clears its
+    own cheap, DB-free check first: an `rfq_created` only when `_all_legs_football` finds every
+    leg (or the RFQ's own top-level ticker, for a single-market RFQ) on a series `store_rfq`'s
+    caller actually prices -- fix 40 tightened this from fix 38's original "at least one leg",
+    which still stored every cross-category combo mixing one football leg with others, all of
+    them declined `no_fair` downstream and none of them quotable; an `rfq_deleted` only when its
+    id is already a row here (`session.get`, the same primary-key probe `store_rfq` itself
+    makes). Either drop is counted through `on_dropped` (`DROP_NOT_ALL_FOOTBALL` /
     `DROP_UNKNOWN_DELETE`) and never logged per frame -- at flood volume a log line per drop is
     the same cost this filter exists to remove. The raw cap and NUL stripping from T13 still
     apply to whatever does get stored; nothing about parsing or trimming changes.
@@ -448,9 +461,9 @@ def handle_frame(session: Session, msg, now: datetime,
     if event is None:
         return None
     if event.kind == "rfq_created":
-        if not _has_football_leg(event):
+        if not _all_legs_football(event):
             if on_dropped is not None:
-                on_dropped(DROP_NONFOOTBALL)
+                on_dropped(DROP_NOT_ALL_FOOTBALL)
             return None
     else:   # rfq_deleted
         if session.get(Rfq, event.rfq_id) is None:
