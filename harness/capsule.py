@@ -3,7 +3,8 @@
 This is never an audit scan. Every statement below is bounded by an id list or a time window,
 every one names the index it rides or says in a comment that its table is small enough to walk,
 every one carries `limit :cap`, and the session runs under a 60 s `statement_timeout`. A file
-that reaches its cap is written, marked `truncated` in the manifest with the last id taken, and
+that reaches its cap is written, marked `truncated` in the manifest with the last integer id it
+took where the table has one (`venue_trades` keys on a string `trade_id` and carries none), and
 makes the command exit 2, so the controller narrows the window instead of receiving a slice
 that silently stops.
 
@@ -289,8 +290,11 @@ def period_slices(session: Session, tickers: list[str], lower: datetime, upper: 
                                   "ix_fair_game_type_created "
                                   "(game_id, market_type, created_at)", cap))
     # `orders` is a small table (8,326 non-replay rows at 13:10 CT on 2026-09-11) with no index
-    # on `placed_at`: this is a bounded walk, stated as such rather than naming ix_orders_status,
-    # which is (status, replay) and cannot serve a placed_at range (review I-a2).
+    # a bare `placed_at` range can ride: this is a bounded walk, stated as such rather than
+    # naming an index that cannot serve it (review I-a2). The two near misses, for a reader
+    # checking: ix_orders_status is (status, replay), and ix_orders_key_placed
+    # (`harness/db/schema.py:250`) is (variant_id, venue_market_id, side, placed_at) -- with no
+    # equality on its three leading columns, its placed_at range is a filter, not a range scan.
     orders = _slice(session, "orders", _WINDOW_ORDERS, {"lower": lower, "upper": upper},
                     "no index on orders.placed_at: bounded walk, small table", cap)
     out.append(orders)
