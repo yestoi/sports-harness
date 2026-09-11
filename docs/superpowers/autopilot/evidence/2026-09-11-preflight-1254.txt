@@ -1,0 +1,58 @@
+
+== clock
+2026-09-11 12:54:22 CDT
+2026-09-11T17:54:22Z (mac utc)
+
+== git
+main
+dirty files:        1
+20c8ef8 docs: correct autopilot resume dependencies and phase 6 scheduling
+7d67635 docs: integrate the 2026-09-11 phase 6 roadmap (U8); journal 113 decision; state
+6eed2d8 docs: journal 112 addendum (fix 39 verified, max_tokens truncation; fix 38 filter too loose); roadmap fixes 40-41; state
+
+== mac
+ sleep                1 (sleep prevented by powerd, sharingd, caffeinate)
+45343 caffeinate -i -t 300
+
+== test db
+harness-pg-test Up 45 hours
+pytest processes: 0
+
+== secrets
+-rw------- anthropic_api_key
+-rw------- backup_age_key
+-rw------- dashboard_token
+-rw------- kalshi_demo_key_id
+-rw------- kalshi_demo_private_key.pem
+-rw------- kalshi_key_id
+-rw------- kalshi_private_key.pem
+-rw------- odds_api_key
+.env.nas present
+
+== paper posture
+paper posture intact
+
+== tunnel
+60522 ssh -N -L 8180:127.0.0.1:8180 trey@192.168.12.228
+localhost:8180 -> 200
+
+== nas
+2026-09-11T17:54:30Z (nas utc)
+sports-harness-app-backup-1 Up 2 days
+sports-harness-app-exec-1 Up 6 hours (healthy)
+sports-harness-app-research-1 Up 6 hours
+sports-harness-app-run-1 Up 6 hours
+sports-harness-app-serve-1 Up 6 hours (healthy)
+sports-harness-app-ws-1 Up 6 hours
+sports-harness-postgres-1 Up 3 days (healthy)
+{"status":"ok","last_run_at":"2026-09-11T17:52:12.110771+00:00","last_status":"running","seconds_since":138,"credits_remaining":4967059,"credits_budget":5000000,"credits_low":false,"venue_limits":null,"build":"7c3d555"}
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.4T  69% /volume1
+mem available MB: 2840
+
+== deployed 7c3d555 vs main 20c8ef8
+
+== game window (in_progress | kickoff -4h..+15m | nfl kickoff 60-100m) and tick ages
+0 | 0 | 0
+last real tick | 11674 | running | 146
+last heartbeat | 11674 | running | 146
+ws last event age s | 0
