@@ -768,11 +768,15 @@ class Recorder:
         if budget.remaining_s() < MIN_TICK_REMAINING_S:
             ctx["weather"] = {"skipped": "tick budget"}
             return
-        if self._nws is None:
-            self._nws = NwsClient(self.s)
         source_budget = _Budget(int(min(self.s.nws_budget_s, budget.remaining_s())),
                                 self.monotonic)
         try:
+            # Built inside the guard, not before it (Minor 10): a failure constructing the
+            # client is exactly the kind of thing "nothing here can fail a tick" above promises
+            # to confine to a warning on this source, not let escape into the tick's outer
+            # handler and skip the rest of the fetch phase.
+            if self._nws is None:
+                self._nws = NwsClient(self.s)
             counts = run_weather_source(session, run.id, self._nws, self.s, now,
                                         source_budget, ctx)
             ctx["weather"] = counts

@@ -5,9 +5,8 @@ takes no `headers`, and `:29` records that ESPN 403s on custom User-Agents so ht
 deliberately kept there. NWS *requires* a User-Agent. Adding a headers argument would widen
 exactly the client that decision D5 and `test_http_client_has_no_write_methods` rest on, so this
 module owns its client instead -- the precedent and the reasoning are
-`harness/venues/kalshi/http.py:16-30`, and the same `_ReadOnlyClient` shape applies: a bare
-`httpx.Client` carries `post`, `put`, `delete` and `patch`, and a read-only feed has no use for a
-working write primitive.
+`harness/venues/kalshi/http.py:16-30`. `NwsClient` itself exposes only `get`, so nothing outside
+this module can reach a write verb even though the `httpx.Client` it wraps carries them.
 
 **The User-Agent is fixed by R:212 and is a user gate.** `sports-harness/1 (self-hosted research
 harness)`, verbatim, from `Settings.nws_user_agent`. If the service ever answers 403 on it or

@@ -618,3 +618,16 @@ def test_the_phase5_tables_and_view_are_present_after_both_paths(two_databases):
         insp = inspect(engine)
         assert expected <= set(insp.get_table_names())
         assert "veto_h9" in set(insp.get_view_names())
+
+
+def test_the_veto_h9_view_definition_agrees_between_schema_and_migration():
+    """Minor 7: `_VETO_H9_VIEW` (`harness/db/schema.py`) and the `create or replace view` block
+    inside `migrations/versions/0004_phase5.py` are the same SQL, kept as two copies because
+    `create_schema` and `upgrade_head` are two independent paths to the same database (Task 15's
+    own module docstring above). `test_the_phase5_tables_and_view_are_present_after_both_paths`
+    only asserts the view exists on both paths, not that a hand-edit to one copy did not drift
+    from the other -- this is the comparison that catches that."""
+    from harness.db.schema import _VETO_H9_VIEW
+
+    migration = (ROOT / "migrations" / "versions" / "0004_phase5.py").read_text()
+    assert _VETO_H9_VIEW.strip() in migration
