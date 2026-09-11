@@ -93,6 +93,9 @@ _PENDING = text("""
     order by r.generated_at desc
 """)
 
+#: Bound: one `report_runs.id`. Index: `report_cells`' own primary key
+#: `(report_run_id, table_key, row_key, col_key)` both selects the rows and supplies the order,
+#: so this reads a contiguous range of one index and sorts nothing.
 _CELLS = text("""
     select table_key, row_key, col_key, text
     from report_cells
@@ -117,6 +120,9 @@ def _attempts_key(run_id: int) -> str:
 
 
 def _backed_off(session: Session, run_id: int, now: datetime) -> bool:
+    """Whether this report's `next_attempt_at` is still in the future. `now` is the sweep's own
+    clock (`ResearchWorker._clock`, UTC-aware), and `_record_failure` writes the deadline from
+    the same clock, so the two agree on what a Unix timestamp means."""
     state = session.get(JobState, _backoff_key(run_id))
     return state is not None and state.value is not None and state.value > now.timestamp()
 

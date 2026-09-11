@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import text
 
 import harness.report.tables as tables_module
+import harness.research.annotate as annotate_module
 from harness.db.models import ReportRun
 from harness.report.tables import Table
 from harness.report.weekly import persist_report
@@ -205,6 +206,11 @@ def test_annotate_pass_never_calls_weekly_tables(db_session, keyed_settings, see
     counts = annotate_pass(db_session, NOW, keyed_settings,
                            client=_client(["412 orders on the first row t1[0,1]."]))
     assert counts["annotated"] == 1
+    # The monkeypatch above only catches a call made *through* the module. The stronger claim is
+    # that the name is not bound in the pass's own namespace at all, so a future `from
+    # harness.report.tables import weekly_tables` re-added here fails this test rather than
+    # slipping past a patch that would no longer see it.
+    assert not hasattr(annotate_module, "weekly_tables")
 
 
 def test_a_run_with_no_cells_is_skipped_and_left_pending(db_session, keyed_settings):
