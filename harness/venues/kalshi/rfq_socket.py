@@ -5,10 +5,10 @@ error_msg: return True` -- any error frame on the socket, from any channel. It i
 last error frame seen and a True there drops the socket, resets every sequence number and the gap
 state, and re-enters a backoff that doubles to 60 s. A `communications` subscribe refused with
 code 9, 10 or 11 would therefore not idle a listener; it would kill the orderbook recorder and
-keep killing it. `_resubscribe` compounds it: it names `self._sids` wholesale in every
-five-minute `update_subscription`, so the communications sid would ride a frame carrying
-`market_tickers` on a channel documented to ignore market specification. One more socket costs
-one socket and removes both.
+keep killing it. `_resubscribe` compounds it: every five-minute plan sends one
+`update_subscription` per sid in `self._sids` (fix 43), so the communications sid would get its
+own frame carrying `market_tickers` on a channel documented to ignore market specification. One
+more socket costs one socket and removes both.
 
 **This module holds no REST transport.** No HTTP client of any kind, no signed-client wrapper --
 asserted statically by `tests/test_rfq_refusal.py`. It owns the subscribe frame, so it can write

@@ -956,7 +956,7 @@ def _recorder_with_sids(sids: list[int], current: list[str]) -> WsRecorder:
     return recorder
 
 
-def test_resubscribe_sends_one_frame_per_sid_per_action(monkeypatch):
+def test_resubscribe_sends_one_frame_per_sid_per_action():
     """Fix 43: the venue answers a multi-sid `update_subscription` with `Exactly one
     subscription ID is required` (code 12), `should_reconnect` then reads the error frame and
     the recorder drops the tape every plan. One frame per sid per action keeps every frame
@@ -1016,8 +1016,11 @@ def test_resubscribe_never_sends_a_multi_sid_frame():
 
     frames = _subscription_frames(ws)
     assert frames  # the diff is non-empty, so this is a real assertion
-    assert all(f["params"]["sids"] == [sid] for f in frames for sid in f["params"]["sids"])
-    assert max(len(f["params"]["sids"]) for f in frames) == 1
+    # Every frame names exactly one sid, and each of the four sids gets its own frame per
+    # action -- eight frames, never one frame carrying the four-element list the venue rejects.
+    assert all(len(f["params"]["sids"]) == 1 for f in frames)
+    assert sorted({f["params"]["sids"][0] for f in frames}) == [1, 2, 3, 4]
+    assert len(frames) == 8
     assert len({f["id"] for f in frames}) == len(frames)
 
 
