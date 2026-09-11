@@ -15,14 +15,15 @@ declines `disagreement`.
 
 **Fix 35: `no_fair` is decided before any fair lookup, wherever it can be.** The 03:15-03:45 CT
 incident (journal 109) was 4,902 frames in 30 minutes, almost all combos on non-football series
-(`KXMVECROSSCATEGORY-SHARD1-...`), every leg of every one running the `fair_values` lateral in
-`_LEG` to find nothing -- 16,264 rows scanned to keep 236, 14 s cold. A leg whose `event_ticker`
-does not start with a football prefix this harness prices (`KXNFL`/`KXNCAAF`), or whose
-`market_ticker` has no `venue_markets` row at all, can never carry a `direct` fair: `_venue_only`
-answers that from `venue_markets` alone (a unique-indexed lookup on `ticker`, no
-`fair_values` touched), and `compute_quote` declines `no_fair` -- and `single_leg` and
-`same_game`, which need only the same cheap resolution -- before `resolve_legs` (the expensive
-lateral) ever runs. Only a combo whose every leg is a priced football market reaches it.
+(`KXMVECROSSCATEGORY-SHARD1-...`), every leg of every one running the `fair_values` lookup in
+`_LEG` to find nothing -- 16,264 rows scanned to keep 236, 14 s cold. A leg whose `series_ticker`
+is not one `harness.venues.kalshi.public.FOOTBALL_SERIES` names, or whose `market_ticker` has no
+`venue_markets` row at all, can never carry a `direct` fair: `_venue_only` answers that from
+`venue_markets` alone (a unique-indexed lookup on `ticker`, no `fair_values` touched), and
+`compute_quote` declines `no_fair` -- and `single_leg` and `same_game`, which need only the same
+cheap resolution -- before `resolve_legs` (the expensive lookup) ever runs. Only a combo whose
+every leg is a priced football market reaches it, and `_venue_only` already read every column
+that lookup needs, so `resolve_legs` reads `venue_markets` a second time for none of them.
 
 **Both fee branches are stored** (F72, ruling A-I2). F72 subtracts a maker fee only when the
 combo is *not* NFL-only-independent, and that test has two readings -- all component games
@@ -49,6 +50,7 @@ from sqlalchemy.orm import Session
 
 from harness.db.models import RfqQuote
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
+from harness.venues.kalshi.public import FOOTBALL_SERIES
 
 log = logging.getLogger(__name__)
 
@@ -81,12 +83,6 @@ FAIR_MAX_AGE = timedelta(minutes=10)
 #: `FOOTBALL_SERIES`, which also carries the three `KXNCAAF*` series -- F72 says NFL, and a
 #: college leg makes the combo not independent.
 _NFL_PREFIX = "KXNFL"
-#: Fix 35: the family test for whether a leg can have a fair *at all* -- both football families
-#: this harness prices, not just F72's NFL-only one above. `KXNFL` alone would decline every
-#: `KXNCAAFGAME` leg `no_fair` before it ever got a chance to resolve one, which is wrong: the
-#: incident's combos were on neither family (`KXMVECROSSCATEGORY-SHARD1-...`), and this is the
-#: cheap gate that catches those without a `fair_values` read.
-_FOOTBALL_PREFIXES = ("KXNFL", "KXNCAAF")
 
 
 @dataclass(frozen=True)
@@ -101,63 +97,87 @@ class LegFair:
 
 @dataclass(frozen=True)
 class LegVenue:
-    """A leg's identity alone -- `venue_markets`, never `fair_values`. What `single_leg`,
-    `same_game` and the fix-35 `no_fair` precheck need, and all any of them may cost."""
+    """A leg's full `venue_markets` row -- everything `single_leg`, `same_game`, the football
+    precheck, *and* (for a leg that clears all three) the fair-value lookup need. Fetched once
+    per leg, in `_venue_only` (fix 35 round 1, review Minor: this used to be two separate
+    `venue_markets` reads per football leg -- one here, one inside the old `_LEG` lateral join --
+    collapsed into the one below by carrying the extra four columns through instead of reading
+    them twice)."""
     market_ticker: str
     event_ticker: str
+    series_ticker: str
     game_id: int | None
+    market_type: str | None
+    side_team_id: int | None
+    side: str | None
+    threshold: Decimal | None
 
 
-#: Fix 35: the cheap half of what `_LEG` below reads -- `venue_markets` alone, keyed on its
-#: unique `ticker`, no `fair_values` touched. `_venue_only` runs this for every leg before
-#: `compute_quote` decides whether the combo is even eligible for `resolve_legs`.
-_LEG_VENUE = text("select vm.game_id, vm.event_ticker from venue_markets vm where vm.ticker = "
-                  ":ticker")
-
-#: Fix 35: served by `ix_fair_leg_lookup` (`harness/db/schema.py`'s `_CONCURRENT_INDEX_DDL`) --
-#: `(game_id, market_type, outcome_team_id, outcome_side, threshold, created_at desc) where
-#: fair_source = 'direct'` is exactly this lateral's five equality predicates (in that order)
-#: plus its sort, under its own partial predicate. Before the fix this ran for every leg of
-#: every combo, including the incident's non-football ones, which had no chance of a hit and
-#: still walked `ix_fair_game_type_created`'s wider (game_id, market_type, created_at) index down
-#: to the newest row and read every candidate in the range to apply the rest of the predicates
-#: by hand rather than through the index. `compute_quote` (fix 35) now calls this only for a
-#: combo every one of whose legs is already known, cheaply, to be a priced football market.
-_LEG = text("""
-    select vm.game_id, vm.event_ticker, vm.market_type, vm.side_team_id, vm.side,
-           f.fair_p, f.disagreement, f.created_at
+#: Fix 35: the one `venue_markets` read per leg -- keyed on its unique `ticker`, no
+#: `fair_values` touched. `_venue_only` runs this for every leg before `compute_quote` decides
+#: whether the combo is even eligible for `resolve_legs`; the four columns past `game_id` and
+#: `event_ticker` are read here only so `resolve_legs` never has to read this table again.
+_LEG_VENUE = text("""
+    select vm.game_id, vm.event_ticker, vm.series_ticker, vm.market_type, vm.side_team_id,
+           vm.side, vm.threshold
     from venue_markets vm
-    left join lateral (
-        select fv.fair_p, fv.disagreement, fv.created_at
-        from fair_values fv
-        where fv.game_id = vm.game_id and fv.market_type = vm.market_type
-          and fv.outcome_team_id is not distinct from vm.side_team_id
-          and fv.outcome_side is not distinct from vm.side
-          -- Review C1: `threshold` is part of the shape's identity everywhere else in the
-          -- harness (the fair_values unique key, venue_markets.match_key, the settlement/report
-          -- joins). Without it, a game with two spread strikes or two total lines returns
-          -- whichever line was priced most recently, not the leg's own line.
-          and fv.threshold is not distinct from vm.threshold
-          and fv.fair_source = 'direct' and fv.created_at <= :as_of
-        order by fv.created_at desc limit 1
-    ) f on true
     where vm.ticker = :ticker
+""")
+
+#: Fix 35: the fair-value lookup, served by `ix_fair_leg_lookup` (`harness/db/schema.py`'s
+#: `_CONCURRENT_INDEX_DDL`) -- `(game_id, market_type, coalesce(outcome_team_id, -1),
+#: coalesce(outcome_side, ''), coalesce(threshold, -9999), created_at desc) where fair_source =
+#: 'direct'` is exactly this query's five equality predicates (in that order) plus its sort,
+#: under its own partial predicate. Before the fix this ran for every leg of every combo,
+#: including the incident's non-football ones, which had no chance of a hit and still walked
+#: `ix_fair_game_type_created`'s wider (game_id, market_type, created_at) index down to the
+#: newest row and read every candidate in the range to apply the rest of the predicates row by
+#: row. `compute_quote` (fix 35) now calls this only for a combo every one of whose legs is
+#: already known, cheaply, to be a priced football market.
+#:
+#: Round 1 (review Important 1): the three nullable columns are compared with `coalesce(...) =
+#: coalesce(...)` rather than `is not distinct from` -- the NULL-safe form the database cannot
+#: turn into an index condition, which is why the first cut of this index was never chosen (measured:
+#: the planner kept the old plan above unchanged). The sentinels have to match the index's own
+#: exactly, or the rewrite changes which rows compare equal; `-1`/`''`/`-9999` are chosen to be
+#: values no real `outcome_team_id`/`outcome_side`/`threshold` takes.
+#:
+#: Round 1 (review Minor: the doubled `venue_markets` read): this no longer joins
+#: `venue_markets` at all -- `_venue_only` already read `game_id`, `market_type`,
+#: `side_team_id`, `side` and `threshold` in its one `_LEG_VENUE` probe, and `resolve_legs`
+#: passes them straight through as bind parameters instead of re-reading the row they came from.
+_LEG = text("""
+    select fv.fair_p, fv.disagreement, fv.created_at
+    from fair_values fv
+    where fv.game_id = :game_id and fv.market_type = :market_type
+      and coalesce(fv.outcome_team_id, -1) = coalesce(:side_team_id, -1)
+      and coalesce(fv.outcome_side, '') = coalesce(:side, '')
+      -- Review C1: `threshold` is part of the shape's identity everywhere else in the harness
+      -- (the fair_values unique key, venue_markets.match_key, the settlement/report joins).
+      -- Without it, a game with two spread strikes or two total lines returns whichever line
+      -- was priced most recently, not the leg's own line.
+      and coalesce(fv.threshold, -9999) = coalesce(:threshold, -9999)
+      and fv.fair_source = 'direct' and fv.created_at <= :as_of
+    order by fv.created_at desc limit 1
 """)
 
 
 def _venue_only(session: Session, legs: list[dict]) -> list[LegVenue]:
-    """Fix 35: each leg's game and event, from `venue_markets` alone. Cheap enough to run on
-    every arrival regardless of what the combo turns out to be: one unique-indexed lookup per
-    leg, never `fair_values`."""
+    """Fix 35: each leg's full `venue_markets` row. Cheap enough to run on every arrival
+    regardless of what the combo turns out to be: one unique-indexed lookup per leg, never
+    `fair_values` -- and, for a combo that goes on to `resolve_legs`, the only `venue_markets`
+    lookup that leg ever gets (round 1, Minor)."""
     out: list[LegVenue] = []
     for leg in legs:
         ticker = leg.get("market_ticker") or ""
         row = session.execute(_LEG_VENUE, {"ticker": ticker}).first()
         if row is None:
-            out.append(LegVenue(ticker, str(leg.get("event_ticker") or ""), None))
+            out.append(LegVenue(ticker, str(leg.get("event_ticker") or ""), "", None, None,
+                                None, None, None))
         else:
             out.append(LegVenue(ticker, row.event_ticker or str(leg.get("event_ticker") or ""),
-                                row.game_id))
+                                row.series_ticker or "", row.game_id, row.market_type,
+                                row.side_team_id, row.side, row.threshold))
     return out
 
 
@@ -165,27 +185,40 @@ def _is_football(leg: LegVenue) -> bool:
     """Fix 35: whether this leg could possibly have a `direct` fair -- resolved in
     `venue_markets` *and* on a series this harness prices. Neither half is optional: an
     unmatched ticker has no game to price against, and a matched one on, say,
-    `KXMVECROSSCATEGORY-SHARD1-...` (the incident's combos) is never going to find one either."""
-    return leg.game_id is not None and (leg.event_ticker or "").startswith(_FOOTBALL_PREFIXES)
+    `KXMVECROSSCATEGORY-SHARD1-...` (the incident's combos) is never going to find one either.
+
+    Round 1 (review Minor: a second source of truth for "priced"): exact membership in
+    `harness.venues.kalshi.public.FOOTBALL_SERIES`, the one place the six series this harness
+    prices are named, rather than a prefix match on `event_ticker` that happened to cover the
+    same six today and would silently mis-decline (or mis-admit) a seventh series added there
+    with a different prefix.
+    """
+    return leg.game_id is not None and leg.series_ticker in FOOTBALL_SERIES
 
 
-def resolve_legs(session: Session, legs: list[dict], as_of: datetime) -> list[LegFair]:
-    """Each leg's game and its newest `direct` fair value as of the arrival.
+def resolve_legs(session: Session, venue_legs: list[LegVenue], as_of: datetime) -> list[LegFair]:
+    """Each already-`_venue_only`-resolved leg's newest `direct` fair value as of the arrival.
 
     Fix 35: `compute_quote` calls this only once the cheap `_venue_only` resolution has already
     cleared `single_leg`, `same_game` and the "not a priced football market" `no_fair` precheck,
-    so every leg this reaches is one that could actually resolve a fair."""
+    so every leg this reaches is one that could actually resolve a fair -- and every leg this
+    reaches already carries everything `_LEG` needs, so this never reads `venue_markets` again
+    (round 1, Minor)."""
     out: list[LegFair] = []
-    for leg in legs:
-        ticker = leg.get("market_ticker") or ""
-        row = session.execute(_LEG, {"ticker": ticker, "as_of": as_of}).first()
-        if row is None:
-            out.append(LegFair(ticker, str(leg.get("event_ticker") or ""), None, None, None,
-                               True))
+    for leg in venue_legs:
+        if leg.game_id is None:
+            out.append(LegFair(leg.market_ticker, leg.event_ticker, None, None, None, True))
             continue
-        stale = row.created_at is None or (as_of - row.created_at) > FAIR_MAX_AGE
-        out.append(LegFair(ticker, row.event_ticker or str(leg.get("event_ticker") or ""),
-                           row.game_id, row.fair_p, row.disagreement, stale))
+        row = session.execute(_LEG, {
+            "game_id": leg.game_id, "market_type": leg.market_type,
+            "side_team_id": leg.side_team_id, "side": leg.side, "threshold": leg.threshold,
+            "as_of": as_of,
+        }).first()
+        stale = (row is None or row.created_at is None
+                or (as_of - row.created_at) > FAIR_MAX_AGE)
+        out.append(LegFair(leg.market_ticker, leg.event_ticker, leg.game_id,
+                           row.fair_p if row is not None else None,
+                           row.disagreement if row is not None else None, stale))
     return out
 
 
@@ -216,8 +249,8 @@ def compute_quote(session: Session, settings, rfq, now: datetime) -> RfqQuote:
     """One stored quote (or decline) for one arrival. Never sends anything.
 
     Fix 35: `single_leg`, `same_game` and "no leg here could ever have a fair" are decided from
-    `_venue_only`'s cheap `venue_markets`-only resolution, before `resolve_legs` -- the lateral
-    join into `fair_values` -- runs at all. Only a combo that clears all three reaches it.
+    `_venue_only`'s cheap `venue_markets`-only resolution, before `resolve_legs` -- the
+    `fair_values` lookup -- runs at all. Only a combo that clears all three reaches it.
     """
     margin = Decimal(str(settings.rfq_margin_per_leg))
     raw_legs = rfq.legs or []
@@ -245,7 +278,7 @@ def compute_quote(session: Session, settings, rfq, now: datetime) -> RfqQuote:
         session.add(quote)
         return quote
 
-    legs = resolve_legs(session, raw_legs, now)
+    legs = resolve_legs(session, venue_legs, now)
     if any(leg.fair_p is None or leg.stale for leg in legs):
         # A leg that passed the cheap football precheck but still has no current `direct` fair
         # (stale, or genuinely unpriced -- e.g. a bye-week or not-yet-primed game) declines here.

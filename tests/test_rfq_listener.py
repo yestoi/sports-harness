@@ -1,5 +1,6 @@
 """The RFQ listener: frame parsing, storage on arrival, idling, and the second socket."""
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -123,16 +124,68 @@ def test_a_replayed_rfq_created_for_an_already_quoted_id_stores_and_recomputes_n
     assert calls == [1]
 
 
+def test_the_replay_log_line_is_debug_not_info(db_session, env_settings, caplog):
+    """Review I3: the replay line fires at burst volume (roughly 490 per reconnect in the
+    incident); it must not render at production's default INFO level."""
+    frame = _created(rfq_id="rfq_debug_check", legs=[])
+    handle_frame(db_session, frame, NOW)
+    with caplog.at_level(logging.INFO, logger="harness.venues.kalshi.rfq"):
+        handle_frame(db_session, frame, NOW + timedelta(minutes=1))
+    assert not any("already quoted" in r.message for r in caplog.records)
+    with caplog.at_level(logging.DEBUG, logger="harness.venues.kalshi.rfq"):
+        handle_frame(db_session, frame, NOW + timedelta(minutes=2))
+    debug_lines = [r for r in caplog.records if "already quoted" in r.message]
+    assert len(debug_lines) == 1 and debug_lines[0].levelno == logging.DEBUG
+
+
+def test_the_replay_log_line_sanitizes_the_venue_id(db_session, env_settings, caplog):
+    """Review I3: `row.id` is the venue's own `rfq_id`, never escaped before this render -- a
+    control character in it must not reach the log verbatim."""
+    hostile_id = "rfq\x1b[31mHOSTILE"
+    frame = _created(rfq_id=hostile_id, legs=[])
+    handle_frame(db_session, frame, NOW)
+    with caplog.at_level(logging.DEBUG, logger="harness.venues.kalshi.rfq"):
+        handle_frame(db_session, frame, NOW + timedelta(minutes=1))
+    debug_lines = [r.message for r in caplog.records if "already quoted" in r.message]
+    assert len(debug_lines) == 1
+    assert "\x1b" not in debug_lines[0]
+
+
 def test_allow_quote_false_stores_the_arrival_and_never_quotes(db_session, env_settings):
-    """Item 4: the reconnect replay cap (`RFQ_REPLAY_MAX`,
-    `harness/venues/kalshi/rfq_socket.py`) skips the quote decision entirely through
-    `allow_quote=False` -- the frame is stored as an arrival like any other, even for a rfq the
-    listener has never seen before."""
+    """Item 4 (round 1: the quote rate limit, `harness/venues/kalshi/rfq_socket.py`): `allow_quote`
+    is a callable, not a bool -- called only at the point a quote would actually be attempted,
+    and a `False` return skips the quote decision entirely. The frame is stored as an arrival
+    like any other, even for a rfq the listener has never seen before."""
     frame = _created(rfq_id="rfq_over_cap", legs=[])
-    row = handle_frame(db_session, frame, NOW, allow_quote=False)
+    row = handle_frame(db_session, frame, NOW, allow_quote=lambda: False)
     assert row is not None
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
     assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 0
+
+
+def test_allow_quote_is_never_called_for_a_dedupe_hit(db_session, env_settings):
+    """C1's exact fix: `allow_quote` must not be able to spend the rate budget on a frame that
+    was never going to call `compute_quote` anyway."""
+    frame = _created(rfq_id="rfq_dedupe_gate", legs=[])
+    handle_frame(db_session, frame, NOW)
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
+
+    def _boom():
+        raise AssertionError("allow_quote was called for an already-quoted rfq")
+
+    row = handle_frame(db_session, frame, NOW + timedelta(minutes=1), allow_quote=_boom)
+    assert row is not None
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
+
+
+def test_allow_quote_is_never_called_for_an_rfq_deleted_frame(db_session, env_settings):
+    """C1's exact fix, the other half: a delete never reaches the quote decision at all, so it
+    must never reach `allow_quote` either."""
+    def _boom():
+        raise AssertionError("allow_quote was called for an rfq_deleted frame")
+
+    row = handle_frame(db_session, _deleted("rfq_delete_gate"), NOW, allow_quote=_boom)
+    assert row is not None and row.status == "deleted"
 
 
 def test_the_raw_message_is_stored_capped_with_a_flag(db_session, env_settings):
@@ -226,13 +279,18 @@ class FakeWs:
         pass
 
 
-def _listener(db_session, env_settings, ws=None):
+def _listener(db_session, env_settings, ws=None, monotonic=None):
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     # `sign` is the seam: `env_settings` keeps the container defaults for the two Kalshi key
     # paths, which do not exist on the Mac, so a real `sign_request` would raise
     # `FileNotFoundError` before the ws factory was ever reached.
+    # `monotonic`, when given, is fix 35 round 1's seam for the quote rate limit's sliding
+    # window -- a test can slide it without a real sleep. Omitted, `RfqListener` uses the real
+    # `time.monotonic`.
+    kwargs = {} if monotonic is None else {"monotonic": monotonic}
     return RfqListener(env_settings, factory, ws_factory=lambda *a, **k: ws,
-                       clock=lambda: NOW, sleep=lambda *_: None, sign=lambda *_a, **_k: {})
+                       clock=lambda: NOW, sleep=lambda *_: None, sign=lambda *_a, **_k: {},
+                       **kwargs)
 
 
 def test_the_subscribe_frame_names_only_the_communications_channel(db_session, env_settings):
@@ -276,24 +334,119 @@ def test_the_listener_counts_a_replayed_arrival_through_the_socket(db_session, e
     assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
 
 
-def test_the_replay_cap_stores_every_arrival_and_quotes_at_most_the_cap(db_session, env_settings,
-                                                                        monkeypatch):
-    """Item 4: `RFQ_REPLAY_MAX` bounds how many `rfq_created` frames after one `subscribe()` may
-    reach the quote decision at all -- every frame past the cap is still stored (H5's denominator
-    never loses an arrival to it), it is just never quoted."""
+#: The rate-limit and burst-summary tests below feed everything through one listener rather than
+#: mixing a direct `handle_frame(db_session, ...)` call with `listener.run_once`: `run_once`
+#: opens its own session per frame (`self._factory()`, a separate connection from `db_session`'s)
+#: and commits it, so a row `db_session` inserted but never committed would not exist yet from
+#: that second connection's point of view -- the two would race for the same primary key instead
+#: of one building on the other's already-quoted state.
+RFQ_SOCKET_LOGGER = "harness.venues.kalshi.rfq_socket"
+
+
+def test_the_rate_limit_never_spends_its_budget_on_a_replay_burst(db_session, env_settings,
+                                                                   monkeypatch):
+    """Review Critical 1: the exact scenario that defeated the first cut of item 4. The venue
+    replays the whole open RFQ set on every subscribe; if the rate limit counted those replayed
+    frames the way the old frame-count cap did, a reconnect's replay of a set the listener had
+    *already* quoted would spend the whole budget on frames doing no `fair_values` work at all
+    and silently starve a genuinely new RFQ arriving right after it on the same connection.
+
+    Cap 3, frames `[ack, old, old, old, new]` where `old` is already quoted before the
+    connection starts: both arrivals store, and `new` still gets quoted -- the three replays of
+    `old` never touch the budget at all."""
     from harness.venues.kalshi import rfq_socket as rfq_socket_mod
 
-    monkeypatch.setattr(rfq_socket_mod, "RFQ_REPLAY_MAX", 3)
-    n = 6
+    monkeypatch.setattr(rfq_socket_mod, "RFQ_QUOTE_RATE_MAX", 3)
+    old_frame = _created(rfq_id="rfq_rate_old", legs=[])
+    handle_frame(db_session, old_frame, NOW)
+    # Committed, not left pending: `listener.run_once` reads and writes through its own session
+    # (`self._factory()`, a separate connection from `db_session`'s), which cannot see a row
+    # `db_session` has only flushed and not committed -- it would insert a colliding primary key
+    # instead of finding `old` already quoted.
+    db_session.commit()
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
+
+    new_frame = _created(rfq_id="rfq_rate_new", legs=[])
     frames = ([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}]
-              + [_created(rfq_id=f"rfq_replay_cap_{i}", legs=[]) for i in range(n)])
+             + [old_frame, old_frame, old_frame, new_frame])
     ws = FakeWs(frames)
     listener = _listener(db_session, env_settings, ws)
     listener.subscribe(ws)
-    for _ in range(1 + n):
+    for _ in range(1 + 4):
         listener.run_once(ws)
-    assert db_session.execute(text("select count(*) from rfqs")).scalar() == n
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 2
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 2
+    assert listener.replayed == 3
+    assert listener.quotes_skipped_rate == 0
+
+
+def test_the_rate_limit_engages_then_releases_once_the_window_slides(db_session, env_settings,
+                                                                      monkeypatch, caplog):
+    """Cap 3 with four brand-new ids inside one second: three quote, the fourth is turned away
+    and counted in `quotes_skipped_rate`, and the engagement logs exactly one WARNING (not one
+    per turned-away frame). Advancing the injected clock past `RFQ_QUOTE_RATE_WINDOW_S` and
+    sending a fifth new id lets it quote again, and logs exactly one INFO release."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    monkeypatch.setattr(rfq_socket_mod, "RFQ_QUOTE_RATE_MAX", 3)
+    clock = [1_000.0]
+    frames = ([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}]
+             + [_created(rfq_id=f"rfq_rate_{i}", legs=[]) for i in range(4)])
+    ws = FakeWs(frames)
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    with caplog.at_level(logging.WARNING, logger=RFQ_SOCKET_LOGGER):
+        for _ in range(1 + 4):
+            listener.run_once(ws)
     assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 3
+    assert listener.quotes_skipped_rate == 1
+    engaged = [r for r in caplog.records
+              if r.name == RFQ_SOCKET_LOGGER and r.levelno == logging.WARNING]
+    assert len(engaged) == 1 and "rate limit engaged" in engaged[0].message
+
+    caplog.clear()
+    clock[0] += rfq_socket_mod.RFQ_QUOTE_RATE_WINDOW_S + 1
+    ws._frames.append(_created(rfq_id="rfq_rate_4", legs=[]))
+    with caplog.at_level(logging.INFO, logger=RFQ_SOCKET_LOGGER):
+        listener.run_once(ws)
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 4
+    assert listener.quotes_skipped_rate == 1
+    released = [r for r in caplog.records
+               if r.name == RFQ_SOCKET_LOGGER and r.levelno == logging.INFO
+               and "rate limit released" in r.message]
+    assert len(released) == 1
+
+
+def test_the_burst_summary_logs_once_after_silence_not_once_per_frame(db_session, env_settings,
+                                                                       caplog):
+    """Review I3: `replayed=<n> quoted=<n> skipped_rate=<n>` logs once, `RFQ_BURST_SILENCE_S`
+    after the last frame processed -- not once per replayed frame, and not before the burst is
+    actually over."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    old_frame = _created(rfq_id="rfq_burst_old", legs=[])
+    new_frame = _created(rfq_id="rfq_burst_new", legs=[])
+    clock = [5_000.0]
+    frames = ([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}]
+             + [old_frame, old_frame, new_frame])
+    ws = FakeWs(frames)
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    with caplog.at_level(logging.INFO, logger=RFQ_SOCKET_LOGGER):
+        listener.run_once(ws)      # the ack
+        listener.run_once(ws)      # old, quoted for the first time
+        listener.run_once(ws)      # old again -- the replay
+        listener.run_once(ws)      # new, quoted
+        assert not any("replayed=" in r.message for r in caplog.records
+                       if r.name == RFQ_SOCKET_LOGGER), (
+            "the summary must not log before the burst's silence window has passed")
+        clock[0] += rfq_socket_mod.RFQ_BURST_SILENCE_S + 1
+        ws._frames.append({"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 99}})
+        listener.run_once(ws)      # any next frame triggers the pending flush
+    summaries = [r for r in caplog.records
+                if r.name == RFQ_SOCKET_LOGGER and "replayed=" in r.message]
+    assert len(summaries) == 1
+    assert "replayed=1 quoted=2 skipped_rate=0" in summaries[0].message
 
 
 def test_a_quote_event_is_counted_and_dropped(db_session, env_settings):

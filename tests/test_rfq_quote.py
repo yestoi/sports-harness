@@ -12,7 +12,7 @@ and 0.50; `same_game_rfq` two legs whose `venue_markets.game_id` is the same;
 `one_leg_rfq` a single-leg `mve_selected_legs`; `big_rfq` a two-game combo whose
 `target_cost_dollars` is above `rfq_collateral_cap_usd`.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -211,3 +211,61 @@ def test_no_module_here_can_send_anything():
     body = (Path(__file__).resolve().parents[1] / "harness" / "venues" / "kalshi"
             / "rfq_quote.py").read_text()
     assert ".send(" not in body and "POST" not in body.upper()
+
+
+# --- fix 35 round 1 (review Important 1): the index must actually be chosen ------------------
+
+def _index_names(node) -> set[str]:
+    """Every `Index Name` anywhere in an `explain (format json)` plan tree."""
+    names: set[str] = set()
+    if isinstance(node, list):
+        for item in node:
+            names |= _index_names(item)
+    elif isinstance(node, dict):
+        if "Index Name" in node:
+            names.add(node["Index Name"])
+        if "Plan" in node:
+            names |= _index_names(node["Plan"])
+        if "Plans" in node:
+            names |= _index_names(node["Plans"])
+    return names
+
+
+def test_ix_fair_leg_lookup_is_chosen_for_the_leg_query(db_session, env_settings):
+    """The reviewer measured the first cut of this index unused: `_LEG`'s `is not distinct from`
+    predicates are not indexable, so the planner walked `ix_fair_game_type_created` and filtered
+    every one of ~300 same-(game_id, market_type) candidates by hand to find the one matching
+    row. The `coalesce(...) = coalesce(...)` rewrite must fix that, not just leave the index
+    present and still unused -- so this seeds the same shape (many rows sharing (game_id,
+    market_type), one matching the queried leg) and reads the actual plan.
+
+    `enable_seqscan` is off for the query so a sequential scan cannot stand in for either index
+    winning on its own merits; the row count is what makes `ix_fair_leg_lookup` the cheaper of
+    the two indexes rather than merely the only usable one."""
+    from harness.db.models import FairValue
+    from harness.venues.kalshi.rfq_quote import _LEG
+
+    game_id = 900_001
+    base = NOW - timedelta(hours=1)
+    for i in range(300):
+        db_session.add(FairValue(
+            run_id=900_000 + i, game_id=game_id, market_type="moneyline",
+            outcome_team_id=i % 50, outcome_side="home" if i % 2 == 0 else "away",
+            threshold=None, fair_p=Decimal("0.5000"), fair_source="direct",
+            disagreement=Decimal("0.0010"), created_at=base + timedelta(seconds=i)))
+    # The leg's own row: the one combo the query below actually asks for, newest of all.
+    db_session.add(FairValue(
+        run_id=999_999, game_id=game_id, market_type="moneyline", outcome_team_id=7,
+        outcome_side="home", threshold=None, fair_p=Decimal("0.6100"), fair_source="direct",
+        disagreement=Decimal("0.0010"), created_at=base + timedelta(seconds=301)))
+    db_session.flush()
+    db_session.execute(text("analyze fair_values"))
+    db_session.execute(text("set local enable_seqscan = off"))
+
+    compiled = _LEG.bindparams(
+        game_id=game_id, market_type="moneyline", side_team_id=7, side="home", threshold=None,
+        as_of=NOW,
+    ).compile(dialect=db_session.get_bind().dialect, compile_kwargs={"literal_binds": True})
+    plan = db_session.execute(text(f"explain (format json) {compiled}")).scalar()
+    names = _index_names(plan)
+    assert "ix_fair_leg_lookup" in names, plan

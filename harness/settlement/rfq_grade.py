@@ -57,11 +57,17 @@ _UNGRADED = text("""
 """)
 
 # Fix 35: served by `ix_fair_leg_lookup` (`harness/db/schema.py`'s `_CONCURRENT_INDEX_DDL`) --
-# `(game_id, market_type, outcome_team_id, outcome_side, threshold, created_at desc) where
-# fair_source = 'direct'` covers this lateral's five equality predicates and its sort, the same
-# index `_LEG` in `harness/venues/kalshi/rfq_quote.py` reads. The `created_at <= g.kickoff_utc`
-# bound below is a range on the index's trailing (descending) column, so the scan still starts
-# from the newest row and stops at the first one at or before kickoff.
+# `(game_id, market_type, coalesce(outcome_team_id, -1), coalesce(outcome_side, ''),
+# coalesce(threshold, -9999), created_at desc) where fair_source = 'direct'` covers this
+# lateral's five equality predicates and its sort, the same index `_LEG` in
+# `harness/venues/kalshi/rfq_quote.py` reads. The `created_at <= g.kickoff_utc` bound below is a
+# range on the index's trailing (descending) column, so the scan still starts from the newest row
+# and stops at the first one at or before kickoff.
+#
+# Round 1 (review Important 1): the three nullable columns are compared with `coalesce(...) =
+# coalesce(...)`, matching the index's own expressions exactly -- `is not distinct from` is
+# NULL-safe equality Postgres cannot turn into an index condition, which is why the first cut of
+# this index went unused by both this lateral and `_LEG`.
 _CLOSING_LEG = text("""
     select f.fair_p, f.created_at, g.status, g.kickoff_utc, g.home_score, g.away_score
     from venue_markets vm
@@ -69,11 +75,11 @@ _CLOSING_LEG = text("""
     left join lateral (
         select fv.fair_p, fv.created_at from fair_values fv
         where fv.game_id = vm.game_id and fv.market_type = vm.market_type
-          and fv.outcome_team_id is not distinct from vm.side_team_id
-          and fv.outcome_side is not distinct from vm.side
+          and coalesce(fv.outcome_team_id, -1) = coalesce(vm.side_team_id, -1)
+          and coalesce(fv.outcome_side, '') = coalesce(vm.side, '')
           -- Review C1: threshold is part of the shape's identity; without it a game with two
           -- spread strikes or two total lines is graded off whichever line was priced last.
-          and fv.threshold is not distinct from vm.threshold
+          and coalesce(fv.threshold, -9999) = coalesce(vm.threshold, -9999)
           and fv.fair_source = 'direct'
           -- Review I3: the close is the last fair at or before kickoff. Without this bound the
           -- lateral join returns the newest `direct` fair full stop, which for a finished NFL

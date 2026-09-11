@@ -118,7 +118,7 @@ journal, never act on it. The market tape is on a different socket and is unaffe
 that with `select max(ts) from orderbook_events`. To turn the listener off:
 `RFQ_LISTENER_ENABLED=0` in `deploy/nas.env`, then `docker compose restart app-ws`.
 
-### Fix 35: cheap quotes and the reconnect replay cap
+### Fix 35: cheap quotes and the quote rate limit
 
 The 03:15-03:45 CT incident (journal 109): the venue replays the whole open RFQ set on every
 subscribe, and reconnected ten times in thirty minutes — 4,902 frames, almost all combos on
@@ -128,23 +128,36 @@ find; the executor's own loop went from single-digit seconds to 235-336 s under 
 `pg_dump`, and eleven quote computations hit the 30 s statement timeout. The controller set
 `RFQ_LISTENER_ENABLED=0` at 03:44 CT (see "To turn the listener off" above).
 
-Two changes came out of it:
+Three changes came out of it (round 1 corrected the first cut of the second and third, below):
 
 - **Cheap declines.** `single_leg`, `same_game`, and `no_fair` for a leg whose `event_ticker`
   does not start with `KXNFL`/`KXNCAAF` (or whose `market_ticker` is not in `venue_markets` at
   all) are now decided from `venue_markets` alone — `compute_quote` never touches `fair_values`
   for a combo that cannot possibly have a fair. Only a combo whose every leg is a priced football
-  market reaches the fair-value lookup, and that lookup now runs against `ix_fair_leg_lookup`
-  (fix 35's migration `0005_rfq_lookup`), a covering index on the lateral's own five-column shape
-  instead of the wider `ix_fair_game_type_created`.
-- **The reconnect replay is bounded.** `RFQ_REPLAY_MAX = 500`
-  (`harness/venues/kalshi/rfq_socket.py`): at most the first 500 `rfq_created` frames after one
-  `subscribe()` reach the quote decision at all. Every frame past that is still stored as an
-  arrival — H5's denominator never loses one to this — it is simply never quoted, until the next
-  `subscribe()` resets the budget. Combined with the existing "already quoted" skip (an
-  `rfq_quotes` row already present for the id, which is now also logged and counted in the
-  listener's own `replayed` as a distinct case from the cap), one connection's replay burst can
-  no longer run an unbounded number of fair-value lookups back to back.
+  market reaches the fair-value lookup, and that lookup runs against `ix_fair_leg_lookup` (fix
+  35's migration `0005_rfq_lookup`), a covering index on the lateral's own five-column shape
+  instead of the wider `ix_fair_game_type_created`. The index's three nullable columns are
+  `coalesce(...)`-wrapped and the lateral compares them the same way (round 1: the original
+  `is not distinct from` comparison is NULL-safe equality Postgres cannot use an index for at
+  all, so the first cut of the index was never actually chosen by the planner).
+- **The quote rate is limited, not the connection's frame count.** `RFQ_QUOTE_RATE_MAX = 500`
+  calls to `compute_quote` in any trailing `RFQ_QUOTE_RATE_WINDOW_S` (60 s), a sliding window
+  (`harness/venues/kalshi/rfq_socket.py`). A dedupe hit (an `rfq_quotes` row already present for
+  the id) or an `rfq_deleted` frame never counts against it — only a frame the listener is about
+  to actually compute a quote for does — so a reconnect's replay of an already-quoted set costs
+  nothing, and a long-lived connection keeps quoting new RFQs indefinitely rather than exhausting
+  a lifetime budget the way a per-connection counter would (round 1: the first cut counted every
+  `rfq_created` frame, dedupe hits included, which meant a reconnect's replay of a set the
+  listener had *already* quoted spent the whole budget on frames doing no work and silently
+  starved every genuinely new RFQ that arrived afterward on that connection). A frame the rate
+  turns away is still stored as an arrival — H5's denominator never loses one to this — and
+  counted in `quotes_skipped_rate`; the listener logs one WARNING when the limit first engages
+  and one INFO when it releases, never per frame.
+- **Replayed/quoted/skipped counts are one summary per burst, not one log line per frame.** The
+  "already quoted" skip used to log an INFO line per replayed frame at burst volume (roughly 490
+  per reconnect in the incident); it is now DEBUG, and the listener instead logs one INFO summary
+  (`replayed=<n> quoted=<n> skipped_rate=<n>`) once `RFQ_BURST_SILENCE_S` (5 s) has passed since
+  the last frame it processed.
 
 Re-enabling the listener after this fix is the same switch as turning it off, in reverse:
 `RFQ_LISTENER_ENABLED=1` in `deploy/nas.env`, then `docker compose restart app-ws`.

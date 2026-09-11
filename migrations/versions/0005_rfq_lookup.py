@@ -2,7 +2,7 @@
 
 Revision ID: 0005_rfq_lookup
 Revises: 0004_phase5
-Create Date: 2026-09-11
+Create Date: 2026-09-11 (round 1 correction 2026-09-11: review Important 1)
 
 The 03:15-03:45 CT incident (journal 109): 4,902 frames in 30 minutes, almost all combos on
 non-football series the harness never prices, every leg of every one running the RFQ quote's
@@ -13,7 +13,17 @@ other half, an index that covers the lateral's own five-column shape (and `_CLOS
 `harness/settlement/rfq_grade.py`, the settlement-time read of the same shape) so the scan that
 does still run is an index scan, not a walk down the wider `ix_fair_game_type_created (game_id,
 market_type, created_at)` with every candidate row's `outcome_team_id`/`outcome_side`/`threshold`
-rechecked by Postgres rather than the index.
+rechecked row by row.
+
+Round 1 fixed this index's own unusability: it originally indexed `outcome_team_id`,
+`outcome_side` and `threshold` bare, but both laterals compare all three with `is not distinct
+from` -- NULL-safe equality Postgres cannot turn into an index condition -- so the planner never
+chose it (this revision's own review measured the unchanged incident plan on a scratch database).
+`coalesce(outcome_team_id, -1)`, `coalesce(outcome_side, '')` and `coalesce(threshold, -9999)`
+here, matched by the identical `coalesce(...) = coalesce(...)` rewrite of both laterals' three
+predicates, make the comparison a plain equality the planner can use -- the same shape
+`uq_fair_value_row` already keys these three columns by, with `threshold`'s sentinel moved to
+-9999 (that unique index's 0 would conflate a real 0.0 spread/total line with "no threshold").
 
 `create_schema`'s `_CONCURRENT_INDEX_DDL` (`harness/db/schema.py`) carries the identical
 statement; the two must land together or `tests/test_alembic.py`'s catalogue diff fails. Not
@@ -23,6 +33,11 @@ migration takes the statement out of the transaction the same way that helper do
 `op.get_context().autocommit_block()` -- and issues the identical raw SQL directly. CONCURRENTLY
 because `fair_values` takes a write on every pricing tick and `init-db` runs on every deploy; the
 connection is already AUTOCOMMIT, which is what CONCURRENTLY requires.
+
+This revision has not shipped (the RFQ listener is off on the NAS pending this fix, per the
+brief), so round 1 corrects it in place rather than adding a new revision on top of it --
+`0001_baseline.py`'s and every later revision's own rule against editing a *deployed* revision
+does not bind a revision nothing has ever run against.
 
 `downgrade()` is `pass` (roadmap invariant 5, the same as every revision since 0002): additive
 only, and rolling back is a code rollback (`git checkout <sha> && make deploy-nas-app`), never a
@@ -42,8 +57,9 @@ depends_on: str | Sequence[str] | None = None
 #: compares the two Python string values (not the raw file text either copy happens to be
 #: line-wrapped as) so a hand-edit to one copy cannot drift from the other unnoticed.
 _INDEX_DDL = ("create index concurrently if not exists ix_fair_leg_lookup "
-              "on fair_values (game_id, market_type, outcome_team_id, outcome_side, threshold, "
-              "created_at desc) where fair_source = 'direct'")
+              "on fair_values (game_id, market_type, coalesce(outcome_team_id, -1), "
+              "coalesce(outcome_side, ''), coalesce(threshold, -9999), created_at desc) "
+              "where fair_source = 'direct'")
 
 
 def upgrade() -> None:

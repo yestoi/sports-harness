@@ -348,7 +348,7 @@ def store_rfq(session: Session, event: RfqEvent, now: datetime) -> Rfq:
 
 def handle_frame(session: Session, msg, now: datetime,
                  on_replay: Callable[[], None] | None = None,
-                 allow_quote: bool = True) -> Rfq | None:
+                 allow_quote: Callable[[], bool] | None = None) -> Rfq | None:
     """One frame. Returns the stored row, or None when the frame was not an RFQ event.
 
     The counterfactual quote is computed **on arrival**, beside the row, because that is the only
@@ -366,31 +366,41 @@ def handle_frame(session: Session, msg, now: datetime,
     incident), so a replayed `rfq_created` for an id `rfq_quotes` already has a row for is by far
     the common case on a reconnect. `uq_rfq_quote_rfq` makes "already quoted" one indexed probe;
     when it hits, the arrival is stored exactly as any other frame is and nothing else happens --
-    logged, and, when the caller is counting (the listener's `replayed`), passed to `on_replay`.
+    logged (DEBUG, review I3: this fires at burst volume and the id is unsanitized venue text),
+    and, when the caller is counting (the listener's `replayed`), passed to `on_replay`.
 
-    **Fix 35, item 4: the reconnect replay burst is bounded.** `allow_quote=False` (the
-    listener's `RFQ_REPLAY_MAX` budget, `harness/venues/kalshi/rfq_socket.py`) skips the quote
-    decision entirely, replay or not -- the frame is still stored as an arrival, never quoted.
+    **Fix 35 round 1 (review C1): the reconnect replay burst is rate-limited, not budgeted.**
+    `allow_quote`, when given, is called **only** at the point a quote is actually about to be
+    attempted -- after `store_rfq` and after the "already quoted" check has already found no row,
+    so neither a dedupe hit nor an `rfq_deleted` frame ever calls it or spends whatever budget it
+    is guarding (the listener's sliding `RFQ_QUOTE_RATE_MAX` per `RFQ_QUOTE_RATE_WINDOW_S`,
+    `harness/venues/kalshi/rfq_socket.py`). A `False` return skips the quote decision for this
+    frame; the frame is still stored as an arrival, never quoted.
     """
     event = parse_rfq_frame(msg)
     if event is None:
         return None
     row = store_rfq(session, event, now)
-    if event.kind == "rfq_created" and allow_quote:
+    if event.kind == "rfq_created":
         existing = session.execute(
             text("select 1 from rfq_quotes where rfq_id = :id"), {"id": row.id}).first()
         if existing is None:
-            try:
-                with session.begin_nested():
-                    from harness.config.settings import get_settings
-                    from harness.venues.kalshi.rfq_quote import compute_quote
+            if allow_quote is None or allow_quote():
+                try:
+                    with session.begin_nested():
+                        from harness.config.settings import get_settings
+                        from harness.venues.kalshi.rfq_quote import compute_quote
 
-                    compute_quote(session, get_settings(), row, now)
-            except Exception:  # noqa: BLE001 - the arrival must survive a quote failure
-                log.exception("computing the counterfactual quote for rfq %s failed", row.id)
+                        compute_quote(session, get_settings(), row, now)
+                except Exception:  # noqa: BLE001 - the arrival must survive a quote failure
+                    # Review I3: the same unsanitized-render gap the replay line below had, on a
+                    # line that fires far less often (only on a failure) but is worth the same
+                    # fix -- `row.id` is the venue's own `rfq_id`, never escaped before this.
+                    log.exception("computing the counterfactual quote for rfq %s failed",
+                                  sanitize_venue_text(row.id, _ID_MAX))
         else:
-            log.info("rfq listener: rfq %s already quoted; replayed frame stored, no recompute",
-                     row.id)
+            log.debug("rfq listener: rfq %s already quoted; replayed frame stored, no recompute",
+                      sanitize_venue_text(row.id, _ID_MAX))
             if on_replay is not None:
                 on_replay()
     return row

@@ -249,18 +249,28 @@ _CONCURRENT_INDEX_DDL = (
     # mirrors it, and the two must land together or the catalogue diff fails.
     "create index concurrently if not exists ix_orders_key_placed "
     "on orders (variant_id, venue_market_id, side, placed_at)",
-    # Fix 35 (journal 109's 03:15-03:45 CT incident): the RFQ quote's fair-value lateral
-    # (`_LEG` in `harness/venues/kalshi/rfq_quote.py`, and `_CLOSING_LEG` in
-    # `harness/settlement/rfq_grade.py`) reads `fair_values` on exactly this five-column shape
-    # under this partial predicate; without it, both walked the wider
+    # Fix 35 (journal 109's 03:15-03:45 CT incident), corrected in round 1 (review Important 1):
+    # the RFQ quote's fair-value lateral (`_LEG` in `harness/venues/kalshi/rfq_quote.py`, and
+    # `_CLOSING_LEG` in `harness/settlement/rfq_grade.py`) reads `fair_values` on this five-column
+    # shape under this partial predicate -- but the first cut indexed the three nullable columns
+    # bare while both laterals compared them with `is not distinct from`, which Postgres cannot
+    # turn into an index condition, so the index was never chosen (measured: both laterals kept
+    # walking `ix_fair_game_type_created (game_id, market_type, created_at)` backwards and
+    # rechecking every candidate row by hand). `coalesce(...)` on the three nullable columns here
+    # and the identical `coalesce(...) = coalesce(...)` in both laterals make the comparison a
+    # plain equality the planner can use -- the same shape `uq_fair_value_row` already uses for
+    # the same three columns, just with `threshold`'s sentinel at -9999 rather than 0 so a real
+    # 0.0 spread/total line is never conflated with "no threshold on this leg" the way a shared
+    # sentinel with that unique index would. Without it, both walked the wider
     # `ix_fair_game_type_created (game_id, market_type, created_at)` and re-checked the rest of
     # the predicates row by row. CONCURRENTLY because `fair_values` takes a write on every
     # pricing tick and init-db runs on every deploy; the connection is already AUTOCOMMIT, which
     # is what CONCURRENTLY requires. `migrations/versions/0005_rfq_lookup.py` mirrors it, and the
     # two must land together or the catalogue diff fails.
     "create index concurrently if not exists ix_fair_leg_lookup "
-    "on fair_values (game_id, market_type, outcome_team_id, outcome_side, threshold, "
-    "created_at desc) where fair_source = 'direct'",
+    "on fair_values (game_id, market_type, coalesce(outcome_team_id, -1), "
+    "coalesce(outcome_side, ''), coalesce(threshold, -9999), created_at desc) "
+    "where fair_source = 'direct'",
 )
 
 #: Open contracts and their average price per variant, from the fills of live orders that have

@@ -28,6 +28,7 @@ sockets agree on the rules and share no state at all.
 import json
 import logging
 import time
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -47,16 +48,25 @@ log = logging.getLogger(__name__)
 SUBSCRIBE_ID = 1
 #: The backoff ceiling, the same shape the recorder uses.
 BACKOFF_MAX_S = 60.0
-#: Fix 35, item 4. The venue replays the whole open RFQ set on every subscribe -- 2,613 distinct
-#: RFQs across 4,902 frames over ten reconnects in the 03:15-03:45 CT incident (journal 109).
-#: Most of that replay is frames `handle_frame` already skips for free (item 2: an id
-#: `rfq_quotes` already holds), but a reconnect early in the season, or after a long idle, can
-#: still hand the listener a burst of genuinely new RFQs all at once. This bounds how many
-#: `rfq_created` frames after a `subscribe()` may reach the quote decision at all: the first
-#: `RFQ_REPLAY_MAX` do, every frame after that is still stored as an arrival (`store_rfq`, inside
-#: `handle_frame`) and never quoted, so one connect's burst can never run an unbounded number of
-#: `compute_quote` calls back to back. Documented in `docs/runbooks/research.md`.
-RFQ_REPLAY_MAX = 500
+#: Fix 35 round 1 (review Critical 1, Important 2). The venue replays the whole open RFQ set on
+#: every subscribe -- 2,613 distinct RFQs across 4,902 frames over ten reconnects in the
+#: 03:15-03:45 CT incident (journal 109). The first cut of this fix spent a per-connection frame
+#: budget on every `rfq_created` frame, dedupe hits (item 2's "already quoted" skip) included --
+#: which meant a later reconnect's replay of the *same* already-quoted set spent the whole budget
+#: on frames that do no `fair_values` work at all, silently starving every genuinely new RFQ that
+#: arrived afterward on that connection. A rate limit on `compute_quote` calls themselves, in a
+#: sliding window rather than a per-connection counter, does not have that failure mode: a
+#: dedupe hit or an `rfq_deleted` frame (`_try_quote` is never even called for either) costs
+#: nothing, and a long-lived connection keeps quoting new RFQs indefinitely once an initial burst
+#: is behind it -- there is no reset to miss on `subscribe()` and no lifetime cap to blow through.
+RFQ_QUOTE_RATE_MAX = 500
+#: The sliding window `RFQ_QUOTE_RATE_MAX` is measured over.
+RFQ_QUOTE_RATE_WINDOW_S = 60.0
+#: Fix 35 round 1 (review I3). A per-frame log line at burst volume (roughly 490 per reconnect
+#: in the incident) is itself a cost; this is how long a gap between frames must be before the
+#: listener treats a burst as over and logs one INFO summary (`replayed=<n> quoted=<n>
+#: skipped_rate=<n>`) instead of a line per frame.
+RFQ_BURST_SILENCE_S = 5.0
 #: The signed path of the WebSocket handshake, the same one the recorder signs.
 WS_SIGN_PATH = "/trade-api/ws/v2"
 
@@ -72,7 +82,8 @@ class RfqListener:
                  ws_factory: Callable = websocket.create_connection,
                  clock: Callable[[], datetime] = _utcnow,
                  sleep: Callable[[float], None] | None = None,
-                 sign: Callable[..., dict] | None = None) -> None:
+                 sign: Callable[..., dict] | None = None,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
         self.s = settings
         self._factory = session_factory
         self._ws_factory = ws_factory
@@ -82,6 +93,10 @@ class RfqListener:
         # `app-ws` already mounts. A test passes a stub, because `Settings`' defaults point at
         # `/run/secrets/...` and reading them on the Mac raises before the socket is reached.
         self._sign = sign
+        # Fix 35 round 1: the seam the quote rate limit's sliding window and the burst-summary
+        # silence check are measured against. Production is `time.monotonic`; a test injects a
+        # fake one so it can slide the window without a real sleep.
+        self._monotonic = monotonic
         self._stop = False
         self._backoff = 1.0
         self.connected = False
@@ -90,12 +105,27 @@ class RfqListener:
         self.arrivals = 0
         #: Fix 35, item 2: an `rfq_created` for an id already quoted -- stored, never recomputed.
         self.replayed = 0
+        #: Fix 35 round 1 (C1/I2): an `rfq_created` that would have been quoted but the sliding
+        #: rate window (`RFQ_QUOTE_RATE_MAX` per `RFQ_QUOTE_RATE_WINDOW_S`) had no room left --
+        #: stored as an arrival like any other, never quoted.
+        self.quotes_skipped_rate = 0
         self._sid: int | None = None
         self._subscribed_at: float = 0.0
         self._timeouts = 0
-        #: Fix 35, item 4: `rfq_created` frames seen since the last `subscribe()`. Reset there,
-        #: not on connect, so a `_sid` that never acks does not grant a fresh budget on its own.
-        self._created_since_subscribe = 0
+        #: Fix 35 round 1: monotonic timestamps of the last `RFQ_QUOTE_RATE_MAX` (or fewer)
+        #: `compute_quote` attempts, oldest first -- `_try_quote` prunes anything older than
+        #: `RFQ_QUOTE_RATE_WINDOW_S` before checking whether there is room for one more.
+        self._quote_times: deque[float] = deque()
+        #: Whether the rate limit is currently engaged, so the WARNING/INFO pair logs once on
+        #: each transition rather than once per frame.
+        self._rate_limited = False
+        #: Fix 35 round 1 (review I3): a burst summary in place of a log line per replayed
+        #: frame. Counts since the last flush; `_maybe_flush_burst_summary` logs and zeroes them
+        #: once `RFQ_BURST_SILENCE_S` has passed since the last frame this connection processed.
+        self._burst_replayed = 0
+        self._burst_quoted = 0
+        self._burst_skipped_rate = 0
+        self._burst_last_frame_at: float = 0.0
         # The signing clock offset, carried across reconnects. It only ever moves on a 401 that
         # came back with a usable `Date`; there is no HTTP client here to ask for the time.
         self._offset_ms = 0
@@ -170,8 +200,13 @@ class RfqListener:
         self._sid = None
         self._subscribed_at = time.monotonic()
         self._timeouts = 0
-        # Fix 35, item 4: a fresh `RFQ_REPLAY_MAX` budget for this connection's replay burst.
-        self._created_since_subscribe = 0
+        # Fix 35 round 1: the quote rate limit is a sliding window, not a per-connection budget,
+        # so nothing about it resets here -- a connection that has been up for a while keeps
+        # whatever headroom its last 60 s of `compute_quote` calls left it. The burst-summary
+        # counters do reset: whatever a prior connection had not yet flushed is not this
+        # connection's story to tell.
+        self._burst_replayed = self._burst_quoted = self._burst_skipped_rate = 0
+        self._burst_last_frame_at = self._monotonic()
 
     # -- the loop ------------------------------------------------------------------------
 
@@ -193,6 +228,11 @@ class RfqListener:
         except (TypeError, ValueError, RecursionError):
             log.warning("rfq listener received a frame it could not decode; dropped")
             return True
+        # Fix 35 round 1 (I3): a gap since the previous frame is exactly the "burst is over"
+        # signal -- checked before this frame updates the timestamp, so it reflects the *prior*
+        # silence, not this arrival.
+        self._maybe_flush_burst_summary()
+        self._burst_last_frame_at = self._monotonic()
         kind = msg.get("type") if isinstance(msg, dict) else None
         if kind == "subscribed":
             body = msg.get("msg")
@@ -216,16 +256,13 @@ class RfqListener:
             log.info("rfq listener dropped a quote event; untrusted venue text: type=%r",
                      sanitize_venue_text(kind, 32))
             return True
-        # Fix 35, item 4: only the first RFQ_REPLAY_MAX `rfq_created` frames since this
-        # connection's subscribe() reach the quote decision; every one past that is still stored
-        # as an arrival (inside handle_frame) and never quoted.
-        allow_quote = True
-        if kind == "rfq_created":
-            allow_quote = self._created_since_subscribe < RFQ_REPLAY_MAX
-            self._created_since_subscribe += 1
+        # Fix 35 round 1 (C1/I2): `_try_quote` is the sliding-window rate gate. It is called
+        # from inside `handle_frame`, and only at the one point a quote would actually be
+        # attempted -- a dedupe hit or an `rfq_deleted` frame never reaches it, so neither ever
+        # spends the budget.
         with self._factory() as session:
             row = handle_frame(session, msg, self._clock(), on_replay=self._count_replay,
-                               allow_quote=allow_quote)
+                               allow_quote=self._try_quote)
             if row is not None:
                 session.commit()
                 self.arrivals += 1
@@ -233,6 +270,47 @@ class RfqListener:
 
     def _count_replay(self) -> None:
         self.replayed += 1
+        self._burst_replayed += 1
+
+    def _try_quote(self) -> bool:
+        """Fix 35 round 1 (C1/I2): whether `handle_frame` may run `compute_quote` right now --
+        at most `RFQ_QUOTE_RATE_MAX` calls in any trailing `RFQ_QUOTE_RATE_WINDOW_S`, a sliding
+        window rather than a per-connection counter. Called from inside `handle_frame` only when
+        it has already determined this frame is not a dedupe hit, so neither a replay nor an
+        `rfq_deleted` frame ever reaches here or spends any of the budget.
+        """
+        now = self._monotonic()
+        window_start = now - RFQ_QUOTE_RATE_WINDOW_S
+        while self._quote_times and self._quote_times[0] < window_start:
+            self._quote_times.popleft()
+        if len(self._quote_times) >= RFQ_QUOTE_RATE_MAX:
+            self.quotes_skipped_rate += 1
+            self._burst_skipped_rate += 1
+            if not self._rate_limited:
+                self._rate_limited = True
+                log.warning("rfq listener: quote rate limit engaged (%d compute_quote calls in "
+                           "the last %.0fs); rfq_created frames store only until it releases",
+                           RFQ_QUOTE_RATE_MAX, RFQ_QUOTE_RATE_WINDOW_S)
+            return False
+        self._quote_times.append(now)
+        self._burst_quoted += 1
+        if self._rate_limited:
+            self._rate_limited = False
+            log.info("rfq listener: quote rate limit released")
+        return True
+
+    def _maybe_flush_burst_summary(self) -> None:
+        """Fix 35 round 1 (I3): one INFO line per burst instead of one per replayed frame. A
+        burst is "over" once `RFQ_BURST_SILENCE_S` has passed since the last frame this
+        connection processed; there is nothing to say when nothing happened, so an all-zero
+        burst logs nothing."""
+        if not (self._burst_replayed or self._burst_quoted or self._burst_skipped_rate):
+            return
+        if self._monotonic() - self._burst_last_frame_at < RFQ_BURST_SILENCE_S:
+            return
+        log.info("rfq listener: replayed=%d quoted=%d skipped_rate=%d",
+                 self._burst_replayed, self._burst_quoted, self._burst_skipped_rate)
+        self._burst_replayed = self._burst_quoted = self._burst_skipped_rate = 0
 
     def _on_timeout(self) -> bool:
         """Silence. Two ways it is fatal to this socket and one way it is nothing.
@@ -240,7 +318,12 @@ class RfqListener:
         A subscribe that was never acked inside the window is a dead subscription, and a socket
         that has stayed open while delivering nothing for `ws_stale_s` is half-open. Both drop
         the connection; neither idles, because neither is the venue refusing us.
+
+        Fix 35 round 1: also where a burst's silence is noticed when no further frame ever
+        arrives to trigger the check in `run_once` -- a real `recv()` timeout is `RECV_TIMEOUT_S`
+        (30 s), well past `RFQ_BURST_SILENCE_S`, so any pending summary flushes here first.
         """
+        self._maybe_flush_burst_summary()
         self._timeouts += 1
         if should_reconnect(1 if self._sid is not None else 0,
                             time.monotonic() - self._subscribed_at, None):
