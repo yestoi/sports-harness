@@ -33,7 +33,11 @@ def write_notes(session: Session, *, call_id: uuid.UUID, kind: str, subject_id: 
         if result.error_detail is not None:
             # Fix 39: the API's own message for an `anthropic.APIStatusError`, sanitized and
             # capped by the client already -- `error` stays the class name (ruling: the error
-            # field is the class), and this is the diagnosable detail beside it.
+            # field is the class), and this is the diagnosable detail beside it. Fix 41 (journal
+            # 112) writes the same column for a `max_tokens` response, where `error` is that
+            # stop reason rather than a class name and the detail is the output token count the
+            # response stopped at; either way the client decides both fields and this stores
+            # whatever it set.
             error_body["error_detail"] = result.error_detail
         if result.raw is not None:
             error_body["raw"] = result.raw
