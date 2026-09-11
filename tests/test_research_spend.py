@@ -165,8 +165,10 @@ def test_the_weekly_cap_refuses_independently_of_the_daily_one(db_session, env_s
 
 
 def test_the_cap_covers_every_kind_not_just_the_veto(db_session, env_settings):
-    """0.3: the caps are totals across the primary, the shadow, the annotator and the parlay
-    rationale. An annotator call eats the veto's budget and must."""
+    """A $0.50 daily cap (fix 41 raised the per-call worst case past the 0.30 this read before):
+    the caps are totals across the primary, the shadow, the annotator and the parlay rationale.
+    One opus reservation under any kind leaves no room for a second, so the annotate reservation
+    is what refuses the veto -- an annotator call eats the veto's budget and must."""
     settings = _settings(env_settings, daily="0.50")
     reserve_spend(db_session, NOW, settings, "annotate", [OPUS])
     with pytest.raises(BudgetRefused):
