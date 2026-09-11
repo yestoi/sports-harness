@@ -250,14 +250,14 @@ _CONCURRENT_INDEX_DDL = (
     "create index concurrently if not exists ix_orders_key_placed "
     "on orders (variant_id, venue_market_id, side, placed_at)",
     # Fix 35 (journal 109's 03:15-03:45 CT incident), corrected in round 1 (review Important 1):
-    # the RFQ quote's fair-value lateral (`_LEG` in `harness/venues/kalshi/rfq_quote.py`, and
+    # the RFQ quote's fair-value lookup (`_LEG` in `harness/venues/kalshi/rfq_quote.py`, and
     # `_CLOSING_LEG` in `harness/settlement/rfq_grade.py`) reads `fair_values` on this five-column
     # shape under this partial predicate -- but the first cut indexed the three nullable columns
-    # bare while both laterals compared them with `is not distinct from`, which Postgres cannot
-    # turn into an index condition, so the index was never chosen (measured: both laterals kept
+    # bare while both reads compared them with `is not distinct from`, which Postgres cannot
+    # turn into an index condition, so the index was never chosen (measured: both reads kept
     # walking `ix_fair_game_type_created (game_id, market_type, created_at)` backwards and
     # rechecking every candidate row by hand). `coalesce(...)` on the three nullable columns here
-    # and the identical `coalesce(...) = coalesce(...)` in both laterals make the comparison a
+    # and the identical `coalesce(...) = coalesce(...)` in both reads make the comparison a
     # plain equality the planner can use -- the same shape `uq_fair_value_row` already uses for
     # the same three columns, just with `threshold`'s sentinel at -9999 rather than 0 so a real
     # 0.0 spread/total line is never conflated with "no threshold on this leg" the way a shared

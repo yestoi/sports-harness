@@ -130,14 +130,14 @@ find; the executor's own loop went from single-digit seconds to 235-336 s under 
 
 Three changes came out of it (round 1 corrected the first cut of the second and third, below):
 
-- **Cheap declines.** `single_leg`, `same_game`, and `no_fair` for a leg whose `event_ticker`
-  does not start with `KXNFL`/`KXNCAAF` (or whose `market_ticker` is not in `venue_markets` at
-  all) are now decided from `venue_markets` alone — `compute_quote` never touches `fair_values`
+- **Cheap declines.** `single_leg`, `same_game`, and `no_fair` for a leg whose `series_ticker`
+  is not one of the six `harness.venues.kalshi.public.FOOTBALL_SERIES` names (or whose
+  `market_ticker` is not in `venue_markets` at all) are now decided from `venue_markets` alone — `compute_quote` never touches `fair_values`
   for a combo that cannot possibly have a fair. Only a combo whose every leg is a priced football
   market reaches the fair-value lookup, and that lookup runs against `ix_fair_leg_lookup` (fix
-  35's migration `0005_rfq_lookup`), a covering index on the lateral's own five-column shape
+  35's migration `0005_rfq_lookup`), a covering index on that lookup's own five-column shape
   instead of the wider `ix_fair_game_type_created`. The index's three nullable columns are
-  `coalesce(...)`-wrapped and the lateral compares them the same way (round 1: the original
+  `coalesce(...)`-wrapped and both `_LEG` and `_CLOSING_LEG` compare them the same way (round 1: the original
   `is not distinct from` comparison is NULL-safe equality Postgres cannot use an index for at
   all, so the first cut of the index was never actually chosen by the planner).
 - **The quote rate is limited, not the connection's frame count.** `RFQ_QUOTE_RATE_MAX = 500`

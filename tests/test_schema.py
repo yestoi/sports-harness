@@ -588,7 +588,7 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # reads through) = 81.
     # + 1 (phase 5 T19 fix round 1: ix_veto_decisions_signal_created, the index t7's window
     # filter on `veto_decisions.signal_created_at` needs) = 82.
-    # + 1 (fix 35: ix_fair_leg_lookup, the covering index the RFQ quote's `_LEG` lateral and
+    # + 1 (fix 35: ix_fair_leg_lookup, the covering index the RFQ quote's `_LEG` lookup and
     # `rfq_grade`'s `_CLOSING_LEG` lateral both read, run CONCURRENTLY from
     # _CONCURRENT_INDEX_DDL -- it still matches the "create index" prefix filter above) = 83.
     assert len(ddl) == 83, [s for s, _, _ in ddl]
