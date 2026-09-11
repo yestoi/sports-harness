@@ -85,8 +85,8 @@ from harness.report.render_for_model import (BULLET_MAX, BULLETS_MAX, check_bull
                                              render_from_cells, titles_from_markdown)
 from harness.research.client import PRIMARY_MODEL, ResearchClient, prompt_hash
 from harness.research.notes import write_notes
-from harness.research.spend import (BudgetRefused, WORST_CASE_OUTPUT_TOKENS, chicago_day,
-                                    cost_usd, release_spend, reserve_spend)
+from harness.research.spend import (BudgetRefused, WORST_CASE_OUTPUT_TOKENS, cost_usd,
+                                    release_spend, reserve_spend)
 from harness.research.text import sanitize_model_text
 from harness.research.worker import register_pass
 
@@ -140,12 +140,29 @@ OUTPUT_SCHEMA: dict = {
 }
 PROMPT_HASH = prompt_hash(SYSTEM_BLOCKS)
 
+#: D5: how far back the backlog reaches. Long enough to cover a missed Monday, a re-run and a
+#: week of outage; short enough that an old report's annotation is not still being paid for a
+#: month later. The window is on `generated_at`, not on the report's own ISO week, so a re-run
+#: of an old week that was generated today is inside it.
+BACKLOG_DAYS = 28
+#: D5: how many candidates one sweep considers. The bound is in the query, not in a Python
+#: slice, so the read itself is capped. It does not bound the *calls*: `annotate_pass` makes at
+#: most one per sweep whatever this is, so a backlog of eight drains over eight sweeps.
+BACKLOG_LIMIT = 8
+
+#: Addendum 0.6. Non-provisional, unannotated, generated inside `BACKLOG_DAYS`, newest week
+#: first. The `year desc, week desc` lead is what makes "the most recent week's report first"
+#: true even when an old week is re-run today: the newest *week* is the one a reader wants
+#: annotated, not the newest render. `report_runs` is a small table (a handful of rows a week),
+#: and the `limit` bounds what the order has to sort.
 _PENDING = text("""
     select r.id, r.year, r.week
     from report_runs r
-    where r.provisional = false and r.year = :year and r.week = :week
+    where r.provisional = false
+      and r.generated_at >= :since
       and not exists (select 1 from report_annotations a where a.report_run_id = r.id)
-    order by r.generated_at desc
+    order by r.year desc, r.week desc, r.generated_at desc
+    limit :limit
 """)
 
 #: Bound: one `report_runs.id`. Index: `report_cells`' own primary key
@@ -254,22 +271,20 @@ def _clear_backoff(session: Session, run_id: int) -> None:
 
 
 def pending_report(session: Session, now: datetime) -> ReportRun | None:
-    """The current ISO week's newest final report that has no annotation yet and is not
-    currently backed off (fix 36).
+    """The newest-week final report that has no annotation yet, is inside the backlog window and
+    is not currently backed off (fix 36).
 
-    "Current" is America/Chicago's week, not UTC's (review round 1): `spend.py`'s
-    `chicago_day` is the same conversion `reserve_spend` already anchors its own week-lock to,
-    and reusing it keeps this pass and the budget gate agreeing on when a week turns over. In
-    the ~5 h window where UTC has rolled to Monday but Chicago has not (00:00-05:00 UTC
-    Monday, i.e. Sunday evening/night CT), a raw `now.isocalendar()` would look for next week's
-    number while a just-written Sunday-slate final report still carries this week's -- and once
-    Chicago also rolls over, that report's week is behind "current" for good, so it would never
-    be annotated.
+    **A bounded backlog, not the current week** (addendum 0.6, fix 41 follow-on). The rule used
+    to be "the current America/Chicago week's newest final report", which had one failure mode
+    that mattered: the Monday report is *for the previous week*, so once Chicago rolled over,
+    Monday's own report of week N was behind "current" for good and was never annotated. The
+    predicate is now `generated_at` inside `BACKLOG_DAYS`, which covers that case, a missed
+    Monday and a re-run, and excludes a report old enough that annotating it would spend the
+    caps on something nobody will read.
 
-    Ordinarily there is at most one non-provisional, unannotated run for the week; a re-run
-    (`harness report` run twice) can leave more than one, and this returns the newest of those
-    that is not backed off, falling through to an older one rather than stopping at the first
-    backed-off row it finds.
+    Ordinarily there is at most one unannotated final run; a re-run (`harness report` run twice)
+    or a missed sweep can leave several, and this returns the newest-week one that is not backed
+    off, falling through to an older one rather than stopping at the first backed-off row.
     """
     run, _ = _pending_with_backoff_status(session, now)
     return run
@@ -278,8 +293,8 @@ def pending_report(session: Session, now: datetime) -> ReportRun | None:
 def _pending_with_backoff_status(session: Session, now: datetime) -> tuple[ReportRun | None, bool]:
     """`pending_report`'s run, plus whether a still-pending report was skipped because it is
     currently backed off (used only for `annotate_pass`'s `"backed_off"` count)."""
-    iso = chicago_day(now).isocalendar()
-    rows = session.execute(_PENDING, {"year": iso.year, "week": iso.week}).all()
+    rows = session.execute(_PENDING, {"since": now - timedelta(days=BACKLOG_DAYS),
+                                      "limit": BACKLOG_LIMIT}).all()
     skipped = False
     for row in rows:
         if _backed_off(session, row.id, now):

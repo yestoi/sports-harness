@@ -123,12 +123,16 @@ def keyed_settings(env_settings, tmp_path):
 
 @pytest.fixture
 def seeded_reports(db_session):
-    """One final run for last week, one provisional run this week (proving `provisional` is
-    excluded even alongside a real row for the current week) and exactly one final run this
-    week, with its cells stored -- the single row `pending_report` must find, and the only row
-    left un-annotated once it has been annotated once
-    (`test_an_already_annotated_run_is_not_annotated_again`)."""
-    _run(db_session, 2026, 38, False, datetime(2026, 9, 14, 10, 0, tzinfo=timezone.utc))
+    """One provisional run for last week and one for this week (proving `provisional` is
+    excluded regardless of week) and exactly one final run this week, with its cells stored --
+    the single row `pending_report` must find, and the only row left un-annotated once it has
+    been annotated once (`test_an_already_annotated_run_is_not_annotated_again`).
+
+    The last-week row is provisional, not final (addendum 0.6): the backlog now reaches past the
+    current week, so an unannotated *final* row here would itself be a live backlog candidate
+    once the week-39 row is annotated or backed off, and the "only row left un-annotated"
+    property the tests below depend on would no longer hold."""
+    _run(db_session, 2026, 38, True, datetime(2026, 9, 14, 10, 0, tzinfo=timezone.utc))
     _run(db_session, 2026, 39, True, datetime(2026, 9, 18, 9, 0, tzinfo=timezone.utc))
     final_id = _persisted(db_session, 2026, 39, False,
                           datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc))
@@ -178,8 +182,11 @@ def test_an_already_annotated_run_is_not_annotated_again(db_session, keyed_setti
     assert pending_report(db_session, NOW) is None
 
 
-def test_last_week_s_report_is_not_annotated_this_week(db_session, seeded_last_week_only):
-    assert pending_report(db_session, NOW) is None
+def test_a_prior_weeks_final_report_is_picked_up_by_the_backlog(db_session, seeded_last_week_only):
+    """Addendum 0.6, replacing the current-week-only rule. A Monday final report for the
+    previous week is annotated in the Monday sweep rather than never."""
+    run = pending_report(db_session, NOW)
+    assert run is not None and (run.year, run.week) == (2026, 38)
 
 
 def test_a_sunday_evening_ct_final_report_is_found_before_midnight_ct(db_session,
@@ -190,10 +197,65 @@ def test_a_sunday_evening_ct_final_report_is_found_before_midnight_ct(db_session
     assert run is not None and run.id == seeded_sunday_final.id
 
 
-def test_the_same_report_is_not_found_after_midnight_ct(db_session, seeded_sunday_final):
-    """At Monday 00:30 CT (05:30 UTC) the Chicago week has turned to 39; the week-38 report is
-    behind "current" for good and needs a week-39 report of its own to be found."""
-    assert pending_report(db_session, NOW_MONDAY_CT) is None
+def test_a_sunday_evening_report_is_still_found_after_midnight_ct(db_session, seeded_sunday_final):
+    """The five-hour window review round 1 found is now covered by the backlog rather than by
+    the week key alone: at Monday 00:30 CT the week-38 report is still inside 28 days."""
+    run = pending_report(db_session, NOW_MONDAY_CT)
+    assert run is not None and run.id == seeded_sunday_final.id
+
+
+def test_the_monday_report_for_the_previous_week_is_annotated_in_the_monday_sweep(db_session):
+    """Addendum 1.5's first case: a week-37 final report generated Mon 2026-09-14 08:59 CT is
+    found by the 09:30 CT sweep, which is already in week 38."""
+    from harness.weeks import chicago_iso_week
+
+    generated = datetime(2026, 9, 14, 13, 59, tzinfo=timezone.utc)   # 08:59 CT
+    sweep = datetime(2026, 9, 14, 14, 30, tzinfo=timezone.utc)       # 09:30 CT
+    assert chicago_iso_week(sweep) == (2026, 38)
+    run = _run(db_session, 2026, 37, False, generated)
+    assert pending_report(db_session, sweep).id == run.id
+
+
+def test_two_pending_runs_take_the_newer_week_first_and_one_call_per_sweep(
+        db_session, keyed_settings):
+    """Addendum 1.5's second case, and U4's money rule: the backlog is bounded by the query, and
+    a sweep still makes exactly one Anthropic call."""
+    older = _persisted(db_session, 2026, 37, False,
+                       datetime(2026, 9, 14, 14, 0, tzinfo=timezone.utc))
+    newer = _persisted(db_session, 2026, 38, False,
+                       datetime(2026, 9, 21, 14, 0, tzinfo=timezone.utc))
+    assert pending_report(db_session, NOW).id == newer
+
+    client = _client(["412 orders on the first row t1[0,1]."])
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=client)
+    assert counts["annotated"] == 1
+    assert len(client.calls) == 1
+    # The older one is still pending: it is the next sweep's work, not this one's.
+    assert pending_report(db_session, NOW).id == older
+
+
+def test_a_backed_off_run_falls_through_to_the_next_one_in_the_backlog(db_session, keyed_settings):
+    """Addendum 1.5's third case. Fix 36's per-run backoff is unchanged; what changes is that
+    the row it falls through to may be a different week's."""
+    from harness.research.annotate import _write_backoff
+
+    newer = _persisted(db_session, 2026, 38, False,
+                       datetime(2026, 9, 21, 14, 0, tzinfo=timezone.utc))
+    older = _persisted(db_session, 2026, 37, False,
+                       datetime(2026, 9, 14, 14, 0, tzinfo=timezone.utc))
+    _write_backoff(db_session, newer, NOW, NOW + timedelta(hours=1))
+    db_session.flush()
+    assert pending_report(db_session, NOW).id == older
+
+
+def test_a_report_older_than_the_backlog_window_is_never_selected(db_session):
+    """Addendum 1.5's fourth case and D5: bounded at 28 days, so a report whose usefulness has
+    passed does not spend against the caps forever."""
+    from harness.research.annotate import BACKLOG_DAYS
+
+    assert BACKLOG_DAYS == 28
+    _run(db_session, 2026, 33, False, NOW - timedelta(days=BACKLOG_DAYS + 1))
+    assert pending_report(db_session, NOW) is None
 
 
 # --- rendering from stored cells, not `weekly_tables` (fix 36) --------------------------------
