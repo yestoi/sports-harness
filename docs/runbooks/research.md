@@ -190,7 +190,8 @@ Three changes came out of it (round 1 corrected the first cut of the second and 
   starved every genuinely new RFQ that arrived afterward on that connection). A frame the rate
   turns away is still stored as an arrival — H5's denominator never loses one to this — and
   counted in `quotes_skipped_rate`; the listener logs one WARNING when the limit first engages
-  and one INFO when it releases, never per frame.
+  and one INFO when it releases, never per frame (fix 38: each direction is also bounded to at
+  most one such log per 30 s — see below).
 - **Replayed/quoted/skipped counts are one summary per burst, not one log line per frame.** The
   "already quoted" skip used to log an INFO line per replayed frame at burst volume (roughly 490
   per reconnect in the incident); it is now DEBUG, and the listener instead logs one INFO summary
@@ -199,6 +200,59 @@ Three changes came out of it (round 1 corrected the first cut of the second and 
 
 Re-enabling the listener after this fix is the same switch as turning it off, in reverse:
 `RFQ_LISTENER_ENABLED=1` in `deploy/nas.env`, then `docker compose restart app-ws`.
+
+### Fix 38: the boundary filter, the summary, the rate-log hysteresis and retention
+
+The 05:26-05:33 CT incident (journal 110), with fix 35 already live: the `communications`
+channel is not a sporadic combo trickle, it is **every** RFQ create and delete on the exchange —
+11,000-14,000 frames a minute sustained on one connection (one `ws_connect` in ten minutes, so
+not a replay), three quarters `rfq_deleted`, almost all on `KXMVECROSSCATEGORY-SHARD1-...`
+combos with no football leg. `store_rfq` wrote every one — 74,608 `rfqs` rows (128 MB) in seven
+minutes, about 17 million rows and 30 GB a day, `app-ws` at 64 % CPU beside the market tape it
+shares a process with. The controller switched the listener off at 05:33 CT
+(`RFQ_LISTENER_ENABLED=0`, same switch as above).
+
+- **Filter before storing.** `handle_frame` (`harness/venues/kalshi/rfq.py`) now decides, before
+  `store_rfq` ever runs: an `rfq_created` frame is stored only when at least one leg's
+  `event_ticker` (or, for a single-market RFQ with no `mve_selected_legs`, the RFQ's own
+  top-level ticker) resolves to a series in `FOOTBALL_SERIES` — a string check
+  (`event_ticker.split("-")[0]`, the same derivation `harness/venues/kalshi/public.py` uses for
+  `MarketSummary.series_ticker`), never a `venue_markets` lookup, because there is no session at
+  this point and a per-leg DB probe on every one of 11,000-14,000 frames a minute is exactly the
+  cost fix 35 already removed from the quote path. This is deliberately weaker than fix 35's own
+  `no_fair` decline (`_is_football` in `rfq_quote.py`, "every leg is football, DB-resolved"): a
+  combo with even one football leg still stores and reaches the normal quote/decline path; only
+  a combo (or single market) touching *no* football series at all is dropped. An `rfq_deleted`
+  frame is applied only when its id is already a stored row; otherwise it is counted and dropped
+  too — before fix 38 a delete for an unseen id wrote its own row (F71: "the socket is the only
+  record"), which is exactly the incident's other three quarters. Either drop is counted, never
+  logged per frame.
+- **Four new counters, one summary.** The listener counts `frames_seen`, `frames_stored`,
+  `dropped_nonfootball` and `dropped_unknown_delete` alongside fix 35's `replayed`, `quoted` and
+  `quotes_skipped_rate`, in the same one-line INFO summary
+  (`replayed=<n> quoted=<n> skipped_rate=<n> frames_seen=<n> frames_stored=<n>
+  dropped_nonfootball=<n> dropped_unknown_delete=<n>`). The flood that started this fix never
+  goes quiet, so the summary no longer waits only on `RFQ_BURST_SILENCE_S` (5 s) of silence — it
+  also flushes after `RFQ_SUMMARY_PERIOD_S` (60 s) of continuous flow, whichever comes first, so
+  it logs at least once a minute while frames are arriving instead of staying dark until the
+  connection eventually goes quiet.
+- **The rate-limit log no longer flaps.** The incident also showed the quote rate limiter's
+  engage/release log pair firing 100 ms apart at the window boundary — a real state transition
+  every time, so the old transition-only guard logged every one of them. Each direction
+  (`rfq listener: quote rate limit engaged`/`released`) now also carries its own cooldown,
+  `RFQ_RATE_LOG_COOLDOWN_S` (30 s): a transition still has to happen to log at all, but a burst
+  of transitions inside 30 s logs at most once per direction. The limit itself —
+  `RFQ_QUOTE_RATE_MAX` per `RFQ_QUOTE_RATE_WINDOW_S`, and which frames it turns away — is
+  unchanged.
+- **Retention.** Housekeeping (`harness/ops/housekeeping.py`, `_prune_rfqs`) deletes `rfqs` rows
+  older than `RFQ_RETENTION_DAYS` (7 days) with no `rfq_quotes` row, in one bounded batch of
+  `RFQ_PRUNE_BATCH` (5,000) per daily run, and records `db.rfqs_pruned`. A quoted row is never in
+  scope (F71: the row is the record of what would have been answered). This is how the flood's
+  own 74,608 rows leave the table — no one-time cleanup, just ordinary attrition once each row
+  passes seven days old, the same way it prunes anything written after this fix too.
+
+Re-enabling the listener after fix 38, same as fix 35: `RFQ_LISTENER_ENABLED=1` in
+`deploy/nas.env`, then `docker compose restart app-ws`.
 
 ## What is never done here
 
