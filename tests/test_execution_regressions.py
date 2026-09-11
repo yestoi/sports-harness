@@ -92,3 +92,24 @@ def test_a_real_missing_subscription_frame_still_writes_a_gap_row():
     assert len(rows) == 1
     assert rows[0].kind == "gap" and rows[0].sid == SID
     assert rows[0].raw["expected"] == 2 and rows[0].raw["got"] == 3
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="6B: a print and the delta that records it are one event; counting "
+                          "both drains the queue twice")
+def test_a_print_and_its_own_delta_are_one_event():
+    """Probe `same_event`. Expected queue 2 and fill 0.
+
+    Computed independently: 5 contracts rest ahead of ours at 0.30. One real trade of 3 lifts
+    3 of them, leaving 2 ahead and nothing for us -- our order is still behind a queue. The
+    book delta of -3 at the same timestamp and price is the exchange reporting that same trade,
+    not a second removal: a cancellation and a trade cannot both be the whole of a -3 that a
+    print of 3 already explains. So the queue moves once, by 3, to 2, and we fill 0. The probe
+    captured `actual_queue 0.00` and `actual_fill 1.00`, i.e. the 3 was applied twice and the
+    overflow crossed into our own order.
+    """
+    result = run(order(queue="5"),
+                 prints=[tprint(1, ".30", "3")],
+                 deltas=[tdelta(1, "yes", ".30", "-3")])
+    assert result.state.queue_remaining == D(2)
+    assert result.state.filled_contracts == D(0)
