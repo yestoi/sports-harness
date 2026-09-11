@@ -495,14 +495,20 @@ def test_the_model_ids_are_the_exact_strings():
 #: `type`, `properties`, `required`, `additionalProperties`, `items`, `enum`, `description` and
 #: `anyOf` -- the structured-output subset the API accepts (fix 39 brief).
 _ALLOWED_SCHEMA_KEYWORDS = {"type", "properties", "required", "additionalProperties", "items",
-                           "enum", "description", "anyOf"}
+                            "enum", "description", "anyOf"}
 
 
 def _schema_nodes(schema: dict):
     """Every schema object nested inside `schema` -- itself, every property's schema, the
-    `items` schema and every `anyOf` branch -- so the keyword check looks only at genuine
+    `items` schema (a single schema or a tuple-validation list of them), every `anyOf` branch and
+    a schema-valued `additionalProperties` -- so the keyword check looks only at genuine
     JSON-schema keyword keys and never at a `properties` dict's own property names (which are
-    arbitrary strings, not keywords, and must not be constrained to this set)."""
+    arbitrary strings, not keywords, and must not be constrained to this set).
+
+    Review round 1 (minor): the list form of `items` and the schema form of
+    `additionalProperties` are followed too, so a future edit cannot hide an unsupported keyword
+    in a nested position this walk does not reach.
+    """
     yield schema
     properties = schema.get("properties")
     if isinstance(properties, dict):
@@ -512,21 +518,45 @@ def _schema_nodes(schema: dict):
     items = schema.get("items")
     if isinstance(items, dict):
         yield from _schema_nodes(items)
+    elif isinstance(items, list):
+        for item_schema in items:
+            if isinstance(item_schema, dict):
+                yield from _schema_nodes(item_schema)
     for branch in schema.get("anyOf") or []:
         if isinstance(branch, dict):
             yield from _schema_nodes(branch)
+    extra = schema.get("additionalProperties")
+    if isinstance(extra, dict):
+        yield from _schema_nodes(extra)
 
 
 @pytest.mark.parametrize("schema", [ANNOTATE_SCHEMA, VETO_SCHEMA, RATIONALE_SCHEMA],
-                        ids=["annotate", "veto", "rationale"])
+                         ids=["annotate", "veto", "rationale"])
 def test_schema_uses_only_the_supported_keyword_subset(schema):
     for node in _schema_nodes(schema):
         offenders = set(node) - _ALLOWED_SCHEMA_KEYWORDS
         assert not offenders, f"{offenders} not in the supported subset (node={node})"
 
 
+@pytest.mark.parametrize("hidden", [
+    {"type": "object", "properties": {"a": {"type": "string", "maxLength": 10}}},
+    {"type": "object", "properties": {"a": {"type": "array",
+                                            "items": {"type": "string", "maxLength": 10}}}},
+    {"type": "object", "properties": {"a": {"type": "array",
+                                            "items": [{"type": "string", "maxLength": 10}]}}},
+    {"type": "object", "properties": {"a": {"anyOf": [{"type": "number", "minimum": 0}]}}},
+    {"type": "object", "additionalProperties": {"type": "string", "maxLength": 10}},
+], ids=["property", "items", "items-list", "anyOf", "additionalProperties"])
+def test_the_keyword_walk_finds_a_keyword_hidden_at_any_depth(hidden):
+    """Review round 1 (minor): the guard above is only worth having if it cannot be satisfied by
+    a schema that buries an unsupported keyword one level down. Each of these must be caught."""
+    offenders = {key for node in _schema_nodes(hidden)
+                 for key in set(node) - _ALLOWED_SCHEMA_KEYWORDS}
+    assert offenders
+
+
 @pytest.mark.parametrize("schema", [ANNOTATE_SCHEMA, VETO_SCHEMA, RATIONALE_SCHEMA],
-                        ids=["annotate", "veto", "rationale"])
+                         ids=["annotate", "veto", "rationale"])
 def test_schema_still_forbids_additional_properties(schema):
     """The keyword walk above only removes keywords; it must not have removed the contract that
     keeps the model from inventing fields."""
@@ -669,8 +699,8 @@ def test_the_notes_row_carries_the_error_detail(db_session):
                         snippets={"items": [], "truncated": False}, error="BadRequestError",
                         error_detail="schema.bullets: unsupported keyword maxItems")
     write_notes(db_session, call_id=uuid.uuid4(), kind="veto", subject_id="1", effort="high",
-               prompt_hash="x" * 64, features={}, results=[result],
-               created_at=datetime(2026, 9, 11, tzinfo=timezone.utc))
+                prompt_hash="x" * 64, features={}, results=[result],
+                created_at=datetime(2026, 9, 11, tzinfo=timezone.utc))
     db_session.flush()
     row = db_session.execute(text(
         "select output ->> 'error' as error, output ->> 'error_detail' as detail "
