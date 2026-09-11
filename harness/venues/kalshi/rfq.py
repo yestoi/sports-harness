@@ -24,6 +24,7 @@ prompt.
 """
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -345,7 +346,9 @@ def store_rfq(session: Session, event: RfqEvent, now: datetime) -> Rfq:
     return row
 
 
-def handle_frame(session: Session, msg, now: datetime) -> Rfq | None:
+def handle_frame(session: Session, msg, now: datetime,
+                  on_replay: Callable[[], None] | None = None,
+                  allow_quote: bool = True) -> Rfq | None:
     """One frame. Returns the stored row, or None when the frame was not an RFQ event.
 
     The counterfactual quote is computed **on arrival**, beside the row, because that is the only
@@ -357,12 +360,23 @@ def handle_frame(session: Session, msg, now: datetime) -> Rfq | None:
     savepoint, so anything it raises rolls back only the quote attempt -- never the `rfqs` row
     already written above, and never out of this function to take the caller's socket loop down
     with it. The row is returned either way.
+
+    **Fix 35, item 2: never recompute a quote already held.** The venue replays the whole open
+    RFQ set on every subscribe (journal 109: ten reconnects, 4,902 frames, in the 03:15-03:45 CT
+    incident), so a replayed `rfq_created` for an id `rfq_quotes` already has a row for is by far
+    the common case on a reconnect. `uq_rfq_quote_rfq` makes "already quoted" one indexed probe;
+    when it hits, the arrival is stored exactly as any other frame is and nothing else happens --
+    logged, and, when the caller is counting (the listener's `replayed`), passed to `on_replay`.
+
+    **Fix 35, item 4: the reconnect replay burst is bounded.** `allow_quote=False` (the
+    listener's `RFQ_REPLAY_MAX` budget, `harness/venues/kalshi/rfq_socket.py`) skips the quote
+    decision entirely, replay or not -- the frame is still stored as an arrival, never quoted.
     """
     event = parse_rfq_frame(msg)
     if event is None:
         return None
     row = store_rfq(session, event, now)
-    if event.kind == "rfq_created":
+    if event.kind == "rfq_created" and allow_quote:
         existing = session.execute(
             text("select 1 from rfq_quotes where rfq_id = :id"), {"id": row.id}).first()
         if existing is None:
@@ -374,6 +388,11 @@ def handle_frame(session: Session, msg, now: datetime) -> Rfq | None:
                     compute_quote(session, get_settings(), row, now)
             except Exception:  # noqa: BLE001 - the arrival must survive a quote failure
                 log.exception("computing the counterfactual quote for rfq %s failed", row.id)
+        else:
+            log.info("rfq listener: rfq %s already quoted; replayed frame stored, no recompute",
+                     row.id)
+            if on_replay is not None:
+                on_replay()
     return row
 
 

@@ -102,6 +102,39 @@ def test_a_repeated_create_does_not_duplicate(db_session, env_settings):
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
 
 
+# --- fix 35: cheap quotes -------------------------------------------------------------------
+
+def test_a_replayed_rfq_created_for_an_already_quoted_id_stores_and_recomputes_nothing(
+        db_session, env_settings):
+    """Item 2: the venue replays the whole open RFQ set on every subscribe (journal 109's
+    incident, ten reconnects in 30 minutes). A repeated `rfq_created` for an id `rfq_quotes`
+    already holds a row for must store the arrival and touch nothing else -- not a second quote
+    row, and `on_replay` is the one signal a caller gets that it happened."""
+    frame = _created(rfq_id="rfq_replay", legs=[])     # legs=[] declines single_leg, no fixtures
+    handle_frame(db_session, frame, NOW)
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
+
+    calls = []
+    row = handle_frame(db_session, frame, NOW + timedelta(minutes=1),
+                       on_replay=lambda: calls.append(1))
+    assert row is not None
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
+    assert calls == [1]
+
+
+def test_allow_quote_false_stores_the_arrival_and_never_quotes(db_session, env_settings):
+    """Item 4: the reconnect replay cap (`RFQ_REPLAY_MAX`,
+    `harness/venues/kalshi/rfq_socket.py`) skips the quote decision entirely through
+    `allow_quote=False` -- the frame is stored as an arrival like any other, even for a rfq the
+    listener has never seen before."""
+    frame = _created(rfq_id="rfq_over_cap", legs=[])
+    row = handle_frame(db_session, frame, NOW, allow_quote=False)
+    assert row is not None
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 0
+
+
 def test_the_raw_message_is_stored_capped_with_a_flag(db_session, env_settings):
     """Ruling B-M9 and D13: the raw message lives in `rfqs.raw` because the report needs the
     legs and no builder may read `raw_responses`. Capped at 8 KB with a flag."""
@@ -228,6 +261,39 @@ def test_the_listener_stores_an_arrival_off_the_socket(db_session, env_settings)
     listener.run_once(ws)
     listener.run_once(ws)
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
+
+
+def test_the_listener_counts_a_replayed_arrival_through_the_socket(db_session, env_settings):
+    """Item 2, end to end: the listener's own `replayed` counter is what `on_replay` feeds."""
+    frame = _created(rfq_id="rfq_replay_socket", legs=[])
+    ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}, frame, frame])
+    listener = _listener(db_session, env_settings, ws)
+    listener.subscribe(ws)
+    listener.run_once(ws)      # the ack
+    listener.run_once(ws)      # the first rfq_created -> quoted
+    listener.run_once(ws)      # the replay
+    assert listener.replayed == 1
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
+
+
+def test_the_replay_cap_stores_every_arrival_and_quotes_at_most_the_cap(db_session, env_settings,
+                                                                        monkeypatch):
+    """Item 4: `RFQ_REPLAY_MAX` bounds how many `rfq_created` frames after one `subscribe()` may
+    reach the quote decision at all -- every frame past the cap is still stored (H5's denominator
+    never loses an arrival to it), it is just never quoted."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    monkeypatch.setattr(rfq_socket_mod, "RFQ_REPLAY_MAX", 3)
+    n = 6
+    frames = ([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}]
+             + [_created(rfq_id=f"rfq_replay_cap_{i}", legs=[]) for i in range(n)])
+    ws = FakeWs(frames)
+    listener = _listener(db_session, env_settings, ws)
+    listener.subscribe(ws)
+    for _ in range(1 + n):
+        listener.run_once(ws)
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == n
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 3
 
 
 def test_a_quote_event_is_counted_and_dropped(db_session, env_settings):

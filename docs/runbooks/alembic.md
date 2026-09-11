@@ -26,13 +26,14 @@ path anywhere: `harness/db/migrate.py` builds the `Config` in code, so every ope
 | Revision | Follows | Adds | `downgrade()` |
 |---|---|---|---|
 | `0004_phase5` | `0003_brin_autosummarize` | the research layer's ten tables (`futures_snapshots`, `weather_points`, `weather_snapshots`, `veto_queue`, `research_notes`, `veto_decisions`, `research_spend`, `report_annotations`, `rfqs`, `rfq_quotes`) and the `veto_h9` view | `pass` (additive only, roadmap invariant 5; see the module docstring for why rolling one of these back is never a schema operation) |
+| `0005_rfq_lookup` | `0004_phase5` | `ix_fair_leg_lookup` on `fair_values (game_id, market_type, outcome_team_id, outcome_side, threshold, created_at desc) where fair_source = 'direct'`, built CONCURRENTLY — the covering index the RFQ quote's `_LEG` lateral and `rfq_grade`'s `_CLOSING_LEG` lateral both read (fix 35, journal 109's incident; see `docs/runbooks/research.md`'s "Fix 35: cheap quotes and the reconnect replay cap") | `pass` (additive only, roadmap invariant 5) |
 
-The stamp moves from `0003_brin_autosummarize` to `0004_phase5` only under the **full**
-`make deploy-nas` recipe, whose `harness migrate ensure` step is the only place `upgrade_head`
-runs. A `make deploy-nas-app` deploy during the phase legitimately leaves `alembic_version`
-reading `0003_brin_autosummarize`: that recipe runs `init-db` and never `migrate ensure`, and the
-ten tables and the view are created (or already exist) either way, since `create_schema` and the
-migration are additive mirrors of each other.
+The stamp moves from `0003_brin_autosummarize` to `0004_phase5`, and from `0004_phase5` to
+`0005_rfq_lookup`, only under the **full** `make deploy-nas` recipe, whose `harness migrate
+ensure` step is the only place `upgrade_head` runs. A `make deploy-nas-app` deploy during a phase
+legitimately leaves `alembic_version` reading the prior revision: that recipe runs `init-db` and
+never `migrate ensure`, and whatever the revision adds is created (or already exists) either way,
+since `create_schema` and the migration are additive mirrors of each other.
 
 ## Rolling back
 

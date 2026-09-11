@@ -118,6 +118,37 @@ journal, never act on it. The market tape is on a different socket and is unaffe
 that with `select max(ts) from orderbook_events`. To turn the listener off:
 `RFQ_LISTENER_ENABLED=0` in `deploy/nas.env`, then `docker compose restart app-ws`.
 
+### Fix 35: cheap quotes and the reconnect replay cap
+
+The 03:15-03:45 CT incident (journal 109): the venue replays the whole open RFQ set on every
+subscribe, and reconnected ten times in thirty minutes — 4,902 frames, almost all combos on
+non-football series the harness never prices. Every leg of every one used to run the fair-value
+lookup (`_LEG` in `harness/venues/kalshi/rfq_quote.py`) before deciding there was nothing to
+find; the executor's own loop went from single-digit seconds to 235-336 s under the same window's
+`pg_dump`, and eleven quote computations hit the 30 s statement timeout. The controller set
+`RFQ_LISTENER_ENABLED=0` at 03:44 CT (see "To turn the listener off" above).
+
+Two changes came out of it:
+
+- **Cheap declines.** `single_leg`, `same_game`, and `no_fair` for a leg whose `event_ticker`
+  does not start with `KXNFL`/`KXNCAAF` (or whose `market_ticker` is not in `venue_markets` at
+  all) are now decided from `venue_markets` alone — `compute_quote` never touches `fair_values`
+  for a combo that cannot possibly have a fair. Only a combo whose every leg is a priced football
+  market reaches the fair-value lookup, and that lookup now runs against `ix_fair_leg_lookup`
+  (fix 35's migration `0005_rfq_lookup`), a covering index on the lateral's own five-column shape
+  instead of the wider `ix_fair_game_type_created`.
+- **The reconnect replay is bounded.** `RFQ_REPLAY_MAX = 500`
+  (`harness/venues/kalshi/rfq_socket.py`): at most the first 500 `rfq_created` frames after one
+  `subscribe()` reach the quote decision at all. Every frame past that is still stored as an
+  arrival — H5's denominator never loses one to this — it is simply never quoted, until the next
+  `subscribe()` resets the budget. Combined with the existing "already quoted" skip (an
+  `rfq_quotes` row already present for the id, which is now also logged and counted in the
+  listener's own `replayed` as a distinct case from the cap), one connection's replay burst can
+  no longer run an unbounded number of fair-value lookups back to back.
+
+Re-enabling the listener after this fix is the same switch as turning it off, in reverse:
+`RFQ_LISTENER_ENABLED=1` in `deploy/nas.env`, then `docker compose restart app-ws`.
+
 ## What is never done here
 
 No quote is sent. `POST /communications/quotes` is refused by the transport before signing and

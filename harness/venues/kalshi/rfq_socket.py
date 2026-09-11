@@ -47,6 +47,16 @@ log = logging.getLogger(__name__)
 SUBSCRIBE_ID = 1
 #: The backoff ceiling, the same shape the recorder uses.
 BACKOFF_MAX_S = 60.0
+#: Fix 35, item 4. The venue replays the whole open RFQ set on every subscribe -- 2,613 distinct
+#: RFQs across 4,902 frames over ten reconnects in the 03:15-03:45 CT incident (journal 109).
+#: Most of that replay is frames `handle_frame` already skips for free (item 2: an id
+#: `rfq_quotes` already holds), but a reconnect early in the season, or after a long idle, can
+#: still hand the listener a burst of genuinely new RFQs all at once. This bounds how many
+#: `rfq_created` frames after a `subscribe()` may reach the quote decision at all: the first
+#: `RFQ_REPLAY_MAX` do, every frame after that is still stored as an arrival (`store_rfq`, inside
+#: `handle_frame`) and never quoted, so one connect's burst can never run an unbounded number of
+#: `compute_quote` calls back to back. Documented in `docs/runbooks/research.md`.
+RFQ_REPLAY_MAX = 500
 #: The signed path of the WebSocket handshake, the same one the recorder signs.
 WS_SIGN_PATH = "/trade-api/ws/v2"
 
@@ -78,9 +88,14 @@ class RfqListener:
         self.idle_until: datetime | None = None
         self.quote_events_dropped = 0
         self.arrivals = 0
+        #: Fix 35, item 2: an `rfq_created` for an id already quoted -- stored, never recomputed.
+        self.replayed = 0
         self._sid: int | None = None
         self._subscribed_at: float = 0.0
         self._timeouts = 0
+        #: Fix 35, item 4: `rfq_created` frames seen since the last `subscribe()`. Reset there,
+        #: not on connect, so a `_sid` that never acks does not grant a fresh budget on its own.
+        self._created_since_subscribe = 0
         # The signing clock offset, carried across reconnects. It only ever moves on a 401 that
         # came back with a usable `Date`; there is no HTTP client here to ask for the time.
         self._offset_ms = 0
@@ -155,6 +170,8 @@ class RfqListener:
         self._sid = None
         self._subscribed_at = time.monotonic()
         self._timeouts = 0
+        # Fix 35, item 4: a fresh `RFQ_REPLAY_MAX` budget for this connection's replay burst.
+        self._created_since_subscribe = 0
 
     # -- the loop ------------------------------------------------------------------------
 
@@ -199,12 +216,23 @@ class RfqListener:
             log.info("rfq listener dropped a quote event; untrusted venue text: type=%r",
                      sanitize_venue_text(kind, 32))
             return True
+        # Fix 35, item 4: only the first RFQ_REPLAY_MAX `rfq_created` frames since this
+        # connection's subscribe() reach the quote decision; every one past that is still stored
+        # as an arrival (inside handle_frame) and never quoted.
+        allow_quote = True
+        if kind == "rfq_created":
+            allow_quote = self._created_since_subscribe < RFQ_REPLAY_MAX
+            self._created_since_subscribe += 1
         with self._factory() as session:
-            row = handle_frame(session, msg, self._clock())
+            row = handle_frame(session, msg, self._clock(), on_replay=self._count_replay,
+                               allow_quote=allow_quote)
             if row is not None:
                 session.commit()
                 self.arrivals += 1
         return True
+
+    def _count_replay(self) -> None:
+        self.replayed += 1
 
     def _on_timeout(self) -> bool:
         """Silence. Two ways it is fatal to this socket and one way it is nothing.

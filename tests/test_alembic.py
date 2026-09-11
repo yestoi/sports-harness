@@ -313,10 +313,10 @@ def test_no_migration_creates_a_bulk_index_outside_concurrent_index(path):
             assert table not in match.group(1), f"{path.name}: {table} outside concurrent_index"
 
 
-def test_the_versions_directory_holds_four_revisions():
+def test_the_versions_directory_holds_five_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
-        "0004_phase5.py"]
+        "0004_phase5.py", "0005_rfq_lookup.py"]
 
 
 def _load_baseline():
@@ -588,13 +588,13 @@ def test_the_orders_key_index_is_in_both_catalogues(two_databases):
 
 # --- phase 5: revision 0004 -----------------------------------------------------------------
 
-def test_phase5_follows_brin_autosummarize_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_phase5_follows_brin_autosummarize():
+    """The head assertion this test used to carry moved to
+    `test_rfq_lookup_follows_phase5_and_is_the_pinned_head`: 0004 is a link in the chain now,
+    not its end, the same trim fix 32 gave 0003 when phase 5 landed."""
     module = _load_revision("0004_phase5.py")
     assert module.revision == "0004_phase5"
     assert module.down_revision == "0003_brin_autosummarize"
-    assert HEAD_REVISION == "0004_phase5"
 
 
 def test_the_phase5_downgrade_is_a_no_op_and_drops_nothing():
@@ -631,3 +631,52 @@ def test_the_veto_h9_view_definition_agrees_between_schema_and_migration():
 
     migration = (ROOT / "migrations" / "versions" / "0004_phase5.py").read_text()
     assert _VETO_H9_VIEW.strip() in migration
+
+
+# --- fix 35: revision 0005 -------------------------------------------------------------------
+
+def test_rfq_lookup_follows_phase5_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0005_rfq_lookup.py")
+    assert module.revision == "0005_rfq_lookup"
+    assert module.down_revision == "0004_phase5"
+    assert HEAD_REVISION == "0005_rfq_lookup"
+
+
+def test_the_rfq_lookup_downgrade_is_a_no_op_and_drops_nothing():
+    module = _load_revision("0005_rfq_lookup.py")
+    assert module.downgrade() is None
+    body = (ROOT / "migrations" / "versions" / "0005_rfq_lookup.py").read_text().lower()
+    for word in ("drop ", "truncate", "delete from"):
+        assert word not in body, f"0005_rfq_lookup contains {word!r}"
+
+
+def test_the_rfq_lookup_index_is_in_both_catalogues(two_databases):
+    """Fix 35 adds `ix_fair_leg_lookup` to both `create_schema`'s `_CONCURRENT_INDEX_DDL` and
+    this revision, in the same commit: the catalogue diff fails if either half lands without the
+    other, the same shape `test_the_orders_key_index_is_in_both_catalogues` checks for phase
+    4.5's `ix_orders_key_placed`."""
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        indexes = {i["name"] for i in inspect(engine).get_indexes("fair_values")}
+        assert "ix_fair_leg_lookup" in indexes
+
+
+def test_the_rfq_lookup_ddl_agrees_between_schema_and_migration():
+    """The two copies (`harness/db/schema.py`'s `_CONCURRENT_INDEX_DDL` entry and this
+    revision's `_INDEX_DDL`) must be the identical statement, not just produce indexes with the
+    same name: `_LEG` and `_CLOSING_LEG` are keyed on this index's exact column order and
+    partial predicate, and a drift between the two copies would only show up as a seq scan on
+    whichever path built the database, not as a test failure anywhere else. Compared as the
+    Python string values each module actually executes, not as raw file text -- the two copies
+    are free to line-wrap differently and still agree."""
+    from harness.db.schema import _CONCURRENT_INDEX_DDL
+
+    schema_stmt = next(s for s in _CONCURRENT_INDEX_DDL if "ix_fair_leg_lookup" in s)
+    module = _load_revision("0005_rfq_lookup.py")
+    assert module._INDEX_DDL == schema_stmt

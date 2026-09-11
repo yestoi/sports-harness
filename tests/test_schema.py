@@ -588,7 +588,10 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     # reads through) = 81.
     # + 1 (phase 5 T19 fix round 1: ix_veto_decisions_signal_created, the index t7's window
     # filter on `veto_decisions.signal_created_at` needs) = 82.
-    assert len(ddl) == 82, [s for s, _, _ in ddl]
+    # + 1 (fix 35: ix_fair_leg_lookup, the covering index the RFQ quote's `_LEG` lateral and
+    # `rfq_grade`'s `_CLOSING_LEG` lateral both read, run CONCURRENTLY from
+    # _CONCURRENT_INDEX_DDL -- it still matches the "create index" prefix filter above) = 83.
+    assert len(ddl) == 83, [s for s, _, _ in ddl]
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.

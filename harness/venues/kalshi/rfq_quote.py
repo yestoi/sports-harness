@@ -13,6 +13,17 @@ distinctness and is counted in `unmatched_legs`, so a reader can see the quote r
 test. A leg with no `direct` sharp fair declines `no_fair`; one over the disagreement threshold
 declines `disagreement`.
 
+**Fix 35: `no_fair` is decided before any fair lookup, wherever it can be.** The 03:15-03:45 CT
+incident (journal 109) was 4,902 frames in 30 minutes, almost all combos on non-football series
+(`KXMVECROSSCATEGORY-SHARD1-...`), every leg of every one running the `fair_values` lateral in
+`_LEG` to find nothing -- 16,264 rows scanned to keep 236, 14 s cold. A leg whose `event_ticker`
+does not start with a football prefix this harness prices (`KXNFL`/`KXNCAAF`), or whose
+`market_ticker` has no `venue_markets` row at all, can never carry a `direct` fair: `_venue_only`
+answers that from `venue_markets` alone (a unique-indexed lookup on `ticker`, no
+`fair_values` touched), and `compute_quote` declines `no_fair` -- and `single_leg` and
+`same_game`, which need only the same cheap resolution -- before `resolve_legs` (the expensive
+lateral) ever runs. Only a combo whose every leg is a priced football market reaches it.
+
 **Both fee branches are stored** (F72, ruling A-I2). F72 subtracts a maker fee only when the
 combo is *not* NFL-only-independent, and that test has two readings -- all component games
 distinct, or all component events distinct. Both are computed and both are stored, with the
@@ -70,6 +81,12 @@ FAIR_MAX_AGE = timedelta(minutes=10)
 #: `FOOTBALL_SERIES`, which also carries the three `KXNCAAF*` series -- F72 says NFL, and a
 #: college leg makes the combo not independent.
 _NFL_PREFIX = "KXNFL"
+#: Fix 35: the family test for whether a leg can have a fair *at all* -- both football families
+#: this harness prices, not just F72's NFL-only one above. `KXNFL` alone would decline every
+#: `KXNCAAFGAME` leg `no_fair` before it ever got a chance to resolve one, which is wrong: the
+#: incident's combos were on neither family (`KXMVECROSSCATEGORY-SHARD1-...`), and this is the
+#: cheap gate that catches those without a `fair_values` read.
+_FOOTBALL_PREFIXES = ("KXNFL", "KXNCAAF")
 
 
 @dataclass(frozen=True)
@@ -82,6 +99,30 @@ class LegFair:
     stale: bool
 
 
+@dataclass(frozen=True)
+class LegVenue:
+    """A leg's identity alone -- `venue_markets`, never `fair_values`. What `single_leg`,
+    `same_game` and the fix-35 `no_fair` precheck need, and all any of them may cost."""
+    market_ticker: str
+    event_ticker: str
+    game_id: int | None
+
+
+#: Fix 35: the cheap half of what `_LEG` below reads -- `venue_markets` alone, keyed on its
+#: unique `ticker`, no `fair_values` touched. `_venue_only` runs this for every leg before
+#: `compute_quote` decides whether the combo is even eligible for `resolve_legs`.
+_LEG_VENUE = text("select vm.game_id, vm.event_ticker from venue_markets vm where vm.ticker = "
+                  ":ticker")
+
+#: Fix 35: served by `ix_fair_leg_lookup` (`harness/db/schema.py`'s `_CONCURRENT_INDEX_DDL`) --
+#: `(game_id, market_type, outcome_team_id, outcome_side, threshold, created_at desc) where
+#: fair_source = 'direct'` is exactly this lateral's five equality predicates (in that order)
+#: plus its sort, under its own partial predicate. Before the fix this ran for every leg of
+#: every combo, including the incident's non-football ones, which had no chance of a hit and
+#: still walked `ix_fair_game_type_created`'s wider (game_id, market_type, created_at) index down
+#: to the newest row and read every candidate in the range to apply the rest of the predicates
+#: by hand rather than through the index. `compute_quote` (fix 35) now calls this only for a
+#: combo every one of whose legs is already known, cheaply, to be a priced football market.
 _LEG = text("""
     select vm.game_id, vm.event_ticker, vm.market_type, vm.side_team_id, vm.side,
            f.fair_p, f.disagreement, f.created_at
@@ -104,8 +145,36 @@ _LEG = text("""
 """)
 
 
+def _venue_only(session: Session, legs: list[dict]) -> list[LegVenue]:
+    """Fix 35: each leg's game and event, from `venue_markets` alone. Cheap enough to run on
+    every arrival regardless of what the combo turns out to be: one unique-indexed lookup per
+    leg, never `fair_values`."""
+    out: list[LegVenue] = []
+    for leg in legs:
+        ticker = leg.get("market_ticker") or ""
+        row = session.execute(_LEG_VENUE, {"ticker": ticker}).first()
+        if row is None:
+            out.append(LegVenue(ticker, str(leg.get("event_ticker") or ""), None))
+        else:
+            out.append(LegVenue(ticker, row.event_ticker or str(leg.get("event_ticker") or ""),
+                                row.game_id))
+    return out
+
+
+def _is_football(leg: LegVenue) -> bool:
+    """Fix 35: whether this leg could possibly have a `direct` fair -- resolved in
+    `venue_markets` *and* on a series this harness prices. Neither half is optional: an
+    unmatched ticker has no game to price against, and a matched one on, say,
+    `KXMVECROSSCATEGORY-SHARD1-...` (the incident's combos) is never going to find one either."""
+    return leg.game_id is not None and (leg.event_ticker or "").startswith(_FOOTBALL_PREFIXES)
+
+
 def resolve_legs(session: Session, legs: list[dict], as_of: datetime) -> list[LegFair]:
-    """Each leg's game and its newest `direct` fair value as of the arrival."""
+    """Each leg's game and its newest `direct` fair value as of the arrival.
+
+    Fix 35: `compute_quote` calls this only once the cheap `_venue_only` resolution has already
+    cleared `single_leg`, `same_game` and the "not a priced football market" `no_fair` precheck,
+    so every leg this reaches is one that could actually resolve a fair."""
     out: list[LegFair] = []
     for leg in legs:
         ticker = leg.get("market_ticker") or ""
@@ -134,9 +203,9 @@ def nfl_only_independent(legs: list[LegFair], key: str) -> bool:
     return len(set(values)) == len(values)
 
 
-def _decline(rfq, now: datetime, legs: list[LegFair], reason: str, margin: Decimal,
+def _decline(rfq, now: datetime, legs_count: int, reason: str, margin: Decimal,
              unmatched: int) -> RfqQuote:
-    return RfqQuote(rfq_id=rfq.id, computed_at=now, legs=len(legs), fair=None,
+    return RfqQuote(rfq_id=rfq.id, computed_at=now, legs=legs_count, fair=None,
                     margin_per_leg=margin, yes_bid=None, no_bid=None,
                     fee_branch_game=None, fee_branch_event=None, fee_subtracted=None,
                     yes_bid_other_branch=None, no_bid_other_branch=None,
@@ -144,28 +213,47 @@ def _decline(rfq, now: datetime, legs: list[LegFair], reason: str, margin: Decim
 
 
 def compute_quote(session: Session, settings, rfq, now: datetime) -> RfqQuote:
-    """One stored quote (or decline) for one arrival. Never sends anything."""
-    margin = Decimal(str(settings.rfq_margin_per_leg))
-    legs = resolve_legs(session, rfq.legs or [], now)
-    unmatched = sum(1 for leg in legs if leg.game_id is None)
+    """One stored quote (or decline) for one arrival. Never sends anything.
 
-    if len(legs) < 2:
-        quote = _decline(rfq, now, legs, DECLINE_SINGLE_LEG, margin, unmatched)
+    Fix 35: `single_leg`, `same_game` and "no leg here could ever have a fair" are decided from
+    `_venue_only`'s cheap `venue_markets`-only resolution, before `resolve_legs` -- the lateral
+    join into `fair_values` -- runs at all. Only a combo that clears all three reaches it.
+    """
+    margin = Decimal(str(settings.rfq_margin_per_leg))
+    raw_legs = rfq.legs or []
+    venue_legs = _venue_only(session, raw_legs)
+    unmatched = sum(1 for leg in venue_legs if leg.game_id is None)
+
+    if len(venue_legs) < 2:
+        quote = _decline(rfq, now, len(venue_legs), DECLINE_SINGLE_LEG, margin, unmatched)
         session.add(quote)
         return quote
 
     # 0.11: game-level distinctness, with an event-level fallback for legs that did not resolve.
-    keys = [leg.game_id if leg.game_id is not None else f"e:{leg.event_ticker}" for leg in legs]
+    keys = [leg.game_id if leg.game_id is not None else f"e:{leg.event_ticker}"
+            for leg in venue_legs]
     if len(set(keys)) != len(keys):
-        quote = _decline(rfq, now, legs, DECLINE_SAME_GAME, margin, unmatched)
+        quote = _decline(rfq, now, len(venue_legs), DECLINE_SAME_GAME, margin, unmatched)
         session.add(quote)
         return quote
+    if any(not _is_football(leg) for leg in venue_legs):
+        # Fix 35: the incident's decline -- a leg on a series this harness never prices
+        # (`KXMVECROSSCATEGORY-SHARD1-...`) or with no `venue_markets` row at all can never
+        # carry a `direct` fair, so the whole combo declines `no_fair` here, before
+        # `resolve_legs` touches `fair_values` for a single leg of it.
+        quote = _decline(rfq, now, len(venue_legs), DECLINE_NO_FAIR, margin, unmatched)
+        session.add(quote)
+        return quote
+
+    legs = resolve_legs(session, raw_legs, now)
     if any(leg.fair_p is None or leg.stale for leg in legs):
-        quote = _decline(rfq, now, legs, DECLINE_NO_FAIR, margin, unmatched)
+        # A leg that passed the cheap football precheck but still has no current `direct` fair
+        # (stale, or genuinely unpriced -- e.g. a bye-week or not-yet-primed game) declines here.
+        quote = _decline(rfq, now, len(legs), DECLINE_NO_FAIR, margin, unmatched)
         session.add(quote)
         return quote
     if any(leg.disagreement is not None and leg.disagreement > DISAGREEMENT_MAX for leg in legs):
-        quote = _decline(rfq, now, legs, DECLINE_DISAGREEMENT, margin, unmatched)
+        quote = _decline(rfq, now, len(legs), DECLINE_DISAGREEMENT, margin, unmatched)
         session.add(quote)
         return quote
     fair = Decimal("1")
@@ -178,7 +266,7 @@ def compute_quote(session: Session, settings, rfq, now: datetime) -> RfqQuote:
     # refusal gets its own reason rather than being filed as "we had no price".
     exposure = exposure_usd(rfq, fair)
     if exposure is not None and exposure > Decimal(str(settings.rfq_collateral_cap_usd)):
-        quote = _decline(rfq, now, legs, DECLINE_COLLATERAL, margin, unmatched)
+        quote = _decline(rfq, now, len(legs), DECLINE_COLLATERAL, margin, unmatched)
         session.add(quote)
         return quote
 

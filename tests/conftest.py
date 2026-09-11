@@ -1084,6 +1084,25 @@ def wrong_line_rfq(db_session):
 
 
 @pytest.fixture
+def non_football_leg_rfq(db_session):
+    """Fix 35: one football leg with a `direct` fair, one leg on a series this harness never
+    prices -- `KXMVECROSSCATEGORY-SHARD1-...`, the incident's own shape (journal 109). The leg
+    still resolves in `venue_markets` (a game_id and all), it simply cannot have a fair: the
+    combo must decline `no_fair` from the cheap `venue_markets`-only check alone, without
+    `resolve_legs` ever touching `fair_values` for either leg."""
+    g1, g2 = _rfq_game(db_session, "NFA"), _rfq_game(db_session, "NFB")
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-NFA-T1", event_ticker="KXNFLGAME-NFA",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.60"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    vm2 = _rfq_market(db_session, ticker="KXMVECROSSCATEGORY-SHARD1-NFB",
+                      event_ticker="KXMVECROSSCATEGORY-SHARD1",
+                      series_ticker="KXMVECROSSCATEGORY", game_id=g2.id, fair_p=None,
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-NON-FOOTBALL", [_rfq_leg(vm1), _rfq_leg(vm2)])
+    return SimpleNamespace(frame=frame)
+
+
+@pytest.fixture
 def mixed_family_rfq(db_session):
     """Review M9: one NFL leg and one NCAAF leg on two games. F72's independence test fails
     under both readings here (not every component event is `KXNFL*`), so Kalshi's real maker fee

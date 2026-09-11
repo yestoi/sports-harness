@@ -56,6 +56,12 @@ _UNGRADED = text("""
     order by q.computed_at
 """)
 
+# Fix 35: served by `ix_fair_leg_lookup` (`harness/db/schema.py`'s `_CONCURRENT_INDEX_DDL`) --
+# `(game_id, market_type, outcome_team_id, outcome_side, threshold, created_at desc) where
+# fair_source = 'direct'` covers this lateral's five equality predicates and its sort, the same
+# index `_LEG` in `harness/venues/kalshi/rfq_quote.py` reads. The `created_at <= g.kickoff_utc`
+# bound below is a range on the index's trailing (descending) column, so the scan still starts
+# from the newest row and stops at the first one at or before kickoff.
 _CLOSING_LEG = text("""
     select f.fair_p, f.created_at, g.status, g.kickoff_utc, g.home_score, g.away_score
     from venue_markets vm

@@ -63,6 +63,39 @@ def test_a_leg_with_no_direct_fair_declines_no_fair(db_session, env_settings, de
         "select declined_reason from rfq_quotes")).scalar() == DECLINE_NO_FAIR
 
 
+def test_a_non_football_leg_declines_no_fair_without_touching_fair_values(
+        db_session, env_settings, non_football_leg_rfq, monkeypatch):
+    """Fix 35: the incident's combos (journal 109) were almost entirely on non-football series
+    (`KXMVECROSSCATEGORY-SHARD1-...`), and every leg of every one ran the `fair_values` lateral
+    to find nothing. A leg whose `event_ticker` is not `KXNFL*`/`KXNCAAF*` can never have a
+    fair, so the whole combo must decline `no_fair` from the cheap `venue_markets`-only check
+    alone -- `resolve_legs` (the lateral into `fair_values`) must never run."""
+    def _boom(*_a, **_k):
+        raise AssertionError("resolve_legs ran for a combo with a non-football leg")
+
+    monkeypatch.setattr("harness.venues.kalshi.rfq_quote.resolve_legs", _boom)
+    handle_frame(db_session, non_football_leg_rfq.frame, NOW)
+    row = db_session.execute(text("select declined_reason from rfq_quotes")).first()
+    assert row is not None, ("resolve_legs raised (see above): compute_quote touched "
+                             "fair_values for a leg the harness never prices")
+    assert row.declined_reason == DECLINE_NO_FAIR
+
+
+def test_same_game_declines_before_any_fair_read(db_session, env_settings, same_game_rfq,
+                                                  monkeypatch):
+    """Fix 35: `same_game` needs only `venue_markets`, so it must decline before `resolve_legs`
+    ever runs -- not just before the `no_fair` check that used to follow it."""
+    def _boom(*_a, **_k):
+        raise AssertionError("resolve_legs ran for a same_game decline")
+
+    monkeypatch.setattr("harness.venues.kalshi.rfq_quote.resolve_legs", _boom)
+    handle_frame(db_session, same_game_rfq.frame, NOW)
+    row = db_session.execute(text("select declined_reason from rfq_quotes")).first()
+    assert row is not None, ("resolve_legs raised (see above): same_game must decline before "
+                             "any fair read")
+    assert row.declined_reason == DECLINE_SAME_GAME
+
+
 def test_a_leg_over_the_disagreement_threshold_declines(db_session, env_settings,
                                                         disagreeing_rfq):
     handle_frame(db_session, disagreeing_rfq.frame, NOW)
