@@ -232,3 +232,17 @@ def test_no_ticket_sql_names_a_forbidden_table():
     for table in ("orderbook_events", "venue_trades", "raw_responses", "odds_snapshots",
                   "venue_quotes"):
         assert table not in body
+
+
+#: Sunday 2026-09-13 20:00 CT: UTC's ISO week is already 38, Chicago's is still 37.
+SUNDAY_20_CT = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
+
+
+def test_the_budget_week_is_the_chicago_week_on_a_sunday_evening(db_session, env_settings):
+    """Addendum 0.1: a Sunday-evening build must spend against week 37's ledger, not week 38's."""
+    db_session.add(ParlayLedger(ts=SUNDAY_20_CT - timedelta(days=1), card_id=1, kind="stake",
+                                amount=Decimal("20.00"), year=2026, week=37))
+    db_session.flush()
+    between = build_ticket(db_session, SUNDAY_20_CT, env_settings)["between"]
+    assert (between["year"], between["week"]) == (2026, 37)
+    assert between["budget_left"] == 30.0

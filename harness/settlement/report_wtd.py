@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from harness.report.tables import weekly_tables
 from harness.report.weekly import build_meta, persist_report
 from harness.settlement.job import Budget, StageResult, current_ctx, register_stage
+from harness.weeks import chicago_iso_week
 
 log = logging.getLogger(__name__)
 
@@ -64,8 +65,9 @@ def report_wtd_stage(session: Session, now: datetime, budget: Budget) -> StageRe
     if not _due(last, now, timedelta(seconds=settings.report_wtd_period_s)):
         return StageResult("report_wtd", {"skipped": True}, False, None)
 
-    iso = now.isocalendar()
-    year, week = iso.year, iso.week
+    # Addendum 0.1 / Amendment 5: the provisional run's week is the America/Chicago ISO week.
+    # A raw `now.isocalendar()` stamped a Sunday-evening rebuild with the *next* week's number.
+    year, week = chicago_iso_week(now)
     tables = weekly_tables(session, year, week, settings)
     meta = build_meta(session, settings, year, week, now=now)
     report_run_id = persist_report(session, tables, meta, year, week,

@@ -44,6 +44,7 @@ from harness.health import (CREDITS_LOW_FRACTION, CREDITS_WATCH_FRACTION, DB_BRO
                             WS_EVENT_BROKEN_S, WS_EVENT_WATCH_S)
 from harness.research.spend import spend_state
 from harness.telemetry import sanitize_reason
+from harness.weeks import chicago_iso_week
 
 log = logging.getLogger(__name__)
 
@@ -531,9 +532,9 @@ def rule_snapshot_stale(v) -> RuleResult:
     permanent BROKEN from the second week of operation, masking every real BROKEN behind it. The
     ages panel still lists every row, including the closed weeks.
     """
-    iso = v["now"].isocalendar()
+    year, week = chicago_iso_week(v["now"])
     judged = ({n for n in JUDGED_CADENCES if n != "study"}
-              | {f"study:{iso.year}-{iso.week}"})
+              | {f"study:{year}-{week}"})
     rows = [r for r in v["snapshots"] if r["name"] in judged]
     if not rows:
         return _absent("snapshot_stale", 2, "count")

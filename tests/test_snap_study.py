@@ -307,3 +307,23 @@ def test_no_study_sql_names_a_forbidden_table():
     for table in ("orderbook_events", "venue_trades", "raw_responses", "odds_snapshots",
                   "venue_quotes"):
         assert table not in body
+
+
+SUNDAY_20_CT = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
+
+
+def test_the_current_week_at_sunday_evening_ct_is_the_chicago_week(db_session, env_settings):
+    """Addendum 0.1: only the *current* week takes the newest run of either kind, so a
+    provisional week-37 run is buildable and stale at 20:00 CT Sunday. Under UTC's week the
+    same run would be a closed week with no final run, and nothing would be listed."""
+    _run(db_session, year=2026, week=37, provisional=True, generated_at=SUNDAY_20_CT)
+    db_session.flush()
+    assert stale_study_names(db_session, SUNDAY_20_CT) == ["study:2026-37"]
+
+    token = snapshots.current_name.set(None)
+    try:
+        payload = build_study(db_session, SUNDAY_20_CT, env_settings)
+    finally:
+        snapshots.current_name.reset(token)
+    assert (payload["year"], payload["week"]) == (2026, 37)
+    assert payload["provisional"] is True

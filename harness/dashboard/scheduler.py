@@ -65,6 +65,7 @@ from harness.dashboard.snapshots import ticket as _ticket
 from harness.dashboard.snapshots.pulse import FLOOR_P95_WINDOW
 from harness.dashboard.snapshots.study import stale_study_names
 from harness.dashboard.window import game_window_open
+from harness.weeks import chicago_iso_week
 
 log = logging.getLogger(__name__)
 
@@ -286,9 +287,10 @@ class SnapshotScheduler:
         now = now or datetime.now(timezone.utc)
         if "study" in snapshots.disabled_builders():
             return []
-        iso = now.isocalendar()
-        # Unpadded, matching `SNAPSHOT_NAME_RE`, `stale_study_names` and the Pulse rule.
-        names = [f"study:{iso.year}-{iso.week}"]
+        # Unpadded, matching `SNAPSHOT_NAME_RE`, `stale_study_names` and the Pulse rule; the
+        # America/Chicago week, matching every other week key (addendum 0.1).
+        year, week = chicago_iso_week(now)
+        names = [f"study:{year}-{week}"]
         try:
             with self._factory() as session:
                 stale = [n for n in stale_study_names(session, now) if n not in names]

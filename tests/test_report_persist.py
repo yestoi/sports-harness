@@ -125,3 +125,19 @@ def test_t12_cells_round_trip_with_their_composite_row_keys(db_session, env_sett
     assert "sharp_direct/rejected:edge" in keys
     by_col = {c.col_key for c in cells}
     assert "clv_rejected_gap_outcomes" in by_col
+
+
+#: Sunday 2026-09-13 20:00 CT. UTC has not rolled over yet, but `datetime.isocalendar()` on the
+#: UTC instant says week 38 while Chicago is still in week 37 (addendum 1.2).
+SUNDAY_20_CT = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
+
+
+def test_the_provisional_run_is_stamped_with_the_chicago_week(db_session, env_settings):
+    """Addendum 0.1: at Sunday 20:00 CT the week-to-date run belongs to week 37, not 38."""
+    assert SUNDAY_20_CT.isocalendar()[:2] == (2026, 38)
+    with use_ctx(new_ctx(settings=env_settings)):
+        result = report_wtd_stage(db_session, SUNDAY_20_CT, Budget(300, lambda: 0.0))
+        db_session.commit()
+    assert (result.counts["year"], result.counts["week"]) == (2026, 37)
+    row = db_session.query(ReportRun).one()
+    assert (row.year, row.week) == (2026, 37)

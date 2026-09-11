@@ -26,6 +26,7 @@ from harness.dashboard import sentences
 from harness.dashboard.snapshots import base_payload, register_builder, section
 from harness.parlay.needs import needs, score_state
 from harness.telemetry import sanitize_reason
+from harness.weeks import chicago_iso_week
 
 log = logging.getLogger(__name__)
 
@@ -247,15 +248,17 @@ def _season(session: Session) -> dict:
 def _between(session: Session, now: datetime) -> dict:
     """The state the surface is in for most of the week (spec §2.5 item 3): when the next card
     is built, the anchor rule, and what is left of this week's $50."""
-    iso = now.isocalendar()
+    # Addendum 0.1: the $50 is a weekly budget on the owner's calendar, so the ledger sum and
+    # the week the surface prints are both the America/Chicago ISO week.
+    year, week = chicago_iso_week(now)
     staked = Decimal(str(session.execute(
-        _WEEK_STAKED, {"year": iso.year, "week": iso.week}).scalar() or 0))
+        _WEEK_STAKED, {"year": year, "week": week}).scalar() or 0))
     # College cards are built on Friday, NFL cards on Saturday evening.
     next_day = "Friday" if now.weekday() < 4 else "Saturday evening"
     return {"next_build_day": next_day, "anchor_rule": ANCHOR_RULE,
             "budget_left": float(WEEKLY_BUDGET - staked),
             "weekly_budget": float(WEEKLY_BUDGET),
-            "year": iso.year, "week": iso.week}
+            "year": year, "week": week}
 
 
 def build_ticket(session: Session, now: datetime, settings: Settings) -> dict:

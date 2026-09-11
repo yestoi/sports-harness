@@ -754,3 +754,24 @@ def test_no_pulse_query_names_a_forbidden_table():
                            fromlist=["__file__"]).__file__).read_text().lower()
     for table in ("research_notes", "rfqs "):
         assert table not in body
+
+
+def test_the_judged_study_week_is_the_chicago_week(db_session, env_settings):
+    """Addendum 0.1: `rule_snapshot_stale` judges `study:2026-37` at 20:00 CT Sunday, which is
+    the name the scheduler is writing at that hour."""
+    from harness.dashboard.snapshots.pulse import rule_snapshot_stale
+
+    sunday_20_ct = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
+    values = _absent_values()
+    values["now"] = sunday_20_ct
+    values["snapshots"] = [
+        {"name": "study:2026-37", "generated_at": sunday_20_ct - timedelta(seconds=2400),
+         "elapsed_ms": 10, "error": None},
+        {"name": "study:2026-38", "generated_at": sunday_20_ct - timedelta(days=5),
+         "elapsed_ms": 10, "error": None},
+    ]
+    result = rule_snapshot_stale(values)
+    # 2400 s over Study's 600 s cadence is 4x: BROKEN, and only the week-37 row is judged. The
+    # week-38 row is five days old and would dominate if the judged set read UTC's week.
+    assert result.level == "broken"
+    assert result.value == pytest.approx(4.0)

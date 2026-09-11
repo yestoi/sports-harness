@@ -471,3 +471,15 @@ def test_the_study_job_builds_the_current_week_and_at_most_two_stale_ones(db_ses
     built = {row.name for row in db_session.query(DashboardSnapshot).all()}
     assert set(names) <= built
     assert len(built) == 1 + STUDY_STALE_PER_TICK
+
+
+SUNDAY_20_CT = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
+
+
+def test_the_current_study_name_is_the_chicago_week(db_session, env_settings, tmp_path):
+    """Addendum 0.1: the scheduler's "current week" name is `study:2026-37` at 20:00 CT Sunday,
+    the same name `stale_study_names` and Pulse read."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    names = SnapshotScheduler(factory, _settings(env_settings, tmp_path)).run_study(
+        now=SUNDAY_20_CT)
+    assert names[0] == "study:2026-37"

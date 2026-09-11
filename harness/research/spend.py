@@ -33,26 +33,22 @@ and journaled**; verify.md's phase 5 block carries the row that does it.
 """
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Sequence
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import ResearchSpend
+from harness.weeks import chicago_day, iso_week_bounds  # noqa: F401 - re-exported (D1)
 
 log = logging.getLogger(__name__)
 
 #: The four writers that share the caps (addendum 0.3, D10). `research_notes.kind` is the same
 #: vocabulary and the column is String(8), which "annotate" fills exactly.
 KINDS = ("veto", "annotate", "parlay", "study")
-
-#: America/Chicago. The cap resets on the owner's day, not on UTC's: the 09:00 CT journal line
-#: reads "today's spend" and has to mean the day the owner is living in.
-_TZ = ZoneInfo("America/Chicago")
 
 #: One million tokens, as a Decimal, so every price division stays exact.
 _MTOK = Decimal("1000000")
@@ -135,16 +131,10 @@ class BudgetRefused(RuntimeError):
 
 # --- the calendar ----------------------------------------------------------------------------
 
-def chicago_day(now: datetime) -> date:
-    """The America/Chicago calendar day `now` falls in."""
-    return now.astimezone(_TZ).date()
-
-
-def iso_week_bounds(day: date) -> tuple[date, date]:
-    """[Monday, Sunday] of `day`'s ISO week, inclusive on both ends -- the shape a `between`
-    predicate on a `date` column wants."""
-    monday = day - timedelta(days=day.weekday())
-    return monday, monday + timedelta(days=6)
+# `chicago_day` and `iso_week_bounds` moved to `harness/weeks.py` (addendum 0.1, D1): the
+# dashboard and the settlement stage need the same conversion and must not import the research
+# budget to get it. They are re-exported above so this module's own callers and
+# `tests/test_research_spend.py` are unchanged.
 
 
 # --- the cost model --------------------------------------------------------------------------

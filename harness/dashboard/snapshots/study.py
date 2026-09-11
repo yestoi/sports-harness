@@ -34,6 +34,7 @@ from harness.dashboard import sentences
 from harness.dashboard.snapshots import base_payload, current_name, register_builder, section
 from harness.report.tables import CONTRAST_BENCHMARK, week_bounds
 from harness.telemetry import sanitize_reason
+from harness.weeks import chicago_iso_week
 
 #: 600 s, unchanged by fix 31: it was already the slowest of the five, and what made Study
 #: expensive on the NAS was building every stale week in one tick, which the scheduler's own
@@ -151,16 +152,16 @@ def stale_study_names(session: Session, now: datetime | None = None) -> list[str
     is optional so the scheduler can call this with the session alone; tests pass it to pin the
     week rather than depend on the wall clock.
     """
-    current = (now or datetime.now(timezone.utc)).isocalendar()
+    cur_year, cur_week = chicago_iso_week(now or datetime.now(timezone.utc))
     stored = {row.name: row.run_id for row in session.execute(_STUDY_SNAPSHOTS)}
     # name -> the run id `build_study` would pick for that week today. A closed week with no
     # non-provisional run is simply absent, which is what stops the forever-stale loop.
     wanted: dict[str, int] = {f"study:{row.year}-{row.week}": row.id
                               for row in session.execute(_NEWEST_FINAL_PER_WEEK)}
     row = session.execute(_NEWEST_ANY_ID,
-                          {"year": current.year, "week": current.week}).first()
+                          {"year": cur_year, "week": cur_week}).first()
     if row is not None:
-        wanted[f"study:{current.year}-{current.week}"] = row.id
+        wanted[f"study:{cur_year}-{cur_week}"] = row.id
     return sorted(name for name, run_id in wanted.items() if stored.get(name) != str(run_id))
 
 
@@ -287,14 +288,14 @@ def _declined_rows(cells: dict) -> list[dict]:
 
 
 def build_study(session: Session, now: datetime, settings: Settings) -> dict:
-    name = current_name.get() or f"study:{now.isocalendar().year}-{now.isocalendar().week}"
+    current = chicago_iso_week(now)
+    name = current_name.get() or f"study:{current[0]}-{current[1]}"
     year, week = parse_week(name)
     payload = base_payload(name, now, settings, CADENCE_S)
     payload["year"], payload["week"] = year, week
     section(session, payload, "weeks", lambda: weeks_available(session))
 
-    current = now.isocalendar()
-    is_current = (year, week) == (current.year, current.week)
+    is_current = (year, week) == current
     run = session.execute(_NEWEST_ANY if is_current else _NEWEST_FINAL,
                           {"year": year, "week": week}).first()
     if run is None:
