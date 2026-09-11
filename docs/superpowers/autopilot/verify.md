@@ -287,6 +287,26 @@ select count(*) from rfq_quotes q
   where not exists (select 1 from rfqs r where r.id = q.rfq_id);   -- no quote without an rfq
 ```
 
+### Phase 6C additions, wave 1 (after the week-key and diagnostic deploy)
+
+This block runs from the wave-1 deploy onward, on every verification. The Sunday-evening rows can
+only be judged inside the window they name; outside it they are **deferred** with the wakeup time,
+never failed. Most of the Friday deploy window is inside quiet hours (01:00-08:00 CT), where the
+forced tick is skipped and the pricing, ERROR-line and signals rows are deferred to the 08:10 CT
+run, exactly as the time-of-day table already says.
+
+| Check | Expected |
+|---|---|
+| (i) Provisional run week key | `select year, week from report_runs where provisional order by generated_at desc limit 1`. **Sun 19:00-23:59 CT:** the Sunday's own Chicago week (37 on 2026-09-13), never the next one. **Any other hour:** the Chicago ISO week of `now`. Outside the Sunday window the row is judged on the second half alone; the discriminating case is **deferred** to the next Sunday 19:00 CT. |
+| (ii) Current study snapshot name | `select name from dashboard_snapshots where name like 'study:%' order by generated_at desc limit 1` equals `study:<chicago year>-<chicago week>`, unpadded. A padded or UTC-week name is a FAIL, not a cosmetic difference: `stale_study_names` keys on this string. |
+| (iii) Pulse's judged study week | `select payload->'status'->'all' from dashboard_snapshots where name = 'pulse'` — the `snapshot_stale` rule's judged set names the same `study:<year>-<week>` as row (ii). Read it through the rule's own value rather than by eye: a WATCH or BROKEN whose worst ratio comes from a *closed* week is the bug this row catches. |
+| (iv) Ticket week key | `select payload->'between'->>'year', payload->'between'->>'week' from dashboard_snapshots where name = 'ticket'` equals the Chicago ISO week. The `budget_left` beside it is that week's $50 less that week's stakes. |
+| (v) t13 present and first | After the Monday report: `select count(*) from report_cells where report_run_id = (select id from report_runs where provisional = false order by generated_at desc limit 1) and table_key = 't13'` is **> 0**, and `substring(markdown from position('## Table' in markdown) for 40)` on that same run names **t13** — the diagnostic is the first table on the page. Journal t13's `filled orders, week`, `counterfactual orders, week`, `runs with no fair, gap or signal count` and `orders under audit` values; they are the four numbers 6B and 6D are scoped against. |
+| (vi) Annotation of a prior week's report | **Mondays, after `harness report --week N` runs:** a `report_annotations` row for that run appears within the sweep that follows it (the research worker's own cadence), even though the report's ISO week is the *previous* one. `select r.id, r.year, r.week, r.generated_at, a.created_at from report_runs r left join report_annotations a on a.report_run_id = r.id where r.provisional = false order by r.generated_at desc limit 3`. Zero bullets is a legitimate answer and is journalled with the dropped count from `app-research`'s log. **Any other day:** deferred. |
+| (vii) Week-key invariant | `select count(*) from report_runs r where r.provisional and (r.year, r.week) <> ((extract(isoyear from (r.generated_at at time zone 'America/Chicago'))::int), (extract(week from (r.generated_at at time zone 'America/Chicago'))::int)) and r.generated_at > '<deploy time>'` = **0**. Rows generated before the deploy are outside the predicate by design: Amendment 5 records that the pre-fix range is empty, and this query proves it stays empty going forward. Any non-zero count is an integrity anomaly and a carried fix. |
+| Study's two labelled times (stand-in) | Until the Chrome bridge answers, this is the deterministic stand-in for the walker (design review Minor 7). `ssh … 'curl -sS -H "Authorization: Bearer $(cat /volume1/docker/sports-harness/secrets/dashboard_token)" http://localhost:<SERVE_PORT>/ui/js/study.mjs'` contains both `snapshot built` and `report cells from`; the same fetch of `pulse.mjs` contains `cell_age_s` and `cells from`; and `GET /api/snapshots/study:<year>-<week>` carries `now`, `generated_at` and a numeric `cell_age_s`. All three must hold. The pixels are re-scored by the walker at the first verification after the bridge answers, and until then this row is what wave 1 is accepted on. |
+| README §7 and the coded criteria | `tests/test_readme_gate.py` is the check and it runs in `make test`; this row exists so the verification names it. On a deploy whose diff touches `harness/report/gate.py`, confirm the branch suite was green on the deployed sha before accepting. |
+
 ## Layer 2b: invariants and plausibility bands
 
 **Invariants.** Every query must return 0. A non-zero row is an **integrity anomaly**: a carried
@@ -438,6 +458,7 @@ windows above:
 | Any hour, key present, budget under the caps | `veto_decisions` track `intents` inside the worker's lag; `research_spend` grows |
 | Any hour, budget exhausted | every new signal decides `veto_skipped_budget`; Pulse's `research_budget` reads WATCH; no Anthropic call is made until the next America/Chicago day |
 | 01:00–08:00, no game in progress | no weather fetch (the recorder is on its quiet cadence), no futures pass, the veto worker still sweeps |
+| Sunday 19:00-23:59 CT | the week-key rows (i)-(iv) are judged on the Sunday's own Chicago week; at every other hour they read the Chicago week of `now` and the discriminating case is deferred to the next Sunday 19:00 CT |
 
 ## Layer 3: deterministic summary check (every verify)
 
