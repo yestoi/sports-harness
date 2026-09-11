@@ -146,9 +146,12 @@ def export_ws_tape(session: Session, ticker: str, lower: datetime, upper: dateti
                    cap: int | None = None) -> dict:
     """One ticker's snapshot, deltas and prints over `[lower, upper]` (the Task 4 tape shape).
 
-    The snapshot is the newest one at or before `upper`, which is what a book anchors on; as in
-    the shipped sample, the deltas between it and the window are not carried, so the file
-    documents its own limits rather than pretending to rebuild the exact book at `lower`.
+    The snapshot is the newest one in `[lower - ANCHOR_LOOKBACK, upper]`, which is what a book
+    anchors on; as in the shipped sample, the deltas between it and the window are not carried,
+    so the file documents its own limits rather than pretending to rebuild the exact book at
+    `lower`. The lower bound applies to `export-fixture` too, not only to the capsule: a ticker
+    whose newest snapshot is more than `ANCHOR_LOOKBACK` old exports `snapshot: None` rather
+    than opening every weekly partition to find one (review I3).
     """
     if lower > upper:
         raise ValueError(f"--from {lower.isoformat()} is after --to {upper.isoformat()}")
