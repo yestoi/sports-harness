@@ -163,6 +163,21 @@ def _backed_off(session: Session, run_id: int, now: datetime) -> bool:
     return state is not None and state.value is not None and state.value > now.timestamp()
 
 
+def _write_backoff(session: Session, run_id: int, now: datetime, until: datetime) -> None:
+    """Sets `annotate:<run_id>`'s `next_attempt_at`. Shared by `_record_failure` (which also
+    bumps the attempts counter, since a failure might resolve itself on retry) and
+    `_skip_empty_view` below (which does not: an empty view is a structural fact about a
+    report's stored data that a retry cannot fix, so there is no strike count to escalate).
+    Neither commits here -- each caller has its own reason to control exactly when."""
+    bkey = _backoff_key(run_id)
+    bstate = session.get(JobState, bkey)
+    value = int(until.timestamp())
+    if bstate is None:
+        session.add(JobState(key=bkey, value=value, updated_at=now))
+    else:
+        bstate.value, bstate.updated_at = value, now
+
+
 def _record_failure(session: Session, now: datetime, run_id: int, exc: Exception) -> None:
     """Backs `run_id` off an hour, or a day once three attempts in a row have failed. Committed
     here, in its own transaction: `annotate_pass` no longer re-raises after a failure (fix round
@@ -181,13 +196,7 @@ def _record_failure(session: Session, now: datetime, run_id: int, exc: Exception
         astate.value, astate.updated_at = attempts, now
 
     backoff = BACKOFF_LONG if attempts >= BACKOFF_STRIKES else BACKOFF_SHORT
-    until = int((now + backoff).timestamp())
-    bkey = _backoff_key(run_id)
-    bstate = session.get(JobState, bkey)
-    if bstate is None:
-        session.add(JobState(key=bkey, value=until, updated_at=now))
-    else:
-        bstate.value, bstate.updated_at = until, now
+    _write_backoff(session, run_id, now, now + backoff)
 
     # Never `str(exc)`: an exception's message can carry SQL and row content
     # (harness/research/worker.py's own rule for the same reason). ERROR fires once, exactly at
@@ -199,6 +208,23 @@ def _record_failure(session: Session, now: datetime, run_id: int, exc: Exception
     else:
         log.info("annotator: report %s failed (%s), backing off %s (attempt %d)", run_id,
                  type(exc).__name__, backoff, attempts)
+    session.commit()
+
+
+def _skip_empty_view(session: Session, now: datetime, run_id: int, tables_omitted: int) -> None:
+    """A rendered view with no tables at all (fix round 3): every table `render_from_cells`
+    could have shown was structurally unable to render -- an identity-column drift (new defect
+    2) that happened to empty every table, or, theoretically, a `report_cells` set with no rows
+    whose `table_key` is in `TABLE_KEYS` at all. Skipped like a report with no stored cells
+    (`annotate_pass`'s own check just above this function's call site): no reservation, no call,
+    no annotation. Unlike that case, though, this backs the report off a full day outright
+    rather than leaving it to retry every sweep -- an empty render is a structural drift a retry
+    cannot fix, not a transient failure that might clear on its own, so quiet 30 s retries would
+    only repeat the same ERROR log forever for no benefit. One ERROR here, once, is the signal
+    an operator needs to go looking."""
+    log.error("annotator skipping report %s: rendered view has no tables (tables_omitted=%s)",
+              run_id, tables_omitted)
+    _write_backoff(session, run_id, now, now + BACKOFF_LONG)
     session.commit()
 
 
@@ -298,14 +324,27 @@ def annotate_pass(session: Session, now: datetime, settings, client=None) -> dic
     # column for is left out of the view entirely (fails closed) rather than shown with it
     # visible; carried into the sweep's own counts so an operator can see it happened.
     counts["tables_omitted"] = view.tables_omitted
+    if not view.columns:
+        # Fix round 3: a view with no tables at all -- every one omitted, or none stored to
+        # begin with -- makes no call and writes no annotation, exactly like the no-cells check
+        # above, but (unlike that check) backs the report off a day outright, since a retry
+        # cannot fix a structural rendering gap the way it might a transient failure.
+        _skip_empty_view(session, now, run_id, view.tables_omitted)
+        counts["backed_off"] = 1
+        return counts
 
     def _fail(exc: Exception) -> dict:
         """The one way this pass ends unhappily past this point: roll back whatever this stage
         left uncommitted, back the report off on the now-clean session, and return `counts` as
         it actually stands -- fix round 2, new defect 3: a fresh `{"dropped": 0, ...}` literal
         here used to discard bullets this same sweep had already, correctly, counted as
-        dropped."""
-        log.exception("annotator failed for report %s", run_id)
+        dropped. Logs with `exc_info=exc` rather than `log.exception` (fix round 3): two of this
+        function's call sites are outside any active `except` block (the raising `client.call`,
+        reached only after its `try/except/finally` has already completed and cleared
+        `sys.exc_info()`, and the captured `result.error` case), where `log.exception` prints no
+        traceback and no exception type at all. Passing the exception object directly works on
+        every call site, active `except` block or not, since it carries its own traceback."""
+        log.error("annotator failed for report %s", run_id, exc_info=exc)
         session.rollback()
         _record_failure(session, now, run_id, exc)
         counts["annotated"] = 0

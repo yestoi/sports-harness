@@ -499,19 +499,61 @@ def test_no_pending_report_is_not_counted_as_a_backoff(db_session, keyed_setting
 
 
 def test_a_table_omitted_for_an_unrecoverable_identity_column_is_counted_in_the_sweep(
-        db_session, keyed_settings, seeded_reports, monkeypatch):
+        db_session, keyed_settings, monkeypatch):
     """Fix round 2, new defect 2: `render_from_cells`'s per-table omission (fail closed, not
-    open) reaches the sweep's own counts, not only `ModelView.tables_omitted`. The pass still
-    completes -- an omitted table is not a failure, just a smaller view -- so this is a
-    successful sweep that also reports one table left out."""
+    open) reaches the sweep's own counts, not only `ModelView.tables_omitted`. Two tables here,
+    not the fixture's usual single one: omitting `t1` still leaves `t12` behind, so the view is
+    not empty and the pass completes -- unlike the all-tables-omitted case fix round 3 adds a
+    guard for (`test_a_view_with_no_tables_skips_the_run_and_backs_it_off_a_day`, below)."""
+    tables = {
+        "t1": Table(title="Table 1 (t1): order lifecycle", header="h",
+                    columns=["variant", "orders"], rows=[["sharp_direct", "4120356789"]]),
+        "t12": Table(title="Table 12 (t12): declined candidates", header="h",
+                    columns=["variant/reason", "kind"], rows=[["x/y", "rejected"]]),
+    }
+    _persisted(db_session, 2026, 39, False, datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc),
+              tables=tables)
     monkeypatch.setitem(render_module.IDENTITY_COLUMNS, "t1", "not_the_real_column")
-    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
+    client = _client(["Rejections trend as expected t12[0,1]."])
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=client)
     assert counts["tables_omitted"] == 1
     assert counts["annotated"] == 1
-    # t1 is the only table this fixture stores, and it is the one omitted -- so the bullet's
-    # citation resolves against nothing and it is dropped, never stored.
-    assert counts["dropped"] == 1
-    assert counts["bullets"] == 0
+    assert counts["dropped"] == 0
+    assert counts["bullets"] == 1
+
+
+def test_a_view_with_no_tables_skips_the_run_and_backs_it_off_a_day(
+        db_session, keyed_settings, seeded_reports, monkeypatch, caplog):
+    """Fix round 3: every table omitted (here, the fixture's only table, `t1`) leaves the view
+    with nothing in it. Skipped exactly like the no-stored-cells check above -- no reservation,
+    no call, no annotation row -- but, unlike that case, backed off a full day outright: an
+    empty render is a structural drift a retry cannot fix, so leaving it to retry every 30 s
+    sweep would only repeat the same ERROR log forever."""
+    monkeypatch.setitem(render_module.IDENTITY_COLUMNS, "t1", "not_the_real_column")
+    run_id = seeded_reports.final_this_week
+    client = _client(["412 t1[0,1]."])
+
+    with caplog.at_level("ERROR", logger="harness.research.annotate"):
+        counts = annotate_pass(db_session, NOW, keyed_settings, client=client)
+
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1,
+                     "tables_omitted": 1}
+    assert client.calls == []
+    assert db_session.execute(text("select count(*) from research_spend")).scalar() == 0
+    assert db_session.execute(text("select count(*) from report_annotations")).scalar() == 0
+
+    # Scoped to this module: `render_from_cells` also logs its own ERROR for the omitted table
+    # itself, which is not what this assertion is about.
+    error_records = [r for r in caplog.records
+                     if r.levelname == "ERROR" and r.name == "harness.research.annotate"]
+    assert len(error_records) == 1
+    message = error_records[0].getMessage()
+    assert str(run_id) in message
+    assert "tables_omitted" in message
+
+    until = _job_state_value(db_session, f"annotate:{run_id}")
+    assert until == pytest.approx(int((NOW + BACKOFF_LONG).timestamp()), abs=2)
+    assert pending_report(db_session, NOW) is None
 
 
 # --- spend ----------------------------------------------------------------------------------------
