@@ -733,10 +733,17 @@ def test_the_quotes_run_index_ddl_agrees_between_schema_and_migration():
 
 
 def test_the_quotes_run_index_is_never_built_without_concurrently():
-    """F65 (fix 25): `venue_quotes` is a bulk table, so every copy of this index's DDL that a
-    populated database can reach is CONCURRENTLY. The model declaration is the exception by
-    construction -- `create_all` only builds indexes for tables it is creating, so a fresh
-    database gets it inside the table's own creation and a populated one never sees that path."""
+    """F65 (fix 25): neither `_INDEX_DDL` nor the revision carries a plain `create index` for
+    this index -- both written copies are CONCURRENTLY.
+
+    The model declaration is not as exempt as it looks: `create_all` only builds indexes for
+    tables it is creating, but `create_schema` then calls `_model_index_ddl`, which issues a
+    plain `index.create(..., checkfirst=True)` for every model index outside `TAPE_TABLES`, and
+    `venue_quotes` is a bulk table that is not a tape table. So a *populated* database that
+    lacks this index would take a plain, table-locking create there, before the CONCURRENTLY
+    entry it would have made a no-op. That hazard predates fix 42 (fix 25's `ix_odds_fetched_book`
+    on `odds_snapshots` has the same shape) and is deferred to 6E; the NAS is not exposed because
+    the index was built there by hand. Do not read this test as proof that path cannot happen."""
     from harness.db.schema import _CONCURRENT_INDEX_DDL, _INDEX_DDL
 
     assert not any("ix_quotes_run_market" in s for s in _INDEX_DDL)
