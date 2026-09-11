@@ -1384,3 +1384,17 @@ Times are America/Chicago.
 - Anomalies: Chrome bridge disconnected (above). state.md carried a Codex-written "Session" line; rewritten.
 - Dispatches: 3 (impl-fix-37 sonnet; review-fix-40-41 opus; design-review-6c opus)
 - Next: hotfix (37 review, 40/41 rulings) and plan-next 6C in parallel; wakeup none yet (agents in flight)
+
+## 116. hotfix - fixes 40 and 41 merged to main, e1cc629 - 2026-09-11 13:39 CT
+
+- Orient: rule 1 - roadmap rows 40/41 "committed in 9e21d4f, unreviewed" (journal 114); the branch reviewed as one diff, never re-dispatched.
+- Branch / commits: `fix-40-41-rfq-all-football-annotate-budget` rebased onto main twice (docs-only divergence both times) 9e21d4f -> 658a4cb -> e1cc629; five commits (the fix, four reviewer commits); merged `--ff-only` at 13:39 CT; worktree and branch removed.
+- Result: done
+- Dispatches: 1 (review opus)
+- Tests: 2,932 passed, pristine, on the branch at 93096bb (the reviewer's run; the two later commits are verify.md wording only, ruled no re-run); the reviewer's first run failed four `test_housekeeping` tests on a `pg_database_size` statement timeout while fix 37's suite ran beside it, passed alone and on the re-run: contention on the shared test server, not the diff. `make test` on `main` at e1cc629 running (merge gate for the deploy).
+- Review: clean after rulings; 0 Critical, 2 Important (verify.md: the re-fit row's constant 30_000 -> 60_000; the rfqs row gains an over-dropping clause), 8 Minor (2 fixed by the reviewer 9771723/93096bb; M3-M8 ledgered, .superpowers/sdd/hotfix-2026-09-11/review-fix-40-41-notes.md).
+- Deploy: none yet - waits for fix 37 (U8 prerequisite; implementer in its full suite at 13:40 CT); target `make deploy-nas-app WITH_WS=1` (listener in app-ws, annotator in app-research) before 17:45 CT or in the Fri 23:00 CT - Sat 10:45 CT window.
+- Verification: not run (after the deploy: verify.md's `rfqs` arrivals row incl. the new over-dropping clause, the annotator's next call under the 60,000 projection, `research_spend`)
+- Rulings: (1) I1 and I2 are documentation of the fix and tighten only; the reviewer applied controller-supplied text as two docs commits, no re-review - cost if wrong: one number and one clause in verify.md the controller wrote. (2) The branch suite at 93096bb stands as the merge gate for e1cc629 (two verify.md-only commits on top) - cost if wrong: none, no code changed. (3) M6 (the annotator's 60-row cap keeps ascending row_key: an alphabetical prefix, not the 60 most material rows, and nothing logs that the cap bit) carried to 6C's annotation task as a note, not a hotfix - cost if wrong: one heavy week's annotation reads the wrong 60 rows. (4) The branch's test database is dropped when no suite runs (two run now) - cost if wrong: disk on the test VM. (5) Journal 115 stamped the 6C addendum and reviewer dispatch as 13:35/13:37 CT by estimate; the clock read 13:05 CT (state.md corrected; the entry stands, this line is the correction).
+- Carried forward: none (rows 40 and 41 read merged; deploy pending on 37)
+- Next: hotfix (fix 37 review when its implementer reports), plan-next 6C/6A (plans in review), deploy of the wave once 37 is clean and main's suite is pristine; wakeup none (agents in flight)
