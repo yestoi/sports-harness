@@ -134,17 +134,34 @@ Two rules keep the scoring honest:
 
 Before any data existed, the owner wrote down the conditions the system must meet before the question of
 real money is even raised. The software cannot change them. The weekly gate report stores the exact
-definitions with a fingerprint, and the dashboard shows them. In plain words:
+definitions with a fingerprint, and the dashboard shows them. One plain-words line per coded test, each
+naming the test the code runs:
 
-- At least **150 pretend fills** confirmed by real trades, across at least **40 games and both sports**,
-  most of them from a clean live order-book feed rather than periodic snapshots.
-- The **low end of the honest range** on closing line value against Pinnacle is **above zero**.
-- Mean CLV is **not negative under any** of the closing prices that count.
-- The **30-minute markout is positive** after fees: the price does not run away from us after we buy.
-- The bets that filled are **not meaningfully worse** than the ones that did not. If only the bad bets get
-  taken, the edge is an illusion.
-- The fair price we act on is **fresh**: median age under 90 seconds.
-- **Zero** settlement disagreements with Kalshi and **zero** bets on the wrong game.
+- `fill_events`: at least **150 pretend fills** confirmed by real trades, across at least **40 games and
+  both sports**, at least **80 %** of them from a live order-book feed rather than periodic snapshots.
+- `marquee_share`: at least **30 %** of those fills are on a tight market (a 4-cent spread or less) in the
+  NFL or in college football.
+- `clv_pinnacle_lb`: the **low end of the honest range** on closing line value against Pinnacle is **above
+  zero**.
+- `markout_30m`: the **30-minute markout is positive** after fees: the price does not run away from us
+  after we buy.
+- `adverse_drift`: the fair price does not drift against us between the bet and the fill by more than
+  **1 cent**.
+- `filled_vs_unfilled`: the bets that filled are **not meaningfully worse** than the ones that did not. If
+  only the bad bets get taken, the edge is an illusion.
+- `clv_every_benchmark`: mean CLV is **not negative under any** of the closing prices that count.
+- `staleness_median`: the fair price we act on is **fresh**: median age under **90 seconds**.
+- `settlement`: **zero** settlement disagreements with Kalshi, and a venue settlement row for at least
+  **90 %** of the settled markets we had fills in.
+- `mismatched_markets`: **zero** bets on the wrong game.
+- `legal_decision`: the owner's separate, documented legal decision. False by construction while this is
+  paper.
+- `live_trading_env`: live trading switched on in the container and in the config. False by construction
+  while this is paper.
+
+Duties around the gate, not gate tests. These two are on the calendar and in the runbooks. No code checks
+them, and neither is part of the stored fingerprint:
+
 - A replay of the recorded week reproduces the live results within 2 %.
 - Three weeks in a row.
 
