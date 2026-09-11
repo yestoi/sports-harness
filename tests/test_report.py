@@ -9,7 +9,7 @@ inside it: Monday 2026-09-14 00:00 America/Chicago through the following Monday,
 import json
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -27,10 +27,13 @@ from harness.db.models import (
     Intent,
     MarketGapSnapshot,
     Markout,
+    MetricSample,
     Order,
     OrderbookEvent,
     OrderClv,
     OrderEvent,
+    ReportRun,
+    Run,
     Signal,
     StrategyVariant,
     VenueMarket,
@@ -39,6 +42,7 @@ from harness.db.models import (
 from harness.report.tables import (
     FLAG_CLUSTERS,
     GREY_CLUSTERS,
+    NOT_COLLECTED,
     PLACEHOLDER,
     TABLE_KEYS,
     Table,
@@ -1017,3 +1021,22 @@ def test_t12_is_not_a_gate_input():
 
     source = Path(gate.__file__).read_text()
     assert "TABLE_KEYS" not in source and "t12" not in source
+
+
+# --- table 13: the operational diagnostic (addendum 0.3, 0.4, 1.3) ---------------------------
+
+
+def test_the_audit_register_opens_with_order_157_pending():
+    """Addendum 0.4 / D4: the register is a code constant because `docs/` is not in the image
+    and the report has to read it from inside the container. 6B updates it."""
+    from harness.report.audits import AUDIT_STATUSES, ORDER_AUDITS
+
+    assert set(ORDER_AUDITS) == {157}
+    entry = ORDER_AUDITS[157]
+    assert entry.status == "pending" and entry.status in AUDIT_STATUSES
+    assert entry.since == "2026-09-11"
+    assert "6B" in entry.note
+    for audit in ORDER_AUDITS.values():
+        assert audit.status in AUDIT_STATUSES
+        # Minor 5: an ISO-8601 date, pinned rather than left to the writer's taste.
+        date.fromisoformat(audit.since)
