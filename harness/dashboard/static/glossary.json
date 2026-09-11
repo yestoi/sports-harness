@@ -328,5 +328,17 @@
     "plain": "memory free on the NAS",
     "what": "How much memory is available on the machine the database and every job run on, in megabytes.",
     "why": "It is the other resource, beside disk space, that can quietly run out before anything on this page turns red."
+  },
+  "research.rfq_quotes_24h": {
+    "term": "research.rfq_quotes_24h",
+    "plain": "RFQ quotes in the last 24 hours",
+    "what": "How many quotes the RFQ listener computed and stored in the last 24 hours.",
+    "why": "It is the one activity count from the RFQ side of the research layer that Pulse otherwise has no way to show."
+  },
+  "research.annotations_week": {
+    "term": "research.annotations_week",
+    "plain": "report annotations written this week",
+    "what": "How many weekly reports the annotator has written a surviving set of bullets for so far this week.",
+    "why": "The annotator runs at most once a week per report; this is how an operator sees that it ran at all."
   }
 }

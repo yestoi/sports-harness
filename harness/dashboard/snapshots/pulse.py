@@ -743,7 +743,7 @@ def _research(session: Session, now: datetime, values: dict) -> dict:
         "week_start": now - timedelta(days=now.weekday()),
     }).first()
     decided = session.execute(_VETO_RATE, {"since": now - timedelta(hours=24)}).first()
-    return {
+    section = {
         "day_usd": None if state is None else float(state.day_usd),
         "day_reserved": None if state is None else float(state.day_reserved),
         "week_usd": None if state is None else float(state.week_usd),
@@ -755,6 +755,12 @@ def _research(session: Session, now: datetime, values: dict) -> dict:
         "rfq_quotes_24h": int(counts.rfq_quotes_24h) if counts else 0,
         "annotations_week": int(counts.annotations_week) if counts else 0,
     }
+    # Fix round 2, I5: the card renders these two prose sentences rather than recomposing them,
+    # which is also what makes `sentences.research_reading`/`veto_reading` reachable from
+    # anything other than their own tests.
+    section["sentence"] = sentences.research_reading(section)
+    section["veto_sentence"] = sentences.veto_reading(section)
+    return section
 
 
 def build_pulse(session: Session, now: datetime, settings: Settings) -> dict:

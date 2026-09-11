@@ -725,6 +725,20 @@ def test_the_research_section_shows_the_spend_and_the_caps(db_session, env_setti
                             "annotations_week"}
 
 
+def test_the_research_section_carries_its_own_rendered_sentences(db_session, env_settings):
+    """Fix round 2, I5: the builder puts `research_reading`/`veto_reading`'s output into the
+    payload itself (`research.sentence`, `research.veto_sentence`) so the card renders those
+    strings rather than recomposing them -- which is also what makes the two sentence helpers
+    reachable from something other than their own tests."""
+    from harness.dashboard import sentences
+    from harness.dashboard.snapshots.pulse import build_pulse
+
+    payload = build_pulse(db_session, NOW, env_settings)
+    section = payload["research"]
+    assert section["sentence"] == sentences.research_reading(section)
+    assert section["veto_sentence"] == sentences.veto_reading(section)
+
+
 def test_the_pulse_payload_keys_gain_research():
     from harness.dashboard.snapshots.pulse import PULSE_KEYS
 

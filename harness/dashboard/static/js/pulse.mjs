@@ -33,6 +33,10 @@ export const LABELS = [
   { plain: "Loops skipped", technical: "exec_heartbeat.loops_skipped" },
   { plain: "Markets with a book we distrust", technical: "book_dirty_markets" },
   { plain: "Memory free on the NAS", technical: "host.mem_available_mb" },
+  // Fix round 2, I5: the research card's two counts -- the spend and the veto rate are already
+  // read through the sentences below, which is why they carry no `technical` name of their own.
+  { plain: "RFQ quotes in the last 24 hours", technical: "research.rfq_quotes_24h" },
+  { plain: "Report annotations written this week", technical: "research.annotations_week" },
 ];
 
 const LEVEL_CLASS = { broken: "bad", watch: "warn", fine: "good", not_evaluated: "grey" };
@@ -216,8 +220,29 @@ function eventsCard(payload) {
               : table(["when", "kind", "what"], rows, { label: "Operator events" }));
 }
 
+function researchCard(payload) {
+  const section = payload.research;
+  if (sectionFailed(section)) {
+    return el("div", { class: "card" }, el("h3", { text: "Research spend and the veto" }),
+      el("div", { class: "grey", text: "unavailable" }));
+  }
+  const research = section || {};
+  // The day's spend against the daily cap, the live reservation, the week's spend against the
+  // weekly cap, the dormant flag's wording, the veto rate and the decided count all come through
+  // these two prose sentences (`research_reading`, `veto_reading`) rather than being recomposed
+  // here; what is left to show as numbers is the two counts neither sentence carries.
+  return el("div", { class: "card" }, el("h3", { text: "Research spend and the veto" }),
+    sentences([research.sentence, research.veto_sentence].filter(Boolean)),
+    el("div", { class: "grid" },
+      statTile({ label: "RFQ quotes", technical: "research.rfq_quotes_24h",
+                 value: research.rfq_quotes_24h, threshold: null }),
+      statTile({ label: "Report annotations", technical: "research.annotations_week",
+                 value: research.annotations_week, threshold: null })));
+}
+
 export function render(root, payload) {
   root.replaceChildren(
     statusCard(payload), tapeCard(payload), vitalsCard(payload), storageCard(payload),
-    invariantWall(payload), buildCard(payload), snapshotsCard(payload), eventsCard(payload));
+    invariantWall(payload), buildCard(payload), snapshotsCard(payload), eventsCard(payload),
+    researchCard(payload));
 }

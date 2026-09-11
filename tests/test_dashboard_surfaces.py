@@ -61,7 +61,7 @@ def test_no_surface_composes_its_own_sentence(name):
 def test_the_pulse_module_renders_every_section_of_its_payload():
     body = (STATIC / "js" / "pulse.mjs").read_text()
     for key in ("status", "tape", "vitals", "storage", "invariants", "operator_events",
-                "snapshots", "build"):
+                "snapshots", "build", "research"):
         assert f"payload.{key}" in body
 
 
