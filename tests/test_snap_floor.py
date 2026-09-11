@@ -644,6 +644,15 @@ def test_the_board_score_read_is_bounded_to_its_own_window(db_session, env_setti
 
 
 def _spread_market(session, game, *, threshold, ticker):
+    """One spread line of `game`. Both markets this helper builds carry the same `side`, so
+    `threshold` is the only column that separates them -- which is the point of the test below.
+
+    The `side="yes"` is arbitrary filler, not a production shape: `upsert_venue_markets`
+    (`harness/normalize/kalshi.py:112`) writes `side` NULL for every team-sided market
+    (moneyline and spread) and `"over"` for a total, and `fair_values.outcome_side` is written
+    from the same mapping (`harness/pricing/fair.py:113-118`). Read the NULL-keyed test below
+    for the shape production actually stores.
+    """
     market = VenueMarket(venue="kalshi", ticker=ticker, event_ticker="E", series_ticker="KXNFL",
                          game_id=game.id, market_type="spread",
                          threshold=Decimal(str(threshold)), side_team_id=1, side="yes",
@@ -722,7 +731,12 @@ def test_a_moneyline_order_reads_its_own_teams_fair(db_session, env_settings):
 def test_a_null_keyed_fair_matches_only_a_null_keyed_market(db_session, env_settings):
     """D10: the three predicates are `is not distinct from`, so NULL matches NULL -- which is
     what keeps a moneyline market with no `side_team_id` (and every older, unkeyed fair row)
-    inside the join instead of silently dropping out of it."""
+    inside the join instead of silently dropping out of it.
+
+    Only that half is asserted here: that a NULL-keyed fair *does* reach a NULL-keyed market.
+    The converse -- a NULL-keyed fair passed over for a keyed market -- is what the two tests
+    above cover, each of which hands its order a keyed fair over a newer rival.
+    """
     game = _game_with_market(db_session)          # no side_team_id, no side, no threshold
     _open_order(db_session, venue_market_id=game.market_id, prob=Decimal("0.4500"))
     db_session.add(FairValue(run_id=1, game_id=game.id, market_type="moneyline",
@@ -742,6 +756,9 @@ def test_a_no_orders_live_edge_uses_one_minus_the_fair_and_the_book_is_not_conve
     so this pins the existing conversions and forbids a second one. At a YES-space fair of 0.62
     a NO order resting at 0.40 has 1 - 0.62 = 0.38 of fair, so 0.38 - 0.40 - 0.0042 = -0.0242 --
     never the 0.2158 an unconverted fair would give.
+
+    `test_a_no_side_order_prices_its_live_edge_in_its_own_side_space` already pins the
+    `edge_live` half; what is new here is the book pair, which must survive untouched.
     """
     game = _game_with_market(db_session)
     order = _open_order(db_session, venue_market_id=game.market_id, prob=Decimal("0.4000"),

@@ -268,10 +268,19 @@ _WATCH = text("""
 #: so the comparison is `is not distinct from`: a NULL-keyed fair matches a NULL-keyed market
 #: and nothing else, which keeps older unkeyed rows in the join instead of dropping them.
 #:
-#: Cost (I5): the seek still leads on `ix_fair_game_type_created (game_id, market_type,
-#: created_at)` and still terminates at `created_at >= :since` (`FAIR_WINDOW`), so it stays a
-#: bounded index seek per market -- at most `ORDERS_LIMIT` of them. What changes is that inside
-#: that window it now filters rather than stopping at the first row. No index, no migration.
+#: Cost (I5): the read still leads on `ix_fair_game_type_created (game_id, market_type,
+#: created_at)` and is still capped by `created_at >= :since` (`FAIR_WINDOW`), so it stays
+#: bounded per market -- at most `ORDERS_LIMIT` of them. No index, no migration. What changes is
+#: the shape inside that window: the three identity columns are not in the index, so they can
+#: only ever be a heap filter, and the lateral now scans the window applying it instead of
+#: stopping at the first row. Worst case -- no fair for this exact contract inside the window --
+#: it reads every fair row that window holds for this `(game_id, market_type)` and returns
+#: nothing, which an inner `join lateral` turns into a missing entry that `_orders` reads back as
+#: a null `fair_p`/`edge_live` (the "no current fair" path `_live_edge` already documents).
+#: `is not distinct from` is not an indexable predicate (`rfq_grade.py`'s `_CLOSING_LEG` is
+#: written `coalesce(...) = coalesce(...)` for exactly that reason); it costs nothing here only
+#: because no index covers these columns for an unfiltered `fair_source`. Give this lateral such
+#: an index and the predicates must be rewritten to match its expressions.
 _FAIR_FOR_ORDERS = text("""
     select m.id as venue_market_id, m.fee_type, m.fee_multiplier,
            f.fair_p, f.staleness_s, f.created_at
