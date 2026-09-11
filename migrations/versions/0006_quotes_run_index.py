@@ -23,11 +23,13 @@ column the second, so the whole read is one index scan.
 
 CONCURRENTLY because `venue_quotes` is a bulk table the recorder is inserting into and `init-db`
 runs on every deploy -- fix 25's F65 rule is that every index on a bulk table is built
-CONCURRENTLY, no carve-out. Not routed through `migrations.env.concurrent_index` for the same
-reason `0005_rfq_lookup` is not: this file keeps the statement as one string identical to
-`harness/db/schema.py`'s copy, which is what `tests/test_alembic.py` compares. The statement is
-taken out of the surrounding transaction with `op.get_context().autocommit_block()`, which is
-what CONCURRENTLY requires.
+CONCURRENTLY, no carve-out. Not routed through `migrations.env.concurrent_index`, but for a
+different reason than `0005_rfq_lookup`: that revision's index carries a partial predicate the
+helper has no way to express, while this one the helper could build verbatim. What it cannot do
+is hold the statement as one module-level string identical to `harness/db/schema.py`'s copy,
+which is what `tests/test_alembic.py` compares to keep the two from drifting. The statement is
+taken out of the surrounding transaction with `op.get_context().autocommit_block()` -- the same
+thing the helper does -- which is what CONCURRENTLY requires.
 
 `if not exists` is load-bearing here rather than merely defensive: the controller built this
 index by hand on the NAS at 14:15 CT as an emergency measure, so both this revision and
