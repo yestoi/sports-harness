@@ -9,10 +9,12 @@ from collections import namedtuple
 
 import pytest
 
-from harness.report.render_for_model import (BULLET_MAX, BULLETS_MAX, CITATION_RE, ModelView,
-                                             check_bullet, numbers_in, render_for_model,
-                                             render_from_cells, resolve_citation)
-from harness.report.tables import Table
+import harness.report.render_for_model as render_module
+from harness.report.render_for_model import (BULLET_MAX, BULLETS_MAX, CITATION_RE,
+                                             IDENTITY_COLUMNS, ModelView, check_bullet,
+                                             numbers_in, render_for_model, render_from_cells,
+                                             resolve_citation, titles_from_markdown)
+from harness.report.tables import TABLE_KEYS, Table
 from harness.report.weekly import format_cell
 
 #: A `report_cells` row, or enough of one: `render_from_cells` reads only these four fields.
@@ -216,9 +218,11 @@ def test_render_from_cells_accepts_titles():
     assert "note: a note" in view.text
 
 
-def test_render_from_cells_falls_back_to_no_hidden_column_without_a_match():
-    """A table whose first row matches no column by value (should not happen for a real report
-    table, whose row key is always its own first column) hides nothing rather than guessing."""
+def test_render_from_cells_falls_back_to_no_hidden_column_for_an_unmapped_table(monkeypatch):
+    """A table key `IDENTITY_COLUMNS` does not name (should not happen for anything in
+    `TABLE_KEYS` -- `test_identity_columns_match_every_table_s_real_first_column` guards that)
+    hides nothing rather than guessing."""
+    monkeypatch.delitem(render_module.IDENTITY_COLUMNS, "t9")
     cells = [
         _Cell("t9", "row-a", "alpha", "10"),
         _Cell("t9", "row-a", "beta", "20"),
@@ -229,9 +233,11 @@ def test_render_from_cells_falls_back_to_no_hidden_column_without_a_match():
 
 
 def test_render_from_cells_treats_a_null_stored_text_as_the_placeholder():
+    """`t9`'s real shape (`_not_collected`'s `["item", "status"]`), so the identity column is
+    recognised by name and the placeholder assertion below is about the *other* column."""
     cells = [
-        _Cell("t9", "row-a", "row-a", "row-a"),
-        _Cell("t9", "row-a", "value", None),
+        _Cell("t9", "row-a", "item", "row-a"),
+        _Cell("t9", "row-a", "status", None),
     ]
     view = render_from_cells(cells)
     from harness.report.tables import PLACEHOLDER
@@ -251,3 +257,99 @@ def test_render_from_cells_orders_tables_by_table_keys_not_by_input_order():
     ]
     view = render_from_cells(cells)
     assert list(view.columns) == ["t9", "t10"]
+
+
+# --- IDENTITY_COLUMNS (fix round 1, Critical 1) -------------------------------------------------
+
+
+def test_identity_columns_match_every_table_s_real_first_column():
+    """`IDENTITY_COLUMNS` duplicates `harness/report/tables.py`'s own first-column literals,
+    since `report_cells` carries no column-position field for `render_from_cells` to read one
+    off directly. This compares the copy against the real source: the eleven tables with a named
+    `_T*_COLUMNS` module constant, t2's inline list (built from the same `BENCHMARK_TYPES` the
+    real `_table2` uses), and t9's real shape (`_not_collected`, called directly -- pure, no
+    session needed)."""
+    import harness.report.tables as tables_module
+    from harness.settlement.benchmarks import BENCHMARK_TYPES
+
+    named = {
+        "t1": tables_module._T1_COLUMNS, "t3": tables_module._T3_COLUMNS,
+        "t4": tables_module._T4_COLUMNS, "t4b": tables_module._T4B_COLUMNS,
+        "t5": tables_module._T5_COLUMNS, "t6": tables_module._T6_COLUMNS,
+        "t7": tables_module._T7_COLUMNS, "t8": tables_module._T8_COLUMNS,
+        "t10": tables_module._T10_COLUMNS, "t11": tables_module._T11_COLUMNS,
+        "t12": tables_module._T12_COLUMNS,
+    }
+    for key, columns in named.items():
+        assert IDENTITY_COLUMNS[key] == columns[0]
+
+    t2_columns = ["variant", "tier", "basis", *BENCHMARK_TYPES]
+    assert IDENTITY_COLUMNS["t2"] == t2_columns[0]
+
+    t9 = tables_module._not_collected("t9", "placeholder title", "placeholder reason")
+    assert IDENTITY_COLUMNS["t9"] == t9.columns[0]
+
+    assert set(IDENTITY_COLUMNS) == set(TABLE_KEYS)
+
+
+def test_render_from_cells_hides_column_0_for_every_table_key():
+    """Every table in `TABLE_KEYS` has its identity column recovered and kept out of the printed
+    line, not only the ones exercised elsewhere in this file."""
+    for key in TABLE_KEYS:
+        identity_col = IDENTITY_COLUMNS[key]
+        secret = f"secret-value-for-{key}"
+        cells = [
+            _Cell(key, "row-0", identity_col, secret),
+            _Cell(key, "row-0", "other", "42"),
+        ]
+        view = render_from_cells(cells)
+        assert secret not in view.text, f"{key} printed its identity column"
+        assert view.cells[key][0][0] == "row-0"   # kept, for resolution
+
+
+def test_render_from_cells_hides_a_row_key_over_60_characters():
+    """Fix round 1, Critical 1. `report_cells.row_key` truncates at 60 characters and the
+    matching cell's stored `text` at 64 (`Table.row_key`, `harness/report/weekly.py::
+    _cell_fields`) -- two different lengths from the same value -- so recovering the identity
+    column by matching `text == row_key` silently failed for any first-column value over 60
+    characters and printed it straight into the model's prompt. Table 12's
+    `f"{variant}/{kind}:{reason}"[:64]` is routinely that long. `IDENTITY_COLUMNS` recovers t12's
+    identity column by name, so this passes regardless of length."""
+    key = ("sharp_direct_nfl_spread/rejected:benchmark_stale_beyond_ten_minutes_here")[:62]
+    assert len(key) == 62
+    tables = {
+        "t12": Table(title="Table 12 (t12): declined candidates", header="h",
+                    columns=["variant/reason", "kind", "count", "share"],
+                    rows=[[key, "rejected", 3, 0.5]]),
+    }
+    view = render_from_cells(_stored_cells(tables))
+    assert key not in view.text
+    assert key[:60] not in view.text   # the stored (truncated) row_key must not leak either
+    assert view.cells["t12"][0][0] == key[:60]   # kept, for resolution
+
+
+# --- titles_from_markdown (fix round 1, Important 1) ---------------------------------------------
+
+
+def test_titles_from_markdown_recovers_title_header_and_note():
+    from harness.report.weekly import render_markdown
+
+    markdown = render_markdown(_tables(), {"year": 2026, "week": 38})
+    titles = titles_from_markdown(markdown)
+    assert titles["t1"] == ("Table 1 (t1): order lifecycle",
+                            "one row per variant; fill rate is fills over orders",
+                            "replay excluded")
+    assert titles["t11"] == ("Table 11 (t11): venue requests", "authenticated traffic only",
+                             None)
+
+
+def test_render_from_cells_uses_recovered_titles():
+    from harness.report.weekly import render_markdown
+
+    tables = _tables()
+    markdown = render_markdown(tables, {"year": 2026, "week": 38})
+    titles = titles_from_markdown(markdown)
+    view = render_from_cells(_stored_cells(tables), titles=titles)
+    assert "Table 1 (t1): order lifecycle" in view.text
+    assert "one row per variant; fill rate is fills over orders" in view.text
+    assert "note: replay excluded" in view.text

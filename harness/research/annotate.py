@@ -27,15 +27,37 @@ that:
   generated (`render_from_cells`, `harness/report/render_for_model.py`), and never calls
   `weekly_tables` at all -- reading a report_run_id-keyed set of rows is bounded regardless of
   how heavy the report was to compute in the first place.
-* A pass that fails -- an exception, or a captured model-call error (what
-  `harness/research/veto.py` calls its `veto_error` decision) -- backs the *report* off for an
-  hour (a day after three failures), so a report that keeps failing stops being retried every
-  sweep. The backoff is recorded in `job_state` under `annotate:<report_run_id>` (and a sibling
-  `annotate:<report_run_id>:attempts` counter): `job_state.value` is `BigInteger` only, shaped
-  for a resumable cursor (`harness/venues/kalshi/futures.py`'s `RESUME_KEY`), not a JSON
-  payload, so the backoff key holds `next_attempt_at` as a Unix timestamp and the attempts key
-  holds the count; the failing exception's class name is logged, never persisted (worker.py's
-  own rule: a message can carry row content, a class name cannot).
+* A pass that fails anywhere after the pending run is found -- an exception, or a captured
+  model-call error (what `harness/research/veto.py` calls its `veto_error` decision) -- backs
+  the *report* off for an hour (a day after three failures), so a report that keeps failing
+  stops being retried every sweep. The backoff is recorded in `job_state` under
+  `annotate:<report_run_id>` (and a sibling `annotate:<report_run_id>:attempts` counter):
+  `job_state.value` is `BigInteger` only, shaped for a resumable cursor
+  (`harness/venues/kalshi/futures.py`'s `RESUME_KEY`), not a JSON payload, so the backoff key
+  holds `next_attempt_at` as a Unix timestamp and the attempts key holds the count; the failing
+  exception's class name is logged, never persisted (worker.py's own rule: a message can carry
+  row content, a class name cannot).
+
+**Fix round 1.** Two things the first cut of the above got wrong, found in review:
+
+* The row-key protection (F60/B-I5) used to be recovered by *value* -- whichever stored column's
+  text equalled the row's `row_key` -- which silently failed for any first-column value over 60
+  characters (`row_key` truncates there; the matching cell's `text` truncates at 64), and table
+  12's `variant/kind:reason` routinely is. `render_for_model.IDENTITY_COLUMNS` now looks it up by
+  *name*, a table's first column being a structural fact of its builder, not a per-row guess.
+* The backoff only wrapped `client.call`. Everything after it -- `write_notes`, the bullet
+  checks, the `report_annotations` insert -- could raise past it, leaving a paid call's
+  reservation release uncommitted (so a `session.rollback()` restored it as a phantom
+  reservation) and the report retried, and re-paid for, every sweep. The reservation's release
+  is now committed the moment the call returns (`release_spend`, `_call_pair`'s own pattern in
+  `harness/research/veto.py`), independent of anything that fails afterward, and everything from
+  the pending run to the annotation write is one failure domain: any exception in it records the
+  backoff and is swallowed, never re-raised, with `counts["backed_off"] = 1` carrying the
+  failure into the sweep's own report instead.
+
+Also fixed: `render_from_cells` is now passed `titles` recovered from the run's own
+`report_runs.markdown` (`render_for_model.titles_from_markdown`) rather than none at all, so the
+model reads the same title, header and note lines a person does.
 """
 import logging
 import uuid
@@ -46,7 +68,7 @@ from sqlalchemy.orm import Session
 
 from harness.db.models import JobState, ReportAnnotation, ReportRun
 from harness.report.render_for_model import (BULLET_MAX, BULLETS_MAX, check_bullet,
-                                             render_from_cells)
+                                             render_from_cells, titles_from_markdown)
 from harness.research.client import PRIMARY_MODEL, ResearchClient, prompt_hash
 from harness.research.notes import write_notes
 from harness.research.spend import BudgetRefused, chicago_day, cost_usd, release_spend, reserve_spend
@@ -129,9 +151,13 @@ def _backed_off(session: Session, run_id: int, now: datetime) -> bool:
 
 def _record_failure(session: Session, now: datetime, run_id: int, exc: Exception) -> None:
     """Backs `run_id` off an hour, or a day once three attempts in a row have failed. Committed
-    here, in its own transaction, because `ResearchWorker.run_once` rolls the whole session back
-    when the pass it drove raises, and `annotate_pass` re-raises right after calling this --
-    the backoff has to be durable before that rollback runs, not after (journal 109)."""
+    here, in its own transaction: `annotate_pass` no longer re-raises after a failure (fix round
+    1, Critical 2 -- re-raising left an already-called `release_spend`'s changes sitting
+    uncommitted in the same session, so `ResearchWorker.run_once`'s rollback on the raising pass
+    silently restored the reservation as a phantom, un-released and re-spent every retry), so a
+    caller's own eventual commit would likely cover this anyway -- but committing here keeps the
+    backoff durable independent of that, including when a test calls `annotate_pass` directly
+    with no such caller at all."""
     attempts_key = _attempts_key(run_id)
     astate = session.get(JobState, attempts_key)
     attempts = (astate.value or 0) + 1 if astate is not None else 1
@@ -205,11 +231,23 @@ def _pending_with_backoff_status(session: Session, now: datetime) -> tuple[Repor
 
 
 def annotate_pass(session: Session, now: datetime, settings, client=None) -> dict:
-    """One sweep. Returns `{"annotated", "bullets", "dropped", "backed_off"}`."""
+    """One sweep. Returns `{"annotated", "bullets", "dropped", "backed_off"}`.
+
+    Everything from here to the `report_annotations` write is one failure domain (fix round 1,
+    Critical 2): any exception in it -- `client.call`'s own, or one from `write_notes`, the
+    bullet checks or the insert -- records the backoff and is swallowed, never re-raised.
+    Re-raising used to leave the reservation's release sitting uncommitted in this same session,
+    so `ResearchWorker.run_once`'s rollback on the raising pass silently restored it as a
+    phantom, un-released reservation that the next sweep paid for again.
+    """
     counts = {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 0}
     run, skipped_backoff = _pending_with_backoff_status(session, now)
+    # Set unconditionally, not only when nothing else is pending (fix round 1, Minor): a week
+    # with two unannotated final runs where the newer is backed off and the older gets annotated
+    # is still a sweep that skipped a backed-off report, and the operator's only view of that is
+    # this count.
+    counts["backed_off"] = 1 if skipped_backoff else 0
     if run is None:
-        counts["backed_off"] = 1 if skipped_backoff else 0
         return counts
     if client is None:
         if not settings.has_anthropic_key():
@@ -224,7 +262,12 @@ def annotate_pass(session: Session, now: datetime, settings, client=None) -> dic
     if not cells:
         log.info("annotator skipping report %s: no stored cells", run.id)
         return counts
-    view = render_from_cells(cells)
+    # `titles_from_markdown` reads the run's own stored Markdown for each table's title, header
+    # and note (fix round 1, Important 1); a run with no markdown (should not happen for a
+    # `provisional = false` run -- `harness report` always writes one) falls back to the bare
+    # `== <key> ==` rendering `render_from_cells` already supports.
+    titles = titles_from_markdown(run.markdown) if run.markdown else None
+    view = render_from_cells(cells, titles=titles)
 
     try:
         reservation = reserve_spend(session, now, settings, "annotate", [PRIMARY_MODEL],
@@ -245,54 +288,66 @@ def annotate_pass(session: Session, now: datetime, settings, client=None) -> dic
     # exactly this point for the same reason.
     session.commit()
 
+    # Everything from the call to the annotation write is one failure domain (fix round 1,
+    # Critical 2): the outer `try` catches an exception from any of it, `client.call` included,
+    # so a failure anywhere in here goes through the same backoff below rather than only the
+    # call's own raising. Nothing in this block re-raises past that `except`.
     result = None
-    call_exc: Exception | None = None
     try:
-        result = client.call(model=PRIMARY_MODEL, system=SYSTEM_BLOCKS, user=view.text,
-                             schema=OUTPUT_SCHEMA, effort=EFFORT,
-                             max_output_tokens=MAX_OUTPUT_TOKENS, tools=())
-    except Exception as exc:  # noqa: BLE001 - recorded as a backoff below, then re-raised
-        call_exc = exc
-    finally:
-        release_spend(session, reservation,
-                      {PRIMARY_MODEL: result.usage} if result is not None else {})
+        try:
+            result = client.call(model=PRIMARY_MODEL, system=SYSTEM_BLOCKS, user=view.text,
+                                 schema=OUTPUT_SCHEMA, effort=EFFORT,
+                                 max_output_tokens=MAX_OUTPUT_TOKENS, tools=())
+        finally:
+            # Always, and committed here, immediately, before anything downstream can fail: a
+            # reservation committed (above) and then rolled back without its release eats the
+            # U4 cap for the rest of the America/Chicago day, shared across `veto`, `parlay` and
+            # `study` too. `harness/research/veto.py`'s `_call_pair` releases and commits at
+            # exactly this point, in its own nested `try`, for the same reason.
+            try:
+                release_spend(session, reservation,
+                              {PRIMARY_MODEL: result.usage} if result is not None else {})
+                session.commit()
+            except Exception:  # noqa: BLE001 - a lost release must not lose the failure below
+                log.exception("annotator could not release its reservation for report %s",
+                              run.id)
 
-    if call_exc is not None:
-        _record_failure(session, now, run.id, call_exc)
-        raise call_exc
+        write_notes(session, call_id=uuid.uuid4(), kind="annotate", subject_id=str(run.id),
+                    effort=EFFORT, prompt_hash=PROMPT_HASH,
+                    features={"year": run.year, "week": run.week}, results=[result],
+                    created_at=now)
 
-    write_notes(session, call_id=uuid.uuid4(), kind="annotate", subject_id=str(run.id),
-                effort=EFFORT, prompt_hash=PROMPT_HASH,
-                features={"year": run.year, "week": run.week}, results=[result],
-                created_at=now)
+        if result.error is not None:
+            # A captured model-call error (veto.py's `veto_error` shape): recorded and retried
+            # later, never written as a zero-bullet annotation -- that would satisfy
+            # `pending_report` forever on a report the model never actually read.
+            raise _ModelCallFailed(result.error)
 
-    if result.error is not None:
-        # A captured model-call error (veto.py's `veto_error` shape): recorded and retried
-        # later, never written as a zero-bullet annotation -- that would satisfy `pending_report`
-        # forever on a report that was never actually read by the model.
-        _record_failure(session, now, run.id, _ModelCallFailed(result.error))
-        counts["backed_off"] = 1
-        return counts
+        kept: list[str] = []
+        if isinstance(result.output, dict):
+            for bullet in (result.output.get("bullets") or [])[:BULLETS_MAX * 2]:
+                cleaned = sanitize_model_text(bullet, BULLET_MAX)
+                reason = check_bullet(view, cleaned)
+                if reason is not None:
+                    log.info("annotator bullet dropped: %s", reason)
+                    counts["dropped"] += 1
+                    continue
+                kept.append(cleaned)
+                if len(kept) == BULLETS_MAX:
+                    break
 
-    kept: list[str] = []
-    if isinstance(result.output, dict):
-        for bullet in (result.output.get("bullets") or [])[:BULLETS_MAX * 2]:
-            cleaned = sanitize_model_text(bullet, BULLET_MAX)
-            reason = check_bullet(view, cleaned)
-            if reason is not None:
-                log.info("annotator bullet dropped: %s", reason)
-                counts["dropped"] += 1
-                continue
-            kept.append(cleaned)
-            if len(kept) == BULLETS_MAX:
-                break
+        session.add(ReportAnnotation(report_run_id=run.id, model=PRIMARY_MODEL,
+                                     prompt_hash=PROMPT_HASH, bullets=kept,
+                                     cost_usd=cost_usd(PRIMARY_MODEL, result.usage),
+                                     created_at=now))
+        session.flush()
+        _clear_backoff(session, run.id)
+    except Exception as exc:  # noqa: BLE001 - fix round 1, Critical 2: any failure past the
+                              # pending run is found backs off; none of them re-raise
+        log.exception("annotator failed for report %s", run.id)
+        _record_failure(session, now, run.id, exc)
+        return {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
 
-    session.add(ReportAnnotation(report_run_id=run.id, model=PRIMARY_MODEL,
-                                 prompt_hash=PROMPT_HASH, bullets=kept,
-                                 cost_usd=cost_usd(PRIMARY_MODEL, result.usage),
-                                 created_at=now))
-    session.flush()
-    _clear_backoff(session, run.id)
     counts["annotated"] = 1
     counts["bullets"] = len(kept)
     return counts

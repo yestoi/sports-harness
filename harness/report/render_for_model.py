@@ -32,6 +32,28 @@ from harness.report.weekly import format_cell
 BULLETS_MAX = 5
 BULLET_MAX = 240
 
+#: `Table.columns[0]` for every table key `TABLE_KEYS` names (fix round 1, Critical 1) -- the
+#: row-key column `render_for_model` keeps out of the printed line (F60/B-I5). `report_cells`
+#: stores no column-position field, only names, so `render_from_cells` cannot read this off a
+#: live `Table` the way `render_for_model` does; these are `harness/report/tables.py`'s own
+#: literals, copied here because none of them is exported: `_T1_COLUMNS[0]` through
+#: `_T12_COLUMNS[0]` for the tables that have a named constant, `_table2`'s inline
+#: `["variant", "tier", "basis", *BENCHMARK_TYPES, ...]` for t2, and `_not_collected`'s
+#: `["item", "status"]` for t9. A first column's *value* was tried instead of its *name*
+#: (matching it against the stored `row_key` by equality) and failed on real data: `row_key` is
+#: truncated at 60 characters and the matching cell's `text` at 64, so any first-column value
+#: over 60 characters -- t12's `f"{variant}/{kind}:{reason}"` routinely is -- matched nothing,
+#: and the venue-sourced value it should have hidden was printed straight into the model's
+#: prompt instead. A name never truncates, so this does not have that failure mode; the risk it
+#: trades in is drift from `tables.py` if a table's first column is ever renamed, which
+#: `tests/test_render_for_model.py::test_identity_columns_match_every_table_s_real_first_column`
+#: catches by comparing this dict against `tables.py`'s own constants directly.
+IDENTITY_COLUMNS: dict[str, str] = {
+    "t1": "variant", "t2": "variant", "t3": "variant", "t4": "fair_source",
+    "t4b": "market_type", "t5": "sport", "t6": "variant", "t7": "decision", "t8": "metric",
+    "t9": "item", "t10": "group", "t11": "env", "t12": "variant/reason",
+}
+
 #: `t4b` and `t12` both exist, so the table part is digits with an optional trailing `b`.
 CITATION_RE = re.compile(r"t(\d+b?)\[(\d+),(\d+)\]")
 
@@ -112,13 +134,15 @@ def render_from_cells(cells: Sequence[Any],
     what `Table.row_key` stores as `report_cells.row_key`. That value is *also* stored again as
     an ordinary cell (`persist_report` zips every column, including the first, into its own
     `ReportCell` row -- the dashboard's Study surface needs the full row to show a person), and
-    nothing in `report_cells` marks which `col_key` that was. So it is recovered the only way
-    the stored data allows: per table, from its first row, whichever `col_key`'s stored `text`
-    equals that row's `row_key` exactly is the identity column, folded into a synthetic column 0
-    (`row_key`'s own value, kept in `cells` and never printed, exactly like `render_for_model`'s
-    column 0) and dropped from the printed "every other cell" list. A table whose first row
-    matches no column this way hides nothing -- documented here rather than guessed at, since a
-    table shaped so differently from the rest is worth a person's attention, not a silent guess.
+    nothing in `report_cells` marks which `col_key` that was. This function looks it up by
+    **name** in `IDENTITY_COLUMNS` -- `Table.columns[0]` is a structural fact about each table
+    builder, unconditional and never data-dependent, so the table key is enough to know it.
+    That column's value is folded into a synthetic column 0 (`row_key`'s own value, kept in
+    `cells` and never printed, exactly like `render_for_model`'s column 0) and dropped from the
+    printed "every other cell" list. A table key `IDENTITY_COLUMNS` does not name hides nothing
+    rather than guessing -- it should not happen for any key in `TABLE_KEYS` (the module
+    constant is tested against it), and a table this function does not otherwise recognise is
+    worth a person's attention, not a silent guess.
 
     `titles`, keyed by table key, is `(title, header, note)`; omitted (the default) because
     `harness/report/tables.py` keeps those as literals inside each table builder rather than in
@@ -141,8 +165,7 @@ def render_from_cells(cells: Sequence[Any],
         if state is None:
             continue
         row_keys = sorted(state["rows"])
-        first_row = state["rows"][row_keys[0]]
-        identity_col = next((c for c in state["cols"] if first_row.get(c) == row_keys[0]), None)
+        identity_col = IDENTITY_COLUMNS.get(key)
         other_cols = [c for c in state["cols"] if c != identity_col]
         columns[key] = [identity_col or "row_key", *other_cols]
         rendered = [[row_key, *(state["rows"][row_key].get(c, PLACEHOLDER) for c in other_cols)]
@@ -162,6 +185,58 @@ def render_from_cells(cells: Sequence[Any],
             lines.append(f"note: {meta[2]}")
         lines.append("")
     return ModelView(text="\n".join(lines), columns=columns, cells=cells_out)
+
+
+#: `_render_table` (`harness/report/weekly.py`) always writes a table's heading as
+#: `## Table <n> (t<key>): <name>` -- every builder in `harness/report/tables.py` follows the
+#: same convention, `_not_collected` included. The parenthesised key is what ties a heading back
+#: to a `TABLE_KEYS` entry.
+_TABLE_HEADING_RE = re.compile(r"^## .*\((t\d+b?)\)")
+
+
+def titles_from_markdown(markdown: str) -> dict[str, tuple[str, str, str | None]]:
+    """Recovers each table's `(title, header, note)` from a report's own stored Markdown
+    (`report_runs.markdown`) -- the `titles` argument `render_from_cells` takes, so the
+    annotator's model reads the same title, header and note a person does (fix round 1,
+    Important 1) rather than a bare `== t4 ==` and a columns line.
+
+    Parses `_render_table`'s own layout (`harness/report/weekly.py`): `## <title>`, a blank
+    line, `<header>`, a blank line, the Markdown table itself, then optionally a blank line and
+    `_<note>_`. This is the one place those three strings are written; recovering them from here
+    means there is nothing to drift, unlike copying the literals into a second place the way
+    `IDENTITY_COLUMNS` above has to.
+    """
+    titles: dict[str, tuple[str, str, str | None]] = {}
+    lines = markdown.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        match = _TABLE_HEADING_RE.match(lines[i])
+        if match is None:
+            i += 1
+            continue
+        key = match.group(1)
+        title = lines[i][3:].strip()
+        i += 1
+        while i < n and not lines[i].strip():
+            i += 1
+        header = lines[i].strip() if i < n else ""
+        i += 1
+        # The Markdown table itself: a columns row, a separator row, then the data rows, every
+        # one of them starting with `|` (`_render_table`'s own format).
+        while i < n and not lines[i].lstrip().startswith("|"):
+            i += 1
+        while i < n and lines[i].lstrip().startswith("|"):
+            i += 1
+        note = None
+        j = i
+        while j < n and not lines[j].strip():
+            j += 1
+        stripped = lines[j].strip() if j < n else ""
+        if len(stripped) > 1 and stripped.startswith("_") and stripped.endswith("_"):
+            note = stripped[1:-1]
+            i = j + 1
+        titles[key] = (title, header, note)
+    return titles
 
 
 def resolve_citation(view: ModelView, citation: str) -> str | None:

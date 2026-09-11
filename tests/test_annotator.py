@@ -262,6 +262,27 @@ def test_the_prompt_carries_no_row_key(db_session, keyed_settings, seeded_report
     assert "sharp_direct" not in client.calls[0]["user"]
 
 
+def test_the_prompt_never_carries_a_row_key_over_60_characters(db_session, keyed_settings):
+    """Fix round 1, Critical 1, through the real write path: `persist_report`'s own truncations
+    (`row_key` at 60 characters, the matching cell's `text` at 64) are exactly what broke the
+    old value-matching recovery, so this seeds a report through `persist_report` -- the way
+    `harness report` really writes one -- with a table 12-shaped first column over 60
+    characters, the case the review found leaking on real data."""
+    key = ("sharp_direct_nfl_spread/rejected:benchmark_stale_beyond_ten_minutes_here")[:62]
+    assert len(key) == 62
+    tables = {
+        "t12": Table(title="Table 12 (t12): declined candidates", header="h",
+                    columns=["variant/reason", "kind", "count", "share"],
+                    rows=[[key, "rejected", 3, 0.5]]),
+    }
+    _persisted(db_session, 2026, 39, False, datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc),
+              tables=tables)
+    client = _client(["3 rejected t12[0,2]."])
+    annotate_pass(db_session, NOW, keyed_settings, client=client)
+    assert key not in client.calls[0]["user"]
+    assert key[:60] not in client.calls[0]["user"]
+
+
 def test_the_call_is_high_effort_and_toolless(db_session, keyed_settings, seeded_reports):
     client = _client(["412 orders t1[0,1]."])
     annotate_pass(db_session, NOW, keyed_settings, client=client)
@@ -272,14 +293,17 @@ def test_the_call_is_high_effort_and_toolless(db_session, keyed_settings, seeded
 # --- backoff (fix 36) ---------------------------------------------------------------------------
 
 
-def test_a_raising_call_backs_the_report_off_and_survives_the_worker_s_rollback(
-        db_session, keyed_settings, seeded_reports):
-    """`ResearchWorker.run_once` rolls the whole session back when the pass it drove raises;
-    `annotate_pass` commits the backoff before re-raising so it survives that (journal 109)."""
+def test_a_raising_call_backs_the_report_off_without_raising(db_session, keyed_settings,
+                                                              seeded_reports):
+    """Fix round 1, Critical 2: `annotate_pass` no longer re-raises after a failure -- it used
+    to, and that left `release_spend`'s own uncommitted change sitting in the session for
+    `ResearchWorker.run_once`'s rollback to erase, restoring the reservation as a phantom. The
+    backoff itself is still committed in its own transaction (`_record_failure`), so it survives
+    even a rollback nothing here triggers on this path any more."""
     run_id = seeded_reports.final_this_week
-    with pytest.raises(ConnectionError):
-        annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
-    db_session.rollback()   # what `run_once` does to the raising pass's session
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+    db_session.rollback()   # proves the backoff below does not depend on a caller's own commit
 
     until = _job_state_value(db_session, f"annotate:{run_id}")
     assert until is not None
@@ -288,10 +312,7 @@ def test_a_raising_call_backs_the_report_off_and_survives_the_worker_s_rollback(
 
 
 def test_the_next_sweep_skips_a_backed_off_report(db_session, keyed_settings, seeded_reports):
-    with pytest.raises(ConnectionError):
-        annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
-    db_session.rollback()
-
+    annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
     assert pending_report(db_session, NOW) is None
     counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
     assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
@@ -299,10 +320,7 @@ def test_the_next_sweep_skips_a_backed_off_report(db_session, keyed_settings, se
 
 def test_a_report_is_no_longer_backed_off_once_its_hour_is_up(db_session, keyed_settings,
                                                               seeded_reports):
-    with pytest.raises(ConnectionError):
-        annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
-    db_session.rollback()
-
+    annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
     later = NOW + BACKOFF_SHORT + timedelta(minutes=1)
     run = pending_report(db_session, later)
     assert run is not None and run.id == seeded_reports.final_this_week
@@ -315,15 +333,44 @@ def test_three_failed_attempts_back_off_a_day(db_session, keyed_settings, seeded
     run_id = seeded_reports.final_this_week
     when = NOW
     for _ in range(BACKOFF_STRIKES):
-        with pytest.raises(ConnectionError):
-            annotate_pass(db_session, when, keyed_settings, client=_RaisingClient())
-        db_session.rollback()
+        annotate_pass(db_session, when, keyed_settings, client=_RaisingClient())
         when = when + BACKOFF_SHORT + timedelta(minutes=1)
 
     assert _job_state_value(db_session, f"annotate:{run_id}:attempts") == BACKOFF_STRIKES
     until = _job_state_value(db_session, f"annotate:{run_id}")
     last_attempt_at = when - BACKOFF_SHORT - timedelta(minutes=1)
     assert until == pytest.approx(int((last_attempt_at + BACKOFF_LONG).timestamp()), abs=2)
+
+
+def test_a_failure_after_the_call_still_backs_off_and_leaks_no_reservation(
+        db_session, keyed_settings, seeded_reports, monkeypatch):
+    """Fix round 1, Critical 2. The original bug: only `client.call`'s own exception was backed
+    off, so a deterministic failure downstream of a successful (and paid-for) call -- here,
+    `write_notes` -- retried the whole pass, including a fresh Anthropic call, every sweep,
+    while `research_spend.usd_reserved` leaked a reservation each time and `usd` never recorded
+    what was actually spent."""
+    def _boom(*_a, **_k):
+        raise RuntimeError("write_notes exploded")
+
+    monkeypatch.setattr(annotate_module, "write_notes", _boom)
+    run_id = seeded_reports.final_this_week
+
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+
+    assert _job_state_value(db_session, f"annotate:{run_id}") is not None
+    row = db_session.execute(text(
+        "select usd_reserved, usd from research_spend")).first()
+    assert row.usd_reserved == Decimal("0.0000")
+    assert row.usd > 0
+    assert db_session.execute(text("select count(*) from report_annotations")).scalar() == 0
+
+    # The next sweep makes no call: the report is backed off.
+    monkeypatch.undo()
+    client = _client(["412 t1[0,1]."])
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=client)
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+    assert client.calls == []
 
 
 def test_a_captured_model_error_backs_off_without_writing_an_annotation(
