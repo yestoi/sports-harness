@@ -25,7 +25,7 @@ it is `PLACEHOLDER`, never an empty string: a blank in a scored table reads as a
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Sequence
 from zoneinfo import ZoneInfo
@@ -33,8 +33,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from harness.dashboard.queries import recent_runs
 from harness.execution.book import BookState, side_p
 from harness.pricing.fees import KALSHI_FOOTBALL
+from harness.report.audits import ORDER_AUDITS
 from harness.report.stats import (
     CI,
     bh_reject,
@@ -50,7 +52,16 @@ from harness.settlement.order_clv import clv_formulas
 
 #: Render and persist order. t12 is appended *after t10*, not after t11: t11 sits before t9 and
 #: t10 in this tuple, so "after t11" would insert the new table in the middle (ruling A-I14).
-TABLE_KEYS = ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9", "t10", "t12")
+#: t13 is appended at the end for the same reason, and `RENDER_ORDER` below -- not this tuple --
+#: is what puts it first on the page (addendum 0.3).
+TABLE_KEYS = ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9", "t10", "t12",
+              "t13")
+
+#: What `render_markdown` renders in, as opposed to what `weekly_tables` keys and
+#: `render_for_model` iterates. The operational diagnostic goes first for the person reading on
+#: Monday morning; the model keeps `TABLE_KEYS` order and reads it last, which is cosmetic there
+#: because its bullets cite cells by table key (design review Minor 3).
+RENDER_ORDER = ("t13", *(key for key in TABLE_KEYS if key != "t13"))
 
 #: What an empty cell prints. Never "" (the brief's `test_render_has_no_empty_cells`).
 PLACEHOLDER = "--"
@@ -1558,6 +1569,255 @@ def _not_collected(key: str, title: str, what: str) -> Table:
                  ["item", "status"], [[title, NOT_COLLECTED]], NOT_COLLECTED)
 
 
+# --- table 13: the operational diagnostic -------------------------------------------------------
+#
+# Every read here is bounded and named. The rule the design review's C1 set: no query keys a
+# pricing table by `run_id`, no query puts a predicate on `runs.started_at`, and every
+# runs-derived count comes from `runs.notes` through `recent_run_notes`' cap-then-filter form,
+# the shape Floor's `_funnel` already uses (`harness/dashboard/snapshots/floor.py:480-491`).
+# t13 is built wherever `weekly_tables` runs, which includes the hourly provisional `report_wtd`
+# stage, so it is sized for that cadence: notes and small indexed tables only (ruling I8).
+
+#: The first paper order. The cumulative fill counts are bounded below by this date so they ride
+#: `ix_fills_filled_at` rather than walking the whole table; `ix_orders_status` is
+#: `(status, replay)` and cannot serve a status-independent count of orders (design review I8).
+FIRST_PAPER_ORDER_AT = datetime(2026, 9, 8, tzinfo=ZoneInfo("UTC"))
+
+#: How many `runs` rows the coverage block reads. A week at the 30 s heartbeat is about 20,160
+#: runs, so this is roughly a 25 % margin -- the same shape of margin `FUNNEL_NOTES_LIMIT`
+#: carries for its own window. The cap, not a `started_at` predicate, is what stops the read
+#: (design review C1); the week's two ends are then applied in Python (plan review C1), the
+#: lower one by `recent_runs` itself and the upper one by `_t13_coverage`. When the cap binds,
+#: the coverage rows describe the newest `T13_NOTES_LIMIT` runs rather than the whole week, and
+#: the `notes read` and `runs after the window` rows say so out loud.
+T13_NOTES_LIMIT = 25_000
+
+_T13_COLUMNS = ["item", "value", "unit", "note"]
+
+#: Bound: `f.filled_at` inside the week (`ix_fills_filled_at`); `orders` is reached by primary
+#: key from the fills the window already selected. One row per order, which is what lets the
+#: counterfactual population (an order whose only fills are `no_watcher`) be separated from the
+#: actual one without a second pass over `fills`.
+_T13_ORDER_FILLS = text("""
+    select o.variant_id, o.game_id, f.order_id,
+           bool_or(f.fill_method = 'queue_model') as has_queue_model,
+           bool_or(f.fill_method = 'no_watcher') as has_no_watcher
+    from fills f
+    join orders o on o.id = f.order_id
+    where f.replay = false and o.replay = false
+      and f.filled_at >= :start and f.filled_at < :end
+    group by 1, 2, 3
+""")
+
+#: Bound and index as above. Fill *rows* by method, which is a different unit from orders and
+#: gets its own rows rather than being folded into one number.
+_T13_FILL_ROWS = text("""
+    select f.fill_method, count(*) as n
+    from fills f
+    join orders o on o.id = f.order_id
+    where f.replay = false and o.replay = false
+      and f.filled_at >= :start and f.filled_at < :end
+    group by 1
+""")
+
+#: Bound: `f.filled_at >= :since` (`FIRST_PAPER_ORDER_AT`) and `< :end`. Index:
+#: `ix_fills_filled_at`, with `orders` reached by primary key.
+_T13_CUMULATIVE = text("""
+    select count(distinct f.order_id) as orders, count(distinct o.game_id) as games
+    from fills f
+    join orders o on o.id = f.order_id
+    where f.replay = false and o.replay = false and f.fill_method = 'queue_model'
+      and o.variant_id = :variant_id
+      and f.filled_at >= :since and f.filled_at < :end
+""")
+
+#: Bound: `ts` inside the week. Index: `ix_metric_samples_name_ts (name, ts desc)`, one range
+#: per name. Ruling I1: tape gaps are the `ws.gaps` counter; there is no gap table, and
+#: `market_gap_snapshots` is the pricing fair-vs-venue gap, a different thing entirely.
+_T13_METRICS = text("""
+    select name, count(*) as samples, coalesce(sum(value), 0) as total
+    from metric_samples
+    where name in ('exec.loop_ms', 'exec.loops_skipped', 'ws.gaps')
+      and ts >= :start and ts < :end
+    group by 1
+""")
+
+#: The published report the freshness pair is measured against. `generated_at` carries no index,
+#: so this is a sort of the whole table -- which is fine and is stated rather than implied:
+#: `report_runs` holds a handful of rows a week (one `harness report` run plus the provisional
+#: trail at `report_wtd_period_s`), so the sort is over tens of rows, not thousands. The
+#: provisional trail is excluded on purpose: a provisional row is what the week looked like an
+#: hour ago, not a published report.
+_T13_NEWEST_FINAL = text("""
+    select generated_at from report_runs
+    where provisional = false
+    order by generated_at desc limit 1
+""")
+
+
+def _t13_gate_variant(variants: list[dict], settings) -> dict | None:
+    """The one variant t13's gate rows are about, by `harness/report/gate.py`'s own rule
+    (`gate_row_variant`): `Settings.gate_variant` names it, and the active primary stands in
+    when that name is not registered. Resolved from the `variants` list `weekly_tables` already
+    loaded rather than by importing the gate, which would make this module depend on it."""
+    named = next((v for v in variants if v["name"] == settings.gate_variant), None)
+    if named is not None:
+        return named
+    return next((v for v in variants if v["tier"] == "primary"), None)
+
+
+def _t13_coverage(session: Session, window: dict, gate_name: str | None) -> dict:
+    """The runs block, entirely out of `runs.notes` (design review C1), over a two-sided window
+    (plan review C1).
+
+    `recent_runs` caps the read at `T13_NOTES_LIMIT` rows walking the primary key backwards and
+    applies the week's **lower** bound; the **upper** bound is applied here. Both ends are
+    needed because the cap is what stops the read, not a predicate: filtered on the week's start
+    alone, a Monday-morning report of the previous week counts about 33 hours of the following
+    week's runs among its own, and a report of an older week describes the wrong week entirely.
+    A run read but dated on or after the week's end is counted only in `after_window`, which is
+    what makes a cap that lands past a closed week visible rather than silent.
+
+    "No fair, gap or signal count" is the notes' own reading, not a table-level truth: a run
+    whose `pricing` block carries none of `ticks`, `gaps` or `signals` produced no pricing
+    counts it could report. 6D instruments the rest, and t13's note says so.
+    """
+    counts = {"notes_read": 0, "after_window": 0, "pricing_runs": 0, "gate_scored": 0,
+              "no_counts": 0, "budget_exhausted": 0}
+    for started_at, note in recent_runs(session, window["start"], limit=T13_NOTES_LIMIT):
+        if started_at >= window["end"]:
+            counts["after_window"] += 1
+            continue
+        counts["notes_read"] += 1
+        pricing = (note or {}).get("pricing") or {}
+        if not pricing:
+            counts["no_counts"] += 1
+            continue
+        counts["pricing_runs"] += 1
+        signals = pricing.get("signals") or {}
+        if gate_name is not None and gate_name in signals:
+            counts["gate_scored"] += 1
+        if not any(key in pricing for key in ("ticks", "gaps", "signals")):
+            counts["no_counts"] += 1
+        if pricing.get("budget_exhausted"):
+            counts["budget_exhausted"] += 1
+    return counts
+
+
+def _table13(session: Session, window: dict, variants: list[dict], settings,
+             now: datetime) -> Table:
+    """U8's operational diagnostic: one row per operational quantity, each with its own unit.
+
+    Rendered first (`RENDER_ORDER`) because it is what the Monday duty reads before anything
+    else, and persisted in `report_cells` like every other table -- one artefact, on Study, in
+    the model's view and in `docs/reports/` (D3).
+    """
+    header = (
+        "One row per operational quantity, each naming its own unit. No row pools variants and "
+        "no row adds unlike things. Counts are the week's non-replay rows unless the item says "
+        "cumulative. Sources: `fills` through `ix_fills_filled_at` with `orders` reached by "
+        "primary key, `metric_samples` through `ix_metric_samples_name_ts`, and `runs.notes` "
+        "through the capped read Floor's funnel uses. No query keys a pricing table by "
+        "`run_id` and none puts a predicate on `runs.started_at` (design review C1), so the "
+        "coverage rows are what the notes can say, not a table-level truth; 6D instruments the "
+        "rest.")
+    gate = _t13_gate_variant(variants, settings)
+    gate_id = None if gate is None else gate["variant_id"]
+    gate_name = None if gate is None else gate["name"]
+
+    per_order = [dict(r._mapping) for r in session.execute(_T13_ORDER_FILLS, window)]
+    mine = [r for r in per_order if gate_id is not None and r["variant_id"] == gate_id]
+    actual = [r for r in mine if r["has_queue_model"]]
+    counterfactual = [r for r in mine if not r["has_queue_model"] and r["has_no_watcher"]]
+    fill_rows = {r.fill_method: int(r.n) for r in session.execute(_T13_FILL_ROWS, window)}
+
+    cumulative = None
+    if gate_id is not None:
+        cumulative = session.execute(_T13_CUMULATIVE, {
+            "variant_id": gate_id, "since": FIRST_PAPER_ORDER_AT, "end": window["end"]}).first()
+
+    metrics = {r.name: r for r in session.execute(_T13_METRICS, window)}
+
+    def _samples(name: str) -> int:
+        row = metrics.get(name)
+        return 0 if row is None else int(row.samples)
+
+    def _total(name: str) -> int:
+        row = metrics.get(name)
+        return 0 if row is None else int(row.total)
+
+    coverage = _t13_coverage(session, window, gate_name)
+
+    newest_final = session.execute(_T13_NEWEST_FINAL).scalar()
+    audited_and_filled = sum(
+        1 for r in actual
+        if r["order_id"] in ORDER_AUDITS
+        and ORDER_AUDITS[r["order_id"]].status != "validated")
+
+    rows: list[list] = [
+        ["gate variant", gate_name or PLACEHOLDER, "variant",
+         "`Settings.gate_variant`, resolved against `strategy_variants` by the gate's own rule"],
+        ["filled orders, week", len(actual), "orders",
+         "orders with at least one `queue_model` fill, `replay = false`"],
+        ["distinct games filled, week",
+         len({r["game_id"] for r in actual if r["game_id"] is not None}), "games",
+         "distinct `orders.game_id` behind the row above"],
+        ["filled orders, cumulative",
+         0 if cumulative is None else int(cumulative.orders), "orders",
+         f"since {FIRST_PAPER_ORDER_AT.date().isoformat()}, the first paper order"],
+        ["distinct games filled, cumulative",
+         0 if cumulative is None else int(cumulative.games), "games",
+         f"since {FIRST_PAPER_ORDER_AT.date().isoformat()}"],
+        ["counterfactual orders, week", len(counterfactual), "orders",
+         "orders whose only fills are `no_watcher`: what would have filled without a watcher"],
+        ["fill rows, queue_model, week", fill_rows.get("queue_model", 0), "fill rows",
+         "rows, not orders: one order can carry several"],
+        ["fill rows, no_watcher, week", fill_rows.get("no_watcher", 0), "fill rows",
+         "rows, not orders"],
+        ["pricing runs, week", coverage["pricing_runs"], "runs",
+         "runs whose `notes.pricing` block is non-empty"],
+        ["runs scoring the gate variant", coverage["gate_scored"], "runs",
+         "`notes.pricing.signals` names the gate variant"],
+        ["runs with no fair, gap or signal count", coverage["no_counts"], "runs",
+         "`notes.pricing` carries none of `ticks`, `gaps`, `signals`; the notes' own reading"],
+        ["runs with budget_exhausted", coverage["budget_exhausted"], "runs",
+         "`notes.pricing.budget_exhausted`"],
+        ["executor loop samples", _samples("exec.loop_ms"), "metric samples",
+         "count of `exec.loop_ms` rows; there is no per-loop counter, 6D instruments it"],
+        ["executor loops skipped", _total("exec.loops_skipped"), "loops",
+         "sum of `exec.loops_skipped`"],
+        ["tape gaps", _total("ws.gaps"), "gap events",
+         "sum of `ws.gaps`; there is no gap table (design review I1)"],
+    ]
+    for order_id in sorted(ORDER_AUDITS):
+        audit = ORDER_AUDITS[order_id]
+        rows.append([f"order audit {order_id}", audit.status, "audit status",
+                     f"{audit.note} (since {audit.since})"])
+    rows += [
+        ["fill events under audit", audited_and_filled, "orders",
+         "the gate variant's actual filled orders in the register with a non-`validated` "
+         "status; the gate criterion itself is untouched (R1)"],
+        ["this run generated at", now.isoformat(), "timestamp", "the report being rendered"],
+        ["newest final report generated at",
+         newest_final.isoformat() if newest_final is not None else PLACEHOLDER, "timestamp",
+         "the newest non-provisional `report_runs` row; provisional rows are a trail"],
+        ["newest final report age",
+         PLACEHOLDER if newest_final is None else int((now - newest_final).total_seconds()),
+         "seconds", "age of the row above at this render"],
+        ["week key", "America/Chicago ISO week, Amendment 5", "convention",
+         "addendum 0.1 and 0.2; the UTC partition names are storage keys and are unchanged"],
+        ["notes read", coverage["notes_read"], "runs",
+         f"cap {T13_NOTES_LIMIT}; runs inside the week, and the only ones the coverage rows "
+         f"above count"],
+        ["runs after the window", coverage["after_window"], "runs",
+         "read by the cap but dated on or after the week's end; counted in no row above. A "
+         "count near the cap means the read did not reach far enough back into this week"],
+    ]
+    note = ("The coverage rows are what `runs.notes` can say, not a table-level truth (design "
+            "review C1). The audit rows label and never exclude: no gate criterion reads them.")
+    return Table("Table 13 (t13): operational diagnostic", header, _T13_COLUMNS, rows, note)
+
+
 # --- entry point --------------------------------------------------------------------------------
 
 _VARIANTS = text("""
@@ -1566,12 +1826,18 @@ _VARIANTS = text("""
 """)
 
 
-def weekly_tables(session: Session, year: int, week: int, settings) -> dict[str, Table]:
-    """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t12` (with `t4b`).
+def weekly_tables(session: Session, year: int, week: int, settings,
+                  now: datetime | None = None) -> dict[str, Table]:
+    """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t13` (with `t4b`).
 
     Read-only. Each table is restricted to the week's non-replay rows and each per-variant table
     groups by variant first; a table with nothing in it still answers a placeholder row.
+
+    `now` is the render instant t13's freshness pair reports; it defaults to the wall clock so
+    `harness/cli.py` and `harness/settlement/report_wtd.py` need no change, and every test
+    passes it explicitly.
     """
+    now = now or datetime.now(timezone.utc)
     start, end = week_bounds(year, week, settings.tz_local)
     window = {"start": start, "end": end, "tz": settings.tz_local}
     variants = [dict(r._mapping) for r in session.execute(_VARIANTS)]
@@ -1589,6 +1855,7 @@ def weekly_tables(session: Session, year: int, week: int, settings) -> dict[str,
         "t9": _not_collected("t9", "flow", "H3's flow imbalance is a later phase."),
         "t10": _table10(session, window),
         "t12": _table12(session, window),
+        "t13": _table13(session, window, variants, settings, now),
     }
 
 

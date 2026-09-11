@@ -70,7 +70,7 @@ ROWS_MAX = 60
 IDENTITY_COLUMNS: dict[str, str] = {
     "t1": "variant", "t2": "variant", "t3": "variant", "t4": "fair_source",
     "t4b": "market_type", "t5": "sport", "t6": "variant", "t7": "decision", "t8": "metric",
-    "t9": "item", "t10": "group", "t11": "env", "t12": "variant/reason",
+    "t9": "item", "t10": "group", "t11": "env", "t12": "variant/reason", "t13": "item",
 }
 
 #: `t4b` and `t12` both exist, so the table part is digits with an optional trailing `b`.

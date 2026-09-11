@@ -27,6 +27,7 @@ from harness.report.tables import (
     HEADLINE_PANEL,
     NOT_COLLECTED,
     PLACEHOLDER,
+    RENDER_ORDER,
     SIGNIFICANT_CELLS_REQUIRED,
     TABLE_KEYS,
     Table,
@@ -130,7 +131,9 @@ def render_markdown(tables: dict[str, Table], meta: dict) -> str:
                   "", "```"]
         lines += [f"- {bullet}" for bullet in annotation]
         lines += ["```", ""]
-    for key in TABLE_KEYS:
+    # `RENDER_ORDER`, not `TABLE_KEYS`: the operational diagnostic is what the Monday duty reads
+    # first (addendum 0.3). `render_for_model` keeps `TABLE_KEYS` order on purpose.
+    for key in RENDER_ORDER:
         table = tables.get(key)
         if table is not None:
             lines += _render_table(table)

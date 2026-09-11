@@ -290,7 +290,7 @@ def test_weekly_tables_return_every_key_with_placeholders(db_session, env_settin
     tables = _tables(db_session, env_settings)
     assert list(tables) == list(TABLE_KEYS)
     assert set(TABLE_KEYS) == {"t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9",
-                               "t10", "t12"}
+                               "t10", "t12", "t13"}
     for key, table in tables.items():
         assert isinstance(table, Table), key
         assert table.title and table.header, key
@@ -951,12 +951,12 @@ def test_table1_stopped_share_ignores_rows_outside_the_week_and_unevaluated_ones
 # --- table 12: declined candidates, with both counterfactual estimators ----------------------
 
 
-def test_t12_is_appended_after_t10_and_renders_last():
+def test_t12_is_appended_after_t10_and_t13_after_t12():
     from harness.report.tables import TABLE_KEYS
 
-    assert TABLE_KEYS[-1] == "t12"
+    assert TABLE_KEYS[-1] == "t13"
     assert TABLE_KEYS == ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9",
-                          "t10", "t12")
+                          "t10", "t12", "t13")
 
 
 def test_t12_row_keys_are_composite_and_unique(db_session, env_settings):
@@ -1040,3 +1040,216 @@ def test_the_audit_register_opens_with_order_157_pending():
         assert audit.status in AUDIT_STATUSES
         # Minor 5: an ISO-8601 date, pinned rather than left to the writer's taste.
         date.fromisoformat(audit.since)
+
+
+def _t13(db_session, env_settings, year=YEAR, week=WEEK, now=None):
+    """t13 as a `{item: (value, unit, note)}` map, which is how every assertion below reads it."""
+    table = weekly_tables(db_session, year, week, env_settings,
+                          now=now or (WEEK_START + timedelta(days=7)))["t13"]
+    assert table.columns == ["item", "value", "unit", "note"]
+    return {row[0]: (row[1], row[2], row[3]) for row in table.rows}
+
+
+def test_t13_counts_actual_fills_apart_from_the_counterfactual_ones(db_session, env_settings):
+    """Addendum 0.3: an actual filled order has at least one `queue_model` fill; the
+    counterfactual population is the orders whose only fills are `no_watcher`. They are two
+    rows with two units, never one pooled number."""
+    # Three markets, one game: `uq_open_order` allows only one open order per
+    # (venue, ticker, side, variant), and every `_order` here defaults to `status="open"`.
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    game = _game(db_session)
+    actual = _order(db_session, _market(db_session, game.id, "T13MKT1A"), PRIMARY)
+    _fill(db_session, actual, fill_method="queue_model")
+    counterfactual = _order(db_session, _market(db_session, game.id, "T13MKT1B"), PRIMARY)
+    _fill(db_session, counterfactual, fill_method="no_watcher")
+    audited = _order(db_session, _market(db_session, game.id, "T13MKT1C"), PRIMARY)
+    _fill(db_session, audited, fill_method="queue_model")
+    db_session.flush()
+
+    rows = _t13(db_session, env_settings)
+    assert rows["filled orders, week"] == (1 + 1, "orders", rows["filled orders, week"][2])
+    assert rows["counterfactual orders, week"][0] == 1
+    assert rows["counterfactual orders, week"][1] == "orders"
+    assert rows["distinct games filled, week"] == (1, "games", rows["distinct games filled, week"][2])
+    assert rows["fill rows, queue_model, week"][0] == 2
+    assert rows["fill rows, no_watcher, week"][0] == 1
+    assert rows["fill rows, queue_model, week"][1] == "fill rows"
+    assert rows["week key"][0] == "America/Chicago ISO week, Amendment 5"
+
+
+def test_t13_reports_the_audit_register_and_the_orders_under_audit(db_session, env_settings,
+                                                                   monkeypatch):
+    """Addendum 0.4: one row per audited order, plus the count of the gate variant's actual
+    filled orders that are in the register with a non-`validated` status."""
+    from harness.report.audits import Audit
+    import harness.report.tables as tables_module
+
+    # Two markets: `uq_open_order` allows only one open order per (venue, ticker, side,
+    # variant), and every `_order` here defaults to `status="open"`.
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    game = _game(db_session)
+    audited = _order(db_session, _market(db_session, game.id, "T13MKT2A"), PRIMARY)
+    _fill(db_session, audited, fill_method="queue_model")
+    clean = _order(db_session, _market(db_session, game.id, "T13MKT2B"), PRIMARY)
+    _fill(db_session, clean, fill_method="queue_model")
+    db_session.flush()
+
+    monkeypatch.setattr(tables_module, "ORDER_AUDITS", {
+        audited.id: Audit("pending", "fill history not uniquely identified", "2026-09-11"),
+        999_999: Audit("validated", "matches the tape", "2026-09-11"),
+    })
+    rows = _t13(db_session, env_settings)
+    assert rows[f"order audit {audited.id}"][0] == "pending"
+    assert rows[f"order audit {audited.id}"][1] == "audit status"
+    assert "2026-09-11" in rows[f"order audit {audited.id}"][2]
+    assert rows["order audit 999999"][0] == "validated"
+    # Only the pending one is a fill event under audit, and only because its order actually
+    # filled: the validated row and the order that is not in the register are not counted.
+    assert rows["fill events under audit"] == (1, "orders", rows["fill events under audit"][2])
+
+
+def test_t13_reads_coverage_from_runs_notes_only(db_session, env_settings):
+    """Design review C1: no predicate on `runs.started_at`, no anti-join against a pricing
+    table. Every coverage row is what `runs.notes` can say."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    db_session.add(Run(started_at=WED, status="ok", build_sha="abc",
+                       notes={"pricing": {"gaps": 900, "budget_exhausted": False,
+                                          "signals": {"sharp_direct": {"candidate": 12,
+                                                                       "rejected": 88}}}}))
+    db_session.add(Run(started_at=WED, status="ok", build_sha="abc",
+                       notes={"pricing": {"gaps": 5, "budget_exhausted": True, "signals": {}}}))
+    db_session.add(Run(started_at=WED, status="skipped", build_sha="abc", notes={"pricing": {}}))
+    db_session.flush()
+
+    rows = _t13(db_session, env_settings)
+    assert rows["pricing runs, week"] == (2, "runs", rows["pricing runs, week"][2])
+    assert rows["runs scoring the gate variant"][0] == 1
+    assert rows["runs with no fair, gap or signal count"][0] == 1
+    assert rows["runs with budget_exhausted"][0] == 1
+    assert rows["runs scoring the gate variant"][1] == "runs"
+
+
+def test_t13_coverage_counts_only_the_weeks_own_runs(db_session, env_settings):
+    """Plan review C1: the coverage read is capped by the primary key walking backwards, so its
+    window has to be closed at **both** ends. A run dated on or after the week's end is read and
+    then excluded, and is reported in its own row so a cap that lands past a closed week is
+    visible; a run a second before the week's start is never read into the window at all.
+
+    Without the upper bound, the Monday 09:00 CT report for week 37 would count about 33 hours of
+    week-38 runs among its own, and a report of an older week would describe a different week
+    entirely.
+    """
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    start, end = week_bounds(YEAR, WEEK, env_settings.tz_local)
+    priced = {"pricing": {"gaps": 1, "signals": {"sharp_direct": {"candidate": 1,
+                                                                 "rejected": 0}}}}
+    db_session.add(Run(started_at=start, status="ok", build_sha="abc", notes=priced))
+    db_session.add(Run(started_at=end + timedelta(hours=1), status="ok", build_sha="abc",
+                       notes=priced))
+    db_session.add(Run(started_at=start - timedelta(seconds=1), status="ok", build_sha="abc",
+                       notes=priced))
+    db_session.flush()
+
+    rows = _t13(db_session, env_settings)
+    assert rows["pricing runs, week"][0] == 1
+    assert rows["runs scoring the gate variant"][0] == 1
+    assert rows["notes read"][0] == 1
+    assert rows["runs after the window"] == (1, "runs", rows["runs after the window"][2])
+
+
+def test_t13_reads_the_executor_and_tape_counters_from_metric_samples(db_session, env_settings):
+    """Ruling I1: tape gaps are the `ws.gaps` counter, not a table. There is no per-loop
+    counter either, so the loop row counts `exec.loop_ms` samples and says so."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    db_session.add(MetricSample(ts=WED, source="exec", name="exec.loop_ms", value=Decimal("42")))
+    db_session.add(MetricSample(ts=WED, source="exec", name="exec.loop_ms", value=Decimal("51")))
+    db_session.add(MetricSample(ts=WED, source="exec", name="exec.loops_skipped",
+                                value=Decimal("3")))
+    db_session.add(MetricSample(ts=WED, source="ws", name="ws.gaps", value=Decimal("2")))
+    db_session.flush()
+
+    rows = _t13(db_session, env_settings)
+    assert rows["executor loop samples"] == (2, "metric samples",
+                                             rows["executor loop samples"][2])
+    assert rows["executor loops skipped"] == (3, "loops", rows["executor loops skipped"][2])
+    assert rows["tape gaps"] == (2, "gap events", rows["tape gaps"][2])
+
+
+def test_t13_carries_the_freshness_pair(db_session, env_settings):
+    """Addendum 0.3: this run's `generated_at` beside the newest *final* report's and its age."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    db_session.add(ReportRun(year=2026, week=37, generated_at=WEEK_START - timedelta(hours=2),
+                             provisional=False, build_sha="abc", criteria_hash="h",
+                             config_hashes=[], markdown="# w37", markdown_sha256="s"))
+    db_session.add(ReportRun(year=2026, week=37, generated_at=WEEK_START - timedelta(minutes=5),
+                             provisional=True, build_sha="abc", criteria_hash="h",
+                             config_hashes=[], markdown=None, markdown_sha256=None))
+    db_session.flush()
+
+    now = WEEK_START
+    rows = _t13(db_session, env_settings, now=now)
+    assert rows["this run generated at"][0] == now.isoformat()
+    # The provisional row is five minutes old and is *not* the one reported: a provisional run
+    # is a trail, and the freshness pair is about the published report.
+    assert rows["newest final report generated at"][0] == (
+        WEEK_START - timedelta(hours=2)).isoformat()
+    assert rows["newest final report age"] == (7200, "seconds",
+                                               rows["newest final report age"][2])
+
+
+def test_t13_on_an_empty_week_is_zeros_with_units_never_not_collected(db_session, env_settings):
+    """Addendum 1.3: an empty week is a week with zero of everything, which is a measurement.
+    `NOT_COLLECTED` would say the opposite -- that nothing was even looked at."""
+    rows = _t13(db_session, env_settings)
+    for item in ("filled orders, week", "distinct games filled, week",
+                 "counterfactual orders, week", "fill rows, queue_model, week",
+                 "pricing runs, week", "runs scoring the gate variant",
+                 "runs with budget_exhausted", "tape gaps", "fill events under audit",
+                 "notes read", "runs after the window"):
+        value, unit, _note = rows[item]
+        assert value == 0, item
+        assert unit and unit != NOT_COLLECTED, item
+    assert rows["newest final report generated at"][0] == PLACEHOLDER
+    assert NOT_COLLECTED not in {value for value, _u, _n in rows.values()}
+
+
+def test_t13_renders_first_and_the_model_view_keeps_table_keys_order(db_session, env_settings):
+    """Addendum 0.3 and design review Minor 3: the human reader gets the diagnostic first, the
+    model gets it last, and the two orders are named rather than implied."""
+    from harness.report.tables import RENDER_ORDER, TABLE_KEYS
+
+    assert RENDER_ORDER[0] == "t13"
+    assert set(RENDER_ORDER) == set(TABLE_KEYS)
+    assert TABLE_KEYS[-1] == "t13"
+    assert list(RENDER_ORDER[1:]) == [k for k in TABLE_KEYS if k != "t13"]
+
+    tables = weekly_tables(db_session, YEAR, WEEK, env_settings, now=WEEK_START)
+    text = render_markdown(tables, {"year": YEAR, "week": WEEK, "build_sha": "abc",
+                                    "criteria_hash": "0" * 64, "config_hashes": []})
+    assert text.index("(t13)") < text.index("(t1)")
+
+
+def test_t13_sql_keys_no_pricing_table_by_run_id():
+    """Design review C1, stated as a structural test so a later edit cannot quietly reintroduce
+    the anti-join or the `runs.started_at` predicate.
+
+    Only the **SQL literals** are inspected, not the whole block. The Python around them
+    legitimately says `signals` (reading `notes.pricing.signals`) and `started_at` (applying the
+    week's upper bound in memory, plan review C1), and a plain substring check over the block
+    would fail on its own correct code.
+    """
+    import re
+
+    from harness.report import tables as tables_module
+
+    source = Path(tables_module.__file__).read_text()
+    block = source.split("# --- table 13", 1)[1].split("# --- entry point", 1)[0]
+    statements = " ".join(re.findall(r'text\("""(.*?)"""\)', block, flags=re.S)).lower()
+    assert statements, "t13 defines no SQL, so this test would be checking nothing"
+    assert "started_at" not in statements
+    assert "not exists" not in statements
+    for name in ("fair_values", "market_gap_snapshots", "signals", "orderbook_events",
+                 "venue_trades", "from runs"):
+        assert name not in statements, name
+    # And every runs-derived count goes through the one capped reader, never a query of its own.
+    assert "recent_runs" in block

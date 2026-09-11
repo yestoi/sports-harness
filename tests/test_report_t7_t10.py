@@ -462,4 +462,4 @@ def test_the_table_order_is_unchanged():
     from harness.report.tables import TABLE_KEYS
 
     assert TABLE_KEYS == ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9",
-                          "t10", "t12")
+                          "t10", "t12", "t13")

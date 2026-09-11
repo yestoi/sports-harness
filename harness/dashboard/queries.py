@@ -66,6 +66,32 @@ def recent_run_notes(session: Session, cutoff: datetime, limit: int | None = Non
     return [notes for started_at, notes in session.execute(stmt).all() if started_at >= cutoff]
 
 
+def recent_runs(session: Session, cutoff: datetime,
+                limit: int | None = None) -> list[tuple[datetime, dict]]:
+    """`recent_run_notes`' sibling, returning `(started_at, notes)` so a caller that needs an
+    **upper** bound can apply one (plan review C1).
+
+    Same read and the same reasoning as `recent_run_notes` above: `runs` carries no index on
+    `started_at`, so with a `limit` the SQL carries the limit alone, the read stops at exactly N
+    rows walking the primary key backwards, and the window is applied in Python on rows already
+    in memory. The one difference is that the timestamp comes back instead of being discarded,
+    because `recent_run_notes`' single-ended filter answers "since `cutoff`", which for a
+    *closed* week means "from that week's Monday until now". The weekly report needs "inside that
+    week", and the difference is a third of a day on a Monday-morning report of the previous
+    week and the whole answer on any week before that.
+
+    Without a `limit` the predicate goes in the SQL, exactly as above, and the caller still
+    applies its own upper bound.
+    """
+    if limit is None:
+        stmt = (select(Run.started_at, Run.notes)
+                .where(Run.started_at >= cutoff).order_by(desc(Run.id)))
+        return [(started_at, notes) for started_at, notes in session.execute(stmt).all()]
+    stmt = select(Run.started_at, Run.notes).order_by(desc(Run.id)).limit(limit)
+    return [(started_at, notes) for started_at, notes in session.execute(stmt).all()
+            if started_at >= cutoff]
+
+
 def signals_by_variant_from_notes(session: Session, run_notes: list[dict]) -> dict:
     """`{variant_name: {tier, candidate, rejected}}`, seeded with every active variant's `tier`
     from `strategy_variants` (a small table -- this join stays a live query) and summed from
