@@ -190,21 +190,31 @@ class WsRecorder:
         ws.send(json.dumps({"id": 1, "cmd": "subscribe", "params": {"channels": CHANNELS, "market_tickers": tickers}}))
         self._current = list(tickers)
 
-    def _resubscribe(self, ws, wanted: list[str], msg_id: int) -> None:
+    def _resubscribe(self, ws, wanted: list[str], msg_id: int) -> int:
+        """Move the venue's subscriptions to `wanted`. `update_subscription` takes exactly one
+        subscription id per frame ("sids: array containing exactly one subscription ID"), so
+        send a frame per sid per action -- a multi-sid `sids` is rejected with code 12,
+        "Exactly one subscription ID is required", which `should_reconnect` reads as a dead
+        subscription and drops the tape. A frame per sid also means one rejection names the one
+        sid that failed. Returns the next free msg id, as `_recover_gap` does."""
         add, remove = diff_subscriptions(self._current, wanted)
         if not add and not remove:
             self._current = list(wanted)
-            return
+            return msg_id
         sent = 0
         for action, tickers in (("add_markets", add), ("delete_markets", remove)):
-            if tickers and self._sids:
+            if not tickers:
+                continue
+            for sid in self._sids:
                 ws.send(json.dumps({"id": msg_id, "cmd": "update_subscription",
-                                    "params": {"sids": self._sids, "market_tickers": tickers, "action": action}}))
+                                    "params": {"sids": [sid], "market_tickers": tickers, "action": action}}))
+                msg_id += 1
                 sent += 1
         # Without a sid nothing was sent, so the venue still holds the old set. Advancing
         # _current here would make every later diff empty and silence the recorder for good.
         if sent:
             self._current = list(wanted)
+        return msg_id
 
     def _recover_gap(self, ws, sid: int, msg_id: int) -> int:
         """A gap leaves every ticker on `sid` with an unknown book until something forces a
@@ -322,8 +332,10 @@ class WsRecorder:
                 with self.factory() as session:
                     wanted = select_ws_tickers(session, self.clock(), self.s.ws_max_tickers,
                                                self.s.ws_lookahead_hours, self.s.ws_lookback_hours, self.s.exec_variants)
-                self._resubscribe(ws, wanted, msg_id)
-                msg_id, last_plan = msg_id + 1, time.monotonic()
+                # A plan now sends one frame per sid per action, so only `_resubscribe` knows
+                # how far the ids advanced; take the next free id from it.
+                msg_id = self._resubscribe(ws, wanted, msg_id)
+                last_plan = time.monotonic()
 
     def run_forever(self) -> None:
         signal.signal(signal.SIGTERM, self.stop)

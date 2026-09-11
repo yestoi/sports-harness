@@ -43,6 +43,12 @@ orderbook messages. It never places or cancels orders. It is conditional on a Ka
    confirmed-working production WebSocket URL (the connection requires the same RSA-signed
    headers as the REST API, even for public market-data channels).
 
+**One sid per `update_subscription` frame** (fix 43, 2026-09-11). The venue accepts exactly one
+subscription id per frame and answers a multi-sid `sids` list with `{"code": 12, "msg":
+"Exactly one subscription ID is required"}`; that error frame reconnects the socket, so the
+symptom is a tape gap and `book_dirty_markets` climbing on every 15-minute plan. The recorder
+sends one frame per sid per action, with consecutive `id`s, so a rejection names the one sid.
+
 Live smoke test performed 2026-09-06 against `wss://api.elections.kalshi.com/trade-api/ws/v2`
 with real (unfunded) production credentials: ran `ws-record` against tickers selected by
 `select_ws_tickers` for roughly 4 minutes (widened lookahead window for the smoke only), then

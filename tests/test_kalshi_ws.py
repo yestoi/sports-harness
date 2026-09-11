@@ -949,6 +949,78 @@ def _subscription_frames(ws) -> list[dict]:
     return [json.loads(f) for f in ws.sent if json.loads(f).get("cmd") == "update_subscription"]
 
 
+def _recorder_with_sids(sids: list[int], current: list[str]) -> WsRecorder:
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), _FakeSink(lambda m, t: None),
+                          ws_factory=lambda *a, **kw: None, clock=lambda: NOW)
+    recorder._sids, recorder._current = list(sids), list(current)
+    return recorder
+
+
+def test_resubscribe_sends_one_frame_per_sid_per_action(monkeypatch):
+    """Fix 43: the venue answers a multi-sid `update_subscription` with `Exactly one
+    subscription ID is required` (code 12), `should_reconnect` then reads the error frame and
+    the recorder drops the tape every plan. One frame per sid per action keeps every frame
+    inside the venue's contract, and a rejection then names the one sid that failed."""
+    recorder = _recorder_with_sids([7, 8], ["K-A", "K-B"])
+    ws = _FakeWs([])
+
+    next_id = recorder._resubscribe(ws, ["K-B", "K-C"], 2)
+
+    frames = _subscription_frames(ws)
+    assert len(frames) == 4  # two actions x two sids
+    assert all(len(f["params"]["sids"]) == 1 for f in frames)
+    assert [(f["params"]["action"], f["params"]["sids"][0], f["params"]["market_tickers"]) for f in frames] == [
+        ("add_markets", 7, ["K-C"]), ("add_markets", 8, ["K-C"]),
+        ("delete_markets", 7, ["K-A"]), ("delete_markets", 8, ["K-A"]),
+    ]
+    # Distinct, consecutive ids: acks and errors are uncorrelatable when frames share an id.
+    assert [f["id"] for f in frames] == [2, 3, 4, 5]
+    assert next_id == 6  # the next free id, so the caller's next frame never collides
+    assert recorder._current == ["K-B", "K-C"]
+
+
+def test_resubscribe_with_one_sid_sends_two_frames():
+    """One sid, one add and one remove: a frame per action, each still a single-element list."""
+    recorder = _recorder_with_sids([7], ["K-A", "K-B"])
+    ws = _FakeWs([])
+
+    next_id = recorder._resubscribe(ws, ["K-B", "K-C"], 10)
+
+    frames = _subscription_frames(ws)
+    assert [(f["id"], f["params"]["sids"], f["params"]["action"]) for f in frames] == [
+        (10, [7], "add_markets"), (11, [7], "delete_markets"),
+    ]
+    assert next_id == 12
+
+
+def test_resubscribe_without_a_sid_sends_nothing_and_keeps_the_old_set():
+    """No sid means nothing was sent, so the venue still holds the old set; advancing
+    `_current` here would make every later diff empty and silence the recorder for good."""
+    recorder = _recorder_with_sids([], ["K-A"])
+    ws = _FakeWs([])
+
+    next_id = recorder._resubscribe(ws, ["K-B"], 2)
+
+    assert ws.sent == []
+    assert next_id == 2
+    assert recorder._current == ["K-A"]
+
+
+def test_resubscribe_never_sends_a_multi_sid_frame():
+    """The old shape -- every acked sid in one `sids` list -- is what the venue rejects; no
+    number of sids or tickers may bring it back."""
+    recorder = _recorder_with_sids([1, 2, 3, 4], ["K-A", "K-B", "K-C"])
+    ws = _FakeWs([])
+
+    recorder._resubscribe(ws, ["K-C", "K-D", "K-E"], 2)
+
+    frames = _subscription_frames(ws)
+    assert frames  # the diff is non-empty, so this is a real assertion
+    assert all(f["params"]["sids"] == [sid] for f in frames for sid in f["params"]["sids"])
+    assert max(len(f["params"]["sids"]) for f in frames) == 1
+    assert len({f["id"] for f in frames}) == len(frames)
+
+
 def test_sequence_gap_resubscribes_the_sid_once_inside_the_recovery_window(db_session, monkeypatch):
     """F7: the sink saw gaps and nobody acted. After a gap every ticker on that sid has an
     unknown book until the next reconnect, so the recorder re-adds the sid's markets to force
