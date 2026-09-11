@@ -107,6 +107,18 @@ def test_a_malformed_quote_is_isolated_and_the_good_quote_still_grades(
     assert good is not None       # graded despite the other quote's failure
 
 
+def test_an_empty_legs_list_is_left_waiting_not_graded_with_a_fabricated_certainty(
+        db_session, empty_legs_quote):
+    """Review M5: an `rfqs` row with no legs has no product to grade. Left waiting -- not graded
+    with `closing_fair = 1.0000` (the empty product) and a P&L built off it."""
+    result = grade_rfq_quotes(db_session, NOW, _budget())
+    assert result.counts["waiting"] == 1
+    row = db_session.execute(text(
+        "select graded_at, closing_fair from rfq_quotes where id = :id"),
+        {"id": empty_legs_quote.quote.id}).first()
+    assert row.graded_at is None and row.closing_fair is None
+
+
 def test_grading_twice_is_idempotent(db_session, settled_quote):
     grade_rfq_quotes(db_session, NOW, _budget())
     first = db_session.execute(text("select graded_at from rfq_quotes")).scalar()

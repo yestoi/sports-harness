@@ -93,17 +93,36 @@ def test_a_leg_with_two_priced_lines_uses_its_own_threshold(db_session, env_sett
     assert quote.fair == Decimal("0.2750")     # 0.55 (the leg's own line) * 0.50
 
 
-def test_both_fee_branches_are_stored(db_session, env_settings, two_game_rfq):
-    """F72 and ruling A-I2. `fee_branch_game` is the game-level independence answer the decline
-    rule uses, `fee_branch_event` the event-level one F72 wrote, and the other branch's bids are
-    stored so grading can be re-run either way."""
-    handle_frame(db_session, two_game_rfq.frame, NOW)
+def test_both_fee_branches_are_stored(db_session, env_settings, mixed_family_rfq):
+    """F72 and ruling A-I2, and review M9: the fee is Kalshi's real maker fee per contract at our
+    quoted price (`harness.pricing.fees.fee_per_contract`), not the quoting margin -- a different
+    quantity, already folded into `spread`. `fee_branch_game` is the game-level independence
+    answer the decline rule uses, `fee_branch_event` the event-level one F72 wrote, and the other
+    branch's bids are stored so grading can be re-run either way.
+
+    `mixed_family_rfq` fails F72's independence test under both readings (one leg is
+    `KXNCAAFGAME`, not `KXNFL*`), so the real fee applies to both branches, and applies once per
+    side at that side's own price -- never multiplied by leg count the way the margin is.
+
+    By hand: fair = 0.60 x 0.50 = 0.3000; spread = 0.03 x 2 legs = 0.06; the pre-fee bids are
+    0.2400 (yes) and 0.6400 (no).
+    fee_yes = fee_per_contract(KALSHI_FOOTBALL, "maker", 0.2400, 1)
+            = ceil_to_centicent(0.0175 x 0.2400 x 0.7600) = ceil_to_centicent(0.003192) = 0.0032
+    fee_no  = fee_per_contract(KALSHI_FOOTBALL, "maker", 0.6400, 1)
+            = ceil_to_centicent(0.0175 x 0.6400 x 0.3600) = ceil_to_centicent(0.004032) = 0.0041
+    yes_bid = 0.2400 - 0.0032 = 0.2368; no_bid = 0.6400 - 0.0041 = 0.6359.
+    Both branches fail independence identically here (one non-NFL leg fails either reading), so
+    the other-branch bids match the branch taken.
+    """
+    handle_frame(db_session, mixed_family_rfq.frame, NOW)
     quote = db_session.execute(text(
-        "select fee_branch_game, fee_branch_event, fee_subtracted, yes_bid_other_branch, "
-        "no_bid_other_branch from rfq_quotes")).first()
-    assert quote.fee_branch_game is not None and quote.fee_branch_event is not None
-    assert quote.yes_bid_other_branch is not None and quote.no_bid_other_branch is not None
-    assert quote.fee_subtracted is not None
+        "select fee_branch_game, fee_branch_event, fee_subtracted, yes_bid, no_bid, "
+        "yes_bid_other_branch, no_bid_other_branch from rfq_quotes")).first()
+    assert quote.fee_branch_game is False and quote.fee_branch_event is False
+    assert quote.fee_subtracted == Decimal("0.0032")
+    assert quote.yes_bid == Decimal("0.2368") and quote.no_bid == Decimal("0.6359")
+    assert quote.yes_bid_other_branch == Decimal("0.2368")
+    assert quote.no_bid_other_branch == Decimal("0.6359")
 
 
 @pytest.mark.parametrize("key", ["game_id", "event_ticker"])

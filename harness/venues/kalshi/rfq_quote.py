@@ -1,8 +1,9 @@
 """The combo quote we would have sent, computed and stored and never sent (spec §8.2, F72).
 
-`fair = Pi(leg fair)`; `yes_bid = fair - margin x legs`; `no_bid = 1 - fair - margin x legs`,
-with the margin defaulting to three cents a leg. Every number here is a record of what we would
-have quoted; nothing in this module can deliver one, and a static test says so.
+`fair = Pi(leg fair)`; the pre-fee bids are `yes = fair - margin x legs`,
+`no = 1 - fair - margin x legs`, with the margin defaulting to three cents a leg. Every number
+here is a record of what we would have quoted; nothing in this module can deliver one, and a
+static test says so.
 
 **The decline rules** (0.11, ruling A-I2). Each leg's `market_ticker` resolves to
 `venue_markets.game_id`, and two legs on one `game_id` decline `same_game` -- the spec says "two
@@ -17,6 +18,15 @@ combo is *not* NFL-only-independent, and that test has two readings -- all compo
 distinct, or all component events distinct. Both are computed and both are stored, with the
 bids the other branch would have quoted, so grading can be re-run either way without re-deriving
 anything.
+
+**The fee is Kalshi's real maker fee, not the quoting margin** (review M9). `margin` is this
+combo's own quoting spread, folded into `spread` above; the fee F72 asks about is a different
+quantity, `harness.pricing.fees.fee_per_contract(KALSHI_FOOTBALL, "maker", p, 1)` at the price we
+would actually be quoting. It is computed once per side, at that side's own pre-fee price (the
+yes side's fee uses the pre-fee yes price, the no side's its own), and subtracted once from that
+side -- never multiplied by leg count the way `spread` is. `fee_subtracted` records the yes
+side's fee for the branch taken; the no side's own fee follows the same rule at its own price
+but is not separately stored, the same asymmetry `pnl_yes`/`pnl_no` already carries elsewhere.
 """
 import logging
 from dataclasses import dataclass
@@ -27,6 +37,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from harness.db.models import RfqQuote
+from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 
 log = logging.getLogger(__name__)
 
@@ -172,20 +183,33 @@ def compute_quote(session: Session, settings, rfq, now: datetime) -> RfqQuote:
         return quote
 
     spread = margin * len(legs)
+    base_yes = fair - spread
+    base_no = Decimal("1") - fair - spread
 
     branch_game = nfl_only_independent(legs, "game_id")
     branch_event = nfl_only_independent(legs, "event_ticker")
-    # F72: subtract a maker fee only when the combo is NOT NFL-only-independent.
-    fee_game = Decimal("0") if branch_game else margin
-    fee_event = Decimal("0") if branch_event else margin
+    # F72 (review M9): subtract Kalshi's real maker fee -- not the quoting margin -- only when
+    # the combo is NOT NFL-only-independent. The fee is a function of price, so each side gets
+    # its own fee at its own pre-fee price, computed once (never multiplied by leg count).
+    fee_yes_game = (Decimal("0") if branch_game
+                    else fee_per_contract(KALSHI_FOOTBALL, "maker", base_yes, 1))
+    fee_no_game = (Decimal("0") if branch_game
+                   else fee_per_contract(KALSHI_FOOTBALL, "maker", base_no, 1))
+    fee_yes_event = (Decimal("0") if branch_event
+                     else fee_per_contract(KALSHI_FOOTBALL, "maker", base_yes, 1))
+    fee_no_event = (Decimal("0") if branch_event
+                    else fee_per_contract(KALSHI_FOOTBALL, "maker", base_no, 1))
 
     quote = RfqQuote(
         rfq_id=rfq.id, computed_at=now, legs=len(legs), fair=fair, margin_per_leg=margin,
-        yes_bid=_clamp(fair - spread - fee_game),
-        no_bid=_clamp(Decimal("1") - fair - spread - fee_game),
-        fee_branch_game=branch_game, fee_branch_event=branch_event, fee_subtracted=fee_game,
-        yes_bid_other_branch=_clamp(fair - spread - fee_event),
-        no_bid_other_branch=_clamp(Decimal("1") - fair - spread - fee_event),
+        yes_bid=_clamp(base_yes - fee_yes_game),
+        no_bid=_clamp(base_no - fee_no_game),
+        fee_branch_game=branch_game, fee_branch_event=branch_event,
+        # The yes side's own fee, for the branch taken (docstring above says why only one side
+        # is stored). The no side's fee (`fee_no_game`) followed the same rule at its own price.
+        fee_subtracted=fee_yes_game,
+        yes_bid_other_branch=_clamp(base_yes - fee_yes_event),
+        no_bid_other_branch=_clamp(base_no - fee_no_event),
         declined_reason=None, unmatched_legs=unmatched)
     session.add(quote)
     return quote

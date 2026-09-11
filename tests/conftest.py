@@ -1083,6 +1083,23 @@ def wrong_line_rfq(db_session):
     return SimpleNamespace(frame=frame)
 
 
+@pytest.fixture
+def mixed_family_rfq(db_session):
+    """Review M9: one NFL leg and one NCAAF leg on two games. F72's independence test fails
+    under both readings here (not every component event is `KXNFL*`), so Kalshi's real maker fee
+    applies to both branches. Same fair (0.60 x 0.50 = 0.3000) as `two_game_rfq`, so the only
+    thing that differs between the two tests is whether a fee applies."""
+    g1, g2 = _rfq_game(db_session, "MA"), _rfq_game(db_session, "MB")
+    vm1 = _rfq_market(db_session, ticker="KXNFLGAME-MA-T1", event_ticker="KXNFLGAME-MA",
+                      series_ticker="KXNFLGAME", game_id=g1.id, fair_p=Decimal("0.60"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    vm2 = _rfq_market(db_session, ticker="KXNCAAFGAME-MB-T1", event_ticker="KXNCAAFGAME-MB",
+                      series_ticker="KXNCAAFGAME", game_id=g2.id, fair_p=Decimal("0.50"),
+                      created_at=QUOTE_NOW - timedelta(minutes=2))
+    frame = _rfq_frame("RFQ-MIXED-FAMILY", [_rfq_leg(vm1), _rfq_leg(vm2)])
+    return SimpleNamespace(frame=frame)
+
+
 # --- Task T14: the `rfq_grade` fixtures (a stored quote + the legs it grades against) ---------
 
 GRADE_NOW = datetime(2026, 9, 22, 6, 0, tzinfo=timezone.utc)
@@ -1242,3 +1259,13 @@ def malformed_quote_beside_a_good_one(db_session):
                                        yes_bid=Decimal("0.30"), no_bid=Decimal("0.64"))
     db_session.commit()
     return SimpleNamespace(bad=bad_quote, good=good_quote)
+
+
+@pytest.fixture
+def empty_legs_quote(db_session):
+    """Review M5: an `rfqs` row with no legs at all (unreachable through `compute_quote`, which
+    declines anything under two legs) has no product to grade -- left waiting, never graded with
+    the fabricated certainty of an empty product (1.0000)."""
+    rfq, quote = _graded_rfq(db_session, rfq_id="RFQ-GRADE-EMPTY-LEGS", legs=[],
+                             yes_bid=Decimal("0.30"), no_bid=Decimal("0.64"))
+    return SimpleNamespace(rfq=rfq, quote=quote)
