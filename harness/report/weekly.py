@@ -233,14 +233,31 @@ _PREVIOUS_HASH = text("""
     limit 1
 """)
 
+#: The annotator writes one `report_annotations` row per `report_runs` row, keyed off whichever
+#: run was `pending_report` (`harness/research/annotate.py`) at the time it ran -- never the
+#: render this call is producing, which does not exist yet when `build_meta` runs ahead of
+#: `persist_report` (Task 12b, `harness/cli.py`'s report command). So this joins on `(year, week)`
+#: rather than a specific `report_run_id`: a re-render of an already-annotated week still finds
+#: the bullets an earlier render of the same week collected (fix round 2, C2).
+_LATEST_ANNOTATION = text("""
+    select a.bullets
+    from report_annotations a
+    join report_runs r on r.id = a.report_run_id
+    where r.year = :year and r.week = :week
+    order by a.created_at desc
+    limit 1
+""")
+
 
 def build_meta(session: Session, settings, year: int, week: int, now: datetime | None = None,
                confirmation: bool = False) -> dict:
     """The provenance block: build, criteria hash, the config hashes the week's orders carry,
-    and the previous report's criteria hash when one is on file."""
+    the previous report's criteria hash when one is on file, and the annotator's bullets when
+    the week has a surviving set (addendum §1.5; `render_markdown` renders `meta["annotation"]`
+    inside the fenced "model-written, unverified" block when it is set)."""
     start, end = week_bounds(year, week, settings.tz_local)
     window = {"start": start, "end": end}
-    return {
+    meta = {
         "year": year,
         "week": week,
         "start": start.isoformat(),
@@ -253,6 +270,10 @@ def build_meta(session: Session, settings, year: int, week: int, now: datetime |
         "previous_criteria_hash": session.execute(_PREVIOUS_HASH, window).scalar(),
         "confirmation": confirmation,
     }
+    bullets = session.execute(_LATEST_ANNOTATION, {"year": year, "week": week}).scalar()
+    if bullets:
+        meta["annotation"] = list(bullets)
+    return meta
 
 
 def _cell_fields(value: Any) -> dict:

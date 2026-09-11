@@ -459,6 +459,36 @@ def test_confirm_report_does_not_persist_a_shadow_run(tmp_path, cli_settings, db
     assert db_session.query(OperatorEvent).filter_by(kind="report_written").count() == 0
 
 
+def test_re_rendering_an_annotated_week_shows_the_fence(cli_settings, db_session):
+    """Fix round 2, C2: `build_meta` reads the newest `report_annotations` row for the week and
+    sets `meta["annotation"]`, so the annotator's bullets -- which used to reach no reader --
+    render inside the fenced "model-written, unverified" block on the next `harness report` for
+    that week. Wired through the CLI's report command, not `render_markdown` called directly:
+    that only proves the renderer, never that anything sets the key it reads. The annotated run
+    is not the one this call persists (`build_meta` runs before `persist_report`), so this also
+    proves the read is keyed on the week and not on the run this render is about to create."""
+    from harness.db.models import ReportAnnotation, ReportRun
+    from harness.report.weekly import ANNOTATION_HEADER
+
+    earlier = ReportRun(year=YEAR, week=WEEK, generated_at=WEEK_START, provisional=False,
+                        build_sha="0" * 40, criteria_hash="0" * 64, config_hashes=[])
+    db_session.add(earlier)
+    db_session.flush()
+    db_session.add(ReportAnnotation(report_run_id=earlier.id, model="claude-opus-5",
+                                    prompt_hash="0" * 64, bullets=["412 orders t1[0,1]."],
+                                    cost_usd=Decimal("0.010000"), created_at=WEEK_START))
+    db_session.commit()
+
+    result = runner.invoke(app, ["report", "--week", str(WEEK), "--year", str(YEAR), "--out", "-"])
+    assert result.exit_code == 0, result.output
+    assert ANNOTATION_HEADER in result.stdout
+    assert "412 orders t1[0,1]." in result.stdout
+
+    newest = db_session.query(ReportRun).filter_by(year=YEAR, week=WEEK).order_by(
+        ReportRun.id.desc()).first()
+    assert newest.id != earlier.id, "the render must persist its own new run"
+
+
 def test_selected_json_round_trip_and_confirm_restricts(tmp_path, cli_settings, db_session):
     # `cli_settings` already points get_settings() at the test database; `env_settings` would
     # point it back at a fake host, so this test builds its tables from the same settings the
