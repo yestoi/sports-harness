@@ -342,7 +342,10 @@ def _capture_quote_select(db_session, run_id):
     captured = []
 
     def before(conn, cursor, statement, parameters, context, executemany):
-        if "venue_quotes" in statement and "market_gap_snapshots" not in statement:
+        # A SELECT specifically: an autoflushed `INSERT INTO venue_quotes` would otherwise be
+        # captured first and EXPLAINed instead of the read under test.
+        if (statement.lstrip().lower().startswith("select")
+                and "venue_quotes" in statement and "market_gap_snapshots" not in statement):
             captured.append((statement, parameters))
 
     bind = db_session.get_bind()
