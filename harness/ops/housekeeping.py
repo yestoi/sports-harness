@@ -51,6 +51,16 @@ LOOKBACK = timedelta(days=7)
 FULL_WINDOW_NOTES = 7
 BYTES_PER_GB = 1024 ** 3
 
+#: Fix 38 (journal 110): how long an unquoted `rfqs` row is kept. The flood that incident wrote
+#: (74,608 rows in seven minutes) ages out of the table this way rather than through a one-time
+#: cleanup -- there is nothing here that treats today's rows differently from any other day's.
+RFQ_RETENTION_DAYS = 7
+#: Deleted in batches this size, one batch per housekeeping run -- the same reason every bulk
+#: write in this codebase is bounded rather than run whole: a single unbounded `DELETE` against
+#: a table the flood left at 128 MB (and, unpruned, growing) is a lock a settlement pass cannot
+#: afford to wait behind.
+RFQ_PRUNE_BATCH = 5000
+
 #: `pg_total_relation_size` on a partitioned parent (relkind 'p') reports 0 -- the parent owns
 #: no storage itself, its partitions do -- so every relation is joined back to its top-level
 #: parent through `pg_inherits` (a non-partitioned table, and a partitioned parent's own catalog
@@ -68,6 +78,22 @@ _TABLE_SIZES = text("""
 """)
 
 _DATABASE_SIZE = text("select pg_database_size(current_database())")
+
+#: Fix 38: the bounded retention delete. `not exists (... rfq_quotes ...)` rather than a join,
+#: since a row can only ever have at most one `rfq_quotes` row (`uq_rfq_quote_rfq`) and this
+#: reads as exactly the rule it is -- "never quoted" -- without a `distinct` to guard against a
+#: join fan-out that cannot happen anyway. Postgres has no `DELETE ... LIMIT`; the bounded
+#: subquery is the standard way to cap one, and its own `limit` is exactly `RFQ_PRUNE_BATCH`.
+_PRUNE_RFQS = text("""
+    delete from rfqs
+    where id in (
+        select r.id
+        from rfqs r
+        where r.received_at < :cutoff
+          and not exists (select 1 from rfq_quotes q where q.rfq_id = r.id)
+        limit :batch
+    )
+""")
 
 #: Every physical BRIN index (never a partitioned parent, `relkind = 'i'` only --
 #: `brin_summarize_new_values` is undefined on a partitioned index's own relation, same
@@ -216,12 +242,30 @@ def _brin_ranges_summarized(session: Session) -> int:
     return total
 
 
+def _prune_rfqs(session: Session, now: datetime) -> int:
+    """Fix 38 (journal 110): every `rfqs` row older than `RFQ_RETENTION_DAYS` with no
+    `rfq_quotes` row, deleted in one bounded batch of `RFQ_PRUNE_BATCH` per housekeeping run.
+
+    A quoted row is retention's whole point (F71: the row **is** the record of what we would
+    have answered), so `_PRUNE_RFQS`'s `not exists` guard means this rule can never touch one --
+    only an arrival that was declined or never reached `compute_quote` at all. The flood the
+    incident wrote (74,608 rows, most never quoted) ages out through this rule once each row
+    passes seven days old; there is no one-time cleanup, and after fix 38's boundary filter a
+    non-football frame never reaches `rfqs` in the first place, so what this prunes going
+    forward is ordinary attrition, not a backlog.
+    """
+    cutoff = now - timedelta(days=RFQ_RETENTION_DAYS)
+    result = session.execute(_PRUNE_RFQS, {"cutoff": cutoff, "batch": RFQ_PRUNE_BATCH})
+    return result.rowcount or 0
+
+
 def record_housekeeping_metrics(session: Session, now: datetime, counts: dict,
                                 match_by_sport: dict[str, dict], pg_data_mount) -> int:
     """Every `metric_samples` row housekeeping writes (design spec §3.1), as one batch."""
     samples: list[tuple[str, object, dict]] = [
         ("db.size_gb", counts["size_gb"], {}),
         ("db.brin_ranges_summarized", _brin_ranges_summarized(session), {}),
+        ("db.rfqs_pruned", _prune_rfqs(session, now), {}),
     ]
     for table, gb in counts.get("tables_gb", {}).items():
         samples.append(("db.table_gb", gb, {"table": table}))

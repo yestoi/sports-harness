@@ -12,14 +12,17 @@ them.
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
-from harness.db.models import CheckResult, JobRun, MetricSample
+from harness.db.models import CheckResult, JobRun, MetricSample, Rfq, RfqQuote
 from harness.ops.housekeeping import (
     DUE_HOUR_UTC,
     JOB_STATE_KEY,
+    RFQ_PRUNE_BATCH,
+    RFQ_RETENTION_DAYS,
     ceiling_projection,
     housekeeping,
     housekeeping_stage,
@@ -27,6 +30,7 @@ from harness.ops.housekeeping import (
     record_housekeeping_metrics,
     _host_disk_gb,
     _host_mem_available_mb,
+    _prune_rfqs,
     _table_sizes_gb,
 )
 from harness.recorder.store import get_source_state, set_source_state
@@ -297,3 +301,80 @@ def test_housekeeping_stage_writes_metrics_and_check_results(db_session, env_set
 
     check_rows = db_session.query(CheckResult).filter_by(job_run_id=job.id).all()
     assert len(check_rows) == len(CHECKS)  # every registered Layer 2b check
+
+
+# --- fix 38: rfqs retention (journal 110) --------------------------------------------------
+
+
+def _rfq_row(rid: str, received_at: datetime) -> Rfq:
+    return Rfq(id=rid, received_at=received_at, market_ticker=f"MKT-{rid}",
+              legs=[], raw={"msg": {}, "truncated": False}, status="open")
+
+
+def test_prune_rfqs_deletes_only_old_unquoted_rows(db_session):
+    """Fix 38: a row older than `RFQ_RETENTION_DAYS` with no `rfq_quotes` row is pruned; an
+    equally old row that *was* quoted, and a recent unquoted row, are both left alone -- F71's
+    "the row is the record" means a quoted arrival is never in scope for this rule."""
+    old_cutoff = NOW - timedelta(days=RFQ_RETENTION_DAYS, hours=1)
+    old_unquoted = _rfq_row("RFQ-OLD-UNQUOTED", old_cutoff)
+    old_quoted = _rfq_row("RFQ-OLD-QUOTED", old_cutoff)
+    recent_unquoted = _rfq_row("RFQ-RECENT", NOW - timedelta(hours=1))
+    db_session.add_all([old_unquoted, old_quoted, recent_unquoted])
+    db_session.flush()
+    db_session.add(RfqQuote(rfq_id=old_quoted.id, computed_at=NOW, legs=1, fair=None,
+                            margin_per_leg=Decimal("0.03"), yes_bid=None, no_bid=None,
+                            declined_reason="single_leg", unmatched_legs=0))
+    db_session.flush()
+
+    pruned = _prune_rfqs(db_session, NOW)
+    db_session.flush()
+
+    assert pruned == 1
+    remaining = {r.id for r in db_session.query(Rfq).all()}
+    assert remaining == {"RFQ-OLD-QUOTED", "RFQ-RECENT"}
+
+
+def test_prune_rfqs_exactly_at_the_retention_boundary_is_kept(db_session):
+    """`RFQ_RETENTION_DAYS` old, to the second, is not yet older than the window -- `<`, not
+    `<=`, in `_PRUNE_RFQS`."""
+    db_session.add(_rfq_row("RFQ-AT-BOUNDARY", NOW - timedelta(days=RFQ_RETENTION_DAYS)))
+    db_session.flush()
+
+    pruned = _prune_rfqs(db_session, NOW)
+
+    assert pruned == 0
+    assert db_session.query(Rfq).filter_by(id="RFQ-AT-BOUNDARY").count() == 1
+
+
+def test_prune_rfqs_is_bounded_to_one_batch_per_run(db_session, monkeypatch):
+    """Fix 38: bounded batches, not a whole-table sweep -- an unbounded `DELETE` against a
+    flood-sized table is exactly the lock this fix must not reintroduce. `RFQ_PRUNE_BATCH`
+    monkeypatched small so the bound is checkable without seeding thousands of rows."""
+    from harness.ops import housekeeping as hk
+
+    monkeypatch.setattr(hk, "RFQ_PRUNE_BATCH", 3)
+    old = NOW - timedelta(days=RFQ_RETENTION_DAYS, hours=1)
+    for i in range(5):
+        db_session.add(_rfq_row(f"RFQ-BATCH-{i}", old))
+    db_session.flush()
+
+    pruned = hk._prune_rfqs(db_session, NOW)
+    db_session.flush()
+
+    assert pruned == 3
+    assert db_session.query(Rfq).count() == 2
+
+
+def test_prune_rfqs_metric_is_recorded(db_session):
+    """`db.rfqs_pruned` carries however many rows this run actually deleted, through the same
+    `record_housekeeping_metrics` batch every other housekeeping metric goes through."""
+    db_session.add(_rfq_row("RFQ-METRIC-OLD", NOW - timedelta(days=RFQ_RETENTION_DAYS, hours=1)))
+    db_session.flush()
+
+    record_housekeeping_metrics(db_session, NOW, {"size_gb": 1.0, "tables_gb": {}}, {},
+                                pg_data_mount="/no/such/mount")
+    db_session.flush()
+
+    row = db_session.query(MetricSample).filter_by(
+        source="housekeeping", name="db.rfqs_pruned").one()
+    assert float(row.value) == 1.0

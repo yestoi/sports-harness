@@ -135,11 +135,23 @@ def test_research_spend_is_keyed_by_day_kind_and_model(db_session):
         text("select count(*) from research_spend where day = :d"), {"d": day}).scalar() == 4
 
 
-def test_housekeeping_never_deletes_from_a_phase_5_table(db_session):
-    """Ruling B-M7: every one of the ten tables is retained for the season. That holds today
-    only because `harness/ops/housekeeping.py` contains no delete at all, and nothing pinned it.
-    This is the pin: the retention rule is a property of that module's text, so the test reads
-    the text."""
+def test_housekeeping_deletes_from_no_phase_5_table_except_rfqs_bounded(db_session):
+    """Ruling B-M7: every one of the ten tables is retained for the season. That held for nine
+    of them only because `harness/ops/housekeeping.py` contained no delete at all, and nothing
+    pinned it -- this is the pin, and it still holds unconditionally for these nine: the
+    retention rule is a property of that module's text, so the test reads the text.
+
+    `rfqs` is the one deliberate, narrow exception (fix 38, journal 110): a `communications`
+    channel that turned out to deliver 11,000-14,000 frames a minute, almost all never quoted,
+    made an unconditional season-long `rfqs` untenable (74,608 rows / 128 MB in seven minutes,
+    heading toward 30 GB/day). `rfq_quotes` -- the actual record of what would have been
+    answered (F71) -- is still covered by this same pin below, unconditionally, alongside the
+    other nine; only the raw-arrival table lost the guarantee, and only for a row that was never
+    quoted (`test_prune_rfqs_deletes_only_old_unquoted_rows`,
+    `tests/test_housekeeping.py`, pins the bound). The stale "every one of the ten tables"
+    comment in `harness/db/models.py` and the phase 5 design docs are out of this hotfix's scope
+    to correct; flagged for a follow-up commit.
+    """
     from pathlib import Path
 
     import harness.ops.housekeeping as housekeeping
@@ -147,9 +159,14 @@ def test_housekeeping_never_deletes_from_a_phase_5_table(db_session):
     body = Path(housekeeping.__file__).read_text().lower()
     for table in ("futures_snapshots", "weather_points", "weather_snapshots", "veto_queue",
                   "research_notes", "veto_decisions", "research_spend", "report_annotations",
-                  "rfqs", "rfq_quotes"):
+                  "rfq_quotes"):
         assert f"delete from {table}" not in body
         assert f"truncate {table}" not in body
+    # rfqs: no longer an unconditional pin (fix 38) -- but the delete that exists must still be
+    # the bounded, unquoted-only one, not an unbounded sweep a later change could slip in.
+    assert "delete from rfqs" in body
+    assert "not exists" in body and "rfq_quotes" in body
+    assert "truncate rfqs" not in body
 
 
 def test_the_other_five_tables_accept_a_row(db_session):
