@@ -229,3 +229,48 @@ def test_the_watched_track_takes_no_fill_after_expiry():
         executor._simulate_order(None, row, CLEAN_MARKET, {"A": base}, set(),
                                  {"A": ([late], [])}, set(), at(30), ExecStats())
     assert captured[0].state.filled_contracts == D(0)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="6B: the rejected verdict is tested only on the cancel path "
+                          "(plan.py:511), never before a Place is emitted")
+def test_a_rejected_latest_verdict_yields_no_place():
+    """Addendum §0.5 case 6. Expected `Place` count 0.
+
+    Computed independently: `latest_decision` is the newest verdict the strategy reached for
+    this market and side. `rejected` means the strategy has since decided this is not a bet. An
+    order placed on it is an order placed against the strategy's own current answer. The cancel
+    path already agrees -- a resting order whose latest verdict is `rejected` is cancelled with
+    reason `signal_rejected` (`harness/execution/plan.py:511`) -- so placing one in the same
+    loop would cancel it in the next. The placement path never makes that test
+    (`_intent_actions`, defined at `plan.py:519` and called from `plan_actions` at
+    `plan.py:607`), so a rejected intent still produces a Place.
+    """
+    rejected = intent(decision="rejected")
+    actions = plan_actions([rejected], [], {1: market()}, {}, {"v1": cfg()},
+                           kill_active=False, now=NOW, s=S)
+    assert [a for a in actions if isinstance(a, Place)] == []
+
+
+def test_criterion_one_is_satisfiable_by_a_realistic_population():
+    """Probe `criterion1_not_mathematically_impossible`, the reconciliation's correction of
+    "criterion 1 cannot pass at any fill count". Expected: passed, value 150, 40 game clusters.
+
+    Computed independently from the definition text: criterion 1 needs at least 150 non-replay
+    orders carrying a `queue_model` fill, spread over at least 40 distinct games, with both
+    sports present, and at least 80 % of them on a clean WS book. 150 orders over game ids
+    0..39 is 150 observations in exactly 40 clusters; alternating `nfl` and `ncaaf` puts both
+    sports in the set; every row carries `book_source = 'ws'` and `dirty_minutes = 0`, so the
+    clean share is 1.00, above 0.80. Nothing in the definition scales a threshold with the
+    population, so the criterion is satisfiable and the gate's first item is not the blocker.
+    This is a passing guard, not a claim that the gate passes: eleven other criteria are
+    unexamined here and two are False by construction.
+    """
+    rows = [NS(id=i, game_id=i % 40, sport="nfl" if i % 2 else "ncaaf",
+               book_source="ws", dirty_minutes=0) for i in range(150)]
+    session = NS(execute=lambda *unused, **unused_kw: NS(all=lambda: rows))
+    result = fill_events(session, NOW, "synthetic-guard", CRITERIA[0])
+    assert result.passed is True
+    assert result.value == 150 and result.n_clusters == 40
+    assert result.detail["ws_clean_share"] == 1.0
+    assert sorted(result.detail["sports"]) == ["ncaaf", "nfl"]
