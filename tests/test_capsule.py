@@ -288,3 +288,43 @@ def test_merge_slices_takes_each_row_once(db_session):
     assert len(merged["venue_markets"]) == 1
     for table in ("order_events", "ledger"):
         assert len(merged[table]) == len({r["id"] for r in merged[table]})
+
+
+def test_write_capsule_hashes_and_counts_every_file(db_session, tmp_path):
+    """The manifest is the capsule's own audit: counts and digests must match the bytes.
+
+    A capsule whose manifest says 12 rows and whose file holds 11 is worse than no capsule,
+    because 6B would reason from it. The digest is over the gzipped bytes as written.
+    """
+    from harness.capsule import write_capsule
+
+    _seed_order(db_session)
+    slices = order_slices(db_session, 1)
+    out = tmp_path / "capsule-order-1"
+    manifest = write_capsule(slices, str(out), {"selector": {"order": 1}, "build": "abc1234"})
+
+    assert manifest["build"] == "abc1234"
+    assert manifest["row_cap"] == CAPSULE_ROW_CAP
+    assert manifest["truncated"] == []
+    for entry in manifest["files"]:
+        path = out / entry["name"]
+        raw = path.read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == entry["sha256"]
+        lines = gzip.decompress(raw).decode().strip().splitlines()
+        assert len(lines) == entry["rows"]
+        assert all(json.loads(line) for line in lines) or entry["rows"] == 0
+        assert entry["sql"] and entry["index_note"]
+    stored = json.loads((out / "manifest.json").read_text())
+    assert stored == manifest
+
+
+def test_a_capped_file_is_marked_truncated_with_its_last_id(db_session, tmp_path):
+    """A file that reached its cap is written and says so; it never pretends to be complete."""
+    from harness.capsule import write_capsule
+
+    _seed_order(db_session)
+    slices = order_slices(db_session, 1, cap=1)
+    fills = next(s for s in slices if s.table == "fills")
+    assert fills.truncated is True and fills.rows and fills.last_id is not None
+    manifest = write_capsule(slices, str(tmp_path / "c"), {"selector": {"order": 1}})
+    assert "fills" in manifest["truncated"]

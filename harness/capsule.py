@@ -20,6 +20,7 @@ import io
 import json
 import sys
 import tarfile
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,22 @@ from pathlib import Path
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from harness.fixtures import _Encoder, _WS_PRINTS, _capped, _rows, export_ws_tape
+from harness.fixtures import _Encoder as _FixtureEncoder
+from harness.fixtures import _WS_PRINTS, _capped, _rows, export_ws_tape
+
+
+class _Encoder(_FixtureEncoder):
+    """`_fixtures._Encoder` plus `uuid.UUID` as its string form.
+
+    `intents.id` is a UUID primary key (`harness/db/models.py:392`-ish), and every order
+    capsule's `intents` slice carries it; the fixtures encoder never needed this because none of
+    `export_day`'s or `export_ws_tape`'s columns are UUIDs.
+    """
+
+    def default(self, o):
+        if isinstance(o, uuid.UUID):
+            return str(o)
+        return super().default(o)
 
 #: Rows per file. Also the memory bound: `_rows` materializes before anything is written
 #: (review I-f), so this number is both the truncation point and the ceiling on one slice's
@@ -58,10 +74,17 @@ ORDER_TAPE_PAD_MIN = 30
 
 def _slice(session: Session, table: str, stmt, params: dict, index_note: str,
            cap: int) -> Slice:
-    """One bounded read, capped, with the statement and the index recorded beside its rows."""
+    """One bounded read, capped, with the statement and the index recorded beside its rows.
+
+    `last_id` is `int | None` (the `Slice` contract): most capsule tables key on an integer
+    `id`, but `intents.id` is a UUID, and `Slice.last_id` exists so the controller can resume a
+    truncated read from a bookmark, which a lookup-by-known-id table like `intents` never is.
+    Capturing the UUID anyway would also break the manifest's own JSON round-trip, since the
+    written file stringifies it while the in-memory value stays a `UUID`.
+    """
     rows = _rows(session, stmt, dict(params, cap=cap))
     truncated = len(rows) >= cap
-    last = rows[-1].get("id") if rows and "id" in rows[-1] else None
+    last = rows[-1].get("id") if rows and isinstance(rows[-1].get("id"), int) else None
     return Slice(table=table, rows=rows, sql=" ".join(stmt.text.split()),
                  index_note=index_note, truncated=truncated, last_id=last)
 
