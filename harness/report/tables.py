@@ -1,6 +1,6 @@
 """The tables of spec §7.2, built over one ISO week's rows.
 
-t1-t8, t11 and t12 are implemented; t7, t9 and t10 are not-collected today.
+t1-t8, t10, t11 and t12 are implemented; t9 is not-collected today.
 
 Read-only: every function here runs `select`s and returns `Table` values. Nothing writes, and
 nothing imports the executor's or the settler's write paths (addendum ruling 6).
@@ -1394,7 +1394,145 @@ def _table12(session: Session, window: dict) -> Table:
                  f"rejected signals: {totals['rejected']}; skipped intents: {totals['skipped']}")
 
 
-# --- tables 7, 9, 10: not collected ----------------------------------------------------------------
+# --- table 7: the shadow veto (addendum 0.14, §7.2, H9) ---------------------------------------
+
+_T7_COLUMNS = ["decision", "n", "clusters", "clv_pinnacle_t5", "lag_p50_s", "lag_p95_s",
+               "cached_share"]
+
+_T7 = text("""
+    select h.decision,
+           count(*) as n,
+           count(distinct i.game_id) as clusters,
+           avg(c.clv_p_net) as clv,
+           percentile_disc(0.5) within group (
+               order by extract(epoch from (h.decided_at - h.signal_created_at))) as lag_p50,
+           percentile_disc(0.95) within group (
+               order by extract(epoch from (h.decided_at - h.signal_created_at))) as lag_p95,
+           avg(case when h.from_cache then 1.0 else 0.0 end) as cached_share
+    from veto_h9 h
+    join intents i on i.signal_id = h.signal_id and i.replay = false
+    left join orders o on o.intent_id = i.id and o.replay = false
+    left join order_clv c on c.order_id = o.id and c.benchmark_type = :benchmark
+    where h.signal_created_at >= :start and h.signal_created_at < :end
+    group by h.decision
+    order by h.decision
+""")
+
+_T7_LABELS = text("""
+    select decision, count(*) as n from veto_decisions
+    where signal_created_at >= :start and signal_created_at < :end
+      and decision in ('veto_skipped_budget', 'veto_error')
+    group by decision order by decision
+""")
+
+
+def _table7(session: Session, window: dict) -> Table:
+    """H9: the CLV of proceeded signals against vetoed and reduced ones.
+
+    The population is the `veto_h9` view -- the primary model's rows, no replays, the three
+    decided labels -- so the filters are defined once and never re-derived in a query.
+
+    The header carries the honesty this table exists to preserve. The decisions are **post-hoc**
+    (addendum 0.1): the executor's decision stood and the veto judged the signal afterwards from
+    features frozen as of the signal. So this is an upper bound on what an enforcing veto could
+    have delivered, not a measurement of one, and the lag columns are what let a reader see how
+    far from real time the judgement was (ruling B-I1). `cached_share` is the fraction of a row's
+    signals that inherited a bucket-mate's decision rather than getting their own call.
+    """
+    rows = []
+    for row in session.execute(_T7, {**window, "benchmark": CONTRAST_BENCHMARK}):
+        rows.append([row.decision, int(row.n), int(row.clusters or 0),
+                     _f(row.clv) if row.clv is not None else PLACEHOLDER,
+                     int(row.lag_p50) if row.lag_p50 is not None else PLACEHOLDER,
+                     int(row.lag_p95) if row.lag_p95 is not None else PLACEHOLDER,
+                     _f(row.cached_share)])
+    excluded = {r.decision: int(r.n) for r in session.execute(_T7_LABELS, window)}
+    note = ("excluded from every cell above and reported here instead: "
+            f"veto_skipped_budget {excluded.get('veto_skipped_budget', 0)}, "
+            f"veto_error {excluded.get('veto_error', 0)}. Both are call-less labels -- the "
+            "budget's and the machine's -- and counting them as decisions would make a dormant "
+            "day read as a calm one.")
+    return Table(
+        "Table 7 (t7): shadow veto CLV",
+        "CLV at pinnacle_t5 by the primary model's decision. The decisions are POST-HOC: the "
+        "executor acted first and the veto judged the signal afterwards from features frozen as "
+        "of the signal, so every number here is an UPPER BOUND on what an enforcing veto could "
+        "have delivered. lag is decided_at minus signal_created_at; cached_share is the share of "
+        "signals that inherited a bucket-mate's decision.",
+        _T7_COLUMNS, rows or [[PLACEHOLDER] * len(_T7_COLUMNS)], note)
+
+
+# --- table 10: the combo RFQ listener (addendum 0.14, §7.2, H5) --------------------------------
+
+_T10_COLUMNS = ["group", "n", "margin_per_leg", "fair", "pnl_yes", "pnl_no"]
+
+#: Ruling B-I6 plus the T14 interface note: `voided` (a leg's game was postponed or canceled)
+#: is graded once and carries no P&L, exactly like a stale close, and must never share the
+#: `quoted` line's average -- so it is checked before `closing_stale` (grading clears
+#: `closing_stale` to false on a void) and gets its own group, never folded into `quoted`.
+_T10 = text("""
+    select coalesce(q.declined_reason,
+                     case when q.voided then 'voided'
+                          when q.closing_stale then 'stale close'
+                          else 'quoted' end) as grp,
+           count(*) as n,
+           avg(q.margin_per_leg) as margin,
+           avg(q.fair) as fair,
+           avg(q.pnl_yes) as pnl_yes,
+           avg(q.pnl_no) as pnl_no
+    from rfq_quotes q
+    join rfqs r on r.id = q.rfq_id
+    where r.received_at >= :start and r.received_at < :end
+    group by 1 order by 1
+""")
+
+_T10_ARRIVALS = text("""
+    select count(*) as arrivals,
+           count(*) filter (where status = 'deleted') as deleted,
+           sum(coalesce(jsonb_array_length(legs), 0)) as legs
+    from rfqs where received_at >= :start and received_at < :end
+""")
+
+
+def _table10(session: Session, window: dict) -> Table:
+    """H5: combo RFQs, the quotes we would have made, and what they would have earned.
+
+    Every quote in this table was computed and stored and **never sent**. The P&L is therefore a
+    counterfactual: it assumes the RFQ's creator took our bid, that we were filled, and that our
+    being there changed nothing about the price. That makes it an upper bound twice over -- no
+    fill risk and no adverse selection -- and the header says so where the number is read (ruling
+    B-I6). Quotes whose closing leg fair values were stale are a separate row, not a dropped one,
+    and so are quotes voided by a postponed or canceled leg (T14's final shape): neither invents
+    a number, so both print the placeholder in every P&L cell rather than averaging in a null.
+    """
+    rows = []
+    for row in session.execute(_T10, window):
+        rows.append([str(row.grp)[:120], int(row.n),
+                     _f(row.margin) if row.margin is not None else PLACEHOLDER,
+                     _f(row.fair) if row.fair is not None else PLACEHOLDER,
+                     _f(row.pnl_yes) if row.pnl_yes is not None else PLACEHOLDER,
+                     _f(row.pnl_no) if row.pnl_no is not None else PLACEHOLDER])
+    totals = session.execute(_T10_ARRIVALS, window).first()
+    # `tests/test_rfq_refusal.py::test_no_module_in_the_repository_names_the_quote_path` greps
+    # every module under `harness/` for the venue's literal quote-submission path, so this note
+    # describes the refusal without naming it (the transport test is where that path lives).
+    note = (f"arrivals {int(totals.arrivals or 0)} ({int(totals.deleted or 0)} later deleted), "
+            f"{int(totals.legs or 0)} legs. No quote was sent: the transport refuses a quote "
+            "submission before signing and before any I/O.")
+    return Table(
+        "Table 10 (t10): combo RFQs",
+        "One row per outcome group. The P&L is a COUNTERFACTUAL and an UPPER BOUND: no fill risk "
+        "and no adverse selection are modelled, and the scored side is the RFQ's creator taking "
+        "our bid on the side the RFQ asked for. `stale close` is quoted RFQs whose closing leg "
+        "fair values were not current and `voided` is quoted RFQs a postponed or canceled leg "
+        "can never settle: both are reported here rather than dropped, and their fair and P&L "
+        "cells print the placeholder because no value is substituted for a close we did not "
+        "have. `collateral` and `single_leg` are size and shape refusals, kept apart from "
+        "`no_fair` so the decline mix answers H5's question.",
+        _T10_COLUMNS, rows or [[PLACEHOLDER] * len(_T10_COLUMNS)], note)
+
+
+# --- table 9: not collected --------------------------------------------------------------------
 
 
 def _not_collected(key: str, title: str, what: str) -> Table:
@@ -1428,11 +1566,11 @@ def weekly_tables(session: Session, year: int, week: int, settings) -> dict[str,
         "t4b": _table4b(session, window),
         "t5": _table5(session, window),
         "t6": _table6(session, window, variants),
-        "t7": _not_collected("t7", "veto", "The shadow veto arrives in phase 5."),
+        "t7": _table7(session, window),
         "t8": _table8(session, window),
         "t11": _table11(session, window),
         "t9": _not_collected("t9", "flow", "H3's flow imbalance is a later phase."),
-        "t10": _not_collected("t10", "RFQ", "The combo RFQ listener is a later phase."),
+        "t10": _table10(session, window),
         "t12": _table12(session, window),
     }
 

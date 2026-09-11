@@ -294,8 +294,11 @@ def test_weekly_tables_return_every_key_with_placeholders(db_session, env_settin
         assert table.rows, f"{key} must render a placeholder row, never an empty table"
         for row in table.rows:
             assert len(row) == len(table.columns), key
-    for key in ("t7", "t9", "t10"):
-        assert "not collected" in tables[key].note
+    # T19: t7 (shadow veto CLV) and t10 (combo RFQ) are implemented; only t9 (H3's flow
+    # imbalance) is still not-collected in this phase.
+    assert "not collected" in tables["t9"].note
+    for key in ("t7", "t10"):
+        assert "not collected" not in tables[key].note
 
 
 def test_grey_rule_uses_clusters_not_rows(db_session, env_settings):
