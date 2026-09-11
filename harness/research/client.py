@@ -330,7 +330,7 @@ class ResearchClient:
             # the API's own message into the log and the returned result.
             detail = _error_detail(exc)
             log.warning("anthropic call failed on %s: %s (status %s): %s", model,
-                       type(exc).__name__, exc.status_code, detail)
+                        type(exc).__name__, exc.status_code, detail)
             return CallResult(model=model, output=None, usage=Usage(), stop_reason=None,
                               request_id=None,
                               latency_ms=int((time.monotonic() - started) * 1000),

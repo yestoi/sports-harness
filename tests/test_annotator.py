@@ -267,7 +267,7 @@ def test_an_over_long_bullet_is_truncated_to_the_cap(db_session, keyed_settings,
     assert len(bullet) > BULLET_MAX
     counts = annotate_pass(db_session, NOW, keyed_settings, client=_client([bullet]))
     assert counts == {"annotated": 1, "bullets": 1, "dropped": 0, "backed_off": 0,
-                     "tables_omitted": 0}
+                      "tables_omitted": 0}
     stored = db_session.execute(text("select bullets from report_annotations")).scalar()
     assert len(stored) == 1
     assert len(stored[0]) == BULLET_MAX

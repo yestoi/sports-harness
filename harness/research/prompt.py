@@ -86,7 +86,7 @@ OUTPUT_SCHEMA: dict = {
         "decision": {"type": "string", "enum": ["proceed", "reduce", "veto"]},
         "confidence": {"type": "number", "description": "0 to 1."},
         "reason": {"type": "string",
-                  "description": f"At most {VETO_REASON_MAX} characters of plain text."},
+                   "description": f"At most {VETO_REASON_MAX} characters of plain text."},
         "evidence_ids": {"type": "array", "items": {"type": "string"},
                          "description": "At most 8 ids."},
     },

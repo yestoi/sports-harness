@@ -50,8 +50,8 @@ _SYSTEM = [{"type": "text", "text":
 #: `tests/test_research_client.py` walks this schema (and the annotator's and the veto's)
 #: recursively and asserts no key outside the supported set.
 _SCHEMA = {"type": "object",
-          "properties": {"text": {"type": "string", "description": "At most 600 characters."}},
-          "required": ["text"], "additionalProperties": False}
+           "properties": {"text": {"type": "string", "description": "At most 600 characters."}},
+           "required": ["text"], "additionalProperties": False}
 PROMPT_HASH = prompt_hash(_SYSTEM)
 
 
