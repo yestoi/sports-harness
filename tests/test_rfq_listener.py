@@ -746,7 +746,8 @@ def test_a_refusal_on_the_listeners_own_sid_still_idles_for_an_hour(db_session, 
     refusal that happens to carry our sid is still an hour's idle, not a reconnect loop against
     a venue that is telling us no."""
     ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 3}},
-                 {"type": "error", "sid": 3, "msg": {"code": 9, "msg": "authentication required"}}])
+                 {"type": "error", "sid": 3,
+                  "msg": {"code": 9, "msg": "authentication required"}}])
     listener = _listener(db_session, env_settings, ws)
     listener.subscribe(ws)
     listener.run_once(ws)
@@ -763,7 +764,8 @@ def test_the_dropped_socket_is_followed_by_a_fresh_subscribe(db_session, env_set
     settings = env_settings.model_copy(update={"kalshi_key_id_file": key_id,
                                                "kalshi_private_key_file": key_pem})
     frames = [{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 1}},
-              {"type": "error", "sid": 1, "msg": {"code": 25, "msg": "Subscription buffer overflow"}}]
+              {"type": "error", "sid": 1,
+               "msg": {"code": 25, "msg": "Subscription buffer overflow"}}]
     box = []
 
     class StopOnSecondSubscribe(FakeWs):

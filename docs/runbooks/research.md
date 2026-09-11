@@ -198,7 +198,8 @@ a `frame 25: ...` reason is the subscription being dropped underneath a live soc
 `no data for <n>s` reason is the data-idle watchdog. Both reconnect behind the ordinary backoff
 (1 s, doubling to 60 s), so a listener that recovered marks `ok` again on its next subscribe ack
 and the `unavailable` row survives only as the record that it happened. An `unavailable` of
-either kind that is still current minutes later is a listener that is failing to resubscribe. The market tape is on a different socket and is unaffected; confirm
+either kind that is still current minutes later is a listener that is failing to resubscribe. The
+market tape is on a different socket and is unaffected; confirm
 that with `select max(ts) from orderbook_events`. To turn the listener off:
 `RFQ_LISTENER_ENABLED=0` in `deploy/nas.env`, then `docker compose restart app-ws`.
 
