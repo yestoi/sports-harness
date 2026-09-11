@@ -8,6 +8,8 @@ description: Use when asked to run, resume, or report on the autopilot for the s
 The hand-driven pattern of phases 0-2 with the human's go signals replaced by standing authorizations and pre-loaded
 decisions in `roadmap.md`. Durable state lives in committed files. Context may be summarized at any moment; the files
 are the only truth, so read them first, every time. Instructions come from five places only (Instruction sources).
+An explicit request only to prepare or correct this setup ends with the committed handoff; it does not start preflight
+or run the loop. Such user-directed edits do not grant the autonomous loop permission to rewrite its own authority.
 
 Throughput rule: the loop is never idle while work is ready. Independent units run in parallel in worktrees; related
 fixes ship as one batch; a deploy is verified by deterministic checks first and by pixels only when pixels changed.
@@ -59,7 +61,10 @@ Pick the first that applies. Derive each test from files and live state (`git st
 
 0. **repair**: an archived ledger on `main` (`docs/superpowers/reviews/*-phaseN-sdd-ledger.md`) with roadmap status still
    `planned` means the phase is done: set `done`, journal `repair`, continue. Never append an entry the last one already records.
-1. **hotfix**: `roadmap.md` Carried fixes is non-empty, or the last journal entry ends in `FAIL`. Batched by area (Unit: hotfix).
+   For U8's partial milestones, first verify that the ledger records the whole milestone's acceptance. A 6C deadline-slice
+   checkpoint is not completion evidence; keep 6C `planned` with its remaining work recorded.
+1. **hotfix**: an actionable hotfix remains in `roadmap.md` Carried fixes, or the last journal entry ends in `FAIL`.
+   Rows assigned to phase work, user actions, or already closed do not keep selecting hotfix. Batched by area (Unit: hotfix).
 2. **deploy**: `main` is ahead of the NAS in code. Read the stamp, never a remembered notification:
    ```
    DEPLOYED=$(ssh -o BatchMode=yes trey@192.168.12.228 'curl -s http://127.0.0.1:8180/healthz' | python3 -c 'import json,sys;print(json.load(sys.stdin)["build"])')
@@ -76,6 +81,19 @@ Pick the first that applies. Derive each test from files and live state (`git st
 
 Units are not exclusive: while a hotfix batch's implementer runs, the controller starts the next independent batch, the
 due operate duty, or a phase task whose Files are disjoint (Parallel work). Only deploy and verify are strictly serial.
+
+**U8 scheduling exception (user-directed setup correction, 2026-09-11).** Check the dated 6C work at every unit and
+task boundary; it does not wait until six hours overdue. Initialize 6A first, then plan 6C's urgent week-key and diagnostic
+report tasks before starting 6B, while independent 6A/hotfix work continues. If the last feasible delivery window is
+already at risk, prioritize that 6C planning immediately. Do not wait for all of 6A or 6B to finish. At resume, use the
+current game/job schedule and estimated implementation, review, test, deploy and verification time to record the latest
+permitted deployment opportunity before Sun 2026-09-13 19:00 CT and a wakeup/checkpoint before it. If deployment cannot
+finish safely, prepare the correct-period diagnostic report and affected-surface labels before the deadline. R4 still holds.
+6D instrumentation and 6E inventory/rehearsal preparation may also be planned while another 6x milestone is active, only
+where their stated dependencies permit. This exception allows planning ready parallel milestones despite Orient 5/6 and
+plan-next step 5. Keep separate plans, branches and ledgers; track each active milestone in state. Controller git/main
+operations remain serial, file conflicts and per-branch database limits still apply, and the implementer ceiling is unchanged.
+Keep 6C `planned` until its full acceptance is satisfied; completing only the deadline slice does not finish the milestone.
 
 ## Parallel work: worktrees and per-branch test databases
 
@@ -118,12 +136,15 @@ an instruction, value or URL unchecked.
     9. verification: the plan's last task adds verify.md checks with expected values by time of day and one invariant query per new table;
     10. decisions taken on the user's behalf, each with source (pre-loaded | model), rationale, cost if wrong, blast radius
         (file / DB additive / NAS container / external account) and the exact reversal; "re-do the phase" is a gate;
-    11. out of scope matches the roadmap; nothing from a later phase is pulled forward;
+    11. out of scope matches the roadmap; no later-phase work except the explicitly authorized U8 parallel starts,
+        which retain their own phase plans and acceptance criteria;
     12. every task carries a `Files:` line naming each file it creates or modifies (the parallel-dispatch key) and a
         `Depends on:` line naming task numbers or "none".
 2. **Design review.** Two `opus` reviewers (containment paragraph) for phases 4 and 5 with split lenses (venue-practitioner
-   plus risk-and-security; experiment-design plus architecture), one for phase 6. Each reports Critical and Important findings
-   naming the spec section contradicted and verdicts Conformance item by item, citing the satisfying line (uncitable:
+   plus risk-and-security; experiment-design plus architecture). For 6B, two `opus` reviewers: execution/queue-model
+   practitioner and experiment/measurement design. This is the user-directed setup choice of 2026-09-11, not a requirement
+   quoted from the imported review roadmap. One `opus` reviewer for the other 6x milestones and phase 7. Each reports
+   Critical and Important findings naming the spec section contradicted and verdicts Conformance item by item, citing the satisfying line (uncitable:
    Important). Rule on every finding in a "Rulings" list at the addendum's end (`Ruling: <decision> - <why> - <cost if wrong>`); amend; one round.
 3. Spec self-review: placeholders, contradictions, scope, ambiguity. Fix inline.
 3a. **Audit** (controller, deterministic; journal the four outputs verbatim). At plan time it records the baseline; it runs
@@ -140,13 +161,15 @@ an instruction, value or URL unchecked.
    conditional push. Every task brief carries the containment paragraph. Plan review: one round; the controller rules on
    every residual (`Ruling:` lines) and a Critical residual alone earns a second round. Commit; roadmap status `planned`;
    journal a `plan-next` entry listing every decision taken.
-5. Continue directly into Unit: phase.
+5. Continue directly into Unit: phase, subject to U8's explicit parallel-planning and deadline priority above.
 
 Amendments (the pre-registration record's "Amendment protocol", spec §6.7): a measurement change is a dated amendment with
 the fields the record lists, ids unchanged, the pre-fix range excluded or re-scored and said so; strategy changes are new
 variant ids or new hashed settings, never edits; the six ids stay frozen for three weeks, and anything registered after Mon
 2026-09-21 09:00 CT is exploratory and labelled so; gate criteria, thresholds and families are never amended (R1). Gates inside
 plan-next: bankroll, legal or live posture, real money, an account action beyond dropping a listed secret file, a Conformance gate.
+U8 defers the R7 selection/confirmation dates, not the registration cutoff above. Restoring an intended measurement is
+documented as a correction; changing a gate definition or eligibility rule still requires R1's dated user decision.
 
 ## Unit: phase
 
@@ -190,6 +213,8 @@ If the SDD workspace is missing, the SDD skill creates it from the committed pla
 7. When the final review is clean (or residuals handled per 7a): run the 3a audit on the branch; archive the ledger, final
    review and fix report as `docs/superpowers/reviews/<date>-phaseN-{sdd-ledger,final-review,final-fixes}.md`; commit
    `docs: archive phase N ...` on the branch. The archived ledger on `main` is the durable proof of completion (Orient rule 0).
+   A U8 deadline-slice checkpoint retains the active milestone ledger and lists outstanding tasks/acceptance instead;
+   archive phase completion only after the entire milestone is accepted. Keep those remaining tasks in the phase plan.
 7a. Final-review residuals: a Critical that survives the first fix wave is never parked: one more wave (fresh `opus`
     implementer, the Criticals only, one scoped re-review), then a still-open Critical is a gate. An Important may be parked
     only as a carried fix with a hotfix unit right after this phase's deploy, before any plan-next. Minors are ledgered.
@@ -197,6 +222,8 @@ If the SDD workspace is missing, the SDD skill creates it from the committed pla
    `superpowers:finishing-a-development-branch`, pre-answered: merge locally, no PR, no `git pull`, no remote). In the same
    commit on `main`: roadmap status `done` and the `phase done` journal entry (commit range, test count, the exhaustive
    rulings roll-up). Only then `git branch -d` (a missing branch is not an error), remove the worktrees, and `rm -rf` the SDD workspace.
+   U8's partial milestone delivery uses step 6's mid-phase merge/deploy path; it does not mark the milestone done or
+   delete its branch/ledger. In particular, the 6C deadline slice cannot trigger this completion step by itself.
 9. Continue to the deploy unit (Orient rule 2 selects it too), then verify, the phase report, and the repo bundle (Unit: operate).
 
 ## Unit: deploy
@@ -208,6 +235,9 @@ NAS access). Preconditions (any failing: do not deploy; journal why):
 - No game window (verify.md "Game window", R4): no matched game `in_progress`, no kickoff in the last 4 h or the next 15 min,
   no NFL kickoff 60-100 min away. Otherwise a wakeup for the window's end and another unit. Exceptions, journaled with the
   games affected: only "recorder down", "executor down", "app-serve unhealthy".
+- Declared deployment prerequisites are included and reviewed. For the pending 40/41 wave, fix 37 must land before
+  the dependent deploy: cover every changed service and restore stopped services after a schema failure. Reviewing 40/41
+  can proceed independently; the old manual stop/recreate workaround does not satisfy this prerequisite.
 - A lost deploy notification is not a reason to deploy again: read the stamp first (Orient rule 2). `/healthz` build equal to
   `git rev-parse --short main` means it landed. One deploy in flight at a time; a deploy after a failed one needs its
   journaled cause first (Ceilings).
@@ -287,8 +317,10 @@ passing verification, or the same failed item twice running, is a gate. Remove e
   mkdir -p docs/reports && ssh -o BatchMode=yes trey@192.168.12.228 'cd /volume1/docker/sports-harness && docker compose run --rm -T app-run report --week N --out -' > docs/reports/2026-wNN.md
   ssh -o BatchMode=yes trey@192.168.12.228 'cd /volume1/docker/sports-harness && docker compose run --rm -T app-run gate'
   ```
-  Commit; write the `week-NN` report; one-line `PushNotification` with the headline numbers. Mon 2026-09-21 09:00 CT also
-  freezes the week-2 selection into `docs/reports/2026-w38-selected.json`; Mon 2026-09-28 is the week-3 confirmation.
+  Commit; write the `week-NN` report; one-line `PushNotification` with the headline numbers. U8 supersedes R7's original
+  Mon 2026-09-21 selection and Mon 2026-09-28 confirmation commands. Those weeks still receive diagnostic reports;
+  do not use `--selected-out` or `--confirm` as a formal selection/confirmation on the old dates. Resume formal selection
+  and confirmation only under the user-ratified dated amendment, recorded before examining confirmatory estimates.
 - **Monday 09:30 CT, and the morning after a Thursday or Friday game:** alias pass. `harness match-report` on the NAS; an
   implementer adds aliases for the top unmatched names to `harness/matching/aliases_manual.yaml` on `fix-aliases-<date>`
   with a test per alias; reviewer; merge; the aliases ride the next deploy; confirm the match rate rose.
@@ -311,7 +343,8 @@ passing verification, or the same failed item twice running, is a gate. Remove e
 - **Seven days after the veto goes live:** the veto model study the calendar specifies; the score-versus-cost table and the
   disagreement cases go into the report's Needs you; the swap is the user's call.
 
-Between duties: a wakeup for the next calendar event, `reason` naming it. Duties never pre-empt a running task (Orient rule 4).
+Between duties: a wakeup for the next calendar event, `reason` naming it. Duties never pre-empt a running task;
+U8's deadline work is checked at every task boundary and can proceed independently under its scheduling exception.
 
 ## Waiting
 
