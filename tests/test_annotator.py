@@ -382,6 +382,15 @@ def test_a_captured_model_error_backs_off_without_writing_an_annotation(
     assert db_session.execute(text("select count(*) from report_annotations")).scalar() == 0
     assert pending_report(db_session, NOW) is None
 
+    # The partial state this leaves is the intended one, and it is `_record_failure`'s own
+    # commit that makes it durable: the errored call still wrote its `research_notes` row
+    # (notes.py: "an errored call writes its row too", so `research_spend` stays
+    # reconcilable), and no annotation was written. The rollback proves the note does not
+    # depend on a caller's own commit, the same way the backoff tests above do.
+    db_session.rollback()
+    assert db_session.execute(text(
+        "select count(*) from research_notes where kind = 'annotate'")).scalar() == 1
+
 
 def test_success_clears_a_prior_backoff(db_session, keyed_settings, seeded_reports):
     run_id = seeded_reports.final_this_week

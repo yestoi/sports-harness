@@ -205,6 +205,17 @@ def titles_from_markdown(markdown: str) -> dict[str, tuple[str, str, str | None]
     `_<note>_`. This is the one place those three strings are written; recovering them from here
     means there is nothing to drift, unlike copying the literals into a second place the way
     `IDENTITY_COLUMNS` above has to.
+
+    The Markdown is the harness's own render, but one block inside it is not: `render_markdown`
+    writes a previous annotation's bullets into a fenced "model notes" block *above* the tables,
+    and a re-run of an already-annotated week stores that block in the pending run's own
+    `markdown`. This parser tracks no fences and does not need to: a stored bullet has been
+    through `sanitize_model_text`, which collapses every run of whitespace (newlines included)
+    into a single space, and `render_markdown` writes each one as `- {bullet}` -- so no
+    model-written line can begin with `## `, which is what `_TABLE_HEADING_RE` anchors on. The
+    fence also precedes every real heading, so even a matching line there would be overwritten
+    by the real one. Both invariants live elsewhere; if either moves, this parser needs a fence
+    skip, because a title and a header go straight into the next prompt.
     """
     titles: dict[str, tuple[str, str, str | None]] = {}
     lines = markdown.splitlines()
