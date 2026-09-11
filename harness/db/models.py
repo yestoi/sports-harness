@@ -1004,10 +1004,16 @@ class ParlayLegProb(Base):
 # ---------------------------------------------------------------------------
 # Phase 5: the research layer (addendum §2). Ten additive tables and one view.
 #
-# Every one of them is retained for the season (ruling B-M7): `harness/ops/housekeeping.py`
-# deletes nothing here. Two of them hold free text of outside provenance -- `rfqs.raw` and
-# `research_notes.snippets` -- and both tables are on the snapshot builders' forbidden list
-# (ruling B-I9), so a surface can count them but can never render one.
+# Nine of them are retained for the season (ruling B-M7): `harness/ops/housekeeping.py` deletes
+# nothing from those nine. `rfqs` is the one exception, narrowed by fix 38 (journal 110) after
+# the venue's `communications` channel turned out to deliver every RFQ create and delete on the
+# exchange: an `rfqs` row with no `rfq_quotes` row is pruned once it is older than
+# `RFQ_RETENTION_DAYS` (7 days), in bounded batches (`_prune_rfqs`). A *quoted* arrival is never
+# in scope for that rule, so `rfq_quotes` and the record of what we would have answered (F71)
+# keep the season-long guarantee unconditionally, as do the other eight tables. Two of these
+# tables hold free text of outside provenance -- `rfqs.raw` and `research_notes.snippets` -- and
+# both are on the snapshot builders' forbidden list (ruling B-I9), so a surface can count them
+# but can never render one.
 #
 # Every index these tables need is raw DDL in harness/db/schema.py (`_INDEX_DDL`), the same
 # convention the telemetry tables use, and ruling B-M13 puts this phase's there by name.
