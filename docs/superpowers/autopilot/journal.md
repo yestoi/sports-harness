@@ -1497,3 +1497,14 @@ Times are America/Chicago.
 - Rulings: (1) Fix 40's acceptance is judged on the post-replay hour, not the replay minute - cost if wrong: one hour's delay in raising a carried fix. (2) Fix 41's row is judged at the quiet-hour verify - cost if wrong: none.
 - Carried forward: none
 - Next: hotfix 42 merge (its suite running), 6C tasks 3/4 reviews then T6 and the Friday-night deploy, 6A T2; wakeup 17:30 CT (fix 40 judge-after, cron) and 22:45 CT (cron 4d16b211)
+
+## 125. verify - judge-after 17:30 CT (fix 40 post-replay hour, fix 43, tape gaps) - 2026-09-11 17:32 CT
+
+- Orient: rule 3 - the 17:31 CT judge-after wakeup (cron bebecabc); 30 min before the 18:00 CT kickoffs, no deploy.
+- Result: done
+- Verification: **fix 43 PASS** (`subscription rejected` 0 in the 85 min since the restart; the resubscribe plans ran); **fix 40 deferred again**: `rfqs` rows in the last 60 min = 0, but not because the filter is tight: the listener has received no frame since 21:10:02Z (see anomaly A), so the row cannot be judged until the listener is restored; judge-after the fix 44 deploy. Tape gap rows last 60 min: 11 (the pre-existing reconnect churn, an observation for 6B/6D). Executor 17:31 CT: open_orders 24 (130 at 16:54: pre-kickoff repricing and stale-fair cancels), loops_skipped 600, dirty 154, last loop 8.0 s, p95 17.0 s (the NAS under pre-game load; watched through the window).
+- Anomalies: (A) **the RFQ listener is silent**: after the venue's error frame at 21:10:02Z (untrusted venue text: code 25 "Subscription buffer overflow") the listener logged nothing for 80 min, wrote no summary line, did not reconnect, `venue_status('kalshi_rfq')` still `ok` (updated 21:08:51Z), `max(rfqs.received_at)` 21:10:02Z; the idle rule never fired because it is evaluated on frame arrival. Carried fix 44 (roadmap row; opus implementer dispatched). Not data-stopping for the tape: the market socket is separate (deltas and snapshots flowing).
+- Dispatches: 1 (impl-fix-44 opus)
+- Rulings: (1) No operational restart of `app-ws` before tonight's games: a recreate costs a tape gap at kickoff for a research-only listener - cost if wrong: H5's RFQ shadow quotes miss tonight; the fix deploys in the Fri 23:00 CT wave. (2) Fix 40 stays deferred rather than passed on an empty hour - cost if wrong: none.
+- Carried forward: 44
+- Next: hotfix 44 (implementing), 6A T2 re-review, 6C T9, the fix 42 suite; the Friday-night wave (6C wave 1 + 42 + 44 + 6A if clean) at 23:00 CT (cron 4d16b211 at 22:45)

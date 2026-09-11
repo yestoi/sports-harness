@@ -1,6 +1,6 @@
 # Autopilot state (rewritten by the loop at every unit boundary; the journal is the history)
 
-- Updated: 2026-09-11 16:29 CT
+- Updated: 2026-09-11 17:32 CT
 - Session: session_01383GStaVQDKm3CttxJkTG6 (Claude, resumed 12:54 CT 2026-09-11; journal 115 preflight). Prior sessions' agents are dead; only the agents named here are live.
 - Position: hotfix wave deployed and verified (bd220b8, journal 123-124); fix 42 review-clean at 74814d0, its branch suite queued to run alone (the test server was exhausted by orphaned backends, cleared 16:28 CT); 6C wave 1: T1, T2, T3, T5 on the phase branch (3ee67d1), T4 in review (1238956), T6 worktree ready (dispatch after T4 merges); 6C T9 (wave 2) implementing; 6A: T1 on the phase branch (0543d3c), T2 re-dispatched fresh (impl-6a-t2b). NAS on bd220b8 (healthy 16:21 CT).
 - Agents in flight: review-6c-t4 (sonnet, 16:18 CT); impl-6c-t9 (sonnet, ../sports-wt/phase6c-t9-floor-join, 16:23 CT); impl-6a-t2b (sonnet, ../sports-wt/phase6a-t2-capsule, 16:23 CT). Implementer slots 2 of 3 (T9, 6A T2); the third is for fix rounds or 6C T6. Background: the fix 42 branch suite (wait-then-run, scratchpad/fix42-suite-74814d0-c.log). Crons: 17:31 CT fix 40 judge-after (bebecabc), 22:45 CT Friday-night window checkpoint (4d16b211).
