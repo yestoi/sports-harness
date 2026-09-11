@@ -155,3 +155,8 @@ Reviewer B (experiment design and honesty; architecture):
 - B-M1..M15 `Ruling: all accepted (label set and "decided"; the veto_h9 view; rfq_listener_enabled; the cache assertion; the tool type recorded; CronTrigger timezone; season retention; title and yes_sub_title; truncation with a flag; t7/t10 in scope; F50 and 600; leg values; _INDEX_DDL; the NAS-side .env note; D11 and D19 fields).`
 - B underspecified 1-10 `Ruling: resolved in 0.2, 1.4, 1.1, 1.3, 1.6, 0.14, 1.2, 1.4 and conformance 12.`
 - B conformance 1, 3, 7, 9 `Ruling: corrected by 0.12, 0.13, 1.5 and §3.`
+
+
+## Amendment 2026-09-11 (controller ruling during hotfix 38, journal 110)
+
+- **B-M7 narrowed for `rfqs`.** The venue's `communications` channel delivers every RFQ create and delete on the exchange (11,000-14,000 frames a minute, three quarters deletes, almost none with a football leg), not the sporadic combo trickle this addendum assumed. Season retention of every frame is impossible (about 30 GB a day). From fix 38 on: the listener stores only `rfq_created` combos with at least one football leg and applies `rfq_deleted` only to stored ids; housekeeping prunes `rfqs` rows older than 7 days that have no `rfq_quotes` row, in bounded batches. Quoted rows and the other nine phase-5 tables keep season retention. H5's population is unchanged in substance: it was always the quotable combos.
