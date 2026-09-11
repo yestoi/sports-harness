@@ -1290,3 +1290,8 @@ Times are America/Chicago.
 ## 105. verify - `make test` on `main` after the phase 5 merge - 2026-09-10 21:21 CT
 
 - `make test` on `main` (harness_test_main) at 4293802: pristine, 0 failure markers, 2,831 tests by dot count. Deploy precondition met on the code side; the deploy stays HELD for the user's word on the host and for the game window.
+
+## 106. operate - phase 5 deploy authorized by the user - 2026-09-10 22:18 CT
+
+- The user at 22:17 CT: "Let's go ahead and deploy when safe. Might as well test all our work in a live environment until I setup the Mac mini tomorrow." The host hold (journal 103) is lifted; the game-window hold stands: LAR-SF (game 2) kicked 19:37 CT, four-hour mark 23:37; game 371 final 77-7 at 22:15; next kickoff Fri 18:00. Deploy wakeup armed for 23:41 CT (cron b6f19f59); the 23:17 CT post-window read (abb8aad6) stays.
+- Deploy inputs checked: `deploy/nas.env` carries `SNAPSHOTS_ENABLED=1`, `RESEARCH_WORKER_ENABLED=1`, `RFQ_LISTENER_ENABLED=1` as bare lines and the recipe copies it to the NAS `.env` (Makefile line 36); the NAS `.env` today has only the snapshots line, so the two research switches land with the deploy. `secrets/anthropic_api_key` exists locally and already on the NAS (`/volume1/docker/sports-harness/secrets/`), so the veto, the annotator and the parlay rationale go live at the deploy with real spend under U4's caps ($25/day, $150/week, `reserve_spend` before every call, dormant past the cap); the user's "test all our work in a live environment" covers it, and the first daily 09:00 CT line reports the spend. Rollback: `git checkout 3ca32dd && make deploy-nas-app`.
