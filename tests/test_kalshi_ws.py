@@ -1113,6 +1113,64 @@ def test_third_gap_inside_five_minutes_falls_through_to_a_reconnect(db_session, 
     assert db_session.query(OrderbookEvent).filter_by(kind="gap").count() == 3
 
 
+def test_recv_loop_ids_never_collide_across_a_plan_and_a_gap_recovery(db_session, monkeypatch):
+    """Review round 1, Important 2: `_recv_loop` owns one msg-id counter that both
+    `_recover_gap` and `_resubscribe` draw from, and each returns the next free id. Fix 43 made
+    `_resubscribe` send a frame per sid, so the caller can no longer guess how far the ids
+    advanced -- it must take the returned id (ws.py:337). Drop that assignment, or restore the
+    old `msg_id + 1`, and a recovery after a plan reuses ids the plan already spent, leaving the
+    venue's acks and errors uncorrelatable. Nothing covered that caller before this test.
+
+    One connection, one sid, three id-spending events in order: a gap recovery, a plan that
+    crosses 300 s with a non-empty diff, then a second gap recovery."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    # The plan's diff has to be non-empty for `_resubscribe` to send anything, so the second
+    # call (the 300 s plan) wants a different market than the subscribe asked for.
+    planned = [["K-A"], ["K-B"]]
+    monkeypatch.setattr(ws_module, "select_ws_tickers",
+                        lambda *a, **kw: planned.pop(0) if len(planned) > 1 else planned[0])
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+
+    script = [json.dumps({"type": "subscribed", "msg": {"sid": 7}}),
+              json.dumps(_delta(7, 1, "K-A")),
+              json.dumps(_delta(7, 4, "K-A")),    # gap -> recovery 1, ids 2 and 3
+              301.0,                              # cross the 300 s plan interval
+              json.dumps(_delta(7, 5, "K-A")),    # handled, then the plan -> ids 4 and 5
+              json.dumps(_delta(7, 8, "K-A"))]    # gap -> recovery 2, ids 6 and 7
+    sockets: list[_ScriptedWs] = []
+
+    def ws_factory(url, header, timeout):
+        sockets.append(_ScriptedWs(script if not sockets else [], clock))
+        return sockets[-1]
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+    monkeypatch.setattr(time, "sleep", lambda _s: recorder.stop())
+
+    recorder.run_forever()
+
+    sent = [json.loads(f) for f in sockets[0].sent]
+    ids = [f["id"] for f in sent]
+    # The whole point: every frame on the connection carries its own id, strictly increasing.
+    assert len(set(ids)) == len(ids)
+    assert ids == sorted(ids)
+    assert ids == [1, 2, 3, 4, 5, 6, 7]
+
+    frames = _subscription_frames(sockets[0])
+    assert all(f["params"]["sids"] == [7] for f in frames)
+    assert [(f["id"], f["params"]["action"], f["params"]["market_tickers"]) for f in frames] == [
+        (2, "delete_markets", ["K-A"]), (3, "add_markets", ["K-A"]),   # recovery 1
+        (4, "add_markets", ["K-B"]), (5, "delete_markets", ["K-A"]),   # the 300 s plan's diff
+        (6, "delete_markets", ["K-B"]), (7, "add_markets", ["K-B"]),   # recovery 2
+    ]
+    # The plan really ran, rather than the ids merely happening to line up.
+    assert recorder._current == ["K-B"]
+
+
 # --- hotfix F8/R10: the subscription window and its priority ---------------------------
 
 def _signal(session, vmid: int, created_at, decision: str = "candidate", replay: bool = False,
