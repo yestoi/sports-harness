@@ -1522,3 +1522,17 @@ Times are America/Chicago.
 - Rulings: (1) `downgrade()` is `pass` (a DROP is gate 3; the precedent since 0002). (2) `migrate.py`'s HEAD_REVISION and `test_schema.py`'s count were necessary edits outside the brief's file list. (3) The baseline revision's plain indexes are exempt because the same revision creates the table (a test pins that only 0001 uses the exemption). (4) The implementer's late report, four re-runs and a `pkill -9` of its own run contributed to the server's exhaustion; the test-server lessons are in state.md. (5) The branch rename to obtain a fresh database name is a controller expedient, not a pattern: the invalid database `harness_test_fix_42_quotes_run_index` and its `_a`/`_b` scratch databases are dropped at the next quiet moment on the test server.
 - Carried forward: none (row 42 reads merged)
 - Next: the Friday-night deploy wave (6C wave 1 + 42 + 44 when clean) at 23:00 CT: rebase the 6C branch onto main, its suite alone, ff main, main's suite; wakeup 22:45 CT (cron 4d16b211)
+
+## 127. hotfix - fix 44 merged to main, 50d981a - 2026-09-11 18:36 CT
+
+- Orient: rule 1 - roadmap row 44 (journal 125: the RFQ listener silent since 21:10Z).
+- Branch / commits: `fix-44-rfq-listener-idle` 591b928..449a787 (implementation), reviewer 56c269a, round 1 95e8429; rebased onto main as d2325fa..50d981a; merged `--ff-only`; worktree and branch removed.
+- Result: done
+- Dispatches: 3 (impl opus; review opus; re-review sonnet)
+- Tests: 2,968 passed, pristine, on the branch at 95e8429 (the re-reviewer's full run, adopted as the merge gate); `make test` on `main` at 50d981a running as the deploy gate.
+- Review: 1 fix round (I1 the ack reset the backoff so a code-25 lap never escalated: a forced-resubscribe floor doubling from 5 s to the ceiling, forgotten after 300 s; I2 non-RFQ frame types restarted the data window: gated on the RFQ types, and `run_once` returns the watchdog's answer for non-data frames; two Minors taken: the 15 s ack window shared with the ping path, slice-before-sanitize), re-review ADDRESSED.
+- Deploy: none yet - the Fri 23:00 CT wave (full recipe: the listener lives in `app-ws`).
+- Verification: after the deploy: the listener's summary line every minute with `frames_seen` growing; `rfqs` arrivals resume (then fix 40's row is judged on the post-replay hour); an injected code-25 in tests forces a resubscribe (already pinned).
+- Rulings: (1) The implementer's corrected root cause stands over the brief's (websocket-client's `recv()` answers pings internally and restarts its 30 s timeout; `recv_data(control_frame=True)` surfaces each ping as a loop iteration and the library still sends the pong, verified by the reviewer in 1.9.2). (2) `venue_status` has no `degraded` value: both new paths write `unavailable` with a reason. (3) A quiet 15 minutes now costs a resubscribe and a replay burst (about four an hour at worst): accepted, the threshold is 6D's to revisit. (4) The 300 s decay of the forced floor flattens escalation for code-25 laps 300 s or more apart: a deferred minor, not a regression. (5) One existing test was renamed because it asserted the bug.
+- Carried forward: none (row 44 reads merged)
+- Next: deploy (the Fri 23:00 CT wave: 6C wave 1 + fix 42 + fix 44) after main's suite; wakeup 22:45 CT (cron 4d16b211)
