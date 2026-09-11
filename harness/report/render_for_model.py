@@ -12,11 +12,20 @@ many words that the block is model-written and unverified.
 
 Nothing here calls a model, reads a key, opens a socket or touches the database. It is a pure
 function of the tables and a string, which is what makes the honesty rule testable.
+
+Fix 36. `render_for_model` recomputes every table from the week's rows -- fine for `harness
+report`, which runs once, but the annotator used to call it on every 30 s research-worker sweep
+until an annotation landed, so a report the weekly render cannot finish inside the statement
+timeout locked the worker into a heavy query stream forever (journal 109). `render_from_cells`
+is the other constructor: it builds the same `ModelView` from `report_cells`, the rows
+`harness/report/weekly.py::persist_report` already wrote when the report was generated, so the
+annotator renders what was published rather than recomputing it.
 """
 import re
 from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 
-from harness.report.tables import TABLE_KEYS, Table
+from harness.report.tables import PLACEHOLDER, TABLE_KEYS, Table
 from harness.report.weekly import format_cell
 
 #: Addendum §1.5: at most five bullets, each at most 240 characters.
@@ -79,6 +88,80 @@ def render_for_model(tables: dict[str, Table]) -> ModelView:
             lines.append(f"note: {table.note}")
         lines.append("")
     return ModelView(text="\n".join(lines), columns=columns, cells=cells)
+
+
+def render_from_cells(cells: Sequence[Any],
+                      titles: Mapping[str, tuple[str, str, str | None]] | None = None
+                      ) -> ModelView:
+    """The tables as indices and cells, built from stored `report_cells` rows (fix 36) instead
+    of a fresh `weekly_tables` computation. `cells` is every row of one `report_runs.id`, read
+    ordered by `(table_key, row_key, col_key)` -- the caller's query does that, never this
+    function, since it is what fixes the deterministic order below. Each row needs `table_key`,
+    `row_key`, `col_key` and `text` (a `report_cells` row, or anything shaped like one).
+
+    **Column order.** `report_cells` has no column-position field, only names, so the order is
+    recovered from the scan itself: the position a `col_key` first appears in, reading rows
+    ordered as above. Every row of a table carries the same column set, and ordering by
+    `row_key` before `col_key` means the very first row already contains that whole set in
+    `col_key`'s own ascending order -- so in practice this is lexicographic order by column
+    name, not `Table.columns`'s left-to-right order (`render_for_model` has the live `Table` to
+    read that from; this does not).
+
+    **Column 0, and F60/B-I5.** `render_for_model` keeps `Table.columns[0]` -- a variant, a
+    ticker, a stratum -- out of the rendered line and only in `cells`, because it is exactly
+    what `Table.row_key` stores as `report_cells.row_key`. That value is *also* stored again as
+    an ordinary cell (`persist_report` zips every column, including the first, into its own
+    `ReportCell` row -- the dashboard's Study surface needs the full row to show a person), and
+    nothing in `report_cells` marks which `col_key` that was. So it is recovered the only way
+    the stored data allows: per table, from its first row, whichever `col_key`'s stored `text`
+    equals that row's `row_key` exactly is the identity column, folded into a synthetic column 0
+    (`row_key`'s own value, kept in `cells` and never printed, exactly like `render_for_model`'s
+    column 0) and dropped from the printed "every other cell" list. A table whose first row
+    matches no column this way hides nothing -- documented here rather than guessed at, since a
+    table shaped so differently from the rest is worth a person's attention, not a silent guess.
+
+    `titles`, keyed by table key, is `(title, header, note)`; omitted (the default) because
+    `harness/report/tables.py` keeps those as literals inside each table builder rather than in
+    an importable table, and duplicating them here as a second copy is how the two drift. Without
+    it, this renders `== <key> ==` and the columns line only, with no title, header or note.
+    """
+    tables: dict[str, dict] = {}
+    for row in cells:
+        state = tables.setdefault(row.table_key, {"cols": [], "rows": {}})
+        if row.col_key not in state["cols"]:
+            state["cols"].append(row.col_key)
+        text = row.text if row.text is not None else PLACEHOLDER
+        state["rows"].setdefault(row.row_key, {})[row.col_key] = text
+
+    lines = [_PREAMBLE]
+    columns: dict[str, list[str]] = {}
+    cells_out: dict[str, list[list[str]]] = {}
+    for key in TABLE_KEYS:
+        state = tables.get(key)
+        if state is None:
+            continue
+        row_keys = sorted(state["rows"])
+        first_row = state["rows"][row_keys[0]]
+        identity_col = next((c for c in state["cols"] if first_row.get(c) == row_keys[0]), None)
+        other_cols = [c for c in state["cols"] if c != identity_col]
+        columns[key] = [identity_col or "row_key", *other_cols]
+        rendered = [[row_key, *(state["rows"][row_key].get(c, PLACEHOLDER) for c in other_cols)]
+                   for row_key in row_keys]
+        cells_out[key] = rendered
+        lines.append(f"== {key} ==")
+        meta = titles.get(key) if titles else None
+        if meta is not None:
+            lines.append(meta[0])
+            lines.append(meta[1])
+        lines.append("columns: " + ", ".join(f"{i}:{name}"
+                                             for i, name in enumerate(columns[key])))
+        for index, row in enumerate(rendered):
+            body = " ".join(f"{i}={value}" for i, value in enumerate(row) if i > 0)
+            lines.append(f"[{index}] {body}")
+        if meta is not None and meta[2]:
+            lines.append(f"note: {meta[2]}")
+        lines.append("")
+    return ModelView(text="\n".join(lines), columns=columns, cells=cells_out)
 
 
 def resolve_citation(view: ModelView, citation: str) -> str | None:

@@ -5,13 +5,35 @@ The renderer's contract is negative as much as positive: the model sees cells, h
 a bullet survives only if it cites a real cell and invents no number.
 """
 import re
+from collections import namedtuple
 
 import pytest
 
 from harness.report.render_for_model import (BULLET_MAX, BULLETS_MAX, CITATION_RE, ModelView,
                                              check_bullet, numbers_in, render_for_model,
-                                             resolve_citation)
+                                             render_from_cells, resolve_citation)
 from harness.report.tables import Table
+from harness.report.weekly import format_cell
+
+#: A `report_cells` row, or enough of one: `render_from_cells` reads only these four fields.
+_Cell = namedtuple("_Cell", "table_key row_key col_key text")
+
+
+def _stored_cells(tables: dict) -> list:
+    """Cells stored the way `harness/report/weekly.py::persist_report` stores them, read back
+    ordered by `(table_key, row_key, col_key)` -- without touching a database, so this file
+    stays a pure-function test like the rest of it."""
+    cells = []
+    for table_key, table in tables.items():
+        seen: dict[str, int] = {}
+        for row in table.rows:
+            base = table.row_key(row)[:60]
+            seen[base] = seen.get(base, 0) + 1
+            row_key = base if seen[base] == 1 else f"{base}#{seen[base]}"
+            for col_key, value in zip(table.columns, row):
+                cells.append(_Cell(table_key, row_key, col_key, format_cell(value)[:64]))
+    cells.sort(key=lambda c: (c.table_key, c.row_key, c.col_key))
+    return cells
 
 
 def _tables():
@@ -134,3 +156,98 @@ def test_format_cell_is_public_and_is_the_one_formatter():
 
     assert weekly.format_cell(0.31) == "0.3100"
     assert not hasattr(weekly, "_format_cell")
+
+
+# --- render_from_cells (fix 36) ----------------------------------------------------------------
+#
+# Built with rows and non-identity columns already in the order `render_from_cells` recovers
+# them in (row key ascending, other columns alphabetical), so a direct comparison against
+# `render_for_model`'s output is meaningful rather than an artefact of two different orderings
+# that both happen to be "deterministic".
+
+
+def _cell_tables():
+    return {
+        "t1": Table(
+            title="Table 1 (t1): order lifecycle",
+            header="one row per variant",
+            columns=["variant", "a_metric", "b_metric"],
+            rows=[["alpha_variant", 5, 6], ["beta_variant", 7, 8]],
+        ),
+    }
+
+
+def test_render_from_cells_reproduces_columns_and_cells():
+    tables = _cell_tables()
+    expected = render_for_model(tables)
+    view = render_from_cells(_stored_cells(tables))
+    assert view.columns == expected.columns
+    assert view.cells == expected.cells
+
+
+def test_render_from_cells_keeps_the_row_key_out_of_the_rendered_line():
+    """B-I5/F60: the column that duplicates `row_key` (here `variant`) is recovered by value,
+    from the first row, and kept out of the printed line even though `report_cells` stores it
+    as an ordinary column too."""
+    view = render_from_cells(_stored_cells(_cell_tables()))
+    assert "alpha_variant" not in view.text
+    assert "beta_variant" not in view.text
+    assert view.cells["t1"][0][0] == "alpha_variant"   # kept, for resolution
+    assert resolve_citation(view, "t1[0,0]") == "alpha_variant"
+
+
+def test_render_from_cells_skips_missing_tables_in_table_keys_order():
+    view = render_from_cells(_stored_cells(_cell_tables()))
+    assert list(view.columns) == ["t1"]
+
+
+def test_render_from_cells_defaults_to_no_title_or_header():
+    view = render_from_cells(_stored_cells(_cell_tables()))
+    assert "== t1 ==" in view.text
+    assert "order lifecycle" not in view.text
+
+
+def test_render_from_cells_accepts_titles():
+    view = render_from_cells(_stored_cells(_cell_tables()),
+                             titles={"t1": ("Table 1 (t1): order lifecycle",
+                                            "one row per variant", "a note")})
+    assert "Table 1 (t1): order lifecycle" in view.text
+    assert "one row per variant" in view.text
+    assert "note: a note" in view.text
+
+
+def test_render_from_cells_falls_back_to_no_hidden_column_without_a_match():
+    """A table whose first row matches no column by value (should not happen for a real report
+    table, whose row key is always its own first column) hides nothing rather than guessing."""
+    cells = [
+        _Cell("t9", "row-a", "alpha", "10"),
+        _Cell("t9", "row-a", "beta", "20"),
+    ]
+    view = render_from_cells(cells)
+    assert view.columns["t9"] == ["row_key", "alpha", "beta"]
+    assert view.cells["t9"][0] == ["row-a", "10", "20"]
+
+
+def test_render_from_cells_treats_a_null_stored_text_as_the_placeholder():
+    cells = [
+        _Cell("t9", "row-a", "row-a", "row-a"),
+        _Cell("t9", "row-a", "value", None),
+    ]
+    view = render_from_cells(cells)
+    from harness.report.tables import PLACEHOLDER
+
+    assert view.cells["t9"][0][1] == PLACEHOLDER
+
+
+def test_render_from_cells_orders_tables_by_table_keys_not_by_input_order():
+    """`TABLE_KEYS` orders `t9` before `t10`, the opposite of their alphabetical (and thus SQL
+    `order by table_key`) order -- a real query's own row order, so this is what a caller's
+    `_CELLS`-shaped query actually hands the function."""
+    cells = [
+        _Cell("t10", "row-a", "row-a", "row-a"),
+        _Cell("t10", "row-a", "n", "1"),
+        _Cell("t9", "row-a", "row-a", "row-a"),
+        _Cell("t9", "row-a", "n", "2"),
+    ]
+    view = render_from_cells(cells)
+    assert list(view.columns) == ["t9", "t10"]

@@ -28,6 +28,15 @@ Both switches are on their own line in `deploy/nas.env`, with no inline comment:
 part of the value. The rollback for either is to set it back to `1` and restart the affected
 container — `docker compose restart app-research` or `docker compose restart app-ws`.
 
+## The weekly report annotator
+
+Fix 36 (journal 109): the annotator renders the week's final report from its stored
+`report_cells` rows, never by recomputing the tables, so its per-sweep cost is one bounded query
+regardless of how heavy the report was to build in the first place. A pass that fails (an
+exception, or a captured model-call error) backs that report off an hour, escalating to a day
+after three failed attempts in a row, so a report that keeps failing is not retried every sweep.
+The backoff lives in `job_state` under `annotate:<report_run_id>`.
+
 ## Reading the spend
 
 ```sql

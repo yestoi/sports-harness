@@ -1,15 +1,18 @@
-"""The annotator: its trigger, its checks, and the fence its output renders inside."""
-from datetime import datetime, timezone
+"""The annotator: its trigger, its checks, its render source, its backoff, and the fence its
+output renders inside."""
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 
-import harness.research.annotate as annotate_module
+import harness.report.tables as tables_module
 from harness.db.models import ReportRun
 from harness.report.tables import Table
-from harness.research.annotate import (BULLETS_MAX, EFFORT, PROMPT_HASH, annotate_pass,
+from harness.report.weekly import persist_report
+from harness.research.annotate import (BACKOFF_LONG, BACKOFF_SHORT, BACKOFF_STRIKES,
+                                       BULLETS_MAX, EFFORT, PROMPT_HASH, annotate_pass,
                                        pending_report)
 from harness.research.client import CallResult
 from harness.research.spend import Usage
@@ -21,19 +24,22 @@ NOW = datetime(2026, 9, 21, 15, 0, tzinfo=timezone.utc)   # Monday of ISO week 3
 NOW_SUNDAY_CT = datetime(2026, 9, 21, 4, 30, tzinfo=timezone.utc)
 NOW_MONDAY_CT = datetime(2026, 9, 21, 5, 30, tzinfo=timezone.utc)
 
+_EMPTY_COUNTS = {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 0}
+
 
 # --- fixtures ---------------------------------------------------------------------------------
 #
 # `weekly_tables` recomputes tables 1-12 from orders, signals and fills; that machinery is
-# already exercised by `tests/test_report.py`. What this file tests is the trigger, the citation
-# and number checks, and the spend/registration wiring around it -- so every fixture here
-# monkeypatches `harness.research.annotate.weekly_tables` to a single fixed table rather than
-# seeding a week's worth of order data. The table is deliberately the same shape T17 already
-# tests against (`tests/test_render_for_model.py`): a variant name in column 0 (never rendered
-# to the model, per B-I5) and an "orders" count of `4120356789` in column 1, whose rendered text
-# carries "412" as a contiguous substring and every digit 0-9 somewhere else in the string -- the
-# second property only matters to `test_at_most_five_bullets_survive` below, which appends a
-# bare digit to each bullet's text.
+# already exercised by `tests/test_report.py`, and fix 36 means `annotate_pass` never calls it
+# at all. What this file tests is the trigger, the citation and number checks, the backoff, and
+# the spend/registration wiring -- so every fixture here stores one small table's cells the way
+# `harness/report/weekly.py::persist_report` does (`report_run_id, table_key, row_key, col_key,
+# text`) rather than seeding a week's worth of order data. The table has one column besides the
+# row key (`orders`) so its reconstructed position is unambiguous: `render_from_cells` orders
+# the columns it recovers from `report_cells` alphabetically by name, which only matters when
+# there is more than one non-identity column to order. Row 0's `orders` value is the same
+# `4120356789` T17's own fixture used, chosen so its rendered text carries "412" as a contiguous
+# substring -- the property `test_at_most_five_bullets_survive` needs.
 
 
 def _stub_tables():
@@ -41,18 +47,29 @@ def _stub_tables():
         "t1": Table(
             title="Table 1 (t1): order lifecycle",
             header="one row per variant; orders is the week's non-replay order count",
-            columns=["variant", "orders", "fill_rate"],
-            rows=[["sharp_direct", "4120356789", 0.31]],
+            columns=["variant", "orders"],
+            rows=[["sharp_direct", "4120356789"]],
         ),
     }
 
 
 def _run(session, year, week, provisional, generated_at) -> ReportRun:
+    """A bare `report_runs` row, no cells -- enough for `pending_report`, which never reads
+    `report_cells`."""
     run = ReportRun(year=year, week=week, generated_at=generated_at, provisional=provisional,
                     build_sha="0" * 40, criteria_hash="0" * 64, config_hashes=[])
     session.add(run)
     session.flush()
     return run
+
+
+def _persisted(session, year, week, provisional, generated_at, tables=None) -> int:
+    """A `report_runs` row and its `report_cells`, written the same way `harness report` does."""
+    run_id = persist_report(session, tables if tables is not None else _stub_tables(),
+                            {"generated_at": generated_at}, year, week, provisional,
+                            markdown=None)
+    session.flush()
+    return run_id
 
 
 class _FakeClient:
@@ -72,6 +89,24 @@ class _FakeClient:
                           snippets={"items": [], "truncated": False}, error=None)
 
 
+class _ErrorClient:
+    """A call that returns, but as a captured error -- `harness/research/veto.py`'s
+    `veto_error` shape -- rather than raising."""
+
+    def call(self, **kwargs) -> CallResult:
+        return CallResult(model=kwargs["model"], output=None,
+                          usage=Usage(input_tokens=10, output_tokens=0), stop_reason="pause_turn",
+                          request_id="fake-request-id", latency_ms=5, tool_calls=[],
+                          snippets={"items": [], "truncated": False}, error="pause_turn")
+
+
+class _RaisingClient:
+    """A call that raises, standing in for a transport failure."""
+
+    def call(self, **kwargs) -> CallResult:
+        raise ConnectionError("boom")
+
+
 def _client(bullets: list[str]) -> _FakeClient:
     return _FakeClient(bullets)
 
@@ -84,16 +119,17 @@ def keyed_settings(env_settings, tmp_path):
 
 
 @pytest.fixture
-def seeded_reports(db_session, monkeypatch):
+def seeded_reports(db_session):
     """One final run for last week, one provisional run this week (proving `provisional` is
     excluded even alongside a real row for the current week) and exactly one final run this
-    week -- the single row `pending_report` must find, and the only row left un-annotated once
-    it has been annotated once (`test_an_already_annotated_run_is_not_annotated_again`)."""
-    monkeypatch.setattr(annotate_module, "weekly_tables", lambda *a, **k: _stub_tables())
+    week, with its cells stored -- the single row `pending_report` must find, and the only row
+    left un-annotated once it has been annotated once
+    (`test_an_already_annotated_run_is_not_annotated_again`)."""
     _run(db_session, 2026, 38, False, datetime(2026, 9, 14, 10, 0, tzinfo=timezone.utc))
     _run(db_session, 2026, 39, True, datetime(2026, 9, 18, 9, 0, tzinfo=timezone.utc))
-    final = _run(db_session, 2026, 39, False, datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc))
-    return SimpleNamespace(final_this_week=final.id)
+    final_id = _persisted(db_session, 2026, 39, False,
+                          datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc))
+    return SimpleNamespace(final_this_week=final_id)
 
 
 @pytest.fixture
@@ -111,6 +147,11 @@ def seeded_sunday_final(db_session) -> ReportRun:
     """One final report for week 38, generated Sunday evening CT -- the boundary review round 1
     flagged: for about five hours UTC has rolled to Monday while America/Chicago has not."""
     return _run(db_session, 2026, 38, False, datetime(2026, 9, 20, 22, 0, tzinfo=timezone.utc))
+
+
+def _job_state_value(session, key):
+    return session.execute(text("select value from job_state where key = :k"),
+                           {"k": key}).scalar()
 
 
 # --- the trigger --------------------------------------------------------------------------------
@@ -152,13 +193,34 @@ def test_the_same_report_is_not_found_after_midnight_ct(db_session, seeded_sunda
     assert pending_report(db_session, NOW_MONDAY_CT) is None
 
 
+# --- rendering from stored cells, not `weekly_tables` (fix 36) --------------------------------
+
+
+def test_annotate_pass_never_calls_weekly_tables(db_session, keyed_settings, seeded_reports,
+                                                 monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("weekly_tables must not be called (fix 36)")
+
+    monkeypatch.setattr(tables_module, "weekly_tables", _boom)
+    counts = annotate_pass(db_session, NOW, keyed_settings,
+                           client=_client(["412 orders on the first row t1[0,1]."]))
+    assert counts["annotated"] == 1
+
+
+def test_a_run_with_no_cells_is_skipped_and_left_pending(db_session, keyed_settings):
+    _run(db_session, 2026, 39, False, datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc))
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["x"]))
+    assert counts == _EMPTY_COUNTS
+    assert pending_report(db_session, NOW) is not None
+
+
 # --- the checks and the store --------------------------------------------------------------------
 
 
 def test_a_surviving_bullet_is_stored(db_session, keyed_settings, seeded_reports):
     counts = annotate_pass(db_session, NOW, keyed_settings,
                            client=_client(["412 orders on the first row t1[0,1]."]))
-    assert counts == {"annotated": 1, "bullets": 1, "dropped": 0}
+    assert counts == {"annotated": 1, "bullets": 1, "dropped": 0, "backed_off": 0}
     row = db_session.execute(text(
         "select model, prompt_hash, bullets, cost_usd from report_annotations")).first()
     assert row.model == "claude-opus-5" and row.prompt_hash == PROMPT_HASH
@@ -187,7 +249,8 @@ def test_at_most_five_bullets_survive(db_session, keyed_settings, seeded_reports
 
 def test_the_prompt_carries_no_row_key(db_session, keyed_settings, seeded_reports):
     """B-I5: the model is shown row indices. A variant name and a ticker are venue-sourced
-    strings and F60 keeps them out of a prompt."""
+    strings and F60 keeps them out of a prompt -- `render_from_cells` recovers which stored
+    column duplicates the row key and keeps that one out of the rendered line too."""
     client = _client(["412 orders t1[0,1]."])
     annotate_pass(db_session, NOW, keyed_settings, client=client)
     assert "sharp_direct" not in client.calls[0]["user"]
@@ -198,6 +261,95 @@ def test_the_call_is_high_effort_and_toolless(db_session, keyed_settings, seeded
     annotate_pass(db_session, NOW, keyed_settings, client=client)
     assert client.calls[0]["effort"] == EFFORT == "high"
     assert client.calls[0]["tools"] == ()
+
+
+# --- backoff (fix 36) ---------------------------------------------------------------------------
+
+
+def test_a_raising_call_backs_the_report_off_and_survives_the_worker_s_rollback(
+        db_session, keyed_settings, seeded_reports):
+    """`ResearchWorker.run_once` rolls the whole session back when the pass it drove raises;
+    `annotate_pass` commits the backoff before re-raising so it survives that (journal 109)."""
+    run_id = seeded_reports.final_this_week
+    with pytest.raises(ConnectionError):
+        annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
+    db_session.rollback()   # what `run_once` does to the raising pass's session
+
+    until = _job_state_value(db_session, f"annotate:{run_id}")
+    assert until is not None
+    assert until == pytest.approx(int((NOW + BACKOFF_SHORT).timestamp()), abs=2)
+    assert _job_state_value(db_session, f"annotate:{run_id}:attempts") == 1
+
+
+def test_the_next_sweep_skips_a_backed_off_report(db_session, keyed_settings, seeded_reports):
+    with pytest.raises(ConnectionError):
+        annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
+    db_session.rollback()
+
+    assert pending_report(db_session, NOW) is None
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 t1[0,1]."]))
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+
+
+def test_a_report_is_no_longer_backed_off_once_its_hour_is_up(db_session, keyed_settings,
+                                                              seeded_reports):
+    with pytest.raises(ConnectionError):
+        annotate_pass(db_session, NOW, keyed_settings, client=_RaisingClient())
+    db_session.rollback()
+
+    later = NOW + BACKOFF_SHORT + timedelta(minutes=1)
+    run = pending_report(db_session, later)
+    assert run is not None and run.id == seeded_reports.final_this_week
+
+
+def test_three_failed_attempts_back_off_a_day(db_session, keyed_settings, seeded_reports):
+    """Each attempt only happens once its predecessor's backoff has elapsed -- a report backed
+    off an hour is not retried a second time within that hour -- so the three strikes span three
+    sweeps, each just past the last one's `next_attempt_at`."""
+    run_id = seeded_reports.final_this_week
+    when = NOW
+    for _ in range(BACKOFF_STRIKES):
+        with pytest.raises(ConnectionError):
+            annotate_pass(db_session, when, keyed_settings, client=_RaisingClient())
+        db_session.rollback()
+        when = when + BACKOFF_SHORT + timedelta(minutes=1)
+
+    assert _job_state_value(db_session, f"annotate:{run_id}:attempts") == BACKOFF_STRIKES
+    until = _job_state_value(db_session, f"annotate:{run_id}")
+    last_attempt_at = when - BACKOFF_SHORT - timedelta(minutes=1)
+    assert until == pytest.approx(int((last_attempt_at + BACKOFF_LONG).timestamp()), abs=2)
+
+
+def test_a_captured_model_error_backs_off_without_writing_an_annotation(
+        db_session, keyed_settings, seeded_reports):
+    """A `veto_error`-class outcome (`result.error` set, e.g. a `pause_turn`) is a failure that
+    must retry later, not a success recorded as zero bullets forever."""
+    counts = annotate_pass(db_session, NOW, keyed_settings, client=_ErrorClient())
+    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0, "backed_off": 1}
+    assert db_session.execute(text("select count(*) from report_annotations")).scalar() == 0
+    assert pending_report(db_session, NOW) is None
+
+
+def test_success_clears_a_prior_backoff(db_session, keyed_settings, seeded_reports):
+    run_id = seeded_reports.final_this_week
+    db_session.execute(text(
+        "insert into job_state (key, value, updated_at) values (:k, :v, :now)"),
+        {"k": f"annotate:{run_id}", "v": int(NOW.timestamp()) - 10, "now": NOW})
+    db_session.execute(text(
+        "insert into job_state (key, value, updated_at) values (:k, :v, :now)"),
+        {"k": f"annotate:{run_id}:attempts", "v": 2, "now": NOW})
+
+    annotate_pass(db_session, NOW, keyed_settings, client=_client(["412 orders t1[0,1]."]))
+
+    remaining = db_session.execute(text(
+        "select count(*) from job_state where key like :p"), {"p": f"annotate:{run_id}%"}
+    ).scalar()
+    assert remaining == 0
+
+
+def test_no_pending_report_is_not_counted_as_a_backoff(db_session, keyed_settings,
+                                                        seeded_provisional_only):
+    assert annotate_pass(db_session, NOW, keyed_settings, client=_client([])) == _EMPTY_COUNTS
 
 
 # --- spend ----------------------------------------------------------------------------------------
@@ -213,7 +365,7 @@ def test_a_budget_refusal_writes_no_annotation_and_leaves_the_trigger_pending(
         db_session, keyed_settings, seeded_reports):
     settings = keyed_settings.model_copy(update={"veto_daily_usd_cap": Decimal("0.001")})
     counts = annotate_pass(db_session, NOW, settings, client=_client(["412 orders t1[0,1]."]))
-    assert counts == {"annotated": 0, "bullets": 0, "dropped": 0}
+    assert counts == _EMPTY_COUNTS
     assert pending_report(db_session, NOW) is not None
 
 
@@ -246,8 +398,7 @@ def test_the_reservation_does_not_keep_the_week_lock_across_the_call(db_session,
 
 
 def test_the_pass_is_dormant_without_a_key(db_session, env_settings, seeded_reports):
-    assert annotate_pass(db_session, NOW, env_settings, client=None) == {
-        "annotated": 0, "bullets": 0, "dropped": 0}
+    assert annotate_pass(db_session, NOW, env_settings, client=None) == _EMPTY_COUNTS
 
 
 # --- the fence --------------------------------------------------------------------------------
