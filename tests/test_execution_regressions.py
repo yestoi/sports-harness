@@ -182,3 +182,50 @@ def test_recovery_takes_no_fill_from_a_trade_inside_the_gap():
         executor._simulate_order(None, _order_row(), CLEAN_MARKET, {}, {"A"},
                                  {"A": ([trade], [delta])}, set(), at(30), ExecStats())
     assert captured[0].state.filled_contracts == D(0)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="6B: the dirty-seconds write happens before any status test, so a "
+                          "cancelled order keeps accruing dirty time for its counterfactual")
+def test_a_cancelled_order_accrues_no_dirty_seconds():
+    """Probe `cancelled_counterfactual_dirty_accrual`. Expected calls 0, seconds added 0.
+
+    Computed independently: `dirty_minutes` is a property of the watched order -- how long the
+    order we placed sat against a book we could not read. A cancelled order is not sitting
+    against anything: it left the market when it was cancelled. The 15 s belongs to the
+    no-watcher counterfactual, which is still running, and `store.add_dirty_seconds` writes to
+    the order's own `dirty_seconds`/`dirty_minutes` columns (`harness/execution/store.py:684`),
+    not to a counterfactual column. So no write is due. The probe captured one call adding 15 s
+    to order 157's own counter, which is how a cancelled order reached `dirty_minutes 3020`.
+    """
+    row = _order_row(status="cancelled", nw_done=False)
+    executor, _ = _executor({})
+    with patch("harness.execution.store.add_dirty_seconds") as add_dirty:
+        executor._simulate_order(None, row, DIRTY_MARKET, {}, set(), {}, set(),
+                                 at(30), ExecStats())
+    assert add_dirty.call_args_list == []
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="6B: the watched track is simulated to `now` (loop.py:852) while the "
+                          "no-watcher track is clamped to the expiry (loop.py:867)")
+def test_the_watched_track_takes_no_fill_after_expiry():
+    """Review I-c2 / addendum §0.5 case 5. Expected fill 0.
+
+    Computed independently: an order with an expiry of T0 + 10 s is off the market from T0 +
+    10 s. A print at T0 + 20 s happened after the order stopped existing, so nothing of ours
+    could have traded against it. The no-watcher track computes its own deadline as
+    `min(now, expiry)` (`harness/execution/loop.py:867`); the watched track is handed `now`
+    (`loop.py:852`, the `now` argument of the call spanning 850-852), so a print in the ten seconds between expiry and the loop instant fills an
+    order that is no longer there. Queue is 0 here so the print reaches us immediately.
+    """
+    base = BookState.from_levels("A", [[".30", "0"]], [[".60", "5"]], sid=SID, seq=1,
+                                 as_of=at(0), source="ws", anchor_id=1)
+    late = TapePrint("after-expiry", at(20), D(".30"), D(4), "no", "ws")
+    row = _order_row(expiry=at(10), queue_ahead_at_place=D(0), queue_remaining=D(0),
+                     nw_done=True)
+    executor, captured = _executor({"A": base})
+    with patch("harness.execution.store.update_order"):
+        executor._simulate_order(None, row, CLEAN_MARKET, {"A": base}, set(),
+                                 {"A": ([late], [])}, set(), at(30), ExecStats())
+    assert captured[0].state.filled_contracts == D(0)
