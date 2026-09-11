@@ -1458,3 +1458,17 @@ Times are America/Chicago.
 - Dispatches: 1 so far (T1 implementer sonnet)
 - Rulings: (1) standing: T6's deploy runs from `main` via the mid-phase path with fix 37's recipe, after the window query; trailers this session's. (2) T1 takes the last implementer slot now; T2, T4, T5 as fixes 42/43 free theirs - cost if wrong: wave 1 finishes about an hour later, inside the Friday-night window.
 - Next: T1 in flight; wakeup 22:45 CT (the Friday-night window checkpoint) armed at the next boundary
+
+## 122. hotfix - fix 37 merged to main, 6eb718a - 2026-09-11 14:51 CT
+
+- Orient: rule 1 - roadmap row 37 (U8: the deployment prerequisite for 40/41).
+- Branch / commits: `fix-37-deploy-plumbing` 20c8ef8..cf333a6 (implementation), round 1 1802b97; rebased onto main and merged `--ff-only` as d3665c3, 6eb718a; worktree and branch removed.
+- Result: done
+- Dispatches: 4 (impl sonnet; review sonnet x2, the first killed by the usage limit; re-review haiku)
+- Tests: 2,944 passed, pristine, on the branch at cf333a6 (the implementer's clean re-run); round 1 targeted 62 passed (Makefile text and a text-parsing test only, ruled the merge gate); an earlier run's three `test_housekeeping` failures were the shared-server `pg_database_size` timeout flake (identical to the 40/41 reviewer's at the same minute; the file passes alone). `make test` on `main` at 6eb718a is queued until fewer than three suites share the test server (four run now).
+- Review: 1 fix round (Important: the backup-precheck fallback's inner `exit 1` skipped the outer ABORT echo; every restore-then-exit branch now echoes its own ABORT and a test asserts it); 0 Minor.
+- Deploy: none yet - the wave (37 + 40/41, plus 42/43 when clean) deploys from `main` after its suite, before 17:45 CT after the window query, else in the Fri 23:00 CT window; target `make deploy-nas` (fix 42's revision 0006 needs `migrate ensure`; `WITH_WS=1` is the app-only recipe's flag, moot for the full recipe which recreates every service).
+- Verification: not run (after the deploy: the recipe's schema step under 10 s with no LockNotAvailable, executor downtime under 90 s, every container Up incl. app-research and app-ws on the new build)
+- Rulings: (1) the index-exists check widened to `relkind in ('i','I')` for partitioned indexes (the brief said 'i'; the test caught it) - cost if wrong: none. (2) Restore-on-failure uses `docker compose start` (old containers, old image), never `up -d` - cost if wrong: old code keeps running after a failed schema step, which is the pre-deploy state. (3) Round 1's targeted run stands as the merge gate (above) - cost if wrong: none.
+- Carried forward: none (row 37 reads merged)
+- Next: hotfix (42, 43 implementing), 6A T1 review (chased), 6C T1; main's suite; the wave deploy; wakeup 22:45 CT (cron 4d16b211)
