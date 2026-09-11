@@ -176,8 +176,8 @@ def _market_types_of(session: Session, rows: Sequence) -> dict[int, str]:
     return {r.id: r.market_type for r in session.execute(_MARKET_TYPES, {"ids": ids})}
 
 
-def _enqueue_veto(session: Session, row, now: datetime, market_types: dict[int, str]) -> None:
-    """One `veto_queue` row per intent this call wrote (addendum 0.2, ruling B-C1).
+def _queue_values(row, now: datetime, market_types: dict[int, str], minutes: int) -> dict:
+    """One `veto_queue` row's values for one intent this call wrote (addendum 0.2, ruling B-C1).
 
     One row per **signal**, never one per bucket: a unique index on the bucket key would refuse
     the second and later signals of a burst and their ids would never be persisted anywhere,
@@ -185,19 +185,23 @@ def _enqueue_veto(session: Session, row, now: datetime, market_types: dict[int, 
     moving line.
 
     `bucket_start` is a plain column with a partial index; the worker claims every unclaimed row
-    of a bucket at once.
+    of a bucket at once. Pure -- no session, no I/O -- so building the whole batch's values
+    cannot itself be the thing a savepoint has to guard against (fix round 2, I2).
     """
-    from harness.config.settings import get_settings
-    from harness.db.models import VetoQueue
     from harness.research.veto import bucket_start
 
-    minutes = get_settings().veto_bucket_minutes
-    session.execute(insert(VetoQueue).values(
-        signal_id=row.signal_id, game_id=row.game_id,
-        market_type=market_types.get(row.venue_market_id) or "unknown",
-        bucket_start=bucket_start(row.created_at, minutes),
-        enqueued_at=now, claimed_at=None,
-    ).on_conflict_do_nothing(index_elements=["signal_id"]))
+    return dict(signal_id=row.signal_id, game_id=row.game_id,
+               market_type=market_types.get(row.venue_market_id) or "unknown",
+               bucket_start=bucket_start(row.created_at, minutes),
+               enqueued_at=now, claimed_at=None)
+
+
+def _write_queue_batch(session: Session, queue_values: list[dict]) -> None:
+    """The whole batch's `veto_queue` rows, one insert."""
+    from harness.db.models import VetoQueue
+
+    session.execute(insert(VetoQueue).values(queue_values)
+                    .on_conflict_do_nothing(index_elements=["signal_id"]))
 
 
 def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool) -> int:
@@ -206,9 +210,13 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
     Phase 5 hangs the veto queue off this loop, because it is already exactly once per signal:
     the insert is `on conflict do nothing` on `signal_id` and only a returned row counts.
     """
+    from harness.config.settings import get_settings
+
     written = 0
     # Resolved lazily, so a loop whose candidates all conflict pays for no lookup at all.
     market_types: dict[int, str] | None = None
+    minutes = get_settings().veto_bucket_minutes
+    queue_values: list[dict] = []
     for row in rows:
         stmt = insert(Intent).values(
             signal_id=row.signal_id, variant_id=row.variant_id, venue=row.venue,
@@ -222,16 +230,23 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
         if session.execute(stmt).first() is not None:
             written += 1
             if not replay:
-                # Phase 5: the veto queue. Advisory and post-hoc -- a queue write must never cost
-                # the executor an intent, so it is guarded by a savepoint and its failure is a
-                # log line. A replay writes nothing: H9 is measured on live signals only.
-                try:
-                    if market_types is None:
-                        market_types = _market_types_of(session, rows)
-                    with session.begin_nested():
-                        _enqueue_veto(session, row, now, market_types)
-                except Exception:  # noqa: BLE001
-                    log.exception("veto enqueue failed for signal %s", row.signal_id)
+                # Phase 5: the veto queue. A replay writes nothing: H9 is measured on live
+                # signals only. Collected here and written once after the loop, in one savepoint
+                # (fix round 2, I2): `candidate_signals` has no LIMIT, so a recorder/executor gap
+                # can put well over sixty-four intents through this loop in one transaction, and
+                # PostgreSQL's `pg_subtrans` SLRU overflows past 64 subtransactions -- a cost
+                # every concurrent reader pays, cluster-wide, on a 2 GB Postgres. One savepoint
+                # around one batched insert buys the same isolation (a queue failure never costs
+                # an intent) at one subtransaction regardless of batch size.
+                if market_types is None:
+                    market_types = _market_types_of(session, rows)
+                queue_values.append(_queue_values(row, now, market_types, minutes))
+    if queue_values:
+        try:
+            with session.begin_nested():
+                _write_queue_batch(session, queue_values)
+        except Exception:  # noqa: BLE001
+            log.exception("veto enqueue failed for a batch of %d intent(s)", len(queue_values))
     return written
 
 

@@ -92,7 +92,7 @@ def test_the_enqueue_never_fails_the_executor(db_session, env_settings, seeded_c
     the executor an intent."""
     from harness.execution import store
 
-    monkeypatch.setattr(store, "_enqueue_veto",
+    monkeypatch.setattr(store, "_write_queue_batch",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert store.insert_intents(db_session, seeded_candidates, NOW, replay=False) > 0
     assert db_session.execute(text("select count(*) from intents")).scalar() == 3
@@ -131,19 +131,44 @@ def test_no_lookup_happens_when_nothing_is_written(db_session, env_settings, see
     assert calls == []
 
 
-def test_a_failed_enqueue_leaves_the_intent_committed(db_session, env_settings,
-                                                      seeded_candidates, monkeypatch):
-    """The guard is a savepoint, so the failed queue write rolls back on its own and the intent
-    that shares the transaction survives it."""
+def test_a_failed_enqueue_leaves_the_intents_committed(db_session, env_settings,
+                                                       seeded_candidates, monkeypatch):
+    """The guard is a savepoint, so the failed batched queue write rolls back on its own and
+    every intent that shares the transaction survives it."""
     from harness.execution import store
 
-    def _explode(session, row, now, market_types):
+    def _explode(session, queue_values):
+        row = queue_values[0]
         session.execute(text("insert into veto_queue (signal_id, market_type, bucket_start, "
                              "enqueued_at) values (:s, :m, :b, :n)"),
-                        {"s": row.signal_id, "m": market_types[row.venue_market_id],
-                         "b": bucket_start(row.created_at, 30), "n": now})
+                        {"s": row["signal_id"], "m": row["market_type"],
+                         "b": row["bucket_start"], "n": row["enqueued_at"]})
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(store, "_enqueue_veto", _explode)
+    monkeypatch.setattr(store, "_write_queue_batch", _explode)
     assert store.insert_intents(db_session, seeded_candidates, NOW, replay=False) == 3
+    assert db_session.execute(text("select count(*) from intents")).scalar() == 3
     assert db_session.execute(text("select count(*) from veto_queue")).scalar() == 0
+
+
+def test_the_whole_batch_is_written_under_one_savepoint(db_session, env_settings,
+                                                        seeded_candidates, monkeypatch):
+    """Fix round 2, I2: one savepoint around one batched insert of the whole queue-row list,
+    not one savepoint per intent -- a burst well past 64 candidates would otherwise overflow
+    PostgreSQL's `pg_subtrans` SLRU, which costs every concurrent reader cluster-wide."""
+    from harness.execution import store
+
+    calls: list[int] = []
+    real_begin_nested = db_session.begin_nested
+
+    def counting_begin_nested(*a, **k):
+        calls.append(1)
+        return real_begin_nested(*a, **k)
+
+    monkeypatch.setattr(db_session, "begin_nested", counting_begin_nested)
+    written = store.insert_intents(db_session, seeded_candidates, NOW, replay=False)
+    assert written == 3
+    assert len(calls) == 1, "one savepoint should cover the whole batch, not one per intent"
+    rows = db_session.execute(text(
+        "select signal_id from veto_queue order by signal_id")).scalars().all()
+    assert rows == sorted(row.signal_id for row in seeded_candidates)
