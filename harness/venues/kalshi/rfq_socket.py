@@ -38,7 +38,8 @@ import websocket
 from harness.execution.venue import (STATUS_OK, STATUS_UNAVAILABLE, mark_status,
                                      sanitize_venue_text)
 from harness.venues.kalshi.auth import sign_request
-from harness.venues.kalshi.rfq import CHANNEL, ENV, IDLE_S, VENUE, handle_frame, idle_reason
+from harness.venues.kalshi.rfq import (CHANNEL, DROP_NONFOOTBALL, ENV, IDLE_S, VENUE,
+                                       handle_frame, idle_reason)
 from harness.venues.kalshi.ws import RECV_TIMEOUT_S, is_stale, should_reconnect
 
 log = logging.getLogger(__name__)
@@ -65,8 +66,20 @@ RFQ_QUOTE_RATE_WINDOW_S = 60.0
 #: Fix 35 round 1 (review I3). A per-frame log line at burst volume (roughly 490 per reconnect
 #: in the incident) is itself a cost; this is how long a gap between frames must be before the
 #: listener treats a burst as over and logs one INFO summary (`replayed=<n> quoted=<n>
-#: skipped_rate=<n>`) instead of a line per frame.
+#: skipped_rate=<n>`, fix 38: plus the four boundary-filter counters) instead of a line per
+#: frame.
 RFQ_BURST_SILENCE_S = 5.0
+#: Fix 38 (journal 110): the flood that started this fix never goes quiet -- 11,000-14,000
+#: frames a minute sustained -- so a summary gated only on `RFQ_BURST_SILENCE_S` would never
+#: fire during exactly the traffic its counters exist to show. This is the other trigger: the
+#: summary also flushes after this long of continuous flow, so it logs at least once a minute
+#: (and at most once, per `_maybe_flush_burst_summary`'s own throttle) whether or not the
+#: connection ever goes quiet.
+RFQ_SUMMARY_PERIOD_S = 60.0
+#: Fix 38 (journal 110): the rate limiter itself flapped at the window boundary -- engage/release
+#: pairs 100 ms apart. The limit's own behaviour is unchanged; only how often each direction may
+#: *log* a transition is bounded, independently, to at most once per this many seconds.
+RFQ_RATE_LOG_COOLDOWN_S = 30.0
 #: The signed path of the WebSocket handshake, the same one the recorder signs.
 WS_SIGN_PATH = "/trade-api/ws/v2"
 
@@ -109,6 +122,21 @@ class RfqListener:
         #: rate window (`RFQ_QUOTE_RATE_MAX` per `RFQ_QUOTE_RATE_WINDOW_S`) had no room left --
         #: stored as an arrival like any other, never quoted.
         self.quotes_skipped_rate = 0
+        #: Fix 38 (journal 110): every frame that reached the boundary decision (an
+        #: `rfq_created` or `rfq_deleted`, whatever it turned out to be) -- the denominator
+        #: `frames_stored` is measured against.
+        self.frames_seen = 0
+        #: Fix 38: every frame that cleared the boundary filter and was written, replays and
+        #: unmatched deletes included -- the same event `self.arrivals` already counts, kept
+        #: under this name too since it is what the burst/periodic summary and the verify row
+        #: name.
+        self.frames_stored = 0
+        #: Fix 38: an `rfq_created` counted and dropped before `store_rfq` because no leg (and
+        #: not the RFQ's own top-level ticker) touched a football series.
+        self.dropped_nonfootball = 0
+        #: Fix 38: an `rfq_deleted` counted and dropped before `store_rfq` because its id was
+        #: never stored here -- the flood's other three quarters (journal 110).
+        self.dropped_unknown_delete = 0
         self._sid: int | None = None
         self._subscribed_at: float = 0.0
         self._timeouts = 0
@@ -116,16 +144,32 @@ class RfqListener:
         #: `compute_quote` attempts, oldest first -- `_try_quote` prunes anything older than
         #: `RFQ_QUOTE_RATE_WINDOW_S` before checking whether there is room for one more.
         self._quote_times: deque[float] = deque()
-        #: Whether the rate limit is currently engaged, so the WARNING/INFO pair logs once on
-        #: each transition rather than once per frame.
+        #: Whether the rate limit is currently engaged, so the WARNING/INFO pair logs only on an
+        #: actual transition rather than once per frame.
         self._rate_limited = False
+        #: Fix 38 (journal 110): each direction's transition log is *also* bounded to at most
+        #: once per `RFQ_RATE_LOG_COOLDOWN_S`, on top of the transition guard above -- the
+        #: incident's rate limiter flapped engage/release pairs 100 ms apart at the window
+        #: boundary, and a transition guard alone still logs every one of those (each flip is a
+        #: real transition). `float("-inf")` so the very first occurrence in each direction
+        #: always logs.
+        self._last_engage_log_at: float = float("-inf")
+        self._last_release_log_at: float = float("-inf")
         #: Fix 35 round 1 (review I3): a burst summary in place of a log line per replayed
         #: frame. Counts since the last flush; `_maybe_flush_burst_summary` logs and zeroes them
-        #: once `RFQ_BURST_SILENCE_S` has passed since the last frame this connection processed.
+        #: once `RFQ_BURST_SILENCE_S` has passed since the last frame this connection processed,
+        #: or (fix 38) once `RFQ_SUMMARY_PERIOD_S` has passed since the last flush, whichever
+        #: comes first -- a continuous flood never goes quiet, so the silence trigger alone would
+        #: never fire during exactly the traffic these counters exist to show.
         self._burst_replayed = 0
         self._burst_quoted = 0
         self._burst_skipped_rate = 0
+        self._burst_frames_seen = 0
+        self._burst_frames_stored = 0
+        self._burst_dropped_nonfootball = 0
+        self._burst_dropped_unknown_delete = 0
         self._burst_last_frame_at: float = 0.0
+        self._last_summary_at: float = 0.0
         # The signing clock offset, carried across reconnects. It only ever moves on a 401 that
         # came back with a usable `Date`; there is no HTTP client here to ask for the time.
         self._offset_ms = 0
@@ -204,9 +248,14 @@ class RfqListener:
         # so nothing about it resets here -- a connection that has been up for a while keeps
         # whatever headroom its last 60 s of `compute_quote` calls left it. The burst-summary
         # counters do reset: whatever a prior connection had not yet flushed is not this
-        # connection's story to tell.
+        # connection's story to tell. (Fix 38: the rate-log cooldowns are not reset here either,
+        # the same reason -- a reconnect inside `RFQ_RATE_LOG_COOLDOWN_S` of the last engage or
+        # release log is not a reason to log again immediately.)
         self._burst_replayed = self._burst_quoted = self._burst_skipped_rate = 0
+        self._burst_frames_seen = self._burst_frames_stored = 0
+        self._burst_dropped_nonfootball = self._burst_dropped_unknown_delete = 0
         self._burst_last_frame_at = self._monotonic()
+        self._last_summary_at = self._monotonic()
 
     # -- the loop ------------------------------------------------------------------------
 
@@ -259,18 +308,34 @@ class RfqListener:
         # Fix 35 round 1 (C1/I2): `_try_quote` is the sliding-window rate gate. It is called
         # from inside `handle_frame`, and only at the one point a quote would actually be
         # attempted -- a dedupe hit or an `rfq_deleted` frame never reaches it, so neither ever
-        # spends the budget.
+        # spends the budget. Fix 38: `_count_dropped` is the boundary filter's counter, called
+        # from inside `handle_frame` for a frame counted and dropped before `store_rfq`.
+        self.frames_seen += 1
+        self._burst_frames_seen += 1
         with self._factory() as session:
             row = handle_frame(session, msg, self._clock(), on_replay=self._count_replay,
-                               allow_quote=self._try_quote)
+                               allow_quote=self._try_quote, on_dropped=self._count_dropped)
             if row is not None:
                 session.commit()
                 self.arrivals += 1
+                self.frames_stored += 1
+                self._burst_frames_stored += 1
         return True
 
     def _count_replay(self) -> None:
         self.replayed += 1
         self._burst_replayed += 1
+
+    def _count_dropped(self, reason: str) -> None:
+        """Fix 38 (journal 110): a frame counted and dropped at the boundary, before
+        `store_rfq` -- never stored, never quoted, and (the whole point at flood volume) never
+        logged per frame. `reason` is `rfq.DROP_NONFOOTBALL` or `rfq.DROP_UNKNOWN_DELETE`."""
+        if reason == DROP_NONFOOTBALL:
+            self.dropped_nonfootball += 1
+            self._burst_dropped_nonfootball += 1
+        else:
+            self.dropped_unknown_delete += 1
+            self._burst_dropped_unknown_delete += 1
 
     def _try_quote(self) -> bool:
         """Fix 35 round 1 (C1/I2): whether `handle_frame` may run `compute_quote` right now --
@@ -278,6 +343,15 @@ class RfqListener:
         window rather than a per-connection counter. Called from inside `handle_frame` only when
         it has already determined this frame is not a dedupe hit, so neither a replay nor an
         `rfq_deleted` frame ever reaches here or spends any of the budget.
+
+        Fix 38 (journal 110): the engage/release log lines still fire only on an actual
+        transition (`self._rate_limited`, as before), but each direction's transition is now
+        *also* throttled to at most once per `RFQ_RATE_LOG_COOLDOWN_S`
+        (`_last_engage_log_at`/`_last_release_log_at`). The incident's rate limiter flapped --
+        engage/release pairs 100 ms apart at the window boundary -- and every one of those is a
+        real transition, so the transition guard alone still logged all of them; the cooldown is
+        what keeps the log quiet through a flapping burst without changing when the limit itself
+        engages or releases.
         """
         now = self._monotonic()
         window_start = now - RFQ_QUOTE_RATE_WINDOW_S
@@ -288,29 +362,50 @@ class RfqListener:
             self._burst_skipped_rate += 1
             if not self._rate_limited:
                 self._rate_limited = True
-                log.warning("rfq listener: quote rate limit engaged (%d compute_quote calls in "
-                           "the last %.0fs); rfq_created frames store only until it releases",
-                           RFQ_QUOTE_RATE_MAX, RFQ_QUOTE_RATE_WINDOW_S)
+                if now - self._last_engage_log_at >= RFQ_RATE_LOG_COOLDOWN_S:
+                    self._last_engage_log_at = now
+                    log.warning(
+                        "rfq listener: quote rate limit engaged (%d compute_quote calls in "
+                        "the last %.0fs); rfq_created frames store only until it releases",
+                        RFQ_QUOTE_RATE_MAX, RFQ_QUOTE_RATE_WINDOW_S)
             return False
         self._quote_times.append(now)
         self._burst_quoted += 1
         if self._rate_limited:
             self._rate_limited = False
-            log.info("rfq listener: quote rate limit released")
+            if now - self._last_release_log_at >= RFQ_RATE_LOG_COOLDOWN_S:
+                self._last_release_log_at = now
+                log.info("rfq listener: quote rate limit released")
         return True
 
     def _maybe_flush_burst_summary(self) -> None:
         """Fix 35 round 1 (I3): one INFO line per burst instead of one per replayed frame. A
         burst is "over" once `RFQ_BURST_SILENCE_S` has passed since the last frame this
         connection processed; there is nothing to say when nothing happened, so an all-zero
-        burst logs nothing."""
-        if not (self._burst_replayed or self._burst_quoted or self._burst_skipped_rate):
+        burst logs nothing.
+
+        Fix 38 (journal 110): the other trigger -- `RFQ_SUMMARY_PERIOD_S` since the last flush,
+        whichever of the two comes first. The flood that started this fix never goes quiet, so
+        the silence trigger alone would never fire while it was happening; this is what makes
+        the summary a heartbeat (at least once a minute) instead of something that only speaks
+        up once traffic has already stopped.
+        """
+        counts = (self._burst_replayed, self._burst_quoted, self._burst_skipped_rate,
+                 self._burst_frames_seen, self._burst_frames_stored,
+                 self._burst_dropped_nonfootball, self._burst_dropped_unknown_delete)
+        if not any(counts):
             return
-        if self._monotonic() - self._burst_last_frame_at < RFQ_BURST_SILENCE_S:
+        now = self._monotonic()
+        silent = (now - self._burst_last_frame_at) >= RFQ_BURST_SILENCE_S
+        due = (now - self._last_summary_at) >= RFQ_SUMMARY_PERIOD_S
+        if not (silent or due):
             return
-        log.info("rfq listener: replayed=%d quoted=%d skipped_rate=%d",
-                 self._burst_replayed, self._burst_quoted, self._burst_skipped_rate)
-        self._burst_replayed = self._burst_quoted = self._burst_skipped_rate = 0
+        log.info("rfq listener: replayed=%d quoted=%d skipped_rate=%d frames_seen=%d "
+                 "frames_stored=%d dropped_nonfootball=%d dropped_unknown_delete=%d", *counts)
+        (self._burst_replayed, self._burst_quoted, self._burst_skipped_rate,
+        self._burst_frames_seen, self._burst_frames_stored, self._burst_dropped_nonfootball,
+        self._burst_dropped_unknown_delete) = (0, 0, 0, 0, 0, 0, 0)
+        self._last_summary_at = now
 
     def _on_timeout(self) -> bool:
         """Silence. Two ways it is fatal to this socket and one way it is nothing.

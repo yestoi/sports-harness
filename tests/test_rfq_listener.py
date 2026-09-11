@@ -10,9 +10,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import Rfq
-from harness.venues.kalshi.rfq import (CHANNEL, ENV, EXCERPT_MAX, IDLE_ERROR_CODES, IDLE_S,
-                                       RAW_MAX_BYTES, VENUE, handle_frame, idle_reason,
-                                       parse_rfq_frame, store_rfq)
+from harness.venues.kalshi.rfq import (CHANNEL, DROP_NONFOOTBALL, DROP_UNKNOWN_DELETE, ENV,
+                                       EXCERPT_MAX, IDLE_ERROR_CODES, IDLE_S, RAW_MAX_BYTES,
+                                       VENUE, handle_frame, idle_reason, parse_rfq_frame,
+                                       store_rfq)
 from harness.venues.kalshi.rfq_socket import SUBSCRIBE_ID, RfqListener
 
 NOW = datetime(2026, 9, 15, 18, 0, tzinfo=timezone.utc)
@@ -37,6 +38,23 @@ def _deleted(rfq_id="rfq_1"):
     return {"type": "rfq_deleted", "sid": 7, "msg": {
         "id": rfq_id, "creator_id": "anon", "market_ticker": "KXNFLGAME-26SEP14DALNYG-DAL",
         "deleted_ts": 1789003600}}
+
+
+def _non_football_created(rfq_id="rfq_nf"):
+    """Fix 38 (journal 110): the incident's own shape -- a combo whose top-level ticker is a
+    synthetic MVE collection id, not a priced series, and whose legs are all on
+    `KXMVECROSSCATEGORY-SHARD*`, a series this harness never prices at all."""
+    return {"type": "rfq_created", "sid": 7, "msg": {
+        "id": rfq_id, "creator_id": "", "market_ticker": "KXMVECROSSCATEGORY-SHARD1-X",
+        "event_ticker": "KXMVECROSSCATEGORY-SHARD1", "created_ts": 1789000000,
+        "mve_collection_ticker": "MVE-X-1",
+        "mve_selected_legs": [
+            {"event_ticker": "KXMVECROSSCATEGORY-SHARD1-A",
+             "market_ticker": "KXMVECROSSCATEGORY-SHARD1-A-YES", "side": "yes",
+             "yes_settlement_value_dollars": "1.0000"},
+            {"event_ticker": "KXMVECROSSCATEGORY-SHARD2-B",
+             "market_ticker": "KXMVECROSSCATEGORY-SHARD2-B-YES", "side": "yes",
+             "yes_settlement_value_dollars": "1.0000"}]}}
 
 
 # --- parsing -------------------------------------------------------------------------------
@@ -90,17 +108,88 @@ def test_a_delete_marks_the_existing_row(db_session, env_settings):
     assert row.received_at == NOW      # the arrival time is not overwritten
 
 
-def test_a_delete_for_an_unseen_rfq_writes_its_own_row(db_session):
-    """Quotes have not been queryable after the fact since 2026-06-25 (F71), so the socket is
-    the only record: a delete we saw and a create we missed is still an arrival."""
-    row = handle_frame(db_session, _deleted("rfq_never_seen"), NOW)
-    assert row.status == "deleted"
+def test_a_delete_for_an_unseen_rfq_is_dropped_without_a_write(db_session):
+    """Fix 38 (journal 110): three quarters of the incident's flood was `rfq_deleted` frames,
+    almost all for combos this listener never stored in the first place (no football leg, or
+    arrived before the listener was ever turned on). A delete for an id with no row here is now
+    counted and dropped, not written -- the pre-fix-38 behaviour (F71: "the socket is the only
+    record, so write it anyway") is exactly the incident's other three quarters."""
+    dropped = []
+    row = handle_frame(db_session, _deleted("rfq_never_seen"), NOW, on_dropped=dropped.append)
+    assert row is None
+    assert dropped == [DROP_UNKNOWN_DELETE]
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 0
+
+
+def test_a_delete_for_a_stored_rfq_still_applies(db_session, env_settings):
+    """The other half of the same rule: a delete for an id `handle_frame` already stored is
+    applied as before, not dropped."""
+    handle_frame(db_session, _created(), NOW)
+    row = handle_frame(db_session, _deleted(), NOW + timedelta(minutes=5))
+    assert row is not None and row.status == "deleted"
 
 
 def test_a_repeated_create_does_not_duplicate(db_session, env_settings):
     handle_frame(db_session, _created(), NOW)
     handle_frame(db_session, _created(), NOW + timedelta(seconds=1))
     assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
+
+
+# --- fix 38: the boundary filter (journal 110) -----------------------------------------------
+
+def test_a_non_football_rfq_created_is_counted_and_not_stored(db_session):
+    """The incident's own shape: a combo with no football leg at all is counted and dropped
+    before `store_rfq` -- never written, never quoted."""
+    dropped = []
+    row = handle_frame(db_session, _non_football_created(), NOW, on_dropped=dropped.append)
+    assert row is None
+    assert dropped == [DROP_NONFOOTBALL]
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 0
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 0
+
+
+def test_a_football_leg_combo_is_stored_and_quoted_as_before(db_session, env_settings):
+    """The ordinary case, unaffected: every leg is `KXNFLGAME`, so the filter passes it straight
+    through to storage and the quote path exactly as before fix 38."""
+    dropped = []
+    row = handle_frame(db_session, _created(), NOW, on_dropped=dropped.append)
+    assert row is not None and dropped == []
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 1
+
+
+def test_a_combo_with_one_football_leg_and_one_non_football_leg_still_stores(db_session,
+                                                                             env_settings):
+    """Fix 38's filter is 'at least one leg', not 'every leg' -- the stronger, all-legs test is
+    `rfq_quote.py`'s own `no_fair` decline (fix 35), downstream and unaffected by this fix. A
+    mixed combo still reaches storage here, top-level ticker deliberately non-football too, so
+    only the leg-level check can be what lets it through; `compute_quote` is what later declines
+    it, not the boundary filter."""
+    frame = _created(rfq_id="rfq_mixed", legs=[
+        {"event_ticker": "KXNFLGAME-26SEP14DALNYG",
+         "market_ticker": "KXNFLGAME-26SEP14DALNYG-DAL", "side": "yes",
+         "yes_settlement_value_dollars": "1.0000"},
+        {"event_ticker": "KXMVECROSSCATEGORY-SHARD1",
+         "market_ticker": "KXMVECROSSCATEGORY-SHARD1-A", "side": "yes",
+         "yes_settlement_value_dollars": "1.0000"}])
+    frame["msg"]["event_ticker"] = "KXMVECROSSCATEGORY-SHARD1"
+    dropped = []
+    row = handle_frame(db_session, frame, NOW, on_dropped=dropped.append)
+    assert row is not None and dropped == []
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 1
+
+
+def test_a_non_football_single_market_rfq_is_dropped(db_session):
+    """No `mve_selected_legs` at all -- a single-market RFQ, not a combo -- is checked against
+    its own top-level ticker, the only market it names: non-football drops it exactly as a combo
+    would."""
+    frame = _created(rfq_id="rfq_single_nf", legs=[])
+    frame["msg"]["event_ticker"] = "KXMVECROSSCATEGORY-SHARD1"
+    frame["msg"]["market_ticker"] = "KXMVECROSSCATEGORY-SHARD1-A"
+    dropped = []
+    row = handle_frame(db_session, frame, NOW, on_dropped=dropped.append)
+    assert row is None and dropped == [DROP_NONFOOTBALL]
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 0
 
 
 # --- fix 35: cheap quotes -------------------------------------------------------------------
@@ -180,7 +269,11 @@ def test_allow_quote_is_never_called_for_a_dedupe_hit(db_session, env_settings):
 
 def test_allow_quote_is_never_called_for_an_rfq_deleted_frame(db_session, env_settings):
     """C1's exact fix, the other half: a delete never reaches the quote decision at all, so it
-    must never reach `allow_quote` either."""
+    must never reach `allow_quote` either. (Fix 38: the id has to be stored first -- a delete
+    for an id never stored is now dropped at the boundary before this decision is even in play,
+    covered separately by `test_a_delete_for_an_unseen_rfq_is_dropped_without_a_write`.)"""
+    handle_frame(db_session, _created(rfq_id="rfq_delete_gate"), NOW)
+
     def _boom():
         raise AssertionError("allow_quote was called for an rfq_deleted frame")
 
@@ -417,6 +510,35 @@ def test_the_rate_limit_engages_then_releases_once_the_window_slides(db_session,
     assert len(released) == 1
 
 
+def test_the_rate_limit_log_flapping_is_bounded_to_two_lines(db_session, env_settings,
+                                                              monkeypatch, caplog):
+    """Fix 38 (journal 110): the incident's rate limiter flapped -- engage/release pairs
+    100 ms apart at the window boundary. Ten such flips inside about a second must not produce
+    ten log lines: each direction logs a transition at most once per `RFQ_RATE_LOG_COOLDOWN_S`
+    (cap 1, window 0.05s here so the flapping is reproducible without a real sleep), so the
+    burst logs exactly two lines total -- the first engage and the first release -- and stays
+    quiet through the rest. The limit's own behaviour (when a call is turned away) is
+    unaffected; only how often a transition may log is bounded."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    monkeypatch.setattr(rfq_socket_mod, "RFQ_QUOTE_RATE_MAX", 1)
+    monkeypatch.setattr(rfq_socket_mod, "RFQ_QUOTE_RATE_WINDOW_S", 0.05)
+    clock = [2_000.0]
+    listener = _listener(db_session, env_settings, ws=None, monotonic=lambda: clock[0])
+
+    with caplog.at_level(logging.INFO, logger=RFQ_SOCKET_LOGGER):
+        for _ in range(10):
+            listener._try_quote()      # fills the one-slot window: not yet over cap
+            clock[0] += 0.01           # still inside the window
+            listener._try_quote()      # the window's second occupant: over cap -> engaged
+            clock[0] += 0.06           # past the window: the next pair starts released again
+    lines = [r for r in caplog.records if r.name == RFQ_SOCKET_LOGGER
+            and ("rate limit engaged" in r.message or "rate limit released" in r.message)]
+    assert len(lines) == 2
+    assert sum("engaged" in r.message for r in lines) == 1
+    assert sum("released" in r.message for r in lines) == 1
+
+
 def test_the_burst_summary_logs_once_after_silence_not_once_per_frame(db_session, env_settings,
                                                                        caplog):
     """Review I3: `replayed=<n> quoted=<n> skipped_rate=<n>` logs once, `RFQ_BURST_SILENCE_S`
@@ -447,6 +569,68 @@ def test_the_burst_summary_logs_once_after_silence_not_once_per_frame(db_session
                 if r.name == RFQ_SOCKET_LOGGER and "replayed=" in r.message]
     assert len(summaries) == 1
     assert "replayed=1 quoted=2 skipped_rate=0" in summaries[0].message
+
+
+def test_the_burst_summary_carries_the_four_new_counters(db_session, env_settings, caplog):
+    """Fix 38 (journal 110): `frames_seen`, `frames_stored`, `dropped_nonfootball` and
+    `dropped_unknown_delete` ride the same one-per-burst summary the replayed/quoted/
+    skipped_rate trio already used -- one stored frame, one non-football drop and one
+    unknown-delete drop, each counted once."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    stored_frame = _created(rfq_id="rfq_summary_stored", legs=[])
+    nonfootball_frame = _non_football_created("rfq_summary_nf")
+    unknown_delete_frame = _deleted("rfq_summary_never_seen")
+    clock = [8_000.0]
+    frames = ([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}]
+             + [stored_frame, nonfootball_frame, unknown_delete_frame])
+    ws = FakeWs(frames)
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    with caplog.at_level(logging.INFO, logger=RFQ_SOCKET_LOGGER):
+        listener.run_once(ws)      # the ack
+        listener.run_once(ws)      # stored
+        listener.run_once(ws)      # dropped: nonfootball
+        listener.run_once(ws)      # dropped: unknown delete
+        clock[0] += rfq_socket_mod.RFQ_BURST_SILENCE_S + 1
+        ws._frames.append({"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 99}})
+        listener.run_once(ws)      # any next frame triggers the pending flush
+    summaries = [r for r in caplog.records
+                if r.name == RFQ_SOCKET_LOGGER and "replayed=" in r.message]
+    assert len(summaries) == 1
+    message = summaries[0].message
+    assert "frames_seen=3" in message
+    assert "frames_stored=1" in message
+    assert "dropped_nonfootball=1" in message
+    assert "dropped_unknown_delete=1" in message
+    assert (listener.frames_seen, listener.frames_stored) == (3, 1)
+    assert (listener.dropped_nonfootball, listener.dropped_unknown_delete) == (1, 1)
+
+
+def test_the_burst_summary_also_flushes_periodically_during_continuous_flow(db_session,
+                                                                            env_settings,
+                                                                            monkeypatch, caplog):
+    """Fix 38 (journal 110): the flood that started this fix never goes quiet -- silence alone
+    would never flush the summary while it was happening. `RFQ_SUMMARY_PERIOD_S` since the last
+    flush is the other trigger (monkeypatched small here), so a connection that never stops
+    receiving frames -- each one well under `RFQ_BURST_SILENCE_S` after the last -- still logs a
+    heartbeat instead of staying dark until the flow eventually stops."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    monkeypatch.setattr(rfq_socket_mod, "RFQ_SUMMARY_PERIOD_S", 3.0)
+    clock = [9_000.0]
+    ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}])
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    with caplog.at_level(logging.INFO, logger=RFQ_SOCKET_LOGGER):
+        listener.run_once(ws)      # the ack; no counters yet, nothing to flush
+        for i in range(6):
+            ws._frames.append(_created(rfq_id=f"rfq_periodic_{i}", legs=[]))
+            clock[0] += 1.0        # well under RFQ_BURST_SILENCE_S (5s) -- never silent
+            listener.run_once(ws)
+    summaries = [r for r in caplog.records
+                if r.name == RFQ_SOCKET_LOGGER and "replayed=" in r.message]
+    assert len(summaries) >= 1
 
 
 def test_a_quote_event_is_counted_and_dropped(db_session, env_settings):

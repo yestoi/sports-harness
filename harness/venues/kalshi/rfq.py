@@ -5,6 +5,13 @@ contains nothing that could send anything at all, and `tests/test_rfq_refusal.py
 statically. That is the whole of conformance item 5 for this component: not "we chose not to
 quote" but "there is nothing here that could".
 
+**Storage is on arrival, but only for a frame that clears the boundary filter** (fix 38, journal
+110). The venue's `communications` channel is every RFQ create and delete on the exchange, not
+the sporadic combo trickle earlier phases assumed -- 11,000-14,000 frames a minute sustained,
+almost all on combos with no football leg. `handle_frame` counts and drops those, and an
+`rfq_deleted` for an id never stored, before either ever reaches `store_rfq`; see its docstring
+for the exact rule. What follows in this docstring is about the frame that does get stored.
+
 **Storage is on arrival** (R:243, F71). Quotes have not been queryable after the fact since
 2026-06-25, so the socket is the only record and the row is written the moment the frame lands.
 `rfqs.raw` holds the whole `msg`, capped at 8 KB with a `truncated` flag, because the report
@@ -34,6 +41,7 @@ from sqlalchemy.orm import Session
 
 from harness.db.models import Rfq
 from harness.execution.venue import sanitize_venue_text
+from harness.venues.kalshi.public import FOOTBALL_SERIES
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +107,46 @@ class RfqEvent:
     mve_collection_ticker: str | None
     legs: list[dict]
     raw: dict
+
+
+#: Fix 38 (journal 110): the two reasons a frame is counted and dropped at the boundary, before
+#: `store_rfq` ever runs. Passed to `handle_frame`'s `on_dropped` callback so a caller counting
+#: them (the listener) never has to duplicate the decision.
+DROP_NONFOOTBALL = "nonfootball"
+DROP_UNKNOWN_DELETE = "unknown_delete"
+
+
+def _series_ticker(event_ticker: str | None) -> str:
+    """The series prefix of a venue event ticker: the segment before the first `-`, the same
+    derivation `harness/venues/kalshi/public.py`'s `MarketSummary.series_ticker` uses
+    (`event_ticker.split("-")[0]`). Deliberately not a `venue_markets` lookup: the boundary
+    filter below has no session and runs ahead of every write, at 11,000-14,000 frames a minute
+    (journal 110) -- a per-leg DB probe here is exactly the cost fix 35 already removed from the
+    quote path, reintroduced one step earlier."""
+    return (event_ticker or "").split("-", 1)[0]
+
+
+def _has_football_leg(event: RfqEvent) -> bool:
+    """Fix 38: whether this arrival touches a football market at all -- checked at the boundary,
+    before anything is written. `harness.venues.kalshi.public.FOOTBALL_SERIES` is the one place
+    the six series this harness prices are named, the same membership fix 35's `_is_football`
+    (`harness/venues/kalshi/rfq_quote.py`) gates the counterfactual quote on; this checks it
+    against the ticker string rather than a `venue_markets` row, since there is no session at
+    this point and nothing here may cost a DB round trip per leg.
+
+    Both the RFQ's own top-level `event_ticker` and every leg's count: a single-market RFQ (no
+    `mve_selected_legs`) is not a combo and carries no legs at all, and its top-level ticker is
+    the only market it names, so checking legs alone would drop every single-market arrival
+    regardless of what it is on. A combo's top-level ticker is typically its MVE collection id
+    rather than any priced series (the incident's own `KXMVECROSSCATEGORY-SHARD1-...` shape), so
+    for a combo this check degrades to exactly "at least one leg is football" -- the incident's
+    own rule (journal 110: "when at least one leg's event_ticker belongs to
+    ... FOOTBALL_SERIES"). A combo with even one football leg still passes here and is stored
+    and quoted (or declined `no_fair`, `single_leg`, etc.) downstream exactly as before; only a
+    combo -- or single market -- touching no football series at all is dropped.
+    """
+    tickers = [event.event_ticker] + [leg.get("event_ticker") for leg in event.legs]
+    return any(_series_ticker(t) in FOOTBALL_SERIES for t in tickers if t)
 
 
 def _dec(value, quantum: Decimal, ceiling: Decimal) -> Decimal | None:
@@ -327,8 +375,13 @@ def store_rfq(session: Session, event: RfqEvent, now: datetime) -> Rfq:
     The first frame for an id writes the row and the rest never rewrite it: `received_at` is the
     arrival timestamp H5's latency reads, and a repeated `rfq_created` is the same arrival seen
     twice, not a second one. A `rfq_deleted` is the exception, because it carries the one fact
-    the create could not: that the RFQ is gone. A delete for an RFQ whose create we missed
-    writes its own row -- the socket is the only record there is (F71).
+    the create could not: that the RFQ is gone.
+
+    Fix 38: this primitive still upserts either way -- a `rfq_deleted` for an id with no row
+    here would happily create one, the F71 behaviour this had before fix 38. The guard against
+    that (three quarters of the incident's flood, journal 110) lives one level up, in
+    `handle_frame`, which never calls this at all for a delete whose id is not already stored:
+    that frame is counted (`DROP_UNKNOWN_DELETE`) and dropped before it reaches here.
     """
     row = session.get(Rfq, event.rfq_id)
     if row is None:
@@ -348,8 +401,10 @@ def store_rfq(session: Session, event: RfqEvent, now: datetime) -> Rfq:
 
 def handle_frame(session: Session, msg, now: datetime,
                  on_replay: Callable[[], None] | None = None,
-                 allow_quote: Callable[[], bool] | None = None) -> Rfq | None:
-    """One frame. Returns the stored row, or None when the frame was not an RFQ event.
+                 allow_quote: Callable[[], bool] | None = None,
+                 on_dropped: Callable[[str], None] | None = None) -> Rfq | None:
+    """One frame. Returns the stored row, or None when the frame was not an RFQ event, or was
+    one but was dropped at the boundary.
 
     The counterfactual quote is computed **on arrival**, beside the row, because that is the only
     moment the leg fair values are the ones we would actually have quoted against. It is stored
@@ -360,6 +415,18 @@ def handle_frame(session: Session, msg, now: datetime,
     savepoint, so anything it raises rolls back only the quote attempt -- never the `rfqs` row
     already written above, and never out of this function to take the caller's socket loop down
     with it. The row is returned either way.
+
+    **Fix 38 (journal 110): the boundary filter.** The venue's `communications` channel is every
+    RFQ create and delete on the exchange -- 11,000-14,000 frames a minute sustained, three
+    quarters `rfq_deleted`, almost all on combos with no football leg. Neither kind reaches
+    `store_rfq` unless it clears its own cheap, DB-free check first: an `rfq_created` only when
+    `_has_football_leg` finds at least one leg (or the RFQ's own top-level ticker, for a
+    single-market RFQ) on a series `store_rfq`'s caller actually prices; an `rfq_deleted` only
+    when its id is already a row here (`session.get`, the same primary-key probe `store_rfq`
+    itself makes). Either drop is counted through `on_dropped` (`DROP_NONFOOTBALL` /
+    `DROP_UNKNOWN_DELETE`) and never logged per frame -- at flood volume a log line per drop is
+    the same cost this filter exists to remove. The raw cap and NUL stripping from T13 still
+    apply to whatever does get stored; nothing about parsing or trimming changes.
 
     **Fix 35, item 2: never recompute a quote already held.** The venue replays the whole open
     RFQ set on every subscribe (journal 109: ten reconnects, 4,902 frames, in the 03:15-03:45 CT
@@ -380,6 +447,16 @@ def handle_frame(session: Session, msg, now: datetime,
     event = parse_rfq_frame(msg)
     if event is None:
         return None
+    if event.kind == "rfq_created":
+        if not _has_football_leg(event):
+            if on_dropped is not None:
+                on_dropped(DROP_NONFOOTBALL)
+            return None
+    else:   # rfq_deleted
+        if session.get(Rfq, event.rfq_id) is None:
+            if on_dropped is not None:
+                on_dropped(DROP_UNKNOWN_DELETE)
+            return None
     row = store_rfq(session, event, now)
     if event.kind == "rfq_created":
         existing = session.execute(
