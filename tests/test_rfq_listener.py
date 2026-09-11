@@ -782,6 +782,100 @@ def test_the_dropped_socket_is_followed_by_a_fresh_subscribe(db_session, env_set
     assert ws.sent[1]["params"] == {"channels": [CHANNEL]}
 
 
+def test_repeated_code_25_laps_escalate_the_backoff(db_session, env_settings, tmp_path):
+    """Round 1 (review I1): the subscribe ack sets `_backoff` back to 1 s, and the incident's
+    order was ack, replay burst, code 25 -- so without a floor of its own, a venue that
+    overflows this subscription on every connection gets a handshake and a ~4,900-frame replay
+    every second, forever. Three laps of exactly that sequence must sleep longer each time."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    key_id, key_pem = tmp_path / "key_id", tmp_path / "key.pem"
+    key_id.write_text("unused")
+    key_pem.write_bytes(b"unused")
+    settings = env_settings.model_copy(update={"kalshi_key_id_file": key_id,
+                                               "kalshi_private_key_file": key_pem})
+    sleeps = []
+    listener = None
+
+    def factory(url, **kwargs):
+        return FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 1}},
+                       {"type": "error", "sid": 1,
+                        "msg": {"code": 25, "msg": "Subscription buffer overflow"}}])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            listener.stop()
+
+    listener = RfqListener(settings, sessionmaker(bind=db_session.get_bind()),
+                           ws_factory=factory, clock=lambda: NOW, sleep=sleep,
+                           sign=lambda *_a, **_k: {}, monotonic=lambda: 60_000.0)
+    listener.run_forever()
+    assert len(sleeps) == 3
+    assert sleeps[0] < sleeps[1] < sleeps[2]
+    assert sleeps[0] >= rfq_socket_mod.RFQ_RESUBSCRIBE_BACKOFF_S
+
+
+def test_a_forced_resubscribe_long_after_the_last_one_starts_at_the_floor(db_session,
+                                                                          env_settings):
+    """The other half of the escalation: it is forgotten by time. Two overflows
+    `RFQ_FORCED_BACKOFF_DECAY_S` apart are two incidents, not a loop, and the second must not
+    inherit the first's penalty -- otherwise a listener that sees one code 25 an hour would
+    climb to the ceiling and stay there."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    clock = [70_000.0]
+    listener = _listener(db_session, env_settings, ws=None, monotonic=lambda: clock[0])
+    listener._escalate_backoff()
+    first = listener._forced_backoff
+    listener._escalate_backoff()
+    assert listener._forced_backoff > first          # back to back: it climbs
+    clock[0] += rfq_socket_mod.RFQ_FORCED_BACKOFF_DECAY_S + 1
+    listener._escalate_backoff()
+    assert listener._forced_backoff == first         # long after: back to the floor
+
+
+def test_a_frame_of_an_unknown_type_does_not_count_as_data(db_session, env_settings, caplog):
+    """Round 1 (review I2): the data window tracks `rfq_created`/`rfq_deleted`, not "a frame
+    arrived". A venue emitting frames of some other type -- which `parse_rfq_frame` rejects and
+    never stores -- must not hold the watchdog off while the subscription delivers nothing."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    clock = [80_000.0]
+    unknown = {"type": "market_lifecycle_v2", "sid": 7, "msg": {"anything": 1}}
+    ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}, unknown, unknown])
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    listener.run_once(ws)                            # the ack: the last real data
+    clock[0] += rfq_socket_mod.RFQ_DATA_IDLE_S - 1
+    assert listener.run_once(ws) is True             # an unknown frame, inside the window
+    clock[0] += 2                                    # ... which it must not have restarted
+    with caplog.at_level(logging.WARNING, logger=RFQ_SOCKET_LOGGER):
+        assert listener.run_once(ws) is False
+    assert any("no rfq data" in r.message for r in caplog.records
+               if r.name == RFQ_SOCKET_LOGGER)
+    assert listener.frames_seen == 2                 # both were seen, neither was data
+
+
+def test_an_unacked_subscribe_under_pings_reconnects_at_the_ack_window(db_session, env_settings,
+                                                                       caplog):
+    """Round 1 (review M1): the ack window lived only in `_on_timeout`, and a venue sending
+    keepalives is a venue whose `recv` never times out -- so a subscribe that was never acked
+    waited 900 s for the data watchdog instead of 15 s for `should_reconnect`."""
+    ws = PingWs([], pings=2)                         # no ack ever arrives, only pings
+    clock = [90_000.0]
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    assert listener.run_once(ws) is True             # a ping, inside the ack window
+    listener._subscribed_at -= 3600                  # ... and now past it
+    with caplog.at_level(logging.WARNING, logger=RFQ_SOCKET_LOGGER):
+        assert listener.run_once(ws) is False
+    assert any("no subscribe ack" in r.message for r in caplog.records
+               if r.name == RFQ_SOCKET_LOGGER)
+    assert listener._sid is None                     # never acked, and the data watchdog never
+    assert not listener._data_idle_logged            # got a say: 15 s, not 900 s
+
+
 def test_a_ping_reaches_the_loop_and_is_not_data(db_session, env_settings):
     """The mechanism half of fix 44: a ping must be a loop iteration, not something the socket
     library absorbs. It keeps the socket (returns True) and counts as no data at all."""

@@ -76,8 +76,10 @@ RESUBSCRIBE_ERROR_CODES = frozenset({25})
 
 #: The two frame types that are ours. `QuoteCreated`, `QuoteAccepted` and `QuoteExecuted` are
 #: sent only to a quote's creator or an RFQ's creator, so a listener that never quotes receives
-#: none; if one arrives it is counted and dropped by the connection module.
-_RFQ_TYPES = ("rfq_created", "rfq_deleted")
+#: none; if one arrives it is counted and dropped by the connection module. Public since fix 44
+#: round 1 (review I2): the connection module reads it too, because "the subscription delivered
+#: data" has to mean one of exactly these two and not merely "a frame arrived".
+RFQ_TYPES = ("rfq_created", "rfq_deleted")
 
 #: Every identifier column on `rfqs` is `String(64)`.
 _ID_MAX = 64
@@ -363,7 +365,7 @@ def parse_rfq_frame(msg) -> RfqEvent | None:
     if not isinstance(msg, dict):
         return None
     kind = msg.get("type")
-    if kind not in _RFQ_TYPES:
+    if kind not in RFQ_TYPES:
         return None
     body = msg.get("msg")
     if not isinstance(body, dict):
@@ -562,4 +564,8 @@ def resubscribe_reason(error_msg: dict | None, sid: int | None) -> str | None:
         return None
     body = error_msg.get("msg")
     detail = body.get("msg") if isinstance(body, dict) else ""
-    return sanitize_venue_text(f"frame {code}: {detail}", EXCERPT_MAX)
+    # Round 1 (review M2): cut before sanitizing. `sanitize_venue_text` truncates last, so
+    # handing it the venue's unbounded string means three per-character passes over all of it
+    # to keep 120 characters. The slice is deliberately wider than `EXCERPT_MAX` -- escaping
+    # can lengthen what survives, and the sanitizer still makes the final cut.
+    return sanitize_venue_text(f"frame {code}: {str(detail)[:4 * EXCERPT_MAX]}", EXCERPT_MAX)
