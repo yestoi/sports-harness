@@ -241,14 +241,31 @@ def _grade(output: dict | None, snippets: dict) -> tuple[str, object, str | None
 
 
 def _clamp_confidence(value):
-    """`confidence` into [0, 1] (fix 39): the schema's own `minimum`/`maximum` are not in the
-    structured-output subset the API accepts, so a model that returns an out-of-range number is
-    clamped here, before `_grade` or `_record`'s own `_confidence` (the `Numeric(6,4)`
-    conversion) ever sees it. Left untouched when the model did not return a number at all --
-    `_confidence`'s own conversion already turns that into a stored `None`, exactly as before."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return value
-    return max(0.0, min(1.0, float(value)))
+    """`confidence` into [0, 1], or `None` (fix 39 round 1, review Important 1).
+
+    The schema's own `minimum`/`maximum` are not in the structured-output subset the API
+    accepts, so an out-of-range or off-contract `confidence` has to be handled entirely here,
+    before `_grade` or `_record`'s own `_confidence` (the `Numeric(6,4)` conversion) ever sees
+    it. Accepts an `int`, a `float`, or a numeric string (`Decimal(str(value))`, so `"5"` and
+    `"0.62"` clamp exactly like the numbers they name -- the schema still states `"type":
+    "number"`, but an off-contract reply can still arrive as text). Everything else becomes
+    `None`: a non-numeric string, `None` itself, a `NaN` or infinite float, and a `bool` --
+    excluded on purpose even though `Decimal(str(True))` would raise on its own, since Python's
+    `bool` is an `int` subtype and `isinstance(True, (int, float))` is otherwise true. The first
+    cut of this function returned a non-numeric value (a string, a bool) unchanged on the claim
+    that `_confidence`'s own conversion already turned it into a stored `None` -- true for a
+    bool and for `"high"`, but not for a numeric string, which `_confidence` converts and stores
+    in range, out-of-range value and all.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not decimal_value.is_finite():
+        return None
+    return float(max(Decimal("0"), min(Decimal("1"), decimal_value)))
 
 
 def _sanitized(result):
@@ -263,7 +280,14 @@ def _sanitized(result):
     output["confidence"] = _clamp_confidence(output.get("confidence"))
     evidence_ids = output.get("evidence_ids")
     if isinstance(evidence_ids, list):
-        output["evidence_ids"] = evidence_ids[:VETO_EVIDENCE_IDS_MAX]
+        # Review Important 2: non-`str` elements used to survive the cap and reach `_grade`'s
+        # `item in known` against a `set` (`known` below), which raises `TypeError` on an
+        # unhashable item (a dict, a list) rather than simply failing to match -- crashing the
+        # pass after the paired call has already been made and paid for. Dropped here, before
+        # the cap, so the count that survives to `VETO_EVIDENCE_IDS_MAX` is of ids that can
+        # actually be compared.
+        output["evidence_ids"] = [item for item in evidence_ids
+                                  if isinstance(item, str)][:VETO_EVIDENCE_IDS_MAX]
     return type(result)(**{**result.__dict__, "output": output})
 
 

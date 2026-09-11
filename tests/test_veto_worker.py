@@ -13,8 +13,8 @@ from sqlalchemy import text
 from harness.db.models import Intent, OrderEvent
 from harness.research.client import CallResult, parse_response
 from harness.research.spend import Usage
-from harness.research.veto import (DECIDED, DECISIONS, STALE_CLAIM, _grade, claim_bucket,
-                                   veto_pass)
+from harness.research.veto import (DECIDED, DECISIONS, STALE_CLAIM, _clamp_confidence, _grade,
+                                   claim_bucket, veto_pass)
 from tests.veto_fixtures import enqueue, seed_game, seed_history, seed_signal, seed_weather
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -512,6 +512,69 @@ def test_evidence_ids_are_capped_at_eight(db_session, env_settings, queued_bucke
         "where model = 'claude-opus-5'")).scalar()
     assert stored == many_ids[:8]
     assert len(stored) == 8
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("5", 1.0), ("0.62", 0.62), ("-3", 0.0), ("abc", None), (True, None), (False, None),
+    (float("nan"), None), (float("inf"), None), (None, None),
+])
+def test_clamp_confidence_accepts_numbers_and_numeric_strings(value, expected):
+    """Review round 1, Important 1: the first cut of `_clamp_confidence` passed a non-numeric
+    value through unchanged on the claim that `_confidence`'s own `Decimal` conversion already
+    turned it into a stored `None` -- true for a bool and for `"high"`, but not for a numeric
+    *string*: `_confidence("5")` converts and stores `Decimal("5.0000")`, an out-of-range
+    confidence the clamp exists specifically to prevent. Numeric strings now clamp exactly like
+    the numbers they name; a bool is excluded on purpose (Python's `bool` is an `int` subtype, so
+    `isinstance(True, (int, float))` would otherwise let it through as `1.0`)."""
+    result = _clamp_confidence(value)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == pytest.approx(expected)
+
+
+def test_a_numeric_string_confidence_is_clamped_in_the_stored_decision(db_session, env_settings,
+                                                                       queued_bucket):
+    """The same gap, exercised end to end: an off-contract numeric-string confidence must not
+    reach `veto_decisions.confidence` out of range."""
+    class TextConfidence(FakeClient):
+        def call(self, **kwargs):
+            result = super().call(**kwargs)
+            return result.__class__(**{**result.__dict__,
+                                       "output": {"decision": "proceed", "confidence": "5",
+                                                  "reason": "no material news",
+                                                  "evidence_ids": []}})
+
+    veto_pass(db_session, NOW, env_settings, client=TextConfidence())
+    stored_decision = db_session.execute(text(
+        "select confidence from veto_decisions")).scalar()
+    assert stored_decision == Decimal("1.0000")
+
+
+def test_non_string_evidence_ids_are_dropped_and_the_pass_does_not_raise(db_session, env_settings,
+                                                                         queued_bucket):
+    """Review round 1, Important 2: a non-`str` evidence id used to survive the truncation and
+    reach `_grade`'s `item in known` against a `set`, raising `TypeError` on an unhashable item
+    (a dict, a list) -- crashing the pass after the paired call had already been made and paid
+    for, with the decision row lost and the same signal re-claimed and re-paid for on the next
+    sweep. Non-strings are now dropped before the cap, so `_grade`'s set membership never sees
+    one."""
+    mixed = [{"id": 1}, "s1", None, ["x"]]
+
+    class Mixed(FakeClient):
+        def call(self, **kwargs):
+            result = super().call(**kwargs)
+            return result.__class__(**{**result.__dict__,
+                                       "output": {"decision": "veto", "confidence": 0.9,
+                                                  "reason": "mixed evidence",
+                                                  "evidence_ids": mixed}})
+
+    counts = veto_pass(db_session, NOW, env_settings, client=Mixed())
+    assert counts["calls"] >= 1
+    stored = db_session.execute(text(
+        "select output->'evidence_ids' from research_notes "
+        "where model = 'claude-opus-5'")).scalar()
+    assert stored == ["s1"]
 
 
 def test_the_injection_case(db_session, env_settings, queued_bucket):
