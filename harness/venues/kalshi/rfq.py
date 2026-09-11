@@ -67,6 +67,13 @@ IDLE_ERROR_CODES = frozenset({8, 9, 10, 11, 27})
 #: different socket in a different thread.
 IDLE_S = 3600
 
+#: Fix 44 (journal 125): the other kind of error frame. 25 (subscription buffer overflow) is not
+#: a permission answer -- nothing is being refused -- so it must not cost an hour of blindness;
+#: but it is the venue dropping *this subscription* underneath a socket it leaves open, which is
+#: exactly what happened at 21:10:02Z on 2026-09-11 and was then shrugged off for 80 minutes.
+#: Between idling and doing nothing there is the answer that was missing: drop and resubscribe.
+RESUBSCRIBE_ERROR_CODES = frozenset({25})
+
 #: The two frame types that are ours. `QuoteCreated`, `QuoteAccepted` and `QuoteExecuted` are
 #: sent only to a quote's creator or an RFQ's creator, so a listener that never quotes receives
 #: none; if one arrives it is counted and dropped by the connection module.
@@ -534,3 +541,25 @@ def idle_reason(status: int | None, error_msg: dict | None) -> str | None:
     if not parts:
         return None
     return sanitize_venue_text(" ".join(parts), EXCERPT_MAX)
+
+
+def resubscribe_reason(error_msg: dict | None, sid: int | None) -> str | None:
+    """Why the listener should drop this socket and subscribe again, or None (fix 44).
+
+    Two frames say the subscription is gone while the connection is not: one of
+    `RESUBSCRIBE_ERROR_CODES`, and any error frame the venue addresses to the sid this listener
+    holds -- an error about *our* subscription is about our subscription whatever its code.
+    Checked only after `idle_reason`, so a refusal that happens to carry our sid still idles for
+    an hour rather than reconnecting against a venue that is telling us no. The reason is the
+    venue's own text, sanitized and bounded to `venue_status.reason`'s 120 characters.
+    """
+    if not isinstance(error_msg, dict):
+        return None
+    code = _error_code(error_msg)
+    own_sid = sid is not None and not isinstance(error_msg.get("sid"), bool) \
+        and error_msg.get("sid") == sid
+    if code not in RESUBSCRIBE_ERROR_CODES and not own_sid:
+        return None
+    body = error_msg.get("msg")
+    detail = body.get("msg") if isinstance(body, dict) else ""
+    return sanitize_venue_text(f"frame {code}: {detail}", EXCERPT_MAX)

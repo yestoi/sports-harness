@@ -193,7 +193,12 @@ select status, reason, since from venue_status where venue = 'kalshi_rfq';
 
 is its state. `unavailable` is the one-hour idle (`IDLE_S = 3600`) after a refused subscribe or a
 frame gap, and `reason` is the venue's own text, capped at 120 characters — quote it in the
-journal, never act on it. The market tape is on a different socket and is unaffected; confirm
+journal, never act on it. Since fix 44 two more things write `unavailable` without idling at all:
+a `frame 25: ...` reason is the subscription being dropped underneath a live socket, and a
+`no data for <n>s` reason is the data-idle watchdog. Both reconnect behind the ordinary backoff
+(1 s, doubling to 60 s), so a listener that recovered marks `ok` again on its next subscribe ack
+and the `unavailable` row survives only as the record that it happened. An `unavailable` of
+either kind that is still current minutes later is a listener that is failing to resubscribe. The market tape is on a different socket and is unaffected; confirm
 that with `select max(ts) from orderbook_events`. To turn the listener off:
 `RFQ_LISTENER_ENABLED=0` in `deploy/nas.env`, then `docker compose restart app-ws`.
 
@@ -305,6 +310,55 @@ shares a process with. The controller switched the listener off at 05:33 CT
 
 Re-enabling the listener after fix 38, same as fix 35: `RFQ_LISTENER_ENABLED=1` in
 `deploy/nas.env`, then `docker compose restart app-ws`.
+
+### Fix 44: the listener that went silent and never noticed
+
+On 2026-09-11 the listener resubscribed at 21:08:51Z, and at 21:10:02Z the venue sent an error
+frame on its own sid — `code 25`, `Subscription buffer overflow` (untrusted venue text, quoted
+here as evidence). It logged one line, kept the socket, and from that instant delivered nothing:
+no RFQ frame, no summary line, no reconnect, no staleness warning, for over 80 minutes, while
+`venue_status('kalshi_rfq')` still read `ok` and the container sat at 1.7 % CPU. The market tape
+is a separate socket and kept flowing throughout.
+
+Nothing in the listener was watching the right thing. Every check it had was about the
+*connection* — the subscribe-ack window, `is_stale`'s count of `recv()` timeouts, the hour-long
+idle after a refusal — and the connection was fine; it was the subscription that was gone. Worse,
+none of those checks could even run: `websocket-client`'s `recv()` answers a ping internally and
+loops back to read again, resetting the socket's own 30 s timeout each time, so a venue keeping
+the connection alive with pings parks the listener inside `recv()` indefinitely. There is no
+return value and no `WebSocketTimeoutException`, and therefore no loop iteration at all.
+
+Four changes:
+
+- **Code 25 is a reconnect trigger**, and so is any error frame the venue addresses to the sid
+  this listener holds (`resubscribe_reason`, `harness/venues/kalshi/rfq.py`). It logs one
+  WARNING, writes `venue_status` with the sanitized 120-character reason, and drops the socket;
+  `run_forever`'s existing backoff brings back a fresh subscribe. The refusal codes (8, 9, 10,
+  11, 27) are checked first and still idle for an hour, including when one carries our sid — a
+  venue saying no is not a venue to reconnect against.
+- **A data-idle watchdog on a clock**, not on frame arrival: `RFQ_DATA_IDLE_S` (900 s) since the
+  last `rfq_created`/`rfq_deleted` frame or subscribe ack drops the socket to resubscribe, with
+  one WARNING and a `no data for <n>s` reason in `venue_status`. The combo trickle is sporadic,
+  so minutes of nothing are ordinary; a quarter of an hour of nothing on a football Friday is a
+  dead subscription. It is checked on every loop iteration that carried no data — a timeout, a
+  ping, a quote event, an error frame we shrugged off.
+- **Control frames reach the loop.** The listener asks for `recv_data(control_frame=True)`, so a
+  ping is an iteration (the pong is still sent by the library before it returns). Without this
+  the watchdog above would be unreachable code in exactly the incident it was written for.
+- **The summary line runs on the clock.** It used to return early whenever every counter was
+  zero, which is why a silent listener printed nothing at all. It now logs `frames_seen=0
+  frames_stored=0 ...` once per `RFQ_SUMMARY_PERIOD_S` (60 s) whether or not anything arrived.
+
+How to read it during a verify: the `rfqs` arrivals row in
+`docs/superpowers/autopilot/verify.md` treats zero arrivals as inconclusive on its own, because
+combo RFQs are sporadic. The summary line is what makes it conclusive. No `rfq listener:
+replayed=... frames_seen=...` line for five minutes means the listener is dead, whatever
+`venue_status` says — the line is emitted once a minute by a listener that is merely receiving
+nothing, so five of them missing is not a quiet market. Two states are the exception and both
+announce themselves: the hour-long idle after a refusal, which logs its own WARNING and leaves
+`venue_status` `unavailable` until it lapses, and `RFQ_LISTENER_ENABLED=0`, which logs one line
+at startup and nothing after. A summary line reading `frames_seen=0` alongside `venue_status`
+`ok` is a quiet market and nothing more.
 
 ## What is never done here
 

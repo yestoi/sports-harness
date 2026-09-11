@@ -20,6 +20,14 @@ error-frame code in reply to the subscribe, idles the listener for an hour and w
 `venue_status('kalshi_rfq', 'prod', 'unavailable', reason)`. The market channels are on a
 different socket in a different thread and are unaffected either way.
 
+**A third answer** (fix 44, journal 125). Idling for an hour and doing nothing were the only
+two, and on 2026-09-11 the venue found the gap between them: it dropped this subscription with
+`{"code": 25, "msg": "Subscription buffer overflow"}` on the listener's own sid, then kept the
+connection alive for 80 minutes. Not a refusal, so not an hour's idle; not nothing, either.
+Code 25 and any error frame carrying our sid now drop the socket and resubscribe behind the
+existing backoff, and `_check_data_idle` watches the subscription on a clock (`RFQ_DATA_IDLE_S`)
+rather than on frame arrival -- because the connection was never the thing that failed.
+
 **Nothing here is allowed to take `app-ws` down.** Every loop failure is caught and answered
 with a backoff, every `venue_status` write is best-effort, and the recorder's own helpers
 (`should_reconnect`, `is_stale`, `RECV_TIMEOUT_S`) are *imported* rather than shared: the two
@@ -39,7 +47,7 @@ from harness.execution.venue import (STATUS_OK, STATUS_UNAVAILABLE, mark_status,
                                      sanitize_venue_text)
 from harness.venues.kalshi.auth import sign_request
 from harness.venues.kalshi.rfq import (CHANNEL, DROP_NOT_ALL_FOOTBALL, ENV, IDLE_S, VENUE,
-                                       handle_frame, idle_reason)
+                                       handle_frame, idle_reason, resubscribe_reason)
 from harness.venues.kalshi.ws import RECV_TIMEOUT_S, is_stale, should_reconnect
 
 log = logging.getLogger(__name__)
@@ -80,8 +88,23 @@ RFQ_SUMMARY_PERIOD_S = 60.0
 #: pairs 100 ms apart. The limit's own behaviour is unchanged; only how often each direction may
 #: *log* a transition is bounded, independently, to at most once per this many seconds.
 RFQ_RATE_LOG_COOLDOWN_S = 30.0
+#: Fix 44 (journal 125): how long the listener will go without a single `rfq_created` or
+#: `rfq_deleted` frame before it stops believing its own subscription. Not a `Settings` field:
+#: the listener has exactly one (`rfq_listener_enabled`), and this is a property of the venue's
+#: traffic rather than of a deployment. 900 s, because the combo trickle is sporadic -- minutes
+#: of nothing is ordinary -- but a quarter of an hour of nothing on a football Friday is the
+#: subscription being gone, which is what 21:10:02Z to 22:30Z on 2026-09-11 actually was. Read
+#: against the same monotonic clock the burst summary uses, and reset by the subscribe ack, so a
+#: reconnect starts the window over rather than inheriting a dead connection's silence.
+RFQ_DATA_IDLE_S = 900.0
 #: The signed path of the WebSocket handshake, the same one the recorder signs.
 WS_SIGN_PATH = "/trade-api/ws/v2"
+
+#: Fix 44: what `_recv` returns for a ping or a pong -- a loop iteration that carried no data,
+#: which is distinct both from a frame (a str/bytes body) and from a closed socket (falsy).
+_CONTROL = object()
+#: The two control opcodes `websocket-client` answers internally. See `_recv`.
+_PING_PONG = (websocket.ABNF.OPCODE_PING, websocket.ABNF.OPCODE_PONG)
 
 
 def _utcnow() -> datetime:
@@ -175,6 +198,16 @@ class RfqListener:
         self._burst_dropped_unknown_delete = 0
         self._burst_last_frame_at: float = 0.0
         self._last_summary_at: float = 0.0
+        #: Fix 44 (journal 125): the monotonic timestamp of the last thing that proved the
+        #: subscription itself was alive -- a subscribe ack, or an `rfq_created`/`rfq_deleted`
+        #: frame. Seeded here (not left at 0.0) so a listener whose `run_once` is called before
+        #: `subscribe` -- every socket-level unit test does exactly that -- is not instantly
+        #: judged to have been silent since the epoch.
+        self._last_data_at: float = self._monotonic()
+        #: Whether the data-idle watchdog has already spoken for this connection: it drops the
+        #: socket, so under `run_forever` it fires once and the reconnect resets it, but a
+        #: caller that keeps reading a dead socket gets one line, not one per iteration.
+        self._data_idle_logged = False
         # The signing clock offset, carried across reconnects. It only ever moves on a 401 that
         # came back with a usable `Date`; there is no HTTP client here to ask for the time.
         self._offset_ms = 0
@@ -261,8 +294,39 @@ class RfqListener:
         self._burst_dropped_not_all_football = self._burst_dropped_unknown_delete = 0
         self._burst_last_frame_at = self._monotonic()
         self._last_summary_at = self._monotonic()
+        # Fix 44: the data-idle window starts at the subscribe, not at whatever the last
+        # connection last heard -- a reconnect must not inherit a dead socket's silence and drop
+        # itself before the venue has had a chance to say anything.
+        self._last_data_at = self._monotonic()
+        self._data_idle_logged = False
 
     # -- the loop ------------------------------------------------------------------------
+
+    def _recv(self, ws):
+        """One frame off the socket: its body, `_CONTROL` for a ping or pong, falsy when closed.
+
+        Fix 44 (journal 125), the mechanism half. `websocket-client`'s `recv()` is
+        `recv_data(control_frame=False)`, and `recv_data_frame` *loops* on a ping: it sends the
+        pong and goes straight back to `recv_frame()`, which resets the socket's own
+        `RECV_TIMEOUT_S` on every read. So a venue that keeps a connection alive with pings
+        while its subscription delivers nothing parks the listener inside `recv()` forever --
+        no return value, no `WebSocketTimeoutException`, and therefore no loop iteration at all
+        in which `_on_timeout`'s staleness counter, or any watchdog, could ever run. That, and
+        not a reset counter, is why 80 minutes of silence looked healthy on 2026-09-11.
+
+        Asking for the control frames turns each ping into an iteration. The pong is still sent
+        by `recv_data_frame` before it returns, so nothing about keepalive changes. The
+        `getattr` is the seam for the test fakes, which offer `recv()` only.
+        """
+        recv_data = getattr(ws, "recv_data", None)
+        if recv_data is None:
+            return ws.recv()
+        opcode, data = recv_data(control_frame=True)
+        if opcode in _PING_PONG:
+            return _CONTROL
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            return ""
+        return data
 
     def run_once(self, ws) -> bool:
         """Read one frame and act on it. Returns False when the caller should drop the socket.
@@ -271,17 +335,21 @@ class RfqListener:
         drop reconnects behind the backoff, an idle stops for an hour. Only a refusal idles.
         """
         try:
-            raw = ws.recv()
+            raw = self._recv(ws)
         except websocket.WebSocketTimeoutException:
             return self._on_timeout()
         self._timeouts = 0
+        if raw is _CONTROL:
+            # Fix 44: a ping or pong. The socket is alive and the subscription has said
+            # nothing; that is precisely the case the data-idle watchdog exists for.
+            return self._on_quiet()
         if not raw:
             return False
         try:
             msg = json.loads(raw)
         except (TypeError, ValueError, RecursionError):
             log.warning("rfq listener received a frame it could not decode; dropped")
-            return True
+            return self._check_data_idle()
         # Fix 35 round 1 (I3): a gap since the previous frame is exactly the "burst is over"
         # signal -- checked before this frame updates the timestamp, so it reflects the *prior*
         # silence, not this arrival.
@@ -293,23 +361,36 @@ class RfqListener:
             self._sid = body.get("sid") if isinstance(body, dict) else msg.get("sid")
             self._backoff = 1.0
             self._mark(STATUS_OK, None)
+            # Fix 44: the ack is the first proof this subscription works, so the data-idle
+            # window is measured from it.
+            self._note_data()
             log.info("rfq listener subscribed to %s, sid=%s", CHANNEL, self._sid)
             return True
         if kind == "error":
             reason = idle_reason(None, msg)
-            if reason is None:
-                log.warning("rfq listener error frame, not an idling code: %s",
-                            json.dumps(msg, default=str)[:200])
-                return True
-            self._idle(reason)
-            return False
+            if reason is not None:
+                self._idle(reason)
+                return False
+            # Fix 44 (journal 125): between an hour's idle and doing nothing. Code 25, or any
+            # error the venue addresses to our own sid, is this subscription being dropped
+            # while the connection stays up -- so the socket goes and the existing backoff
+            # brings back a fresh subscribe.
+            reason = resubscribe_reason(msg, self._sid)
+            if reason is not None:
+                log.warning("rfq listener: error frame on its own subscription; dropping the "
+                            "socket to resubscribe. untrusted venue text: reason=%r", reason)
+                self._mark(STATUS_UNAVAILABLE, reason)
+                return False
+            log.warning("rfq listener error frame, not an idling code: %s",
+                        sanitize_venue_text(json.dumps(msg, default=str), 200))
+            return self._check_data_idle()
         if isinstance(kind, str) and kind.lower().startswith("quote"):
             # Quote events reach a quote's creator or an RFQ's creator. We are neither, so this
             # is a fact about the account and not about a position: counted and dropped.
             self.quote_events_dropped += 1
             log.info("rfq listener dropped a quote event; untrusted venue text: type=%r",
                      sanitize_venue_text(kind, 32))
-            return True
+            return self._check_data_idle()
         # Fix 35 round 1 (C1/I2): `_try_quote` is the sliding-window rate gate. It is called
         # from inside `handle_frame`, and only at the one point a quote would actually be
         # attempted -- a dedupe hit or an `rfq_deleted` frame never reaches it, so neither ever
@@ -317,6 +398,9 @@ class RfqListener:
         # from inside `handle_frame` for a frame counted and dropped before `store_rfq`.
         self.frames_seen += 1
         self._burst_frames_seen += 1
+        # Fix 44: an `rfq_created`/`rfq_deleted` frame is the subscription doing its job, so it
+        # restarts the data-idle window -- whatever the boundary filter then decides about it.
+        self._note_data()
         with self._factory() as session:
             row = handle_frame(session, msg, self._clock(), on_replay=self._count_replay,
                                allow_quote=self._try_quote, on_dropped=self._count_dropped)
@@ -326,6 +410,45 @@ class RfqListener:
                 self.frames_stored += 1
                 self._burst_frames_stored += 1
         return True
+
+    def _note_data(self) -> None:
+        """Fix 44: the subscription just proved it is alive. Restarts the data-idle window."""
+        self._last_data_at = self._monotonic()
+        self._data_idle_logged = False
+
+    def _on_quiet(self) -> bool:
+        """Fix 44: one loop iteration that carried no RFQ data -- a ping or a pong.
+
+        It is not a `recv()` timeout, so it is none of `_on_timeout`'s business: the ack window
+        and the half-open check are both about a socket delivering nothing at all, and this
+        socket is delivering keepalives. What it does share with a timeout is that the summary
+        clock has to keep running and the subscription has to be questioned.
+        """
+        self._maybe_flush_burst_summary()
+        return self._check_data_idle()
+
+    def _check_data_idle(self) -> bool:
+        """Fix 44 (journal 125): whether this subscription has gone quiet for too long.
+
+        Frame arrival is not evidence: on 2026-09-11 the venue kept the connection alive for 80
+        minutes after dropping the subscription with a code 25, and every existing check here
+        is about the *connection* -- the ack window, `is_stale`'s count of `recv()` timeouts,
+        the hour-long idle after a refusal. None of them is about whether the channel we
+        subscribed to is still delivering. This one is, and it reads a clock rather than a
+        counter, so nothing the venue sends can reset it except the data itself.
+
+        False drops the socket; `run_forever` then reconnects behind the existing backoff and
+        `subscribe` sends a fresh subscribe frame, which is the resubscribe.
+        """
+        idle_s = self._monotonic() - self._last_data_at
+        if idle_s <= RFQ_DATA_IDLE_S:
+            return True
+        if not self._data_idle_logged:
+            self._data_idle_logged = True
+            log.warning("rfq listener: no rfq data for %.0fs (the socket is alive and the "
+                        "subscription is not); dropping it to resubscribe", idle_s)
+            self._mark(STATUS_UNAVAILABLE, f"no data for {idle_s:.0f}s")
+        return False
 
     def _count_replay(self) -> None:
         self.replayed += 1
@@ -398,11 +521,16 @@ class RfqListener:
         counts = (self._burst_replayed, self._burst_quoted, self._burst_skipped_rate,
                  self._burst_frames_seen, self._burst_frames_stored,
                  self._burst_dropped_not_all_football, self._burst_dropped_unknown_delete)
-        if not any(counts):
-            return
         now = self._monotonic()
         silent = (now - self._burst_last_frame_at) >= RFQ_BURST_SILENCE_S
         due = (now - self._last_summary_at) >= RFQ_SUMMARY_PERIOD_S
+        if not any(counts) and not due:
+            # Fix 44 (journal 125): an all-zero burst used to log nothing at all, which meant
+            # the one line that says "this listener is alive" vanished exactly when the
+            # listener stopped receiving -- 80 minutes with no summary and no way to tell it
+            # from a quiet market. On the period it now logs the zeros; the silence trigger
+            # still says nothing about them, or every `recv()` timeout would print a line.
+            return
         if not (silent or due):
             return
         log.info("rfq listener: replayed=%d quoted=%d skipped_rate=%d frames_seen=%d "
@@ -433,7 +561,10 @@ class RfqListener:
             log.warning("rfq listener: no frame for %.0fs; reconnecting",
                         self._timeouts * RECV_TIMEOUT_S)
             return False
-        return True
+        # Fix 44: and the subscription's own clock, which a timeout does not reset either. In
+        # practice `ws_stale_s` (180 s) trips first when *nothing* arrives; this is what answers
+        # a socket that is being kept alive while its channel delivers nothing.
+        return self._check_data_idle()
 
     def run_forever(self) -> None:
         if not self.s.rfq_listener_enabled:

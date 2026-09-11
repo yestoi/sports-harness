@@ -675,6 +675,192 @@ def test_an_error_frame_idles_rather_than_reconnecting(db_session, env_settings)
     assert row.status == "unavailable"
 
 
+# --- fix 44 (journal 125): the listener that went silent and never noticed --------------------
+
+class PingWs(FakeWs):
+    """A fake that speaks `recv_data(control_frame=True)`, the way `websocket.WebSocket` does.
+
+    The 2026-09-11 incident's own shape: the venue keeps the connection alive with ping frames
+    while the subscription delivers nothing. `websocket-client`'s `recv()` answers a ping
+    internally and *loops* (`recv_data_frame`, control_frame False), so a listener calling
+    `recv()` blocks inside it for as long as the pings keep coming -- no return, no
+    `WebSocketTimeoutException`, and therefore no loop iteration in which any watchdog could
+    run. `recv()` here raises, so a listener that still called it would fail this test rather
+    than quietly pass it.
+    """
+
+    def __init__(self, frames=(), pings=0):
+        super().__init__(frames)
+        self.pings = pings
+
+    def recv(self):
+        raise AssertionError("the listener must ask for control frames when the socket has them")
+
+    def recv_data(self, control_frame=False):
+        assert control_frame, "a ping must reach the loop, not be swallowed inside recv()"
+        if self._frames:
+            frame = self._frames.pop(0)
+            if isinstance(frame, Exception):
+                raise frame
+            return websocket.ABNF.OPCODE_TEXT, json.dumps(frame).encode()
+        if self.pings > 0:
+            self.pings -= 1
+            return websocket.ABNF.OPCODE_PING, b""
+        raise websocket.WebSocketTimeoutException()
+
+
+def test_a_subscription_buffer_overflow_drops_the_socket_instead_of_continuing(db_session,
+                                                                               env_settings):
+    """Fix 44: the frame the venue sent on the listener's own sid at 21:10:02Z. It is not a
+    refusal -- nothing is being denied -- so it must not idle for an hour; it is the
+    subscription being dropped underneath a socket that stays open, so it must not be shrugged
+    off either. A drop, behind the existing backoff."""
+    ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 1}},
+                 {"type": "error", "sid": 1, "seq": 49129,
+                  "msg": {"code": 25, "msg": "Subscription buffer overflow"}}])
+    listener = _listener(db_session, env_settings, ws)
+    listener.subscribe(ws)
+    assert listener.run_once(ws) is True       # the ack
+    assert listener.run_once(ws) is False      # the error frame: drop and resubscribe
+    assert listener.idle_until is None         # ... and never an hour of blindness
+    row = db_session.execute(text(
+        "select status, reason from venue_status where venue = :v"), {"v": VENUE}).first()
+    assert row.status == "unavailable"
+    assert "25" in row.reason and len(row.reason) <= 120
+
+
+def test_an_error_frame_on_the_listeners_own_sid_drops_the_socket(db_session, env_settings):
+    """The general rule behind the code the incident happened to carry: an error the venue
+    addresses to *this* subscription is about this subscription, whatever its code."""
+    ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 4}},
+                 {"type": "error", "sid": 4, "msg": {"code": 26, "msg": "too many subs"}}])
+    listener = _listener(db_session, env_settings, ws)
+    listener.subscribe(ws)
+    listener.run_once(ws)
+    assert listener.run_once(ws) is False
+    assert listener.idle_until is None
+
+
+def test_a_refusal_on_the_listeners_own_sid_still_idles_for_an_hour(db_session, env_settings):
+    """The refusal codes (0.8: 8, 9, 10, 11, 27) are unchanged by fix 44 -- an authentication
+    refusal that happens to carry our sid is still an hour's idle, not a reconnect loop against
+    a venue that is telling us no."""
+    ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 3}},
+                 {"type": "error", "sid": 3, "msg": {"code": 9, "msg": "authentication required"}}])
+    listener = _listener(db_session, env_settings, ws)
+    listener.subscribe(ws)
+    listener.run_once(ws)
+    assert listener.run_once(ws) is False
+    assert listener.idle_until == NOW + timedelta(seconds=IDLE_S)
+
+
+def test_the_dropped_socket_is_followed_by_a_fresh_subscribe(db_session, env_settings, tmp_path):
+    """What "reconnect" has to mean end to end: `run_forever` comes back round behind the
+    backoff and sends a second `subscribe` frame for the same channel."""
+    key_id, key_pem = tmp_path / "key_id", tmp_path / "key.pem"
+    key_id.write_text("unused")           # the signer is stubbed; these exist only so that
+    key_pem.write_bytes(b"unused")        # `has_kalshi_credentials()` is true.
+    settings = env_settings.model_copy(update={"kalshi_key_id_file": key_id,
+                                               "kalshi_private_key_file": key_pem})
+    frames = [{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 1}},
+              {"type": "error", "sid": 1, "msg": {"code": 25, "msg": "Subscription buffer overflow"}}]
+    box = []
+
+    class StopOnSecondSubscribe(FakeWs):
+        def send(self, payload):
+            super().send(payload)
+            if len(self.sent) == 2:
+                box[0].stop()
+
+    ws = StopOnSecondSubscribe(frames)
+    listener = _listener(db_session, settings, ws)
+    box.append(listener)
+    listener.run_forever()
+    assert [frame["cmd"] for frame in ws.sent] == ["subscribe", "subscribe"]
+    assert ws.sent[1]["params"] == {"channels": [CHANNEL]}
+
+
+def test_a_ping_reaches_the_loop_and_is_not_data(db_session, env_settings):
+    """The mechanism half of fix 44: a ping must be a loop iteration, not something the socket
+    library absorbs. It keeps the socket (returns True) and counts as no data at all."""
+    ws = PingWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}], pings=2)
+    clock = [20_000.0]
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    assert listener.run_once(ws) is True        # the ack
+    assert listener.run_once(ws) is True        # a ping, well inside the window
+    assert listener.frames_seen == 0
+
+
+def test_pings_alone_for_the_idle_window_resubscribe_and_log_once(db_session, env_settings,
+                                                                   caplog):
+    """The incident itself: after the error frame the venue kept the connection alive and sent
+    no RFQ data for over 80 minutes, and nothing in the listener noticed. `RFQ_DATA_IDLE_S`
+    since the last `rfq_created`/`rfq_deleted` frame or subscribe ack now drops the socket --
+    checked on a loop iteration that carried no data, which is the only kind there was."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    ws = PingWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}}], pings=4)
+    clock = [20_000.0]
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    listener.run_once(ws)                       # the ack: the last data this connection saw
+    clock[0] += rfq_socket_mod.RFQ_DATA_IDLE_S + 1
+    with caplog.at_level(logging.WARNING, logger=RFQ_SOCKET_LOGGER):
+        assert listener.run_once(ws) is False
+        assert listener.run_once(ws) is False   # still dropped, and still only one line
+    lines = [r for r in caplog.records
+             if r.name == RFQ_SOCKET_LOGGER and "no rfq data" in r.message]
+    assert len(lines) == 1
+    row = db_session.execute(text(
+        "select status, reason from venue_status where venue = :v"), {"v": VENUE}).first()
+    assert row.status == "unavailable" and "no data" in row.reason
+
+
+def test_a_data_frame_inside_the_window_keeps_the_socket(db_session, env_settings):
+    """The other half: data arriving is what the watchdog is measuring, so a connection that
+    keeps delivering RFQ frames is never dropped by it however long it has been up."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    clock = [40_000.0]
+    ws = FakeWs([{"type": "subscribed", "msg": {"channel": CHANNEL, "sid": 7}},
+                 _created(rfq_id="rfq_idle_data", legs=[]),
+                 {"type": "QuoteCreated", "msg": {"id": "q1"}}])
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    listener.run_once(ws)                                   # the ack
+    clock[0] += rfq_socket_mod.RFQ_DATA_IDLE_S - 1
+    assert listener.run_once(ws) is True                    # data: the window restarts here
+    clock[0] += rfq_socket_mod.RFQ_DATA_IDLE_S - 1
+    assert listener.run_once(ws) is True                    # a quote event, inside the window
+
+
+def test_the_summary_line_is_emitted_on_the_clock_with_no_frames_at_all(db_session,
+                                                                        env_settings,
+                                                                        monkeypatch, caplog):
+    """Fix 44: a silent listener has to be visible *as* silent. The summary used to return
+    early whenever every counter was zero, so the one log line that says the listener is alive
+    disappeared exactly when it mattered. It now prints `frames_seen=0` on the period."""
+    from harness.venues.kalshi import rfq_socket as rfq_socket_mod
+
+    monkeypatch.setattr(rfq_socket_mod, "RFQ_SUMMARY_PERIOD_S", 3.0)
+    clock = [50_000.0]
+    ws = FakeWs([])                              # every recv times out; nothing ever arrives
+    listener = _listener(db_session, env_settings, ws, monotonic=lambda: clock[0])
+    listener.subscribe(ws)
+    listener._sid = 7                            # acked: the ack window no longer applies
+    with caplog.at_level(logging.INFO, logger=RFQ_SOCKET_LOGGER):
+        assert listener.run_once(ws) is True     # a recv timeout, inside the period
+        assert not any("frames_seen=" in r.message for r in caplog.records
+                       if r.name == RFQ_SOCKET_LOGGER)
+        clock[0] += 4.0
+        assert listener.run_once(ws) is True
+    summaries = [r for r in caplog.records
+                 if r.name == RFQ_SOCKET_LOGGER and "frames_seen=" in r.message]
+    assert len(summaries) == 1
+    assert "frames_seen=0" in summaries[0].message and "frames_stored=0" in summaries[0].message
+
+
 def test_the_listener_is_off_when_its_setting_is_false(db_session, env_settings):
     """`connected` is False before `run_forever` too, so the assertion that carries the claim is
     the signing seam and the factory: a disabled listener reads no key and opens no socket."""
@@ -824,8 +1010,11 @@ def test_a_closed_socket_ends_the_read_loop(db_session, env_settings):
     assert listener.idle_until is None      # a closed socket reconnects; it does not idle
 
 
-def test_an_error_frame_with_an_undocumented_code_keeps_the_socket(db_session, env_settings):
-    ws = FakeWs([{"type": "error", "msg": {"code": 25, "msg": "buffer overflow"}}])
+def test_an_error_frame_for_another_subscription_keeps_the_socket(db_session, env_settings):
+    """Fix 44 narrowed this: an error frame that is neither a refusal (an hour's idle), nor code
+    25, nor addressed to this listener's own sid is still logged and shrugged off -- it is not
+    about us. Code 26 on a sid we do not hold, with no ack ever received, is that frame."""
+    ws = FakeWs([{"type": "error", "sid": 99, "msg": {"code": 26, "msg": "too many subs"}}])
     listener = _listener(db_session, env_settings, ws)
     assert listener.run_once(ws) is True
     assert listener.idle_until is None
