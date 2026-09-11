@@ -1,4 +1,5 @@
 import logging
+import re
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
@@ -548,8 +549,72 @@ def _retry_once(conn: Connection, run: Callable[[], None], label: str) -> None:
     run()
 
 
-def _execute_ddl(conn: Connection, statement: str) -> None:
+#: Identifier in a DDL statement: bare, or double-quoted (fix 37's parser lower-cases the whole
+#: statement first, so a quoted identifier's case is not preserved here -- none of the DDL this
+#: file writes needs that, and the parser exists only to recognize *this file's own* statements).
+_IDENT = r'(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)'
+
+#: `alter table <t> add column if not exists <c> ...`. The trailing `(?=\s|$)` stands in for a
+#: word boundary: a quoted identifier ends on `"`, which is not a word character, so `\b` right
+#: after it never matches.
+_ADD_COLUMN_RE = re.compile(
+    rf"^alter\s+table\s+({_IDENT})\s+add\s+column\s+if\s+not\s+exists\s+({_IDENT})(?=\s|$)")
+
+#: `create [unique] index [concurrently] if not exists <name> ...`
+_CREATE_INDEX_RE = re.compile(
+    rf"^create\s+(?:unique\s+)?index\s+(?:concurrently\s+)?if\s+not\s+exists\s+({_IDENT})(?=\s|$)")
+
+
+def ddl_target(statement: str) -> tuple[str, str, str] | tuple[str, str] | None:
+    """What `statement` adds, for the two shapes `create_schema` can skip once the target
+    already exists (fix 37, journal 110/112): `("column", table, column)` for an
+    `add column if not exists`, `("index", name)` for a `create [unique] index [concurrently]
+    if not exists`. `None` for anything else -- a view, a backfill, an `alter ... alter column`,
+    a `set` -- which always runs exactly as before; only these two shapes ask for a lock a
+    no-op does not need.
+    """
+    normalized = " ".join(statement.split()).lower()
+    m = _ADD_COLUMN_RE.match(normalized)
+    if m:
+        return ("column", m.group(1).strip('"'), m.group(2).strip('"'))
+    m = _CREATE_INDEX_RE.match(normalized)
+    if m:
+        return ("index", m.group(1).strip('"'))
+    return None
+
+
+def _exists(conn: Connection, target: tuple[str, ...]) -> bool:
+    """Whether `target` (from `ddl_target`) is already there, so the DDL that would add it is a
+    genuine no-op that does not need to ask for its lock."""
+    if target[0] == "column":
+        _, table, column = target
+        return conn.execute(text(
+            "select 1 from information_schema.columns where table_schema = current_schema() "
+            "and table_name = :t and column_name = :c"),
+            {"t": table, "c": column}).first() is not None
+    _, name = target  # target[0] == "index"
+    # relkind 'i' is a plain index; 'I' is the parent index of a partitioned table (e.g. every
+    # index create_schema builds on raw_responses, orderbook_events or venue_trades, which are
+    # partitioned from the model itself) -- either one means the index is already there.
+    return conn.execute(text(
+        "select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace "
+        "where c.relkind in ('i', 'I') and n.nspname = current_schema() and c.relname = :n"),
+        {"n": name}).first() is not None
+
+
+def _execute_ddl(conn: Connection, statement: str) -> bool:
+    """Run one DDL statement, unless `ddl_target` recognizes its shape and the target it would
+    add already exists -- a no-op `add column if not exists` still asks for an AccessExclusive
+    lock, and a no-op `create index if not exists` still asks for a Share lock, before Postgres
+    notices there is nothing to do (fix 37: this is what queued a deploy's schema step behind a
+    live snapshot builder for 236-286s and hit the 5s DDL_LOCK_TIMEOUT). Returns whether the
+    statement was skipped, so a caller can tally them."""
+    target = ddl_target(statement)
+    if target is not None and _exists(conn, target):
+        log.debug("init-db: skipping no-op ddl: %s", " ".join(statement.split())[:80])
+        return True
     _retry_once(conn, lambda: conn.execute(text(statement)), " ".join(statement.split())[:80])
+    return False
 
 
 def _model_indexes() -> list[Index]:
@@ -579,22 +644,24 @@ def create_schema(engine: Engine) -> None:
     writing, and one long DDL transaction deadlocked a deploy.
     """
     Base.metadata.create_all(engine)
+    skipped = 0
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
         conn.execute(text(f"set lock_timeout = '{DDL_LOCK_TIMEOUT}'"))
         for statement in _COLUMN_DDL + _INDEX_DDL + _VIEW_DDL + _BACKFILL_DDL:
-            _execute_ddl(conn, statement)
+            skipped += _execute_ddl(conn, statement)
         _model_index_ddl(conn)
         for statement in _CONCURRENT_INDEX_DDL:
-            _execute_ddl(conn, statement)
+            skipped += _execute_ddl(conn, statement)
         for statement in _TAPE_DDL:
-            _execute_ddl(conn, statement)
+            skipped += _execute_ddl(conn, statement)
         for table in TAPE_TABLES:
             if not _takes_new_indexes(conn, table):
                 log.info("skipping %s btree indexes: table is live and not partitioned yet", table)
                 continue
             for name, body in TAPE_NEW_INDEXES[table]:
-                _execute_ddl(conn, f"create index if not exists {name} {body}")
+                skipped += _execute_ddl(conn, f"create index if not exists {name} {body}")
         _set_brin_autosummarize(conn)
+    log.info("init-db: %d no-op DDL statements skipped", skipped)
 
 
 def drop_schema(engine: Engine) -> None:

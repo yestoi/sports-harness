@@ -218,7 +218,9 @@ def test_the_deploy_recipe_starts_app_backup_with_postgres():
 
 def test_every_init_db_in_both_deploy_recipes_is_preceded_by_stopping_the_app_writers():
     # Fix 21: `add column if not exists` needs an AccessExclusive lock that a running executor
-    # loop blocks, so every schema step must stop app-exec and app-run first.
+    # loop blocks, so every schema step must stop app-exec and app-run first. Fix 37 widens the
+    # stop list to app-serve too: an `app-serve` snapshot builder holding ACCESS SHARE on a
+    # table is exactly what queued the 2026-09-11 05:20 CT deploy behind the 5s lock_timeout.
     mk = (ROOT / "Makefile").read_text()
     deploy_nas = mk.split("deploy-nas:")[1].split("\ndeploy-nas-app:")[0]
     deploy_nas_app = mk.split("\ndeploy-nas-app:")[1].split("\nstatus-nas:")[0]
@@ -227,19 +229,69 @@ def test_every_init_db_in_both_deploy_recipes_is_preceded_by_stopping_the_app_wr
         for line in recipe.splitlines():
             if "app-run init-db" in line:
                 init_db_count += 1
-                assert "docker compose stop app-exec app-run &&" in line, (
+                assert "docker compose stop app-exec app-run app-serve &&" in line, (
                     f"{name}: init-db not preceded by stopping the writers on: {line}"
                 )
         assert init_db_count > 0, name
-        assert recipe.count("docker compose stop app-exec app-run &&") == init_db_count, name
+        assert recipe.count("docker compose stop app-exec app-run app-serve &&") == init_db_count, name
     assert mk.count("app-run init-db") == 3
-    assert mk.count("docker compose stop app-exec app-run &&") == 3
+    assert mk.count("docker compose stop app-exec app-run app-serve &&") == 3
+
+
+def test_every_stop_of_the_app_writers_restores_them_before_exiting_on_failure():
+    # Fix 37 (journal 110): a schema step that stops app-exec/app-run/app-serve and then fails
+    # must restart them before it exits non-zero -- the 2026-09-11 05:20 CT incident left the
+    # executor down for four minutes because the failed step exited without doing this. `start`,
+    # not `up -d`: it must restart the containers on the image they were already running.
+    mk = (ROOT / "Makefile").read_text()
+    for line in mk.splitlines():
+        if "docker compose stop app-exec app-run app-serve &&" not in line:
+            continue
+        stop_index = line.index("docker compose stop app-exec app-run app-serve &&")
+        restore_index = line.find("docker compose start app-exec app-run app-serve", stop_index)
+        assert restore_index > stop_index, f"stop with no restore on failure: {line}"
+        or_index = line.rfind("||", stop_index, restore_index)
+        assert or_index != -1, f"restore is not in a failure branch: {line}"
+        exit_index = line.index("exit 1", restore_index)
+        assert exit_index > restore_index, f"restore does not precede exit 1: {line}"
+    assert mk.count("docker compose start app-exec app-run app-serve") >= 3
 
 
 def test_the_precheck_runs_before_the_writers_are_stopped():
     mk = (ROOT / "Makefile").read_text()
     recipe = mk.split("deploy-nas:")[1].split("\ndeploy-nas-app:")[0]
     assert recipe.index("backup-precheck") < recipe.index("docker compose stop")
+
+
+def test_deploy_nas_app_declares_app_services_with_app_research_and_conditional_app_ws():
+    # Fix 37 (journal 112): `deploy-nas-app` predates `app-research` (phase 5) and never
+    # touched `app-ws`; app-research shares the app image and must always be rebuilt and
+    # recreated, and app-ws only when the controller passes WITH_WS=1 (its diff touches the
+    # RFQ/WebSocket code) -- default off so the market tape socket is kept.
+    mk = (ROOT / "Makefile").read_text()
+    assert re.search(
+        r"^APP_SERVICES\s*:=\s*app-run\s+app-serve\s+app-exec\s+app-research\s+"
+        r"\$\(if\s+\$\(filter\s+1,\$\(WITH_WS\)\),app-ws,\)\s*$", mk, re.MULTILINE), (
+        "APP_SERVICES is not defined as documented")
+    deploy_nas_app = mk.split("\ndeploy-nas-app:")[1].split("\nstatus-nas:")[0]
+    build_line = next(l for l in deploy_nas_app.splitlines() if "docker compose build" in l
+                       and "up -d" in l)
+    up_line = next(l for l in deploy_nas_app.splitlines() if "up -d --no-deps" in l)
+    assert build_line == up_line  # the build-then-restart line is one line, per the recipe form
+    assert "$(APP_SERVICES)" in build_line
+    # app-ws appears only inside the variable's own definition, never spelled out in the line
+    # that actually builds/restarts services.
+    assert "app-ws" not in build_line
+
+
+def test_deploy_nas_app_help_and_done_message_reflect_app_research_and_with_ws():
+    mk = (ROOT / "Makefile").read_text()
+    help_line = next(l for l in mk.splitlines() if l.startswith("deploy-nas-app:"))
+    assert "app-research" in help_line
+    assert "WITH_WS" in help_line
+    deploy_nas_app = mk.split("\ndeploy-nas-app:")[1].split("\nstatus-nas:")[0]
+    done_line = next(l for l in deploy_nas_app.splitlines() if "Done" in l)
+    assert "WITH_WS" in done_line
 
 
 # --- the deletion rule, executed ------------------------------------------------------------

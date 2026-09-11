@@ -9,7 +9,8 @@ from sqlalchemy.exc import IntegrityError
 
 from harness.db.models import Base
 from harness.db.schema import (BRIN_AUTOSUMMARIZE, PARTITIONED_TABLES, _set_brin_autosummarize,
-                               create_schema, drop_schema, ensure_partitions, week_bounds)
+                               create_schema, ddl_target, drop_schema, ensure_partitions,
+                               week_bounds)
 
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
 
@@ -97,6 +98,64 @@ def test_raw_insert_roundtrip(db_session):
     db_session.flush()
     got = db_session.get(RawResponse, (row.id, row.fetched_at))
     assert got.body == {"markets": []}
+
+
+@pytest.mark.parametrize("statement,expected", [
+    ("alter table market_gap_snapshots add column if not exists no_fair_reason varchar(32)",
+     ("column", "market_gap_snapshots", "no_fair_reason")),
+    ("alter table venue_markets add column if not exists exchange_index integer not null default 0",
+     ("column", "venue_markets", "exchange_index")),
+    # Quoted identifiers parse the same shape (the whole statement is lower-cased first, so a
+    # quoted identifier's case is not preserved -- nothing this file writes needs that).
+    ('alter table "Fair_Values" add column if not exists "Feed_Kind" varchar(9)',
+     ("column", "fair_values", "feed_kind")),
+    ("create index if not exists ix_raw_source_fetched on raw_responses (source, fetched_at)",
+     ("index", "ix_raw_source_fetched")),
+    ("create unique index if not exists uq_odds_snapshot_row on odds_snapshots (raw_id)",
+     ("index", "uq_odds_snapshot_row")),
+    ("create index concurrently if not exists ix_fair_created_brin "
+     "on fair_values using brin (created_at) with (autosummarize = on)",
+     ("index", "ix_fair_created_brin")),
+    ("create unique index concurrently if not exists uq_x on t (a)", ("index", "uq_x")),
+    ('create index if not exists "Ix_Quoted" on t (a)', ("index", "ix_quoted")),
+    # Multi-line: create_schema's own statements are single strings, but the parser normalizes
+    # whitespace regardless.
+    ("alter table fair_values\n    add column if not exists feed_kind varchar(9)",
+     ("column", "fair_values", "feed_kind")),
+    # Not recognized -- these always run exactly as before.
+    ("update venue_markets set match_key = null where match_key is null", None),
+    ("create or replace view positions as select 1", None),
+    ("alter table orders alter column status set default 'open'", None),
+    ("alter index if exists ix_x set (autosummarize = on)", None),
+    ("alter table orders add column crossed boolean", None),  # no "if not exists"
+])
+def test_ddl_target(statement, expected):
+    assert ddl_target(statement) == expected
+
+
+def test_create_schema_second_run_touches_no_column_or_index_ddl(db_session):
+    """Fix 37 (journal 110, 112): a no-op `add column if not exists` / `create index if not
+    exists` still asks for a lock before Postgres notices it has nothing to do -- on 2026-09-11
+    that queued a deploy's schema step behind a live snapshot builder for 236-286s and hit the
+    5s DDL_LOCK_TIMEOUT. Once every column and index create_schema knows about already exists,
+    a rerun must not even ask."""
+    engine = db_session.get_bind()
+    db_session.commit()
+    create_schema(engine)  # first run: may still add anything genuinely missing
+
+    seen: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement.strip().lower())
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        create_schema(engine)  # second run: everything above is already there
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    ddl = [s for s in seen if s.startswith(("alter table", "create index", "create unique index"))]
+    assert ddl == [], ddl
 
 
 def test_create_schema_adds_no_fair_reason_to_an_existing_table(db_session):
@@ -538,11 +597,19 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
     autocommit transaction under a lock_timeout: one long transaction holds the AccessExclusiveLock
     that `alter table venue_trades ...` takes until commit, and the later `create index` on
     orderbook_events then queues behind the WebSocket sink's open insert batch, whose next insert
-    into venue_trades waits on init-db."""
+    into venue_trades waits on init-db.
+
+    Fix 37 skips a statement in Python once `ddl_target` finds its column or index already there,
+    so against the already-migrated database the `db_session` fixture hands every test, a second
+    `create_schema` now sends none of them (see `test_create_schema_second_run_touches_no_column_
+    or_index_ddl`). This test needs statements that genuinely still have to run, so it drops the
+    schema first -- a fresh database, exactly like the very first deploy -- and restores the
+    partitions `drop_schema` took with it once it is done."""
     from harness.db import schema as schema_mod
 
     engine = db_session.get_bind()
     db_session.commit()
+    drop_schema(engine)
     seen: list[tuple[str, bool, int]] = []
 
     def capture(conn, cursor, statement, parameters, context, executemany):
@@ -554,44 +621,30 @@ def test_create_schema_runs_ddl_in_autocommit_with_lock_timeout(db_session):
         create_schema(engine)
     finally:
         event.remove(engine, "before_cursor_execute", capture)
+        ensure_partitions(db_session, datetime.now(timezone.utc))  # restore what drop_schema took
 
     assert schema_mod.DDL_LOCK_TIMEOUT == "5s"
     assert [s for s, _, _ in seen if s.startswith("set lock_timeout")] == ["set lock_timeout = '5s'"]
+    # `create_all`, on this fresh database, builds every table it owns in one pass -- including
+    # every model-level `Index(...)` (F47), as a bare `CREATE INDEX` with no `IF NOT EXISTS`.
+    # Those are not this file's own DDL and run inside `create_all`'s own transaction, not the
+    # AUTOCOMMIT block below, so they are excluded by requiring "if not exists" on the two
+    # shapes that carry it.
     ddl = [(s, autocommit, txn) for s, autocommit, txn in seen
-           if s.startswith(("alter table", "create index", "create unique index",
-                            "create or replace view", "update venue_markets"))]
-    # 24 column ALTERs + 19 indexes (Task 9 fix round 1, M1 adds ix_markouts_as_measured) +
-    # 3 views + 1 match_key backfill + 1 concurrent BRIN (carried fix 16: ix_fair_created_brin)
-    # + 4 tape statements + the 4 tape indexes Task 2b guards behind "partitioned, or still
-    # empty" (both tape tables are partitioned here, so all four run) + 5 telemetry indexes
-    # (Task 12b: metric_samples, operator_events, game_score_events, check_results,
-    # report_runs) + 6 phase 4 column ALTERs (equity_snapshots: peak_equity_7d, drawdown_pct,
-    # drawdown_stop; orders: venue_order_id, order_group_id, exchange_index_at_place) + 2 phase
-    # 4 indexes (ix_venue_requests_ts, and Task 11 fix round 1's ix_equity_variant_ts) = 62 + 8
-    # + 1 (fix 25 round 1: ix_odds_fetched_book, the odds-staleness covering index, run
-    # CONCURRENTLY from _CONCURRENT_INDEX_DDL per F65 -- it still matches the "create index"
-    # prefix filter above, so it counts here the same as a plain one) = 71
-    # + 1 (phase 4.5 T5: ix_orders_key_placed, the second _CONCURRENT_INDEX_DDL entry, which the
-    # corrected `intents_without_order_or_skip` check rides) = 72.
-    # Phase 4.5's two model indexes (ix_parlay_cards_week, ix_parlay_legs_card_seq) do not add to
-    # this count: `_model_index_ddl` builds them with `checkfirst=True`, and the db_session
-    # fixture has already run create_schema once, so the second run emits nothing for them.
-    # The three views are unchanged in number: Task 11 widened the `positions` view's fill-method
-    # filter in place, which is one `create or replace view` as it always was.
-    # + 8 (phase 5 T1, ruling B-M13: the seven `_INDEX_DDL` entries the ten research-layer
-    # tables need -- ix_futures_series_week, ix_weather_game_fetched, ix_research_notes_subject,
-    # ix_veto_queue_open, ix_veto_decisions_decided, ix_rfqs_received, uq_rfq_quote_rfq -- plus
-    # the fourth view, veto_h9. The ten tables themselves add nothing here: `create_all` emits
-    # `CREATE TABLE`, which this filter does not match, and none of them declares a model-level
-    # index) = 80.
-    # + 1 (phase 5 T16 fix round 1: ix_rfq_quotes_computed, the bound Pulse's research section
-    # reads through) = 81.
-    # + 1 (phase 5 T19 fix round 1: ix_veto_decisions_signal_created, the index t7's window
-    # filter on `veto_decisions.signal_created_at` needs) = 82.
-    # + 1 (fix 35: ix_fair_leg_lookup, the covering index the RFQ quote's `_LEG` lookup and
-    # `rfq_grade`'s `_CLOSING_LEG` lateral both read, run CONCURRENTLY from
-    # _CONCURRENT_INDEX_DDL -- it still matches the "create index" prefix filter above) = 83.
-    assert len(ddl) == 83, [s for s, _, _ in ddl]
+           if (s.startswith(("alter table", "create index", "create unique index"))
+               and "if not exists" in s)
+           or s.startswith(("create or replace view", "update venue_markets"))]
+    # Every column this file adds by raw ALTER is also declared on the model (grep harness/db/
+    # models.py for each one), so `create_all` on this fresh database already creates every
+    # table with them; `ddl_target` sees each ALTER's column already there and skips it, first
+    # run or not. What is left is only the indexes/views/backfill that create_all does not
+    # build for the caller: not a fixed number to hand-derive here (a future column or index
+    # moves it), only that fix 37 must not have skipped a shape that is actually new on a fresh
+    # database. Asserted narrowly instead of pinned to a count.
+    assert not any(s.startswith("alter table") and "if not exists" in s for s, _, _ in seen), \
+        "every column ALTER should already be covered by create_all on a fresh database"
+    assert any(s.startswith(("create index", "create unique index")) for s, _, _ in ddl), (
+        "a fresh database should still need at least one index this file's own DDL adds")
     assert all(autocommit for _, autocommit, _ in ddl), [s for s, a, _ in ddl if not a]
     # psycopg's TransactionStatus.IDLE is 0: no transaction was open as the statement started,
     # so the statement's own locks are released the moment it finishes.
@@ -609,6 +662,11 @@ def test_create_schema_retries_a_ddl_statement_after_a_lock_timeout(db_session, 
     engine = db_session.get_bind()
     db_session.commit()
     monkeypatch.setattr(schema_mod, "DDL_LOCK_TIMEOUT", "300ms")
+    # Fix 37 skips a no-op ALTER before it ever asks for a lock, and the db_session fixture has
+    # already run create_schema once, so taker_outcome_side is already there; drop it back out
+    # so this ALTER is genuinely pending and create_schema actually reaches for the lock below.
+    db_session.execute(text("alter table venue_trades drop column if exists taker_outcome_side"))
+    db_session.commit()
 
     blocked: list[str] = []
     hit = threading.Event()
