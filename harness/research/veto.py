@@ -222,7 +222,13 @@ def _grade(output: dict | None, snippets: dict) -> tuple[str, object, str | None
     confidence = output.get("confidence")
     if decision == "proceed":
         return decision, confidence, None
-    known = {item.get("id") for item in (snippets.get("items") or [])}
+    # The model never sees the harness's own `s1`-shaped ids -- `snippets_from` assigns them
+    # *after* the call returns -- so it cites the one identifier Anthropic's `web_search_result`
+    # blocks actually carry: the page's `url`. Resolving against both keeps a harness-side id
+    # honored if one is ever echoed back, and fixes the live case, which is url-only (fix round
+    # 2, C1: the recorded fixture cites eight URLs and none of the harness's own ids).
+    items = snippets.get("items") or []
+    known = ({item.get("id") for item in items} | {item.get("url") for item in items}) - {None}
     cited = [item for item in (output.get("evidence_ids") or []) if item in known]
     if not cited:
         return "proceed", confidence, "unresolved_evidence"

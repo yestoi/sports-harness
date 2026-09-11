@@ -1,19 +1,23 @@
 """The worker: the bucket claim, one decision per signal, the labels, the budget and the
 injection case. No test here makes a call; the client is a double."""
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 
 from harness.db.models import Intent, OrderEvent
-from harness.research.client import CallResult
+from harness.research.client import CallResult, parse_response
 from harness.research.spend import Usage
-from harness.research.veto import (DECIDED, DECISIONS, STALE_CLAIM, claim_bucket,
+from harness.research.veto import (DECIDED, DECISIONS, STALE_CLAIM, _grade, claim_bucket,
                                    veto_pass)
 from tests.veto_fixtures import enqueue, seed_game, seed_history, seed_signal, seed_weather
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 NOW = datetime(2026, 9, 19, 22, 30, tzinfo=timezone.utc)
 BUCKET = datetime(2026, 9, 19, 22, 0, tzinfo=timezone.utc)
@@ -492,6 +496,22 @@ def test_a_veto_with_a_resolving_evidence_id_stands(db_session, env_settings, qu
     veto_pass(db_session, NOW, env_settings, client=Grounded())
     assert db_session.execute(text(
         "select distinct decision from veto_decisions")).scalars().all() == ["veto"]
+
+
+def test_the_recorded_live_call_grades_as_reduce_not_proceed(env_settings):
+    """Fix round 2, C1. The controller's own recorded live call
+    (`tests/fixtures/anthropic_structured_websearch.json`) cites eight URLs and none of the
+    harness's own `s1`-shaped ids -- the model is never shown that id space, because the
+    harness assigns it only after the response comes back. Run through the shipped parser and
+    grader unmodified, this used to downgrade to `proceed` with `unresolved_evidence`; every
+    real `reduce`/`veto` in production did the same, and `rule_veto_rate` sat at 0.0 forever."""
+    payload = json.loads((FIXTURES / "anthropic_structured_websearch.json").read_text())
+    result = parse_response("claude-opus-5", payload, latency_ms=1000, request_id="req_proving")
+    assert result.error is None
+    decision, confidence, reason_code = _grade(result.output, result.snippets)
+    assert decision == "reduce"
+    assert reason_code is None
+    assert float(confidence) == pytest.approx(0.62)
 
 
 # --- dormancy and registration -----------------------------------------------------------------
