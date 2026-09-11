@@ -163,9 +163,15 @@ def test_housekeeping_deletes_from_no_phase_5_table_except_rfqs_bounded(db_sessi
         assert f"delete from {table}" not in body
         assert f"truncate {table}" not in body
     # rfqs: no longer an unconditional pin (fix 38) -- but the delete that exists must still be
-    # the bounded, unquoted-only one, not an unbounded sweep a later change could slip in.
-    assert "delete from rfqs" in body
-    assert "not exists" in body and "rfq_quotes" in body
+    # the bounded, unquoted-only one, not an unbounded sweep a later change could slip in. The
+    # guard is asserted against the statement itself rather than the module's whole text: this
+    # file's own prose already says "not exists" and "rfq_quotes" more than once, so reading
+    # the body for them would let a future unguarded sweep pass on the strength of a docstring.
+    statement = housekeeping._PRUNE_RFQS.text.lower()
+    assert "delete from rfqs" in statement
+    assert "not exists" in statement and "rfq_quotes" in statement
+    assert "limit :batch" in statement
+    assert body.count("delete from rfqs") == 1     # that statement, and no second one
     assert "truncate rfqs" not in body
 
 
