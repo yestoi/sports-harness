@@ -98,6 +98,21 @@ def test_the_enqueue_never_fails_the_executor(db_session, env_settings, seeded_c
     assert db_session.execute(text("select count(*) from intents")).scalar() == 3
 
 
+def test_a_failed_market_type_lookup_never_fails_the_executor(db_session, env_settings,
+                                                              seeded_candidates, monkeypatch):
+    """Round 3, from the re-review: `_market_types_of` used to run outside the guard that now
+    covers only `_write_queue_batch` -- a raise there (a statement timeout under contention, in
+    production) escaped `insert_intents` and cost the whole batch of intents, not just the queue
+    write. The lookup now sits inside the same savepoint as the batched write."""
+    from harness.execution import store
+
+    monkeypatch.setattr(store, "_market_types_of",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert store.insert_intents(db_session, seeded_candidates, NOW, replay=False) == 3
+    assert db_session.execute(text("select count(*) from intents")).scalar() == 3
+    assert db_session.execute(text("select count(*) from veto_queue")).scalar() == 0
+
+
 def test_the_market_type_is_looked_up_once_for_the_batch(db_session, env_settings,
                                                          seeded_candidates):
     """Review round 1, minor: the executor's loop ceiling is 7.5 s and a burst is exactly when

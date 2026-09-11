@@ -213,10 +213,12 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
     from harness.config.settings import get_settings
 
     written = 0
-    # Resolved lazily, so a loop whose candidates all conflict pays for no lookup at all.
-    market_types: dict[int, str] | None = None
-    minutes = get_settings().veto_bucket_minutes
-    queue_values: list[dict] = []
+    # Collected here, not queued yet: building the batch (the market-type lookup included) has
+    # to sit inside the same guard as the write, or a lookup that raises -- a statement timeout
+    # under contention, say -- escapes this function and costs every intent this call wrote
+    # (fix round 3, guarding `_market_types_of` too). A replay writes nothing: H9 is measured on
+    # live signals only.
+    written_rows: list = []
     for row in rows:
         stmt = insert(Intent).values(
             signal_id=row.signal_id, variant_id=row.variant_id, venue=row.venue,
@@ -230,23 +232,25 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
         if session.execute(stmt).first() is not None:
             written += 1
             if not replay:
-                # Phase 5: the veto queue. A replay writes nothing: H9 is measured on live
-                # signals only. Collected here and written once after the loop, in one savepoint
-                # (fix round 2, I2): `candidate_signals` has no LIMIT, so a recorder/executor gap
-                # can put well over sixty-four intents through this loop in one transaction, and
-                # PostgreSQL's `pg_subtrans` SLRU overflows past 64 subtransactions -- a cost
-                # every concurrent reader pays, cluster-wide, on a 2 GB Postgres. One savepoint
-                # around one batched insert buys the same isolation (a queue failure never costs
-                # an intent) at one subtransaction regardless of batch size.
-                if market_types is None:
-                    market_types = _market_types_of(session, rows)
-                queue_values.append(_queue_values(row, now, market_types, minutes))
-    if queue_values:
+                written_rows.append(row)
+    if written_rows:
+        # Phase 5: the veto queue, built and written together in one savepoint (fix round 2, I2;
+        # fix round 3 folds the market-type lookup into the same guard). `candidate_signals` has
+        # no LIMIT, so a recorder/executor gap can put well over sixty-four intents through the
+        # loop above in one transaction, and PostgreSQL's `pg_subtrans` SLRU overflows past 64
+        # subtransactions -- a cost every concurrent reader pays, cluster-wide, on a 2 GB
+        # Postgres. One savepoint around the lookup and the batched insert buys the isolation
+        # the comment above promises (a queue failure, of any kind, never costs an intent) at one
+        # subtransaction regardless of batch size.
         try:
             with session.begin_nested():
+                minutes = get_settings().veto_bucket_minutes
+                market_types = _market_types_of(session, written_rows)
+                queue_values = [_queue_values(row, now, market_types, minutes)
+                               for row in written_rows]
                 _write_queue_batch(session, queue_values)
         except Exception:  # noqa: BLE001
-            log.exception("veto enqueue failed for a batch of %d intent(s)", len(queue_values))
+            log.exception("veto enqueue failed for a batch of %d intent(s)", len(written_rows))
     return written
 
 
