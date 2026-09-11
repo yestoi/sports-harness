@@ -113,3 +113,72 @@ def test_a_print_and_its_own_delta_are_one_event():
                  deltas=[tdelta(1, "yes", ".30", "-3")])
     assert result.state.queue_remaining == D(2)
     assert result.state.filled_contracts == D(0)
+
+
+def _executor(books: dict) -> tuple[Executor, list]:
+    """An `Executor` with only what `_simulate_order` reads, and the track results it produced.
+
+    `Executor.__init__` builds a runtime, a gateway and a session factory; none of them is part
+    of the fill decision. `_persist_track` is replaced with a capture, exactly as the probe does
+    it, so no row is written and the simulator's own result is what the case asserts on.
+    """
+    captured: list = []
+    executor = Executor.__new__(Executor)
+    executor.exec_settings = NS()
+    executor.settings = NS(exec_period_s=15)
+    executor.books = books
+
+    def persist(session, order_row, order_obj, result, prints, ledger, crossed_already):
+        captured.append(result)
+        return _TrackResult(result.state, result.state.filled_contracts,
+                            len(result.fills), result.crossed)
+
+    executor._persist_track = persist
+    return executor, captured
+
+
+def _order_row(**over):
+    """One `orders` row as `_simulate_order` reads it: attribute access only, no ORM."""
+    row = NS(id=1, venue_market_id=1, ticker="A", side="yes", prob=D(".30"),
+             contracts=D(10), placed_at=T0, expiry=DEADLINE,
+             queue_ahead_at_place=D(5), queue_remaining=D(5), traded_at_price=D(0),
+             filled_contracts=D(0), tape_cursor_event_id=1, crossed=False,
+             last_print_ts=T0, last_print_ids=(), nw_queue_remaining=D(5),
+             nw_traded_at_price=D(0), nw_filled_contracts=D(0),
+             nw_tape_cursor_event_id=1, nw_crossed=False, nw_last_print_ts=T0,
+             nw_last_print_ids=(), nw_done=True, status="open")
+    for key, value in over.items():
+        setattr(row, key, value)
+    return row
+
+
+#: A market that is never dirty, and one that always is. `_simulate_order` calls
+#: `market.dirty(now, exec_settings)` and nothing else on it.
+CLEAN_MARKET = {1: NS(dirty=lambda *unused: False)}
+DIRTY_MARKET = {1: NS(dirty=lambda *unused: True)}
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="6B: after a recovery the print watermark is stale while the delta "
+                          "cursor has advanced, so a trade from inside the gap fills against "
+                          "the post-gap queue")
+def test_recovery_takes_no_fill_from_a_trade_inside_the_gap():
+    """Probe `actual_recovery_branch`. Expected fill 0.
+
+    Computed independently: before the gap, 5 rest ahead of us. During the gap one trade of 3
+    happens. The recovery snapshot is taken after that trade and shows 2 resting ahead -- which
+    is the same 5 minus the same 3, already accounted for. Applying the gap's trade to the
+    recovered queue would subtract those 3 a second time, taking 2 to -1 and paying us 1
+    contract we were never in line for. The recovery snapshot is the queue; the trade that
+    produced it is spent. The probe captured `actual_fill 1.00` with the print watermark left
+    at the trade's own timestamp while the delta cursor had moved to the recovery anchor.
+    """
+    recovered = BookState.from_levels("A", [[".30", "2"]], [[".60", "5"]], sid=SID, seq=3,
+                                      as_of=at(20), source="ws", anchor_id=3)
+    trade = TapePrint("during-gap", at(10), D(".30"), D(3), "no", "ws")
+    delta = TapeDelta(2, at(10), "yes", D(".30"), D(-3), SID, 2)
+    executor, captured = _executor({"A": recovered})
+    with patch("harness.execution.store.update_order"):
+        executor._simulate_order(None, _order_row(), CLEAN_MARKET, {}, {"A"},
+                                 {"A": ([trade], [delta])}, set(), at(30), ExecStats())
+    assert captured[0].state.filled_contracts == D(0)
