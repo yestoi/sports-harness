@@ -96,6 +96,7 @@ from harness.execution.plan import (
     rebuild_state,
 )
 from harness.execution.risk import compute_drawdown, peak_equity_7d
+from harness.execution.state import _state_columns, _state_of
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_for_order
 
 log = logging.getLogger(__name__)
@@ -1256,36 +1257,6 @@ def _note_error(heartbeat: dict, message: str) -> None:
     """Keep the first failure of the step; a later one rarely explains more than the first."""
     if heartbeat["last_error"] is None:
         heartbeat["last_error"] = message[:2000]
-
-
-def _state_of(row, prefix: str) -> SimState:
-    """The persisted `SimState` of one track, read off the order row."""
-    return SimState(
-        queue_remaining=getattr(row, f"{prefix}queue_remaining"),
-        traded_at_price=getattr(row, f"{prefix}traded_at_price") or ZERO,
-        filled_contracts=getattr(row, f"{prefix}filled_contracts"),
-        cursor_event_id=getattr(row, f"{prefix}tape_cursor_event_id"),
-        crossed=bool(getattr(row, f"{prefix}crossed")),
-        last_print_ts=getattr(row, f"{prefix}last_print_ts"),
-        last_print_ids=tuple(getattr(row, f"{prefix}last_print_ids") or ()))
-
-
-def _state_columns(prefix: str, state: SimState) -> dict:
-    """The columns one track's `SimState` is persisted in.
-
-    The cursor is the last tape row the simulation actually consumed and nothing else. The
-    cache's own head runs ahead of it -- `advance_book` folds a delta in on `id` with no upper
-    `ts` bound while `_merge_events` stops at the track's deadline -- so writing the head back
-    would jump the order over a delta stamped ahead of our clock. The next step reaches that
-    delta through `_sim_book`'s `book_at(ts_of(cursor))` branch instead.
-    """
-    cursor = state.cursor_event_id
-    return {f"{prefix}queue_remaining": state.queue_remaining,
-            f"{prefix}traded_at_price": state.traded_at_price,
-            f"{prefix}tape_cursor_event_id": cursor,
-            f"{prefix}crossed": state.crossed,
-            f"{prefix}last_print_ts": state.last_print_ts,
-            f"{prefix}last_print_ids": list(state.last_print_ids)}
 
 
 def _venue_status(was: str, filled: Decimal, contracts: Decimal) -> str:
