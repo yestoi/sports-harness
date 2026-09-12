@@ -890,3 +890,39 @@ sports-harness-app-serve-1 101.7MiB / 7.536GiB
 "message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
 "message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
 "message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
+Sat Sep 12 12:52:17 AM CDT 2026
+/ui/ 200 3018B 0.175559s
+/ui/js/app.mjs 200 19650B 0.038331s
+/ui/js/pulse.mjs 200 13684B 0.013646s
+/ui/js/study.mjs 200 15070B 0.022523s
+/ui/js/floor.mjs 200 19574B 0.020612s
+/api/snap 200 716B 0.009616s
+-- /api/snap names/errors:
+list [('floor', 113.08879, None), ('gate', 83.088377, None), ('pulse', 23.087952, None), ('study:2026-37', 23.086821, None), ('ticket', 53.088282, None)]
+-- ui index script tags:
+<script>
+<script src="./vendor/uPlot.iife.min.js">
+<script type="module" src="./js/app.mjs">
+-- app-serve log since restart (errors/warnings):
+      2 "message": "snapshot section research failed: OperationalError
+-- executor loops since 05:47Z:
+2026-09-12 05:42:09.701753+00 | 505097.000000
+2026-09-12 05:42:09.701753+00 | 19870 | 505097 | 00:10:08.639202
+Mem:            7717        6014         720         550        2239        1702
+sports-harness-app-run-1 1.454GiB / 7.536GiB
+Sat Sep 12 12:52:55 AM CDT 2026
+sports-harness-app-run-1 1.454GiB / 7.536GiB
+12133 | 2026-09-12 05:49:26.718945+00 | ok | 176 |  |  | 
+12134 | 2026-09-12 05:51:26.719597+00 | running | 0 |  |  | 
+      4 "message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
+      4 "message": "Added job \
+      1 "message": "tick ok n=97 credits=176 errors=0 warnings=0
+      1 "message": "tick ok n=225 credits=6 errors=0 warnings=0
+      1 "message": "scheduler stopped
+      1 "message": "scheduler started heartbeat=30s settle=3600s backup_encrypt=600s
+      1 "message": "Scheduler started
+      1 "message": "Scheduler has been shut down
+Sat Sep 12 12:54:56 AM CDT 2026
+sports-harness-app-run-1 1.819GiB / 7.536GiB
+Mem:            7717        6378         406         551        2189        1338
+iowait=12 si=11
