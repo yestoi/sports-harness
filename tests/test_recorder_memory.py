@@ -207,27 +207,24 @@ def test_the_gap_snapshot_read_does_not_grow_with_the_history_behind_it(
 
 @respx.mock
 def test_the_tick_retains_nothing_after_the_second(env_settings, db_session):
-    """Finding 49's acceptance: over 20 ticks the traced total grows under 5 % once warm.
+    """Finding 49's acceptance: over 20 ticks the traced total grows under 5 % after tick 2.
 
-    The brief asks for the baseline at tick 2 and this test used it until 2026-09-12, when the
-    full suite showed why it cannot be: `tracemalloc`'s traced total is the whole *process*, and
-    psycopg prepares a statement on its fifth execution (`prepare_threshold`, default 5), so the
-    driver's prepared-statement cache is still filling at tick 3 and 4. Run alone the test read
-    +1.6 % from tick 2; run inside `make test`, with the connection reaching the prepare
-    threshold on different statements, it read +31.7 % -- and every kilobyte of that difference
-    was psycopg's two query-building sites, with the harness's own retained allocation
-    (`json/decoder.py`, 291.5 KiB in 4,847 blocks) identical to the byte in both runs.
-
-    So the baseline is tick 5, where the last of those caches is full. The window this still
-    covers is fifteen ticks, and real per-tick retention does not stop at tick 5: before the
-    `DISTINCT ON` read of fix 49 the gap snapshot stage grew with every tick in the fifteen-
-    minute window and never plateaued.
+    The total has psycopg's prepared-statement cache taken out of it (`_DRIVER_CACHE` in the
+    rig). Run alone this test passed at +1.6 %; run inside `make test` it read +31.7 % on one
+    run and, rebaselined at tick 5, +76.8 % on the next -- and in both the whole difference sat
+    in psycopg's two query-building sites, while the harness's own retained allocation
+    (`json/decoder.py`, 291.5 KiB in 4,847 blocks) was identical to the kilobyte. The driver
+    prepares a statement on its fifth execution and holds the query bytes until eviction, so
+    which tick the cache fills on depends on what ran in the process before this file did. That
+    is the driver's business and bounded by its own `prepared_max`; what this criterion is about
+    is what the *tick* keeps, so the measurement now says that and the baseline stays where the
+    brief put it.
     """
     ticks = 20
     run_tick, _ = _driver(env_settings, db_session, ticks)
     report = measure_ticks(run_tick, ticks, checkpoints=(1, 2, 5, 10))
     print("\n" + report.text())
 
-    growth = report.growth_after(5)
+    growth = report.growth_after(2)
     assert growth < 0.05, (
-        f"traced total grew {growth:.1%} from tick 5 to tick {ticks}\n{report.text()}")
+        f"traced total grew {growth:.1%} from tick 2 to tick {ticks}\n{report.text()}")
