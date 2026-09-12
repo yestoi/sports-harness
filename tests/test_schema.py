@@ -982,11 +982,19 @@ def _autocommit_conn(engine):
 def _reset_raw_source_endpoint_id(engine):
     """Drop the index this section builds and re-builds repeatedly, including any partition
     child left behind unattached (invalid) by an earlier interrupted run in this same session --
-    `drop index if exists` on the parent alone would not reach one of those."""
+    `drop index if exists` on the parent alone drops every *attached* child with it, but not a
+    stray, unattached one.
+
+    Two naming shapes, both swept: `ix_raw_source_endpoint_id_<suffix>` is what this recipe's own
+    builder names a child, and `<partition>_source_endpoint_id_idx` is Postgres's own default
+    name for a child it attached automatically (review Minor 5, fix 45 round 1 -- the same blind
+    spot Critical 1's fix closed in the recipe itself: a stray under that name is exactly what a
+    reproduction of Critical 1 would leave behind)."""
     with _autocommit_conn(engine) as conn:
         conn.execute(text("drop index if exists ix_raw_source_endpoint_id"))
         stale = conn.execute(text(
-            r"select relname from pg_class where relname ~ '^ix_raw_source_endpoint_id_'")).scalars().all()
+            r"select relname from pg_class where relname ~ "
+            r"'^ix_raw_source_endpoint_id_|_source_endpoint_id_idx$'")).scalars().all()
         for name in stale:
             conn.execute(text(f"drop index concurrently if exists {name}"))
 
@@ -1092,6 +1100,62 @@ def test_ensure_partitioned_concurrent_indexes_rebuilds_an_invalid_child(db_sess
     new_oid = db_session.execute(text("select oid from pg_class where relname = :n"),
                                  {"n": stale_child}).scalar()
     assert new_oid != stale_oid, "the stale index must be dropped and rebuilt, not reused"
+
+
+def test_ensure_partitioned_concurrent_indexes_recognises_a_partition_postgres_indexed_itself(db_session):
+    """Review Critical 1 (fix 45 round 1): a partition created while the parent index already
+    exists is indexed and attached by Postgres itself, under Postgres's own default name -- not
+    the name this recipe would choose. The old name-keyed attach check never recognised that
+    child, so the loop built a second, duplicate index on the same partition and then had its own
+    `ATTACH` refused ("Another index is already attached for partition ..."), leaving the parent
+    permanently invalid.
+
+    Reproduced here by building the parent `on only` by hand (step (a) of the recipe, with zero
+    attached children so far), then creating a brand new partition while the parent stands
+    invalid -- Postgres auto-builds and attaches that partition's own child immediately, under its
+    own default name -- and finally running the real helper over the result."""
+    from harness.db import schema as schema_module
+
+    engine = db_session.get_bind()
+    _reset_raw_source_endpoint_id(engine)
+    db_session.commit()
+
+    with _autocommit_conn(engine) as conn:
+        conn.execute(text(
+            "create index if not exists ix_raw_source_endpoint_id on only raw_responses "
+            "(source, endpoint, id)"))
+    db_session.commit()
+    assert not schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
+
+    # A brand new partition, several weeks out so it cannot collide with the fixture's own two.
+    future_start, future_end = week_bounds(datetime.now(timezone.utc) + timedelta(weeks=5))
+    new_partition = schema_module._partition_name("raw_responses", future_start)
+    db_session.execute(text(
+        f"create table {new_partition} partition of raw_responses "
+        f"for values from ('{future_start.isoformat()}') to ('{future_end.isoformat()}')"))
+    db_session.commit()
+
+    def source_endpoint_id_indexes() -> list[str]:
+        return db_session.execute(text(
+            "select indexname from pg_indexes where tablename = :t "
+            "and indexname like '%source_endpoint_id%'"), {"t": new_partition}).scalars().all()
+
+    auto_named = source_endpoint_id_indexes()
+    assert auto_named, "Postgres should have auto-attached a child to the new partition"
+    assert not any(n.startswith("ix_raw_source_endpoint_id") for n in auto_named), (
+        "the auto-attached child must carry Postgres's own default name, not this recipe's, "
+        "or the reproduction proves nothing")
+    db_session.commit()
+
+    with _autocommit_conn(engine) as conn:
+        schema_module._ensure_partitioned_concurrent_indexes(conn)  # must not raise
+
+    assert source_endpoint_id_indexes() == auto_named, (
+        "no second index should have been built on a partition Postgres already indexed itself")
+    assert schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
+    for partition in schema_module._partitions_of(db_session, "raw_responses"):
+        assert schema_module._partition_has_attached_child(
+            db_session, "ix_raw_source_endpoint_id", partition), partition
 
 
 def test_ensure_partitioned_concurrent_indexes_skips_when_already_valid(db_session):

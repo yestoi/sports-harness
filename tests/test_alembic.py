@@ -879,10 +879,17 @@ def test_the_raw_events_lookup_downgrade_drops_the_parent_index():
     """Unlike every revision since `0002_phase45` (whose `downgrade()` is `pass`, roadmap
     invariant 5), this one actually drops: a plain additive index carries none of the data-loss
     risk that rule guards against, and dropping the parent takes every attached partition child
-    with it (intrinsic to a partitioned index in Postgres; no CASCADE needed)."""
+    with it (intrinsic to a partitioned index in Postgres; no CASCADE needed).
+
+    Round 1 (review Minor 3): read through `_executable_strings`, not the lowercased file body --
+    the module docstring quotes this same SQL in prose, so a body-text assertion would still pass
+    against a `downgrade()` that dropped nothing.
+    `test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose` is the precedent."""
     module = _load_revision("0007_raw_events_lookup.py")
-    body = (ROOT / "migrations" / "versions" / "0007_raw_events_lookup.py").read_text().lower()
-    assert "drop index if exists ix_raw_source_endpoint_id" in body
+    path = ROOT / "migrations" / "versions" / "0007_raw_events_lookup.py"
+    strings = [s.lower() for s in _executable_strings(path)]
+    assert any("drop index if exists ix_raw_source_endpoint_id" in s for s in strings)
+    body = path.read_text().lower()
     # Still none of `test_no_migration_drops_or_alters_an_existing_object`'s FORBIDDEN shapes
     # (that parametrized test already covers this file; this just states the intent locally).
     assert "drop_index" not in body and "drop table" not in body
@@ -915,16 +922,28 @@ def test_the_raw_source_endpoint_id_index_matches_the_partitioned_concurrent_tup
     assert [c.name for c in index.columns] == ["source", "endpoint", "id"]
 
 
-def test_the_raw_events_lookup_index_is_in_both_catalogues(two_databases):
+def test_the_raw_events_lookup_index_is_in_both_catalogues(two_databases, frozen_now):
     """Fix 45 adds `ix_raw_source_endpoint_id` to `RawResponse.__table_args__`, to
     `harness/db/schema.py`'s `_PARTITIONED_CONCURRENT_INDEXES` and to this revision in one commit:
     the catalogue diff fails if any half lands without the others, the same shape
-    `test_the_quotes_run_index_is_in_both_catalogues` checks for fix 42's `ix_quotes_run_market`."""
+    `test_the_quotes_run_index_is_in_both_catalogues` checks for fix 42's `ix_quotes_run_market`.
+
+    Round 1 (review Minor 2): `inspect().get_indexes` reports an invalid index the same as a
+    valid one, so `ensure_partitions` gives each database at least one partition here and the
+    test also checks `pg_index.indisvalid` -- not just that the name is present -- for the
+    parent on both paths."""
     from harness.db.migrate import upgrade_head
 
     a, b = two_databases
     create_schema(a)
     upgrade_head(_url(b))
     for engine in (a, b):
+        with Session(engine) as s:
+            ensure_partitions(s, frozen_now)
         indexes = {i["name"] for i in inspect(engine).get_indexes("raw_responses")}
         assert "ix_raw_source_endpoint_id" in indexes
+        with engine.connect() as conn:
+            valid = conn.execute(text(
+                "select indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid "
+                "where c.relname = 'ix_raw_source_endpoint_id'")).scalar()
+        assert valid is True
