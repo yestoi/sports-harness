@@ -59,7 +59,7 @@ that need adjudication. Preserve the model allocations, independent reviewers an
 ## Kickoff (a fresh session, the way the user starts it)
 
 ```
-cd ~/dev/sports && claude --dangerously-skip-permissions
+cd ~/dev/sports && claude --dangerously-skip-permissions --autocompact 500k   # compact at 500k, not the model's ~967k: cheaper turns late in a long pass; recovery.md makes compaction safe
 /effort            # high (xhigh and max spend three to four times the tokens for no measured gain on this loop)
 /autopilot
 ```
