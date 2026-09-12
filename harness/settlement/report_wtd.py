@@ -38,6 +38,16 @@ def _due(last: datetime | None, now: datetime, period: timedelta) -> bool:
     return last is None or (now - last) >= period
 
 
+def is_due(session: Session, now: datetime, settings) -> bool:
+    """Whether `report_wtd_stage` would treat itself as due right now: the same
+    `_GET_LAST` read plus `_due` this stage always used, factored out (fix 47) so
+    `Settler.run` can ask the identical question before the loop, to give a due six-hourly
+    report a run ahead of the hourly stages that would otherwise starve it. `_due` itself
+    stays pure; this is the one place that reads the clock's job_state row for it."""
+    last = session.execute(_GET_LAST, {"k": JOB_STATE_KEY}).scalar()
+    return _due(last, now, timedelta(seconds=settings.report_wtd_period_s))
+
+
 def report_wtd_stage(session: Session, now: datetime, budget: Budget) -> StageResult:
     """Rebuild the week-to-date tables when `report_wtd_period_s` has elapsed since the last
     rebuild, unless the shared settlement budget is already below `MIN_BUDGET_S`.
@@ -61,8 +71,7 @@ def report_wtd_stage(session: Session, now: datetime, budget: Budget) -> StageRe
         # raise for want of one.
         return StageResult("report_wtd", {"skipped": True, "reason": "no settings"}, False, None)
 
-    last = session.execute(_GET_LAST, {"k": JOB_STATE_KEY}).scalar()
-    if not _due(last, now, timedelta(seconds=settings.report_wtd_period_s)):
+    if not is_due(session, now, settings):
         return StageResult("report_wtd", {"skipped": True}, False, None)
 
     # Addendum 0.1 / Amendment 5: the provisional run's week is the America/Chicago ISO week.

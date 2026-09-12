@@ -61,16 +61,26 @@ class Budget:
 
 @dataclass
 class StageResult:
-    """What one stage did. `counts` goes into `job_runs.notes` verbatim, so it must be JSON."""
+    """What one stage did. `counts` goes into `job_runs.notes` verbatim, so it must be JSON.
+
+    `elapsed_s` (fix 47) is wall clock the stage took, timed by `Settler._run_stage` with the
+    job's own injected `monotonic` -- never `time.monotonic` directly -- so a test can pin it.
+    It defaults to `0.0` for a `StageResult` a stage function builds itself (every real call
+    from `_run_stage` overwrites it after the fact), and stays `0.0` on the synthetic "ran
+    first" placeholder `Settler.run` builds for a `report_wtd` that already ran ahead of its
+    usual slot -- that placeholder is never passed through `_run_stage` a second time.
+    """
 
     name: str
     counts: dict = field(default_factory=dict)
     budget_exhausted: bool = False
     error: str | None = None
+    elapsed_s: float = 0.0
 
     def as_note(self) -> dict:
         return {"name": self.name, "counts": self.counts,
-                "budget_exhausted": self.budget_exhausted, "error": self.error}
+                "budget_exhausted": self.budget_exhausted, "error": self.error,
+                "elapsed_s": self.elapsed_s}
 
 
 StageFn = Callable[[Session, datetime, Budget], StageResult]
@@ -160,9 +170,11 @@ class Settler:
         self._monotonic = monotonic
 
     def run(self) -> JobRun:
+        from harness.settlement.report_wtd import is_due as report_wtd_is_due
         from harness.settlement.settle import stale_unsettled
 
         stages = load_stages()
+        stage_fns = dict(stages)
         now = self._clock()
         with self._factory() as session:
             row = JobRun(job="settle", started_at=now, status="running", notes={})
@@ -174,11 +186,38 @@ class Settler:
             # Task 12b: the one stage that writes check_results (harness.ops.housekeeping)
             # needs this run's own id to key its rows to.
             ctx["job_run_id"] = row.id
-            results: list[StageResult] = []
+
+            # Fix 47, ruling (row 47): a due six-hourly `report_wtd` outranks the hourly
+            # stages once, because today it always runs last, behind eight stages that
+            # routinely spend the whole shared budget before it gets a turn. The budget is
+            # still full here (nothing has run yet), so `report_wtd`'s own `MIN_BUDGET_S`
+            # guard only ever matters for the not-due path below. The B-I7 order of the
+            # hourly stages themselves, and `STAGE_MODULES`'s text order, are unchanged.
+            due_first = "report_wtd" in stage_fns and report_wtd_is_due(session, now, self.s)
+
+            run_order: list[str] = []
+            results: list[StageResult] = []       # real results, in run order (status/telemetry)
+            stage_notes: list[StageResult] = []    # one per registered name, registry order (notes)
             with use_ctx(ctx):
+                if due_first:
+                    early = self._run_stage(session, "report_wtd", stage_fns["report_wtd"],
+                                            now, budget)
+                    run_order.append("report_wtd")
+                    results.append(early)
+
                 for name, fn in stages:
+                    if due_first and name == "report_wtd":
+                        # It already ran, ahead of its usual slot: this slot in the notes'
+                        # `stages` list records that rather than running it a second time, so
+                        # the list stays eleven entries long and `order` (below) carries the
+                        # truth of when it actually ran.
+                        stage_notes.append(StageResult(
+                            "report_wtd", {"skipped": True, "reason": "ran first"}, False, None))
+                        continue
                     result = self._run_stage(session, name, fn, now, budget)
+                    run_order.append(name)
                     results.append(result)
+                    stage_notes.append(result)
                     if name == "settle":
                         # Task 12b: one equity_snapshots row per exec variant right after the
                         # stage that can move the ledger, whether or not it errored -- the
@@ -208,7 +247,8 @@ class Settler:
             row.finished_at = self._clock()
             row.status = _status(results, ctx["errors"])
             row.budget_exhausted = any(r.budget_exhausted for r in results)
-            row.notes = {"stages": [r.as_note() for r in results],
+            row.notes = {"budget_s": self.s.settle_budget_s, "order": run_order,
+                         "stages": [r.as_note() for r in stage_notes],
                          "stale_unsettled": stale,
                          "warnings": ctx["warnings"], "errors": ctx["errors"]}
             session.commit()
@@ -219,14 +259,16 @@ class Settler:
 
     def _run_stage(self, session: Session, name: str, fn: StageFn, now: datetime,
                    budget: Budget) -> StageResult:
+        start = self._monotonic()
         try:
             result = fn(session, now, budget)
             session.commit()
-            return result
         except Exception as exc:  # noqa: BLE001 - one stage must not take the job down
             session.rollback()
             log.exception("settlement stage %s failed", name)
-            return StageResult(name=name, error=f"{type(exc).__name__}: {exc}"[:2000])
+            result = StageResult(name=name, error=f"{type(exc).__name__}: {exc}"[:2000])
+        result.elapsed_s = round(self._monotonic() - start, 3)
+        return result
 
     def _stale(self, session: Session, fn, now: datetime, ctx: dict) -> int | None:
         """`stale_unsettled` is a counter on the job run, not a stage; a failure there must not

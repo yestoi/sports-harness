@@ -534,8 +534,12 @@ def test_stage_registry_runs_stages_in_registration_order_under_one_budget(
     assert [name for name, _ in load_stages()] == ["first", "boom", "last"]
 
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    # Fix 47: `_run_stage` now reads the monotonic clock twice more per stage (elapsed_s's
+    # start/end), interleaved with each stage's own `budget.remaining_s()` read -- a plain
+    # increasing sequence keeps every reading strictly later than the one before it, whatever
+    # order the calls land in, so the budget-draining assertion below still holds.
     settler = Settler(env_settings, factory, None, clock=lambda: NOW,
-                      monotonic=Mono(0.0, 0.0, 5.0, 10.0, 20.0))
+                      monotonic=Mono(*(float(i) for i in range(10))))
     row = settler.run()
 
     assert [name for name, _ in seen] == ["first", "boom", "last"]
@@ -554,6 +558,88 @@ def test_stage_registry_runs_stages_in_registration_order_under_one_budget(
     assert len(errors) == 1 and errors[0].ref == {"stage": "boom"}
     exhausted = db_session.query(OperatorEvent).filter_by(kind="budget_exhausted").all()
     assert len(exhausted) == 1 and exhausted[0].ref == {"stage": "last"}
+
+
+def test_elapsed_s_budget_s_and_order_recorded_in_notes(db_session, env_settings, monkeypatch):
+    """Fix 47 (a): every stage note carries `elapsed_s`, timed from the job's own injected
+    monotonic clock, and `notes` itself carries `budget_s` and `order` so a reader can see
+    what the shared budget was and what actually ran, in what sequence."""
+    monkeypatch.setattr(job_module, "STAGES", [])
+    monkeypatch.setattr(job_module, "STAGE_MODULES", [])
+
+    def first(session, now, budget):
+        return StageResult("first", {"n": 1}, False, None)
+
+    def second(session, now, budget):
+        return StageResult("second", {"n": 2}, False, None)
+
+    register_stage("first", first)
+    register_stage("second", second)
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    # index0: Budget.__init__ (unused by this test). index1/2: first's start/end (elapsed 2.0).
+    # index3/4: second's start/end (elapsed 3.0).
+    settler = Settler(env_settings, factory, None, clock=lambda: NOW,
+                      monotonic=Mono(100.0, 0.0, 2.0, 2.0, 5.0))
+    row = settler.run()
+
+    assert row.notes["budget_s"] == env_settings.settle_budget_s
+    assert row.notes["order"] == ["first", "second"]
+    stages = row.notes["stages"]
+    assert [s["name"] for s in stages] == ["first", "second"]
+    assert stages[0]["elapsed_s"] == 2.0
+    assert stages[1]["elapsed_s"] == 3.0
+
+
+def test_due_report_wtd_runs_first_and_is_not_starved(db_session, env_settings, monkeypatch):
+    """Fix 47 (b): a `report_wtd` that is due outranks the rest of the hourly registry once --
+    it gets the whole (fresh) budget instead of whatever the stage ahead of it left over, and
+    the notes' `order` records that it actually ran first even though the stage list itself
+    keeps its usual eleven-ish (here two) entries. Not due: nothing about the order changes."""
+    from harness.settlement.report_wtd import JOB_STATE_KEY, _SET_LAST
+
+    ran: list[str] = []
+
+    def hog(session, now, budget):
+        # Stands in for "the stage that used to spend the whole shared budget" (roadmap row
+        # 47): whatever ran before `report_wtd` reported the budget already gone.
+        ran.append("hog")
+        return StageResult("hog", {}, True, None)
+
+    def report_wtd_stub(session, now, budget):
+        ran.append("report_wtd")
+        starved_by_hog = "hog" in ran[:-1]
+        return StageResult("report_wtd", {"ran": True}, starved_by_hog, None)
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+
+    # -- due: report_wtd has never run, so job_state has no row for it -> due by default.
+    monkeypatch.setattr(job_module, "STAGES", [])
+    monkeypatch.setattr(job_module, "STAGE_MODULES", [])
+    register_stage("hog", hog)
+    register_stage("report_wtd", report_wtd_stub)
+
+    row = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
+
+    assert ran[0] == "report_wtd"
+    assert row.notes["order"] == ["report_wtd", "hog"]
+    assert len(row.notes["stages"]) == 2
+    notes = {s["name"]: s for s in row.notes["stages"]}
+    assert notes["report_wtd"]["budget_exhausted"] is False  # ran first: never starved
+    assert notes["hog"]["budget_exhausted"] is True
+
+    # -- not due: stamp report_wtd as having just run, then re-run with the same registry.
+    db_session.execute(_SET_LAST, {"k": JOB_STATE_KEY, "now": NOW})
+    db_session.commit()
+    ran.clear()
+    monkeypatch.setattr(job_module, "STAGES", [])
+    monkeypatch.setattr(job_module, "STAGE_MODULES", [])
+    register_stage("hog", hog)
+    register_stage("report_wtd", report_wtd_stub)
+
+    row2 = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
+
+    assert row2.notes["order"] == ["hog", "report_wtd"]  # unchanged registration order
 
 
 def test_equity_snapshot_written_after_the_settle_stage(db_session, env_settings):
