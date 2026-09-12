@@ -308,10 +308,12 @@ class MemoryReport:
     def growth_after(self, baseline_tick: int) -> float:
         """Fractional growth in traced total from `baseline_tick` to the last sample.
 
-        The baseline is the *second* tick, not the first: the first tick warms every lazily
-        built cache the process has (SQLAlchemy's compiled-statement cache, the popularity
-        table, the normalizer's event cache), and counting that warm-up as a leak would make
-        the criterion unmeetable for reasons that have nothing to do with retention.
+        The baseline is never the first tick: tick 1 warms every lazily built cache the process
+        has (SQLAlchemy's compiled-statement cache, the popularity table, the normalizer's event
+        cache, psycopg's prepared statements), and counting that warm-up as a leak would make
+        the criterion unmeetable for reasons that have nothing to do with retention. How many
+        ticks the warm-up takes depends on the cache: see the caller for the tick it picks and
+        why.
         """
         base = self.at(baseline_tick).traced_kb
         if base <= 0:
