@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from harness.db.models import ReportCell, ReportRun
 from harness.report import criteria_hash
+from harness.report.amendments import AMENDMENTS
 from harness.report.tables import (
     CONTRAST_BENCHMARK,
     GREY_CLUSTERS,
@@ -132,6 +133,17 @@ def render_markdown(tables: dict[str, Table], meta: dict) -> str:
                      f"(was `{previous}`). Every criterion below is judged on the new set.")
     if meta.get("confirmation"):
         lines.append(f"- {CONFIRMATION_NOTE}")
+    # Addendum 0.9: one line per amendment, including the ones that exclude nothing. A reader
+    # who sees four lines against five amendments cannot tell clean from forgotten.
+    eligibility = meta.get("eligibility") or {}
+    for number in sorted(eligibility):
+        entry = eligibility[number]
+        runs = entry.get("excluded_runs")
+        if not runs:
+            lines.append(f"- Excluded by Amendment {number}: none ({entry.get('what', '')})")
+        else:
+            lines.append(f"- Excluded by Amendment {number}: {entry.get('orders', 0)} orders, "
+                         f"{entry.get('signals', 0)} signals (runs {runs[0]}-{runs[1]})")
     lines.append("")
     annotation = meta.get("annotation")
     if annotation:
@@ -314,6 +326,30 @@ _PREVIOUS_HASH = text("""
     limit 1
 """)
 
+#: Addendum 0.9. Bound: the same week window on `orders.placed_at` that `_CONFIG_HASHES` above
+#: already uses, with `market_gap_snapshots` reached by primary key -- `orders` carries no
+#: `run_id`, so the run an order came from is its gap snapshot's. An order with no gap snapshot
+#: cannot be attributed to a run and is not counted, which is the honest answer rather than a
+#: guess.
+_ELIGIBILITY_ORDERS = text("""
+    select count(*) from orders o
+    join market_gap_snapshots g on g.id = o.gap_snapshot_id
+    where o.replay = false and o.placed_at >= :start and o.placed_at < :end
+      and g.run_id between :lo and :hi
+""")
+
+#: Bound: the same week window `_T1_SIGNALS` (`harness/report/tables.py:298`) and `_T1_COVERAGE`
+#: (`:336`) already read `signals` on. `signals`' indexes lead on variant and on market, not on
+#: time, so a bare `created_at` window **is** a scan of that table -- but it is a scan the weekly
+#: render and the hourly provisional stage that shares it already perform twice. This adds two
+#: more of the same scan per render (one per amendment that carries a range), not a new kind of
+#: read. Making it an index seek is a schema change and is out of scope (§2, no DDL).
+_ELIGIBILITY_SIGNALS = text("""
+    select count(*) from signals
+    where replay = false and created_at >= :start and created_at < :end
+      and run_id between :lo and :hi
+""")
+
 #: The annotator writes one `report_annotations` row per `report_runs` row, keyed off whichever
 #: run was `pending_report` (`harness/research/annotate.py`) at the time it ran -- never the
 #: render this call is producing, which does not exist yet when `build_meta` runs ahead of
@@ -328,6 +364,32 @@ _LATEST_ANNOTATION = text("""
     order by a.created_at desc
     limit 1
 """)
+
+
+def _eligibility(session: Session, window: dict) -> dict[int, dict]:
+    """Per amendment, how many of this week's non-replay orders and signals sit inside its
+    excluded run-id range (addendum 0.9).
+
+    Every amendment appears, including the ones that exclude nothing: a reader who sees four
+    lines and five amendments cannot tell whether the fifth was clean or forgotten.
+
+    This does not change the gate. The gate is cumulative over the whole paper run and already
+    excludes replay rows, and an epoch label excludes nothing by itself (U8, 6A). An eligibility
+    *mechanism* for the gate is 6A/6B's.
+    """
+    out: dict[int, dict] = {}
+    for amendment in AMENDMENTS:
+        orders = signals = 0
+        if amendment.excluded_runs is not None:
+            lo, hi = amendment.excluded_runs
+            params = dict(window, lo=lo, hi=hi)
+            orders = int(session.execute(_ELIGIBILITY_ORDERS, params).scalar() or 0)
+            signals = int(session.execute(_ELIGIBILITY_SIGNALS, params).scalar() or 0)
+        out[amendment.number] = {
+            "orders": orders, "signals": signals,
+            "excluded_runs": list(amendment.excluded_runs) if amendment.excluded_runs else None,
+            "recorded": amendment.recorded, "what": amendment.what}
+    return out
 
 
 def build_meta(session: Session, settings, year: int, week: int, now: datetime | None = None,
@@ -351,6 +413,7 @@ def build_meta(session: Session, settings, year: int, week: int, now: datetime |
         "previous_criteria_hash": session.execute(_PREVIOUS_HASH, window).scalar(),
         "confirmation": confirmation,
     }
+    meta["eligibility"] = _eligibility(session, window)
     bullets = session.execute(_LATEST_ANNOTATION, {"year": year, "week": week}).scalar()
     if bullets:
         meta["annotation"] = list(bullets)

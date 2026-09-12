@@ -52,7 +52,9 @@ from harness.report.tables import (
     week_bounds,
     weekly_tables,
 )
+from harness.report.amendments import AMENDMENTS
 from harness.report.weekly import (
+    build_meta,
     read_selected,
     render_markdown,
     restrict_to_selection,
@@ -1408,3 +1410,50 @@ def test_the_contrast_note_prints_its_own_denominators():
     ]}
     note = restrict_to_selection({"t2": t2}, selection)["t2"].note
     assert "selected 2" in note and "evaluated 1" in note
+
+
+def test_build_meta_counts_the_weeks_rows_inside_each_amendments_excluded_range(db_session,
+                                                                                env_settings):
+    """Addendum 0.9: per amendment, how many of *this week's* non-replay orders and signals fall
+    inside its excluded run-id range. Amendment 4's range is runs 344-4327."""
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    game = _game(db_session)
+    market = _market(db_session, game.id, "ELIGMKT")
+    # A second market for the "outside" order: `uq_open_order` is one live order per
+    # (venue, ticker, side, variant), so two open orders for the same variant need distinct
+    # tickers to coexist. The eligibility query attributes an order to a run through its gap
+    # snapshot's id, not through the market, so this changes nothing the test is checking.
+    market2 = _market(db_session, game.id, "ELIGMKT2")
+    inside = _gap(db_session, market)
+    inside.run_id = 1000
+    outside = _gap(db_session, market2)
+    outside.run_id = 90_000
+    db_session.flush()
+    _order(db_session, market, PRIMARY, gap=inside)
+    _order(db_session, market2, PRIMARY, gap=outside)
+    _signal(db_session, inside, market, PRIMARY)
+    _signal(db_session, outside, market2, PRIMARY)
+    db_session.flush()
+
+    meta = build_meta(db_session, env_settings, YEAR, WEEK, now=WEEK_START)
+    eligibility = meta["eligibility"]
+    # Run 1000 is inside both Amendment 2's (1-2320) and Amendment 4's (344-4327) ranges.
+    assert eligibility[2]["orders"] == 1 and eligibility[2]["signals"] == 1
+    assert eligibility[4]["orders"] == 1 and eligibility[4]["signals"] == 1
+    # The amendments with no range are present and say so, rather than being absent.
+    assert eligibility[3]["excluded_runs"] is None
+    assert eligibility[3]["orders"] == 0 and eligibility[3]["signals"] == 0
+    assert set(eligibility) == {a.number for a in AMENDMENTS}
+
+
+def test_the_provenance_block_prints_one_eligibility_line_per_amendment(db_session,
+                                                                       env_settings):
+    """Addendum 0.9: "excluded by Amendment n: <orders> orders, <signals> signals", or "none"."""
+    meta = build_meta(db_session, env_settings, YEAR, WEEK, now=WEEK_START)
+    text = render_markdown(weekly_tables(db_session, YEAR, WEEK, env_settings, now=WEEK_START),
+                           meta)
+    assert "- Excluded by Amendment 4: 0 orders, 0 signals (runs 344-4327)" in text
+    assert "- Excluded by Amendment 3: none" in text
+    assert "- Excluded by Amendment 5: none" in text
+    for amendment in AMENDMENTS:
+        assert f"- Excluded by Amendment {amendment.number}:" in text
