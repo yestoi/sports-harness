@@ -121,7 +121,18 @@ settlement or benchmark row.
   schedule (`settle_period_s`): settle final games, fetch the venue's own result, compute
   benchmarks, drain CLV and write markouts. It prints `job_run=<id> status=<ok|error>
   budget_exhausted=<bool> stale_unsettled=<n> <stage=counts...>` and exits 1 on `status=error`.
-  Re-running it inserts nothing new for work already done.
+  Re-running it inserts nothing new for work already done. (Fix 47) `job_runs.notes` now
+  carries `elapsed_s` on every stage (timed with the job's own clock) plus `budget_s` and
+  `order` -- the stage names in the sequence actually run -- at the top of `notes`, so a stuck
+  `markouts`/`report_wtd` can be diagnosed from one row instead of re-guessing from durations;
+  a due `report_wtd` also now runs *first* in the job rather than last (its usual slot in
+  `notes.stages` then reads `{"skipped": true, "reason": "ran first"}`), so the hourly stages
+  ahead of it in `STAGE_MODULES` cannot starve its six-hourly turn; and `markouts` resumes from
+  `job_state` key `markouts.cursor` (the last order id it finished, wrapping back to the head
+  once it clears the tail and resetting to `0` after a full pass) instead of always restarting
+  the walk at the lowest id, so a budget that only ever covers part of the due backlog still
+  reaches all of it over a few runs -- `select * from job_state where key = 'markouts.cursor'`
+  shows where it currently is.
 - **`harness report --week N --out -`** renders the weekly report (ten tables over one ISO
   week's non-replay rows) to stdout; `--out <path>` writes a file instead. `--year` defaults to
   2026. This is the only report path that persists `report_runs`/`report_cells` with
