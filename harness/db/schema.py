@@ -7,6 +7,7 @@ from sqlalchemy import Connection, Engine, Index, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from harness.db.engine import BATCH_STATEMENT_TIMEOUT_MS
 from harness.db.models import Base
 
 log = logging.getLogger(__name__)
@@ -353,6 +354,29 @@ def _index_attached(conn: Connection, parent: str, child: str) -> bool:
         {"parent": parent, "child": child}).first() is not None
 
 
+def _partition_has_attached_child(conn: Connection, parent: str, partition: str) -> bool:
+    """Whether `partition` already carries *any* index attached as a partition of `parent` --
+    asked by partition, not by the name the recipe would itself choose (review Critical 1, fix
+    45 round 1).
+
+    A partition created while the parent index already exists is indexed and attached by
+    Postgres itself, automatically, under Postgres's own default name
+    (`<partition>_source_endpoint_id_idx`, not `<parent>_<suffix>`). The name-keyed check this
+    replaced never recognised that child, so the loop built a second full index on the same
+    partition and then issued an `ALTER INDEX ... ATTACH` that Postgres refuses ("Another index
+    is already attached for partition ..."), leaving a duplicate index and the parent
+    permanently invalid. Asking by partition instead makes the recipe agnostic to who built the
+    child or what it is named.
+    """
+    return conn.execute(text(
+        "select 1 from pg_inherits i "
+        "join pg_index x on x.indexrelid = i.inhrelid "
+        "join pg_class p on p.oid = i.inhparent "
+        "join pg_class t on t.oid = x.indrelid "
+        "where p.relname = :parent and t.relname = :partition"),
+        {"parent": parent, "partition": partition}).first() is not None
+
+
 def _drop_if_invalid_index(conn: Connection, index: str) -> None:
     """Mirrors `harness/db/partition.py`'s `_drop_if_invalid`: CREATE INDEX CONCURRENTLY leaves an
     invalid index behind when it fails, and `if not exists` would then skip the rebuild and leave
@@ -367,40 +391,79 @@ def _drop_if_invalid_index(conn: Connection, index: str) -> None:
         conn.execute(text(f"drop index concurrently if exists {index}"))
 
 
-def _ensure_partitioned_concurrent_indexes(conn: Connection) -> int:
+def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str] | None = None) -> int:
     """Build every `_PARTITIONED_CONCURRENT_INDEXES` entry against a partitioned parent, the only
     recipe Postgres 16 allows for a CONCURRENTLY-equivalent build on one:
 
     1. `create index if not exists <name> on only <table> (<cols>)` -- the parent, metadata-only
        and invalid until every partition below has a matching, attached child.
-    2. For every current partition (`pg_inherits`): drop a child left invalid by an earlier
-       aborted build, then `create index concurrently if not exists <name>_<suffix> on
-       <partition> (<cols>)`, then `alter index <name> attach partition <name>_<suffix>`. A
-       partition whose child is already attached is skipped.
+    2. For every current partition (`pg_inherits`): skip a partition that already carries an
+       attached child of this parent -- asked by *partition*, not by the name this recipe would
+       itself choose (review Critical 1, fix 45 round 1): a partition created while the parent
+       already exists is indexed and attached by Postgres itself, under Postgres's own default
+       name, and a name-keyed check would miss that child, build a second one, and then have its
+       `ATTACH` refused, wedging the parent invalid permanently. Otherwise: drop a child left
+       invalid by an earlier aborted build under the name this recipe would use, then
+       `create index concurrently if not exists <name>_<suffix> on <partition> (<cols>)`, then
+       `alter index <name> attach partition <name>_<suffix>`.
     3. A parent already valid -- every partition already has an attached child -- is skipped
        entirely: no statement runs, so a repeat call takes no lock at all (fix 37's rule for a
        genuine no-op).
 
+    Every statement goes through `_retry_once`, the same as every other DDL statement
+    `create_schema` runs (review Important 1): both callers set `lock_timeout = 5s`
+    (`create_schema` itself, and `migrations/env.py` for the migration path), and
+    `make deploy-nas` runs `migrate ensure` *before* stopping the app containers -- so revision
+    0007 can build this index while the recorder is still inserting into `raw_responses`, and a
+    single lock timeout must not abort the whole run.
+
+    The per-partition CONCURRENTLY builds get their own generous `statement_timeout` around them,
+    restored to whatever the caller had once they finish (review Important 2): a concurrent build
+    reads the partition heap twice and waits for every other open transaction, and whichever
+    caller got here first may have set a much tighter ceiling for its *own* purposes -- the
+    migration path's 300s (`migrations/env.py`) is a third of `init-db`'s 900s
+    (`BATCH_STATEMENT_TIMEOUT_MS`, `harness/db/engine.py`) -- neither of which was chosen with a
+    2.2GB+ partition under this host's documented IO starvation (journals 130/132/134) in mind.
+    Using `BATCH_STATEMENT_TIMEOUT_MS` here, explicitly, means the ceiling is the same regardless
+    of which path got here first.
+
     A future weekly partition needs none of this: `create table ... partition of ...` inherits
     every one of the parent's indexes automatically, valid or not, the moment it is created.
 
+    `only` restricts the run to entries whose name is in the set (used by
+    `migrations/versions/0007_raw_events_lookup.py` so a future tuple entry cannot retroactively
+    change what an already-shipped revision builds); `None` (the default, what `create_schema`
+    uses) runs every entry.
+
     Returns the number of index entries skipped as already complete, for `create_schema`'s tally.
     """
+    entries = _PARTITIONED_CONCURRENT_INDEXES if only is None else tuple(
+        e for e in _PARTITIONED_CONCURRENT_INDEXES if e[0] in only)
     skipped = 0
-    for name, table, cols in _PARTITIONED_CONCURRENT_INDEXES:
+    for name, table, cols in entries:
         if _index_valid(conn, name):
             skipped += 1
             continue
-        conn.execute(text(f"create index if not exists {name} on only {table} {cols}"))
-        for partition in _partitions_of(conn, table):
-            suffix = partition[len(table):]
-            child = f"{name}{suffix}"
-            if _index_attached(conn, name, child):
-                continue
-            _drop_if_invalid_index(conn, child)
-            log.info("building %s concurrently on %s", child, partition)
-            conn.execute(text(f"create index concurrently if not exists {child} on {partition} {cols}"))
-            conn.execute(text(f"alter index {name} attach partition {child}"))
+        _retry_once(conn, lambda name=name, table=table, cols=cols: conn.execute(text(
+            f"create index if not exists {name} on only {table} {cols}")), f"index {name} (parent)")
+        partitions = [p for p in _partitions_of(conn, table)
+                     if not _partition_has_attached_child(conn, name, p)]
+        if not partitions:
+            continue
+        prior_timeout = conn.execute(text("show statement_timeout")).scalar()
+        conn.execute(text(f"set statement_timeout = {BATCH_STATEMENT_TIMEOUT_MS}"))
+        try:
+            for partition in partitions:
+                child = f"{name}{partition[len(table):]}"
+                _drop_if_invalid_index(conn, child)
+                log.info("building %s concurrently on %s", child, partition)
+                _retry_once(conn, lambda child=child, partition=partition: conn.execute(text(
+                    f"create index concurrently if not exists {child} on {partition} {cols}")),
+                    f"index {child}")
+                _retry_once(conn, lambda name=name, child=child: conn.execute(text(
+                    f"alter index {name} attach partition {child}")), f"attach {child}")
+        finally:
+            conn.execute(text(f"set statement_timeout = '{prior_timeout}'"))
     return skipped
 
 
