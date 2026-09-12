@@ -112,7 +112,8 @@ def render_markdown(tables: dict[str, Table], meta: dict) -> str:
 
     `meta` carries `build_sha`, `criteria_hash`, the executor `config_hash` values seen in the
     week, and -- when the previous report's hash differs -- `previous_criteria_hash`, which is
-    what turns the "definitions changed" line on.
+    what turns the "definitions changed" line on. `meta["eligibility"]` (addendum 0.9) prints one
+    "Excluded by Amendment n" line per recorded amendment.
     """
     year, week = meta.get("year"), meta.get("week")
     lines = [f"# Weekly report {year}-W{week:02d}" if isinstance(week, int)
@@ -395,9 +396,10 @@ def _eligibility(session: Session, window: dict) -> dict[int, dict]:
 def build_meta(session: Session, settings, year: int, week: int, now: datetime | None = None,
                confirmation: bool = False) -> dict:
     """The provenance block: build, criteria hash, the config hashes the week's orders carry,
-    the previous report's criteria hash when one is on file, and the annotator's bullets when
-    the week has a surviving set (addendum §1.5; `render_markdown` renders `meta["annotation"]`
-    inside the fenced "model-written, unverified" block when it is set)."""
+    the previous report's criteria hash when one is on file, the per-amendment eligibility
+    counts (addendum 0.9; `meta["eligibility"]`, keyed by amendment number), and the annotator's
+    bullets when the week has a surviving set (addendum §1.5; `render_markdown` renders
+    `meta["annotation"]` inside the fenced "model-written, unverified" block when it is set)."""
     start, end = week_bounds(year, week, settings.tz_local)
     window = {"start": start, "end": end}
     meta = {
