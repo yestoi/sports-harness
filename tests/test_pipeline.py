@@ -194,9 +194,13 @@ def test_price_and_signal_stops_when_budget_is_spent(env_settings, db_session):
     result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=0)
 
     assert result["budget_exhausted"] is True
-    # Stage 1 (fair values) always runs, regardless of the budget.
+    # Stage 1 (direct fair values) always runs, regardless of the budget -- that is the half the
+    # gate variant and the primary are scored on. Fix 48 moved the derived pass to stage 4, so a
+    # spent budget now skips it: `fair_derived` is 0 and `fair_derived_skipped` says why, which
+    # is what lets a coverage reader tell "not computed" from "computed, none found".
     assert result["fair_direct"] == 5
-    assert result["fair_derived"] == 2
+    assert result["fair_derived"] == 0
+    assert result["fair_derived_skipped"] is True
     assert result["gaps"] == 0
     assert result["signals"] == {}
     assert result["variants_run"] == []

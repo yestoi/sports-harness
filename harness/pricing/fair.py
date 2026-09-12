@@ -62,7 +62,7 @@ def _feed_info(pairs: dict, newest_ts, now: datetime) -> tuple[str | None, int |
     return kind, int((now - chosen.fetched_at).total_seconds())
 
 
-def _ttk_minutes(game: Game, now: datetime) -> float:
+def _ttk_minutes(game: "GameFacts", now: datetime) -> float:
     return (game.kickoff_utc - now).total_seconds() / 60
 
 
@@ -79,16 +79,58 @@ class FairCounts:
     errored_game_ids: frozenset[int] = field(default_factory=frozenset)
 
 
-def _candidate_games(session: Session, now: datetime, game_ids: list[int] | None) -> list[Game]:
+@dataclass(frozen=True)
+class GameFacts:
+    """The five columns both fair-value phases read off a game.
+
+    Carried as plain values rather than as the mapped `Game` because fix 48 now runs the derived
+    phase after the gap snapshots and the direct variants have each committed: a mapped instance
+    would be expired by those commits and reload itself one row at a time.
+    """
+
+    id: int
+    sport: str
+    home_team_id: int
+    away_team_id: int
+    kickoff_utc: datetime
+
+
+#: A contract shape: (market_type, outcome_team_id, outcome_side, threshold).
+Shape = tuple
+
+
+@dataclass(frozen=True)
+class PendingDerived:
+    """One game's leftovers after the direct pass: the shapes with no sharp line of their own.
+
+    `compute_derived_fair_values` prices exactly these, so the derived phase never recomputes or
+    re-inserts a direct row (fix 48).
+    """
+
+    game: GameFacts
+    shapes: tuple[Shape, ...]
+
+
+@dataclass(frozen=True)
+class DirectFairResult:
+    counts: FairCounts
+    pending: tuple[PendingDerived, ...]
+
+
+_GAME_COLUMNS = (Game.id, Game.sport, Game.home_team_id, Game.away_team_id, Game.kickoff_utc)
+
+
+def _candidate_games(session: Session, now: datetime, game_ids: list[int] | None) -> list[GameFacts]:
     if game_ids is not None:
         if not game_ids:
             return []
-        return list(session.execute(select(Game).where(Game.id.in_(game_ids)).order_by(Game.id)).scalars())
+        stmt = select(*_GAME_COLUMNS).where(Game.id.in_(game_ids)).order_by(Game.id)
+        return [GameFacts(*row) for row in session.execute(stmt)]
 
     window_start = now - timedelta(hours=4)
     window_end = now + timedelta(days=8)
     stmt = (
-        select(Game)
+        select(*_GAME_COLUMNS)
         .join(VenueMarket, VenueMarket.game_id == Game.id)
         .where(
             Game.kickoff_utc >= window_start,
@@ -98,7 +140,7 @@ def _candidate_games(session: Session, now: datetime, game_ids: list[int] | None
         .distinct()
         .order_by(Game.id)
     )
-    return list(session.execute(stmt).scalars())
+    return [GameFacts(*row) for row in session.execute(stmt)]
 
 
 def _shapes_for_game(markets: list[VenueMarket]) -> list[tuple]:
@@ -176,10 +218,15 @@ def _build_model(sport: str, home_id: int, away_id: int, lines, now: datetime) -
     return MarginModel.from_main_lines(sport, home_point, p_home_cover, total_line, p_over)
 
 
-def _process_game(
-    session: Session, game: Game, run_id: int, now: datetime, lookback_s: int, settings: Settings,
-) -> tuple[int, int, int]:
-    """Compute and insert fair values for one game. Returns (direct, derived, no_sharp) counts."""
+def _direct_for_game(
+    session: Session, game: GameFacts, run_id: int, now: datetime, lookback_s: int, settings: Settings,
+) -> tuple[int, list[Shape]]:
+    """Insert this game's *direct* fair values. Returns (rows inserted, shapes left over).
+
+    The leftovers are the shapes no sharp book prices directly; `_derived_for_game` takes them
+    from here rather than rediscovering them, so the two phases together do exactly the work the
+    single pass did (fix 48).
+    """
     markets = list(
         session.execute(
             select(VenueMarket).where(
@@ -189,11 +236,11 @@ def _process_game(
         ).scalars()
     )
     if not markets:
-        return 0, 0, 0
+        return 0, []
 
     shapes = _shapes_for_game(markets)
     if not shapes:
-        return 0, 0, 0
+        return 0, []
 
     lines = latest_book_lines(session, game.id, now, lookback_s)
     home_id, away_id = game.home_team_id, game.away_team_id
@@ -244,13 +291,29 @@ def _process_game(
         direct_n += n
         direct_results[shape] = result
 
-    remaining = [s for s in shapes if s not in direct_results]
+    return direct_n, [s for s in shapes if s not in direct_results]
+
+
+def _derived_for_game(
+    session: Session, game: GameFacts, remaining: tuple[Shape, ...] | list[Shape], run_id: int,
+    now: datetime, lookback_s: int, settings: Settings,
+) -> tuple[int, int]:
+    """Insert this game's *derived* fair values for `remaining`. Returns (derived, no_sharp).
+
+    Re-reads the book lines rather than carrying them out of the direct phase: between the two
+    phases the pipeline scores the direct variants, and holding every game's lines across that
+    would trade the budget problem fix 48 fixes for the memory problem fix 49 fixes.
+    """
     if not remaining:
-        return direct_n, 0, 0
+        return 0, 0
+
+    lines = latest_book_lines(session, game.id, now, lookback_s)
+    home_id, away_id = game.home_team_id, game.away_team_id
+    ttk_minutes = _ttk_minutes(game, now)
 
     model = _build_model(game.sport, home_id, away_id, lines, now)
     if model is None:
-        return direct_n, 0, len(remaining)
+        return 0, len(remaining)
 
     # main-line consensus for n_groups/disagreement on derived rows: recompute the main
     # spread's direct consensus (cheap; identical shape to what _build_model already found).
@@ -259,7 +322,7 @@ def _process_game(
     )
     main_spread_result = direct_fair(main_spread_pairs, now)
     if main_spread_result is None:
-        return direct_n, 0, len(remaining)
+        return 0, len(remaining)
     main_consensus, _ = main_spread_result
     main_kind, main_lag = _feed_info(main_spread_pairs, main_consensus.newest_ts, now)
     main_allowance = stale_allowance_s(main_kind, ttk_minutes, settings) if main_kind is not None else None
@@ -309,7 +372,79 @@ def _process_game(
         )
         derived_n += n
 
-    return direct_n, derived_n, no_sharp_n
+    return derived_n, no_sharp_n
+
+
+def compute_direct_fair_values(
+    session: Session,
+    run_id: int,
+    now: datetime,
+    settings: Settings,
+    lookback_s: int = 1200,
+    game_ids: list[int] | None = None,
+) -> DirectFairResult:
+    """Fix 48's first phase: every candidate game's direct fair values, and nothing else.
+
+    This is the pass the gate variant and the primary need, and on the NAS it is a fraction of
+    the single pass's cost -- 190 direct rows against 3,079 derived ones on the 2026-09-12
+    Saturday slate. `pending` carries what the derived phase still owes, so the caller can spend
+    what budget it has on a gap snapshot and a variant before paying for it.
+    """
+    games = _candidate_games(session, now, game_ids)
+    direct_n = error_n = 0
+    errored_game_ids: set[int] = set()
+    pending: list[PendingDerived] = []
+
+    for game in games:
+        try:
+            with session.begin_nested():
+                d, remaining = _direct_for_game(session, game, run_id, now, lookback_s, settings)
+            direct_n += d
+            if remaining:
+                pending.append(PendingDerived(game=game, shapes=tuple(remaining)))
+        except Exception:
+            log.exception("direct fair value computation failed for game_id=%s", game.id)
+            error_n += 1
+            errored_game_ids.add(game.id)
+
+    session.commit()
+    counts = FairCounts(direct=direct_n, derived=0, no_sharp=0, games=len(games), errors=error_n,
+                        errored_game_ids=frozenset(errored_game_ids))
+    return DirectFairResult(counts=counts, pending=tuple(pending))
+
+
+def compute_derived_fair_values(
+    session: Session,
+    pending: tuple[PendingDerived, ...],
+    run_id: int,
+    now: datetime,
+    settings: Settings,
+    lookback_s: int = 1200,
+) -> FairCounts:
+    """Fix 48's second phase: the margin-model fair values for what the direct pass left over.
+
+    `games` counts the games this phase actually had work for, not the whole candidate set --
+    `compute_fair_values` adds the direct phase's count, which is the candidate set, so the
+    combined `FairCounts` reads exactly as it did before the split.
+    """
+    derived_n = no_sharp_n = error_n = 0
+    errored_game_ids: set[int] = set()
+
+    for item in pending:
+        try:
+            with session.begin_nested():
+                der, ns = _derived_for_game(
+                    session, item.game, item.shapes, run_id, now, lookback_s, settings)
+            derived_n += der
+            no_sharp_n += ns
+        except Exception:
+            log.exception("derived fair value computation failed for game_id=%s", item.game.id)
+            error_n += 1
+            errored_game_ids.add(item.game.id)
+
+    session.commit()
+    return FairCounts(direct=0, derived=derived_n, no_sharp=no_sharp_n, games=len(pending),
+                      errors=error_n, errored_game_ids=frozenset(errored_game_ids))
 
 
 def compute_fair_values(
@@ -320,22 +455,19 @@ def compute_fair_values(
     lookback_s: int = 1200,
     game_ids: list[int] | None = None,
 ) -> FairCounts:
-    games = _candidate_games(session, now, game_ids)
-    direct_n = derived_n = no_sharp_n = error_n = 0
-    errored_game_ids: set[int] = set()
+    """Both phases back to back, with the counts of the single pass this used to be.
 
-    for game in games:
-        try:
-            with session.begin_nested():
-                d, der, ns = _process_game(session, game, run_id, now, lookback_s, settings)
-            direct_n += d
-            derived_n += der
-            no_sharp_n += ns
-        except Exception:
-            log.exception("fair value computation failed for game_id=%s", game.id)
-            error_n += 1
-            errored_game_ids.add(game.id)
-
-    session.commit()
-    return FairCounts(direct=direct_n, derived=derived_n, no_sharp=no_sharp_n, games=len(games), errors=error_n,
-                       errored_game_ids=frozenset(errored_game_ids))
+    The pipeline calls the two phases separately so it can score a variant between them
+    (fix 48); every other caller -- `harness price-once`'s backfills, the fixture-day loader,
+    the tests that predate the split -- wants the whole thing and keeps calling this.
+    """
+    direct = compute_direct_fair_values(session, run_id, now, settings, lookback_s, game_ids)
+    derived = compute_derived_fair_values(session, direct.pending, run_id, now, settings, lookback_s)
+    return FairCounts(
+        direct=direct.counts.direct,
+        derived=derived.derived,
+        no_sharp=derived.no_sharp,
+        games=direct.counts.games,
+        errors=direct.counts.errors + derived.errors,
+        errored_game_ids=direct.counts.errored_game_ids | derived.errored_game_ids,
+    )

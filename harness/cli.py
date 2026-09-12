@@ -672,6 +672,9 @@ def price_once(run_id: int = typer.Option(None, "--run-id")) -> None:
     `finished_at` -- not wall-clock time -- so a backfill against an old run sees exactly the
     books it fetched and nothing that postdates it. Without `--run-id`, the latest run is
     picked (as today) and `now` is wall-clock time, since that run is effectively live.
+
+    Prints the six stage costs (fix 48) before the result, since "which stage spent the budget"
+    is the first question anyone asks of a run that produced no signal.
     """
     configure_logging()
     from harness.db.models import Run
@@ -694,6 +697,8 @@ def price_once(run_id: int = typer.Option(None, "--run-id")) -> None:
             rid = run_id
             now = pricing_clock_for_run(run, s.tick_budget_s)
         result = price_and_signal(session, rid, now, s, s.price_budget_s)
+    for stage in result.get("stages", []):
+        print(f"  {stage['name']:<17} {stage['elapsed_ms']:>7} ms  {stage['status']}")
     print(f"run_id={rid} {result}")
 
 

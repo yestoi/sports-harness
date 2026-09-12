@@ -276,10 +276,14 @@ def test_per_game_isolation_continues_after_one_game_errors(db_session, monkeypa
 
     rows_a = db_session.query(FairValue).filter_by(run_id=run.id, game_id=game_a.id).all()
     rows_b = db_session.query(FairValue).filter_by(run_id=run.id, game_id=game_b.id).all()
-    # game_a errored (first call to from_main_lines) and was rolled back entirely.
-    assert rows_a == []
-    # game_b succeeded and its rows (including the direct ones) were inserted.
+    # game_a's margin model raised, so its *derived* pass rolled back. Fix 48 gave each phase
+    # its own savepoint -- the pipeline commits and scores the direct rows before the derived
+    # pass runs at all -- so the direct rows it had already earned stand.
+    assert rows_a != []
+    assert {r.fair_source for r in rows_a} == {"direct"}
+    # game_b succeeded in both phases.
     assert len(rows_b) > 0
+    assert {r.fair_source for r in rows_b} == {"direct", "derived"}
 
 
 # --- F11: staleness amendment ------------------------------------------------
