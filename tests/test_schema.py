@@ -895,6 +895,11 @@ def test_model_index_loop_never_rebuilds_a_concurrent_index():
     names = {index.name for index in schema_module._model_indexes()}
     assert "ix_quotes_run_market" not in names
     assert "ix_odds_fetched_book" not in names
+    # Fix 45: `ix_raw_source_endpoint_id` is a plain model index on a partitioned parent, so a
+    # populated database would otherwise take this loop's plain `index.create` there -- not
+    # metadata-only on a partitioned table, and exactly what
+    # `_ensure_partitioned_concurrent_indexes` exists to avoid.
+    assert "ix_raw_source_endpoint_id" not in names
     assert not names & schema_module._CONCURRENT_INDEX_NAMES, sorted(
         names & schema_module._CONCURRENT_INDEX_NAMES)
     # The subtraction is narrow: `venue_quotes`' and `odds_snapshots`' other model indexes are
@@ -904,16 +909,21 @@ def test_model_index_loop_never_rebuilds_a_concurrent_index():
 
 
 def test_the_concurrent_index_names_are_parsed_from_the_statements():
-    """The set is derived, not a second hand-maintained list: every entry contributes its name,
-    and it is read through fix 37's `ddl_target` rather than a second parser of the same shape."""
+    """The set is derived, not a second hand-maintained list: every `_CONCURRENT_INDEX_DDL`
+    entry contributes its name, read through fix 37's `ddl_target` rather than a second parser of
+    the same shape, unioned with the names `_PARTITIONED_CONCURRENT_INDEXES` declares directly
+    (fix 45: those entries have no single DDL string for `ddl_target` to read)."""
     from harness.db import schema as schema_module
 
     assert schema_module._CONCURRENT_INDEX_NAMES == {
         "ix_fair_created_brin", "ix_odds_fetched_book", "ix_orders_key_placed",
-        "ix_fair_leg_lookup", "ix_quotes_run_market"}
-    assert len(schema_module._CONCURRENT_INDEX_NAMES) == len(schema_module._CONCURRENT_INDEX_DDL)
+        "ix_fair_leg_lookup", "ix_quotes_run_market", "ix_raw_source_endpoint_id"}
+    ddl_names = {ddl_target(s)[1] for s in schema_module._CONCURRENT_INDEX_DDL}
+    partitioned_names = {name for name, _table, _cols in schema_module._PARTITIONED_CONCURRENT_INDEXES}
+    assert ddl_names.isdisjoint(partitioned_names)
+    assert schema_module._CONCURRENT_INDEX_NAMES == ddl_names | partitioned_names
     assert {ddl_target(s) for s in schema_module._CONCURRENT_INDEX_DDL} == {
-        ("index", name) for name in schema_module._CONCURRENT_INDEX_NAMES}
+        ("index", name) for name in ddl_names}
 
 
 @pytest.mark.parametrize("statement", [
@@ -946,6 +956,192 @@ def test_create_schema_still_ends_with_both_concurrent_bulk_indexes(db_session):
     insp = inspect(engine)
     assert "ix_quotes_run_market" in {i["name"] for i in insp.get_indexes("venue_quotes")}
     assert "ix_odds_fetched_book" in {i["name"] for i in insp.get_indexes("odds_snapshots")}
+
+
+# --- fix 45: the partitioned recipe for ix_raw_source_endpoint_id --------------------------
+#
+# `_ensure_partitioned_concurrent_indexes` runs CREATE INDEX CONCURRENTLY, which cannot run
+# inside a transaction and is genuinely slow under contention -- the test Postgres is shared with
+# up to two other suites (Makefile/brief). Its own connection is opened with a batch-sized
+# statement_timeout, the same one `harness/cli.py`'s init-db command gives `create_schema` in
+# production (`BATCH_STATEMENT_TIMEOUT_MS`), rather than the 30s the shared session-scoped test
+# engine carries -- a plain `engine.connect()` here would inherit that 30s and could be cancelled
+# by contention alone, which is an environment flake, not a bug in the recipe. `lock_timeout` is
+# reset too: SQLAlchemy's pool does not undo a bare `SET` on connection checkin, so a physical
+# connection this pool previously handed to `create_schema` (which sets `lock_timeout = '5s'`,
+# `DDL_LOCK_TIMEOUT`) can still carry that 5s the next time this helper checks the same
+# connection back out, well before any DDL of ours runs.
+
+def _autocommit_conn(engine):
+    conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    conn.execute(text("set lock_timeout = 0"))
+    conn.execute(text("set statement_timeout = '300s'"))
+    return conn
+
+
+def _reset_raw_source_endpoint_id(engine):
+    """Drop the index this section builds and re-builds repeatedly, including any partition
+    child left behind unattached (invalid) by an earlier interrupted run in this same session --
+    `drop index if exists` on the parent alone would not reach one of those."""
+    with _autocommit_conn(engine) as conn:
+        conn.execute(text("drop index if exists ix_raw_source_endpoint_id"))
+        stale = conn.execute(text(
+            r"select relname from pg_class where relname ~ '^ix_raw_source_endpoint_id_'")).scalars().all()
+        for name in stale:
+            conn.execute(text(f"drop index concurrently if exists {name}"))
+
+
+def test_ensure_partitioned_concurrent_indexes_builds_then_is_a_no_op(db_session):
+    """On a populated database whose weekly partitions already exist (the NAS shape, and the
+    `_schema` fixture's own shape): the first call builds the parent metadata-only, each
+    partition's own child CONCURRENTLY, and attaches it; the second call, with the parent
+    already valid, issues no DDL at all -- fix 37's rule that a genuine no-op must not even ask
+    for a lock."""
+    from harness.db import schema as schema_module
+
+    engine = db_session.get_bind()
+    _reset_raw_source_endpoint_id(engine)
+    db_session.commit()
+    partitions = schema_module._partitions_of(db_session, "raw_responses")
+    assert partitions, "the _schema fixture should already have this week's/next week's partitions"
+
+    seen: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement.strip().lower())
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        with _autocommit_conn(engine) as conn:
+            first = schema_module._ensure_partitioned_concurrent_indexes(conn)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert first == 0
+
+    parent_stmts = [s for s in seen if "on only raw_responses" in s]
+    assert len(parent_stmts) == 1, parent_stmts
+    child_stmts = [s for s in seen if "create index concurrently" in s]
+    assert len(child_stmts) == len(partitions), child_stmts
+    # F65 (fix 25): never a plain, recursive `create index` straight on the parent -- that would
+    # take a ShareLock on every partition for the whole build.
+    recursive = [s for s in seen if s.startswith("create index") and "concurrently" not in s
+                and "on only" not in s and " raw_responses " in s]
+    assert recursive == [], recursive
+
+    assert schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
+    for partition in partitions:
+        child = f"ix_raw_source_endpoint_id{partition[len('raw_responses'):]}"
+        assert schema_module._index_attached(db_session, "ix_raw_source_endpoint_id", child)
+        assert schema_module._index_valid(db_session, child)
+
+    seen.clear()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        with _autocommit_conn(engine) as conn:
+            second = schema_module._ensure_partitioned_concurrent_indexes(conn)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert second == 1
+    ddl = [s for s in seen if s.startswith(("create index", "alter index", "drop index"))]
+    assert ddl == [], ddl
+
+
+def test_ensure_partitioned_concurrent_indexes_rebuilds_an_invalid_child(db_session):
+    """CREATE INDEX CONCURRENTLY leaves an invalid index behind when it aborts mid-build; `if not
+    exists` would then skip the rebuild forever and the attach would find nothing matching to
+    use (`harness/db/partition.py`'s `_drop_if_invalid` is the precedent this mirrors). Simulated
+    directly against `pg_index`, the same catalog `_index_valid`/`_drop_if_invalid_index` read,
+    since provoking a real aborted CONCURRENTLY build is not practical inside a test."""
+    from harness.db import schema as schema_module
+
+    engine = db_session.get_bind()
+    _reset_raw_source_endpoint_id(engine)
+    db_session.commit()
+    partitions = schema_module._partitions_of(db_session, "raw_responses")
+    target = partitions[0]
+    stale_child = f"ix_raw_source_endpoint_id{target[len('raw_responses'):]}"
+
+    with _autocommit_conn(engine) as conn:
+        conn.execute(text(
+            f"create index concurrently {stale_child} on {target} (source, endpoint, id)"))
+    stale_oid = db_session.execute(text("select oid from pg_class where relname = :n"),
+                                   {"n": stale_child}).scalar()
+    db_session.execute(text(
+        "update pg_index set indisvalid = false where indexrelid = :n::regclass"),
+        {"n": stale_child})
+    db_session.commit()
+    assert not schema_module._index_valid(db_session, stale_child)
+
+    with _autocommit_conn(engine) as conn:
+        skipped = schema_module._ensure_partitioned_concurrent_indexes(conn)
+    assert skipped == 0
+
+    assert schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
+    assert schema_module._index_attached(db_session, "ix_raw_source_endpoint_id", stale_child)
+    assert schema_module._index_valid(db_session, stale_child)
+    new_oid = db_session.execute(text("select oid from pg_class where relname = :n"),
+                                 {"n": stale_child}).scalar()
+    assert new_oid != stale_oid, "the stale index must be dropped and rebuilt, not reused"
+
+
+def test_ensure_partitioned_concurrent_indexes_skips_when_already_valid(db_session):
+    """The top-level skip is unconditional on a fully-built index -- no partition lookup, no
+    statement at all -- which is what makes the no-op genuinely lock-free (fix 37) rather than
+    merely idempotent per-statement."""
+    from harness.db import schema as schema_module
+
+    engine = db_session.get_bind()
+    if not schema_module._index_valid(db_session, "ix_raw_source_endpoint_id"):
+        # A prior test in this session-scoped schema may have left it mid-rebuild; put it back
+        # rather than assume the fixture's original build is still standing.
+        with _autocommit_conn(engine) as conn:
+            schema_module._ensure_partitioned_concurrent_indexes(conn)
+        db_session.commit()
+    assert schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
+
+    seen: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement.strip().lower())
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        with _autocommit_conn(engine) as conn:
+            skipped = schema_module._ensure_partitioned_concurrent_indexes(conn)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert skipped == 1
+    ddl = [s for s in seen if s.startswith(("create index", "alter index", "drop index"))]
+    assert ddl == [], ddl
+
+
+def test_create_schema_builds_the_raw_events_lookup_index_on_a_database_that_predates_it(db_session):
+    """The same idempotent-rebuild shape `test_create_schema_adds_odds_fetched_book_index_to_a_
+    database_that_predates_it` checks for fix 25's index: `create_schema`'s own call to
+    `_ensure_partitioned_concurrent_indexes` (not just the model declaration) must add the index
+    to a populated database that predates it, and a rerun after that must be a genuine no-op."""
+    engine = db_session.get_bind()
+
+    def has_index() -> bool:
+        return db_session.execute(text(
+            "select 1 from pg_indexes where indexname = 'ix_raw_source_endpoint_id'")).first() is not None
+
+    assert has_index()  # the db_session fixture already ran create_schema once
+    _reset_raw_source_endpoint_id(engine)
+    db_session.commit()
+    assert not has_index()
+
+    create_schema(engine)
+    db_session.commit()
+    assert has_index()
+
+    create_schema(engine)  # idempotent: a database that already has it is untouched
+    assert has_index()
+
+
+def test_the_raw_source_endpoint_id_index_exists(db_session):
+    assert db_session.execute(text(
+        "select 1 from pg_indexes where indexname = 'ix_raw_source_endpoint_id'")).first()
 
 
 def test_fixture_truncates_between_tests_a(db_session):

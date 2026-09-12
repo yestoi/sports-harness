@@ -48,7 +48,18 @@ class RawResponse(Base):
     params: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     http_status: Mapped[int] = mapped_column(Integer, nullable=False)
     body: Mapped[dict | list | None] = mapped_column(JSONB)
-    __table_args__ = {"postgresql_partition_by": "RANGE (fetched_at)"}
+    __table_args__ = (
+        # Fix 45: `_load_events_cache` (harness/normalize/runner.py) reads the newest 200 rows
+        # for (source, endpoint, http_status = 200) in id order; this is the index it rides.
+        # `create_all` gives it to a fresh database (the test database included) directly. A
+        # populated database (the NAS) needs the partitioned recipe instead --
+        # `harness/db/schema.py`'s `_ensure_partitioned_concurrent_indexes`, listed by name in
+        # `_PARTITIONED_CONCURRENT_INDEXES` there -- because Postgres 16 cannot build an index
+        # CONCURRENTLY on a partitioned parent and a plain `create index` on one is not
+        # metadata-only.
+        Index("ix_raw_source_endpoint_id", "source", "endpoint", "id"),
+        {"postgresql_partition_by": "RANGE (fetched_at)"},
+    )
 
 
 class TradeWatermark(Base):

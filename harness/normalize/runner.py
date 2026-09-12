@@ -52,6 +52,11 @@ def _family_filter(family: str):
 
 
 def _load_events_cache(session: Session) -> None:
+    # Fix 45: rides `ix_raw_source_endpoint_id (source, endpoint, id)` for its (source='kalshi',
+    # endpoint='/events') predicate in id-descending order -- an index-ordered backward scan of
+    # exactly this shape, rather than the pre-fix backward walk of the primary key across every
+    # partition with these predicates only a filter (cost 3,887 warm, past the 30 s statement
+    # timeout cold; journal 132/134).
     rows = session.execute(select(RawResponse).where(_family_filter("kalshi_events"), RawResponse.http_status == 200)
                            .order_by(RawResponse.id.desc()).limit(200)).scalars().all()
     for r in reversed(rows):
