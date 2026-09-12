@@ -335,6 +335,23 @@ make test 2>&1 | tail -3
 | Capsules | six capsules exist (order 157 plus the five named periods), each with a `manifest.json` whose `build` equals the deploy sha, whose `truncated` is `[]`, and every `unverifiable_slices` entry journaled with its `sid`/`ts` or its ticker. | taken in the Sat 2026-09-12 04:30–08:00 CT quiet window, after the 03:30 CT dump and before the 10:45 CT game window; **at any other hour this row reads "deferred: judge after the extraction"** |
 | Execution regressions | `make test`'s summary line reports exactly **6 xfailed** from `tests/test_execution_regressions.py` and **zero** `XPASS`. An unexpected pass means 6B's repair landed early or a case passes for the wrong reason; either way it is read before it is unmarked. | every verify after the 6A deploy, until 6B unmarks them |
 
+### Phase 6C additions, wave 2 (after the confirmation, join and units deploy)
+
+| Check | Expected |
+|---|---|
+| Confirmation path, fixture count | U8 suspends formal selection and confirmation until the user ratifies 6F's amendment, so there is **no confirmation report to read on the NAS** and this row is judged on the branch suite instead: `tests/test_report.py`'s confirmation tests are present and green on the deployed sha, and the deployed `harness/report/weekly.py` contains `DIRECTION_NOTE = "proposed one-sided reading, not in force"`. `ssh … 'docker compose run --rm -T app-run python -c "from harness.report.weekly import DIRECTION_NOTE; print(DIRECTION_NOTE)"'`. A deployed build whose note is missing or whose text differs is a FAIL: it would mean the one-sided reading shipped as a condition, which only a dated user decision makes (R1). |
+| Eligibility lines in the report | After the next weekly report: `select markdown from report_runs where provisional = false order by generated_at desc limit 1` carries one `- Excluded by Amendment n:` line for **every** amendment in `harness/report/amendments.py`, and Amendment 4's line names the runs 344-4327 range. Journal the two counted numbers for Amendments 2 and 4; a non-zero count on a week that should predate nothing is worth a second look, not a FAIL. |
+| Floor's fair matches the executor's | `select count(*) from (select o.id from orders o join venue_markets m on m.id = o.venue_market_id where o.replay = false and o.status = any(array['open','partially_filled']) and o.placed_at > now() - interval '7 days') x` bounds the set; for each such order, the `fair_p` Floor shows equals the newest `fair_values` row for that order's **exact contract** — `(game_id, market_type, outcome_team_id, outcome_side, threshold)` matched against the market's `(game_id, market_type, side_team_id, side, threshold)` with `is not distinct from`, inside the fair window. Run it as one query against `payload->'orders'->'orders'` and journal any row where the two differ. A difference is a FAIL and a carried fix. Vacuously true with no open orders: journal "no open orders" rather than a pass. |
+| Floor funnel unit keys | `select payload->'funnel' from dashboard_snapshots where name = 'floor'` carries `candidate_signals`, `intent_verdicts`, `placements`, `orders_filled_actual`, `orders_filled_counterfactual`, `fill_rows` and `units`, and `units.candidate_signals` says "not distinct opportunities". The old `intents`/`orders`/`fills` keys are still present for this release; their disappearance in a later release is expected, not a failure. |
+| Floor exposure coverage | `select payload->'exposure'->'coverage' from dashboard_snapshots where name = 'floor'` reads `{"window_days": 14, "complete": false, ...}` and the note is visible on the surface. A `complete: true` here would mean the unbounded aggregate fix 31 removed has come back, which is a FAIL. |
+| Table 1's fill-rate header | The newest final report's markdown contains "actual fill rate (orders with a `queue_model` fill / placements)", and `report_cells` still carries `col_key = 'fill_rate'` for `table_key = 't1'`. The key is stored data the Study surface reads; only the header sentence changed. |
+
+**Walkthrough items (Layer 3b, when the Chrome bridge is up).** Study shows two labelled times;
+Pulse's ages panel shows the study cell age; Floor's exposure note is visible beside the figures;
+Floor's funnel table shows a unit column. Until the bridge answers, the wave-1 block's
+deterministic stand-in row is what these are accepted on, and the walker re-scores the pixels at
+the first verification after it returns.
+
 ## Layer 2b: invariants and plausibility bands
 
 **Invariants.** Every query must return 0. A non-zero row is an **integrity anomaly**: a carried
