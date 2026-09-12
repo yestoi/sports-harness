@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event, text
 
 from harness.db.models import Game, NormalizeState, OddsSnapshot, RawResponse, Run, VenueMarket, VenueQuote, VenueTrade
 from harness.db.schema import ensure_partitions
@@ -208,3 +209,86 @@ def test_normalize_counts_sideless_prints_into_ctx(db_session):
     assert normalize_new(db_session, ctx=ctx)["kalshi_trades"] == 2
     assert {t.trade_id for t in db_session.query(VenueTrade).all()} == {"keep-1"}
     assert ctx["taker_side_missing"] == 2
+
+
+# --- fix 45: the events-cache read must ride the (source, endpoint, id) index -----------------
+#
+# 23:23/23:26/23:27 CT on 2026-09-11 and 00:06 CT on 2026-09-12: `_load_events_cache`'s select
+# had no index leading with (source, endpoint) in id order, so the planner walked raw_responses'
+# primary key backwards across every partition with the three predicates only a filter -- cost
+# 3,887 warm, past the 30 s statement timeout cold on the NAS. `ix_raw_source_endpoint_id
+# (source, endpoint, id)` is the scan key.
+
+def _index_names(node) -> set[str]:
+    """Every `Index Name` anywhere in an `explain (format json)` plan tree (the same helper
+    `tests/test_gaps.py`'s fix 42 precedent uses, duplicated locally rather than imported across
+    test modules)."""
+    names: set[str] = set()
+    if isinstance(node, list):
+        for item in node:
+            names |= _index_names(item)
+    elif isinstance(node, dict):
+        if "Index Name" in node:
+            names.add(node["Index Name"])
+        if "Plan" in node:
+            names |= _index_names(node["Plan"])
+        if "Plans" in node:
+            names |= _index_names(node["Plans"])
+    return names
+
+
+def _capture_events_cache_select(db_session):
+    """The exact statement `_load_events_cache` issues, captured off the connection rather than
+    rebuilt here. Distinguished from `_drain_batch`'s per-family reads (which also filter
+    `raw_responses` on `http_status = 200`) by its `order by ... desc`: `_drain_batch` always
+    orders ascending so a batch resumes where the last one stopped, and only the events cache
+    reads newest-first."""
+    captured = []
+
+    def before(conn, cursor, statement, parameters, context, executemany):
+        lowered = statement.lower()
+        if (lowered.lstrip().startswith("select") and "raw_responses" in lowered
+                and " desc" in lowered):
+            captured.append((statement, parameters))
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", before)
+    try:
+        normalize_new(db_session)
+    finally:
+        event.remove(bind, "before_cursor_execute", before)
+    assert captured, "_load_events_cache issued no statement over raw_responses"
+    return captured[0]
+
+
+def test_ix_raw_source_endpoint_id_is_chosen_for_the_events_cache_select(db_session):
+    """The plan, not just the index's presence: without a scan key on (source, endpoint) in id
+    order the planner has raw_responses' primary key to walk backwards across every partition,
+    which is exactly what timed out on the NAS.
+
+    Seeded the shape that makes the difference visible -- hundreds of other-family rows crowding
+    the id space the /events rows sit in -- and `enable_seqscan` off, so a sequential scan cannot
+    stand in for the index winning on its own merits (fix 35's
+    `test_ix_fair_leg_lookup_is_chosen_for_the_leg_query` and fix 42's
+    `test_ix_quotes_run_market_is_chosen_for_the_gap_select` are the precedent for both)."""
+    run = _seed_raw(db_session)
+    for i in range(400):
+        _raw(db_session, run.id, "espn", "/scoreboard", {"i": i}, {"events": []})
+    db_session.execute(text("analyze raw_responses"))
+
+    statement, parameters = _capture_events_cache_select(db_session)
+    db_session.execute(text("set local enable_seqscan = off"))
+    raw = db_session.connection().connection
+    with raw.cursor() as cur:
+        cur.execute(f"explain (format json) {statement}", parameters)
+        plan = cur.fetchone()[0]
+    names = _index_names(plan)
+    # There is no single index named exactly like the parent to scan directly -- each partition's
+    # own child carries its own name, and the two ways a child comes to exist name it two
+    # different ways: `_ensure_partitioned_concurrent_indexes`'s own recipe (a populated database
+    # missing the parent) spells it `ix_raw_source_endpoint_id_<suffix>`, but a fresh test
+    # database builds the parent validly with zero partitions (`create_all`, immediately valid),
+    # so every partition here was attached automatically by Postgres itself when `ensure_
+    # partitions` created it -- and Postgres's own default child name is
+    # `<partition>_source_endpoint_id_idx`. Both spellings share this substring.
+    assert any("source_endpoint_id" in n for n in names), plan
