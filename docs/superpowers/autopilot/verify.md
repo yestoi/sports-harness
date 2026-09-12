@@ -307,6 +307,34 @@ run, exactly as the time-of-day table already says.
 | Study's two labelled times (stand-in) | Until the Chrome bridge answers, this is the deterministic stand-in for the walker (design review Minor 7). `ssh … 'curl -sS -H "Authorization: Bearer $(cat /volume1/docker/sports-harness/secrets/dashboard_token)" http://localhost:<SERVE_PORT>/ui/js/study.mjs'` contains both `snapshot built` and `report cells from`; the same fetch of `pulse.mjs` contains `cell_age_s` and `cells from`; and `GET /api/snapshots/study:<year>-<week>` carries `now`, `generated_at` and a numeric `cell_age_s`. All three must hold. The pixels are re-scored by the walker at the first verification after the bridge answers, and until then this row is what wave 1 is accepted on. |
 | README §7 and the coded criteria | `tests/test_readme_gate.py` is the check and it runs in `make test`; this row exists so the verification names it. On a deploy whose diff touches `harness/report/gate.py`, confirm the branch suite was green on the deployed sha before accepting. |
 
+### Phase 6A additions (after the capsule, the correction manifest and dormant gate eligibility ship)
+
+```
+ssh trey@192.168.12.228 'cd /volume1/docker/sports-harness && docker compose run --rm -T app-run manifest'
+```
+
+```
+select criteria_hash, evaluated_at, gate_variant from gate_reports order by id desc limit 3;
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+```
+
+On the Mac:
+```
+ls docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/*/manifest.json 2>/dev/null | wc -l
+for m in docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/*/manifest.json; do
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sys.argv[1], d["build"], d["truncated"], len(d["unverifiable_slices"]))' "$m"
+done
+make test 2>&1 | tail -3
+```
+
+| Check | Expected | When |
+|---|---|---|
+| Correction manifest | `harness manifest` on the NAS prints `"manifest_version": 1` and `"measurement_version": "4.4"` — or whatever `EXECUTOR_VERSION` carries at deploy time, which the journal line states. One correction, id `C0`, with seven `variant_ids` of 12 hex characters and six `config_hashes` of 64. | after the 6A deploy |
+| Gate eligibility dormant | `select count(*) from gate_reports where criteria_json ? 'eligibility'` returns **0**. A non-zero count means a setting was switched on without a dated user decision: an integrity anomaly and a carried fix, not a fix-forward. | every verify after the 6A deploy |
+| Criteria hash | the newest `gate_reports` row's `criteria_hash` is `5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5`. A different value means a criterion definition moved, which is an R1 event. | every verify after the 6A deploy |
+| Capsules | six capsules exist (order 157 plus the five named periods), each with a `manifest.json` whose `build` equals the deploy sha, whose `truncated` is `[]`, and every `unverifiable_slices` entry journaled with its `sid`/`ts` or its ticker. | taken in the Sat 2026-09-12 04:30–08:00 CT quiet window, after the 03:30 CT dump and before the 10:45 CT game window; **at any other hour this row reads "deferred: judge after the extraction"** |
+| Execution regressions | `make test`'s summary line reports exactly **6 xfailed** from `tests/test_execution_regressions.py` and **zero** `XPASS`. An unexpected pass means 6B's repair landed early or a case passes for the wrong reason; either way it is read before it is unmarked. | every verify after the 6A deploy, until 6B unmarks them |
+
 ## Layer 2b: invariants and plausibility bands
 
 **Invariants.** Every query must return 0. A non-zero row is an **integrity anomaly**: a carried
@@ -334,6 +362,11 @@ select count(*) from benchmarks where source_ts > target_ts;
 select count(*) from fills f join orders o on o.id=f.order_id join games g on g.id=o.game_id
   where f.replay=false and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
 select count(*) from markouts where at_ts > horizon_ts;
+-- after phase 6a
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+  -- gate_eligible_from_order_id / gate_eligible_from_run_id are None by design (addendum §0.4).
+  -- A row carrying the key means the measurement boundary was switched on; only a dated user
+  -- decision may do that (R1), so a non-zero count is an integrity anomaly, not a fix-forward.
 -- the remaining CHECKS (harness/ops/checks.py), same SQL: verify.md and CHECKS agree
 select count(*) from (
     select venue, trade_id
