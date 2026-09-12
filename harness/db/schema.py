@@ -300,6 +300,110 @@ _CONCURRENT_INDEX_DDL = (
     "on venue_quotes (run_id, venue_market_id)",
 )
 
+#: Fix 45 (the 23:23/23:26/23:27 CT 2026-09-11 and 00:06 CT 2026-09-12 normalize timeouts):
+#: `_load_events_cache` (`harness/normalize/runner.py`) selects the newest 200 rows with
+#: `source = 'kalshi', endpoint = '/events', http_status = 200` off `raw_responses` -- 2.2 GB+ per
+#: weekly partition, growing by one partition a week -- and no index led with `(source,
+#: endpoint)` in id order: the live plan was a backward walk of the primary key across every
+#: partition with the three predicates only a filter, cost 3,887 warm and past the 30 s
+#: statement timeout cold. `(source, endpoint, id)` makes the predicate the scan key.
+#:
+#: Not a `_CONCURRENT_INDEX_DDL` entry: Postgres 16 refuses `create index concurrently` on a
+#: partitioned parent (`raw_responses` is partitioned by `fetched_at`), and a plain `create
+#: index` on one is not metadata-only -- it recurses into every partition and takes a ShareLock
+#: on each, exactly what F65 (fix 25) forbids on a bulk table. `_ensure_partitioned_concurrent_
+#: indexes` below builds each of these with the documented partitioned recipe (parent, then every
+#: partition CONCURRENTLY, then attach) instead of one DDL string. (name, table, columns).
+#: `migrations/versions/0007_raw_events_lookup.py` calls the same function, so there is one
+#: implementation rather than a second copy that could drift from it.
+_PARTITIONED_CONCURRENT_INDEXES = (
+    ("ix_raw_source_endpoint_id", "raw_responses", "(source, endpoint, id)"),
+)
+
+
+def _index_valid(conn: Connection, name: str) -> bool:
+    """Whether the index `name` exists and Postgres considers it valid. False for a missing
+    index and for one left invalid by an aborted build -- the parent of a partitioned index is
+    marked invalid until every one of its partitions carries a matching, attached child."""
+    row = conn.execute(text(
+        "select i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid "
+        "where c.relname = :n"), {"n": name}).first()
+    return bool(row and row[0])
+
+
+def _partitions_of(conn: Connection, table: str) -> list[str]:
+    """The current partitions of a partitioned parent, from `pg_inherits` -- the same source
+    `harness/db/partition.py` reads, so a name here can never drift from what Postgres reports."""
+    return conn.execute(text(
+        "select c.relname from pg_inherits i "
+        "join pg_class c on c.oid = i.inhrelid "
+        "join pg_class p on p.oid = i.inhparent "
+        "where p.relname = :t order by c.relname"), {"t": table}).scalars().all()
+
+
+def _index_attached(conn: Connection, parent: str, child: str) -> bool:
+    """Whether `child` is already an attached partition of the index `parent` -- distinct from
+    merely existing: a child left behind by an aborted CONCURRENTLY build exists but was never
+    attached, and `_drop_if_invalid_index` is what clears that one."""
+    return conn.execute(text(
+        "select 1 from pg_inherits i "
+        "join pg_class c on c.oid = i.inhrelid "
+        "join pg_class p on p.oid = i.inhparent "
+        "where p.relname = :parent and c.relname = :child"),
+        {"parent": parent, "child": child}).first() is not None
+
+
+def _drop_if_invalid_index(conn: Connection, index: str) -> None:
+    """Mirrors `harness/db/partition.py`'s `_drop_if_invalid`: CREATE INDEX CONCURRENTLY leaves an
+    invalid index behind when it fails, and `if not exists` would then skip the rebuild and leave
+    the attach with nothing matching to find. Not imported from `partition.py` -- that module
+    already imports from this one, and a schema helper needing a one-off recovery step from the
+    one-off migration script would run the dependency the wrong way."""
+    invalid = conn.execute(text(
+        "select 1 from pg_index i join pg_class c on c.oid = i.indexrelid "
+        "where c.relname = :n and not i.indisvalid"), {"n": index}).first()
+    if invalid:
+        log.warning("dropping %s: left invalid by a failed concurrent build", index)
+        conn.execute(text(f"drop index concurrently if exists {index}"))
+
+
+def _ensure_partitioned_concurrent_indexes(conn: Connection) -> int:
+    """Build every `_PARTITIONED_CONCURRENT_INDEXES` entry against a partitioned parent, the only
+    recipe Postgres 16 allows for a CONCURRENTLY-equivalent build on one:
+
+    1. `create index if not exists <name> on only <table> (<cols>)` -- the parent, metadata-only
+       and invalid until every partition below has a matching, attached child.
+    2. For every current partition (`pg_inherits`): drop a child left invalid by an earlier
+       aborted build, then `create index concurrently if not exists <name>_<suffix> on
+       <partition> (<cols>)`, then `alter index <name> attach partition <name>_<suffix>`. A
+       partition whose child is already attached is skipped.
+    3. A parent already valid -- every partition already has an attached child -- is skipped
+       entirely: no statement runs, so a repeat call takes no lock at all (fix 37's rule for a
+       genuine no-op).
+
+    A future weekly partition needs none of this: `create table ... partition of ...` inherits
+    every one of the parent's indexes automatically, valid or not, the moment it is created.
+
+    Returns the number of index entries skipped as already complete, for `create_schema`'s tally.
+    """
+    skipped = 0
+    for name, table, cols in _PARTITIONED_CONCURRENT_INDEXES:
+        if _index_valid(conn, name):
+            skipped += 1
+            continue
+        conn.execute(text(f"create index if not exists {name} on only {table} {cols}"))
+        for partition in _partitions_of(conn, table):
+            suffix = partition[len(table):]
+            child = f"{name}{suffix}"
+            if _index_attached(conn, name, child):
+                continue
+            _drop_if_invalid_index(conn, child)
+            log.info("building %s concurrently on %s", child, partition)
+            conn.execute(text(f"create index concurrently if not exists {child} on {partition} {cols}"))
+            conn.execute(text(f"alter index {name} attach partition {child}"))
+    return skipped
+
+
 #: Open contracts and their average price per variant, from the fills of live orders that have
 #: not settled yet, on either fill method that is money: `queue_model` (inferred against the
 #: recorded tape) and `venue` (the venue's own report). snapshot_cross and no_watcher fills are
@@ -645,16 +749,20 @@ def _execute_ddl(conn: Connection, statement: str) -> bool:
 
 def _concurrent_index_names() -> frozenset[str]:
     """The index names `_CONCURRENT_INDEX_DDL` builds, read out of the statements themselves
-    through fix 37's `ddl_target` so there is one parser here and no second list to keep in step.
+    through fix 37's `ddl_target` so there is one parser here and no second list to keep in step,
+    unioned with the names `_PARTITIONED_CONCURRENT_INDEXES` declares directly (fix 45: those
+    entries are `(name, table, cols)` tuples, not DDL strings -- there is no single statement for
+    `ddl_target` to read a name out of).
 
-    `_model_indexes` subtracts these. An index declared on a model *and* listed in that tuple
-    (fix 25's `ix_odds_fetched_book`, fix 42's `ix_quotes_run_market`) would otherwise be built
-    twice on one `create_schema` run, and the first of the two is `_model_index_ddl`'s plain
-    `create index`, which holds a ShareLock against the recorder for the whole build on a
-    populated bulk table -- exactly what CONCURRENTLY is there to avoid, and it would leave the
-    CONCURRENTLY statement a no-op (review Important 1, fix 42 round 1). A fresh database is
-    unaffected: `create_all` builds a model index as part of creating its table, before any of
-    this runs.
+    `_model_indexes` subtracts these. An index declared on a model *and* listed in either tuple
+    (fix 25's `ix_odds_fetched_book`, fix 42's `ix_quotes_run_market`, fix 45's
+    `ix_raw_source_endpoint_id`) would otherwise be built twice on one `create_schema` run, and
+    the first of the two is `_model_index_ddl`'s plain `create index`, which holds a ShareLock
+    against the writer for the whole build on a populated bulk table -- exactly what CONCURRENTLY
+    (or, for a partitioned parent, `_ensure_partitioned_concurrent_indexes`) is there to avoid,
+    and it would leave that safer build a no-op (review Important 1, fix 42 round 1). A fresh
+    database is unaffected: `create_all` builds a model index as part of creating its table,
+    before any of this runs.
 
     Strict on purpose, twice over. An entry `ddl_target` does not read as an index, or one
     written without CONCURRENTLY, raises at import rather than dropping out of this set and
@@ -669,6 +777,7 @@ def _concurrent_index_names() -> frozenset[str]:
                 f"_CONCURRENT_INDEX_DDL entry is not a `create index concurrently if not "
                 f"exists` statement: {statement!r}")
         names.add(target[1])
+    names.update(name for name, _table, _cols in _PARTITIONED_CONCURRENT_INDEXES)
     return frozenset(names)
 
 
@@ -717,6 +826,7 @@ def create_schema(engine: Engine) -> None:
         _model_index_ddl(conn)
         for statement in _CONCURRENT_INDEX_DDL:
             skipped += _execute_ddl(conn, statement)
+        skipped += _ensure_partitioned_concurrent_indexes(conn)
         for statement in _TAPE_DDL:
             skipped += _execute_ddl(conn, statement)
         for table in TAPE_TABLES:

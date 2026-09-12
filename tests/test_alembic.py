@@ -416,10 +416,11 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_six_revisions():
+def test_the_versions_directory_holds_seven_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
-        "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py"]
+        "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
+        "0007_raw_events_lookup.py"]
 
 
 def _load_baseline():
@@ -787,13 +788,13 @@ def test_the_rfq_lookup_ddl_agrees_between_schema_and_migration():
 
 # --- fix 42: revision 0006 -------------------------------------------------------------------
 
-def test_quotes_run_index_follows_rfq_lookup_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_quotes_run_index_follows_rfq_lookup():
+    """The head assertion this test used to carry moved to
+    `test_raw_events_lookup_follows_quotes_run_index_and_is_the_pinned_head`: 0006 is a link in
+    the chain now, not its end, the same trim fix 32/phase 5/fix 35 gave 0003/0004/0005."""
     module = _load_revision("0006_quotes_run_index.py")
     assert module.revision == "0006_quotes_run_index"
     assert module.down_revision == "0005_rfq_lookup"
-    assert HEAD_REVISION == "0006_quotes_run_index"
 
 
 def test_the_quotes_run_index_downgrade_is_a_no_op_and_drops_nothing():
@@ -861,3 +862,69 @@ def test_the_quotes_run_index_is_never_built_without_concurrently():
     assert "ix_quotes_run_market" in _CONCURRENT_INDEX_NAMES
     src = (ROOT / "migrations" / "versions" / "0006_quotes_run_index.py").read_text()
     assert "autocommit_block" in src
+
+
+# --- fix 45: revision 0007 --------------------------------------------------------------------
+
+def test_raw_events_lookup_follows_quotes_run_index_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0007_raw_events_lookup.py")
+    assert module.revision == "0007_raw_events_lookup"
+    assert module.down_revision == "0006_quotes_run_index"
+    assert HEAD_REVISION == "0007_raw_events_lookup"
+
+
+def test_the_raw_events_lookup_downgrade_drops_the_parent_index():
+    """Unlike every revision since `0002_phase45` (whose `downgrade()` is `pass`, roadmap
+    invariant 5), this one actually drops: a plain additive index carries none of the data-loss
+    risk that rule guards against, and dropping the parent takes every attached partition child
+    with it (intrinsic to a partitioned index in Postgres; no CASCADE needed)."""
+    module = _load_revision("0007_raw_events_lookup.py")
+    body = (ROOT / "migrations" / "versions" / "0007_raw_events_lookup.py").read_text().lower()
+    assert "drop index if exists ix_raw_source_endpoint_id" in body
+    # Still none of `test_no_migration_drops_or_alters_an_existing_object`'s FORBIDDEN shapes
+    # (that parametrized test already covers this file; this just states the intent locally).
+    assert "drop_index" not in body and "drop table" not in body
+
+
+def test_the_raw_events_lookup_migration_calls_the_shared_partitioned_recipe():
+    """Unlike `0005_rfq_lookup`/`0006_quotes_run_index`, there is no single DDL string to compare
+    between two copies -- the partitioned recipe loops over `pg_inherits`, so this revision
+    imports and calls `harness/db/schema.py`'s `_ensure_partitioned_concurrent_indexes` directly.
+    One implementation, not two copies free to drift the way a hand-typed second copy could."""
+    from harness.db.schema import _ensure_partitioned_concurrent_indexes
+
+    module = _load_revision("0007_raw_events_lookup.py")
+    assert module._ensure_partitioned_concurrent_indexes is _ensure_partitioned_concurrent_indexes
+
+
+def test_the_raw_source_endpoint_id_index_matches_the_partitioned_concurrent_tuple():
+    """The model, `_PARTITIONED_CONCURRENT_INDEXES` and this revision must all name and shape the
+    same index or the catalogue diff fails -- the same shape
+    `test_the_quotes_run_index_ddl_agrees_between_schema_and_migration` checks for fix 42, applied
+    to a tuple entry instead of a DDL string since there is no string here to compare."""
+    from harness.db.models import RawResponse
+    from harness.db.schema import _PARTITIONED_CONCURRENT_INDEXES
+
+    name, table, cols = next(e for e in _PARTITIONED_CONCURRENT_INDEXES
+                             if e[0] == "ix_raw_source_endpoint_id")
+    assert table == "raw_responses"
+    assert cols == "(source, endpoint, id)"
+    index = next(i for i in RawResponse.__table__.indexes if i.name == name)
+    assert [c.name for c in index.columns] == ["source", "endpoint", "id"]
+
+
+def test_the_raw_events_lookup_index_is_in_both_catalogues(two_databases):
+    """Fix 45 adds `ix_raw_source_endpoint_id` to `RawResponse.__table_args__`, to
+    `harness/db/schema.py`'s `_PARTITIONED_CONCURRENT_INDEXES` and to this revision in one commit:
+    the catalogue diff fails if any half lands without the others, the same shape
+    `test_the_quotes_run_index_is_in_both_catalogues` checks for fix 42's `ix_quotes_run_market`."""
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        indexes = {i["name"] for i in inspect(engine).get_indexes("raw_responses")}
+        assert "ix_raw_source_endpoint_id" in indexes

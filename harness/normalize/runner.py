@@ -73,6 +73,10 @@ def _events_in(body) -> list:
 
 
 def _load_events_cache(session: Session) -> None:
+    # Fix 45: `ix_raw_source_endpoint_id (source, endpoint, id)` supports this
+    # (source='kalshi', endpoint='/events') lookup in id-descending order, avoiding
+    # a backward primary-key walk with source and endpoint only as filters.
+    # http_status remains a filter; the index does not cover the selected body.
     # Only the body is read, so only the body is selected (fix 49): loading the mapped
     # `RawResponse` pulled two hundred whole rows -- jsonb payloads included -- into the session
     # to copy a handful of dicts out of them.
