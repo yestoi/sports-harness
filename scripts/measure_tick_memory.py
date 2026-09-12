@@ -23,7 +23,7 @@ Run standalone for a longer series than the test's:
 """
 
 import tracemalloc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 from harness.telemetry import rss_mb
@@ -319,6 +319,24 @@ class TickSample:
 class MemoryReport:
     samples: list[TickSample]
     top: list[str]
+    grew: list[str] = field(default_factory=list)
+
+    def creep_kb_per_tick(self, baseline_tick: int) -> float:
+        """KiB of traced total added per tick between `baseline_tick` and the last sample.
+
+        This, not the fraction `growth_after` returns, is what "the tick retains nothing" means.
+        A fraction is measured against the baseline total, and that total is whatever the process
+        happened to be carrying when this file started running -- 528 KiB inside `make test` and
+        835 KiB behind three other test files, for the same rig on the same day -- so the same
+        few kilobytes of creep read as 5.9 % in one process and 2.2 % in the next. Per-tick
+        growth has no such scale in it: retention that matters is per tick by definition, and
+        this number is directly comparable across runs.
+        """
+        base = self.at(baseline_tick)
+        ticks = self.samples[-1].tick - base.tick
+        if ticks <= 0:
+            return 0.0
+        return (self.samples[-1].traced_kb - base.traced_kb) / ticks
 
     def at(self, tick: int) -> TickSample:
         for s in self.samples:
@@ -342,7 +360,10 @@ class MemoryReport:
         return (self.samples[-1].traced_kb - base) / base
 
     def text(self) -> str:
-        return "\n".join([s.line() for s in self.samples] + [""] + self.top)
+        blocks = [s.line() for s in self.samples] + [""] + self.top
+        if self.grew:
+            blocks += ["", "grew since the baseline tick (driver cache excluded):"] + self.grew
+        return "\n".join(blocks)
 
 
 class StagePeaks:
@@ -394,20 +415,25 @@ class StagePeaks:
 
 
 def measure_ticks(run_tick, ticks: int, checkpoints: tuple[int, ...] = (1, 2, 5, 10),
-                  top_n: int = 12) -> MemoryReport:
+                  top_n: int = 12, baseline_tick: int = 2) -> MemoryReport:
     """Run `run_tick()` `ticks` times under `tracemalloc`, sampling at `checkpoints` and last.
 
     A `gc.collect()` runs before each sample so the traced total counts what is genuinely
     reachable rather than what the cyclic collector has not got to yet -- SQLAlchemy's
     identity map and instance state are full of cycles, and an uncollected cycle would read
     as retention that a later generation sweep would have cleared anyway.
+
+    `report.grew` is the answer to the only question a failure here raises: *what* grew. It
+    diffs `baseline_tick`'s snapshot against the last one, driver cache excluded, so the reader
+    gets allocation sites rather than a number to argue with.
     """
     import gc
 
-    wanted = set(checkpoints) | {ticks}
+    wanted = set(checkpoints) | {ticks, baseline_tick}
     tracemalloc.start()
     samples: list[TickSample] = []
     snapshot = None
+    baseline_snapshot = None
     try:
         for i in range(1, ticks + 1):
             run_tick()
@@ -421,10 +447,20 @@ def measure_ticks(run_tick, ticks: int, checkpoints: tuple[int, ...] = (1, 2, 5,
             snapshot = tracemalloc.take_snapshot()
             traced_kb, driver_kb = _totals(snapshot)
             samples.append(TickSample(i, traced_kb, peak / 1024, rss_mb(), driver_kb))
-        top = []
+            if i == baseline_tick:
+                baseline_snapshot = snapshot
+        top, grew = [], []
         if snapshot is not None:
             for stat in snapshot.statistics("lineno")[:top_n]:
                 top.append(f"  {stat.size / 1024:9.1f} KiB  {stat.count:7d} blocks  {stat.traceback[0]}")
+        if snapshot is not None and baseline_snapshot is not None:
+            diff = snapshot.filter_traces([_DRIVER_CACHE]).compare_to(
+                baseline_snapshot.filter_traces([_DRIVER_CACHE]), "lineno")
+            for stat in diff[:top_n]:
+                if stat.size_diff <= 0:
+                    break
+                grew.append(f"  {stat.size_diff / 1024:+9.1f} KiB  {stat.count_diff:+7d} blocks  "
+                            f"{stat.traceback[0]}")
     finally:
         tracemalloc.stop()
-    return MemoryReport(samples=samples, top=top)
+    return MemoryReport(samples=samples, top=top, grew=grew)
