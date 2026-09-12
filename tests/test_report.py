@@ -40,6 +40,7 @@ from harness.db.models import (
     VenueRequest,
 )
 from harness.report.tables import (
+    CONTRAST_BENCHMARK,
     FLAG_CLUSTERS,
     GREY_CLUSTERS,
     NOT_COLLECTED,
@@ -58,6 +59,7 @@ from harness.report.weekly import (
     select_cells,
     write_selected,
 )
+from harness.settlement.benchmarks import BENCHMARK_TYPES
 
 runner = CliRunner()
 
@@ -1253,3 +1255,148 @@ def test_t13_sql_keys_no_pricing_table_by_run_id():
         assert name not in statements, name
     # And every runs-derived count goes through the one capped reader, never a query of its own.
     assert "recent_runs" in block
+
+
+# --- the confirmation path (addendum 0.8, 1.7; design review C2) -------------------------------
+
+
+def _confirmation_t4(rows: list[list]) -> Table:
+    """A table-4 shaped table with only the columns the confirmation path reads, so these stay
+    pure-function tests. `rows` are `[fair_source, price_bucket, ttk, sport, market_type,
+    posterior]` and the builder pads the rest with placeholders."""
+    from harness.report.tables import _T4_COLUMNS
+
+    columns = list(_T4_COLUMNS)
+    posterior = columns.index("posterior")
+    out = []
+    for key in rows:
+        row = [PLACEHOLDER] * len(columns)
+        row[:5] = key[:5]
+        row[posterior] = key[5]
+        out.append(row)
+    return Table("Table 4 (t4): mispricing map", "header", columns, out)
+
+
+def _cell(estimate, n_clusters, lo, hi):
+    return (estimate, n_clusters * 4, n_clusters, lo, hi)
+
+
+def _selected(fair_source="direct", direction=1, n_clusters=42):
+    return {"fair_source": fair_source, "price_bucket": "20-35", "ttk": "< 3 h", "sport": "nfl",
+            "market_type": "moneyline", "panel": "gap_mid",
+            "posterior_excludes_zero": True, "direction": direction, "n_clusters": n_clusters}
+
+
+def test_select_cells_stores_the_direction_and_the_cluster_count():
+    """Addendum 0.8: storing changes no rule. It records what week 2 chose so week 3 can print
+    the one-sided count beside the registered two-sided one."""
+    from harness.report.tables import _T4_COLUMNS
+
+    columns = list(_T4_COLUMNS)
+    rows = []
+    for fair_source, estimate in (("direct", 0.0300), ("derived", -0.0200)):
+        row = [PLACEHOLDER] * len(columns)
+        row[:5] = [fair_source, "20-35", "< 3 h", "nfl", "moneyline"]
+        row[columns.index("posterior")] = _cell(estimate, 42, estimate - 0.01, estimate + 0.01)
+        row[columns.index("bh")] = "reject"
+        rows.append(row)
+    cells = select_cells({"t4": Table("t", "h", columns, rows)})["cells"]
+
+    assert [c["direction"] for c in cells] == [1, -1]
+    assert [c["n_clusters"] for c in cells] == [42, 42]
+
+
+def test_select_cells_records_no_direction_for_a_cell_with_no_estimate():
+    from harness.report.tables import _T4_COLUMNS
+
+    columns = list(_T4_COLUMNS)
+    row = [PLACEHOLDER] * len(columns)
+    row[:5] = ["direct", "20-35", "< 3 h", "nfl", "moneyline"]
+    row[columns.index("posterior")] = PLACEHOLDER
+    row[columns.index("bh")] = "reject"
+    cells = select_cells({"t4": Table("t", "h", columns, [row])})["cells"]
+    assert cells[0]["direction"] is None and cells[0]["n_clusters"] is None
+
+
+def test_a_cell_below_the_ten_cluster_floor_is_insufficient_not_confirmed():
+    """Design review C2: the floor is a **restoration**. The pre-registration record already
+    greys below 10 game clusters (Analysis plan line 63) and excludes greyed cells from every
+    family (line 66); the confirmation count had not been applying it."""
+    from harness.report.tables import GREY_CLUSTERS
+
+    assert GREY_CLUSTERS == 10
+    t4 = _confirmation_t4([
+        ["direct", "20-35", "< 3 h", "nfl", "moneyline", _cell(0.0300, 4, 0.0200, 0.0400)],
+    ])
+    selection = {"cells": [_selected()], "contrasts": []}
+    note = restrict_to_selection({"t4": t4}, selection)["t4"].note
+
+    assert "insufficient (< 10 clusters) 1" in note
+    assert "confirmed (two-sided) 0" in note
+
+
+def test_the_confirmation_note_counts_selected_evaluated_insufficient_missing_and_confirmed():
+    """Addendum 0.8's exact line: every denominator is printed, so a reader can see why a count
+    is what it is rather than inferring it."""
+    t4 = _confirmation_t4([
+        # confirmed, on the selected direction
+        ["direct", "20-35", "< 3 h", "nfl", "moneyline", _cell(0.0300, 42, 0.0200, 0.0400)],
+        # confirmed, against the selected direction
+        ["derived", "20-35", "< 3 h", "nfl", "moneyline", _cell(-0.0300, 42, -0.0400, -0.0200)],
+        # evaluated, interval straddles zero
+        ["direct", "35-50", "< 3 h", "nfl", "moneyline", _cell(0.0100, 42, -0.0100, 0.0300)],
+        # evaluated, below the floor
+        ["direct", "50-65", "< 3 h", "nfl", "moneyline", _cell(0.0300, 4, 0.0200, 0.0400)],
+    ])
+    selection = {"cells": [
+        _selected(fair_source="direct"),
+        _selected(fair_source="derived", direction=1),
+        dict(_selected(fair_source="direct"), price_bucket="35-50"),
+        dict(_selected(fair_source="direct"), price_bucket="50-65"),
+        dict(_selected(fair_source="direct"), price_bucket="65-80"),   # no row in week 3
+    ], "contrasts": []}
+
+    note = restrict_to_selection({"t4": t4}, selection)["t4"].note
+    assert "selected 5" in note
+    assert "evaluated 4" in note
+    assert "insufficient (< 10 clusters) 1" in note
+    assert "missing (no row) 1" in note
+    assert "confirmed (two-sided) 2" in note
+    assert "of which on the selected direction 1" in note
+
+
+def test_the_direction_count_is_printed_and_never_applied():
+    """Design review C2 and D6: making the stored direction a *condition* turns the record's
+    two-sided rule into a one-sided one, which is a success-threshold change under R1. The loop
+    prints the number and applies nothing; the user's dated decision is what would apply it."""
+    from harness.report.weekly import DIRECTION_NOTE
+    from harness.report.tables import SIGNIFICANT_CELLS_REQUIRED
+
+    assert SIGNIFICANT_CELLS_REQUIRED == 3
+    assert DIRECTION_NOTE == "proposed one-sided reading, not in force"
+
+    t4 = _confirmation_t4([
+        ["direct", "20-35", "< 3 h", "nfl", "moneyline", _cell(-0.0300, 42, -0.0400, -0.0200)],
+    ])
+    selection = {"cells": [_selected(direction=1)], "contrasts": []}
+    note = restrict_to_selection({"t4": t4}, selection)["t4"].note
+    # The cell confirms on the registered two-sided rule even though it moved the other way.
+    assert "confirmed (two-sided) 1" in note
+    assert "of which on the selected direction 0" in note
+    assert DIRECTION_NOTE in note
+
+
+def test_the_contrast_note_prints_its_own_denominators():
+    columns = ["variant", "tier", "basis", *BENCHMARK_TYPES, f"holm({CONTRAST_BENCHMARK})", "gate"]
+    row = [PLACEHOLDER] * len(columns)
+    row[0] = "wide_band"
+    row[columns.index(CONTRAST_BENCHMARK)] = _cell(0.0200, 42, 0.0100, 0.0300)
+    t2 = Table("Table 2 (t2): CLV per variant", "h", columns, [row])
+    selection = {"cells": [], "contrasts": [
+        {"variant": "wide_band", "benchmark_type": CONTRAST_BENCHMARK, "direction": 1,
+         "n_clusters": 42},
+        {"variant": "absent_variant", "benchmark_type": CONTRAST_BENCHMARK, "direction": -1,
+         "n_clusters": 11},
+    ]}
+    note = restrict_to_selection({"t2": t2}, selection)["t2"].note
+    assert "selected 2" in note and "evaluated 1" in note

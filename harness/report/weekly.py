@@ -24,6 +24,7 @@ from harness.db.models import ReportCell, ReportRun
 from harness.report import criteria_hash
 from harness.report.tables import (
     CONTRAST_BENCHMARK,
+    GREY_CLUSTERS,
     HEADLINE_PANEL,
     NOT_COLLECTED,
     PLACEHOLDER,
@@ -46,6 +47,16 @@ CONTRAST_KEY = ("variant", "benchmark_type")
 
 CONFIRMATION_NOTE = ("confirmation set: restricted to the cells and contrasts selected in the "
                      "week-38 freeze; nothing outside that set is evaluated here.")
+
+#: Addendum 0.8 and design review C2. The direction count is printed **beside** the registered
+#: two-sided count and is not a condition. The record's §9.6 rule is "at least three cells whose
+#: 90 % CI excludes zero after shrinkage" (Analysis plan line 68), judged on the posterior
+#: interval, two-sided. Making the stored direction a condition turns that into a one-sided
+#: rule, which is a success-threshold change under R1 and only a dated user decision makes it.
+#: The phase report's Needs-you carries the decision; this module prints the number and applies
+#: nothing. D6's reversal is therefore the right way round: the decision is needed to *add* the
+#: condition, not to remove it.
+DIRECTION_NOTE = "proposed one-sided reading, not in force"
 
 #: R:232-234: the bullets live inside a fenced block that says what they are. The Monday duty
 #: acts on the tables, never on the bullets, and the fence is what makes that visible on the page
@@ -143,6 +154,37 @@ def render_markdown(tables: dict[str, Table], meta: dict) -> str:
 # --- selection ------------------------------------------------------------------------------
 
 
+def _direction(value: Any) -> int | None:
+    """`+1` or `-1` for the sign of a cell's estimate, `None` when it has no signed estimate.
+
+    Stored at selection (addendum 0.8). A zero or NaN estimate has no direction and says so,
+    rather than being rounded into one.
+    """
+    if not is_cell(value):
+        return None
+    estimate = value[0]
+    if estimate != estimate or estimate == 0:
+        return None
+    return 1 if estimate > 0 else -1
+
+
+def _n_clusters(value: Any) -> int | None:
+    """A cell's game-cluster count, stored beside the direction so the confirmation report can
+    say why a selected cell was insufficient without re-deriving it."""
+    return value[2] if is_cell(value) else None
+
+
+def _has_floor(value: Any) -> bool:
+    """Whether a week-3 cell clears the registered ten-game-cluster floor.
+
+    A **correction**, not a new rule (design review C2): the pre-registration record's Analysis
+    plan already greys a cell below `GREY_CLUSTERS` game clusters (line 63) and excludes greyed
+    cells from every family (line 66). The confirmation count had not been applying it, so a
+    week-3 cell resting on four games could confirm a selection made on forty.
+    """
+    return is_cell(value) and not is_grey(value)
+
+
 def select_cells(tables: dict[str, Table]) -> dict:
     """The cells and contrasts this report selects: everything its own families rejected.
 
@@ -161,6 +203,8 @@ def select_cells(tables: dict[str, Table]) -> dict:
             entry = {name: row[i] for name, i in index.items()}
             entry["panel"] = HEADLINE_PANEL
             entry["posterior_excludes_zero"] = cell_excludes_zero(row[posterior])
+            entry["direction"] = _direction(row[posterior])
+            entry["n_clusters"] = _n_clusters(row[posterior])
             cells.append(entry)
     contrasts = []
     t2 = tables.get("t2")
@@ -168,9 +212,15 @@ def select_cells(tables: dict[str, Table]) -> dict:
     if t2 is not None and holm_column in t2.columns:
         holm = t2.columns.index(holm_column)
         variant = t2.columns.index("variant")
+        # The contrast's effect lives in the benchmark's own column; the Holm column is the
+        # decision, not the estimate, so the direction is read off the effect.
+        effect = t2.columns.index(CONTRAST_BENCHMARK)
         for row in t2.rows:
             if row[holm] == "reject":
-                contrasts.append({"variant": row[variant], "benchmark_type": CONTRAST_BENCHMARK})
+                contrasts.append({"variant": row[variant],
+                                  "benchmark_type": CONTRAST_BENCHMARK,
+                                  "direction": _direction(row[effect]),
+                                  "n_clusters": _n_clusters(row[effect])})
     return {"cells": cells, "contrasts": contrasts}
 
 
@@ -201,11 +251,29 @@ def restrict_to_selection(tables: dict[str, Table], selection: dict) -> dict[str
     t4 = tables.get("t4")
     if t4 is not None:
         index = [t4.columns.index(name) for name in CELL_KEY]
-        rows = [row for row in t4.rows if tuple(row[i] for i in index) in wanted_cells]
         posterior = t4.columns.index("posterior")
-        confirmed = sum(1 for row in rows if cell_excludes_zero(row[posterior]))
-        note = (f"{CONFIRMATION_NOTE} {len(rows)} selected cell(s) evaluated; {confirmed} whose "
-                f"posterior interval excludes zero (§9.6 needs {SIGNIFICANT_CELLS_REQUIRED}).")
+        selected = [tuple(entry.get(name) for name in CELL_KEY)
+                    for entry in selection.get("cells", [])]
+        directions = {tuple(entry.get(name) for name in CELL_KEY): entry.get("direction")
+                      for entry in selection.get("cells", [])}
+        rows = [row for row in t4.rows if tuple(row[i] for i in index) in wanted_cells]
+        present = {tuple(row[i] for i in index) for row in t4.rows}
+        missing = sum(1 for key in selected if key not in present)
+        eligible = [row for row in rows if _has_floor(row[posterior])]
+        insufficient = len(rows) - len(eligible)
+        confirmed = [row for row in eligible if cell_excludes_zero(row[posterior])]
+        on_direction = sum(
+            1 for row in confirmed
+            if directions.get(tuple(row[i] for i in index)) is not None
+            and directions[tuple(row[i] for i in index)] == _direction(row[posterior]))
+        note = (f"{CONFIRMATION_NOTE} "
+                f"selected {len(selected)} / evaluated {len(rows)} / "
+                f"insufficient (< {GREY_CLUSTERS} clusters) {insufficient} / "
+                f"missing (no row) {missing} / "
+                f"confirmed (two-sided) {len(confirmed)} "
+                f"(§9.6 needs {SIGNIFICANT_CELLS_REQUIRED}) / "
+                f"of which on the selected direction {on_direction} "
+                f"({DIRECTION_NOTE}).")
         out["t4"] = with_rows(t4, rows, note)
 
     t2 = tables.get("t2")
@@ -215,8 +283,10 @@ def restrict_to_selection(tables: dict[str, Table], selection: dict) -> dict[str
         # CONTRAST_BENCHMARK, so a selection naming another benchmark selects nothing here.
         rows = [row for row in t2.rows
                 if (row[variant], CONTRAST_BENCHMARK) in wanted_contrasts]
-        out["t2"] = with_rows(t2, rows,
-                              f"{CONFIRMATION_NOTE} {len(rows)} selected contrast(s) evaluated.")
+        out["t2"] = with_rows(
+            t2, rows,
+            f"{CONFIRMATION_NOTE} selected {len(selection.get('contrasts', []))} / "
+            f"evaluated {len(rows)} contrast(s).")
     return out
 
 

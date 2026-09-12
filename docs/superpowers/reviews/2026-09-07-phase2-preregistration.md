@@ -134,3 +134,28 @@ User decision U5 (2026-09-07) supersedes the controller inference in the previou
 - **Tables and criteria touched:** every table, but through the **provisional trail only**. The Monday `harness report --week N` runs were explicit about their week and are unaffected, and they are what `docs/reports/` and the confirmation calendar read. **Gate criteria touched: none** -- the gate window is the whole paper run up to `now`, not one ISO week (`harness/report/gate.py:21-22`), and no criterion reads a week key. **No threshold, family definition, cell grid, success threshold or confirmation cut-off changes.**
 - **Re-scoring command: none needed.** Provisional rows are a trail of what the week looked like as it went, never a scored artefact, and they are never re-scored. The pre-fix range being empty, there is nothing to exclude either; this line records that deliberately rather than leaving it unsaid.
 - **Unchanged by design:** the weekly *partition* names (`harness/db/schema.py:41`, `harness/ops/checks.py:53`) stay on UTC. They are storage keys, not measurement keys, and renaming one is a migration for no measurement gain.
+
+## Correction 2 (added 2026-09-11; phase 6C, addendum 0.8, design review C2)
+
+The week-3 confirmation count was not applying the **ten-game-cluster floor** this record already
+states. The Analysis plan (added 2026-09-07) says "a cell is greyed below 10 game clusters" and
+"Greyed cells are excluded from the family", but `restrict_to_selection` counted a selected cell as
+confirmed on its posterior interval alone, so a week-3 cell resting on four games could confirm a
+selection made on forty. Corrected 2026-09-11: a greyed week-3 cell is counted as **insufficient**
+and never as confirmed. This restores the registered rule; it does not add one, and no threshold,
+family, grid or cut-off moves.
+
+Two fields are now **stored** at selection, per selected cell and contrast: `direction` (the sign of
+the selected estimate) and `n_clusters`. Storing changes no rule.
+
+The **direction is reported, never applied.** The week-3 note prints, beside the registered
+two-sided count this record's §9.6 rule defines ("90 % CI excludes zero", Analysis plan line 68),
+the count of confirmed cells whose posterior interval also lies on the stored direction, labelled
+"proposed one-sided reading, not in force". Making the direction a *condition* would convert a
+two-sided decision rule into a one-sided one, which is a success-threshold change under ruling R1
+and Amendment protocol item 4: **only a dated user decision adds it**. The phase report's Needs-you
+list carries that decision; until it is dated, the printed count is a diagnostic and nothing reads
+it. `SIGNIFICANT_CELLS_REQUIRED = 3`, the families, the grid and the cut-off dates are untouched.
+
+Under U8 formal selection and confirmation are suspended until the user ratifies 6F's amendment, so
+this milestone produces no confirmation report; the code path is exercised on fixtures only.
