@@ -173,9 +173,14 @@ def test_the_gap_snapshot_read_does_not_grow_with_the_history_behind_it(
     the peak is flat.
     """
     ticks = 12
+    #: Every stage `price_and_signal` calls by name. `build_gap_snapshots`, `_load_gap_rows` and
+    #: `run_strategy` each run more than once a tick since fix 48; `StagePeaks.wrap` keeps the
+    #: largest reading of the tick, which is the one that sets the allocator's high-water mark.
+    STAGES = ("compute_direct_fair_values", "compute_derived_fair_values", "build_gap_snapshots",
+              "_load_gap_rows", "run_strategy")
     run_tick, _ = _driver(env_settings, db_session, ticks)
     peaks = StagePeaks()
-    for name in ("compute_fair_values", "build_gap_snapshots", "_load_gap_rows", "run_strategy"):
+    for name in STAGES:
         monkeypatch.setattr(pipeline, name, peaks.wrap(name, getattr(pipeline, name)))
 
     tracemalloc.start()
@@ -185,11 +190,17 @@ def test_the_gap_snapshot_read_does_not_grow_with_the_history_behind_it(
             peaks.end_tick()
     finally:
         tracemalloc.stop()
-    print("\n" + peaks.text(("compute_fair_values", "build_gap_snapshots", "_load_gap_rows",
-                             "run_strategy")))
+    print("\n" + peaks.text(STAGES))
 
+    # The bound is 25 %, not the 10 % this test carried before fix 48 landed beside it, because
+    # `growth` compares two single ticks and a single tick's peak is noisy: the same twelve-tick
+    # run reads 5,010 to 5,422 KiB with no trend in it (measured 2026-09-12), so a first tick at
+    # the bottom of that band and a last tick at the top is +8 % of pure noise. What the test is
+    # there to catch is unbounded growth with the history behind it, and that was +138.7 % over
+    # the same twelve ticks before the `DISTINCT ON` read; 25 % separates the two with room for
+    # the noise. Measured at the head of this branch: +4.1 %.
     growth = peaks.growth("build_gap_snapshots")
-    assert growth < 0.10, (
+    assert growth < 0.25, (
         f"the gap snapshot stage's peak grew {growth:.1%} over {ticks} ticks of history\n"
         + peaks.text(("build_gap_snapshots",)))
 
