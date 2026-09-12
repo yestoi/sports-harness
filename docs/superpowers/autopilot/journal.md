@@ -1763,3 +1763,10 @@ Times are America/Chicago.
 - Recorder: 1.0 GiB RSS at 08:44 CT (318 MiB at 08:06; the Saturday 5-min ticks), host available 1.6 GB, swap 4.45 GB. Under the 2.4 GiB / 600 MB restart rule; monitor `b46l8zq9w` watching. Fix 49's branch is reviewed and waiting on the gate.
 - Result: PASS (operate). Dispatches: 0.
 - Next: gated; wakeup 09:45 CT (recorder before the 10:45 CT NCAAF window; the user's answer).
+
+## 146. operate - recorder restarted before the NCAAF window (1.68 GiB, available 1.0 GB); floor builder re-disabled, app-serve restarted - 2026-09-12 09:50 CT
+
+- Orient: rule 4 (recorder rule, entry 138), while gated (entry 143). At 09:44 CT: `app-run` 1.68 GiB RSS (318 MiB at 08:06, 1.0 GiB at 08:44: ~0.7 GiB an hour on the Saturday 5-min ticks), host available 1.0 GB, swap 3.7 GB; `app-ws` 4 QueryCanceled disconnects in the hour (fix 50, back with the memory pressure); `floor` builder disabled again at 09:37 CT ([2541, 2520, 3064] ms), `pulse` alive.
+- Ruling: restart `app-run` at 09:44 CT although under the 2.4 GiB / 600 MB line: on the measured trend the line trips at ~10:45 CT, inside the NCAAF window where the rule forbids the restart, and a restart now costs one 5-min tick on an empty slate - cost if wrong: one tick (run 12911, left `running`) and the settle job's anchor pushed an hour again. Result: `app-run` Up, 78 MiB; host available 3.1 GB, swap 2.2 GB. Then `app-serve` restarted at 09:48 CT on the calm host so `floor` builds through the window (entry 144 ruling 3 precedent).
+- Result: PASS (operate). Dispatches: 0. Anomaly: run 12911 (09:44:07 CT) stays `running` (interrupted by the restart; the same stuck-row shape as earlier restarts).
+- Next: gated; wakeup 10:50 CT (window open: recorder, sink, builders; no deploy but app-only per decision 128 once the user answers).
