@@ -1,0 +1,52 @@
+Phase 6B Task 2 (subscription continuity, correction C1) -- TDD evidence
+Worktree: /Users/trey/dev/sports-wt/phase6b-t2-continuity   branch phase6b-t2-continuity
+Base: fba5c27 (phase branch head)
+All runs: DATABASE_URL_TEST=<per-branch db on localhost:5433> PYTHONPATH=. .venv/bin/pytest
+
+=== Step 2: the new tests fail before the change ===
+$ pytest tests/test_book.py -q
+
+==================================== ERRORS ====================================
+_____________________ ERROR collecting tests/test_book.py ______________________
+ImportError while importing test module '/Users/trey/dev/sports-wt/phase6b-t2-continuity/tests/test_book.py'.
+Traceback:
+tests/test_book.py:10: in <module>
+    from harness.execution.book import (
+E   ImportError: cannot import name 'newest_ws_connect' from 'harness.execution.book'
+=========================== short test summary info ============================
+ERROR tests/test_book.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+
+(The brief predicts exactly this: the one import error is the whole file failing to
+collect, which is the expected first state.)
+
+=== Step 7: the same tests pass after the change ===
+$ pytest tests/test_book.py tests/test_exec_loop.py -rA
+97 passed in 30.90s
+
+The six cases this task writes or rewrites, from that run's PASSES report:
+PASSED tests/test_book.py::test_a_skipped_seq_no_longer_dirties_the_book
+PASSED tests/test_book.py::test_the_anchor_instant_does_not_move_with_the_deltas
+PASSED tests/test_book.py::test_a_book_anchored_before_a_reconnect_is_dirty_until_it_re_anchors
+PASSED tests/test_book.py::test_a_delta_dropped_by_the_ts_floor_dirties_the_book
+PASSED tests/test_book.py::test_a_snapshot_from_before_the_reconnect_does_not_clear_the_boundary
+PASSED tests/test_book.py::test_a_book_rebuilt_at_a_cursor_carries_its_subscriptions_gap_verdict
+
+=== Step 8: regression case 1a, before removing its marker ===
+$ pytest tests/test_execution_regressions.py -rxX
+
+F.xxxxx.                                                                 [100%]
+=================================== FAILURES ===================================
+________ test_multiplexed_subscription_sequence_does_not_dirty_the_book ________
+[XPASS(strict)] 6B: per-market streams legitimately skip subscription sequence numbers; the per-ticker seq check reads that as a lost frame
+1 failed, 2 passed, 5 xfailed in 0.60s
+
+Exactly one strict XPASS, and it is case 1a -- the defect this task repairs. The
+other five markers are untouched and the guard
+test_a_real_missing_subscription_frame_still_writes_a_gap_row stays green beside it.
+
+=== Step 8: after removing case 1a's three xfail lines ===
+$ pytest tests/test_execution_regressions.py -rxX
+3 passed, 5 xfailed in 0.51s
+
+Matches the brief's expected `5 xfailed, 3 passed`.
