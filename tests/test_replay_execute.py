@@ -344,9 +344,9 @@ def test_replay_advances_its_book_instead_of_rebuilding_it(monkeypatch, env_sett
     advanced: list[str] = []
     real_build, real_advance = loop_mod.load_book_at, loop_mod.advance_book_at
 
-    def counting_build(session, ticker, now):
+    def counting_build(session, ticker, now, ws_connect_at=None):
         built.append(ticker)
-        return real_build(session, ticker, now)
+        return real_build(session, ticker, now, ws_connect_at)
 
     def counting_advance(session, book, now, ws_connect_at=None):
         advanced.append(book.ticker)

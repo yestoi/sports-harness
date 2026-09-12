@@ -527,11 +527,16 @@ class Executor:
         bound (fix round 1, I1 and I2). Both paths build once and advance afterwards: a replay
         that rebuilt each book from its anchor at every 15 s step would be quadratic in the
         day's tape.
+
+        The reconnect instant goes to the load branch as well as the advance branch (review
+        Important 2): the cache is pruned to the active ticker set each step, so a ticker that
+        leaves and re-enters takes the load branch again, and every ticker takes it after a
+        restart.
         """
         if self.replay:
-            return (load_book_at(session, ticker, now) if cached is None
+            return (load_book_at(session, ticker, now, ws_connect_at) if cached is None
                     else advance_book_at(session, cached, now, ws_connect_at))
-        return (load_book(session, ticker, now) if cached is None
+        return (load_book(session, ticker, now, ws_connect_at) if cached is None
                 else advance_book(session, cached, now, ws_connect_at))
 
     def _market_now(self, row, dead_recorder: bool) -> MarketNow:
@@ -914,8 +919,11 @@ class Executor:
                 # sid for the rest of the season and take the markouts with it. But this branch
                 # is asking what the *live loop* believed at that cursor, and a gap the live
                 # loop had already seen dirtied its book. `load_book_at` is `book_at` plus
-                # exactly that verdict, bounded at the instant (ruling I-14).
-                return load_book_at(session, row.ticker, at)
+                # exactly that verdict, bounded at the instant (ruling I-14). The session test
+                # is bounded the same way: a reconnect recorded after the cursor instant is not
+                # something the live loop knew at it (review Important 2).
+                return load_book_at(session, row.ticker, at,
+                                    newest_ws_connect(session, at))
         return None if base is None else base.copy()
 
     def _persist_track(self, session: Session, row, order: PaperOrder, result, prints,

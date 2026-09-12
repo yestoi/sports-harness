@@ -76,15 +76,18 @@ _LATE_DELTA_AT = text(
     "select 1 from orderbook_events where ticker = :t and kind = 'delta' "
     "and id > :cursor and ts < :lower and ts <= :instant limit 1"
 )
-# The newest reconnect, bounded at a past instant for the replay path. `operator_events` is
-# small (one row per operator-visible event) and read in full with a `limit 1` through the
-# ordering; it carries no index on `kind`, so this is a walk of a small table, stated rather
-# than claimed otherwise.
+# The newest reconnect, and the same bounded at a past instant for the replay path. Both ride
+# `ix_operator_events_ts on operator_events (ts desc)`, walking it backwards until they meet a
+# `ws_connect` row; there is no index on `kind`, so that walk is the access path. `limit 1` is
+# the bound. The table is small because only exceptional events write it -- kills, deploys,
+# settle errors, gate evaluations, reconnects, through one helper (`harness/telemetry.py`) --
+# so it is hundreds to low thousands of rows a season, not a per-tick table.
 _NEWEST_WS_CONNECT = text(
-    "select max(ts) from operator_events where kind = 'ws_connect'"
+    "select ts from operator_events where kind = 'ws_connect' order by ts desc limit 1"
 )
 _NEWEST_WS_CONNECT_AT = text(
-    "select max(ts) from operator_events where kind = 'ws_connect' and ts <= :instant"
+    "select ts from operator_events where kind = 'ws_connect' and ts <= :instant "
+    "order by ts desc limit 1"
 )
 
 # The live delta scan (`ix_obe_ticker_id`): `id` order, lower `ts` bound only.
@@ -248,6 +251,10 @@ class BookState:
     and every gap row on sid 0 would be "after" it forever; its `gap_check_id` is instead the
     tape's position when the ladder was fetched. For a WS anchor the two are the same row, so
     it defaults to `anchor_id` and callers building a book by hand need not think about it.
+
+    It doubles as the **scan floor** for the §0.2 dropped-delta probe (`_probe_floor`): it is
+    the newest tape row this anchor already accounts for, on either anchor kind, which is
+    exactly the row below which nothing can be a delta we have not seen.
     """
 
     ticker: str
@@ -413,6 +420,25 @@ def _gapped_at(session, book: BookState, instant: datetime) -> bool:
                             "instant": instant}).first() is not None
 
 
+def _probe_floor(book: BookState, cursor: int) -> int:
+    """The id below which nothing can be a delta this book has not seen (review Important 1).
+
+    Rows at or below the anchor's own tape head are already in the ladder, so they are not
+    evidence of anything missing. The cursor alone is not that head on a REST anchor: it keeps
+    `last_event_id` at 0 until a delta lands at or after its fetch, because it selects deltas by
+    `ts >= fetched_at` rather than by id. An unbounded `id > 0` therefore read the ticker's whole
+    pre-fetch history -- every row of which the REST snapshot already contains -- as a dropped
+    delta, dirtying a complete ladder for the length of a WebSocket outage, which is the one
+    stretch where no later snapshot can re-anchor it.
+
+    `gap_check_id` is that head on both anchor kinds (`anchor_id` for a WS anchor, the tape
+    position at fetch for a REST one), so the `max` is a no-op for every WS book: `from_levels`
+    sets `last_event_id = anchor_id` and the cursor only rises. `or 0` because the field is
+    typed optional and written by direct attribute assignment.
+    """
+    return max(cursor, book.gap_check_id or 0)
+
+
 def _dropped_delta(session, ticker: str, cursor: int, lower: datetime) -> bool:
     """Whether a delta after `cursor` was excluded by the scan's own `ts` floor (§0.2).
 
@@ -457,7 +483,8 @@ def _mark_session_boundary(book: BookState, ws_connect_at: datetime | None) -> N
         book.mark_dirty("session_boundary")
 
 
-def load_book(session, ticker: str, now: datetime) -> BookState | None:
+def load_book(session, ticker: str, now: datetime,
+              ws_connect_at: datetime | None = None) -> BookState | None:
     """Anchor on the fresher of the two snapshot sources, then advance to the tape's head.
 
     Returns None when the ticker has neither a WebSocket snapshot nor a REST ladder -- the
@@ -466,6 +493,13 @@ def load_book(session, ticker: str, now: datetime) -> BookState | None:
     `now` is the caller's clock, passed explicitly rather than read here so that a replay
     and a live loop take the same path; the anchor decision itself is made on the two
     sources' own timestamps, never on wall time.
+
+    `ws_connect_at` carries §0.3's session test onto a *freshly loaded* book (review Important
+    2). The verdict cannot live only in `advance_book`: the executor prunes its cache to the
+    active ticker set each step, so a ticker that leaves and re-enters, and every ticker after a
+    restart, takes this path instead -- and for a ticker dropped from the subscription set, the
+    exact case CR-7 exists for, its newest snapshot predates the reconnect permanently. None
+    skips the test and keeps every existing call site unchanged.
     """
     ws = session.execute(_NEWEST_WS_SNAPSHOT, {"t": ticker}).first()
     rest = session.execute(_NEWEST_REST_SNAPSHOT, {"t": ticker}).first()
@@ -490,6 +524,7 @@ def load_book(session, ticker: str, now: datetime) -> BookState | None:
     _apply_rows(book, rows, check_seq=use_ws)
     if _gapped(session, book):
         book.mark_dirty("gap")
+    _mark_session_boundary(book, ws_connect_at)
     return book
 
 
@@ -506,6 +541,12 @@ def advance_book(session, book: BookState, now: datetime,
     `ws_connect_at` is the caller's once-per-step read of `newest_ws_connect`; None skips the
     session test, which is what a caller with no operator-event history (a pure unit fixture)
     gets.
+
+    A book the re-anchor branch reloads is re-tested for the session boundary but deliberately
+    not for a dropped delta (review Minor 5). The asymmetry follows from what each test asks: a
+    re-anchor target need only be newer than the previous anchor, so it can still predate the
+    reconnect, while a freshly loaded book cannot have a delta dropped below its own anchor --
+    its cursor and its scan floor are that anchor, and the probe asks only about rows above it.
     """
     out = book.copy()
     lower = out.as_of - DELTA_LOOKBACK
@@ -515,7 +556,7 @@ def advance_book(session, book: BookState, now: datetime,
     _apply_rows(out, rows, check_seq=out.source == "ws")
     if _gapped(session, out):
         out.mark_dirty("gap")
-    if _dropped_delta(session, out.ticker, cursor, lower):
+    if _dropped_delta(session, out.ticker, _probe_floor(out, cursor), lower):
         out.mark_dirty("event_age")
     # The client dropped its sids and cleared its remembered sequences at the reconnect, so
     # whatever was lost across the outage produced no gap row anywhere. A book anchored before
@@ -524,6 +565,8 @@ def advance_book(session, book: BookState, now: datetime,
     _mark_session_boundary(out, ws_connect_at)
     if out.dirty and session.execute(_CLEAN_SNAPSHOT_AFTER,
                                      {"t": out.ticker, "anchor_id": out.gap_check_id}).first() is not None:
+        # `ws_connect_at` is deliberately not passed here: the explicit re-test just below is
+        # what CR-7 requires, and doing it in both places would apply the same verdict twice.
         reloaded = load_book(session, out.ticker, now)
         if reloaded is not None:
             # The re-anchor target only has to be newer than *our* anchor and free of a later
@@ -598,16 +641,24 @@ def book_at(session, ticker: str, instant: datetime) -> BookState | None:
     return book
 
 
-def load_book_at(session, ticker: str, instant: datetime) -> BookState | None:
+def load_book_at(session, ticker: str, instant: datetime,
+                 ws_connect_at: datetime | None = None) -> BookState | None:
     """`load_book` bounded at a past instant -- the book a replay executor starts a ticker on.
 
     `book_at` plus the live loop's own gap verdict, bounded: a gap the live loop had already
     seen by `instant` dirtied its book, so it has to dirty the replayed one too, while a gap
     taped afterwards is not information the replayed instant had.
+
+    `ws_connect_at` applies §0.3's session test to the loaded book for the same reason
+    `load_book` takes it; on this path it is the caller's `newest_ws_connect(session, instant)`,
+    so a reconnect recorded after the instant is not information the replayed step had.
     """
     book = book_at(session, ticker, instant)
-    if book is not None and _gapped_at(session, book, instant):
+    if book is None:
+        return None
+    if _gapped_at(session, book, instant):
         book.mark_dirty("gap")
+    _mark_session_boundary(book, ws_connect_at)
     return book
 
 
@@ -634,12 +685,13 @@ def advance_book_at(session, book: BookState, instant: datetime,
     _apply_rows(out, rows, check_seq=out.source == "ws")
     if _gapped_at(session, out, instant):
         out.mark_dirty("gap")
-    if _dropped_delta_at(session, out.ticker, cursor, lower, instant):
+    if _dropped_delta_at(session, out.ticker, _probe_floor(out, cursor), lower, instant):
         out.mark_dirty("event_age")
     _mark_session_boundary(out, ws_connect_at)
     if out.dirty and session.execute(
             _CLEAN_SNAPSHOT_AFTER_AT,
             {"t": out.ticker, "anchor_id": out.gap_check_id, "instant": instant}).first() is not None:
+        # Same as `advance_book`: the explicit re-test below is the CR-7 one.
         reloaded = load_book_at(session, out.ticker, instant)
         if reloaded is not None:
             _mark_session_boundary(reloaded, ws_connect_at)
