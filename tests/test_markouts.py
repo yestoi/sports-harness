@@ -19,8 +19,12 @@ from harness.execution.book import book_age_s, book_at, side_p
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 from harness.settlement.job import Budget
 from harness.settlement.markouts import (
+    _CANDIDATE_ORDERS,
+    CLOSE_OFFSET,
     HORIZONS,
     FairPoint,
+    _get_cursor,
+    _set_cursor,
     compute_markouts,
     markout_at,
 )
@@ -565,3 +569,79 @@ def test_one_book_per_order_walked_forward_not_rebuilt_per_horizon(db_session):
         assert row.source == "ws_book"
         assert row.venue_mid == side_p(rebuilt.mid(), "yes")
         assert row.mid_age_s == book_age_s(rebuilt, row.horizon_ts)
+
+
+# --- fix 47: the rotating cursor and the SQL due filter ---------------------------------
+
+
+def test_markouts_cursor_rotates_past_the_prefix_and_resets_after_a_full_pass(db_session):
+    """Fix 47 (c): a budget that only ever admits part of the due backlog must not always
+    restart the walk at the lowest id -- two budget-limited runs together reach every order,
+    covering `2N` distinct ones for a budget that admits `N` each time, and the rotation wraps
+    back to the head once the tail is exhausted."""
+    game = _game(db_session)
+    # Distinct markets: `orders` has a `uq_open_order` constraint on (venue, ticker, side,
+    # variant_id), which four same-shaped open orders would collide on.
+    markets = [_market(db_session, game.id, ticker=f"T-{i}") for i in range(4)]
+    orders = [_order(db_session, m, placed_at=NOW - timedelta(hours=3)) for m in markets]
+    db_session.commit()
+    order_ids = [o.id for o in orders]
+
+    # A cursor left over from an earlier exhausted run: rotation should start just past it.
+    _set_cursor(db_session, order_ids[1], NOW)
+    db_session.commit()
+
+    # Budget.__init__ consumes one value; two more `budget.ok()` reads stay under the
+    # deadline, the third is past it -- exactly two orders get processed per call.
+    n1 = compute_markouts(db_session, NOW, Budget(60, Mono(0.0, 0.0, 0.0, 100.0)))
+    assert n1 > 0
+    touched_1 = {r.order_id for r in db_session.query(Markout).all()}
+    assert touched_1 == {order_ids[2], order_ids[3]}  # started just past the cursor
+    assert _get_cursor(db_session) == order_ids[3]  # not a full pass: cursor holds, no reset
+
+    n2 = compute_markouts(db_session, NOW, Budget(60, Mono(0.0, 0.0, 0.0, 100.0)))
+    assert n2 > 0
+    touched_2 = {r.order_id for r in db_session.query(Markout).all()} - touched_1
+    assert touched_2 == {order_ids[0], order_ids[1]}  # the wrap-around covers the head
+
+    assert touched_1 | touched_2 == set(order_ids)  # 2N distinct orders across the two runs
+    assert _get_cursor(db_session) == 0  # the second run completed a full pass
+
+
+def test_candidate_sql_excludes_an_order_with_nothing_due_yet(db_session):
+    """Fix 47 (d): the due test now lives in `_CANDIDATE_ORDERS` itself, not only in
+    `_process_order`'s `horizon_ts > now: continue` -- an order with nothing currently due is
+    excluded from the walk entirely, not merely left unwritten. `close` is the clean place to
+    observe this: one instant, so there is no "which horizon" ambiguity the way there is for
+    an anchor's own family of offsets."""
+    kickoff = NOW + timedelta(hours=3)
+    game = _game(db_session, kickoff=kickoff)
+    market = _market(db_session, game.id)
+    order = _order(db_session, market, side="yes", prob="0.5000",
+                   placed_at=NOW - timedelta(hours=3))
+    db_session.commit()
+
+    # Settle every horizon `place` has except `close` (kickoff is 3h out).
+    first = compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    assert first == 4
+    assert {r.horizon for r in db_session.query(Markout).filter_by(order_id=order.id).all()
+           } == {"1m", "5m", "30m", "120m"}
+
+    def _candidate_ids(now):
+        rows = db_session.execute(_CANDIDATE_ORDERS,
+                                  {"now": now, "close_offset": CLOSE_OFFSET}).all()
+        return {r.order_id for r in rows}
+
+    # Nothing is due yet (only `close` remains, and kickoff is hours away): excluded outright.
+    assert order.id not in _candidate_ids(NOW)
+    again = compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    assert again == 0
+
+    # Once `now` passes kickoff - CLOSE_OFFSET, the order is a candidate again.
+    due_now = kickoff - CLOSE_OFFSET
+    assert order.id in _candidate_ids(due_now)
+    written = compute_markouts(db_session, due_now, Budget(60, Mono(0.0)))
+    assert written == 1
+    row = db_session.query(Markout).filter_by(
+        order_id=order.id, anchor="place", horizon="close").one()
+    assert row.horizon_ts == due_now

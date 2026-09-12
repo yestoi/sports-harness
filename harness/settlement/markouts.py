@@ -28,12 +28,18 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from harness.db.models import Markout
+from harness.db.models import JobState, Markout
 from harness.execution.book import BookWalker, book_age_s, side_p
 from harness.pricing.fees import fee_model_for, fee_per_contract
 from harness.settlement.job import Budget, StageResult, current_ctx, register_stage
 
 log = logging.getLogger(__name__)
+
+#: Fix 47: the last successfully processed order id, so a budget-exhausted run does not
+#: always restart the walk at the lowest id. The same `job_state` table/shape `order_clv`'s
+#: `gap_outcomes_watermark` uses -- a resumable integer cursor is exactly what that table is
+#: for (`harness.db.models.JobState`), so this is a new row, not a new table.
+MARKOUTS_CURSOR_KEY = "markouts.cursor"
 
 FOUR = Decimal("0.0001")
 
@@ -161,6 +167,21 @@ def markout_at(
 #: must be checked for an anchor to read as done. An order whose game is unmatched
 #: (`kickoff_utc is null`) can never get a `close` row, so that half of the check is skipped
 #: for it rather than leaving it a permanent candidate.
+#:
+#: Fix 47: each branch also carries its own "is anything about it actually due yet" gate, so
+#: the walk is not spent on orders that would write nothing at all (a stage's own budget was
+#: being spent on the query cost and the fair/fill/quote lookups of orders that could not yet
+#: produce a row). `close`'s gate is exactly the brief's `kickoff_utc - :close_offset <= :now`
+#: -- unambiguous, since `close` is one instant, not a family of offsets. The `120m`-named
+#: branches gate on their anchor's *earliest* horizon instead of literally 120 minutes: `place`
+#: and `cross_fill` never get a `0m` row (`ZERO_M_ANCHORS`), so their earliest is `1m` (60 s);
+#: `fill`/`nw_fill` do get `0m`, so theirs is due immediately (`filled_at <= :now`, effectively
+#: a no-op gate, kept for symmetry). Gating a branch on its own *widest* horizon (120 minutes)
+#: instead would silently exclude an order whose nearer horizons (`1m`/`5m`/`30m`) are already
+#: due but whose `120m` is not for up to two hours -- exactly the case
+#: `test_horizons_beyond_now_are_not_written_yet` pins, and this filter must not delay it.
+#: The Python `horizon_ts > now: continue` in `_process_order` stays as the second line of
+#: defence: it is what actually decides, per horizon, whether a row is written this call.
 _CANDIDATE_ORDERS = text("""
     select o.id as order_id, o.side, o.prob, o.placed_at, o.game_id, o.fair_row_id_at_place,
            o.crossed, o.nw_crossed, o.ticker, o.venue_market_id,
@@ -171,44 +192,70 @@ _CANDIDATE_ORDERS = text("""
     left join games g on g.id = o.game_id
     where o.replay = false
       and (
-        not exists (
-          select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'place' and mk.horizon = '120m'
+        (
+          o.placed_at + interval '60 seconds' <= :now
+          and not exists (
+            select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'place' and mk.horizon = '120m'
+          )
         )
-        or (g.kickoff_utc is not null and not exists (
-          select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'place' and mk.horizon = 'close'
-        ))
+        or (
+          g.kickoff_utc is not null and g.kickoff_utc - :close_offset <= :now
+          and not exists (
+            select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'place' and mk.horizon = 'close'
+          )
+        )
         or exists (
           select 1 from fills f where f.order_id = o.id and f.fill_method = 'queue_model'
           and (
-            not exists (
-              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'fill' and mk.horizon = '120m'
+            (
+              f.filled_at <= :now
+              and not exists (
+                select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'fill' and mk.horizon = '120m'
+              )
             )
-            or (g.kickoff_utc is not null and not exists (
-              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'fill' and mk.horizon = 'close'
-            ))
+            or (
+              g.kickoff_utc is not null and g.kickoff_utc - :close_offset <= :now
+              and not exists (
+                select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'fill' and mk.horizon = 'close'
+              )
+            )
           )
         )
         or exists (
           select 1 from fills f where f.order_id = o.id and f.fill_method in ('queue_model', 'no_watcher')
           and (
-            not exists (
-              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'nw_fill' and mk.horizon = '120m'
+            (
+              f.filled_at <= :now
+              and not exists (
+                select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'nw_fill' and mk.horizon = '120m'
+              )
             )
-            or (g.kickoff_utc is not null and not exists (
-              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'nw_fill' and mk.horizon = 'close'
-            ))
+            or (
+              g.kickoff_utc is not null and g.kickoff_utc - :close_offset <= :now
+              and not exists (
+                select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'nw_fill' and mk.horizon = 'close'
+              )
+            )
           )
         )
         or (
           (o.crossed or o.nw_crossed)
-          and exists (select 1 from fills f where f.order_id = o.id and f.fill_method = 'snapshot_cross')
-          and (
-            not exists (
-              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'cross_fill' and mk.horizon = '120m'
+          and exists (
+            select 1 from fills f where f.order_id = o.id and f.fill_method = 'snapshot_cross'
+            and (
+              (
+                f.filled_at + interval '60 seconds' <= :now
+                and not exists (
+                  select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'cross_fill' and mk.horizon = '120m'
+                )
+              )
+              or (
+                g.kickoff_utc is not null and g.kickoff_utc - :close_offset <= :now
+                and not exists (
+                  select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'cross_fill' and mk.horizon = 'close'
+                )
+              )
             )
-            or (g.kickoff_utc is not null and not exists (
-              select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'cross_fill' and mk.horizon = 'close'
-            ))
           )
         )
       )
@@ -381,22 +428,58 @@ def _process_order(session: Session, row, now: datetime,
     return inserted
 
 
+def _get_cursor(session: Session) -> int:
+    row = session.get(JobState, MARKOUTS_CURSOR_KEY)
+    return 0 if row is None or row.value is None else int(row.value)
+
+
+def _set_cursor(session: Session, value: int, now: datetime) -> None:
+    stmt = insert(JobState).values(key=MARKOUTS_CURSOR_KEY, value=value, updated_at=now)
+    stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"value": value, "updated_at": now})
+    session.execute(stmt)
+
+
+def _rotate_from_cursor(rows: list, cursor: int) -> list:
+    """Candidates ordered by id, starting just after `cursor` and wrapping around to the head
+    once the tail is exhausted or empty (fix 47) -- so two consecutive budget-spent runs walk
+    different halves of the backlog instead of the same low-id prefix every time."""
+    if not rows:
+        return rows
+    split = next((i for i, r in enumerate(rows) if r.order_id > cursor), len(rows))
+    return rows[split:] + rows[:split]
+
+
 def compute_markouts(session: Session, now: datetime, budget: Budget) -> int:
     """Every markout row that is both missing and due (`horizon_ts <= now`) for every
     non-replay order's current anchors. One savepoint per order, mirroring the other
     settlement stages: one order's pricing history raising must not cost the orders around it
-    their own rows."""
+    their own rows.
+
+    Fix 47: the walk starts just past `markouts.cursor` (the last order id successfully
+    processed) rather than always at the lowest id, wrapping around to the head when the tail
+    runs out -- so a budget that only ever admits part of the backlog still reaches every
+    order over a few runs instead of re-walking the same prefix forever. The cursor advances
+    inside each order's own commit (only on success) and resets to 0 once a run gets all the
+    way through the candidates it fetched (a "full pass"), so the next run's rotation starts
+    fresh from the head rather than drifting past a backlog that has since shrunk.
+    """
     ctx = current_ctx()
     inserted = 0
-    rows = session.execute(_CANDIDATE_ORDERS).all()
+    cursor = _get_cursor(session)
+    rows = _rotate_from_cursor(
+        session.execute(_CANDIDATE_ORDERS, {"now": now, "close_offset": CLOSE_OFFSET}).all(),
+        cursor)
     fair_cache: dict[tuple, list] = {}
+    full_pass = True
     for seen, row in enumerate(rows):
         if not budget.ok():
             log.info("compute_markouts budget spent with %d orders left", len(rows) - seen)
+            full_pass = False
             break
         try:
             with session.begin_nested():
                 n = _process_order(session, row, now, fair_cache)
+            _set_cursor(session, row.order_id, now)
             session.commit()
             inserted += n
         except Exception as exc:  # noqa: BLE001 - one order must not cost the pass
@@ -404,6 +487,9 @@ def compute_markouts(session: Session, now: datetime, budget: Budget) -> int:
             log.exception("compute_markouts failed for order_id=%s", row.order_id)
             ctx["errors"].append({"compute_markouts": row.order_id,
                                   "error": f"{type(exc).__name__}: {exc}"[:500]})
+    if rows and full_pass:
+        _set_cursor(session, 0, now)
+        session.commit()
     return inserted
 
 
