@@ -20,14 +20,13 @@ Live facts are the controller's `.superpowers/sdd/plan-next-phase6b/live-facts.t
 timestamp 15:07:15.332Z under six `last_print_ids`, their two `no_watcher` mirrors, two later `no_watcher` fills from
 the REST tape stamped 17:00:20.728Z, and a `snapshot_cross` of 48.08 stamped 2026-09-10 19:42Z, two days after the
 cancel; the whole fill population is 834 `no_watcher`, 77 `snapshot_cross`, 2 `queue_model`, every row simulated and
-non-replay; 8,822 cancelled and 7 expired orders; 2 `ledger` rows of kind `fill`; 7,998 orders still simulated every
-loop with `nw_done = false`; `exec.loop_ms` p95 227 s in the 19:00 CT hour with 61 loops skipped. Venue documentation
-used (Kalshi WebSockets, `/websites/kalshi_websockets`, fetched 2026-09-11): three shapes only, each checked against our
-own tape and code before use - `orderbook_delta` and `orderbook_snapshot` frames carry `sid` (a server-generated
+non-replay, against 8,822 cancelled orders and 2 `ledger` rows of kind `fill`; 7,998 orders still simulated every loop
+with `nw_done = false`; `exec.loop_ms` p95 227 s in the 19:00 CT hour with 61 loops skipped. Venue documentation used
+(Kalshi WebSockets, `/websites/kalshi_websockets`, fetched 2026-09-11): three shapes only, each checked against our own
+tape and code before use - `orderbook_delta` and `orderbook_snapshot` frames carry `sid` (a server-generated
 **subscription** identifier) and `seq` ("sequential number that should be checked if you want to guarantee you received
-all the messages"), the `trade` payload carries `sid` and **no** `seq` at all, and an `orderbook_delta` subscription
-"sends `orderbook_snapshot` first, then incremental `orderbook_delta` updates". No URL, value or instruction from that
-source is adopted anywhere else.
+all the messages"), the `trade` payload carries `sid` and **no** `seq`, and an `orderbook_delta` subscription "sends
+`orderbook_snapshot` first, then incremental `orderbook_delta` updates". Nothing else from that source is adopted.
 
 Scope: the six bullets of ROADMAP.md §6B as versioned corrections `C1`-`C6`, the order 157 audit, the no-watcher
 re-score, and the carried `--out -` test. Acceptance is ROADMAP.md's 6B acceptance paragraph, verbatim: realistic mixed-
@@ -51,12 +50,10 @@ independently calculated expected queue/ledger result. Where the reconciliation'
 - **0.2 (§9.2) Continuity is a property of the subscription, not of a ticker.** `seq` counts per `sid` across every
   market on it, so a ticker whose own frames carry 1 then 3 has lost nothing when frame 2 belonged to another ticker.
   `BookState.apply_delta` tests `int(seq) != self.seq + 1` per book object (`harness/execution/book.py:272-274`) and
-  marks the book dirty on ordinary interleaving; `WsSink._check_seq` (`harness/recorder/ws_sink.py:84-100`) already does
-  the correct subscription-level test and writes a `gap` row under the whole-subscription sentinel `ticker = ""`. 6B
-  deletes the per-object check and makes every book path read continuity from the sid-level gap rows it already has
-  (`_gapped` / `_gapped_at`, `book.py:346-356`), including `book_at`, whose dirtiness today "comes only from a seq break
-  among the deltas actually replayed". v2 §9.2 is unchanged in effect; only the place the gap is detected moves, and the
-  recorder is not touched.
+  dirties the book on ordinary interleaving, while `WsSink._check_seq` (`harness/recorder/ws_sink.py:84-100`) already
+  makes the correct subscription-level test and writes a `gap` row under the sentinel `ticker = ""`. 6B deletes the
+  per-object check and reads continuity from those sid-level rows (`_gapped` / `_gapped_at`, `book.py:346-356`) on every
+  book path, `book_at` included. Only the place the gap is detected moves; the recorder is untouched.
 - **0.3 (§9.2) Connection and session boundaries are a continuity case with no gap row.** On a reconnect the client
   drops its sids and clears remembered sequences (`harness/venues/kalshi/ws.py:358-366`,
   `WsSink.reset_sequences`), so frames lost across the outage produce no `gap` row and a cached book anchored before the
@@ -64,12 +61,11 @@ independently calculated expected queue/ledger result. Where the reconciliation'
   `operator_events(kind = 'ws_connect')` as dirty until it re-anchors on a snapshot taken after that reconnect. The
   executor reads that one instant once per step, not once per book.
 - **0.4 (§9.5 paper fills) Anchoring a snapshot anchors the print watermark with it.** The recovery branch
-  (`harness/execution/loop.py:828-836`) takes the queue down to what is resting now and advances
-  `cursor_event_id`, but leaves `last_print_ts` where it was, so a trade from inside the gap - already reflected in the
-  snapshot - is applied again against the newly anchored queue. The no-book branch (`loop.py:816-826`) sets the
-  watermark to `now`, which is the recorder's clock rather than the book's, and so discards prints that legitimately
-  follow the anchor. Both branches instead set the watermark, the per-price accumulators and the delta cursor together
-  from the anchoring book: watermark `book.as_of`, accumulators zero, cursor `book.last_event_id`.
+  (`harness/execution/loop.py:828-836`) takes the queue down to what is resting now and advances `cursor_event_id` but
+  leaves `last_print_ts` where it was, so a trade from inside the gap, already reflected in the snapshot, is applied
+  again against the newly anchored queue; the no-book branch (`loop.py:816-826`) sets the watermark to `now`, the
+  recorder's clock rather than the book's, discarding prints that legitimately follow the anchor. Both branches instead
+  take watermark `book.as_of`, accumulators zero and cursor `book.last_event_id` from the anchoring book together.
 - **0.5 (§9.5 paper fills) Trades and level decrements are reconciled, not ordered.** `_merge_events` folds deltas
   before prints at equal timestamps (`harness/execution/fills.py:47, 253-271`) on the assumption that the delta arrives
   with the trade it reports; `_apply_queue_delta` then charges the decrement against `traded_at_price`
@@ -121,14 +117,25 @@ independently calculated expected queue/ledger result. Where the reconciliation'
   a basis for a forecast.
 - **0.13 Needs the user's dated decision (R1); nothing waits on it.** (a) *Eligibility:* "Should the cumulative gate
   count only orders placed under the 6B corrections - that is, should `GATE_ELIGIBLE_FROM_ORDER_ID` and
-  `GATE_ELIGIBLE_FROM_RUN_ID` be set together to the 6B deploy boundary, and on what date?" 6A built that mechanism
-  dormant and the loop never sets it; until a dated decision the gate keeps reading the whole non-replay history, which
-  after 6B is a mixed population, and every report quoting it says so. (b) *Cleanliness interval:* "Criterion 1's
-  clean-book share is measured over the order's whole watched resting interval (§0.10). Do you want it measured over the
-  interval up to the first fill, or at placement only, instead?" 6B adopts the coded interval; either alternative is an
-  R1 amendment, adoptable without further code from the `order_dirty_time` view's `to_first_fill_dirty_s` column, which
-  is computed and stored but read by nothing.
-- **0.14 (roadmap 37, journal 128) The 6B deploy is the full recipe.** The additive DDL touches `harness/db/models.py`,
+  `GATE_ELIGIBLE_FROM_RUN_ID` be set together to the 6B deploy boundary, and on what date?" Until a dated decision the
+  gate keeps reading the whole non-replay history, which after 6B is a mixed population, and every report quoting it
+  says so. (b) *Cleanliness interval:* "Criterion 1's clean-book share is measured over the order's whole watched
+  resting interval (§0.10). Do you want it measured up to the first fill, or at placement only, instead?" 6B adopts the
+  coded interval; either alternative is an R1 amendment, adoptable with no further code from the `order_dirty_time`
+  view's `to_first_fill_dirty_s` column, which is computed and stored but read by nothing.
+- **0.14 (§9.5, F3) The counterfactual's scope is stated and its tail is bounded.** Every order keeps a `no_watcher`
+  track from `placed_at` to its natural `expiry` (kickoff minus 10 min) whatever we did; that is F3's design, it is not
+  changed here, and it is why order 157 took two `no_watcher` fills from a REST backfill and a `snapshot_cross` two days
+  after its cancel. Of the 7,998 orders carried with `nw_done = false`, 5,384 have a 09-12 kickoff and are open for that
+  reason alone. What 6B repairs is the tail: `done` requires `row.ticker not in lagging` (`loop.py:878-880`) and a
+  ticker whose read failed outright is skipped before the track runs at all (`loop.py:559`), so under sustained IO
+  starvation - 23 cancelled tape reads in 40 minutes, loop p95 227 s, 61 skipped loops in the 19:00 CT hour - a track
+  past its own expiry can stay open indefinitely and be re-read every loop. Such a track is closed after
+  `NW_TAIL_LOOPS` consecutive loops past expiry without a complete read and labelled `unverifiable_tail`, so the
+  population is bounded and the untaped remainder is declared rather than silently deferred (U8: a slice without tape is
+  marked unverifiable). Whether counterfactuals should be carried at all, and every holding, freshness or capacity rule,
+  stays 6D's.
+- **0.15 (roadmap 37, journal 128) The 6B deploy is the full recipe.** The additive DDL touches `harness/db/models.py`,
   which is on the full-deploy trigger list, so journal 128's app-only allowance does not apply and R4 governs.
 
 ## 1. Components
@@ -173,25 +180,24 @@ Per track and per our own `(side, price)`, three persisted quantities replace th
 `traded_at_price` (print volume whose decrement has not arrived), `unmatched_decrement` (decrement volume that took
 queue ahead of us and no print has claimed) and `pending_surplus` (decrement volume beyond the queue, unclaimed). A
 shrinking delta of size `d` at our price first repays `traded_at_price`, then removes `min(queue, rest)` from the queue
-into `unmatched_decrement` and the remainder into `pending_surplus`. A hitting print of `c` at our price claims
+into `unmatched_decrement` and the remainder into `pending_surplus`. A hitting print of `c` claims
 `unmatched_decrement` first (those units were ahead of us and are now known to have traded, so no fill), then
-`pending_surplus` (those units were beyond the queue, so they reach us and fill), then consumes queue directly, and only
-the unclaimed remainder is added to `traded_at_price`. A print through our price still sweeps the queue to zero
-unchanged. Prints are deduplicated by `trade_id` over a bounded set covering `store.PRINT_LOOKBACK`, so a late REST
-backfill is applied once and correctly instead of being dropped by the watermark. `cancels_ahead` accumulates the
-decrement volume never claimed by any print - the only quantity whose attribution is unknowable - so an order with
-`cancels_ahead = 0` is provably insensitive to the convention; `simulate_fills` takes a `cancel_policy` argument
-(`ahead` by default, `behind` for the bound) used only offline by §1.8.
+`pending_surplus` (beyond the queue, so they reach us and fill), then consumes queue directly, and only the unclaimed
+remainder joins `traded_at_price`; a print through our price still sweeps the queue to zero unchanged. Prints are
+deduplicated by `trade_id` over a bounded set covering `store.PRINT_LOOKBACK`, so a late REST backfill is applied once
+and correctly rather than dropped by the watermark. `cancels_ahead` accumulates the decrement volume no print ever
+claims - the only quantity whose attribution is unknowable - so `cancels_ahead = 0` proves an order insensitive to the
+convention; `simulate_fills` takes a `cancel_policy` argument (`ahead` by default, `behind` for the bound) used only
+offline by §1.8.
 *Files:* `harness/execution/fills.py`, `harness/execution/loop.py` (`_state_of` / `_state_columns`),
 `harness/db/models.py`, `harness/db/schema.py`, `migrations/versions/0007_phase6b_execution.py`, `tests/test_fills.py`,
 `tests/test_fills_tape.py`, `tests/test_execution_regressions.py`. *Depends on:* nothing.
 *Turns green:* `test_a_print_and_its_own_delta_are_one_event` (case 2).
 *Expected result, computed independently:* five contracts rest ahead at 0.30; one real trade of three lifts three of
 them, leaving two ahead and nothing for us. The same-timestamp delta of -3 at the same price is the exchange reporting
-that trade, not a second removal. Queue 2, fill 0, and the same pair fed in the other order, split into a 2 and a 1, or
-separated by a persisted loop boundary gives the identical answer. The fixture check
-`fixture_equal_timestamp_matching_delta` (196 of 196 prints carry a same-timestamp matching delta) says this path is the
-normal case on our tape, not an edge.
+that trade, not a second removal. Queue 2, fill 0 - and the same pair fed in the other order, split into a 2 and a 1, or
+separated by a persisted loop boundary, gives the identical answer. The probe `fixture_equal_timestamp_matching_delta`
+(196 of 196 prints carry a same-timestamp matching delta) says this path is our tape's normal case, not an edge.
 
 ### 1.4 Expiry clamp and rejected-latest-signal placement (correction C4; ROADMAP §6B bullet 4; §0.8)
 The watched track's deadline becomes `min(now, expiry)`, the same expression the counterfactual already uses.
@@ -208,7 +214,7 @@ number of `Place` actions is 0 and exactly one `skipped` event with reason `sign
 asserted by re-running the same loop over the same tape after persisting and re-reading the state (`_state_columns` then
 `_state_of`): no second fill, no second skip row.
 
-### 1.5 Watched versus counterfactual dirty intervals (correction C5; ROADMAP §6B bullet 5; §0.9, §0.10)
+### 1.5 Watched versus counterfactual dirty intervals and counterfactual scope (correction C5; ROADMAP §6B bullet 5; §0.9, §0.10, §0.14)
 A new table `market_dirty_intervals(id, venue_market_id, ticker, started_at, ended_at, cause, replay)` gets one row per
 market per contiguous dirty stretch, opened when the book step first sees the market dirty and closed when it clears or
 when the executor stops (a row left open is closed by the next step that sees the market clean). `cause` is one of
@@ -217,7 +223,9 @@ when the executor stops (a row left open is closed by the next step that sees th
 `store.OPEN_STATUSES` and with the elapsed seconds since that order's previous observation rather than
 `exec_period_s`; the counterfactual's own exposure accrues to a new nullable `orders.nw_dirty_seconds`. A view
 `order_dirty_time` reports, per order, `watched_dirty_s`, `counterfactual_dirty_s`, `to_first_fill_dirty_s` and the
-per-cause breakdown, by intersecting the order's intervals with its market's.
+per-cause breakdown, by intersecting the order's two intervals - watched `[placed_at, min(cancelled_at, expiry)]`,
+counterfactual `[placed_at, expiry]` - with its market's. `done` (`loop.py:878-880`) gains §0.14's tail rule and writes
+a new nullable `orders.nw_tail` label, so a counterfactual no tape will ever complete stops being re-read every loop.
 *Files:* `harness/execution/loop.py`, `harness/execution/store.py`, `harness/db/models.py`, `harness/db/schema.py`,
 `migrations/versions/0007_phase6b_execution.py`, `tests/test_exec_loop.py`, `tests/test_execution_regressions.py`.
 *Depends on:* 1.1 (the causes include the continuity verdict), 1.4.
@@ -227,7 +235,10 @@ placed sat against a book we could not read. A cancelled order is not sitting ag
 counter is due: `add_dirty_seconds` calls 0, seconds added 0. A second case computes elapsed time: two observations 47 s
 apart over a market dirty throughout add 47 s, not 15, and the interval row carries one cause. A third pins the scope
 split: an order cancelled at T+60 whose market is dirty from T+30 to T+120 and whose expiry is T+600 has
-`watched_dirty_s` 30 and `counterfactual_dirty_s` 90.
+`watched_dirty_s` 30 and `counterfactual_dirty_s` 90. A fourth pins §0.14: a track past its expiry whose ticker has been
+lagging for `NW_TAIL_LOOPS` loops is closed exactly once with `nw_tail = 'unverifiable_tail'`, leaves `working_orders`,
+and is reported `unverifiable` by §1.8 rather than as a completed counterfactual; one that catches up inside the window
+closes normally with `nw_tail` null.
 
 ### 1.6 Capacity-equivalent baseline replay (correction C6; ROADMAP §6B bullet 6; §0.11)
 `replay()` accepts a list of variants (`--variant` repeatable, or `--population live` resolving
@@ -245,37 +256,32 @@ skips the live ordering rule (`_order_action` first, then intents by edge) gives
 range produces strictly more orders for that variant, which is why the label exists.
 
 ### 1.7 The order 157 audit (ROADMAP §6B "audit order 157 before using it as a validated fill")
-`harness audit-order --capsule <dir>` reads the 6A capsule for order 157 (its tape, prints, snapshots, fills,
-`order_events`, watch samples and ledger rows) with no database and no NAS access, replays the order under the C0 code
-path and under the repaired one, and publishes one of three verdicts with the supporting tape:
-`validated` (the repaired simulation reproduces the recorded fills within one contract), `corrected` (it differs and
-the tape explains why, the corrected quantities recorded as a retrospective estimate in `order_rescores`),
-`unverifiable` (the capsule's tape does not cover the interval, or no snapshot anchors it - the 6A manifest's
-`unverifiable_slices` is the input for that call). It discriminates the hypotheses the reconciliation left open, in this
-order: (i) the equal-timestamp double count, which predicts a decrement of about -6,376 at our price stamped
-15:07:15.332Z beside prints summing to 63.92 across the six recorded `last_print_ids`; (ii) a recovery anchoring error,
-which predicts a `gap` row on the anchor's sid and a snapshot between 14:36:47Z and 15:07:15Z; (iii) a genuine queue
-collapse, which predicts prints of 6,401 or more at 0.45 before the fills. Each is a query over the capsule with a
-stated expected count, so the verdict is evidence and not a preference. The verdict string is stored in
-`harness/corrections.py` beside `CORRECTIONS` so 6C's t13 can read it inside the container, and the prose record is
+`harness audit-order --capsule <dir>` reads the 6A capsule for order 157 (tape, prints, snapshots, fills, events, watch
+samples, ledger) with no database and no NAS access, replays it under the C0 path and the repaired one, and publishes
+one verdict with the supporting tape: `validated` (the repair reproduces the recorded fills within one contract),
+`corrected` (it differs and the tape explains why, the corrected quantities recorded in `order_rescores` as a
+retrospective estimate), `unverifiable` (the tape does not cover the interval or nothing anchors it - the 6A manifest's
+`unverifiable_slices` is that call's input). It discriminates the hypotheses the reconciliation left open: (i) the
+equal-timestamp double count, predicting a decrement near -6,376 at our price stamped 15:07:15.332Z beside prints
+summing to 63.92 across the six recorded `last_print_ids`; (ii) a recovery anchoring error, predicting a `gap` row on
+the anchor's sid and a snapshot between 14:36:47Z and 15:07:15Z; (iii) a genuine queue collapse, predicting prints of
+6,401 or more at 0.45 before the fills. Each is a capsule query with a stated expected count, and the verdict string
+lives in `harness/corrections.py` (6C's t13 reads it inside the container) beside the record
 `docs/superpowers/reviews/2026-09-12-order-157-audit.md`.
 *Files:* `harness/audit.py`, `harness/cli.py`, `tests/test_audit_order.py`, `harness/corrections.py`,
 `docs/superpowers/reviews/2026-09-12-order-157-audit.md`. *Depends on:* 1.1-1.5.
-*Expected result, computed independently:* the fixture is a synthetic capsule built to each hypothesis in turn. The
-reconciliation's own counterexample (queue 6,401, a same-timestamp decrement of -6,376, prints of 25, 25 and 13.92,
-reproducing `filled_contracts` 38.92, `traded_at_price` 63.92 and `queue_remaining` 0 with no recovery) is classified
-`corrected` with a repaired fill of 0; a capsule with no anchoring snapshot is `unverifiable`; one whose prints
-genuinely exhaust the queue is `validated`. This design fixes the procedure, not its answer: the controller runs it
-against the real capsule.
+*Expected result, computed independently:* the fixture is a synthetic capsule per hypothesis. The reconciliation's own
+counterexample (queue 6,401, a same-timestamp decrement of -6,376, prints of 25, 25 and 13.92, reproducing 38.92,
+63.92 and queue 0 with no recovery) is `corrected` with a repaired fill of 0; one with no anchoring snapshot is
+`unverifiable`; one whose prints genuinely exhaust the queue is `validated`. The controller runs it on the real capsule.
 
 ### 1.8 The no-watcher re-score (ROADMAP §6B "re-score no-watcher outcomes only after the same model repairs")
-`harness rescore --from-order <a> --to-order <b> --correction C5` walks each original order's own capsule or tape
-window under the repaired simulator and writes one `order_rescores` row per (order, correction set, cancel policy):
-`order_id`, `correction_ids`, `cancel_policy`, `watched_filled`, `counterfactual_filled`, `queue_remaining`,
-`cancels_ahead`, `watched_dirty_s`, `counterfactual_dirty_s`, `verdict`, `computed_at`, `build_sha`. Two rows per
-order, one per cancel policy, are the sensitivity band of §0.7. Nothing is written back to `orders` or `fills`; the rows
-are labelled retrospective estimates wherever they are read, they are excluded from the gate exactly as `replay = true`
-rows are, and the 27/445 figure is reported only beside its re-scored replacement, never as a ceiling.
+`harness rescore --from-order <a> --to-order <b>` walks each original order's capsule or tape window under the repaired
+simulator and writes one `order_rescores` row per (order, correction set, cancel policy): `order_id`, `correction_ids`,
+`cancel_policy`, `watched_filled`, `counterfactual_filled`, `queue_remaining`, `cancels_ahead`, `watched_dirty_s`,
+`counterfactual_dirty_s`, `verdict`, `computed_at`, `build_sha`. The two policy rows are §0.7's band. Nothing is written
+back to `orders` or `fills`; the rows are labelled retrospective estimates, excluded from the gate exactly as `replay =
+true` rows are, and 27/445 is reported only beside its re-scored replacement, never as a ceiling.
 *Files:* `harness/rescore.py`, `harness/cli.py`, `harness/db/models.py`, `harness/db/schema.py`,
 `migrations/versions/0007_phase6b_execution.py`, `tests/test_rescore.py`. *Depends on:* 1.7.
 *Expected result, computed independently:* a seeded world of three orders - one whose recorded fill the repaired
@@ -284,10 +290,9 @@ verdicts `validated`, `corrected`, `unverifiable`, an unchanged `fills` table (r
 identical before and after) and two policy rows for each order, equal to each other exactly when `cancels_ahead` is 0.
 
 ### 1.9 `harness capsule --out -` (carried from the 6A ledger, final review M2)
-`write_capsule(..., out="-")` streams a tar of the whole capsule on `sys.stdout.buffer` (`harness/capsule.py:463-486`)
-and is exercised only by hand today. The test captures `sys.stdout.buffer`, un-tars the stream, and asserts the members
-equal a directory-written capsule of the same slices byte for byte, that `manifest.json` is the last member, and that no
-log line or progress text contaminates the stream.
+`write_capsule(..., out="-")` streams a tar of the capsule on `sys.stdout.buffer` (`harness/capsule.py:463-486`) and is
+exercised only by hand today. The test captures that buffer, un-tars it, and asserts the members equal a
+directory-written capsule byte for byte, `manifest.json` last, with no log or progress text in the stream.
 *Files:* `tests/test_capsule.py`. *Depends on:* nothing.
 *Expected result, computed independently:* a capsule of *n* slices produces *n* + 1 tar members (`<table>.jsonl.gz` plus
 `manifest.json`), each member's sha256 equal to the manifest's entry for it and its bytes equal to the directory path's,
@@ -303,7 +308,7 @@ requires (§0.1 for the no-rewrite rule, §4.3 for rollback).
 | Addition | Shape | Invariant query (must return 0) |
 |---|---|---|
 | `orders.unmatched_decrement`, `.pending_surplus`, `.cancels_ahead` and the three `nw_` twins | `numeric(14,2)`, nullable, no default | `select count(*) from orders where replay = false and id <= :boundary_order_id and (unmatched_decrement is not null or nw_unmatched_decrement is not null)` - no pre-6B row is ever backfilled |
-| `orders.nw_dirty_seconds` | `integer`, nullable, no default | `select count(*) from orders where nw_dirty_seconds is not null and nw_dirty_seconds < 0` |
+| `orders.nw_dirty_seconds`, `orders.nw_tail` | `integer` and `varchar(20)`, nullable, no default | `select count(*) from orders where nw_dirty_seconds < 0 or (nw_tail is not null and nw_done = false)` - a labelled tail is always a closed one |
 | `market_dirty_intervals` | `id bigserial`, `venue_market_id int`, `ticker varchar(64)`, `started_at timestamptz`, `ended_at timestamptz null`, `cause varchar(20)`, `replay bool`; index on `(venue_market_id, started_at)` | `select count(*) from market_dirty_intervals where ended_at is not null and ended_at < started_at` and `select count(*) from (select venue_market_id from market_dirty_intervals where ended_at is null and replay = false group by 1 having count(*) > 1) x` |
 | `order_rescores` | `order_id bigint`, `correction_ids varchar(64)`, `cancel_policy varchar(6)`, the six measured columns, `verdict varchar(12)`, `computed_at timestamptz`, `build_sha varchar(24)`; primary key `(order_id, correction_ids, cancel_policy)` | `select count(*) from order_rescores r left join orders o on o.id = r.order_id where o.id is null or r.verdict not in ('validated','corrected','unverifiable')` |
 | `order_dirty_time` view | per order: `watched_dirty_s`, `counterfactual_dirty_s`, `to_first_fill_dirty_s`, per-cause seconds | `select count(*) from order_dirty_time where watched_dirty_s > counterfactual_dirty_s` - the watched interval is contained in the counterfactual one |
@@ -315,16 +320,15 @@ The deploy boundary values (`:boundary_order_id`, `:boundary_fill_id`, `:boundar
 immediately before the deploy; the rows below quote them.
 
 1. **Originals intact.** `select count(*), sum(contracts), max(id) from fills where replay = false and id <=
-   :boundary_fill_id` equals the journaled pre-deploy triple, and the same for `orders`' `sum(filled_contracts)` and
-   `sum(dirty_seconds)` at `id <= :boundary_order_id`. *Every verify after the 6B deploy; any hour.* A difference is an
-   integrity anomaly, not a fix-forward.
+   :boundary_fill_id` equals the journaled pre-deploy triple, and so do `orders`' `sum(filled_contracts)` and
+   `sum(dirty_seconds)` at `id <= :boundary_order_id`. A difference is an integrity anomaly. *Every verify, any hour.*
 2. **No post-expiry fill.** `select count(*) from fills f join orders o on o.id = f.order_id where f.replay = false and
    f.id > :boundary_fill_id and o.expiry is not null and f.filled_at > o.expiry` = 0. *Judged from the first game
    window after the deploy; before one has run it reads "deferred: no post-deploy fill yet".*
-3. **No placement from a rejected target.** `select count(*) from order_events e join orders o on o.intent_id =
-   e.intent_id where e.kind = 'place' and e.id > :boundary_event_id and exists (select 1 from order_events s where
-   s.intent_id = e.intent_id and s.kind = 'skipped' and s.reason = 'signal_rejected' and s.ts <= e.ts)` = 0, and the
-   `skipped/signal_rejected` count is > 0 by the first game window (the rule fires, rather than being unreachable).
+3. **No placement from a rejected target.** `select count(*) from order_events e where e.kind = 'place' and e.id >
+   :boundary_event_id and exists (select 1 from order_events s where s.intent_id = e.intent_id and s.kind = 'skipped'
+   and s.reason = 'signal_rejected' and s.ts <= e.ts)` = 0, with the `skipped/signal_rejected` count above 0 by the
+   first game window, so the rule is shown to fire rather than to be unreachable.
 4. **Liquidity conservation.** For a sample of ten post-deploy orders with a `queue_model` fill:
    `filled_contracts <= sum(count) over hitting prints at or through the order's price inside its resting interval`,
    read from `venue_trades` by `(ticker, ts)`; and `select count(*) from fills where replay = false and id >
@@ -332,9 +336,10 @@ immediately before the deploy; the rows below quote them.
    the sample is empty.*
 5. **Dirty scope.** `select count(*) from orders where replay = false and id > :boundary_order_id and status in
    ('cancelled','expired') and dirty_seconds > extract(epoch from (coalesce(cancelled_at, expiry) - placed_at))` = 0 -
-   no order accrues more watched dirty time than it spent resting. *Every verify.* At 01:00-08:00 CT
-   `market_dirty_intervals` has no open row older than two hours; inside a game window open rows are expected and their
-   count is journaled beside `exec.dirty_markets`.
+   no order accrues more watched dirty time than it spent resting - and `select count(*) from orders where replay =
+   false and nw_done = false and expiry < now() - interval '2 hours'` = 0 (§0.14's tail bound). *Every verify.* At
+   01:00-08:00 CT `market_dirty_intervals` has no open row older than two hours; inside a game window open rows are
+   expected and their count is journaled beside `exec.dirty_markets`.
 6. **Manifest.** `harness manifest` on the NAS prints `"manifest_version": 7`, `"measurement_version": "4.5"`, seven
    corrections `C0`-`C6`, and the order 157 verdict. *After the 6B deploy.*
 7. **Regressions.** `make test`'s summary line reports **0 xfailed** from `tests/test_execution_regressions.py` and zero
@@ -356,23 +361,23 @@ after, because §1.4's rejection skip and §1.1's continuity repair both change 
   migration `0007_phase6b_execution` carries the same statements for a database that takes migrations instead.
 - 4.2 Window: R4 in full (no deploy while a matched game is `in_progress`, within 4 h after any kickoff, within 15 min
   before one, or 60-100 min before an NFL kickoff); journal 128's app-only allowance does not apply.
-- 4.3 Rollback: previous sha plus `make deploy-nas`. The additive columns, tables and view stay; no DROP is ever part of
-  a rollback (roadmap invariant 5). A rolled-back build writes the old columns and ignores the new ones, and the
-  correction record says which build produced which rows.
+- 4.3 Rollback: previous sha plus `make deploy-nas`. The additive columns, tables and view stay - no DROP is ever part
+  of a rollback (roadmap invariant 5) - and a rolled-back build ignores them, with the correction record saying which
+  build produced which rows.
 - 4.4 No new secret, host, container or cron. The re-score and the audit are read-mostly commands the controller runs
   over ssh in the quiet window (01:00-08:00 CT), one at a time, abandoned if `exec.loop_ms` exceeds 30 s during one -
   the rule the capsule extraction already runs under.
-- 4.5 Expected load change: §1.4 and §1.5 shorten what the loop simulates; the 7,998 orders carried with `nw_done =
-  false` remain carried (closing them early is 6D's policy question). The before and after `exec.loop_ms` numbers are
-  journaled, not promised: 6B is not a performance fix.
+- 4.5 Expected load change: §1.4 and §1.5 shorten what the loop simulates and §0.14 bounds the counterfactual tail, so
+  the carried population stops growing on tickers no read completes; pre-kickoff counterfactuals are still carried,
+  which is F3. The before and after `exec.loop_ms` numbers are journaled, not promised: 6B is not a performance fix.
 
 ## 5. Testing
 
 - **Fixtures.** Realistic mixed-market fixtures come from the 6A capsules (`clean`, `interleaved`, `gap_recovery`,
-  `delayed_loop`, `capacity_bound`, plus order 157's), loaded through a small reader over the gzipped JSON-lines files,
-  with `tests/fixtures/tape_sample_lou_miss_2026-09-07T03.json` kept as the existing premise check. A capsule not yet
-  extracted is not a blocker: each case has a synthetic twin built from `tests/test_fills.py`'s helpers with the same
-  shape, and the capsule-backed variant is added by the task that has the file. No test skips.
+  `delayed_loop`, `capacity_bound`, plus order 157's) through a reader over the gzipped JSON-lines files, with
+  `tests/fixtures/tape_sample_lou_miss_2026-09-07T03.json` kept as the premise check. A capsule not yet extracted is not
+  a blocker: each case has a synthetic twin from `tests/test_fills.py`'s helpers with the same shape, and the
+  capsule-backed variant is added by the task that has the file. No test skips.
 - **The genuine gap/reconnect case** is the `gap_recovery` capsule: a real `gap` row with its `sid` and `ts`, the
   resubscribe, the fresh snapshot and the deltas either side, proving §1.1 (the interleaving before the gap does not
   dirty the book) and §1.2 (the snapshot after it anchors both cursors) on one slice. **A recovery containing an older
@@ -382,20 +387,18 @@ after, because §1.4's rejection skip and §1.1's continuity repair both change 
   fills, queue and accumulators - the existing `test_chunking_invariance` extended to the new state.
 - **Independently calculated expectations.** Every case's docstring states the expected queue and ledger result and how
   it was derived from the tape; a test that re-runs the code's own arithmetic is rejected at review (ROADMAP §6B).
-- **Acceptance mapping.** ROADMAP.md §6B's acceptance clauses are proven at: realistic mixed-market fixtures §5 and
-  §1.3; genuine gap/reconnect §1.1 and §1.2; recovery containing an older trade §1.2; liquidity conservation §3 row 4
-  and §1.3's property test; no post-expiry fills §1.4 and §3 row 2; no placement from rejected targets §1.4 and §3
-  row 3; batch/restart consistency §5; independently calculated expected queue/ledger result every component's
-  *Expected result* line; timing-policy differences recorded §1.6; order 157 published as validated, corrected or
-  unverifiable §1.7; no-watcher re-scored only after the repairs §1.8; raw historical cleanliness retained §0.9, §2 and
-  §3 row 1.
+- **Acceptance mapping.** ROADMAP.md §6B's acceptance clauses are proven at: mixed-market fixtures §5 and §1.3;
+  gap/reconnect §1.1, §1.2; recovery with an older trade §1.2; liquidity conservation §3 row 4 and §1.3's property test;
+  no post-expiry fills §1.4, §3 row 2; no placement from rejected targets §1.4, §3 row 3; batch/restart consistency §5;
+  independently calculated queue/ledger results every component's *Expected result* line; timing-policy differences
+  §1.6; order 157 §1.7; no-watcher re-scored only after the repairs §1.8; raw cleanliness retained §0.9, §2, §3 row 1.
 
 ## 6. Out of scope
 
 6C (week keys, gate documentation, confirmation floor, exact-contract joins, funnel units, annotation backlog); 6D
 (scheduled-versus-completed instrumentation, budget isolation, the holding and capacity policy comparison - including
-any change to `max_open_orders`, the stale allowance, rest-to-expiry or admission rules, and closing the `nw_done =
-false` backlog early); 6E (inventory, restore rehearsal, benchmark, host choice, cutover); 6F (the version boundary and
+any change to `max_open_orders`, the stale allowance, rest-to-expiry or admission rules, and whether a counterfactual
+track should be carried at all; §0.14 bounds its tail, it does not shorten its design life); 6E (inventory, restore rehearsal, benchmark, host choice, cutover); 6F (the version boundary and
 the prospective period); anything live, any venue write, any real money. No new variant: the registered ids are frozen,
 nothing under `harness/variants/` is touched, and anything new after Mon 2026-09-21 09:00 CT would be exploratory. No
 change to any gate criterion, threshold, family, grid, success threshold or cut-off (R1); no switching on of the
@@ -408,28 +411,24 @@ hosts.
    §1.8 its no-watcher re-score, §1.9 the 6A ledger's carried `--out -` test. Nothing else.
 2. **Dependencies.** None new: standard library, SQLAlchemy, Typer and pytest as already pinned. `pyproject.toml` and
    `constraints.txt` are untouched.
-3. **Pre-registered ids.** Untouched; `MAX_PRIMARY` and `MAX_SECONDARY` untouched; `harness/variants/` untouched.
-   `EXECUTOR_VERSION` moves 4.4 → 4.5 once, which changes `config_hash` for orders placed afterwards and is the
-   measurement boundary C1-C6 record (§0.1); `tests/test_fills.py::test_executor_version_is_bumped_for_fills` moves with
-   it.
-4. **Schema.** Additive only: six nullable `numeric` columns and one nullable `integer` on `orders`, two new tables, one
-   view, declared in models, `schema.py` and migration `0007_phase6b_execution` together (§2). No DROP, RENAME,
+3. **Pre-registered ids.** Untouched, as are `MAX_PRIMARY`, `MAX_SECONDARY` and `harness/variants/`.
+   `EXECUTOR_VERSION` moves 4.4 → 4.5 once, changing `config_hash` for orders placed afterwards, which is the
+   measurement boundary C1-C6 record (§0.1); `test_executor_version_is_bumped_for_fills` moves with it.
+4. **Schema.** Additive only: six nullable `numeric` columns plus `nw_dirty_seconds` and `nw_tail` on `orders`, two new
+   tables, one view, declared in models, `schema.py` and migration `0007_phase6b_execution` together (§2). No DROP, RENAME,
    TRUNCATE, DELETE or backfill.
-5. **Venue writes.** None. No code path here opens a venue client; the gateway stays `PaperGateway` and the refusal
-   tests are unchanged.
+5. **Venue writes.** None; no venue client is opened, the gateway stays `PaperGateway`, the refusal tests are unchanged.
 6. **Money.** None; no metered call, no Anthropic call, no Odds API credit.
 7. **Secrets.** None; no component reads `secrets/`.
 8. **Ops.** §4: full deploy recipe under R4, rollback to the previous sha, no new secret, host, container or cron.
-9. **Verification.** §3, with one invariant query per new table and column family (§2) and expected values by time of
-   day on rows 2, 4 and 5.
+9. **Verification.** §3, with an invariant query per new table and column family (§2) and times of day on rows 2, 4, 5.
 10. **Decisions taken on the user's behalf.** §8, each with source, rationale, cost if wrong, blast radius and its exact
     reversal.
 11. **Out of scope** matches the roadmap's milestone boundaries (§6).
-12. **Files and Depends on.** Every component above carries both lines; the plan writer turns them into tasks and the
-    plan review checks the pairing (the addendum's component sections are not the plan). Independent starts: §1.1,
-    §1.3, §1.9. Then §1.2 (after §1.3), §1.4 (after §1.2), §1.5 (after §1.1, §1.4), §1.6 (after §1.1-§1.5), §1.7 (after
-    §1.1-§1.5), §1.8 (after §1.7); `verify.md` last. `harness/execution/loop.py` is touched by §1.1, §1.2, §1.4 and
-    §1.5, which is why those four are serialized rather than run wide.
+12. **Files and Depends on.** Every component carries both lines; the plan writer turns them into tasks and the plan
+    review checks the pairing (these sections are not the plan). Independent starts: §1.1, §1.3, §1.9. Then §1.2 (after
+    §1.3), §1.4 (after §1.2), §1.5 (after §1.1, §1.4), §1.6 and §1.7 (after §1.1-§1.5), §1.8 (after §1.7); `verify.md`
+    last. §1.1, §1.2, §1.4 and §1.5 all touch `harness/execution/loop.py`, which is why they are serialized.
 
 ## 8. Decisions taken on the user's behalf
 
@@ -446,5 +445,6 @@ hosts.
 | D9 | The order 157 verdict lives in `harness/corrections.py` as well as in a record | model (6A D4's reasoning: `docs/` is absent inside the container, and 6C's t13 must read the status) | one import, no file read, and the parity test keeps the two honest | two places to update | file | keep only the record |
 | D10 | One `EXECUTOR_VERSION` bump (4.5) for the whole milestone rather than one per correction | model | the milestone deploys once, so one boundary and one new `config_hash` set is what the record needs; per-task bumps would invent boundaries no order was placed across | a later correction inside 6B shares the boundary with the others | file | bump again before the deploy |
 | D11 | `C1`-`C6`'s `config_hashes` are filled by the controller at merge time, as `C0`'s were | pre-loaded (6A's established pattern; agents have no NAS access) | the post-deploy hashes do not exist until the deploy; the tuples ship empty with width-only tests | the record's hashes are added in the controller's own commit | file | none |
+| D12 | A counterfactual past its expiry is closed after `NW_TAIL_LOOPS` (proposed 240, one hour of 15 s loops) consecutive loops without a complete tape read, labelled `unverifiable_tail` | model (`loop.py:878-880` and `:559` under the measured starvation) | an open track no read completes is re-simulated every loop forever and its record says "not finished" rather than "not taped"; declaring it is the roadmap's own rule for a slice without tape | a track that would have caught up in the 241st loop is labelled unverifiable and re-scored offline instead | file, DB additive | raise the constant or drop the rule |
 
 ## 9. Rulings
