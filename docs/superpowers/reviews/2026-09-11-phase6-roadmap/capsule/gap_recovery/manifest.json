@@ -1,0 +1,337 @@
+{
+ "build": "b0a3991",
+ "counts": {
+  "config_history": 8,
+  "exec_heartbeat": 1,
+  "fair_values": 17556,
+  "fills": 0,
+  "ledger": 0,
+  "market_gap_snapshots": 276,
+  "metric_samples": 494,
+  "operator_events": 4,
+  "order_events": 380,
+  "orderbook_events": 20801,
+  "orderbook_events_gaps": 14,
+  "orders": 190,
+  "venue_markets": 66,
+  "venue_trades": 1782
+ },
+ "executor_version": "4.4",
+ "extracted_at": "2026-09-12T09:31:46.172637+00:00",
+ "files": [
+  {
+   "index_note": "ix_obe_ticker_ts (ticker, ts) for deltas; ix_obe_snapshot (ticker, ts desc) where kind = 'snapshot' for the anchor",
+   "last_id": null,
+   "name": "orderbook_events.jsonl.gz",
+   "rows": 20801,
+   "sha256": "22721478123684df96251cf16f2613cc9e30ae91a7f0302aee64abf658b1a247",
+   "sql": "select id, ts, sid, seq, raw from orderbook_events where ticker = :t and kind = 'snapshot' and ts <= :upper and ts >= :anchor_lower order by ts desc, id desc limit 1 ;; select id, ts, sid, seq, side, price, delta from orderbook_events where ticker = :t and kind = 'delta' and ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "orderbook_events",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_trades_ticker_ts (ticker, ts) -- the _WS_PRINTS projection, not select *: trade_id, ts, yes_price, count, taker_side, is_block, source",
+   "last_id": null,
+   "name": "venue_trades.jsonl.gz",
+   "rows": 1782,
+   "sha256": "e81b3b0308bcdbd71edbbaf9104f9f04bfcc8a1e7b31041b44c4980deb210175",
+   "sql": "select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side, is_block, source from venue_trades where ticker = :t and ts >= :lower and ts <= :upper order by ts, trade_id limit :cap",
+   "table": "venue_trades",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_obe_ts_brin (ts) -- partition-pruned; the gap row is subscription-level and carries ticker = '' (review C1)",
+   "last_id": 61486883,
+   "name": "orderbook_events_gaps.jsonl.gz",
+   "rows": 14,
+   "sha256": "382d7362a9cb4c1809ef5b4cf8e215c6d7363d8f16b726e83dcf4641157d7666",
+   "sql": "select id, ts, sid, seq, ticker, raw from orderbook_events where kind = 'gap' and ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "orderbook_events_gaps",
+   "truncated": false
+  },
+  {
+   "index_note": "venue_markets.ticker unique index",
+   "last_id": 2860,
+   "name": "venue_markets.jsonl.gz",
+   "rows": 66,
+   "sha256": "d78eaa5a1cc1b6fd6849c7202305605494d90b9c79bca8590ad1f653ad598a50",
+   "sql": "select * from venue_markets where ticker = :t limit :cap",
+   "table": "venue_markets",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_gap_market_created (venue_market_id, created_at)",
+   "last_id": 2393887,
+   "name": "market_gap_snapshots.jsonl.gz",
+   "rows": 276,
+   "sha256": "0026a89a7e22223bcee9ed6c3ff487624a647ef4fe0bcf214874cd26ac67ca2d",
+   "sql": "select * from market_gap_snapshots where venue_market_id = :vm_id and created_at >= :lower and created_at <= :upper order by created_at, id limit :cap",
+   "table": "market_gap_snapshots",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_fair_game_type_created (game_id, market_type, created_at)",
+   "last_id": 2585804,
+   "name": "fair_values.jsonl.gz",
+   "rows": 17556,
+   "sha256": "200c0b00f3c083849bbb2dcc190a1e8c05a3b5964a0abfb4d85e5d0de02eca5d",
+   "sql": "select * from fair_values where game_id = :game_id and market_type = :market_type and created_at >= :lower and created_at <= :upper order by created_at, id limit :cap",
+   "table": "fair_values",
+   "truncated": false
+  },
+  {
+   "index_note": "no index on orders.placed_at: bounded walk, small table",
+   "last_id": 8829,
+   "name": "orders.jsonl.gz",
+   "rows": 190,
+   "sha256": "f277d3e1c4fb8724249d0f0cab9f0c807a7fe6a16c43328cb3ee20e85325049e",
+   "sql": "select * from orders where placed_at >= :lower and placed_at <= :upper order by id limit :cap",
+   "table": "orders",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_fills_filled_at (filled_at)",
+   "last_id": null,
+   "name": "fills.jsonl.gz",
+   "rows": 0,
+   "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+   "sql": "select * from fills where filled_at >= :lower and filled_at <= :upper order by filled_at, id limit :cap",
+   "table": "fills",
+   "truncated": false
+  },
+  {
+   "index_note": "uq_order_event (order_id, kind, ts)",
+   "last_id": 1841593,
+   "name": "order_events.jsonl.gz",
+   "rows": 380,
+   "sha256": "68c0dbb593feac450daa18e9f210727d505d4fc28998f83c0fc3e2fff0834349",
+   "sql": "select * from order_events where order_id = any(:order_ids) order by ts, id limit :cap",
+   "table": "order_events",
+   "truncated": false
+  },
+  {
+   "index_note": "no index on ledger.order_id: sequential scan, small table",
+   "last_id": null,
+   "name": "ledger.jsonl.gz",
+   "rows": 0,
+   "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+   "sql": "select * from ledger where order_id = any(:order_ids) order by ts, id limit :cap",
+   "table": "ledger",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_metric_samples_name_ts (name, ts desc) -- explicit name list, never a LIKE prefix (review I-a1)",
+   "last_id": 139352,
+   "name": "metric_samples.jsonl.gz",
+   "rows": 494,
+   "sha256": "f7c84296d20a20b3511a607e6772348f7efd3019921c84878b8ada58faba7051",
+   "sql": "select * from metric_samples where name = any(:names) and ts >= :lower and ts <= :upper order by ts, name limit :cap",
+   "table": "metric_samples",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_operator_events_ts (ts desc)",
+   "last_id": 823,
+   "name": "operator_events.jsonl.gz",
+   "rows": 4,
+   "sha256": "9af7aa3848c903b0d9e0b95fb5fd30bcafb591ab135e9dfcc867b05a420117be",
+   "sql": "select * from operator_events where ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "operator_events",
+   "truncated": false
+  },
+  {
+   "index_note": "single row (id = 1), full read",
+   "last_id": 1,
+   "name": "exec_heartbeat.jsonl.gz",
+   "rows": 1,
+   "sha256": "a7f513ad5ad9dd27ccf74aa773129b8e34c9d2d7c842fd28f9d883a3a536eb81",
+   "sql": "select * from exec_heartbeat limit :cap",
+   "table": "exec_heartbeat",
+   "truncated": false
+  },
+  {
+   "index_note": "small table, full read ordered by first_seen",
+   "last_id": null,
+   "name": "config_history.jsonl.gz",
+   "rows": 8,
+   "sha256": "4cbf595fb82c80113a20435cb0da7992ae59be826d284c7e6ade66a06b618fac",
+   "sql": "select * from config_history order by first_seen limit :cap",
+   "table": "config_history",
+   "truncated": false
+  }
+ ],
+ "identity": {
+  "build_mismatch": true,
+  "healthz_build": "b0a3991",
+  "main_sha": "b9c0cdd",
+  "worktrees": "/Users/trey/dev/sports [main];/Users/trey/dev/sports-autopilot-context-recovery [review/autopilot-context-recovery];/Users/trey/dev/sports-wt/fix-45-raw-events-index [fix-45-raw-events-index];/Users/trey/dev/sports-wt/fix-48-pricing-stage-order [fix-48-pricing-stage-order];/Users/trey/dev/sports-wt/phase6c-trustworthy-reports [phase6c-trustworthy-reports];"
+ },
+ "kind": "capsule",
+ "period_note": "gap_recovery: select ts, kind, summary from operator_events where kind in (ws_disconnect, ws_connect) last 7 days -> hours before 2026-09-12 with d>0: 2026-09-11 21:00Z d=1 c=2 tickers=66 p95 16.3 s (21:05:51 ws_disconnect _Reconnect(subscription rejected: type: error, id: 3, msg: code: 12, msg: Exactly one subscription ID is required); 21:05:53 ws_connect; 21:08:56 ws_connect); chosen 2026-09-11 21:00-22:00Z: one disconnect/connect pair with 66 tickers carrying orders.",
+ "row_cap": 150000,
+ "selector": {
+  "from": "2026-09-11T21:00:00+00:00",
+  "period": "gap_recovery",
+  "tickers": [
+   "KXNCAAFGAME-26SEP11MIZZKU-KU",
+   "KXNCAAFGAME-26SEP11RUTGBC-BC",
+   "KXNCAAFGAME-26SEP11RUTGBC-RUTG",
+   "KXNCAAFGAME-26SEP12ALAUK-ALA",
+   "KXNCAAFGAME-26SEP12ALAUK-UK",
+   "KXNCAAFGAME-26SEP12ARIZBYU-ARIZ",
+   "KXNCAAFGAME-26SEP12ARIZBYU-BYU",
+   "KXNCAAFGAME-26SEP12BUFFFIU-BUFF",
+   "KXNCAAFGAME-26SEP12BUFFFIU-FIU",
+   "KXNCAAFGAME-26SEP12CALSYR-CAL",
+   "KXNCAAFGAME-26SEP12CALSYR-SYR",
+   "KXNCAAFGAME-26SEP12DUKEILL-DUKE",
+   "KXNCAAFGAME-26SEP12DUKEILL-ILL",
+   "KXNCAAFGAME-26SEP12GASTKENN-GAST",
+   "KXNCAAFGAME-26SEP12GASTKENN-KENN",
+   "KXNCAAFGAME-26SEP12JVSTOHIO-JVST",
+   "KXNCAAFGAME-26SEP12JVSTOHIO-OHIO",
+   "KXNCAAFGAME-26SEP12MEMBSU-BSU",
+   "KXNCAAFGAME-26SEP12MEMBSU-MEM",
+   "KXNCAAFGAME-26SEP12NAVYFAU-FAU",
+   "KXNCAAFGAME-26SEP12NAVYFAU-NAVY",
+   "KXNCAAFGAME-26SEP12NDSUAFA-AFA",
+   "KXNCAAFGAME-26SEP12NDSUAFA-NDSU",
+   "KXNCAAFGAME-26SEP12OKLAMICH-MICH",
+   "KXNCAAFGAME-26SEP12OKLAMICH-OKLA",
+   "KXNCAAFGAME-26SEP12OSUTEX-TEX",
+   "KXNCAAFGAME-26SEP12UCFPITT-PITT",
+   "KXNCAAFGAME-26SEP12UCFPITT-UCF",
+   "KXNCAAFGAME-26SEP12ULMUAB-UAB",
+   "KXNCAAFGAME-26SEP12ULMUAB-ULM",
+   "KXNCAAFGAME-26SEP12UNLVUNT-UNLV",
+   "KXNCAAFGAME-26SEP12UNLVUNT-UNT",
+   "KXNCAAFGAME-26SEP12USATULN-TULN",
+   "KXNCAAFGAME-26SEP12USATULN-USA",
+   "KXNCAAFGAME-26SEP12USFARMY-ARMY",
+   "KXNCAAFGAME-26SEP12USFARMY-USF",
+   "KXNCAAFGAME-26SEP12WAKEPUR-PUR",
+   "KXNCAAFGAME-26SEP12WAKEPUR-WAKE",
+   "KXNCAAFGAME-26SEP13NMSUHAW-HAW",
+   "KXNCAAFGAME-26SEP13NMSUHAW-NMSU",
+   "KXNCAAFSPREAD-26SEP12ALSTTROY-TROY23",
+   "KXNCAAFSPREAD-26SEP12ARIZBYU-BYU8",
+   "KXNCAAFSPREAD-26SEP12BUFFFIU-FIU11",
+   "KXNCAAFSPREAD-26SEP12CALSYR-SYR4",
+   "KXNCAAFSPREAD-26SEP12DELVAN-VAN21",
+   "KXNCAAFSPREAD-26SEP12EMUMSU-MSU18",
+   "KXNCAAFSPREAD-26SEP12ETSUUNC-UNC36",
+   "KXNCAAFSPREAD-26SEP12HCMOH-MOH31",
+   "KXNCAAFSPREAD-26SEP12MDCONN-MD12",
+   "KXNCAAFSPREAD-26SEP12MTSTNEV-MTST4",
+   "KXNCAAFSPREAD-26SEP12RICEND-ND45",
+   "KXNCAAFSPREAD-26SEP12RMUAKR-AKR28",
+   "KXNCAAFSPREAD-26SEP12SHUMASS-MASS24",
+   "KXNCAAFSPREAD-26SEP12SOUHOU-HOU52",
+   "KXNCAAFSPREAD-26SEP12SUUCSU-CSU21",
+   "KXNCAAFSPREAD-26SEP12USATULN-TULN10",
+   "KXNCAAFSPREAD-26SEP12WAGJMU-JMU46",
+   "KXNCAAFSPREAD-26SEP12WCUCIN-CIN37",
+   "KXNCAAFSPREAD-26SEP12WEBBLIB-LIB28",
+   "KXNCAAFSPREAD-26SEP12WEBCOLO-COLO35",
+   "KXNCAAFSPREAD-26SEP12WSUKSU-KSU18",
+   "KXNCAAFTOTAL-26SEP11RICHNCST-51",
+   "KXNCAAFTOTAL-26SEP12ETSUUNC-55",
+   "KXNCAAFTOTAL-26SEP12HOWIND-65",
+   "KXNCAAFTOTAL-26SEP12UCDSMU-59",
+   "KXNCAAFTOTAL-26SEP12ULLUSC-60"
+  ],
+  "to": "2026-09-11T22:00:00+00:00"
+ },
+ "statement_timeout_ms": 60000,
+ "truncated": [],
+ "unverifiable_slices": [
+  {
+   "exposed_by": "KXNCAAFTOTAL-26SEP12USATULN-45",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:13:57.082979+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFGAME-26SEP12OREOKST-OKST",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:13:57.136000+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFGAME-26SEP12OSUTEX-OSU",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:13:57.318501+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFSPREAD-26SEP11MIZZKU-KU7",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:23:57.605222+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFGAME-26SEP12OSUTEX-OSU",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:23:57.886852+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFSPREAD-26SEP11NORFUVA-UVA28",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:28:57.648088+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFGAME-26SEP12OSUTEX-OSU",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:28:57.822116+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFSPREAD-26SEP12ALSTTROY-TROY23",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:33:57.899262+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFGAME-26SEP12OSUTEX-OSU",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:33:58.070457+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFSPREAD-26SEP11MIZZKU-MIZZ6",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:39:02.475000+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFSPREAD-26SEP11NORFUVA-UVA52",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:39:02.578176+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFGAME-26SEP11MIZZKU-MIZZ",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:39:02.693423+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFSPREAD-26SEP12WKUUGA-UGA34",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:49:07.155685+00:00"
+  },
+  {
+   "exposed_by": "KXNCAAFGAME-26SEP11MIZZKU-MIZZ",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-11T21:49:07.311325+00:00"
+  }
+ ],
+ "window": {
+  "from": "2026-09-11T21:00:00+00:00",
+  "to": "2026-09-11T22:00:00+00:00"
+ }
+}

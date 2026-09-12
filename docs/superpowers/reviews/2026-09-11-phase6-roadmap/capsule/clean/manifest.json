@@ -1,0 +1,204 @@
+{
+ "build": "b0a3991",
+ "counts": {
+  "config_history": 8,
+  "exec_heartbeat": 1,
+  "fair_values": 88,
+  "fills": 0,
+  "ledger": 0,
+  "market_gap_snapshots": 72,
+  "metric_samples": 476,
+  "operator_events": 4,
+  "order_events": 116,
+  "orderbook_events": 2659,
+  "orderbook_events_gaps": 0,
+  "orders": 58,
+  "venue_markets": 18,
+  "venue_trades": 297
+ },
+ "executor_version": "4.4",
+ "extracted_at": "2026-09-12T09:30:10.456399+00:00",
+ "files": [
+  {
+   "index_note": "ix_obe_ticker_ts (ticker, ts) for deltas; ix_obe_snapshot (ticker, ts desc) where kind = 'snapshot' for the anchor",
+   "last_id": null,
+   "name": "orderbook_events.jsonl.gz",
+   "rows": 2659,
+   "sha256": "4269b84b7ce2675334a5eb934f751d03ba680fee8773005d5d300b2ddf8f8a39",
+   "sql": "select id, ts, sid, seq, raw from orderbook_events where ticker = :t and kind = 'snapshot' and ts <= :upper and ts >= :anchor_lower order by ts desc, id desc limit 1 ;; select id, ts, sid, seq, side, price, delta from orderbook_events where ticker = :t and kind = 'delta' and ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "orderbook_events",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_trades_ticker_ts (ticker, ts) -- the _WS_PRINTS projection, not select *: trade_id, ts, yes_price, count, taker_side, is_block, source",
+   "last_id": null,
+   "name": "venue_trades.jsonl.gz",
+   "rows": 297,
+   "sha256": "be0b9b046d77a4fd44c834ae5cd8e4782e6a0b9ca30aae6e39f139a873c80d47",
+   "sql": "select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side, is_block, source from venue_trades where ticker = :t and ts >= :lower and ts <= :upper order by ts, trade_id limit :cap",
+   "table": "venue_trades",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_obe_ts_brin (ts) -- partition-pruned; the gap row is subscription-level and carries ticker = '' (review C1)",
+   "last_id": null,
+   "name": "orderbook_events_gaps.jsonl.gz",
+   "rows": 0,
+   "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+   "sql": "select id, ts, sid, seq, ticker, raw from orderbook_events where kind = 'gap' and ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "orderbook_events_gaps",
+   "truncated": false
+  },
+  {
+   "index_note": "venue_markets.ticker unique index",
+   "last_id": 33,
+   "name": "venue_markets.jsonl.gz",
+   "rows": 18,
+   "sha256": "36e2d601ad5b08b214efb5cbf7f09a65a1f0362ec8e8dc4125e0a7076751e28b",
+   "sql": "select * from venue_markets where ticker = :t limit :cap",
+   "table": "venue_markets",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_gap_market_created (venue_market_id, created_at)",
+   "last_id": 1168957,
+   "name": "market_gap_snapshots.jsonl.gz",
+   "rows": 72,
+   "sha256": "6416f8d8315bea43ee1f8b2cb9a70f1242662c04e580de8d6bec2ddd44a4bfb0",
+   "sql": "select * from market_gap_snapshots where venue_market_id = :vm_id and created_at >= :lower and created_at <= :upper order by created_at, id limit :cap",
+   "table": "market_gap_snapshots",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_fair_game_type_created (game_id, market_type, created_at)",
+   "last_id": 921408,
+   "name": "fair_values.jsonl.gz",
+   "rows": 88,
+   "sha256": "358642b2b72968a843cc04cc99eb3590c855cb3ee04aeac2adfc4dfa12449630",
+   "sql": "select * from fair_values where game_id = :game_id and market_type = :market_type and created_at >= :lower and created_at <= :upper order by created_at, id limit :cap",
+   "table": "fair_values",
+   "truncated": false
+  },
+  {
+   "index_note": "no index on orders.placed_at: bounded walk, small table",
+   "last_id": 1316,
+   "name": "orders.jsonl.gz",
+   "rows": 58,
+   "sha256": "c5b898a16c71f4613e7d56cd9efc8fb7d098c8c5782aaf4be9ad3fca0da9670e",
+   "sql": "select * from orders where placed_at >= :lower and placed_at <= :upper order by id limit :cap",
+   "table": "orders",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_fills_filled_at (filled_at)",
+   "last_id": null,
+   "name": "fills.jsonl.gz",
+   "rows": 0,
+   "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+   "sql": "select * from fills where filled_at >= :lower and filled_at <= :upper order by filled_at, id limit :cap",
+   "table": "fills",
+   "truncated": false
+  },
+  {
+   "index_note": "uq_order_event (order_id, kind, ts)",
+   "last_id": 596958,
+   "name": "order_events.jsonl.gz",
+   "rows": 116,
+   "sha256": "fdef61b7a2d8efc86738a4fc9be23bdce03801b25be3f140d3c23273efe5900e",
+   "sql": "select * from order_events where order_id = any(:order_ids) order by ts, id limit :cap",
+   "table": "order_events",
+   "truncated": false
+  },
+  {
+   "index_note": "no index on ledger.order_id: sequential scan, small table",
+   "last_id": null,
+   "name": "ledger.jsonl.gz",
+   "rows": 0,
+   "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+   "sql": "select * from ledger where order_id = any(:order_ids) order by ts, id limit :cap",
+   "table": "ledger",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_metric_samples_name_ts (name, ts desc) -- explicit name list, never a LIKE prefix (review I-a1)",
+   "last_id": 27809,
+   "name": "metric_samples.jsonl.gz",
+   "rows": 476,
+   "sha256": "00f474c2726d3eef9f49068f8ff000f2fca508ce38f7a898f4200df6f1c10912",
+   "sql": "select * from metric_samples where name = any(:names) and ts >= :lower and ts <= :upper order by ts, name limit :cap",
+   "table": "metric_samples",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_operator_events_ts (ts desc)",
+   "last_id": 118,
+   "name": "operator_events.jsonl.gz",
+   "rows": 4,
+   "sha256": "da97e472d8923ff2599c34884b10d806876db94d992f39676c787cb15500e413",
+   "sql": "select * from operator_events where ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "operator_events",
+   "truncated": false
+  },
+  {
+   "index_note": "single row (id = 1), full read",
+   "last_id": 1,
+   "name": "exec_heartbeat.jsonl.gz",
+   "rows": 1,
+   "sha256": "24773d300d77902717ebafe64e9e36089d6f036ab7c9a2b492945a5837efa041",
+   "sql": "select * from exec_heartbeat limit :cap",
+   "table": "exec_heartbeat",
+   "truncated": false
+  },
+  {
+   "index_note": "small table, full read ordered by first_seen",
+   "last_id": null,
+   "name": "config_history.jsonl.gz",
+   "rows": 8,
+   "sha256": "4cbf595fb82c80113a20435cb0da7992ae59be826d284c7e6ade66a06b618fac",
+   "sql": "select * from config_history order by first_seen limit :cap",
+   "table": "config_history",
+   "truncated": false
+  }
+ ],
+ "identity": {
+  "build_mismatch": true,
+  "healthz_build": "b0a3991",
+  "main_sha": "b9c0cdd",
+  "worktrees": "/Users/trey/dev/sports [main];/Users/trey/dev/sports-autopilot-context-recovery [review/autopilot-context-recovery];/Users/trey/dev/sports-wt/fix-45-raw-events-index [fix-45-raw-events-index];/Users/trey/dev/sports-wt/fix-48-pricing-stage-order [fix-48-pricing-stage-order];/Users/trey/dev/sports-wt/phase6c-trustworthy-reports [phase6c-trustworthy-reports];"
+ },
+ "kind": "capsule",
+ "period_note": "clean: select date_trunc('hour', ts), connects, disconnects from operator_events last 7 days having disconnects=0 and connects=1 -> 2026-09-11 11:00Z (0 tickers, p95 13.3 s), 2026-09-10 12:00Z (0 tickers), 2026-09-09 05:00Z (18 tickers, exec.loop_ms p95 3789 ms), 2026-09-08 09:00Z (0 tickers); chosen 2026-09-09 05:00-06:00Z: the only clean hour with orders and p95 under 10 s.",
+ "row_cap": 150000,
+ "selector": {
+  "from": "2026-09-09T05:00:00+00:00",
+  "period": "clean",
+  "tickers": [
+   "KXNFLGAME-26SEP10SFLAR-SF",
+   "KXNFLGAME-26SEP13ATLPIT-ATL",
+   "KXNFLGAME-26SEP13BALIND-BAL",
+   "KXNFLGAME-26SEP13BALIND-IND",
+   "KXNFLGAME-26SEP13BUFHOU-BUF",
+   "KXNFLGAME-26SEP13CHICAR-CAR",
+   "KXNFLGAME-26SEP13CHICAR-CHI",
+   "KXNFLGAME-26SEP13GBMIN-GB",
+   "KXNFLGAME-26SEP13GBMIN-MIN",
+   "KXNFLGAME-26SEP13MIALV-LV",
+   "KXNFLGAME-26SEP13MIALV-MIA",
+   "KXNFLGAME-26SEP13NODET-DET",
+   "KXNFLGAME-26SEP13NODET-NO",
+   "KXNFLGAME-26SEP13TBCIN-CIN",
+   "KXNFLGAME-26SEP13WASPHI-PHI",
+   "KXNFLGAME-26SEP13WASPHI-WAS",
+   "KXNFLGAME-26SEP14DENKC-DEN",
+   "KXNFLGAME-26SEP14DENKC-KC"
+  ],
+  "to": "2026-09-09T06:00:00+00:00"
+ },
+ "statement_timeout_ms": 60000,
+ "truncated": [],
+ "unverifiable_slices": [],
+ "window": {
+  "from": "2026-09-09T05:00:00+00:00",
+  "to": "2026-09-09T06:00:00+00:00"
+ }
+}

@@ -1,0 +1,252 @@
+{
+ "build": "b0a3991",
+ "counts": {
+  "config_history": 8,
+  "exec_heartbeat": 1,
+  "fair_values": 133,
+  "fills": 379,
+  "intents": 1,
+  "ledger": 2,
+  "market_gap_snapshots": 135,
+  "metric_samples": 24633,
+  "operator_events": 460,
+  "order_events": 11184,
+  "order_watch_samples": 34,
+  "orderbook_events": 554,
+  "orderbook_events_gaps": 6,
+  "orders": 5592,
+  "signals": 1,
+  "venue_markets": 1,
+  "venue_trades": 14
+ },
+ "executor_version": "4.4",
+ "extracted_at": "2026-09-12T09:29:18.393915+00:00",
+ "files": [
+  {
+   "index_note": "orders.pkey (primary key read)",
+   "last_id": 5690,
+   "name": "orders.jsonl.gz",
+   "rows": 5592,
+   "sha256": "a9c040f1322bc485474662f89cc8aa0ffdfd44ca8609d5c83cd7e222f703916c",
+   "sql": "select * from orders where id = :order_id limit :cap ;; select * from orders where placed_at >= :lower and placed_at <= :upper order by id limit :cap",
+   "table": "orders",
+   "truncated": false
+  },
+  {
+   "index_note": "uq_order_event (order_id, kind, ts)",
+   "last_id": 1520284,
+   "name": "order_events.jsonl.gz",
+   "rows": 11184,
+   "sha256": "bb3665d508bf89d4041ca2ab8772d32008f57404734dcb242ddeada5cac1a01b",
+   "sql": "select * from order_events where order_id = :order_id order by ts, id limit :cap ;; select * from order_events where order_id = any(:order_ids) order by ts, id limit :cap",
+   "table": "order_events",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_fills_order (order_id)",
+   "last_id": 367,
+   "name": "fills.jsonl.gz",
+   "rows": 379,
+   "sha256": "cc43f131d578b6773572248a164089cc1e77686d135bd76e16143e3a2971fd3f",
+   "sql": "select * from fills where order_id = :order_id order by filled_at, id limit :cap ;; select * from fills where filled_at >= :lower and filled_at <= :upper order by filled_at, id limit :cap",
+   "table": "fills",
+   "truncated": false
+  },
+  {
+   "index_note": "order_watch_samples.pkey (order_id, ts)",
+   "last_id": null,
+   "name": "order_watch_samples.jsonl.gz",
+   "rows": 34,
+   "sha256": "3bcff521cda3090f07b6225369429e43005fba05993b9bf551f58375fde0f65d",
+   "sql": "select * from order_watch_samples where order_id = :order_id order by ts limit :cap",
+   "table": "order_watch_samples",
+   "truncated": false
+  },
+  {
+   "index_note": "no index on ledger.order_id: sequential scan, small table",
+   "last_id": 2,
+   "name": "ledger.jsonl.gz",
+   "rows": 2,
+   "sha256": "17111ef6721859bfc6d67d54fdc54ed71b34d7ba47c6b8b3465133ebf7dc9b2f",
+   "sql": "select * from ledger where order_id = :order_id order by ts, id limit :cap ;; select * from ledger where order_id = any(:order_ids) order by ts, id limit :cap",
+   "table": "ledger",
+   "truncated": false
+  },
+  {
+   "index_note": "intents.pkey (primary key read)",
+   "last_id": null,
+   "name": "intents.jsonl.gz",
+   "rows": 1,
+   "sha256": "f2822af1230977cf5fe5d159a0187de2f56be3e9d2a73ad303f8be1d5d3ffb3c",
+   "sql": "select * from intents where id = :intent_id limit :cap",
+   "table": "intents",
+   "truncated": false
+  },
+  {
+   "index_note": "signals.pkey (primary key read)",
+   "last_id": 5607670,
+   "name": "signals.jsonl.gz",
+   "rows": 1,
+   "sha256": "bae9215925dcb046784cfa5f5675bc8d8cda8acc62c421a183b2240f81f16611",
+   "sql": "select * from signals where id = :signal_id limit :cap",
+   "table": "signals",
+   "truncated": false
+  },
+  {
+   "index_note": "market_gap_snapshots.pkey (primary key read)",
+   "last_id": 1711477,
+   "name": "market_gap_snapshots.jsonl.gz",
+   "rows": 135,
+   "sha256": "2bf0efb2d4573451a60c3ce10d01eda22ba79341bca78a6a2654ce7ee03c82f3",
+   "sql": "select * from market_gap_snapshots where id = :gap_id limit :cap ;; select * from market_gap_snapshots where venue_market_id = :vm_id and created_at >= :lower and created_at <= :upper order by created_at, id limit :cap",
+   "table": "market_gap_snapshots",
+   "truncated": false
+  },
+  {
+   "index_note": "fair_values.pkey (primary key read)",
+   "last_id": 770418,
+   "name": "fair_values.jsonl.gz",
+   "rows": 133,
+   "sha256": "bee942c2610419085a79b20cf63d73850640ef2cc655b93d7353141b127993eb",
+   "sql": "select * from fair_values where id = :fair_id limit :cap ;; select * from fair_values where game_id = :game_id and market_type = :market_type and created_at >= :lower and created_at <= :upper order by created_at, id limit :cap",
+   "table": "fair_values",
+   "truncated": false
+  },
+  {
+   "index_note": "venue_markets.pkey (primary key read)",
+   "last_id": 3031,
+   "name": "venue_markets.jsonl.gz",
+   "rows": 1,
+   "sha256": "a50c4cd693180c678e2ac0030c3a354abd827d62c9aa1536b3af7e22e0ba9708",
+   "sql": "select * from venue_markets where id = :vm_id limit :cap ;; select * from venue_markets where ticker = :t limit :cap",
+   "table": "venue_markets",
+   "truncated": false
+  },
+  {
+   "index_note": "config_history.pkey (primary key read, keyed by the 12-hex variant id; the order's own 64-hex executor config_hash rides on the orders row)",
+   "last_id": null,
+   "name": "config_history.jsonl.gz",
+   "rows": 8,
+   "sha256": "dde3160e0c9de51aedc87df5223784b1435d4f205809d45dc1c4253ea2824817",
+   "sql": "select * from config_history where config_hash = :variant_id limit :cap ;; select * from config_history order by first_seen limit :cap",
+   "table": "config_history",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_obe_ticker_ts (ticker, ts) for deltas; ix_obe_snapshot (ticker, ts desc) where kind = 'snapshot' for the anchor",
+   "last_id": 48398045,
+   "name": "orderbook_events.jsonl.gz",
+   "rows": 554,
+   "sha256": "e4fe3051472639ff0213cbf3739f5e326402f36df9723e907d97a6b9f825a9fc",
+   "sql": "select id, ts, sid, seq, raw from orderbook_events where ticker = :t and kind = 'snapshot' and ts <= :upper and ts >= :anchor_lower order by ts desc, id desc limit 1 ;; select id, ts, sid, seq, side, price, delta from orderbook_events where ticker = :t and kind = 'delta' and ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "orderbook_events",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_trades_ticker_ts (ticker, ts) -- the _WS_PRINTS projection, not select *: trade_id, ts, yes_price, count, taker_side, is_block, source",
+   "last_id": null,
+   "name": "venue_trades.jsonl.gz",
+   "rows": 14,
+   "sha256": "0270e37c066cf3f8e6864c8cbcd744744156e47b2850429cdb6ee2b33e15a6b5",
+   "sql": "select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side, is_block, source from venue_trades where ticker = :t and ts >= :lower and ts <= :upper order by ts, trade_id limit :cap",
+   "table": "venue_trades",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_obe_ts_brin (ts) -- partition-pruned; the gap row is subscription-level and carries ticker = '' (review C1)",
+   "last_id": 45568959,
+   "name": "orderbook_events_gaps.jsonl.gz",
+   "rows": 6,
+   "sha256": "56c708921ec12821496ed301e6ec944f01c844290099bf1095b11831041dbcc3",
+   "sql": "select id, ts, sid, seq, ticker, raw from orderbook_events where kind = 'gap' and ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "orderbook_events_gaps",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_metric_samples_name_ts (name, ts desc) -- explicit name list, never a LIKE prefix (review I-a1)",
+   "last_id": 94493,
+   "name": "metric_samples.jsonl.gz",
+   "rows": 24633,
+   "sha256": "4eac0e0deb227e2b6c31f29136150d641bfc79377fc5d506522c2c4a314275c9",
+   "sql": "select * from metric_samples where name = any(:names) and ts >= :lower and ts <= :upper order by ts, name limit :cap",
+   "table": "metric_samples",
+   "truncated": false
+  },
+  {
+   "index_note": "ix_operator_events_ts (ts desc)",
+   "last_id": 474,
+   "name": "operator_events.jsonl.gz",
+   "rows": 460,
+   "sha256": "417451883ee5fe349014ed75f1f3f0739ef3204643a0c36eea8482cb584c370a",
+   "sql": "select * from operator_events where ts >= :lower and ts <= :upper order by ts, id limit :cap",
+   "table": "operator_events",
+   "truncated": false
+  },
+  {
+   "index_note": "single row (id = 1), full read",
+   "last_id": 1,
+   "name": "exec_heartbeat.jsonl.gz",
+   "rows": 1,
+   "sha256": "9e25748a1316d21878ef8e7808eb71f847594317788471c4c897f3e64cd37d51",
+   "sql": "select * from exec_heartbeat limit :cap",
+   "table": "exec_heartbeat",
+   "truncated": false
+  }
+ ],
+ "identity": {
+  "build_mismatch": true,
+  "healthz_build": "b0a3991",
+  "main_sha": "b9c0cdd",
+  "worktrees": "/Users/trey/dev/sports [main];/Users/trey/dev/sports-autopilot-context-recovery [review/autopilot-context-recovery];/Users/trey/dev/sports-wt/fix-45-raw-events-index [fix-45-raw-events-index];/Users/trey/dev/sports-wt/fix-48-pricing-stage-order [fix-48-pricing-stage-order];/Users/trey/dev/sports-wt/phase6c-trustworthy-reports [phase6c-trustworthy-reports];"
+ },
+ "kind": "capsule",
+ "period_note": null,
+ "row_cap": 150000,
+ "selector": {
+  "order": 157
+ },
+ "statement_timeout_ms": 60000,
+ "truncated": [],
+ "unverifiable_slices": [
+  {
+   "exposed_by": "sink_exception",
+   "reason": "gap",
+   "sid": 1,
+   "ts": "2026-09-09T22:48:52.602068+00:00"
+  },
+  {
+   "exposed_by": "sink_exception",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-09T22:48:52.602068+00:00"
+  },
+  {
+   "exposed_by": "sink_exception",
+   "reason": "gap",
+   "sid": 1,
+   "ts": "2026-09-10T00:29:58.958291+00:00"
+  },
+  {
+   "exposed_by": "sink_exception",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-10T00:29:58.958291+00:00"
+  },
+  {
+   "exposed_by": "sink_exception",
+   "reason": "gap",
+   "sid": 1,
+   "ts": "2026-09-10T03:25:27.673548+00:00"
+  },
+  {
+   "exposed_by": "sink_exception",
+   "reason": "gap",
+   "sid": 2,
+   "ts": "2026-09-10T03:25:27.673548+00:00"
+  }
+ ],
+ "window": {
+  "from": "2026-09-08T14:06:47.579399+00:00",
+  "to": "2026-09-10T20:12:20.164988+00:00"
+ }
+}
