@@ -61,9 +61,9 @@ from harness.execution.book import (
     advance_book,
     advance_book_at,
     book_age_s,
-    book_at,
     load_book,
     load_book_at,
+    newest_ws_connect,
     side_p,
 )
 from harness.execution.fills import (
@@ -478,19 +478,24 @@ class Executor:
         `base` is the previous step's book, copied before the cache moves; the fill step gives
         it to the simulator, which walks its own copy. The cache itself is never handed out and
         never mutated by a simulation.
+
+        The newest `ws_connect` is read once for the whole step (§0.3) and written onto the
+        cached books: a book anchored before it kept folding in a new subscription's deltas, and
+        the verdict has to land on the cached object so that the re-anchor branch can clear it.
         """
+        connected_at = newest_ws_connect(session, self._at(now))
         bases: dict[str, BookState | None] = {}
         re_anchored: set[str] = set()
         for ticker in sorted(tickers):
             cached = self.books.get(ticker)
             if cached is None:
-                book = self._book_now(session, ticker, now, None)
+                book = self._book_now(session, ticker, now, None, connected_at)
                 self.books[ticker] = book
                 bases[ticker] = book
             else:
                 base = cached.copy()
                 bases[ticker] = base
-                advanced = self._book_now(session, ticker, now, cached)
+                advanced = self._book_now(session, ticker, now, cached, connected_at)
                 self.books[ticker] = advanced
                 if (advanced.anchor_id, advanced.source) != (base.anchor_id, base.source):
                     # `advance_book` re-anchors inside a single call when a gap is followed by a
@@ -511,7 +516,8 @@ class Executor:
         return bases, recovering
 
     def _book_now(self, session: Session, ticker: str, now: datetime,
-                  cached: BookState | None) -> BookState | None:
+                  cached: BookState | None,
+                  ws_connect_at: datetime | None = None) -> BookState | None:
         """The ticker's book at `now`: the tape's head live, the past instant in replay.
 
         The two paths are the same two calls. `load_book`/`advance_book` run to the head of the
@@ -524,9 +530,9 @@ class Executor:
         """
         if self.replay:
             return (load_book_at(session, ticker, now) if cached is None
-                    else advance_book_at(session, cached, now))
+                    else advance_book_at(session, cached, now, ws_connect_at))
         return (load_book(session, ticker, now) if cached is None
-                else advance_book(session, cached, now))
+                else advance_book(session, cached, now, ws_connect_at))
 
     def _market_now(self, row, dead_recorder: bool) -> MarketNow:
         return MarketNow(
@@ -903,7 +909,13 @@ class Executor:
         if cursor is not None:
             at = store.event_ts(session, cursor)
             if at is not None:
-                return book_at(session, row.ticker, at)
+                # `book_at` takes no gap verdict on purpose: every gap after the instant also
+                # has a higher id, so the live test would dirty every historical book on that
+                # sid for the rest of the season and take the markouts with it. But this branch
+                # is asking what the *live loop* believed at that cursor, and a gap the live
+                # loop had already seen dirtied its book. `load_book_at` is `book_at` plus
+                # exactly that verdict, bounded at the instant (ruling I-14).
+                return load_book_at(session, row.ticker, at)
         return None if base is None else base.copy()
 
     def _persist_track(self, session: Session, row, order: PaperOrder, result, prints,
