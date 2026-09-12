@@ -1004,6 +1004,11 @@ def test_ensure_partitioned_concurrent_indexes_builds_then_is_a_no_op(db_session
     db_session.commit()
     partitions = schema_module._partitions_of(db_session, "raw_responses")
     assert partitions, "the _schema fixture should already have this week's/next week's partitions"
+    # CREATE INDEX CONCURRENTLY waits for every other open transaction in the database to end,
+    # not just ones touching raw_responses -- the read above started one on db_session's own
+    # connection (SQLAlchemy auto-begins on first execute), and leaving it open would make the
+    # build below wait on db_session itself, indefinitely as far as the recipe is concerned.
+    db_session.commit()
 
     seen: list[str] = []
 
@@ -1033,6 +1038,7 @@ def test_ensure_partitioned_concurrent_indexes_builds_then_is_a_no_op(db_session
         child = f"ix_raw_source_endpoint_id{partition[len('raw_responses'):]}"
         assert schema_module._index_attached(db_session, "ix_raw_source_endpoint_id", child)
         assert schema_module._index_valid(db_session, child)
+    db_session.commit()  # same reason as above, ahead of the second CONCURRENTLY-capable call
 
     seen.clear()
     event.listen(engine, "before_cursor_execute", capture)
@@ -1060,6 +1066,9 @@ def test_ensure_partitioned_concurrent_indexes_rebuilds_an_invalid_child(db_sess
     partitions = schema_module._partitions_of(db_session, "raw_responses")
     target = partitions[0]
     stale_child = f"ix_raw_source_endpoint_id{target[len('raw_responses'):]}"
+    # See the sibling test above: CREATE INDEX CONCURRENTLY waits for every other open
+    # transaction in the database, so db_session must hold none of its own before either build.
+    db_session.commit()
 
     with _autocommit_conn(engine) as conn:
         conn.execute(text(
@@ -1067,10 +1076,11 @@ def test_ensure_partitioned_concurrent_indexes_rebuilds_an_invalid_child(db_sess
     stale_oid = db_session.execute(text("select oid from pg_class where relname = :n"),
                                    {"n": stale_child}).scalar()
     db_session.execute(text(
-        "update pg_index set indisvalid = false where indexrelid = :n::regclass"),
+        "update pg_index set indisvalid = false where indexrelid = to_regclass(:n)"),
         {"n": stale_child})
     db_session.commit()
     assert not schema_module._index_valid(db_session, stale_child)
+    db_session.commit()
 
     with _autocommit_conn(engine) as conn:
         skipped = schema_module._ensure_partitioned_concurrent_indexes(conn)
@@ -1091,13 +1101,16 @@ def test_ensure_partitioned_concurrent_indexes_skips_when_already_valid(db_sessi
     from harness.db import schema as schema_module
 
     engine = db_session.get_bind()
-    if not schema_module._index_valid(db_session, "ix_raw_source_endpoint_id"):
+    already_valid = schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
+    db_session.commit()  # CREATE INDEX CONCURRENTLY waits on any open transaction, db_session's included
+    if not already_valid:
         # A prior test in this session-scoped schema may have left it mid-rebuild; put it back
         # rather than assume the fixture's original build is still standing.
         with _autocommit_conn(engine) as conn:
             schema_module._ensure_partitioned_concurrent_indexes(conn)
         db_session.commit()
     assert schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
+    db_session.commit()
 
     seen: list[str] = []
 
@@ -1127,13 +1140,16 @@ def test_create_schema_builds_the_raw_events_lookup_index_on_a_database_that_pre
             "select 1 from pg_indexes where indexname = 'ix_raw_source_endpoint_id'")).first() is not None
 
     assert has_index()  # the db_session fixture already ran create_schema once
+    db_session.commit()  # CREATE/DROP INDEX CONCURRENTLY wait on any open transaction
     _reset_raw_source_endpoint_id(engine)
     db_session.commit()
     assert not has_index()
+    db_session.commit()
 
     create_schema(engine)
     db_session.commit()
     assert has_index()
+    db_session.commit()
 
     create_schema(engine)  # idempotent: a database that already has it is untouched
     assert has_index()
