@@ -1536,3 +1536,13 @@ Times are America/Chicago.
 - Rulings: (1) The implementer's corrected root cause stands over the brief's (websocket-client's `recv()` answers pings internally and restarts its 30 s timeout; `recv_data(control_frame=True)` surfaces each ping as a loop iteration and the library still sends the pong, verified by the reviewer in 1.9.2). (2) `venue_status` has no `degraded` value: both new paths write `unavailable` with a reason. (3) A quiet 15 minutes now costs a resubscribe and a replay burst (about four an hour at worst): accepted, the threshold is 6D's to revisit. (4) The 300 s decay of the forced floor flattens escalation for code-25 laps 300 s or more apart: a deferred minor, not a regression. (5) One existing test was renamed because it asserted the bug.
 - Carried forward: none (row 44 reads merged)
 - Next: deploy (the Fri 23:00 CT wave: 6C wave 1 + fix 42 + fix 44) after main's suite; wakeup 22:45 CT (cron 4d16b211)
+
+## 128. decision - app-only deploys allowed during college game windows - 2026-09-11 19:14 CT
+
+- User (chat, 2026-09-11 19:14 CT), verbatim: "I approve the decision to allow app only deploys." (in reply to the loop's recommendation: "Keep R4 for full deploys and for NFL Sunday. For rapid iteration, allow app-only deploys during college game windows (Thursday, Friday, Saturday) when the diff does not touch `app-ws`.")
+- Orient: n/a (a user decision in chat).
+- Result: done (recorded; applied from the next app-only change onward)
+- Reading, as the recommendation stated it: `make deploy-nas-app` (app-run, app-serve, app-exec, app-research recreated; `app-ws` and the tape untouched) may run during an NCAAF game window on Thursday, Friday or Saturday when the full-deploy trigger diff (`ws_sink.py`, `ws.py`, `models.py`, compose, Dockerfile, pyproject, constraints) is empty and the diff does not name `WITH_WS=1` files; full deploys and every deploy inside an NFL window (Sunday 10:20 CT onward, Monday night) stay under R4; the executor's minute-long pause is accepted because paper orders expire at kickoff minus 10 minutes (R8) and nothing rests in-game. The failure ceiling (two failed deploys a day) and the one-deploy-per-wave rule are unchanged.
+- Rulings: (1) The R4 text lives in the roadmap's rulings table, which the loop never edits: this entry governs until the user pastes the replacement wording (User-side TODO added with the exact text) - cost if wrong: none; the rule is applied as the user stated it. (2) Tonight's wave is a full deploy (fix 44 touches `app-ws`) and stays at 23:00 CT.
+- Carried forward: none
+- Next: unchanged (6A T6, 6C T7, the 23:00 CT wave)
