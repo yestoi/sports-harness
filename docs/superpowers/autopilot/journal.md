@@ -1791,3 +1791,9 @@ Times are America/Chicago.
 - Ruling (extends entry 148): the in-window restart condition is the monitor's trip plus any of: the sink cancelling, the executor's tape reads timing out at scale, or an executor loop over 5 minutes; all three are the same host starvation costing the window's data, and the restart costs one 2-min tick - cost if wrong: one tick on the live slate. `docker compose restart app-run` 13:01:03-13:03:42 CT.
 - Result: PASS (operate). Dispatches: 0. Restarts today: 00:47, 01:09, 01:26, 01:42, 01:57, 09:44, 10:49, 11:56, 13:01 CT; the refill time on the slate is ~65 min. Fix 49 (reviewed at b447827) waits on the gate.
 - Next: gated; the monitor's next trip (~14:05 CT) is handled the same way; wakeup 13:27 CT stands.
+
+## 150. operate - recorder restarted on the 13:41 CT trip (2.40 GiB in 40 min; executor loop 848 s) - 2026-09-12 13:45 CT
+
+- Orient: rule 4 (monitor trip 13:41 CT), while gated (entry 143). 13:27: 2.0 GiB 23 min after the 13:01 restart, available 800 MB, sink quiet. 13:41: 2.40 GiB, available 553 MB, swap 2.9 GB; `app-ws` 0 QueryCanceled in 15 min, `app-exec` 60 `statement timeout` tape reads in 15 min, `exec.loop_ms` 847,703: entry 149's condition. `docker compose restart app-run` 13:41:36-13:44:09 CT; after: 4 MiB, host available 3.2 GB.
+- Result: PASS (operate). Dispatches: 0. Restarts today: 00:47, 01:09, 01:26, 01:42, 01:57, 09:44, 10:49, 11:56, 13:01, 13:41 CT. The refill time fell from ~65 to ~40 min as the slate filled; each restart costs one 2-min tick. Third push notification sent 13:28 CT.
+- Next: gated; the monitor handles the next trip; wakeup 13:58 CT stands.
