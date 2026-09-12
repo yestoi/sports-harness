@@ -108,8 +108,14 @@ ssh -o BatchMode=yes trey@192.168.12.228 \
   > /tmp/capsule-gap-recovery.tar
 ```
 
-`--out -` writes the whole capsule as a tar stream on stdout, which is the R16 shape. Unpack on
-the Mac with `tar -xf`.
+`--out -` writes the whole capsule as a tar stream on stdout, which is the R16 shape. The archive
+carries no directory prefix (its members are `manifest.json`, `orders.jsonl.gz` and so on at the root),
+so each capsule gets its own directory named for its selector, and unpacking two into one directory
+overwrites the first silently. Unpack on the Mac with an explicit destination:
+
+```
+mkdir -p capsule/order-157 && tar -xf /tmp/capsule-order-157.tar -C capsule/order-157
+```
 
 **Exit codes.**
 
@@ -117,7 +123,7 @@ the Mac with `tar -xf`.
 |---|---|---|
 | 0 | Clean | Unpack, read `manifest.json`, journal the counts |
 | 1 | Bad selector, or an order id with no row | Fix the arguments; nothing was written |
-| 2 | A file hit the 150,000-row cap | The files are written but one table is incomplete: narrow the window and take it again |
+| 2 | A file hit the row cap (`row_cap` in the manifest; 150,000 unless `--cap` overrides it) | The files are written but one table is incomplete: narrow the window and take it again |
 
 ## 5. Reading the manifest
 

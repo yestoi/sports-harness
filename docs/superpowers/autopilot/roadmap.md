@@ -481,6 +481,7 @@ actual contract count is closed by the centicent fee fix (F11), which makes the 
 - Keep a Time Machine or equivalent copy of the Mac (R5). The private GitHub remote (U7) is the second copy.
 - Copy `secrets/backup_age_key` somewhere safe once the loop creates it, and say so.
 - 2026-09-11 (journal 128, user decision): paste this replacement for R4 into the rulings table when convenient: "Deploy window: no **full** deploy (`make deploy-nas`, which recreates `app-ws`) while any matched game is `in_progress`, within 4 h after any kickoff, within 15 min before any kickoff, or 60 to 100 min before an NFL kickoff; an **app-only** deploy (`make deploy-nas-app`, app-ws untouched) may run inside an NCAAF window on Thursday, Friday or Saturday when the full-deploy trigger diff is empty; NFL windows (Sunday from 10:20 CT, Monday night) block every deploy. Exceptions: only 'recorder down', 'executor down', 'app-serve unhealthy', journaled with the games affected." Until pasted, journal 128 governs.
+- 2026-09-11 (6A, R1): gate measurement boundary. Setting `GATE_ELIGIBLE_FROM_ORDER_ID` / `GATE_ELIGIBLE_FROM_RUN_ID` changes which rows every gate criterion sees. The mechanism ships dormant and the loop never sets it; say the word and the date, and the loop records the decision (set both together: one alone leaves criterion 8 on the whole history).
 - The legal decision before any live trading.
 
 The spec §2 legal-facts correction is being applied by the controller, not by the user.
