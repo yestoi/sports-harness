@@ -282,16 +282,37 @@ def synthetic_day(teams: list[Team], n_games: int, now: datetime, sport: str = "
 
 # --- the measurement itself --------------------------------------------------------------
 
+#: Excluded from the traced total, because it is the database driver's cache and not the
+#: recorder's retention. psycopg prepares a statement on its `prepare_threshold`-th execution
+#: (default 5) and holds the built query bytes until `prepared_max` (default 100) evicts them,
+#: so the cache is bounded by construction -- but it fills at whichever tick each statement
+#: happens to cross the threshold, which depends on what ran in the process before. Measured on
+#: 2026-09-12 it was worth 417 KiB against a 553 KiB harness total in one `make test` run and
+#: 1,231 KiB against 558 KiB in another, while the harness's own retained allocation was the
+#: same to the kilobyte in both: without this filter the criterion measures psycopg.
+_DRIVER_CACHE = tracemalloc.Filter(False, "*/psycopg/_queries.py")
+
+
+def _totals(snapshot) -> tuple[float, float]:
+    """(traced KiB excluding the driver cache, driver cache KiB) for one snapshot."""
+    total = sum(s.size for s in snapshot.statistics("filename"))
+    kept = sum(s.size for s in snapshot.filter_traces([_DRIVER_CACHE]).statistics("filename"))
+    return kept / 1024, (total - kept) / 1024
+
+
 @dataclass(frozen=True)
 class TickSample:
     tick: int
     traced_kb: float
     peak_kb: float
     rss_mb: float | None
+    driver_kb: float = 0.0
 
     def line(self) -> str:
         rss = "n/a" if self.rss_mb is None else f"{self.rss_mb:8.1f}"
-        return f"tick {self.tick:3d}  traced {self.traced_kb:10.1f} KiB  peak {self.peak_kb:10.1f} KiB  rss {rss} MiB"
+        return (f"tick {self.tick:3d}  traced {self.traced_kb:10.1f} KiB  "
+                f"peak {self.peak_kb:10.1f} KiB  rss {rss} MiB  "
+                f"driver cache {self.driver_kb:9.1f} KiB")
 
 
 @dataclass(frozen=True)
@@ -393,10 +414,13 @@ def measure_ticks(run_tick, ticks: int, checkpoints: tuple[int, ...] = (1, 2, 5,
             if i not in wanted:
                 continue
             gc.collect()
-            current, peak = tracemalloc.get_traced_memory()
-            samples.append(TickSample(i, current / 1024, peak / 1024, rss_mb()))
-            if i == ticks:
-                snapshot = tracemalloc.take_snapshot()
+            _, peak = tracemalloc.get_traced_memory()
+            # A snapshot per checkpoint, not one at the end: the traced total this criterion is
+            # asserted on has the driver's prepared-statement cache taken out of it, and only a
+            # snapshot can say how much of the total that cache is.
+            snapshot = tracemalloc.take_snapshot()
+            traced_kb, driver_kb = _totals(snapshot)
+            samples.append(TickSample(i, traced_kb, peak / 1024, rss_mb(), driver_kb))
         top = []
         if snapshot is not None:
             for stat in snapshot.statistics("lineno")[:top_n]:
