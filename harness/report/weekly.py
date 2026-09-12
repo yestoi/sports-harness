@@ -241,6 +241,14 @@ def restrict_to_selection(tables: dict[str, Table], selection: dict) -> dict[str
     This is the week-3 confirmation: only what week 2 froze is evaluated, on week-3 data. The
     §9.6 verdict is re-stated in table 4's note over the restricted set, judged on the
     posterior interval (ruling R13).
+
+    Table 4's note prints every denominator behind that verdict -- selected, evaluated,
+    insufficient, missing, confirmed -- so a reader can see why the count is what it is. A
+    week-3 cell below the registered ten-game-cluster floor is counted `insufficient` and never
+    confirmed (`_has_floor`; a restoration of the record's own rule, not a new one). The count
+    of confirmed cells lying on the stored direction is printed beside the registered two-sided
+    count and is applied nowhere: making it a condition would be a success-threshold change
+    under R1 (see `DIRECTION_NOTE`).
     """
     out = dict(tables)
     wanted_cells = {tuple(entry.get(name) for name in CELL_KEY)
