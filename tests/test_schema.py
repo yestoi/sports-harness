@@ -999,6 +999,19 @@ def _reset_raw_source_endpoint_id(engine):
             conn.execute(text(f"drop index concurrently if exists {name}"))
 
 
+@pytest.fixture
+def raw_events_index_cleanup(db_session):
+    """Restore the shared index after tests that deliberately leave invalid catalog state."""
+    yield
+    from harness.db import schema as schema_module
+
+    db_session.rollback()
+    engine = db_session.get_bind()
+    _reset_raw_source_endpoint_id(engine)
+    with _autocommit_conn(engine) as conn:
+        schema_module._ensure_partitioned_concurrent_indexes(conn)
+
+
 def test_ensure_partitioned_concurrent_indexes_builds_then_is_a_no_op(db_session):
     """On a populated database whose weekly partitions already exist (the NAS shape, and the
     `_schema` fixture's own shape): the first call builds the parent metadata-only, each
@@ -1060,7 +1073,7 @@ def test_ensure_partitioned_concurrent_indexes_builds_then_is_a_no_op(db_session
     assert ddl == [], ddl
 
 
-def test_ensure_partitioned_concurrent_indexes_rebuilds_an_invalid_child(db_session):
+def test_ensure_partitioned_concurrent_indexes_rebuilds_an_invalid_child(db_session, raw_events_index_cleanup):
     """CREATE INDEX CONCURRENTLY leaves an invalid index behind when it aborts mid-build; `if not
     exists` would then skip the rebuild forever and the attach would find nothing matching to
     use (`harness/db/partition.py`'s `_drop_if_invalid` is the precedent this mirrors). Simulated
@@ -1102,22 +1115,66 @@ def test_ensure_partitioned_concurrent_indexes_rebuilds_an_invalid_child(db_sess
     assert new_oid != stale_oid, "the stale index must be dropped and rebuilt, not reused"
 
 
-def test_ensure_partitioned_concurrent_indexes_retry_cleans_up_its_own_invalid_leftover(db_session):
-    """Round 2 (review New Critical 1). The retried unit has to be "drop-if-invalid, then
-    create" as one callable, not a `_drop_if_invalid_index` that runs once before the loop and a
-    bare `create index concurrently if not exists` inside the retry -- the bare create is a
-    silent no-op over whatever invalid leftover the attempt it is retrying left behind, so the
-    retry would do nothing and the subsequent `ATTACH` would happily attach a still-invalid child
-    (Postgres raises nothing attaching one).
+def test_ensure_partitioned_concurrent_indexes_retry_cleans_up_its_own_invalid_leftover(
+        db_session, raw_events_index_cleanup):
+    """Inject a retriable failure at the CREATE boundary with a real invalid catalog leftover.
 
-    Reproduced with a real lock rather than a timing guess: an invalid, unattached leftover is
-    seeded under the exact name the recipe will use (the precondition the reviewer's sequence
-    starts from -- as if an earlier run had already failed and left it there), a separate
-    connection holds an AccessExclusiveLock on the target partition so the helper's attempt at
-    the partition genuinely hits `lock_timeout`, and `_retry_once` must retry once the lock is
-    released. The attempt that actually runs the DDL -- whichever one that turns out to be --
-    must still notice the invalid leftover, drop it, rebuild, and attach a genuinely new, valid
-    index; not the stale one, and not an invalid one."""
+    Unlike the real-lock test below, no stale index exists before the first CREATE. After that
+    real concurrent build completes, mark its index invalid and raise QueryCanceled to simulate
+    an interrupted build. This deterministically pins the outer drop/create retry: retrying
+    only CREATE would no-op over this exact index and fail the pre-ATTACH validity check.
+    """
+    from psycopg.errors import QueryCanceled
+    from sqlalchemy.exc import OperationalError
+
+    from harness.db import schema as schema_module
+
+    engine = db_session.get_bind()
+    db_session.commit()
+    _reset_raw_source_endpoint_id(engine)
+    target = schema_module._partitions_of(db_session, "raw_responses")[0]
+    child = f"ix_raw_source_endpoint_id{target[len('raw_responses'):]}"
+    db_session.commit()
+    creates: list[str] = []
+    leftover_oids: list[int] = []
+    drops: list[str] = []
+
+    def fail_first_create(conn, cursor, statement, parameters, context, executemany):
+        sql = statement.strip().lower()
+        if sql == f"drop index concurrently if exists {child}":
+            drops.append(sql)
+        if not sql.startswith(f"create index concurrently if not exists {child} on "):
+            return
+        creates.append(sql)
+        if len(creates) == 1:
+            oid = conn.execute(text("select to_regclass(:n)::oid"), {"n": child}).scalar_one()
+            conn.execute(text("update pg_index set indisvalid = false where indexrelid = :oid"),
+                         {"oid": oid})
+            leftover_oids.append(oid)
+            raise OperationalError(statement, parameters, QueryCanceled("injected build cancel"))
+
+    event.listen(engine, "after_cursor_execute", fail_first_create)
+    try:
+        with _autocommit_conn(engine) as conn:
+            schema_module._ensure_partitioned_concurrent_indexes(conn)
+    finally:
+        event.remove(engine, "after_cursor_execute", fail_first_create)
+
+    assert len(creates) == 2, "the combined callable must execute CREATE again"
+    assert len(drops) == 1, "the outer retry must drop the failed attempt's leftover"
+    assert schema_module._index_valid(db_session, child)
+    assert schema_module._index_attached(db_session, "ix_raw_source_endpoint_id", child)
+    assert schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
+    assert db_session.execute(text("select to_regclass(:n)::oid"), {"n": child}).scalar_one() != leftover_oids[0]
+
+
+def test_ensure_partitioned_concurrent_indexes_retries_a_locked_invalid_child_drop(
+        db_session, raw_events_index_cleanup):
+    """A real lock timeout in DROP INDEX CONCURRENTLY retries after the blocker releases.
+
+    This covers the drop's own retry. The sibling injected-build-failure regression covers the
+    outer retry of the combined drop/create callable.
+    """
     from harness.db import schema as schema_module
 
     engine = db_session.get_bind()
@@ -1183,10 +1240,8 @@ def test_ensure_partitioned_concurrent_indexes_retry_cleans_up_its_own_invalid_l
         blocker.close()
 
     assert result.get("ok"), result.get("exc")
-    # The retried unit is "drop-if-invalid, then create" as one callable (that's the whole point
-    # of this test), so the drop -- not the create -- is what actually reaches the lock first and
-    # hits the timeout; it names the stale index, not the partition, in its statement text.
-    assert blocked and stale_child.lower() in blocked[0].lower(), blocked
+    assert blocked and blocked[0].lower().startswith("drop index concurrently"), blocked
+    assert stale_child.lower() in blocked[0].lower(), blocked
 
     assert schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
     assert schema_module._index_attached(db_session, "ix_raw_source_endpoint_id", stale_child)
@@ -1196,7 +1251,9 @@ def test_ensure_partitioned_concurrent_indexes_retry_cleans_up_its_own_invalid_l
     assert new_oid != stale_oid, "a retry must rebuild the stale leftover, not reuse or skip it"
 
 
-def test_ensure_partitioned_concurrent_indexes_reindexes_an_attached_invalid_child(db_session):
+@pytest.mark.parametrize("build_missing", [True, False], ids=["repair-and-build", "repair-only"])
+def test_ensure_partitioned_concurrent_indexes_reindexes_an_attached_invalid_child(
+        db_session, raw_events_index_cleanup, build_missing):
     """Round 2 (review New Critical 1, point 3). An attached-but-invalid child cannot be dropped
     on its own -- Postgres refuses ("cannot drop index ... because index ... requires it") -- so
     the only repair is `reindex index concurrently <child>`, which rebuilds a leaf partition
@@ -1218,6 +1275,11 @@ def test_ensure_partitioned_concurrent_indexes_reindexes_an_attached_invalid_chi
             "create index if not exists ix_raw_source_endpoint_id on only raw_responses "
             "(source, endpoint, id)"))
     db_session.commit()
+    if not build_missing:
+        # All existing partitions must be attached before invalidating the child. Otherwise
+        # their later ATTACH statements hide the missing parent revalidation after REINDEX.
+        with _autocommit_conn(engine) as conn:
+            schema_module._ensure_partitioned_concurrent_indexes(conn)
 
     future_start, future_end = week_bounds(datetime.now(timezone.utc) + timedelta(weeks=6))
     new_partition = schema_module._partition_name("raw_responses", future_start)
@@ -1233,7 +1295,8 @@ def test_ensure_partitioned_concurrent_indexes_reindexes_an_attached_invalid_chi
         child_name = attached[0]
 
         db_session.execute(text(
-            "update pg_index set indisvalid = false where indexrelid = to_regclass(:n)"),
+            "update pg_index set indisvalid = false "
+            "where indexrelid in (to_regclass(:n), 'ix_raw_source_endpoint_id'::regclass)"),
             {"n": child_name})
         db_session.commit()
         assert not schema_module._index_valid(db_session, child_name)
@@ -1261,7 +1324,64 @@ def test_ensure_partitioned_concurrent_indexes_reindexes_an_attached_invalid_chi
         db_session.commit()
 
 
-def test_ensure_partitioned_concurrent_indexes_refuses_to_attach_a_still_invalid_child(db_session, monkeypatch):
+@pytest.mark.parametrize("suppress_attach", [False, True], ids=["revalidate", "refuse-silent-success"])
+def test_ensure_partitioned_concurrent_indexes_revalidates_parent_with_all_children_valid(
+        db_session, raw_events_index_cleanup, suppress_attach):
+    """No build or repair is needed, but an invalid parent still needs ATTACH and verification."""
+    from harness.db import schema as schema_module
+
+    engine = db_session.get_bind()
+    db_session.commit()
+    with _autocommit_conn(engine) as conn:
+        schema_module._ensure_partitioned_concurrent_indexes(conn)
+    for partition in schema_module._partitions_of(db_session, "raw_responses"):
+        assert schema_module._partition_has_attached_child(
+            db_session, "ix_raw_source_endpoint_id", partition)
+    db_session.execute(text(
+        "update pg_index set indisvalid = false "
+        "where indexrelid = 'ix_raw_source_endpoint_id'::regclass"))
+    db_session.commit()
+    seen: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        sql = statement.strip().lower()
+        seen.append(sql)
+        if suppress_attach and sql.startswith("alter index ix_raw_source_endpoint_id attach"):
+            return "select 1", {}
+        return statement, parameters
+
+    event.listen(engine, "before_cursor_execute", capture, retval=True)
+    try:
+        with _autocommit_conn(engine) as conn:
+            prior_timeout = conn.execute(text("show statement_timeout")).scalar_one()
+            if suppress_attach:
+                with pytest.raises(RuntimeError, match="parent still invalid"):
+                    schema_module._ensure_partitioned_concurrent_indexes(conn)
+            else:
+                schema_module._ensure_partitioned_concurrent_indexes(conn)
+            assert conn.execute(text("show statement_timeout")).scalar_one() == prior_timeout
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    assert not any(s.startswith(("create index concurrently", "reindex", "drop index")) for s in seen)
+    assert len([s for s in seen if s.startswith("alter index")]) == 1
+    assert schema_module._index_valid(db_session, "ix_raw_source_endpoint_id") == (not suppress_attach)
+    db_session.commit()
+    # Repair with real ATTACH after the injected no-op, then verify a normal rerun is lock-free.
+    with _autocommit_conn(engine) as conn:
+        schema_module._ensure_partitioned_concurrent_indexes(conn)
+    seen.clear()
+    event.listen(engine, "before_cursor_execute", capture, retval=True)
+    try:
+        with _autocommit_conn(engine) as conn:
+            assert schema_module._ensure_partitioned_concurrent_indexes(conn) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert not any(s.startswith(("create index", "reindex", "alter index", "drop index")) for s in seen)
+
+
+def test_ensure_partitioned_concurrent_indexes_refuses_to_attach_a_still_invalid_child(
+        db_session, monkeypatch, raw_events_index_cleanup):
     """Round 2 (review New Critical 1, point 2). Even if a leftover invalid index is somehow not
     cleaned up before the build (`_drop_if_invalid_index` disabled here, to isolate this check
     from the sibling retry test's belt), the helper must never attach a child it can see is still
@@ -1286,11 +1406,11 @@ def test_ensure_partitioned_concurrent_indexes_refuses_to_attach_a_still_invalid
         {"n": stale_child})
     db_session.commit()
 
-    monkeypatch.setattr(schema_module, "_drop_if_invalid_index", lambda conn, index: None)
-
-    with _autocommit_conn(engine) as conn:
-        with pytest.raises(RuntimeError, match=stale_child):
-            schema_module._ensure_partitioned_concurrent_indexes(conn)
+    with monkeypatch.context() as patch:
+        patch.setattr(schema_module, "_drop_if_invalid_index", lambda conn, index: None)
+        with _autocommit_conn(engine) as conn:
+            with pytest.raises(RuntimeError, match=stale_child):
+                schema_module._ensure_partitioned_concurrent_indexes(conn)
 
     assert not schema_module._index_valid(db_session, stale_child)
     assert not schema_module._index_attached(db_session, "ix_raw_source_endpoint_id", stale_child)

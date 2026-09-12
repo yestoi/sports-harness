@@ -434,7 +434,12 @@ def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str
          attach partition <name>_<suffix>` -- an invalid child is never attached (round 2, review
          New Critical 1: `ATTACH` accepts an invalid child without complaint, and the
          partition-keyed skip would then hide it forever).
-    3. A parent already valid -- every partition already has a valid, attached child -- is
+    3. If the parent is still invalid, re-attach an existing valid child to make Postgres
+       recompute the parent's validity. REINDEX CONCURRENTLY repairs a child without doing
+       that recomputation; a previous repair may also have left every child valid already.
+       Check the parent afterward and raise if it is still invalid, including when there was
+       nothing to build or repair. Never report success with an unusable parent.
+    4. A parent already valid -- every partition already has a valid, attached child -- is
        skipped entirely: no statement runs, so a repeat call takes no lock at all (fix 37's rule
        for a genuine no-op).
 
@@ -491,16 +496,14 @@ def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str
 
         to_build: list[str] = []
         to_repair: list[tuple[str, str]] = []
-        for partition in _partitions_of(conn, table):
+        partitions = _partitions_of(conn, table)
+        for partition in partitions:
             attached = _attached_child(conn, name, partition)
             if attached is None:
                 to_build.append(partition)
             elif not attached[1]:
                 to_repair.append((partition, attached[0]))
             # else: a valid child is already attached -- nothing to do for this partition.
-
-        if not to_build and not to_repair:
-            continue
 
         prior_timeout = conn.execute(text("show statement_timeout")).scalar()
         conn.execute(text(f"set statement_timeout = {BATCH_STATEMENT_TIMEOUT_MS}"))
@@ -530,6 +533,22 @@ def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str
                         f"{child}: still invalid after CREATE INDEX CONCURRENTLY, refusing to attach")
                 _retry_once(conn, lambda name=name, child=child: conn.execute(text(
                     f"alter index {name} attach partition {child}")), f"attach {child}")
+
+            if not _index_valid(conn, name):
+                # PG16 accepts an already-attached child here and rechecks the parent.
+                # Do this even when both work lists were empty: a prior child-only REINDEX
+                # can leave all children valid and the parent invalid indefinitely.
+                for partition in partitions:
+                    attached = _attached_child(conn, name, partition)
+                    if attached is not None and attached[1]:
+                        child = attached[0]
+                        _retry_once(conn, lambda name=name, child=child: conn.execute(text(
+                            f"alter index {name} attach partition {child}")),
+                            f"revalidate {name} via {child}")
+                        break
+                if not _index_valid(conn, name):
+                    raise RuntimeError(
+                        f"{name}: parent still invalid after partition index recovery")
         finally:
             conn.execute(text(f"set statement_timeout = '{prior_timeout}'"))
     return skipped
