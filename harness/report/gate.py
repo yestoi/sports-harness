@@ -208,6 +208,13 @@ def criteria_hash(criteria: tuple[Criterion, ...] | None = None) -> str:
 
 #: Where a predicate may be inserted. A marker sits on its own line inside a `where` clause,
 #: after the last unconditional predicate, with the alias it names in scope.
+#:
+#: The aliases are hard-coded, so a new marker is only correct where the alias means the table
+#: the predicate assumes: `o` is `orders` in every constant that carries an order marker, but
+#: `s` is `signals` only in `_STALENESS` -- in `_SETTLEMENT_COVERAGE` the same letter is
+#: `venue_settlements`, which has no `run_id`. Adding `-- eligibility:run` there would compile
+#: against the wrong table or not at all, so `tests/test_gate_eligibility.py` runs `explain`
+#: over every marked constant with both bounds set.
 _MARKER_ORDER = "-- eligibility:order"
 _MARKER_RUN = "-- eligibility:run"
 _PREDICATE_ORDER = "and o.id >= :eligible_from_order"
