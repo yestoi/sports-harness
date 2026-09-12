@@ -1560,3 +1560,13 @@ Times are America/Chicago.
 - Anomalies: none new. Fix 40's row still waits on the listener (fix 44 in the wave).
 - Carried forward: 6B may now be planned (gate "6A done" met); it queues behind the wave deploy and 6C wave 2.
 - Next: main's suite; the 23:00 CT wave now carries 6A + 6C wave 1 + fix 42 + fix 44 (full recipe from main 2d1ed62); wakeup 22:45 CT (cron 4d16b211); 6C T8 in review soon, T10 holding its suite for a free slot, then T11; the 6A phase report + U7 bundle/push after the deploy verify.
+
+## 130. operate - anomaly: second NAS starvation incident in a game window - 2026-09-11 19:46 CT
+
+- Orient: n/a (an anomaly noticed during the 6B plan-next inputs; no unit action).
+- Observed (NAS reads 19:38-19:44 CT, inside the Friday game window): `exec.loop_ms` 19:00 hour p50 19.2 s, p95 227 s, max 288 s (cadence 15 s); `exec.loops_skipped` 61 in the hour (63 in Thursday's 19:00 hour); 23 executor tape reads cancelled by the 30 s statement timeout in 40 minutes (`tape read failed for KXNCAAFTOTAL-26SEP12APPECU-57 ... QueryCanceled`), handled by fix 22 (the ticker sits the loop out). EXPLAIN of the failing read uses `orderbook_events_y2026w37_ticker_id_idx` at cost 414: the plan is right; the box is IO-starved (load 4.97, IO wait 23-28 %, swap 3.0 GB used, 419 MB free, an autovacuum ANALYZE of the w37 partition 55 s in DataFileRead, ~650 orderbook events/s). Open orders 0, so no live fill is affected; the counterfactual track lags on those tickers. Pricing (`app-run`) shows no timeouts.
+- Trigger: the Mac mini trigger was met and flagged 2026-09-10 20:10 CT (journal 101); this is the "second starvation incident" clause met again, with the daytime loop p50 drifting from ~4 s (09-09) to 7-10 s (09-11) under 7,998 cancelled/expired orders still simulated every loop (`nw_done = false`). Nothing for the loop to move (the user decides the host, 6E); this entry and the 6A phase report carry the flag.
+- Result: done (recorded)
+- Rulings: (1) No hotfix: the query plan is correct and the timeouts are handled; the cost lives in the counterfactual backlog (6B: cancelled orders stay working while `nw_done=false`; 6D: holding/capacity policy) and the host (6E) - cost if wrong: counterfactual coverage on game-day tickers stays partial until 6B. (2) The executor-load numbers go into the 6B design inputs (live-facts.txt).
+- Carried forward: 6E inventory (user); 6B/6D design inputs.
+- Next: unchanged (main's suite; the 23:00 CT wave; 6C T8/T10; 6B plan-next running).
