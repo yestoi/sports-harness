@@ -248,9 +248,50 @@ def test_no_fair_reason_is_no_sharp_line_when_there_is_no_pinnacle_backed_line(d
     assert row.no_fair_reason == "no_sharp_line"
 
 
-def test_no_fair_reason_is_pricing_error_when_the_game_raised(db_session, monkeypatch, env_settings):
-    """A game whose fair-value computation raised and was rolled back has no FairValue rows
-    at all for this run; its gap rows must say so was a pricing error, not a missing line."""
+def test_no_fair_reason_is_pricing_error_when_the_direct_pass_raised(
+        db_session, monkeypatch, env_settings):
+    """A game whose direct pass raised and was rolled back has no FairValue rows at all for this
+    run; its gap rows must say that was a pricing error, not a missing line."""
+    from harness.pricing import fair as fair_mod
+
+    game, run, markets = _seed(db_session)
+
+    def flaky(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fair_mod, "direct_fair", flaky)
+
+    counts = compute_fair_values(db_session, run.id, NOW, env_settings)
+    assert counts.direct == 0
+    assert counts.derived == 0
+    assert counts.errors == 1
+    assert counts.errored_game_ids == frozenset({game.id})
+
+    _add_quotes(db_session, run.id, markets, raw_id_start=9000, fetched_at=NOW)
+    build_gap_snapshots(db_session, run.id, NOW, TZ, errored_game_ids=counts.errored_game_ids)
+
+    rows = db_session.query(MarketGapSnapshot).filter_by(run_id=run.id).all()
+    ml_home_market = next(m for m in markets if m.ticker == "KXNFL-G-1")
+    ml_home_row = next(r for r in rows if r.venue_market_id == ml_home_market.id)
+    assert ml_home_row.fair_p is None
+    assert ml_home_row.no_fair_reason == "pricing_error"
+
+    # the unmapped-market-type row keeps its own reason even when the whole game errored.
+    draw_market = next(m for m in markets if m.ticker == "KXNFL-G-8")
+    draw_row = next(r for r in rows if r.venue_market_id == draw_market.id)
+    assert draw_row.no_fair_reason == "unmapped_market_type"
+
+
+def test_a_derived_pass_that_raises_leaves_the_direct_rows_standing(
+        db_session, monkeypatch, env_settings):
+    """Fix 48 narrowed the rollback to the phase that failed.
+
+    The two passes have to be separately committable -- the pipeline scores the gate variant on
+    the direct rows before the derived pass runs, so a derived failure could not take them back
+    even if it wanted to. So a game whose margin model raises keeps every direct fair value it
+    earned, and only the shapes that were waiting on that model read `pricing_error`. Before the
+    split the whole game rolled back and every one of its gap rows said `pricing_error`.
+    """
     from harness.pricing.margin_model import MarginModel
 
     game, run, markets = _seed(db_session)
@@ -261,7 +302,7 @@ def test_no_fair_reason_is_pricing_error_when_the_game_raised(db_session, monkey
     monkeypatch.setattr(MarginModel, "from_main_lines", classmethod(flaky))
 
     counts = compute_fair_values(db_session, run.id, NOW, env_settings)
-    assert counts.direct == 0
+    assert counts.direct == 5
     assert counts.derived == 0
     assert counts.errors == 1
     assert counts.errored_game_ids == frozenset({game.id})
@@ -272,10 +313,13 @@ def test_no_fair_reason_is_pricing_error_when_the_game_raised(db_session, monkey
     rows = db_session.query(MarketGapSnapshot).filter_by(run_id=run.id).all()
     ml_home_market = next(m for m in markets if m.ticker == "KXNFL-G-1")
     ml_home_row = next(r for r in rows if r.venue_market_id == ml_home_market.id)
-    assert ml_home_row.fair_p is None
-    assert ml_home_row.no_fair_reason == "pricing_error"
+    assert ml_home_row.fair_p is not None
+    assert ml_home_row.fair_source == "direct"
+    assert ml_home_row.no_fair_reason is None
 
-    # the unmapped-market-type row keeps its own reason even when the whole game errored.
+    # the two shapes that had no sharp line of their own are the ones the failure cost.
+    assert sum(1 for r in rows if r.no_fair_reason == "pricing_error") == 2
+
     draw_market = next(m for m in markets if m.ticker == "KXNFL-G-8")
     draw_row = next(r for r in rows if r.venue_market_id == draw_market.id)
     assert draw_row.no_fair_reason == "unmapped_market_type"

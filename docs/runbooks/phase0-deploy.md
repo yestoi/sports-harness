@@ -148,6 +148,18 @@ settlement or benchmark row.
 - **`harness exec-once`** is documented above with `app-exec`; it is safe to run beside the
   running service only because the advisory lock makes the extra invocation a no-op
   (`locked=False`, nothing written).
+- **`harness price-once [--run-id N]`** runs the pricing pass for one run and prints what each
+  stage cost. The pass has six stages and spends `price_budget_s` in that order: direct fair
+  values (always, budget or not), gap snapshots over the markets those price, the variants whose
+  `sources_allowed` is satisfied by direct rows (the gate variant first, then the primary), the
+  margin-model derived fair values, gap snapshots for the markets the first call left alone, and
+  finally the derived consumers. Before fix 48 (2026-09-12) direct and derived fair values were
+  one stage ahead of everything else, and on a Saturday slate that stage alone outlasted the
+  budget — 172 consecutive runs recorded `gaps: 0, variants_run: [], budget_exhausted: true` and
+  the harness produced no signal for eight hours. The same per-stage costs are stored on every
+  tick at `runs.notes->'pricing'->'stages'`, so read those first when a run produced no signal:
+  a stage marked `skipped` is one the budget never reached. `fair_derived_skipped: true` beside
+  a `fair_derived` of 0 means the derived pass did not run, as against running and finding none.
 - **`harness replay --from-run A --to-run B --variant NAME [--file PATH] --execute`** drives the
   executor over a 15-second grid across `[pricing_clock_for_run(A), pricing_clock_for_run(B)]`
   instead of one pass per run, so it reproduces paper orders and fills the same way the live

@@ -5,7 +5,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
 import yaml
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -61,6 +61,22 @@ _FAIR_COLUMNS = (FairValue.id, *_KEY_COLUMNS, FairValue.fair_p, FairValue.n_grou
 _PREV_COLUMNS = (*_KEY_COLUMNS, FairValue.fair_p, FairValue.created_at)
 
 
+#: Fix 48's three ways to call this.
+#:
+#: "all" is what it always did and what every caller outside the pipeline still wants: one row
+#: for every matched market this run quoted. The pipeline splits it, because it now builds gap
+#: snapshots twice -- once on the direct fair values, so the gate variant and the primary can be
+#: scored before the 45 s budget is gone, and once more after the derived pass.
+#:
+#: "direct" writes a row only for a market whose shape already has a fair value; everything else
+#: (a shape still waiting on the margin model, an unmapped market type, a game with no sharp
+#: line at all) is left for the second call. "derived" writes the rest. The split is that way
+#: round, rather than "everything now, top up later", because `market_gap_snapshots` is unique
+#: on (run_id, venue_market_id) and the insert does nothing on conflict: a row written in the
+#: first call with `fair_p` still NULL could never be corrected by the second one.
+GAP_PHASES = ("all", "direct", "derived")
+
+
 def build_gap_snapshots(
     session: Session,
     run_id: int,
@@ -68,7 +84,10 @@ def build_gap_snapshots(
     tz: str,
     fee_model: FeeModel = KALSHI_FOOTBALL,
     errored_game_ids: frozenset[int] = frozenset(),
+    phase: str = "all",
 ) -> int:
+    if phase not in GAP_PHASES:
+        raise ValueError(f"phase must be one of {GAP_PHASES}, got {phase!r}")
     tzinfo = ZoneInfo(tz)
     popularity = load_popularity()
 
@@ -89,6 +108,17 @@ def build_gap_snapshots(
             Game.kickoff_utc > window_start,
         )
     )
+    if phase == "derived":
+        # The second call's bound (fix 48): skip every market the first call already snapshotted,
+        # rather than building each row again only for the insert to do nothing on conflict. The
+        # anti-join rides `uq_gap_run_market (run_id, venue_market_id)`, the same unique index
+        # that constraint uses.
+        stmt = stmt.where(~exists(
+            select(MarketGapSnapshot.id).where(
+                MarketGapSnapshot.run_id == run_id,
+                MarketGapSnapshot.venue_market_id == VenueQuote.venue_market_id,
+            )
+        ))
     rows = session.execute(stmt).all()
     if not rows:
         return 0
@@ -142,6 +172,11 @@ def build_gap_snapshots(
             fair = fair_by_key.get((game.id, market_type, team_id, side, threshold, "direct")) or fair_by_key.get(
                 (game.id, market_type, team_id, side, threshold, "derived")
             )
+
+        if phase == "direct" and fair is None:
+            # Nothing to say about this market yet: it may still gain a derived fair value, and
+            # a row written now could not be corrected once it had. The "derived" call takes it.
+            continue
 
         prev_fair = None
         if fair is not None:
