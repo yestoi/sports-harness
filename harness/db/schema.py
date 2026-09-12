@@ -354,27 +354,44 @@ def _index_attached(conn: Connection, parent: str, child: str) -> bool:
         {"parent": parent, "child": child}).first() is not None
 
 
-def _partition_has_attached_child(conn: Connection, parent: str, partition: str) -> bool:
-    """Whether `partition` already carries *any* index attached as a partition of `parent` --
-    asked by partition, not by the name the recipe would itself choose (review Critical 1, fix
-    45 round 1).
+def _attached_child(conn: Connection, parent: str, partition: str) -> tuple[str, bool] | None:
+    """The `(name, indisvalid)` of whatever index is already attached to `parent` as
+    `partition`'s child, or `None` if nothing is attached yet.
 
-    A partition created while the parent index already exists is indexed and attached by
-    Postgres itself, automatically, under Postgres's own default name
-    (`<partition>_source_endpoint_id_idx`, not `<parent>_<suffix>`). The name-keyed check this
-    replaced never recognised that child, so the loop built a second full index on the same
-    partition and then issued an `ALTER INDEX ... ATTACH` that Postgres refuses ("Another index
-    is already attached for partition ..."), leaving a duplicate index and the parent
-    permanently invalid. Asking by partition instead makes the recipe agnostic to who built the
-    child or what it is named.
+    Asked by *partition*, not by the name the recipe would itself choose (review Critical 1, fix
+    45 round 1): a partition created while the parent index already exists is indexed and
+    attached by Postgres itself, automatically, under Postgres's own default name
+    (`<partition>_source_endpoint_id_idx`, not `<parent>_<suffix>`). A name-keyed check does not
+    recognise that child, so the loop would build a second full index on the same partition and
+    then have its own `ALTER INDEX ... ATTACH` refused ("Another index is already attached for
+    partition ..."), leaving a duplicate index and the parent permanently invalid. The name is
+    returned (not just whether one exists) because the repair path for an attached-but-invalid
+    child (review New Critical 1, round 2) has to reindex it under whatever name it actually
+    carries -- which may be Postgres's own default, or this recipe's, depending on how it came to
+    exist.
     """
-    return conn.execute(text(
-        "select 1 from pg_inherits i "
+    row = conn.execute(text(
+        "select c.relname, x.indisvalid from pg_inherits i "
         "join pg_index x on x.indexrelid = i.inhrelid "
+        "join pg_class c on c.oid = i.inhrelid "
         "join pg_class p on p.oid = i.inhparent "
         "join pg_class t on t.oid = x.indrelid "
         "where p.relname = :parent and t.relname = :partition"),
-        {"parent": parent, "partition": partition}).first() is not None
+        {"parent": parent, "partition": partition}).first()
+    return (row[0], row[1]) if row is not None else None
+
+
+def _partition_has_attached_child(conn: Connection, parent: str, partition: str) -> bool:
+    """Whether `partition` already carries a *valid*, attached child of `parent`.
+
+    Round 2 (review New Critical 1) adds the validity requirement: an attached-but-invalid child
+    (left by an interrupted build, however it came to be attached) must not be mistaken for a
+    finished partition -- the loop would filter it out forever, silently, with the parent
+    permanently invalid and no exception or log line to say so. `_attached_child` is the richer
+    query this is a boolean, valid-only view of.
+    """
+    attached = _attached_child(conn, parent, partition)
+    return attached is not None and attached[1]
 
 
 def _drop_if_invalid_index(conn: Connection, index: str) -> None:
@@ -382,13 +399,20 @@ def _drop_if_invalid_index(conn: Connection, index: str) -> None:
     invalid index behind when it fails, and `if not exists` would then skip the rebuild and leave
     the attach with nothing matching to find. Not imported from `partition.py` -- that module
     already imports from this one, and a schema helper needing a one-off recovery step from the
-    one-off migration script would run the dependency the wrong way."""
+    one-off migration script would run the dependency the wrong way.
+
+    Only for a child that was never attached: an attached index cannot be dropped on its own
+    (Postgres refuses -- "cannot drop index ... because index ... requires it"); the repair path
+    for one of those is `_ensure_partitioned_concurrent_indexes`'s `REINDEX INDEX CONCURRENTLY`,
+    not this function.
+    """
     invalid = conn.execute(text(
         "select 1 from pg_index i join pg_class c on c.oid = i.indexrelid "
         "where c.relname = :n and not i.indisvalid"), {"n": index}).first()
     if invalid:
         log.warning("dropping %s: left invalid by a failed concurrent build", index)
-        conn.execute(text(f"drop index concurrently if exists {index}"))
+        _retry_once(conn, lambda index=index: conn.execute(
+            text(f"drop index concurrently if exists {index}")), f"drop {index}")
 
 
 def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str] | None = None) -> int:
@@ -396,19 +420,23 @@ def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str
     recipe Postgres 16 allows for a CONCURRENTLY-equivalent build on one:
 
     1. `create index if not exists <name> on only <table> (<cols>)` -- the parent, metadata-only
-       and invalid until every partition below has a matching, attached child.
-    2. For every current partition (`pg_inherits`): skip a partition that already carries an
-       attached child of this parent -- asked by *partition*, not by the name this recipe would
-       itself choose (review Critical 1, fix 45 round 1): a partition created while the parent
-       already exists is indexed and attached by Postgres itself, under Postgres's own default
-       name, and a name-keyed check would miss that child, build a second one, and then have its
-       `ATTACH` refused, wedging the parent invalid permanently. Otherwise: drop a child left
-       invalid by an earlier aborted build under the name this recipe would use, then
-       `create index concurrently if not exists <name>_<suffix> on <partition> (<cols>)`, then
-       `alter index <name> attach partition <name>_<suffix>`.
-    3. A parent already valid -- every partition already has an attached child -- is skipped
-       entirely: no statement runs, so a repeat call takes no lock at all (fix 37's rule for a
-       genuine no-op).
+       and invalid until every partition below has a matching, valid, attached child.
+    2. For every current partition (`pg_inherits`), by `_attached_child`:
+       - a valid attached child already there: nothing to do.
+       - an *invalid* attached child (an earlier interrupted build, however it came to be
+         attached): `reindex index concurrently <child>` repairs it in place -- the only option,
+         since an attached partition index cannot be dropped on its own (round 2, review New
+         Critical 1). If it is still invalid afterward, raise loudly rather than silently
+         treating the partition as done.
+       - nothing attached: drop a same-named leftover invalid from an earlier aborted build (see
+         below), then `create index concurrently if not exists <name>_<suffix> on <partition>
+         (<cols>)`, then, only if that build actually produced a valid index, `alter index <name>
+         attach partition <name>_<suffix>` -- an invalid child is never attached (round 2, review
+         New Critical 1: `ATTACH` accepts an invalid child without complaint, and the
+         partition-keyed skip would then hide it forever).
+    3. A parent already valid -- every partition already has a valid, attached child -- is
+       skipped entirely: no statement runs, so a repeat call takes no lock at all (fix 37's rule
+       for a genuine no-op).
 
     Every statement goes through `_retry_once`, the same as every other DDL statement
     `create_schema` runs (review Important 1): both callers set `lock_timeout = 5s`
@@ -417,11 +445,25 @@ def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str
     0007 can build this index while the recorder is still inserting into `raw_responses`, and a
     single lock timeout must not abort the whole run.
 
-    The per-partition CONCURRENTLY builds get their own generous `statement_timeout` around them,
-    restored to whatever the caller had once they finish (review Important 2): a concurrent build
-    reads the partition heap twice and waits for every other open transaction, and whichever
-    caller got here first may have set a much tighter ceiling for its *own* purposes -- the
-    migration path's 300s (`migrations/env.py`) is a third of `init-db`'s 900s
+    Round 2 (review New Critical 1): wrapping the CONCURRENTLY build alone in `_retry_once` opened
+    a worse hole than the one it closed. `create index concurrently if not exists` is a silent
+    no-op over an already-existing name, invalid or not -- so a retry that re-ran only the create
+    statement did nothing when the first attempt's failure (any `LOCK_SQLSTATES` code, including
+    `57014 query_canceled` from a `statement_timeout` cancel) left an invalid leftover under that
+    name behind. The retried *attach* then happily attached that still-invalid child (Postgres
+    raises no error attaching an invalid index), the parent stayed invalid, and the
+    partition-keyed skip above -- which did not check validity before this round -- hid the whole
+    thing from every later run: no exception, no log line, the index silently useless forever. The
+    fix is two-layered: the retried unit is "drop-if-invalid, then create" as one callable, so a
+    retry rebuilds rather than no-ops; and the child's own validity is checked before it is ever
+    attached, with a loud exception if it is not, rather than trusting a successful `ALTER INDEX`
+    to mean the child was any good.
+
+    The per-partition CONCURRENTLY and REINDEX CONCURRENTLY builds get their own generous
+    `statement_timeout` around them, restored to whatever the caller had once they finish (review
+    Important 2): both read the partition heap and wait for every other open transaction, and
+    whichever caller got here first may have set a much tighter ceiling for its *own* purposes --
+    the migration path's 300s (`migrations/env.py`) is a third of `init-db`'s 900s
     (`BATCH_STATEMENT_TIMEOUT_MS`, `harness/db/engine.py`) -- neither of which was chosen with a
     2.2GB+ partition under this host's documented IO starvation (journals 130/132/134) in mind.
     Using `BATCH_STATEMENT_TIMEOUT_MS` here, explicitly, means the ceiling is the same regardless
@@ -446,20 +488,46 @@ def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str
             continue
         _retry_once(conn, lambda name=name, table=table, cols=cols: conn.execute(text(
             f"create index if not exists {name} on only {table} {cols}")), f"index {name} (parent)")
-        partitions = [p for p in _partitions_of(conn, table)
-                     if not _partition_has_attached_child(conn, name, p)]
-        if not partitions:
+
+        to_build: list[str] = []
+        to_repair: list[tuple[str, str]] = []
+        for partition in _partitions_of(conn, table):
+            attached = _attached_child(conn, name, partition)
+            if attached is None:
+                to_build.append(partition)
+            elif not attached[1]:
+                to_repair.append((partition, attached[0]))
+            # else: a valid child is already attached -- nothing to do for this partition.
+
+        if not to_build and not to_repair:
             continue
+
         prior_timeout = conn.execute(text("show statement_timeout")).scalar()
         conn.execute(text(f"set statement_timeout = {BATCH_STATEMENT_TIMEOUT_MS}"))
         try:
-            for partition in partitions:
+            for partition, child_name in to_repair:
+                log.warning("repairing invalid attached child %s on %s", child_name, partition)
+                _retry_once(conn, lambda child_name=child_name: conn.execute(
+                    text(f"reindex index concurrently {child_name}")), f"reindex {child_name}")
+                if not _index_valid(conn, child_name):
+                    raise RuntimeError(
+                        f"{child_name}: still invalid after REINDEX INDEX CONCURRENTLY")
+
+            for partition in to_build:
                 child = f"{name}{partition[len(table):]}"
-                _drop_if_invalid_index(conn, child)
+
+                def _build(conn=conn, child=child, partition=partition, cols=cols):
+                    # The retried unit, deliberately: a retry that ran only the create statement
+                    # would no-op over an invalid leftover from the attempt it is retrying.
+                    _drop_if_invalid_index(conn, child)
+                    conn.execute(text(
+                        f"create index concurrently if not exists {child} on {partition} {cols}"))
+
                 log.info("building %s concurrently on %s", child, partition)
-                _retry_once(conn, lambda child=child, partition=partition: conn.execute(text(
-                    f"create index concurrently if not exists {child} on {partition} {cols}")),
-                    f"index {child}")
+                _retry_once(conn, _build, f"index {child}")
+                if not _index_valid(conn, child):
+                    raise RuntimeError(
+                        f"{child}: still invalid after CREATE INDEX CONCURRENTLY, refusing to attach")
                 _retry_once(conn, lambda name=name, child=child: conn.execute(text(
                     f"alter index {name} attach partition {child}")), f"attach {child}")
         finally:
