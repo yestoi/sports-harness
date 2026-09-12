@@ -19,8 +19,8 @@ value differs from the newest stored row for that pair -- the rule `game_score_e
 uses. "The newest weather snapshot before the signal", which is what the veto asks for, is
 answered identically by a change log.
 
-**Fetch order is oldest-snapshot-first** (ruling A-M12), so a budget that binds does not starve
-the same game every hour.
+**Fetch order is oldest-successful-fetch-first** (ruling A-M12), so a budget that binds
+does not starve the same game every hour.
 """
 import logging
 import re
@@ -75,10 +75,19 @@ class GameVenue:
     newest_fetched_at: datetime | None
 
 
+# Successful hourly fetches have their own clock: refreshing an unchanged forecast must
+# not move its evidence timestamp beyond an earlier signal's as-of boundary. The verify
+# freshness check uses this same source_state key and falls back to legacy snapshots.
+FETCH_STATE_PREFIX = "nws_hourly:"
+
+
 _DUE = text("""
     select g.id, g.sport, g.home_team_id, g.away_team_id, g.kickoff_utc,
-           (select max(w.fetched_at) from weather_snapshots w where w.game_id = g.id) as newest
+           greatest(s.last_fetched_at,
+                    (select max(w.fetched_at) from weather_snapshots w
+                     where w.game_id = g.id)) as newest
     from games g
+    left join source_state s on s.key = :state_prefix || g.id::text
     where g.kickoff_utc >= :now and g.kickoff_utc <= :horizon
     order by newest nulls first, g.kickoff_utc
 """)
@@ -93,8 +102,13 @@ _NEWEST_PERIODS = text("""
 
 
 def games_due(session: Session, now: datetime) -> list[GameVenue]:
-    """Every game inside 72 hours whose newest snapshot is at least an hour old, oldest first."""
-    rows = session.execute(_DUE, {"now": now, "horizon": now + FORECAST_WINDOW}).all()
+    """Games inside 72 hours whose last successful forecast fetch is an hour old.
+
+    Legacy snapshot timestamps seed the clock until a successful fetch records its own mark.
+    These mutable scheduling marks are never used by historical forecast readers.
+    """
+    rows = session.execute(_DUE, {"now": now, "horizon": now + FORECAST_WINDOW,
+                                  "state_prefix": FETCH_STATE_PREFIX}).all()
     return [GameVenue(r.id, r.sport, r.home_team_id, r.away_team_id, r.kickoff_utc, r.newest)
             for r in rows
             if r.newest is None or now - r.newest >= REFETCH_AFTER]
@@ -231,10 +245,16 @@ def _one_game(session: Session, run_id: int, client, game: GameVenue, venue, now
         counts["skipped"][str(game.game_id)] = "schema pin"
         return
 
+    window = periods_in_window(parsed, game.kickoff_utc)
+    if not window:
+        # A valid response without any relevant forecast is not fresh game evidence.
+        counts["skipped"][str(game.game_id)] = "no forecast periods"
+        return
+
     stored = {r.period_start: dict(r._mapping)
               for r in session.execute(_NEWEST_PERIODS, {"game_id": game.game_id})}
     written = 0
-    for row in periods_in_window(parsed, game.kickoff_utc):
+    for row in window:
         if not _changed(stored.get(row["period_start"]), row):
             continue
         session.add(WeatherSnapshot(run_id=run_id, game_id=game.game_id,
@@ -247,3 +267,6 @@ def _one_game(session: Session, run_id: int, client, game: GameVenue, venue, now
         # must see rows this pass just wrote, not wait on a later commit elsewhere.
         session.flush()
     counts["written"] += written
+    # Advance only after a usable response and all changed periods were written. Keep this
+    # in the same transaction as the evidence; HTTP/schema/points errors remain due.
+    store.set_source_state(session, f"{FETCH_STATE_PREFIX}{game.game_id}", result.fetched_at)

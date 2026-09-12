@@ -4,12 +4,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
+import pytest
 import respx
 from freezegun import freeze_time
 from sqlalchemy import text
 
 from harness.db.models import Game, WeatherPoint
 from harness.feeds.nws import NwsClient
+from harness.recorder.store import get_source_state, set_source_state
+from harness.research.features import _NEWEST_WEATHER
 from harness.weather.snapshots import games_due, run_weather_source
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -81,7 +84,7 @@ def test_a_dome_is_never_fetched_and_never_gets_a_points_row(db_session, env_set
     dome = Stadium("ncaaf", 77, "DOME", "A Dome", 30.0, -90.0, "dome", "https://example.org")
     monkeypatch.setattr(module, "stadium_for", lambda *a, **k: dome)
     _seed_game(db_session, 1, 77, hours_ahead=10)
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
     finally:
@@ -98,7 +101,7 @@ def test_a_game_with_no_stadium_row_is_skipped_with_its_reason(db_session, env_s
 
     monkeypatch.setattr(module, "stadium_for", lambda *a, **k: None)
     _seed_game(db_session, 1, 12345, hours_ahead=10)
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
     finally:
@@ -119,7 +122,7 @@ def test_a_retractable_roof_is_fetched_and_labelled(db_session, env_settings, mo
     _stub_hourly(POINTS["properties"]["forecastHourly"])
     _seed_game(db_session, 1, 22, hours_ahead=10, sport="nfl")
 
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
     finally:
@@ -146,18 +149,32 @@ def test_a_second_pass_writes_nothing_when_the_forecast_has_not_changed(db_sessi
     _stub_hourly(POINTS["properties"]["forecastHourly"])
     _seed_game(db_session, 1, 99, hours_ahead=10)
 
-    client = NwsClient(env_settings)
+    fetched_at = NOW
+    client = NwsClient(env_settings, clock=lambda: fetched_at)
     try:
         first = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
-        db_session.execute(text("update weather_snapshots set fetched_at = fetched_at "
-                                "- interval '2 hours'"))
-        db_session.flush()
+        fetched_at = NOW + timedelta(hours=2)
         second = run_weather_source(db_session, 1, client, env_settings,
                                     NOW + timedelta(hours=2), _Budget(60), {})
+        immediate = run_weather_source(db_session, 1, client, env_settings,
+                                       fetched_at + timedelta(seconds=30), _Budget(60), {})
+        assert immediate["due"] == immediate["fetched"] == immediate["written"] == 0
     finally:
         client.close()
     assert first["written"] > 0
     assert second["written"] == 0 and second["fetched"] == 1
+    assert games_due(db_session, fetched_at) == []
+    assert games_due(db_session, fetched_at + timedelta(minutes=59, seconds=59)) == []
+    assert [g.game_id for g in games_due(db_session, fetched_at + timedelta(hours=1))] == [1]
+    timestamps = db_session.execute(
+        text("select distinct fetched_at from weather_snapshots")).scalars().all()
+    assert timestamps == [NOW]
+    assert get_source_state(db_session, "nws_hourly:1") == fetched_at
+    # The actual research as-of query still sees the original evidence after a later refresh.
+    assert db_session.execute(_NEWEST_WEATHER, {
+        "game_id": 1, "as_of": NOW + timedelta(hours=1)}).one().fetched_at == NOW
+    assert db_session.execute(_NEWEST_WEATHER, {
+        "game_id": 1, "as_of": NOW - timedelta(seconds=1)}).first() is None
 
 
 @respx.mock
@@ -178,17 +195,29 @@ def test_a_changed_temperature_appends_a_row(db_session, env_settings, monkeypat
         side_effect=[httpx.Response(200, json=HOURLY), httpx.Response(200, json=warmer)])
     _seed_game(db_session, 1, 99, hours_ahead=10)
 
-    client = NwsClient(env_settings)
+    fetched_at = NOW
+    client = NwsClient(env_settings, clock=lambda: fetched_at)
     try:
         first = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
-        db_session.execute(text("update weather_snapshots set fetched_at = fetched_at "
-                                "- interval '2 hours'"))
-        db_session.flush()
+        fetched_at = NOW + timedelta(hours=2)
         second = run_weather_source(db_session, 1, client, env_settings,
                                     NOW + timedelta(hours=2), _Budget(60), {})
     finally:
         client.close()
-    assert second["written"] == first["written"]
+    assert second["written"] == first["written"] > 0
+    assert games_due(db_session, fetched_at) == []
+    old = db_session.execute(_NEWEST_WEATHER, {
+        "game_id": 1, "as_of": NOW + timedelta(hours=1)}).one()
+    latest = db_session.execute(_NEWEST_WEATHER, {
+        "game_id": 1, "as_of": fetched_at}).one()
+    assert old.fetched_at == NOW
+    assert latest.fetched_at == fetched_at
+    # All periods changed; the later data must not appear in the earlier as-of query.
+    old_period = db_session.execute(text(
+        "select temperature_f from weather_snapshots where game_id = 1 "
+        "and fetched_at = :now and period_start = :period"),
+        {"now": NOW, "period": latest.period_start}).scalar_one()
+    assert latest.temperature_f == old_period + 5
 
 
 @respx.mock
@@ -210,7 +239,7 @@ def test_a_404_on_the_hourly_url_re_resolves_points_once(db_session, env_setting
                                 fetched_at=NOW - timedelta(days=2)))
     db_session.flush()
 
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
     finally:
@@ -238,7 +267,7 @@ def test_a_schema_pin_failure_is_skipped_with_its_reason(db_session, env_setting
         return_value=httpx.Response(200, json=celsius))
     _seed_game(db_session, 1, 99, hours_ahead=10)
 
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
     finally:
@@ -263,7 +292,7 @@ def test_a_non_200_forecast_is_skipped_with_its_http_status(db_session, env_sett
     respx.get(POINTS["properties"]["forecastHourly"]).mock(return_value=httpx.Response(500))
     _seed_game(db_session, 1, 99, hours_ahead=10)
 
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
     finally:
@@ -288,7 +317,7 @@ def test_a_persistent_points_failure_is_skipped_and_still_counts_as_fetched(
         return_value=httpx.Response(500))
     _seed_game(db_session, 1, 99, hours_ahead=10)
 
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
     finally:
@@ -296,6 +325,8 @@ def test_a_persistent_points_failure_is_skipped_and_still_counts_as_fetched(
     assert counts["skipped"] == {"1": "points"}
     assert counts["fetched"] == 1
     assert respx.calls.call_count == 1
+    assert get_source_state(db_session, "nws_hourly:1") is None
+    assert [g.game_id for g in games_due(db_session, NOW)] == [1]
 
 
 @respx.mock
@@ -334,7 +365,7 @@ def test_the_budget_is_checked_before_the_re_resolve_retry(db_session, env_setti
                                 fetched_at=NOW - timedelta(days=2)))
     db_session.flush()
 
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _BudgetOnce(), {})
     finally:
@@ -358,7 +389,7 @@ def test_the_budget_stops_the_pass_between_games(db_session, env_settings, monke
         _seed_game(db_session, game_id, team, hours_ahead=10)
     _stub_hourly(POINTS["properties"]["forecastHourly"])
 
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(0.0), {})
     finally:
@@ -395,7 +426,7 @@ def test_the_budget_stops_the_pass_after_the_first_game(db_session, env_settings
         _seed_game(db_session, game_id, team, hours_ahead=10)
     _stub_hourly(POINTS["properties"]["forecastHourly"])
 
-    client = NwsClient(env_settings)
+    client = NwsClient(env_settings, clock=lambda: NOW)
     try:
         counts = run_weather_source(db_session, 1, client, env_settings, NOW, _BudgetFor(1), {})
     finally:
@@ -404,3 +435,54 @@ def test_the_budget_stops_the_pass_after_the_first_game(db_session, env_settings
     assert counts["fetched"] == 1 and counts["budget_exhausted"] is True
     assert db_session.execute(
         text("select count(distinct game_id) from weather_snapshots")).scalar() == 1
+
+
+@pytest.mark.parametrize("failure", ["http", "schema", "no periods", "exception"])
+@respx.mock
+def test_failed_refresh_preserves_success_mark_and_remains_due(
+        db_session, env_settings, monkeypatch, failure):
+    from harness.weather import snapshots as module
+    from harness.weather.stadiums import Stadium
+
+    lsu = Stadium("ncaaf", 99, "LSU", "Tiger Stadium", 30.4118, -91.1836, "open",
+                  "https://example.org")
+    monkeypatch.setattr(module, "stadium_for", lambda *a, **k: lsu)
+    _seed_game(db_session, 1, 99, hours_ahead=10)
+    previous = NOW - timedelta(hours=2)
+    set_source_state(db_session, "nws_hourly:1", previous)
+    respx.get("https://api.weather.gov/points/30.4118,-91.1836").mock(
+        return_value=httpx.Response(200, json=POINTS))
+    hourly = respx.get(POINTS["properties"]["forecastHourly"])
+    if failure == "http":
+        hourly.mock(return_value=httpx.Response(500))
+    elif failure == "schema":
+        hourly.mock(return_value=httpx.Response(200, json={"properties": {}}))
+    elif failure == "no periods":
+        body = json.loads(json.dumps(HOURLY))
+        body["properties"]["periods"] = body["properties"]["periods"][:1]
+        hourly.mock(return_value=httpx.Response(200, json=body))
+    else:
+        hourly.mock(side_effect=httpx.ReadTimeout("forecast timed out"))
+    client = NwsClient(env_settings, clock=lambda: NOW)
+    try:
+        counts = run_weather_source(db_session, 1, client, env_settings, NOW, _Budget(60), {})
+    finally:
+        client.close()
+    assert counts["errors"] or counts["skipped"]
+    assert counts["written"] == 0
+    assert get_source_state(db_session, "nws_hourly:1") == previous
+    assert [g.game_id for g in games_due(db_session, NOW)] == [1]
+
+
+def test_success_marks_order_games_without_rewriting_legacy_evidence(db_session):
+    for game_id in (1, 2, 3):
+        _seed_game(db_session, game_id, 99, hours_ahead=10)
+    # Game 1 has the oldest forecast values, but game 2 was checked less recently.
+    db_session.execute(text(
+        "insert into weather_snapshots (run_id, game_id, fetched_at, period_start, roof) "
+        "values (1, 1, :ts, :ts, 'open')"), {"ts": NOW - timedelta(hours=6)})
+    set_source_state(db_session, "nws_hourly:1", NOW - timedelta(hours=2))
+    set_source_state(db_session, "nws_hourly:2", NOW - timedelta(hours=3))
+    # An unrelated source's state cannot suppress this game's weather fetch.
+    set_source_state(db_session, "odds_alt:3", NOW)
+    assert [g.game_id for g in games_due(db_session, NOW)] == [3, 2, 1]

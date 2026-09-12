@@ -761,7 +761,10 @@ class Recorder:
         Nothing here can fail a tick: the whole call sits inside one `try` and a failure is a
         warning on the run.
         """
-        cadence = cadence_in_force(now, kickoffs, self.s.tz_local)
+        # The budget helper falls back to 900 when every sport is quiet. That is a
+        # pricing allowance, not permission to fetch NWS on the 30 s heartbeat.
+        intervals = [interval_for(sport, now, kickoffs, self.s.tz_local) for sport in SPORTS]
+        cadence = min((i for i in intervals if i is not None), default=None)
         if cadence not in ALLOWED_CADENCES:
             ctx["weather"] = {"skipped": f"cadence {cadence}"}
             return

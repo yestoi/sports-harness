@@ -1042,7 +1042,8 @@ class _StubBudget:
         return self._remaining
 
 
-@pytest.mark.parametrize("cadence,ran", [(20, False), (120, False), (300, True), (900, True)])
+@pytest.mark.parametrize("cadence,ran", [(None, False), (20, False), (30, False),
+                                         (120, False), (300, True), (900, True)])
 def test_the_weather_source_runs_only_on_the_two_slow_cadences(env_settings, db_session,
                                                                monkeypatch, cadence, ran):
     """Rulings A-I7 and B-I10. `cadence.py` returns 20 s for NFL 60-100 minutes before kickoff:
@@ -1052,7 +1053,7 @@ def test_the_weather_source_runs_only_on_the_two_slow_cadences(env_settings, db_
     from harness.recorder import tick as tick_module
 
     calls = []
-    monkeypatch.setattr(tick_module, "cadence_in_force", lambda *a, **k: cadence)
+    monkeypatch.setattr(tick_module, "interval_for", lambda *a, **k: cadence)
     monkeypatch.setattr(tick_module, "run_weather_source",
                         lambda *a, **k: calls.append(True) or {"due": 0})
     monkeypatch.setattr(tick_module, "NwsClient", lambda settings: object())
@@ -1068,7 +1069,7 @@ def test_the_weather_source_yields_below_twenty_five_seconds_of_tick_budget(env_
     from harness.recorder import tick as tick_module
 
     calls = []
-    monkeypatch.setattr(tick_module, "cadence_in_force", lambda *a, **k: 900)
+    monkeypatch.setattr(tick_module, "interval_for", lambda *a, **k: 900)
     monkeypatch.setattr(tick_module, "run_weather_source",
                         lambda *a, **k: calls.append(True) or {"due": 0})
     monkeypatch.setattr(tick_module, "NwsClient", lambda settings: object())
@@ -1078,3 +1079,35 @@ def test_the_weather_source_yields_below_twenty_five_seconds_of_tick_budget(env_
     recorder._weather(db_session, run, NOW, [], _StubBudget(24.0), ctx)
     assert calls == []
     assert ctx["weather"] == {"skipped": "tick budget"}
+
+
+@pytest.mark.parametrize("at,ran", [
+    ("2026-09-12T05:59:59+00:00", True),   # 00:59:59 CT, weekend cadence
+    ("2026-09-12T06:00:00+00:00", False),  # 01:00 CT, quiet starts
+    ("2026-09-12T08:00:00+00:00", False),  # observed storm window
+    ("2026-09-12T12:59:59+00:00", False),
+    ("2026-09-12T13:00:00+00:00", True),   # 08:00 CT, quiet ends
+])
+@pytest.mark.parametrize("force", [False, True])
+def test_weather_respects_real_quiet_hours_even_on_forced_ticks(
+        env_settings, db_session, monkeypatch, at, ran, force):
+    from harness.recorder import tick as tick_module
+
+    now = datetime.fromisoformat(at)
+    calls = []
+    clients = []
+    monkeypatch.setattr(tick_module, "run_weather_source",
+                        lambda *a, **k: calls.append(True) or {"due": 0})
+    monkeypatch.setattr(tick_module, "NwsClient",
+                        lambda settings: clients.append(True) or object())
+    recorder, _ = _recorder(env_settings, db_session, now=now)
+    recorder._force = force
+    ctx = {"warnings": []}
+    recorder._weather(db_session, store.start_run(db_session, now), now, [],
+                      _StubBudget(60), ctx)
+    assert bool(calls) is ran
+    assert bool(clients) is ran
+    if not ran:
+        assert ctx["weather"] == {"skipped": "cadence None"}
+        # Preserve the registered pricing allowance; it is not a source cadence.
+        assert cadence_in_force(now, [], env_settings.tz_local) == DEFAULT_CADENCE_S
