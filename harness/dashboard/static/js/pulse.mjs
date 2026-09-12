@@ -33,6 +33,7 @@ export const LABELS = [
   { plain: "Loops skipped", technical: "exec_heartbeat.loops_skipped" },
   { plain: "Markets with a book we distrust", technical: "book_dirty_markets" },
   { plain: "Memory free on the NAS", technical: "host.mem_available_mb" },
+  { plain: "Recorder memory after tick or settle", technical: "recorder.rss_mb" },
   // Fix round 2, I5: the research card's two counts -- the spend and the veto rate are already
   // read through the sentences below, which is why they carry no `technical` name of their own.
   { plain: "RFQ quotes in the last 24 hours", technical: "research.rfq_quotes_24h" },

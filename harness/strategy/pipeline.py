@@ -14,7 +14,8 @@ is recorded in `notes->'pricing'->'stages'`.
   1. `fair_direct`      -- every candidate game's direct fair values. Always runs, budget or not.
   2. `gaps_direct`      -- gap snapshots for the markets those fair values price.
   3. `variants_direct`  -- every variant whose `sources_allowed` is satisfied by direct rows,
-                           in `pricing_order`: the gate variant first, then the primary.
+                           in `pricing_order`: the gate variant first, then the primary,
+                           including either priority variant when it also consumes derived rows.
   4. `fair_derived`     -- the margin-model fair values for the shapes with no sharp line.
   5. `gaps_derived`     -- gap snapshots for the markets the first call left alone.
   6. `variants_derived` -- the derived consumers, plus a second scoring of the direct-only
@@ -23,8 +24,8 @@ is recorded in `notes->'pricing'->'stages'`.
 Until 2026-09-12 stage 1 computed direct *and* derived fair values before anything else, and on
 the NAS that alone spent the whole 45 s budget: 172 consecutive runs recorded
 `{"gaps": 0, "variants_run": [], "budget_exhausted": true, "fair_derived": 3079}` and the harness
-produced no signal for eight hours. The order above is that fix. What it buys is that the two
-variants every conclusion rests on are scored on a tick that can only afford one stage.
+produced no signal for eight hours. The order above is that fix. It puts the gate and primary
+evaluations ahead of optional derived work; the deadline still applies between stages.
 """
 
 import logging
@@ -53,7 +54,7 @@ SIGNAL_INSERT_CHUNK = 1000
 log = logging.getLogger(__name__)
 
 
-def _load_gap_rows(session: Session, run_id: int) -> list[GapRow]:
+def _load_gap_rows(session: Session, run_id: int, market_order: list[int] | None = None) -> list[GapRow]:
     stmt = (
         select(MarketGapSnapshot, VenueMarket, Game)
         .join(VenueMarket, VenueMarket.id == MarketGapSnapshot.venue_market_id)
@@ -91,11 +92,17 @@ def _load_gap_rows(session: Session, run_id: int) -> list[GapRow]:
             feed_kind=snap.feed_kind,
             price_ranges=market.price_ranges,
         ))
+    if market_order is not None:
+        # Preserve the traversal captured by the original full quote query, including ties
+        # between direct and derived markets. Other callers retain stored snapshot order.
+        rank = {market_id: i for i, market_id in enumerate(market_order)}
+        rows.sort(key=lambda row: (rank.get(row.venue_market_id, len(rank)), row.gap_snapshot_id))
     return rows
 
 
 def _insert_signals(
-    session: Session, run_id: int, variant: Variant, now: datetime, signals: list, replay: bool = False
+    session: Session, run_id: int, variant: Variant, now: datetime, signals: list, replay: bool = False,
+    replace_existing: bool = False,
 ) -> int:
     if not signals:
         return 0
@@ -128,12 +135,20 @@ def _insert_signals(
     ]
     inserted = 0
     for start in range(0, len(values), SIGNAL_INSERT_CHUNK):
-        stmt = (
-            insert(Signal)
-            .values(values[start:start + SIGNAL_INSERT_CHUNK])
-            .on_conflict_do_nothing(index_elements=["run_id", "variant_id", "venue_market_id", "side", "replay"])
-            .returning(Signal.id)
-        )
+        stmt = insert(Signal).values(values[start:start + SIGNAL_INSERT_CHUNK])
+        key = ["run_id", "variant_id", "venue_market_id", "side", "replay"]
+        if replace_existing:
+            # A mixed-source gate/primary was provisionally scored before derived candidates
+            # existed. Refresh that same signal ID atomically with its full-universe result.
+            # Bound: this run/variant/market/side/replay and the 1000-row chunk; index uq_signal_key.
+            stmt = stmt.on_conflict_do_update(
+                index_elements=key,
+                set_={name: getattr(stmt.excluded, name) for name in values[start]
+                      if name not in key and name != "created_at"},
+            )
+        else:
+            stmt = stmt.on_conflict_do_nothing(index_elements=key)
+        stmt = stmt.returning(Signal.id)
         inserted += len(session.execute(stmt).fetchall())
     return inserted
 
@@ -232,6 +247,8 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         "budget_exhausted": False,
         "variants_run": [],
         "variants_skipped": [],
+        "variants_partial": [],
+        "no_sharp_skipped": True,
         "variant_ms": {},
         "order": [],
         "gate_variant_missing": False,
@@ -258,10 +275,11 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         result["fair_derived_skipped"] = True
         return finish()
 
+    market_order: list[int] = []
     t0 = _stage_clock()
     result["gaps"] = build_gap_snapshots(
         session, run_id, now, tz=settings.tz_local, errored_game_ids=errored_game_ids,
-        phase="direct")
+        phase="direct", market_order=market_order)
     stages.record("gaps_direct", t0)
 
     if not ok():
@@ -272,6 +290,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # A registry with no active variant scores nothing, but it still prices: stages 4 and 5 run
     # below on an empty `ordered`, so the fair values and gap snapshots a later tick (or a
     # backfill) reads keep being written.
+    t0 = _stage_clock()
     variants = active_variants(session)
     as_measured: dict | None = None
     stopped: set = set()
@@ -310,6 +329,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
                         "the primary first (run %s)", settings.gate_variant, run_id)
 
     scored: set[str] = set()
+    complete: set[str] = set()
 
     def record_order() -> None:
         """`variants_run`/`variants_skipped` in `pricing_order`, not in the order stages ran.
@@ -320,42 +340,43 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         """
         result["variants_run"] = [v.name for v in ordered if v.name in scored]
         result["variants_skipped"] = [v.name for v in ordered if v.name not in scored]
+        result["variants_partial"] = [v.name for v in ordered if v.name in scored - complete]
 
-    def score(variant: Variant, rows: list[GapRow]) -> None:
-        """Score one variant over `rows` and persist what it produced.
-
-        Called twice for a direct-only variant on a tick that reaches stage 6: once on the direct
-        gap rows and once on the whole set. The second scoring is what keeps this pipeline's
-        output identical to the single pass's -- a direct-only variant still emits a *rejected*
-        signal for a derived-source or unpriced gap row (`source_allowed`, `has_fair`), and those
-        rows do not exist yet in stage 3. Re-scoring is safe rather than merely idempotent: such a
-        row can never be a candidate for such a variant, so it never consumes bankroll and never
-        changes a label on any other row, and `_insert_signals` does nothing on conflict.
+    def score(variant: Variant, rows: list[GapRow], *, full: bool = False) -> None:
+        """Persist scoring over the available universe, then reconcile a mixed-source priority
+        variant when the full universe exists. Direct-only rows retain their original IDs.
+        `variants_partial` distinguishes any scoring from a complete market evaluation.
         """
         t_variant = time.monotonic()
         signals = run_strategy(rows, variant, now, as_measured=as_measured,
                                stopped=variant.variant_id in stopped)
         candidate = sum(1 for s in signals if s.decision == "candidate")
-        _insert_signals(session, run_id, variant, now, signals)
+        _insert_signals(session, run_id, variant, now, signals,
+                        replace_existing=full and variant.name in scored and consumes_derived(variant))
         session.commit()
         result["signals"][variant.name] = {"candidate": candidate,
                                            "rejected": len(signals) - candidate}
         result["variant_ms"][variant.name] = (
             result["variant_ms"].get(variant.name, 0) + int((time.monotonic() - t_variant) * 1000))
         scored.add(variant.name)
+        if full:
+            complete.add(variant.name)
 
-    direct_only = [v for v in ordered if not consumes_derived(v)]
-    direct_rows = _load_gap_rows(session, run_id) if direct_only else []
+    priority = [v for v in ordered if not consumes_derived(v)
+                or v.name == settings.gate_variant or v.tier == "primary"]
+    # Load even when there are only derived consumers: stage 5 may add no rows, while those
+    # consumers still need the direct gaps already present. Include this read in stage cost.
+    direct_rows = _load_gap_rows(session, run_id, market_order) if ordered else []
+    direct_complete = len(direct_rows) == len(market_order)
 
-    t0 = _stage_clock()
-    for variant in direct_only:
+    for variant in priority:
         if not ok():
             result["budget_exhausted"] = True
             stages.record("variants_direct", t0)
             record_order()
             result["fair_derived_skipped"] = True
             return finish()
-        score(variant, direct_rows)
+        score(variant, direct_rows, full=direct_complete)
     stages.record("variants_direct", t0)
     record_order()
 
@@ -369,6 +390,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     stages.record("fair_derived", t0)
     result["fair_derived"] = derived_counts.derived
     result["no_sharp"] = derived_counts.no_sharp
+    result["no_sharp_skipped"] = False
     result["fair_errors"] += derived_counts.errors
     errored_game_ids = errored_game_ids | derived_counts.errored_game_ids
 
@@ -392,15 +414,15 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # pass did. A direct-only variant already scored in stage 3 is re-scored only when stage 5
     # actually added rows; when it added none, stage 3 already saw the whole set and a second
     # pass could not produce a row it has not produced.
-    all_rows = _load_gap_rows(session, run_id) if new_gaps else direct_rows
     t0 = _stage_clock()
+    all_rows = _load_gap_rows(session, run_id, market_order) if new_gaps else direct_rows
     for variant in ordered:
         if not consumes_derived(variant) and not new_gaps:
             continue
         if not ok():
             result["budget_exhausted"] = True
             break
-        score(variant, all_rows)
+        score(variant, all_rows, full=True)
     stages.record("variants_derived", t0)
     record_order()
 

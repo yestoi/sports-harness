@@ -12,10 +12,10 @@ measurement that are not test plumbing:
 * `measure_ticks` drives any zero-argument "run one tick" callable under `tracemalloc` and
   reports the traced total and RSS at chosen tick numbers.
 
-The acceptance number is `tracemalloc`'s traced total, not RSS: traced total counts live Python
-allocations and is deterministic, while RSS also carries allocator arenas the interpreter has
-freed but not returned to the kernel. RSS is reported alongside it for the operator's benefit,
-which is also why the tick writes it as `recorder.rss_mb` (`harness.telemetry.rss_mb`).
+The original acceptance requires <5% growth after tick 2; it remains open. This rig reports
+unfiltered pre-GC allocations and RSS beside its inherited filtered/post-GC diagnostic.
+Neither a flat Python slope nor a reduced peak in an unexecuted stage establishes the live
+RSS cause. `AllocationStages` separates the control paths and boundaries for that investigation.
 
 Run standalone for a longer series than the test's:
 
@@ -307,12 +307,15 @@ class TickSample:
     peak_kb: float
     rss_mb: float | None
     driver_kb: float = 0.0
+    raw_traced_kb: float = 0.0
+    rss_before_gc: float | None = None
 
     def line(self) -> str:
         rss = "n/a" if self.rss_mb is None else f"{self.rss_mb:8.1f}"
         return (f"tick {self.tick:3d}  traced {self.traced_kb:10.1f} KiB  "
                 f"peak {self.peak_kb:10.1f} KiB  rss {rss} MiB  "
-                f"driver cache {self.driver_kb:9.1f} KiB")
+                f"driver cache {self.driver_kb:9.1f} KiB  "
+                f"before GC, unfiltered {self.raw_traced_kb:10.1f} KiB, RSS {self.rss_before_gc}")
 
 
 @dataclass(frozen=True)
@@ -322,16 +325,7 @@ class MemoryReport:
     grew: list[str] = field(default_factory=list)
 
     def creep_kb_per_tick(self, baseline_tick: int) -> float:
-        """KiB of traced total added per tick between `baseline_tick` and the last sample.
-
-        This, not the fraction `growth_after` returns, is what "the tick retains nothing" means.
-        A fraction is measured against the baseline total, and that total is whatever the process
-        happened to be carrying when this file started running -- 528 KiB inside `make test` and
-        835 KiB behind three other test files, for the same rig on the same day -- so the same
-        few kilobytes of creep read as 5.9 % in one process and 2.2 % in the next. Per-tick
-        growth has no such scale in it: retention that matters is per tick by definition, and
-        this number is directly comparable across runs.
-        """
+        """Slope of the filtered post-GC diagnostic; not the original <5% criterion."""
         base = self.at(baseline_tick)
         ticks = self.samples[-1].tick - base.tick
         if ticks <= 0:
@@ -361,6 +355,11 @@ class MemoryReport:
 
     def text(self) -> str:
         blocks = [s.line() for s in self.samples] + [""] + self.top
+        if any(s.tick == 2 for s in self.samples):
+            base = self.at(2).raw_traced_kb
+            growth = (self.samples[-1].raw_traced_kb - base) / base if base else float("nan")
+            blocks += [f"Unfiltered pre-GC growth since tick 2: {growth:.1%}; original limit <5%.",
+                       "Diagnostic only: production cause and original acceptance remain unverified."]
         if self.grew:
             blocks += ["", "grew since the baseline tick (driver cache excluded):"] + self.grew
         return "\n".join(blocks)
@@ -415,10 +414,13 @@ class StagePeaks:
 
 
 def measure_ticks(run_tick, ticks: int, checkpoints: tuple[int, ...] = (1, 2, 5, 10),
-                  top_n: int = 12, baseline_tick: int = 2) -> MemoryReport:
+                  top_n: int = 12, baseline_tick: int = 2,
+                  collect_gc: bool = True) -> MemoryReport:
     """Run `run_tick()` `ticks` times under `tracemalloc`, sampling at `checkpoints` and last.
 
-    A `gc.collect()` runs before each sample so the traced total counts what is genuinely
+    With `collect_gc=True`, a `gc.collect()` runs before each sample. Set False for an
+    unperturbed-GC comparison; original acceptance must not rely on the forced collection.
+    The post-GC diagnostic counts what is genuinely
     reachable rather than what the cyclic collector has not got to yet -- SQLAlchemy's
     identity map and instance state are full of cycles, and an uncollected cycle would read
     as retention that a later generation sweep would have cleared anyway.
@@ -439,14 +441,20 @@ def measure_ticks(run_tick, ticks: int, checkpoints: tuple[int, ...] = (1, 2, 5,
             run_tick()
             if i not in wanted:
                 continue
-            gc.collect()
+            # Keep the process reading before the rig changes GC state. Filtered/post-GC
+            # readings remain diagnostic columns, never substitutes for original acceptance.
+            raw_kb = tracemalloc.get_traced_memory()[0] / 1024
+            rss_before_gc = rss_mb()
+            if collect_gc:
+                gc.collect()
             _, peak = tracemalloc.get_traced_memory()
             # A snapshot per checkpoint, not one at the end: the traced total this criterion is
             # asserted on has the driver's prepared-statement cache taken out of it, and only a
             # snapshot can say how much of the total that cache is.
             snapshot = tracemalloc.take_snapshot()
             traced_kb, driver_kb = _totals(snapshot)
-            samples.append(TickSample(i, traced_kb, peak / 1024, rss_mb(), driver_kb))
+            samples.append(TickSample(i, traced_kb, peak / 1024, rss_mb(), driver_kb,
+                                      raw_kb, rss_before_gc))
             if i == baseline_tick:
                 baseline_snapshot = snapshot
         top, grew = [], []
@@ -464,3 +472,42 @@ def measure_ticks(run_tick, ticks: int, checkpoints: tuple[int, ...] = (1, 2, 5,
     finally:
         tracemalloc.stop()
     return MemoryReport(samples=samples, top=top, grew=grew)
+
+
+class AllocationStages:
+    """Diagnostic boundaries for non-nested fetch, normalize, pricing, and settle calls.
+
+    Each record contains unfiltered live allocations and current Linux RSS before/after the
+    actual call, peak extra Python allocations, and the largest live allocation sites at exit.
+    Instrumentation itself costs time/memory; use it in a separate run from retention acceptance.
+    A missing record means that stage never ran. No RSS-cause inference is made by this rig.
+    """
+
+    def __init__(self):
+        self.samples = []
+
+    def wrap(self, name, fn):
+        def measured(*args, **kwargs):
+            before = tracemalloc.get_traced_memory()[0]
+            rss_before = rss_mb()
+            tracemalloc.reset_peak()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                current, peak = tracemalloc.get_traced_memory()
+                rss_after = rss_mb()
+                top = [str(stat) for stat in tracemalloc.take_snapshot().statistics("lineno")[:3]]
+                self.samples.append({"stage": name, "before_kib": before / 1024,
+                                     "after_kib": current / 1024,
+                                     "peak_extra_kib": (peak - before) / 1024,
+                                     "rss_before_mib": rss_before, "rss_after_mib": rss_after,
+                                     "top_live_allocations": top})
+        return measured
+
+    def drain(self):
+        """Print and release one tick's diagnostics so the recorder rig does not retain history."""
+        import json
+
+        print(json.dumps(self.samples, indent=2))
+        samples, self.samples = self.samples, []
+        return samples

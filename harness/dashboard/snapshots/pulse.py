@@ -205,9 +205,9 @@ _TAPE = text("""
 #: `ix_metric_samples_name_ts (name, ts desc)`, one range per name. Ordered *descending* so the
 #: cap drops the oldest points rather than the newest; `_vitals` reverses each lane (fix 31).
 _VITALS = text("""
-    select name, value, ts from metric_samples
+    select name, value, ts, labels->>'phase' as phase from metric_samples
     where name in ('exec.p95_loop_ms', 'exec.loops_skipped', 'exec.dirty_markets',
-                   'exec.ws_event_age_s', 'recorder.credits_remaining')
+                   'exec.ws_event_age_s', 'recorder.credits_remaining', 'recorder.rss_mb')
       and ts > :since
     order by ts desc
     limit :limit
@@ -655,11 +655,24 @@ def _vitals(session: Session, now: datetime, values: dict) -> dict:
     lane is reversed here so the series still reads left to right (fix 31)."""
     lines: dict[str, list[list]] = {}
     for row in session.execute(_VITALS, {"since": now - TAPE_WINDOW, "limit": VITALS_LIMIT}):
-        lines.setdefault(row.name, []).append(
+        name = row.name
+        if name == "recorder.rss_mb":
+            if row.phase not in ("tick", "settle"):
+                continue
+            name = f"{name}.{row.phase}"
+        lines.setdefault(name, []).append(
             [row.ts.isoformat(), float(row.value) if row.value is not None else None])
     for lane in lines.values():
         lane.reverse()
     heartbeat = values["heartbeat"] or {}
+    rss_tiles = []
+    for phase in ("tick", "settle"):
+        metric = f"recorder.rss_mb.{phase}"
+        points = lines.get(metric, [])
+        rss_tiles.append({"label": f"recorder memory after {phase} (MiB)",
+                          "technical": "recorder.rss_mb", "metric": metric, "phase": phase,
+                          "value": points[-1][1] if points else None,
+                          "unit": "MiB", "threshold": None})
     return {
         "sparklines": lines,
         # `technical` stays the glossary key a test checks it as (ruling B-C3); `metric` is the
@@ -688,7 +701,7 @@ def _vitals(session: Session, now: datetime, values: dict) -> dict:
              "value": (float(values["credits_remaining"])
                        if values["credits_remaining"] is not None else None),
              "unit": "count", "threshold": None},
-        ],
+        ] + rss_tiles,
     }
 
 

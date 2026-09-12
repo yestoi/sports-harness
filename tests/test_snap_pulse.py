@@ -811,3 +811,20 @@ def test_a_non_numeric_cell_age_s_does_not_break_the_ages_panel(db_session, env_
     assert rows["pulse"]["cell_age_s"] is None
     # The bad value costs only its own field: the row's own age still renders.
     assert rows["study:2026-37"]["age_s"] == pytest.approx(120, abs=2)
+
+
+def test_recorder_rss_has_separate_tick_and_settle_vitals(db_session, env_settings):
+    _ok_machine(db_session, env_settings)
+    samples = [("tick", 100, 3), ("settle", 180, 2), ("tick", 120, 1)]
+    for phase, value, minutes in samples:
+        db_session.add(MetricSample(ts=NOW - timedelta(minutes=minutes), source="recorder",
+                                    name="recorder.rss_mb", value=value, labels={"phase": phase}))
+    db_session.flush()
+    vitals = build_pulse(db_session, NOW, env_settings)["vitals"]
+    tiles = {tile.get("phase"): tile for tile in vitals["tiles"] if tile.get("phase")}
+    assert tiles["tick"]["value"] == 120
+    assert tiles["settle"]["value"] == 180
+    for phase, expected in (("tick", [100, 120]), ("settle", [180])):
+        tile = tiles[phase]
+        assert tile["technical"] == "recorder.rss_mb" and tile["unit"] == "MiB"
+        assert [point[1] for point in vitals["sparklines"][tile["metric"]]] == expected

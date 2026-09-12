@@ -252,6 +252,17 @@ class Settler:
                 session.rollback()
 
             stale = self._stale(session, stale_unsettled, now, ctx)
+            # Fix 49: this job shares the recorder process. Sample after all settle work,
+            # including the stale probe, with a separate phase; telemetry cannot fail the job.
+            try:
+                rss = telemetry.rss_mb()
+                if rss is not None:
+                    telemetry.record(session, "recorder", "recorder.rss_mb", round(rss, 1),
+                                     labels={"phase": "settle"}, ts=self._clock())
+                    session.commit()
+            except Exception:  # noqa: BLE001 - telemetry never fails the job
+                session.rollback()
+                log.exception("settle RSS telemetry failed")
             row.finished_at = self._clock()
             row.status = _status(results, ctx["errors"])
             row.budget_exhausted = any(r.budget_exhausted for r in results)

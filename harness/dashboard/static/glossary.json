@@ -340,5 +340,11 @@
     "plain": "report annotations written this week",
     "what": "How many weekly reports the annotator has written a surviving set of bullets for so far this week.",
     "why": "The annotator runs at most once a week per report; this is how an operator sees that it ran at all."
+  },
+  "recorder.rss_mb": {
+    "term": "recorder.rss_mb",
+    "plain": "Recorder memory",
+    "what": "Resident memory of the recorder process in MiB, sampled separately after ticks and settlement jobs. Linux reports current resident memory; the fallback on macOS reports peak memory.",
+    "why": "Separate tick and settlement samples show when recorder memory grows."
   }
 }

@@ -5,7 +5,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
 import yaml
-from sqlalchemy import exists, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -39,42 +39,8 @@ def _shape_for_market(market: VenueMarket) -> Shape | None:
     return None
 
 
-def _fair_key(fv) -> tuple:
-    """The shape a fair value prices, plus which model produced it.
-
-    Takes a `FairValue` or any row exposing the same six attributes -- both reads below project
-    columns rather than loading the mapped object (fix 49).
-    """
+def _fair_key(fv: FairValue) -> tuple:
     return (fv.game_id, fv.market_type, fv.outcome_team_id, fv.outcome_side, fv.threshold, fv.fair_source)
-
-
-#: The shape-and-source key both fair-value reads group by, as columns.
-_KEY_COLUMNS = (FairValue.game_id, FairValue.market_type, FairValue.outcome_team_id,
-                FairValue.outcome_side, FairValue.threshold, FairValue.fair_source)
-#: Everything this module reads off *this run's* fair values. Deliberately not `model_json`:
-#: a derived row carries the whole margin model in it and nothing here looks at it, so loading
-#: the mapped object meant carrying thousands of those dicts through the snapshot build.
-_FAIR_COLUMNS = (FairValue.id, *_KEY_COLUMNS, FairValue.fair_p, FairValue.n_groups,
-                 FairValue.disagreement, FairValue.staleness_s, FairValue.feed_kind,
-                 FairValue.feed_lag_s, FairValue.stale_allowance_s)
-#: Everything it reads off the *previous* fair value for a shape: just the two snapshot columns.
-_PREV_COLUMNS = (*_KEY_COLUMNS, FairValue.fair_p, FairValue.created_at)
-
-
-#: Fix 48's three ways to call this.
-#:
-#: "all" is what it always did and what every caller outside the pipeline still wants: one row
-#: for every matched market this run quoted. The pipeline splits it, because it now builds gap
-#: snapshots twice -- once on the direct fair values, so the gate variant and the primary can be
-#: scored before the 45 s budget is gone, and once more after the derived pass.
-#:
-#: "direct" writes a row only for a market whose shape already has a fair value; everything else
-#: (a shape still waiting on the margin model, an unmapped market type, a game with no sharp
-#: line at all) is left for the second call. "derived" writes the rest. The split is that way
-#: round, rather than "everything now, top up later", because `market_gap_snapshots` is unique
-#: on (run_id, venue_market_id) and the insert does nothing on conflict: a row written in the
-#: first call with `fair_p` still NULL could never be corrected by the second one.
-GAP_PHASES = ("all", "direct", "derived")
 
 
 def build_gap_snapshots(
@@ -84,11 +50,7 @@ def build_gap_snapshots(
     tz: str,
     fee_model: FeeModel = KALSHI_FOOTBALL,
     errored_game_ids: frozenset[int] = frozenset(),
-    phase: str = "all",
-    market_order: list[int] | None = None,
 ) -> int:
-    if phase not in GAP_PHASES:
-        raise ValueError(f"phase must be one of {GAP_PHASES}, got {phase!r}")
     tzinfo = ZoneInfo(tz)
     popularity = load_popularity()
 
@@ -99,7 +61,7 @@ def build_gap_snapshots(
     # one walking `ix_quotes_market_fetched (venue_market_id, fetched_at)` with `run_id` only a
     # filter -- every quote ever recorded for the market read to keep the handful of this run --
     # and on 2026-09-11 it went past the 30 s statement timeout on every pricing run.
-    stmt = (
+    rows = session.execute(
         select(VenueQuote, VenueMarket, Game)
         .join(VenueMarket, VenueMarket.id == VenueQuote.venue_market_id)
         .join(Game, Game.id == VenueMarket.game_id)
@@ -108,83 +70,47 @@ def build_gap_snapshots(
             VenueMarket.match_status.in_(MATCHED_STATUSES),
             Game.kickoff_utc > window_start,
         )
-    )
-    if phase == "derived":
-        # The second call's bound (fix 48): skip every market the first call already snapshotted,
-        # rather than building each row again only for the insert to do nothing on conflict. The
-        # anti-join rides `uq_gap_run_market (run_id, venue_market_id)`, the same unique index
-        # that constraint uses.
-        stmt = stmt.where(~exists(
-            select(MarketGapSnapshot.id).where(
-                MarketGapSnapshot.run_id == run_id,
-                MarketGapSnapshot.venue_market_id == VenueQuote.venue_market_id,
-            )
-        ))
-    rows = session.execute(stmt).all()
-    if market_order is not None:
-        # Capture the original unfiltered quote traversal before splitting phases. Snapshot IDs
-        # now reflect phase order; strategy's equal-edge tiebreak must not inherit that order.
-        # Only scalar IDs survive this call, bounded by this run's quoted markets.
-        market_order.extend(dict.fromkeys(market.id for _, market, _ in rows))
+    ).all()
     if not rows:
         return 0
 
     game_ids = {game.id for _, _, game in rows}
 
-    # This run's own fair values, one row per shape. Scanned through
-    # `ix_fair_game_type_created (game_id, market_type, created_at)` on the `game_id` leg, with
-    # `run_id` a filter; bounded by the run's own shape count, which is what it writes.
-    fair_by_key: dict[tuple, object] = {}
+    fair_by_key: dict[tuple, FairValue] = {}
     for fv in session.execute(
-        select(*_FAIR_COLUMNS).where(FairValue.run_id == run_id, FairValue.game_id.in_(game_ids))
-    ):
+        select(FairValue).where(FairValue.run_id == run_id, FairValue.game_id.in_(game_ids))
+    ).scalars():
         fair_by_key[_fair_key(fv)] = fv
 
     lookback_start = now - timedelta(minutes=15)
-    # Fix 49: the previous fair value per shape, resolved to one row per key *in the database*.
-    # This read used to load every mapped `FairValue` written in the trailing fifteen minutes
-    # for these games -- on the 30 s heartbeat that is thirty runs, and at 3,269 fair values a
-    # run on a Saturday slate roughly a hundred thousand objects, each carrying its `model_json`
-    # -- and then throw all but the newest per key away. Measured on a twenty-game synthetic
-    # slate (`tests/test_recorder_memory.py`) the old shape grew this stage's peak allocation by
-    # about 1 MiB per tick with no ceiling but the window; `DISTINCT ON` makes it one row per
-    # shape, so the cost is the run's shape count rather than the history behind it.
-    # Same index as above: `game_id` leads the scan and `created_at` bounds it.
-    prev_by_key: dict[tuple, object] = {}
+    prev_by_key: dict[tuple, FairValue] = {}
     for fv in session.execute(
-        select(*_PREV_COLUMNS)
-        .distinct(*_KEY_COLUMNS)
+        select(FairValue)
         .where(
             FairValue.game_id.in_(game_ids),
             FairValue.run_id != run_id,
             FairValue.created_at < now,
             FairValue.created_at >= lookback_start,
         )
-        # `DISTINCT ON` keeps the first row of each key group, so the ordering *is* the choice of
-        # "previous": newest first, and `id` breaks a tie between two rows stamped with the same
-        # `created_at` (the old read left that tie to whatever order the scan returned).
-        .order_by(*_KEY_COLUMNS, FairValue.created_at.desc(), FairValue.id.desc())
-    ):
-        prev_by_key[_fair_key(fv)] = fv
+        .order_by(FairValue.created_at.desc())
+    ).scalars():
+        key = _fair_key(fv)
+        if key not in prev_by_key:
+            prev_by_key[key] = fv
 
     lines_cache: dict[int, dict[LineKey, Line]] = {}
     inserted = 0
 
     for quote, market, game in rows:
         shape = _shape_for_market(market)
-        fair = None  # a projected row (see _FAIR_COLUMNS), not a mapped FairValue
+        fair: FairValue | None = None
         if shape is not None:
             market_type, team_id, side, threshold = shape
             fair = fair_by_key.get((game.id, market_type, team_id, side, threshold, "direct")) or fair_by_key.get(
                 (game.id, market_type, team_id, side, threshold, "derived")
             )
 
-        if phase == "direct" and fair is None:
-            # Nothing to say about this market yet: it may still gain a derived fair value, and
-            # a row written now could not be corrected once it had. The "derived" call takes it.
-            continue
-
-        prev_fair = None
+        prev_fair: FairValue | None = None
         if fair is not None:
             prev_fair = prev_by_key.get(
                 (game.id, shape[0], shape[1], shape[2], shape[3], fair.fair_source)

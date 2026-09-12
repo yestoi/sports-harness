@@ -767,3 +767,30 @@ def test_settler_reports_degraded_when_a_game_fails(db_session, env_settings):
     assert len(row.notes["errors"]) == 1
     db_session.expire_all()
     assert [r.game_id for r in db_session.query(Settlement).all()] == [good.id]
+
+
+def test_settler_samples_recorder_rss_after_its_final_probe(db_session, env_settings, monkeypatch):
+    from harness.db.models import MetricSample
+
+    monkeypatch.setattr(job_module, "STAGES", [])
+    monkeypatch.setattr(job_module, "STAGE_MODULES", [])
+    seen = []
+
+    def stale(*args):
+        seen.append("stale")
+        return 0
+
+    def rss():
+        assert seen == ["stale"]
+        seen.append("rss")
+        return 123.46
+
+    monkeypatch.setattr(Settler, "_stale", stale)
+    monkeypatch.setattr(job_module.telemetry, "rss_mb", rss)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    row = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
+    assert row.status == "ok"
+    sample = db_session.query(MetricSample).filter_by(name="recorder.rss_mb").one()
+    assert sample.source == "recorder" and sample.labels == {"phase": "settle"}
+    assert float(sample.value) == 123.5
+    assert sample.ts == NOW

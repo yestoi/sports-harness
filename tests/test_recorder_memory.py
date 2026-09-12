@@ -207,28 +207,12 @@ def test_the_gap_snapshot_read_does_not_grow_with_the_history_behind_it(
 
 @respx.mock
 def test_the_tick_retains_nothing_after_the_second(env_settings, db_session):
-    """Finding 49's acceptance: over 20 ticks the tick keeps nothing that grows with the ticks.
+    """Inherited small-leak detector, not the original finding 49 acceptance.
 
-    The brief writes this as "under 5 % after the second tick". It is asserted here as KiB per
-    tick instead, for a reason the measurement forced rather than a preference. Two corrections
-    stand behind that, both made on 2026-09-12 after the first full `make test`:
-
-    1. `tracemalloc`'s traced total is the whole *process*, and psycopg prepares a statement on
-       its fifth execution and holds the built query bytes until `prepared_max` evicts them. The
-       cache fills on whichever tick each statement crosses that threshold, which depends on
-       what ran in the process first: this test read +1.6 % alone and +31.7 % inside the suite,
-       with the entire difference in psycopg's two query-building sites and the harness's own
-       retained allocation identical to the kilobyte. So the total excludes that cache
-       (`_DRIVER_CACHE` in the rig) and prints it beside the number instead.
-    2. A *fraction* is measured against the baseline total, which is whatever the process was
-       carrying when this file started: 528 KiB inside `make test`, 835 KiB behind three test
-       files. The same few kilobytes of creep then read as 5.9 % in one run and 2.2 % in the
-       next. Per-tick growth has no such scale in it.
-
-    The bound is 8 KiB a tick against a measured 1.7, 1.0 and 0.6 in three different process
-    contexts. What it is there to catch is retention that grows with the history behind the
-    tick, and that has no ceiling: `build_gap_snapshots` was adding about 1 MiB of peak *per
-    tick* before fix 49's `DISTINCT ON` read. `report.grew` names the sites if this ever trips.
+    Preserve its existing 8 KiB/tick bound without relaxing it. Passing this filtered,
+    post-GC diagnostic does not establish <5% process growth. The report now also prints
+    unfiltered pre-GC growth and RSS, and original acceptance remains open for controlled
+    Linux measurement. The separate stage-peak test detects the fair-history regression.
     """
     ticks = 20
     run_tick, _ = _driver(env_settings, db_session, ticks)
@@ -239,3 +223,79 @@ def test_the_tick_retains_nothing_after_the_second(env_settings, db_session):
     assert creep < 8.0, (
         f"traced total grew {creep:.1f} KiB per tick from tick 2 to tick {ticks} "
         f"({report.growth_after(2):.1%} in total)\n{report.text()}")
+
+
+@pytest.mark.parametrize("path", ["candidate", "baseline_budget_exhausted"])
+@respx.mock
+def test_diagnostic_allocations_cover_the_actual_tick_path(
+        env_settings, db_session, monkeypatch, path):
+    from harness.recorder import tick as tick_module
+    from pricing_baseline import baseline_pipeline
+    from scripts.measure_tick_memory import AllocationStages
+
+    run_tick, _ = _driver(env_settings, db_session, 2)
+    allocations = AllocationStages()
+    # Fetch boundaries do not overlap; _checkpoint stays real and clears the session as usual.
+    for name in ("_espn", "_odds", "_kalshi_markets", "_kalshi_events", "_kalshi_settled",
+                 "_kalshi_series", "_kalshi_trades_and_ladders"):
+        monkeypatch.setattr(Recorder, name, allocations.wrap(name, getattr(Recorder, name)))
+    monkeypatch.setattr(tick_module, "normalize_new",
+                        allocations.wrap("normalize", tick_module.normalize_new))
+    results = []
+    if path == "baseline_budget_exhausted":
+        original = baseline_pipeline().price_and_signal
+
+        def price(session, run_id, now, settings, budget_s):
+            # Original stage 1 computes every fair even with budget=0, then returns before gaps.
+            # This reproduces the reported control flow without pretending to emulate NAS speed.
+            result = original(session, run_id, now, settings, budget_s=0)
+            results.append(result)
+            return result
+    else:
+        original = tick_module.price_and_signal
+
+        def price(session, run_id, now, settings, budget_s):
+            result = original(session, run_id, now, settings, budget_s=600)
+            results.append(result)
+            return result
+    monkeypatch.setattr(tick_module, "price_and_signal", allocations.wrap(path, price))
+    tracemalloc.start()
+    try:
+        for _ in range(2):
+            run_tick()
+            stages = allocations.drain()
+            assert {"_espn", "_odds", "_kalshi_markets", "normalize", path} <= {
+                stage["stage"] for stage in stages}
+    finally:
+        tracemalloc.stop()
+    assert all(result["fair_direct"] > 0 for result in results)
+    if path == "baseline_budget_exhausted":
+        assert all(result["budget_exhausted"] and result["order"] == []
+                   and result["gaps"] == 0 and result["fair_derived"] > 0 for result in results)
+    else:
+        assert all(result["gaps"] > 0 and result["variants_run"] for result in results)
+
+
+@respx.mock
+def test_diagnostic_settle_contribution_is_separate_from_the_tick(
+        env_settings, db_session):
+    from harness.settlement.job import Settler
+    from scripts.measure_tick_memory import AllocationStages
+
+    run_tick, _ = _driver(env_settings, db_session, 1)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    settler = Settler(env_settings, factory, None, clock=lambda: NOW + timedelta(seconds=30),
+                      monotonic=time.monotonic)
+    stages = AllocationStages()
+    tracemalloc.start()
+    try:
+        stages.wrap("tick", run_tick)()
+        tick_samples = stages.drain()
+        stages.wrap("settle", settler.run)()
+        settle_samples = stages.drain()
+    finally:
+        tracemalloc.stop()
+    assert [sample["stage"] for sample in tick_samples + settle_samples] == ["tick", "settle"]
+    phases = {row.labels["phase"] for row in db_session.query(MetricSample).filter_by(
+        source="recorder", name="recorder.rss_mb")}
+    assert phases == {"tick", "settle"}
