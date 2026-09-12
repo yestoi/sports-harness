@@ -28,7 +28,7 @@ from harness.dashboard.snapshots import base_payload, register_builder, section
 #: `"insufficient"`, and whose sample size is `n_obs`/`n_clusters` -- there is no `n` key. A
 #: surface that spelled either itself would render an always-empty failing list and an always-zero
 #: pass count against a production row, while passing its own tests.
-from harness.report.gate import FAILED, INSUFFICIENT, PASSED
+from harness.report.gate import CRITERIA, FAILED, INSUFFICIENT, PASSED
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,14 @@ log = logging.getLogger(__name__)
 CADENCE_S = 300
 #: How far back the per-criterion history reaches (spec §2.4 item 2).
 HISTORY_LIMIT = 200
+
+#: The stored keys that are criteria, and nothing else `criteria_json` may ever carry beside
+#: them (review I1). `evaluate_all` writes an `eligibility` key into the same object once the
+#: dormant gate eligibility mechanism (Task 4) is switched on; without this filter that key
+#: would iterate as a thirteenth criterion here and render a phantom row with every field
+#: `None`. Read from `CRITERIA` rather than restated, so a future sibling key needs no change
+#: here either.
+_CRITERION_NAMES = frozenset(c.name for c in CRITERIA)
 
 GATE_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                        "verdict", "criteria", "variants", "history", "standing_text"})
@@ -82,6 +90,8 @@ def _criterion_rows(criteria_json: dict) -> list[dict]:
     """
     rows = []
     for name, body in (criteria_json or {}).items():
+        if name not in _CRITERION_NAMES:
+            continue
         body = body if isinstance(body, dict) else {}
         rows.append({"name": name,
                      "definition": body.get("definition"),
@@ -100,6 +110,8 @@ def _history(session: Session) -> dict:
     out: dict[str, list] = {}
     for row in session.execute(_HISTORY, {"limit": HISTORY_LIMIT}):
         for name, body in (row.criteria_json or {}).items():
+            if name not in _CRITERION_NAMES:
+                continue
             body = body if isinstance(body, dict) else {}
             out.setdefault(name, []).append({"evaluated_at": row.evaluated_at.isoformat(),
                                              "value": body.get("value"),

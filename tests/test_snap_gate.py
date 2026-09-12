@@ -12,18 +12,23 @@ NOW = datetime(2026, 10, 5, 15, 0, tzinfo=timezone.utc)
 #: The shape `harness.report.gate.CriterionResult.as_json()` actually writes, not an invented
 #: one: nine keys, sample size as `n_obs`/`n_clusters`, and the three status strings the gate
 #: defines. A fixture of the wrong shape would let every test pass over a broken surface.
+#:
+#: The three keys are real `CRITERIA` names (review I1 fix): `_criterion_rows`/`_history` now
+#: filter to `{c.name for c in CRITERIA}`, so a fixture keyed by an invented name would be
+#: silently dropped rather than exercise the surface. The values beside them stay illustrative,
+#: not the real definitions -- only the key has to be real.
 CRITERIA = {
-    "clv_positive": {"value": 0.021, "threshold": "> 0", "passed": True, "status": "passed",
-                     "n_obs": 240, "n_clusters": 62,
-                     "definition": "mean CLV vs pinnacle_t5 > 0", "fn": "_clv_positive",
-                     "detail": {}},
-    "fill_realism": {"value": 0.91, "threshold": ">= 0.95", "passed": False, "status": "failed",
-                     "n_obs": 180, "n_clusters": 40,
-                     "definition": "queue-model fills with a print", "fn": "_fill_realism",
-                     "detail": {}},
-    "sample_size": {"value": None, "threshold": ">= 30", "passed": False,
-                    "status": "insufficient", "n_obs": 18, "n_clusters": 6,
-                    "definition": "game clusters", "fn": "_sample_size", "detail": {}},
+    "clv_pinnacle_lb": {"value": 0.021, "threshold": "> 0", "passed": True, "status": "passed",
+                        "n_obs": 240, "n_clusters": 62,
+                        "definition": "mean CLV vs pinnacle_t5 > 0", "fn": "_clv_positive",
+                        "detail": {}},
+    "fill_events": {"value": 0.91, "threshold": ">= 0.95", "passed": False, "status": "failed",
+                    "n_obs": 180, "n_clusters": 40,
+                    "definition": "queue-model fills with a print", "fn": "_fill_realism",
+                    "detail": {}},
+    "filled_vs_unfilled": {"value": None, "threshold": ">= 30", "passed": False,
+                          "status": "insufficient", "n_obs": 18, "n_clusters": 6,
+                          "definition": "game clusters", "fn": "_sample_size", "detail": {}},
 }
 
 
@@ -84,13 +89,13 @@ def test_every_criterion_carries_its_stored_definition_threshold_value_and_n(db_
     _evaluation(db_session, at=NOW - timedelta(hours=1))
     payload = build_gate(db_session, NOW, env_settings)
     rows = {r["name"]: r for r in payload["criteria"]}
-    assert rows["clv_positive"]["definition"] == "mean CLV vs pinnacle_t5 > 0"
-    assert rows["clv_positive"]["threshold"] == "> 0"
-    assert rows["clv_positive"]["value"] == 0.021
+    assert rows["clv_pinnacle_lb"]["definition"] == "mean CLV vs pinnacle_t5 > 0"
+    assert rows["clv_pinnacle_lb"]["threshold"] == "> 0"
+    assert rows["clv_pinnacle_lb"]["value"] == 0.021
     # `n` is the game-cluster count, which is what the confidence phrase reads; `n_obs` travels
     # beside it. There is no `n` key in what the gate stores.
-    assert rows["clv_positive"]["n"] == 62 and rows["clv_positive"]["n_obs"] == 240
-    assert rows["clv_positive"]["status"] == PASSED
+    assert rows["clv_pinnacle_lb"]["n"] == 62 and rows["clv_pinnacle_lb"]["n_obs"] == 240
+    assert rows["clv_pinnacle_lb"]["status"] == PASSED
     assert payload["verdict"]["n_pass"] == 1
     assert payload["verdict"]["n_fail"] == 1
     assert payload["verdict"]["n_insufficient"] == 1
@@ -105,7 +110,7 @@ def test_a_real_gate_result_round_trips_through_the_builder(db_session, env_sett
                              n_clusters=62, definition="mean CLV vs pinnacle_t5 > 0",
                              fn="_clv_positive", status=PASSED)
     _evaluation(db_session, at=NOW - timedelta(hours=1),
-                criteria={"clv_positive": result.as_json()})
+                criteria={"clv_pinnacle_lb": result.as_json()})
     row = build_gate(db_session, NOW, env_settings)["criteria"][0]
     assert row["status"] == PASSED and row["n"] == 62 and row["value"] == 0.021
     assert row["definition"] == "mean CLV vs pinnacle_t5 > 0"
@@ -114,7 +119,8 @@ def test_a_real_gate_result_round_trips_through_the_builder(db_session, env_sett
 def test_an_insufficient_criterion_is_never_dressed_up(db_session, env_settings):
     _evaluation(db_session, at=NOW - timedelta(hours=1))
     payload = build_gate(db_session, NOW, env_settings)
-    reading = next(r for r in payload["readings"]["criteria"] if r.startswith("sample_size"))
+    reading = next(r for r in payload["readings"]["criteria"]
+                  if r.startswith("filled_vs_unfilled"))
     assert "not enough evidence" in reading
     assert "0.0" not in reading
 
@@ -135,8 +141,8 @@ def test_the_history_is_bounded_and_newest_first(db_session, env_settings):
     for days in range(5):
         _evaluation(db_session, at=NOW - timedelta(days=days))
     history = build_gate(db_session, NOW, env_settings)["history"]
-    assert len(history["clv_positive"]) == 5
-    stamps = [row["evaluated_at"] for row in history["clv_positive"]]
+    assert len(history["clv_pinnacle_lb"]) == 5
+    stamps = [row["evaluated_at"] for row in history["clv_pinnacle_lb"]]
     assert stamps == sorted(stamps, reverse=True)
     assert gate.HISTORY_LIMIT == 200
 
@@ -147,6 +153,33 @@ def test_the_payload_carries_only_the_allowed_keys_and_no_projection(db_session,
     assert set(payload) == GATE_KEYS
     for banned in ("projection", "forecast", "estimate_at_go_live"):
         assert banned not in payload
+
+
+def test_an_eligibility_key_beside_the_twelve_criteria_renders_no_phantom_row(db_session,
+                                                                            env_settings):
+    """Review I1: `evaluate_all` writes `criteria_json["eligibility"]` as a sibling of the
+    twelve criterion names once the dormant gate eligibility mechanism (Task 4) is switched
+    on. That key is not a criterion -- it carries no `status`, no `value`, no `n_clusters` --
+    and the builder must not render it as a thirteenth row with every field `None`.
+    """
+    from harness.report.gate import CRITERIA as REAL_CRITERIA
+    from harness.report.gate import PASSED
+
+    criteria_json = {c.name: {"value": 1, "threshold": 0, "passed": True, "status": PASSED,
+                              "n_obs": 1, "n_clusters": 1, "definition": c.definition,
+                              "fn": c.fn, "detail": {}}
+                     for c in REAL_CRITERIA}
+    criteria_json["eligibility"] = {"from_order_id": 4200, "from_run_id": 9100}
+    _evaluation(db_session, at=NOW - timedelta(hours=1), criteria=criteria_json)
+
+    payload = build_gate(db_session, NOW, env_settings)
+    names = {r["name"] for r in payload["criteria"]}
+    assert len(payload["criteria"]) == 12
+    assert names == {c.name for c in REAL_CRITERIA}
+    assert "eligibility" not in names
+
+    history = build_gate(db_session, NOW, env_settings)["history"]
+    assert "eligibility" not in history
 
 
 def test_gate_reads_only_its_two_tables():

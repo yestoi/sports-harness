@@ -215,6 +215,27 @@ def test_note_cli_rejects_an_unknown_kind(cli_settings, db_session):
     assert db_session.query(OperatorEvent).count() == 0
 
 
+def test_gate_cmd_runs_with_the_default_dormant_eligibility_settings(cli_settings, db_session):
+    """Review M4: `gate` had no coverage at all. This exercises the wiring added in Task 4
+    (`harness/cli.py:551`) with `Settings()`'s real defaults -- both eligibility settings
+    `None` -- and asserts the command runs end to end without anyone having to pass an
+    `Eligibility` object in by hand, and that the dormant boundary line stays out of the
+    printed document."""
+    from datetime import datetime, timezone
+
+    from harness.db.models import StrategyVariant
+
+    db_session.add(StrategyVariant(variant_id="p00000000009", name="sharp_direct",
+                                   tier="primary", config_json={}, active=True,
+                                   registered_at=datetime(2026, 9, 1, tzinfo=timezone.utc)))
+    db_session.commit()
+
+    result = runner.invoke(app, ["gate"])
+    assert result.exit_code == 0, result.output
+    assert "criteria_hash=" in result.output
+    assert "eligibility=" not in result.output
+
+
 def test_runbook_export_fixture_paragraph_matches_the_shipped_command():
     """Final review I5: the runbook's `export-fixture` paragraph had drifted from the CLI --
     it described a fixture *directory* "the same shape as tests/fixtures/day_2026-09-13/",
