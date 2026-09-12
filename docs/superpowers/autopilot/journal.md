@@ -1546,3 +1546,17 @@ Times are America/Chicago.
 - Rulings: (1) The R4 text lives in the roadmap's rulings table, which the loop never edits: this entry governs until the user pastes the replacement wording (User-side TODO added with the exact text) - cost if wrong: none; the rule is applied as the user stated it. (2) Tonight's wave is a full deploy (fix 44 touches `app-ws`) and stays at 23:00 CT.
 - Carried forward: none
 - Next: unchanged (6A T6, 6C T7, the 23:00 CT wave)
+
+## 129. phase - 6A preserve and define merged to main, 2d1ed62 - 2026-09-11 19:38 CT
+
+- Orient: rule 5 (phase 6A in progress since journal 118; all six tasks complete on the branch).
+- Branch / commits: `phase6a-preserve-and-define` 962863a..ac4a556 (23 commits: T1 strict-xfail regressions, T2 capsule + `harness capsule`, T3 correction manifest + C0, T4 dormant gate eligibility, T5 runbook, T6 verify rows), controller fix commit 1947569, archive 2d1ed62; `git merge --ff-only` into main at 19:38 CT; base was main e67b19d.
+- Result: done (merged; deploy pending)
+- Dispatches this unit: 1 (final review, opus). Phase total: 6 implementers (one re-dispatch), 6 task reviewers, 3 scoped re-reviews, 1 final review.
+- Tests: branch suite alone at ac4a556: 3,077 passed, 6 xfailed (strict), 0 failed, 0 warnings (scratchpad/phase6a-suite-ac4a556.log); `make test` on `main` at 2d1ed62 running (evidence/2026-09-11-main-suite-2d1ed62.txt) as the deploy gate.
+- Final review: mergeable, 0 Critical, 2 Important, 7 Minor (`docs/superpowers/reviews/2026-09-11-phase6a-final-review.md`). I1: addendum §0.4's roadmap clause undelivered - User-side TODO line added. I2: the runbook's `tar -xf` with no destination would let six prefix-less capsules overwrite each other - explicit per-selector directory, matching verify.md's `capsule/*/manifest.json`. M4 taken with them (`row_cap` wording). Docs-only, applied by the controller (1947569); no re-review.
+- 3a audit on the branch: variants empty; pyproject empty; URL hits identical to main; the DDL-pattern hits are the manifest field `truncated` only.
+- Rulings: (1) M1 - the order capsule keys `config_history` by `variant_id`, not `orders.config_hash`, a deviation from §0.1: accepted, the two hashes are different ids (12-hex strategy id vs the executor's 64-hex sha256) and the literal join matches nothing - cost if wrong: the capsule carries the variant's config row rather than the order's, which is the same row today. (2) M2 - no automated test for `--out -`: carried to 6B (the reviewer exercised it by hand and found it correct). (3) M3 - one-sided activation of the eligibility settings leaves criterion 8 on the whole history: stated in the User-side TODO line so the switch is set as a pair. (4) Roadmap 6A status set to `done` at the merge; the milestone's deploy and the capsule extraction (Sat 04:30-08:00 CT, runbook `docs/runbooks/capsule.md`) follow as deploy/operate units, not as phase work.
+- Anomalies: none new. Fix 40's row still waits on the listener (fix 44 in the wave).
+- Carried forward: 6B may now be planned (gate "6A done" met); it queues behind the wave deploy and 6C wave 2.
+- Next: main's suite; the 23:00 CT wave now carries 6A + 6C wave 1 + fix 42 + fix 44 (full recipe from main 2d1ed62); wakeup 22:45 CT (cron 4d16b211); 6C T8 in review soon, T10 holding its suite for a free slot, then T11; the 6A phase report + U7 bundle/push after the deploy verify.
