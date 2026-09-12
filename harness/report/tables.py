@@ -394,8 +394,10 @@ def _stopped_note(session: Session, window: dict, variants: list[dict]) -> str:
 def _table1(session: Session, window: dict, variants: list[dict]) -> Table:
     header = ("Funnel per registered variant x sport, over the week's non-replay rows. "
               "`fill_rate` is the actual fill rate (orders with a `queue_model` fill / "
-              "placements); the column key is unchanged because it is a stored "
-              "`report_cells.col_key` the Study surface reads. "
+              "placements); its numerator is orders, while the `fills` column beside it counts "
+              "`queue_model` fill *rows*, of which one order can carry several. The column key "
+              "is unchanged because it is a stored `report_cells.col_key` the Study surface "
+              "reads. "
               "`markets_scanned` is variant-independent (distinct markets with a gap snapshot). "
               "`tick_coverage` is the share of the week's pricing ticks on which the variant "
               "was scored at all (distinct `signals.run_id` over distinct "

@@ -138,7 +138,8 @@ definitions with a fingerprint, and the dashboard shows them. One plain-words li
 naming the test the code runs:
 
 - `fill_events`: at least **150 pretend fills** confirmed by real trades, across at least **40 games and
-  both sports**, at least **80 %** of them from a live order-book feed rather than periodic snapshots.
+  both sports**, at least **80 %** of them from a live order-book feed rather than periodic snapshots
+  **and with a clean book for the whole time the order rested**.
 - `marquee_share`: at least **30 %** of those fills are on a tight market (a 4-cent spread or less) in the
   NFL or in college football.
 - `clv_pinnacle_lb`: the **low end of the honest range** on closing line value against Pinnacle is **above

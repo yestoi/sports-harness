@@ -878,10 +878,14 @@ def test_restrict_to_selection_keys_a_contrast_on_its_benchmark(db_session, env_
 
 def test_table1_names_what_its_fill_rate_actually_is(db_session, env_settings):
     """Addendum 0.11: the column key stays `fill_rate` -- it is a stored `report_cells.col_key`
-    that the Study surface reads -- and the header says what it measures."""
+    that the Study surface reads -- and the header says what it measures. Review I2: the header
+    also says that `fill_rate`'s numerator is orders while the neighbouring `fills` column counts
+    fill rows, so a reader does not divide the two and expect `fill_rate`."""
     t1 = _tables(db_session, env_settings)["t1"]
     assert "fill_rate" in t1.columns
     assert "actual fill rate (orders with a `queue_model` fill / placements)" in t1.header
+    assert ("its numerator is orders, while the `fills` column beside it counts "
+            "`queue_model` fill *rows*, of which one order can carry several") in t1.header
 
 
 def test_table1_reports_tick_coverage_per_variant(db_session, env_settings):
@@ -1370,9 +1374,47 @@ def test_the_confirmation_note_counts_selected_evaluated_insufficient_missing_an
     assert "selected 5" in note
     assert "evaluated 4" in note
     assert "insufficient (< 10 clusters) 1" in note
+    assert "no estimate 0" in note
     assert "missing (no row) 1" in note
     assert "confirmed (two-sided) 2" in note
     assert "of which on the selected direction 1" in note
+
+
+def test_a_duplicate_selected_cell_key_does_not_inflate_the_selected_count():
+    """Minor M3: `selected` is counted over the deduplicated `wanted_cells` set, so a duplicate
+    entry in `selection["cells"]` (same `CELL_KEY`) cannot push `selected` past
+    `evaluated + insufficient + no estimate + missing`."""
+    t4 = _confirmation_t4([
+        ["direct", "20-35", "< 3 h", "nfl", "moneyline", _cell(0.0300, 42, 0.0200, 0.0400)],
+    ])
+    selection = {"cells": [_selected(), _selected()], "contrasts": []}
+    note = restrict_to_selection({"t4": t4}, selection)["t4"].note
+    assert "selected 1" in note
+    assert "evaluated 1" in note
+    assert "missing (no row) 0" in note
+
+
+def test_a_selected_cell_with_no_posterior_at_all_is_no_estimate_not_insufficient():
+    """Minor M2: `_has_floor` returns False both for a cell below the ten-game-cluster floor and
+    for a cell with no posterior at all (`PLACEHOLDER` or `NOT_COLLECTED`). Folding both into
+    `insufficient` would misname the second population, which has no cluster count to be below
+    a floor of. The two are counted and printed apart."""
+    t4 = _confirmation_t4([
+        # below the floor: a real posterior, four clusters
+        ["direct", "20-35", "< 3 h", "nfl", "moneyline", _cell(0.0300, 4, 0.0200, 0.0400)],
+        # no estimate at all: never collected
+        ["derived", "20-35", "< 3 h", "nfl", "moneyline", NOT_COLLECTED],
+    ])
+    selection = {"cells": [
+        _selected(fair_source="direct"),
+        _selected(fair_source="derived"),
+    ], "contrasts": []}
+
+    note = restrict_to_selection({"t4": t4}, selection)["t4"].note
+    assert "evaluated 2" in note
+    assert "insufficient (< 10 clusters) 1" in note
+    assert "no estimate 1" in note
+    assert "confirmed (two-sided) 0" in note
 
 
 def test_the_direction_count_is_printed_and_never_applied():
