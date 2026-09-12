@@ -52,7 +52,14 @@ this file keeps `0007`.
 (intrinsic to a partitioned index in Postgres -- no CASCADE needed) -- unlike every revision
 since `0002_phase45`, whose `downgrade()` is `pass` under roadmap invariant 5. A plain, additive
 index carries none of the data-loss risk that rule guards against, and leaving a partitioned
-parent half-built by a rolled-back-and-reapplied revision is worse than removing it cleanly.
+parent half-built by a rolled-back-and-reapplied revision is worse than removing it cleanly. The
+plain `drop index` takes an AccessExclusiveLock on the parent and every partition -- correct here
+because a downgrade is already an operator action taken with the deploy stopped, not a statement
+`init-db` or `migrate ensure` could run against a live writer.
+
+Round 1 (review Minor 1): `only={"ix_raw_source_endpoint_id"}` pins `upgrade()` to the one index
+this revision has ever built, so a tuple entry `_PARTITIONED_CONCURRENT_INDEXES` gains later
+cannot retroactively change what an already-shipped revision does.
 """
 from collections.abc import Sequence
 
@@ -68,7 +75,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     with op.get_context().autocommit_block():
-        _ensure_partitioned_concurrent_indexes(op.get_bind())
+        _ensure_partitioned_concurrent_indexes(op.get_bind(), only=frozenset({"ix_raw_source_endpoint_id"}))
 
 
 def downgrade() -> None:
