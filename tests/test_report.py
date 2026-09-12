@@ -874,6 +874,14 @@ def test_restrict_to_selection_keys_a_contrast_on_its_benchmark(db_session, env_
         tables["t2"].columns)]
 
 
+def test_table1_names_what_its_fill_rate_actually_is(db_session, env_settings):
+    """Addendum 0.11: the column key stays `fill_rate` -- it is a stored `report_cells.col_key`
+    that the Study surface reads -- and the header says what it measures."""
+    t1 = _tables(db_session, env_settings)["t1"]
+    assert "fill_rate" in t1.columns
+    assert "actual fill rate (orders with a `queue_model` fill / placements)" in t1.header
+
+
 def test_table1_reports_tick_coverage_per_variant(db_session, env_settings):
     """Amendment 4: two pricing ticks in the week, the primary scored on both and the secondary
     on one, so the rotation's asymmetry is visible beside every cross-variant comparison."""

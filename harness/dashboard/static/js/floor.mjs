@@ -94,13 +94,15 @@ function gameBoard(payload) {
 
 // --- 2. funnel -----------------------------------------------------------------------------
 
+// Addendum 0.11: each stage carries its unit, and the unit comes from the payload rather than
+// being retyped here, so the label and the number cannot drift apart.
 const FUNNEL_STAGES = [
   { key: "ticks", plain: "Raw ticks" },
   { key: "gaps", plain: "Gap snapshots" },
-  { key: "candidates", plain: "Candidates" },
-  { key: "intents", plain: "Wanted to bet", technical: "intent" },
-  { key: "orders", plain: "Simulated orders" },
-  { key: "fills", plain: "Filled" },
+  { key: "candidate_signals", plain: "Candidate signals" },
+  { key: "intent_verdicts", plain: "Intent verdicts", technical: "intent" },
+  { key: "placements", plain: "Orders placed" },
+  { key: "orders_filled_actual", plain: "Orders filled" },
 ];
 const BAR_W = 26;
 const BAR_GAP = 20;
@@ -149,8 +151,10 @@ function funnelSection(payload) {
   if (sectionFailed(payload.funnel)) return unavailableCard("Funnel");
   const data = funnelData(payload) || {};
   const counts = { ticks: data.ticks || 0, gaps: data.gaps || 0,
-                   candidates: data.candidates || 0, intents: data.intents || 0,
-                   orders: data.orders || 0, fills: data.fills || 0 };
+                   candidate_signals: data.candidate_signals || 0,
+                   intent_verdicts: data.intent_verdicts || 0,
+                   placements: data.placements || 0,
+                   orders_filled_actual: data.orders_filled_actual || 0 };
   const max = Math.max(1, ...Object.values(counts));
   const skipped = data.skipped || [];
   const cancelled = data.cancelled || [];
@@ -176,8 +180,17 @@ function funnelSection(payload) {
   // variant beside the funnel's own total.
   const variantRows = Object.entries(data.by_variant || {})
     .map(([variant, v]) => [`candidates -- ${variant}`, v.candidate ?? 0]);
-  const countRows = [...FUNNEL_STAGES.map((stage) => [stage.plain, counts[stage.key]]),
-                     ["signals rejected", rejectedTotal], ...variantRows];
+  const units = data.units || {};
+  const fillRows = data.fill_rows || {};
+  const countRows = [
+    ...FUNNEL_STAGES.map((stage) => [stage.plain, counts[stage.key], units[stage.key] || ""]),
+    ["signals rejected", rejectedTotal, "rejected signal rows"],
+    ["Orders filled, counterfactual only", data.orders_filled_counterfactual || 0,
+     units.orders_filled_counterfactual || ""],
+    ...Object.keys(fillRows).map((method) =>
+      [`fill rows -- ${method}`, fillRows[method], units.fill_rows || ""]),
+    ...variantRows.map(([name, count]) => [name, count, units.candidate_signals || ""]),
+  ];
   const reasonRows = [
     ...skipped.map((s) => [s.plain || s.reason, s.reason, s.count]),
     ...cancelled.map((s) => [s.plain || s.reason, s.reason, s.count]),
@@ -186,7 +199,7 @@ function funnelSection(payload) {
     el("h3", { text: `Funnel, trailing ${data.window_h ?? "--"} h` }),
     sentences(payload.sentences?.funnel),
     fig,
-    table(["stage", "count"], countRows, { label: "Funnel counts" }),
+    table(["stage", "count", "unit"], countRows, { label: "Funnel counts" }),
     reasonRows.length
       ? table(["reason", "code", "count"], reasonRows, { label: "Skips and cancels" })
       : null);
@@ -311,9 +324,15 @@ function exposureLanes(payload) {
   }
   const data = exposure(payload) || {};
   const lanes = data.lanes || [];
+  // Addendum 0.12: a 14-day figure labelled as one. The bound is fix 31's and stays.
+  const coverage = data.coverage;
+  const note = coverage
+    ? el("p", { class: "n", text: coverage.note })
+    : null;
   return el("div", { class: "card" }, head,
     lanes.length ? el("div", { class: "grid3" }, lanes.map(exposureLane))
-                 : el("p", { class: "grey", text: "no lane reporting yet" }));
+                 : el("p", { class: "grey", text: "no lane reporting yet" }),
+    note);
 }
 
 // --- 6. executor vitals strip ------------------------------------------------------------------

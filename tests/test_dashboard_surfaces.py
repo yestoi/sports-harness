@@ -173,3 +173,13 @@ def test_pulse_shows_the_study_cell_age_in_its_ages_panel():
     body = (STATIC / "js" / "pulse.mjs").read_text()
     assert "cell_age_s" in body
     assert "cells from" in body
+
+
+def test_floor_reads_the_new_funnel_unit_keys_and_prints_the_exposure_note():
+    """Addendum 0.11 and 0.12: the surface switches to the unit-named keys and shows the
+    exposure coverage note beside the figures."""
+    body = (STATIC / "js" / "floor.mjs").read_text()
+    for key in ("candidate_signals", "intent_verdicts", "placements", "orders_filled_actual",
+                "orders_filled_counterfactual"):
+        assert key in body, key
+    assert "coverage" in body

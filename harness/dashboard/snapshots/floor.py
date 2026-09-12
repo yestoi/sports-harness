@@ -97,6 +97,25 @@ FUNNEL_WINDOW = WINDOW_6H
 #: not as a trim. Rows come back newest-first, so if it ever does bind it drops the oldest of
 #: the window, never the newest.
 FUNNEL_NOTES_LIMIT = 2000
+
+#: Addendum 0.11 and design review I6. What each funnel count *is*, said out loud on the
+#: payload, because every one of them is a count of events and none is the distinct count a
+#: conversion funnel would need. `candidate_signals` sums `pricing.signals[variant].candidate`
+#: out of `runs.notes`: one opportunity scored on three ticks is three signal rows.
+#: `intent_verdicts` is `exec.placed + exec.skipped` off `metric_samples`: one intent repriced
+#: twice is several verdicts. The distinct versions need the `signals`/`intents` queries fix 31
+#: removed (`_funnel`'s own docstring says why), and they are 6D's instrumentation, not a
+#: display fix. Until then this is a labelled count, and it says so.
+FUNNEL_UNITS = {
+    "ticks": "pricing ticks, from runs.notes",
+    "gaps": "gap snapshots, from runs.notes",
+    "candidate_signals": "candidate signal rows, not distinct opportunities",
+    "intent_verdicts": "intent verdicts (placed + skipped), not distinct episodes",
+    "placements": "orders placed",
+    "orders_filled_actual": "orders with at least one queue_model fill",
+    "orders_filled_counterfactual": "orders whose only fills are no_watcher",
+    "fill_rows": "fill rows by method, not orders",
+}
 BOARD_WINDOW = timedelta(hours=24)
 BOARD_LOOKBACK = timedelta(hours=4)
 #: How far back `_SCORES` looks for a board game's newest score row. A game on the board either
@@ -227,6 +246,29 @@ _FUNNEL_COUNTS = text("""
 #: time-leading index of its own.
 _FILLS_COUNT = text("""
     select count(*) from fills where replay = false and filled_at >= :since
+""")
+
+#: Addendum 0.11. Bound: `f.filled_at >= :since` (`FUNNEL_WINDOW`, 6 h). Index:
+#: `ix_fills_filled_at`, with `orders` reached by primary key. One row per order, which is what
+#: separates the actual filled population (at least one `queue_model` fill) from the
+#: counterfactual one (only `no_watcher` fills) without a second pass over `fills`.
+_FUNNEL_ORDER_FILLS = text("""
+    select f.order_id,
+           bool_or(f.fill_method = 'queue_model') as has_queue_model,
+           bool_or(f.fill_method = 'no_watcher') as has_no_watcher
+    from fills f
+    join orders o on o.id = f.order_id
+    where f.replay = false and o.replay = false and f.filled_at >= :since
+    group by f.order_id
+""")
+
+#: Same bound and index. Fill *rows* by method, which is a different unit from orders and is
+#: reported as its own number rather than folded in.
+_FUNNEL_FILL_ROWS = text("""
+    select f.fill_method, count(*) as n
+    from fills f
+    where f.replay = false and f.filled_at >= :since
+    group by 1
 """)
 
 #: Bound: `o.placed_at >= :since` (`OPEN_ORDERS_WINDOW`, 7 d) and `limit :limit`
@@ -499,6 +541,11 @@ def _funnel(session: Session, now: datetime) -> dict:
     replaced query counted and this one does not. `exec.intents_considered` is not usable for
     the old meaning and was not used: `load_intents` re-reads the newest intent per key on every
     loop, so that gauge counts one intent once per loop it survives, not once.
+
+    Addendum 0.11: the old keys (`candidates`, `intents`, `orders`, `fills`) travel for one
+    release beside unit-named twins (`candidate_signals`, `intent_verdicts`, `placements`,
+    `orders_filled_actual`, `orders_filled_counterfactual`, `fill_rows`), each labelled in
+    `units` with what it counts and, where it matters, what it is *not* -- see `FUNNEL_UNITS`.
     """
     since = now - FUNNEL_WINDOW
     notes = recent_run_notes(session, since, limit=FUNNEL_NOTES_LIMIT)
@@ -530,14 +577,28 @@ def _funnel(session: Session, now: datetime) -> dict:
                 skips[row.reason] = skips.get(row.reason, 0.0) + count
         elif row.reason:
             cancels[row.reason] = cancels.get(row.reason, 0.0) + count
+    per_order = [dict(r._mapping) for r in session.execute(_FUNNEL_ORDER_FILLS, window)]
+    fill_rows = {r.fill_method: int(r.n) for r in session.execute(_FUNNEL_FILL_ROWS, window)}
+    actual = sum(1 for r in per_order if r["has_queue_model"])
+    counterfactual = sum(1 for r in per_order
+                         if not r["has_queue_model"] and r["has_no_watcher"])
     return {
         "window_h": int(FUNNEL_WINDOW.total_seconds() // 3600),
         "ticks": ticks, "gaps": gaps, "candidates": candidates,
         "rejected_total": rejected,
         "by_variant": by_variant,
+        # The old keys, kept for one release so a cached page still renders (addendum 0.11).
         "intents": int(placed + skipped_total),
         "orders": int(placed),
         "fills": int(session.execute(_FILLS_COUNT, window).scalar() or 0),
+        # The new keys, each named for what it actually counts.
+        "candidate_signals": candidates,
+        "intent_verdicts": int(placed + skipped_total),
+        "placements": int(placed),
+        "orders_filled_actual": actual,
+        "orders_filled_counterfactual": counterfactual,
+        "fill_rows": fill_rows,
+        "units": FUNNEL_UNITS,
         "skipped": _reason_rows(skips),
         "cancelled": _reason_rows(cancels),
     }
@@ -697,7 +758,14 @@ def _exposure(session: Session, now: datetime, settings: Settings) -> dict:
                       "daily_cap": _dec(cap_money),
                       "caps_enforced": enforced,
                       "cap_use": cap_use})
-    return {"lanes": lanes}
+    # Addendum 0.12 / D7: fix 31's `EXPOSURE_WINDOW` stays -- a complete aggregate over the whole
+    # `positions` view is exactly the unbounded scan it removed -- so the figure above is a
+    # 14-day figure. It is labelled rather than presented as a total; a complete aggregate is a
+    # 6D/6E cost question, not a display fix.
+    return {"lanes": lanes,
+            "coverage": {"window_days": EXPOSURE_WINDOW.days, "complete": False,
+                         "note": "positions opened more than "
+                                 f"{EXPOSURE_WINDOW.days} days ago are not counted"}}
 
 
 def _vitals(session: Session, now: datetime) -> dict:

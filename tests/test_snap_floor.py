@@ -959,3 +959,67 @@ def test_the_lateral_leads_on_ix_fair_game_type_created_and_filters_the_rest(db_
     assert "outcome_team_id" in filt, plan
     assert "outcome_side" in filt, plan
     assert "threshold" in filt, plan
+
+
+def test_the_funnel_labels_each_count_with_its_own_unit(db_session, env_settings):
+    """Addendum 0.11 and design review I6: a distinct-opportunity or distinct-episode count
+    needs the `signals`/`intents` queries fix 31 removed, so this surface reports the counts it
+    actually has and says what they are. One candidate that becomes two intent verdicts and one
+    placement with a `queue_model` fill: four numbers, four units, no addition of unlike things.
+    """
+    db_session.add(Run(started_at=NOW - timedelta(hours=1), status="ok", build_sha="abc",
+                       notes={"pricing": {"gaps": 9, "signals": {"sharp_direct":
+                                                                 {"candidate": 1,
+                                                                  "rejected": 0}}}}))
+    _exec_metric(db_session, "exec.placed", 1)
+    _exec_metric(db_session, "exec.skipped", 1, reason="kickoff")
+    game = _game_with_market(db_session)
+    actual = _open_order(db_session, venue_market_id=game.market_id, prob=Decimal("0.4500"),
+                         game_id=game.id)
+    db_session.add(Fill(order_id=actual.id, prob=Decimal("0.4500"), contracts=Decimal("5.00"),
+                        fee=Decimal("0.0200"), filled_at=NOW - timedelta(hours=1),
+                        fill_method="queue_model", through=False, tape_source="ws",
+                        has_print=True, replay=False))
+    counterfactual = _open_order(db_session, venue_market_id=game.market_id,
+                                 prob=Decimal("0.4500"), game_id=game.id)
+    db_session.add(Fill(order_id=counterfactual.id, prob=Decimal("0.4500"),
+                        contracts=Decimal("5.00"), fee=Decimal("0.0200"),
+                        filled_at=NOW - timedelta(hours=1), fill_method="no_watcher",
+                        through=False, tape_source="ws", has_print=False, replay=False))
+    db_session.flush()
+
+    funnel = build_floor(db_session, NOW, env_settings)["funnel"]
+    assert funnel["candidate_signals"] == 1
+    assert funnel["intent_verdicts"] == 2
+    assert funnel["placements"] == 1
+    assert funnel["orders_filled_actual"] == 1
+    assert funnel["orders_filled_counterfactual"] == 1
+    assert funnel["fill_rows"] == {"queue_model": 1, "no_watcher": 1}
+    # Every new count names its unit, and the label is honest about what it is not.
+    assert "not distinct opportunities" in funnel["units"]["candidate_signals"]
+    assert "not distinct episodes" in funnel["units"]["intent_verdicts"]
+    assert set(funnel["units"]) >= {"candidate_signals", "intent_verdicts", "placements",
+                                    "orders_filled_actual", "orders_filled_counterfactual",
+                                    "fill_rows"}
+
+
+def test_the_old_funnel_keys_stay_for_one_release(db_session, env_settings):
+    """Addendum 0.11: the front end switches to the new keys, and the old ones travel beside
+    them for one release so a cached page and a replayed payload both still render."""
+    _exec_metric(db_session, "exec.placed", 3)
+    db_session.flush()
+    funnel = build_floor(db_session, NOW, env_settings)["funnel"]
+    assert funnel["orders"] == funnel["placements"] == 3
+    assert "intents" in funnel and "fills" in funnel and "candidates" in funnel
+
+
+def test_the_exposure_section_states_its_own_coverage_limit(db_session, env_settings):
+    """Addendum 0.12 and D7: fix 31's 14-day bound stays -- a complete aggregate over the whole
+    `positions` view is the unbounded scan it removed -- and the figure is labelled rather than
+    quietly presented as a total."""
+    from harness.dashboard.snapshots.floor import EXPOSURE_WINDOW
+
+    coverage = build_floor(db_session, NOW, env_settings)["exposure"]["coverage"]
+    assert coverage["window_days"] == EXPOSURE_WINDOW.days == 14
+    assert coverage["complete"] is False
+    assert "not counted" in coverage["note"]
