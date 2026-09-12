@@ -1,0 +1,61 @@
+
+== clock
+2026-09-11 23:47:39 CDT
+2026-09-12T04:47:39Z (mac utc)
+
+== git
+main
+dirty files:        0
+8973697 docs(autopilot): kickoff launches with --autocompact 500k
+cbc8072 merge: autopilot context recovery (routed references, bootstrap reader, compaction hooks)
+1d536b5 docs: autopilot journal 133 (drill: expecting verify; normalize timeouts transient); state for the fresh session
+
+== mac
+ sleep                1 (sleep prevented by sharingd, caffeinate, powerd)
+97298 caffeinate -i -t 300
+
+== test db
+harness-pg-test Up 2 days
+pytest processes: 0
+
+== secrets
+-rw------- anthropic_api_key
+-rw------- backup_age_key
+-rw------- dashboard_token
+-rw------- kalshi_demo_key_id
+-rw------- kalshi_demo_private_key.pem
+-rw------- kalshi_key_id
+-rw------- kalshi_private_key.pem
+-rw------- odds_api_key
+.env.nas present
+
+== paper posture
+paper posture intact
+
+== tunnel
+60522 ssh -N -L 8180:127.0.0.1:8180 trey@192.168.12.228
+localhost:8180 -> 200
+
+== nas
+2026-09-12T04:47:44Z (nas utc)
+sports-harness-app-backup-1 Up 3 days
+sports-harness-app-exec-1 Up 25 minutes (unhealthy)
+sports-harness-app-research-1 Up 25 minutes
+sports-harness-app-run-1 Up 25 minutes
+sports-harness-app-serve-1 Up 25 minutes (healthy)
+sports-harness-app-ws-1 Up 25 minutes
+sports-harness-postgres-1 Up 3 days (healthy)
+{"status":"ok","last_run_at":"2026-09-12T04:47:06.044876+00:00","last_status":"running","seconds_since":39,"credits_remaining":4932840,"credits_budget":5000000,"credits_low":false,"venue_limits":null,"build":"b0a3991"}
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.4T  70% /volume1
+mem available MB: 523
+
+== deployed b0a3991 vs main 8973697
+ .claude/skills/autopilot/scripts/recovery_hook.py  | 146 ++++++++++++++++++
+ .../autopilot/tests/test_context_recovery.py       | 168 +++++++++++++++++++++
+ 4 files changed, 482 insertions(+)
+
+== game window (in_progress | kickoff -4h..+15m | nfl kickoff 60-100m) and tick ages
+0 | 0 | 0
+last real tick | 12116 | running | 43
+last heartbeat | 12116 | running | 44
+ws last event age s | -1

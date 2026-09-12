@@ -1,0 +1,843 @@
+== clock
+Fri Sep 11 23:50:00 CDT 2026
+Sat Sep 12 04:50:00 UTC 2026
+== Layer 1 healthz
+{"status":"ok","last_run_at":"2026-09-12T04:49:36.045416+00:00","last_status":"running","seconds_since":32,"credits_remaining":4932680,"credits_budget":5000000,"credits_low":false,"venue_limits":null,"build":"b0a3991"}
+== Game window
+0
+0
+0
+== Layer 2 core
+-- runs last 5 real
+12118 | 2026-09-12 04:49:36.045416+00 | running | 0 |  | 
+12117 | 2026-09-12 04:48:36.045042+00 | ok | 0 |  | []
+12116 | 2026-09-12 04:47:06.044876+00 | ok | 160 | 4932680 | []
+12115 | 2026-09-12 04:41:06.044344+00 | ok | 6 | 4932840 | []
+12114 | 2026-09-12 04:39:36.045258+00 | ok | 160 | 4932846 | []
+-- runs status 3h
+degraded | 4
+ok | 40
+running | 2
+-- newest run
+12118 | 2026-09-12 04:49:36.045416+00 | running
+-- signals 3h
+-- ws kinds 2h
+delta | 2576571
+snapshot | 8343
+-- ws last event age
+00:02:44.927683
+-- dead tuples
+orders | 8829 | 4189 | 2026-09-12 04:41:52.0956+00 | 2026-09-12 04:41:55.591075+00
+rfqs | 156237 | 2437 | 2026-09-12 04:53:03.411457+00 | 2026-09-12 04:48:53.75945+00
+venue_markets | 6086 | 1000 | 2026-09-12 04:53:49.251134+00 | 2026-09-12 04:53:49.986106+00
+trade_watermarks | 4027 | 303 |  | 2026-09-12 04:42:47.228216+00
+source_state | 120 | 80 | 2026-09-12 04:53:47.89763+00 | 2026-09-12 04:52:47.942429+00
+-- wal
+69 | 1104 MB
+-- db size
+61 GB
+-- build stamps since deploy
+b0a3991
+-- gap rows 2h
+0
+== Phase 3
+-- exec_heartbeat
+2026-09-12 04:54:24.696842+00 | 19863 | 0 | OperationalError: (psycopg.errors.QueryCanceled) canceling statement due to statement timeout
+[SQL: select 1 from orderbook_events s where s.ticker = %(t)s and s.kind = 'snapshot' and s.id > %(anchor_id)s and not exists (select 1 from orderbook_events g                 where g.kind = 'gap' and g.sid = s.sid and g.id > s.id) limit 1]
+[parameters: {'t': 'KXNCAAFGAME-26SEP12BUFFFIU-BUFF', 'anchor_id': 61827004}]
+(Background on this error at: https://sqlalche.me/e/20/e3q8) | 35393 | 763267 | 1545 | 0 | 2026-09-12 04:51:59.263+00 | 00:00:35.942573
+-- orders by status
+cancelled | 8822
+expired | 7
+-- open orders without tape 15m
+0
+-- intents, fills
+92904
+919
+-- settlements, venue_settlements, benchmarks
+106
+994
+1872
+-- gap_outcomes, markouts
+3840
+19683
+-- skip reasons 24h
+book_dirty | 3836
+fair_stale | 2967
+exec_capacity | 344
+no_book | 9
+-- job_runs
+settle | ok | t | 2026-09-12 04:19:16.39072+00
+settle | ok | t | 2026-09-12 03:19:05.195139+00
+settle | ok | t | 2026-09-12 02:18:53.942393+00
+-- order_clv
+5263
+-- gate_reports failed
+0 | 
+-- metric_samples
+db.brin_ranges_summarized | 2026-09-11 09:15:53.532981+00
+db.growth_gb_per_day | 2026-09-11 09:15:53.532981+00
+db.size_gb | 2026-09-11 09:15:53.532981+00
+db.table_gb | 2026-09-11 09:15:53.532981+00
+exec.cancelled | 2026-09-11 22:44:21.638687+00
+exec.dirty_markets | 2026-09-12 04:54:24.696842+00
+exec.filled_contracts | 2026-09-12 04:54:24.696842+00
+exec.intents_considered | 2026-09-12 04:54:24.696842+00
+exec.loop_ms | 2026-09-12 04:54:24.696842+00
+exec.loops_skipped | 2026-09-12 04:54:24.696842+00
+exec.open_orders | 2026-09-12 04:54:24.696842+00
+exec.p95_loop_ms | 2026-09-12 04:54:24.696842+00
+exec.placed | 2026-09-12 04:54:24.696842+00
+exec.skipped | 2026-09-11 21:52:06.640128+00
+exec.tape_batch_min | 2026-09-12 04:54:24.696842+00
+exec.tape_lag_tickers | 2026-09-12 04:54:24.696842+00
+exec.ws_event_age_s | 2026-09-12 04:54:24.696842+00
+exec.ws_event_ahead_s | 2026-09-12 04:54:24.696842+00
+host.disk_free_gb | 2026-09-11 09:15:53.532981+00
+host.disk_total_gb | 2026-09-11 09:15:53.532981+00
+host.mem_available_mb | 2026-09-11 09:15:53.532981+00
+match.rate | 2026-09-11 09:15:53.532981+00
+match.unmatched | 2026-09-11 09:15:53.532981+00
+pricing.candidates | 2026-09-12 04:25:48.082837+00
+pricing.fair_values | 2026-09-12 04:41:06.044344+00
+pricing.rejected | 2026-09-11 21:45:52.044705+00
+pricing.staleness_median_s | 2026-09-12 04:41:06.044344+00
+recorder.credits_remaining | 2026-09-12 04:52:36.044496+00
+recorder.errors | 2026-09-12 04:52:36.044496+00
+recorder.fetched | 2026-09-12 04:52:36.044496+00
+recorder.tick_ms | 2026-09-12 04:52:36.044496+00
+recorder.trade_gaps | 2026-09-12 04:52:36.044496+00
+serve.snapshot_ms | 2026-09-12 04:55:09.654417+00
+ws.events_per_min | 2026-09-12 04:51:00.034553+00
+ws.gaps | 2026-09-12 04:51:00.034553+00
+ws.reconnects | 2026-09-12 04:51:00.034553+00
+ws.sink_lag_s | 2026-09-12 04:51:00.034553+00
+ws.subscribed_tickers | 2026-09-12 04:51:00.034553+00
+ws.trades_per_min | 2026-09-12 04:51:00.034553+00
+-- order_watch_samples 1h
+0
+-- equity_snapshots
+ff363c8ac08d | 2026-09-12 04:41:09.698296+00
+5632da729fa7 | 2026-09-12 04:41:09.698296+00
+f259ca109084 | 2026-09-12 04:41:09.698296+00
+e82fcd0a1e99 | 2026-09-08 12:31:58.93176+00
+-- game_score_events 24h
+63
+-- check_results 25h
+duplicate_trades | skip
+clv_p_used_matches_order_prob | pass
+settle_errors_24h | pass
+derived_without_venue_row_48h | pass
+build_sha_drift | pass
+orders_open_past_expiry | pass
+fills_without_print | pass
+gate_rows_one_gate_variant | pass
+fair_values_negative_staleness | skip
+runs_taker_side_missing_24h | pass
+orders_without_place_event | pass
+intents_without_order_or_skip | fail
+fill_contracts_exceed_order_contracts | pass
+orders_filled_exceeds_contracts | pass
+settlement_result_mismatch | pass
+fair_values_negative_feed_lag | skip
+benchmarks_source_after_target | pass
+fills_outside_placement_window | pass
+markouts_at_after_horizon | pass
+metric_samples_negative_24h | pass
+operator_events_empty_summary_24h | pass
+order_watch_negative_queue_24h | pass
+equity_mtm_coverage_out_of_range_24h | pass
+game_score_went_down_24h | pass
+check_results_unknown_status_25h | pass
+report_runs_generated_in_future | pass
+report_cells_orphan | pass
+-- report_runs
+2026 | 37 | t | 2026-09-10 10:25:41.887694+00
+2026 | 37 | t | 2026-09-09 20:49:29.04087+00
+2026 | 37 | t | 2026-09-09 13:52:44.314097+00
+== Phase 4
+-- venue_requests 24h
+prod | GET | 29
+-- prod GET 2h
+3
+-- venue_status
+kalshi | demo | ok |  | 2026-09-09 15:54:44.71089+00 | 2026-09-09 15:54:44.71089+00
+kalshi_rfq | prod | ok |  | 2026-09-12 04:55:02.385281+00 | 2026-09-12 04:55:02.385281+00
+-- backup_runs
+encrypt | ok | 1302921039 | 2026-09-11 08:46:23.753298+00 | 20:09:19.525827
+encrypt | ok | 5982 | 2026-09-11 08:45:54.925054+00 | 20:09:48.354071
+forever | ok | 5982 | 2026-09-11 08:45:51+00 | 20:09:52.279125
+nightly | ok | 1302921039 | 2026-09-11 08:45:19+00 | 20:10:24.279125
+encrypt | ok | 1160375129 | 2026-09-10 08:46:21.368391+00 | 1 day 20:09:21.910734
+encrypt | ok | 5982 | 2026-09-10 08:45:42.458347+00 | 1 day 20:10:00.820778
+-- drill rows
+2
+-- drawdown
+5632da729fa7 | 0.0000 | f
+f259ca109084 | -0.0059 | f
+ff363c8ac08d | 0.0000 | f
+-- gate_variant_missing 24h
+0
+-- pricing order
+ |  |  | 
+ |  |  | 
+ |  |  | 
+-- venue_limits newest non-skipped
+12121 | {"tier": "basic", "age_s": 1889.999, "read_at": "2026-09-12T04:22:36.045816+00:00", "page_pause_s": 0.05, "read_capacity": 600.0, "write_capacity": 100.0, "read_refill_rate": 200.0, "write_refill_rate": 100.0}
+-- alembic
+0006_quotes_run_index
+== Phase 4.5
+-- snapshots names/ages
+-- snapshot_disabled 25h
+ERROR:  column "cadence_s" does not exist
+LINE 1: ...act(epoch from now()-generated_at)::int as age_s, cadence_s,...
+                                                             ^
+2
+-- snapshot cpu top minutes
+2026-09-12 03:59:00+00 | 19062.000000
+2026-09-12 04:54:00+00 | 10068.000000
+2026-09-12 04:24:00+00 | 9288.000000
+2026-09-12 04:23:00+00 | 7493.000000
+2026-09-12 04:55:00+00 | 6699.000000
+-- floor p95
+4183.000000
+-- builder p95 15m
+floor | 4183.000000
+gate | 605.000000
+pulse | 6605.000000
+study:2026-37 | 5814.000000
+ticket | 346.000000
+-- pulse status
+BROKEN | [{"name": "ws_event_watch", "unit": "s", "level": "watch", "value": 190.391417, "threshold": 60.0}, {"name": "ws_event_broken", "unit": "s", "level": "broken", "value": 190.391417, "threshold": 120.0}, {"name": "tape_gap", "unit": "count", "level": "broken", "value": 187.0, "threshold": 0}, {"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}, {"name": "check_skipped", "unit": "count", "level": "watch", "value": 3, "threshold": 0}, {"name": "budget_exhausted", "unit": "count", "level": "watch", "value": 2, "threshold": 2}, {"name": "snapshot_budget", "unit": "count", "level": "watch", "value": 4183.0, "threshold": 250.0}, {"name": "research_budget", "unit": "count", "level": "watch", "value": 24.5964, "threshold": 25.0}] | [{"name": "kill_switch", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 0}]
+-- pulse snapshots disabled
+[{"name": "floor", "age_s": 30.000544, "error": null, "disabled": false, "cadence_s": 120, "cell_age_s": null, "elapsed_ms": 4183, "generated_at": "2026-09-12T04:54:39.653873+00:00", "disabled_over_ms": 2500}, {"name": "gate", "age_s": 120.000606, "error": null, "disabled": false, "cadence_s": 300, "cell_age_s": null, "elapsed_ms": 2, "generated_at": "2026-09-12T04:53:09.653811+00:00", "disabled_over_ms": 2500}, {"name": "pulse", "age_s": 60.000011, "error": null, "disabled": false, "cadence_s": 60, "cell_age_s": null, "elapsed_ms": 71, "generated_at": "2026-09-12T04:54:09.654406+00:00", "disabled_over_ms": 2500}, {"name": "study:2026-37", "age_s": 59.998749, "error": null, "disabled": false, "cadence_s": 600, "cell_age_s": 152907.767974, "elapsed_ms": 5814, "generated_at": "2026-09-12T04:54:09.655668+00:00", "disabled_over_ms": 2500}, {"name": "ticket", "age_s": 90.000666, "error": null, "disabled": false, "cadence_s": 120, "cell_age_s": null, "elapsed_ms": 346, "generated_at": "2026-09-12T04:53:39.653751+00:00", "disabled_over_ms": 2500}]
+-- 4.5 invariants
+0
+0
+0
+0
+-- t12 row keys
+600 | 0
+== Phase 5
+-- futures job_runs this week
+-- futures coverage
+-- weather missing 72h
+58
+-- weather reresolved 24h
+0
+-- research_spend
+2026-09-11 | 24.5964 | 0.0000 | 644
+-- veto vs intents 24h
+5938 | 4797 | 0.03356264331874087972
+-- decision lag
+1853.189876 | 6341.352559
+-- veto decisions by label 24h
+veto_skipped_budget | 4319
+proceed | 478
+-- two notes per call
+0
+-- annotations
+4 | 2026 | 37 | 2026-09-08 16:56:09.722823+00 |  | 
+2 | 2026 | 37 | 2026-09-08 14:24:15.78345+00 | 2026-09-11 13:42:20.190966+00 | 0
+-- t7 t10
+t10 | 2
+t7 | 2
+-- rfqs 24h and since deploy
+161423 | 2026-09-11 08:15:53.525258+00 | 2026-09-12 04:55:48.430563+00
+63443
+63443
+-- venue_status rfq
+ok |  | 2026-09-12 04:55:02.385281+00 | 2026-09-12 04:56:31.580397+00
+-- rfq_quotes branches
+0
+-- phase 5 invariants
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+== Phase 6C wave 1
+-- (i) provisional week key
+2026 | 37
+-- chicago week now
+2026 | 37
+-- (ii) study name
+study:2026-37
+-- (iii) pulse all rules
+[{"name": "recorder_stale", "unit": "s", "level": "fine", "value": 3.609085, "threshold": 1200.0}, {"name": "heartbeat_watch", "unit": "s", "level": "watch", "value": 104.95702, "threshold": 60.0}, {"name": "heartbeat_broken", "unit": "s", "level": "fine", "value": 104.95702, "threshold": 120.0}, {"name": "ws_event_watch", "unit": "s", "level": "watch", "value": 250.390862, "threshold": 60.0}, {"name": "ws_event_broken", "unit": "s", "level": "broken", "value": 250.390862, "threshold": 120.0}, {"name": "tape_gap", "unit": "count", "level": "broken", "value": 187.0, "threshold": 0}, {"name": "kill_switch", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 0}, {"name": "disk_free", "unit": "fraction", "level": "fine", "value": 0.3111129871323274, "threshold": 0.25}, {"name": "db_ceiling", "unit": "fraction", "level": "fine", "value": 0.023151, "threshold": 0.6}, {"name": "credits_low", "unit": "fraction", "level": "fine", "value": 0.986472, "threshold": 0.4}, {"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}, {"name": "check_skipped", "unit": "count", "level": "watch", "value": 3, "threshold": 0}, {"name": "settle_error_24h", "unit": "count", "level": "fine", "value": 0, "threshold": 0}, {"name": "budget_exhausted", "unit": "count", "level": "watch", "value": 2, "threshold": 2}, {"name": "book_dirty_in_game", "unit": "count", "level": "fine", "value": 0, "threshold": 0}, {"name": "drawdown_stop", "unit": "fraction", "level": "fine", "value": 0.0, "threshold": -0.2}, {"name": "snapshot_stale", "unit": "count", "level": "fine", "value": 0.99999075, "threshold": 2.0}, {"name": "snapshot_budget", "unit": "count", "level": "watch", "value": 4183.0, "threshold": 250.0}, {"name": "snapshot_disabled", "unit": "count", "level": "fine", "value": 0.0, "threshold": 0}, {"name": "research_budget", "unit": "count", "level": "watch", "value": 24.5964, "threshold": 25.0}, {"name": "veto_rate", "unit": "fraction", "level": "fine", "value": 0.0, "threshold": 0.25}]
+-- (iv) ticket week
+2026 | 37 | 50.0
+-- (v) t13 on newest final
+0
+## Table 1 (t1): funnel
+
+Funnel per regi
+-- (vii) week-key invariant since deploy
+0
+-- provisional runs since deploy
+== Phase 6C wave-1 stand-in (string presence counts only)
+study.mjs: 3
+pulse.mjs: 2
+{'now': None, 'generated_at': None, 'cell_age_s': None}
+== Phase 6A
+ Container sports-harness-postgres-1  Running
+{
+ "corrections": [
+  {
+   "affected_order_id_range": "all orders through the 6B deploy",
+   "affected_run_id_range": "all runs through the 6B deploy",
+   "code_version_after": "7c3d555",
+   "code_version_before": "6eed2d8",
+   "config_hashes": [
+    "15a491be8fad9588d9d5465d5a159a6cef8b32642afea11680ba71d36c5d176b",
+    "51afb46a112c5d930d2156985bda3ebe92966609828f43c8e1b6538fb3631139",
+    "776b1ccac8d4e903f0e2cd0b9a18d17c38540317a0d5da1d39de55fa6a789f66",
+    "82768f6793c9318b0aabb067f26eef4b052c2bc724120cbe9d047b6256b2ce75",
+    "d6962419ca950dd003f7f8283bc12ab01c36b9fd40e5654901353780d9a9cb9f",
+    "ef06087f4af152a62a85ca59aef4efbe08c9ca6ce24fbf1277562e28938267bd"
+   ],
+   "deploy_sha": "7c3d555",
+   "eligible_measurements": "raw historical cleanliness and counts, labelled retrospective",
+   "excluded_measurements": "none yet",
+   "id": "C0",
+   "measurement_version_after": "4.4",
+   "measurement_version_before": "4.4",
+   "rescore_command": "none: the baseline is the record",
+   "title": "Baseline: the paper record as measured before any 6B repair",
+   "variant_ids": [
+    "ff363c8ac08d",
+    "e549e693e117",
+    "64ba3ef09642",
+    "f259ca109084",
+    "49af716f8708",
+    "c2bc45377328",
+    "5632da729fa7"
+   ]
+  }
+ ],
+ "manifest_version": 1,
+ "measurement_version": "4.4"
+}
+-- criteria hash
+-- eligibility
+0
+== Phase 6C wave 2
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such command 'python'.                                                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+-- excluded lines newest final report
+-- open orders 7d bound
+0
+-- floor fair vs executor fair (mismatches)
+0 | 0
+-- floor funnel keys
+gaps
+fills
+ticks
+units
+orders
+intents
+skipped
+window_h
+cancelled
+fill_rows
+by_variant
+candidates
+placements
+rejected_total
+intent_verdicts
+candidate_signals
+orders_filled_actual
+orders_filled_counterfactual
+{"gaps": "gap snapshots, from runs.notes", "ticks": "pricing ticks, from runs.notes", "fill_rows": "fill rows by method, not orders", "placements": "orders placed", "intent_verdicts": "intent verdicts (placed + skipped), not distinct episodes", "candidate_signals": "candidate signal rows, not distinct opportunities", "orders_filled_actual": "orders with at least one queue_model fill", "orders_filled_counterfactual": "orders whose only fills are no_watcher"}
+-- floor exposure coverage
+{"note": "positions opened more than 14 days ago are not counted", "complete": false, "window_days": 14}
+-- table 1 fill-rate header
+f
+16
+== Layer 2b invariants
+0
+0
+0
+39534
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1703
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+-- book coverage: book_source split of orders placed 24h; dirty-window queue fills
+ws | 1056
+rest | 3
+-- stale benchmark share 24h
+consensus_t180 | 0.19047619047619047619 | 42
+consensus_t60 | 0.20454545454545454545 | 44
+kalshi_last_trade_pre_kick | 0.51184834123222748815 | 211
+result | 0.00000000000000000000 | 216
+pinnacle_t5 | 0.00000000000000000000 | 35
+novig_devig_t5 | 0.30769230769230769231 | 13
+consensus_t5 | 0.22727272727272727273 | 44
+kalshi_mid_t5 | 0.47222222222222222222 | 216
+opening_first_seen | 0.00000000000000000000 | 6
+-- fills/orders today (chicago)
+6 | 0
+-- gap rows / snapshot rows today
+gap | 37
+snapshot | 57998
+-- odds credits used 24h
+54889
+== Mac-side shell checks
+NAME                            STATUS
+sports-harness-app-backup-1     Up 3 days
+sports-harness-app-exec-1       Up 48 minutes (unhealthy)
+sports-harness-app-research-1   Up 48 minutes
+sports-harness-app-run-1        Up 48 minutes
+sports-harness-app-serve-1      Up 48 minutes (healthy)
+sports-harness-app-ws-1         Up 48 minutes
+sports-harness-postgres-1       Up 3 days (healthy)
+
+{"status":"ok","last_run_at":"2026-09-12T05:04:06.045124+00:00","last_status":"running","seconds_since":393,"credits_remaining":4932194,"credits_budget":5000000,"credits_low":false,"venue_limits":null,"build":"b0a3991"} [200]
+/dev/mapper/ug_A97AC6_1773254885_pool1-volume1   11T  7.5T  3.4T  70% /volume1
+               total        used        free      shared  buff/cache   available
+Mem:            7717        5956         408         551        2610        1760
+Swap:           9999        4244        5755
+ 1  7 4346712 415908  11100 2663556   22   22   449   138  370 1061  9  1 88  2  0
+ 2  6 4346712 415908  11100 2663556   12    0  3216  1024 2808 12693 10  1 50 39  0
+ 2  4 4346712 415908  11100 2663556  660    0  3300  1192 3185 14736 12  2 55 31  0
+-- dashboard section (10m):
+6
+-- ERROR lines 10m:
+== app-run
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "<string>", line 1, in <listcomp>
+  File "/usr/lib/python3.11/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+== app-serve
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "<string>", line 1, in <listcomp>
+  File "/usr/lib/python3.11/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+== app-ws
+== app-exec
+== app-research
+-- ERROR lines since deploy (app-run, counted by message):
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/usr/lib/python3.11/collections/__init__.py", line 597, in __init__
+    self.update(iterable, **kwds)
+  File "/usr/lib/python3.11/collections/__init__.py", line 688, in update
+    _count_elements(self, iterable)
+  File "<string>", line 1, in <genexpr>
+  File "/usr/lib/python3.11/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+-- backups:
+6.6G	/volume1/docker/sports-harness/backups
+68K	/volume1/docker/sports-harness/backups/forever
+6.6G	/volume1/docker/sports-harness/backups/nightly
+4.0K	/volume1/docker/sports-harness/backups/partitions
+4.0K	/volume1/docker/sports-harness/backups/weekly
+-rwxrwxrwx 1 trey admin       1393 Sep 10 03:40 harness-nightly-20260910T083003Z.meta.json
+-rwxrwxrwx 1 trey admin          0 Sep 10 03:46 harness-nightly-20260910T083003Z.ok
+-rwxrwxrwx 1 trey admin 1302921039 Sep 11 03:44 harness-nightly-20260911T083001Z.dump
+-rwxrwxrwx 1 trey admin 1303239319 Sep 11 03:46 harness-nightly-20260911T083001Z.dump.age
+-rwxrwxrwx 1 trey admin       1590 Sep 11 03:45 harness-nightly-20260911T083001Z.meta.json
+-rwxrwxrwx 1 trey admin          0 Sep 11 03:46 harness-nightly-20260911T083001Z.ok
+0
+-- app-research log tail:
+[2K{"asctime": "2026-09-12 05:07:01,061", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omitted': 0}"}
+[2K{"asctime": "2026-09-12 05:07:31,073", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omitted': 0}"}
+[2K{"asctime": "2026-09-12 05:08:01,121", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omitted': 0}"}
+[2K{"asctime": "2026-09-12 05:08:31,135", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omitted': 0}"}
+[2K{"asctime": "2026-09-12 05:09:01,147", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omitted': 0}"}
+[2K{"asctime": "2026-09-12 05:09:31,163", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omitted': 0}"}
+[2K{"asctime": "2026-09-12 05:10:01,174", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omitted': 0}"}
+[2K{"asctime": "2026-09-12 05:10:31,184", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omitted': 0}"}
+    volumes:
+      - type: bind
+        source: /volume1/docker/sports-harness/secrets/anthropic_api_key
+        target: /run/secrets/anthropic_api_key
+--
+    volumes:
+      - type: bind
+        source: /volume1/docker/sports-harness/pgdata
+        target: /var/lib/postgresql/data
+-- rfq listener summary lines (app-ws, 30m):
+[2K{"asctime": "2026-09-12 05:09:52,548", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: replayed=0 quoted=500 skipped_rate=1200 frames_seen=17151 frames_stored=2078 dropped_not_all_football=6806 dropped_unknown_delete=8267"}
+[2K{"asctime": "2026-09-12 05:09:54,545", "levelname": "WARNING", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener loop error: WebSocketConnectionClosedException; reconnecting in 1s"}
+[2K{"asctime": "2026-09-12 05:09:59,171", "levelname": "WARNING", "name": "harness.execution.venue", "message": "venue kalshi_rfq/prod -> ok; untrusted venue text: reason=None"}
+[2K{"asctime": "2026-09-12 05:09:59,180", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener subscribed to communications, sid=1"}
+[2K{"asctime": "2026-09-12 05:10:09,750", "levelname": "WARNING", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: quote rate limit engaged (500 compute_quote calls in the last 60s); rfq_created frames store only until it releases"}
+[2K{"asctime": "2026-09-12 05:10:10,022", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: quote rate limit released"}
+[2K{"asctime": "2026-09-12 05:10:39,798", "levelname": "WARNING", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: quote rate limit engaged (500 compute_quote calls in the last 60s); rfq_created frames store only until it releases"}
+[2K{"asctime": "2026-09-12 05:10:40,071", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: quote rate limit released"}
+-- ws_disconnect / subscription rejected since deploy:
+0
+0
+-- snapshot scheduler stagger:
+-- demo secrets on NAS:
+total 28
+-rw------- 1 trey admin  109 Sep 11 23:13 anthropic_api_key
+-rw------- 1 trey admin   65 Sep  6 22:57 dashboard_token
+-rw------- 1 trey admin   37 Sep 11 23:13 kalshi_demo_key_id
+-rw------- 1 trey admin 1675 Sep 11 23:13 kalshi_demo_private_key.pem
+-rw------- 1 trey admin   37 Sep 11 23:13 kalshi_key_id
+-rw------- 1 trey admin 1675 Sep 11 23:13 kalshi_private_key.pem
+-rw------- 1 trey admin   32 Sep 11 23:13 odds_api_key
+== Capsule manifests on the Mac
+       0
+== main suite evidence at 6c11df3 (xfail line)
+== app-run
+1 normalize failed
+== app-serve
+1 snapshot builder study disabled after [2676, 5814, 3574] ms builds, all over 2500 ms
+1 snapshot builder pulse disabled after [4940, 9826, 4181] ms builds, all over 2500 ms
+== app-ws
+== app-exec
+1 executor step failed
+== app-research
+== dashboard section (15m)
+6 dashboard section unmatched_markets failed: OperationalError
+== app-run ERROR since restart (50m)
+1 ('04:26', 'normalize failed')
+1 ('04:27', 'normalize failed')
+1 ('05:06', 'normalize failed')
+{'now': None, 'generated_at': '2026-09-12T05:04:09.654849+00:00', 'cell_age_s': None, 'name': 'study:2026-37', 'age_s': None}
+['name', 'generated_at', 'elapsed_ms', 'cadence_s', 'payload', 'error']
+2026-09-11 09:15:53.532981+00 | duplicate_trades | skip | timeout
+2026-09-11 09:15:53.532981+00 | fair_values_negative_feed_lag | skip | timeout
+2026-09-11 09:15:53.532981+00 | fair_values_negative_staleness | skip | timeout
+2026-09-11 09:15:53.532981+00 | intents_without_order_or_skip | fail | 
+id|bigint||not null|nextval('check_results_id_seq'::regclass)
+job_run_id|bigint||not null|
+ts|timestamp with time zone||not null|
+check_name|character varying(48)||not null|
+status|character varying(8)||not null|
+value|numeric(18,6)|||
+threshold|character varying(48)|||
+detail|character varying(200)|||
+-- pg_stat_activity (active/waiting, by age)
+293641 | harness |  | idle in transaction | Client | ClientRead | 00:00:17.205079 | INSERT INTO venue_trades (venue, trade_id, ticker, ts, yes_price, count, taker_side, taker_outcome_side, taker_book_side, is_block, source, raw_id) VALUES ($1::VARCHAR, $2::VARCHAR, $3::VARCHAR, $4::TIMESTAMP WITH TIME Z
+292214 | harness |  | active | IO | DataFileRead | 00:00:16.419746 | SELECT candidates.ticker 
+FROM (SELECT venue_markets.id AS vmid, venue_markets.ticker AS ticker, venue_markets.last_seen_at AS last_seen_at, (EXISTS (SELECT orders.id 
+FROM orders 
+WHERE orders.venue_market_id = venue_ma
+292240 | harness |  | active | IO | DataFileRead | 00:00:01.72267 | 
+select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,
+       source
+from venue_trades where ticker = $1 and ts >= $2 order by ts, trade_id
+
+292252 | harness |  | idle in transaction | Client | ClientRead | -00:00:00.111366 | INSERT INTO source_state (key, last_fetched_at) VALUES ($1::VARCHAR, $2::TIMESTAMP WITH TIME ZONE) ON CONFLICT (key) DO UPDATE SET last_fetched_at = $3::TIMESTAMP WITH TIME ZONE
+-- rfq_quotes last 60 min by declined_reason
+no_fair | 18651
+QUOTED | 3336
+same_game | 1061
+collateral | 402
+-- rfqs table size, rows since deploy
+374 MB | 8480 kB
+-- rfq legs distribution since deploy (n legs)
+2 | 15092
+3 | 13214
+4 | 11298
+5 | 8308
+6 | 7975
+7 | 5141
+8 | 4761
+9 | 3831
+10 | 5713
+11 | 2368
+12 | 2790
+13 | 2612
+-- check value for intents check
+duplicate_trades | skip |  | == 0
+intents_without_order_or_skip | fail | 483.000000 | == 0
+-- intents without order/skip 24h: veto state split
+-- exec heartbeat now
+ERROR:  column v.intent_id does not exist
+LINE 1: ...t(*) from intents i left join veto_decisions v on v.intent_i...
+                                                             ^
+2026-09-12 05:13:54.697675+00 | 19865 | 0 | 21578 | 1112923 | 1620 | 00:07:39.560528
+id|character varying(64)||not null|
+received_at|timestamp with time zone||not null|
+created_ts|timestamp with time zone|||
+event_ticker|character varying(64)|||
+market_ticker|character varying(64)||not null|
+contracts_fp|numeric(14,2)|||
+target_cost_dollars|numeric(14,4)|||
+mve_collection_ticker|character varying(64)|||
+legs|jsonb||not null|
+raw|jsonb||not null|
+status|character varying(8)||not null|
+deleted_ts|timestamp with time zone|||
+id|bigint||not null|nextval('rfq_quotes_id_seq'::regclass)
+rfq_id|character varying(64)||not null|
+computed_at|timestamp with time zone||not null|
+legs|smallint||not null|
+fair|numeric(6,4)|||
+margin_per_leg|numeric(6,4)||not null|
+yes_bid|numeric(6,4)|||
+no_bid|numeric(6,4)|||
+fee_branch_game|boolean|||
+fee_branch_event|boolean|||
+fee_subtracted|numeric(10,4)|||
+yes_bid_other_branch|numeric(6,4)|||
+no_bid_other_branch|numeric(6,4)|||
+declined_reason|character varying(16)|||
+unmatched_legs|smallint||not null|
+graded_at|timestamp with time zone|||
+28:SNAPSHOTS_ENABLED=1
+35:RESEARCH_WORKER_ENABLED=1
+36:# Phase 5 (addendum §1.6, ruling B-M3). The combo RFQ listener's second WebSocket connection
+39:RFQ_LISTENER_ENABLED=1
+/ 200 37.806669s
+/api/summary 200 0.413113s
+Sat Sep 12 12:23:42 AM CDT 2026
+39:RFQ_LISTENER_ENABLED=1
+39:RFQ_LISTENER_ENABLED=0
+ Container sports-harness-app-ws-1  Restarting
+ Container sports-harness-app-ws-1  Started
+sports-harness-app-ws-1 Up 20 seconds
+Sat Sep 12 12:25:19 AM CDT 2026
+ 2  6 3175448 440004  19316 1661068  387    0  3448   922 4028 12904  9  2 61 27  0
+ 2  4 3175448 440004  19316 1661068   34    0  1497  1046 2616 11570  9  1 60 29  0
+               total        used        free      shared  buff/cache   available
+Mem:            7717        6927         374         546        1667         789
+{"asctime": "2026-09-12 05:17:36,171", "levelname": "WARNING", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: quote rate limit engaged (500 compute_quote calls in the last 60s); rfq_created frames store only until it releases"}
+{"asctime": "2026-09-12 05:18:23,460", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: replayed=0 quoted=500 skipped_rate=2592 frames_seen=32063 frames_stored=3930 dropped_not_all_football=12883 dropped_unknown_delete=15250"}
+{"asctime": "2026-09-12 05:18:23,660", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: quote rate limit released"}
+{"asctime": "2026-09-12 05:18:23,715", "levelname": "WARNING", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener: quote rate limit engaged (500 compute_quote calls in the last 60s); rfq_created frames store only until it releases"}
+-- after listener off: exec loops (last 15 min)
+2026-09-12 05:13:54.697675+00 | 19865 | 21578 | 1112923 | 1620 | 00:11:37.198085 | OperationalError: (psycopg.errors.QueryCanceled) canceling s
+-- gap rows last 15 min (app-ws restart)
+0 |  | 
+-- ws sink lag last 10 min
+2026-09-12 05:16:26.225566+00 | 0.057566
+2026-09-12 05:17:26.234578+00 | 0.037578
+2026-09-12 05:19:07.90608+00 | 41.934080
+2026-09-12 05:20:07.967638+00 | 0.035638
+2026-09-12 05:21:07.991416+00 | 0.041416
+2026-09-12 05:22:08.007543+00 | 0.037543
+2026-09-12 05:23:08.016751+00 | 0.037751
+-- rfqs last 5 min
+7016
+-- runs last 15 min
+12124 | 2026-09-12 05:13:36.044726+00 | ok
+12125 | 2026-09-12 05:18:36.044706+00 | ok
+12126 | 2026-09-12 05:20:06.044566+00 | running
+Sat Sep 12 12:26:13 AM CDT 2026
+1
+-- recreate app-ws so the env change takes effect
+ Container sports-harness-app-ws-1  Starting
+ Container sports-harness-app-ws-1  Started
+0
+{"asctime": "2026-09-12 05:27:20,281", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener disabled by rfq_listener_enabled"}
+sports-harness-app-ws-1 Up 25 seconds
+Sat Sep 12 12:28:52 AM CDT 2026
+ 1  7 4360848 513356  14532 1001756 2890    0 11413   260 2589 5704  2  1 47 49  0
+Mem:            7717        7403         455         523        1035         313
+-- 00:30 CT: executor
+2026-09-12 05:28:24.697468+00 | 19867 | 21558 | 1112923 | 1675 | 00:00:39.340103 | OperationalError: (psycopg.errors.QueryC
+2026-09-12 05:14:24.696609+00 | 833775.000000
+-- active queries
+295204 | active | IO | 00:00:22.819025 | 
+    select id, created_at, newest_book_ts, fair_p from fair_values
+    where game_id = $1 and market_type = $2
+      an
+295536 | active | IO | 00:00:12.556752 | autovacuum: VACUUM ANALYZE public.orders
+292240 | active | IO | 00:00:03.461352 | select 1 from orderbook_events s where s.ticker = $1 and s.kind = 'snapshot' and s.id > $2 and not exists (select 1 from
+292252 | active | IO | -00:00:00.936172 | INSERT INTO fair_values (run_id, game_id, market_type, outcome_team_id, outcome_side, threshold, fair_p, fair_source, n_
+-- rfqs after the recreate (05:27Z)
+0
+-- gap rows since 05:20Z (two app-ws restarts)
+-- sink lag last 8 min
+2026-09-12 05:21:07.991416+00 | 0.041416
+2026-09-12 05:22:08.007543+00 | 0.037543
+2026-09-12 05:23:08.016751+00 | 0.037751
+2026-09-12 05:28:45.917032+00 | 0.034032
+-- study snapshot payload keys (stand-in row)
+2026-09-12T05:04:09.654849+00:00 | 153507.767155 | 2026-09-10T10:25:41.887694+00:00
+now
+week
+year
+cells
+weeks
+equity
+markdown
+readings
+build_sha
+cadence_s
+sentences
+cell_age_s
+annotations
+provisional
+generated_at
+report_run_id
+sentences_gaps
+markdown_sha256
+-- settle job newest row: stage names, errors, budget flags
+-- report_wtd stage over the last 48 h: exhausted flags
+ERROR:  function left(jsonb, integer) does not exist
+LINE 1: ...r' as error, s->>'budget_exhausted' as exhausted, left(s->'c...
+                                                             ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+84 | 2026-09-12 04:08:52.046176+00 | true | 
+83 | 2026-09-12 03:08:52.045795+00 | true | 
+82 | 2026-09-12 02:08:52.044987+00 | true | 
+81 | 2026-09-12 01:08:52.045551+00 | true | 
+80 | 2026-09-12 00:08:52.044714+00 | true | 
+79 | 2026-09-11 23:08:52.047664+00 | true | 
+78 | 2026-09-11 22:08:53.338501+00 | true | 
+77 | 2026-09-11 20:38:42.110969+00 | true | 
+76 | 2026-09-11 19:38:42.111538+00 | true | 
+75 | 2026-09-11 18:38:42.111203+00 | true | 
+74 | 2026-09-11 17:38:42.112131+00 | true | 
+73 | 2026-09-11 16:38:42.111684+00 | true | 
+-- newest provisional report run
+9 | 2026 | 37 | 2026-09-10 10:25:41.887694+00
+8 | 2026 | 37 | 2026-09-09 20:49:29.04087+00
+-- settle 84 stages
+settle |  | false | {"games": 3, "orders": 0, "markets": 141, "ledger_rows": 0} | 
+venue_result |  | false | {"mismatches": 0, "venue_rows": 91} | 
+parlay_grade |  | false | {"legs": 0, "void": 0, "cards": 0, "busted": 0, "cashed": 0, "errors": 0} | 
+rfq_grade |  | false | {"stale": 0, "errors": 0, "graded": 90, "voided": 0, "waiting": 386} | 
+benchmarks |  | false | {"benchmarks": 0} | 
+result_benchmarks |  | false | {"result_benchmarks": 141} | 
+gap_outcomes_drain |  | false | {"gap_outcomes_drain": 0} | 
+order_clv |  | false | {"no_game": 0, "order_clv": 359} | 
+markouts |  | true | {"markouts": 0} | 
+housekeeping |  | false | {"skipped": true} | 
+report_wtd |  | true | {"budget_exhausted": true} | 
+-- settle 84 top-level notes keys
+errors
+stages
+warnings
+stale_unsettled
+{"errors": [], "warnings": [], "stale_unsettled": 0}
+-- raw_responses partitions and their indexes
+raw_responses_y2026w37 | 2236 MB
+raw_responses_y2026w38 | 80 kB
+raw_responses_pkey
+ix_raw_source_fetched
+ix_raw_fetched_brin
+ix_raw_run
+Sat Sep 12 12:31:45 AM CDT 2026
+ 1  3 4685488 349692  14264 1366436  479    0  3068   415 2180 5242  2  1 76 21  0
+Mem:            7717        7222         377         504        1327         494
+2026-09-12 05:28:54.698617+00 | 19868 | 16397 | 1676 | 00:02:57.432227
+sports-harness-app-backup-1 480KiB / 7.536GiB 0.00%
+sports-harness-app-exec-1 150.5MiB / 7.536GiB 0.79%
+sports-harness-app-research-1 16.89MiB / 7.536GiB 0.01%
+sports-harness-app-run-1 2.103GiB / 7.536GiB 3.85%
+sports-harness-app-serve-1 101.6MiB / 7.536GiB 0.24%
+sports-harness-app-ws-1 66.92MiB / 7.536GiB 0.06%
+sports-harness-postgres-1 678.5MiB / 7.536GiB 4.11%
+syncthing 37.5MiB / 7.536GiB 0.00%
+wireguard 1.836MiB / 7.536GiB 0.00%
+
+sonarr Exited (137) 28 hours ago
+dispatcharr Exited (137) 28 hours ago
+threadfin Exited (137) 28 hours ago
+downloads Exited (2) 28 hours ago
+arm Exited (137) 28 hours ago
+jellyfin Exited (137) 28 hours ago
+jellyseerr Exited (137) 28 hours ago
+ersatztv Exited (137) 28 hours ago
+ytdl-sub Exited (137) 28 hours ago
+ripper Exited (137) 6 months ago
+sr-mod-loader Exited (0) 5 months ago
+bazarr Exited (137) 28 hours ago
+radarr Exited (137) 28 hours ago
+sabnzbd Exited (137) 28 hours ago
+prowlarr Exited (137) 28 hours ago
+recyclarr Exited (143) 28 hours ago
+wireguard Up 3 weeks
+syncthing Up 3 weeks
+unpackerr Exited (0) 28 hours ago
+flaresolverr Exited (143) 28 hours ago
+
+  RSS COMMAND
+2028520 harness
+447360 postgres
+422564 postgres
+404924 postgres
+329448 postgres
+320600 postgres
+279252 postgres
+Sat Sep 12 12:34:22 AM CDT 2026
+ 4  1 4927888 522672  12780 1464396 56862 12194 74155 13667 5095 8323  4  9 65 22  0
+Mem:            7717        7155         432         539        1375         561
+2026-09-12 05:28:54.698617+00 | 19868 | 16397 | 1676 | 00:05:34.496236
+-- pricing notes, newest ok run with a pricing block
+12127 | 2026-09-12 05:26:36.044703+00 | {"gaps": 0, "order": [], "signals": {}, "budget_s": 45, "no_sharp": 1138, "variant_ms": {}, "fair_direct": 190, "fair_errors": 0, "fair_derived": 3079, "variants_run": [], "budget_capped": false, "gate_variant_id": null, "budget_exhausted": true, "variants_skipped": [], "gate_variant_missing": false}
+-- runs with a pricing block, last 8 h: count, last id
+172 | 12127 | 2026-09-12 05:26:36.044703+00
+-- gap snapshots last 3 h
+0 | 
+-- pricing.candidates metric last 6 h (ts, value)
+2026-09-12 04:25:48.082837+00 | 0.000000
+2026-09-12 04:25:48.082837+00 | 0.000000
+2026-09-12 04:25:48.082837+00 | 0.000000
+2026-09-12 04:25:48.082837+00 | 0.000000
+2026-09-12 04:25:48.082837+00 | 0.000000
+2026-09-12 04:25:48.082837+00 | 0.000000
+2026-09-12 04:25:48.082837+00 | 0.000000
+2026-09-11 23:48:22.044847+00 | 0.000000
+-- newest signal
+2026-09-11 21:47:18.841711+00
