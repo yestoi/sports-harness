@@ -1754,3 +1754,12 @@ Times are America/Chicago.
 - Rulings: (1) The weather freshness miss is scored FAIL on the row's letter, and the fix is code (fix 52 b), not the row: a fetch that writes nothing must still mark the game fetched - cost if wrong: one hotfix touching `snapshots.py` that 6D would otherwise own. (2) The Pulse BROKEN word is not scored while the builder is disabled; the self-guard is the host finding already under watch (6E) - cost if wrong: a BROKEN that a live builder would also show goes unscored until the next pass. (3) app-serve restarted at IO wait 20 % (entry 139's precedent was < 15 %) so the day's game window has live Pulse/Floor snapshots; the guard protects the box if the builds are still slow - cost if wrong: the builders trip again within the hour and the restart bought nothing.
 - Carried forward: 51, 52 (new); 45 (gated), 46 (6D), 47 (main), 48+49 (reviewed, waiting), 50 (quiet).
 - Next: still gated on entry 143; the stopped report gains fixes 51 and 52. Wakeup 08:45 CT (annotation, the app-serve builders); the recorder monitor; 6C Sunday row (i) at 19:00 CT needs fix 47 deployed.
+
+## 145. operate - 08:45 CT follow-ups: run 4 annotated, the Pulse/Floor builders back, recorder 1.0 GiB - 2026-09-12 08:46 CT
+
+- Orient: rule 3/4 (the 08:45 CT judge-after and the app-serve restart check), while gated (entry 143). Evidence appended to `evidence/2026-09-12-verify-0805-judge-after.txt`.
+- Annotation of `report_runs` 4: `report_annotations` row at 13:39:55Z (08:39 CT), 2 bullets, 1 opus call ($0.13, `research_spend` 2026-09-12); sweeps since read `backed_off 0`. **PASS** (the 24 h back-off ended and the fourth attempt succeeded; the three 2026-09-11 failures stay unexplained in the log's INFO lines, not a finding).
+- app-serve after the 08:08 CT restart: `pulse` 13:43:57Z and `floor` 13:43:27Z snapshots (2 min and 5 min builders running), no `disabled` line in 40 min. Pulse readable again for the game window.
+- Recorder: 1.0 GiB RSS at 08:44 CT (318 MiB at 08:06; the Saturday 5-min ticks), host available 1.6 GB, swap 4.45 GB. Under the 2.4 GiB / 600 MB restart rule; monitor `b46l8zq9w` watching. Fix 49's branch is reviewed and waiting on the gate.
+- Result: PASS (operate). Dispatches: 0.
+- Next: gated; wakeup 09:45 CT (recorder before the 10:45 CT NCAAF window; the user's answer).

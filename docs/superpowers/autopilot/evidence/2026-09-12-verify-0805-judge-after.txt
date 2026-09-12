@@ -390,3 +390,25 @@ stale | 14
 stale | 18
 stale | 38
 stale | 20
+
+## 08:45 CT follow-up Sat Sep 12 13:44:13 UTC 2026
+-- annotation run 4
+4 | 2026-09-12 13:39:55.899689+00 | 2
+2026-09-12 | annotate | claude-opus-5 | 1 | 21413 | 992 | 0 | 0 | 0 | 0.0000 | 0.1319
+-- snapshots
+pulse | 2026-09-12 13:43:57.096854+00
+floor | 2026-09-12 13:43:27.096996+00
+ticket | 2026-09-12 13:42:27.096985+00
+study:2026-37 | 2026-09-12 13:40:57.098369+00
+gate | 2026-09-12 13:39:57.097013+00
+-- annotator log since 08:35 CT
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:41:42,226", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 0, 'tables_omitted': 0}"}
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:42:12,235", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 0, 'tables_omitted': 0}"}
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:42:42,246", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 0, 'tables_omitted': 0}"}
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:43:12,257", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 0, 'tables_omitted': 0}"}
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:43:42,268", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 0, 'tables_omitted': 0}"}
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:44:12,278", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 0, 'tables_omitted': 0}"}
+-- app-serve disabled?
+-- host
+Mem:            7717        6077         362         551        2548        1639
+sports-harness-app-run-1 1.004GiB / 7.536GiB
