@@ -37,9 +37,6 @@ from tests.test_fills import DEADLINE, T0, at, order, run, tdelta, tprint
 SID = 7
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: per-market streams legitimately skip subscription sequence "
-                          "numbers; the per-ticker seq check reads that as a lost frame")
 def test_multiplexed_subscription_sequence_does_not_dirty_the_book():
     """Probe `multiplexed_sequence`. Expected `dirty` is False.
 
