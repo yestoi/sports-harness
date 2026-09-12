@@ -1,0 +1,392 @@
+# verify judge-afters 08:05 CT on b0a3991 (gated on fix 45; deferred items from journal 136/139)
+Sat Sep 12 12:58:59 UTC 2026
+-- game window
+0
+0
+0
+-- check_results last 25 h (distinct check, latest status)
+benchmarks_source_after_target | pass | 2026-09-12 09:57:37.956701+00
+build_sha_drift | pass | 2026-09-12 09:57:37.956701+00
+check_results_unknown_status_25h | pass | 2026-09-12 09:57:37.956701+00
+clv_p_used_matches_order_prob | pass | 2026-09-12 09:57:37.956701+00
+derived_without_venue_row_48h | pass | 2026-09-12 09:57:37.956701+00
+duplicate_trades | skip | 2026-09-12 09:57:37.956701+00
+equity_mtm_coverage_out_of_range_24h | pass | 2026-09-12 09:57:37.956701+00
+fair_values_negative_feed_lag | skip | 2026-09-12 09:57:37.956701+00
+fair_values_negative_staleness | skip | 2026-09-12 09:57:37.956701+00
+fill_contracts_exceed_order_contracts | pass | 2026-09-12 09:57:37.956701+00
+fills_outside_placement_window | pass | 2026-09-12 09:57:37.956701+00
+fills_without_print | pass | 2026-09-12 09:57:37.956701+00
+game_score_went_down_24h | pass | 2026-09-12 09:57:37.956701+00
+gate_rows_one_gate_variant | pass | 2026-09-12 09:57:37.956701+00
+intents_without_order_or_skip | pass | 2026-09-12 09:57:37.956701+00
+markouts_at_after_horizon | pass | 2026-09-12 09:57:37.956701+00
+metric_samples_negative_24h | pass | 2026-09-12 09:57:37.956701+00
+operator_events_empty_summary_24h | pass | 2026-09-12 09:57:37.956701+00
+orders_filled_exceeds_contracts | pass | 2026-09-12 09:57:37.956701+00
+orders_open_past_expiry | pass | 2026-09-12 09:57:37.956701+00
+orders_without_place_event | pass | 2026-09-12 09:57:37.956701+00
+order_watch_negative_queue_24h | pass | 2026-09-12 09:57:37.956701+00
+report_cells_orphan | pass | 2026-09-12 09:57:37.956701+00
+report_runs_generated_in_future | pass | 2026-09-12 09:57:37.956701+00
+runs_taker_side_missing_24h | pass | 2026-09-12 09:57:37.956701+00
+settle_errors_24h | pass | 2026-09-12 09:57:37.956701+00
+settlement_result_mismatch | pass | 2026-09-12 09:57:37.956701+00
+-- check_results non-pass in last 25 h
+duplicate_trades | skip | 2026-09-12 09:57:37.956701+00 | timeout
+fair_values_negative_staleness | skip | 2026-09-12 09:57:37.956701+00 | timeout
+fair_values_negative_feed_lag | skip | 2026-09-12 09:57:37.956701+00 | timeout
+-- latest sweep ts
+2026-09-12 09:57:37.956701+00
+-- pulse status
+BROKEN | [{"name": "heartbeat_watch", "unit": "s", "level": "watch", "value": 164.816808, "threshold": 60.0}, {"name": "heartbeat_broken", "unit": "s", "level": "broken", "value": 164.816808, "threshold": 120.0}, {"name": "ws_event_watch", "unit": "s", "level": "watch", "value": 163.138495, "threshold": 60.0}, {"name": "ws_event_broken", "unit": "s", "level": "broken", "value": 163.138495, "threshold": 120.0}, {"name": "tape_gap", "unit": "count", "level": "broken", "value": 17.0, "threshold": 0}, {"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}, {"name": "check_skipped", "unit": "count", "level": "watch", "value": 3, "threshold": 0}, {"name": "budget_exhausted", "unit": "count", "level": "watch", "value": 2, "threshold": 2}, {"name": "snapshot_stale", "unit": "count", "level": "broken", "value": 13.241220908333334, "threshold": 2.0}, {"name": "snapshot_disabled", "unit": "count", "level": "broken", "value": 1.0, "threshold": 0}]
+-- annotation: report_runs vs annotations (last 3 non-provisional)
+9 | 2026 | 37 | t | 2026-09-10 10:25:41.887694+00 |  | 
+8 | 2026 | 37 | t | 2026-09-09 20:49:29.04087+00 |  | 
+7 | 2026 | 37 | t | 2026-09-09 13:52:44.314097+00 |  | 
+6 | 2026 | 37 | t | 2026-09-09 06:52:44.540548+00 |  | 
+-- research spend today CT
+-- weather freshness (72 h, no snapshot within 2 h)
+ERROR:  column "date" does not exist
+LINE 1: select date, spent_usd, reserved_usd from research_spend ord...
+               ^
+HINT:  Perhaps you meant to reference the column "research_spend.day".
+89
+97
+-- weather skipped reasons on the last real tick
+ERROR:  column g.venue does not exist
+LINE 1: select g.id, g.sport, g.kickoff_utc, g.venue from games g wh...
+                                             ^
+12875 | 2026-09-12 12:59:07.95521+00 | running | 
+-- weather reresolved 24h
+0
+-- runs last 90 min (status, pricing order)
+12875 | 2026-09-12 12:59:07.95521+00 | running |  |  | 
+12874 | 2026-09-12 12:58:37.976908+00 | ok |  |  | 
+12873 | 2026-09-12 12:58:07.954792+00 | ok |  |  | 
+12872 | 2026-09-12 12:57:37.955439+00 | ok |  |  | 
+12871 | 2026-09-12 12:57:07.955109+00 | ok |  |  | 
+12870 | 2026-09-12 12:56:37.955194+00 | ok |  |  | 
+12869 | 2026-09-12 12:56:07.955077+00 | ok |  |  | 
+12868 | 2026-09-12 12:55:37.955285+00 | ok |  |  | 
+-- signals 3h
+-- candidates by variant 24h
+49af716f8708 | 1268
+5632da729fa7 | 3096
+64ba3ef09642 | 983
+c2bc45377328 | 1443
+e549e693e117 | 148
+f259ca109084 | 1464
+ff363c8ac08d | 237
+-- ws last event, gap rows 2h
+2026-09-12 13:00:14.143+00
+0
+-- open orders, exec loop
+0
+recorder.tick_ms | 8067.000000 | 2026-09-12 12:59:37.955152+00
+exec.loop_ms | 7226.000000 | 2026-09-12 12:59:24.699595+00
+, "value": 164.816808, "threshold": 60.0}
+{"name": "heartbeat_broken", "unit": "s", "level": "broken", "value": 164.816808, "threshold": 120.0}
+{"name": "ws_event_watch", "unit": "s", "level": "watch", "value": 163.138495, "threshold": 60.0}
+{"name": "ws_event_broken", "unit": "s", "level": "broken", "value": 163.138495, "threshold": 120.0}
+{"name": "tape_gap", "unit": "count", "level": "broken", "value": 17.0, "threshold": 0}
+{"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}
+{"name": "check_skipped", "unit": "count", "level": "watch", "value": 3, "threshold": 0}
+{"name": "budget_exhausted", "unit": "count", "level": "watch", "value": 2, "threshold": 2}
+{"name": "snapshot_stale", "unit": "count", "level": "broken", "value": 13.241220908333334, "threshold": 2.0}
+{"name": "snapshot_disabled", "unit": "count", "level": "broken", "value": 1.0, "threshold": 0}
+2026-09-12 07:22:54.514495+00
+-- check skips history 48h (three checks)
+duplicate_trades | skip | 2026-09-12 09:57:37.956701+00 | timeout
+fair_values_negative_feed_lag | skip | 2026-09-12 09:57:37.956701+00 | timeout
+fair_values_negative_staleness | skip | 2026-09-12 09:57:37.956701+00 | timeout
+duplicate_trades | skip | 2026-09-11 09:15:53.532981+00 | timeout
+fair_values_negative_feed_lag | skip | 2026-09-11 09:15:53.532981+00 | timeout
+fair_values_negative_staleness | skip | 2026-09-11 09:15:53.532981+00 | timeout
+-- non-provisional report runs + annotations
+4 | 2026 | 37 | f | 2026-09-08 16:56:09.722823+00 |  | 
+2 | 2026 | 37 | f | 2026-09-08 14:24:15.78345+00 | 2026-09-11 13:42:20.190966+00 | 0
+-- research spend
+-- weather: newest snapshot, last run with a weather block
+ERROR:  column "spent_usd" does not exist
+LINE 1: select day, spent_usd, reserved_usd from research_spend orde...
+                    ^
+2026-09-12 12:47:14.758233+00
+12876 | 2026-09-12 12:59:37.955152+00 | {"due": 94, "errors": [], "fetched": 89, "skipped": {"4": "dome", "11": "dome", "12": "dome", "14": "dome", "392": "dome"}, "written": 0, "reresolved": 0, "budget_exhausted": false}
+-- executor heartbeat and loop
+recorder.tick_ms | 8067.000000 | 2026-09-12 12:59:37.955152+00
+exec.loop_ms | 7226.000000 | 2026-09-12 12:59:24.699595+00
+recorder.tick_ms | 6208.000000 | 2026-09-12 12:59:07.95521+00
+recorder.tick_ms | 9201.000000 | 2026-09-12 12:58:37.976908+00
+exec.loop_ms | 10009.000000 | 2026-09-12 12:58:09.697288+00
+recorder.tick_ms | 6115.000000 | 2026-09-12 12:58:07.954792+00
+recorder.tick_ms | 6888.000000 | 2026-09-12 12:57:37.955439+00
+exec.loop_ms | 8226.000000 | 2026-09-12 12:57:09.697751+00
+recorder.tick_ms | 6603.000000 | 2026-09-12 12:57:07.955109+00
+recorder.tick_ms | 9496.000000 | 2026-09-12 12:56:37.955194+00
+exec.loop_ms | 8087.000000 | 2026-09-12 12:56:09.698144+00
+recorder.tick_ms | 6514.000000 | 2026-09-12 12:56:07.955077+00
+2026-09-12 12:59:24.699595+00
+-- settle job runs last 12h
+91 | 2026-09-12 12:57:37.956484+00 |  | running |  | 
+90 | 2026-09-12 11:57:37.95658+00 | 2026-09-12 12:14:29.460734+00 | ok |  | 
+89 | 2026-09-12 10:57:37.956607+00 | 2026-09-12 11:16:34.310066+00 | ok |  | 
+-- app-exec log tail (errors/loop, 30 min)
+[2Kapp-exec-1  | {"asctime": "2026-09-12 13:01:56,839", "levelname": "WARNING", "name": "harness.execution.loop", "message": "tape read failed for KXNCAAFSPREAD-26SEP12ASUTXAM-TXAM15: (psycopg.errors.QueryCanceled) canceling statement due to statement timeout\n[SQL: \nselect trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,\n       source\nfrom venue_trades where ticker = %(t)s and ts >= %(lower)s order by ts, trade_id\n]\n[parameters: {'t': 'KXNCAAFSPREAD-26SEP12ASUTXAM-TXAM15', 'lower': datetime.datetime(2026, 9, 8, 13, 16, 13, 931440, tzinfo=zoneinfo.ZoneInfo(key='Etc/UTC'))}]\n(Background on this error at: https://sqlalche.me/e/20/e3q8)"}
+[2Kapp-exec-1  | {"asctime": "2026-09-12 13:01:56,840", "levelname": "WARNING", "name": "harness.execution.loop", "message": "tape batch for KXNCAAFSPREAD-26SEP12ASUTXAM-TXAM15 shrunk to 624 after a statement timeout"}
+[2Kapp-exec-1  | {"asctime": "2026-09-12 13:02:06,849", "levelname": "WARNING", "name": "harness.execution.loop", "message": "tape read failed for KXNFLGAME-26SEP14DENKC-KC: (psycopg.errors.QueryCanceled) canceling statement due to statement timeout\n[SQL: \nselect trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,\n       source\nfrom venue_trades where ticker = %(t)s and ts >= %(lower)s order by ts, trade_id\n]\n[parameters: {'t': 'KXNFLGAME-26SEP14DENKC-KC', 'lower': datetime.datetime(2026, 9, 8, 13, 16, 13, 931440, tzinfo=zoneinfo.ZoneInfo(key='Etc/UTC'))}]\n(Background on this error at: https://sqlalche.me/e/20/e3q8)"}
+[2Kapp-exec-1  | {"asctime": "2026-09-12 13:02:06,850", "levelname": "WARNING", "name": "harness.execution.loop", "message": "tape batch for KXNFLGAME-26SEP14DENKC-KC shrunk to 1250 after a statement timeout"}
+[2Kapp-exec-1  | {"asctime": "2026-09-12 13:02:27,281", "levelname": "WARNING", "name": "harness.execution.loop", "message": "tape read failed for KXNFLGAME-26SEP13NODET-DET: (psycopg.errors.QueryCanceled) canceling statement due to statement timeout\n[SQL: \nselect trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,\n       source\nfrom venue_trades where ticker = %(t)s and ts >= %(lower)s order by ts, trade_id\n]\n[parameters: {'t': 'KXNFLGAME-26SEP13NODET-DET', 'lower': datetime.datetime(2026, 9, 8, 13, 16, 13, 931440, tzinfo=zoneinfo.ZoneInfo(key='Etc/UTC'))}]\n(Background on this error at: https://sqlalche.me/e/20/e3q8)"}
+[2Kapp-exec-1  | {"asctime": "2026-09-12 13:02:27,282", "levelname": "WARNING", "name": "harness.execution.loop", "message": "tape batch for KXNFLGAME-26SEP13NODET-DET shrunk to 500 after a statement timeout"}
+[2Kapp-exec-1  | {"asctime": "2026-09-12 13:02:37,288", "levelname": "WARNING", "name": "harness.execution.loop", "message": "tape read failed for KXNCAAFGAME-26SEP12ALAUK-ALA: (psycopg.errors.QueryCanceled) canceling statement due to statement timeout\n[SQL: \nselect trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,\n       source\nfrom venue_trades where ticker = %(t)s and ts >= %(lower)s order by ts, trade_id\n]\n[parameters: {'t': 'KXNCAAFGAME-26SEP12ALAUK-ALA', 'lower': datetime.datetime(2026, 9, 8, 13, 16, 13, 931440, tzinfo=zoneinfo.ZoneInfo(key='Etc/UTC'))}]\n(Background on this error at: https://sqlalche.me/e/20/e3q8)"}
+[2Kapp-exec-1  | {"asctime": "2026-09-12 13:02:37,289", "levelname": "WARNING", "name": "harness.execution.loop", "message": "tape batch for KXNCAAFGAME-26SEP12ALAUK-ALA shrunk to 624 after a statement timeout"}
+-- top/io
+ 2  2 4559968 423872  13764 3174432    0    0  1492  2398 2017 4534  2  1 75 23  0
+
+## follow-ups 2 Sat Sep 12 13:03:58 UTC 2026
+-- research_spend columns
+day
+kind
+model
+calls
+input_tokens
+output_tokens
+cache_read_tokens
+cache_write_tokens
+searches
+usd_reserved
+usd
+2026-09-11 | veto | claude-opus-5 | 317 | 443536 | 125610 | 3232688 | 436735 | 196 | 0.0000 | 11.6633
+2026-09-11 | veto | claude-sonnet-5 | 317 | 442039 | 261005 | 7518779 | 1000279 | 389 | 0.0000 | 11.3885
+-- dashboard snapshots freshness
+ticket | 2026-09-12 13:03:24.514449+00
+study:2026-37 | 2026-09-12 13:01:54.513614+00
+gate | 2026-09-12 13:00:54.514063+00
+pulse | 2026-09-12 07:22:54.514495+00
+floor | 2026-09-12 06:56:25.567986+00
+-- weather snapshots by hour (12h) and games covered in 2h
+2026-09-12 12:00:00+00 | 12 | 3
+2026-09-12 11:00:00+00 | 24 | 5
+2026-09-12 10:00:00+00 | 3 | 1
+2026-09-12 09:00:00+00 | 2 | 1
+2026-09-12 08:00:00+00 | 8 | 2
+2026-09-12 07:00:00+00 | 138 | 29
+2026-09-12 06:00:00+00 | 261 | 49
+2026-09-12 05:00:00+00 | 124 | 24
+2026-09-12 04:00:00+00 | 179 | 39
+8
+12876 | 2026-09-12 12:59:37.955152+00 | 89 | 0 | 94
+12875 | 2026-09-12 12:59:07.95521+00 | 89 | 0 | 94
+12874 | 2026-09-12 12:58:37.976908+00 | 89 | 0 | 94
+12873 | 2026-09-12 12:58:07.954792+00 | 89 | 0 | 94
+12872 | 2026-09-12 12:57:37.955439+00 | 89 | 0 | 94
+12871 | 2026-09-12 12:57:07.955109+00 | 89 | 0 | 94
+12870 | 2026-09-12 12:56:37.955194+00 | 89 | 0 | 94
+12869 | 2026-09-12 12:56:07.955077+00 | 89 | 0 | 94
+12868 | 2026-09-12 12:55:37.955285+00 | 89 | 0 | 94
+12867 | 2026-09-12 12:55:07.954625+00 | 89 | 0 | 94
+12866 | 2026-09-12 12:54:37.955126+00 | 89 | 0 | 94
+12865 | 2026-09-12 12:54:07.955295+00 | 89 | 0 | 94
+-- job_runs notes keys (settle 90)
+89 | {"errors": [], "stages": [{"name": "settle", "error": null, "counts": {"games": 0, "orders": 0, "markets": 0, "ledger_rows": 0}, "budget_exhausted": false}, {"name": "venue_result", "error": null, "counts": {"mismatches": 0, "venue_rows": 0}, "budget_exhausted": false}, {"name": "parlay_grade", "err
+90 | {"errors": [], "stages": [{"name": "settle", "error": null, "counts": {"games": 0, "orders": 0, "markets": 0, "ledger_rows": 0}, "budget_exhausted": false}, {"name": "venue_result", "error": null, "counts": {"mismatches": 0, "venue_rows": 0}, "budget_exhausted": false}, {"name": "parlay_grade", "err
+-- app-research annotator since 00:00 CT
+[2Kapp-research-1  | {"asctime": "2026-09-12 12:58:24,656", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 12:58:54,671", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 12:59:24,685", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 12:59:54,701", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:00:24,716", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:00:54,732", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:01:24,746", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:01:54,757", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:02:24,771", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:02:54,785", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:03:24,799", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+[2Kapp-research-1  | {"asctime": "2026-09-12 13:03:54,812", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_off': 1, 'tables_omi
+-- app-serve builders since 8h
+[2Kapp-serve-1  | {"asctime": "2026-09-12 12:59:24,530", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Job \"SnapshotScheduler.run_once (trigger: interval[0:02:00], next run at: 2026-09-12 13:01:24 UTC)\" executed successfully"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:00:54,513", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Running job \"SnapshotScheduler.run_once (trigger: interval[0:05:00], next run at: 2026-09-12 13:05:54 UTC)\" (scheduled at 2026-09-12 13:00:54.513258+00:00)"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:00:55,265", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Job \"SnapshotScheduler.run_once (trigger: interval[0:05:00], next run at: 2026-09-12 13:05:54 UTC)\" executed successfully"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:01:24,513", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Running job \"SnapshotScheduler.run_once (trigger: interval[0:02:00], next run at: 2026-09-12 13:03:24 UTC)\" (scheduled at 2026-09-12 13:01:24.513258+00:00)"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:01:24,532", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Job \"SnapshotScheduler.run_once (trigger: interval[0:02:00], next run at: 2026-09-12 13:03:24 UTC)\" executed successfully"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:01:54,513", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Running job \"SnapshotScheduler.run_study (trigger: interval[0:10:00], next run at: 2026-09-12 13:11:54 UTC)\" (scheduled at 2026-09-12 13:01:54.513258+00:00)"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:01:59,345", "levelname": "WARNING", "name": "harness.dashboard.snapshots", "message": "snapshot section equity failed: OperationalError"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:02:00,730", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Job \"SnapshotScheduler.run_study (trigger: interval[0:10:00], next run at: 2026-09-12 13:11:54 UTC)\" executed successfully"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:03:24,513", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Running job \"SnapshotScheduler.run_once (trigger: interval[0:02:00], next run at: 2026-09-12 13:05:24 UTC)\" (scheduled at 2026-09-12 13:03:24.513258+00:00)"}
+[2Kapp-serve-1  | {"asctime": "2026-09-12 13:03:24,644", "levelname": "INFO", "name": "apscheduler.executors.default", "message": "Job \"SnapshotScheduler.run_once (trigger: interval[0:02:00], next run at: 2026-09-12 13:05:24 UTC)\" executed successfully"}
+
+## follow-ups 3 Sat Sep 12 13:06:16 UTC 2026
+-- raw_responses columns
+id
+fetched_at
+run_id
+source
+endpoint
+params
+http_status
+body
+-- latest ticks with a pricing block (fix 48 rows)
+-- weather: games due now vs newest snapshot age per game (sample)
+ERROR:  function left(jsonb, integer) does not exist
+LINE 1: select id, started_at, status, left(notes->'pricing'::text, ...
+                                       ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+97
+392 | 2026-09-12 19:30:00+00 | 
+12 | 2026-09-13 20:25:00+00 | 
+11 | 2026-09-13 20:25:00+00 | 
+4 | 2026-09-13 17:00:00+00 | 
+14 | 2026-09-13 20:25:00+00 | 
+422 | 2026-09-13 04:00:00+00 | 2026-09-12 04:04:36.717741+00
+-- annotate backoff deadline
+annotate:4 | 1789220370 | 2026-09-12 13:39:30+00
+-- page times
+/api/summary 200 29.993057s
+/ 200 0.468612s
+-- ws sink QueryCanceled 3h
+0
+-- nws GETs per minute in app-run log (last 5 min)
+0
+-- host
+Mem:            7717        5486         447         551        3052        2230
+Swap:           9999        4450        5549
+ 1  2 4557760 458484  14332 3112308    4    0  7348   162 2050 4582  1  1 78 20  0
+sports-harness-app-serve-1 111.7MiB / 7.536GiB 0.23%
+sports-harness-app-run-1 318.4MiB / 7.536GiB 0.08%
+sports-harness-postgres-1 951.3MiB / 7.536GiB 3.92%
+
+## follow-ups 4 Sat Sep 12 13:07:25 UTC 2026
+-- nws raw_responses last hour / last 5 min / by hour 12h
+9193 | 2026-09-12 12:07:38.202822+00 | 2026-09-12 12:59:45.57575+00
+0
+2026-09-12 12:00:00+00 | 10498
+2026-09-12 11:00:00+00 | 10759
+2026-09-12 10:00:00+00 | 10909
+2026-09-12 09:00:00+00 | 11010
+2026-09-12 08:00:00+00 | 10155
+2026-09-12 07:00:00+00 | 3139
+2026-09-12 06:00:00+00 | 3662
+2026-09-12 05:00:00+00 | 1014
+2026-09-12 04:00:00+00 | 1326
+-- all raw_responses rows per hour 6h (fetch-storm check)
+2026-09-12 13:00:00+00 | kalshi | 445
+2026-09-12 13:00:00+00 | odds_api | 190
+2026-09-12 12:00:00+00 | espn | 8
+2026-09-12 12:00:00+00 | kalshi | 38
+2026-09-12 12:00:00+00 | nws | 10498
+2026-09-12 11:00:00+00 | espn | 8
+2026-09-12 11:00:00+00 | kalshi | 38
+2026-09-12 11:00:00+00 | nws | 10759
+2026-09-12 10:00:00+00 | espn | 8
+2026-09-12 10:00:00+00 | kalshi | 38
+2026-09-12 10:00:00+00 | nws | 10909
+2026-09-12 09:00:00+00 | espn | 8
+2026-09-12 09:00:00+00 | kalshi | 38
+2026-09-12 09:00:00+00 | nws | 11010
+2026-09-12 08:00:00+00 | espn | 8
+2026-09-12 08:00:00+00 | kalshi | 38
+2026-09-12 08:00:00+00 | nws | 10155
+2026-09-12 07:00:00+00 | espn | 6
+2026-09-12 07:00:00+00 | kalshi | 31
+2026-09-12 07:00:00+00 | nws | 2827
+-- latest ticks with a pricing block (fix 48 rows)
+12877 | 2026-09-12 13:00:07.955462+00 | ok | {"gaps": 0, "order": [], "signals": {}, "budget_s": 20, "no_sharp": 1251, "variant_ms": {}, "fair_direct": 204, "fair_errors": 0, "fair_derived": 3046, "variants_run": [], "budget_capped": true, "gate_variant_id": null, "budget_exhausted": true, "variants_skipped": [], "gate_variant_missing": false}
+12876 | 2026-09-12 12:59:37.955152+00 | ok | {}
+-- weather: outdoor games in 72h: none / stale>2h / fresh
+fresh | 21
+fresh | 28
+fresh | 30
+fresh | 31
+fresh | 23
+fresh | 29
+fresh | 17
+fresh | 34
+none | 1
+none | 1
+none | 1
+none | 1
+none | 1
+stale | 20
+stale | 18
+stale | 14
+stale | 27
+stale | 30
+stale | 20
+stale | 21
+stale | 24
+stale | 15
+stale | 24
+stale | 14
+stale | 30
+stale | 16
+stale | 28
+stale | 24
+stale | 22
+stale | 28
+stale | 18
+stale | 24
+stale | 20
+stale | 18
+stale | 33
+stale | 17
+stale | 25
+stale | 14
+stale | 18
+stale | 29
+stale | 14
+stale | 15
+stale | 17
+stale | 14
+stale | 23
+stale | 19
+stale | 20
+stale | 23
+stale | 20
+stale | 15
+stale | 12
+stale | 19
+stale | 15
+stale | 16
+stale | 14
+stale | 10
+stale | 24
+stale | 24
+stale | 24
+stale | 23
+stale | 13
+stale | 26
+stale | 18
+stale | 18
+stale | 15
+stale | 24
+stale | 22
+stale | 23
+stale | 15
+stale | 16
+stale | 15
+stale | 22
+stale | 15
+stale | 18
+stale | 18
+stale | 22
+stale | 14
+stale | 17
+stale | 24
+stale | 23
+stale | 18
+stale | 15
+stale | 17
+stale | 28
+stale | 18
+stale | 17
+stale | 18
+stale | 18
+stale | 18
+stale | 26
+stale | 20
+stale | 17
+stale | 18
+stale | 14
+stale | 18
+stale | 38
+stale | 20
