@@ -1655,3 +1655,15 @@ Times are America/Chicago.
 - Rulings: (1) 6B's status column reads `in progress`; (2) T3's revision id follows the ledger's ruling (0008 on top of fix 45's 0007) - cost if wrong: one rename.
 - Carried forward: none.
 - Next: task reviews for T1/T10 as they report; wave 2 (T2, opus) after T1 merges into the phase branch.
+
+## 138. operate - host relief: the recorder held 2.3 GB; app-run and app-serve restarted - 2026-09-12 00:50 CT
+
+- Orient: n/a - operational containment inside the verify's hotfix follow-up (no game in progress; window query 0 | 0 | 0 at 23:50 CT and no kickoff before Sat 10:45 CT).
+- Observed (evidence file of journal 136, appended): `docker stats` at 00:32 CT: `app-run` 2.1 GiB, postgres 679 MiB, `app-exec` 150 MiB, `app-serve` 102 MiB; `ps` on the host: the `harness` process RSS 2,028,520 kB, the largest on the box, above every postgres backend. At 00:47 CT `app-run` read 2.3 GiB. `docker compose restart app-run` at 00:47:20 CT: 78 MiB thirty seconds later; host memory available 313-561 MB -> 3,163 MB; swap 4.5 GB -> 2.3 GB; IO wait 34 % -> 12 % by 00:49 CT; 0 ERROR lines in the recorder's first 40 s. The recorder had been up since the 23:22 CT deploy (85 min) when it reached 2.3 GiB.
+- Then `docker compose restart app-serve` at 00:49:33 CT (the documented re-enable for the self-guard: `study` and `pulse` were paused at 00:04/00:07 CT); scheduler restarted; the first builds are judged by the second walker (dispatched 00:51 CT) and the next reads.
+- Executor at 00:46 CT: last completed loop 05:29:24Z (751 s), 17 min into the next; `tape read failed` QueryCanceled on four NFL tickers in 20 min; `exec.tape_lag_tickers` 19; counterfactual backlog: **7,995 cancelled orders with `nw_done = false`**, every one simulated every loop (journal 130's finding, now quantified); `intents_considered` 0, open orders 0.
+- Result: done
+- Dispatches: 1 (walker2, sonnet).
+- Rulings: (1) The recorder's growth to 2.3 GiB in 85 minutes is a defect, not a host fact: **carried fix 49** (measure the growth per tick, find the retention, bound it; opus, the recorder path); until it ships the recorder is restarted outside game windows when its RSS passes 1 GiB, journaled each time - cost if wrong: a restart costs one tick. (2) Restarting `app-run` and `app-serve` outside a game window is within the operate duty (the same restarts the deploy recipe performs; journal 1322 precedent) - cost if wrong: one tick and one cold builder round. (3) The 7,995-order counterfactual backlog is the executor's load; no hotfix (journal 130's ruling stands: 6B Task 6's backoff and 6D's holding policy); the number goes to both briefs - cost if wrong: Saturday's watched simulation runs on 10-minute loops.
+- Carried forward: 49.
+- Next: consume T10's report; dispatch fix 48 (opus) at the first free slot; walker2's report; the 00:51 CT reconcile; executor loop times after the memory release (judge at 01:05 CT).

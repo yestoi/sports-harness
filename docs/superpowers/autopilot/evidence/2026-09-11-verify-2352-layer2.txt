@@ -841,3 +841,52 @@ Mem:            7717        7155         432         539        1375         561
 2026-09-11 23:48:22.044847+00 | 0.000000
 -- newest signal
 2026-09-11 21:47:18.841711+00
+Sat Sep 12 12:46:23 AM CDT 2026
+ 1  3 4491184 532072  16424 1022908 2190    0  5271   658 2419 5411  2  1 63 34  0
+Mem:            7717        7329         493         455        1040         387
+2026-09-12 05:29:24.697057+00 | 19869 | 750973 | 1676 | 00:17:08.378882
+-- counterfactual backlog: orders with nw_done false, by status
+cancelled | 7995
+-- executor metrics last loop
+exec.dirty_markets | 138.000000 | 2026-09-12 05:29:24.697057+00
+exec.intents_considered | 0.000000 | 2026-09-12 05:29:24.697057+00
+exec.open_orders | 0.000000 | 2026-09-12 05:29:24.697057+00
+exec.tape_batch_min | 250.000000 | 2026-09-12 05:29:24.697057+00
+exec.tape_lag_tickers | 19.000000 | 2026-09-12 05:29:24.697057+00
+-- active executor queries now
+IO | DataFileRead | 00:00:01.167969 | 
+select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,
+       source
+from venue_trades where ticker = $1 and ts >= $2 o
+IO | DataFileRead | -00:00:00.663253 | INSERT INTO fair_values (run_id, game_id, market_type, outcome_team_id, outcome_side, threshold, fair_p, fair_source, n_groups, disagreement, newest_book_ts, st
+     76 "message": "Execution of job \
+      4 "message": "Running job \
+      4 "message": "Job \
+      2 "message": "executor step failed
+      1 "message": "tape read failed for KXNFLSPREAD-26SEP13MIALV-LV4: (psycopg.errors.QueryCanceled) cancelin
+      1 "message": "tape read failed for KXNFLGAME-26SEP13TBCIN-TB: (psycopg.errors.QueryCanceled) canceling s
+      1 "message": "tape read failed for KXNFLGAME-26SEP13TBCIN-CIN: (psycopg.errors.QueryCanceled) canceling 
+      1 "message": "tape read failed for KXNFLGAME-26SEP13NODET-DET: (psycopg.errors.QueryCanceled) canceling 
+Sat Sep 12 12:47:20 AM CDT 2026
+sports-harness-app-run-1 2.3GiB / 7.536GiB
+ Container sports-harness-app-run-1  Started
+sports-harness-app-run-1 78.13MiB / 7.536GiB
+Mem:            7717        4553        2702         534        1700        3163
+Swap:           9999        2276        7723
+0
+Sat Sep 12 12:49:33 AM CDT 2026
+iowait=12
+Mem:            7717        4585        2311         538        2064        3131
+sports-harness-app-run-1 98.05MiB / 7.536GiB
+sports-harness-app-exec-1 198.6MiB / 7.536GiB
+sports-harness-app-serve-1 101.7MiB / 7.536GiB
+-- restarting app-serve (builders paused by the guard)
+ Container sports-harness-app-serve-1  Started
+"message": "Running job \
+"message": "Job \
+"message": "Scheduler has been shut down
+"message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
+"message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
+"message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
+"message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
+"message": "Adding job tentatively -- it will be properly scheduled when the scheduler starts
