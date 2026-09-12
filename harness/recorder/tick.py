@@ -221,6 +221,14 @@ def _recorder_samples(session: Session, run_id: int, tick_ms: int,
                       ctx: dict) -> list[tuple[str, object, dict]]:
     """`recorder.*` metric_samples for one tick."""
     samples: list[tuple[str, object, dict]] = [("recorder.tick_ms", tick_ms, {})]
+    # Fix 49. `app-run` went 78 MiB -> 1.82 GiB across one tick on 2026-09-12 and the only way
+    # to see it was ssh and `docker stats`; this puts the same number on Pulse's vitals. The
+    # `phase` label is there because the hourly settle job shares this process (controller
+    # addendum, 01:20 CT): a sample taken at the end of a tick says "tick", so a future sample
+    # at the end of a settle run can say "settle" without the two series colliding.
+    rss = telemetry.rss_mb()
+    if rss is not None:
+        samples.append(("recorder.rss_mb", round(rss, 1), {"phase": "tick"}))
     for source, count in session.execute(_FETCHED_BY_SOURCE, {"run_id": run_id}).all():
         samples.append(("recorder.fetched", count, {"source": source}))
     samples.append(("recorder.errors", len(ctx["errors"]), {}))

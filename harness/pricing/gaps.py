@@ -39,8 +39,26 @@ def _shape_for_market(market: VenueMarket) -> Shape | None:
     return None
 
 
-def _fair_key(fv: FairValue) -> tuple:
+def _fair_key(fv) -> tuple:
+    """The shape a fair value prices, plus which model produced it.
+
+    Takes a `FairValue` or any row exposing the same six attributes -- both reads below project
+    columns rather than loading the mapped object (fix 49).
+    """
     return (fv.game_id, fv.market_type, fv.outcome_team_id, fv.outcome_side, fv.threshold, fv.fair_source)
+
+
+#: The shape-and-source key both fair-value reads group by, as columns.
+_KEY_COLUMNS = (FairValue.game_id, FairValue.market_type, FairValue.outcome_team_id,
+                FairValue.outcome_side, FairValue.threshold, FairValue.fair_source)
+#: Everything this module reads off *this run's* fair values. Deliberately not `model_json`:
+#: a derived row carries the whole margin model in it and nothing here looks at it, so loading
+#: the mapped object meant carrying thousands of those dicts through the snapshot build.
+_FAIR_COLUMNS = (FairValue.id, *_KEY_COLUMNS, FairValue.fair_p, FairValue.n_groups,
+                 FairValue.disagreement, FairValue.staleness_s, FairValue.feed_kind,
+                 FairValue.feed_lag_s, FairValue.stale_allowance_s)
+#: Everything it reads off the *previous* fair value for a shape: just the two snapshot columns.
+_PREV_COLUMNS = (*_KEY_COLUMNS, FairValue.fair_p, FairValue.created_at)
 
 
 def build_gap_snapshots(
@@ -61,7 +79,7 @@ def build_gap_snapshots(
     # one walking `ix_quotes_market_fetched (venue_market_id, fetched_at)` with `run_id` only a
     # filter -- every quote ever recorded for the market read to keep the handful of this run --
     # and on 2026-09-11 it went past the 30 s statement timeout on every pricing run.
-    rows = session.execute(
+    stmt = (
         select(VenueQuote, VenueMarket, Game)
         .join(VenueMarket, VenueMarket.id == VenueQuote.venue_market_id)
         .join(Game, Game.id == VenueMarket.game_id)
@@ -70,47 +88,62 @@ def build_gap_snapshots(
             VenueMarket.match_status.in_(MATCHED_STATUSES),
             Game.kickoff_utc > window_start,
         )
-    ).all()
+    )
+    rows = session.execute(stmt).all()
     if not rows:
         return 0
 
     game_ids = {game.id for _, _, game in rows}
 
-    fair_by_key: dict[tuple, FairValue] = {}
+    # This run's own fair values, one row per shape. Scanned through
+    # `ix_fair_game_type_created (game_id, market_type, created_at)` on the `game_id` leg, with
+    # `run_id` a filter; bounded by the run's own shape count, which is what it writes.
+    fair_by_key: dict[tuple, object] = {}
     for fv in session.execute(
-        select(FairValue).where(FairValue.run_id == run_id, FairValue.game_id.in_(game_ids))
-    ).scalars():
+        select(*_FAIR_COLUMNS).where(FairValue.run_id == run_id, FairValue.game_id.in_(game_ids))
+    ):
         fair_by_key[_fair_key(fv)] = fv
 
     lookback_start = now - timedelta(minutes=15)
-    prev_by_key: dict[tuple, FairValue] = {}
+    # Fix 49: the previous fair value per shape, resolved to one row per key *in the database*.
+    # This read used to load every mapped `FairValue` written in the trailing fifteen minutes
+    # for these games -- on the 30 s heartbeat that is thirty runs, and at 3,269 fair values a
+    # run on a Saturday slate roughly a hundred thousand objects, each carrying its `model_json`
+    # -- and then throw all but the newest per key away. Measured on a twenty-game synthetic
+    # slate (`tests/test_recorder_memory.py`) the old shape grew this stage's peak allocation by
+    # about 1 MiB per tick with no ceiling but the window; `DISTINCT ON` makes it one row per
+    # shape, so the cost is the run's shape count rather than the history behind it.
+    # Same index as above: `game_id` leads the scan and `created_at` bounds it.
+    prev_by_key: dict[tuple, object] = {}
     for fv in session.execute(
-        select(FairValue)
+        select(*_PREV_COLUMNS)
+        .distinct(*_KEY_COLUMNS)
         .where(
             FairValue.game_id.in_(game_ids),
             FairValue.run_id != run_id,
             FairValue.created_at < now,
             FairValue.created_at >= lookback_start,
         )
-        .order_by(FairValue.created_at.desc())
-    ).scalars():
-        key = _fair_key(fv)
-        if key not in prev_by_key:
-            prev_by_key[key] = fv
+        # `DISTINCT ON` keeps the first row of each key group, so the ordering *is* the choice of
+        # "previous": newest first, and `id` breaks a tie between two rows stamped with the same
+        # `created_at` (the old read left that tie to whatever order the scan returned).
+        .order_by(*_KEY_COLUMNS, FairValue.created_at.desc(), FairValue.id.desc())
+    ):
+        prev_by_key[_fair_key(fv)] = fv
 
     lines_cache: dict[int, dict[LineKey, Line]] = {}
     inserted = 0
 
     for quote, market, game in rows:
         shape = _shape_for_market(market)
-        fair: FairValue | None = None
+        fair = None  # a projected row (see _FAIR_COLUMNS), not a mapped FairValue
         if shape is not None:
             market_type, team_id, side, threshold = shape
             fair = fair_by_key.get((game.id, market_type, team_id, side, threshold, "direct")) or fair_by_key.get(
                 (game.id, market_type, team_id, side, threshold, "derived")
             )
 
-        prev_fair: FairValue | None = None
+        prev_fair = None
         if fair is not None:
             prev_fair = prev_by_key.get(
                 (game.id, shape[0], shape[1], shape[2], shape[3], fair.fair_source)

@@ -9,6 +9,7 @@ whatever the database raises, since swallowing it here would hide the failure fr
 that actually knows what "continue anyway" means for its own loop.
 """
 
+import sys
 import time
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
@@ -25,6 +26,35 @@ from harness.db.models import MetricSample, OperatorEvent
 _SANITIZE_RE = _re_compile(r"[^\w \-.,:/()]")
 #: `operator_events.summary` and `kill_switch.reason` are both this wide.
 SUMMARY_MAX = 200
+
+
+def rss_mb() -> float | None:
+    """This process's resident set size in MiB, or None where neither source reads.
+
+    Fix 49: `app-run` went 78 MiB -> 1.82 GiB in one tick on the NAS and nobody could see it
+    without ssh, so the recorder now writes this as `recorder.rss_mb` every tick. Linux (the
+    NAS, every container) gets the *current* size from `/proc/self/status`; elsewhere (a Mac
+    running the tests) `getrusage` gives the process's *peak* instead, which is the closest
+    thing BSD offers without adding a dependency, so a local number never decreases.
+
+    No new dependency by design: `psutil` would read both platforms uniformly, but this metric
+    is not worth a package on the deploy image.
+    """
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import resource
+
+        maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:  # noqa: BLE001 - a metric never fails its caller
+        return None
+    # Linux reports ru_maxrss in KiB, macOS and the BSDs in bytes.
+    return maxrss / 1024 if sys.platform.startswith("linux") else maxrss / (1024 * 1024)
 
 
 def sanitize_reason(text: str) -> str:

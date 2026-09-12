@@ -20,6 +20,12 @@ FAMILIES = ("espn", "odds_featured", "odds_alternates", "kalshi_events", "kalshi
 # holds source='ws' rows that exist nowhere in raw_responses, so it is pruned by source instead.
 NORMALIZED_TABLES = ("odds_snapshots", "venue_quotes", "orderbook_snapshots", "venue_markets", "games")
 _EVENTS: dict[str, dict] = {}  # event_ticker -> event, refreshed from raw /events bodies
+#: Fix 49: `_EVENTS` is process-wide and used to be pruned by nothing but `reprocess`, so a
+#: recorder that stayed up for a season accumulated an entry for every event ticker football
+#: ever had. The cap is far above one weekend's events across all six series (a Saturday slate
+#: is on the order of a thousand) and far below unbounded; eviction is oldest-write-first, and
+#: `_remember_event` re-inserts on every write so a ticker still in the feed keeps its place.
+_EVENTS_MAX = 20_000
 _OB_RE = re.compile(r"^/markets/([^/]+)/orderbook$")
 _SERIES_RE = re.compile(r"^/series/([^/]+)$")
 
@@ -51,13 +57,31 @@ def _family_filter(family: str):
     }[family]
 
 
+def _remember_event(ev: dict) -> None:
+    """Write one event into the process-wide cache, keeping it under `_EVENTS_MAX`."""
+    ticker = ev.get("event_ticker")
+    if not ticker:
+        return
+    _EVENTS.pop(ticker, None)  # re-insert so insertion order tracks last write
+    _EVENTS[ticker] = ev
+    while len(_EVENTS) > _EVENTS_MAX:
+        _EVENTS.pop(next(iter(_EVENTS)))
+
+
+def _events_in(body) -> list:
+    return body.get("events", []) if isinstance(body, dict) else []
+
+
 def _load_events_cache(session: Session) -> None:
-    rows = session.execute(select(RawResponse).where(_family_filter("kalshi_events"), RawResponse.http_status == 200)
-                           .order_by(RawResponse.id.desc()).limit(200)).scalars().all()
-    for r in reversed(rows):
-        for ev in (r.body or {}).get("events", []) if isinstance(r.body, dict) else []:
-            if ev.get("event_ticker"):
-                _EVENTS[ev["event_ticker"]] = ev
+    # Only the body is read, so only the body is selected (fix 49): loading the mapped
+    # `RawResponse` pulled two hundred whole rows -- jsonb payloads included -- into the session
+    # to copy a handful of dicts out of them.
+    bodies = session.execute(select(RawResponse.body)
+                             .where(_family_filter("kalshi_events"), RawResponse.http_status == 200)
+                             .order_by(RawResponse.id.desc()).limit(200)).scalars().all()
+    for body in reversed(bodies):
+        for ev in _events_in(body):
+            _remember_event(ev)
 
 
 def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
@@ -74,9 +98,8 @@ def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
         dropped["unknown_game"] += odds.dropped_unknown_game
         dropped["unresolved_team"] += odds.dropped_unresolved_team
     elif family == "kalshi_events":
-        for ev in (body or {}).get("events", []) if isinstance(body, dict) else []:
-            if ev.get("event_ticker"):
-                _EVENTS[ev["event_ticker"]] = ev
+        for ev in _events_in(body):
+            _remember_event(ev)
     elif family == "kalshi_markets" and sport:
         if (r.params or {}).get("status") == "settled":
             # Recorder._kalshi_settled (F10(b)/R11) stores this page for phase 3's settlement
@@ -124,7 +147,7 @@ def _drain_batch(session: Session, family: str, batch: int, ctx: dict,
     if not rows:
         return 0, 0, True
     n, last_id, processed = 0, last_committed, 0
-    for r in rows:
+    for i, r in enumerate(rows):
         if deadline is not None and processed > 0 and time.monotonic() >= deadline:
             break
         processed += 1
@@ -139,6 +162,12 @@ def _drain_batch(session: Session, family: str, batch: int, ctx: dict,
             ctx.setdefault("normalize_errors", []).append({family: {"raw_id": r.id, "error": repr(e)[:300]}})
         # A poison row is skipped, never retried in a loop.
         last_id = r.id
+        # Fix 49: drop the row, and the jsonb body hanging off it, as soon as it is handled.
+        # A batch is five hundred rows and an odds-alternates body is the whole ladder for one
+        # event, so holding the batch to its end meant carrying every body in it at once --
+        # the largest single allocation the normalize phase makes. The list slot is what holds
+        # the strong reference; the session's identity map is weak.
+        rows[i] = None
     _watermark(session, family).last_raw_id = last_id
     try:
         session.commit()
