@@ -791,3 +791,23 @@ def test_the_ages_panel_carries_the_study_cell_age(db_session, env_settings):
     assert rows["study:2026-37"]["cell_age_s"] == pytest.approx(5400)
     # A surface with no report cells under it has no cell age, and says None rather than 0.
     assert rows["pulse"]["cell_age_s"] is None
+
+
+def test_a_non_numeric_cell_age_s_does_not_break_the_ages_panel(db_session, env_settings):
+    """Minor M5: only Study writes `cell_age_s` today, and writes a number, but the ages panel
+    must not raise past a bad value from a future surface's payload -- a `::float` cast in the
+    query would fail the whole read; the guarded Python conversion instead reads that one row's
+    `cell_age_s` as `None` and leaves every other row intact."""
+    db_session.add(DashboardSnapshot(name="study:2026-37",
+                                     generated_at=NOW - timedelta(minutes=2),
+                                     payload={"cell_age_s": "not-a-number"}, elapsed_ms=12,
+                                     error=None))
+    db_session.add(DashboardSnapshot(name="pulse", generated_at=NOW - timedelta(seconds=30),
+                                     payload={}, elapsed_ms=9, error=None))
+    db_session.flush()
+
+    rows = {row["name"]: row for row in build_pulse(db_session, NOW, env_settings)["snapshots"]}
+    assert rows["study:2026-37"]["cell_age_s"] is None
+    assert rows["pulse"]["cell_age_s"] is None
+    # The bad value costs only its own field: the row's own age still renders.
+    assert rows["study:2026-37"]["age_s"] == pytest.approx(120, abs=2)

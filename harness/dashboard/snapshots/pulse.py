@@ -245,9 +245,12 @@ _EVENTS = text("""
 #: Addendum 0.5: `cell_age_s` rides along with the row's own age so the ages panel can show the
 #: two apart. It is a key of the *stored payload*, so a surface that does not carry one (every
 #: surface but Study) reads SQL NULL and the row says `None` rather than a zero it did not earn.
+#: Minor M5: read as text and converted per row in `_snapshots`, not cast here -- a `::float`
+#: cast in the query raises on any non-numeric value, which would fail the whole ages read (via
+#: `_group`'s isolation) rather than just that row's `cell_age_s`.
 _SNAPSHOT_AGES = text("""
     select name, generated_at, elapsed_ms, error,
-           (payload->>'cell_age_s')::float as cell_age_s
+           payload->>'cell_age_s' as cell_age_s
     from dashboard_snapshots
 """)
 _GAMES_LIVE = text("select count(*) from games where status = 'in_progress'")
@@ -722,6 +725,19 @@ def _events(session: Session) -> list[dict]:
             for row in session.execute(_EVENTS, {"limit": EVENTS_LIMIT})]
 
 
+def _safe_cell_age_s(raw) -> float | None:
+    """Minor M5: `raw` is whatever a surface's payload wrote under `cell_age_s` -- today only
+    Study writes the key, and writes a number, but the ages panel must not break if a future
+    surface writes something else. Anything that does not parse as a float is `None`, the same
+    value a payload with no key at all produces."""
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _snapshots(values: dict) -> list[dict]:
     """Every row's age, including the closed `study:` weeks `rule_snapshot_stale` does not judge:
     the ages panel is the place an operator can see that a week was built and when.
@@ -740,7 +756,7 @@ def _snapshots(values: dict) -> list[dict]:
                     "error": row["error"],
                     "disabled": builder_key(row["name"]) in disabled,
                     "disabled_over_ms": _DISABLE_MS,
-                    "cell_age_s": row.get("cell_age_s")})
+                    "cell_age_s": _safe_cell_age_s(row.get("cell_age_s"))})
     return sorted(out, key=lambda r: r["name"])
 
 

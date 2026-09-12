@@ -144,7 +144,9 @@ def render_markdown(tables: dict[str, Table], meta: dict) -> str:
             lines.append(f"- Excluded by Amendment {number}: none ({entry.get('what', '')})")
         else:
             lines.append(f"- Excluded by Amendment {number}: {entry.get('orders', 0)} orders, "
-                         f"{entry.get('signals', 0)} signals (runs {runs[0]}-{runs[1]})")
+                         f"{entry.get('signals', 0)} signals (runs {runs[0]}-{runs[1]}); "
+                         f"the order count omits orders with no gap snapshot, which cannot be "
+                         f"attributed to a run (Minor M4)")
     lines.append("")
     annotation = meta.get("annotation")
     if annotation:
@@ -256,10 +258,13 @@ def restrict_to_selection(tables: dict[str, Table], selection: dict) -> dict[str
     posterior interval (ruling R13).
 
     Table 4's note prints every denominator behind that verdict -- selected, evaluated,
-    insufficient, missing, confirmed -- so a reader can see why the count is what it is. A
-    week-3 cell below the registered ten-game-cluster floor is counted `insufficient` and never
-    confirmed (`_has_floor`; a restoration of the record's own rule, not a new one). The count
-    of confirmed cells lying on the stored direction is printed beside the registered two-sided
+    insufficient, no estimate, missing, confirmed -- so a reader can see why the count is what
+    it is. A week-3 cell below the registered ten-game-cluster floor is counted `insufficient`
+    and never confirmed (`_has_floor`; a restoration of the record's own rule, not a new one).
+    A selected cell with no posterior at all (`PLACEHOLDER` or `NOT_COLLECTED`) is a different
+    population from one that has a posterior but is below the floor, so it is counted under its
+    own `no estimate` label rather than folded into `insufficient` (Minor M2). The count of
+    confirmed cells lying on the stored direction is printed beside the registered two-sided
     count and is applied nowhere: making it a condition would be a success-threshold change
     under R1 (see `DIRECTION_NOTE`).
     """
@@ -273,23 +278,27 @@ def restrict_to_selection(tables: dict[str, Table], selection: dict) -> dict[str
     if t4 is not None:
         index = [t4.columns.index(name) for name in CELL_KEY]
         posterior = t4.columns.index("posterior")
-        selected = [tuple(entry.get(name) for name in CELL_KEY)
-                    for entry in selection.get("cells", [])]
         directions = {tuple(entry.get(name) for name in CELL_KEY): entry.get("direction")
                       for entry in selection.get("cells", [])}
         rows = [row for row in t4.rows if tuple(row[i] for i in index) in wanted_cells]
         present = {tuple(row[i] for i in index) for row in t4.rows}
-        missing = sum(1 for key in selected if key not in present)
+        # Minor M3: `selected` and `missing` are counted over the deduplicated `wanted_cells`
+        # set, not a list built straight from `selection["cells"]`, so a duplicate cell key
+        # there cannot inflate `selected` past `evaluated + insufficient + no estimate +
+        # missing`.
+        missing = sum(1 for key in wanted_cells if key not in present)
         eligible = [row for row in rows if _has_floor(row[posterior])]
-        insufficient = len(rows) - len(eligible)
+        no_estimate = sum(1 for row in rows if not is_cell(row[posterior]))
+        insufficient = len(rows) - len(eligible) - no_estimate
         confirmed = [row for row in eligible if cell_excludes_zero(row[posterior])]
         on_direction = sum(
             1 for row in confirmed
             if directions.get(tuple(row[i] for i in index)) is not None
             and directions[tuple(row[i] for i in index)] == _direction(row[posterior]))
         note = (f"{CONFIRMATION_NOTE} "
-                f"selected {len(selected)} / evaluated {len(rows)} / "
+                f"selected {len(wanted_cells)} / evaluated {len(rows)} / "
                 f"insufficient (< {GREY_CLUSTERS} clusters) {insufficient} / "
+                f"no estimate {no_estimate} / "
                 f"missing (no row) {missing} / "
                 f"confirmed (two-sided) {len(confirmed)} "
                 f"(§9.6 needs {SIGNIFICANT_CELLS_REQUIRED}) / "
