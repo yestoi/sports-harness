@@ -2525,6 +2525,8 @@ EOF
 
 ### Task 6: Dirty intervals, observation coverage and counterfactual backoff (correction C5, spec §1.5, §0.9, §0.10, §0.14)
 
+> **Controller note (plan re-check, 2026-09-11 21:45 CT):** in `_advance_books`, collect the clean markets of the step into one list and call `store.close_intervals` once per table for that list, the way the `gone` set is closed below; never one statement per ticker inside the loop (about 110 statements per step on a 55-ticker loop is the cost the reviewer measured against a p95 loop of 227 s).
+
 **Files:**
 - Create: `harness/execution/dirty_time.py`
 - Create: `tests/test_dirty_time.py`
@@ -3483,6 +3485,7 @@ EOF
 - Modify: `harness/replay.py` (`ReplayCounts` at lines 45-54, `replay()`'s variant resolution, `_execute` at 230-259)
 - Modify: `harness/cli.py` (the `replay` command at lines 700-741: `--population` and the refusal exit code)
 - Modify: `tests/test_replay.py` (four new cases)
+- Modify: `tests/test_replay_execute.py` (its three `replay(...)` calls move to the new signature in step 1; plan re-check note)
 
 **Depends on:** Tasks 2, 3, 4, 5, 6 (spec §1.6 depends on §1.1-§1.5).
 
@@ -3998,7 +4001,7 @@ Expected: zero failures, zero warnings, 0 xfailed, zero `XPASS`.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add harness/replay.py harness/cli.py tests/test_replay.py
+git add harness/replay.py harness/cli.py tests/test_replay.py tests/test_replay_execute.py
 git commit -m "$(cat <<'EOF'
 fix(6b): C6 replay the range's own population under one capacity counter
 
