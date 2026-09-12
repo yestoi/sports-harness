@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import respx
+from freezegun import freeze_time
 from sqlalchemy import text
 
 from harness.db.models import Game, WeatherPoint
@@ -128,6 +129,7 @@ def test_a_retractable_roof_is_fetched_and_labelled(db_session, env_settings, mo
 
 
 @respx.mock
+@freeze_time(NOW)
 def test_a_second_pass_writes_nothing_when_the_forecast_has_not_changed(db_session,
                                                                         env_settings,
                                                                         monkeypatch):
@@ -159,6 +161,7 @@ def test_a_second_pass_writes_nothing_when_the_forecast_has_not_changed(db_sessi
 
 
 @respx.mock
+@freeze_time(NOW)
 def test_a_changed_temperature_appends_a_row(db_session, env_settings, monkeypatch):
     from harness.weather import snapshots as module
     from harness.weather.stadiums import Stadium

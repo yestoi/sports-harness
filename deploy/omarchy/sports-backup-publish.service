@@ -1,0 +1,10 @@
+[Unit]
+Description=Publish encrypted sports backups for NAS pull
+RequiresMountsFor=/srv/sports-harness
+
+[Service]
+Type=oneshot
+User=trey
+Group=trey
+UMask=0077
+ExecStart=/usr/bin/python /srv/sports-harness/deploy/omarchy/publish-backups.py /srv/sports-harness/backups /srv/sports-harness/backup-export

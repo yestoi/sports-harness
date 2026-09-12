@@ -20,6 +20,7 @@ BUILD_TIME := $(shell date -u +%FT%TZ)
 APP_SERVICES := app-run app-serve app-exec app-research $(if $(filter 1,$(WITH_WS)),app-ws,)
 
 deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate; seed; start
+	@ssh -o BatchMode=yes $(NAS_USER)@$(NAS_IP) 'test ! -e $(NAS_STACK)/migration-retired || { echo "Deployment blocked: this stack was retired by the Omarchy migration. See docs/runbooks/nas-to-omarchy-progress.md." >&2; exit 1; }'
 	@if [ -n "$$(git status --porcelain)" ] && [ "$$ALLOW_DIRTY" != "1" ]; then \
 		echo "refusing to deploy a dirty tree; commit first (or ALLOW_DIRTY=1)"; exit 1; fi
 	@printf "$(GREEN)[DEPLOY]$(NC) Pushing to $(NAS_USER)@$(NAS_IP):$(NAS_STACK)\n"
@@ -83,6 +84,7 @@ deploy-nas: ## Push source, compose env, and secrets to the NAS; build; migrate;
 	@printf "$(GREEN)[DEPLOY]$(NC) Done. Run: make status-nas\n"
 
 deploy-nas-app: ## Same push, but restart only app-run/app-serve/app-exec/app-research (WITH_WS=1 also rebuilds app-ws)
+	@ssh -o BatchMode=yes $(NAS_USER)@$(NAS_IP) 'test ! -e $(NAS_STACK)/migration-retired || { echo "Deployment blocked: this stack was retired by the Omarchy migration. See docs/runbooks/nas-to-omarchy-progress.md." >&2; exit 1; }'
 	@if [ -n "$$(git status --porcelain)" ] && [ "$$ALLOW_DIRTY" != "1" ]; then \
 		echo "refusing to deploy a dirty tree; commit first (or ALLOW_DIRTY=1)"; exit 1; fi
 	@docker compose config --services >/dev/null 2>&1 || { \
@@ -147,6 +149,20 @@ stop-mac: ## Stop the stopgap recorder on this Mac (avoid double credit spend on
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-12s %s\n", $$1, $$2}'
+
+.PHONY: status-omarchy logs-omarchy tunnel-omarchy ssh-omarchy preflight-omarchy verify-summary-omarchy
+status-omarchy: ## Container status and health on the new production host
+	@scripts/omarchy.sh status
+logs-omarchy: ## Stream production logs from Omarchy
+	@scripts/omarchy.sh logs
+tunnel-omarchy: ## Open the Omarchy dashboard at localhost:8180
+	@scripts/omarchy.sh tunnel
+ssh-omarchy: ## SSH into the Omarchy runtime directory
+	@scripts/omarchy.sh ssh
+preflight-omarchy: ## Check Omarchy storage, containers, and current database activity
+	@scripts/omarchy.sh preflight
+verify-summary-omarchy: ## Compare Omarchy dashboard with SQL (DEPLOY_SHA=<sha>)
+	@SPORTS_HOST_PROFILE=deploy/omarchy/host.env $(VENV)/bin/python scripts/verify_summary.py $(DEPLOY_SHA)
 
 # ---- autopilot helpers (added 2026-09-07) ----
 # The test DB is per branch so implementers in worktrees never share a schema; scripts/testdb.py creates it.

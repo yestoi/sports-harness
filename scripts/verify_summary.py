@@ -7,6 +7,8 @@ SQL runs first and the page second, so an in-flight tick can only make the page 
 candidate count is re-checked once after 20 s before it is scored FAIL.
 """
 import json
+import os
+import shlex
 import subprocess
 import sys
 import time
@@ -24,7 +26,7 @@ select 'cand', v.name, count(s.id) from strategy_variants v
 
 def nas() -> tuple[str, str]:
     vals = {}
-    for line in open(".env.nas"):
+    for line in open(os.environ.get("SPORTS_HOST_PROFILE", ".env.nas")):
         line = line.strip()
         if "=" in line and not line.startswith("#"):
             k, v = line.split("=", 1)
@@ -40,7 +42,9 @@ def ssh(host: str, cmd: str, stdin: str | None = None) -> str:
 
 
 def sql(host: str, stack: str) -> dict:
-    out = ssh(host, f"cd {stack} && docker compose exec -T postgres psql -U harness -d harness -At -F '|'", stdin=SQL)
+    # Omarchy's wrapper selects the pinned migration image overrides.
+    compose = "./sports-compose" if stack == "/srv/sports-harness" else "docker compose"
+    out = ssh(host, f"cd {shlex.quote(stack)} && {compose} exec -T postgres psql -U harness -d harness -At -F '|'", stdin=SQL)
     d: dict = {"cand": {}}
     for line in out.splitlines():
         parts = line.split("|")

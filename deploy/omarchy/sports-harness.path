@@ -1,0 +1,10 @@
+[Unit]
+Description=Activate sports runtime when the validated migration is enabled
+RequiresMountsFor=/srv/sports-harness
+
+[Path]
+PathExists=/srv/sports-harness/migration/production-enabled
+Unit=sports-harness.service
+
+[Install]
+WantedBy=multi-user.target

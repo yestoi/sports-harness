@@ -1,0 +1,8 @@
+FROM alpine:3.22
+RUN apk add --no-cache openssh-client rsync util-linux \
+    && adduser -D -H -u 1000 -G wheel trey
+COPY pull-backups.sh /usr/local/bin/pull-backups
+COPY archive-loop.sh /usr/local/bin/archive-loop
+RUN chmod 755 /usr/local/bin/pull-backups /usr/local/bin/archive-loop
+USER 1000:10
+ENTRYPOINT ["/usr/local/bin/archive-loop"]
