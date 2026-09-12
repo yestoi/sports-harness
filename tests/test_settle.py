@@ -619,7 +619,10 @@ def test_due_report_wtd_runs_first_and_is_not_starved(db_session, env_settings, 
     register_stage("hog", hog)
     register_stage("report_wtd", report_wtd_stub)
 
-    row = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
+    # index0: Budget.__init__ (unused). index1/2: report_wtd's `_run_stage` start/end (its
+    # early run has no budget reads of its own) -> elapsed 3.0. index3/4: hog's start/end.
+    row = Settler(env_settings, factory, None, clock=lambda: NOW,
+                 monotonic=Mono(100.0, 0.0, 3.0, 3.0, 3.0)).run()
 
     assert ran[0] == "report_wtd"
     assert row.notes["order"] == ["report_wtd", "hog"]
@@ -627,6 +630,12 @@ def test_due_report_wtd_runs_first_and_is_not_starved(db_session, env_settings, 
     notes = {s["name"]: s for s in row.notes["stages"]}
     assert notes["report_wtd"]["budget_exhausted"] is False  # ran first: never starved
     assert notes["hog"]["budget_exhausted"] is True
+    # Review fix round 1, Minor 2: the brief pins this slot's `counts` verbatim.
+    assert notes["report_wtd"]["counts"] == {"skipped": True, "reason": "ran first"}
+    # Review fix round 1, Important 1: the placeholder must not discard the early run's own
+    # timing (or, below, its error) just because it is standing in for a second call that
+    # never happens.
+    assert notes["report_wtd"]["elapsed_s"] == 3.0
 
     # -- not due: stamp report_wtd as having just run, then re-run with the same registry.
     db_session.execute(_SET_LAST, {"k": JOB_STATE_KEY, "now": NOW})
@@ -640,6 +649,33 @@ def test_due_report_wtd_runs_first_and_is_not_starved(db_session, env_settings, 
     row2 = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
 
     assert row2.notes["order"] == ["hog", "report_wtd"]  # unchanged registration order
+
+
+def test_due_report_wtd_placeholder_carries_the_early_run_s_error(
+        db_session, env_settings, monkeypatch):
+    """Review fix round 1, Important 1: a `report_wtd` that raises on its early, ran-first
+    call must still show up as an error in `notes.stages` -- `_run_stage` already turns the
+    exception into a `StageResult(error=...)`, but the placeholder built for report_wtd's
+    usual (unused) slot must carry that `error` through rather than hardcoding `None`, or a
+    raising due-first report_wtd degrades the job with no erroring stage anywhere in `notes`,
+    and `harness/cli.py`'s `counts or error` print shows the truthy `skipped` dict instead."""
+    monkeypatch.setattr(job_module, "STAGES", [])
+    monkeypatch.setattr(job_module, "STAGE_MODULES", [])
+
+    def boom(session, now, budget):
+        raise RuntimeError("report_wtd exploded")
+
+    register_stage("report_wtd", boom)
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    row = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
+
+    assert row.notes["order"] == ["report_wtd"]
+    note = row.notes["stages"][0]
+    assert note["name"] == "report_wtd"
+    assert note["counts"] == {"skipped": True, "reason": "ran first"}  # pinned verbatim
+    assert note["error"] is not None and "report_wtd exploded" in note["error"]
+    assert row.status == "error"
 
 
 def test_equity_snapshot_written_after_the_settle_stage(db_session, env_settings):

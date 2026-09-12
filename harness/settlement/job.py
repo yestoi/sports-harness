@@ -199,6 +199,7 @@ class Settler:
             results: list[StageResult] = []       # real results, in run order (status/telemetry)
             stage_notes: list[StageResult] = []    # one per registered name, registry order (notes)
             with use_ctx(ctx):
+                early: StageResult | None = None
                 if due_first:
                     early = self._run_stage(session, "report_wtd", stage_fns["report_wtd"],
                                             now, budget)
@@ -210,9 +211,16 @@ class Settler:
                         # It already ran, ahead of its usual slot: this slot in the notes'
                         # `stages` list records that rather than running it a second time, so
                         # the list stays eleven entries long and `order` (below) carries the
-                        # truth of when it actually ran.
+                        # truth of when it actually ran. The brief pins this slot's `counts`
+                        # verbatim, but not `elapsed_s`/`error` -- review fix round 1,
+                        # Important 1: a placeholder that hardcoded those to `0.0`/`None`
+                        # blinded the notes on exactly the stage whose timing/failure this
+                        # reordering makes the first question on the first post-deploy run,
+                        # and hid a raising early report_wtd from `harness/cli.py`'s
+                        # `counts or error` print (a truthy `skipped` dict beats `None`).
                         stage_notes.append(StageResult(
-                            "report_wtd", {"skipped": True, "reason": "ran first"}, False, None))
+                            "report_wtd", {"skipped": True, "reason": "ran first"}, False,
+                            early.error, early.elapsed_s))
                         continue
                     result = self._run_stage(session, name, fn, now, budget)
                     run_order.append(name)

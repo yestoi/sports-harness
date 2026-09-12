@@ -53,6 +53,12 @@ HORIZONS = {"0m": 0, "1m": 60, "5m": 300, "30m": 1800, "120m": 7200}
 ZERO_M_ANCHORS = ("fill", "nw_fill")
 CLOSE_OFFSET = timedelta(minutes=5)
 
+#: Fix 47's `_CANDIDATE_ORDERS` due-gate for the `place`/`cross_fill` branches (review fix
+#: round 1, Minor 3): the earliest horizon either anchor can owe, since neither is in
+#: `ZERO_M_ANCHORS`. Bound as a parameter, like `CLOSE_OFFSET`, rather than inlined, so a
+#: change to `HORIZONS["1m"]` cannot silently desync the gate from the horizon it tracks.
+_MIN_HORIZON_OFFSET = timedelta(seconds=HORIZONS["1m"])
+
 #: How close a `venue_quotes` row must be to the horizon instant to be used over the WS book.
 #: One-sided (fix round 1, Important 3): a quote is only a candidate at or before the horizon,
 #: never after it -- a markout is a statement about what was knowable at that instant, and a
@@ -193,7 +199,7 @@ _CANDIDATE_ORDERS = text("""
     where o.replay = false
       and (
         (
-          o.placed_at + interval '60 seconds' <= :now
+          o.placed_at + :min_offset <= :now
           and not exists (
             select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'place' and mk.horizon = '120m'
           )
@@ -244,7 +250,7 @@ _CANDIDATE_ORDERS = text("""
             select 1 from fills f where f.order_id = o.id and f.fill_method = 'snapshot_cross'
             and (
               (
-                f.filled_at + interval '60 seconds' <= :now
+                f.filled_at + :min_offset <= :now
                 and not exists (
                   select 1 from markouts mk where mk.order_id = o.id and mk.anchor = 'cross_fill' and mk.horizon = '120m'
                 )
@@ -429,6 +435,10 @@ def _process_order(session: Session, row, now: datetime,
 
 
 def _get_cursor(session: Session) -> int:
+    # Review fix round 1, Minor 5: reads through the identity map, while `_set_cursor` writes
+    # with a Core `insert ... on conflict` that does not refresh it -- safe as the one call
+    # per `compute_markouts` run this is, but a second direct call on the same session after
+    # a write would see the pre-write value.
     row = session.get(JobState, MARKOUTS_CURSOR_KEY)
     return 0 if row is None or row.value is None else int(row.value)
 
@@ -467,7 +477,8 @@ def compute_markouts(session: Session, now: datetime, budget: Budget) -> int:
     inserted = 0
     cursor = _get_cursor(session)
     rows = _rotate_from_cursor(
-        session.execute(_CANDIDATE_ORDERS, {"now": now, "close_offset": CLOSE_OFFSET}).all(),
+        session.execute(_CANDIDATE_ORDERS, {"now": now, "close_offset": CLOSE_OFFSET,
+                                            "min_offset": _MIN_HORIZON_OFFSET}).all(),
         cursor)
     fair_cache: dict[tuple, list] = {}
     full_pass = True
@@ -487,7 +498,12 @@ def compute_markouts(session: Session, now: datetime, budget: Budget) -> int:
             log.exception("compute_markouts failed for order_id=%s", row.order_id)
             ctx["errors"].append({"compute_markouts": row.order_id,
                                   "error": f"{type(exc).__name__}: {exc}"[:500]})
-    if rows and full_pass:
+    if full_pass:
+        # Review fix round 1, Minor 4: a zero-row fetch (nothing due right now) is the
+        # fullest pass there is, not a reason to leave a stale cursor sitting past every
+        # current id -- harmless today (`_rotate_from_cursor` already treats "cursor past
+        # every id" as "start from the head"), but this keeps the cursor from drifting on an
+        # idle system rather than relying on that fallback indefinitely.
         _set_cursor(session, 0, now)
         session.commit()
     return inserted

@@ -20,6 +20,7 @@ from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 from harness.settlement.job import Budget
 from harness.settlement.markouts import (
     _CANDIDATE_ORDERS,
+    _MIN_HORIZON_OFFSET,
     CLOSE_OFFSET,
     HORIZONS,
     FairPoint,
@@ -608,6 +609,25 @@ def test_markouts_cursor_rotates_past_the_prefix_and_resets_after_a_full_pass(db
     assert _get_cursor(db_session) == 0  # the second run completed a full pass
 
 
+def test_markouts_cursor_resets_on_a_zero_row_pass_too(db_session):
+    """Review fix round 1, Minor 4: a fetch with nothing currently due is the fullest pass
+    there is, not a reason to leave a stale cursor sitting past every live id."""
+    game = _game(db_session)  # kickoff defaults to NOW + 2h: `close` stays not due below
+    market = _market(db_session, game.id)
+    _order(db_session, market, placed_at=NOW - timedelta(hours=3))
+    db_session.commit()
+
+    first = compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    assert first == 4  # place's 1m/5m/30m/120m are all due; only `close` remains, not due yet
+
+    _set_cursor(db_session, 999_999, NOW)  # a cursor stranded past every real id
+    db_session.commit()
+
+    n = compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
+    assert n == 0  # nothing currently due: a zero-row fetch
+    assert _get_cursor(db_session) == 0
+
+
 def test_candidate_sql_excludes_an_order_with_nothing_due_yet(db_session):
     """Fix 47 (d): the due test now lives in `_CANDIDATE_ORDERS` itself, not only in
     `_process_order`'s `horizon_ts > now: continue` -- an order with nothing currently due is
@@ -627,21 +647,38 @@ def test_candidate_sql_excludes_an_order_with_nothing_due_yet(db_session):
     assert {r.horizon for r in db_session.query(Markout).filter_by(order_id=order.id).all()
            } == {"1m", "5m", "30m", "120m"}
 
-    def _candidate_ids(now):
-        rows = db_session.execute(_CANDIDATE_ORDERS,
-                                  {"now": now, "close_offset": CLOSE_OFFSET}).all()
-        return {r.order_id for r in rows}
-
     # Nothing is due yet (only `close` remains, and kickoff is hours away): excluded outright.
-    assert order.id not in _candidate_ids(NOW)
+    assert order.id not in _candidate_ids(db_session, NOW)
     again = compute_markouts(db_session, NOW, Budget(60, Mono(0.0)))
     assert again == 0
 
     # Once `now` passes kickoff - CLOSE_OFFSET, the order is a candidate again.
     due_now = kickoff - CLOSE_OFFSET
-    assert order.id in _candidate_ids(due_now)
+    assert order.id in _candidate_ids(db_session, due_now)
     written = compute_markouts(db_session, due_now, Budget(60, Mono(0.0)))
     assert written == 1
     row = db_session.query(Markout).filter_by(
         order_id=order.id, anchor="place", horizon="close").one()
     assert row.horizon_ts == due_now
+
+
+def _candidate_ids(session, now):
+    rows = session.execute(_CANDIDATE_ORDERS, {
+        "now": now, "close_offset": CLOSE_OFFSET, "min_offset": _MIN_HORIZON_OFFSET}).all()
+    return {r.order_id for r in rows}
+
+
+def test_candidate_sql_place_gate_uses_the_earliest_horizon_not_120_minutes(db_session):
+    """Review fix round 1, Minor 1: a direct test for the ruling this whole review turned on
+    (`test_horizons_beyond_now_are_not_written_yet` only covers it indirectly). `place`'s
+    earliest horizon is `1m` (60 s; `place` is not in `ZERO_M_ANCHORS`), not the widest `120m`
+    the brief's own literal formula named -- an order placed 30 s ago has nothing due yet and
+    is excluded; the same order 61 s in is a candidate."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    order = _order(db_session, market, side="yes", prob="0.5000",
+                   placed_at=NOW - timedelta(seconds=30))
+    db_session.commit()
+
+    assert order.id not in _candidate_ids(db_session, NOW)  # 30s old: nothing due yet
+    assert order.id in _candidate_ids(db_session, NOW + timedelta(seconds=31))  # now 61s old
