@@ -582,6 +582,71 @@ def test_positions_view_sums_the_money_fills_of_live_orders(db_session):
     ]
 
 
+# --- carried fix 56: a fill that has been settled is not an open position --------------------
+
+
+def _settled_fill_scenario(session, *, status, ledger_row, ticker):
+    """One non-replay order with one `queue_model` fill, optionally paid by a ledger
+    `settlement` row. The shape carried fix 56 is about: order 157 filled 38.92 YES, was
+    cancelled `fair_stale`, and its fill was later settled for payout 0 -- the order's status
+    stays `cancelled` (`settle.SETTLEABLE` moves only filled/partially_filled orders), so a
+    reader that decides "open" on the status alone strands the position forever.
+    """
+    from harness.db.models import Fill, Ledger
+
+    order = _order(session, ticker=ticker, status=status)
+    fill = Fill(order_id=order.id, prob=Decimal("0.4500"), contracts=Decimal("38.92"),
+                fee=Decimal("0.0000"), filled_at=NOW, fill_method="queue_model",
+                source_trade_id=f"{ticker}-settled-fill")
+    session.add(fill)
+    session.flush()
+    if ledger_row:
+        session.add(Ledger(ts=NOW, variant_id=order.variant_id, kind="settlement",
+                           order_id=order.id, fill_id=fill.id, ticker=ticker, side="yes",
+                           contracts=fill.contracts, price=fill.prob, payout=Decimal("0.00"),
+                           cash_delta=Decimal("0.00"), replay=False))
+    session.flush()
+    return order
+
+
+def _position_tickers(session):
+    return {r.ticker for r in session.execute(text("select ticker from positions")).all()}
+
+
+def test_a_cancelled_orders_settled_fill_is_not_an_open_position(db_session):
+    """(a) The ledger `settlement` row is the fact that money moved for the fill; after it the
+    fill is closed whatever the order's status says."""
+    _settled_fill_scenario(db_session, status="cancelled", ledger_row=True, ticker="T-PAID")
+
+    assert "T-PAID" not in _position_tickers(db_session)
+
+
+def test_a_cancelled_order_whose_fill_is_unpaid_is_still_an_open_position(db_session):
+    """(b) A cancelled-after-partial-fill order on a ticker that has not settled still holds
+    contracts: nothing has paid for them yet."""
+    _settled_fill_scenario(db_session, status="cancelled", ledger_row=False, ticker="T-UNPAID")
+
+    assert "T-UNPAID" in _position_tickers(db_session)
+
+
+def test_a_settled_order_is_still_not_an_open_position(db_session):
+    """(c) The existing status path, unchanged."""
+    _settled_fill_scenario(db_session, status="settled", ledger_row=False, ticker="T-DONE")
+
+    assert "T-DONE" not in _position_tickers(db_session)
+
+
+def test_the_three_open_position_readers_embed_the_one_predicate():
+    """(d) The view, the executor's caps read and Floor's exposure read answer the same
+    question; a later edit to one of the three must not be able to diverge silently."""
+    from harness.dashboard.snapshots.floor import _EXPOSURE
+    from harness.db.schema import OPEN_FILL_SQL, _POSITIONS_VIEW
+    from harness.execution.store import _POSITIONS
+
+    assert OPEN_FILL_SQL in _POSITIONS_VIEW
+    assert OPEN_FILL_SQL in _POSITIONS.text
+    assert OPEN_FILL_SQL in _EXPOSURE.text
+
 def test_create_schema_is_idempotent(db_session):
     engine = db_session.get_bind()
     db_session.commit()

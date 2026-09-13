@@ -416,12 +416,66 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_seven_revisions():
+def test_the_versions_directory_holds_eight_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
-        "0007_raw_events_lookup.py"]
+        "0007_raw_events_lookup.py", "0008_positions_open_fill.py"]
 
+
+# --- carried fix 56 (second row): revision 0008 -------------------------------------------------
+
+def test_positions_open_fill_follows_raw_events_lookup_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0008_positions_open_fill.py")
+    assert module.revision == "0008_positions_open_fill"
+    assert module.down_revision == "0007_raw_events_lookup"
+    assert HEAD_REVISION == "0008_positions_open_fill"
+
+
+def test_the_positions_view_ddl_agrees_between_schema_and_migration():
+    """`create_schema` owns the views; this revision exists so a *migrated* database carries the
+    same text, because `0001_baseline` holds the view's previous one and
+    `test_a_migrated_database_matches_a_create_schema_database` compares view definitions.
+
+    The two copies are compared as the Python string values each module holds, not as raw file
+    text -- the revision wraps the long predicate line with a backslash continuation, which does
+    not change the value. This is `test_the_quotes_run_index_ddl_agrees_between_schema_and_
+    migration`'s shape, applied to a view instead of an index, and it is what makes a later edit
+    to `_POSITIONS_VIEW` that forgets this copy fail here rather than in the catalogue diff.
+    """
+    from harness.db.schema import OPEN_FILL_SQL, _POSITIONS_VIEW
+
+    module = _load_revision("0008_positions_open_fill.py")
+    assert module._VIEW_DDL == _POSITIONS_VIEW
+    assert OPEN_FILL_SQL in module._VIEW_DDL
+
+
+def test_the_positions_open_fill_revision_only_issues_the_view_and_undoes_nothing():
+    """`upgrade()` runs exactly one statement and it is the view; `downgrade()` is `pass`
+    (roadmap invariant 5): re-issuing a view has nothing additive to undo, and the previous text
+    is in `0001_baseline`, which a code rollback's `init-db` puts back through `create_schema`.
+
+    Read through the parsed source rather than the lowercased file body, for
+    `test_the_raw_events_lookup_downgrade_drops_the_parent_index`'s reason: the module docstring
+    quotes SQL it does not run.
+    """
+    path = ROOT / "migrations" / "versions" / "0008_positions_open_fill.py"
+    # `_executable_strings` also returns the revision identifiers, which are not statements; the
+    # SQL is whatever starts with a DDL or DML verb.
+    verbs = ("create", "drop", "alter", "insert", "update", "delete", "truncate")
+    statements = [" ".join(s.split()).lower() for s in _executable_strings(path)]
+    sql = [s for s in statements if s.startswith(verbs)]
+    assert len(sql) == 1, sql
+    assert sql[0].startswith("create or replace view positions as")
+    tree = ast.parse(path.read_text())
+    upgrade = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "upgrade")
+    assert len(upgrade.body) == 1
+    downgrade = next(n for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef) and n.name == "downgrade")
+    assert all(isinstance(node, ast.Pass) for node in downgrade.body)
 
 def _load_baseline():
     path = ROOT / "migrations" / "versions" / "0001_baseline.py"
@@ -866,13 +920,12 @@ def test_the_quotes_run_index_is_never_built_without_concurrently():
 
 # --- fix 45: revision 0007 --------------------------------------------------------------------
 
-def test_raw_events_lookup_follows_quotes_run_index_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_raw_events_lookup_follows_quotes_run_index():
+    """It stopped being the pinned head at carried fix 56 (second row), which added
+    `0008_positions_open_fill` on top of it; its place in the chain is what this still pins."""
     module = _load_revision("0007_raw_events_lookup.py")
     assert module.revision == "0007_raw_events_lookup"
     assert module.down_revision == "0006_quotes_run_index"
-    assert HEAD_REVISION == "0007_raw_events_lookup"
 
 
 def test_the_raw_events_lookup_downgrade_drops_the_parent_index():

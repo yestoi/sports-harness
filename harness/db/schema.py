@@ -554,14 +554,24 @@ def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str
     return skipped
 
 
-#: Open contracts and their average price per variant, from the fills of live orders that have
-#: not settled yet, on either fill method that is money: `queue_model` (inferred against the
-#: recorded tape) and `venue` (the venue's own report). snapshot_cross and no_watcher fills are
-#: counterfactuals, not positions. The list matches `store.MONEY_FILL_METHODS` exactly -- the
+#: A fill is open until it has been settled: the order has not been moved to `settled` (the
+#: filled/partially_filled path) *and* no ledger `settlement` row has been posted for the fill
+#: (the path a partially filled order takes when it is later cancelled or expires: its status is
+#: the executor's record and never becomes `settled`, carried fix 56). `f` is the fills alias
+#: and `o` the orders alias in every consumer; the three readers below embed this text so they
+#: cannot diverge.
+OPEN_FILL_SQL = (
+    "o.status <> 'settled' and not exists ("
+    "select 1 from ledger l where l.fill_id = f.id and l.kind = 'settlement')")
+
+#: Open contracts and their average price per variant, from the fills that have not been settled
+#: yet (`OPEN_FILL_SQL`), on either fill method that is money: `queue_model` (inferred against
+#: the recorded tape) and `venue` (the venue's own report). snapshot_cross and no_watcher fills
+#: are counterfactuals, not positions. The list matches `store.MONEY_FILL_METHODS` exactly -- the
 #: view and `store._POSITIONS` answer the same question and must not diverge on which fills are
 #: real (Task 11 fix round 1, Important 2). Widening a `create or replace view` is additive:
 #: the column list is unchanged, so nothing that reads it needs to know.
-_POSITIONS_VIEW = """
+_POSITIONS_VIEW = f"""
 create or replace view positions as
 select o.variant_id,
        o.ticker,
@@ -572,7 +582,7 @@ from fills f
 join orders o on o.id = f.order_id
 where f.fill_method in ('queue_model', 'venue')
   and o.replay = false
-  and o.status <> 'settled'
+  and {OPEN_FILL_SQL}
 group by o.variant_id, o.ticker, o.side
 """
 

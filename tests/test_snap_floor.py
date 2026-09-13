@@ -589,6 +589,63 @@ def test_a_settled_or_replay_order_is_still_excluded_from_exposure(db_session, e
     assert lane["open_contracts"] == pytest.approx(0.0)
 
 
+
+# --- carried fix 56: a settled fill leaves Floor's exposure -------------------------------------
+
+
+def _cancelled_after_partial_fill(session, *, status="cancelled", settled=False):
+    """Order 157's shape on the exposure lane: a `queue_model` fill inside the window, on an
+    order the executor cancelled. Settlement pays the fill with a ledger `settlement` row and
+    leaves the order `cancelled`, so `open_stake`/`mtm_open` carried it forever."""
+    from harness.db.models import Ledger
+
+    session.add(StrategyVariant(variant_id="capped", name="constrained_t", tier="secondary",
+                                config_json={}, registered_at=NOW, active=True))
+    session.add(EquitySnapshot(ts=NOW - timedelta(minutes=5), variant_id="capped",
+                               cash=Decimal(3000), open_stake=Decimal("0.00"),
+                               n_open_positions=1, n_open_orders=0))
+    game = _game_with_market(session)
+    order = _open_order(session, venue_market_id=game.market_id, prob=Decimal("0.4500"),
+                        variant_id="capped", status=status, game_id=game.id)
+    fill = Fill(order_id=order.id, prob=Decimal("0.4500"), contracts=Decimal("38.92"),
+                fee=Decimal("0.0400"), filled_at=NOW - timedelta(hours=1),
+                fill_method="queue_model", tape_source="ws", replay=False)
+    session.add(fill)
+    session.flush()
+    if settled:
+        session.add(Ledger(ts=NOW, variant_id="capped", kind="settlement", order_id=order.id,
+                           fill_id=fill.id, ticker=order.ticker, side="yes",
+                           contracts=fill.contracts, price=fill.prob, payout=Decimal("0.00"),
+                           cash_delta=Decimal("0.00"), replay=False))
+    session.flush()
+    return order
+
+
+def test_a_cancelled_orders_settled_fill_leaves_the_exposure_lane(db_session, env_settings):
+    """(a) The lane's `open_contracts` is what the equity snapshot's `open_stake` and `mtm_open`
+    are built from; a paid fill holds nothing."""
+    _cancelled_after_partial_fill(db_session, settled=True)
+
+    lane = build_floor(db_session, NOW, env_settings)["exposure"]["lanes"][0]
+    assert lane["open_contracts"] == pytest.approx(0.0)
+
+
+def test_a_cancelled_order_whose_fill_is_unpaid_stays_on_the_exposure_lane(db_session,
+                                                                          env_settings):
+    """(b) Until the settle job pays it, the position is open however the order ended."""
+    _cancelled_after_partial_fill(db_session, settled=False)
+
+    lane = build_floor(db_session, NOW, env_settings)["exposure"]["lanes"][0]
+    assert lane["open_contracts"] == pytest.approx(38.92)
+
+
+def test_a_settled_order_still_leaves_the_exposure_lane(db_session, env_settings):
+    """(c) The existing status path, unchanged."""
+    _cancelled_after_partial_fill(db_session, status="settled", settled=False)
+
+    lane = build_floor(db_session, NOW, env_settings)["exposure"]["lanes"][0]
+    assert lane["open_contracts"] == pytest.approx(0.0)
+
 def test_the_funnel_caps_the_run_notes_it_reads(db_session, env_settings, monkeypatch):
     """`runs` carries no index on `started_at`, so the window predicate never stopped the read:
     it was a sequential scan of every run of the season with its `notes` JSONB. The cap is what

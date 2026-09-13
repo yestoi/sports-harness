@@ -486,3 +486,52 @@ def test_the_positions_view_counts_a_venue_fill(db_session):
         "select variant_id, open_contracts, avg_price from positions")).all()
     assert row.variant_id == "v-pos" and row.open_contracts == Decimal("20.00")
     assert row.avg_price == Decimal("0.5")
+
+
+# --- carried fix 56: a settled fill leaves the executor's positions -----------------------------
+
+
+def _cancelled_after_partial_fill(session, *, status="cancelled", settled=False):
+    """Order 157's shape: a `queue_model` fill on an order the executor then cancelled. When the
+    settle job pays the fill it writes a ledger `settlement` row but leaves the order's status
+    alone (`settle.SETTLEABLE` is filled/partially_filled), so the status is not what says
+    whether the position is still open.
+    """
+    from harness.db.models import Ledger
+
+    order_id = _open_order(session, variant_id="v-56", mode="paper", status=status,
+                           venue_market_id=_venue_market(session), game_id=7)
+    _fill(session, order_id, "queue_model", NOW, prob="0.4500", contracts="38.92")
+    fill_id = session.execute(text(
+        "select id from fills where order_id = :o"), {"o": order_id}).scalar_one()
+    if settled:
+        session.add(Ledger(ts=NOW, variant_id="v-56", kind="settlement", order_id=order_id,
+                           fill_id=fill_id, ticker="KX-56", side="yes",
+                           contracts=Decimal("38.92"), price=Decimal("0.4500"),
+                           payout=Decimal("0.00"), cash_delta=Decimal("0.00"), replay=False))
+    session.flush()
+    return order_id
+
+
+def test_a_cancelled_orders_settled_fill_leaves_load_positions(db_session):
+    """(a) `rebuild_state` feeds `cap_per_game`, `max_open` and the loop's equity accounting off
+    this read. A fill that has been paid holds no contracts, so leaving it in spends the caps on
+    a position that no longer exists -- forever, since the order never becomes `settled`."""
+    _cancelled_after_partial_fill(db_session, settled=True)
+
+    assert store.load_positions(db_session, False) == []
+
+
+def test_a_cancelled_order_whose_fill_is_unpaid_is_still_a_position(db_session):
+    """(b) Before settlement the contracts are real: the caps must still see them."""
+    _cancelled_after_partial_fill(db_session, settled=False)
+
+    (view,) = store.load_positions(db_session, False)
+    assert view.variant_id == "v-56" and view.stake == Decimal("17.5140")
+
+
+def test_a_settled_order_still_leaves_load_positions(db_session):
+    """(c) The existing status path, unchanged."""
+    _cancelled_after_partial_fill(db_session, status="settled", settled=False)
+
+    assert store.load_positions(db_session, False) == []

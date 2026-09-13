@@ -42,6 +42,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import EquitySnapshot, Fill, Intent, Ledger, Order, OrderEvent, OrderWatchSample
+from harness.db.schema import OPEN_FILL_SQL
 from harness.execution.fills import TapeDelta, TapePrint
 from harness.execution.plan import FillView, IntentView, PositionView
 from harness.strategy.variants import with_defaults
@@ -588,13 +589,17 @@ def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
 #: is dormant, so every paper and replay number is byte-identical.
 MONEY_FILL_METHODS = ("queue_model", "venue")
 
-_POSITIONS = text("""
+#: `OPEN_FILL_SQL` is the shared "this fill has not been settled yet" predicate, imported so the
+#: view, this read and Floor's exposure read cannot drift apart (carried fix 56: an order that
+#: was partially filled and then cancelled or expired keeps its own status forever, so its
+#: settled fill stayed in the caps).
+_POSITIONS = text(f"""
 select o.variant_id, o.game_id, m.side_team_id, o.side,
        sum(f.contracts * f.prob) as stake, max(o.edge_at_place) as edge
 from fills f
 join orders o on o.id = f.order_id
 join venue_markets m on m.id = o.venue_market_id
-where f.fill_method = any(:methods) and o.replay = :replay and o.status <> 'settled'
+where f.fill_method = any(:methods) and o.replay = :replay and {OPEN_FILL_SQL}
 group by o.variant_id, o.game_id, m.side_team_id, o.side
 """)
 

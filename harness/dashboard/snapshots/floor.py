@@ -63,6 +63,7 @@ from harness.dashboard.queries import (WINDOW_6H, local_day_bounds_utc, recent_r
                                        signals_by_variant_from_notes)
 from harness.dashboard.snapshots import base_payload, register_builder, section
 from harness.db.models import StrategyVariant
+from harness.db.schema import OPEN_FILL_SQL
 from harness.execution.book import side_p
 from harness.execution.store import MONEY_FILL_METHODS, OPEN_STATUSES
 from harness.pricing.fair import MATCHED_STATUSES
@@ -373,15 +374,17 @@ _FILLS = text("""
 #: The three predicates after the bound are `_POSITIONS_VIEW`'s three, in its own vocabulary:
 #: `fill_method` from `store.MONEY_FILL_METHODS` (imported, never restated -- the view and
 #: `store._POSITIONS` are required not to diverge on which fills are real), `o.replay = false`
-#: and `o.status <> 'settled'`. `f.replay` is deliberately not filtered, because the view does
-#: not filter it either: a replay fill belongs to a replay order, and the order is where the
-#: flag is read.
-_EXPOSURE = text("""
+#: and `OPEN_FILL_SQL`, the shared "not settled yet" predicate (imported for the same reason;
+#: carried fix 56 -- an order that was partially filled and then cancelled or expired keeps its
+#: own status forever, so deciding on the status alone left its settled fill on this lane).
+#: `f.replay` is deliberately not filtered, because the view does not filter it either: a replay
+#: fill belongs to a replay order, and the order is where the flag is read.
+_EXPOSURE = text(f"""
     select o.variant_id, sum(f.contracts) as contracts
     from fills f
     join orders o on o.id = f.order_id
     where f.filled_at >= :since and f.fill_method = any(:methods)
-      and o.replay = false and o.status <> 'settled'
+      and o.replay = false and {OPEN_FILL_SQL}
     group by o.variant_id
 """)
 #: Bound: `ts >= :since` (`EQUITY_WINDOW`, 7 d). Index: `ix_equity_variant_ts (variant_id,
