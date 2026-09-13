@@ -118,10 +118,14 @@ main { padding: 16px 24px 20px; }
   text-transform: none; letter-spacing: 0; }
 .card > h3 .technical, .card > h3 .tech { text-transform: none; letter-spacing: 0;
   color: var(--ink-muted); font-weight: 400; font-size: 11px; }
+/* The technical text beside a plain reading, wherever it lands outside a card's own `h3`
+   (fix 53: a table cell showing the exact stored text next to a humanized operator-event
+   summary) -- muted and small like the `h3` and tile cases, and able to wrap. */
+.technical { color: var(--ink-muted); font-size: 11px; overflow-wrap: anywhere; }
 .card > h3 .tag { font-size: 10px; letter-spacing: 0.06em; color: var(--accent);
   border: 1px solid var(--accent); border-radius: 4px; padding: 1px 5px; }
 .sentences { margin: 0 0 12px; padding: 0; color: var(--ink); font-size: 14.5px;
-  line-height: 1.5; max-width: 72ch; text-wrap: pretty; }
+  line-height: 1.5; max-width: 72ch; text-wrap: pretty; overflow-wrap: anywhere; }
 .sentences li { margin: 0 0 6px; list-style: none; }
 .sentences li:last-child { margin-bottom: 0; }
 .lead { font-size: 14.5px; line-height: 1.5; margin: 0 0 12px; max-width: 72ch;
@@ -161,7 +165,7 @@ td.num, th.num { text-align: right; }
 .fill.warm { background: var(--fun); }
 .grey, .muted { color: var(--ink-muted); }
 .sec { color: var(--ink-2); }
-.n { font-size: 11px; color: var(--ink-muted); }
+.n { font-size: 11px; color: var(--ink-muted); overflow-wrap: anywhere; }
 .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
 .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px;
   font-weight: 600; letter-spacing: 0.04em; }

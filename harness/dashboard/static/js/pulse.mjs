@@ -214,10 +214,19 @@ function snapshotsCard(payload) {
               { label: "Snapshot ages" }));
 }
 
+//: Fix 53: a stored summary that was a raw exception repr now arrives humanized, with the exact
+//: stored text carried alongside as `technical` -- shown visibly, not only on hover, so a
+//: keyboard or screen-reader reader sees the same evidence a mouse hover would (ruling A-I13).
+function eventWhat(event) {
+  if (!event.technical) return event.summary;
+  return el("span", {}, event.summary,
+            el("span", { class: "technical tech" }, " · ", event.technical));
+}
+
 function eventsCard(payload) {
   const section = payload.operator_events;
   const rows = listOf(section).map((event) =>
-    [fmtAge((Date.now() - Date.parse(event.ts)) / 1000), event.kind, event.summary]);
+    [fmtAge((Date.now() - Date.parse(event.ts)) / 1000), event.kind, eventWhat(event)]);
   return el("div", { class: "card" }, el("h3", { text: "Recent operator events" }),
             sectionFailed(section) ? el("div", { class: "grey", text: "unavailable" })
               : table(["when", "kind", "what"], rows, { label: "Operator events" }));

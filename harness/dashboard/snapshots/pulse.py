@@ -21,6 +21,7 @@ and `PULSE_KEYS` is asserted by the payload-schema test.
 """
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -732,10 +733,67 @@ def _invariants(values: dict) -> dict:
             "n_skip": sum(1 for t in tiles if t["status"] == "skip")}
 
 
+#: Fix 53: a background job sometimes logs `repr(exc)` rather than a sentence, so a stored
+#: `operator_events.summary` can be a raw Python exception repr -- `ClassName(message)` or, for
+#: a wrapped driver error, `Outer((Inner.Class) message)`. The stored row is append-only evidence
+#: and is never rewritten; this only changes what the payload shows beside it. Matched against
+#: the *whole* sanitized summary, so a plain sentence that merely contains a parenthesis
+#: (`gate evaluated for 3 variant(s)`) never matches: the string has to be one bare identifier
+#: immediately followed by `(...)` and nothing else.
+_EXC_REPR = re.compile(r"^([A-Za-z_][\w.]*)\((.*)\)$", re.S)
+#: The wrapped form's own leading `(Inner.Class) rest of message` -- the class name a reader
+#: actually wants (`psycopg.errors.QueryCanceled`), one level inside the driver's own wrapper
+#: class (`OperationalError`).
+_EXC_REPR_NESTED = re.compile(r"^\(([\w.]+)\)\s*")
+
+#: Known exception/error names (bare, or dotted for a driver's own namespace) to the plain
+#: reading an operator should see. Checked against the nested class name first when the repr is
+#: wrapped, then the outer one, so `OperationalError((psycopg.errors.QueryCanceled) ...)` reads
+#: by its useful inner name rather than the generic driver wrapper.
+_EXC_PHRASES = {
+    "WebSocketConnectionClosedException": "connection to the exchange was lost",
+    "psycopg.errors.QueryCanceled": "a database statement timed out",
+    "QueryCanceled": "a database statement timed out",
+}
+
+
+def _humanize_class_name(name: str) -> str:
+    """`FooBarError` -> `foo bar error`; `psycopg.errors.SomeError` -> `some error` (only the
+    class itself, not its module path). Used only for the generic fallback below, so an
+    exception this table has no phrase for still reads as words, not a bare symbol."""
+    bare = name.rsplit(".", 1)[-1]
+    words = re.findall(r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z0-9]+", bare)
+    return " ".join(w.lower() for w in words) if words else bare.lower()
+
+
+def humanize_event_summary(summary: str) -> tuple[str, str | None]:
+    """The plain "what" for a stored `operator_events.summary`, and the exact stored text
+    alongside it when the two differ (fix 53). Most kinds are already plain (`connected`,
+    `gate evaluated for 3 variant(s)`, `build_sha b0a3991 - 93dfb95`) and pass through with no
+    `technical` text at all -- only a summary shaped like a bare Python exception repr is
+    rewritten, and the second element is then the untouched input, never a re-derived string, so
+    the payload can show the caller the exact evidence that was stored. Pure, total and never
+    raises: a builder section calls this over a value that already came out of the database."""
+    match = _EXC_REPR.match(summary or "")
+    if not match:
+        return summary, None
+    outer, inner = match.group(1), match.group(2)
+    nested = _EXC_REPR_NESTED.match(inner)
+    class_name = nested.group(1) if nested else outer
+    phrase = _EXC_PHRASES.get(class_name) or _EXC_PHRASES.get(class_name.rsplit(".", 1)[-1])
+    if phrase is None:
+        phrase = f"error: {_humanize_class_name(class_name)}"
+    return phrase, summary
+
+
 def _events(session: Session) -> list[dict]:
-    return [{"ts": row.ts.isoformat(), "kind": row.kind,
-             "summary": sanitize_reason(row.summary or "")}
-            for row in session.execute(_EVENTS, {"limit": EVENTS_LIMIT})]
+    events = []
+    for row in session.execute(_EVENTS, {"limit": EVENTS_LIMIT}):
+        raw = sanitize_reason(row.summary or "")
+        summary, technical = humanize_event_summary(raw)
+        events.append({"ts": row.ts.isoformat(), "kind": row.kind, "summary": summary,
+                       "technical": technical})
+    return events
 
 
 def _safe_cell_age_s(raw) -> float | None:

@@ -303,3 +303,18 @@ def test_the_theme_toggle_can_go_back_to_following_the_system():
     body = (STATIC / "js" / "app.mjs").read_text()
     assert "removeItem(THEME_KEY)" in body
     assert "THEME_CYCLE" in body and '"system"' in body
+
+
+def test_long_unbroken_tokens_can_wrap_so_a_populated_card_never_forces_the_page_wide():
+    """Fix 53: a populated Gate stored a 64-char criteria hash and full ISO timestamps in
+    `.n` spans and `.sentences` lines with no space to break on -- CSS line breaking treats a
+    run with no space (and no break after a hyphen between digits, as in an ISO date) as one
+    unbreakable word, so the card's min-content grew past a 390 px viewport. `overflow-wrap:
+    anywhere` on both lets the browser break the run instead of stretching the card."""
+    css = (STATIC / "app.css").read_text()
+    n_rule = re.search(r"\.n\s*\{([^}]*)\}", css)
+    assert n_rule and "overflow-wrap: anywhere" in n_rule.group(1), \
+        ".n has no overflow-wrap: anywhere for long hashes/timestamps"
+    sentences_rule = re.search(r"\.sentences\s*\{([^}]*)\}", css)
+    assert sentences_rule and "overflow-wrap: anywhere" in sentences_rule.group(1), \
+        ".sentences has no overflow-wrap: anywhere for long unbroken values"

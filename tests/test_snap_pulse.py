@@ -828,3 +828,56 @@ def test_recorder_rss_has_separate_tick_and_settle_vitals(db_session, env_settin
         tile = tiles[phase]
         assert tile["technical"] == "recorder.rss_mb" and tile["unit"] == "MiB"
         assert [point[1] for point in vitals["sparklines"][tile["metric"]]] == expected
+
+
+# --- fix 53: operator-event summaries humanized, technical text kept alongside -----------------
+
+def test_humanize_event_summary_leaves_plain_text_alone():
+    """Most kinds are already plain (`connected`, `gate evaluated for 3 variant(s)`,
+    `build_sha b0a3991 - 93dfb95`): no `ClassName(...)` shape, no rewrite, no technical text."""
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
+    for plain in ("connected", "gate evaluated for 3 variant(s)", "build_sha b0a3991 - 93dfb95",
+                 "budget_exhausted: markouts, report_wtd"):
+        summary, technical = humanize_event_summary(plain)
+        assert summary == plain
+        assert technical is None
+
+
+def test_humanize_event_summary_reads_a_websocket_disconnect():
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
+    raw = "WebSocketConnectionClosedException(Connection to remote host was lost.)"
+    summary, technical = humanize_event_summary(raw)
+    assert summary == "connection to the exchange was lost"
+    assert technical == raw
+
+
+def test_humanize_event_summary_reads_a_query_cancelled_timeout():
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
+    raw = ("OperationalError((psycopg.errors.QueryCanceled) canceling statement due to "
+          "statement timeout)")
+    summary, technical = humanize_event_summary(raw)
+    assert summary == "a database statement timed out"
+    assert technical == raw
+
+
+def test_humanize_event_summary_falls_back_to_a_humanized_class_name():
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
+    raw = "SomeOddFailure(disk is on fire)"
+    summary, technical = humanize_event_summary(raw)
+    assert summary == "error: some odd failure"
+    assert technical == raw
+
+
+def test_operator_events_carry_the_human_summary_and_the_stored_technical_text(
+        db_session, env_settings):
+    """The stored row is untouched (fix 53 brief: append-only, technical text is evidence); the
+    payload's `summary` is what a reader should read and `technical` is the exact stored text."""
+    _ok_machine(db_session, env_settings)
+    raw = "WebSocketConnectionClosedException(Connection to remote host was lost.)"
+    db_session.add(OperatorEvent(ts=NOW - timedelta(minutes=5), kind="ws_disconnect",
+                                 summary=raw, ref={}))
+    db_session.flush()
+    events = build_pulse(db_session, NOW, env_settings)["operator_events"]
+    row = next(e for e in events if e["kind"] == "ws_disconnect")
+    assert row["summary"] == "connection to the exchange was lost"
+    assert row["technical"] == raw
