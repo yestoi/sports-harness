@@ -22,7 +22,7 @@
 | "Deploy now, the game is almost over" | Run the Game window query; wake at the window's end. |
 | "One fix at a time is safer" | Fixes in one area ship as one batch; disjoint areas ship in parallel. Serial units were the day's bottleneck. |
 | "Only one implementer at a time, the test DB is shared" | Each worktree has its own database (`make test`). Dispatch every ready task. |
-| "I'll wait for the next tick" | Outside quiet hours, `tick-once --force` after the deploy; judge the rows now. |
+| "I'll force another tick after the release" | The Omarchy release waits for a naturally completed tick at the new SHA; verify that tick. Do not duplicate it with a forced fetch or force a quiet-hour tick. |
 | "The fix is tiny, I'll patch this myself" | Controller fixes skip review. The reviewer fixes Minors; Importants go back to the implementer. |
 | "The suite was green an hour ago" | `make test` on the branch, before every merge and deploy. |
 | "The user would want X, better ask" | Check Gates and the pre-loaded decisions. Not listed: rule, journal, continue. |

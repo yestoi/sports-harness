@@ -1808,3 +1808,32 @@ Times are America/Chicago.
 - Reminder drill delivered successfully without launching a model. Actual user timers:2026091301 Sun02:50CT window check,2026091302 Sun09:30CT pre-NFL readiness,2026091303 Sun18:30CT prepare6C19:00 checks,2026091401 Mon07:30CT diagnostic before09:00. Native controller wakeups remain session-owned; timers do not survive reboot.
 - Off-host archive: trusted NAS host key copied from the Mac known-host record. Omarchy SSH authentication to NAS is denied; no private key copied and no account authorization changed. Bundle creation/local preservation can continue; NAS copy requires the user's SSH setup.
 - Dispatches:14 preparation launches/followups audited from this controller's tool-call records; prior day19 retained, conservative day total33. Failed deploys0. Historical retries/gates preserved; the old gate45 question is answered by the preparation instruction. Final merge/deploy/verify evidence will be appended separately.
+
+## 152. setup - Omarchy controller drill verified; pricing acceptance rerun - 2026-09-12 19:55 CT
+
+- Orient: user-directed restart preparation, bounded plan 2026-09-12-omarchy-loop-restart; no autonomous loop or new6B task.
+- Branch / commits: main e38e6a0; fix48 candidate8631fcd; fix45 candidate8c24df2.
+- Result: controller setup drills verified; application integration still pending full acceptance.
+- Dispatches: setup17Codex preparation calls plus2boundedClaude child drills, historic19 retained, conservative CT-day38; no failed deployment.
+- Tests: controller96isolated tests PASS, final guard/MCP35PASS; actual second Claude child31PASS and screenshot; fix45full3140PASS/6expectedxfails; fix52full3136PASS/6expectedxfails; fix48target12PASS5.75s at8631fcd, fullrerun in progress.
+- Review: independent final controller source review accepted e38e6a0; fix48test-repair review accepted8631fcd with original54stage assertions and15memory assertions retained, no producer/config edits.
+- Deploy: none; b0a3991/schema0006 remains. App-only precheck eligible under journal128; full index release still game-window blocked.
+- Verification: actual fixedMCP shell/screenshot inventory and tool results inspected in Claude session5da60aed-9045-460c-ba85-d8c8172df1d8; controller-runtime-evidence.md records kernel isolation, restrictedSQL role and known limitations. Not application verification.
+- Rulings: original failed fullpricing run preserved at27f254e (5failures, interrupted receipt-1); package import defect confirmed by isolated trace and fixed, ambiguous test fixtures corrected without changing parity expectations. Full rerun required; previous unexplained fifth failure not declared closed by targeted pass alone.
+- Rulings: SIGINT was intercepted by a test-installed handler; controller validated exact testPID/worktree and uncaught SIGHUP before ending only that process. Private test receipt records failure. Original memory cause/acceptance stays OPEN.
+- Carried forward: authenticated NAS archive path unavailable; native Claude wakeups require future controller session; pending 6h/24h/cold-start/corrected-workload and6C deadline acceptance retained.
+- Next: full48 acceptance, FFmain and exactmainfullsuite, eligible app release/verification, final45source integration and preparedT3handoff. Stop before new6B work; do not wait overnight for fullrelease window.
+
+## 153. integration - accepted pricing branch and final app candidate - 2026-09-12 20:28 CT
+
+- Orient: bounded restart plan, integrate prerequisite48/49 after exact-source review/tests.
+- Branch / commits: recovery/fix48-review8631fcd FFmerged into main;47/52 already present;45 remains isolated8c24df2 for final rebase/test.
+- Result: branch integration done; final main acceptance and release pending.
+- Dispatches: setup18Codex calls plus2boundedClaude child drills, historic19 retained, conservative day39; next CSS independent review not yet counted.
+- Tests: exact clean Omarchy8631fcd:3209passed,6expectedxfails,1859.63s; no warnings/tracebacks, scope[], empty filtering env, exit0. Previously failing12stage cases and all7memory diagnostics pass in full context.
+- Review: source producer and test-repair reviews accepted; final10-line responsive CSS patch awaits independent review. Controller added wrapping for long invariant names to the author's technical-label/chart repair; no nav-width or clipping prototype adopted.
+- Deploy: none; b0a3991/schema0006 unchanged.
+- Verification: private browser preview at390/1440 fits all5surfaces and retains actualTab glossary/ArrowRight navigation, zero JS exceptions. Production visual acceptance remains due on actual release. Pre-release92query evidence records154late-fill rows,151markout-timing rows,11score-history rows,36literal old-build-history matches and5query timeouts; all affected research measurements remain under audit.
+- Rulings: controller applies the CSS setup patch after the exact accepted branch FF and runs fresh unfiltered main acceptance before release;8631fcd's receipt does not attest to the CSS change. OldMac worktrees and all failed/preview evidence remain preserved. Long fullsuite gates are controller-owned because worker MCP calls have bounded deadlines.
+- Carried forward: original memory acceptance, fix50/51 long-window evidence,6C/6E partial acceptance, and the source-vs-legacy-contract query discrepancies remain explicit; no ruler was relaxed.
+- Next: independent CSS review, final main fullsuite, app release/verification; final45integration and6Bhandoff before any newT3 work.

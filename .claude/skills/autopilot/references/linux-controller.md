@@ -109,3 +109,14 @@ credentials or mount production volumes into this service.
 Hook envelope assumptions follow the official [Claude hooks reference](https://code.claude.com/docs/en/hooks):
 subagent tool hooks include `agent_id`, and project hooks run inside subagents.
 The actual bounded Claude drill must confirm this installation before loop dispatch.
+
+Worker Git status can show the deliberately masked `.env.example`, `.env.nas.example`
+and `secrets/.gitkeep` as changed/missing. These are namespace views, not host edits.
+Return only the assigned source diff; never copy these masks into a patch. The controller
+checks actual host Git status and runs the exact clean full-suite acceptance outside
+the worker namespace after code review. Worker receipts are scoped evidence only.
+
+Cancellation of an MCP request does not currently stop its subprocess: its declared
+deadline still applies (maximum1800s). Reconcile the test lock/process before another
+run; server shutdown terminates tracked launchers. Do not assume a cancelled UI call
+released the suite slot, and never bypass the slot to work around it.

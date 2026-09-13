@@ -130,6 +130,14 @@ main { padding: 16px 24px 20px; }
 .tile { background: var(--tile); border: 1px solid var(--border); border-radius: 8px;
   padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .tile .lbl { font-size: 11px; color: var(--ink-muted); }
+/* Keep long glossary keys within their tile without changing the focusable button. */
+.tile .lbl, .tile .technical { overflow-wrap: anywhere; }
+.tile .technical .term-wrap, .tile .technical .term { max-width: 100%; }
+.tile .technical .term { text-align: left; }
+/* Give a sparkline real layout space before uPlot measures it; wrap when the value and
+   a useful chart width cannot share a row. ResizeObserver follows the resulting width. */
+.tile > .row { flex-wrap: wrap; }
+.tile > .row > .spark { flex: 1 1 100px; min-width: 0; }
 .tile .val { font-size: 20px; font-weight: 600; }
 .tile .val small { font-size: 11px; font-weight: 500; color: var(--ink-muted);
   margin-left: 4px; }
@@ -274,6 +282,8 @@ td.num, th.num { text-align: right; }
   main { padding: 18px 16px 90px; }
   .banner { padding: 8px 16px; }
   .status-word { font-size: 48px; }
+  /* Small tiles give the chart its own full-width line below the value. */
+  .tile > .row > .spark { flex-basis: 100%; }
   .phone-tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
     background: var(--tile); border-top: 1px solid var(--border);
     padding-bottom: env(safe-area-inset-bottom, 0); }

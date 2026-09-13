@@ -1,7 +1,7 @@
 # Deploy verification contract
 
-Runs after every deploy. Layers, in order: freshness, live data over ssh, invariants and bands, the
-deterministic summary check, and pixels through Chrome when the Layer 3b cadence rule says so. The
+Runs after every deploy. Layers, in order: freshness, live data on Omarchy, invariants and bands, the
+deterministic summary check, and browser captures when the Layer 3b cadence rule says so. The
 controller judges; walker prose is advisory.
 
 ## Preconditions
@@ -40,9 +40,9 @@ bash -c 'curl -s http://127.0.0.1:8180/healthz'
 `build` equals `DEPLOY_SHA` and does not end in `-dirty`. The dashboard header shows the same
 string (checked again in Layer 3, cross-check 1).
 
-## Layer 2: live data over ssh
+## Layer 2: live data on Omarchy
 
-Run the SQL through stdin (dollar quoting is expanded by the remote shell otherwise):
+Run SQL through stdin; preserve quoted heredocs so the shell does not expand SQL:
 
 ```
 /srv/sports-harness/sports-compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U harness -d harness -At -F " | " <<'SQL'
@@ -74,7 +74,7 @@ rule below.
 |---|---|---|
 | Containers | all `Up`; `app-serve` `(healthy)`; `app-exec` present after phase 3 | existing |
 | `/healthz` | 200 with `status: ok`; during quiet hours `last_status` is `skipped`, still 200 | existing |
-| Runs | a `skipped` row inside the last 2 minutes (the heartbeat), **and** a non-skipped row inside the cadence window for the time of day (15 min weekdays, 5 min weekends, 2 min in a game window); after a deploy the forced tick (`tick-once --force`, skill deploy step 6) is that row. Of the last 5 real ticks at most 1 is `error`, and none repeats the same error key. | existing |
+| Runs | a `skipped` row inside the last 2 minutes (the heartbeat), **and** a non-skipped row inside the cadence window for the time of day (15 min weekdays, 5 min weekends, 2 min in a game window); after an Omarchy deploy use the first naturally completed tick (no forced tick in quiet hours). Of the last 5 real ticks at most 1 is `error`, and none repeats the same error key. | existing |
 | ERROR lines | 0 for every service in the last 10 minutes, **except** a line whose message is one of `espn failed`, `odds featured failed`, `odds alternates failed`, `kalshi markets failed`, `kalshi events failed`, `kalshi trades failed`, `kalshi orderbook failed` carrying an http 5xx, 429, timeout or connection error, when the next real tick is `ok`. Those are journaled as anomalies with their count. Any other ERROR line, or the same upstream error in two consecutive real ticks, is a FAIL. | existing |
 | Tape continuity | `gap` rows in the last 2 hours = 0. A non-zero count names the deploy or the socket; journal the sids. | existing |
 | WS last event age | under 60 minutes outside quiet hours | existing |
@@ -84,7 +84,7 @@ rule below.
 | Degraded sections | `dashboard section` count = 0. These log at WARNING, so the ERROR check cannot see them. | existing |
 | Credits | `odds_remaining` numeric, decreasing only on real ticks, and above 20 % of the month's allowance (20,000 on the 100k tier, 1,000,000 after the U1 upgrade) | existing |
 | Signals | see the time-of-day table | existing |
-| DB size | below the 2 TB ceiling (`db_budget_gb = 2000`, U3); the dashboard turns red at 80 %, 1.6 TB; note the number and the days-to-ceiling projection in the journal | existing |
+| DB size | below Omarchy's preserved 600 GB capacity alert budget; the dashboard turns red at the unchanged 80 %, 480 GB; note the number and the days-to-ceiling projection in the journal | existing |
 | Build stamp | every `runs` row since the deploy carries `build_sha = DEPLOY_SHA` (`select distinct build_sha from runs where started_at > '<deploy time>'`). The column arrives with phase 3 Task 2. | after phase 3 |
 
 ### Phase 3 additions (after the executor ships)
@@ -167,9 +167,9 @@ select version_num from alembic_version;
 | `check_results` (fix 16) | all `pass` in the last 25 h. `duplicate_trades`, `fair_values_negative_staleness`, `intents_without_order_or_skip`, `build_sha_drift` and `fair_values_negative_feed_lag` must be `pass`, not `skip`: the first two were bounded in phase 4 Task 2, the last three in phase 4.5, and a `skip` on any of them means the bound regressed. |
 | `alembic_version` | any hour, from the first phase 4 deploy through the last phase 4.5-only deploy: exactly one row, `version_num = '0001_baseline'`. From the first phase 4.5 **full** deploy onward this row is superseded by the Phase 4.5 block's `alembic_version` row below, which expects `0002_phase45`. |
 | Demo smoke | run once per phase deploy and outside a game window (R4), never on the quiet-hour verifications. **Only when `secrets/kalshi_demo_key_id` and `secrets/kalshi_demo_private_key.pem` both exist on Omarchy** (`ls -l`, never `cat`). No service mounts them, so the controller supplies the mount for one run, and each `-v` source must be an **absolute host path** -- `/srv/sports-harness/sports-compose run` reads a relative `./secrets/...` as a *volume name* and refuses it: `bash -c 'cd /srv/sports-harness && /srv/sports-harness/sports-compose run --rm -T -v /srv/sports-harness/secrets/kalshi_demo_key_id:/run/secrets/kalshi_demo_key_id:ro -v /srv/sports-harness/secrets/kalshi_demo_private_key.pem:/run/secrets/kalshi_demo_private_key.pem:ro app-run kalshi-smoke --env demo'`. Exits 0 and prints the step table. A zero balance prints "demo unfunded" and still exits 0. A venue rejection of the off-grid leg is a named failing step with the grid it used (`steps=`, `low=`, `next=`, `high=`), journaled, not a crash. Demo prices are not evidence and reach no table. When the files are absent the row is **skipped**, not failed. After a run that exits 0, whatever its step table says, write the result so Floor's venue tile stops saying "no smoke recorded": `/srv/sports-harness/sports-compose run --rm -T app-run note --kind verify_pass "demo smoke <n>/<m> on <sha>"`, where `<n>/<m>` is the count of steps that passed out of the total and `<sha>` is `DEPLOY_SHA`. The venue tile reads the newest `operator_events` row whose `summary` starts with `demo smoke`. |
-| `backups/` ownership | checked on the first verification after the phase 4 deploy, and after that only when the `backups/` listing row above fails. `bash -c 'ls -ld /srv/sports-harness/backups /srv/sports-harness/backups/nightly'` shows the same uid the app containers run as (`APP_UID`/`APP_GID` in `deploy/nas.env`, 1000:10). The deploy recipe runs no `chown`, so a mismatch here means the tree predates the recipe: fix it by hand once and journal it. |
+| `backups/` ownership | checked on the first verification after the phase 4 deploy, and after that only when the `backups/` listing row above fails. `bash -c 'ls -ld /srv/sports-harness/backups /srv/sports-harness/backups/nightly'` shows the same uid the app containers run as (the effective preserved runtime `APP_UID`/`APP_GID`; inspect the running container user). The deploy recipe runs no `chown`, so a mismatch here means the tree predates the recipe: fix it by hand once and journal it. |
 | Limits read | judged on the newest **non-skipped** run, so it is **deferred** through quiet hours, when every run is `skipped`; the read itself is hourly, so consecutive ticks inside one hour legitimately carry the same block. `runs.notes->'venue_limits'` on the newest non-skipped run carries a `tier` and a numeric `read_refill_rate`, and `/healthz` shows the same block. A `null` means either that `has_kalshi_credentials()` was False in `app-run` or that the read itself failed: check the two key mounts first, because without them nothing writes a `venue_requests` row and the tripwire row above is vacuous. |
-| Demo secrets push | checked on the first verification after a deploy, and skipped otherwise: if the demo secrets exist on Omarchy but not on Omarchy, the Makefile's conditional push loop did not run: re-run `make deploy-nas` and journal it |
+| Demo secrets push | checked on the first verification after a deploy, and skipped otherwise: check the existing runtime demo-secret paths and permissions without reading contents. Omarchy releases preserve credentials; there is no Mac-to-runtime secret push. Missing optional demo credentials defer only the demo smoke; never invoke the retired NAS deploy target |
 
 **Daily line (phase 4).** Two numbers, run by the controller and journaled every verification.
 Neither needs code.
@@ -292,7 +292,7 @@ select count(*) from rfq_quotes q
 This block runs from the wave-1 deploy onward, on every verification. The Sunday-evening rows can
 only be judged inside the window they name; outside it they are **deferred** with the wakeup time,
 never failed. Most of the Friday deploy window is inside quiet hours (01:00-08:00 CT), where the
-forced tick is skipped and the pricing, ERROR-line and signals rows are deferred to the 08:10 CT
+natural tick is skipped and the pricing, ERROR-line and signals rows are deferred to the 08:10 CT
 run, exactly as the time-of-day table already says.
 
 | Check | Expected |
@@ -304,7 +304,7 @@ run, exactly as the time-of-day table already says.
 | (v) t13 present and first | After the Monday report: `select count(*) from report_cells where report_run_id = (select id from report_runs where provisional = false order by generated_at desc limit 1) and table_key = 't13'` is **> 0**, and `substring(markdown from position('## Table' in markdown) for 40)` on that same run names **t13** — the diagnostic is the first table on the page. Journal t13's `filled orders, week`, `counterfactual orders, week`, `runs with no fair, gap or signal count` and `orders under audit` values; they are the four numbers 6B and 6D are scoped against. |
 | (vi) Annotation of a prior week's report | **Mondays, after `harness report --week N` runs:** a `report_annotations` row for that run appears within the sweep that follows it (the research worker's own cadence), even though the report's ISO week is the *previous* one. `select r.id, r.year, r.week, r.generated_at, a.created_at from report_runs r left join report_annotations a on a.report_run_id = r.id where r.provisional = false order by r.generated_at desc limit 3`. Zero bullets is a legitimate answer and is journalled with the dropped count from `app-research`'s log. **Any other day:** deferred. |
 | (vii) Week-key invariant | `select count(*) from report_runs r where r.provisional and (r.year, r.week) <> ((extract(isoyear from (r.generated_at at time zone 'America/Chicago'))::int), (extract(week from (r.generated_at at time zone 'America/Chicago'))::int)) and r.generated_at > '<deploy time>'` = **0**. Rows generated before the deploy are outside the predicate by design: Amendment 5 records that the pre-fix range is empty, and this query proves it stays empty going forward. Any non-zero count is an integrity anomaly and a carried fix. |
-| Study's two labelled times (stand-in) | Until the Chrome bridge answers, this is the deterministic stand-in for the walker (design review Minor 7). `bash -c 'curl -sS -H "Authorization: Bearer $(cat /srv/sports-harness/secrets/dashboard_token)" http://localhost:<SERVE_PORT>/ui/js/study.mjs'` contains both `snapshot built` and `report cells from`; the same fetch of `pulse.mjs` contains `cell_age_s` and `cells from`; and `GET /api/snapshots/study:<year>-<week>` carries `now`, `generated_at` and a numeric `cell_age_s`. All three must hold. The pixels are re-scored by the walker at the first verification after the bridge answers, and until then this row is what wave 1 is accepted on. |
+| Study's two labelled times (stand-in) | Until the Chrome bridge answers, this is the deterministic stand-in for the walker (design review Minor 7). `curl -fsS http://127.0.0.1:8180/ui/js/study.mjs` contains both `snapshot built` and `report cells from`; the same fetch of `pulse.mjs` contains `cell_age_s` and `cells from`; and `GET /api/snapshots/study:<year>-<week>` carries `now`, `generated_at` and a numeric `cell_age_s`. All three must hold. The pixels are re-scored by the walker at the first verification after the bridge answers, and until then this row is what wave 1 is accepted on. |
 | README §7 and the coded criteria | `tests/test_readme_gate.py` is the check and it runs in `make test`; this row exists so the verification names it. On a deploy whose diff touches `harness/report/gate.py`, confirm the branch suite was green on the deployed sha before accepting. |
 
 ### Phase 6A additions (after the capsule, the correction manifest and dormant gate eligibility ship)
@@ -318,7 +318,7 @@ select criteria_hash, evaluated_at, gate_variant from gate_reports order by id d
 select count(*) from gate_reports where criteria_json ? 'eligibility';
 ```
 
-On the Mac:
+In the Omarchy development checkout:
 ```
 ls docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/*/manifest.json 2>/dev/null | wc -l
 for m in docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/*/manifest.json; do
@@ -339,7 +339,7 @@ make test 2>&1 | tail -3
 
 | Check | Expected |
 |---|---|
-| Confirmation path, fixture count | U8 suspends formal selection and confirmation until the user ratifies 6F's amendment, so there is **no confirmation report to read on Omarchy** and this row is judged on the branch suite instead: `tests/test_report.py`'s confirmation tests are present and green on the deployed sha, and the deployed `harness/report/weekly.py` contains `DIRECTION_NOTE = "proposed one-sided reading, not in force"`. `bash -c '/srv/sports-harness/sports-compose run --rm -T app-run python -c "from harness.report.weekly import DIRECTION_NOTE; print(DIRECTION_NOTE)"'`. A deployed build whose note is missing or whose text differs is a FAIL: it would mean the one-sided reading shipped as a condition, which only a dated user decision makes (R1). |
+| Confirmation path, fixture count | U8 suspends formal selection and confirmation until the user ratifies 6F's amendment, so there is **no confirmation report to read on Omarchy** and this row is judged on the branch suite instead: `tests/test_report.py`'s confirmation tests are present and green on the deployed sha, and the deployed `harness/report/weekly.py` contains `DIRECTION_NOTE = "proposed one-sided reading, not in force"`. `bash -c '/srv/sports-harness/sports-compose exec -T app-run python -c "from harness.report.weekly import DIRECTION_NOTE; print(DIRECTION_NOTE)"'`. A deployed build whose note is missing or whose text differs is a FAIL: it would mean the one-sided reading shipped as a condition, which only a dated user decision makes (R1). |
 | Eligibility lines in the report | After the next weekly report: `select markdown from report_runs where provisional = false order by generated_at desc limit 1` carries one `- Excluded by Amendment n:` line for **every** amendment in `harness/report/amendments.py`, and Amendment 4's line names the runs 344-4327 range. Journal the two counted numbers for Amendments 2 and 4; a non-zero count on a week that should predate nothing is worth a second look, not a FAIL. |
 | Floor's fair matches the executor's | `select count(*) from (select o.id from orders o join venue_markets m on m.id = o.venue_market_id where o.replay = false and o.status = any(array['open','partially_filled']) and o.placed_at > now() - interval '7 days') x` bounds the set; for each such order, the `fair_p` Floor shows equals the newest `fair_values` row for that order's **exact contract** — `(game_id, market_type, outcome_team_id, outcome_side, threshold)` matched against the market's `(game_id, market_type, side_team_id, side, threshold)` with `is not distinct from`, inside the fair window. Run it as one query against `payload->'orders'->'orders'` and journal any row where the two differ. A difference is a FAIL and a carried fix. Vacuously true with no open orders: journal "no open orders" rather than a pass. |
 | Floor funnel unit keys | `select payload->'funnel' from dashboard_snapshots where name = 'floor'` carries `candidate_signals`, `intent_verdicts`, `placements`, `orders_filled_actual`, `orders_filled_counterfactual`, `fill_rows` and `units`, and `units.candidate_signals` says "not distinct opportunities". The old `intents`/`orders`/`fills` keys are still present for this release; their disappearance in a later release is expected, not a failure. |
@@ -512,7 +512,7 @@ windows above:
 
 ## Layer 3: deterministic summary check (every verify)
 
-`make verify-summary DEPLOY_SHA=<sha>` (`scripts/verify_summary.py`) fetches `/api/summary` and the page over ssh
+`make verify-summary-omarchy DEPLOY_SHA=<sha>` (`scripts/verify_summary.py`) fetches `/api/summary` and the page locally on Omarchy
 and compares them with SQL run in the same seconds. SQL runs first, so an in-flight tick can only make the page
 newer; an out-of-band candidate count is measured again once after 20 s before it scores FAIL. Output goes to
 `docs/superpowers/autopilot/evidence/<date>-<unit>-<HHMM>-summary.txt` (`--evidence`).
@@ -545,7 +545,13 @@ FAIL of the dashboard, not of the data.
 | Executor heartbeat age (page) vs `exec_heartbeat` | both under 60 s |
 | Pulse status word vs the latest sweep | `FINE`/`WATCH` on the page agrees with `select status, count(*) from check_results where ts = (select max(ts) from check_results) group by 1`: any `fail` and the page must read `BROKEN` |
 
-Walker prompt (Agent tool, `model: sonnet`, substitute `<...>`):
+On Omarchy, follow the fixed sports-worker/capture procedure in the skill's verify reference.
+The controller supplies screenshots and interaction evidence; the independent reviewer
+uses only its screenshot tool. Missing interactions remain pending. The checklist and
+cross-check tolerances below still apply.
+
+Historical Chrome-session walker prompt (use only on a host with that permitted capability;
+never give these tools to an Omarchy sports-worker):
 
 ```
 You are the deployment walker for <unit slug>. Read-only: never submit a form, never type
