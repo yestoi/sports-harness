@@ -57,34 +57,33 @@ from harness.strategy.variants import load_variants, register_variants
 from harness.telemetry import rss_mb
 from harness.venues.kalshi.public import KalshiPublic
 
-from scripts.measure_tick_memory import _DRIVER_CACHE, synthetic_day, synthetic_teams
+from scripts.measure_tick_memory import synthetic_day, synthetic_teams
 
 from tests.test_recorder_memory import VARIANTS_DIR, _EVENT_ID
 
-#: Excluded from the traced total this test asserts on, with the reason each one is not the
-#: recorder's retention:
+#: The traced total this test asserts on counts only allocations whose traceback has a frame under
+#: `harness/` -- an *inclusive* filter, not a list of exclusions (controller ruling, 2026-09-13).
 #:
-#: * `psycopg/_queries.py` and `psycopg/_preparing.py` are the driver's prepared-statement cache,
-#:   bounded by construction (`prepared_max`) and filling at whichever tick each statement
-#:   happens to cross `prepare_threshold`. Round 1's rig already excludes the first of them.
-#: * `respx`'s compiled route patterns, `httpx/_urls.py`'s URL objects and the `urllib.parse`
-#:   caches underneath them are in this process only because the rig mocks the network:
-#:   production's httpx holds connections, not a router full of route patterns. Measured
-#:   2026-09-13, these four modules were the whole of the traced growth between tick 5 and tick 8
-#:   (28.6 KiB of 28.6 KiB).
+#: Rounds 1 and 2 excluded the third-party and stdlib modules that had been *observed* growing.
+#: That instrument is only as good as the observation: in the controller's full-suite process the
+#: recorder's own traced baseline is a couple of hundred KiB rather than the two megabytes it is
+#: when this file runs alone, and 9.3 KiB of `urllib.request`'s URL cache -- a module nobody had
+#: seen grow, so nobody had excluded -- read as 6.9 % growth and failed the run. Chasing that with
+#: one more exclusion pattern would only move the next surprise somewhere else, and every
+#: exclusion risks hiding a real retention (`httpx/_models.py` is where an unreleased response
+#: body would land).
 #:
-#: Each entry names a *module*, never a package: excluding all of `*/httpx/*` or `*/urllib/*`
-#: would also hide `httpx/_models.py`, where a response body the recorder had failed to release
-#: would be counted -- which is exactly the kind of growth this assertion exists to catch.
+#: Inverting it removes the whole class of problem: a third-party or stdlib cache that fills on
+#: its own cannot move this number, because no frame of its traceback is under `harness/`. Nothing
+#: the recorder is responsible for escapes, either -- `all_frames=True` over the three-frame
+#: tracebacks this test captures means an allocation made *inside* SQLAlchemy, psycopg or httpx
+#: still counts whenever a recorder frame is on the stack within three frames of it, which is
+#: exactly the retention this test exists to detect. A body the recorder failed to release is
+#: allocated under `normalize_new`/`maybe_tick`, and is counted.
 #:
-#: The unfiltered total and RSS are printed and asserted on beside it, so nothing hides here.
-_NOT_THE_RECORDER = (
-    _DRIVER_CACHE,
-    tracemalloc.Filter(False, "*/psycopg/_preparing.py"),
-    tracemalloc.Filter(False, "*/respx/*"),
-    tracemalloc.Filter(False, "*/httpx/_urls.py"),
-    tracemalloc.Filter(False, "*/urllib/parse.py"),
-)
+#: The unfiltered total is printed as a column beside it and the "top growing tracebacks" block is
+#: computed from the unfiltered snapshots, so nothing hides: RSS is asserted on separately.
+_THE_RECORDER = tracemalloc.Filter(True, "*/harness/*", all_frames=True)
 
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
 GAMES = 6
@@ -503,10 +502,10 @@ def test_eight_production_shaped_ticks_do_not_grow_the_process(env_settings, db_
     """
     ticks, baseline = TICKS, BASELINE_TICK
     run_tick, _ = _driver(env_settings, db_session)
-    samples: list[tuple[int, float, float, float | None, float]] = []
+    samples: list[tuple[int, float, float, float | None, float, float, float]] = []
     snapshots: dict[int, tracemalloc.Snapshot] = {}
 
-    print("\ntick   traced KiB      peak KiB     RSS MiB    tick s   (stage ms)", flush=True)
+    print("\ntick  harness KiB      peak KiB     RSS MiB    tick s   (stage ms)", flush=True)
     # Three frames, not twelve: `tracemalloc` captures a traceback on *every* allocation, and at
     # twelve frames that instrumentation cost five to seven times the tick itself -- measured
     # 2026-09-13, 68-140 s a tick against ~13 s uninstrumented. Three frames still name the
@@ -523,12 +522,9 @@ def test_eight_production_shaped_ticks_do_not_grow_the_process(env_settings, db_
             snapshot = tracemalloc.take_snapshot()
             unfiltered = sum(st.size for st in snapshot.statistics("filename"))
             tm_overhead = tracemalloc.get_tracemalloc_memory()
-            # The traced total has psycopg's prepared-statement cache taken out of it, exactly
-            # as round 1's rig does: that cache is the driver's, it is bounded by construction
-            # (`prepared_max`), and it fills at whichever tick each statement happens to cross
-            # `prepare_threshold`, which is noise of the order of the whole harness total.
+            # Only what the recorder's own code paths allocated; see `_THE_RECORDER`.
             traced = sum(st.size for st in
-                         snapshot.filter_traces(_NOT_THE_RECORDER).statistics("filename"))
+                         snapshot.filter_traces([_THE_RECORDER]).statistics("filename"))
             rss = rss_mb()
             samples.append((i, traced / 1024, peak / 1024, rss, elapsed,
                             unfiltered / 1024, tm_overhead / (1024 * 1024)))
@@ -546,7 +542,7 @@ def test_eight_production_shaped_ticks_do_not_grow_the_process(env_settings, db_
     finally:
         tracemalloc.stop()
 
-    lines = ["tick   traced KiB      peak KiB     RSS MiB    tick s  unfiltered KiB  "
+    lines = ["tick  harness KiB      peak KiB     RSS MiB    tick s  unfiltered KiB  "
              "tracemalloc MiB"]
     for i, traced, peak, rss, elapsed, unfiltered, tm_overhead in samples:
         lines.append(f"{i:4d} {traced:12.1f} {peak:13.1f} "
@@ -566,7 +562,8 @@ def test_eight_production_shaped_ticks_do_not_grow_the_process(env_settings, db_
     last_traced, last_rss = samples[-1][1], samples[-1][3]
     traced_growth = (last_traced - base_traced) / base_traced
     assert traced_growth < 0.05, (
-        f"traced total grew {traced_growth:.1%} from tick {baseline} to tick {ticks}\n{table}")
+        f"the recorder's traced total grew {traced_growth:.1%} from tick {baseline} to tick "
+        f"{ticks}\n{table}")
     # RSS gets a band of max(5 % of the tick-5 reading, RSS_FLOOR_MIB), not a pure percentage
     # (controller ruling, 2026-09-13). The C allocator extends the heap in discrete ~4 MiB arena
     # steps -- measured +4.3 and +4.0 MiB at ticks 6 and 7 on a 142 MiB process -- so 5 % of a
