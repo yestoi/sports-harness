@@ -92,6 +92,29 @@ def test_record_durations_sums_junit_times_per_file_and_merges_the_previous_reco
     assert written["nodes"] == {"tests/test_a.py::t1": 1.5, "tests/test_a.py::t2": 2.0, "tests/test_b.py::TestX::t3": 4.0}
 
 
+def test_record_durations_adds_a_split_files_shards_together_instead_of_keeping_the_last(tmp_path):
+    runner = load()
+    first = tmp_path / "shard1.xml"
+    first.write_text('<testsuites><testsuite><testcase classname="tests.test_heavy" name="slow" time="500.0"/>'
+                     '</testsuite></testsuites>')
+    second = tmp_path / "shard2.xml"
+    second.write_text('<testsuites><testsuite><testcase classname="tests.test_heavy" name="quick" time="7.0"/>'
+                      '<testcase classname="tests.test_heavy" name="quicker" time="3.0"/></testsuite></testsuites>')
+    record = tmp_path / "test-durations.json"
+    runner.record_durations([first, second], record)
+    assert json.loads(record.read_text())["files"] == {"tests/test_heavy.py": 510.0}
+
+
+def test_plan_trusts_the_node_records_when_the_file_sum_is_smaller_than_they_are():
+    runner = load()
+    counts = {"tests/test_schema.py": 1, "tests/test_heavy.py": 3, "tests/test_a.py": 5, "tests/test_b.py": 5}
+    weights = {"tests/test_schema.py": 30.0, "tests/test_heavy.py": 60.0, "tests/test_a.py": 300.0, "tests/test_b.py": 300.0}
+    nodes = {"tests/test_heavy.py::slow": 500.0, "tests/test_heavy.py::mid": 300.0, "tests/test_heavy.py::quick": 60.0}
+    plan = runner.plan_shards(counts, shards=4, base="db", weights=weights, nodes=nodes)
+    units = [unit for shard in plan for unit in shard.files]
+    assert "tests/test_heavy.py::slow" in units and "tests/test_heavy.py" not in units
+
+
 def test_a_file_heavier_than_a_shard_is_split_into_its_recorded_nodes_plus_a_deselected_remainder():
     runner = load()
     counts = {"tests/test_schema.py": 1, "tests/test_heavy.py": 7, "tests/test_a.py": 50, "tests/test_b.py": 50}

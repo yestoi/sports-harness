@@ -89,7 +89,12 @@ def plan_shards(counts, shards, base, weights=None, nodes=None):
         raise SystemExit(f'test database name too long for shard suffixes: {base}')
     known = [weights[path] for path in counts if path in weights]
     per_test = (sum(known) / max(1, sum(counts[path] for path in counts if path in weights))) if known else 1.0
-    cost = {path: weights.get(path, counts[path] * per_test) for path in counts}
+    # A file's cost is never less than its recorded tests add up to (a record written by an
+    # older runner kept only the last shard's share of a split file).
+    by_file = {}
+    for node, seconds in nodes.items():
+        by_file[node.split('::')[0]] = by_file.get(node.split('::')[0], 0.0) + seconds
+    cost = {path: max(weights.get(path, counts[path] * per_test), by_file.get(path, 0.0)) for path in counts}
     shards = max(1, min(shards, len(counts)))
     threshold = sum(cost.values()) / shards
     plan = [Shard(base if k == 0 else f'{base}_p{k + 1}', []) for k in range(shards)]
@@ -134,12 +139,12 @@ def load_record(record, seed=SEED):
 def record_durations(junit_paths, record):
     """Sum each shard's junit test times per file and per node, merged over the previous record."""
     files, nodes = load_record(record, seed=None)
+    fresh = {}  # a split file's tests land in several shards' junit files: add them all up
     for path in junit_paths:
         try:
             root = ElementTree.parse(path).getroot()
         except (OSError, ElementTree.ParseError):
             continue
-        fresh = {}
         for case in root.iter('testcase'):
             module = case.get('classname', '').split('.')
             classes = []
@@ -150,7 +155,7 @@ def record_durations(junit_paths, record):
                 seconds = float(case.get('time', 0) or 0)
                 fresh[key] = fresh.get(key, 0.0) + seconds
                 nodes['::'.join([key, *classes, case.get('name', '')])] = seconds
-        files.update(fresh)
+    files.update(fresh)
     record = Path(record)
     temporary = record.with_suffix('.json.tmp')
     temporary.write_text(json.dumps({'files': files, 'nodes': nodes}, indent=1, sort_keys=True) + '\n')
