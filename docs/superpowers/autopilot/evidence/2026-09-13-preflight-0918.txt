@@ -1,0 +1,42 @@
+2026-09-13T14:17:37.859623+00:00
+?? docs/superpowers/autopilot/evidence/2026-09-13-preflight-0918.txt
+a4b0b53 docs: record LAN port 8443 (ufw opened by the user) in the phase 4.6 decisions; journal 163
+c716c75 setup: start-herdr launch mode for the controller (same locked command without tmux); kickoff docs updated
+526de1f docs: setup handoff - PRs #1/#2 merged, phase 4.6 (fun tickets UI revision, U9) added to the roadmap; journal 162; state checkpoint
+/home/trey/dev/sports                               a4b0b53 [main]
+/home/trey/dev/sports-wt/fix-45-raw-events-index    003375e [fix-45-raw-events-index]
+/home/trey/dev/sports-wt/fix-48-pricing-stage-order b447827 [fix-48-pricing-stage-order]
+/home/trey/dev/sports-wt/phase6b-repair-execution   bac35ab [phase6b-repair-execution]
+/home/trey/dev/sports-wt/recovery-fix45-final       4b2f2cd [recovery/fix45-final]
+/home/trey/dev/sports-wt/recovery-fix45-round3      8c24df2 [recovery/fix45-round3]
+/home/trey/dev/sports-wt/recovery-fix48-review      8631fcd [recovery/fix48-review]
+/home/trey/dev/sports-wt/recovery-fix52             073732f [recovery/fix52]
+/home/trey/dev/sports-wt/restart-worker-smoke       bb90c7a [recovery/worker-smoke]
+               total        used        free      shared  buff/cache   available
+Mem:           31904        7984        1055        1709       26499       23920
+Swap:          63808        1428       62380
+Filesystem        Size  Used Avail Use% Mounted on
+/dev/mapper/root  952G  106G  842G  12% /srv/sports-harness
+test-db state=running memory=4294967296 cpus=4000000000
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED        STATUS                  PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     16 hours ago   Up 16 hours             5432/tcp
+sports-harness-app-exec-1       sports-release/app:ebf0953                                                         "harness exec"           app-exec       3 hours ago    Up 3 hours (healthy)    
+sports-harness-app-research-1   sports-release/app:ebf0953                                                         "harness research-wo…"   app-research   3 hours ago    Up 3 hours              
+sports-harness-app-run-1        sports-release/app:ebf0953                                                         "harness run"            app-run        3 hours ago    Up 3 hours              
+sports-harness-app-serve-1      sports-release/app:ebf0953                                                         "harness serve --por…"   app-serve      3 hours ago    Up 3 hours (healthy)    127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:ebf0953                                                         "harness ws-record"      app-ws         3 hours ago    Up 3 hours              
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       16 hours ago   Up 16 hours (healthy)   5432/tcp
+paper posture intact
+{"status": "ok", "last_run_at": "2026-09-13T14:16:57.884381+00:00", "last_status": "running", "seconds_since": 40, "credits_remaining": 4902671, "credits_budget": 5000000, "credits_low": false, "venue_limits": null, "build": "ebf0953"}
+0007_raw_events_lookup
+14225|2026-09-13 14:16:57.884381+00|running|ebf0953
+14224|2026-09-13 14:16:27.884381+00|ok|ebf0953
+14223|2026-09-13 14:14:27.884585+00|ok|ebf0953
+2026-09-13 14:17:27.543484+00|2594|3216|
+135676708|2026-09-13 14:17:37.358+00
+nfl|scheduled|13|2026-09-13 17:00:00+00|2026-09-14 00:20:00+00
+
+Durable reminder: 2026091201.txt 2026-09-13T00:04:07Z Omarchy restart reminder drill completed; no controller was launched
+Durable reminder: 2026091301.txt 2026-09-13T07:50:07Z Inspect game window before fix45 full release; no model auto-start
+Provider auth, native wakeups, browser and worker-isolation smoke must be checked in the controller session.
+exit=0
