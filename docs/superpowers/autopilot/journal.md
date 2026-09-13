@@ -2107,3 +2107,17 @@ Times are America/Chicago.
 - Rulings: none new.
 - Carried forward: none; row 56 (first row) closed in the roadmap. Worktree and branch removed; four fixture grants revoked (databases kept).
 - Next: consume the T1 review, the fix-positions, fix-49-r3, T6 and 6D reports as they arrive; wakeups unchanged (19:07, 21:09, Mon 08:57 CT).
+
+## 174. hotfix - fix 56 (second row): a settled fill leaves every open-position reader; revision 0008 - 2026-09-13 14:13-15:29 CT
+
+- Orient: rule 1 - Carried fixes row 56 (second row: order 157's stranded position), actionable (ledger `.superpowers/sdd/hotfix-2026-09-12-omarchy/progress.md`).
+- Branch / commits: fix-20260913-positions fdc351d..440095d (af6d568 the fix rebased onto 7571b88, 440095d the reviewer's Minors); `--ff-only` into main, so main = 440095d.
+- Result: done (merged; deploy pending).
+- Dispatches: 2 (impl opus, review opus); one SendMessage resume for the parity ruling. CT day Sep 13 running total: 37 (172's 31 + 6D amend author, 4.6 amendment writer, 4.6 amendment review, positions review, 6D plan writer, T6 review; T2's dispatch at 15:29 CT is 38).
+- Tests: 3,308 passed, 6 xfailed, 1 deselected, exit 0 on all six shards, pristine, 10:44 wall on `harness_test_fix_20260913_positions` (log `positions-full-440095d.log`, receipt json); `tests/test_alembic.py` over TCP 73 passed including the catalogue-parity case; targeted 270 passed (reviewer).
+- Review: clean (opus, `results/fix-positions-review.md`: 0 Critical, 0 Important, 4 Minor applied; predicate verified by import in all three readers; settlement path re-derived; replay and non-queue fills cannot be misclassified).
+- Deploy: none yet (NFL block). The view change needs the full release (`init-db` re-issues the view; `migrate ensure` applies 0008): Tuesday's window, full recipe.
+- Verification: pending the release: `select * from positions` no longer returns order 157; the caps and Floor's exposure drop its stake; the row closes then.
+- Rulings: (1) "open" = order not settled and no ledger `settlement` row for the fill, one shared `OPEN_FILL_SQL` constant embedded by the view, `store._POSITIONS` and Floor's `_EXPOSURE` (journal 172); (2) parity: revision `0008_positions_open_fill` re-issues the view with SQL `create or replace view` (additive, plan-next conformance item 4; revision 0004's precedent; the Alembic op spelling and DROP VIEW stay banned), the baseline is history and untouched, the parity test unchanged; 6B renumbers its unmerged 0008 to 0009 at its merge (4.6 ruling D9); (3) the runbook's "Never a view" bullet gains the ruled exception (reviewer Minor).
+- Carried forward: row 56 (second row) annotated merged, stays open until the release verify. Worktree/branch removed; grant revoked.
+- Next: T6 review, fix 49 round 3, T1 suite rerun, T2, 6D plan; wakeups 19:07 CT, 21:09 CT, Mon 08:57 CT.
