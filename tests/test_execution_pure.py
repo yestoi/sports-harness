@@ -11,13 +11,15 @@ Owned by 6B Task 4 (recovery anchoring), then Task 5 (the expiry clamp), then Ta
 scope and the backoff), in that order.
 """
 
+from datetime import timedelta
 from decimal import Decimal as D
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 
+from harness.execution import store
 from harness.execution.book import DELTA_LOOKBACK, BookState
 from harness.execution.fills import TapeDelta, TapePrint
-from harness.execution.loop import ExecStats, Executor, _TrackResult
+from harness.execution.loop import ExecStats, Executor, _TrackResult, _clamped
 from harness.execution.state import _state_columns
 from tests.test_fills import DEADLINE, T0, at
 
@@ -37,6 +39,11 @@ def _executor(books: dict) -> tuple[Executor, list]:
     executor.exec_settings = NS()
     executor.settings = NS(exec_period_s=15)
     executor.books = books
+    # `uses_the_simulator` (`harness/execution/gateway.py:851-858`) reads
+    # `getattr(gateway, "simulates_fills", None)` and raises `TypeError` unless it is a `bool`:
+    # the contract is declared, never inferred, so one attribute is the whole gateway a pure
+    # case needs. `_simulate` asks it before it reads a single order.
+    executor.gateway = NS(simulates_fills=True)
 
     def persist(session, order_row, order_obj, result, prints, ledger, crossed_already):
         captured.append(result)
@@ -176,3 +183,120 @@ def test_the_watched_track_fills_a_print_stamped_exactly_at_the_expiry():
         executor._simulate_order(None, row, CLEAN_MARKET, {"A": base}, set(),
                                  {"A": ([on_time], [])}, set(), at(30), ExecStats())
     assert captured[0].state.filled_contracts == D(4)
+
+
+# --- Task 6 (C5): the dirty scope, the clamp and the counterfactual backoff -------------------
+
+def test_a_cancelled_order_accrues_on_the_counterfactual_column_only():
+    """Expected: zero watched calls, `exec_period_s` added to `nw_dirty_seconds`.
+
+    Derived independently: `dirty_minutes` is a property of the watched order -- how long the
+    order we placed sat against a book we could not read. A cancelled order is not sitting
+    against anything; it left the market when it was cancelled. The 15 s belongs to the
+    counterfactual, which is still running, and it has a column of its own for exactly this
+    reason. Order 157 reached 181,200 seconds on a 35-minute order because the accrual happened
+    before any status test.
+    """
+    row = _order_row(status="cancelled", nw_done=False)
+    executor, _ = _executor({})
+    with patch("harness.execution.store.add_dirty_seconds") as add_dirty:
+        executor._simulate_order(None, row, DIRTY_MARKET, {}, set(), {}, set(),
+                                 at(30), ExecStats())
+    watched = [c for c in add_dirty.call_args_list if c.kwargs.get("watched") is True]
+    counterfactual = [c for c in add_dirty.call_args_list if c.kwargs.get("watched") is False]
+    assert watched == []
+    assert [c.args[2] for c in counterfactual] == [15]
+
+
+def test_the_watched_accrual_is_clamped_to_the_resting_interval():
+    """Expected: 5 s added, not 15, for an order with 5 s of resting interval left.
+
+    Derived independently: the accrual is a count of observation opportunities while the order
+    rested, so it cannot exceed the interval the order rested for. An order placed at T0 with an
+    expiry of T0+10 s, observed dirty at T0+5 s under a 15 s period, has 5 s of interval left,
+    not 15. Without the clamp §3 row 5's first clause -- `dirty_seconds` never exceeding
+    `coalesce(cancelled_at, expiry) - placed_at` -- would be an assertion about luck.
+    `_order_action` deliberately holds `Expire` on a lagging ticker, so a past-expiry order can
+    stay `open` and would otherwise accrue for as long as the ticker lags.
+    """
+    row = _order_row(status="open", expiry=at(10), nw_done=True)
+    executor, _ = _executor({})
+    with patch("harness.execution.store.add_dirty_seconds") as add_dirty:
+        executor._simulate_order(None, row, DIRTY_MARKET, {}, set(), {}, set(),
+                                 at(5), ExecStats())
+    assert [c.args[2] for c in add_dirty.call_args_list] == [5]
+
+
+def test_an_order_with_no_expiry_accrues_the_whole_period_on_both_tracks():
+    """Expected 15 s on each track for a row whose `expiry` is NULL.
+
+    Derived independently from `orders.expiry` being nullable in the model: there is no
+    interval to clamp to, so the clamp has nothing to say and the observation counts in full.
+    Guessing a bound would be worse than not having one (R8 makes the case rare), and the
+    alternative -- treating a missing expiry as a zero-length interval -- would silently stop
+    recording dirty time for exactly the orders whose end nobody wrote down. The whole-branch
+    list records that no other test on either track reaches `row.expiry is None`.
+    """
+    row = _order_row(status="open", expiry=None, cancelled_at=None, nw_done=False)
+    executor, _ = _executor({})
+    with patch("harness.execution.store.add_dirty_seconds") as add_dirty:
+        executor._simulate_order(None, row, DIRTY_MARKET, {}, set(), {}, set(),
+                                 at(30), ExecStats())
+    assert [c.args[2] for c in add_dirty.call_args_list] == [15, 15]
+    assert _clamped(15, row, at(30), watched=True) == 15
+
+
+def test_a_failed_counterfactual_read_backs_off_and_is_never_closed():
+    """Expected next-attempt delays of 15, 30 and 60 s, a cap at `NW_RETRY_MAX_S`, `nw_done`
+    still False, and `nw_attempts` back to 0 on the first complete read.
+
+    Derived independently: `exec_period_s` is 15 s and the delay doubles per failed read, so
+    the first three are 15, 30 and 60. The cap is 3600 elapsed seconds, and the bound is elapsed
+    wall time rather than a loop count because the executor ran 27 loops in an hour on the
+    sampled evening, where a loop-counted bound would stretch by an order of magnitude in
+    exactly the conditions it exists for (ruling CR-5). Nothing is ever closed: a closed track
+    would take its order out of gate criterion 4's population, which `_MARKOUTS` builds from the
+    `nw_fill` anchor with no fill predicate, and 834 of the 836 non-cross fills on the record are
+    no-watcher fills (ruling CR-4).
+    """
+    delays = []
+    row = _order_row(status="cancelled", nw_done=False, nw_attempts=0, nw_next_attempt_at=None)
+    executor, _ = _executor({})
+    for attempt in range(3):
+        nxt = executor._nw_backoff(row.nw_attempts, at(attempt * 100))
+        delays.append(int((nxt - at(attempt * 100)).total_seconds()))
+        row = _order_row(status="cancelled", nw_done=False, nw_attempts=row.nw_attempts + 1,
+                         nw_next_attempt_at=nxt)
+    assert delays == [15, 30, 60]
+    assert executor._nw_backoff(99, at(0)) == at(0) + timedelta(seconds=store.NW_RETRY_MAX_S)
+    assert row.nw_done is False
+
+
+def test_a_deferred_ticker_is_not_simulated_and_its_track_stays_open():
+    """Expected: `nw_done` still False and the cursors unmoved, for a past-expiry track whose
+    ticker was deferred by the backoff (ruling CR-2).
+
+    Derived independently from the closing rule, not from the code. `_simulate_order` closes a
+    counterfactual when `row.ticker not in lagging` and the expiry has passed. A ticker skipped
+    by the backoff is read by nobody that step, so it is in neither `unread` nor `lagging` --
+    and a past-expiry track would therefore be closed on a loop that read none of its tape.
+    Before the backoff a failed read put the ticker in `unread` and `_simulate` skipped the row,
+    which is exactly why the track survived. Closing it is the abandonment ruling CR-4 forbids:
+    it removes the order from gate criterion 4's population, non-randomly and on the
+    worst-taped tickers.
+
+    So `_tape` reports the deferred set separately, `_simulate` skips those rows, and the track
+    comes out of the step exactly as it went in.
+    """
+    row = _order_row(status="cancelled", nw_done=False, expiry=at(10),
+                     nw_tape_cursor_event_id=41, nw_attempts=2,
+                     nw_next_attempt_at=at(900))
+    executor, captured = _executor({})
+    with patch.object(Executor, "_tape",
+                      return_value=({}, set(), set(), {"A"})):
+        outcomes = executor._simulate(None, [row], CLEAN_MARKET, {}, set(), at(30),
+                                      ExecStats(), {"tape_lag": [], "last_error": None})
+    assert captured == []
+    assert row.nw_done is False
+    assert row.nw_tape_cursor_event_id == 41
+    assert outcomes[row.id] == (row.status, row.filled_contracts)
