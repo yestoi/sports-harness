@@ -346,7 +346,7 @@ class WorkerGuardTests(unittest.TestCase):
         self.assertTrue(recorded['session'])
         self.assertEqual(recorded['environment']['DATABASE_URL_TEST'], 'postgresql://test-only')
         self.assertEqual(controller_receipt.read_text(), 'controller receipt')
-        self.assertTrue((private / 'test-harness_test_main.json').is_file())
+        self.assertTrue((private / 'test-harness_test_main-scoped.json').is_file())
         self.assertFalse((private / 'test-suite.lock').exists())
 
     def test_sensitive_files_are_hidden_in_main_and_task(self):

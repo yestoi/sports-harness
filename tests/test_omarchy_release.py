@@ -363,7 +363,7 @@ def test_suite_child_inherits_the_lock_and_its_exit_code_is_recorded(monkeypatch
     args, kwargs = launches[0]
     assert kwargs["start_new_session"] is True and len(kwargs["pass_fds"]) == 1
     assert kwargs["env"]["DATABASE_URL_TEST"].endswith("localhost:5433/harness_test_main")
-    receipt = json.loads((tmp_path / ".cache/sports-harness/test-state/test-harness_test_main.json").read_text())
+    receipt = json.loads((tmp_path / ".cache/sports-harness/test-state/test-harness_test_main-scoped.json").read_text())
     assert receipt["exit_code"] == 7 and receipt["scope"] == ["tests/test_one.py"]
 
 

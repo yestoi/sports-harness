@@ -48,7 +48,7 @@ the controller provisions its isolated index fault-fixture permission as describ
 Workers keep the restricted SQL role and never receive Docker/admin access. The controller commits
 returned patches and produces clean exact-SHA (or exact-tree) full-suite receipts; namespace-only
 credential masks are never returned as source edits. Reconcile a cancelled test's
-actual process and host-wide lock before another suite.
+actual process and per-database lock before another suite.
 
 ## Boundary before new 6B work
 

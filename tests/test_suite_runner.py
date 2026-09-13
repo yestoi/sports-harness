@@ -85,9 +85,59 @@ def test_record_durations_sums_junit_times_per_file_and_merges_the_previous_reco
                      '<testcase classname="tests.test_a" name="t2" time="2.0"/>'
                      '<testcase classname="tests.test_b.TestX" name="t3" time="4.0"/></testsuite></testsuites>')
     record = tmp_path / "test-durations.json"
-    record.write_text(json.dumps({"tests/test_old.py": 9.0, "tests/test_a.py": 100.0}))
+    record.write_text(json.dumps({"tests/test_old.py": 9.0, "tests/test_a.py": 100.0}))  # legacy flat form
     runner.record_durations([junit], record)
-    assert json.loads(record.read_text()) == {"tests/test_old.py": 9.0, "tests/test_a.py": 3.5, "tests/test_b.py": 4.0}
+    written = json.loads(record.read_text())
+    assert written["files"] == {"tests/test_old.py": 9.0, "tests/test_a.py": 3.5, "tests/test_b.py": 4.0}
+    assert written["nodes"] == {"tests/test_a.py::t1": 1.5, "tests/test_a.py::t2": 2.0, "tests/test_b.py::TestX::t3": 4.0}
+
+
+def test_a_file_heavier_than_a_shard_is_split_into_its_recorded_nodes_plus_a_deselected_remainder():
+    runner = load()
+    counts = {"tests/test_schema.py": 1, "tests/test_heavy.py": 7, "tests/test_a.py": 50, "tests/test_b.py": 50}
+    weights = {"tests/test_schema.py": 30.0, "tests/test_heavy.py": 850.0, "tests/test_a.py": 300.0, "tests/test_b.py": 300.0}
+    nodes = {"tests/test_heavy.py::test_slow": 470.0, "tests/test_heavy.py::test_slower": 320.0,
+             "tests/test_heavy.py::test_quick": 60.0, "tests/test_a.py::test_x": 300.0}
+    plan = runner.plan_shards(counts, shards=4, base="db", weights=weights, nodes=nodes)
+    units = [unit for shard in plan for unit in shard.files]
+    assert "tests/test_heavy.py::test_slow" in units and "tests/test_heavy.py::test_slower" in units
+    remainder = next(u for u in units if u.startswith("tests/test_heavy.py --deselect"))
+    assert remainder == ("tests/test_heavy.py --deselect tests/test_heavy.py::test_slow"
+                         " --deselect tests/test_heavy.py::test_slower")
+    assert "tests/test_heavy.py" not in units  # never both whole and split
+    assert "tests/test_a.py" in units  # under the threshold: stays whole
+    slow_shard = next(shard for shard in plan if "tests/test_heavy.py::test_slow" in shard.files)
+    slower_shard = next(shard for shard in plan if "tests/test_heavy.py::test_slower" in shard.files)
+    assert slow_shard is not slower_shard
+    assert slow_shard.files == ["tests/test_heavy.py::test_slow"]
+
+
+def test_a_heavy_file_without_node_records_stays_whole():
+    runner = load()
+    counts = {"tests/test_schema.py": 1, "tests/test_heavy.py": 7, "tests/test_a.py": 5}
+    weights = {"tests/test_heavy.py": 850.0, "tests/test_a.py": 30.0, "tests/test_schema.py": 30.0}
+    plan = runner.plan_shards(counts, shards=3, base="db", weights=weights, nodes={})
+    assert sorted(u for shard in plan for u in shard.files) == sorted(counts)
+
+
+def test_load_record_reads_the_seed_when_the_state_directory_has_no_record(tmp_path, monkeypatch):
+    runner = load()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test-durations.json").write_text(json.dumps(
+        {"files": {"tests/test_a.py": 5.0}, "nodes": {"tests/test_a.py::t": 5.0}}))
+    files, nodes = runner.load_record(tmp_path / "state/test-durations.json")
+    assert files == {"tests/test_a.py": 5.0} and nodes == {"tests/test_a.py::t": 5.0}
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state/test-durations.json").write_text(json.dumps({"tests/test_b.py": 7.0}))
+    files, nodes = runner.load_record(tmp_path / "state/test-durations.json")
+    assert files == {"tests/test_b.py": 7.0} and nodes == {}  # the host record wins over the seed
+
+
+def test_a_database_name_too_long_for_shard_suffixes_is_refused():
+    runner = load()
+    with pytest.raises(SystemExit):
+        runner.plan_shards({"tests/test_a.py": 1, "tests/test_b.py": 1}, shards=2, base="x" * 61)
 
 
 def test_shard_count_never_exceeds_the_number_of_files():
@@ -143,6 +193,7 @@ def test_sharded_full_suite_merges_exit_codes_and_records_the_tree(monkeypatch, 
 
     monkeypatch.setattr(runner.subprocess, "Popen", popen)
     assert runner.main() == 3
+    assert not (state / "test-durations.json").exists()  # an interrupted or crashed shard records nothing
     databases = sorted(kw["env"]["DATABASE_URL_TEST"].rsplit("/", 1)[1] for _, kw in launches)
     assert databases == ["harness_test_main", "harness_test_main_p2"]
     assert all(kw["start_new_session"] and len(kw["pass_fds"]) == 1 for _, kw in launches)
@@ -170,7 +221,32 @@ def test_sharded_run_records_durations_for_the_next_plan(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runner.subprocess, "Popen", popen)
     assert runner.main() == 0
-    assert json.loads((state / "test-durations.json").read_text()) == {"tests/test_schema.py": 2.5, "tests/test_a.py": 2.5}
+    record = json.loads((state / "test-durations.json").read_text())
+    assert record["files"] == {"tests/test_schema.py": 2.5, "tests/test_a.py": 2.5}
+    assert record["nodes"] == {"tests/test_schema.py::t": 2.5, "tests/test_a.py::t": 2.5}
+
+
+def test_sharded_full_suite_launches_split_units_as_pytest_arguments(monkeypatch, tmp_path):
+    runner, state = _runner_env(monkeypatch, tmp_path, [])
+    monkeypatch.setenv("TEST_SHARDS", "3")
+    monkeypatch.setattr(runner, "discover", lambda: {"tests/test_schema.py": 1, "tests/test_heavy.py": 3, "tests/test_a.py": 2})
+    state.mkdir(parents=True)
+    (state / "test-durations.json").write_text(json.dumps({
+        "files": {"tests/test_schema.py": 10.0, "tests/test_heavy.py": 900.0, "tests/test_a.py": 20.0},
+        "nodes": {"tests/test_heavy.py::test_slow": 600.0, "tests/test_heavy.py::test_mid": 200.0,
+                  "tests/test_heavy.py::test_quick": 100.0}}))
+    launches = []
+
+    def popen(args, **kwargs):
+        launches.append(args)
+        kwargs["stdout"].write("== 1 passed in 1.00s ==\n")
+        return SimpleNamespace(pid=1, wait=lambda: 0)
+
+    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    assert runner.main() == 0
+    tails = [args[args.index("-ra") + 3:] for args in launches]  # after -ra, --junit-xml, <path>
+    assert ["tests/test_heavy.py::test_slow"] in tails
+    assert any(t[:3] == ["tests/test_heavy.py", "--deselect", "tests/test_heavy.py::test_slow"] for t in tails)
 
 
 def test_sharded_output_ends_with_one_combined_summary_line(monkeypatch, tmp_path, capsys):
@@ -202,5 +278,14 @@ def test_scoped_run_is_one_process_on_the_base_database_with_a_tree(monkeypatch,
     monkeypatch.setattr(runner.subprocess, "Popen", popen)
     assert runner.main() == 0
     assert len(launches) == 1 and launches[0][1]["env"]["DATABASE_URL_TEST"].endswith("/harness_test_main")
-    receipt = json.loads((state / "test-harness_test_main.json").read_text())
+    receipt = json.loads((state / "test-harness_test_main-scoped.json").read_text())
     assert receipt["scope"] == ["tests/test_one.py"] and receipt["tree"] == TREE and "shards" not in receipt
+
+
+def test_scoped_run_never_overwrites_the_full_suite_receipt(monkeypatch, tmp_path):
+    runner, state = _runner_env(monkeypatch, tmp_path, ["tests/test_one.py"])
+    state.mkdir(parents=True)
+    (state / "test-harness_test_main.json").write_text('{"scope": [], "exit_code": 0}')
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: SimpleNamespace(pid=1, wait=lambda: 0))
+    assert runner.main() == 0
+    assert json.loads((state / "test-harness_test_main.json").read_text()) == {"scope": [], "exit_code": 0}
