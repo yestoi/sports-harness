@@ -8,9 +8,13 @@ because a notification was lost. Preserve the daily failure ceilings and pending
 1. Compare deployed source with main, excluding docs/Markdown/.claude controller
    tooling. Batch all reviewed, ready independent fixes into one release. Keep the
    declared prerequisites and service ownership in the ledger.
-2. Run `make test` on exact clean main with no filtering environment/TEST_ARGS. Its
-   receipt must show the same before/after SHA, no dirty files, exit 0 and a full
-   scope. Review the log for warnings/tracebacks and expected xfails; a worker's
+2. The release needs a clean full-suite receipt for main's exact commit or exact tree
+   (`git rev-parse HEAD^{tree}`): the merged branch's pre-merge `make test` on its own
+   database counts when the branch was rebased onto main before the fast-forward, so
+   run `make test` on main only when no such receipt exists. Either receipt must show
+   the same before/after SHA, no dirty files (worker report files moved out first),
+   exit 0, a full scope and every shard exit 0, with no filtering environment/TEST_ARGS.
+   Review the log for warnings/tracebacks and expected xfails; a worker's
    “passed” statement is insufficient.
 3. `make plan-release-omarchy MODE=app` checks stamp, configuration and game window.
    App-only is rejected for WebSocket/RFQ, database/model/migration, matching/alias,

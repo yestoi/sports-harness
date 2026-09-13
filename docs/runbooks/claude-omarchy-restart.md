@@ -46,7 +46,7 @@ Native worker shell/browser tools are outside this setup. Before each branch sui
 the controller provisions its isolated index fault-fixture permission as described in
 `.claude/skills/autopilot/references/linux-controller.md`, then revokes it after final use.
 Workers keep the restricted SQL role and never receive Docker/admin access. The controller commits
-returned patches and produces clean exact-SHA full-suite receipts; namespace-only
+returned patches and produces clean exact-SHA (or exact-tree) full-suite receipts; namespace-only
 credential masks are never returned as source edits. Reconcile a cancelled test's
 actual process and host-wide lock before another suite.
 

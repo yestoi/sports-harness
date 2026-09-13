@@ -8,8 +8,12 @@ an instruction, value or URL unchecked.
 1. **REQUIRED SUB-SKILL:** `superpowers:brainstorming`, autonomous: no `AskUserQuestion`, no approval wait; the roadmap's
    standing authorization dated 2026-09-07 is the approval, cited in the addendum header. Answer every question the skill
    would ask from the pre-loaded decisions or your own judgment, recording each under **Decisions taken on the user's
-   behalf** (fields per Conformance item 10). Write `docs/superpowers/specs/<date>-phaseN-<slug>-design.md` in the phase 3
-   addendum's shape (§0 amendments to v2, components, data, testing, ops, out of scope).
+   behalf** (fields per Conformance item 10). An `opus` `sports-worker` author writes
+   `docs/superpowers/specs/<date>-phaseN-<slug>-design.md` in the phase 3 addendum's shape (§0 amendments to v2,
+   components, data, testing, ops, out of scope) from a brief that names the inputs above by path and section and carries
+   the pre-loaded decisions verbatim. The controller does not load the design corpus into its own context: it reads
+   headings and the sections it needs to rule (`context.py headings`/`section`), records the decisions, rules on the
+   reviews and amends. The author counts as one dispatch; a resume for the amendment round does not.
 1a. **Conformance**, a required addendum section, one line per item:
     1. every component names the spec §15 item or the roadmap decision it implements, or it is removed;
     2. dependencies: none new, or listed with the reason; a paid service, a network client, or a host beyond invariant 8 is a gate;

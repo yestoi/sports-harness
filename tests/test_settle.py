@@ -513,6 +513,10 @@ def test_venue_result_isolates_a_failing_ticker(db_session, monkeypatch):
 def test_stage_registry_runs_stages_in_registration_order_under_one_budget(
         db_session, env_settings, monkeypatch):
     seen: list[tuple[str, float]] = []
+    # Import every real stage module first: a stage registers itself at import time, and a
+    # first import inside this test (when no earlier file in the process imported it) would land
+    # in the emptied registry below. This test's outcome must not depend on file order.
+    load_stages()
     monkeypatch.setattr(job_module, "STAGES", [])
     monkeypatch.setattr(job_module, "STAGE_MODULES", [])
 

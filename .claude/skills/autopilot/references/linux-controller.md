@@ -68,8 +68,10 @@ proxy. The host user service owns `/run/user/1000/sports-test-db`; the sandbox s
 `/run/sports-test-db` and a non-superuser test account. No general network route or
 server-file/program privilege is provided. Only the shared lock inode is mounted at
 `SPORTS_TEST_LOCK_FILE`; worker receipts stay in private `/tmp/sports-test-state`,
-with controller release receipts inaccessible. The supported runner serializes
-suites; this is cooperative scheduling, not SQL access control.
+with controller release receipts inaccessible. The supported runner locks per
+test database on the shared lock inode (open-file-description byte ranges): branches
+test concurrently and one database's runs serialize; this is cooperative scheduling,
+not SQL access control.
 
 Use `make test` for full evidence or `make test TEST_ARGS='tests/test_x.py'` for scoped
 evidence. Full acceptance requires no filters, clean source and the exact candidate.
@@ -141,7 +143,9 @@ docker exec harness-pg-test psql -X -v ON_ERROR_STOP=1 -U sports_test_admin \
   -c 'GRANT UPDATE (indisvalid) ON pg_catalog.pg_index TO harness'
 ```
 
-This permits only the fault-fixture column in that isolated database. Do not grant
+A sharded full suite keeps the schema and Alembic tests on the branch database (the
+other shards use `<database>_p2..`, which need no grant), so this provisioning is
+unchanged. This permits only the fault-fixture column in that isolated database. Do not grant
 whole-table UPDATE, SUPERUSER, role memberships, server-file/program privileges or
 catalog ownership. The worker continues using only `make test` and its restricted
 account. Record the database and grant in the ledger; after its final suite/worker

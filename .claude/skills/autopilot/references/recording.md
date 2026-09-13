@@ -15,6 +15,9 @@
 - Next: <unit>, wakeup <HH:MM CT> | none
 ```
 
+Ledger lines are appended with `python3 .claude/skills/autopilot/scripts/context.py append <ledger> '<text>'`,
+which stamps the line from the clock; a time is never written from memory or estimated.
+
 Shape: every field is one line; a Verification line names verdicts and the evidence path, and the numbers live in the
 evidence file, not the entry. Anomalies are one line each under `Rulings` or a separate `Anomalies:` line. Entries are
 appended, never edited, never duplicated (Orient rule 0); `roadmap.md` statuses and `state.md` update in the same commit,

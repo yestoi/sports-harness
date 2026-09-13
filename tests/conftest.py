@@ -32,6 +32,21 @@ def _schema():
     from harness.db.schema import create_schema, drop_schema, ensure_partitions
 
     engine = make_engine(url)
+
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "checkin")
+    def _reset_session_settings(dbapi_connection, _record):
+        # SQLAlchemy's pool rolls back on checkin but keeps a bare `SET` (statement_timeout,
+        # lock_timeout, ...) on the physical connection, so one test's session setting would
+        # reach whichever test checks that connection out next; the order files run in must
+        # not change a result (the full suite runs as several file groups in parallel).
+        if dbapi_connection is None:
+            return
+        with dbapi_connection.cursor() as cursor:
+            cursor.execute("reset all")
+        dbapi_connection.commit()
+
     drop_schema(engine)
     create_schema(engine)
     # ensure_partitions covers all three partitioned tables (raw_responses, orderbook_events,

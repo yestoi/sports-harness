@@ -104,22 +104,36 @@ def bootstrap(root):
     return "\n".join(output)
 
 
+def append_line(path, text, now=None):
+    """Append one ledger line stamped from the clock (America/Chicago), never from memory."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    when = (now or datetime.now(ZoneInfo("America/Chicago"))).astimezone(ZoneInfo("America/Chicago"))
+    with Path(path).open("a", encoding="utf-8") as handle:
+        handle.write(f"- {when:%Y-%m-%d %H:%M} CT: {text}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("bootstrap")
-    for command in ("headings", "section", "journal"):
+    for command in ("headings", "section", "journal", "append"):
         child = sub.add_parser(command)
         child.add_argument("path", type=Path)
         if command == "section":
             child.add_argument("title")
+        if command == "append":
+            child.add_argument("text")
         if command == "journal":
             child.add_argument("--count", type=int, default=2)
     args = parser.parse_args()
     try:
         if args.command == "bootstrap":
             output = bootstrap(args.root)
+        elif args.command == "append":
+            append_line(args.root / args.path, args.text)
+            output = f"appended to {args.path}"
         else:
             text = read(args.root, args.path)
             if args.command == "headings":

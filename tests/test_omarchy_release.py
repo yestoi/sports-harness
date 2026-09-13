@@ -21,6 +21,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "a" * 40
+TREE = "t" * 40
 SHA = "aaaaaaa"
 OLD = "b0a3991"
 PG_IMAGE = "postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94"
@@ -60,7 +61,7 @@ def release(monkeypatch, tmp_path):
     test_receipt.write_text(json.dumps(receipt))
     state = SimpleNamespace(module=module, runtime=runtime, before=before, home=home,
                             test_receipt=test_receipt, receipt=receipt, calls=[], health_calls=[],
-                            failure=None, failed=False, dirty="", head=HEAD, old=OLD,
+                            failure=None, failed=False, dirty="", head=HEAD, tree=TREE, old=OLD,
                             touched=[], mutate_candidate=None)
     monkeypatch.setattr(module, "RUNTIME", runtime)
     monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: home))
@@ -78,6 +79,8 @@ def release(monkeypatch, tmp_path):
             return SHA
         if args == ("rev-parse", "HEAD"):
             return state.head
+        if args == ("rev-parse", "HEAD^{tree}"):
+            return state.tree
         if args[:1] == ("cat-file",):
             return ""
         if args[:1] == ("diff",):
@@ -197,6 +200,53 @@ def test_stale_dirty_partial_or_failed_suite_receipt_is_rejected(release, field,
     assert not any("build" in call or "stop" in call for call in release.calls)
 
 
+def test_branch_receipt_with_the_same_tree_covers_the_deploy(release):
+    """A rebased branch suite on a byte-identical tree is the main receipt; no rerun on main."""
+    release.test_receipt.unlink()
+    branch = dict(release.receipt, head="c" * 40, head_after="c" * 40, branch="fix-x",
+                  database="harness_test_fix_x", tree=TREE)
+    (release.test_receipt.parent / "test-harness_test_fix_x.json").write_text(json.dumps(branch))
+    release.module.deploy("app")
+    written = release_receipt(release)
+    assert written["status"] == "healthy"
+    assert written["suite_receipt"]["database"] == "harness_test_fix_x" and written["suite_receipt"]["tree"] == TREE
+
+
+def test_the_exact_commit_receipt_wins_over_a_tree_match_and_ties_never_crash(release):
+    twin = dict(release.receipt, head="c" * 40, head_after="c" * 40, tree=TREE, database="harness_test_fix_x")
+    (release.test_receipt.parent / "test-harness_test_fix_x.json").write_text(json.dumps(twin))
+    (release.test_receipt.parent / "test-harness_test_fix_y.json").write_text(json.dumps(twin))
+    release.module.deploy("app")
+    assert release_receipt(release)["suite_receipt"]["database"] == "harness_test_main"
+
+
+def test_receipt_with_neither_the_head_nor_the_tree_is_rejected(release):
+    release.test_receipt.unlink()
+    branch = dict(release.receipt, head="c" * 40, head_after="c" * 40, tree="u" * 40)
+    (release.test_receipt.parent / "test-harness_test_fix_x.json").write_text(json.dumps(branch))
+    with pytest.raises(RuntimeError, match="receipt"):
+        release.module.deploy("app")
+    assert not any("build" in call or "stop" in call for call in release.calls)
+
+
+def test_tree_matched_receipt_must_still_be_clean_and_complete(release):
+    release.test_receipt.unlink()
+    branch = dict(release.receipt, head="c" * 40, head_after="c" * 40, tree=TREE,
+                  dirty_before="?? .superpowers-report-x.md")
+    (release.test_receipt.parent / "test-harness_test_fix_x.json").write_text(json.dumps(branch))
+    with pytest.raises(RuntimeError, match="receipt"):
+        release.module.deploy("app")
+
+
+def test_sharded_receipt_with_a_failed_shard_is_rejected(release):
+    release.receipt["shards"] = [{"database": "harness_test_main", "exit_code": 0},
+                                 {"database": "harness_test_main_p2", "exit_code": 1}]
+    release.receipt["exit_code"] = 1
+    release.test_receipt.write_text(json.dumps(release.receipt))
+    with pytest.raises(RuntimeError, match="receipt"):
+        release.module.deploy("app")
+
+
 def test_dirty_checkout_is_rejected_before_build_or_stop(release):
     release.dirty = "?? new-file.py"
     with pytest.raises(RuntimeError, match="clean main"):
@@ -254,6 +304,7 @@ def test_window_exception_uses_chicago_day_and_never_overrides_nfl(mode, day, bl
 
 def test_suite_cannot_issue_full_receipt_for_environment_filtered_pytest(monkeypatch, tmp_path):
     module = load_script("test-suite")
+    monkeypatch.setenv("TEST_SHARDS", "1")
     monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("SPORTS_TEST_STATE_DIR", str(tmp_path / ".cache/sports-harness/test-state"))
     monkeypatch.setenv("PYTEST_ADDOPTS", "-k only_this_test")

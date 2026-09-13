@@ -148,6 +148,30 @@ def atomic_copy(source, dest):
     os.replace(temporary, dest)
 
 
+def full_suite_receipt(head, tree):
+    """The controller's clean, unfiltered, passing receipt for this exact commit or this exact tree.
+
+    A branch rebased onto main and fast-forwarded has the same tree as main, so its pre-merge
+    suite is the release evidence; a receipt without a tree field must match the commit.
+    """
+    state = Path(os.environ.get('SPORTS_TEST_STATE_DIR', str(Path.home()/'.cache/sports-harness/test-state')))
+    candidates = []
+    for path in sorted(state.glob('test-*.json')):
+        try:
+            test = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        clean = (test.get('exit_code') == 0 and test.get('scope') == [] and not test.get('dirty_before')
+                 and not test.get('dirty_after') and test.get('pytest_addopts') == ''
+                 and test.get('pytest_plugins') == '' and test.get('head') == test.get('head_after')
+                 and all(shard.get('exit_code') == 0 for shard in test.get('shards', [])))
+        if clean and (test.get('head') == head or (test.get('tree') and test['tree'] == tree)):
+            candidates.append(test)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda test: (test.get('head') == head, test.get('finished_at', '')))
+
+
 def deploy(mode, plan=False):
     if git('branch', '--show-current') != 'main' or git('status', '--porcelain'):
         raise RuntimeError('Release requires clean main (including untracked files)')
@@ -172,14 +196,13 @@ def deploy(mode, plan=False):
                       'window': window, 'full_paths': touched}), flush=True)
     if plan:
         return
-    test = json.loads((Path.home()/'.cache/sports-harness/test-state/test-harness_test_main.json').read_text())
-    if (test.get('head') != head or test.get('head_after') != head or test.get('exit_code') != 0
-            or test.get('scope') != [] or test.get('dirty_before') or test.get('dirty_after')
-            or test.get('pytest_addopts') != '' or test.get('pytest_plugins') != ''):
-        raise RuntimeError('A clean full-suite receipt at this exact main SHA is required')
+    test = full_suite_receipt(head, git('rev-parse', 'HEAD^{tree}'))
+    if test is None:
+        raise RuntimeError('A clean full-suite receipt at this exact main SHA (or its exact tree) is required')
     receipt_dir = RUNTIME/'releases'/f'{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{sha}'
     receipt_dir.mkdir(parents=True, mode=0o700)
     receipt = {'head': head, 'sha': sha, 'previous': old, 'mode': mode, 'services': changed,
+               'suite_receipt': {key: test.get(key) for key in ('database', 'branch', 'head', 'tree', 'finished_at')},
                'started_at': datetime.now(timezone.utc).isoformat(), 'status': 'preparing'}
     def checkpoint(status):
         receipt['status'] = status

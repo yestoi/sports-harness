@@ -25,9 +25,11 @@ tool allowlist replaces native/plugin worker tools. Preserve the model allocatio
    - implementer `sonnet`; `haiku` when the brief contains the complete code; `opus` only for tasks the plan or the
      plan-next entry marks judgment-heavy (phase 3: Tasks 5, 6, 10, 13 unless the plan says otherwise).
    - task reviewer `opus` for anything under `harness/recorder/`, `harness/execution/`, `harness/pricing/`,
-     `harness/settlement/`, `harness/venues/`; `sonnet` elsewhere. The reviewer fixes Minors itself in the task's worktree
-     (comment, name, assertion, docstring: no behaviour change), commits them with the trailers, lists each with its sha,
-     and runs `make test`; those need no re-review. Importants and Criticals go back to the implementer (SendMessage).
+     `harness/settlement/`, `harness/venues/`; `sonnet` elsewhere. Reviewer dispatches name the task worktree as `cwd` so the shell tool mounts it
+     (a reviewer without the worktree cannot run the database-backed tests). The reviewer fixes Minors itself (comment,
+     name, assertion, docstring: no behaviour change) and returns them as one unified diff in its report, since worker Git
+     is read-only; the controller applies and commits that patch with the trailers, runs the named targeted tests, and
+     ledgers each Minor with the sha; those need no re-review. Importants and Criticals go back to the implementer (SendMessage).
    - scoped re-review only after an Important or Critical fix round: `haiku` for a diff under 60 lines, else `sonnet`.
      Fix rounds 1-3 resume the same implementer; rounds 4-5 a fresh implementer one tier up; final whole-branch review
      `opus`; fix wave `sonnet` (`opus` if a finding is architectural); its re-review `sonnet`.
@@ -36,7 +38,10 @@ tool allowlist replaces native/plugin worker tools. Preserve the model allocatio
 4. Commit trailers on every commit use **this** session's values from the harness instructions (`Co-Authored-By` plus
    `Claude-Session`); a plan that hard-codes an older session id is stale on that point.
 5. Full suite before every merge and deploy: `make test` on the branch being merged (its own database), pristine
-   output (no warnings, no tracebacks). `make test` on `main` after the merge, before the deploy.
+   output (no warnings, no tracebacks), started only after the review verdict is clean or the fix round is committed,
+   never speculatively during a review. Move worker report files out of the worktree first so the receipt is clean.
+   A branch rebased onto `main` and fast-forwarded has `main`'s tree, so its receipt is the release receipt
+   (deploy.md step 2); rerun on `main` only when the trees differ.
 6. A plan step that says "controller: deploy this task now" is honoured mid-phase, but Omarchy only ever runs `main` (R15):
    after the task's review is clean, `git checkout main && git merge --ff-only phaseN-<slug> && git checkout phaseN-<slug>`,
    then the deploy unit from `main`, verify per verify.md's task-specific rows, journal, continue the branch. A plan whose last
