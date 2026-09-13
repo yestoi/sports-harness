@@ -1,0 +1,51 @@
+=== research_spend, every row ===
+2026-09-11|annotate|claude-opus-5|10|280617|5659|0|0|0|0.0000|1.5446
+2026-09-11|veto|claude-opus-5|317|443536|125610|3232688|436735|196|0.0000|11.6633
+2026-09-11|veto|claude-sonnet-5|317|442039|261005|7518779|1000279|389|0.0000|11.3885
+2026-09-12|annotate|claude-opus-5|1|21413|992|0|0|0|0.0000|0.1319
+2026-09-13|veto|claude-opus-5|134|1025015|74688|1941297|1092655|140|0.0000|16.1921
+2026-09-13|veto|claude-sonnet-5|134|1002151|123254|4052351|1001083|168|0.0000|8.2303
+=== veto_decisions by Chicago day, label, cache hit ===
+2026-09-11|proceed|f|317|0.672
+2026-09-11|proceed|t|161|0.672
+2026-09-11|veto_skipped_budget|f|4319|
+2026-09-13|proceed|f|134|0.678
+2026-09-13|proceed|t|93|0.677
+2026-09-13|veto_skipped_budget|f|5042|
+=== veto_decisions reason codes ===
+veto_skipped_budget|daily|9361
+proceed||367
+proceed|fair_move|338
+=== confidence spread of decided rows ===
+proceed|0.5500|0.7600|0.0508|12
+=== research_notes by kind ===
+annotate|11|2026-09-11 10:25:57.301628+00|2026-09-12 13:39:55.899689+00
+veto|902|2026-09-11 13:33:49.433513+00|2026-09-13 06:42:29.881277+00
+=== per-call shape by Chicago day and model (veto) ===
+2026-09-11|claude-opus-5|317|1704|7|7|1.30|10858|1399|1378|10198|396|0.0368
+2026-09-11|claude-sonnet-5|317|1704|7|7|3.31|19463|1394|3155|23719|823|0.0359
+2026-09-13|claude-opus-5|134|9613|72|59|2.21|16330|7649|8154|14487|557|0.1208
+2026-09-13|claude-sonnet-5|134|9613|72|59|3.19|21999|7479|7471|30241|920|0.0614
+=== primary vs shadow decision agreement (paired on subject_id) ===
+proceed|proceed|444|0.087
+proceed|(no output)|5|
+proceed|reduce|2|0.110
+=== how often the model says it lacks identifiers ===
+claude-sonnet-5|451|411
+claude-opus-5|451|432
+=== two sample primary outputs, first day and today ===
+2026-09-11 13:33:49.433513+00|{"reason": "Signal has no team/venue identifiers, so no news can be tied to this specific game. Weather is benign (82F, 2 mph wind, mostly sunny, 0% precip) and consistent with features; fair value is fresh (127s). No cited evidence contradicts the numbers.", "decision": "proceed", "confidence": 0.72, "evidence_ids": []}
+2026-09-11 13:33:49.433513+00|{"reason": "No team, player or venue identifiers in the signal, so no targeted news check is possible. Weather is benign (82F, 2 mph wind, mostly sunny, open roof), status scheduled, fair value fresh (127s). No cited evidence that the numbers are stale or wrong.", "decision": "proceed", "confidence": 0.62, "evidence_ids": []}
+2026-09-13 06:42:29.881277+00|{"reason": "Signal lacks team identifiers, so no targeted news check is possible. General Week 2 injury searches returned nothing tied to this game. Fair value stable at 0.545 with low disagreement and fresh data (124s), 15h to kickoff. No evidence the numbers are stale or wrong.", "decision": "proceed", "confidence": 0.72, "evidence_ids": []}
+2026-09-13 06:42:29.881277+00|{"reason": "Signal has no team/matchup identifiers, so no retrieved news can be tied to it. Generic NFL injury pages give nothing specific. Fair value is fresh (124s staleness) and venue mid stable at 0.545 all night. No cited evidence of staleness or error.", "decision": "proceed", "confidence": 0.62, "evidence_ids": []}
+=== feature keys sent to the model (one recent primary call) ===
+as_of_ct, as_of_utc, book_history, disagreement, edge, espn_status, fair_history, fair_p, fair_source, fair_staleness_s, kickoff_ct, kickoff_utc, market_type, minutes_to_kickoff, precip_pct, side, signal_created_at_ct, signal_created_at_utc, signal_id, sport, temperature_f, venue_history, weather_fetched_at, weather_roof, wind_mph
+=== veto call window today (Chicago) ===
+2026-09-13 00:17:03.339526|2026-09-13 01:42:29.881277|268
+=== decided signals that became orders and fills ===
+705|302|0
+=== veto_queue backlog ===
+11297|1231|2026-09-11 13:33:11.778205+00|2026-09-13 15:29:42.543428+00
+=== report_annotations ===
+2|claude-opus-5|0e83349734b4|0|0.2461|2026-09-11 13:42:20.190966+00
+4|claude-opus-5|0e83349734b4|2|0.1319|2026-09-12 13:39:55.899689+00
