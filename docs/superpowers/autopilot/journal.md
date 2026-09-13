@@ -1900,3 +1900,17 @@ Times are America/Chicago.
 - Rulings: implementer worktrees and databases provisioned with the database-local UPDATE(indisvalid) fixture grant (harness_test_phase6b_t3_reconciliation, harness_test_fix_20260912_recorder_memory, harness_test_fix_20260912_dashboard_mobile, harness_test_main and its _a/_b/_s siblings); revoked after each database's last suite.
 - Carried forward: none new (49, 51, 53 dispositions updated in state).
 - Next: phase T3 + hotfix 49/53 in flight; wakeup 23:53 CT (worker reconciliation, cron 0fa407c3) and 03:03 CT Sun (deploy window + WTD/fix 52 checks, cron d005838b).
+
+## 158. hotfix - fix 53 dashboard mobile fit and Pulse event wording, merged - 2026-09-13 00:31 CT
+
+- Orient: rule 1 - Carried fixes row 53 actionable (populated Gate 764 px at 390; Pulse raw exception reprs), captured on 93dfb95 in journal 154.
+- Branch / commits: fix-20260912-dashboard-mobile a2287da..b362960, rebased clean onto ef9a933 as 61923be..6f0b5b9; main ff to 6f0b5b9.
+- Result: done (merged; release pending the 03:00 CT window).
+- Dispatches: 4 (impl sonnet, review sonnet, re-review haiku, re-review sonnet); CT day Sep 12 total 51.
+- Tests: 3240 passed, 6 xfailed, pristine on b362960 (.superpowers/sdd/hotfix-2026-09-12-omarchy/fix53-full-b362960.log); 205 targeted before that.
+- Review: 2 fix rounds (round 1 controller-found Important: the real width source was `variantsSection`'s unclassed grid item with min-width auto, fixed by `#surface > * { min-width: 0 }`; round 2 reviewer Critical: a blanket `.technical` rule restyled Floor/Study/Ticket labels, rescoped to `.event-technical`; Important: exception detector narrowed to CamelCase Error/Exception names or the nested driver form; two Minors fixed); final re-review ADDRESSED.
+- Deploy: none yet; joins the full release with fix 45.
+- Verification: controller headless capture with the branch CSS over live 93dfb95: all five surfaces 390 px body / 0 overflow, 1440 unchanged, 0 runtime errors (.superpowers/sdd/screenshots/fix53-final-b362960-*.png, -browser.json); Pulse humanized events are server-side and get their pixels after the release; deferred: canonical visual items 17/19/23 to the post-release walk.
+- Rulings: rebasing a reviewed branch onto docs-only main commits keeps the review and suite evidence (source tree identical); the exact-main suite on 6f0b5b9 is the merge check and the release receipt. Stored operator_events rows untouched; the technical text shown beside the humanized summary is the sanitized stored text.
+- Carried forward: none.
+- Next: main suite on 6f0b5b9 for the release; fix 49 and T3 in flight; wakeups 00:45 CT (T3 re-check) and 03:03 CT (deploy window).
