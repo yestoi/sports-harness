@@ -10,8 +10,9 @@ drawn from the recorded tape. Two independent things arrive from it:
   bid at 0.97 being lifted, which `tests/test_fills_tape.py` pins against the real tape.
 * **Deltas** (`orderbook_events`), the level's net change. A negative delta at our price is
   the *same* event the print already reported, plus any genuine cancels. Counting both would
-  shorten the queue twice, so the per-price accumulator `traded_at_price` remembers how much
-  has already been explained by prints and only the unexplained remainder counts as a cancel.
+  shorten the queue twice, so 6B §1.3's two-sided ledger reconciles the two streams by volume
+  inside `RECON_HORIZON`: `print_unmatched` is print volume whose delta has not arrived and the
+  `buckets` are decrement volume no print has claimed, each stamped with its own timestamp.
 
 The queue itself is the pessimistic half of the model: we join behind everything resting at
 our price (`queue_ahead_at_place`) and only trade once that is gone. Against it sits the
@@ -26,25 +27,55 @@ call or in twenty chunks produces the same fills (`test_chunking_invariance`).
 
 Chunking is not enough on its own, because neither stream arrives once. The executor keeps no
 print cursor and rescans prints from `placed_at - 60 s` every loop (§1), and a book that has
-crossed our price stays crossed on every later loop, so the state carries a print watermark
-(`last_print_ts`, `last_print_ids`) and a `crossed` flag and both re-feeds are absorbed. One
-consequence is deliberate: a REST print that lands late carrying a `ts` earlier than the
-watermark is skipped rather than applied. Its delta has already moved the queue, so applying
-it would double count; the only thing given up is a fill at the very front of the queue, and
-being wrong in that direction is the conservative one.
+crossed our price stays crossed on every later loop, so the state carries a `crossed` flag and
+the two halves of print idempotence and both re-feeds are absorbed. Those halves do different
+jobs (§0.6): the `trade_ids` set makes a re-fed print a no-op by identity, which is what keeps
+a late REST backfill stamped earlier than a print already applied *usable*; and `print_floor`
+is the anchoring bound, below which nothing may be applied at all, because a print from before
+an anchoring book's own instant is already inside the queue that book established.
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from harness.execution.book import FOUR, QTY, SIDES, ZERO, BookState, opp, side_p
+from harness.execution.book import (
+    DELTA_LOOKBACK,
+    FOUR,
+    QTY,
+    SIDES,
+    ZERO,
+    BookState,
+    opp,
+    side_p,
+)
 from harness.pricing.fees import KALSHI_FOOTBALL, FeeModel, fee_for_order
 
 #: Deltas are folded in before prints at the same instant. The venue publishes the book
 #: change and the trade for one event with one timestamp; taking the print first would let
 #: it consume queue that the delta is about to report as already traded.
 _DELTA, _PRINT = 0, 1
+
+#: The two kinds of unclaimed decrement volume a bucket can hold. `pending` took queue ahead of
+#: us under the point-estimate policy; `surplus` was beyond the queue, so a print that claims it
+#: reaches us.
+BUCKET_KINDS = ("pending", "surplus")
+#: The cancel convention (§0.7, D3). `ahead` is the coded and documented point estimate -- an
+#: unmatched decrement at our price rested ahead of us -- and `behind` is the other end of the
+#: band, used offline by the re-score and never by the loop (D4).
+AHEAD, BEHIND = "ahead", "behind"
+#: Bounds on the per-track persisted state. A bucket lives at most `PRINT_LOOKBACK` and a trade
+#: id at most the track's own window, so neither cap is normally reached; they exist because a
+#: jsonb column on an order that rests for hours must not be able to grow without limit. At the
+#: trade-id cap the oldest ids drop and the print floor rises to the oldest retained id's
+#: timestamp, so nothing below the floor can re-apply (§0.6, D5).
+BUCKET_CAP = 500
+TRADE_ID_CAP = 2000
+#: The reconciliation horizon: a decrement bucket is claimable only by a print within this of
+#: the bucket's own timestamp (§0.5). The same 60 s as `store.PRINT_LOOKBACK`, which is the
+#: window the executor re-reads prints over; defined here rather than imported because
+#: `harness.execution.store` imports this module.
+RECON_HORIZON = timedelta(seconds=60)
 
 CROSS = "snapshot_cross"
 
@@ -122,61 +153,126 @@ class TapeDelta:
 class SimState:
     """The per-track simulation state, persisted on the order between loops.
 
-    The watched track stores it in `queue_remaining` / `traded_at_price` /
-    `filled_contracts` / `tape_cursor_event_id`; the no-watcher track in the `nw_*` columns.
+    The watched track stores it in `queue_remaining` / `filled_contracts` /
+    `tape_cursor_event_id` / the four ledger columns / `recon_state`; the counterfactual in the
+    `nw_` twins. `traded_at_price` is **not** here: C0's charge-against quantity is a different
+    thing from the ledger's terms, so post-boundary orders leave that column null rather than
+    reusing it, and the boundary is visible by nullness (ruling CR-3).
 
-    `crossed` and the print watermark are state, not per-call facts, because both of the
-    tape's two streams can be re-fed. `crossed` makes the worst-case fill once per order even
-    though the book keeps crossing on every later loop, and `last_print_ts` / `last_print_ids`
-    make a print idempotent even though the executor keeps no print cursor and rescans from
-    `placed_at - 60 s` every loop (§1). The ids are only those applied at exactly
-    `last_print_ts`, which is all that is needed to separate a re-fed trade from a second
-    trade stamped the same millisecond.
+    The ledger is two-sided (§0.5). `print_unmatched` is print volume whose decrement has not
+    arrived. `buckets` are decrement volume no print has claimed, each stamped with the
+    decrement's own timestamp and tagged `pending` (it took queue ahead of us) or `surplus`
+    (it was beyond the queue, so a print that claims it reaches us). A bucket is claimable only
+    by a print within `RECON_HORIZON` of its timestamp; past that an aged `pending` bucket
+    retires into `cancels_ahead` -- it was a real cancellation -- and an aged `surplus` bucket
+    is discarded, having never moved the queue.
+
+    `crossed` and the print bookkeeping are state, not per-call facts, because both of the
+    tape's streams can be re-fed. `crossed` makes the worst-case fill once per order even though
+    the book keeps crossing on every later loop. `print_floor` and `trade_ids` are the two
+    halves of print idempotence and do different jobs (§0.6, D5): the floor makes a re-anchor
+    sound -- nothing stamped before the anchoring book's own instant may be applied against the
+    newly anchored queue -- and the id set makes a late REST backfill *above* the floor usable,
+    which a timestamp watermark alone could not.
+
+    Both lists are bounded on every write. `buckets` are pruned to `RECON_HORIZON` and capped at
+    `BUCKET_CAP`; `trade_ids` are pruned to the track's own window (`placed_at - RECON_HORIZON`
+    to the deadline, which is the window `_tape` re-reads prints over) and capped at
+    `TRADE_ID_CAP`. The window pruning is what keeps the cap for the case it exists for: an
+    order resting for hours on a busy ticker would otherwise reach the cap on ids it can never be
+    offered again, and the cap's own remedy -- raising `print_floor` to the oldest retained id --
+    would then silently skip a real front-of-queue fill (ruling IM-12).
     """
 
     queue_remaining: Decimal | None
-    traded_at_price: Decimal
     filled_contracts: Decimal
     cursor_event_id: int | None
     crossed: bool = False
-    last_print_ts: datetime | None = None
-    last_print_ids: tuple[str, ...] = ()
+    print_unmatched: Decimal = ZERO
+    cancels_ahead: Decimal = ZERO
+    #: `(ts, kind, size)`, oldest first. `kind` is one of `BUCKET_KINDS`.
+    buckets: tuple[tuple[datetime, str, Decimal], ...] = ()
+    #: `(ts, trade_id)`, oldest first: the prints already applied above the floor.
+    trade_ids: tuple[tuple[datetime, str], ...] = ()
+    print_floor: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.queue_remaining is not None:
             self.queue_remaining = _q(self.queue_remaining)
-        self.traded_at_price = _q(self.traded_at_price)
         self.filled_contracts = _q(self.filled_contracts)
-        self.last_print_ids = tuple(self.last_print_ids)
+        self.print_unmatched = _q(self.print_unmatched)
+        self.cancels_ahead = _q(self.cancels_ahead)
+        self.buckets = tuple((ts, kind, _q(size)) for ts, kind, size in self.buckets)
+        self.trade_ids = tuple((ts, str(tid)) for ts, tid in self.trade_ids)
 
     @classmethod
     def initial(cls, order: PaperOrder) -> "SimState":
-        return cls(queue_remaining=order.queue_ahead_at_place, traded_at_price=ZERO,
-                   filled_contracts=ZERO, cursor_event_id=None)
+        return cls(queue_remaining=order.queue_ahead_at_place, filled_contracts=ZERO,
+                   cursor_event_id=None)
+
+    @property
+    def pending_unmatched(self) -> Decimal:
+        """The surviving `pending` buckets' sum -- the scalar column, by construction (§2)."""
+        return _q(sum((size for _ts, kind, size in self.buckets if kind == "pending"), ZERO))
+
+    @property
+    def pending_surplus(self) -> Decimal:
+        """The surviving `surplus` buckets' sum."""
+        return _q(sum((size for _ts, kind, size in self.buckets if kind == "surplus"), ZERO))
 
     def _copy(self) -> "SimState":
-        return SimState(self.queue_remaining, self.traded_at_price, self.filled_contracts,
-                        self.cursor_event_id, self.crossed, self.last_print_ts,
-                        self.last_print_ids)
+        return SimState(self.queue_remaining, self.filled_contracts, self.cursor_event_id,
+                        self.crossed, self.print_unmatched, self.cancels_ahead, self.buckets,
+                        self.trade_ids, self.print_floor)
+
+    def anchor(self, *, queue: Decimal | None, cursor_event_id: int | None,
+               anchor_as_of: datetime) -> None:
+        """Take this track to a freshly anchored book (§1.2's helper calls this).
+
+        The ledger is emptied rather than carried: its buckets and its unmatched print volume
+        describe a queue that no longer exists. `cancels_ahead` survives, being a retired count
+        rather than a claim on the current queue, and the trade-id set is pruned to the new
+        floor, below which nothing can re-apply anyway.
+        """
+        self.queue_remaining = None if queue is None else _q(queue)
+        self.cursor_event_id = cursor_event_id
+        self.print_floor = anchor_as_of - DELTA_LOOKBACK
+        self.print_unmatched = ZERO
+        self.buckets = ()
+        self.trade_ids = tuple((ts, tid) for ts, tid in self.trade_ids
+                               if ts > self.print_floor)
 
     def _seen_print(self, tape_print: "TapePrint") -> bool:
-        """Whether this print is already folded in, by the watermark rather than by a cursor.
+        """Whether this print is already folded in, by trade id above the floor.
 
-        Behind the watermark means behind it in venue time, so a late REST backfill stamped
-        earlier than a print already applied reads as seen and is skipped (module docstring).
+        The floor is enforced in `_merge_events`, so anything reaching here is above it and the
+        id set is the whole answer -- which is what makes a REST backfill stamped earlier than a
+        print already applied usable instead of silently skipped (§0.6).
         """
-        if self.last_print_ts is None:
-            return False
-        if tape_print.ts < self.last_print_ts:
-            return True
-        return tape_print.ts == self.last_print_ts and tape_print.trade_id in self.last_print_ids
+        return any(tid == tape_print.trade_id for _ts, tid in self.trade_ids)
 
-    def _mark_print(self, tape_print: "TapePrint") -> None:
-        if self.last_print_ts is not None and tape_print.ts == self.last_print_ts:
-            self.last_print_ids = self.last_print_ids + (tape_print.trade_id,)
-        else:
-            self.last_print_ts = tape_print.ts
-            self.last_print_ids = (tape_print.trade_id,)
+    def _mark_print(self, tape_print: "TapePrint", window_start: datetime) -> None:
+        """Record the print, prune to the track's own window, and raise the floor at the cap.
+
+        Two prunings, and they are different things (ruling IM-12). The **window** pruning is
+        the ordinary one: the executor re-reads prints from `placed_at - PRINT_LOOKBACK` every
+        loop, so an id stamped before that can never be offered again and keeping it is dead
+        weight. Without it an order resting for hours on a busy ticker reaches the cap for the
+        wrong reason.
+
+        The **cap** is the backstop. At it the oldest ids drop, so a print below the new floor
+        could no longer be recognised as seen; raising the floor to the oldest *retained* id's
+        timestamp is what keeps it from re-applying instead (D5). Being wrong in that direction
+        skips a fill at the very front of the queue rather than inventing one.
+        """
+        ids = tuple((ts, tid) for ts, tid in self.trade_ids if ts >= window_start)
+        ids = ids + ((tape_print.ts, tape_print.trade_id),)
+        if len(ids) > TRADE_ID_CAP:
+            ids = tuple(sorted(ids)[-TRADE_ID_CAP:])
+            oldest = ids[0][0]
+            self.print_floor = oldest if self.print_floor is None else max(self.print_floor,
+                                                                          oldest)
+        self.trade_ids = ids
 
 
 @dataclass(frozen=True)
@@ -251,13 +347,21 @@ def has_print(fill: SimFill, order: PaperOrder, prints, window_s: int = 60) -> b
 
 
 def _merge_events(prints, deltas, placed_at: datetime, deadline: datetime,
-                  cursor: int | None) -> list[tuple]:
+                  cursor: int | None, print_floor: datetime | None) -> list[tuple]:
     """Prints and deltas in `ts` order, deltas first at equal `ts`, input order within a kind.
 
     Dropped here rather than in the walk: anything at or before `placed_at` (we were not in
-    the queue yet), anything after `deadline` (the track has stopped), and any delta the
-    cursor already covers (it is folded into the state and the book we were handed).
+    the queue yet), anything at or before the `print_floor` (a print from before the anchoring
+    book's own instant is already inside the queue it anchored, §0.6), anything after
+    `deadline` (the track has stopped), and any delta the cursor already covers (it is folded
+    into the state and the book we were handed).
+
+    The `_DELTA` before `_PRINT` ordering at equal timestamps is kept, but it is no longer
+    load-bearing: the ledger of §1.3 reconciles a print with its own delta in either order, and
+    the four splittings of `test_a_split_delta_and_a_split_print_reconcile_to_the_same_answer`
+    are what say so.
     """
+    floor = placed_at if print_floor is None else max(placed_at, print_floor)
     events: list[tuple] = []
     for i, d in enumerate(deltas):
         if cursor is not None and d.event_id <= cursor:
@@ -265,15 +369,97 @@ def _merge_events(prints, deltas, placed_at: datetime, deadline: datetime,
         if placed_at < d.ts <= deadline:
             events.append((d.ts, _DELTA, i, d))
     for i, p in enumerate(prints):
-        if placed_at < p.ts <= deadline:
+        if floor < p.ts <= deadline:
             events.append((p.ts, _PRINT, i, p))
     events.sort(key=lambda e: (e[0], e[1], e[2]))
     return events
 
 
+def _retire(state: SimState, now_ts: datetime) -> None:
+    """Age out every bucket older than the horizon, as of one event's timestamp.
+
+    A `pending` bucket that no print claimed within `RECON_HORIZON` was a real cancellation of
+    size ahead of us: it retires into `cancels_ahead`, which is a count, not a claim. A
+    `surplus` bucket that no print claimed never moved the queue and is simply discarded.
+
+    Retirement happens at event timestamps only, never at the walk's deadline, so one call and
+    twenty chunks of the same history retire exactly the same buckets at exactly the same
+    points (`test_chunking_invariance`).
+    """
+    kept: list[tuple[datetime, str, Decimal]] = []
+    for ts, kind, size in state.buckets:
+        if now_ts - ts <= RECON_HORIZON:
+            kept.append((ts, kind, size))
+        elif kind == "pending":
+            state.cancels_ahead = _q(state.cancels_ahead + size)
+    state.buckets = tuple(kept[-BUCKET_CAP:])
+
+
+def _claim(state: SimState, kind: str, want: Decimal, now_ts: datetime) -> Decimal:
+    """Take up to `want` from the buckets of `kind` inside the horizon, oldest first.
+
+    Returns what was actually taken. Oldest first because a print explains the decrement that
+    has been waiting longest for one, and because it is the only order that makes the walk
+    independent of how the venue chose to split its rows.
+    """
+    taken = ZERO
+    kept: list[tuple[datetime, str, Decimal]] = []
+    for ts, bucket_kind, size in state.buckets:
+        room = want - taken
+        if bucket_kind != kind or room <= ZERO or now_ts - ts > RECON_HORIZON:
+            kept.append((ts, bucket_kind, size))
+            continue
+        used = min(size, room)
+        taken = _q(taken + used)
+        if size - used > ZERO:
+            kept.append((ts, bucket_kind, _q(size - used)))
+    state.buckets = tuple(kept)
+    return taken
+
+
+def _bucket(state: SimState, ts: datetime, kind: str, size: Decimal) -> None:
+    """Record unclaimed decrement volume, capped oldest-first."""
+    if size <= ZERO:
+        return
+    state.buckets = (state.buckets + ((ts, kind, _q(size)),))[-BUCKET_CAP:]
+
+
+def _apply_queue_delta(order: PaperOrder, state: SimState, delta: TapeDelta,
+                       cancel_policy: str) -> None:
+    """Fold one shrinking delta at our own price into the ledger (§1.3's first clause).
+
+    Only a shrinking level at our own price on our own side can say anything about the queue
+    ahead of us. A positive delta is a late joiner, who sits behind us.
+
+    `m = min(d, print_unmatched)` is the part of this decrement a print has already reported,
+    which moved the queue when that print was applied and must not move it again. The rest is
+    volume no print has explained *yet*: under the point-estimate policy (`ahead`) it rested
+    ahead of us, so `consumed = min(queue, rest)` comes off the queue now and the remainder was
+    beyond the queue. Under `behind` the same volume is assumed to have rested behind us, so it
+    takes no queue here; a print that later claims it is what moves the queue instead, because
+    a claimed decrement was a trade rather than a cancellation and the contracts it lifted were
+    ahead of us after all.
+    """
+    if delta.side != order.side or delta.price != order.prob or delta.delta >= ZERO:
+        return
+    size = -delta.delta
+    matched = min(size, state.print_unmatched)
+    state.print_unmatched = _q(state.print_unmatched - matched)
+    rest = _q(size - matched)
+    if rest <= ZERO:
+        return
+    if cancel_policy == BEHIND:
+        _bucket(state, delta.ts, "pending", rest)
+        return
+    consumed = min(state.queue_remaining, rest)
+    state.queue_remaining = _q(state.queue_remaining - consumed)
+    _bucket(state, delta.ts, "pending", consumed)
+    _bucket(state, delta.ts, "surplus", _q(rest - consumed))
+
+
 def _apply_print(order: PaperOrder, state: SimState, tape_print: TapePrint, fill_method: str,
-                 fee_model: FeeModel) -> SimFill | None:
-    """The queue arithmetic for one print; returns the fill it produced, if any."""
+                 fee_model: FeeModel, cancel_policy: str) -> SimFill | None:
+    """The queue arithmetic for one print (§1.3's second clause); returns the fill, if any."""
     if not hits(tape_print, order.side):
         return None
     price = price_on_side(tape_print, order.side)
@@ -283,41 +469,43 @@ def _apply_print(order: PaperOrder, state: SimState, tape_print: TapePrint, fill
     if price < order.prob:
         # Swept through us: the trade happened past our level, so everything ahead of us is
         # gone by definition and our size trades. It says nothing about volume *at* our price,
-        # so the per-price accumulator is untouched.
+        # so no ledger term moves.
         state.queue_remaining = ZERO
         contracts = min(tape_print.count, remaining)
         through = True
     else:
-        consumed = min(state.queue_remaining, tape_print.count)
-        state.queue_remaining -= consumed
-        contracts = min(tape_print.count - consumed, remaining)
-        state.traded_at_price += tape_print.count
+        count = tape_print.count
+        # Volume this print explains that was already taken off the queue as a pending
+        # decrement: ahead of us and now known to have traded, so no fill and no second move.
+        claimed_pending = _claim(state, "pending", count, tape_print.ts)
+        if cancel_policy == BEHIND and claimed_pending > ZERO:
+            # Under `behind` the decrement took no queue when it arrived, because it was assumed
+            # to rest behind us. A print claiming it says it traded, so those contracts were
+            # ahead of us and the queue moves now.
+            state.queue_remaining = _q(state.queue_remaining
+                                       - min(state.queue_remaining, claimed_pending))
+        # Volume this print explains that was beyond the queue: it reaches us.
+        claimed_surplus = _claim(state, "surplus", _q(count - claimed_pending), tape_print.ts)
+        contracts = min(claimed_surplus, remaining)
+        remaining = _q(remaining - contracts)
+        # What neither ledger term explains: the ordinary case of a print arriving before its
+        # own delta. It consumes queue and then reaches us, and is remembered so that the delta
+        # reporting it cannot move the queue a second time.
+        rest = _q(count - claimed_pending - claimed_surplus)
+        consumed = min(state.queue_remaining, rest)
+        state.queue_remaining = _q(state.queue_remaining - consumed)
+        contracts = _q(contracts + min(_q(rest - consumed), remaining))
+        state.print_unmatched = _q(state.print_unmatched + rest)
         through = False
     if contracts <= ZERO:
         return None
-    state.filled_contracts += contracts
+    state.filled_contracts = _q(state.filled_contracts + contracts)
     return SimFill(prob=order.prob, contracts=contracts,
                    fee=fee_for_order(fee_model, "maker", order.prob, contracts),
                    filled_at=tape_print.ts, fill_method=fill_method,
                    source_trade_id=tape_print.trade_id, source_event_id=None,
                    taker_side=tape_print.taker_side, through=through,
                    tape_source=tape_print.source)
-
-
-def _apply_queue_delta(order: PaperOrder, state: SimState, delta: TapeDelta) -> None:
-    """Fold one delta into the queue: trades first, then genuine cancels.
-
-    Only a shrinking level at our own price on our own side can move us up. A positive delta
-    is a late joiner, who sits behind us. A negative one is the venue reporting the level's
-    net change, which already includes the trades the prints told us about, so it is charged
-    against `traded_at_price` first and only what is left is a cancel.
-    """
-    if delta.side != order.side or delta.price != order.prob or delta.delta >= ZERO:
-        return
-    size = -delta.delta
-    cancels = max(ZERO, size - state.traded_at_price)
-    state.traded_at_price = max(ZERO, state.traded_at_price - size)
-    state.queue_remaining = max(ZERO, state.queue_remaining - cancels)
 
 
 def _crosses(book: BookState, order: PaperOrder) -> bool:
@@ -341,7 +529,8 @@ def _cross_fill(order: PaperOrder, state: SimState, book: BookState, ts: datetim
 
 def simulate_fills(order: PaperOrder, state: SimState, book: BookState | None, prints, deltas,
                    deadline: datetime, fill_method: str,
-                   fee_model: FeeModel = KALSHI_FOOTBALL) -> FillResult:
+                   fee_model: FeeModel = KALSHI_FOOTBALL,
+                   cancel_policy: str = AHEAD) -> FillResult:
     """Walk the tape from `state`'s cursor to `deadline` and report what would have filled.
 
     `deadline` is explicit because the two tracks stop at different instants (F3): the watched
@@ -357,6 +546,8 @@ def simulate_fills(order: PaperOrder, state: SimState, book: BookState | None, p
         # order stays out of simulation -- no fills, no cross, and the cursor does not move,
         # which is what lets the executor re-simulate from here once a book appears.
         return FillResult(fills=[], state=out, cross=None, crossed=False)
+    if cancel_policy not in (AHEAD, BEHIND):
+        raise ValueError(f"unknown cancel policy {cancel_policy!r}")
 
     working = book.copy() if book is not None else None
     fills: list[SimFill] = []
@@ -369,11 +560,12 @@ def simulate_fills(order: PaperOrder, state: SimState, book: BookState | None, p
         cross = _cross_fill(order, out, working, working.as_of, working.anchor_id, fee_model)
 
     for _ts, kind, _i, event in _merge_events(prints, deltas, order.placed_at, deadline,
-                                              state.cursor_event_id):
+                                              state.cursor_event_id, out.print_floor):
+        _retire(out, event.ts)
         if kind == _DELTA:
             out.cursor_event_id = (event.event_id if out.cursor_event_id is None
                                    else max(out.cursor_event_id, event.event_id))
-            _apply_queue_delta(order, out, event)
+            _apply_queue_delta(order, out, event, cancel_policy)
             if working is not None:
                 # A REST anchor has no sequence of its own to continue, exactly as in
                 # `book._apply_rows`; a WS anchor keeps the seq check.
@@ -384,8 +576,12 @@ def simulate_fills(order: PaperOrder, state: SimState, book: BookState | None, p
                     out.crossed = True
                     cross = _cross_fill(order, out, working, event.ts, event.event_id, fee_model)
         elif not out._seen_print(event):
-            fill = _apply_print(order, out, event, fill_method, fee_model)
-            out._mark_print(event)
+            # `order.placed_at - RECON_HORIZON` is the track's own window start, which is exactly
+            # the lower bound `_tape` reads prints from (`loop.py:729`, `placed_at -
+            # store.PRINT_LOOKBACK`): an id stamped before it can never be offered to this track
+            # again.
+            fill = _apply_print(order, out, event, fill_method, fee_model, cancel_policy)
+            out._mark_print(event, order.placed_at - RECON_HORIZON)
             if fill is not None:
                 fills.append(fill)
 

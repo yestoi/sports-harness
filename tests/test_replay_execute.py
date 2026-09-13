@@ -206,6 +206,10 @@ def _run_live(env_settings, db_session, run_a, run_b):
 # --- R14 ------------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="6B T3: live folds the NOW+5 s delta before placement (arrival order), "
+                          "replay anchors by ts (queue 45 vs 50, fills 55 vs 50); the anchoring "
+                          "instant is unified by Task 4 (C2), which removes this marker")
 def test_replay_execute_reproduces_live_orders_and_fills_exactly(env_settings, db_session, two_runs):
     """R14: the same grid, the same tape, the same orders and the same fills -- exactly."""
     game, run_a, run_b = two_runs

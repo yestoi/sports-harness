@@ -330,6 +330,11 @@ select o.id, o.intent_id, o.variant_id, o.ticker, o.venue_market_id, o.side, o.p
        o.tape_cursor_event_id, o.crossed, o.last_print_ts, o.last_print_ids,
        o.nw_filled_contracts, o.nw_queue_remaining, o.nw_traded_at_price,
        o.nw_tape_cursor_event_id, o.nw_crossed, o.nw_last_print_ts, o.nw_last_print_ids,
+       -- 6B §1.3's ledger, per track: `state._state_of` reads these three names off this row
+       -- for each track, so leaving them out of the projection is an AttributeError on the
+       -- first order of every step.
+       o.print_unmatched, o.cancels_ahead, o.recon_state,
+       o.nw_print_unmatched, o.nw_cancels_ahead, o.nw_recon_state,
        o.nw_done, o.book_source, o.dirty_seconds, o.worst_case_fill
 from orders o
 left join intents i on i.id = o.intent_id

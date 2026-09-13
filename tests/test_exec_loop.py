@@ -329,6 +329,62 @@ def test_print_at_price_fills_after_queue_and_writes_ledger(env_settings, db_ses
     assert ledger[0].cash_delta < 0
 
 
+def test_the_ledger_columns_are_written_and_traded_at_price_stays_null(env_settings, db_session,
+                                                                      world):
+    """6B §1.3 and §2: the ledger's own columns carry the state, `traded_at_price` carries NULL.
+
+    Computed independently: 40 rest ahead of us and a print of 50 goes off at our price, so 40
+    clears the queue and 10 is ours -- and the whole 50 is print volume whose decrement has not
+    arrived, because this tape has no delta at our level at all. So `print_unmatched` is 50,
+    both bucket sums are 0 (nothing unclaimed came off the book), `cancels_ahead` is 0 (nothing
+    retired) and `recon_state` holds the print's own id with an empty bucket list.
+
+    `traded_at_price` must be NULL on both tracks: it is C0's charge-against quantity, not a
+    ledger term, and §3's boundary query reads exactly that nullness to tell a post-6B order
+    from a pre-6B one (ruling CR-3). It is NULL from placement, not merely after the first
+    simulation, so an order placed and never stepped cannot read as pre-boundary either.
+    """
+    clock = Clock(NOW)
+    _place_and_print(env_settings, db_session, clock)
+
+    order = orders_of(db_session)[0]
+    assert order.filled_contracts == Decimal("10.00")
+    assert order.traded_at_price is None and order.nw_traded_at_price is None
+    assert order.print_unmatched == Decimal("50.00")
+    assert order.pending_unmatched == Decimal("0.00")
+    assert order.pending_surplus == Decimal("0.00")
+    assert order.cancels_ahead == Decimal("0.00")
+    assert order.recon_state["buckets"] == []
+    assert [tid for _ts, tid in order.recon_state["trade_ids"]] == ["t1"]
+    assert order.recon_state["print_floor"] is None
+    # The counterfactual ran the same tape on its own columns (F3).
+    assert order.nw_print_unmatched == Decimal("50.00")
+    assert order.nw_recon_state["trade_ids"] == order.recon_state["trade_ids"]
+    # §2's invariant, on this row: the two scalars are the surviving buckets' sums.
+    sums = sum(Decimal(size) for _ts, _kind, size in order.recon_state["buckets"])
+    assert order.pending_unmatched + order.pending_surplus == sums
+
+
+def test_a_placed_order_carries_no_traded_at_price_before_any_simulation(env_settings, db_session,
+                                                                        world):
+    """The same boundary rule at placement: the insert leaves both columns NULL (§1.3, §2).
+
+    Computed independently: the column's meaning is "the C0 quantity this build charged prints
+    against", and this build charges nothing against it. An order placed after the 6B deploy and
+    cancelled before its first fill step would otherwise carry a 0 there and read as a pre-6B row
+    in §3's boundary query, which is the one thing that query is for.
+    """
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    make_executor(env_settings, db_session, clock).step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.filled_contracts == Decimal("0.00")
+    assert order.traded_at_price is None and order.nw_traded_at_price is None
+
+
 def test_print_through_price_fills_fully(env_settings, db_session, world):
     clock = Clock(NOW)
     _place_and_print(env_settings, db_session, clock, yes_price="0.30", count="200")
@@ -917,9 +973,14 @@ def test_a_fresh_executor_resumes_from_the_persisted_cursor(env_settings, db_ses
     refresh(db_session)
 
     order = orders_of(db_session)[0]
-    # 40 resting, 10 cancelled by the delta, 60 printed: 30 clears the queue, 30 is ours.
+    # 40 resting, a -10 delta, then a print of 60 three seconds later. 6B §1.3 reconciles the two
+    # instead of counting both: the -10 took 10 off the queue when it arrived, and the print
+    # claims those 10 as the trade it is reporting, so they neither move the queue again nor
+    # fill. 50 of the print's 60 is volume no ledger term explains -- 30 clears the rest of the
+    # queue and 20 reaches us. (Pre-6B the decrement was read as a cancellation and the whole 60
+    # moved the queue a second time, which is the double count C3 removes; that answer was 30.)
     assert order.queue_remaining == Decimal("0.00")
-    assert order.filled_contracts == Decimal("30.00")
+    assert order.filled_contracts == Decimal("20.00")
 
 
 # --- fix 22: the delta read ------------------------------------------------------------

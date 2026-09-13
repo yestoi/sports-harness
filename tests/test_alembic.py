@@ -416,11 +416,54 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_seven_revisions():
+def test_the_versions_directory_holds_eight_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
-        "0007_raw_events_lookup.py"]
+        "0007_raw_events_lookup.py", "0008_phase6b_execution.py"]
+
+
+# --- 6B §1.3: revision 0008 -------------------------------------------------------------------
+
+def test_phase6b_execution_follows_raw_events_lookup_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0008_phase6b_execution.py")
+    assert module.revision == "0008_phase6b_execution"
+    assert module.down_revision == "0007_raw_events_lookup"
+    assert HEAD_REVISION == "0008_phase6b_execution"
+
+
+def test_the_phase6b_ledger_ddl_agrees_between_schema_and_migration():
+    """The two copies of 6B's additive DDL must be the same strings, character for character.
+
+    `harness/db/schema.py` stays the schema authority and the revision carries the identical
+    statements (spec §2); the catalogue diff above would eventually catch a divergence, but only
+    as an unexplained column difference. This names it.
+    """
+    from harness.db.schema import _COLUMN_DDL
+
+    module = _load_revision("0008_phase6b_execution.py")
+    assert len(module._STATEMENTS) == 10
+    for statement in module._STATEMENTS:
+        assert statement in _COLUMN_DDL, statement
+
+
+def test_the_phase6b_ledger_columns_are_nullable_with_no_default(scratch_db):
+    """Spec §2, row 1: nullable with no default, so no pre-6B order is backfilled and the
+    boundary invariant (`every ledger column null at or below the boundary order id`) holds by
+    construction rather than by a later UPDATE."""
+    from harness.db.migrate import upgrade_head
+
+    upgrade_head(_url(scratch_db))
+    names = ("print_unmatched", "pending_unmatched", "pending_surplus", "cancels_ahead",
+             "recon_state")
+    columns = {c["name"]: c for c in inspect(scratch_db).get_columns("orders")}
+    for prefix in ("", "nw_"):
+        for name in names:
+            column = columns[f"{prefix}{name}"]
+            assert column["nullable"] is True, name
+            assert column["default"] is None, name
 
 
 def _load_baseline():
@@ -866,13 +909,12 @@ def test_the_quotes_run_index_is_never_built_without_concurrently():
 
 # --- fix 45: revision 0007 --------------------------------------------------------------------
 
-def test_raw_events_lookup_follows_quotes_run_index_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_raw_events_lookup_follows_quotes_run_index():
+    """Fix 45's revision keeps its place in the chain; 6B's `0008` is the head that follows it
+    (`test_phase6b_execution_follows_raw_events_lookup_and_is_the_pinned_head`)."""
     module = _load_revision("0007_raw_events_lookup.py")
     assert module.revision == "0007_raw_events_lookup"
     assert module.down_revision == "0006_quotes_run_index"
-    assert HEAD_REVISION == "0007_raw_events_lookup"
 
 
 def test_the_raw_events_lookup_downgrade_drops_the_parent_index():

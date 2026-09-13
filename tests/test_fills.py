@@ -1,15 +1,20 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from decimal import Decimal as D
+from types import SimpleNamespace as NS
 
 from harness.execution import EXECUTOR_VERSION
 from harness.execution.book import BookState
 from harness.execution.fills import (
+    _DELTA,
+    _PRINT,
     FillResult,
     PaperOrder,
     SimFill,
     SimState,
     TapeDelta,
     TapePrint,
+    _merge_events,
     fill_fee_fields,
     has_print,
     hits,
@@ -51,9 +56,10 @@ def book(yes=None, no=None, as_of=T0, source="ws", event_id=900, last_event_id=N
 
 
 def run(o, prints=(), deltas=(), bk=None, state=None, fill_method="queue_model",
-        deadline=DEADLINE, fee_model=KALSHI_FOOTBALL) -> FillResult:
+        deadline=DEADLINE, fee_model=KALSHI_FOOTBALL, cancel_policy="ahead") -> FillResult:
     return simulate_fills(o, state if state is not None else SimState.initial(o), bk,
-                          list(prints), list(deltas), deadline, fill_method, fee_model)
+                          list(prints), list(deltas), deadline, fill_method, fee_model,
+                          cancel_policy)
 
 
 # --- primitives --------------------------------------------------------------
@@ -92,7 +98,7 @@ def test_queue_consumed_before_fill_at_price():
     assert f.filled_at == at(1)
     assert f.source_event_id is None
     assert res.state.queue_remaining == Decimal("0.00")
-    assert res.state.traded_at_price == Decimal("8.00")
+    assert res.state.print_unmatched == Decimal("8.00")
     assert res.state.filled_contracts == Decimal("3.00")
     assert res.crossed is False and res.cross is None
 
@@ -103,7 +109,7 @@ def test_sweep_through_zeroes_queue_and_fills():
     assert [(f.contracts, f.through) for f in res.fills] == [(Decimal("4.00"), True)]
     assert res.state.queue_remaining == Decimal("0.00")
     # A sweep through our level says nothing about how much traded *at* our price.
-    assert res.state.traded_at_price == Decimal("0.00")
+    assert res.state.print_unmatched == Decimal("0.00")
     assert res.state.filled_contracts == Decimal("4.00")
 
 
@@ -112,16 +118,20 @@ def test_fractional_print_consumes_half_a_contract():
     res = run(o, prints=[tprint(1, "0.30", "0.50")])
     assert [f.contracts for f in res.fills] == [Decimal("0.50")]
     assert res.state.filled_contracts == Decimal("0.50")
-    assert res.state.traded_at_price == Decimal("0.50")
+    assert res.state.print_unmatched == Decimal("0.50")
 
 
 def test_negative_delta_attributed_to_trades_first_then_cancels():
     o = order(queue="5")
     # The print takes 3 of the 5 ahead of us; the venue's own -4 delta at our price reports
-    # the same 3 trades plus 1 genuine cancel, so only that 1 shortens the queue again.
+    # the same 3 trades plus 1 genuine cancel, so only that 1 shortens the queue again. Under
+    # 6B's ledger the 3 the print already explained are its `print_unmatched`, which the delta
+    # matches and spends, and the 1 left over is a pending bucket: unclaimed decrement volume
+    # that took queue ahead of us and has not yet aged out of the horizon.
     res = run(o, prints=[tprint(1, "0.30", "3")], deltas=[tdelta(2, "yes", "0.30", "-4")])
     assert res.fills == []
-    assert res.state.traded_at_price == Decimal("0.00")
+    assert res.state.print_unmatched == Decimal("0.00")
+    assert res.state.pending_unmatched == Decimal("1.00")
     assert res.state.queue_remaining == Decimal("1.00")
     assert res.state.cursor_event_id == 1002
 
@@ -130,7 +140,7 @@ def test_positive_delta_never_changes_queue():
     o = order(queue="5")
     res = run(o, deltas=[tdelta(1, "yes", "0.30", "50")])
     assert res.state.queue_remaining == Decimal("5.00")
-    assert res.state.traded_at_price == Decimal("0.00")
+    assert res.state.print_unmatched == Decimal("0.00")
     assert res.state.cursor_event_id == 1001
 
 
@@ -146,21 +156,21 @@ def test_opposite_side_prints_ignored():
     res = run(o, prints=[tprint(1, "0.30", "8", taker_side="yes")])
     assert res.fills == []
     assert res.state.queue_remaining == Decimal("5.00")
-    assert res.state.traded_at_price == Decimal("0.00")
+    assert res.state.print_unmatched == Decimal("0.00")
 
 
 def test_print_without_side_never_fills():
     o = order(queue="0")
     res = run(o, prints=[tprint(1, "0.30", "8", taker_side=None)])
     assert res.fills == []
-    assert res.state.traded_at_price == Decimal("0.00")
+    assert res.state.print_unmatched == Decimal("0.00")
 
 
 def test_prints_above_our_price_never_fill():
     o = order(queue="0")
     res = run(o, prints=[tprint(1, "0.31", "8")])
     assert res.fills == []
-    assert res.state.traded_at_price == Decimal("0.00")
+    assert res.state.print_unmatched == Decimal("0.00")
 
 
 def test_no_side_order_fills_on_yes_taker_at_or_above_one_minus_prob():
@@ -173,7 +183,7 @@ def test_no_side_order_fills_on_yes_taker_at_or_above_one_minus_prob():
     assert [(f.contracts, f.through) for f in res.fills] == [
         (Decimal("3.00"), False), (Decimal("4.00"), True)]
     assert all(f.prob == Decimal("0.7000") for f in res.fills)
-    assert res.state.traded_at_price == Decimal("5.00")
+    assert res.state.print_unmatched == Decimal("5.00")
     assert res.state.filled_contracts == Decimal("7.00")
 
 
@@ -182,20 +192,27 @@ def test_fills_stop_at_the_order_size():
     res = run(o, prints=[tprint(1, "0.30", "8"), tprint(2, "0.30", "8")])
     assert [f.contracts for f in res.fills] == [Decimal("8.00"), Decimal("2.00")]
     assert res.state.filled_contracts == Decimal("10.00")
-    # Once full, a further print still counts toward the per-price accumulator.
+    # Once full, a further print is still print volume whose decrement has not arrived.
     more = run(o, prints=[tprint(3, "0.30", "5")], state=res.state)
     assert more.fills == []
-    assert more.state.traded_at_price == Decimal("21.00")
+    assert more.state.print_unmatched == Decimal("21.00")
 
 
-def test_prints_after_deltas_at_the_same_timestamp():
+def test_deltas_are_still_merged_before_prints_at_the_same_timestamp():
+    """The merge order is unchanged; what it used to imply is not (6B §0.5, §1.3).
+
+    This case asserted the arithmetic that order produced -- the -3 read as a pure cancel, the
+    queue to 0 and 1 contract crossing into our own order -- which is the double count C3
+    repairs and which `test_a_print_and_its_matching_delta_move_the_queue_once` now owns. The
+    ordering itself is kept and is asserted here directly, on `_merge_events`, because the
+    ledger's answer must no longer depend on it: the four feeds of
+    `test_a_split_delta_and_a_split_print_reconcile_to_the_same_answer` are the proof that it
+    does not.
+    """
     o = order(queue="5")
-    # If the print were taken first it would consume 3 of the queue and the -3 delta would
-    # then be attributed to those trades, leaving the queue at 2. Deltas go first, so the -3
-    # is a pure cancel, the queue drops to 2 and the print fills 1 of its 3.
-    res = run(o, prints=[tprint(1, "0.30", "3")], deltas=[tdelta(1, "yes", "0.30", "-3")])
-    assert [f.contracts for f in res.fills] == [Decimal("1.00")]
-    assert res.state.queue_remaining == Decimal("0.00")
+    merged = _merge_events([tprint(1, "0.30", "3")], [tdelta(1, "yes", "0.30", "-3")],
+                           o.placed_at, DEADLINE, None, None)
+    assert [kind for _ts, kind, _i, _event in merged] == [_DELTA, _PRINT]
 
 
 # --- cross -------------------------------------------------------------------
@@ -316,8 +333,8 @@ def test_events_at_or_before_placement_ignored():
 
 def test_deltas_at_or_before_the_cursor_ignored():
     o = order(queue="5")
-    state = SimState(queue_remaining=Decimal("5"), traded_at_price=Decimal("0"),
-                     filled_contracts=Decimal("0"), cursor_event_id=1002)
+    state = SimState(queue_remaining=Decimal("5"), filled_contracts=Decimal("0"),
+                     cursor_event_id=1002)
     res = run(o, state=state, deltas=[tdelta(1, "yes", "0.30", "-2", event_id=1002),
                                       tdelta(2, "yes", "0.30", "-1", event_id=1003)])
     assert res.state.queue_remaining == Decimal("4.00")
@@ -334,7 +351,7 @@ def test_cursor_is_the_highest_event_id_seen():
     assert res.state.cursor_event_id == 1009
 
 
-# --- print watermark ---------------------------------------------------------
+# --- print idempotence: the floor and the id set (§0.6) ----------------------
 
 
 def test_refeeding_the_same_prints_changes_nothing():
@@ -354,42 +371,59 @@ def test_two_prints_at_one_timestamp_both_apply_once():
     a = tprint(1, "0.30", "2", trade_id="a")
     b = tprint(1, "0.30", "3", trade_id="b")
     first = run(o, prints=[a])
-    assert first.state.last_print_ts == at(1)
-    assert first.state.last_print_ids == ("a",)
+    assert first.state.trade_ids == ((at(1), "a"),)
     second = run(o, prints=[a, b], state=first.state)
     assert [f.contracts for f in second.fills] == [Decimal("3.00")]
-    assert second.state.last_print_ids == ("a", "b")
+    assert second.state.trade_ids == ((at(1), "a"), (at(1), "b"))
     assert second.state.filled_contracts == Decimal("5.00")
     assert run(o, prints=[a, b], state=second.state).fills == []
 
 
-def test_the_watermark_ids_reset_when_the_timestamp_moves_on():
+def test_the_id_set_keeps_every_print_in_the_track_s_window():
+    """6B §0.6 replaces the timestamp watermark: the id set governs everything above the floor.
+
+    The old shape kept only the ids stamped at exactly `last_print_ts` and dropped the rest when
+    the timestamp moved on, because the timestamp itself was the skip test. With that skip test
+    gone -- it is what made a late REST backfill unusable -- identity is the whole answer, so
+    every print inside the window the executor re-reads has to stay recognisable. The window
+    starts at `placed_at - 60 s`, so all three ids here are inside it and none is dropped, and no
+    floor is set because nothing anchored.
+    """
     o = order(queue="0", contracts="10")
     res = run(o, prints=[tprint(1, "0.30", "1", trade_id="a"),
                          tprint(2, "0.30", "1", trade_id="b"),
                          tprint(2, "0.30", "1", trade_id="c")])
-    assert res.state.last_print_ts == at(2)
-    assert res.state.last_print_ids == ("b", "c")
+    assert res.state.trade_ids == ((at(1), "a"), (at(2), "b"), (at(2), "c"))
+    assert res.state.print_floor is None
 
 
-def test_a_print_behind_the_watermark_is_skipped_deliberately():
-    # A REST backfill can land after a WS print with an earlier `ts`. Its delta has already
-    # moved the queue, so replaying it would double count; skipping it forgoes at most a fill
-    # at the front of the queue, which is the conservative direction.
+def test_a_late_rest_backfill_above_the_floor_is_applied_not_skipped():
+    """The behaviour §0.6 reverses, and the floor that replaces it.
+
+    A REST backfill can land after a WS print with an earlier `ts`. The pre-6B watermark skipped
+    it, which is what silently did the re-anchor's work and what made a real backfilled trade
+    unusable; with the ledger, a decrement already folded in is remembered as a bucket or as
+    `print_unmatched` and cannot be charged twice, so the backfill is applied on its own merits.
+    Below a `print_floor` -- the only bound that remains -- it is still dropped, because a print
+    stamped before an anchoring book's instant is already inside the queue that book established.
+    """
     o = order(queue="0", contracts="10")
     first = run(o, prints=[tprint(5, "0.30", "2")])
-    late = run(o, state=first.state,
-               prints=[tprint(3, "0.30", "4", trade_id="late", source="rest")])
-    assert late.fills == []
-    assert late.state.traded_at_price == first.state.traded_at_price
-    assert late.state.filled_contracts == first.state.filled_contracts
+    late_print = tprint(3, "0.30", "4", trade_id="late", source="rest")
+    late = run(o, state=first.state, prints=[late_print])
+    assert [f.contracts for f in late.fills] == [Decimal("4.00")]
+    assert late.state.filled_contracts == Decimal("6.00")
+
+    anchored = first.state._copy()
+    anchored.print_floor = at(4)
+    assert run(o, state=anchored, prints=[late_print]).fills == []
 
 
-def test_a_print_that_never_hit_us_still_moves_the_watermark():
-    # A print we ignored still moves the watermark, so a later loop cannot replay it either.
+def test_a_print_that_never_hit_us_still_joins_the_id_set():
+    # A print we ignored is still recorded, so a later loop cannot replay it either.
     o = order(queue="0", contracts="10")
     first = run(o, prints=[tprint(1, "0.30", "4", taker_side="yes")])
-    assert first.state.last_print_ids == ("t1",)
+    assert first.state.trade_ids == ((at(1), "t1"),)
     assert run(o, prints=[tprint(1, "0.30", "4", taker_side="yes")], state=first.state).fills == []
 
 
@@ -406,7 +440,7 @@ def test_no_queue_means_no_fills_and_no_cursor_advance():
     assert res.state.queue_remaining is None
     assert res.state.cursor_event_id is None
     assert res.state.filled_contracts == Decimal("0.00")
-    assert (res.state.last_print_ts, res.state.last_print_ids) == (None, ())
+    assert (res.state.print_floor, res.state.trade_ids) == (None, ())
     assert res.state.crossed is False
     assert res.state == state
 
@@ -482,6 +516,12 @@ def test_chunking_invariance():
                  deltas=[d for d in deltas if d.ts > at(5)])
     assert first.fills + second.fills == whole.fills
     assert second.state == whole.state
+    # `SimState` is a dataclass, so the equality above already covers the ledger; these four
+    # name which part of it diverged instead of printing two whole states (6B §1.3).
+    assert second.state.buckets == whole.state.buckets
+    assert second.state.trade_ids == whole.state.trade_ids
+    assert second.state.print_unmatched == whole.state.print_unmatched
+    assert second.state.cancels_ahead == whole.state.cancels_ahead
     # The tape has to actually do something for the equality to mean anything.
     assert len(whole.fills) >= 3 and first.fills and second.fills
     assert whole.state.filled_contracts > Decimal("0")
@@ -530,7 +570,7 @@ def test_deterministic():
     b = run(o, prints=prints, deltas=deltas, bk=bk, state=state)
     assert a == b
     # Nothing the first run touched leaked into the caller's state or order.
-    assert (state.queue_remaining, state.traded_at_price, state.filled_contracts,
+    assert (state.queue_remaining, state.print_unmatched, state.filled_contracts,
             state.cursor_event_id) == (Decimal("6.00"), Decimal("0.00"), Decimal("0.00"), None)
     assert a.state is not state
     assert o.contracts == Decimal("10.00")
@@ -542,3 +582,192 @@ def test_input_lists_are_not_reordered_or_consumed():
     p_before, d_before = list(prints), list(deltas)
     run(o, prints=prints, deltas=deltas)
     assert prints == p_before and deltas == d_before
+
+
+# --- the reconciliation ledger (6B §1.3) -------------------------------------
+
+
+def test_a_print_and_its_matching_delta_move_the_queue_once():
+    """Expected queue 2, fill 0, `cancels_ahead` 0 -- in either arrival order.
+
+    Derived from the tape, not from the code: 5 contracts rest ahead of us at 0.30. One real
+    trade of 3 lifts 3 of them, leaving 2 ahead and nothing for us. The book delta of -3 at the
+    same price is the exchange reporting that same trade; a cancellation and a trade cannot both
+    be the whole of a -3 that a print of 3 already explains. The queue therefore moves once, by
+    3, and the 2 still ahead of us are still ahead of us. Nothing was cancelled, so
+    `cancels_ahead` is 0.
+    """
+    for label, events in (("delta first", dict(prints=[tprint(1, ".30", "3")],
+                                               deltas=[tdelta(1, "yes", ".30", "-3")])),
+                          ("print first", dict(prints=[tprint(1, ".30", "3", trade_id="p")],
+                                               deltas=[tdelta(2, "yes", ".30", "-3")]))):
+        result = run(order(queue="5"), **events)
+        assert result.state.queue_remaining == D(2), label
+        assert result.state.filled_contracts == D(0), label
+        assert result.state.cancels_ahead == D(0), label
+
+
+def test_a_split_delta_and_a_split_print_reconcile_to_the_same_answer():
+    """Expected queue 2, fill 0 for each of the four splittings.
+
+    Derived independently: the venue may report one trade of 3 as one delta of -3 or as -2 then
+    -1, and may print it as one row of 3 or as 2 then 1. None of that changes what happened --
+    three contracts ahead of us traded -- so all four feeds must land on queue 2 and fill 0. An
+    implementation that matched whole events rather than volume would pass one and fail three.
+    """
+    feeds = [
+        ([tprint(1, ".30", "3")], [tdelta(1, "yes", ".30", "-2", event_id=1),
+                                   tdelta(1, "yes", ".30", "-1", event_id=2)]),
+        ([tprint(1, ".30", "2", trade_id="a"), tprint(1, ".30", "1", trade_id="b")],
+         [tdelta(1, "yes", ".30", "-3")]),
+        ([tprint(1, ".30", "2", trade_id="a"), tprint(2, ".30", "1", trade_id="b")],
+         [tdelta(1, "yes", ".30", "-2", event_id=1), tdelta(2, "yes", ".30", "-1", event_id=2)]),
+        ([tprint(2, ".30", "3")], [tdelta(1, "yes", ".30", "-3")]),
+    ]
+    for i, (prints, deltas) in enumerate(feeds):
+        result = run(order(queue="5"), prints=prints, deltas=deltas)
+        assert result.state.queue_remaining == D(2), i
+        assert result.state.filled_contracts == D(0), i
+
+
+def test_a_decrement_beyond_the_queue_reaches_us_when_its_print_arrives():
+    """Expected queue 0, fill 3 -- in either arrival order (the `pending_surplus` path).
+
+    Derived independently: 2 rest ahead of us and a trade of 5 goes off at our price. Two of
+    those five were the contracts ahead of us; the other three had to come from somewhere, and
+    the only resting size left at that price is ours. So we trade 3 and the queue is empty. When
+    the matching delta of -5 arrives first, the 3 beyond the queue are decrement volume the
+    queue cannot explain -- `pending_surplus` -- and the print that follows is what turns them
+    into our fill.
+    """
+    for label, (prints, deltas) in (
+            ("print alone", ([tprint(1, ".30", "5")], [])),
+            ("delta first", ([tprint(1, ".30", "5")], [tdelta(1, "yes", ".30", "-5")]))):
+        result = run(order(queue="2"), prints=prints, deltas=deltas)
+        assert result.state.queue_remaining == D(0), label
+        assert result.state.filled_contracts == D(3), label
+
+
+def test_a_genuine_cancellation_outside_the_horizon_does_not_absorb_a_later_trade():
+    """Expected queue 0, fill 3, `cancels_ahead` 2 (the case a horizon-less ledger breaks).
+
+    Derived independently: 2 rest ahead of us and both are cancelled at T+1 -- no print
+    accompanies them, and none arrives within `store.PRINT_LOOKBACK` (60 s), so they left the
+    book rather than trading. We are now at the front of the queue. Ten minutes later a real
+    trade of 3 goes off at our price; with nothing ahead of us all 3 are ours. A ledger that let
+    the ten-minute-old decrement be claimed by that print would report fill 1, which is what
+    today's `traded_at_price` accumulator would do if the horizon were removed.
+    """
+    result = run(order(queue="2"),
+                 prints=[tprint(600, ".30", "3")],
+                 deltas=[tdelta(1, "yes", ".30", "-2")])
+    assert result.state.queue_remaining == D(0)
+    assert result.state.filled_contracts == D(3)
+    assert result.state.cancels_ahead == D(2)
+
+
+def test_a_print_through_our_price_still_sweeps_the_queue():
+    """Expected queue 0, fill 4 -- unchanged from the pre-6B rule.
+
+    Derived independently: a trade at 0.25 against a YES order at 0.30 happened past our level,
+    so everything resting between is gone by definition and our size trades up to the print's
+    own count. It says nothing about volume *at* our price, so no ledger term moves.
+    """
+    result = run(order(queue="5"), prints=[tprint(1, ".25", "4")])
+    assert result.state.queue_remaining == D(0)
+    assert result.state.filled_contracts == D(4)
+    assert result.state.print_unmatched == D(0)
+
+
+def test_the_ledger_survives_a_persisted_loop_boundary():
+    """Expected: the same queue 2 and fill 0 as the one-call feed.
+
+    Derived independently: the loop persists a track's state between steps and reads it back, so
+    a delta in one loop and its matching print in the next must reconcile exactly as they do
+    inside one call. The state that crosses the boundary here carries one `pending` bucket of 3;
+    if the buckets did not persist, the print would arrive against an empty ledger and take the
+    queue a second time, to 0, with 1 contract crossing into our order -- the original defect,
+    reappearing one loop later.
+    """
+    from harness.execution.state import _state_columns, _state_of
+
+    first = run(order(queue="5"), deltas=[tdelta(1, "yes", ".30", "-3")], deadline=at(2))
+    assert first.state.pending_unmatched == D(3)
+    row = NS(**dict(_state_columns("", first.state),
+                    filled_contracts=first.state.filled_contracts))
+    resumed = _state_of(row, "")
+    second = run(order(queue="5"), prints=[tprint(1, ".30", "3")], state=resumed)
+    assert second.state.queue_remaining == D(2)
+    assert second.state.filled_contracts == D(0)
+
+
+def test_the_behind_policy_agrees_with_ahead_whenever_nothing_is_retired():
+    """Expected: identical queue and fills when `cancels_ahead` is 0; a smaller fill under
+    `behind` when it is not (ruling I-10: the implication only).
+
+    Derived independently: the two policies differ only about decrement volume nobody claimed.
+    When every decrement is explained by a print inside the horizon, both policies agree that
+    those contracts traded and both move the queue by the same amount -- `ahead` at the delta,
+    `behind` at the print -- so the two answers are identical.
+
+    When a decrement retires unclaimed they part. In the second case 2 contracts leave the level
+    at T+1 with no print, and 10 minutes later a real trade of 3 goes off at our price. Under
+    `ahead` those 2 were in front of us, so we were at the head of the queue and all 3 are ours.
+    Under `behind` they were never in front of us, so 2 still are, 2 of the 3 go to them and 1 is
+    ours. Both end with an empty queue; the disagreement is in the fills, which is why the point
+    estimate is the optimistic one about cancellations and the band says by how much (D3).
+    """
+    claimed = dict(prints=[tprint(1, ".30", "3")], deltas=[tdelta(1, "yes", ".30", "-3")])
+    ahead = run(order(queue="5"), **claimed)
+    behind = run(order(queue="5"), cancel_policy="behind", **claimed)
+    assert ahead.state.cancels_ahead == D(0)
+    assert (behind.state.queue_remaining, behind.state.filled_contracts) == (
+        ahead.state.queue_remaining, ahead.state.filled_contracts)
+
+    # The band's second half, and the reason it is an implication: a retired bucket is where
+    # the two policies part.
+    retired = dict(prints=[tprint(600, ".30", "3")], deltas=[tdelta(1, "yes", ".30", "-2")])
+    ahead = run(order(queue="2"), **retired)
+    behind = run(order(queue="2"), cancel_policy="behind", **retired)
+    assert ahead.state.cancels_ahead == D(2) and behind.state.cancels_ahead == D(2)
+    assert ahead.state.filled_contracts == D(3)
+    assert behind.state.filled_contracts == D(1)
+
+
+def test_the_trade_id_set_stays_inside_the_tracks_own_window():
+    """Expected: an id stamped before `placed_at - RECON_HORIZON` is dropped on the next write,
+    an id inside that window is kept, and the floor does not move (ruling IM-12, §2's "pruned to
+    the horizon and the track window on every write").
+
+    Derived independently: the executor re-reads prints from `placed_at - PRINT_LOOKBACK` to the
+    loop instant every loop (`harness/execution/loop.py:729`), so the window's lower bound is
+    fixed at `placed_at - 60 s` while its upper bound grows with the loop. An id below that
+    bound can never be offered to this track again and keeping it can only cost memory. An id
+    above it is re-offered on every later loop however old it is, so dropping it would let its
+    print apply a second time -- the double count this task exists to remove. The pruning is
+    therefore the window's lower bound and nothing narrower, and `TRADE_ID_CAP` is what bounds
+    the set for an order resting for hours on a busy ticker, with `print_floor` rising to the
+    oldest retained id as the cap's own remedy (§0.6, D5).
+
+    Deviation from the brief, reported to the controller: the brief's version of this case fed a
+    print an hour after `placed_at` and expected the earlier id to be pruned. That id is still
+    inside `[placed_at - 60 s, now]`, so the executor still offers it on every loop, and pruning
+    it while the floor stays where it was -- which the brief's own last assertion pins -- would
+    re-apply its print. Spec §0.6 is the rule followed here: the set is "bounded by the track's
+    own window (`placed_at - PRINT_LOOKBACK` to the deadline) rather than by 60 seconds, because
+    `loop.py:717` re-reads the order's whole resting print history every loop".
+    """
+    o = order(queue="0", contracts="10", placed_at=at(1000))
+    stale = (at(900), "stale")      # below `placed_at - 60 s`: never offered to us again
+    recent = (at(1005), "early")    # inside the window: offered again on every later loop
+    state = SimState(queue_remaining=D(0), filled_contracts=D(0), cursor_event_id=None,
+                     trade_ids=(stale, recent))
+    second = run(o, state=state, prints=[tprint(4600, ".30", "1", trade_id="late")],
+                 deadline=at(4610))
+    assert [tid for _ts, tid in second.state.trade_ids] == ["early", "late"]
+    assert second.state.print_floor is None
+    # The id the window kept is still recognised as seen, so its print cannot apply twice: the
+    # one contract `second` took from the print of its own loop is all that was ever filled.
+    again = run(o, state=second.state, prints=[tprint(1005, ".30", "1", trade_id="early")],
+                deadline=at(4610))
+    assert again.fills == [] and again.state == second.state

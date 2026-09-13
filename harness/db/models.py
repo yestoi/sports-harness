@@ -482,6 +482,23 @@ class Order(Base):
     nw_traded_at_price: Mapped[Decimal | None] = mapped_column(CONTRACTS)
     nw_tape_cursor_event_id: Mapped[int | None] = mapped_column(BigInteger)
     nw_done: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 6B §1.3's reconciliation ledger, per track. `print_unmatched` is print volume whose
+    #: decrement has not arrived; `pending_unmatched` and `pending_surplus` are the surviving
+    #: decrement buckets' sums by kind; `cancels_ahead` is decrement volume that aged out of the
+    #: horizon unclaimed -- a real cancellation ahead of us, retired and unclaimable.
+    #: `traded_at_price` above is left NULL on every post-boundary order: C0's charge-against
+    #: quantity is not a ledger term and the two must never be read as one (ruling CR-3).
+    print_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    pending_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    pending_surplus: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_print_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_pending_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_pending_surplus: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    #: The buckets, the trade-id set and the print floor, bounded and pruned on every write.
+    recon_state: Mapped[dict | None] = mapped_column(JSONB)
+    nw_recon_state: Mapped[dict | None] = mapped_column(JSONB)
     #: The rest of `execution.fills.SimState`, per track (Task 4 review ruling). `crossed` makes
     #: the worst-case fill happen once even though the book keeps crossing on every later loop;
     #: the print watermark makes a print idempotent even though the executor keeps no print

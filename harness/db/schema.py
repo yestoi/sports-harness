@@ -128,6 +128,19 @@ _COLUMN_DDL = (
     "alter table orders add column if not exists venue_order_id varchar(64)",
     "alter table orders add column if not exists order_group_id varchar(64)",
     "alter table orders add column if not exists exchange_index_at_place integer",
+    # Phase 6B §1.3: the reconciliation ledger per track, and the bounded jsonb it persists in.
+    # Nullable with no default, so no pre-6B row is backfilled and §3 row 1's invariant holds by
+    # construction (spec §2).
+    "alter table orders add column if not exists print_unmatched numeric(14,2)",
+    "alter table orders add column if not exists pending_unmatched numeric(14,2)",
+    "alter table orders add column if not exists pending_surplus numeric(14,2)",
+    "alter table orders add column if not exists cancels_ahead numeric(14,2)",
+    "alter table orders add column if not exists nw_print_unmatched numeric(14,2)",
+    "alter table orders add column if not exists nw_pending_unmatched numeric(14,2)",
+    "alter table orders add column if not exists nw_pending_surplus numeric(14,2)",
+    "alter table orders add column if not exists nw_cancels_ahead numeric(14,2)",
+    "alter table orders add column if not exists recon_state jsonb",
+    "alter table orders add column if not exists nw_recon_state jsonb",
 )
 
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).

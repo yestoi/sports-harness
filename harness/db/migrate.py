@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 #: creates the new tables and the view; and a database stamped ahead of a checkout that lacks the
 #: matching revision file aborts at `ensure`, because its `current` branch calls `upgrade_head`
 #: unconditionally.
-HEAD_REVISION = "0007_raw_events_lookup"
+HEAD_REVISION = "0008_phase6b_execution"
 
 #: Where the migrations live inside the image. The Dockerfile's `COPY migrations ./migrations`
 #: puts them here; the checkout path below is what the test suite and a developer use.

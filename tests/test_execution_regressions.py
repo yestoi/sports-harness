@@ -108,9 +108,6 @@ def test_a_real_missing_subscription_frame_still_writes_a_gap_row():
     assert rows[0].raw["expected"] == 2 and rows[0].raw["got"] == 3
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: a print and the delta that records it are one event; counting "
-                          "both drains the queue twice")
 def test_a_print_and_its_own_delta_are_one_event():
     """Probe `same_event`. Expected queue 2 and fill 0.
 
@@ -154,13 +151,17 @@ def _executor(books: dict) -> tuple[Executor, list]:
 def _order_row(**over):
     """One `orders` row as `_simulate_order` reads it: attribute access only, no ORM."""
     row = NS(id=1, venue_market_id=1, ticker="A", side="yes", prob=D(".30"),
-             contracts=D(10), placed_at=T0, expiry=DEADLINE,
+             contracts=D(10), placed_at=T0, expiry=DEADLINE, cancelled_at=None,
              queue_ahead_at_place=D(5), queue_remaining=D(5), traded_at_price=D(0),
              filled_contracts=D(0), tape_cursor_event_id=1, crossed=False,
-             last_print_ts=T0, last_print_ids=(), nw_queue_remaining=D(5),
+             last_print_ts=T0, last_print_ids=(),
+             print_unmatched=D(0), cancels_ahead=D(0), recon_state=None,
+             nw_queue_remaining=D(5),
              nw_traded_at_price=D(0), nw_filled_contracts=D(0),
              nw_tape_cursor_event_id=1, nw_crossed=False, nw_last_print_ts=T0,
-             nw_last_print_ids=(), nw_done=True, status="open")
+             nw_last_print_ids=(),
+             nw_print_unmatched=D(0), nw_cancels_ahead=D(0), nw_recon_state=None,
+             nw_done=True, status="open")
     for key, value in over.items():
         setattr(row, key, value)
     return row

@@ -829,11 +829,14 @@ class Executor:
                 return row.status, row.filled_contracts
             queue = book.resting_at(row.side, row.prob)
             for state in (watched, no_watcher):
-                state.queue_remaining = queue
-                state.traded_at_price = ZERO
-                state.cursor_event_id = book.last_event_id
-                state.last_print_ts = now
-                state.last_print_ids = ()
+                # The queue, the delta cursor, the ledger and the print floor are anchored
+                # together, from the anchoring book itself (6B §0.4, §1.3's `SimState.anchor`).
+                # The floor is what this branch used to spell as a watermark at `now`, the
+                # recorder's clock rather than the book's: the prints of the no-book window are
+                # already inside the queue this book establishes, so they are discarded (D7)
+                # rather than applied against it.
+                state.anchor(queue=queue, cursor_event_id=book.last_event_id,
+                             anchor_as_of=book.anchor_as_of)
             anchor = book
             updates.update(queue_ahead_at_place=queue, book_source=book.source,
                            book_age_s=book_age_s(book, now), book_first_seen_at=now)
@@ -1047,8 +1050,11 @@ class Executor:
             "venue_ask_at_place": market.best_ask_yes,
             "venue_mid_at_place": market.mid_yes,
             "queue_ahead_at_place": queue, "queue_remaining": queue,
-            "traded_at_price": ZERO, "nw_queue_remaining": queue,
-            "nw_traded_at_price": ZERO,
+            "nw_queue_remaining": queue,
+            # `traded_at_price` and `nw_traded_at_price` are left NULL from here on (6B §1.3,
+            # ruling CR-3): C0's charge-against quantity is not one of the ledger's terms, and
+            # the 6B boundary is visible by that nullness. Writing a 0 at placement would make
+            # every order placed after the deploy but never simulated look pre-boundary.
             "book_source": book.source if book is not None else "none",
             "book_age_s": None if book is None else book_age_s(book, now),
             "book_first_seen_at": None if book is None else now,
