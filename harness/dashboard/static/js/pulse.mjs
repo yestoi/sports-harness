@@ -214,13 +214,17 @@ function snapshotsCard(payload) {
               { label: "Snapshot ages" }));
 }
 
-//: Fix 53: a stored summary that was a raw exception repr now arrives humanized, with the exact
-//: stored text carried alongside as `technical` -- shown visibly, not only on hover, so a
+//: Fix 53: a stored summary that was a raw exception repr now arrives humanized, with the
+//: sanitized stored text (`sanitize_reason`'s output -- stripped and truncated at 200, not the
+//: raw original) carried alongside as `technical` -- shown visibly, not only on hover, so a
 //: keyboard or screen-reader reader sees the same evidence a mouse hover would (ruling A-I13).
+//: `.event-technical` is this card's own class, not `.technical`/`.tech`: those are
+//: `components.mjs`'s `label()` classes and are already used, unstyled, by other surfaces (fix
+//: 53 round 2, Critical 1).
 function eventWhat(event) {
   if (!event.technical) return event.summary;
   return el("span", {}, event.summary,
-            el("span", { class: "technical tech" }, " · ", event.technical));
+            el("span", { class: "event-technical" }, " · ", event.technical));
 }
 
 function eventsCard(payload) {

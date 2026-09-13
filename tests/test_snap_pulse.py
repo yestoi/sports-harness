@@ -861,17 +861,30 @@ def test_humanize_event_summary_reads_a_query_cancelled_timeout():
 
 
 def test_humanize_event_summary_falls_back_to_a_humanized_class_name():
+    """An `...Error`/`...Exception`-suffixed class this table has no phrase for still gets a
+    generic reading rather than staying a bare symbol."""
     from harness.dashboard.snapshots.pulse import humanize_event_summary
-    raw = "SomeOddFailure(disk is on fire)"
+    raw = "SomeOddError(disk is on fire)"
     summary, technical = humanize_event_summary(raw)
-    assert summary == "error: some odd failure"
+    assert summary == "error: some odd error"
     assert technical == raw
+
+
+def test_humanize_event_summary_leaves_a_plain_call_shaped_string_alone():
+    """Fix 53 round 2, Important 2: a first cut matched any bare `identifier(...)` shape, which
+    would have relabelled a future plain summary of that shape (not a CamelCase `Error`/
+    `Exception` class, no nested `(module.Class)` form inside) as `error: something`."""
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
+    summary, technical = humanize_event_summary("something(done)")
+    assert summary == "something(done)"
+    assert technical is None
 
 
 def test_operator_events_carry_the_human_summary_and_the_stored_technical_text(
         db_session, env_settings):
     """The stored row is untouched (fix 53 brief: append-only, technical text is evidence); the
-    payload's `summary` is what a reader should read and `technical` is the exact stored text."""
+    payload's `summary` is what a reader should read and `technical` is the sanitized stored
+    text (`sanitize_reason`'s output, not the raw original)."""
     _ok_machine(db_session, env_settings)
     raw = "WebSocketConnectionClosedException(Connection to remote host was lost.)"
     db_session.add(OperatorEvent(ts=NOW - timedelta(minutes=5), kind="ws_disconnect",
@@ -881,3 +894,16 @@ def test_operator_events_carry_the_human_summary_and_the_stored_technical_text(
     row = next(e for e in events if e["kind"] == "ws_disconnect")
     assert row["summary"] == "connection to the exchange was lost"
     assert row["technical"] == raw
+
+
+def test_operator_events_carry_no_technical_text_for_a_plain_summary(db_session, env_settings):
+    """Fix 53 round 2, Minor 4: end to end, not just the pure function -- a plain summary (the
+    kind every event but the rare exception repr already is) carries no `technical` at all."""
+    _ok_machine(db_session, env_settings)
+    db_session.add(OperatorEvent(ts=NOW - timedelta(minutes=5), kind="connected",
+                                 summary="connected", ref={}))
+    db_session.flush()
+    events = build_pulse(db_session, NOW, env_settings)["operator_events"]
+    row = next(e for e in events if e["kind"] == "connected")
+    assert row["summary"] == "connected"
+    assert row["technical"] is None

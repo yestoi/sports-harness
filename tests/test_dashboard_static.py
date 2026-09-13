@@ -321,7 +321,7 @@ def test_long_unbroken_tokens_can_wrap_so_a_populated_card_never_forces_the_page
 
 
 def test_every_surface_grid_item_has_min_width_zero():
-    """Fix 53 round 2: a grid item's `min-width` defaults to `auto`, which resolves to its
+    """Fix 53 round 1: a grid item's `min-width` defaults to `auto`, which resolves to its
     content's automatic minimum size. `variantsSection`'s unclassed wrapper `div` around the
     Gate criteria table has no class and no `min-width` rule of its own, so it took the grid
     track to the table's min-content width (748 px at a 390 px viewport, confirmed by a real
@@ -332,3 +332,18 @@ def test_every_surface_grid_item_has_min_width_zero():
     rule = re.search(r"#surface\s*>\s*\*\s*\{([^}]*)\}", css)
     assert rule and "min-width: 0" in rule.group(1), \
         "#surface > * has no min-width: 0 -- a bare grid-item wrapper can stretch the track wide"
+
+
+def test_the_pulse_event_technical_span_has_its_own_class_not_a_blanket_dot_technical_rule():
+    """Fix 53 round 2, Critical 1: a blanket `.technical { ... }` rule restyled every other
+    surface's unrelated, previously-unstyled use of `components.mjs`'s `label()` `.technical`
+    span -- Floor's edge-now cell, Study's week bar, Ticket's slip legs (where `--ink-muted` is
+    the wrong, main-page token on the slip's warm paper). The Pulse events technical text has
+    its own class, `.event-technical`, styled on its own and never applied by `label()`."""
+    css = (STATIC / "app.css").read_text()
+    assert not re.search(r"^\.technical\s*\{", css, re.M), \
+        "a blanket `.technical { ... }` rule would restyle every surface's label() technical span"
+    rule = re.search(r"\.event-technical\s*\{([^}]*)\}", css)
+    assert rule and "overflow-wrap: anywhere" in rule.group(1)
+    body = (STATIC / "js" / "pulse.mjs").read_text()
+    assert '"event-technical"' in body

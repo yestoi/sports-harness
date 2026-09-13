@@ -736,11 +736,21 @@ def _invariants(values: dict) -> dict:
 #: Fix 53: a background job sometimes logs `repr(exc)` rather than a sentence, so a stored
 #: `operator_events.summary` can be a raw Python exception repr -- `ClassName(message)` or, for
 #: a wrapped driver error, `Outer((Inner.Class) message)`. The stored row is append-only evidence
-#: and is never rewritten; this only changes what the payload shows beside it. Matched against
-#: the *whole* sanitized summary, so a plain sentence that merely contains a parenthesis
-#: (`gate evaluated for 3 variant(s)`) never matches: the string has to be one bare identifier
-#: immediately followed by `(...)` and nothing else.
-_EXC_REPR = re.compile(r"^([A-Za-z_][\w.]*)\((.*)\)$", re.S)
+#: and is never rewritten; this only changes what the payload shows beside it.
+#:
+#: Fix 53 round 2, Important 2: matched only when the outer identifier is a CamelCase class name
+#: ending in `Error` or `Exception`, or the inner text starts with the driver's own nested
+#: `(module.Class)` form -- not any bare `identifier(...)` shape. A first cut matched anything
+#: shaped like `identifier(...)`, which would have relabelled a future plain summary such as
+#: `something(done)` as `error: something`; the narrower match still catches both live cases
+#: (`WebSocketConnectionClosedException(...)`, `OperationalError((psycopg.errors.QueryCanceled)
+#: ...)`) and passes through anything that is not actually exception-shaped.
+_EXC_OUTER = re.compile(r"^([A-Z]\w*(?:Error|Exception))\((.*)\)$", re.S)
+#: The looser wrapper shape, only accepted when its inner text turns out to start with the
+#: nested `(module.Class)` form below -- a driver can wrap a nested error in a class of its own
+#: that does not itself end in `Error`/`Exception` (e.g. a plain adapter class), and the nested
+#: class name is still the useful one to read by.
+_EXC_WRAPPER = re.compile(r"^([A-Za-z_][\w.]*)\((.*)\)$", re.S)
 #: The wrapped form's own leading `(Inner.Class) rest of message` -- the class name a reader
 #: actually wants (`psycopg.errors.QueryCanceled`), one level inside the driver's own wrapper
 #: class (`OperationalError`).
@@ -767,16 +777,22 @@ def _humanize_class_name(name: str) -> str:
 
 
 def humanize_event_summary(summary: str) -> tuple[str, str | None]:
-    """The plain "what" for a stored `operator_events.summary`, and the exact stored text
-    alongside it when the two differ (fix 53). Most kinds are already plain (`connected`,
-    `gate evaluated for 3 variant(s)`, `build_sha b0a3991 - 93dfb95`) and pass through with no
-    `technical` text at all -- only a summary shaped like a bare Python exception repr is
-    rewritten, and the second element is then the untouched input, never a re-derived string, so
-    the payload can show the caller the exact evidence that was stored. Pure, total and never
-    raises: a builder section calls this over a value that already came out of the database."""
-    match = _EXC_REPR.match(summary or "")
+    """The plain "what" for a stored `operator_events.summary`, and the sanitized stored text
+    (`sanitize_reason`'s output -- stripped and truncated at 200, not the raw original) alongside
+    it when the two differ (fix 53). Most kinds are already plain (`connected`, `gate evaluated
+    for 3 variant(s)`, `build_sha b0a3991 - 93dfb95`) and pass through with no `technical` text at
+    all -- only a summary shaped like a CamelCase `...Error(...)`/`...Exception(...)` repr, or
+    wrapping the driver's own nested `(module.Class) ...` form, is rewritten (fix 53 round 2,
+    Important 2: a bare `identifier(...)` shape alone, e.g. `something(done)`, is not enough).
+    The second element is then the untouched sanitized input, never a re-derived string, so the
+    payload can show the caller the exact evidence that was stored. Pure, total and never raises:
+    a builder section calls this over a value that already came out of the database."""
+    match = _EXC_OUTER.match(summary or "")
     if not match:
-        return summary, None
+        wrapper = _EXC_WRAPPER.match(summary or "")
+        if not wrapper or not _EXC_REPR_NESTED.match(wrapper.group(2)):
+            return summary, None
+        match = wrapper
     outer, inner = match.group(1), match.group(2)
     nested = _EXC_REPR_NESTED.match(inner)
     class_name = nested.group(1) if nested else outer
