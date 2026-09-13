@@ -32,7 +32,7 @@ export const LABELS = [
   { plain: "Loop time", technical: "exec.p95_loop_ms" },
   { plain: "Loops skipped", technical: "exec_heartbeat.loops_skipped" },
   { plain: "Markets with a book we distrust", technical: "book_dirty_markets" },
-  { plain: "Memory free on the NAS", technical: "host.mem_available_mb" },
+  { plain: "Memory available on the host", technical: "host.mem_available_mb" },
   { plain: "Recorder memory after tick or settle", technical: "recorder.rss_mb" },
   // Fix round 2, I5: the research card's two counts -- the spend and the veto rate are already
   // read through the sentences below, which is why they carry no `technical` name of their own.
@@ -135,7 +135,7 @@ function storageCard(payload) {
                value: storage.disk_free_gb, threshold: storage.disk_min_fraction }),
     statTile({ label: "Days until the ceiling", technical: "db.growth_gb_per_day",
                value: storage.days_to_ceiling, threshold: null }),
-    statTile({ label: "Memory free on the NAS", technical: "host.mem_available_mb",
+    statTile({ label: "Memory available on the host", technical: "host.mem_available_mb",
                value: storage.mem_available_mb, threshold: null }));
   const tables = Object.entries(storage.tables_gb || {})
     .sort((a, b) => b[1] - a[1]).slice(0, 6);
