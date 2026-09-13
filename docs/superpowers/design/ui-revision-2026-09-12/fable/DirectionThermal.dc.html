@@ -191,33 +191,53 @@
     .fav-strip .tm svg { width: 12px; height: 12px; fill: #f5a524; }
     .fav-strip .k { font-family: 'IBM Plex Mono', monospace; color: #7c8794; }
 
+    .slip { background: #f2efe8; color: #17191d; box-shadow: 0 10px 30px rgba(0,0,0,0.45);  }
+    .slip .kind, .slip .sub, .slip .would, .leg .line, .leg .says, .leg .sel, .leg .stat .src { color: #5f6670; }
+    .slip .pay, .leg .what, .leg .odds, .leg .stat, .foot b { color: #17191d; }
+    .slip .pay small { color: #5f6670; }
+    .slip .anchor, .leg .prov, .pending { color: #3b5bdb; }
+    .leg { border-top: 1px dashed #c9c4b8; }
+    .leg .lamp { background: #c9c4b8; box-shadow: inset 0 0 0 2px #5f6670; }
+    .leg .lamp.alive { background: #3b5bdb; box-shadow: 0 0 0 4px rgba(59,91,219,0.28), 0 0 14px rgba(59,91,219,0.28); }
+    .leg .bar { background: #c9c4b8; } .leg .bar div { background: #17191d; }
+    .foot { border-top: 2px solid #17191d; color: #5f6670; }
+    .funbadge { border-color: #3b5bdb; color: #3b5bdb; }
+    .tabbar div.on.fun { color: #3b5bdb; box-shadow: inset 0 2px 0 #3b5bdb; }
+    .headline { color: #3b5bdb; }
+    .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+    .sw { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #7c8794; font-family: 'IBM Plex Mono', monospace; }
+    .sw i { display: block; width: 44px; height: 28px; border-radius: 4px; border: 1px solid #1f2733; }
+    
   </style>
 </helmet>
-<div style="width: 390px; min-height: 1140px; background: #0b0e13; position: relative; overflow: hidden;">
+<div style="width: 390px; min-height: 1120px; background: #0b0e13; position: relative; overflow: hidden;">
 <div class="sample">DESIGN · EVERY VALUE IS FICTIONAL</div>
 <div class="hdr" style="padding: 0 16px; gap: 10px;"><div class="brand">HARNESS</div><div class="status"><span class="dot"></span>FINE</div><div class="spacer"></div><span class="funbadge">FUN MONEY · $50/WK</span><span class="pill muted">SAMPLE</span></div>
 <div style="padding: 16px 14px 90px; display: flex; flex-direction: column; gap: 14px;">
 <div>
-  <div class="display" style="font-size:30px; font-weight:700; letter-spacing:-0.02em; color:#f5a524">Every leg hit.</div>
-  <p class="lead" style="margin-top:6px">All four legs are in. DraftKings has not settled the slip yet; the return is recorded when it does.</p>
+  <div class="badge" style="margin-bottom:8px">DIRECTION · THERMAL WHITE AND INK BLUE</div>
+  <div class="display headline" style="font-size:30px; font-weight:700; letter-spacing:-0.02em">Two legs from glory.</div>
+  <p class="lead" style="margin-top:6px">Marchand needs 42 more passing yards. Delacroix has his number, but the game is not final.</p>
 </div>
 <div class="slip">
   <div class="row spread" style="align-items:flex-start">
     <div><div class="kind">SMART CARD · WEEK 38 · PLACED SAT 4:12 PM</div><div class="pay"><small>$25 →</small> $137.50</div></div>
-    <div style="text-align:right"><div class="kind">LEGS</div><div class="display" style="font-size:22px; font-weight:700; white-space:nowrap">4 of 4</div></div>
+    <div style="text-align:right"><div class="kind">LEGS</div><div class="display" style="font-size:22px; font-weight:700; white-space:nowrap">2 to go</div></div>
   </div>
-  <div class="pending">all legs hit · awaiting DraftKings settlement</div>
+  <div class="anchor">carries LSU −3.5</div>
   <div style="margin-top:10px">
-  <div class="leg "><span class="lamp hit"></span><div><div class="what">LSU by 4 or more</div><div class="line">Final · LSU 31, Florida 21</div></div><div class="odds">−110</div></div>
-  <div class="leg "><span class="lamp hit"></span><div><div class="what">Marchand 250+ passing yards</div><div class="line">Final · 263 passing yards · ESPN final box</div></div><div class="odds">+120</div></div>
-  <div class="leg "><span class="lamp hit"></span><div><div class="what">Michigan to win</div><div class="line">Final · Michigan 28, Nebraska 17</div></div><div class="odds">−165</div></div>
-  <div class="leg "><span class="lamp hit"></span><div><div class="what">Delacroix 50+ receiving yards</div><div class="line">Final · 71 receiving yards · ESPN final box</div></div><div class="odds">−115</div></div>
+  <div class="leg "><span class="lamp alive"></span><div><div class="what">LSU by 4 or more</div><div class="line">LSU 24, Florida 21 · 4th quarter, 8:42 · needs 1 more point of margin</div><div class="says">sharps say <span class="bar"><div style="width:61%"></div></span><span class="num">61 %</span></div></div><div class="odds">−110</div></div>
+  <div class="leg "><span class="lamp alive"></span><div><div class="what">Marchand 250+ passing yards</div><div class="line">LSU 24, Florida 21 · 4th quarter, 8:42</div><div class="stat"><span>208 of 250 passing yards · 42 to go</span> <span class="src">· ESPN 40 s ago</span></div><div class="says">no sharp read</div></div><div class="odds">+120</div></div>
+  <div class="leg "><span class="lamp hit"></span><div><div class="what">Michigan to win</div><div class="line">Final · Michigan 28, Nebraska 17</div><div class="says">sharps say —</div></div><div class="odds">−165</div></div>
+  <div class="leg miss"><span class="lamp miss"></span><div><div class="what">Nebraska +6.5</div><div class="line">Final · Michigan 28, Nebraska 17 · lost by 11</div><div class="says">sharps say —</div></div><div class="odds">−110</div></div>
   </div>
-  <div class="foot"><span>expected return <b>$137.50</b> · confirmed return <b>—</b></span><span class="week">$25 recorded · $25 left of $50</span></div>
-</div><div class="card"><h3>Season <span class="tech">parlay_ledger</span></h3>
-  <div class="grid3" style="gap:10px"><div class="tile"><span class="lbl">staked</span><span class="val">30</span></div><div class="tile"><span class="lbl">returned · incl. stake</span><span class="val">143</span></div><div class="tile"><span class="lbl">net</span><span class="val ok">+113</span></div></div>
-  <div class="n" style="margin-top:8px">best hit: week 37, $143 · streak: 1</div>
-  
+  <div class="foot"><span>both remaining legs hit: <b>sharps 34 %</b> · DraftKings paid as if <b>+450</b></span><span class="week">$25 recorded · $25 left of $50</span></div>
+</div>
+<div class="card" style="padding:12px 12px">
+  <h3>Thermal white and ink blue</h3>
+  <p class="lead" style="font-size:13px">A real printed betting slip in a dark room: white thermal paper, black ink, the receipt from the counter. The accent is an ink blue used only for the alive lamp, the anchor and the Ticket tab. Nothing else on the dashboard is white, so it is unmistakably the one real-money object.</p>
+  <div class="n" style="margin-bottom:10px">Tradeoff: the brightest thing on any surface; at a bar the phone will glow. Light theme needs the inverse treatment worked out.</div>
+  <div class="swatches"><div class="sw"><i style="background:#f2efe8"></i>slip</div><div class="sw"><i style="background:#17191d"></i>ink</div><div class="sw"><i style="background:#5f6670"></i>muted</div><div class="sw"><i style="background:#3b5bdb"></i>fun</div><div class="sw"><i style="background:#1f8a3b"></i>hit</div><div class="sw"><i style="background:#c8102e"></i>miss</div></div>
 </div>
 </div>
 <div class="tabbar"><div class=""><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Pulse</div><div class=""><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></svg>Floor</div><div class=""><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Study</div><div class=""><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>Gate</div><div class="on fun"><svg viewBox="0 0 24 24"><path d="M4 7h16v4a2 2 0 0 0 0 4v4H4v-4a2 2 0 0 0 0-4z"/><path d="M9 7v13" stroke-dasharray="2 2"/></svg>Ticket</div></div>

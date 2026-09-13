@@ -111,6 +111,33 @@
    "w": 390,
    "h": 1080,
    "title": "Floor · no position · phone"
+  },
+  {
+   "file": "DirectionSlate.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 1120,
+   "title": "A · Slate and coral",
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionThermal.dc.html",
+   "x": 480,
+   "y": 0,
+   "w": 390,
+   "h": 1120,
+   "title": "B · Thermal white and ink blue",
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionPlum.dc.html",
+   "x": 960,
+   "y": 0,
+   "w": 390,
+   "h": 1120,
+   "title": "C · Plum and lilac",
+   "page": "page-2"
   }
  ],
  "annotations": [
@@ -134,9 +161,28 @@
    "y": 4550,
    "w": 420,
    "text": "The only crossing between paper and fun money: one line, no amount, one way (Floor → Ticket). The slip never links back."
+  },
+  {
+   "id": "directions-brief",
+   "x": 0,
+   "y": -140,
+   "w": 900,
+   "page": "page-2",
+   "text": "Three slip materials to replace the amber-and-brown ticket. Same slip anatomy, same lamps and stamps; only the material and the fun accent change. Each accent stays clear of cyan (paper side), green (good), amber (warn) and red (bad). Pick one and the screens on page 1 are redrawn in it."
+  }
+ ],
+ "pages": [
+  {
+   "id": "page-1",
+   "name": "Screens"
+  },
+  {
+   "id": "page-2",
+   "name": "Slip directions"
   }
  ],
  "launch": {
-  "view": "canvas"
+  "view": "canvas",
+  "page": "page-2"
  }
 }
