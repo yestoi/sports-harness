@@ -486,8 +486,11 @@ class Order(Base):
     #: decrement has not arrived; `pending_unmatched` and `pending_surplus` are the surviving
     #: decrement buckets' sums by kind; `cancels_ahead` is decrement volume that aged out of the
     #: horizon unclaimed -- a real cancellation ahead of us, retired and unclaimable.
-    #: `traded_at_price` above is left NULL on every post-boundary order: C0's charge-against
-    #: quantity is not a ledger term and the two must never be read as one (ruling CR-3).
+    #: C0's charge-against quantity is not a ledger term and the two must never be read as one
+    #: (ruling CR-3): `traded_at_price` above stays NULL on every post-boundary order, which is
+    #: what makes the boundary visible by nullness, while a pre-boundary order still being
+    #: simulated keeps the value it already had -- the repaired writer carries it back unchanged
+    #: and never computes it (round 2, Important A).
     print_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
     pending_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
     pending_surplus: Mapped[Decimal | None] = mapped_column(CONTRACTS)

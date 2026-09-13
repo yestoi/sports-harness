@@ -19,8 +19,9 @@ T0 = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
 
 #: The columns one track is persisted in, for a track with no prefix. `filled_contracts` is
 #: deliberately not among them: the loop writes it beside the state, from the track result.
-#: `traded_at_price` is written, always as NULL (ruling CR-3): C0's charge-against quantity is
-#: not a ledger term, and the 6B boundary is visible by that nullness.
+#: `traded_at_price` is written back exactly as it was read (ruling CR-3): NULL on a
+#: post-boundary order, which is what makes the 6B boundary visible by nullness, and its existing
+#: value on a pre-boundary order still being simulated.
 WATCHED_COLUMNS = ["cancels_ahead", "crossed", "last_print_ids", "last_print_ts",
                    "pending_surplus", "pending_unmatched", "print_unmatched", "queue_remaining",
                    "recon_state", "tape_cursor_event_id", "traded_at_price"]
@@ -50,7 +51,7 @@ def _blank_row(prefix: str = "", **over) -> NS:
               f"{prefix}tape_cursor_event_id": None, f"{prefix}crossed": False,
               f"{prefix}print_unmatched": None, f"{prefix}cancels_ahead": None,
               f"{prefix}recon_state": None, f"{prefix}last_print_ts": None,
-              f"{prefix}last_print_ids": None}
+              f"{prefix}last_print_ids": None, f"{prefix}traded_at_price": None}
     return NS(**dict(values, **{f"{prefix}{k}": v for k, v in over.items()}))
 
 
@@ -169,31 +170,58 @@ def test_a_stored_zero_is_not_an_absent_column():
                      "").print_floor is None
 
 
-def test_traded_at_price_is_written_null_on_every_track():
-    """Expected: both tracks write NULL there, and neither reads it (ruling CR-3, §1.3).
+def test_traded_at_price_is_null_after_the_boundary_and_kept_before_it():
+    """Expected: NULL stays NULL, and a pre-6B value comes back unchanged (round 2, Important A).
 
     Computed independently: C0's `traded_at_price` is the quantity a print was charged against,
-    which the ledger replaces with terms of its own; reusing the column would make the two
-    indistinguishable in the table. §2's invariant for the post-boundary range is
-    `traded_at_price is null`, so the writer must leave it null and the reader must not depend
-    on it -- which is why a row with no such attribute at all still reads back a state.
+    which the ledger replaces with terms of its own, so no 6B code may compute or update it.
+    §2 row 3's invariant is that **post-boundary** rows have it NULL -- that nullness is what
+    distinguishes them -- and an order placed after the deploy never acquires one, so a state that
+    read NULL writes NULL on both tracks.
+
+    A pre-6B order that is still working at the deploy is the other half, and the one the first
+    version of this task got wrong: it has a recorded C0 quantity, it is simulated on every step
+    for as long as it rests (and its counterfactual for as long as `nw_done` is false), and a
+    writer that replaced that value with NULL would both destroy the record and make the row look
+    post-boundary. So the value travels through the state untouched and is written back as it was.
     """
-    state = _ledger_state()
-    assert _state_columns("", state)["traded_at_price"] is None
-    assert _state_columns("nw_", state)["nw_traded_at_price"] is None
-    columns = _state_columns("", state)
-    del columns["traded_at_price"]
-    assert _state_of(_row("", columns, Decimal("3.00")), "") == state
+    post = _ledger_state()
+    assert post.legacy_traded_at_price is None
+    assert _state_columns("", post)["traded_at_price"] is None
+    assert _state_columns("nw_", post)["nw_traded_at_price"] is None
+    # The round trip of a post-boundary row: NULL in, NULL out, on both tracks.
+    columns = _state_columns("", post)
+    assert _state_of(_row("", columns, Decimal("3.00")), "") == post
+
+    # A pre-6B order, mid-simulation: `7` in, `7` out, and nothing else about it changes.
+    legacy = _blank_row(queue_remaining=Decimal("5.00"), traded_at_price=Decimal("7"),
+                        last_print_ts=T0, last_print_ids=["a"])
+    state = _state_of(legacy, "")
+    assert state.legacy_traded_at_price == Decimal("7")
+    written = _state_columns("", state)
+    assert written["traded_at_price"] == Decimal("7")
+    # ... and it survives a second step, which reads what the first step wrote.
+    again = _state_of(_row("", written, Decimal("0.00")), "")
+    assert again.legacy_traded_at_price == Decimal("7")
+    assert _state_columns("", again)["traded_at_price"] == Decimal("7")
+    # The counterfactual track carries its own column, not the watched one's.
+    nw = _state_of(_blank_row("nw_", traded_at_price=Decimal("4")), "nw_")
+    assert _state_columns("nw_", nw)["nw_traded_at_price"] == Decimal("4")
 
 
-def test_the_ledger_document_is_bounded_and_json_safe():
-    """Expected: every value in the document is a string, a null or a list, and the three lists
-    are capped.
+def test_the_ledger_document_is_json_safe_and_exactly_invertible():
+    """Expected: every value in the document is a string, a null or a list, and `recon_state_of`
+    returns the three lists and the floor unchanged -- at the caps and past them.
 
     Computed independently: the column is `jsonb`, so a `Decimal` or a `datetime` in it would
-    either raise on write or come back as a float and lose a fractional contract count (F40).
-    The caps are §2's: an order resting for hours must not be able to grow the column without
-    limit. `recon_state_of` is the inverse and is what a restart reads.
+    either raise on write or come back as a float and lose a fractional contract count (F40). The
+    document is written whole, with no slice of its own (round 2, minor 6): the scalar columns are
+    derived from the same tuples and §2 row 2 compares the two, so trimming here would break that
+    equality rather than enforce a bound. Bounding is the simulator's job on every write, where
+    the volume is known and a merge can conserve it --
+    `tests/test_fills.py::test_six_hundred_decrements_inside_one_horizon_are_all_still_explained`
+    is where that is pinned. This case feeds lists past both caps precisely to show that the
+    persistence layer neither trims nor reorders what it is handed.
     """
     from harness.execution.fills import BUCKET_CAP, TRADE_ID_CAP
 
@@ -202,21 +230,71 @@ def test_the_ledger_document_is_bounded_and_json_safe():
         prints=tuple((T0, Decimal(str(i + 1))) for i in range(BUCKET_CAP + 10)),
         trade_ids=tuple((T0, f"t{i}") for i in range(TRADE_ID_CAP + 10)))
     doc = recon_state_json(state)
-    assert len(doc["buckets"]) == BUCKET_CAP and len(doc["trade_ids"]) == TRADE_ID_CAP
-    assert len(doc["prints"]) == BUCKET_CAP
+    assert len(doc["buckets"]) == len(state.buckets) == BUCKET_CAP + 10
+    assert len(doc["prints"]) == len(state.prints) == BUCKET_CAP + 10
+    assert len(doc["trade_ids"]) == len(state.trade_ids) == TRADE_ID_CAP + 10
     assert all(isinstance(value, str) for row in doc["buckets"] for value in row)
     assert all(isinstance(value, str) for row in doc["prints"] for value in row)
     assert all(isinstance(value, str) for row in doc["trade_ids"] for value in row)
     assert doc["print_floor"] == T0.isoformat()
     buckets, prints, trade_ids, floor = recon_state_of(doc)
-    assert buckets == state.buckets[-BUCKET_CAP:]
-    assert prints == state.prints[-BUCKET_CAP:]
-    assert trade_ids == state.trade_ids[-TRADE_ID_CAP:]
+    assert buckets == state.buckets
+    assert prints == state.prints
+    assert trade_ids == state.trade_ids
     assert floor == T0
     # A column written as text by any reader that round-trips it through `json` still loads.
     import json
 
     assert recon_state_of(json.dumps(doc)) == (buckets, prints, trade_ids, floor)
+
+
+def test_the_scalar_columns_are_the_sums_of_the_document_beside_them():
+    """§2 row 2, on the writer: `pending_unmatched + pending_surplus` equals the buckets in the
+    document, and `print_unmatched` equals its `prints`, with no list trimmed on the way out
+    (round 2, minor 6).
+
+    Computed independently: the invariant query compares the scalar columns of a row with the
+    `jsonb` beside them, so the two have to be derived from the same tuples. A document sliced at
+    the cap while the scalars were summed over the whole state would fail that query on exactly
+    the orders the cap exists for -- a busy ticker, where the difference is real volume. Bounding
+    the lists is the simulator's job, on every write, and it conserves volume by merging rather
+    than by trimming.
+    """
+    from harness.execution.fills import BUCKET_CAP
+
+    state = _ledger_state(
+        buckets=tuple((T0, "pending", Decimal("1.00")) for _ in range(BUCKET_CAP + 7)),
+        prints=tuple((T0, Decimal("2.00")) for _ in range(BUCKET_CAP + 5)))
+    columns = _state_columns("", state)
+    doc = columns["recon_state"]
+    assert len(doc["buckets"]) == BUCKET_CAP + 7 and len(doc["prints"]) == BUCKET_CAP + 5
+    bucket_sum = sum(Decimal(size) for _ts, _kind, size in doc["buckets"])
+    assert columns["pending_unmatched"] + columns["pending_surplus"] == bucket_sum
+    assert columns["print_unmatched"] == sum(Decimal(size) for _ts, size in doc["prints"])
+
+
+def test_a_foreign_bucket_kind_in_the_column_is_refused():
+    """Expected: `ValueError`, not a silently unmatchable bucket (round 2, minor 7).
+
+    Computed independently: `fills._claim` selects buckets by comparing `kind` for equality, so a
+    kind outside `BUCKET_KINDS` -- a hand-edited row, a future build's name, a typo in a fixture --
+    would never be claimed by any print, the decrement it holds would stay unexplained, and the
+    next print would take the queue for it a second time. That is the double count C3 removes,
+    arriving through the column instead of through the arithmetic. Failing once on the read is the
+    cheap place to catch it.
+    """
+    import pytest
+
+    from harness.execution.fills import BUCKET_KINDS
+
+    assert BUCKET_KINDS == ("pending", "surplus")
+    good = {"buckets": [[T0.isoformat(), "surplus", "1.00"]], "prints": [], "trade_ids": [],
+            "print_floor": None}
+    assert recon_state_of(good)[0] == ((T0, "surplus", Decimal("1.00")),)
+    bad = {"buckets": [[T0.isoformat(), "pendign", "1.00"]], "prints": [], "trade_ids": [],
+           "print_floor": None}
+    with pytest.raises(ValueError, match="pendign"):
+        recon_state_of(bad)
 
 
 def test_the_loop_reads_the_helpers_from_the_new_module():

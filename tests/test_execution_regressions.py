@@ -155,12 +155,12 @@ def _order_row(**over):
              queue_ahead_at_place=D(5), queue_remaining=D(5), traded_at_price=D(0),
              filled_contracts=D(0), tape_cursor_event_id=1, crossed=False,
              last_print_ts=T0, last_print_ids=(),
-             print_unmatched=D(0), cancels_ahead=D(0), recon_state=None,
+             cancels_ahead=D(0), recon_state=None,
              nw_queue_remaining=D(5),
              nw_traded_at_price=D(0), nw_filled_contracts=D(0),
              nw_tape_cursor_event_id=1, nw_crossed=False, nw_last_print_ts=T0,
              nw_last_print_ids=(),
-             nw_print_unmatched=D(0), nw_cancels_ahead=D(0), nw_recon_state=None,
+             nw_cancels_ahead=D(0), nw_recon_state=None,
              nw_done=True, status="open")
     for key, value in over.items():
         setattr(row, key, value)

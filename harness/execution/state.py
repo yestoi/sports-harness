@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from harness.execution.book import ZERO
-from harness.execution.fills import BUCKET_CAP, TRADE_ID_CAP, SimState
+from harness.execution.fills import BUCKET_KINDS, SimState
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -21,6 +21,19 @@ def _iso(value: datetime | None) -> str | None:
 
 def _ts(value) -> datetime | None:
     return None if value is None else datetime.fromisoformat(value)
+
+
+def _kind(value: str) -> str:
+    """One bucket kind off the document, checked against `BUCKET_KINDS`.
+
+    The column is the only input to this module that did not come from this module, and a kind
+    the simulator does not know would silently stop matching: `_claim` compares kinds by equality,
+    so a typo'd `pending` would make a decrement unclaimable and the next print would take the
+    queue a second time. Loud once per load is cheap; silent per print is not (round 2, minor 7).
+    """
+    if value not in BUCKET_KINDS:
+        raise ValueError(f"unknown recon_state bucket kind {value!r}")
+    return value
 
 
 def _number(value) -> Decimal | None:
@@ -39,19 +52,23 @@ def recon_state_json(state: SimState) -> dict:
     """The bounded `jsonb` document one track's ledger persists as (§2).
 
     Decimals are written as strings and instants as ISO-8601, because a round trip through
-    `json` would otherwise turn a contract count into a float. Every list is already bounded by
-    the simulator; the slices here are a second, cheap guarantee that a column written by an
-    older build cannot grow past the cap when this one writes it back.
+    `json` would otherwise turn a contract count into a float.
+
+    The lists are written whole, with no slice of their own (round 2, minor 6): the scalar columns
+    beside this document are derived from the same tuples, and §2 row 2's invariant compares the
+    two, so a document trimmed here while the scalars were summed there would break that equality
+    rather than enforce a bound. The bound belongs where the volume is known -- `fills._bucket`,
+    `_claim_print` and `_retire`, which hold both lists at `BUCKET_CAP` by merging, and
+    `SimState._mark_prints`, which holds the ids at `TRADE_ID_CAP`.
 
     `prints` is the ledger's other side, added in round 1 (I5): print volume whose decrement has
     not arrived, stamped with each print's own instant so the horizon can age it exactly as it
     ages a bucket. The scalar `print_unmatched` column is its sum, derived on the way out like
     the two bucket sums.
     """
-    return {"buckets": [[_iso(ts), kind, str(size)]
-                        for ts, kind, size in state.buckets[-BUCKET_CAP:]],
-            "prints": [[_iso(ts), str(size)] for ts, size in state.prints[-BUCKET_CAP:]],
-            "trade_ids": [[_iso(ts), tid] for ts, tid in state.trade_ids[-TRADE_ID_CAP:]],
+    return {"buckets": [[_iso(ts), kind, str(size)] for ts, kind, size in state.buckets],
+            "prints": [[_iso(ts), str(size)] for ts, size in state.prints],
+            "trade_ids": [[_iso(ts), tid] for ts, tid in state.trade_ids],
             "print_floor": _iso(state.print_floor)}
 
 
@@ -69,7 +86,8 @@ def recon_state_of(value) -> tuple[tuple, tuple, tuple, datetime | None]:
     if not value:
         return (), (), (), None
     doc = value if isinstance(value, dict) else json.loads(value)
-    buckets = tuple((_ts(ts), kind, Decimal(size)) for ts, kind, size in doc.get("buckets", ()))
+    buckets = tuple((_ts(ts), _kind(kind), Decimal(size))
+                    for ts, kind, size in doc.get("buckets", ()))
     prints = tuple((_ts(ts), Decimal(size)) for ts, size in doc.get("prints", ()))
     trade_ids = tuple((_ts(ts), tid) for ts, tid in doc.get("trade_ids", ()))
     return buckets, prints, trade_ids, _ts(doc.get("print_floor"))
@@ -78,11 +96,14 @@ def recon_state_of(value) -> tuple[tuple, tuple, tuple, datetime | None]:
 def _state_of(row, prefix: str) -> SimState:
     """The persisted `SimState` of one track, read off the order row.
 
-    `traded_at_price` is deliberately not read: C0's charge-against quantity is not a ledger
-    term, and a post-boundary order leaves that column null (ruling CR-3). The three scalar
-    ledger columns are not read either: they are derived sums of the document beside them, which
-    is what §2's invariant compares them with. Only `cancels_ahead` is genuinely persisted as a
-    scalar, and a stored `0` there must read back as `0` -- see `_number`.
+    `traded_at_price` is read but never used by the arithmetic: C0's charge-against quantity is
+    not a ledger term, and the repaired writer neither computes nor updates it. It is carried so
+    that a **pre-boundary** order still being simulated keeps the value it already had, while a
+    post-boundary order, which never had one, keeps that column NULL -- which is how §2 row 3
+    tells the two apart (ruling CR-3; round 2, Important A). The three scalar ledger columns are
+    not read: they are derived sums of the document beside them, which is what §2's invariant
+    compares them with. Only `cancels_ahead` is genuinely persisted as a scalar, and a stored `0`
+    there must read back as `0` -- see `_number`.
 
     **The transitional read (round 1, I3).** An order placed before the 6B deploy and still
     working at it has no `recon_state`, but it does have the pre-6B print watermark
@@ -98,7 +119,10 @@ def _state_of(row, prefix: str) -> SimState:
         getattr(row, f"{prefix}recon_state"))
     cancels = _number(getattr(row, f"{prefix}cancels_ahead"))
     watermark = getattr(row, f"{prefix}last_print_ts")
-    if not getattr(row, f"{prefix}recon_state") and watermark is not None:
+    # `is None`, not falsiness: an empty document is a *written* ledger -- a track that has been
+    # simulated and owes nothing -- and must not be mistaken for a pre-6B row whose watermark is
+    # still the authority (round 2, minor 5).
+    if getattr(row, f"{prefix}recon_state") is None and watermark is not None:
         print_floor = watermark
         trade_ids = tuple((watermark, str(tid))
                           for tid in getattr(row, f"{prefix}last_print_ids") or ())
@@ -108,6 +132,7 @@ def _state_of(row, prefix: str) -> SimState:
         cursor_event_id=getattr(row, f"{prefix}tape_cursor_event_id"),
         crossed=bool(getattr(row, f"{prefix}crossed")),
         cancels_ahead=ZERO if cancels is None else cancels,
+        legacy_traded_at_price=getattr(row, f"{prefix}traded_at_price"),
         prints=prints, buckets=buckets, trade_ids=trade_ids, print_floor=print_floor)
 
 
@@ -120,18 +145,20 @@ def _state_columns(prefix: str, state: SimState) -> dict:
     would jump the order over a delta stamped ahead of our clock. The next step reaches that
     delta through `_sim_book`'s `book_at(ts_of(cursor))` branch instead.
 
-    `traded_at_price` is written as NULL on every post-boundary order (ruling CR-3): the C0
-    quantity is never written again, and the boundary is visible by nullness rather than by a
-    date. The three scalar ledger columns are the surviving entries' sums -- `print_unmatched`
-    over the print claims, the other two over the buckets by kind -- which §2's invariant query
-    checks against the `jsonb` document beside them.
+    `traded_at_price` is written back exactly as it was read (ruling CR-3; round 2, Important A):
+    NULL on a post-boundary order, which never had a C0 quantity and by that nullness is
+    recognisable as post-boundary (§2 row 3), and its existing value on a pre-boundary order still
+    being simulated, whose recorded quantity this build has no business destroying. Nothing
+    recomputes it. The three scalar ledger columns are the surviving entries' sums --
+    `print_unmatched` over the print claims, the other two over the buckets by kind -- which §2's
+    invariant query checks against the `jsonb` document beside them.
 
     `last_print_ts` and `last_print_ids` keep being written so the existing columns stay
     meaningful and no reader of them breaks: the floor is what `last_print_ts` now holds, and the
     id list is empty because the ids live in `recon_state`.
     """
     return {f"{prefix}queue_remaining": state.queue_remaining,
-            f"{prefix}traded_at_price": None,
+            f"{prefix}traded_at_price": state.legacy_traded_at_price,
             f"{prefix}tape_cursor_event_id": state.cursor_event_id,
             f"{prefix}crossed": state.crossed,
             f"{prefix}print_unmatched": state.print_unmatched,

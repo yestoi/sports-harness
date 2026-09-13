@@ -73,9 +73,15 @@ AHEAD, BEHIND = "ahead", "behind"
 #: D5 set them; what each does at the cap is the load-bearing part (round 1, I1 and I4):
 #:
 #: * at `BUCKET_CAP`, and at the same cap for print claims, the two oldest entries of one kind
-#:   are **merged** under the older timestamp. Volume is conserved, so no decrement is silently
-#:   unexplained, and the merged entry ages out at the earlier instant, which retires a
-#:   cancellation sooner rather than claiming a trade later -- the conservative direction.
+#:   are **merged** under the older timestamp. Volume is conserved either way, so nothing the
+#:   ledger owes is silently unexplained, and the merged entry ages out at the earlier instant.
+#:   On the bucket side that is the conservative direction: a cancellation retires into
+#:   `cancels_ahead` sooner rather than a trade being claimed later. On the print side the same
+#:   older stamp makes a claim *expire* sooner, which is the optimistic direction for the queue --
+#:   an expired claim lets the next decrement take queue again -- so the bound is stated rather
+#:   than claimed as conservative: it is reached only past 500 live claims, the volume stays in
+#:   the list until the horizon takes it, and at 60 s of horizon an expiry the merge brings
+#:   forward was seconds from happening anyway.
 #: * at `TRADE_ID_CAP` the oldest ids drop and `print_floor` rises to the oldest retained id's
 #:   timestamp, so nothing below the floor can re-apply (§0.6, D5). That skips a fill at the very
 #:   front of the queue rather than inventing one.
@@ -166,9 +172,14 @@ class SimState:
 
     The watched track stores it in `queue_remaining` / `filled_contracts` /
     `tape_cursor_event_id` / the four ledger columns / `recon_state`; the counterfactual in the
-    `nw_` twins. `traded_at_price` is **not** here: C0's charge-against quantity is a different
-    thing from the ledger's terms, so post-boundary orders leave that column null rather than
-    reusing it, and the boundary is visible by nullness (ruling CR-3).
+    `nw_` twins. C0's `traded_at_price` is not a ledger term and the arithmetic never reads it:
+    a post-boundary order leaves that column NULL rather than reusing it, which is how the
+    boundary is visible by nullness (ruling CR-3, §2 row 3). A **pre-boundary** order still being
+    simulated -- an open pre-6B order, or the `nw_done = false` counterfactual of one -- keeps the
+    C0 value it already had: `legacy_traded_at_price` carries it through the state unchanged so
+    the writer can put it back, because overwriting it with NULL would both destroy a recorded
+    pre-6B quantity and make a pre-boundary row indistinguishable from a post-boundary one
+    (round 2, Important A).
 
     The ledger is two-sided (§0.5), and the horizon applies to **both** sides (§1.3 clarification,
     round 1 I5). `prints` are print volume whose decrement has not arrived, each stamped with the
@@ -207,6 +218,9 @@ class SimState:
     cursor_event_id: int | None
     crossed: bool = False
     cancels_ahead: Decimal = ZERO
+    #: C0's `traded_at_price` as the row already held it, or None for an order that never had one
+    #: (every post-boundary order). Carried, never read by the arithmetic, never recomputed.
+    legacy_traded_at_price: Decimal | None = None
     #: `(ts, size)`, oldest first: print volume whose decrement has not arrived.
     prints: tuple[tuple[datetime, Decimal], ...] = ()
     #: `(ts, kind, size)`, oldest first. `kind` is one of `BUCKET_KINDS`.
@@ -246,8 +260,8 @@ class SimState:
 
     def _copy(self) -> "SimState":
         return SimState(self.queue_remaining, self.filled_contracts, self.cursor_event_id,
-                        self.crossed, self.cancels_ahead, self.prints, self.buckets,
-                        self.trade_ids, self.print_floor)
+                        self.crossed, self.cancels_ahead, self.legacy_traded_at_price,
+                        self.prints, self.buckets, self.trade_ids, self.print_floor)
 
     def anchor(self, *, queue: Decimal | None, cursor_event_id: int | None,
                anchor_as_of: datetime) -> None:
@@ -281,6 +295,15 @@ class SimState:
         Once per call rather than once per print (round 1, I4): the pruning and the cap are
         properties of the set, not of any one print, and rebuilding the tuple per print made a
         loop's re-feed quadratic.
+
+        One consequence, stated because it is a real difference from the per-print version: the
+        window prune and the cap now move once per call, so a history fed as one call and the same
+        history fed in chunks can disagree about `trade_ids` and `print_floor` **at**
+        `TRADE_ID_CAP` -- the per-print version could too, at a different point. Both answers are
+        bounded by the cap, and the cap's own error is to skip a fill at the front of the queue
+        rather than to invent one, so neither can over-fill; the ledger's arithmetic is unaffected,
+        because retirement still happens only at event timestamps. Below the cap the two are
+        identical, which is what `test_chunking_invariance` and the twenty-chunk tape feed pin.
 
         Two prunings, and they are different things (ruling IM-12). The **window** pruning is the
         ordinary one: the executor re-reads prints from `placed_at - PRINT_LOOKBACK` every loop,
