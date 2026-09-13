@@ -62,6 +62,7 @@ def release(monkeypatch, tmp_path):
     state = SimpleNamespace(module=module, runtime=runtime, before=before, home=home,
                             test_receipt=test_receipt, receipt=receipt, calls=[], health_calls=[],
                             failure=None, failed=False, dirty="", head=HEAD, tree=TREE, old=OLD,
+                            listing="100644 blob 1111111111111111111111111111111111111111\tharness/x.py\n",
                             touched=[], mutate_candidate=None)
     monkeypatch.setattr(module, "RUNTIME", runtime)
     monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: home))
@@ -81,6 +82,8 @@ def release(monkeypatch, tmp_path):
             return state.head
         if args == ("rev-parse", "HEAD^{tree}"):
             return state.tree
+        if args == ("ls-tree", "-r", "HEAD"):
+            return state.listing
         if args[:1] == ("cat-file",):
             return ""
         if args[:1] == ("diff",):
@@ -218,6 +221,45 @@ def test_the_exact_commit_receipt_wins_over_a_tree_match_and_ties_never_crash(re
     (release.test_receipt.parent / "test-harness_test_fix_y.json").write_text(json.dumps(twin))
     release.module.deploy("app")
     assert release_receipt(release)["suite_receipt"]["database"] == "harness_test_main"
+
+
+def test_branch_receipt_with_the_same_release_tree_covers_the_deploy_after_a_journal_commit(release):
+    """Main moved by a docs/superpowers/autopilot commit since the branch suite: head and tree
+    differ, the release tree does not, so no rerun on main."""
+    release.test_receipt.unlink()
+    expected = release.module.release_tree(run=lambda a, **k: release.listing)
+    branch = dict(release.receipt, head="c" * 40, head_after="c" * 40, tree="u" * 40, branch="fix-x",
+                  database="harness_test_fix_x", release_tree=expected)
+    (release.test_receipt.parent / "test-harness_test_fix_x.json").write_text(json.dumps(branch))
+    release.module.deploy("app")
+    written = release_receipt(release)
+    assert written["status"] == "healthy"
+    assert written["suite_receipt"]["match"] == "release_tree" and written["suite_receipt"]["release_tree"] == expected
+
+
+def test_receipt_with_a_different_release_tree_is_rejected(release):
+    release.test_receipt.unlink()
+    branch = dict(release.receipt, head="c" * 40, head_after="c" * 40, tree="u" * 40, release_tree="r" * 64)
+    (release.test_receipt.parent / "test-harness_test_fix_x.json").write_text(json.dumps(branch))
+    with pytest.raises(RuntimeError, match="receipt"):
+        release.module.deploy("app")
+    assert not any("build" in call or "stop" in call for call in release.calls)
+
+
+def test_match_kind_is_recorded_and_the_exact_commit_beats_tree_beats_release_tree(release):
+    expected = release.module.release_tree(run=lambda a, **k: release.listing)
+    by_release = dict(release.receipt, head="c" * 40, head_after="c" * 40, tree="u" * 40, database="rt", release_tree=expected)
+    by_tree = dict(release.receipt, head="d" * 40, head_after="d" * 40, tree=TREE, database="tr", release_tree=expected)
+    (release.test_receipt.parent / "test-rt.json").write_text(json.dumps(by_release))
+    (release.test_receipt.parent / "test-tr.json").write_text(json.dumps(by_tree))
+    release.module.deploy("app")
+    assert release_receipt(release)["suite_receipt"]["match"] == "head"
+    release.test_receipt.unlink()
+    chosen = release.module.full_suite_receipt(HEAD, TREE, expected)
+    assert chosen["match"] == "tree" and chosen["database"] == "tr"
+    (release.test_receipt.parent / "test-tr.json").unlink()
+    chosen = release.module.full_suite_receipt(HEAD, TREE, expected)
+    assert chosen["match"] == "release_tree" and chosen["database"] == "rt"
 
 
 def test_receipt_with_neither_the_head_nor_the_tree_is_rejected(release):

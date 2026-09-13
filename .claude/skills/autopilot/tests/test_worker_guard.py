@@ -337,7 +337,7 @@ class WorkerGuardTests(unittest.TestCase):
                                      'SPORTS_TEST_LOCK_FILE': str(self.lockfile)}, clear=True), \
                 patch.object(suite.sys, 'argv', ['test-suite', '--', 'tests/test_example.py']), \
                 patch.object(suite.subprocess, 'check_output', side_effect=[
-                    'main', 'abc123', 'tree123', '', 'postgresql://test-only', 'abc123', '']), \
+                    'main', 'abc123', 'tree123', '100644 blob 1 x\tharness/x.py\n', '', 'postgresql://test-only', 'abc123', '']), \
                 patch.object(suite.subprocess, 'Popen', side_effect=start_child), \
                 patch.object(suite.signal, 'signal'), \
                 patch.object(suite.sys, 'stdout', io.StringIO()):

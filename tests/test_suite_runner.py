@@ -177,10 +177,16 @@ def test_test_counts_read_sync_async_and_method_tests(tmp_path):
     assert runner.count_tests(source) == 3
 
 
+LISTING = ("100644 blob 1111111111111111111111111111111111111111\tREADME.md\n"
+           "100644 blob 2222222222222222222222222222222222222222\tharness/x.py\n")
+
+
 def _git_stub(args, **kwargs):
     if args[0] == "git":
         if args[1] == "branch":
             return "main\n"
+        if args[1] == "ls-tree":
+            return LISTING
         if args[1] == "status":
             return ""
         if args[2:] == ["HEAD^{tree}"]:
@@ -222,6 +228,8 @@ def test_sharded_full_suite_merges_exit_codes_and_records_the_tree(monkeypatch, 
     assert all(kw["start_new_session"] and len(kw["pass_fds"]) == 1 for _, kw in launches)
     receipt = json.loads((state / "test-harness_test_main.json").read_text())
     assert receipt["exit_code"] == 3 and receipt["scope"] == [] and receipt["tree"] == TREE
+    assert receipt["release_tree"] == runner.release_tree(run=lambda a, **k: LISTING)
+    assert receipt["release_tree"] != runner.release_tree(run=lambda a, **k: LISTING.replace("README", "readme"))
     assert receipt["head"] == HEAD and receipt["head_after"] == HEAD
     assert sorted(shard["database"] for shard in receipt["shards"]) == databases
     assert sorted(shard["exit_code"] for shard in receipt["shards"]) == [0, 3]

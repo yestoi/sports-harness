@@ -8,10 +8,12 @@ because a notification was lost. Preserve the daily failure ceilings and pending
 1. Compare deployed source with main, excluding docs/Markdown/.claude controller
    tooling. Batch all reviewed, ready independent fixes into one release. Keep the
    declared prerequisites and service ownership in the ledger.
-2. The release needs a clean full-suite receipt for main's exact commit or exact tree
-   (`git rev-parse HEAD^{tree}`): the merged branch's pre-merge `make test` on its own
-   database counts when the branch was rebased onto main before the fast-forward, so
-   run `make test` on main only when no such receipt exists. Either receipt must show
+2. The release needs a clean full-suite receipt for main's exact commit, exact tree
+   (`git rev-parse HEAD^{tree}`) or release tree (the tree with `docs/superpowers/autopilot/`
+   left out, `scripts/release_tree.py`): the merged branch's pre-merge `make test` on its own
+   database counts when the branch was rebased onto main before the fast-forward, and the
+   journal/state commits that follow the merge do not disturb it, so run `make test` on main
+   only when no such receipt exists (the release receipt records which match it used). Either receipt must show
    the same before/after SHA, no dirty files (worker report files moved out first),
    exit 0, a full scope and every shard exit 0, with no filtering environment/TEST_ARGS.
    Review the log for warnings/tracebacks and expected xfails; a worker's

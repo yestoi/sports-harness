@@ -28,6 +28,9 @@ import zlib
 from datetime import datetime, timezone
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_tree import release_tree  # noqa: E402  (scripts/release_tree.py, shared with the release script)
+
 LOCK_SPAN = 1 << 20
 # Linux open-file-description lock commands (fcntl exports them only when its build saw them).
 F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW = 36, 37, 38
@@ -206,6 +209,7 @@ def main():
         receipt = {'branch': branch, 'database': name,
                    'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                    'tree': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+                   'release_tree': release_tree(run=subprocess.check_output),
                    'started_at': datetime.now(timezone.utc).isoformat(), 'pid': os.getpid(),
                    'dirty_before': subprocess.check_output(['git', 'status', '--porcelain'], text=True),
                    'scope': args, 'pytest_addopts': os.environ.get('PYTEST_ADDOPTS', ''),

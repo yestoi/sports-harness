@@ -41,7 +41,8 @@ tool allowlist replaces native/plugin worker tools. Preserve the model allocatio
    output (no warnings, no tracebacks), started only after the review verdict is clean or the fix round is committed,
    never speculatively during a review. Move worker report files out of the worktree first so the receipt is clean.
    A branch rebased onto `main` and fast-forwarded has `main`'s tree, so its receipt is the release receipt
-   (deploy.md step 2); rerun on `main` only when the trees differ.
+   (deploy.md step 2), and journal/state commits under `docs/superpowers/autopilot/` keep its release tree; rerun on
+   `main` only when the release trees differ.
 6. A plan step that says "controller: deploy this task now" is honoured mid-phase, but Omarchy only ever runs `main` (R15):
    after the task's review is clean, `git checkout main && git merge --ff-only phaseN-<slug> && git checkout phaseN-<slug>`,
    then the deploy unit from `main`, verify per verify.md's task-specific rows, journal, continue the branch. A plan whose last

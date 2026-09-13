@@ -16,6 +16,9 @@ import subprocess
 import sys
 import tarfile
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_tree import EXCLUDED, release_tree  # noqa: E402  (scripts/release_tree.py, shared with the suite runner)
 import urllib.request
 import urllib.error
 from zoneinfo import ZoneInfo
@@ -148,11 +151,18 @@ def atomic_copy(source, dest):
     os.replace(temporary, dest)
 
 
-def full_suite_receipt(head, tree):
-    """The controller's clean, unfiltered, passing receipt for this exact commit or this exact tree.
+MATCH_RANK = {'head': 2, 'tree': 1, 'release_tree': 0}
+
+
+def full_suite_receipt(head, tree, release):
+    """The controller's clean, unfiltered, passing receipt for this exact commit, this exact
+    tree, or this release tree (the tree with docs/superpowers/autopilot left out; see
+    scripts/release_tree.py).
 
     A branch rebased onto main and fast-forwarded has the same tree as main, so its pre-merge
-    suite is the release evidence; a receipt without a tree field must match the commit.
+    suite is the release evidence; a journal or state commit after that merge changes the tree
+    but not the release tree, so the same receipt still stands. Exact commit beats tree beats
+    release tree; the returned receipt carries the match kind under `match`.
     """
     state = Path(os.environ.get('SPORTS_TEST_STATE_DIR', str(Path.home()/'.cache/sports-harness/test-state')))
     candidates = []
@@ -165,11 +175,17 @@ def full_suite_receipt(head, tree):
                  and not test.get('dirty_after') and test.get('pytest_addopts') == ''
                  and test.get('pytest_plugins') == '' and test.get('head') == test.get('head_after')
                  and all(shard.get('exit_code') == 0 for shard in test.get('shards', [])))
-        if clean and (test.get('head') == head or (test.get('tree') and test['tree'] == tree)):
-            candidates.append(test)
+        if not clean:
+            continue
+        if test.get('head') == head:
+            candidates.append(dict(test, match='head'))
+        elif test.get('tree') and test['tree'] == tree:
+            candidates.append(dict(test, match='tree'))
+        elif test.get('release_tree') and test['release_tree'] == release:
+            candidates.append(dict(test, match='release_tree'))
     if not candidates:
         return None
-    return max(candidates, key=lambda test: (test.get('head') == head, test.get('finished_at', '')))
+    return max(candidates, key=lambda test: (MATCH_RANK[test['match']], test.get('finished_at', '')))
 
 
 def deploy(mode, plan=False):
@@ -196,13 +212,15 @@ def deploy(mode, plan=False):
                       'window': window, 'full_paths': touched}), flush=True)
     if plan:
         return
-    test = full_suite_receipt(head, git('rev-parse', 'HEAD^{tree}'))
+    test = full_suite_receipt(head, git('rev-parse', 'HEAD^{tree}'),
+                              release_tree(run=lambda args, **kwargs: git(*args[1:])))
     if test is None:
-        raise RuntimeError('A clean full-suite receipt at this exact main SHA (or its exact tree) is required')
+        raise RuntimeError('A clean full-suite receipt at this exact main SHA, its exact tree, or its release tree '
+                           f'(everything outside {", ".join(EXCLUDED)}) is required')
     receipt_dir = RUNTIME/'releases'/f'{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{sha}'
     receipt_dir.mkdir(parents=True, mode=0o700)
     receipt = {'head': head, 'sha': sha, 'previous': old, 'mode': mode, 'services': changed,
-               'suite_receipt': {key: test.get(key) for key in ('database', 'branch', 'head', 'tree', 'finished_at')},
+               'suite_receipt': {key: test.get(key) for key in ('database', 'branch', 'head', 'tree', 'release_tree', 'finished_at', 'match')},
                'started_at': datetime.now(timezone.utc).isoformat(), 'status': 'preparing'}
     def checkpoint(status):
         receipt['status'] = status
