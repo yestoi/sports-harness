@@ -2067,3 +2067,15 @@ Times are America/Chicago.
 - Rulings (the user's): (1) fix 49's recorder-memory tests stay unchanged; they are not accuracy tests but the only regression guard for the recorder leak; the runner splits them by node instead. (2) A `slow` tier for the release receipt only is not adopted; it would change what full acceptance means and stays the user's decision. (3) PR #4's rule changes (plan-next ceiling 12, resume is not a dispatch, reviewer cwd and Minors patch, suite after verdict, tree-matched receipt) are accepted with the merge.
 - Carried forward: the release still needs a main suite when a docs commit follows the merge (docs are read by tests; the tree hash cannot exclude them). Shard databases `<db>_p2..p6` accumulate per branch; drop with the branch database.
 - Next (unchanged from journal 169, in Orient order, with the new runner): fix 56 rebase onto 53854ac + suite + merge; fix 49 6 h/500 MiB row (overdue since 12:47 CT); 6B T6; 4.6 T2 ruling and T1 resume; 6D design review; Tuesday deploy window. State: `docs/superpowers/autopilot/state.md` (section "User-directed merges after the stop").
+
+## 171. user-directed - release tree: receipts match main with docs/superpowers/autopilot left out - 2026-09-13 13:35-13:53 CT
+
+- Orient: the user asked why tests read docs (answer: four deliberate parity tests, none under `docs/superpowers/autopilot/`; journal 170 said ten, corrected in state.md) and then: "Build the release-tree hash excluding docs/superpowers/autopilot".
+- Branch / commits: `release-tree-hash` from 0d1f568, one commit e9746b2, `--ff-only` to main, pushed; branch and worktree removed; grant on its database provisioned then revoked.
+- Result: `scripts/release_tree.py` (shared by the runner and the release script); receipts carry `release_tree`; `full_suite_receipt` matches exact commit, then tree, then release tree and records `match` in the release receipt. Guard: `tests/test_release_tree.py` fails if any module under `tests/`, `harness/` or `scripts/` (except the launcher, which only mounts the directory) names `superpowers/autopilot` outside a docstring; a real-repository test shows a journal commit keeps the hash and a code commit moves it. deploy.md step 2, phase.md step 5, SKILL.md and state.md updated.
+- Dispatches: 0 (user's session, no workers).
+- Tests: unit 133 (runner, release, release tree, skill); full suite e9746b2 3,291 passed / 6 xfailed / 1 deselected, exit 0 all shards, pristine, 9:51 wall.
+- Review: this session's TDD and diff review; no worker review.
+- Deploy: none. This entry's own commit is the first test of the rule: after it, main's tree differs from e9746b2's but its release tree does not, and the release script must still select the e9746b2 receipt by `release_tree` (checked below in state.md's section, and by the next deploy).
+- Rulings: none new; the exclusion is exactly one directory, the loop's own bookkeeping.
+- Next: unchanged (journal 169/170).
