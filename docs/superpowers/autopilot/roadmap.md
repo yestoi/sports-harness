@@ -23,9 +23,9 @@ section F holds the binding decisions and rulings.
 | 5 Research layer and hypotheses: futures snapshots, NWS, parlay CLI, shadow veto, report annotator, RFQ listener (overview page moved to 4.5) | done | plan-next | none; veto and annotator run only when `secrets/anthropic_api_key` exists |
 | 6A Preserve and define: evidence capsule (order 157 plus representative clean, interleaved, gap/recovery, delayed-loop and capacity-bound periods), correction manifest, runnable failure cases, deploy plumbing (fix 37) | **done** (merged to main 2026-09-11 19:38 CT at 2d1ed62, journal 129; ledger `docs/superpowers/reviews/2026-09-11-phase6a-sdd-ledger.md`; deployed b0a3991 23:22 CT, journal 132; capsule extraction and phase report pending) | `docs/superpowers/plans/2026-09-11-phase6a-preserve-and-define.md` (spec: `docs/superpowers/specs/2026-09-11-phase6a-preserve-and-define-design.md`) | none: start now |
 | 6B Repair execution: subscription continuity, recovery anchoring, trade/delta reconciliation, expiry, rejection, dirty-time scope, capacity-equivalent replay; the order 157 audit | **in progress** (planned 2026-09-11 21:41 CT, journal 131; started 2026-09-12 00:40 CT, journal 137; branch `phase6b-repair-execution`) | `docs/superpowers/plans/2026-09-11-phase6b-repair-execution.md` (spec: `docs/superpowers/specs/2026-09-11-phase6b-repair-execution-design.md`) | 6A done (met, journal 129); execution starts after tonight's wave deploy and 6C's merge, within the implementer ceiling |
-| 6C Trustworthy reports: Chicago week keys on every surface and reader (fix 33 widened), gate documentation and eligibility, confirmation floor, exact-contract joins, funnel units, prior-week annotation backlog (after fix 41) | **planned** (2026-09-11 14:36 CT, journal 120; all 11 tasks merged to main at 6c11df3 and deployed b0a3991 23:22 CT, journal 132; stays planned until the wave-2 verify rows pass on the NAS and the 6D deferral of two funnel units is accepted or delivered) | `docs/superpowers/plans/2026-09-11-phase6c-trustworthy-reports.md` (spec: `docs/superpowers/specs/2026-09-11-phase6c-trustworthy-reports-design.md`) | none: plan and execute the deadline slice alongside 6A/6B; do not wait for all of 6B. Week keys by Sun 2026-09-13 19:00 CT, diagnostic report before Mon 2026-09-14 09:00 CT; final repaired-fill reports need 6B; the slice alone does not complete 6C |
+| 6C Trustworthy reports: Chicago week keys on every surface and reader (fix 33 widened), gate documentation and eligibility, confirmation floor, exact-contract joins, funnel units, prior-week annotation backlog (after fix 41) | **planned** (2026-09-11 14:36 CT, journal 120; all 11 tasks merged to main at 6c11df3 and deployed b0a3991 23:22 CT, journal 132; stays planned until the wave-2 verify rows pass on Omarchy and the 6D deferral of two funnel units is accepted or delivered) | `docs/superpowers/plans/2026-09-11-phase6c-trustworthy-reports.md` (spec: `docs/superpowers/specs/2026-09-11-phase6c-trustworthy-reports-design.md`) | none: plan and execute the deadline slice alongside 6A/6B; do not wait for all of 6B. Week keys by Sun 2026-09-13 19:00 CT, diagnostic report before Mon 2026-09-14 09:00 CT; final repaired-fill reports need 6B; the slice alone does not complete 6C |
 | 6D Sustained evaluation: scheduled-versus-completed instrumentation, budget isolation, an explicit holding/capacity policy, the coverage contract | not planned | plan-next (§6D) | instrumentation none; the policy comparison needs 6B |
-| 6E Operating environment: Mac mini inventory, complete restore rehearsal, corrected-workload benchmark, host choice, measured cutover (fix 34 self-guard) | not planned | plan-next (§6E) | inventory and rehearsal none; the benchmark needs 6B and 6A's deploy plumbing; the cutover itself is the user's yes |
+| 6E Operating environment: inventory, complete restore rehearsal, corrected-workload benchmark, host choice, measured cutover (fix 34 self-guard) | **partially delivered; acceptance pending** (Omarchy inventory/restore/cutover recorded2026-09-12; corrected6B workload and original operational acceptance remain) | plan-next (§6E) | inventory and rehearsal none; the benchmark needs 6B and 6A's deploy plumbing; the cutover itself is the user's yes |
 | 6F Valid prospective period: recorded version boundary, first healthy-weekend checkpoint, sample-accrual forecast, revised selection/confirmation dates | not planned | plan-next (§6F) | 6B; 6C's numeric and eligibility rows; 6D's declared policy; 6E's environment acceptance |
 | 7 Expand only with a working baseline: new variants and optional hypotheses from repaired research evidence | not planned | plan-next | 6F's operational checkpoint |
 | Operator mode | after phase 6, and calendar duties throughout | n/a | n/a |
@@ -33,6 +33,37 @@ section F holds the binding decisions and rulings.
 
 The carried fixes at the bottom of this file run **before** the phase 3 branch is created (R19). Novig is
 dropped: no adapter, no credentials, no live path (user, 2026-09-07).
+
+## Current host and restart setup (user-directed, 2026-09-12)
+
+The user selected “Run the controller, development, and tests on Omarchy” and asked
+“Lets do as much for Claude to be able to start it's loop back up. Lets ensure a smooth restart by doing all the steps until continuing the 6B correctness work.”
+This setup session may update host routing, controller tooling and recovery instructions,
+resolve fix45's bounded third wave, and review/test/integrate the prerequisite hotfixes.
+It stops at the committed handoff before new 6B tasks; it is not an autonomous loop launch.
+The resumed loop still cannot edit its own authority.
+
+Production is `/srv/sports-harness` on Omarchy; controller `/home/trey/dev/sports`,
+task worktrees `/home/trey/dev/sports-wt`, independent test PostgreSQL on loopback 5433.
+Use the Omarchy release targets. The retired NAS remains an off-host bundle/archive
+source; never restart its writer stack. Migration inventory, restore reconciliation,
+and cutover evidence are preserved in `docs/runbooks/omarchy-operations.md` and the
+migration documents; historical commands retain their original provenance.
+
+Omarchy has 32 GB RAM and a roughly 1 TB filesystem. Preserve the deployed 600 GB
+capacity alert budget and 25% free-space gate. U3's 2 TB NAS budget does not apply to
+this filesystem; no retention/deletion is authorized. NAS-era RSS restart thresholds
+are retired; profile growth while observing cadence, host memory and tape health.
+Fix 49's original memory acceptance remains open until measured, not redefined.
+
+6E's host choice and cutover are already performed. Use the recorded Omarchy inventory
+instead of requesting Mac mini specifications or repeating a migration. Keep 6E unaccepted
+until corrected-workload/two-window performance, cold-start and all original operational
+acceptance checks pass. The 6B-dependent benchmark, 6D policy and 6F amendment still apply.
+Worker Git metadata stays read-only; the controller commits returned worker patches.
+The shared suite slot is cooperative scheduling; controller release receipts are private.
+Linux desktop notifications plus durable reminder files replace macOS notifications;
+native push/wakeup tools are checked in the actual session. Timers never launch a model.
 
 ## Decisions (2026-09-07)
 
@@ -56,8 +87,8 @@ Controller rulings this file governs. Each is reversible; the review states the 
 |---|---|
 | R1 | Gate criteria, thresholds, benchmark and BH families, cell grids, success thresholds and confirmation cut-offs are invariants. The loop never amends them; only a dated user decision does. |
 | R2 | `no_veto` is not registered while the veto is shadow-only, because it equals the primary. H9 is measured within the primary by decision label. A live `no_veto` is a user gate and would replace a secondary by dated amendment. |
-| R3 | Stop notifications use `PushNotification`, a macOS notification (`osascript -e 'display notification "…" with title "autopilot"'`), and the report file. No email, no SMS. The first preflight of each calendar day sends one test notification on each channel and journals the result. |
-| R4 | Deploy window: no deploy while any matched game is `in_progress`, within 4 h after any kickoff, within 15 min before any kickoff, or 60 to 100 min before an NFL kickoff. Exceptions: only "recorder down", "executor down", "app-serve unhealthy", journaled with the games affected. |
+| R3 | Stop notifications use native `PushNotification` when available, the Omarchy desktop notification (`scripts/autopilot-session.sh notify`), and the report file. No email, no SMS. The first preflight of each calendar day sends one test notification on each channel and journals the result. |
+| R4 | Deploy window: no deploy while any matched game is `in_progress`, within 4 h after any kickoff, within 15 min before any kickoff, or 60 to 100 min before an NFL kickoff. Exceptions: "recorder down", "executor down", "app-serve unhealthy", journaled with the games affected. Journal128 also permits app-only releases in Thursday–Saturday NCAAF windows with an empty full-trigger diff and no NFL window. |
 | R5 | No git remote (a gate). After every phase and every Monday the loop writes `git bundle create` and copies it to `/volume1/docker/sports-harness/repo-backup/` over scp. The user keeps a Time Machine or equivalent copy of the Mac. |
 | R6 | One resume drill before 2026-09-12, journaled as `drill`. |
 | R7 | Routine reports retain America/Chicago ISO weeks: Week 1 = ISO 37 (paper orders from the phase 3 deploy through Sun 2026-09-13), Week 2 = ISO 38, Week 3 = ISO 39; Monday-night games belong to the following ISO week. **U8 overrides the former Mon 2026-09-21 09:00 selection and Mon 2026-09-28 09:00 confirmation deadlines.** No formal hypothesis selection or confirmation runs until the user ratifies the replacement dated pre-registration amendment; 6F records the new periods, artifact paths and extension rule before confirmatory estimates are examined. Routine reports continue as diagnostics in the meantime. R1 and independent variant-registration deadlines remain in force. |
@@ -68,9 +99,9 @@ Controller rulings this file governs. Each is reversible; the review states the 
 | Action | Authorized |
 |---|---|
 | Fast-forward merge to `main` after a pristine full suite | **yes** |
-| `make deploy-nas` and `make deploy-nas-app` (restart NAS containers) | **yes**, inside the deploy window below |
-| Deploy window (R4) | no deploy while any matched game is `in_progress`, within 4 h after any kickoff, within 15 min before any kickoff, or 60 to 100 min before an NFL kickoff. Three exceptions only: recorder down, executor down, `app-serve` unhealthy. Each exception is journaled with the games affected. Otherwise schedule a wakeup for the window's end and pick another unit. |
-| Partitioning migration of `orderbook_events` and `venue_trades` as phase 3 Task 2b (U3) | **yes**, metadata-only `ATTACH PARTITION`, run on the NAS in the quiet window |
+| `make deploy-omarchy` and `make deploy-omarchy-app` (restart Omarchy application containers) | **yes**, inside the deploy window below |
+| Deploy window (R4) | no deploy while any matched game is `in_progress`, within 4 h after any kickoff, within 15 min before any kickoff, or 60 to 100 min before an NFL kickoff. Three exceptions only: recorder down, executor down, `app-serve` unhealthy. Each exception is journaled with the games affected. Journal128 also permits app-only releases during Thursday–Saturday NCAAF windows when the full-trigger diff is empty and no NFL window is active. Otherwise schedule a wakeup for the window's end and pick another unit. |
+| Partitioning migration of `orderbook_events` and `venue_trades` as phase 3 Task 2b (U3) | **yes**, metadata-only `ATTACH PARTITION`, run on Omarchy in the quiet window |
 | Archiving or dropping any partition, compaction, retention | **never** without a fresh user yes; the loop may propose (U3) |
 | `git bundle create` copied to `/volume1/docker/sports-harness/repo-backup/` after every phase and every Monday (R5) | **yes**, one new additive NAS write path |
 | One resume drill before 2026-09-12 (R6) | **yes**, journaled as `drill` |
@@ -469,7 +500,7 @@ actual contract count is closed by the centicent fee fix (F11), which makes the 
 ## User-side TODOs
 - 2026-09-10 (user): a Mac mini is available as the alternate host if NAS performance impairs the experiment. The loop never moves on its own; it flags the trigger (executor loop p95 over 7.5 s for two consecutive game windows with fixes 31-32 in place, a second starvation incident, or sustained swap traffic outside deploys) in the journal and the phase report, and the migration becomes a plan-next item on the user's yes. **Trigger met 2026-09-10 20:10 CT (journal 101)**: executor loop avg 27 s / p95 118 s in the 19:00 hour with the scheduler under budget, 5 GB of swap resident, IO wait 25-32 %, memory pressure full avg300 16 %; flagged to the user in the session; the phase 5 deploy waits for the user's word on the host. 2026-09-10 20:12 CT (journal 102): the user had the sixteen media containers stopped (`docker stop`, restart with `docker start`); freed about 1.5 GB; the user plans the Mac mini migration for 2026-09-11.
 
-- 2026-09-11 (U8, 6E): record the Mac mini's chip, RAM, free SSD space, container-runtime allocation and intended unattended operation, and tell the loop; it inventories and rehearses, and the cutover waits for your yes.
+- 2026-09-12 (U8,6E): Omarchy selected and migrated; inventory/restore/cutover recorded. Remaining user-side item: console LUKS unlock for the scheduled cold-start/reboot observation; do not repeat Mac mini inventory or cutover approval.
 - 2026-09-11 (U8, 6F): ratify the dated pre-registration amendment 6F writes for the revised selection and confirmation dates.
 - **Odds API: upgrade to the 5M-credit tier before 2026-09-12 (U1), then tell the loop.** Carried fix 10
   stays unflipped until you confirm.

@@ -9,6 +9,7 @@ candidate count is re-checked once after 20 s before it is scored FAIL.
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -26,7 +27,7 @@ select 'cand', v.name, count(s.id) from strategy_variants v
 
 def nas() -> tuple[str, str]:
     vals = {}
-    for line in open(os.environ.get("SPORTS_HOST_PROFILE", ".env.nas")):
+    for line in open(os.environ.get("SPORTS_HOST_PROFILE", "deploy/omarchy/host.env")):
         line = line.strip()
         if "=" in line and not line.startswith("#"):
             k, v = line.split("=", 1)
@@ -35,7 +36,8 @@ def nas() -> tuple[str, str]:
 
 
 def ssh(host: str, cmd: str, stdin: str | None = None) -> str:
-    r = subprocess.run(["ssh", "-o", "BatchMode=yes", host, cmd], input=stdin, capture_output=True, text=True, timeout=180)
+    command = ["bash", "-c", cmd] if socket.gethostname() == "omarchy" and host.endswith("@192.168.12.127") else ["ssh", "-o", "BatchMode=yes", host, cmd]
+    r = subprocess.run(command, input=stdin, capture_output=True, text=True, timeout=180)
     if r.returncode != 0:
         sys.exit(f"ssh failed ({cmd[:50]}...): {r.stderr.strip()[:200]}")
     return r.stdout

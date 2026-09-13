@@ -23,6 +23,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I \"${CLAUDE_PROJECT_DIR}/.claude/skills/autopilot/scripts/worker_guard.py\"",
+            "timeout": 60
+          }
+        ]
+      }
     ]
   }
 }

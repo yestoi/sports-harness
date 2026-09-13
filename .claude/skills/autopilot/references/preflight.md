@@ -1,17 +1,27 @@
-## Preflight (once per session; journal the result as a `preflight` entry)
+## Preflight, once per controller session
 
-1. `make preflight` (one call: clock, git, Mac sleep, test DB, pytest processes, secrets modes, paper posture, tunnel,
-   NAS containers and `/healthz`, disk and memory, deployed stamp versus `main`, game window, tick ages). Save the output
-   verbatim to `docs/superpowers/autopilot/evidence/<date>-preflight-<HHMM>.txt`; the paper-posture line goes in the
-   journal verbatim and anything but `paper posture intact` is a gate. Fix local plumbing inline (tunnel:
-   `ssh -N -L 8180:127.0.0.1:8180 trey@192.168.12.228` with `run_in_background`; sleep: `caffeinate -dims &`;
-   `chmod 600 secrets/*`). Anything else is a gate.
-2. Tools: one `ToolSearch` for `ScheduleWakeup`, `PushNotification`, `ListAgents`, `CronCreate`, `CronList`, `CronDelete`,
-   `Monitor`, `SendMessage` plus the Chrome set (`tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `computer`, `read_page`,
-   `get_page_text`, `tabs_close_mcp`); `tabs_context_mcp` must answer. Journal which resolved (R23). Fallbacks: `CronList`
-   then `CronCreate` for wakeups; `osascript -e 'display notification "<text>" with title "autopilot"'` for notifications.
-   The two test notifications (R3) run on the first session of a calendar day only; `state.md` records the day they ran.
-3. Git: `main` with an empty `git status --porcelain`, or a `phaseN-`/`fix-` branch whose ledger explains the state (Unit:
-   phase 2a). A dirty tree on `main` is inspected, never discarded: state-file edits are committed, the rest is a gate.
-   `git worktree list` shows the implementer worktrees still alive; reconcile each against a ledger and live workers per [recovery.md](recovery.md). Preserve unexplained worktrees;
-   remove only completed, accounted-for work under the phase cleanup procedure.
+Read linux-controller.md and recovery.md. Run `make preflight` on Omarchy and save
+the output to a dated evidence file. It checks Git/worktrees, the isolated test DB,
+runtime containers/storage/memory, effective paper/RFQ/capacity settings, live stamp,
+schema, tick/tape/executor state and upcoming games. The exact `paper posture intact`
+line belongs in the journal; failure is a gate. Credentials are checked for existence
+and mode only, never printed. Runtime credentials stay under `/srv/sports-harness`.
+
+Reconcile branches and ignored ledgers, worker results, test processes and counters.
+Dirty work is inspected and preserved. A phase branch is valid only with its ledger;
+never recreate or clean a task worktree merely because the old session is gone.
+
+Verify actual native scheduler, messaging and browser tools in this session. Test
+Linux desktop notification on the day's first preflight and record the result;
+use native PushNotification too when available. No `osascript`/`caffeinate`/self-SSH
+assumptions. A missing browser connection leaves its acceptance pending while
+deterministic checks continue; native tool IDs and old wakeups are not recovery evidence.
+
+Check provider authentication (`claude auth status`) and installed Superpowers
+procedures before dispatch. Run the fixed sports-worker MCP inventory and sandbox/DB/screenshot smoke before the first worker; command hooks alone do not enforce isolation.
+Only the test Unix socket is available inside workers. Test-suite ownership and a
+kernel lock, not process-count guesses, control full-suite concurrency.
+
+Recompute the next duty and latest feasible 6C delivery opportunity from current
+games/jobs. Use native wakeups for the active loop and durable reminder files for
+session recovery. Never claim a wakeup exists until its actual scheduler lists it.

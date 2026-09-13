@@ -8,6 +8,9 @@ If the SDD workspace is missing, the SDD skill creates it from the committed pla
 1a. **Wave map.** From the plan's `Files:` and `Depends on:` lines, list the tasks in waves: a task is ready when every
     task it depends on has merged into the phase branch, and it joins the current wave when its Files are disjoint from
     every task already running. Tasks sharing a file wait, in plan order. Re-derive the map after every merge.
+On Omarchy every worker dispatch uses `subagent_type="sports-worker"`; the fixed MCP
+tool allowlist replaces native/plugin worker tools. Preserve the model allocations below.
+
 2. **REQUIRED SUB-SKILL:** `superpowers:subagent-driven-development` on the committed plan, with every ready task dispatched
    at once (Parallel work). Its stop conditions map to the roadmap: a merge is pre-authorized; an irreversible or
    destructive operation, a security-sensitive action, or a plan so broken that every path is a guess is a gate.
@@ -34,10 +37,10 @@ If the SDD workspace is missing, the SDD skill creates it from the committed pla
    `Claude-Session`); a plan that hard-codes an older session id is stale on that point.
 5. Full suite before every merge and deploy: `make test` on the branch being merged (its own database), pristine
    output (no warnings, no tracebacks). `make test` on `main` after the merge, before the deploy.
-6. A plan step that says "controller: deploy this task now" is honoured mid-phase, but the NAS only ever runs `main` (R15):
+6. A plan step that says "controller: deploy this task now" is honoured mid-phase, but Omarchy only ever runs `main` (R15):
    after the task's review is clean, `git checkout main && git merge --ff-only phaseN-<slug> && git checkout phaseN-<slug>`,
    then the deploy unit from `main`, verify per verify.md's task-specific rows, journal, continue the branch. A plan whose last
-   task contains `make deploy-nas` runs it as the phase's deploy unit after the merge in step 8, never on the branch.
+   task contains `make deploy-omarchy` runs it as the phase's deploy unit after the merge in step 8, never on the branch.
 7. When the final review is clean (or residuals handled per 7a): load [plan-next.md](plan-next.md) and run its 3a audit on the branch; archive the ledger, final
    review and fix report as `docs/superpowers/reviews/<date>-phaseN-{sdd-ledger,final-review,final-fixes}.md`; commit
    `docs: archive phase N ...` on the branch. The archived ledger on `main` is the durable proof of completion (Orient rule 0).

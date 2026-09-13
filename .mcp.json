@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "sports_worker": {
+      "type": "stdio",
+      "command": "/usr/bin/python3",
+      "args": ["-I", "/home/trey/dev/sports/scripts/worker-tools.py"]
+    }
+  }
+}

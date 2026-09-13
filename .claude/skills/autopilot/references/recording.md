@@ -25,9 +25,9 @@ answering a question, parking a finding and choosing a model tier outside the ta
 ## Reports (`docs/superpowers/autopilot/reports/<date>-<slug>.md`)
 
 Written after every phase (`phaseN`), after every Monday report (`week-NN`), and whenever the loop stops (`stopped`), each
-followed by a one-line `PushNotification` and the `osascript` notification. Sections, in this order: (1) **Needs you**: every
+followed by a one-line `PushNotification` and the `scripts/autopilot-session.sh notify` desktop notification. Sections, in this order: (1) **Needs you**: every
 gate, secret and TODO as one line with the exact command or file drop, or "nothing"; (2) **Decisions you may want to
-reverse**, each with its reversal command; (3) **What the NAS is running**: build sha, deploy times in CT, containers;
+reverse**, each with its reversal command; (3) **What Omarchy is running**: build sha, deploy times in CT, containers;
 (4) **Numbers**: the Layer 2 and band values as a table, "under audit" flagged; (5) **What shipped**: commits, tests;
 (6) **Evidence**: screenshot paths and ssh numbers; (7) **Anomalies and transients**; (8) **Spend**: dispatches, Odds credits,
 database growth, Anthropic dollars; (9) **Next**: the unit and the wakeup time. Times in CT with UTC in parentheses (NAS logs

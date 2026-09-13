@@ -172,7 +172,15 @@ VENV    ?= $(if $(wildcard .venv/bin/pytest),.venv,$(HOME)/dev/sports/.venv)
 TEST_DB ?= harness_test_$(shell git branch --show-current | tr -c 'a-z0-9\n' '_' | tr -d '\n')
 
 test: ## Full suite against a per-branch test DB on localhost:5433 (created if missing)
-	@URL=$$($(VENV)/bin/python scripts/testdb.py $(TEST_DB)) && DATABASE_URL_TEST=$$URL PYTHONPATH=. $(VENV)/bin/pytest -q
+	@TEST_DB=$(TEST_DB) $(VENV)/bin/python scripts/test-suite.py $(TEST_ARGS)
+
+.PHONY: deploy-omarchy deploy-omarchy-app plan-release-omarchy
+deploy-omarchy: ## Full application/schema release on Omarchy; game-window and backup gated
+	@$(VENV)/bin/python scripts/release-omarchy.py --mode full
+deploy-omarchy-app: ## Release app services on Omarchy while preserving the WebSocket recorder
+	@$(VENV)/bin/python scripts/release-omarchy.py --mode app
+plan-release-omarchy: ## Read-only release eligibility check on Omarchy
+	@$(VENV)/bin/python scripts/release-omarchy.py --mode $(or $(MODE),app) --plan
 
 preflight: ## Session preflight: clock, git, Mac, test DB, secrets, posture, tunnel, NAS, stamp, game window
 	@scripts/preflight.sh

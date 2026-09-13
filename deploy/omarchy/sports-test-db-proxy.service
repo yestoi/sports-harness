@@ -1,0 +1,10 @@
+[Unit]
+Description=Sports isolated test PostgreSQL Unix socket proxy
+[Service]
+RuntimeDirectory=sports-test-db
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/socat UNIX-LISTEN:%t/sports-test-db/.s.PGSQL.5433,fork,unlink-early,mode=0600 TCP:127.0.0.1:5433
+Restart=on-failure
+RestartSec=3
+[Install]
+WantedBy=default.target

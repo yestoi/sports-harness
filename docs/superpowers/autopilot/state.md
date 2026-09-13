@@ -1,21 +1,56 @@
-# Autopilot state (rewritten by the loop at every unit boundary; the journal is the history)
+# Autopilot restart checkpoint
 
-- Updated: 2026-09-12 05:50 CT (10:50Z), main at the commit carrying journal 143. **GATED (skill gate 11) since 05:50 CT: fix 45 has a new Critical after its second fix wave; report `reports/2026-09-12-stopped-0550.md`. Only verify and operate run until the user answers; the recommended answer is round 3 (opus) and a 47 + 48+49 deploy without 45.** Controller: session_01EQLntzrHKwVKGPkLrm5Fy5 (`sports-6b`), checkout /Users/trey/dev/sports, main at c527aa0 (journal 140). Compacted ~01:06 CT; reconciled per recovery.md. A peer session `sports-5a` is idle on this Mac (not the controller).
-- Position: NAS on **b0a3991** (deployed 2026-09-11 23:22 CT, journal 132); **verified FAIL at journal 136** (the deploy stands; four carried fixes). The host is IO-starved (swap 4.2-4.9 GB, IO wait 21-49 %, app-run RSS 2.1 GB). Operational containment in force: `RFQ_LISTENER_ENABLED=0` in the NAS `.env` since 00:27 CT (`deploy/nas.env` still 1: **every deploy before 6D sets the NAS `.env` back to 0 after the recipe**). app-serve restarted 00:49 CT (builders back); walk 2 done (journal 139). Recorder leak (fix 49): restarted 00:47 and 01:09 CT; grows ~1.8 GiB per tick and is not released; Monitor `b46l8zq9w` (5 min) reports RSS > 2.4 GiB or host available < 600 MB; restart `app-run` then, outside game windows, at most once per 30 min (journal 138 ruling 1 tightened 01:24 CT: a restart every tick would record nothing).
-- Active units:
-  - **hotfix 45** (normalize raw_responses index): GATED at round 2 (`fix-45-raw-events-index` 003375e, worktree kept; reviews `fix-45-review.md`, `fix-45-rereview-1.md`, `fix-45-rereview-2.md`: a third Critical, the child reindex never revalidates the parent; one-statement fix). On "go": round 3 by a fresh opus implementer (Critical + 3 minors), opus re-review, rebase, merge, then T3.
-  - **hotfix 48+49** (pricing stage order + recorder memory): takeover `impl-fix-48-49-r2` (opus, dispatched 03:53 CT, re-dispatch 1 of 3) at b447827 (fix commits f0e3dae, eb4e506; base 44e8e9c), suite running 05:37, "report now" sent (fallback 05:55; a second timeout = gate). Report `fix-48-49-report.md`. Its opus review and the deploy wait on the gate answer (recommended: proceed without 45).
-  - **hotfix 47** (settle budget): merged to main b9c0cdd (04:05 CT), undeployed; must reach the NAS before Sun 19:00 CT (the 6C Sunday rows).
-  - **phase 6B** `in progress`: branch `phase6b-repair-execution` head 2d0fd71 (T10, T1, T2 merged; 3126 passed, 5 xfailed); ledger `.superpowers/sdd/2026-09-11-phase6b-repair-execution/progress.md`. Next: T3 (opus, brief `task-3-brief.md` ready) after fix 45 reaches main and the phase branch is rebased onto main (revision `0008_phase6b_execution` on `0007_raw_events_lookup`); T3's brief carries T1 minor 3 (`or ZERO`) and T2's `ws_connect_at` keyword. Whole-branch review list in the ledger (Task 2: complete line).
-  - **6D plan-next**: allowed alongside 6B (U8); start after wave 1 when a slot frees; inputs: journal 130, 136 (fix 46 executor-yield guard and store cap; consensus_t5 stale share; the pricing stage costs fix 48 records; app-run RSS), the two deferred funnel units, fix 47's stage timings.
-- Counters (CT day 2026-09-12): dispatches 19 (journal 143); failed deploys 0; implementers 3 of 3 (impl-fix-45 re-running its suite; impl-fix-48-49 suite running, report written 02:58; impl-fix-47 fix round 1); timeouts: walker 1 (00:39 CT). Monitors: recorder `b46l8zq9w` (2.4 GiB / 600 MB, one-tick minimum; restarts 00:47, 01:09, 01:26, 01:42, 01:57 CT). Hotfix ledger `.superpowers/sdd/hotfix-2026-09-12/progress.md`. Walker 2 deviation (javascript_tool) journaled in 140.
-- Wakeups: cron 6ba6dbfb one-shot 04:27 CT (capsule extraction window 04:30-08:00 CT, docs/runbooks/capsule.md, six capsules; the 6A verify row waits for it); ScheduleWakeup 02:04 CT (fix 45 / T1 timeout check, reconcile). Game window: Sat 10:45 CT (NCAAF) through Sun ~03:00 CT; Sun 10:20 CT onward (NFL). Sun 19:00-23:59 CT the 6C Sunday rows (need fix 47 deployed). Mon 09:00 CT diagnostic report (U8), 09:30 alias pass, 09:45 replay-vs-live, bundle/push.
-- 6A phase report written and pushed (0ae6e61; bundle on the NAS). User 01:09 CT asked about stopping containers / rebooting the NAS: answered in chat (journal 140), no action; a reboot is the user's, before 10:45 CT if at all.
-- 6A: done (journal 129; deployed b0a3991; capsules taken 04:29-04:33 CT, journal 142, committed 9bc4198; phase report 0ae6e61). Capsule cron 6ba6dbfb consumed.
-- 6C: planned, all 11 tasks deployed; stays planned until the wave-2 rows pass on the NAS and the funnel-unit deferral is accepted; Sunday row (i) needs fix 47. Worktree `../sports-wt/phase6c-trustworthy-reports` holds nothing unmerged (remove at 6C done).
-- Carried fixes (journal 144 added): **51 checks skip on timeout (hotfix, ops path, low urgency); 52 NWS fetch storm on the 30 s tick + due-ness never clears (hotfix before tonight's 01:00 CT quiet hours)**; 20 user; 33 done (6C); 34 6E (tripped twice tonight); 37/40/41/43 deployed bd220b8; 42/44 deployed b0a3991 (44 verified: listener resubscribed and delivered; 42: pricing index in place, the pass now fails on budget = fix 48); **45 hotfix (fix round 2), 46 6D (listener off), 47 merged to main b9c0cdd (awaiting the deploy wave), 48+49 hotfix batch (takeover suite), 50 ws sink QueryCanceled storm (verify after the deploy; hotfix if it recurs)**.
-- Deferred judge-afters: 08:45 CT items judged at journal 145 (annotation PASS, builders back); 08:10 CT items judged at journal 144; Sun 19:00 CT row (i); Monday rows; Tuesday futures; gate criteria hash at the Monday gate run.
-- Anomalies under watch: consensus_t5 stale share 22.7 % (numbers under audit); Pulse BROKEN on sink lag / tape_gap / check_fail (host); page `/` 37.8 s; app-exec unhealthy probe; executor loops 15+ min (counterfactual backlog: 6B T6).
-- Needs-you list (for the 6A report): the R4 wording paste (journal 128); the 6A eligibility switch; 6B §0.13 a/b/c; the 6C one-sided reading and the funnel-unit deferral; the Mac mini inventory (trigger re-met twice; tonight's numbers in journal 136); the 6F amendment; a "UI design pass" roadmap row if wanted (journal 134); the age-key copy; the stray worktree `../sports-autopilot-context-recovery` is the user's.
-- Lessons (new): `docker compose restart` does not re-read `.env`; use `up -d` to apply an env change. The NAS is slow enough that a Layer 2 pass takes 10+ minutes; run it in the background with the evidence file as the sink. `left()` on jsonb needs `::text`.
-- Lessons (standing): a killed test run's DROP DATABASE can queue every later connection; never more than two suites at once on harness-pg-test; the Mac's low-memory guard kills background runs (agents run suites in the foreground); never create files inside the repo for logs; after rebasing a branch, do not commit to main before the fast-forward; read the clock for every timestamp; cut review packages from the merge base.
+Updated 2026-09-12 19:14 CT (2026-09-13 00:14Z). This is user-directed preparation,
+not a running Claude controller. Main 073732f; Omarchy runtime b0a3991/schema 0006.
+Controller/development/test destination: /home/trey/dev/sports on Omarchy. Mac
+checkout preserves originals; no retired NAS service is to be started.
+
+Active plan: docs/superpowers/plans/2026-09-12-omarchy-loop-restart.md.
+Ledger: .superpowers/sdd/omarchy-restart-2026-09-12/progress.md. Prior ledger
+.superpowers/sdd/hotfix-2026-09-12/progress.md and the entire recovered SDD tree remain.
+The user's restart-preparation instruction authorizes bounded fix 45 round 3; do not
+ask the old gate question again. No new 6B task starts in this preparation session.
+
+- 52: reviewed, full suite 3,136 passed / 6 expected xfails at 073732f on Omarchy; merged, undeployed.
+- 47: reviewed and merged before migration; still undeployed.
+- 48/49: repaired, independent scoped review PASS (review48-r2.md); branch
+ recovery/fix48-review now 4ac9008 after clean rebase onto 52 plus host-neutral memory label.
+ Fullsuite pending. Original memory cause/<5% synthetic/6 h / 500 MiB acceptance stays OPEN.
+- 45: round 3 code independently reviewed, targeted 11 passed. Fullsuite running on
+ recovery/fix 45-round 3, log fix 45-full.log in restart ledger directory. No Critical
+ remains in reviewed code; merge/deploy evidence still required before 6B T3.
+- Controller tooling: reviewed release script: 51 pure tests PASS; fixed MCP worker tool
+ boundary replacing hook-only enforcement, actual sandbox/Claude drill pending.
+ Claude auth loggedIn=true/claude.ai and Superpowers 6.3.0 installed. No loop launched.
+
+Counters: prior CT-day dispatch count 19 retained (old transcript discrepancy remains
+conservative, never reset). Current setup 14 dispatches audited from controller tool
+calls through 00:07:38Z; day total 33. Failed deploys 0; no release attempted. Historical
+fix 48 redispatch 1 and fix 45 round 2 history retained; old worker IDs/monitors/wakeups
+are not live Omarchy handles. Current preparation workers are tracked in restart ledger.
+
+6B branch phase6b-repair-execution still 2d0fd71 with accepted T10/T1/T2 only;
+.superpowers/sdd/2026-09-11-phase6b-repair-execution/progress.md. Rebase onto final main
+with 0007 before T3; new 0008 dependency and T1/T2 review minors remain in task 3 brief.
+6C remains partial/planned: all 11 tasks deployed b0a3991, Sunday 19:00 week-key checks,
+Monday before 09:00 diagnostic report, numeric eligibility/funnel and 6B dependencies open.
+6E inventory/restore/cutover are recorded; six-hour observer still running, cold-start
+and two representative corrected-workload windows pending. No claim migration fixes 6B.
+
+Actual user-systemd reminder timers installed (not model wakeups):
+- sports-reminder-2026091301: Sun 02:50 CT inspect earliest full-release opportunity.
+- sports-reminder-2026091302: Sun 09:30 CT readiness before 10:20 NFL deployment block.
+- sports-reminder-2026091303: Sun 18:30 CT prepare 19:00 week-key checks.
+- sports-reminder-2026091401: Mon 07:30 CT prepare diagnostic before 09:00.
+Timers survive SSH loss, not reboot. Drill 2026091201 delivered successfully. Native
+Claude wakeups still require actual controller-session setup. Based on recorded games,
+full release cannot occur before roughly Sun 03:00 CT; re-query actual statuses/time first.
+
+Fresh observations: original three fix 51 queries PASS within unchanged 2 s (1.506/0.211/
+0.078s); no WS timeout/subscription rejection seen in last 2 h, not a 24 h fix 50 acceptance.
+One additive host telemetry refresh replaced stale NAS samples with actual Omarchy
+862.329 GiB free of 951.852 GiB, 20399.992 MiB available at 00:12:44Z; no old row changed.
+UI still reflects historical tape gaps, skipped daily checks and 6B dirty-book findings.
+NAS RSS restart thresholds are retired. Preserve RFQ 0, paper/LIVE 0, 600 GB alert budget,
+25% disk gate, all scientific/money/retention rules. Use current instructions, not old
+state's emergency restart monitor or NAS deploy recipes.

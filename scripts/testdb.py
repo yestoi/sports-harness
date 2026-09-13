@@ -5,6 +5,8 @@ Usage: scripts/testdb.py NAME
 Prints the SQLAlchemy URL for NAME. Idempotent; safe to call from every test run.
 """
 import sys
+import os
+from urllib.parse import quote
 
 import psycopg
 
@@ -14,11 +16,16 @@ ADMIN = "postgresql://harness:harness@localhost:5433/postgres"
 def main(name: str) -> None:
     if not name.replace("_", "").isalnum() or len(name) > 63:
         sys.exit(f"testdb: bad database name {name!r}")
-    with psycopg.connect(ADMIN, autocommit=True) as conn:
+    socket = os.environ.get('SPORTS_TEST_SOCKET')
+    options = {'host': socket, 'port': 5433} if socket else {}
+    with psycopg.connect(ADMIN, autocommit=True, **options) as conn:
         exists = conn.execute("select 1 from pg_database where datname = %s", (name,)).fetchone()
         if not exists:
             conn.execute(f'create database "{name}"')
-    print(f"postgresql+psycopg://harness:harness@localhost:5433/{name}")
+    if socket:
+        print(f"postgresql+psycopg://harness:harness@/{name}?host={quote(socket, safe='')}&port=5433")
+    else:
+        print(f"postgresql+psycopg://harness:harness@localhost:5433/{name}")
 
 
 if __name__ == "__main__":

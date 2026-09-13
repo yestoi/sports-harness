@@ -1,34 +1,43 @@
-## Unit: deploy
+## Unit: deploy on Omarchy
 
-Run inline in the controller session, never inside an agent (agents cannot surface failures or prompts, and they have no
-NAS access). Preconditions (any failing: do not deploy; journal why):
-- `git branch --show-current` prints `main`; `git status --porcelain` prints nothing (untracked files also stamp `-dirty`;
-  commit or remove them first).
-- No game window (verify.md "Game window", R4): no matched game `in_progress`, no kickoff in the last 4 h or the next 15 min,
-  no NFL kickoff 60-100 min away. Otherwise a wakeup for the window's end and another unit. Exceptions, journaled with the
-  games affected: only "recorder down", "executor down", "app-serve unhealthy".
-- Declared deployment prerequisites are included and reviewed. For the pending 40/41 wave, fix 37 must land before
-  the dependent deploy: cover every changed service and restore stopped services after a schema failure. Reviewing 40/41
-  can proceed independently; the old manual stop/recreate workaround does not satisfy this prerequisite.
-- A lost deploy notification is not a reason to deploy again: read the stamp first (Orient rule 2). `/healthz` build equal to
-  `git rev-parse --short main` means it landed. One deploy in flight at a time; a deploy after a failed one needs its
-  journaled cause first (Ceilings).
-- One deploy per wave, not per batch: every branch whose review is clean at deploy time is merged first, then one
-  deploy and one verification cover them all (the verify rows are the union of what the merged findings name).
+Only the controller deploys, from `/home/trey/dev/sports` on clean `main`. Before
+choosing this unit, reconcile the live stamp and the latest `/srv/sports-harness/releases/*/receipt.json`.
+A completed deployment awaiting verification goes to verify; never retry merely
+because a notification was lost. Preserve the daily failure ceilings and pending gates.
 
-Target (R4): `make deploy-nas-app` (app containers only; `app-ws` keeps its socket) when the target accepts (it refuses until
-`app-exec` exists, phase 3) and this diff is empty; else `make deploy-nas`, which restarts `app-ws` and loses a few seconds of WebSocket events (note it):
-`git diff --stat "$DEPLOYED"..main -- harness/recorder/ws_sink.py harness/venues/kalshi/ws.py harness/db/models.py docker-compose.yml Dockerfile pyproject.toml constraints.txt`
-
-1. `DEPLOY_SHA=$(git rev-parse --short HEAD)`; the chosen target in the foreground (a cached build lands in about a minute;
-   the Mac's low-memory guard has killed a background deploy before).
-2. `make status-nas`: every container `Up`, `app-serve` `(healthy)` within three minutes.
-3. Freshness: `/healthz` returns `"build": "<DEPLOY_SHA>"` (curl over ssh); a mismatch or `-dirty` is a deploy failure.
-4. A `seed-teams failed` warning in the deploy log: wait five minutes, re-run `docker compose run --rm app-run seed-teams` over
-   ssh once, journal it. Any other failure: **REQUIRED SUB-SKILL** `superpowers:systematic-debugging`, inline; unresolved: gate.
-5. Tape continuity (the verify.md Layer 2 row): after a full deploy, `app-ws` is `Up`, a snapshot has arrived since the
-   restart, and the `gap` rows written around it are counted in the journal's Deploy line.
-6. Forced tick: `ssh ... 'docker compose run --rm -T app-run tick-once --force'` so the pricing, ERROR-line and signals
-   rows can be judged now instead of at the next cadence slot (it spends one tick's credits; never inside quiet hours,
-   where the rows are deferred instead).
-7. Journal a `deploy` entry (sha, time, target, containers, stamp check, gap count); continue to verify.
+1. Compare deployed source with main, excluding docs/Markdown/.claude controller
+   tooling. Batch all reviewed, ready independent fixes into one release. Keep the
+   declared prerequisites and service ownership in the ledger.
+2. Run `make test` on exact clean main with no filtering environment/TEST_ARGS. Its
+   receipt must show the same before/after SHA, no dirty files, exit 0 and a full
+   scope. Review the log for warnings/tracebacks and expected xfails; a worker's
+   “passed” statement is insufficient.
+3. `make plan-release-omarchy MODE=app` checks stamp, configuration and game window.
+   App-only is rejected for WebSocket/RFQ, database/model/migration, matching/alias,
+   variant, Compose, Dockerfile, dependency or backup-script changes. Select full
+   when required, never bypass classification to meet a deadline.
+4. R4 applies to full releases and NFL windows. Journal 128 permits app-only in
+   Thursday–Saturday college windows when the full-trigger diff is empty and no NFL
+   window is active. The migration-only game-window waiver expired at cutover.
+   The script fails closed on a game window; the three existing emergency exceptions
+   require a separate controller-reviewed action and affected-game journal entry,
+   never a generic bypass flag. If time blocks deployment, checkpoint and arm the
+   appropriate native wakeup, then do independent ready work.
+5. Run `make deploy-omarchy-app` or `make deploy-omarchy` in the foreground. The
+   script builds an immutable candidate image from the exact Git archive, validates
+   preserved settings, requires a fresh successful backup, and rechecks the window
+   after building. App-only leaves app-ws untouched. Full application/schema release
+   includes app-ws, migrations, init-db, variant registration and team seeding.
+   PostgreSQL/backup service configuration changes use a separate infrastructure plan.
+6. A failure restores the prior Compose definitions and application image selection;
+   it re-registers the previous image's variants before restarting writers if registration was attempted; it never rolls back additive schema by deleting data. Read the receipt's original
+   and rollback outcome and check actual old-service health. A failed rollback is a
+   stop, not a completed recovery. Existing image tags are never overwritten/rebuilt.
+7. Success means every changed service has its expected immutable image and build
+   environment, health is good, and a completed recorder tick carries the new SHA.
+   Then run `make verify-summary-omarchy DEPLOY_SHA=<sha>` and the full verification
+   contract, including code-specific rows. Full releases record the actual tape gap
+   and first recovered snapshot. No forced tick in quiet hours.
+8. Journal SHA, receipt path, time/window ruling, services, backup evidence, stamp,
+   tape continuity, test/review evidence and all deferred judge-after rows. Keep
+   implemented/reviewed/merged/deployed/verified states distinct. Continue to verify.
