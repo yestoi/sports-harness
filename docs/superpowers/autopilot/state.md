@@ -1,39 +1,41 @@
 # Autopilot checkpoint
 
-Updated 2026-09-13 00:36 CT (2026-09-13T05:36Z). Controller: session sports-09 (session_01Cn2HK3xzxbp3MGVPHK9eQF) in `/home/trey/dev/sports` on Omarchy, launched directly by the user (not the tmux helper); controller.lock held by this session's background flock. Worktrees `/home/trey/dev/sports-wt`; production `/srv/sports-harness`. Last journal: 158.
+Updated 2026-09-13 07:16 CT (12:16Z). Controller session sports-09 (session_01Cn2HK3xzxbp3MGVPHK9eQF) in `/home/trey/dev/sports` on Omarchy, STOPPED at the user's request ("safe stopping point ... before we dispatch task 5") after finishing the release, its verification and Task 4. Worktrees `/home/trey/dev/sports-wt`; production `/srv/sports-harness`. Last journal: 161. Stopped report `reports/2026-09-13-stopped.md`. The controller lock was released at the stop; no Claude controller is running.
 
-## Active units
+## Active units (all idle at the stop)
 
-- **phase 6B** (plan `docs/superpowers/plans/2026-09-11-phase6b-repair-execution.md`, ledger `.superpowers/sdd/2026-09-11-phase6b-repair-execution/progress.md`): phase branch `phase6b-repair-execution` 9eecec6 (T10/T1/T2 accepted). **T3 dispatched** 22:20 CT: branch `phase6b-t3-reconciliation` base 9eecec6, worktree `../sports-wt/phase6b-t3-reconciliation`, DB harness_test_phase6b_t3_reconciliation (fixture grant on), worker impl-6b-t3 (opus, agent ae1d7a9e2ff2d1873), brief `task-3-omarchy-brief.md`. Next legal action: consume its report, commit the patch, exact-SHA opus review package. Remaining after T3: T4-T9, T11, T12, final review.
-- **hotfix batch A, fix 49** (ledger `.superpowers/sdd/hotfix-2026-09-12-omarchy/progress.md`): branch `fix-20260912-recorder-memory` base a2287da, worker impl-fix49 (opus, agent af80d3ab1c7db8cab), dispatched 22:20 CT. Next: report → commit → opus review → full suite → ff merge → release.
-- **hotfix batch B, fix 53**: MERGED to main 6f0b5b9 (journal 158); worktree/branch removed, grants revoked. Awaits the full release and post-release Pulse pixels.
-- **deploy (pending window)**: main 6f0b5b9 is ahead of runtime 93dfb95 by fix 45 (revision 0007, models/schema/migrate/normalize) and fix 53 (dashboard) → `make deploy-omarchy` (full). Window: Saturday college slate blocks until ~03:00 CT Sun (last kickoff 23:00 CT); NFL block from 10:20 CT Sun. Needs an exact-HEAD `make test` receipt on clean main (log dir `.superpowers/sdd/omarchy-loop-2026-09-12/`). Merged hotfix batches join the same release.
-- **6C**: planned/partial; all 11 tasks deployed. Sun 19:00 CT week-37 discriminator (wave-2 verify rows on Omarchy), Mon before 09:00 CT diagnostic report. Deferred funnel units await the user's answer.
-- **6D plan-next** (not started): carries fixes 46, 48 (coverage/throughput), 51 (check statements; verify.md copy via a plan task).
+- **phase 6B** (plan `docs/superpowers/plans/2026-09-11-phase6b-repair-execution.md`, ledger `.superpowers/sdd/2026-09-11-phase6b-repair-execution/progress.md`): branch `phase6b-repair-execution` head bac35ab (T10, T1, T2, T3, T4 accepted). Accepted: T10, T1, T2, T3 (13f891b; 2 fix rounds; opus review + opus/sonnet re-reviews), T4 (bac35ab; 0 fix rounds; opus review Approved, 7 Minors carried). **Next legal action: dispatch T5** from `task-5-omarchy-brief.md` (create `../sports-wt/phase6b-t5-expiry-rejected` from the phase head, DB `harness_test_phase6b_t5_expiry_rejected` + `_a/_b/_s` with the indisvalid grant; model sonnet). Remaining after T5: T6-T9, T11, T12, final review; xfail ledger: 3 in `tests/test_execution_regressions.py` (cases 4, 5, 6) plus the R14 marker in `tests/test_replay_execute.py` (owner Task 7 / 6D). Whole-branch list: in the ledger (T1 minor 2, T2 minor 6 and surfaces, T3 review surfaces 1-9 and round notes, T4 Minors 1-7 and surfaces 1-6).
+- **hotfix ledger** `.superpowers/sdd/hotfix-2026-09-12-omarchy/progress.md`: fix 53 merged 6f0b5b9 and deployed (row reopened on walk item 19); fix 49 merged ebf0953 and deployed (6 h row after 12:44 CT). Carried, not started: 54 (Gate reading units), 55 (legacy signals label), 53 round (disclosure rendering), 51 → 6D.
+- **deploy**: runtime = main = ebf0953 (full release 06:42-06:44 CT, receipt `/srv/sports-harness/releases/20260913T114210Z-ebf0953/`); main has docs commits after it (7d8716c and the stop commit): docs-only, no redeploy trigger.
+- **verify**: journal 160 FAIL (walk items 18 data / 19 fix 53 rendering; five invariants under audit unchanged); all release-specific rows PASS. Deferred with judge-after: fix 49 6 h/500 MiB after 12:44 CT; fix 50 21:05 CT; fix 52 daytime after 08:00 CT (quiet-hour 0 rows PASS so far); fix 45 24 h Mon 06:44 CT; 6C (i)/(iii) Sunday 19:00-23:59 CT; 6C (v)/(vi) and wave-2 eligibility lines after Monday's report; 6A capsules after the extraction; walk item 9 after the first real tick.
+- **6C**: planned/partial; Sun 19:00 CT discriminator and Mon 09:00 CT diagnostic report still due (no controller running: see Needs you).
+- **6D plan-next**: not started; inputs pre-read (ROADMAP.md §6D, backlog dispositions); carries 46, 48, 51, the 55 coverage half, the normalizer denominator.
 
 ## Pending results / subprocesses
 
-- T3 (alive, queued on the suite slot at 00:05 CT ruling) and fix 49 (root cause fixed in `harness/normalize/runner.py::_drain_batch`, 20-tick test outstanding) implementers running; main suite on 6f0b5b9 starting for the release receipt (an aborted main-suite log `main-full-a2287da-aborted-dirty-tree.log` is retained; it was stopped because the untracked preflight evidence file dirtied the receipt).
-- Wakeups (session-only crons): 6d0f4617 Sun 00:45 CT T3 re-check; d005838b Sun 03:03 CT deploy window / WTD / fix 52 checks; 762f2c56 Sun 09:05 CT daily line + NFL readiness; 0d81be85 Sun 19:07 CT 6C week-37 rows; bfcb0b14 Mon 08:57 CT diagnostic report. (0fa407c3 23:53 and a32f4170 00:04 fired.) User-systemd reminders (durable, no model launch): Sun 02:49:59, 09:29:59, 18:29:59, Mon 07:29:59 CT.
+- None. All agents consumed (implementers T3, T4, fix 49, fix 53; reviewers; walker). No suite running; no deploy running.
+- Wakeups: none survive the session (session-only crons 762f2c56 Sun 09:05, 0d81be85 Sun 19:07, bfcb0b14 Mon 08:57 died at the stop). User-systemd reminders Sun 09:29:59 / 18:29:59, Mon 07:29:59 CT still fire and launch nothing.
+- Fixture grant UPDATE(indisvalid) ON: harness_test_main (+_a,_b,_s) only. All branch databases revoked. (Revoke main's before a non-controller use; re-grant before the next main suite.)
+- Preserved: recovery branches/worktrees from the restart (fix-45-raw-events-index, fix-48-pricing-stage-order, recovery/*, restart-worker-smoke), three migration stashes.
 
 ## Evidence receipts
 
-- Runtime 93dfb95 (app-run/serve/exec/research), WS b0a3991, schema 0006; receipt `/srv/sports-harness/releases/20260913T015931Z-93dfb95/receipt.json`; verification FAIL (journal 154; evidence `docs/superpowers/reviews/2026-09-12-omarchy-restart/release-and-verification-evidence.md`).
-- 4b2f2cd (fix 45 source): 3,230 passed / 6 xfail clean full suite; independent review PASS; on main. a2287da = 4b2f2cd + docs.
-- Preflight 2026-09-12 22:21 CT: `evidence/2026-09-12-2212-preflight.txt`, paper posture intact.
+- Runtime ebf0953 all five app services (image sha256:c8ec17eb…), schema 0007; receipt healthy 11:42:10-11:44:01Z; first natural tick 13951 06:43:57 CT.
+- Main suite receipts: 9a85a92 run 2 3,240/6 exit 0; ebf0953 3,244/6 exit 0 (`.superpowers/sdd/omarchy-loop-2026-09-12/main-full-*.log`, `-receipt.json`). Branch: fix 53 b362960 3,240/6; fix 49 ebf0953 3,244/6; T3 13f891b 3,272/5; T4 bac35ab 3,276/4 (all exit 0, clean).
+- Verify ebf0953: `evidence/2026-09-13-verify-ebf0953-0653-{layer2,layer2b,summary}.txt`, `2026-09-13-verify-0653-*` (24 PNG, browser.json, walker report).
 
 ## Counters and gates
 
-- CT day Sep 12: 51 dispatches (43 carried + 8); CT day Sep 13: 0 so far; failed deployment acceptance 1 (fix 48 row); no rate-limit events; no open gates.
-- Fixture grant UPDATE(indisvalid) currently ON: harness_test_main(+_a,_b,_s), harness_test_phase6b_t3_reconciliation, harness_test_fix_20260912_recorder_memory (dashboard_mobile revoked). Revoke after each database's last suite.
+- CT day Sep 12: 51 dispatches; CT day Sep 13: 9 (rev-6b-t3, rerev-6b-t3-1/2, impl-6b-t4, rev-fix49, rerev-fix49-1/3, rev-6b-t4, walker). Failed deployment acceptance: 1 (fix 48 row, carried from Sep 12); the 06:13 CT refused release (receipt under the wrong name) is not a failed deploy. No rate-limit events. No open gates.
+- Fix rounds: fix 53 2; fix 49 3; T3 2; T4 0.
 
 ## Deadlines and open acceptance
 
-- Deploy window Sun ~03:00-10:20 CT (requery games); 6C Sun 19:00 CT and Mon 09:00 CT; fix 50 judge-after Sun 21:05:30 CT; WTD due-report-first after Sun 02:10:38 CT; fix 52 quiet-hour (03:00-08:00 CT) zero-fetch and daytime freshness; fix 51 25 h all-pass not begun; fix 49 original 20-tick/<5 % and 6 h/500 MiB acceptance OPEN (live: 4.2 GB at 22:19 CT, ~1 GB/h in-window); fix 47 due-report-first open; 6E cold-start (user LUKS) and two corrected-workload windows open; 6F awaits the user's amendment.
-- Live evidence for 6C/48: markets normalizer ~12 h behind raw tape; current-run venue_quotes absent; no reset or freshness relaxation.
+- NFL block from 10:20 CT Sun through Monday night; next deploy window Tuesday. 6C Sun 19:00 CT and Mon 09:00 CT (diagnostic report duty; operate.md). Fix 49 original acceptance: 20-tick synthetic <5 % holds in the suite; production 6 h/500 MiB judged from `recorder.rss_mb` after 12:44 CT. 6E cold-start (user LUKS) and two corrected-workload windows open. 6F awaits the user's amendment. Live evidence for 48/6D: markets normalizer backlog and zero current-run venue_quotes unchanged (journal 154).
 
 ## Risks and lessons
 
-- Worker output shows namespace masks (.env.example, .env.nas.example, secrets/.gitkeep): never apply them.
-- Receipts must come from a clean tree: commit docs/evidence before starting a release suite.
-- The suite slot is host-wide and cooperative; three workers plus the controller queue on it.
+- The release script requires the full-suite receipt under `harness_test_main` at the exact HEAD; an identical tree under another branch name is refused. Run `make test` on main last, after all docs commits, then deploy.
+- Suite-slot contention: three implementers plus controller suites serialize on one host slot; a 30-minute full suite blocks every targeted run. Sequence full suites deliberately; kill a superseded suite by SIGKILL on the pytest process group (SIGTERM/INT/HUP do not stop it mid-run).
+- Worker namespace masks (.env.example, .env.nas.example, secrets/.gitkeep) never applied. Alembic scratch tests cannot run in the worker sandbox (socket URL); the controller's TCP suite covers them.
+- Fix 49 root cause: `.scalars().all()` on a 500-row jsonb batch; the normalizer backlog remains a separate open defect (6D).

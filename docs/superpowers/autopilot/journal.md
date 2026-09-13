@@ -1942,3 +1942,17 @@ Times are America/Chicago.
 - Rulings: item 18 is a data FAIL already carried (fix 51, 6D), not a dashboard defect; item 19 keeps fix 53 open (row updated: technical text behind a keyboard-accessible disclosure, humanize `check_failed` names, apply to Study's event history); the cold `/api/summary` is a transient post-restart cache miss, not carried. Walker anomalies: Gate reading text formats non-fractional metrics as percentages (new row 54); legacy signals rows show `fair=None` beside `reason=has_fair` (new row 55): data check shows the rows carry no fair and `rejection_reason` names the failed check, 54,435 rows per variant in 24 h - a label-clarity item; the volume is fix 48 / 6D coverage; item 4's "six variants" wording is stale (7 active plus a replay row) and item 14's days-to-ceiling 31 is the partial projection 6E owns; buttons default to type=submit with no form (harmless).
 - Carried forward: 53 reopened with item 19; 54 Gate reading percentages; 55 legacy signals fair/reason pairing. Under audit unchanged: the five non-zero invariants above.
 - Next: T4 merge on its receipt, then the user-requested stop before T5 (journal 161).
+
+## 161. decision and stopped - user-requested stopping point before 6B Task 5 - 2026-09-13 07:16 CT
+
+- Orient: user instruction in chat at 06:44 CT, verbatim: "Lets get to a safe stopping point for me to make changes to the autopilot skill. Finish out what you have to do before we dispatch task 5." Finished: the running release (journal 159), its verification (journal 160), Task 4's suite and merge; T5 not dispatched; 6D plan-next not started.
+- Branch / commits: phase6b-repair-execution 9eecec6..bac35ab (T3 b65635e/e6975ab/13f891b, T4 bac35ab); main ebf0953 plus docs commits.
+- Result: gated: user-requested stop (not a gate condition; a decision).
+- Dispatches: T4 impl 1, review 1 (CT day Sep 13 total 9).
+- Tests: T4 bac35ab 3276 passed, 4 xfailed, pristine (t4-full-bac35ab.log); T3 13f891b 3272 passed, 5 xfailed.
+- Review: T3 2 fix rounds (opus review Needs fixes: I1-I5 ruled fix-now; opus re-review PASS with two rulings; sonnet re-review PASS); T4 clean (opus Approved, 7 Minors to the whole-branch wave).
+- Deploy: none since 06:44 CT (ebf0953).
+- Verification: see journal 160; deferred rows and their judge-after times are in state.md and the stopped report.
+- Rulings: T3 - R14 parity marker to T7/6D; alembic scratch tests a sandbox limitation; forced edits accepted; I1-I5 fixed (merge-on-overflow, behind-arm fill, transitional print floor, set-based idempotence, symmetric horizon recorded in the addendum §9); pre-boundary C0 quantity preserved via legacy_traded_at_price; §2 row 1 qualifier to T12. T4 - _anchor_tracks on both branches; R14 placement-fold analysis accepted; Minors to the whole-branch wave. Suite-slot priority to the release over T4's suite. The stop releases the controller lock; session-only wakeups end with the session and are listed for recreation.
+- Carried forward: none new beyond journal 160's 54/55 and the reopened 53; T5 brief ready.
+- Next: on relaunch, Orient from files: phase 6B T5 (brief task-5-omarchy-brief.md), the deferred verify rows by their judge-after times, the Sunday 19:00 CT 6C discriminator and Monday 09:00 CT diagnostic report duties; wakeups to recreate per the stopped report §9.
