@@ -22,6 +22,7 @@ SOCKET_DEST = Path('/run/sports-test-db')
 TEST_STATE = Path('/home/trey/.cache/sports-harness/test-state')
 UV_RUNTIMES = Path('/home/trey/.local/share/uv/python')
 BWRAP = Path('/usr/bin/bwrap')
+EMPTY_FILE = Path(__file__).absolute().with_name('worker-empty')
 PROTECTED = ('.claude', 'CLAUDE.md', 'docs/superpowers/autopilot')
 SECRET_NAMES = frozenset({
     'secrets', '.ssh', '.aws', '.azure', '.config', '.docker', '.kube',
@@ -161,6 +162,8 @@ def runtime_aliases(runtime: Path) -> list[Path]:
 
 
 def sandbox_argv(cwd: Path, task: Path | None, command: str) -> list[str]:
+    if EMPTY_FILE.resolve() != EMPTY_FILE or not EMPTY_FILE.is_file() or EMPTY_FILE.stat().st_size:
+        raise IsolationError('trusted empty configuration mask is unavailable')
     if sys.platform != 'linux' or not BWRAP.is_file() or not os.access(BWRAP, os.X_OK):
         raise IsolationError('Linux /usr/bin/bwrap is required; no unsandboxed fallback')
     real_path(MAIN)
@@ -217,7 +220,8 @@ def sandbox_argv(cwd: Path, task: Path | None, command: str) -> list[str]:
         if directory:
             args += ['--tmpfs', str(path), '--remount-ro', str(path)]
         else:
-            args += ['--ro-bind', '/dev/null', str(path)]
+            # A device bind is nodev in this namespace; use a regular empty file.
+            args += ['--ro-bind', str(EMPTY_FILE), str(path)]
     # Only this controller-provisioned Unix socket directory can reach a service. Refuse
     # unexpected entries rather than exposing a second host socket or a symlink escape.
     if SOCKET.exists():
@@ -253,7 +257,7 @@ def main() -> int:
         argv = sandbox_argv(cwd, task, command)
         # No inherited sockets, agent FDs, secrets, LD_PRELOAD or Python startup settings.
         import subprocess
-        return subprocess.run(argv, env={}, close_fds=True).returncode
+        return subprocess.run(argv, env={}, stdin=subprocess.DEVNULL, close_fds=True).returncode
     except (IsolationError, OSError, ValueError) as exc:
         print(f'worker isolation refused: {exc}', file=sys.stderr)
         return 126

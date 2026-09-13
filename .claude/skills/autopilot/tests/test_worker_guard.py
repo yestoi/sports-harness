@@ -359,7 +359,7 @@ class WorkerGuardTests(unittest.TestCase):
         args = shell.sandbox_argv(self.task, self.task, 'true')
         for file in (self.main / '.env', self.main / '.git/config', self.task / 'sub/.env.production'):
             idx = args.index(str(file))
-            self.assertEqual(args[idx-2:idx], ['--ro-bind', '/dev/null'])
+            self.assertEqual(args[idx-2:idx], ['--ro-bind', str(shell.EMPTY_FILE)])
         idx = args.index(str(self.task / 'secrets'))
         self.assertEqual(args[idx-1], '--tmpfs')
         self.assertEqual(args[idx+1:idx+3], ['--remount-ro', str(self.task / 'secrets')])
@@ -411,7 +411,7 @@ class WorkerGuardTests(unittest.TestCase):
                                            '--command-b64', encoded]), \
                 patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
             self.assertEqual(shell.main(), 0)
-        self.assertEqual(run.call_args.kwargs, {'env': {}, 'close_fds': True})
+        self.assertEqual(run.call_args.kwargs, {'env': {}, 'stdin': subprocess.DEVNULL, 'close_fds': True})
         self.assertEqual(run.call_args.args[0][0], str(self.bwrap))
 
     def test_malformed_hook_json_emits_deny(self):
