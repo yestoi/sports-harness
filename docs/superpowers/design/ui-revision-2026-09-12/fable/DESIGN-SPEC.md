@@ -235,9 +235,23 @@ Broadcast typography in exactly three places:
 
 Density, from tightening what exists: the board card's one figures row; the slip's leg rows as a two-column grid at 1440 (plain text and selection left, score, needs and sharps right); three drafts across at 1440. New components are limited to the draft marks, the confirm sheet, the game detail and the stat line. Type never below 12 px; touch targets 44 px; focus ring visible; reduced motion honoured (lamps and stamps already respect it). No new colour outside the token set, so light theme holds.
 
-## 7. Screens to draw
+## 7. Screens
 
-Artboards to add beside `docs/superpowers/design/dashboard/*.dc.html`, same tokens, 390 and 1440 wide, fictional data marked:
+Drawn 2026-09-13 as fourteen artboards in this directory (`*.dc.html`, laid out by `canvas.json`), using the phase 4.5 canvas's tokens and faces, 390 and 1440 wide, every value fictional and marked. Canvas: https://claude.ai/code/artifact/fdcd5d4f-69a5-4b04-8197-85fcb33a18b4
+
+| Artboard | Frame | Shows |
+|---|---|---|
+| `Main.dc.html` | 1440 | Ticket, three drafts (smart, same-game, lottery), Live tickets empty, Season with declined and expired chips |
+| `TicketIdeasPhone.dc.html` | 390 | The same, stacked |
+| `TicketNoIdea.dc.html` | 390 | Three no-idea slots with named reasons |
+| `ConfirmSheet.dc.html`, `ConfirmSheetMoved.dc.html`, `ConfirmSheetCap.dc.html` | 390 | The sheet blank, with a moved line, and refused at the cap |
+| `LiveSlipProps.dc.html`, `LiveSlipPropsPhone.dc.html` | 1440, 390 | A live slip with two prop legs, a stat line, a correction and a provisional crossing |
+| `LiveSlipPending.dc.html` | 390 | All legs hit, settlement pending, no stamp |
+| `FloorBoard.dc.html` | 1440 | The board with favourites first and the one figures row |
+| `GameDetail.dc.html`, `GameDetailGap.dc.html` | 1440 | The detail open under the board, with a full story and with a failed evaluation and a gap |
+| `GameDetailPhone.dc.html`, `GameDetailNoPosition.dc.html` | 390 | The detail as a sheet, with a position and with none |
+
+The list that was drawn from:
 
 1. Ticket, ideas present, 1440 and 390 (three drafts; the same-game draft with relationship notes)
 2. Ticket, no idea for one shape, 390
