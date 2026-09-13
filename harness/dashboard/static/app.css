@@ -109,6 +109,14 @@ main { padding: 16px 24px 20px; }
 /* The grid is on the panel, not the landmark: `<main>` keeps its landmark role and the
    element the surface modules render into is the tabpanel the tabs point at. */
 #surface { display: grid; gap: 14px; align-content: start; }
+/* Fix 53 round 2: a grid item's `min-width` defaults to `auto`, which resolves to its content's
+   automatic minimum size -- for `variantsSection`'s unclassed wrapper `div` around the criteria
+   table (`gate.mjs`), that is the table's min-content width. One item at that width stretches
+   `#surface`'s single column to match, and every other card in the same track -- classed or not
+   -- stretches with it. `.card` already carries its own `min-width: 0`; this is the general form
+   for every direct child of the grid, classed or not, so a future bare wrapper cannot reopen the
+   same overflow on this or any other surface. */
+#surface > * { min-width: 0; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
   padding: 14px 16px; min-width: 0; }
 .card > h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em;

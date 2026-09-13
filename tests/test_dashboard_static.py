@@ -318,3 +318,17 @@ def test_long_unbroken_tokens_can_wrap_so_a_populated_card_never_forces_the_page
     sentences_rule = re.search(r"\.sentences\s*\{([^}]*)\}", css)
     assert sentences_rule and "overflow-wrap: anywhere" in sentences_rule.group(1), \
         ".sentences has no overflow-wrap: anywhere for long unbroken values"
+
+
+def test_every_surface_grid_item_has_min_width_zero():
+    """Fix 53 round 2: a grid item's `min-width` defaults to `auto`, which resolves to its
+    content's automatic minimum size. `variantsSection`'s unclassed wrapper `div` around the
+    Gate criteria table has no class and no `min-width` rule of its own, so it took the grid
+    track to the table's min-content width (748 px at a 390 px viewport, confirmed by a real
+    capture) and every other card in the same track -- `.card`'s own `min-width: 0` included --
+    stretched to match. The general rule protects every direct child of `#surface`, classed or
+    not, so a future bare wrapper cannot reopen this."""
+    css = (STATIC / "app.css").read_text()
+    rule = re.search(r"#surface\s*>\s*\*\s*\{([^}]*)\}", css)
+    assert rule and "min-width: 0" in rule.group(1), \
+        "#surface > * has no min-width: 0 -- a bare grid-item wrapper can stretch the track wide"
