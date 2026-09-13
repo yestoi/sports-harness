@@ -1,10 +1,14 @@
 import itertools
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
+import psycopg
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 
 @pytest.fixture
@@ -58,19 +62,38 @@ def _schema():
     engine.dispose()
 
 
+def truncate_all(engine, *, statement_timeout_ms: int = 120_000, attempts: int = 2,
+                  wait_s: float = 2.0) -> int:
+    """Truncates every model table, restarting identities, under its own statement timeout.
+
+    The engine's connections carry the 30 s production `statement_timeout`; a truncate of ~60 tables
+    under host load has exceeded it three times (carried fix 56). `set local` scopes the longer
+    timeout to this transaction only. A `QueryCanceled` cancel is retried `attempts - 1` times after
+    `wait_s`; anything else, and the last cancel, propagate. Returns the number of attempts made."""
+    from harness.db.models import Base
+
+    tables = ", ".join(sorted(Base.metadata.tables))
+    for attempt in range(1, attempts + 1):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"set local statement_timeout = {statement_timeout_ms}"))
+                conn.execute(text(f"truncate {tables} restart identity cascade"))
+            return attempt
+        except OperationalError as exc:
+            if isinstance(exc.orig, psycopg.errors.QueryCanceled) and attempt < attempts:
+                time.sleep(wait_s)
+                continue
+            raise
+
+
 @pytest.fixture
 def db_session(_schema):
-    from sqlalchemy import text
     from sqlalchemy.orm import sessionmaker
-
-    from harness.db.models import Base
 
     with sessionmaker(bind=_schema)() as session:
         yield session
         session.rollback()
-    tables = ", ".join(sorted(Base.metadata.tables))
-    with _schema.begin() as conn:
-        conn.execute(text(f"truncate {tables} restart identity cascade"))
+    truncate_all(_schema)
 
 
 # --- Task T10: the parlay builder's fixtures --------------------------------------------------
