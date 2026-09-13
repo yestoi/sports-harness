@@ -1318,7 +1318,12 @@ def _two_working_tickers(env_settings, db_session, clock):
 
 
 def _read_tape(executor, db_session, clock):
-    """One `_tape` pass over every working order, the way a step makes it."""
+    """One `_tape` pass over every working order, the way a step makes it.
+
+    Four members since 6B §1.5: the tape, `unread`, `lagging` and `deferred` -- the tickers the
+    counterfactual backoff kept this step from reading at all, which is deliberately not folded
+    into `unread`, whose length feeds `stats.errors` (review CR-2).
+    """
     return executor._tape(db_session, store.working_orders(db_session, False), clock.now,
                           {"last_error": None, "tape_lag": []})
 
@@ -1346,7 +1351,7 @@ def test_a_statement_timeout_shrinks_that_tickers_batch_alone_and_stops_at_the_f
     monkeypatch.setattr(store, "load_deltas", explode)
     sizes = []
     for _ in range(6):
-        _, unread, _ = _read_tape(executor, db_session, clock)
+        _, unread, _, _ = _read_tape(executor, db_session, clock)
         assert unread == {T3}
         sizes.append(executor._delta_batch[T3])
 
@@ -1375,8 +1380,8 @@ def test_a_non_timeout_failure_leaves_the_batch_size_alone(env_settings, db_sess
 
     monkeypatch.setattr(store, "load_deltas", explode)
     heartbeat = {"last_error": None, "tape_lag": []}
-    _, unread, _ = executor._tape(db_session, store.working_orders(db_session, False),
-                                  clock.now, heartbeat)
+    _, unread, _, _ = executor._tape(db_session, store.working_orders(db_session, False),
+                                     clock.now, heartbeat)
     assert unread == {T3}
     assert executor._delta_batch == {}
     assert "ProgrammingError" in heartbeat["last_error"]
@@ -1409,7 +1414,7 @@ def test_a_full_batch_doubles_a_shrunk_ticker_back_and_never_past_the_cap(
     executor._delta_batch[T3] = store.DELTA_BATCH_FLOOR
     sizes = []
     for _ in range(4):
-        _, _, lagging = _read_tape(executor, db_session, clock)
+        _, _, lagging, _ = _read_tape(executor, db_session, clock)
         assert T3 in lagging
         sizes.append(executor._delta_batch[T3])
     assert sizes == [500, 1_000, 2_000, 4_000]

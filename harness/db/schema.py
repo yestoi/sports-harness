@@ -141,6 +141,10 @@ _COLUMN_DDL = (
     "alter table orders add column if not exists nw_cancels_ahead numeric(14,2)",
     "alter table orders add column if not exists recon_state jsonb",
     "alter table orders add column if not exists nw_recon_state jsonb",
+    # Phase 6B §1.5: the counterfactual's own nominal accrual and its retry bookkeeping.
+    "alter table orders add column if not exists nw_dirty_seconds integer",
+    "alter table orders add column if not exists nw_next_attempt_at timestamptz",
+    "alter table orders add column if not exists nw_attempts integer",
 )
 
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).

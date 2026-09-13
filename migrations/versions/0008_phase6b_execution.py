@@ -22,6 +22,7 @@ record says which build produced which rows.
 """
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0008_phase6b_execution"
@@ -41,12 +42,45 @@ _STATEMENTS = (
     "alter table orders add column if not exists nw_cancels_ahead numeric(14,2)",
     "alter table orders add column if not exists recon_state jsonb",
     "alter table orders add column if not exists nw_recon_state jsonb",
+    # Phase 6B §1.5: the counterfactual's own nominal accrual and its retry bookkeeping.
+    "alter table orders add column if not exists nw_dirty_seconds integer",
+    "alter table orders add column if not exists nw_next_attempt_at timestamptz",
+    "alter table orders add column if not exists nw_attempts integer",
 )
+
+
+def _create_interval_tables() -> None:
+    """§1.5's two interval tables, mirroring `harness/db/models.py` (the 0004_phase5 pattern).
+
+    Declared as models so `create_schema` builds them; repeated here because `tests/test_alembic`
+    compares a migrated database's catalogue against a `create_schema` one, and a table in only
+    one of them is a failed diff, not a tolerated difference.
+    """
+    for name, extra in (("market_dirty_intervals",
+                         [sa.Column("cause", sa.String(length=20), nullable=False)]),
+                        ("market_observation_intervals", [])):
+        op.create_table(
+            name,
+            sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+            sa.Column("venue_market_id", sa.Integer(), nullable=False),
+            sa.Column("ticker", sa.String(length=64), nullable=False),
+            sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
+            *extra,
+            sa.Column("replay", sa.Boolean(), nullable=False),
+            sa.PrimaryKeyConstraint("id"),
+            if_not_exists=True,
+        )
+    op.create_index("ix_mdi_market_started", "market_dirty_intervals",
+                    ["venue_market_id", "started_at"], unique=False, if_not_exists=True)
+    op.create_index("ix_moi_market_started", "market_observation_intervals",
+                    ["venue_market_id", "started_at"], unique=False, if_not_exists=True)
 
 
 def upgrade() -> None:
     for statement in _STATEMENTS:
         op.execute(statement)
+    _create_interval_tables()
 
 
 def downgrade() -> None:

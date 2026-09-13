@@ -444,7 +444,10 @@ def test_the_phase6b_ledger_ddl_agrees_between_schema_and_migration():
     from harness.db.schema import _COLUMN_DDL
 
     module = _load_revision("0008_phase6b_execution.py")
-    assert len(module._STATEMENTS) == 10
+    # §1.3's ten ledger statements plus §1.5's three (`nw_dirty_seconds`,
+    # `nw_next_attempt_at`, `nw_attempts`). The count is here so a task appending to one
+    # copy and not the other is named by this test rather than by a catalogue diff.
+    assert len(module._STATEMENTS) == 13
     for statement in module._STATEMENTS:
         assert statement in _COLUMN_DDL, statement
 

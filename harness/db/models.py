@@ -512,6 +512,15 @@ class Order(Base):
     nw_crossed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     nw_last_print_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     nw_last_print_ids: Mapped[list | None] = mapped_column(JSONB)
+    #: 6B §1.5: the counterfactual's own nominal dirty accrual, moved off `dirty_seconds` so a
+    #: cancelled order stops accruing on the watched column (§0.9). Nullable with no default: no
+    #: pre-6B row is backfilled.
+    nw_dirty_seconds: Mapped[int | None] = mapped_column(Integer)
+    #: §0.14's backoff. A counterfactual whose ticker's tape read failed is retried on an
+    #: exponential delay in *elapsed wall seconds* -- never a loop count (ruling CR-5) -- and is
+    #: never closed: closing one would remove its order from gate criterion 4's population.
+    nw_next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    nw_attempts: Mapped[int | None] = mapped_column(Integer)
     #: Minutes this order's book spent dirty after a WS gap (D6), so an optimistic queue is visible.
     dirty_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: The same quantity in seconds, which is what the loop can actually accumulate: one dirty
@@ -791,6 +800,49 @@ class OrderWatchSample(Base):
     fair_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
     book_dirty: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     terminal: Mapped[str | None] = mapped_column(String(12))
+
+
+class MarketDirtyInterval(Base):
+    """One contiguous stretch a market's book could not be trusted, with its cause.
+
+    An interval is a measurement where an accrual is a running total (D6): 136 markets went
+    dirty against 7,998 orders, so recording it once per market and intersecting at read time
+    costs far less than a column per order and answers questions a running total cannot --
+    when, for how long, and why. `cause` is one of `harness.execution.book.DIRTY_CAUSES` plus
+    `recorder_dead`, which is the loop's verdict about the recorder rather than the book's about
+    itself. There is no `recovery` cause (ruling IM-11): recovery is what happens when a market
+    has *stopped* being dirty.
+
+    `ended_at` NULL means still dirty as of the last observation. Every open row for a market
+    absent from a step's market set is closed at that step, stamped with the last observation
+    that saw it, so a market whose last order closes while dirty cannot leave one open forever.
+    """
+    __tablename__ = "market_dirty_intervals"
+    __table_args__ = (Index("ix_mdi_market_started", "venue_market_id", "started_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cause: Mapped[str] = mapped_column(String(20), nullable=False)
+    replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class MarketObservationInterval(Base):
+    """One contiguous stretch the executor actually stepped a market.
+
+    The companion to `MarketDirtyInterval` and the reason `order_dirty_time` can report
+    unobserved seconds instead of folding them into clean time (ruling IM-15): absence of a
+    dirty row means "not observed", not "observed clean".
+    """
+    __tablename__ = "market_observation_intervals"
+    __table_args__ = (Index("ix_moi_market_started", "venue_market_id", "started_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class EquitySnapshot(Base):

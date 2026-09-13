@@ -1,10 +1,13 @@
 """Phase 6A: the execution-reconciliation probes as runnable regressions (design addendum §0.5).
 
-Each defect is one `xfail(strict=True, raises=AssertionError)` case whose docstring states the
-expected value and how it was computed, independently of the code under test. `raises` is not
-decoration: without it a changed signature or a failed import would be swallowed as an expected
-failure and the defect would look documented when nothing ran (review I-d). 6B removes a marker
-when it repairs the defect; a strict XPASS is a hard failure, which is how the suite notices.
+Each defect arrived as one `xfail(strict=True, raises=AssertionError)` case whose docstring
+states the expected value and how it was computed, independently of the code under test.
+`raises` was not decoration: without it a changed signature or a failed import would have been
+swallowed as an expected failure and the defect would have looked documented when nothing ran
+(review I-d). 6B removes a marker when it repairs the defect; a strict XPASS is a hard failure,
+which is how the suite notices. **Every marker in this file is now gone** -- Task 6 took the
+last one, case 4 -- so §3 row 7's "0 xfailed, 0 XPASS from this file" holds for the rest of the
+season and each case below is a plain assertion about repaired behaviour.
 
 Beside them sit passing guards -- behaviours a repair must not break. Case 1b exercises
 `WsSink._check_seq`, not `BookState.apply_delta` where case 1a's defect lives; it guards the
@@ -21,8 +24,6 @@ session. One fixed, tz-aware clock throughout: `tests.test_fills.T0`.
 from decimal import Decimal as D
 from types import SimpleNamespace as NS
 from unittest.mock import patch
-
-import pytest
 
 from harness.execution.book import BookState
 from harness.execution.fills import TapeDelta, TapePrint
@@ -198,26 +199,31 @@ def test_recovery_takes_no_fill_from_a_trade_inside_the_gap():
     assert captured[0].state.filled_contracts == D(0)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: the dirty-seconds write happens before any status test, so a "
-                          "cancelled order keeps accruing dirty time for its counterfactual")
 def test_a_cancelled_order_accrues_no_dirty_seconds():
-    """Probe `cancelled_counterfactual_dirty_accrual`. Expected calls 0, seconds added 0.
+    """Probe `cancelled_counterfactual_dirty_accrual`. Expected watched calls 0, watched
+    seconds added 0.
 
     Computed independently: `dirty_minutes` is a property of the watched order -- how long the
     order we placed sat against a book we could not read. A cancelled order is not sitting
     against anything: it left the market when it was cancelled. The 15 s belongs to the
-    no-watcher counterfactual, which is still running, and `store.add_dirty_seconds` writes to
-    the order's own `dirty_seconds`/`dirty_minutes` columns (`harness/execution/store.py:684`),
-    not to a counterfactual column. So no write is due. The probe captured one call adding 15 s
-    to order 157's own counter, which is how a cancelled order reached `dirty_minutes 3020`.
+    no-watcher counterfactual, which is still running, and before 6B §1.5
+    `store.add_dirty_seconds` had nowhere to put it but the order's own
+    `dirty_seconds`/`dirty_minutes` columns. So no write to the watched counter is due. The
+    probe captured one call adding 15 s to order 157's own counter, which is how a cancelled
+    order reached `dirty_minutes 3020`.
+
+    The assertion is on the *watched* calls rather than on every call because §1.5 gave the
+    counterfactual a column of its own (`orders.nw_dirty_seconds`) behind the same function
+    name, so the repaired loop makes exactly one call here, `watched=False`. `is not False`
+    rather than `is True` is deliberate: the defect's own call passed no `watched` keyword at
+    all, so this still reddens if the status guard is removed.
     """
     row = _order_row(status="cancelled", nw_done=False)
     executor, _ = _executor({})
     with patch("harness.execution.store.add_dirty_seconds") as add_dirty:
         executor._simulate_order(None, row, DIRTY_MARKET, {}, set(), {}, set(),
                                  at(30), ExecStats())
-    assert add_dirty.call_args_list == []
+    assert [c for c in add_dirty.call_args_list if c.kwargs.get("watched") is not False] == []
 
 
 def test_the_watched_track_takes_no_fill_after_expiry():
