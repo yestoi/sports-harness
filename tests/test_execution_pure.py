@@ -19,7 +19,7 @@ from harness.execution.book import DELTA_LOOKBACK, BookState
 from harness.execution.fills import TapeDelta, TapePrint
 from harness.execution.loop import ExecStats, Executor, _TrackResult
 from harness.execution.state import _state_columns
-from tests.test_fills import DEADLINE, T0, at, order, run
+from tests.test_fills import DEADLINE, T0, at
 
 #: The subscription every book and frame in this file belongs to.
 SID = 7
@@ -155,36 +155,24 @@ def test_a_late_rest_print_above_the_floor_is_applied_exactly_once():
     assert captured[0].state.filled_contracts == D(3)
 
 
-def test_the_watched_track_stops_at_the_expiry():
-    """Expected fill 0 for a print stamped after the expiry, with queue 0.
+def test_the_watched_track_fills_a_print_stamped_exactly_at_the_expiry():
+    """Expected fill 4: a print stamped exactly at the expiry is still within the deadline.
 
-    Derived independently: an order whose expiry is T0+10 s is off the market from T0+10 s. A
-    print at T0+20 s happened after the order stopped resting, so nothing of ours could have
-    traded against it -- the queue being empty is what makes this a real test rather than one
-    the queue arithmetic passes by accident.
+    Review round 1, minor 3: the plan's own case here was a line-for-line duplicate of
+    `tests/test_execution_regressions.py::test_the_watched_track_takes_no_fill_after_expiry`.
+    This is the boundary that case does not reach. `_merge_events` bounds each event by
+    `... <= deadline` (`fills.py:430,433`), an inclusive test, and `_order_action` expires an
+    order only once `now >= expiry` -- the expiry instant is the last one the order is still
+    resting. A print stamped at that exact instant is therefore one this order could still have
+    traded against.
     """
     base = BookState.from_levels("A", [[".30", "0"]], [[".60", "5"]], sid=SID, seq=1,
                                  as_of=at(0), source="ws", anchor_id=1)
-    late = TapePrint("after-expiry", at(20), D(".30"), D(4), "no", "ws")
-    row = _order_row(expiry=at(10), queue_ahead_at_place=D(0), queue_remaining=D(0),
+    on_time = TapePrint("at-expiry", at(20), D(".30"), D(4), "no", "ws")
+    row = _order_row(expiry=at(20), queue_ahead_at_place=D(0), queue_remaining=D(0),
                      nw_done=True)
     executor, captured = _executor({"A": base})
     with patch("harness.execution.store.update_order"):
         executor._simulate_order(None, row, CLEAN_MARKET, {"A": base}, set(),
-                                 {"A": ([late], [])}, set(), at(30), ExecStats())
-    assert captured[0].state.filled_contracts == D(0)
-
-
-def test_no_cross_is_taken_from_a_book_past_the_deadline():
-    """Expected: no cross fill and `crossed` False.
-
-    Derived independently: the entry cross is the first thing `simulate_fills` does, and it
-    stamps itself with the book it was handed -- at the loop instant, which can be days after
-    the order's expiry. Order 157 carries exactly such a row, a `snapshot_cross` of 48.08
-    stamped two days after its cancel. Clamping the walk does not touch it, because the entry
-    cross happens before the walk; the test has to be on the book's own instant.
-    """
-    crossing = BookState.from_levels("A", [[".30", "0"]], [[".71", "5"]], sid=SID, seq=1,
-                                     as_of=at(20), source="ws", anchor_id=1)
-    result = run(order(queue="0", prob=".30"), bk=crossing, deadline=at(10))
-    assert result.cross is None and result.crossed is False
+                                 {"A": ([on_time], [])}, set(), at(30), ExecStats())
+    assert captured[0].state.filled_contracts == D(4)

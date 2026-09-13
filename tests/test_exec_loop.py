@@ -661,6 +661,53 @@ def test_skip_recorded_once_across_two_steps(env_settings, db_session, world):
     assert second.skipped == 0
 
 
+def test_a_rejected_latest_decision_writes_one_skip_row_and_no_order(env_settings, db_session,
+                                                                     world):
+    """Review round 1, Important 2 (C4): the spec's idempotence claim -- one `order_events` row,
+    not just a stable planner action -- for the `signal_rejected` reason, modelled on
+    `test_skip_recorded_once_across_two_steps` above.
+
+    Derived independently: VM2's own candidate signal is what `insert_intents` turns into the
+    one intent this test acts on, but a *newer* signal for the same `(variant, venue_market,
+    side)` key already exists with decision `rejected` before the loop ever runs -- exactly a
+    strategy that withdrew its own signal before the executor got to it. `load_intents` reads
+    `latest_decision` from that newer row (`store.py`'s `_NEWEST_DECISIONS`), so the intent is
+    skipped with reason `signal_rejected` on its very first loop, and every loop after, and
+    `uq_skip_once` (partial on `kind in ('skipped', 'cap_gate')`) is what keeps the second and
+    later loops' writes from adding a second row.
+    """
+    old = db_session.query(Signal).filter_by(venue_market_id=VM2, decision="candidate").one()
+    db_session.add(Signal(run_id=old.run_id + 1000, variant_id=old.variant_id,
+                          gap_snapshot_id=old.gap_snapshot_id, venue_market_id=VM2, side="yes",
+                          fair_p=old.fair_p, fair_source=old.fair_source,
+                          venue_best_bid=old.venue_best_bid, venue_best_ask=old.venue_best_ask,
+                          price_target=old.price_target, fee_at_target=old.fee_at_target,
+                          as_estimate=old.as_estimate, edge=old.edge, edge_min=old.edge_min,
+                          stake=old.stake, contracts=old.contracts, decision="rejected",
+                          rejection_reason="edge", labels={},
+                          created_at=old.created_at + timedelta(seconds=5)))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    first = executor.step()
+    refresh(db_session)
+    intent = db_session.query(Intent).one()
+    assert intent.venue_market_id == VM2
+    assert orders_of(db_session, T2) == []
+    skips = [e for e in events_of(db_session, "skipped") if e.reason == "signal_rejected"]
+    assert len(skips) == 1 and skips[0].intent_id == intent.id
+    assert first.skipped == 1
+
+    clock.advance(15)
+    second = executor.step()
+    refresh(db_session)
+    assert len([e for e in events_of(db_session, "skipped")
+               if e.reason == "signal_rejected"]) == 1
+    assert second.skipped == 0
+    assert orders_of(db_session, T2) == []
+
+
 def test_cap_gate_event_written_for_a_non_apply_caps_variant(env_settings, db_session, world):
     # `tiny` has apply_caps: false. A stake past per_bet_cap (0.03 * 3000 = 90) must record the
     # cap it would have failed and still place the order.

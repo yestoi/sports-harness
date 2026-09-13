@@ -257,6 +257,37 @@ def test_initial_crossing_book_sets_crossed():
     assert res.fills == []
 
 
+def test_no_cross_is_taken_from_a_book_past_the_deadline():
+    """Expected: no cross fill and `crossed` False.
+
+    Derived independently (6B C4, review round 1 minor 6 -- moved here from
+    `tests/test_execution_pure.py`, which this file's `run`/`order`/`book` helpers fit better):
+    the entry cross is the first thing `simulate_fills` does, and it stamps itself with the book
+    it was handed -- at the loop instant, which can be days after the order's expiry. Order 157
+    carries exactly such a row, a `snapshot_cross` of 48.08 stamped two days after its cancel.
+    Clamping the walk does not touch it, because the entry cross happens before the walk; the
+    test has to be on the book's own instant.
+    """
+    bk = book(no={"0.71": "5"}, as_of=at(20), event_id=1)
+    result = run(order(queue="0"), bk=bk, deadline=at(10))
+    assert result.cross is None and result.crossed is False
+
+
+def test_a_cross_taken_at_the_deadline_instant_is_still_taken():
+    """Expected: the cross fill is present -- the boundary is inclusive.
+
+    Derived independently (review round 1 minor 4): a book stamped exactly at the deadline is
+    the ordinary live case, since the cached book is normally the newest thing the loop has and
+    `deadline == now` for every unexpired order, so the entry-cross test has to be `<=`, not
+    `<`; a stricter bound would silently stop taking entry crosses on the path that matters
+    most. This is the sibling of `test_no_cross_is_taken_from_a_book_past_the_deadline`, one
+    instant earlier.
+    """
+    bk = book(no={"0.71": "5"}, as_of=at(10), event_id=1)
+    result = run(order(queue="0"), bk=bk, deadline=at(10))
+    assert result.cross is not None
+
+
 def test_initial_cross_is_emitted_once_across_calls():
     o = order(queue="0", contracts="10")
     first = run(o, bk=book(no={"0.72": "40"}, as_of=at(-5), event_id=900, last_event_id=955))

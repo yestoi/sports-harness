@@ -889,13 +889,14 @@ class Executor:
         # different deadlines, so after a cancel their cursors diverge and `_sim_book` hands
         # them different books, which would stamp two different crossing ids on one order.
         crossed_already = bool(row.crossed or row.nw_crossed)
+        # R8: the expiry is the only guarantee an order stops resting, so both tracks stop
+        # there too -- one variable, read by both calls below, so they cannot drift apart again
+        # the way the watched track (handed `now`) and the counterfactual (already clamped)
+        # once did, which is how a print in the seconds between expiry and the loop instant
+        # filled an order that was no longer on the market (§0.8).
+        deadline = min(now, row.expiry) if row.expiry is not None else now
 
         if row.status in store.OPEN_STATUSES:
-            # R8: the expiry is the only guarantee an order stops resting, so the watched track
-            # stops there too. It was handed `now` while the counterfactual clamped
-            # (`min(now, expiry)`), which is how a print in the seconds between expiry and the
-            # loop instant filled an order that was no longer on the market (§0.8).
-            deadline = min(now, row.expiry) if row.expiry is not None else now
             result = simulate_fills(order, watched, self._sim_book(session, row, watched, bases,
                                                                    anchor),
                                     prints, deltas, deadline, QUEUE_MODEL)
@@ -913,7 +914,6 @@ class Executor:
             filled, status = row.filled_contracts, row.status
 
         if not row.nw_done:
-            deadline = min(now, row.expiry) if row.expiry is not None else now
             result = simulate_fills(order, no_watcher,
                                     self._sim_book(session, row, no_watcher, bases, anchor),
                                     prints, deltas, deadline, NO_WATCHER)

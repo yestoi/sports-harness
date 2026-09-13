@@ -533,7 +533,7 @@ def _intent_actions(intent: IntentView, market: MarketNow | None, cfg: dict,
         return [Skip(intent.intent_id, BOOK_DIRTY)]
     if intent.latest_decision == REJECTED:
         # The strategy's own current answer is that this is not a bet, and `_order_action`
-        # already cancels a resting order on the same verdict (line 511), so placing one here
+        # already cancels a resting order on the same verdict, so placing one here
         # would be cancelled by the next loop. After the data-quality tests, so a rejected
         # verdict is never reported as a book or staleness problem, and before the capacity
         # tests, so it never consumes a slot a placeable intent could have used (D14, IM-1).

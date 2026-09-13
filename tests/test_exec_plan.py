@@ -6,6 +6,7 @@ for its NO mirror. No database: `plan_actions` and `rebuild_state` are pure func
 """
 
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -553,17 +554,20 @@ def test_only_the_newest_intent_for_a_key_is_acted_on():
 
 
 def test_a_rejected_latest_verdict_skips_before_the_capacity_test():
-    """Expected: zero `Place` actions, exactly one `Skip` with reason `signal_rejected`, and the
-    capacity counter untouched.
+    """Expected: zero `Place` actions and exactly one `Skip` with reason `signal_rejected`.
 
     Derived from the decision chain, not from the code: `latest_decision` is the newest verdict
     the strategy reached for this market and side. `rejected` is the strategy's own current
     answer that this is not a bet, so an order placed on it would be cancelled by the very next
     loop -- `_order_action` already cancels a resting order whose latest verdict is rejected
-    (`harness/execution/plan.py:511`). The placement of the test in the chain is the second
-    claim: after the data-quality tests, so a rejected verdict is never reported as a book or
-    staleness problem, and before the capacity tests, so it never consumes one of the
-    `max_open_orders` slots a placeable intent could have used (D14).
+    (`harness/execution/plan.py:511`). This case pins the *before* half of the insertion point
+    (after the data-quality tests, so a rejected verdict is never reported as a book or
+    staleness problem); the *after* half -- that it never consumes one of the `max_open_orders`
+    slots a placeable intent could have used (D14) -- needs capacity actually scarce to mean
+    anything, which is `test_a_rejected_verdict_outranks_the_capacity_skip` below, not this case
+    (review round 1, finding 1: with the default `max_open_orders` and no open orders, capacity
+    is never scarce here, so this assertion would hold wherever in the chain the rejected test
+    sat).
     """
     rejected = intent(decision="rejected")
     actions = plan_actions([rejected], [], {1: market()}, {}, {"v1": cfg()},
@@ -573,13 +577,28 @@ def test_a_rejected_latest_verdict_skips_before_the_capacity_test():
     assert [a.reason for a in skips] == ["signal_rejected"]
 
 
+def test_a_rejected_verdict_outranks_the_capacity_skip():
+    """Expected reason `signal_rejected`, not `exec_capacity`: the rejected test comes first, so a
+    verdict the strategy has withdrawn never consumes one of the `max_open_orders` slots (D14).
+
+    The sibling case above pins what comes before the test; this one pins what comes after it,
+    which is the half `test_a_rejected_latest_verdict_skips_before_the_capacity_test` cannot see
+    while capacity is available (review round 1, finding 1).
+    """
+    full = replace(S, max_open_orders=0)
+    actions = plan_actions([intent(decision="rejected")], [], {1: market()}, {}, {"v1": cfg()},
+                           kill_active=False, now=NOW, s=full)
+    assert [a.reason for a in actions if isinstance(a, Skip)] == ["signal_rejected"]
+
+
 def test_a_rejected_verdict_on_a_dirty_book_is_still_a_data_skip():
     """Expected reason `book_dirty`, not `signal_rejected`.
 
     Derived independently: the data-quality tests come first because a book we cannot read is a
     statement about our information, and reporting it as a strategy rejection would move a
-    funnel denominator from one cause to another. The insertion point is asserted from both
-    sides: this case pins what comes before it, and the previous case pins what comes after.
+    funnel denominator from one cause to another. The insertion point is now pinned from both
+    sides: this case pins what comes before it, and
+    `test_a_rejected_verdict_outranks_the_capacity_skip` above pins what comes after.
     """
     rejected = intent(decision="rejected")
     dirty = market(book_dirty=True)
@@ -589,14 +608,19 @@ def test_a_rejected_verdict_on_a_dirty_book_is_still_a_data_skip():
 
 
 def test_the_rejected_skip_is_one_row_however_many_loops_see_it():
-    """Expected: the same single `Skip` action each loop, and one `order_events` row.
+    """Expected: the same single `Skip` action, with the same reason, on every loop.
 
     Derived independently: the planner is pure and re-derives its actions every loop, so a
-    rejected intent produces a `Skip` on each of them; `uq_skip_once`
-    (`migrations/versions/0001_baseline.py:840`, partial on `kind in ('skipped','cap_gate')`) is
-    what makes the second and later writes no-ops. The planner-side assertion is that the action
-    is stable; the row-side assertion is `uq_skip_once`'s, which `tests/test_exec_loop.py`
-    already covers for the other skip reasons.
+    rejected intent must produce the identical `Skip` on each of them for the row-level claim
+    to hold at all. This case pins only that planner-side stability; the row-level claim itself
+    -- that `uq_skip_once` (`migrations/versions/0001_baseline.py:840`, partial on `kind in
+    ('skipped','cap_gate')`) turns the second and later loops' writes into no-ops, leaving
+    exactly one `order_events` row -- is a database-backed claim a pure re-call of `plan_actions`
+    on the same objects cannot make (review round 1, finding 2: calling a pure function twice
+    with the same arguments can only fail if the planner mutates its inputs). That claim is
+    `tests/test_exec_loop.py::test_a_rejected_latest_decision_writes_one_skip_row_and_no_order`,
+    modelled on `test_skip_recorded_once_across_two_steps`, which already covers `uq_skip_once`
+    for the other skip reasons.
     """
     rejected = intent(decision="rejected")
     first = plan_actions([rejected], [], {1: market()}, {}, {"v1": cfg()},
