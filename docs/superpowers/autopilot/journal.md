@@ -1884,3 +1884,19 @@ Times are America/Chicago.
 - Rulings: project memory points to canonical files; original worktrees, three Omarchy migration stashes, ignored ledgers, failed logs and local complete-history bundle retained. NAS SSH authentication unavailable; no identity/key changes or push attempted. Native PushNotification unavailable in this tool session; use the report and local desktop notification.
 - Carried forward: actual user-systemd reminders Sun02:49:59/09:29:59/18:29:59 and Mon07:29:59CT; no timer launches Claude. Native wakeups require actual-session setup. Sun19:00 week37 and Monbefore09:00 diagnostic, original long-window/cold-start/corrected-workload acceptance and6F user amendment remain.
 - Next: user launches scripts/autopilot-session.sh start on Omarchy, selects high effort and /autopilot; controller reconciles failed verify/carried fixes and deadlines before choosing new6B work.
+
+## 157. preflight - Omarchy controller session start; T3 and hotfix batches 49/53 dispatched - 2026-09-12 22:21 CT
+
+- Orient: preflight (SKILL.md kickoff) then rules 1/5 - `make preflight` PASS with `paper posture intact` (evidence `evidence/2026-09-12-2212-preflight.txt`); runtime 93dfb95 healthy, schema 0006; 15 NCAAF in progress, last college kickoff 23:00 CT, first NFL kickoff Sun 12:00 CT; recorder RSS 4.2 GB (RssAnon 4.17 GB) 74 min after restart.
+- Branch / commits: main a2287da; phase6b-repair-execution 9eecec6; new task branch phase6b-t3-reconciliation (base 9eecec6); hotfix branches fix-20260912-recorder-memory and fix-20260912-dashboard-mobile (base a2287da).
+- Result: done (preflight); units in flight.
+- Dispatches: 3 (impl T3 opus, impl fix 49 opus, impl fix 53 sonnet); CT day Sep 12 total 46.
+- Tests: n/a (main full suite for the release starts on the committed head after this entry; a first start was aborted because the untracked preflight evidence file dirtied the receipt).
+- Review: n/a
+- Deploy: none; main is ahead of 93dfb95 by fix 45 (revision 0007: full release required); window closed by the Saturday college slate until about 03:00 CT, NFL block from 10:20 CT.
+- Verification: deferred: WTD due-report-first (judge after Sun 02:10:38 CT), fix 52 quiet-hour zero-fetch (03:00-08:00 CT), fix 50 sequence-gap 24 h (Sun 21:05:30 CT), fix 51 25 h all-pass (not begun), fix 49 6 h/500 MiB (failing on the live trend), fix 53 pixels after its fix.
+- Rulings: this session runs outside the tmux helper (the user launched Claude directly); the controller lock `~/.cache/sports-harness/controller.lock` is held by a background flock from this session so a second `autopilot-session.sh start` cannot create a duplicate controller. Notification channels: desktop notify exit 0 and native PushNotification sent (day's first preflight).
+- Rulings: fix 51 is phase work, not a hotfix (a check statement/window change is a check change, gate 13, same as fix 16); carried to the 6D plan-next with 46 and 48. Fix 49 dispatched as the first hotfix batch with live evidence (no restart: no swap, 20 GB available). Fix 53 dispatched as a narrow presentation repair only, because the user's dashboard redesign is in progress elsewhere. Worker namespace masks (.env.example, .env.nas.example, secrets/.gitkeep) are never applied.
+- Rulings: implementer worktrees and databases provisioned with the database-local UPDATE(indisvalid) fixture grant (harness_test_phase6b_t3_reconciliation, harness_test_fix_20260912_recorder_memory, harness_test_fix_20260912_dashboard_mobile, harness_test_main and its _a/_b/_s siblings); revoked after each database's last suite.
+- Carried forward: none new (49, 51, 53 dispositions updated in state).
+- Next: phase T3 + hotfix 49/53 in flight; wakeup 23:53 CT (worker reconciliation, cron 0fa407c3) and 03:03 CT Sun (deploy window + WTD/fix 52 checks, cron d005838b).
