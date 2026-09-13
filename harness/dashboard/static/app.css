@@ -193,13 +193,19 @@ td.num, th.num { text-align: right; }
 
 /* --- the classes the surface modules use, so a module names a class and never a token ------- */
 
-/* Fix 53 round 2: the stored technical text beside a humanized Pulse operator-event summary
-   (`pulse.mjs`'s `eventWhat`). This is its own class, not `.technical`/`.tech` -- those are
-   `components.mjs`'s `label()` classes, already used unstyled outside `.card > h3` and `.tile`
-   by Floor's edge-now cell, Study's week bar and Ticket's slip legs (whose `--ink-muted` main-
-   page token would have been wrong on the slip's warm paper), and a blanket `.technical` rule
-   restyled all three. */
+/* Fix 53 round 2: the stored technical text beside a humanized operator-event summary
+   (`components.mjs`'s `eventWhat`, shared by Pulse's operator events table and Study's
+   "Operator events this week" table). This is its own class, not `.technical`/`.tech` -- those
+   are `components.mjs`'s `label()` classes, already used unstyled outside `.card > h3` and
+   `.tile` by Floor's edge-now cell, Study's week bar and Ticket's slip legs (whose `--ink-muted`
+   main-page token would have been wrong on the slip's warm paper), and a blanket `.technical`
+   rule restyled all three. */
 .event-technical { color: var(--ink-muted); font-size: 11px; overflow-wrap: anywhere; }
+/* Fix 53 round 2 (walk item 19): the disclosure `<summary>` that opens it is the tap/click
+   target -- without its own rule it would keep the browser default triangle-and-plain-text
+   styling, not obviously interactive next to every other tappable label on the page, and would
+   inherit no colour of its own. */
+details.event > summary { cursor: pointer; color: inherit; }
 
 .status-word { display: flex; align-items: center; gap: 14px; font-family: var(--font-display);
   font-weight: 700; letter-spacing: -0.02em; line-height: 1; font-size: 64px;

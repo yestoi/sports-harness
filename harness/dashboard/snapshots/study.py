@@ -242,11 +242,22 @@ def _equity(session: Session, start: datetime, end: datetime) -> dict:
 
 
 def _annotations(session: Session, start: datetime, end: datetime) -> list[dict]:
+    """The week's operator events for the "Operator events this week" table. Fix 53 round 2
+    (brief fix-53r2-54-55): a stored `summary` that is a raw exception repr used to show up
+    verbatim here -- the same humanizer Pulse's own events table uses (imported lazily to avoid
+    a module-load cycle: `pulse.py` imports this module at load time to build its own snapshot)
+    turns it into a plain phrase, with the sanitized stored text carried alongside as `technical`
+    (additive key; `STUDY_KEYS` lists payload top-level keys only, so it is unaffected)."""
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
     rows = session.execute(_ANNOTATIONS, {"start": start, "end": end,
                                           "limit": ANNOTATIONS_LIMIT}).all()
-    return [{"ts": row.ts.isoformat(), "kind": row.kind,
-             "summary": sanitize_reason(row.summary or "")}
-            for row in reversed(rows)]
+    notes = []
+    for row in reversed(rows):
+        sanitized = sanitize_reason(row.summary or "")
+        summary, technical = humanize_event_summary(sanitized, row.kind)
+        notes.append({"ts": row.ts.isoformat(), "kind": row.kind, "summary": summary,
+                      "technical": technical})
+    return notes
 
 
 def _ledger_rows(cells: dict) -> list[dict]:

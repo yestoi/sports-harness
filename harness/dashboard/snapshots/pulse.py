@@ -776,7 +776,15 @@ def _humanize_class_name(name: str) -> str:
     return " ".join(w.lower() for w in words) if words else bare.lower()
 
 
-def humanize_event_summary(summary: str) -> tuple[str, str | None]:
+#: Fix 53 round 2 (walk item 19): a `check_failed` event's stored summary is a bare check name
+#: (`duplicate_trades`), which the walk still showed as a raw symbol beside no phrase at all.
+#: Checked only when the caller says `kind == "check_failed"`, so a summary of the same shape
+#: under any other kind (there is none today, but the humanizer must not guess) keeps going
+#: through the exception-repr rules below unaffected.
+_BARE_CHECK_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def humanize_event_summary(summary: str, kind: str | None = None) -> tuple[str, str | None]:
     """The plain "what" for a stored `operator_events.summary`, and the sanitized stored text
     (`sanitize_reason`'s output -- stripped and truncated at 200, not the raw original) alongside
     it when the two differ (fix 53). Most kinds are already plain (`connected`, `gate evaluated
@@ -786,7 +794,16 @@ def humanize_event_summary(summary: str) -> tuple[str, str | None]:
     Important 2: a bare `identifier(...)` shape alone, e.g. `something(done)`, is not enough).
     The second element is then the untouched sanitized input, never a re-derived string, so the
     payload can show the caller the exact evidence that was stored. Pure, total and never raises:
-    a builder section calls this over a value that already came out of the database."""
+    a builder section calls this over a value that already came out of the database.
+
+    `kind` is additive (fix 53 round 2, walk item 19): when it is `"check_failed"` and the
+    sanitized summary is a bare check name, the phrase names the check by name (`"the duplicate
+    trades check failed"`) rather than showing the raw symbol, and `technical` carries that same
+    bare name so the evidence stays visible on request. Every other kind, and a `check_failed`
+    summary that is not a bare name (already an exception repr, say), keeps today's behaviour
+    exactly."""
+    if kind == "check_failed" and _BARE_CHECK_NAME.match(summary or ""):
+        return f"the {summary.replace('_', ' ')} check failed", summary
     match = _EXC_OUTER.match(summary or "")
     if not match:
         wrapper = _EXC_WRAPPER.match(summary or "")
@@ -806,7 +823,7 @@ def _events(session: Session) -> list[dict]:
     events = []
     for row in session.execute(_EVENTS, {"limit": EVENTS_LIMIT}):
         raw = sanitize_reason(row.summary or "")
-        summary, technical = humanize_event_summary(raw)
+        summary, technical = humanize_event_summary(raw, row.kind)
         events.append({"ts": row.ts.isoformat(), "kind": row.kind, "summary": summary,
                        "technical": technical})
     return events

@@ -4,8 +4,8 @@
 // `{estimate, n_obs, n_clusters, lo, hi, text, flags}` out of `report_cells`, and every one of
 // them is drawn through `intervalMark`, never read for its raw number and refigured here.
 
-import { el, figure, fmtAge, glossaryTerm, intervalMark, label, sentences, svg, table, text } from
-  "./components.mjs";
+import { el, eventWhat, figure, fmtAge, glossaryTerm, intervalMark, label, sentences, svg,
+  table, text } from "./components.mjs";
 import { equityCurves } from "./charts.mjs";
 
 export const LABELS = [
@@ -254,7 +254,7 @@ function equitySection(payload) {
   const holder = el("div", {});
   if (aligned) requestAnimationFrame(() => equityCurves(holder, lanes));
   const annotations = Array.isArray(payload.annotations) ? payload.annotations : [];
-  const annotationRows = annotations.map((a) => [a.ts, a.kind, a.summary]);
+  const annotationRows = annotations.map((a) => [a.ts, a.kind, eventWhat(a)]);
   const chart = !lanes.length ? el("p", { class: "grey", text: "no equity recorded this week" })
     : !aligned ? el("p", { class: "grey",
         text: "equity lanes do not share a common time axis this week" })

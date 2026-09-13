@@ -151,10 +151,15 @@
 
 <section>
   <h2>Last {{ summary.signals|length }} signals (primary variant)</h2>
+  <!-- Fix 55 (walk item 6 anomaly): `s.reason` is `rejection_reason`, which names the *check*
+       the candidate did not pass (e.g. `has_fair`), not a plain-English reason -- a row with no
+       fair price read as "fair=None" beside a bare "has_fair", easy to misread as the reason
+       itself being missing. Template only: the value (`s.reason`) is unchanged. -->
+  <p class="muted">failed check names the check the candidate did not pass (has_fair: no fair value was available)</p>
   <div class="scroll">
   <table>
     <tr><th>time</th><th>variant</th><th>game</th><th>contract</th><th>fair</th><th>source</th>
-        <th>bid</th><th>ask</th><th>target</th><th>edge</th><th>decision</th><th>reason</th></tr>
+        <th>bid</th><th>ask</th><th>target</th><th>edge</th><th>decision</th><th>failed check</th></tr>
     {% for s in summary.signals %}
     <tr>
       <td>{{ s.time }}</td><td>{{ s.variant }}</td><td>{{ s.game or "-" }}</td><td>{{ s.contract }}</td>

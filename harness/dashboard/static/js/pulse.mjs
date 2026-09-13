@@ -7,8 +7,8 @@
 //
 // Nothing here is a control and nothing here is money: Pulse is about the machine, not the edge.
 
-import { el, fmtAge, glossaryTerm, sentences, statTile, statusWord, storageArc, table,
-         tapeStrip } from "./components.mjs";
+import { el, eventWhat, fmtAge, glossaryTerm, sentences, statTile, statusWord, storageArc,
+         table, tapeStrip } from "./components.mjs";
 import { sparkline } from "./charts.mjs";
 
 export const LABELS = [
@@ -212,19 +212,6 @@ function snapshotsCard(payload) {
     sectionFailed(section) ? el("div", { class: "grey", text: "unavailable" })
       : table(["surface", "age", "cells from", "cadence", "build time", "state", "error"], rows,
               { label: "Snapshot ages" }));
-}
-
-//: Fix 53: a stored summary that was a raw exception repr now arrives humanized, with the
-//: sanitized stored text (`sanitize_reason`'s output -- stripped and truncated at 200, not the
-//: raw original) carried alongside as `technical` -- shown visibly, not only on hover, so a
-//: keyboard or screen-reader reader sees the same evidence a mouse hover would (ruling A-I13).
-//: `.event-technical` is this card's own class, not `.technical`/`.tech`: those are
-//: `components.mjs`'s `label()` classes and are already used, unstyled, by other surfaces (fix
-//: 53 round 2, Critical 1).
-function eventWhat(event) {
-  if (!event.technical) return event.summary;
-  return el("span", {}, event.summary,
-            el("span", { class: "event-technical" }, " · ", event.technical));
 }
 
 function eventsCard(payload) {

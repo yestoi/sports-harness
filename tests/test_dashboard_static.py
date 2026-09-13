@@ -345,5 +345,37 @@ def test_the_pulse_event_technical_span_has_its_own_class_not_a_blanket_dot_tech
         "a blanket `.technical { ... }` rule would restyle every surface's label() technical span"
     rule = re.search(r"\.event-technical\s*\{([^}]*)\}", css)
     assert rule and "overflow-wrap: anywhere" in rule.group(1)
-    body = (STATIC / "js" / "pulse.mjs").read_text()
+    body = (STATIC / "js" / "components.mjs").read_text()
     assert '"event-technical"' in body
+
+
+def test_event_what_lives_in_components_and_is_shared_by_pulse_and_study():
+    """Fix 53 round 2 (brief fix-53r2-54-55): walk item 19 -- the technical text beside a
+    humanized operator-event summary was visible beside the phrase, not behind a disclosure.
+    `eventWhat` now lives in `components.mjs`, exported once, and renders a native
+    `<details class="event"><summary>...</summary><span class="event-technical">...</span>
+    </details>` so the technical text is keyboard-accessible (Tab, Enter/Space) and invisible
+    until opened, with no script. Both Pulse's operator events table and Study's "Operator
+    events this week" table use it; neither defines its own copy."""
+    components = (STATIC / "js" / "components.mjs").read_text()
+    assert "export function eventWhat" in components
+    assert 'el("details", { class: "event" }' in components
+    assert 'el("summary"' in components
+    assert 'el("span", { class: "event-technical" }' in components
+
+    pulse = (STATIC / "js" / "pulse.mjs").read_text()
+    assert "function eventWhat" not in pulse, "pulse.mjs must import eventWhat, not define it"
+    assert re.search(r"import \{[^}]*\beventWhat\b[^}]*\} from \"\./components\.mjs\"", pulse)
+
+    study = (STATIC / "js" / "study.mjs").read_text()
+    assert "function eventWhat" not in study, "study.mjs must import eventWhat, not define it"
+    assert re.search(r"import \{[^}]*\beventWhat\b[^}]*\} from \"\./components\.mjs\"", study)
+
+
+def test_details_event_summary_has_a_pointer_cursor_rule():
+    """The disclosure's `<summary>` is the tap/click target; without its own rule it would keep
+    the browser default, which is not obviously interactive next to every other tappable label
+    on the page."""
+    css = (STATIC / "app.css").read_text()
+    rule = re.search(r"details\.event\s*>\s*summary\s*\{([^}]*)\}", css)
+    assert rule and "cursor: pointer" in rule.group(1)

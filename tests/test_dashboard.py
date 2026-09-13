@@ -55,6 +55,29 @@ def test_index_renders_seeded_run_and_signal(db_session, env_settings, tmp_path)
     assert "tiny" in body
 
 
+def test_signals_table_reason_column_is_labeled_failed_check_with_an_explanatory_note(
+        db_session, env_settings, tmp_path):
+    """Fix 55 (walk item 6 anomaly): every primary-variant row with no fair price showed
+    `fair=None` beside `reason=has_fair` -- `rejection_reason = has_fair` names the *check* the
+    candidate failed to pass (no fair value was available), not a plain-English reason. The
+    template-only fix: the column header reads `failed check`, a muted note under the table
+    heading explains `has_fair`, and the stored value (`s.reason`, unchanged, `/api/summary`'s
+    payload untouched) still renders as-is -- market 8's "draw" shape produces exactly this row
+    (`_seed`'s own comment: "matched but a shape compute_fair_values never produces a FairValue
+    for -> 'no fair' signal")."""
+    _seed_full(db_session, env_settings)
+    settings = _dashboard_settings(env_settings, tmp_path)
+    client = _client(db_session, settings)
+
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    assert "failed check" in body
+    assert "has_fair" in body
+    assert ("failed check names the check the candidate did not pass "
+           "(has_fair: no fair value was available)") in body
+
+
 def test_api_summary_has_funnel_and_health_keys(db_session, env_settings, tmp_path):
     _seed_full(db_session, env_settings)
     settings = _dashboard_settings(env_settings, tmp_path)

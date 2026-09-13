@@ -907,3 +907,46 @@ def test_operator_events_carry_no_technical_text_for_a_plain_summary(db_session,
     row = next(e for e in events if e["kind"] == "connected")
     assert row["summary"] == "connected"
     assert row["technical"] is None
+
+
+def test_humanize_event_summary_reads_a_bare_check_name_for_check_failed():
+    """Fix 53 round 3 (brief fix-53r2-54-55): `check_failed` events store the bare check name
+    (e.g. `duplicate_trades`) as their summary. The walk still showed the raw symbol beside the
+    phrase; passing `kind` lets the humanizer turn a bare check name into a plain phrase, with
+    the untouched check name carried as `technical` so the evidence stays visible on request."""
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
+    summary, technical = humanize_event_summary("duplicate_trades", kind="check_failed")
+    assert summary == "the duplicate trades check failed"
+    assert technical == "duplicate_trades"
+
+
+def test_humanize_event_summary_check_failed_kind_does_not_affect_non_bare_names():
+    """A `check_failed` summary that is not a bare check name (e.g. it already carries an
+    exception repr) still goes through the ordinary exception-repr rules, unaffected by `kind`."""
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
+    raw = "WebSocketConnectionClosedException(Connection to remote host was lost.)"
+    summary, technical = humanize_event_summary(raw, kind="check_failed")
+    assert summary == "connection to the exchange was lost"
+    assert technical == raw
+
+
+def test_humanize_event_summary_other_kinds_do_not_get_the_check_failed_treatment():
+    """The same bare-identifier-shaped text under any other kind keeps today's exact
+    behaviour: a bare word with no `Error`/`Exception` shape passes through unchanged."""
+    from harness.dashboard.snapshots.pulse import humanize_event_summary
+    summary, technical = humanize_event_summary("duplicate_trades", kind="connected")
+    assert summary == "duplicate_trades"
+    assert technical is None
+
+
+def test_operator_events_carry_the_humanized_check_name_for_check_failed(db_session, env_settings):
+    """End to end: a `check_failed` event with a bare check name summary humanizes in the
+    Pulse payload, not only at the pure-function level."""
+    _ok_machine(db_session, env_settings)
+    db_session.add(OperatorEvent(ts=NOW - timedelta(minutes=5), kind="check_failed",
+                                 summary="duplicate_trades", ref={}))
+    db_session.flush()
+    events = build_pulse(db_session, NOW, env_settings)["operator_events"]
+    row = next(e for e in events if e["kind"] == "check_failed")
+    assert row["summary"] == "the duplicate trades check failed"
+    assert row["technical"] == "duplicate_trades"

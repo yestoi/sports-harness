@@ -388,15 +388,75 @@ def gate_criterion(section: dict) -> list[str]:
     return lines
 
 
+def _fmt_seconds(value) -> str:
+    """A whole number of seconds, for a criterion measured as an age (`staleness_median`)."""
+    return PLACEHOLDER if value is None else f"{float(value):.0f} s"
+
+
+def _fmt_as_stored(value) -> str:
+    """No conversion at all -- the criterion's own stored value already reads as words or a
+    flag (`legal_decision`, `live_trading_env`), not a number in any unit this module knows."""
+    return PLACEHOLDER if value is None else str(value)
+
+
+#: Fix 54: `gate_criterion_reading` used to format *every* criterion's value with `fmt_prob` (a
+#: fraction shown as a percentage), so `staleness_median` (an age in seconds) read "measured
+#: 5900.0 %" for 59 s and `fill_events` (a plain count) read "measured 0.0 %" for zero fill
+#: events. Each criterion is measured in its own unit, and this table names it -- keyed by
+#: `harness.report.gate.CRITERIA`'s own names, so a rename there is the one place this table
+#: would need to follow. A name not in the table keeps `fmt_prob` (the conservative fallback:
+#: no criterion this brief covers changes sentence, and a brand-new criterion added later reads
+#: as a probability difference, the commonest shape, until this table is updated for it).
+_CRITERION_UNITS = {
+    "fill_events": fmt_int,
+    "mismatched_markets": fmt_int,
+    "staleness_median": _fmt_seconds,
+    "settlement": fmt_pct,
+    "marquee_share": fmt_pct,
+    "clv_pinnacle_lb": fmt_prob,
+    "clv_every_benchmark": fmt_prob,
+    "markout_30m": fmt_prob,
+    "adverse_drift": fmt_prob,
+    "filled_vs_unfilled": fmt_prob,
+    "legal_decision": _fmt_as_stored,
+    "live_trading_env": _fmt_as_stored,
+}
+
+
+def _safe_fmt(fmt, value) -> str:
+    """`fmt` over a value that turns out not to be the unit's own type (a test fixture's
+    illustrative comparison string such as `"> 0"` in place of a real stored number, say)
+    prints as stored rather than raising: a criterion's sentence must never crash the whole
+    Gate card over one badly-typed value, and the tables this module reads are graded
+    evidence, not something this rendering layer can refuse to show."""
+    if value is None:
+        return PLACEHOLDER
+    try:
+        return fmt(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def gate_criterion_reading(row: dict) -> str:
-    """One criterion row as a sentence. `insufficient` is never dressed up as a near miss."""
+    """One criterion row as a sentence. `insufficient` is never dressed up as a near miss.
+    Fix 54: a criterion in `_CRITERION_UNITS` has its value *and* its threshold formatted in
+    that criterion's own unit, so the sentence never mixes a seconds value with an unformatted
+    threshold or the reverse. A criterion not in the table keeps today's exact sentence shape
+    (`fmt_prob` on the value, the threshold printed as stored, unformatted) -- the conservative
+    fallback the table's own comment describes."""
     name = row.get("name", "?")
     if row.get("status") == INSUFFICIENT:
         return (f"{name}: not enough evidence to judge -- "
                 f"{confidence_phrase(row.get('n'))}.")
     verdict = "meets" if row.get("status") == PASSED else "does not meet"
-    return (f"{name}: measured {fmt_prob(row.get('value'))}, which {verdict} the stored "
-            f"threshold {row.get('threshold', PLACEHOLDER)}, over {fmt_int(row.get('n'))} games.")
+    fmt = _CRITERION_UNITS.get(name)
+    if fmt is None:
+        return (f"{name}: measured {fmt_prob(row.get('value'))}, which {verdict} the stored "
+                f"threshold {row.get('threshold', PLACEHOLDER)}, over {fmt_int(row.get('n'))} "
+                f"games.")
+    return (f"{name}: measured {_safe_fmt(fmt, row.get('value'))}, which {verdict} the stored "
+            f"threshold {_safe_fmt(fmt, row.get('threshold'))}, over "
+            f"{fmt_int(row.get('n'))} games.")
 
 
 # --- Ticket ------------------------------------------------------------------------------------------
