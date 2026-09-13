@@ -118,7 +118,7 @@
    "y": 0,
    "w": 390,
    "h": 1120,
-   "title": "A · Slate and coral",
+   "title": "A · Slate and coral · CHOSEN",
    "page": "page-2"
   },
   {
@@ -168,7 +168,7 @@
    "y": -140,
    "w": 900,
    "page": "page-2",
-   "text": "Three slip materials to replace the amber-and-brown ticket. Same slip anatomy, same lamps and stamps; only the material and the fun accent change. Each accent stays clear of cyan (paper side), green (good), amber (warn) and red (bad). Pick one and the screens on page 1 are redrawn in it."
+   "text": "Three slip materials to replace the amber-and-brown ticket. Same slip anatomy, same lamps and stamps; only the material and the fun accent change. Each accent stays clear of cyan (paper side), green (good), amber (warn) and red (bad). A was chosen on 2026-09-13; the screens on page 1 are drawn in it."
   }
  ],
  "pages": [
@@ -183,6 +183,6 @@
  ],
  "launch": {
   "view": "canvas",
-  "page": "page-2"
+  "page": "page-1"
  }
 }

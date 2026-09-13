@@ -16,6 +16,7 @@ Reading anchor: `main` a2a1791 (2026-09-13). The dashboard spec `docs/superpower
 | F06 | The package's proposed Game Room, Today/Tickets/Research/System navigation, TV-sync, light broadsheet treatment and oversized greeting copy are rejected. | User's brief and this session |
 | F07 | Broadcast typography is used in exactly three places (§6). Everything else keeps the existing token set, faces and card grammar. | Fable, within U11/U12 |
 | F08 | The interaction prototype deliverable is met by state artboards of the critical journey, not a clickable prototype. | Fable; see §10 limitations |
+| F09 | The slip material and the fun accent change: slate and coral replace the night paper and the amber (§6). Chosen from three drawn directions. | User, 2026-09-13, "I don't love the yellow color anymore of the tickets", then "A" |
 
 User decisions U01 to U14 in PRODUCT-BRIEF stand. Nothing here changes a stake, a limit, an anchor, a scientific criterion, the paper posture or a provider account.
 
@@ -40,7 +41,7 @@ Order on both widths: **This week's ideas**, **Live tickets**, **Season**. On th
 
 ### 2.1 The draft slip
 
-A proposed card renders as a **draft slip**: the same night-paper slip (`.slip`, `--slip-paper`, `--slip-ink`) as a placed card, so there is one object to learn. Exactly three marks distinguish a draft:
+A proposed card renders as a **draft slip**: the same slate slip (`.slip`, `--slip-paper`, `--slip-ink`, §6) as a placed card, so there is one object to learn. Exactly three marks distinguish a draft:
 
 1. A **dashed** perforation top and bottom instead of the dotted one.
 2. The badge reads `PROPOSED · NOT PLACED` beside the kind badge.
@@ -225,7 +226,18 @@ A second listener on Omarchy's LAN address serves the same app over HTTPS with a
 
 ## 6. Visual language
 
-Kept: every token in `app.css`, both themes, the three faces, the card grammar, the slip, the lamps and stamps, the sentence-first rule, and the no-vendored-fonts decision.
+Kept: the three faces, the card grammar, the slip anatomy, the lamps and stamps, the sentence-first rule, the no-vendored-fonts decision, and every token in `app.css` except the four below.
+
+**The slip material and the fun accent change (F09).** The night paper and the amber are retired. The slip becomes a raised slate card with a hairline border, the same family as every other surface, and only the coral accent and the perforation say fun money. The amber sat almost on top of the warn colour, which is one reason it grated; coral is warm without being a status colour.
+
+| Token | Dark, was | Dark, now | Light, was | Light, now |
+|---|---|---|---|---|
+| `--slip-paper` | `#2b2517` | `#1a212b` (equals `--raised`) | `#f4ead6` | `#ebe9e3` (equals light `--raised`) |
+| `--slip-ink` | `#f1e6cf` | `#eef2f6` (equals `--ink`) | `#1b1a17` | `#17191d` (equals light `--ink`) |
+| `--slip-muted` | `#b9ad95` | `#8a95a3` | `#6b6255` | `#5f6670` |
+| `--fun` | `#f5a524` | `#ff7f5c` | `#8a5a08` | `#d9542e` |
+
+The slip additionally carries a 1 px border in `--track` so it separates from the card behind it. `--hit` and `--miss` are unchanged. The fun accent is used exactly where the amber was: the Ticket tab, the FUN MONEY badge, the alive lamp, the anchor line, the fan-voice headline, provisional and pending wording, and the one crossing line on Floor. The favourite star on Floor is `--ink-2`, not the fun accent, so no fun colour reaches the paper side. The light values are proposals for the planner to check for contrast; the two theme blocks stay byte-identical by the existing test.
 
 Broadcast typography in exactly three places:
 
@@ -237,7 +249,7 @@ Density, from tightening what exists: the board card's one figures row; the slip
 
 ## 7. Screens
 
-Drawn 2026-09-13 as fourteen artboards in this directory (`*.dc.html`, laid out by `canvas.json`), using the phase 4.5 canvas's tokens and faces, 390 and 1440 wide, every value fictional and marked. Canvas: https://claude.ai/code/artifact/fdcd5d4f-69a5-4b04-8197-85fcb33a18b4
+Drawn 2026-09-13 as fourteen artboards in this directory, redrawn the same day in the chosen slate-and-coral material (F09; the three directions are kept on the canvas's second page) (`*.dc.html`, laid out by `canvas.json`), using the phase 4.5 canvas's tokens and faces, 390 and 1440 wide, every value fictional and marked. Canvas: https://claude.ai/code/artifact/fdcd5d4f-69a5-4b04-8197-85fcb33a18b4
 
 | Artboard | Frame | Shows |
 |---|---|---|
