@@ -86,10 +86,11 @@ Pick the first that applies. Derive each test from files and live state (`git st
 2. **deploy**: `main` is ahead of Omarchy in code. Read the stamp, never a remembered notification:
    ```
    DEPLOYED=$(scripts/omarchy.sh health | python3 -c 'import json,sys;print(json.load(sys.stdin)["build"])')
-   git diff --stat "$DEPLOYED"..main -- . ':!docs' ':!*.md' ':!.claude'
+   git diff --stat "$DEPLOYED"..main -- . ':!docs' ':!*.md' ':!.claude' ':!scripts/autopilot-session.sh'
    ```
    Non-empty output, or a stamp ending in `-dirty`, with the deploy preconditions holding: deploy. Docs-only commits never
-   trigger one. Local `.claude/` tooling is also excluded from the deploy trigger; its presence in a source archive does not require a runtime restart.
+   trigger one. Local `.claude/` tooling and the controller's own session helper (`scripts/autopilot-session.sh`, never copied
+   into the image) are also excluded from the deploy trigger; their presence in a source archive does not require a runtime restart.
    If only the game window blocks it, arm a wakeup for the window's end and go on down this list.
 3. **verify**: no `verify` entry since the last `deploy` entry, a wakeup is due, or a deferred item's judge-after time has
    passed (folded into the next pass unless nothing else is pending); after a restart, assume no wakeup and decide from the clock.
