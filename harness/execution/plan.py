@@ -531,6 +531,15 @@ def _intent_actions(intent: IntentView, market: MarketNow | None, cfg: dict,
         return [Skip(intent.intent_id, FAIR_STALE)]
     if market.dirty(now, s):
         return [Skip(intent.intent_id, BOOK_DIRTY)]
+    if intent.latest_decision == REJECTED:
+        # The strategy's own current answer is that this is not a bet, and `_order_action`
+        # already cancels a resting order on the same verdict (line 511), so placing one here
+        # would be cancelled by the next loop. After the data-quality tests, so a rejected
+        # verdict is never reported as a book or staleness problem, and before the capacity
+        # tests, so it never consumes a slot a placeable intent could have used (D14, IM-1).
+        # The reason re-attribution this causes is recorded in correction C4 and is an input to
+        # 6C's funnel units, not a substitute for them.
+        return [Skip(intent.intent_id, SIGNAL_REJECTED)]
     # The first rule that needs the target: everything above it holds for an intent with no
     # price or size too, and this is where such an intent stops. `Place` still refuses a null
     # target, but as a backstop rather than as the way the loop finds out.

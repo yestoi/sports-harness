@@ -891,9 +891,14 @@ class Executor:
         crossed_already = bool(row.crossed or row.nw_crossed)
 
         if row.status in store.OPEN_STATUSES:
+            # R8: the expiry is the only guarantee an order stops resting, so the watched track
+            # stops there too. It was handed `now` while the counterfactual clamped
+            # (`min(now, expiry)`), which is how a print in the seconds between expiry and the
+            # loop instant filled an order that was no longer on the market (§0.8).
+            deadline = min(now, row.expiry) if row.expiry is not None else now
             result = simulate_fills(order, watched, self._sim_book(session, row, watched, bases,
                                                                    anchor),
-                                    prints, deltas, now, QUEUE_MODEL)
+                                    prints, deltas, deadline, QUEUE_MODEL)
             track = self._persist_track(session, row, order, result, prints, ledger=True,
                                         crossed_already=crossed_already)
             crossed_already = crossed_already or track.cross_written

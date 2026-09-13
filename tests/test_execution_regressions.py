@@ -220,9 +220,6 @@ def test_a_cancelled_order_accrues_no_dirty_seconds():
     assert add_dirty.call_args_list == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: the watched track is simulated to `now` (loop.py:852) while the "
-                          "no-watcher track is clamped to the expiry (loop.py:867)")
 def test_the_watched_track_takes_no_fill_after_expiry():
     """Review I-c2 / addendum §0.5 case 5. Expected fill 0.
 
@@ -245,9 +242,6 @@ def test_the_watched_track_takes_no_fill_after_expiry():
     assert captured[0].state.filled_contracts == D(0)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: the rejected verdict is tested only on the cancel path "
-                          "(plan.py:511), never before a Place is emitted")
 def test_a_rejected_latest_verdict_yields_no_place():
     """Addendum §0.5 case 6. Expected `Place` count 0.
 

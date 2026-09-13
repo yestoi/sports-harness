@@ -699,10 +699,16 @@ def simulate_fills(order: PaperOrder, state: SimState, book: BookState | None, p
     working = book.copy() if book is not None else None
     fills: list[SimFill] = []
     cross: SimFill | None = None
-    if working is not None and not out.crossed and _crosses(working, order):
+    if (working is not None and not out.crossed and working.as_of <= deadline
+            and _crosses(working, order)):
         # Already crossed before a single new event. The book we were handed is itself the
         # observation, so the cross is stamped with the book's `anchor_id`: `last_event_id`
         # advances every loop and would give one crossing a fresh id each time.
+        #
+        # The `as_of <= deadline` test is what actually delivers "no post-expiry fills" (§0.8).
+        # The in-walk cross is already bounded, because `event.ts` comes from `_merge_events`;
+        # this one is not, and a book handed to a cancelled order's still-running counterfactual
+        # can be stamped days after the order left the market.
         out.crossed = True
         cross = _cross_fill(order, out, working, working.as_of, working.anchor_id, fee_model)
 
