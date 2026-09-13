@@ -36,12 +36,22 @@ def _ledger_state(**over) -> SimState:
     """A state with every field set to something that is not its default, so a round trip that
     drops one fails on it."""
     values = dict(queue_remaining=Decimal("5.00"), filled_contracts=Decimal("3.00"),
-                  cursor_event_id=42, crossed=True, print_unmatched=Decimal("2.00"),
-                  cancels_ahead=Decimal("1.00"),
+                  cursor_event_id=42, crossed=True, cancels_ahead=Decimal("1.00"),
+                  prints=((T0, Decimal("2.00")),),
                   buckets=((T0, "pending", Decimal("4.00")),
                            (T0, "surplus", Decimal("0.50"))),
                   trade_ids=((T0, "a"), (T0, "b")), print_floor=T0)
     return SimState(**dict(values, **over))
+
+
+def _blank_row(prefix: str = "", **over) -> NS:
+    """An `orders` row whose every ledger column is NULL: a pre-6B order, never written."""
+    values = {f"{prefix}queue_remaining": None, f"{prefix}filled_contracts": Decimal("0.00"),
+              f"{prefix}tape_cursor_event_id": None, f"{prefix}crossed": False,
+              f"{prefix}print_unmatched": None, f"{prefix}cancels_ahead": None,
+              f"{prefix}recon_state": None, f"{prefix}last_print_ts": None,
+              f"{prefix}last_print_ids": None}
+    return NS(**dict(values, **{f"{prefix}{k}": v for k, v in over.items()}))
 
 
 def test_a_state_round_trips_through_every_column():
@@ -49,10 +59,12 @@ def test_a_state_round_trips_through_every_column():
 
     Computed independently of the code: `SimState` has nine fields, one of which
     (`filled_contracts`) the loop writes from the track result rather than from the state
-    columns. The other eight are persisted across the eleven names below -- the buckets reach
-    three of them, the two scalar sums plus the `jsonb` document §2's invariant compares them
-    with. A round trip that loses one would come back with that field at its default -- `None`,
-    `0` or `()` -- and the equality would fail on it.
+    columns. The other eight are persisted across the eleven names below. Three of the eleven are
+    derived sums the reader does not need -- `print_unmatched` over the print claims and the two
+    bucket sums by kind -- and exist so §2's invariant query can compare them with the `jsonb`
+    document beside them; the document is what carries the three lists and the floor. A round
+    trip that lost one would come back with that field at its default -- `None`, `0` or `()` --
+    and the equality would fail on it.
     """
     state = _ledger_state()
     columns = _state_columns("", state)
@@ -70,7 +82,7 @@ def test_the_counterfactual_track_uses_the_same_shape_under_its_own_prefix():
     we placed actually did.
     """
     state = SimState(queue_remaining=Decimal("1.00"), filled_contracts=Decimal("0.00"),
-                    cursor_event_id=None)
+                     cursor_event_id=None)
     watched, counterfactual = _state_columns("", state), _state_columns("nw_", state)
     assert set(watched) & set(counterfactual) == set()
     assert sorted(counterfactual) == [f"nw_{name}" for name in WATCHED_COLUMNS]
@@ -78,21 +90,54 @@ def test_the_counterfactual_track_uses_the_same_shape_under_its_own_prefix():
 
 
 def test_a_null_ledger_reads_back_as_an_empty_one():
-    """Expected: the buckets and the id set are `()`, the floor is `None` and the two scalars
-    are `0` -- never `None`.
+    """Expected: the three lists are `()`, the floor is `None` and the scalars are `0` -- never
+    `None`.
 
     Computed independently: the columns are nullable with no default and a pre-6B order has
     never had a ledger written, so the database holds NULL in all of them. The simulator sums
-    and compares those Decimals on the first delta of every order's life, and iterates the two
+    and compares those Decimals on the first delta of every order's life, and iterates the three
     tuples, so a `None` reaching it would raise there. A null `recon_state` starts empty rather
     than inferring anything from `traded_at_price`, which is a different quantity (ruling CR-3).
+    A pre-6B order with no watermark either has nothing to carry forward, which is this row.
     """
-    row = NS(queue_remaining=None, filled_contracts=Decimal("0.00"), tape_cursor_event_id=None,
-             crossed=False, print_unmatched=None, cancels_ahead=None, recon_state=None)
-    state = _state_of(row, "")
-    assert (state.buckets, state.trade_ids, state.print_floor) == ((), (), None)
+    state = _state_of(_blank_row(), "")
+    assert (state.prints, state.buckets, state.trade_ids, state.print_floor) == ((), (), (), None)
     assert state.print_unmatched == Decimal("0.00")
     assert state.cancels_ahead == Decimal("0.00")
+
+
+def test_a_pre_6b_order_keeps_its_print_watermark_as_a_floor():
+    """Expected: `print_floor` is the old `last_print_ts` and the old ids come back as seen
+    (round 1, I3).
+
+    Computed independently: the pre-6B shape recorded "every print at or before this instant is
+    already applied, and these are the ids applied at exactly it". An order placed before the 6B
+    deploy and still working at it has that watermark and no `recon_state`. The executor re-reads
+    its whole resting print history from `placed_at - PRINT_LOOKBACK` on the very next step, so a
+    reader that ignored the watermark would apply every one of those prints a second time -- the
+    double count this task exists to remove, reintroduced by the upgrade itself. The watermark's
+    two halves map exactly onto the new shape's two halves: the instant is the floor (nothing at
+    or below it may re-apply) and the ids at that instant are the seen set.
+
+    The transitional read is a read: nothing is written back to a pre-6B row beyond what the
+    repaired writer writes on its first step, and once it has, `recon_state` is not null and this
+    path is dead for that order forever.
+    """
+    row = _blank_row(last_print_ts=T0, last_print_ids=["a", "b"])
+    state = _state_of(row, "")
+    assert state.print_floor == T0
+    assert state.trade_ids == ((T0, "a"), (T0, "b"))
+    assert (state.prints, state.buckets) == ((), ())
+    # The counterfactual track carries its own watermark under its own prefix.
+    nw = _state_of(_blank_row("nw_", last_print_ts=T0, last_print_ids=["c"]), "nw_")
+    assert (nw.print_floor, nw.trade_ids) == (T0, ((T0, "c"),))
+    # A watermark with no ids is still a floor: the instant is what the old shape guaranteed.
+    assert _state_of(_blank_row(last_print_ts=T0), "").print_floor == T0
+    # A written ledger wins: the watermark column now holds the floor the writer put there, and
+    # the document is the authority for the ids.
+    written = _state_columns("", _ledger_state())
+    resumed = _state_of(_row("", written, Decimal("3.00")), "")
+    assert resumed.trade_ids == ((T0, "a"), (T0, "b")) and resumed.print_floor == T0
 
 
 def test_a_stored_zero_is_not_an_absent_column():
@@ -110,13 +155,18 @@ def test_a_stored_zero_is_not_an_absent_column():
     assert written["print_unmatched"] == Decimal("0.00")
     assert written["pending_unmatched"] == Decimal("0.00")
     assert written["cancels_ahead"] == Decimal("0.00")
-    row = NS(queue_remaining=Decimal("0.00"), filled_contracts=Decimal("0.00"),
-             tape_cursor_event_id=None, crossed=False, print_unmatched=Decimal("0.00"),
-             cancels_ahead=Decimal("0.00"), recon_state={"buckets": [], "trade_ids": [],
-                                                        "print_floor": None})
+    row = _blank_row(queue_remaining=Decimal("0.00"), print_unmatched=Decimal("0.00"),
+                     cancels_ahead=Decimal("0.00"),
+                     recon_state={"buckets": [], "prints": [], "trade_ids": [],
+                                  "print_floor": None})
     state = _state_of(row, "")
     assert (state.print_unmatched, state.cancels_ahead) == (Decimal("0.00"), Decimal("0.00"))
     assert state.queue_remaining == Decimal("0.00")
+    # An empty document is not a null one: it is a written ledger, so the pre-6B watermark read
+    # must not fire and reinstate a floor from `last_print_ts`.
+    assert _state_of(_blank_row(recon_state={"buckets": [], "prints": [], "trade_ids": [],
+                                             "print_floor": None}, last_print_ts=T0),
+                     "").print_floor is None
 
 
 def test_traded_at_price_is_written_null_on_every_track():
@@ -137,7 +187,7 @@ def test_traded_at_price_is_written_null_on_every_track():
 
 
 def test_the_ledger_document_is_bounded_and_json_safe():
-    """Expected: every value in the document is a string, a null or a list, and the two lists
+    """Expected: every value in the document is a string, a null or a list, and the three lists
     are capped.
 
     Computed independently: the column is `jsonb`, so a `Decimal` or a `datetime` in it would
@@ -149,20 +199,24 @@ def test_the_ledger_document_is_bounded_and_json_safe():
 
     state = _ledger_state(
         buckets=tuple((T0, "pending", Decimal(str(i + 1))) for i in range(BUCKET_CAP + 10)),
+        prints=tuple((T0, Decimal(str(i + 1))) for i in range(BUCKET_CAP + 10)),
         trade_ids=tuple((T0, f"t{i}") for i in range(TRADE_ID_CAP + 10)))
     doc = recon_state_json(state)
     assert len(doc["buckets"]) == BUCKET_CAP and len(doc["trade_ids"]) == TRADE_ID_CAP
+    assert len(doc["prints"]) == BUCKET_CAP
     assert all(isinstance(value, str) for row in doc["buckets"] for value in row)
+    assert all(isinstance(value, str) for row in doc["prints"] for value in row)
     assert all(isinstance(value, str) for row in doc["trade_ids"] for value in row)
     assert doc["print_floor"] == T0.isoformat()
-    buckets, trade_ids, floor = recon_state_of(doc)
+    buckets, prints, trade_ids, floor = recon_state_of(doc)
     assert buckets == state.buckets[-BUCKET_CAP:]
+    assert prints == state.prints[-BUCKET_CAP:]
     assert trade_ids == state.trade_ids[-TRADE_ID_CAP:]
     assert floor == T0
     # A column written as text by any reader that round-trips it through `json` still loads.
     import json
 
-    assert recon_state_of(json.dumps(doc)) == (buckets, trade_ids, floor)
+    assert recon_state_of(json.dumps(doc)) == (buckets, prints, trade_ids, floor)
 
 
 def test_the_loop_reads_the_helpers_from_the_new_module():

@@ -277,6 +277,15 @@ def test_no_book_order_is_placed_with_marker_and_fills_only_after_a_snapshot(env
     assert order.tape_cursor_event_id is not None
     assert fills_of(db_session, order.id) == []
     assert order.filled_contracts == Decimal("0.00")
+    # D7 is enforced by the print floor the anchoring book sets, so the rule is pinned on the
+    # floor itself and not only on its consequence (6B §0.4, §0.6, round 1 minor): the book was
+    # taken at NOW + 10 s, the floor is that instant less `DELTA_LOOKBACK`, and `_merge_events`
+    # admits only prints strictly above it -- which is why the print at exactly NOW + 5 s, inside
+    # the no-book window, is discarded rather than applied against the queue this book
+    # established. `last_print_ts` carries the same instant for any reader still on that column.
+    floor = NOW + timedelta(seconds=5)
+    assert datetime.fromisoformat(order.recon_state["print_floor"]) == floor
+    assert order.last_print_ts == floor
 
     # A print after the book was adopted does fill.
     _print(db_session, T2, clock.now + timedelta(seconds=5), "0.35", "60", trade_id="late")
