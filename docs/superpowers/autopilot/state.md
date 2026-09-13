@@ -15,7 +15,7 @@ Updated 2026-09-13 10:57 CT (15:57Z) by controller session sports-e7 (session_01
 
 ## Pending results / subprocesses
 
-- Agents in flight (times read from the clock; earlier entries' times were estimates, git commit times authoritative): `impl-6b-t5` (T5 fix round 1, sonnet, round sent ~09:40 CT), `plan-writer-46` (4.6 plan, opus, 10:08 CT). Done: `rev-fix-dash` (Approved), `design-46-A`/`design-46-B` (both NEEDS AMENDMENT; every finding ruled on in addendum revision 2, f53fcec). `impl-fix-56` (carried fix 56, sonnet, 10:24 CT, worktree ../sports-wt/fix-56-teardown-timeout, DB harness_test_fix_56_teardown_timeout granted). `plan-review-46` done (4C/13I/8M, all ruled in `plan-rulings.md`); writer resumed for revision 2 at 10:42 CT. Batch C merged 940fd6d 10:51 CT (journal 165; worktree, branch and its four grants removed); no deploy running.
+- Agents in flight (11:00 CT, clock read): `rev-6b-t5-r1` (T5 round-1 scoped re-review, sonnet, 10:53 CT; T5 branch full suite on 86bb8c7 running, `t5-full-86bb8c7.log`), `rev-fix-56` (sonnet, 10:56 CT; branch `fix-56-teardown-timeout` 91443b7, suite after T5's), `plan-review-46` (scoped re-check of plan revision 2 at 10096e4, 10:58 CT; dispatch 6 of 6), `design-6d-author` (opus, 10:59 CT; worktree ../sports-wt/plan6d-sustained-eval, ledger `.superpowers/sdd/plan-next-phase6d/ledger.md`). Done this session: batch C merged 940fd6d (journal 165); 4.6 addendum revision 2 amended (ddb4f40); T5 round 1 committed 86bb8c7; fix 56 implemented. No deploy running.
 - Wakeups (session-only crons, verified by CronList at creation): dbbeeb7a Sun 12:47 CT (fix 49 row), 6d524910 Sun 19:07 CT (6C rows), b68cb9d0 Sun 21:08 CT (fix 50), 937eca36 Mon 08:57 CT (Monday duties). User-systemd durable reminders Sun 18:29:59 and Mon 07:29:59 CT.
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+_a/_b/_s), harness_test_phase6b_t5_expiry_rejected (+_a/_b/_s), harness_test_fix_56_teardown_timeout. Revoke the branch ones after their last suite.
 - Preserved: recovery branches/worktrees from the restart (fix-45-raw-events-index, fix-48-pricing-stage-order, recovery/*, restart-worker-smoke), three migration stashes. A second interactive Claude session (sports-ad) is the user's; not a controller.
@@ -28,7 +28,7 @@ Updated 2026-09-13 10:57 CT (15:57Z) by controller session sports-e7 (session_01
 
 ## Counters and gates
 
-- CT day Sep 13: 21 dispatches (11 before this session + impl T5, impl batch C, rev T5, rev batch C, design A, design B, plan-writer-46, impl fix 56, plan-review-46, writer resume). Unit counters: phase 6B this session 2; hotfix batch C 2 (closed); hotfix fix 56 1; plan-next 4.6 5 of 6 (wall clock anchored at 09:24 CT, ceiling 13:24 CT). Failed deployment acceptance: 1 (fix 48 row, carried from Sep 12). No rate-limit events. No open gates.
+- - CT day Sep 13: 25 dispatches (11 before this session + impl T5, impl batch C, rev T5, rev batch C, design A, design B, plan-writer-46, impl fix 56, plan-review-46, writer resume, T5 re-review, rev fix 56, plan re-check, 6D author). Unit counters: phase 6B this session 3; hotfix batch C 2 (closed); hotfix fix 56 2; plan-next 4.6 6 of 6 (ceiling reached; wall clock anchored 09:24 CT, ceiling 13:24 CT); plan-next 6D 1 of 6 (started 10:56 CT, ceiling 14:56 CT).
 - Fix rounds: T5 1 (in progress); batch C 0 (fix 53 cumulative 2).
 
 ## Deadlines and open acceptance
