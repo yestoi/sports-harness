@@ -28,11 +28,14 @@ call or in twenty chunks produces the same fills (`test_chunking_invariance`).
 Chunking is not enough on its own, because neither stream arrives once. The executor keeps no
 print cursor and rescans prints from `placed_at - 60 s` every loop (§1), and a book that has
 crossed our price stays crossed on every later loop, so the state carries a `crossed` flag and
-the two halves of print idempotence and both re-feeds are absorbed. Those halves do different
-jobs (§0.6): the `trade_ids` set makes a re-fed print a no-op by identity, which is what keeps
-a late REST backfill stamped earlier than a print already applied *usable*; and `print_floor`
-is the anchoring bound, below which nothing may be applied at all, because a print from before
-an anchoring book's own instant is already inside the queue that book established.
+the two halves of print idempotence and both re-feeds are absorbed.
+
+A re-anchor is what sets the print floor (§0.4, §0.6). A snapshot's own instant is the
+recorder's receive clock and a print carries the venue's `ts_ms`, so the floor is the anchor
+instant less `DELTA_LOOKBACK`; a print inside that slack is reconciled by the ledger above
+rather than dropped, and a print below it is already inside the queue the snapshot anchored.
+Above the floor, idempotence is the trade-id set's job alone, which is what makes a late REST
+backfill usable where the old watermark silently skipped it.
 """
 
 from dataclasses import dataclass
@@ -271,6 +274,14 @@ class SimState:
         describe a queue that no longer exists. `cancels_ahead` survives, being a retired count
         rather than a claim on the current queue, and the trade-id set is pruned to the new
         floor, below which nothing can re-apply anyway.
+
+        The floor is one clock held against the other, and that is the whole of the subtraction.
+        `anchor_as_of` is the recorder's receive time for the snapshot this book was built from
+        (`harness/recorder/ws_sink.py:151`), while every print is stamped with the venue's own
+        `ts_ms` (`ws_sink.py:124-126`); `DELTA_LOOKBACK` (5 s, `book.py:45-49`) is the slack
+        between them, so a print up to that far under the anchor instant may still be a trade
+        the snapshot had not taken in yet. Such a print is above the floor and is not dropped:
+        the ledger reconciles it against the decrement that reports it.
         """
         self.queue_remaining = None if queue is None else _q(queue)
         self.cursor_event_id = cursor_event_id

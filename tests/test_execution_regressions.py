@@ -173,10 +173,6 @@ CLEAN_MARKET = {1: NS(dirty=lambda *unused: False)}
 DIRTY_MARKET = {1: NS(dirty=lambda *unused: True)}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: after a recovery the print watermark is stale while the delta "
-                          "cursor has advanced, so a trade from inside the gap fills against "
-                          "the post-gap queue")
 def test_recovery_takes_no_fill_from_a_trade_inside_the_gap():
     """Probe `actual_recovery_branch`. Expected fill 0.
 

@@ -803,6 +803,30 @@ class Executor:
         heartbeat["tape_lag"] = sorted(lagging)
         return out, unread, lagging
 
+    def _anchor_tracks(self, states, book: BookState, *, queue: Decimal | None) -> None:
+        """Take both tracks to a freshly anchored book: queue, cursor and print floor together.
+
+        The defect this repairs is that they were set apart (§0.4). The recovery branch took the
+        queue to what was resting now and advanced the delta cursor but left the print
+        watermark, so a trade from inside the gap -- already inside the snapshot it anchored on
+        -- was applied a second time against the newly anchored queue; the no-book branch set
+        the watermark to `now`, the recorder's clock rather than the book's.
+
+        The two clocks are not the same clock and the floor is stated on the book's. A snapshot
+        carries the recorder's receive time (`harness/recorder/ws_sink.py:151`) while a print
+        carries the venue's own `ts_ms` (`ws_sink.py:124-126`), so the floor is the anchor
+        instant less `DELTA_LOOKBACK` (5 s, `book.py:45-49`). A print inside that slack is
+        reconciled by §1.3's ledger, not dropped.
+
+        `queue` is the caller's, because the two branches decide it differently: the no-book
+        branch joins the back of the first book it sees, and the recovery branch clamps to the
+        smaller of what it believed and what is resting (review I-2). §1.3's `anchor` empties
+        the ledger, keeps `cancels_ahead` and prunes the trade-id set to the new floor.
+        """
+        for state in states:
+            state.anchor(queue=queue, cursor_event_id=book.last_event_id,
+                         anchor_as_of=book.anchor_as_of)
+
     def _simulate_order(self, session: Session, row, markets, bases, recovering, tape, lagging,
                         now: datetime, stats: ExecStats) -> tuple[str, Decimal]:
         s = self.exec_settings
@@ -828,26 +852,31 @@ class Executor:
                 self._close_nw_if_expired(session, row, now)
                 return row.status, row.filled_contracts
             queue = book.resting_at(row.side, row.prob)
-            for state in (watched, no_watcher):
-                # The queue, the delta cursor, the ledger and the print floor are anchored
-                # together, from the anchoring book itself (6B §0.4, §1.3's `SimState.anchor`).
-                # The floor is what this branch used to spell as a watermark at `now`, the
-                # recorder's clock rather than the book's: the prints of the no-book window are
-                # already inside the queue this book establishes, so they are discarded (D7)
-                # rather than applied against it.
-                state.anchor(queue=queue, cursor_event_id=book.last_event_id,
-                             anchor_as_of=book.anchor_as_of)
+            # The queue, the delta cursor, the ledger and the print floor are anchored together,
+            # from the anchoring book itself, by the one helper both re-anchor branches call so
+            # they cannot drift (6B §0.4, §1.2). The floor is what this branch used to spell as a
+            # watermark at `now`, the recorder's clock rather than the book's: the prints of the
+            # no-book window are already inside the queue this book establishes, so they are
+            # discarded (D7) rather than applied against it.
+            self._anchor_tracks((watched, no_watcher), book, queue=queue)
             anchor = book
             updates.update(queue_ahead_at_place=queue, book_source=book.source,
                            book_age_s=book_age_s(book, now), book_first_seen_at=now)
         elif row.ticker in recovering and book is not None:
             # The first clean book after a dirty stretch. Our queue was built from a tape with
-            # a hole in it, so it is taken down to whatever is actually resting there now.
+            # a hole in it, so it is taken down to whatever is actually resting there now --
+            # never up (review I-2) -- and the print floor is anchored with it, so a trade from
+            # inside the gap that the snapshot already reflects cannot be applied again (§0.4).
             resting = book.resting_at(row.side, row.prob)
             for state in (watched, no_watcher):
-                if state.queue_remaining is not None:
-                    state.queue_remaining = min(state.queue_remaining, resting)
-                state.cursor_event_id = book.last_event_id
+                # A track whose queue is None has no book to have joined behind (R10/D7), and a
+                # recovery says nothing about that: it is still out of simulation until the
+                # no-book branch above admits it. Today's code leaves the None alone and so does
+                # this -- turning it into `resting` here would be a behaviour change with no
+                # correction id (review IM-13).
+                clamped = (None if state.queue_remaining is None
+                           else min(state.queue_remaining, resting))
+                self._anchor_tracks((state,), book, queue=clamped)
             anchor = book
 
         prints, deltas = tape.get(row.ticker, ([], []))

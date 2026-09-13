@@ -207,9 +207,14 @@ def _run_live(env_settings, db_session, run_a, run_b):
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B T3: live folds the NOW+5 s delta before placement (arrival order), "
-                          "replay anchors by ts (queue 45 vs 50, fills 55 vs 50); the anchoring "
-                          "instant is unified by Task 4 (C2), which removes this marker")
+                   reason="6B T7 (C6): at placement the live loop's cached book has already "
+                          "folded the NOW+5 s delta (`advance_book` scans by event id with no "
+                          "upper `ts` bound) while the replay's `book_at(NOW)` has not, so live "
+                          "joins a 45-deep queue and fills 55 where the replay joins 50 and "
+                          "fills 50 -- both conserving the print's 100. Task 4 (C2) anchors "
+                          "`_simulate_order`'s two re-anchor branches, which this fixture never "
+                          "enters; the placement-time instant is the replay timing policy of "
+                          "spec §0.11, so this marker is Task 7's to resolve or carry")
 def test_replay_execute_reproduces_live_orders_and_fills_exactly(env_settings, db_session, two_runs):
     """R14: the same grid, the same tape, the same orders and the same fills -- exactly."""
     game, run_a, run_b = two_runs
