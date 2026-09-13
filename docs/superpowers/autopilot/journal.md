@@ -2034,3 +2034,9 @@ Times are America/Chicago.
 - Rulings: standing rulings ledgered (deploys from main only; this session's trailers; models per the plan's Model lines with opus review for the auth/write and recorder tasks; per-branch databases; the 6D author counts against the implementer ceiling).
 - Carried forward: none.
 - Next: wave 1 in flight; T5 (6B) re-review and suite, fix 56 review, 6D design author (ceiling 14:56 CT); wakeups dbbeeb7a 12:47 CT, 6d524910 19:07 CT, b68cb9d0 21:08 CT, 937eca36 Mon 08:57 CT.
+
+## 168. decision - the user asks for a safe stopping point (loop optimizations PR incoming) - 2026-09-13 11:09 CT
+
+- User, verbatim (11:09 CT, in chat while wave 1 of 4.6 was being dispatched): "Lets find a safe stopping point. I have a PR with optimizations to our loop being created now."
+- Ruling on the stopping point: no new dispatches from this moment; the short in-flight items land (T5 round-1 re-review and its branch suite receipt, fix 56 review); the three long workers (4.6 T1 and T2 implementers, the 6D design author) were told to stop and report within 10 minutes so their partial work is committed on their branches as WIP with the resume point in each ledger; no merge and no deploy unless a complete clean receipt is already in hand; then state checkpoint and a `stopped` entry. The ledgers name every resume point; the next session (on the optimized skill) reconciles from files per recovery.md.
+- Next: stopped entry below once the reports land.
