@@ -477,6 +477,7 @@ def test_the_positions_open_fill_revision_only_issues_the_view_and_undoes_nothin
                      if isinstance(n, ast.FunctionDef) and n.name == "downgrade")
     assert all(isinstance(node, ast.Pass) for node in downgrade.body)
 
+
 def _load_baseline():
     path = ROOT / "migrations" / "versions" / "0001_baseline.py"
     spec = importlib.util.spec_from_file_location("t15_baseline", path)

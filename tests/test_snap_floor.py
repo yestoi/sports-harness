@@ -589,7 +589,6 @@ def test_a_settled_or_replay_order_is_still_excluded_from_exposure(db_session, e
     assert lane["open_contracts"] == pytest.approx(0.0)
 
 
-
 # --- carried fix 56: a settled fill leaves Floor's exposure -------------------------------------
 
 
@@ -645,6 +644,7 @@ def test_a_settled_order_still_leaves_the_exposure_lane(db_session, env_settings
 
     lane = build_floor(db_session, NOW, env_settings)["exposure"]["lanes"][0]
     assert lane["open_contracts"] == pytest.approx(0.0)
+
 
 def test_the_funnel_caps_the_run_notes_it_reads(db_session, env_settings, monkeypatch):
     """`runs` carries no index on `started_at`, so the window predicate never stopped the read:

@@ -29,8 +29,8 @@ path anywhere: `harness/db/migrate.py` builds the `Config` in code, so every ope
 | `0005_rfq_lookup` | `0004_phase5` | `ix_fair_leg_lookup` on `fair_values (game_id, market_type, coalesce(outcome_team_id, -1), coalesce(outcome_side, ''), coalesce(threshold, -9999), created_at desc) where fair_source = 'direct'`, built CONCURRENTLY — the covering index the RFQ quote's `_LEG` lookup and `rfq_grade`'s `_CLOSING_LEG` lateral both read (fix 35, journal 109's incident; the `coalesce(...)` columns are a round 1 correction, review Important 1 — the bare columns compared with `is not distinct from` were never chosen by the planner; see `docs/runbooks/research.md`'s "Fix 35: cheap quotes and the quote rate limit") | `pass` (additive only, roadmap invariant 5) |
 | `0006_quotes_run_index` | `0005_rfq_lookup` | `ix_quotes_run_market` on `venue_quotes (run_id, venue_market_id)`, built CONCURRENTLY — the index the pricing read (`build_gap_snapshots` in `harness/pricing/gaps.py`) rides to fetch a run's quotes. Fix 42: from 13:03 CT on 2026-09-11 no index on this 3.58 M row bulk table led with `run_id`, so the planner walked `ix_quotes_market_fetched` once per matched market with `run_id` as a filter, past the 30 s statement timeout on every run — `runs.status = degraded` and no fair values. `if not exists` matters: the controller built the index by hand on the NAS at 14:15 CT, so the revision and `init-db` both find it present | `pass` (additive only, roadmap invariant 5) |
 | `0007_raw_events_lookup` | `0006_quotes_run_index` | `ix_raw_source_endpoint_id` on `raw_responses (source, endpoint, id)`, built through the partitioned recipe (parent metadata-only, each partition CONCURRENTLY, then attach — `harness/db/schema.py`'s `_ensure_partitioned_concurrent_indexes`, since Postgres 16 refuses `create index concurrently` on a partitioned parent). Fix 45: `_load_events_cache` (`harness/normalize/runner.py`) walked the primary key backwards across every partition of this 2.2 GB+/week table with its predicates only a filter, past the 30 s statement timeout on the NAS at 23:23/23:26/23:27 CT on 2026-09-11 and 00:06 CT on 2026-09-12 — `runs.status = degraded`, no new games or markets from Kalshi events that tick | drops the parent index, which drops every attached partition child with it (not `pass`: see the module docstring) |
-
 | `0008_positions_open_fill` | `0007_raw_events_lookup` | re-issues the `positions` view with `harness/db/schema.py`'s `OPEN_FILL_SQL` predicate: a fill is open while its order is not `settled` **and** no `ledger` row with `kind = 'settlement'` exists for it. Carried fix 56 (second row): order 157 filled 38.92 YES, was cancelled `fair_stale`, and its fill was settled for payout 0 on 2026-09-13 — `settle.py`'s `SETTLEABLE` moves only filled/partially_filled orders, so the order stays `cancelled` and the paid fill read as open forever (legacy exposure, the executor's caps through `store.load_positions`, and `open_stake`/`mtm_open`). The deployed database gets the new text from `init-db`; this revision exists so a *migrated* database's catalogue matches a `create_schema` one, since `0001_baseline` holds the view's previous text and is not edited. The “Adding a migration later” rule below still stands — a view's home is `create_schema` — and this one statement is a controller ruling for this fix, not a new pattern the loop may repeat | `pass` (nothing additive to undo; the previous text is in `0001_baseline`, which a code rollback's `init-db` restores through `create_schema`) |
+
 The stamp moves from `0003_brin_autosummarize` to `0004_phase5`, from `0004_phase5` to
 `0005_rfq_lookup`, from `0005_rfq_lookup` to `0006_quotes_run_index`, from
 `0006_quotes_run_index` to `0007_raw_events_lookup`, and from `0007_raw_events_lookup` to
@@ -65,7 +65,16 @@ The stamp moves from `0003_brin_autosummarize` to `0004_phase5`, from `0004_phas
   models stay the authority and `tests/test_alembic.py` compares the two catalogues.
 - An index on `raw_responses`, `orderbook_events`, `venue_trades`, `venue_quotes` or
   `odds_snapshots` goes through `concurrent_index` only.
-- Never a view. Views live in `create_schema` as `CREATE OR REPLACE VIEW`.
+- Never a view, with one ruled exception. Views live in `create_schema` as
+  `CREATE OR REPLACE VIEW`, and that is still where a view's text is changed. The exception
+  is a view whose text changes after the baseline: because `0001_baseline` holds the old
+  text and `test_a_migrated_database_matches_a_create_schema_database` compares the two
+  catalogues, a revision may re-issue the view with one `op.execute` of the same
+  `create or replace view ...` statement `create_schema` runs, under a controller ruling and
+  with a test that pins the two copies equal — `0008_positions_open_fill` above is the
+  precedent, and it is a ruling per fix, not a pattern to reach for. The Alembic op helper
+  that replaces a view and `DROP VIEW` stay banned either way (`tests/test_alembic.py`'s
+  FORBIDDEN list).
 - A `create index concurrently` that aborts mid-build (a lock timeout, a killed deploy) leaves
   an `INVALID` index behind, and `... if not exists` on every later deploy skips it forever
   rather than rebuilding it; verify's `check_results` row for that index goes `skip` instead of

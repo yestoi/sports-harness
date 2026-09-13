@@ -37,12 +37,13 @@ cancel *decision*, and an expiry is not one), and the intents number is now the 
 reached a decision rather than the intents that were written.
 
 **`_EXPOSURE` no longer reads the `positions` view.** The view aggregates every money fill of
-every unsettled order with no time bound of any kind: `o.status <> 'settled'` is a status
+every unsettled fill with no time bound of any kind: `OPEN_FILL_SQL` (carried fix 56; when this
+paragraph was written the rule was `o.status <> 'settled'` alone) is a status-and-ledger
 predicate, not a bound, and on a database where settlement has ever stalled it walks the season.
 The ruling that left it unbounded (phase 4.5, T11 fix round 1) is reversed by the incident
 above. It is now the same aggregate driven from `fills` under `f.filled_at >= :since`
-(`ix_fills_filled_at`), joined to `orders` by primary key and filtered on the view's own two
-predicates, so the answer is the view's answer for every position taken inside
+(`ix_fills_filled_at`), joined to `orders` by primary key and filtered on the view's own
+non-bound predicates, so the answer is the view's answer for every position taken inside
 `EXPOSURE_WINDOW`. `_EQUITY` was already bounded, and for the same shape of reason: see
 `EQUITY_WINDOW`.
 

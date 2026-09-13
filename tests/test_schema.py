@@ -647,6 +647,7 @@ def test_the_three_open_position_readers_embed_the_one_predicate():
     assert OPEN_FILL_SQL in _POSITIONS.text
     assert OPEN_FILL_SQL in _EXPOSURE.text
 
+
 def test_create_schema_is_idempotent(db_session):
     engine = db_session.get_bind()
     db_session.commit()
