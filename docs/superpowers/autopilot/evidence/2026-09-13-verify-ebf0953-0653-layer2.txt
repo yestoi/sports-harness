@@ -1,0 +1,67 @@
+# Layer 1/2 verify ebf0953 2026-09-13T11:52:53Z (06:52 CT)
+## healthz
+{"status":"ok","last_run_at":"2026-09-13T11:52:27.884386+00:00","last_status":"skipped","seconds_since":26,"credits_remaining":4903697,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":210.0,"read_at":"2026-09-13T11:43:27.884553+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"ebf0953"}
+## layer 2 sql
+0007_raw_events_lookup
+13957 | 2026-09-13 11:46:57.884399+00 | ok | 0 |  | []
+13951 | 2026-09-13 11:43:57.884436+00 | ok | 0 |  | []
+13927 | 2026-09-13 11:31:29.762005+00 | ok | 0 |  | []
+13921 | 2026-09-13 11:28:29.762098+00 | ok | 0 |  | []
+13900 | 2026-09-13 11:17:59.761991+00 | ok | 0 |  | []
+ok | 27
+skipped | 332
+13968 | 2026-09-13 11:52:27.884386+00 | skipped | ebf0953
+ebf0953
+delta | 1030453
+gap | 7
+snapshot | 2759
+00:00:01.473101
+orders | 9057 | 2537 | 2026-09-13 11:52:22.277039+00 | 2026-09-13 11:52:22.576175+00
+runs | 13876 | 1173 |  | 2026-09-13 11:46:22.124934+00
+venue_trades_y2026w37 | 3705217 | 969 | 2026-09-13 05:37:03.746155+00 | 2026-09-13 06:01:55.818178+00
+fair_values | 244801 | 964 |  | 
+rfq_quotes | 0 | 915 |  | 
+64 | 1024 MB
+100 GB
+ws_connect | 2026-09-13 11:42:58.115502+00 | connected
+deploy | 2026-09-13 11:43:27.884553+00 | build_sha 93dfb95 - ebf0953
+134266553 | 2026-09-13 10:01:00.280154+00 | 2 | gap
+134266606 | 2026-09-13 10:01:00.391485+00 | 2 | gap
+134445660 | 2026-09-13 10:31:26.308971+00 | 2 | gap
+134445829 | 2026-09-13 10:31:26.333+00 | 2 | gap
+134445831 | 2026-09-13 10:31:26.507758+00 | 2 | gap
+134720036 | 2026-09-13 11:01:27.009874+00 | 2 | gap
+134720082 | 2026-09-13 11:01:27.124025+00 | 2 | gap
+2026-09-13 11:52:57.884494+00 | 142.400000
+2026-09-13 11:52:27.884386+00 | 142.300000
+2026-09-13 11:51:57.884451+00 | 142.300000
+2026-09-13 11:51:27.884438+00 | 142.300000
+## status
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED          STATUS                    PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     14 hours ago     Up 14 hours               5432/tcp
+sports-harness-app-exec-1       sports-release/app:ebf0953                                                         "harness exec"           app-exec       10 minutes ago   Up 10 minutes (healthy)   
+sports-harness-app-research-1   sports-release/app:ebf0953                                                         "harness research-wo…"   app-research   10 minutes ago   Up 10 minutes             
+sports-harness-app-run-1        sports-release/app:ebf0953                                                         "harness run"            app-run        10 minutes ago   Up 10 minutes             
+sports-harness-app-serve-1      sports-release/app:ebf0953                                                         "harness serve --por…"   app-serve      10 minutes ago   Up 10 minutes (healthy)   127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:ebf0953                                                         "harness ws-record"      app-ws         10 minutes ago   Up 10 minutes             
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       14 hours ago     Up 14 hours (healthy)     5432/tcp
+{"status":"ok","last_run_at":"2026-09-13T11:52:57.884494+00:00","last_status":"skipped","seconds_since":2,"credits_remaining":4903697,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":210.0,"read_at":"2026-09-13T11:43:27.884553+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"ebf0953"} [200]
+## host
+/dev/mapper/root  952G  106G  843G  12% /srv/sports-harness
+               total        used        free      shared  buff/cache   available
+Mem:           31904        7109        2511        1038       25247       24795
+Swap:          63808        1467       62341
+## dashboard section warnings (10m)
+0
+## ERROR lines since 11:42Z
+== app-run
+== app-serve
+== app-ws
+== app-exec
+== app-research
+## RFQ posture
+LIVE_TRADING=0
+SNAPSHOTS_ENABLED=1
+RESEARCH_WORKER_ENABLED=1
+RFQ_LISTENER_ENABLED=0
+1
