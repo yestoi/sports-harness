@@ -1,8 +1,9 @@
-"""The parlay budget, loaded from `parlay.yaml` (roadmap R:213-218).
+"""The parlay budget and prop policy, loaded from `parlay.yaml` (roadmap R:213-218; addendum
+§2.1).
 
 Every value in that file is a user decision. Nothing here has a default that could paper over a
-missing key: a config file that lost `weekly_budget` raises at load rather than building a card
-against an invented budget.
+missing key: a config file that lost `weekly_budget` or `policy_version` raises at load rather
+than building a card against an invented budget or policy.
 """
 import importlib.resources
 from dataclasses import dataclass
