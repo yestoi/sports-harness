@@ -116,11 +116,13 @@ Hook envelope assumptions follow the official [Claude hooks reference](https://c
 subagent tool hooks include `agent_id`, and project hooks run inside subagents.
 The actual bounded Claude drill must confirm this installation before loop dispatch.
 
-Worker Git status can show the deliberately masked `.env.example`, `.env.nas.example`
-and `secrets/.gitkeep` as changed/missing. These are namespace views, not host edits.
-Return only the assigned source diff; never copy these masks into a patch. The controller
-checks actual host Git status and runs the exact clean full-suite acceptance outside
-the worker namespace after code review. Worker receipts are scoped evidence only.
+The launcher masks real `.env*` files, the contents of `secrets/` and Git config, not the
+committed templates `.env.example` and `.env.nas.example` or the committed empty
+`secrets/.gitkeep`, so a worker's Git status shows only the worker's own edits. If a mask
+path ever appears in a worker diff, it is a namespace view, not a host edit: never copy it
+into a patch. The controller checks actual host Git status and runs the exact clean
+full-suite acceptance outside the worker namespace after code review. Worker receipts are
+scoped evidence only.
 
 Cancellation of an MCP request does not currently stop its subprocess: its declared
 deadline still applies (maximum1800s). Reconcile the test lock/process before another

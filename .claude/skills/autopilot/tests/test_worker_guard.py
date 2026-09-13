@@ -364,6 +364,28 @@ class WorkerGuardTests(unittest.TestCase):
         self.assertEqual(args[idx-1], '--tmpfs')
         self.assertEqual(args[idx+1:idx+3], ['--remount-ro', str(self.task / 'secrets')])
 
+    def test_tracked_env_templates_and_secrets_gitkeep_are_not_masked(self):
+        # `.env.example` / `.env.nas.example` are committed templates and `secrets/.gitkeep` is a
+        # committed empty file: hiding them shows every worker a dirty tree it did not touch and
+        # empties the receipt's dirty_before/dirty_after signal. Real `.env*` files stay masked.
+        (self.task / '.env').write_text('do not disclose')
+        (self.task / '.env.example').write_text('DATABASE_URL=postgresql://u:p@h/db\n')
+        (self.task / '.env.nas.example').write_text('NAS_IP=\n')
+        (self.task / 'secrets').mkdir()
+        (self.task / 'secrets/.gitkeep').touch()
+        (self.task / 'secrets/key').write_text('secret')
+        args = shell.sandbox_argv(self.task, self.task, 'true')
+        for name in ('.env.example', '.env.nas.example'):
+            self.assertNotIn(str(self.task / name), args)
+        idx = args.index(str(self.task / '.env'))
+        self.assertEqual(args[idx-2:idx], ['--ro-bind', str(shell.EMPTY_FILE)])
+        secrets = str(self.task / 'secrets')
+        idx = args.index(secrets)
+        self.assertEqual(args[idx-1], '--tmpfs')
+        self.assertEqual(args[idx+1:idx+6], ['--ro-bind', str(shell.EMPTY_FILE), secrets + '/.gitkeep',
+                                              '--remount-ro', secrets])
+        self.assertNotIn(secrets + '/key', args)
+
     def test_hardlinks_special_files_and_secret_symlinks_fail_closed(self):
         origin = self.main / 'source'
         origin.write_text('main code')
