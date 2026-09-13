@@ -1,0 +1,127 @@
+{
+  "package": "Harness UI revision — Fable design handoff",
+  "prepared_date": "2026-09-12",
+  "status": "ready_for_fable_design",
+  "implementation_status": "not_planned_not_started",
+  "source_read_anchor": "93dfb95773f5649d582ff39832d94241f1a8cdf3",
+  "owner_decisions_pending": [],
+  "final_design_owner": "Fable",
+  "selected_visual_direction": "dense, dark, selective broadcast typography",
+  "api_budget_usd_monthly_additional": 100,
+  "sports": [
+    "NFL",
+    "college football"
+  ],
+  "sportsbook": "DraftKings",
+  "ticket_preparation": "system-generated ideas; owner places manually",
+  "ticket_types": [
+    "game lines",
+    "player props",
+    "same-game parlays wherever DraftKings offers them"
+  ],
+  "spoiler_delay": false,
+  "access": "home network only",
+  "providers_selected": false,
+  "files": [
+    {
+      "path": "AFTER-FABLE.md",
+      "bytes": 13663,
+      "sha256": "364978f2ddd64c317a2bd4bf5c63f31ad0672bf67f22f3aa5b65df8f087b36a5"
+    },
+    {
+      "path": "DATA-AND-INTEGRATIONS.md",
+      "bytes": 8686,
+      "sha256": "3d5d111522bd97160c72aa6873586b8a925befab4e2154c74070c9f5e37dff5c"
+    },
+    {
+      "path": "EXPERIENCE-CONTRACTS.md",
+      "bytes": 10411,
+      "sha256": "c669f913311fc789dd4a32a8237beadcb20b0cac71293584f410b855fb9a7360"
+    },
+    {
+      "path": "FABLE-DESIGN-PROMPT.md",
+      "bytes": 3288,
+      "sha256": "8b9224fd50cbfa7e6c06a5602b4cbfa77f5e190101c092687e2b49d47d634ccc"
+    },
+    {
+      "path": "PRODUCT-BRIEF.md",
+      "bytes": 7328,
+      "sha256": "37cf94403104bb2a6c42f61545419bfcf7a6e329b6566fedf5c0f86448e67e31"
+    },
+    {
+      "path": "README.md",
+      "bytes": 5082,
+      "sha256": "f4ee44ca69bf490508116c107fdf33dc9f03c60d30d5875e1aa87ee9d6381e7a"
+    },
+    {
+      "path": "VALIDATION.md",
+      "bytes": 2328,
+      "sha256": "62693be8feeb4243b010b7efcc91c8af78cf4d05a2a8871f0c063a8d053901e5"
+    },
+    {
+      "path": "references/2026-09-12-ui-revision-working-brief.md",
+      "bytes": 29240,
+      "sha256": "b6e604a2ab55e005784c5b3f7e9b4e2c35ab9d8be9f1cdce9b1f1f76aada3274"
+    },
+    {
+      "path": "references/game-day-broadcast-concept.html",
+      "bytes": 77503,
+      "sha256": "7d0c29b95f19dce4776f3baa702debb2093fe7009f96d2d0dca0adab0497a631"
+    },
+    {
+      "path": "references/game-day-broadcast-desktop.png",
+      "bytes": 190301,
+      "sha256": "8d66a75a9590ad05ad8a6a18894b978f0e5512aa841173a0dc5358ddb3d56154"
+    },
+    {
+      "path": "references/game-day-broadcast-phone.png",
+      "bytes": 64446,
+      "sha256": "b6acbc85872837cdceba2f54583f5eab547b023d12e85327385f9979f61b0c3f"
+    },
+    {
+      "path": "references/game-day-broadcast-sgp-desktop.png",
+      "bytes": 165941,
+      "sha256": "ff6e5162e489040e12ff4f4892fe469e34e0dbab71f5b94df6e475c03fdd990e"
+    },
+    {
+      "path": "references/game-day-broadcast-sgp-phone.png",
+      "bytes": 67753,
+      "sha256": "fd329acbaa273768a1d0d279ad70199ccae2886d84bbadf7d6aa897d3cb61f5d"
+    },
+    {
+      "path": "references/game-day-concept-desktop.png",
+      "bytes": 265046,
+      "sha256": "5a00528b6fa5e05f7695c7a7bb1727fc87abf434c34ae9bc7b8701cb3b807bd2"
+    },
+    {
+      "path": "references/game-day-concept-phone.png",
+      "bytes": 199379,
+      "sha256": "37948392041fb492c090d9d78a60201b365790b4a3834632005927b6aa75ed2d"
+    },
+    {
+      "path": "references/game-day-concept.html",
+      "bytes": 54885,
+      "sha256": "af87f25fb95bc614e12ffe48fabef6e5d4add8f7144217d095ccdda13216995a"
+    },
+    {
+      "path": "references/game-day-desk-desktop.png",
+      "bytes": 203792,
+      "sha256": "951e0d40f201c6d53fc1eb87ed2481dc4c68ad6b50c6fcc6d633aa5dd1282296"
+    },
+    {
+      "path": "references/game-day-desk-phone.png",
+      "bytes": 65422,
+      "sha256": "1710d30d6a62b2e1b4631e88c85511ca098a2e2ebbd727edbaa200a504064ab1"
+    },
+    {
+      "path": "references/game-day-sgp-desktop.png",
+      "bytes": 289428,
+      "sha256": "c489e83796d1de9c784a174e1754e7529a6fc668dfa1e696bce31e8b81bd610f"
+    },
+    {
+      "path": "references/game-day-sgp-phone.png",
+      "bytes": 111899,
+      "sha256": "bdfb2386cb4e507c35ae5dc8537a74ed51ef3531799c72046c73c14c6033da0b"
+    }
+  ]
+}
