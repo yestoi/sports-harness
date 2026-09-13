@@ -34,7 +34,7 @@ Updated 2026-09-13 09:12 CT (14:12Z) by a user-directed review/setup session (se
 ## Deadlines and open acceptance
 
 - NFL block from 10:20 CT Sun through Monday night; next deploy window Tuesday. 6C Sun 19:00 CT and Mon 09:00 CT (diagnostic report duty; operate.md). Fix 49 original acceptance: 20-tick synthetic <5 % holds in the suite; production 6 h/500 MiB judged from `recorder.rss_mb` after 12:44 CT. 6E cold-start (user LUKS) and two corrected-workload windows open. 6F awaits the user's amendment. Live evidence for 48/6D: markets normalizer backlog and zero current-run venue_quotes unchanged (journal 154).
-- 4.6 user-side items: the Omarchy firewall rule for the LAN port (sudo) before slice C; a paid stat provider only if the ESPN summary measurement falls short (gate 7).
+- 4.6 user-side items: ufw rule for LAN port 8443 done (user, 2026-09-13; recorded in the 4.6 decisions item 4); a paid stat provider only if the ESPN summary measurement falls short (gate 7).
 
 ## Risks and lessons
 
