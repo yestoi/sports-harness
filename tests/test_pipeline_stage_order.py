@@ -51,7 +51,7 @@ NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
 
 
 def _single_pass(session, run_id, now, settings, budget_s):
-    from pricing_baseline import baseline_pipeline
+    from tests.pricing_baseline import baseline_pipeline
 
     return baseline_pipeline().price_and_signal(session, run_id, now, settings, budget_s)
 
@@ -163,7 +163,7 @@ def test_the_stage_order_produces_exactly_what_the_single_pass_produced(
     pass, one through the reordered pipeline. Every gap snapshot and every signal has to match,
     field for field, and so do the counts and the variant order.
     """
-    from pricing_baseline import baseline_pipeline
+    from tests.pricing_baseline import baseline_pipeline
 
     env_settings.gate_variant = gate
     game, markets = _seed(db_session)
@@ -401,7 +401,7 @@ def test_equal_edge_scoring_uses_captured_market_order_and_reconciles_mixed_prio
 def test_pipeline_refreshes_mixed_gate_labels_after_derived_competition(
         env_settings, db_session, monkeypatch):
     from dataclasses import replace
-    from pricing_baseline import baseline_pipeline
+    from tests.pricing_baseline import baseline_pipeline
 
     env_settings.gate_variant = "sharp_plus_derived"
     game, markets = _seed(db_session)

@@ -230,7 +230,7 @@ def test_the_tick_retains_nothing_after_the_second(env_settings, db_session):
 def test_diagnostic_allocations_cover_the_actual_tick_path(
         env_settings, db_session, monkeypatch, path):
     from harness.recorder import tick as tick_module
-    from pricing_baseline import baseline_pipeline
+    from tests.pricing_baseline import baseline_pipeline
     from scripts.measure_tick_memory import AllocationStages
 
     run_tick, _ = _driver(env_settings, db_session, 2)
