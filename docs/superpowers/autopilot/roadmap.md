@@ -20,6 +20,7 @@ section F holds the binding decisions and rulings.
 | 3 Paper execution, settlement, benchmarks, CLV | **done** (merged 2026-09-08 04:55 CT, journal entry 46), revised by the 2026-09-07 review; gains **Task 2b partitioning (U3, pre-authorized)**, **Task 4b NO-side (U2)** and **Task 12b telemetry (U6)** | `docs/superpowers/plans/2026-09-07-phase3-paper-execution.md` | none |
 | 4 Kalshi authenticated adapter (still paper), risk gate, backups, Alembic | **done** (merged 2026-09-08 21:13 CT, journal entry 65; deployed 21:23 CT `babf8d3`, journal 67; hotfix waves `bdea218` 23:10 CT, `417eecd` 2026-09-09 00:09 CT, `6e3b33f` 00:5x CT; phase report `reports/2026-09-09-phase4.md`) | `docs/superpowers/plans/2026-09-08-phase4-kalshi-authed.md` (spec: `docs/superpowers/specs/2026-09-08-phase4-kalshi-authed-design.md`) | none; the demo smoke runs only when `secrets/kalshi_demo_*` exist |
 | 4.5 Dashboard surfaces: Pulse, Floor, Study, Gate (snapshot layer, `/ui/`, table t12; absorbs phase 5(g)) | done | plan-next from `docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md` and its design canvas | none |
+| 4.6 Fun tickets inside the existing dashboard (U9): this week's ideas as draft slips, in-app "I placed this" with corrections, prop legs with live stat lines, Floor game detail, a LAN listener with an owner login, the scheduled builder stage, slate-and-coral slip material | not planned | plan-next (§4.6) from `docs/superpowers/design/ui-revision-2026-09-12/fable/DESIGN-SPEC.md`, `fable/FEASIBILITY.md` and `AFTER-FABLE.md` | none for slices A–D (contracts, additive data, projections and local writes, the interface on fixtures); a slice E/F claim that presents corrected execution or report evidence needs the matching 6B/6C acceptance; a paid stat provider, a new outbound host or a new dependency is gate 7; the host firewall rule for the LAN port is the user's (needs sudo) |
 | 5 Research layer and hypotheses: futures snapshots, NWS, parlay CLI, shadow veto, report annotator, RFQ listener (overview page moved to 4.5) | done | plan-next | none; veto and annotator run only when `secrets/anthropic_api_key` exists |
 | 6A Preserve and define: evidence capsule (order 157 plus representative clean, interleaved, gap/recovery, delayed-loop and capacity-bound periods), correction manifest, runnable failure cases, deploy plumbing (fix 37) | **done** (merged to main 2026-09-11 19:38 CT at 2d1ed62, journal 129; ledger `docs/superpowers/reviews/2026-09-11-phase6a-sdd-ledger.md`; deployed b0a3991 23:22 CT, journal 132; capsule extraction and phase report pending) | `docs/superpowers/plans/2026-09-11-phase6a-preserve-and-define.md` (spec: `docs/superpowers/specs/2026-09-11-phase6a-preserve-and-define-design.md`) | none: start now |
 | 6B Repair execution: subscription continuity, recovery anchoring, trade/delta reconciliation, expiry, rejection, dirty-time scope, capacity-equivalent replay; the order 157 audit | **in progress** (planned 2026-09-11 21:41 CT, journal 131; started 2026-09-12 00:40 CT, journal 137; branch `phase6b-repair-execution`) | `docs/superpowers/plans/2026-09-11-phase6b-repair-execution.md` (spec: `docs/superpowers/specs/2026-09-11-phase6b-repair-execution-design.md`) | 6A done (met, journal 129); execution starts after tonight's wave deploy and 6C's merge, within the implementer ceiling |
@@ -80,6 +81,7 @@ user decision changes them.
 | U7 GitHub remote | Decided 2026-09-07 evening: a **private** GitHub repository is the remote `origin`, added by the user as an off-site backup. R5 is amended: the loop **pushes** `main` and the current phase branch (`git push origin main <phase-branch>`) at the same moments it writes the bundle (after every phase and every Monday), and the bundle continues. The loop never pulls, never rebases onto the remote, never opens pull requests, never pushes task worktree branches, and the NAS still deploys from the local `main`. A failed push is journaled, never retried in a loop, and never blocks a unit. |
 | U6 Dashboard | Decided 2026-09-07 (design session, spec `docs/superpowers/specs/2026-09-07-dashboard-surfaces-design.md`). Architecture: compute once, render in the browser: jobs write pre-aggregated snapshots, `app-serve` serves them by primary key, a static client renders four surfaces (Pulse, Floor, Study, Gate) under `/ui/`; the legacy page at `/` and the `/api/summary` contract are frozen. Telemetry tables that cannot be backfilled land in phase 3 as **Task 12b** (`metric_samples`, `operator_events`, `order_watch_samples`, `equity_snapshots`, `game_score_events`, `check_results`, `report_runs`/`report_cells`); the front end is **phase 4.5**, planned after phase 4, absorbing phase 5(g). Mobile and desktop both in scope. Visual direction comes from a Claude Design canvas, refined on or after 2026-09-14. |
 | U8 Phase 6 direction and resume setup | Integration requested 2026-09-11 (journal 113, recorded 12:08 CT): "I have a working loop setup in this project I'd like to get this roadmap integrated into." The adopted `docs/superpowers/reviews/2026-09-11-phase6-roadmap/ROADMAP.md` replaces phase 6's feature-first order with milestones 6A-6F and 7; its reconciliation, evidence and hashes remain the preserved review record. Resume correction authorized 2026-09-11: "Lets correct the resume instructions and get me ready to run /autopilot." The setup choices below implement that request, including 6C's parallel deadline slice, fix 37 before dependent deployments, and two 6B design-review lenses; those reviewer choices were not requirements in the original review roadmap. The roadmap adds no deploy trigger: standing authorization and R4 still govern deployment, and changing the recording host still requires the user's yes. Do not begin by relaxing freshness or adding a fill-producing variant; do not remove gate criteria or relax sample thresholds. September 14 is diagnostic. R7's September 21 selection and September 28 confirmation dates are overridden: no formal selection or confirmation until a replacement dated pre-registration amendment is ratified by the user. 6F proposes dates and any extension rule from operational completeness and sample accrual before examining confirmatory estimates. Chicago ISO-week reporting continues; R1's authority rule, the H1 floor, gate criteria, thresholds, families, cell grids and frozen variant ids remain in force. Order 157 requires a tape audit until 6A/6B publish validated, corrected or unverifiable. |
+| U9 Fun tickets UI revision | Decided 2026-09-13 (design session, then the PR review session). User, verbatim, 2026-09-13 morning: "I have two PRs to review and merge. After I would like to get the autopilot loop ready to tackle the rest of our roadmap and add the new dashboard work to it." The approved design is PR #1, merged as `docs/superpowers/design/ui-revision-2026-09-12/` (Fable spec `fable/DESIGN-SPEC.md`, decisions F01–F09; PRODUCT-BRIEF U01–U14 stand). Phase **4.6** carries it. It is a **parallel track**: the loop may plan 4.6 at its next plan-next opportunity and run its tasks while 6B's remaining tasks (T5–T12, final review), the 6C deadline duties and actionable hotfixes continue; those keep priority for the implementer ceiling and the suite slot, and 6D's instrumentation may still be planned alongside. Three standing dashboard rules are widened by the design and are recorded here so the loop does not treat them as scope beyond the roadmap: loopback-only becomes loopback plus one home-network HTTPS listener behind an owner login (never public or remote); UI read-only except the kill pair becomes read-only plus two owner POST routes (`/api/parlay/placed`, `/api/parlay/correct`); game-line-only legs become game lines plus the named prop families. Stakes, the $50 week, the LSU/Saints anchors, the paper posture, the scientific criteria and every invariant below are unchanged; fun-ticket accounting stays separate from paper (F02). PR #2 (the Qwen adoption review package) was merged the same morning as a review record only: no Qwen route, budget, skill edit or activation follows from it; D1–D6 await the user. |
 
 Controller rulings this file governs. Each is reversible; the review states the cost if wrong.
 
@@ -314,6 +316,61 @@ reported "not collected".
 6. The learnable layer (spec §1.2, user 2026-09-07 evening): server-written sentences per section, two-level
    labels, `glossary.json`, the How-it-works page, and plain phrases for every reason code. The reviewer
    checks every technical term on a surface has a glossary entry and every reason code has a phrase.
+
+### Phase 4.6: Fun tickets inside the existing dashboard (U9; design `docs/superpowers/design/ui-revision-2026-09-12/`)
+
+The brief is the merged design package: `fable/DESIGN-SPEC.md` (the approved design; §0 decisions F01–F09 are the
+user's answers), `fable/FEASIBILITY.md` (read against `main` a2a1791; findings 1–5 shape the plan), `AFTER-FABLE.md`
+(§2 reconcile the repository first, §3 the addendum's table of changed rules, §4 slices A–F, §5 the ready-to-run
+criteria, §7 the completion definition) and the package's PRODUCT-BRIEF, EXPERIENCE-CONTRACTS and DATA-AND-INTEGRATIONS.
+The 2026-09-07 dashboard spec and the phase 4.5 addendum remain binding wherever the design is silent. The addendum
+records the fable file paths and their hashes (AFTER-FABLE §1) so tasks build the reviewed output, not a canvas.
+
+1. **Scope and order.** Slices A–D (contracts and provider proof; additive data and accounting; read projections and
+   local writes; the responsive interface on fixtures) have no 6x dependency and may run while 6B continues. Slice E
+   (integrated rehearsal) and F (controlled release and observation) may present corrected execution or report evidence
+   only once the matching 6B/6C acceptance exists; until then those rows are labelled and the release is truthfully
+   incomplete. Launch scope is NFL and college; an internal NFL-only slice is not the finished scope, and a college gap
+   is reported as an unmet requirement, never narrowed silently.
+2. **Player stats.** First candidate is ESPN's summary endpoint on the already-allowlisted host (feasibility finding 1:
+   one new fetch per watched game, bounded to games and players on placed or alive cards). Measure a live game window
+   (update cadence, corrections, missing players) before choosing anything paid. A paid provider inside the $100/month
+   ceiling is gate 7 (the user's account action); its secret file is conditional, its feature switches on
+   `Path.exists()`. Unmatched players fail loudly as `player_unmatched`; missing stat state reads unknown, never zero.
+3. **Props and links.** The Odds API `player_*` families on the per-event endpoint the recorder already calls, plus
+   `includeLinks` and `includeSids`, under a fixed monthly prop credit allocation recorded in config and enforced from
+   the quota headers with the strategy feed's allocation protected first; gate 5 and the bookmakers string unchanged.
+   Plan for `selection` and `event` link capabilities only; `full_slip` does not exist in the product; a label above
+   `event` is shown only after verification on the owner's phone and laptop.
+4. **Access (spec §5.8).** A second HTTPS listener on the Omarchy LAN address with a self-signed certificate, a single
+   owner password whose scrypt hash lives in `secrets/owner_password_hash` (a listed secret: conditional push, never
+   read by a brief), an HMAC-signed `Secure; HttpOnly; SameSite=Strict` season cookie, and exactly two POST routes.
+   Stdlib only; a new dependency is gate 7. The loopback listener, the tunnel, the kill pair and its token header are
+   unchanged (invariant 9 stands). TLS placement (uvicorn on a second serve container or a small proxy) is the model's
+   call, recorded in the addendum. No public or remote exposure. The host firewall rule is a User-side TODO.
+5. **Data (spec §5.1–5.4).** Additive only: new columns with `ADD COLUMN IF NOT EXISTS` mirrored in the model and the
+   revision (the repo's first add-column revision; the catalogue-equality test must pass), new tables, indexes built
+   `CONCURRENTLY` on bulk tables; `market_type` widens to `String(12)`. The placement route takes a row lock on the card
+   and records `confirmation_id` (unique) so two submits record one stake; corrections are offsetting ledger rows;
+   corrections after grading are refused. Nothing under `harness/variants/`, nothing in gate code.
+6. **Builder.** A scheduled `parlay_build` stage (or scheduler job) replaces the by-hand build; `parlay.yaml` gains
+   `policy_version`, the prop pool, the same-game assembly rule and disqualifiers; every card records its version;
+   policy changes are config commits, never UI actions. Card shapes, stakes and anchors unchanged (F03).
+7. **Front end.** Inside the five surfaces (F01), the 300 KiB budget, the no-external-URL, DOM and glossary tests, the
+   five-tab test; the §6 token changes with the light values checked for contrast and the two theme blocks byte-identical;
+   broadcast typography in exactly the three places of §6; touch targets 44 px, type never below 12 px, reduced motion.
+8. **Reviews and allocation.** Design review: two `opus` reviewers with split lenses (access, secrets and write-path
+   security; product data, grading semantics and the paper/fun separation), a setup choice recorded here. Task
+   reviewers per the skill's path rules; the placement route, the LAN listener and the needs-function change are
+   judgment-heavy (`opus` implementers). Carried dashboard fixes 53 (round 2), 54 and 55 stay hotfix rows; the plan may
+   absorb one only where a task changes the same file, and says so in the ledger.
+9. **Verification.** The plan's last task adds verify.md rows for spec §8 items 1–12: the LAN listener refuses a
+   request without a session while the kill pair still works with its token; a placement from the phone visible on the
+   laptop within one Ticket cadence; builder and detail measured under the snapshot budget rows; walkthrough items at
+   390 and 1440; one invariant query per new table. The plan's post-design checks (AFTER-FABLE §5 launch receipt) are
+   plan-next's acceptance: still-to-verify items in FEASIBILITY are plan tasks or labelled unknowns, never assumptions.
+10. **Out of scope.** The "since you last checked" digest (F05), remote access, screenshot import, a new tab or shell
+    (F06), the GPU/Cerebras/Qwen proposals, any stake or anchor change, anything under the scientific invariants.
 
 ### Phase 6: establish a trustworthy experiment before expanding it (U8, 2026-09-11)
 
