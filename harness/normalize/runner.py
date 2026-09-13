@@ -89,10 +89,10 @@ def _load_events_cache(session: Session) -> None:
 
 
 def _handle(session: Session, family: str, r, ctx: dict) -> None:
-    """Normalize one raw response. `r` is any row exposing `id`, `run_id`,
-    `endpoint`, `params`, `fetched_at` and `body` -- since finding 49 round 2 that is a
-    projected `Row`, not the mapped `RawResponse`, so the body is not also pinned by
-    the session's identity map."""
+    """Normalize one raw response. `r` is any row exposing `id`, `run_id`, `endpoint`,
+    `params`, `fetched_at` and `body` -- since finding 49 round 2 that is a projected `Row`, not
+    the mapped `RawResponse`, which avoids building a mapped instance (and its `InstanceState`)
+    per row."""
     sport = _sport_from_endpoint(r.endpoint, r.params)
     body = r.body
     if family == "espn" and sport:
@@ -141,8 +141,8 @@ def _watermark(session: Session, family: str) -> NormalizeState:
 
 
 #: The columns `_handle` reads off a raw response. Finding 49 round 2: the mapped `RawResponse`
-#: was never needed here -- nothing in `_handle` writes to it or navigates a relationship -- and
-#: loading it put the jsonb body in the session's identity map as well as in the caller's hands.
+#: was never needed here -- nothing in `_handle` writes to it or navigates a relationship -- so
+#: the projection also avoids building a mapped instance (and its `InstanceState`) per row.
 _ROW_COLUMNS = (RawResponse.id, RawResponse.run_id, RawResponse.endpoint, RawResponse.params,
                 RawResponse.fetched_at, RawResponse.body)
 
@@ -162,17 +162,17 @@ def _drain_batch(session: Session, family: str, batch: int, ctx: dict,
     lower a peak that has already happened at materialisation. `batch` is five hundred and a
     live `/markets` page is 2.3 MB of JSON (~1,000 markets) while a `/markets/trades` page is up
     to 320 KB (~1,000 prints), and the decoded dicts are several times the JSON's size: measured
-    on 2026-09-13, one batch of 250 trade pages held 269 MiB resident at once, and the recorder
+    on 2026-09-13, one batch of 250 trade pages held 229 MiB resident at once, and the recorder
     does this every tick into an allocator that returns an arena only when it empties. That is
     the `RssAnon` series in the fix 49 brief (121.8 -> 1,935.4 MiB over five ticks, then ~1.2 GB
     steps per tick to 4.0 GiB).
 
     So the batch read now selects the two primary-key columns only -- the batch's *membership*,
     which is all the watermark needs -- and each row's body is fetched on its own, used, and
-    dropped before the next one is read. Peak resident bodies: one, not `batch`. The projection
-    keeps the body out of the identity map too, so nothing but the local name holds it. Nothing
-    about the ordering, the batch size, the per-row savepoint, the watermark or the commit
-    changes.
+    dropped before the next one is read. Peak resident bodies: one, not `batch`; the local name
+    is the only thing holding each body, and the projection avoids building a mapped instance
+    (and its `InstanceState`) per row on top of it. Nothing about the ordering, the batch size,
+    the per-row savepoint, the watermark or the commit changes.
 
     The per-row read is keyed on both primary-key columns (`id`, `fetched_at`), not `id` alone:
     `raw_responses` is range-partitioned on `fetched_at`, so a lookup without it would scan
@@ -195,8 +195,10 @@ def _drain_batch(session: Session, family: str, batch: int, ctx: dict,
         r = session.execute(select(*_ROW_COLUMNS).where(
             RawResponse.id == raw_id, RawResponse.fetched_at == fetched_at)).first()
         if r is None:
-            # Pruned between the membership read and here (housekeeping runs in another
-            # process). Nothing to normalize, and the watermark still has to move past it.
+            # Gone between the membership read and this one. Nothing in the tree deletes
+            # `raw_responses` rows today, so this is a manual prune or a partition detached out
+            # from under us; either way there is nothing to normalize and the watermark still
+            # has to move past it rather than re-reading the hole every batch.
             last_id = raw_id
             continue
         try:

@@ -26,9 +26,10 @@ Two tests here, deliberately split:
 * `test_one_normalize_batch_does_not_hold_the_whole_batch_of_bodies` is the deterministic one.
   It seeds N production-shaped pending rows, neutralises the per-row handler, and measures the
   peak allocation of one `_drain_batch` call. The peak must not scale with N.
-* `test_twenty_production_shaped_ticks_do_not_grow_the_process` is the brief's acceptance: 20
-  real `Recorder.maybe_tick` calls at the body shape above, with the traced total, the per-tick
-  peak and RSS compared between tick 5 and tick 20.
+* `test_eight_production_shaped_ticks_do_not_grow_the_process` is the brief's acceptance, over
+  eight ticks rather than twenty (controller ruling, 2026-09-13 -- see `TICKS`): eight real
+  `Recorder.maybe_tick` calls at the body shape above, with the traced total, the per-tick peak
+  and RSS compared between tick 5 and tick 8.
 
 Run with `-s` to see the per-tick table and the top growing tracebacks.
 """
@@ -45,6 +46,7 @@ import respx
 from sqlalchemy.orm import sessionmaker
 
 from harness.db.models import FairValue, RawResponse, Signal, VenueMarket, VenueTrade
+from harness.db.schema import ensure_partitions
 from harness.feeds.espn import EspnClient
 from harness.feeds.http import HttpClient
 from harness.feeds.odds_api import OddsApiClient
@@ -65,18 +67,23 @@ from tests.test_recorder_memory import VARIANTS_DIR, _EVENT_ID
 #: * `psycopg/_queries.py` and `psycopg/_preparing.py` are the driver's prepared-statement cache,
 #:   bounded by construction (`prepared_max`) and filling at whichever tick each statement
 #:   happens to cross `prepare_threshold`. Round 1's rig already excludes the first of them.
-#: * `respx` and `httpx`'s URL machinery, and the `urllib.parse` caches underneath them, are in
-#:   this process only because the rig mocks the network: production's httpx holds connections,
-#:   not a router full of compiled route patterns. Measured 2026-09-13, these four sites were the
-#:   whole of the traced growth between tick 5 and tick 8 (28.6 KiB of 28.6 KiB).
+#: * `respx`'s compiled route patterns, `httpx/_urls.py`'s URL objects and the `urllib.parse`
+#:   caches underneath them are in this process only because the rig mocks the network:
+#:   production's httpx holds connections, not a router full of route patterns. Measured
+#:   2026-09-13, these four modules were the whole of the traced growth between tick 5 and tick 8
+#:   (28.6 KiB of 28.6 KiB).
+#:
+#: Each entry names a *module*, never a package: excluding all of `*/httpx/*` or `*/urllib/*`
+#: would also hide `httpx/_models.py`, where a response body the recorder had failed to release
+#: would be counted -- which is exactly the kind of growth this assertion exists to catch.
 #:
 #: The unfiltered total and RSS are printed and asserted on beside it, so nothing hides here.
 _NOT_THE_RECORDER = (
     _DRIVER_CACHE,
     tracemalloc.Filter(False, "*/psycopg/_preparing.py"),
     tracemalloc.Filter(False, "*/respx/*"),
-    tracemalloc.Filter(False, "*/httpx/*"),
-    tracemalloc.Filter(False, "*/urllib/*"),
+    tracemalloc.Filter(False, "*/httpx/_urls.py"),
+    tracemalloc.Filter(False, "*/urllib/parse.py"),
 )
 
 NOW = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
@@ -108,19 +115,23 @@ TRADES_PER_PAGE = 1000
 #: writes to a few thousand rows a tick while leaving the *body* at production size, which is
 #: what this file measures. Kept small deliberately: `insert_trades` writes one statement per
 #: print, so a higher number buys nothing for a memory measurement and costs minutes of wall
-#: clock across twenty ticks.
+#: clock across the run.
 NEW_TRADES_PER_TICK = 20
 #: Ticks, and the tick the comparison is based on. Ticks 1-4 warm every lazily built cache in the
 #: process (SQLAlchemy's compiled statements, psycopg's prepared statements, `load_popularity`,
 #: the normalizer's event cache, the stadium tables), so the baseline is tick 5 and never tick 1.
 #:
-#: Ten ticks, not the brief's twenty: a tick at production body shape costs seconds even after
+#: Eight ticks, not the brief's twenty: a tick at production body shape costs seconds even after
 #: the fix, and this has to be an ordinary member of the full suite rather than a quarter-hour
 #: one (controller ruling, 2026-09-13). The fail-before/pass-after evidence for finding 49 is
 #: `test_one_normalize_batch_does_not_hold_the_whole_batch_of_bodies`, which is deterministic and
 #: measures the defect directly; this test is the growth guard around the whole tick.
 TICKS = 8
 BASELINE_TICK = 5
+#: The floor under the RSS band, in MiB (controller ruling, 2026-09-13). Four of the ~4 MiB arena
+#: steps this process's allocator extends the heap by; see the assertion for why a pure percentage
+#: is the wrong instrument on a process this size.
+RSS_FLOOR_MIB = 16.0
 
 
 # --- production-shaped bodies -------------------------------------------------------------
@@ -388,7 +399,14 @@ def _reset_events_cache():
 # --- the deterministic one ----------------------------------------------------------------
 
 def _seed_pending_trade_bodies(db_session, count: int, first_id_marker: int) -> int:
-    """`count` pending `kalshi_trades` raw rows of production size. Returns the body's JSON size."""
+    """`count` pending `kalshi_trades` raw rows of production size. Returns the body's JSON size.
+
+    `ensure_partitions(NOW)` first, the house pattern from `tests/test_runner.py`: `conftest`'s
+    session fixture only builds this week's and next week's `raw_responses` partitions, and
+    these rows are dated `NOW` (2026-09-09), so without it the insert fails with "no partition
+    of relation raw_responses found" for every real week outside that fortnight.
+    """
+    ensure_partitions(db_session, NOW)
     body = _trades_body(f"KXNFLGAME-26SEP09ASBR-{first_id_marker}", 0)
     size = len(json.dumps(body))
     for i in range(count):
@@ -450,7 +468,7 @@ def test_the_production_shaped_slate_actually_prices(env_settings, db_session):
     Also pins the body shape this file exists to drive, so a future change that quietly shrinks
     it fails here rather than passing the acceptance test below for the wrong reason.
     """
-    run_tick, state = _driver(env_settings, db_session)
+    run_tick, _ = _driver(env_settings, db_session)
     run_tick()
 
     markets_bodies = sorted(
@@ -475,15 +493,16 @@ def test_the_production_shaped_slate_actually_prices(env_settings, db_session):
 
 
 @respx.mock
-def test_twenty_production_shaped_ticks_do_not_grow_the_process(env_settings, db_session):
+def test_eight_production_shaped_ticks_do_not_grow_the_process(env_settings, db_session):
     """Finding 49's original acceptance, at production body shape.
 
-    Twenty ticks; the traced total, the per-tick peak and RSS are compared between tick 5 (every
-    lazily built cache in the process is warm by then -- SQLAlchemy's compiled statements,
-    psycopg's prepared statements, `load_popularity`, the normalizer's event cache) and tick 20.
+    `TICKS` (eight) ticks; the traced total, the per-tick peak and RSS are compared between tick
+    `BASELINE_TICK` (five -- every lazily built cache in the process is warm by then: SQLAlchemy's
+    compiled statements, psycopg's prepared statements, `load_popularity`, the normalizer's event
+    cache) and the last tick.
     """
     ticks, baseline = TICKS, BASELINE_TICK
-    run_tick, state = _driver(env_settings, db_session)
+    run_tick, _ = _driver(env_settings, db_session)
     samples: list[tuple[int, float, float, float | None, float]] = []
     snapshots: dict[int, tracemalloc.Snapshot] = {}
 
@@ -502,6 +521,8 @@ def test_twenty_production_shaped_ticks_do_not_grow_the_process(env_settings, db
             peak = tracemalloc.get_traced_memory()[1]
             gc.collect()
             snapshot = tracemalloc.take_snapshot()
+            unfiltered = sum(st.size for st in snapshot.statistics("filename"))
+            tm_overhead = tracemalloc.get_tracemalloc_memory()
             # The traced total has psycopg's prepared-statement cache taken out of it, exactly
             # as round 1's rig does: that cache is the driver's, it is bounded by construction
             # (`prepared_max`), and it fills at whichever tick each statement happens to cross
@@ -509,13 +530,15 @@ def test_twenty_production_shaped_ticks_do_not_grow_the_process(env_settings, db
             traced = sum(st.size for st in
                          snapshot.filter_traces(_NOT_THE_RECORDER).statistics("filename"))
             rss = rss_mb()
-            samples.append((i, traced / 1024, peak / 1024, rss, elapsed))
+            samples.append((i, traced / 1024, peak / 1024, rss, elapsed,
+                            unfiltered / 1024, tm_overhead / (1024 * 1024)))
             # Printed as it happens, not at the end: a tick at production body shape costs
             # seconds, and a run that is cut short still has to say where the time went.
             stages = " ".join(f"{st['name']}={st['elapsed_ms']}"
                               for st in (notes.get("pricing") or {}).get("stages", []))
             print(f"{i:4d} {traced / 1024:12.1f} {peak / 1024:13.1f} "
                   f"{'n/a' if rss is None else f'{rss:11.1f}'} {elapsed:9.1f}   "
+                  f"unfiltered={unfiltered / 1024:.1f} KiB tracemalloc={tm_overhead / (1024 * 1024):.1f} MiB  "
                   f"{stages}  normalized={notes.get('normalized')}", flush=True)
             if i in (baseline, ticks):
                 snapshots[i] = snapshot
@@ -523,10 +546,12 @@ def test_twenty_production_shaped_ticks_do_not_grow_the_process(env_settings, db
     finally:
         tracemalloc.stop()
 
-    lines = ["tick   traced KiB      peak KiB     RSS MiB    tick s"]
-    for i, traced, peak, rss, elapsed in samples:
+    lines = ["tick   traced KiB      peak KiB     RSS MiB    tick s  unfiltered KiB  "
+             "tracemalloc MiB"]
+    for i, traced, peak, rss, elapsed, unfiltered, tm_overhead in samples:
         lines.append(f"{i:4d} {traced:12.1f} {peak:13.1f} "
-                     f"{'n/a' if rss is None else f'{rss:11.1f}'} {elapsed:9.1f}")
+                     f"{'n/a' if rss is None else f'{rss:11.1f}'} {elapsed:9.1f} "
+                     f"{unfiltered:15.1f} {tm_overhead:16.1f}")
     grown = [stat for stat in diff if stat.size_diff > 0][:10]
     lines.append("")
     lines.append(f"top growing tracebacks, tick {baseline} -> tick {ticks}:")
@@ -537,16 +562,28 @@ def test_twenty_production_shaped_ticks_do_not_grow_the_process(env_settings, db
     table = "\n".join(lines)
     print("\n" + table)
 
-    base_traced, base_peak, base_rss = samples[baseline - 1][1:4]
-    last_traced, last_peak, last_rss = samples[-1][1:4]
+    base_traced, base_rss = samples[baseline - 1][1], samples[baseline - 1][3]
+    last_traced, last_rss = samples[-1][1], samples[-1][3]
     traced_growth = (last_traced - base_traced) / base_traced
     assert traced_growth < 0.05, (
         f"traced total grew {traced_growth:.1%} from tick {baseline} to tick {ticks}\n{table}")
+    # RSS gets a band of max(5 % of the tick-5 reading, RSS_FLOOR_MIB), not a pure percentage
+    # (controller ruling, 2026-09-13). The C allocator extends the heap in discrete ~4 MiB arena
+    # steps -- measured +4.3 and +4.0 MiB at ticks 6 and 7 on a 142 MiB process -- so 5 % of a
+    # small test process (7.1 MiB here) is finer than two of those steps and measures arena
+    # quantisation rather than retention: the same eight ticks read +6.0 % from a cold 142 MiB
+    # start and -1.4 % from a 231 MiB one, with the recorder's own numbers flat to 0.3 % in both.
+    # `RSS_FLOOR_MIB` is four such steps; it is an order of magnitude below one tick's growth in
+    # production (~1.2 GB before this fix) and well below the 500 MiB six-hour production
+    # criterion, which only the live `recorder.rss_mb` series can judge. This is a band, not a
+    # ceiling and not a skip: the traced-total bound above and the high-water peak bound below are
+    # the retention detectors, and the roadmap's 5 % criterion stays enforced unchanged by the
+    # synthetic twenty-tick test in `tests/test_recorder_memory.py`.
     if base_rss is not None and last_rss is not None:
-        rss_growth = (last_rss - base_rss) / base_rss
-        assert rss_growth < 0.05, (
-            f"RSS grew {rss_growth:.1%} ({base_rss:.1f} -> {last_rss:.1f} MiB) from tick "
-            f"{baseline} to tick {ticks}\n{table}")
+        band = max(0.05 * base_rss, RSS_FLOOR_MIB)
+        assert last_rss - base_rss < band, (
+            f"RSS grew {last_rss - base_rss:+.1f} MiB ({base_rss:.1f} -> {last_rss:.1f}) from "
+            f"tick {baseline} to tick {ticks}, past the {band:.1f} MiB band\n{table}")
 
     # The high-water mark, not two single ticks: a tick's peak depends on which families the
     # normalize budget reached and is bimodal by construction, so comparing tick `baseline`
