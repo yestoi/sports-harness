@@ -1,0 +1,44 @@
+def summarize(records):
+    try:
+        it = iter(records)
+    except TypeError:
+        raise ValueError("records must be iterable")
+
+    order = ["queued", "running", "done", "failed"]
+    counts = {s: 0 for s in order}
+    totals = {s: 0 for s in order}
+    numeric_counts = {s: 0 for s in order}
+
+    for rec in it:
+        if not isinstance(rec, dict):
+            raise ValueError("each record must be a dict")
+        if "status" not in rec or "duration_ms" not in rec:
+            raise ValueError("record missing required keys")
+
+        status = rec["status"]
+        if status not in order:
+            raise ValueError("invalid status value")
+
+        duration = rec["duration_ms"]
+        if duration is not None:
+            if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0:
+                raise ValueError("invalid duration_ms value")
+
+        counts[status] += 1
+        if duration is not None:
+            totals[status] += duration
+            numeric_counts[status] += 1
+
+    lines = ["status\tcount\ttotal_ms\tavg_ms\n"]
+    for s in order:
+        if counts[s] == 0:
+            continue
+        total = totals[s]
+        n = numeric_counts[s]
+        if n == 0:
+            avg = "-"
+        else:
+            avg = (2 * total + n) // (2 * n)
+        lines.append(f"{s}\t{counts[s]}\t{total}\t{avg}\n")
+
+    return "".join(lines)

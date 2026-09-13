@@ -1,0 +1,108 @@
+"""Eligibility check for a toy receipt.
+
+The function validates that a ``receipt`` dictionary matches a set of strict
+criteria against the supplied ``candidate`` and ``profile`` values.  The
+implementation follows the specification in ``packet.md`` exactly and never
+raises an exception – any validation failure results in ``False``.
+
+Criteria
+~~~~~~~~
+* ``candidate`` – a string of exactly 40 lowercase hexadecimal characters.
+* ``profile`` – a non‑empty string.
+* ``receipt`` – a mapping containing **all** required fields with the exact
+  values/types described below.  Extra fields are ignored.
+
+Required receipt fields
+-----------------------
+``run_id``            – non‑empty string.
+``origin``            – the literal string ``"trusted-runner"``.
+``head`` and ``head_after`` – each must be exactly equal to ``candidate``.
+``profile``           – must be exactly equal to the ``profile`` argument.
+``exit_code``         – integer ``0`` (bool is not accepted as an int).
+``scope``             – an empty list (must be a ``list`` instance).
+``dirty_before`` and ``dirty_after`` – each the empty string.
+``environment``       – a dict containing the keys ``addopts`` and ``plugins``
+                        with values that are the empty string.
+
+Any missing field or mismatched value results in ``False``.
+"""
+
+import string
+
+
+def _is_lower_hex(s: str) -> bool:
+    """Return ``True`` if *s* is exactly 40 lowercase hexadecimal characters."""
+    if not isinstance(s, str) or len(s) != 40:
+        return False
+    # ``string.hexdigits`` contains both cases; restrict to lowercase.
+    allowed = set('0123456789abcdef')
+    return all(ch in allowed for ch in s)
+
+
+def eligible(receipt, candidate, profile):
+    """Validate a receipt against the supplied candidate and profile.
+
+    Returns ``True`` only if *receipt* satisfies all criteria.  Never raises –
+    any validation error yields ``False``.
+    """
+    try:
+        # Validate candidate format
+        if not _is_lower_hex(candidate):
+            return False
+
+        # Validate profile – must be a non‑empty string
+        if not isinstance(profile, str) or len(profile) == 0:
+            return False
+
+        # Receipt must be a dict
+        if not isinstance(receipt, dict):
+            return False
+
+        # Helper to fetch required keys; will raise KeyError if missing
+        def req(key):
+            return receipt[key]
+
+        # run_id – non‑empty string (whitespace counts as non‑empty)
+        run_id = req('run_id')
+        if not isinstance(run_id, str) or len(run_id) == 0:
+            return False
+
+        # origin – exact literal
+        if req('origin') != 'trusted-runner':
+            return False
+
+        # head and head_after must equal the candidate exactly
+        if req('head') != candidate or req('head_after') != candidate:
+            return False
+
+        # profile field must match the supplied profile exactly
+        if req('profile') != profile:
+            return False
+
+        # exit_code – integer 0, but bool is not accepted as int
+        exit_code = req('exit_code')
+        if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code != 0:
+            return False
+
+        # scope – must be an empty list (type must be list)
+        scope = req('scope')
+        if not isinstance(scope, list) or len(scope) != 0:
+            return False
+
+        # dirty_before / dirty_after – empty strings
+        if req('dirty_before') != '' or req('dirty_after') != '':
+            return False
+
+        # environment – dict with specific empty-string keys
+        env = req('environment')
+        if not isinstance(env, dict):
+            return False
+        if env.get('addopts') != '' or env.get('plugins') != '':
+            return False
+
+        # All checks passed
+        return True
+    except Exception:
+        # Any missing key or unexpected error results in ``False``
+        return False
+

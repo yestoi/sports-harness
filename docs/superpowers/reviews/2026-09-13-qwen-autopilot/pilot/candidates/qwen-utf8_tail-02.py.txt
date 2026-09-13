@@ -1,0 +1,72 @@
+"""Bounded complete-character suffix for a streamed UTF-8 byte sequence."""
+
+import codecs
+
+
+def _utf8_lead_len(lead: int) -> int:
+    """Encoded byte length of the character whose first byte is *lead*."""
+    if lead < 0x80:
+        return 1
+    if lead < 0xE0:
+        return 2
+    if lead < 0xF0:
+        return 3
+    return 4
+
+
+def _trim_head(tail: bytes, max_bytes: int) -> bytes:
+    """Drop leading *whole* characters until ``tail`` is <= max_bytes bytes.
+
+    Linear in the number of dropped characters; allocates at most once
+    (the final slice).  Only valid for well-formed UTF-8, which the caller
+    guarantees.
+    """
+    need = max(len(tail) - max_bytes, 0)
+    dropped = 0
+    n = len(tail)
+    while dropped < need:
+        dropped += _utf8_lead_len(tail[dropped])
+        if dropped >= n:  # the whole tail must go (e.g. limit == 0)
+            return b""
+    if dropped:
+        return tail[dropped:]
+    return tail
+
+
+def utf8_tail(chunks, max_bytes):
+    """Return the longest suffix (whole characters) of the concatenated,
+    decoded UTF-8 stream whose UTF-8 encoding is at most *max_bytes* bytes.
+
+    * The *entire* input is validated as strict UTF-8 incrementally --
+      including bytes dropped from the suffix and the case
+      ``max_bytes == 0``.  Invalid or unfinished encodings raise
+      UnicodeDecodeError.
+    * Every chunk must be a ``bytes`` object (not str/bytearray/
+      memoryview); anything else raises TypeError.
+    * ``max_bytes`` must be a non-bool integer, checked before any chunk
+      is consumed; negative values raise ValueError.
+    * The stream is consumed incrementally: retained state is
+      O(max_bytes + largest chunk), never the total stream size.
+    """
+    # Validate the limit before touching the chunk stream.
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
+        raise TypeError("max_bytes must be an integer, got %r"
+                        % type(max_bytes).__name__)
+    if max_bytes < 0:
+        raise ValueError("max_bytes must be >= 0, got %d" % max_bytes)
+
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    tail = b""
+    for chunk in chunks:
+        if not isinstance(chunk, bytes):
+            raise TypeError(
+                "chunks must be an iterable of bytes objects, got %r"
+                % type(chunk).__name__)
+        # Strict incremental decode of this chunk alone; the decoder keeps
+        # only a few pending bytes of state across chunk boundaries.
+        tail = _trim_head(tail + decoder.decode(chunk, False).encode("utf-8"),
+                          max_bytes)
+    # Finalize: raises UnicodeDecodeError on an unfinished multi-byte
+    # sequence, so the whole input has been strictly validated.
+    decoder.decode(b"", True)
+    return tail.decode("utf-8")

@@ -1,0 +1,59 @@
+DIGITS = set('0123456789')
+UNIT_RANK = {'d': 4, 'h': 3, 'm': 2, 's': 1, 'ms': 0}
+UNIT_FACTOR = {'d': 86400000, 'h': 3600000, 'm': 60000, 's': 1000, 'ms': 1}
+MAX_MS = 31536000000
+MAX_LEN = 128
+
+
+def parse_duration(text):
+    if not isinstance(text, str):
+        raise TypeError('text must be a string')
+    if len(text) > MAX_LEN:
+        raise ValueError('input too long')
+
+    n = len(text)
+
+    def skip_spaces(pos):
+        while pos < n and text[pos] == ' ':
+            pos += 1
+        return pos
+
+    pos = skip_spaces(0)
+
+    tokens = []
+    while pos < n:
+        digit_start = pos
+        while pos < n and text[pos] in DIGITS:
+            pos += 1
+        if pos == digit_start:
+            raise ValueError('invalid syntax')
+        num_str = text[digit_start:pos]
+
+        if text[pos:pos + 2] == 'ms':
+            unit = 'ms'
+            pos += 2
+        elif pos < n and text[pos] in ('d', 'h', 'm', 's'):
+            unit = text[pos]
+            pos += 1
+        else:
+            raise ValueError('invalid syntax')
+
+        tokens.append((num_str, unit))
+        pos = skip_spaces(pos)
+
+    if not tokens:
+        raise ValueError('empty input')
+
+    prev_rank = None
+    total = 0
+    for num_str, unit in tokens:
+        rank = UNIT_RANK[unit]
+        if prev_rank is not None and rank >= prev_rank:
+            raise ValueError('units must be strictly descending without repetition')
+        prev_rank = rank
+        total += int(num_str) * UNIT_FACTOR[unit]
+
+    if total > MAX_MS:
+        raise ValueError('total exceeds maximum duration')
+
+    return total

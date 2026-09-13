@@ -1,0 +1,38 @@
+import json
+import os
+import tempfile
+from pathlib import Path
+
+
+def write_snapshot(path, value):
+    path = Path(path)
+    parent = path.parent
+
+    # Serialize first: on failure, nothing has been created on disk.
+    text = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+        allow_nan=False,
+    ) + '\n'
+    data = text.encode('utf-8')
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(parent),
+        prefix=path.name + '.',
+        suffix='.tmp',
+    )
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+            f.flush()
+        os.replace(tmp_name, str(path))
+    except BaseException:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        raise
+
+    return None

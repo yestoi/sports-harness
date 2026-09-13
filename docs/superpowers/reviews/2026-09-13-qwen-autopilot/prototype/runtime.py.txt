@@ -1,0 +1,28 @@
+"""Private namespace loopback bridge to the fixed provider Unix endpoint."""
+import http.server
+import socket
+import subprocess
+import sys
+import threading
+
+class Forward(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        if n < 1 or n > 262144:
+            self.send_error(413)
+            return
+        body = self.rfile.read(n)
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.connect('/transport/inference.sock')
+            raw = (f'POST {self.path} HTTP/1.0\r\nHost: pilot\r\n'
+                   f'Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n').encode()
+            sock.sendall(raw + body)
+            while chunk := sock.recv(65536):
+                self.wfile.write(chunk)
+
+server = http.server.ThreadingHTTPServer(('127.0.0.1', 8765), Forward)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+raise SystemExit(subprocess.call(sys.argv[1:]))

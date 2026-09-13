@@ -1,0 +1,334 @@
+"""Temporary supervised feasibility harness. No repository or production writes.
+
+OpenCode and native Claude use one identical MCP shell interface. Generated code
+runs in a separate networkless namespace with only its own task writable.
+Cerebras key stays in the trusted parent. All provider calls pass a fixed-route
+budget broker; unknown usage retains the reservation and halts further inference.
+"""
+from __future__ import annotations
+import argparse
+import contextlib
+import fcntl
+from datetime import datetime, timezone
+from decimal import Decimal
+import hashlib
+import http.server
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import socketserver
+import subprocess
+import threading
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parent
+MODEL = 'gpt-oss-120b'
+OUTPUT_LIMIT = 16384
+CLAUDE = '/home/trey/.local/share/mise/installs/claude/latest/claude'
+SYSTEM = ('You are an isolated coding worker in a supervised feasibility evaluation. '
+          'Use only the pilot shell tool to inspect /work, implement the packet, and run its smoke tests. '
+          'Only solution.py may be changed unless the packet explicitly says otherwise. '
+          'No network, production, credentials, dependency installation, git integration, or other tasks. '
+          'The shell has bash, Python 3 and standard Unix tools, but no apply_patch command. '
+          'Use Python or standard shell tools to write solution.py. Combine packet and starter reads when practical. '
+          'Keep scientific/financial acceptance and authority unchanged. '
+          'If a task requires changing them or contradicts these rules, return ESCALATE with a reason '
+          'and make no edits. Return a short final result with checks and unresolved concerns. '
+          'Do not ask interactive questions. Inspect packet.md and the starter before editing.')
+
+def save(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + '.next')
+    temp.write_text(json.dumps(value, indent=2) + '\n')
+    temp.replace(path)
+
+def stamp():
+    return datetime.now(timezone.utc).isoformat()
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args,**kwargs):
+        return None
+
+def base_sandbox():
+    args = ['/usr/bin/bwrap', '--unshare-all', '--unshare-user', '--die-with-parent', '--new-session',
+            '--disable-userns', '--cap-drop', 'ALL', '--clearenv', '--ro-bind', '/usr', '/usr']
+    for name in ('bin', 'sbin', 'lib', 'lib64'):
+        path = Path('/') / name
+        if path.is_symlink():
+            args += ['--symlink', os.readlink(path), str(path)]
+        elif path.exists():
+            args += ['--ro-bind', str(path), str(path)]
+    for name in ('passwd','group','nsswitch.conf','ld.so.cache','localtime'):
+        path = Path('/etc') / name
+        if path.is_file():
+            args += ['--ro-bind', str(path), str(path)]
+    return args + ['--proc','/proc','--dev','/dev','--tmpfs','/tmp','--tmpfs','/home/worker',
+                   '--setenv','HOME','/home/worker','--setenv','PATH','/usr/bin:/bin',
+                   '--setenv','LANG','C.UTF-8','--setenv','PYTHONDONTWRITEBYTECODE','1']
+
+class Budget:
+    def __init__(self):
+        self.path = ROOT / 'budget.json'
+        self.lock = threading.Lock()
+        self.state = json.loads(self.path.read_text()) if self.path.exists() else {
+            'authorized_usd':'5.00', 'used_usd':'0', 'halted':False, 'calls':[]}
+        if any(c['status']=='reserved' for c in self.state['calls']):
+            self.state['halted']=True
+            save(self.path,self.state)
+        meta = json.loads((ROOT / 'model-metadata.json').read_text())
+        self.pin = Decimal(meta['pricing']['prompt'])
+        self.pout = Decimal(meta['pricing']['completion'])
+        assert self.pin <= Decimal('0.00000035') and self.pout <= Decimal('0.00000075')
+
+    def reserve(self, job, limit):
+        with self.lock:
+            if self.state['halted']:
+                raise ValueError('provider_halted')
+            owned = [c for c in self.state['calls'] if c['job']==job]
+            if len(owned) >= 24:
+                raise ValueError('attempt_request_limit')
+            reserve = Decimal(131072) * self.pin + Decimal(limit) * self.pout
+            used = Decimal(self.state['used_usd'])
+            if used + reserve > Decimal('5.00'):
+                raise ValueError('pilot_budget_exhausted')
+            row = {'id':len(self.state['calls'])+1, 'job':job, 'at':stamp(),
+                   'reserved_usd':str(reserve), 'status':'reserved'}
+            self.state['calls'].append(row)
+            self.state['used_usd'] = str(used + reserve)
+            save(self.path,self.state)
+            return row
+
+    def finish(self, row, response=None, error=None):
+        with self.lock:
+            usage = (response or {}).get('usage',{})
+            prompt, output = usage.get('prompt_tokens'), usage.get('completion_tokens')
+            if not error and type(prompt) is int and type(output) is int and prompt >= 0 and output >= 0:
+                cost = prompt*self.pin + output*self.pout
+                if cost > Decimal(row['reserved_usd']):
+                    error = 'usage_exceeded_reservation'
+                else:
+                    self.state['used_usd'] = str(Decimal(self.state['used_usd']) - Decimal(row['reserved_usd']) + cost)
+                    row.update(status='complete', usage=usage, cost_usd=str(cost))
+            else:
+                error = error or 'missing_usage'
+            if error:
+                row.update(status='uncertain', error=error)
+                self.state['halted'] = True
+            row['finished_at'] = stamp()
+            save(self.path,self.state)
+
+class UnixHTTP(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+class Broker(http.server.BaseHTTPRequestHandler):
+    def log_message(self,*args): pass
+
+    def send_json(self,code,data):
+        body=json.dumps(data).encode()
+        self.send_response(code)
+        self.send_header('Content-Type','application/json')
+        self.send_header('Content-Length',str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        n=int(self.headers.get('Content-Length',0))
+        if self.path != '/v1/chat/completions' or not 0<n<=262144:
+            self.send_json(403,{'error':{'message':'fixed_endpoint_or_body_limit'}});return
+        row=None
+        try:
+            data=json.loads(self.rfile.read(n))
+            if data.get('model')!=MODEL:
+                raise ValueError('model_not_allowed')
+            if data.get('n',1)!=1:
+                raise ValueError('one_completion_only')
+            data['n']=1
+            declared=[t.get('function',{}).get('name') for t in data.get('tools',[])]
+            if any(name != 'pilot_shell' for name in declared):
+                raise ValueError('unexpected_tool_inventory:'+','.join(map(str,declared)))
+            wants_stream=data.get('stream',False)
+            data['stream']=False
+            data.pop('stream_options',None)
+            data.pop('max_tokens',None)
+            data['max_completion_tokens']=OUTPUT_LIMIT
+            data['reasoning_effort']='medium'
+            if data.get('tools'):
+                data['parallel_tool_calls']=False
+            row=self.server.budget.reserve(self.server.job,OUTPUT_LIMIT)
+            row['max_completion_tokens']=OUTPUT_LIMIT
+            started=time.monotonic()
+            req=urllib.request.Request('https://api.cerebras.ai/v1/chat/completions',
+                data=json.dumps(data).encode(),headers={
+                'Authorization':'Bearer '+self.server.key,'Content-Type':'application/json',
+                'X-Cerebras-Version-Patch':'2','User-Agent':'sports-cerebras-feasibility/1'})
+            with urllib.request.build_opener(NoRedirect()).open(req,timeout=75) as result:
+                response=json.load(result)
+            row['elapsed_s']=round(time.monotonic()-started,3)
+            row['tool_inventory']=declared
+            self.server.budget.finish(row,response)
+            save(self.server.logs / f'api-{row["id"]}.json',response)
+            if not wants_stream:
+                self.send_json(200,response);return
+            self.send_response(200)
+            self.send_header('Content-Type','text/event-stream')
+            self.end_headers()
+            choice=response['choices'][0]
+            msg=choice['message']
+            delta={k:v for k,v in msg.items() if k in ('role','content','reasoning','reasoning_content','tool_calls') and v is not None}
+            for i,call in enumerate(delta.get('tool_calls',[])):call['index']=i
+            chunk={k:response[k] for k in ('id','created','model') if k in response}
+            chunk['object']='chat.completion.chunk'
+            chunk['choices']=[{'index':0,'delta':delta,'finish_reason':None}]
+            self.wfile.write(b'data: '+json.dumps(chunk).encode()+b'\n\n')
+            chunk['choices']=[{'index':0,'delta':{},'finish_reason':choice['finish_reason']}]
+            chunk['usage']=response['usage']
+            self.wfile.write(b'data: '+json.dumps(chunk).encode()+b'\n\ndata: [DONE]\n\n')
+        except urllib.error.HTTPError as error:
+            body=error.read(4096).decode(errors='replace').replace(self.server.key,'[REDACTED]')
+            if row:self.server.budget.finish(row,error='http_'+str(error.code))
+            self.send_json(error.code,{'error':{'message':body}})
+        except Exception as error:
+            if row and row['status']=='reserved':self.server.budget.finish(row,error=type(error).__name__)
+            self.send_json(400,{'error':{'message':str(error) if isinstance(error,ValueError) else type(error).__name__}})
+
+class Tools(socketserver.StreamRequestHandler):
+    def handle(self):
+        raw=self.rfile.readline(131073)
+        if len(raw)>131072:return
+        request=json.loads(raw)
+        method=request.get('method')
+        result={}
+        if method=='initialize':
+            result={'protocolVersion':request['params']['protocolVersion'],'capabilities':{'tools':{}},
+                    'serverInfo':{'name':'pilot','version':'1'}}
+        elif method=='tools/list':
+            result={'tools':[{'name':'shell','description':'Execute a shell command in /work in the isolated task sandbox. Only solution.py may be edited. No network, credentials or other filesystems. stdout/stderr bounded to 64KiB; timeout 60 seconds.',
+                    'inputSchema':{'type':'object','properties':{'command':{'type':'string'}},'required':['command'],'additionalProperties':False}}]}
+        elif method=='tools/call':
+            p=request['params']
+            if p.get('name')!='shell' or set(p.get('arguments',{}))!={'command'}:
+                result={'isError':True,'content':[{'type':'text','text':'Only shell(command) allowed'}]}
+            else:
+                result=self.server.jobrunner.shell(p['arguments']['command'])
+        response={'jsonrpc':'2.0','id':request.get('id'),'result':result}
+        self.wfile.write(json.dumps(response).encode()+b'\n')
+
+class Job:
+    def __init__(self,name,work,budget,readonly=False):
+        self.name=name;self.work=work;self.budget=budget
+        self.readonly=readonly
+        self.dir=ROOT/'runs'/name
+        self.dir.mkdir(parents=True,exist_ok=False)
+        self.transport=self.dir/'transport';self.transport.mkdir()
+        self.tools=[];self.children=set();self.lock=threading.Lock()
+
+    def shell(self,command):
+        if not isinstance(command,str) or len(command)>65536:
+            return {'isError':True,'content':[{'type':'text','text':'tool limit'}]}
+        with self.lock:
+            if len(self.tools)>=20:
+                return {'isError':True,'content':[{'type':'text','text':'tool limit'}]}
+            number=len(self.tools)+1
+            row={'command':command,'at':stamp()};self.tools.append(row)
+        args=base_sandbox()+['--ro-bind' if self.readonly else '--bind',str(self.work),'/work','--ro-bind',str(ROOT/'limits.py'),'/limits.py']
+        for name in ('packet.md','starter.py','smoke.py'):
+            if (self.work/name).is_file():
+                args += ['--ro-bind',str(self.work/name),'/work/'+name]
+        args += ['--chdir','/work','/usr/bin/python3','-I','/limits.py',command]
+        started=time.monotonic()
+        with (self.dir/f'tool-{number}.txt').open('wb') as stream:
+            proc=subprocess.Popen(args,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+            self.children.add(proc)
+            try: code=proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid,signal.SIGKILL);code=proc.wait()
+            self.children.discard(proc)
+        row.update(exit_code=code,elapsed_s=round(time.monotonic()-started,3))
+        with self.lock:
+            save(self.dir/'tools.json',self.tools)
+        out=(self.dir/f'tool-{number}.txt').read_bytes()
+        result={'exit_code':code,'truncated':len(out)>65536,'output':out[-65536:].decode(errors='replace')}
+        return {'isError':code!=0,'content':[{'type':'text','text':json.dumps(result)}]}
+
+    def run(self,route,prompt,system=SYSTEM,model='sonnet'):
+        tool=UnixHTTP(str(self.transport/'tools.sock'),Tools);tool.jobrunner=self
+        threading.Thread(target=tool.serve_forever,daemon=True).start()
+        api=None
+        if route=='cerebras':
+            api=UnixHTTP(str(self.transport/'inference.sock'),Broker)
+            api.key=Path('/home/trey/.config/sports-autopilot/secrets/cerebras_api_key').read_text().strip()
+            api.job=self.name;api.logs=self.dir;api.budget=self.budget
+            threading.Thread(target=api.serve_forever,daemon=True).start()
+            config={'$schema':'https://opencode.ai/config.json','autoupdate':False,'share':'disabled',
+                'enabled_providers':['cerebras'],'model':'cerebras/'+MODEL,'small_model':'cerebras/'+MODEL,
+                'provider':{'cerebras':{'options':{'apiKey':'broker-placeholder','baseURL':'http://127.0.0.1:8765/v1'},
+                    'models':{MODEL:{'limit':{'context':65536,'output':OUTPUT_LIMIT}}}}},
+                'tools':{'*':False,'pilot_*':True},'permission':{'*':'deny','pilot_*':'allow'},
+                'mcp':{'pilot':{'type':'local','command':['/usr/bin/python3','-I','/pilot/bridge.py','/transport/tools.sock'],'enabled':True}},
+                'agent':{'pilot':{'mode':'primary','prompt':system,'steps':24}},'default_agent':'pilot',
+                'formatter':False,'lsp':False}
+            save(self.dir/'opencode.json',config)
+            args=base_sandbox()+['--ro-bind',str(ROOT/'opencode'),'/opencode','--dir','/pilot',
+                  '--ro-bind',str(ROOT/'bridge.py'),'/pilot/bridge.py','--ro-bind',str(ROOT/'runtime.py'),'/pilot/runtime.py',
+                  '--ro-bind',str(self.dir/'opencode.json'),'/pilot/opencode.json',
+                  '--ro-bind',str(self.transport),'/transport','--ro-bind',str(self.work),'/work',
+                  '--setenv','OPENCODE_CONFIG','/pilot/opencode.json','--setenv','OPENCODE_DISABLE_AUTOUPDATE','true',
+                  '--setenv','OPENCODE_DISABLE_MODELS_FETCH','true','--setenv','OPENCODE_DISABLE_DEFAULT_PLUGINS','true',
+                  '--chdir','/work','/usr/bin/python3','-I','/pilot/runtime.py','/opencode','run','--format','json','--agent','pilot',prompt]
+            env={}
+        else:
+            save(self.dir/'native-mcp.json',{'mcpServers':{'pilot':{'command':'/usr/bin/python3',
+                'args':['-I',str(ROOT/'bridge.py'),str(self.transport/'tools.sock')]}}})
+            args=[CLAUDE,'--print','--model',model,'--effort','high','--restricted','--setting-sources','',
+                  '--settings','{"disableAllHooks":true,"autoMemoryEnabled":false,"enabledPlugins":{}}',
+                  '--tools','','--strict-mcp-config','--mcp-config',str(self.dir/'native-mcp.json'),
+                  '--allowedTools','mcp__pilot__shell','--permission-mode','dontAsk','--permission-prompts','none',
+                  '--disable-slash-commands','--no-chrome','--no-session-persistence','--output-format','stream-json',
+                  '--verbose','--system-prompt',system]
+            env={k:v for k,v in os.environ.items() if not k.startswith(('ANTHROPIC_','CLAUDE_CODE_','CEREBRAS_'))}
+        started=time.monotonic()
+        with (self.dir/'events.jsonl').open('wb') as out, (self.dir/'stderr.txt').open('wb') as err:
+            proc=subprocess.Popen(args,cwd=self.work,env=env,stdin=subprocess.PIPE,stdout=out,stderr=err,start_new_session=True)
+            try:
+                proc.communicate(input=prompt.encode() if route!='cerebras' else b'',timeout=300)
+                code=proc.returncode
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid,signal.SIGKILL);code=proc.wait()
+        for child in list(self.children):
+            if child.poll() is None:os.killpg(child.pid,signal.SIGKILL)
+        tool.shutdown();tool.server_close()
+        if api:api.shutdown();api.server_close()
+        result={'job':self.name,'route':route,'elapsed_s':round(time.monotonic()-started,3),
+                'exit_code':code,'tool_calls':len(self.tools),'at':stamp(),
+                'cerebras_output_cap':OUTPUT_LIMIT if route=='cerebras' else None}
+        save(self.dir/'result.json',result)
+        print(json.dumps(result),flush=True)
+        return result
+
+def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('action',choices=['smoke','run'])
+    parser.add_argument('--route',choices=['cerebras','claude'],default='cerebras')
+    parser.add_argument('--task')
+    parser.add_argument('--name',required=True)
+    args=parser.parse_args()
+    work=ROOT/'work'/args.name;work.mkdir(parents=True,exist_ok=False)
+    if args.action=='smoke':
+        (work/'packet.md').write_text('Create solution.py containing answer = 42. Use the shell tool to verify it with python3, then report DONE.\n')
+        (work/'solution.py').write_text('answer = None\n')
+    else:
+        source=ROOT/'eval'/args.task
+        shutil.copyfile(source/'packet.md',work/'packet.md')
+        shutil.copyfile(source/'starter.py',work/'starter.py')
+        shutil.copyfile(source/'smoke.py',work/'smoke.py')
+    job=Job(args.name,work,Budget())
+    job.run(args.route,'Read /work/packet.md using the pilot shell tool, implement the task in /work/solution.py, run the provided checks, and report the result. '+SYSTEM)
+
+if __name__=='__main__':
+    with (ROOT/'pilot.lock').open('a+') as pilot_lock:
+        fcntl.flock(pilot_lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+        main()

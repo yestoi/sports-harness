@@ -1,0 +1,107 @@
+"""solution.py
+=================
+
+Implementation of the ``write_snapshot`` utility as described in ``packet.md``.
+
+The function must:
+
+* Accept a destination ``path`` (``str`` or ``pathlib.Path``).
+* Serialize ``value`` to JSON using exactly the settings required by the
+  specification:
+  ``json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2,
+  allow_nan=False) + '\n'``.
+* Write the resulting UTF‑8 bytes to a **unique temporary regular file** in the
+  same directory as the destination.  The temporary file must not clash with
+  other concurrent writers – we achieve this by using ``tempfile.NamedTemporaryFile``
+  with ``delete=False`` and a random suffix.
+* Flush and ``os.fsync`` the file descriptor to ensure the data is persisted on
+  disk before the atomic rename.
+* Atomically replace the destination with the temporary file using ``os.replace``.
+* Close all file handles and clean up the temporary file on any exception,
+  preserving the original destination file if it existed.
+
+Only the Python standard library is used; no external dependencies are needed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import tempfile
+from typing import Any, Union
+
+
+def _ensure_path(path: Union[str, os.PathLike]) -> pathlib.Path:
+    """Return a ``Path`` object for *path*.
+
+    The function deliberately does **not** create missing parents – the caller
+    is responsible for ensuring the directory exists.  This mirrors the contract
+    described in the task.
+    """
+    return pathlib.Path(path)
+
+
+def write_snapshot(path: Union[str, os.PathLike], value: Any) -> None:
+    """Atomically write a JSON *value* snapshot to *path*.
+
+    The implementation follows the contract laid out in ``packet.md``:
+
+    1. ``value`` is serialized with ``json.dumps`` using the required options and
+       a trailing newline.
+    2. The JSON text is encoded as UTF‑8.
+    3. A uniquely‑named temporary file is created in the *parent* directory of
+       ``path``.  The temporary file is a regular file (not a FIFO, socket, etc.)
+       and its name does not collide with other writers because ``tempfile``
+       generates a random suffix.
+    4. The encoded bytes are written, flushed and ``os.fsync``‑ed to guarantee
+       they reach the storage device.
+    5. After closing the temporary file, ``os.replace`` atomically moves it over
+       the destination path.
+    6. If any step raises an exception, the temporary file (if created) is
+       removed and the original destination is left untouched.
+    """
+
+    dest = _ensure_path(path)
+    parent = dest.parent
+
+    # Serialize JSON with exact formatting.
+    json_text = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+        allow_nan=False,
+    ) + "\n"
+    data = json_text.encode("utf-8")
+
+    tmp_path = None
+    try:
+        # Create a temporary file in the same directory. ``delete=False`` is
+        # required because the file must survive after closing the handle.
+        # ``prefix=".tmp"`` keeps the temp file hidden from typical listings.
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(parent),
+            prefix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_path = pathlib.Path(tmp_file.name)
+            # Write the data, flush Python buffers, and fsync the OS buffer.
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+
+        # At this point the temporary file is closed; replace the destination.
+        os.replace(str(tmp_path), str(dest))
+        tmp_path = None  # Ownership transferred to the destination.
+    finally:
+        # Cleanup the temporary file if an error occurred before the replacement.
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                # Swallow any cleanup errors – the primary exception should
+                # propagate unchanged as per the contract.
+                pass
+

@@ -1,0 +1,46 @@
+"""Deterministic arithmetic and evidence-integrity checks; no provider calls."""
+import hashlib
+import json
+import statistics
+from decimal import Decimal
+from pilot import ROOT, save
+
+def main():
+    rows=json.loads((ROOT/'comparison-results.json').read_text())
+    budget=json.loads((ROOT/'budget.json').read_text())
+    before=json.loads((ROOT/'qwen-freeze.json').read_text())['budget_before']
+    assert budget['calls'][:len(before['calls'])]==before['calls']
+    assert not budget['halted'] and all(c['status']=='complete' for c in budget['calls'])
+    assert sum(Decimal(c['cost_usd']) for c in budget['calls'])==Decimal(budget['used_usd'])
+    for call in budget['calls'][len(before['calls']):]:
+        assert call['model']=='qwen-3.8-27b'
+        expected=Decimal(call['usage']['prompt_tokens'])*Decimal('0.00000099')+Decimal(call['usage']['completion_tokens'])*Decimal('0.00000149')
+        assert expected==Decimal(call['cost_usd'])
+    for item in json.loads((ROOT/'eval'/'freeze_manifest.json').read_text())['files']:
+        assert hashlib.sha256((ROOT/'eval'/item['path']).read_bytes()).hexdigest()==item['sha256']
+    groups={}
+    for label in ('claude','cerebras','qwen'):
+        owned=[r for r in rows if r['job'].startswith(label+'-')]
+        coding=[r for r in owned if not r['task'].startswith('trap_')]
+        first=[r for r in coding if r['job'].endswith('-01')]
+        latest={r['task']:r for r in coding}
+        totals={task:round(sum(r['elapsed_s'] for r in coding if r['task']==task),3) for task in latest}
+        groups[label]={'coding_first_pass':sum(r['pass'] for r in first),
+           'coding_first_functional_checks':sum(r['functional_checks_passed'] for r in first),
+           'coding_eventual_pass':sum(r['pass'] for r in latest.values()),
+           'boundary_pass':sum(r['pass'] for r in owned if r['task'].startswith('trap_')),
+           'coding_worker_total_s':round(sum(r['elapsed_s'] for r in coding),3),
+           'first_attempt_median_s':statistics.median(r['elapsed_s'] for r in first),
+           'retry_inclusive_task_median_s':statistics.median(totals.values()),
+           'task_worker_s':totals,'final_candidates':{k:v['job'] for k,v in latest.items()}}
+    result={'groups':groups,'total_cerebras_usd':budget['used_usd'],
+        'qwen_usd':str(Decimal(budget['used_usd'])-Decimal(before['used_usd'])),
+        'qwen_calls':len(budget['calls'])-len(before['calls']),
+        'total_calls':len(budget['calls']),
+        'qwen_worker_time_reduction_vs_claude_pct':100*(1-groups['qwen']['coding_worker_total_s']/groups['claude']['coding_worker_total_s']),
+        'integrity':'All frozen evaluation files unchanged; original budget prefix unchanged; charges reconcile at pinned rates',
+        'limitations':'Worker time only, not route-to-acceptance. GPT still lacks UTF-8 candidate. Review results separate.'}
+    save(ROOT/'comparison-stats.json',result)
+    print(json.dumps(result,indent=2))
+
+if __name__=='__main__':main()

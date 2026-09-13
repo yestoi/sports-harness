@@ -1,0 +1,160 @@
+"""Implementation of the ``ready_jobs`` function.
+
+The specification is detailed in ``packet.md``. In short:
+
+* ``jobs`` is a list of dictionaries, each containing the keys ``id``,
+  ``priority``, ``submitted`` and ``depends_on``.
+* ``completed`` is a ``set`` of job‑IDs that are already finished.
+* The function validates the input thoroughly and raises ``ValueError`` on any
+  malformed value or on a cyclic dependency graph.
+* It returns a **new** list containing the IDs of the jobs that are not
+  completed yet **and** whose direct dependencies are all present in the
+  ``completed`` set.  The list is sorted by ``priority`` (descending), then
+  ``submitted`` (ascending) and finally the ``id`` string (ascending).
+
+The implementation uses only the Python standard library and does not mutate
+the caller's arguments.
+"""
+
+from __future__ import annotations
+
+from typing import List, Dict, Set, Any
+
+
+def _validate_jobs(jobs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Validate the ``jobs`` list.
+
+    Returns a mapping from job ID to the job dictionary for convenient look‑up.
+    Raises ``ValueError`` if any rule is violated.
+    """
+    if not isinstance(jobs, list):
+        raise ValueError("jobs must be a list")
+
+    id_to_job: dict[str, dict[str, Any]] = {}
+    seen_ids: set[str] = set()
+
+    for idx, job in enumerate(jobs):
+        if not isinstance(job, dict):
+            raise ValueError(f"job at index {idx} is not a dict")
+
+        required = {"id", "priority", "submitted", "depends_on"}
+        missing = required - job.keys()
+        if missing:
+            raise ValueError(
+                f"job {job.get('id', '<missing>')} missing fields {missing}"
+            )
+
+        # id
+        job_id = job["id"]
+        if not isinstance(job_id, str) or job_id == "":
+            raise ValueError("job id must be a non‑empty string")
+        if job_id in seen_ids:
+            raise ValueError(f"duplicate job id '{job_id}'")
+        seen_ids.add(job_id)
+
+        # priority
+        priority = job["priority"]
+        if isinstance(priority, bool) or not isinstance(priority, int):
+            raise ValueError(f"priority of job '{job_id}' must be an int (0‑9)")
+        if not (0 <= priority <= 9):
+            raise ValueError(
+                f"priority of job '{job_id}' must be between 0 and 9"
+            )
+
+        # submitted
+        submitted = job["submitted"]
+        if isinstance(submitted, bool) or not isinstance(submitted, int):
+            raise ValueError(
+                f"submitted of job '{job_id}' must be a non‑negative int"
+            )
+        if submitted < 0:
+            raise ValueError(
+                f"submitted of job '{job_id}' must be non‑negative"
+            )
+
+        # depends_on
+        depends = job["depends_on"]
+        if not isinstance(depends, list):
+            raise ValueError(f"depends_on of job '{job_id}' must be a list")
+        dep_set: Set[str] = set()
+        for dep in depends:
+            if not isinstance(dep, str):
+                raise ValueError(
+                    f"dependency of job '{job_id}' must be a string"
+                )
+            if dep in dep_set:
+                raise ValueError(
+                    f"duplicate dependency '{dep}' in job '{job_id}'"
+                )
+            dep_set.add(dep)
+        if job_id in dep_set:
+            raise ValueError(f"job '{job_id}' cannot depend on itself")
+
+        id_to_job[job_id] = job
+
+    # All dependencies must refer to existing job IDs
+    all_ids = set(id_to_job)
+    for job_id, job in id_to_job.items():
+        for dep in job["depends_on"]:
+            if dep not in all_ids:
+                raise ValueError(
+                    f"job '{job_id}' has unknown dependency '{dep}'"
+                )
+
+    # Cycle detection using DFS
+    visited: Set[str] = set()
+    recursion_stack: Set[str] = set()
+
+    def dfs(node: str) -> None:
+        if node in recursion_stack:
+            raise ValueError("dependency graph contains a cycle")
+        if node in visited:
+            return
+        visited.add(node)
+        recursion_stack.add(node)
+        for neighbor in id_to_job[node]["depends_on"]:
+            dfs(neighbor)
+        recursion_stack.remove(node)
+
+    for node in all_ids:
+        if node not in visited:
+            dfs(node)
+
+    return id_to_job
+
+
+def _validate_completed(completed: Set[Any], job_ids: Set[str]) -> None:
+    """Validate the ``completed`` set.
+
+    ``completed`` must be a set of IDs that are present in ``jobs``.
+    """
+    if not isinstance(completed, set):
+        raise ValueError("completed must be a set")
+    for elem in completed:
+        if not isinstance(elem, str):
+            raise ValueError("completed set elements must be strings")
+        if elem not in job_ids:
+            raise ValueError(f"completed contains unknown job id '{elem}'")
+
+
+def ready_jobs(jobs: List[Dict[str, Any]], completed: Set[str]) -> List[str]:
+    """Return IDs of jobs ready to run.
+
+    A job is *ready* when it is not in ``completed`` and every ID listed in its
+    ``depends_on`` list is present in ``completed``. The returned list is sorted
+    by ``priority`` (descending), then ``submitted`` (ascending) and then the
+    job ``id`` (lexicographically ascending).
+    """
+    id_to_job = _validate_jobs(jobs)
+    job_ids = set(id_to_job)
+    _validate_completed(completed, job_ids)
+
+    ready: List[Dict[str, Any]] = []
+    for job_id, job in id_to_job.items():
+        if job_id in completed:
+            continue
+        if all(dep in completed for dep in job["depends_on"]):
+            ready.append(job)
+
+    ready.sort(key=lambda j: (-j["priority"], j["submitted"], j["id"]))
+    return [j["id"] for j in ready]

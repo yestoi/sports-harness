@@ -1,0 +1,66 @@
+def eligible(receipt, candidate, profile):
+    try:
+        # candidate: exactly 40 lowercase ascii hex chars
+        if not isinstance(candidate, str) or len(candidate) != 40:
+            return False
+        hexdigits = set('0123456789abcdef')
+        for ch in candidate:
+            if ch not in hexdigits:
+                return False
+
+        # profile: nonempty string
+        if not isinstance(profile, str) or len(profile) == 0:
+            return False
+
+        # receipt: dict with required fields
+        if not isinstance(receipt, dict):
+            return False
+
+        required = ('run_id', 'origin', 'head', 'head_after', 'profile',
+                    'exit_code', 'scope', 'dirty_before', 'dirty_after',
+                    'environment')
+        for key in required:
+            if key not in receipt:
+                return False
+
+        run_id = receipt['run_id']
+        if not isinstance(run_id, str) or len(run_id) == 0:
+            return False
+
+        if receipt['origin'] != 'trusted-runner':
+            return False
+
+        if receipt['head'] != candidate:
+            return False
+        if receipt['head_after'] != candidate:
+            return False
+
+        if receipt['profile'] != profile:
+            return False
+
+        exit_code = receipt['exit_code']
+        if type(exit_code) is not int or exit_code != 0:
+            return False
+
+        scope = receipt['scope']
+        if type(scope) is not list or len(scope) != 0:
+            return False
+
+        if receipt['dirty_before'] != '' or not isinstance(receipt['dirty_before'], str):
+            return False
+        if receipt['dirty_after'] != '' or not isinstance(receipt['dirty_after'], str):
+            return False
+
+        environment = receipt['environment']
+        if not isinstance(environment, dict):
+            return False
+        if 'addopts' not in environment or 'plugins' not in environment:
+            return False
+        if environment['addopts'] != '' or not isinstance(environment['addopts'], str):
+            return False
+        if environment['plugins'] != '' or not isinstance(environment['plugins'], str):
+            return False
+
+        return True
+    except Exception:
+        return False

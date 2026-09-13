@@ -1,0 +1,51 @@
+# Qwen integration: controller and isolation review
+
+Reviewed 2026-09-13; repository inspection only. This memo proposes integration points, not operational changes or a launch. No provider calls, key reads, production access, or operational edits were performed.
+
+## Recommendation
+
+Keep Claude as controller and independent acceptance reviewer. Add one supervised, explicitly admitted Qwen implementation lane behind a durable local supervisor. Start with bounded, non-database project work whose consumers and behavior are specified; preserve the current sensitive-path allocation and full acceptance rules. Optimize the shared test queue independently of model selection. The disposable feasibility harness demonstrates an interface, not an unattended supervisor.
+
+The recorded stop is usable: `docs/superpowers/autopilot/state.md:3` records 07:16 CT, T4 accepted on phase head `bac35ab`, runtime `ebf0953`, no pending agents/suites/deployment, and no surviving native wakeups (`:7`, `:16`). This is recorded state, not a fresh runtime observation. Preserve pending acceptance and Sunday/Monday duties on relaunch. T5 being next in the phase does not make executor semantics eligible for Qwen.
+
+## Exact integration map
+
+| Existing source | Change needed in a reviewed implementation |
+|---|---|
+| `.claude/skills/autopilot/SKILL.md`, “Parallel work,” “Waiting,” “Ceilings,” “Instruction sources” | Add explicit external-worker admission, supervisor operations, shared implementer ceiling, provider budget/cooldown semantics, and externally observable job states. Replace always-busy admission with dependencies plus downstream capacity and deadline checks. Preserve scoped gates and data/instruction containment. |
+| `.claude/skills/autopilot/references/phase.md:24` and `hotfix.md:20` | Add a narrow route decision before implementation dispatch. Preserve strong Claude sensitive-path review and final review. A small diff or a Sonnet-labelled task alone is insufficient admission. Resolve contract ambiguity with Claude before routing. |
+| `.claude/skills/autopilot/references/linux-controller.md:40` | Current text requires every worker to be native `sports-worker`; add a named exception for a supervisor-owned external process with equivalent or stronger isolation. Do not pretend an external job is a native agent. |
+| `.claude/agents/sports-worker.md:4`, `.mcp.json:3` | Keep native worker tool restrictions. Expose typed supervisor submit/status/result/pause/cancel operations to the controller as a separate interface; never expose the supervisor's authority or provider credential to worker code. |
+| `scripts/worker-tools.py:39`, `:88`; `scripts/worker-shell.py:70`, `:164` | Reuse the fixed shell boundary behind a per-job adapter. The supervisor, not model arguments, supplies and fences the assigned worktree. Preserve fixed executable, cleared environment, read-only Git and authority, secret masks, and network isolation. |
+| `.claude/skills/autopilot/scripts/worker_guard.py:2`, `.claude/settings.json:27` | These are defense in depth. Do not rely on Claude hooks to constrain an OpenCode process or generated code. Run positive/negative capability tests against the actual external route. |
+| `scripts/autopilot-session.sh:9`, `:30` | Preserve explicit launch and single-controller lock. Add supervised drain/status integration if useful; reminders continue to notify without starting models. No provider or model configuration belongs in shell-expanded task text. |
+| `scripts/test-suite.py:19`; `.claude/skills/autopilot/references/phase.md:38`; `deploy.md:11` | Retain the one host-wide suite slot and exact clean-main release receipt. Add controller-owned admission and remove superseded queued jobs. Run full acceptance once the reviewed candidate is frozen, not speculatively during fix rounds. Do not assume branch receipts satisfy release checks. |
+| `.claude/skills/autopilot/references/recovery.md:50`, `.claude/skills/autopilot/references/recording.md:18`, `.claude/skills/autopilot/scripts/context.py:93` | Persist external job identity, attempt, route/config hash, worktree ownership, budgets, queue state, and immutable result pointers. Bootstrap must reconcile current supervisor observations. Snapshot/event writes must not dirty a frozen release checkout; archive and back up them at safe boundaries. |
+| `docs/superpowers/autopilot/roadmap.md`, “Decisions,” “Standing authorizations,” “Invariants” | Record the actual user-authorized provider scope and separately bounded worker spend without changing runtime research spend, scientific criteria, or operational authorities. Account for existing amendments such as U7; do not flatten older table text into a new authority. |
+
+## Minimum supervisor before unattended use
+
+1. **Identity and ownership:** durable job/attempt IDs, packet/base/config hashes, controller lease, exactly one assigned worktree, and stale-result fencing. An external client must not select another task by changing `cwd`. Current `linux-controller.md:54` expressly leaves assignment to the controller ledger; the external adapter must make that assignment mechanical.
+2. **Restricted capabilities:** generated shell code gets no provider key, inference socket, host network, production paths, Docker/SSH, writable shared environment, Git metadata, or controller authority. The inference client gets only a fixed broker and the job's tool bridge. Restrict writable report output per attempt: the current sandbox mounts the shared results directory writable (`worker-shell.py:199`), which is unsuitable as an unfenced external evidence store.
+3. **Separate paid transport:** pin provider endpoint, account-verified Qwen model ID, pricing, limits, and tools. No automatic alternate-provider/model fallback. Reject redirects. Reserve worst-case request cost before sending, serialize persistent spend updates across processes, include reasoning/output billing, and retain reservations plus halt on unknown usage. The worker budget is separate from U4's application research cap and Claude subscription usage.
+4. **Bounded execution:** explicit wall time, active time, output, request/tool calls, repair count, and concurrency limits. Begin with one external worker within the existing total implementer ceiling. One bounded repair then Claude fallback is a reasonable canary policy; count all failed, repaired, and fallback attempts in performance results. No provider retries during a declared cooldown.
+5. **Durable pause and cancellation:** pause prevents new dispatch while owned jobs drain; resume is explicit. Cancellation confirms all owned descendants ended and the test slot is free before retry. Existing MCP cancellation notifications are ignored (`worker-tools.py:187`), and native UI cancellation cannot stand in for external process termination.
+6. **Acceptance by artifacts:** successful CLI exit and a DONE claim are insufficient. Require a real candidate, permitted file changes, unchanged protected inputs, packet conformance, trusted checks, and independent Claude review of the frozen diff and its consumers. Missing candidate or unsupported completion claims are failed attempts. Preserve reviewed/tested/merged/deployed/verified as separate states.
+7. **Recoverable records:** atomically persist transitions and resource reservations; reconcile pending provider calls, subprocess identities, locks, candidates, and unread results before redispatch after a crash. Missing counters are unknown, never zero. A disposable ignored directory without eventual archival and backup is insufficient.
+
+## Invariants and initial exclusions
+
+- Preserve paper-only posture, no worker production/NAS access, no venue writes, no non-additive database operations, no credentials in packets/logs, and no paid-service expansion through autonomous inference.
+- Preserve gate thresholds, sample/coverage definitions, experiment families, variant IDs, confirmation cutoffs, report-period semantics, and protected authority. Sensitive pricing/execution/settlement/recorder/venue behavior, schema changes, ambiguous contracts, and isolation/budget/approval code remain Claude-owned initially.
+- Preserve `make test`, pristine full acceptance, independent review, controller-only commits/merges/releases, game-window checks, release receipts, and deferred live verification. Qwen does not approve itself or modify checks to convert failure into success.
+- Retain the source boundary from `SKILL.md` “Instruction sources”; worker outputs and new supervisor state are evidence. The user's requested setup change can amend the reviewed setup, but the running loop does not acquire permission to rewrite its own authority.
+
+## Minimal rollout and proof
+
+First, build and exercise supervisor policy and isolation with fake provider responses: budget exhaustion, concurrent reservation, unknown usage, stale completion, wrong-worktree requests, changed protected input, missing candidate, cancellation, restart, and pause. Run current worker guard/tool/recovery tests when their implementation changes.
+
+Then admit one real, bounded task after a Claude contract/routing check. Keep it in an isolated task worktree, run scoped checks, freeze the artifact, obtain independent review, and apply current merge/deploy acceptance. Include controller handling, queue waits, failed attempts, review, repairs, full acceptance, and integration in timing; token latency alone is not the target.
+
+Change scheduling and model routing in separable commits or stages so effects remain measurable. For the next small canary, collect route-to-acceptance time, Qwen success without fallback, reviewer effort, escaped findings, test-slot waiting/waste, spend including failed requests, checkpoint age, and deadline completion. Expand only the task classes supported by those observations; no broad unattended routing claim follows from a small synthetic screen.
+
+Prior proposal: `docs/superpowers/plans/2026-09-12-cerebras-autopilot-implementation-handoff.md`, “Supervisor requirements for unattended operation” and “Staged implementation.” Preserve its ownership and recovery requirements, but replace historical provider/model/host assumptions with the reviewed current package rather than following its old `gpt-oss-120b` or Mac examples.

@@ -1,0 +1,10 @@
+"""Resource ceiling for generated code, inside its no-network namespace."""
+import os
+import resource
+import sys
+
+for kind, value in [(resource.RLIMIT_CPU, 45), (resource.RLIMIT_AS, 1024**3),
+                    (resource.RLIMIT_FSIZE, 8 * 1024**2), (resource.RLIMIT_NPROC, 64),
+                    (resource.RLIMIT_NOFILE, 128), (resource.RLIMIT_CORE, 0)]:
+    resource.setrlimit(kind, (value, value))
+os.execv('/bin/bash', ['/bin/bash', '--noprofile', '--norc', '-c', sys.argv[1]])

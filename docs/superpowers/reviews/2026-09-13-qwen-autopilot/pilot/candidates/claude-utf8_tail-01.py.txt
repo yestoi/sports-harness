@@ -1,0 +1,31 @@
+import codecs
+
+
+def utf8_tail(chunks, max_bytes):
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool):
+        raise TypeError("max_bytes must be an int (not bool)")
+    if max_bytes < 0:
+        raise ValueError("max_bytes must be non-negative")
+
+    decoder = codecs.getincrementaldecoder('utf-8')(errors='strict')
+    buf = bytearray()
+
+    for chunk in chunks:
+        if not isinstance(chunk, bytes):
+            raise TypeError("each chunk must be bytes")
+        # Validate this chunk as part of the overall UTF-8 stream.
+        decoder.decode(chunk, False)
+        if chunk:
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                del buf[: len(buf) - max_bytes]
+
+    # Flush the decoder to catch an unfinished trailing sequence.
+    decoder.decode(b'', True)
+
+    # Drop any leading continuation bytes left over from a character
+    # that was split by the window boundary.
+    while buf and (buf[0] & 0xC0) == 0x80:
+        del buf[0]
+
+    return buf.decode('utf-8')

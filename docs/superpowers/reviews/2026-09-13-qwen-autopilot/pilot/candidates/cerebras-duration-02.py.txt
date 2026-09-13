@@ -1,0 +1,118 @@
+"""Parse a duration string into milliseconds.
+
+The accepted format is a sequence of integer tokens each immediately followed
+by a unit designator.  Valid units are ``d`` (days), ``h`` (hours), ``m``
+minutes, ``s`` seconds and ``ms`` milliseconds.  Units must appear in strictly
+descending magnitude (``d`` > ``h`` > ``m`` > ``s`` > ``ms``) and may not be
+repeated.  Tokens may be separated by zero or more ASCII space characters; any
+other whitespace is disallowed.  Leading and trailing spaces are permitted.
+
+The function returns the total duration in **integer milliseconds**.  Various
+error conditions raise ``ValueError`` or ``TypeError`` as documented in the
+task description.
+"""
+
+from typing import Any
+
+
+def parse_duration(text: Any) -> int:
+    """Convert a duration description to milliseconds.
+
+    Parameters
+    ----------
+    text: Any
+        The duration string.  Must be a ``str``; otherwise a ``TypeError`` is
+        raised.
+
+    Returns
+    -------
+    int
+        Total milliseconds represented by the input.
+
+    Raises
+    ------
+    TypeError
+        If *text* is not a string.
+    ValueError
+        For any syntactic or semantic violation, including:
+        * input length > 128 characters (before trimming),
+        * presence of characters other than ASCII digits, the letters ``d``,
+          ``h``, ``m``, ``s`` (with ``ms`` treated specially), or spaces,
+        * empty or all‑space input after trimming,
+        * invalid token order or repeated units,
+        * total milliseconds exceeding 31 536 000 000.
+    """
+
+    # ---- Type checking ---------------------------------------------------
+    if not isinstance(text, str):
+        raise TypeError("input must be a string")
+
+    # ---- Length constraint (original, before stripping) -----------------
+    if len(text) > 128:
+        raise ValueError("input exceeds maximum length of 128 characters")
+
+    # ---- Allowed characters check ----------------------------------------
+    # Only ASCII digits, letters d h m s, and space are allowed.
+    allowed = set("0123456789dhms ")
+    for ch in text:
+        if ch not in allowed:
+            raise ValueError("invalid character in input")
+
+    # ---- Trim spaces at both ends (only ASCII space) ---------------------
+    stripped = text.strip(" ")
+    if not stripped:
+        raise ValueError("empty input after trimming spaces")
+
+    # ---- Parsing ----------------------------------------------------------
+    # Unit magnitude ordering: higher number = larger unit.
+    unit_order = {"d": 5, "h": 4, "m": 3, "s": 2, "ms": 1}
+    unit_factor = {"d": 86400000, "h": 3600000, "m": 60000, "s": 1000, "ms": 1}
+
+    total_ms = 0
+    prev_order = None
+    i = 0
+    n = len(stripped)
+
+    while i < n:
+        # Skip any spaces between tokens.
+        while i < n and stripped[i] == " ":
+            i += 1
+        if i >= n:
+            break
+
+        # Parse integer amount.
+        start_num = i
+        while i < n and stripped[i].isdigit():
+            i += 1
+        if start_num == i:
+            # No digits where a token should start.
+            raise ValueError("expected numeric amount")
+        amount = int(stripped[start_num:i])
+
+        # Parse unit – check for the two‑character "ms" first.
+        if i + 1 < n and stripped[i : i + 2] == "ms":
+            unit = "ms"
+            i += 2
+        else:
+            if i >= n:
+                raise ValueError("missing unit after amount")
+            unit_char = stripped[i]
+            if unit_char not in "dhms":
+                raise ValueError("invalid unit designator")
+            unit = unit_char
+            i += 1
+
+        # Enforce ordering.
+        cur_order = unit_order[unit]
+        if prev_order is not None:
+            if cur_order >= prev_order:
+                # Must be strictly descending.
+                raise ValueError("units must be in descending order without repetition")
+        prev_order = cur_order
+
+        # Accumulate milliseconds, checking overflow against the max allowed.
+        total_ms += amount * unit_factor[unit]
+        if total_ms > 31536000000:
+            raise ValueError("duration exceeds maximum allowed milliseconds")
+
+    return total_ms

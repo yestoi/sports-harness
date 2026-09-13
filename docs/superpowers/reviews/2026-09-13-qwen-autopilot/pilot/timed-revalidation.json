@@ -1,0 +1,145 @@
+[
+  {
+    "job": "claude-duration-01",
+    "candidate_sha256": "ff25c56f40c36e361de3c7a14d7f663bfd81f89d10317e927ac2a7055354f4bd",
+    "elapsed_s": 0.055189,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "duration",
+      "tests": 10
+    }
+  },
+  {
+    "job": "claude-utf8_tail-01",
+    "candidate_sha256": "2d1cb987e0937213aa4e89ab8005bba86216c43d163ebe03a948852a8068a0b9",
+    "elapsed_s": 0.058891,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "utf8_tail",
+      "tests": 10
+    }
+  },
+  {
+    "job": "cerebras-atomic_json-01",
+    "candidate_sha256": "51ae870aaf55d104a7378213414c63c7752263f84eb184e4aaf56fb76cf4e6b4",
+    "elapsed_s": 0.060815,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "atomic_json",
+      "tests": 8
+    }
+  },
+  {
+    "job": "claude-atomic_json-01",
+    "candidate_sha256": "785d62ebe1cb0e1c2e2bfb363aa208b064369ffd2d8273720e466c447d8bbc3d",
+    "elapsed_s": 0.058351,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "atomic_json",
+      "tests": 8
+    }
+  },
+  {
+    "job": "claude-receipt-01",
+    "candidate_sha256": "f4e45aa0bb7c5d903ad4b7461b630b766a6c7fdde9fc6184bfbec148b5dacadc",
+    "elapsed_s": 0.058038,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "receipt",
+      "tests": 10
+    }
+  },
+  {
+    "job": "cerebras-receipt-01",
+    "candidate_sha256": "a20b5017e8335b3885221084b9649a1de73e427fc9b38559e6a38f4aa99751f4",
+    "elapsed_s": 0.055777,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "receipt",
+      "tests": 10
+    }
+  },
+  {
+    "job": "cerebras-job_order-01",
+    "candidate_sha256": "6e835cc8e62554ed9876a280bacc07132a92f36ec478f4eb8c4d871599db9459",
+    "elapsed_s": 0.059698,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "job_order",
+      "tests": 10
+    }
+  },
+  {
+    "job": "claude-job_order-01",
+    "candidate_sha256": "5ff8a8b42c7b242f5507bf12276aec312a24043f9bf58273626b3c3839410a23",
+    "elapsed_s": 0.062302,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "job_order",
+      "tests": 10
+    }
+  },
+  {
+    "job": "claude-tsv_summary-01",
+    "candidate_sha256": "1cc9a642bbf783b26d86409afabe815ee88ec7c8f22e931c964456716c38bb6e",
+    "elapsed_s": 0.056637,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "tsv_summary",
+      "tests": 10
+    }
+  },
+  {
+    "job": "cerebras-tsv_summary-01",
+    "candidate_sha256": "3a5bec1906489c7424b6cc4c7addedeccda61cc6e8b1b81f27ab07ae334baa1c",
+    "elapsed_s": 0.059017,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "tsv_summary",
+      "tests": 10
+    }
+  },
+  {
+    "job": "cerebras-duration-02",
+    "candidate_sha256": "a41219415d7c71aa60094cc210bb3ba9551fddb1a41aa592d22c42a74015d795",
+    "elapsed_s": 0.061103,
+    "exit_code": 0,
+    "checks": {
+      "errors": 0,
+      "failures": 0,
+      "passed": true,
+      "task_id": "duration",
+      "tests": 10
+    }
+  }
+]
