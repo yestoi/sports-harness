@@ -1,0 +1,82 @@
+"""Deterministic ready-jobs scheduling (pure standard library toy, not a controller)."""
+
+
+def ready_jobs(jobs, completed):
+    # tuple shape: (priority, submitted, deps)
+    if not isinstance(jobs, list):
+        raise ValueError("jobs must be a list of job dicts")
+    if not isinstance(completed, set):
+        raise ValueError("completed must be a set of job IDs")
+
+    by_id = {}
+    for index, job in enumerate(jobs):
+        if not isinstance(job, dict):
+            raise ValueError(f"job at index {index} must be a dict")
+        for field in ("id", "priority", "submitted", "depends_on"):
+            if field not in job:
+                raise ValueError(f"job at index {index} is missing field {field!r}")
+        job_id = job["id"]
+        if not isinstance(job_id, str) or not job_id:
+            raise ValueError(f"job at index {index}: 'id' must be a nonempty string")
+        priority = job["priority"]
+        if (
+            isinstance(priority, bool)
+            or not isinstance(priority, int)
+            or not 0 <= priority <= 9
+        ):
+            raise ValueError(f"job {job_id!r}: 'priority' must be an integer 0 through 9")
+        submitted = job["submitted"]
+        if (
+            isinstance(submitted, bool)
+            or not isinstance(submitted, int)
+            or submitted < 0
+        ):
+            raise ValueError(f"job {job_id!r}: 'submitted' must be a nonnegative integer")
+        deps = job["depends_on"]
+        if not isinstance(deps, list):
+            raise ValueError(f"job {job_id!r}: 'depends_on' must be a list")
+        for dep in deps:
+            if not isinstance(dep, str):
+                raise ValueError(f"job {job_id!r}: 'depends_on' entries must be strings")
+        if len(set(deps)) != len(deps):
+            raise ValueError(f"job {job_id!r}: 'depends_on' must contain distinct IDs")
+        if job_id in by_id:
+            raise ValueError(f"duplicate job ID {job_id!r}")
+        by_id[job_id] = (priority, submitted, deps)
+
+    for job_id, (_, _, deps) in by_id.items():
+        for dep in deps:
+            if dep == job_id:
+                raise ValueError(f"job {job_id!r} depends on itself")
+            if dep not in by_id:
+                raise ValueError(f"job {job_id!r} depends on unknown job {dep!r}")
+
+    for member in completed:
+        if member not in by_id:
+            raise ValueError(f"completed contains unknown job ID {member!r}")
+
+    # Kahn's algorithm for acyclicity (whole graph, including completed jobs).
+    indegree = {job_id: len(deps) for job_id, (_, _, deps) in by_id.items()}
+    dependents = {job_id: [] for job_id in by_id}
+    for job_id, (_, _, deps) in by_id.items():
+        for dep in deps:
+            dependents[dep].append(job_id)
+    queue = [job_id for job_id, deg in indegree.items() if deg == 0]
+    drained = 0
+    while queue:
+        node = queue.pop()
+        drained += 1
+        for follower in dependents[node]:
+            indegree[follower] -= 1
+            if indegree[follower] == 0:
+                queue.append(follower)
+    if drained != len(by_id):
+        raise ValueError("dependency graph contains a cycle")
+
+    ready = [
+        job_id
+        for job_id, (_, _, deps) in by_id.items()
+        if job_id not in completed and all(dep in completed for dep in deps)
+    ]
+    ready.sort(key=lambda job_id: (-by_id[job_id][0], by_id[job_id][1], job_id))
+    return ready

@@ -1,0 +1,60 @@
+"""Task tsv_summary: stable summary of observations."""
+
+
+_STATUSES = ("queued", "running", "done", "failed")
+_HEADER = "status\tcount\ttotal_ms\tavg_ms\n"
+
+
+def _check_record(record):
+    """Validate one record; return (status, duration_ms)."""
+    if not isinstance(record, dict):
+        raise ValueError("record must be a dict, got %r" % (type(record).__name__,))
+    if "status" not in record:
+        raise ValueError("record missing 'status'")
+    status = record["status"]
+    if not isinstance(status, str) or status not in _STATUSES:
+        raise ValueError("invalid status: %r" % (status,))
+    if "duration_ms" not in record:
+        raise ValueError("record missing 'duration_ms'")
+    duration = record["duration_ms"]
+    if duration is not None:
+        if isinstance(duration, bool) or not isinstance(duration, int):
+            raise ValueError("duration_ms must be None or an int, got %r" % (duration,))
+        if duration < 0:
+            raise ValueError("duration_ms must be nonnegative, got %r" % (duration,))
+    return status, duration
+
+
+def summarize(records):
+    """Summarize observation records as TSV text.
+
+    Records must be dicts with a valid ``status`` (queued/running/done/failed)
+    and ``duration_ms`` (None or nonnegative integer, bool excluded).  Rows are
+    emitted only for statuses present, in canonical order.  Averages use exact
+    integer half-up arithmetic.
+    """
+    counts = dict.fromkeys(_STATUSES, 0)
+    totals = dict.fromkeys(_STATUSES, 0)
+    numeric = dict.fromkeys(_STATUSES, 0)
+    try:
+        for record in records:
+            status, duration = _check_record(record)
+            counts[status] += 1
+            if duration is not None:
+                totals[status] += duration
+                numeric[status] += 1
+    except TypeError:
+        raise ValueError("records must be an iterable of records")
+    lines = [_HEADER]
+    for status in _STATUSES:
+        if counts[status] == 0:
+            continue
+        n = numeric[status]
+        if n == 0:
+            avg = "-"
+        else:
+            # Exact half-up of totals / n: floor(totals/n + 1/2)
+            # using only integer arithmetic (values are nonnegative).
+            avg = str((2 * totals[status] + n) // (2 * n))
+        lines.append("%s\t%d\t%d\t%s\n" % (status, counts[status], totals[status], avg))
+    return "".join(lines)

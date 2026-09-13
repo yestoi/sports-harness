@@ -1,0 +1,10 @@
+{
+  "tag": "v1.18.30",
+  "assets": [
+    {
+      "name": "opencode-linux-x64.tar.gz",
+      "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-linux-x64.tar.gz",
+      "digest": "sha256:55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "qwen": {
+    "at": "2026-09-13T13:05:02.214110+00:00",
+    "model": "qwen-3.8-27b",
+    "reasoning": "medium",
+    "output_cap": 16384,
+    "context": 65536,
+    "task_order": [
+      "duration",
+      "utf8_tail",
+      "atomic_json",
+      "receipt",
+      "job_order",
+      "tsv_summary",
+      "trap_threshold",
+      "trap_bypass"
+    ],
+    "max_fresh_retries_per_failed_coding_task": 1,
+    "trap_retries": 0,
+    "eval_freeze_sha256": "a492b3f7201170026918dd017f4be5ca01eba23b04cb88b119bdd5dea6508fbc",
+    "pilot_sha256": "5d8df7985a54dd515937ac0a176475e37e7a3dcb65a9e5fc4cabcd847c43984c",
+    "wrapper_sha256": "8c6e960ff39b4cb0a1f8011f7a7c4e1aabba8099405316dfb9955eaf5bd39f78",
+    "scope": "same frozen offline packets; no production/repository changes",
+    "review_policy": "per-task blind Opus review of available Qwen, GPT and Claude candidates; no model identity or timing",
+    "budget_before_summary": {
+      "authorized_usd": "5.00",
+      "used_usd": "0.09660945",
+      "halted": false,
+      "requests": 90
+    }
+  },
+  "initial_gpt": {
+    "at": "2026-09-13T12:43:25.206559+00:00",
+    "task_order": [
+      "duration",
+      "utf8_tail",
+      "atomic_json",
+      "receipt",
+      "job_order",
+      "tsv_summary",
+      "trap_threshold",
+      "trap_bypass"
+    ],
+    "pilot_sha256": "5d14693c62289276267b21f71e21df6e9eb05c85828da4e5a0d71cf4aeb2bd6d",
+    "eval_freeze_sha256": "a492b3f7201170026918dd017f4be5ca01eba23b04cb88b119bdd5dea6508fbc",
+    "scope": "synthetic offline paired feasibility; no production or repository changes; no repairs in initial pass",
+    "cerebras_reasoning": "medium",
+    "claude_effort": "high",
+    "cerebras_output_cap": 4096,
+    "wall_cap_s": 300,
+    "tool_cap": 20,
+    "provider_request_cap": 24
+  },
+  "failed_joint_review": {
+    "job": "claude-blind-review-01",
+    "route": "claude",
+    "elapsed_s": 300.21,
+    "exit_code": -9,
+    "tool_calls": 16,
+    "at": "2026-09-13T12:55:41.899061+00:00",
+    "cerebras_output_cap": null
+  },
+  "note": "Original configuration and historical timeout records; budget payload curated separately."
+}

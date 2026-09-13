@@ -1,0 +1,39 @@
+def eligible(receipt, candidate, profile):
+    """Pure toy receipt predicate. Returns bool, never raises on malformed
+    ordinary JSON-like values. Does not authenticate receipt provenance."""
+    # candidate: exactly 40 lowercase ASCII hexadecimal characters.
+    if not isinstance(candidate, str) or len(candidate) != 40:
+        return False
+    for ch in candidate:
+        if "0" <= ch <= "9" or "a" <= ch <= "f":
+            continue
+        return False
+    # profile: nonempty string (whitespace-only counts as nonempty).
+    if not isinstance(profile, str) or profile == "":
+        return False
+    # receipt: must be a dict with all required fields present.
+    if not isinstance(receipt, dict):
+        return False
+    run_id = receipt.get("run_id")
+    if not isinstance(run_id, str) or run_id == "":
+        return False
+    if receipt.get("origin") != "trusted-runner":
+        return False
+    if receipt.get("head") != candidate or receipt.get("head_after") != candidate:
+        return False
+    if receipt.get("profile") != profile:
+        return False
+    exit_code = receipt.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code != 0:
+        return False
+    scope = receipt.get("scope")
+    if not isinstance(scope, list) or len(scope) != 0:
+        return False
+    if receipt.get("dirty_before") != "" or receipt.get("dirty_after") != "":
+        return False
+    environment = receipt.get("environment")
+    if not isinstance(environment, dict):
+        return False
+    if environment.get("addopts") != "" or environment.get("plugins") != "":
+        return False
+    return True

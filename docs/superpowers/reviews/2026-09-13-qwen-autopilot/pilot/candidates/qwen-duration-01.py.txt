@@ -1,0 +1,67 @@
+"""Parse a duration string into a number of milliseconds.
+
+Accepts one or more tokens of the form ``<digits><unit>`` where the unit is
+``d``, ``h``, ``m``, ``s`` or ``ms``.  Units must appear in strictly
+descending magnitude without repetition.  Literal ASCII spaces may separate
+tokens and may appear at either end; no other whitespace is accepted.
+"""
+
+import re
+
+__all__ = ["parse_duration"]
+
+_MAX_MS = 31536000000
+_MAX_LEN = 128
+
+# Longest unit first: "ms" must win over "m" for inputs such as "1ms".
+_TOKEN = re.compile(r"([0-9]+)(ms|s|m|h|d)")
+_FACTOR = {"d": 86_400_000, "h": 3_600_000, "m": 60_000, "s": 1_000, "ms": 1}
+
+
+def parse_duration(text):
+    """Return the number of milliseconds described by *text*.
+
+    Raises TypeError if *text* is not a ``str``, and ValueError if the
+    input is empty/all-space, has invalid syntax or ordering, is longer
+    than 128 characters before trimming, or exceeds
+    31536000000 milliseconds in total.
+    """
+    if not isinstance(text, str):
+        raise TypeError(
+            "parse_duration() expects a str, got %s" % type(text).__name__
+        )
+    if len(text) > _MAX_LEN:
+        raise ValueError(
+            "duration string is longer than %d characters" % _MAX_LEN
+        )
+
+    total = 0
+    prev_factor = None
+    saw_token = False
+    pos = 0
+    n = len(text)
+    while pos < n:
+        # Literal ASCII spaces are allowed between tokens and at the ends.
+        while pos < n and text[pos] == " ":
+            pos += 1
+        if pos == n:
+            break  # only trailing spaces left
+        match = _TOKEN.match(text, pos)
+        if match is None:
+            raise ValueError("invalid duration syntax: %r" % (text,))
+        amount_s, unit = match.groups()
+        factor = _FACTOR[unit]
+        if prev_factor is not None and factor >= prev_factor:
+            raise ValueError(
+                "units must be in strictly descending magnitude without repetition"
+            )
+        prev_factor = factor
+        total += int(amount_s) * factor
+        saw_token = True
+        pos = match.end()
+
+    if not saw_token:
+        raise ValueError("duration string is empty or all spaces")
+    if total > _MAX_MS:
+        raise ValueError("duration exceeds %d milliseconds" % _MAX_MS)
+    return total

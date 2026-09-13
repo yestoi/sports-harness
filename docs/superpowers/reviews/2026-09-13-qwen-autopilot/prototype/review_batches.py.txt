@@ -1,0 +1,85 @@
+"""Task-sized blind read-only Opus reviews, maximum two active reviewers."""
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
+import json
+import random
+import shutil
+import threading
+from pilot import ROOT, Job, save, stamp
+from screen import TASKS
+
+SYSTEM=('You are an independent senior code reviewer in a bounded offline comparison. '
+        'Review ONE task packet and its anonymous candidates A/B/C. The /work tree is READ-ONLY. '
+        'Use only the pilot shell; no network, credentials, installation, or edits to /work. '
+        'IMPORTANT: every shell invocation gets a FRESH /tmp. Scratch files DO NOT persist '
+        'between tool calls. Put setup and a check in the SAME shell call. You may read /work '
+        'throughout. You have at most FOUR shell calls: first read the packet and ALL candidates '
+        'together; then at most three focused checks if needed. Prefer source reasoning to broad '
+        'fuzzing. Aim to finish within two minutes. '
+        'Judge ONLY the written contract; do not invent stronger requirements. Find blocking '
+        'correctness violations, memory/resource violations explicitly in the packet, and '
+        'atomicity/exception-preservation issues if relevant. Ordinary finite inputs only, '
+        'not hostile subclasses or arbitrary monkeypatches unless the packet requires them. '
+        'Distinguish real contract defects from optional enhancements. Do not infer authorship. '
+        'Return a concise final verdict for EACH candidate: PASS (no blocking finding), FAIL '
+        '(a blocking finding), or MISSING. For every FAIL give file:line, a concrete ordinary '
+        'counterexample and expected versus actual result; clearly say if unexecuted. '
+        'A candidate missing entirely is MISSING, not PASS. Keep the final under 700 words. '
+        'No repair edits. Stop investigating in time to return the verdict.')
+
+class ReviewJob(Job):
+    def shell(self,command):
+        if len(self.tools)>=4:
+            return {'isError':True,'content':[{'type':'text','text':'Review tool budget exhausted. Return your current verdict; label uncertainty.'}]}
+        return super().shell(command)
+
+def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def run(task,work):
+    name='opus-task-review-'+task+'-01'
+    job=ReviewJob(name,work,None,readonly=True)
+    result=job.run('claude','Read packet.md and every candidate file in /work and independently review them. '+SYSTEM,
+                   system=SYSTEM,model='opus')
+    events=[json.loads(line) for line in (job.dir/'events.jsonl').read_text().splitlines() if line.startswith('{')]
+    init=next((e for e in events if e.get('subtype')=='init'),{})
+    final=next((e for e in reversed(events) if e.get('type')=='result'),{})
+    result.update(task=task,model=init.get('model'),expected_tools=init.get('tools')==['mcp__pilot__shell'],
+                  final_text=final.get('result',''),is_error=final.get('is_error'),
+                  completed=bool(final.get('result')) and not final.get('is_error') and result['exit_code']==0)
+    save(job.dir/'review.json',result)
+    (job.dir/'review.md').write_text(result['final_text']+'\n')
+    return result
+
+def main():
+    earlier=json.loads((ROOT/'screen-results.json').read_text())+json.loads((ROOT/'retry-results.json').read_text())
+    qwen=json.loads((ROOT/'qwen-results.json').read_text())
+    mapping={};works={}
+    rng=random.Random(260913)
+    for task in TASKS[:6]:
+        work=ROOT/'work'/('review-batch-'+task);work.mkdir(exist_ok=False)
+        shutil.copyfile(ROOT/'eval'/task/'packet.md',work/'packet.md')
+        candidates=[]
+        for route,rows in [('claude',earlier),('cerebras',earlier),('qwen',qwen)]:
+            candidates.append(next(r for r in reversed(rows) if r['task']==task and
+                                   (route=='qwen' or r['route']==route)))
+        rng.shuffle(candidates)
+        for label,row in zip('ABC',candidates):
+            source=ROOT/'work'/row['job']/'solution.py'
+            mapping[f'{task}/{label}']={'job':row['job'],'sha256':row.get('candidate_sha256')}
+            if source.exists():
+                assert digest(source)==row['candidate_sha256']
+                shutil.copyfile(source,work/(label+'.py'))
+            else:(work/(label+'-MISSING.txt')).write_text('No candidate file was produced.\n')
+        works[task]=work
+    save(ROOT/'review-batches-freeze.json',{'at':stamp(),'mapping':mapping,'system_prompt':SYSTEM,
+        'script_sha256':digest(ROOT/'review_batches.py'),'max_active_reviewers':2,
+        'note':'Native reviewers make no Cerebras calls or budget writes. Task workspaces are read-only.'})
+    results=[]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures=[pool.submit(run,task,work) for task,work in works.items()]
+        for future in as_completed(futures):
+            result=future.result();results.append(result)
+            save(ROOT/'review-batch-results.json',results)
+            print(json.dumps({k:result.get(k) for k in ('task','completed','elapsed_s','tool_calls','final_text')}),flush=True)
+
+if __name__=='__main__':main()

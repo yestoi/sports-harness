@@ -1,0 +1,95 @@
+[
+  {
+    "source": ".superpowers/sdd/2026-09-11-phase6b-repair-execution/t3-full-b65635e-aborted-superseded.log",
+    "source_sha256": "f2553f3be6057dd98204c34ff950daf62cf32db0e89b4abb9e015e4655edb1a7",
+    "excerpts": [
+      {
+        "line": 170,
+        "text": "================= 3265 passed, 5 xfailed in 1513.21s (0:25:13) ================="
+      },
+      {
+        "line": 171,
+        "text": "{\"branch\": \"phase6b-t3-reconciliation\", \"database\": \"harness_test_phase6b_t3_reconciliation\", \"head\": \"b65635e92f18051b2a922357fc9d5621421466d1\", \"started_at\": \"2026-09-13T07:20:54.768321+00:00\", \"pid\": 293135, \"dirty_before\": \"\", \"scope\": [], \"pytest_addopts\": \"\", \"pytest_plugins\": \"\", \"exit_code\": 0, \"finished_at\": \"2026-09-13T07:46:09.165599+00:00\", \"head_after\": \"b65635e92f18051b2a922357fc9d5621421466d1\", \"dirty_after\": \" M harness/execution/fills.py\\n M harness/execution/state.py\\n\"}"
+      }
+    ]
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-11-phase6b-repair-execution/t3-full-e6975ab-superseded-signal.log",
+    "source_sha256": "97eb8d9d504b8407875d4f9c8bf5b544cbd4706e56bda4944b7b8447b806411f",
+    "excerpts": [
+      {
+        "line": 171,
+        "text": "================= 3270 passed, 5 xfailed in 1532.71s (0:25:32) ================="
+      },
+      {
+        "line": 172,
+        "text": "{\"branch\": \"phase6b-t3-reconciliation\", \"database\": \"harness_test_phase6b_t3_reconciliation\", \"head\": \"e6975ab78594f5c894d7c3fc22a29b12f96d4d07\", \"started_at\": \"2026-09-13T08:46:59.687257+00:00\", \"pid\": 324409, \"dirty_before\": \"\", \"scope\": [], \"pytest_addopts\": \"\", \"pytest_plugins\": \"\", \"exit_code\": 0, \"finished_at\": \"2026-09-13T09:12:33.501920+00:00\", \"head_after\": \"e6975ab78594f5c894d7c3fc22a29b12f96d4d07\", \"dirty_after\": \" M docs/superpowers/specs/2026-09-11-phase6b-repair-execution-design.md\\n M harness/db/models.py\\n M harness/execution/fills.py\\n M harness/execution/state.py\\n M tests/test_exec_state.py\\n M tests/test_execution_regressions.py\\n\"}"
+      }
+    ]
+  },
+  {
+    "source": ".superpowers/sdd/hotfix-2026-09-12-omarchy/fix49-full-5e034a7-aborted-superseded.log",
+    "source_sha256": "d6e1018e9f93f1a481ee88f31cdef43e4cc85cbdd147d34646907d492cf7fe1c",
+    "excerpts": [
+      {
+        "line": 171,
+        "text": "================= 3234 passed, 6 xfailed in 1902.72s (0:31:42) ================="
+      },
+      {
+        "line": 172,
+        "text": "{\"branch\": \"fix-20260912-recorder-memory\", \"database\": \"harness_test_fix_20260912_recorder_memory\", \"head\": \"5e034a7f4543a4ada8dd854572386d4be29bb2a3\", \"started_at\": \"2026-09-13T08:08:08.627220+00:00\", \"pid\": 311469, \"dirty_before\": \"\", \"scope\": [], \"pytest_addopts\": \"\", \"pytest_plugins\": \"\", \"exit_code\": 0, \"finished_at\": \"2026-09-13T08:39:52.511684+00:00\", \"head_after\": \"5e034a7f4543a4ada8dd854572386d4be29bb2a3\", \"dirty_after\": \" M harness/normalize/runner.py\\n M tests/test_recorder_memory_shape.py\\n\"}"
+      }
+    ]
+  },
+  {
+    "source": ".superpowers/sdd/hotfix-2026-09-12-omarchy/fix49-full-ebf0953.log",
+    "source_sha256": "a3828e0def338504633dfce936550d267a0940c594490320838ab201196ffda4",
+    "excerpts": [
+      {
+        "line": 171,
+        "text": "================= 3244 passed, 6 xfailed in 1678.74s (0:27:58) ================="
+      },
+      {
+        "line": 172,
+        "text": "{\"branch\": \"fix-20260912-recorder-memory\", \"database\": \"harness_test_fix_20260912_recorder_memory\", \"head\": \"ebf09533f05af5b7cf0c838aec211dfbe671516a\", \"started_at\": \"2026-09-13T10:44:40.375773+00:00\", \"pid\": 370652, \"dirty_before\": \"\", \"scope\": [], \"pytest_addopts\": \"\", \"pytest_plugins\": \"\", \"exit_code\": 0, \"finished_at\": \"2026-09-13T11:12:40.219690+00:00\", \"head_after\": \"ebf09533f05af5b7cf0c838aec211dfbe671516a\", \"dirty_after\": \"\"}"
+      }
+    ]
+  },
+  {
+    "source": ".superpowers/sdd/2026-09-11-phase6b-repair-execution/t3-full-13f891b.log",
+    "source_sha256": "7f2c566a5436cb5be47725028b8ac551fc843a530f7f2db89dad07ec0027a29a",
+    "excerpts": [
+      {
+        "line": 171,
+        "text": "================= 3272 passed, 5 xfailed in 1553.27s (0:25:53) ================="
+      },
+      {
+        "line": 172,
+        "text": "{\"branch\": \"phase6b-t3-reconciliation\", \"database\": \"harness_test_phase6b_t3_reconciliation\", \"head\": \"13f891bb44a9530ffaf0b9ae546ed9bda11cfc2e\", \"started_at\": \"2026-09-13T09:19:51.736713+00:00\", \"pid\": 336670, \"dirty_before\": \"\", \"scope\": [], \"pytest_addopts\": \"\", \"pytest_plugins\": \"\", \"exit_code\": 0, \"finished_at\": \"2026-09-13T09:45:46.160757+00:00\", \"head_after\": \"13f891bb44a9530ffaf0b9ae546ed9bda11cfc2e\", \"dirty_after\": \"\"}"
+      }
+    ]
+  },
+  {
+    "source": ".superpowers/sdd/omarchy-loop-2026-09-12/main-full-ebf0953-receipt.json",
+    "source_sha256": "bb7edfc992efd9e09cd3a17e955d74d6bc26e55804661910085b33e7c86db776",
+    "excerpts": [
+      {
+        "record": {
+          "branch": "main",
+          "database": "harness_test_main",
+          "head": "ebf09533f05af5b7cf0c838aec211dfbe671516a",
+          "started_at": "2026-09-13T11:14:06.163706+00:00",
+          "pid": 381072,
+          "dirty_before": "",
+          "scope": [],
+          "pytest_addopts": "",
+          "pytest_plugins": "",
+          "exit_code": 0,
+          "finished_at": "2026-09-13T11:41:34.686401+00:00",
+          "head_after": "ebf09533f05af5b7cf0c838aec211dfbe671516a",
+          "dirty_after": ""
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,51 @@
+{
+  "id": "qwen-3.8-27b",
+  "object": "model",
+  "created": 0,
+  "owned_by": "Cerebras",
+  "name": "Qwen 3.8 27B",
+  "description": "This model excels at vision-language understanding, coding, research, and long-horizon agentic tasks.",
+  "hugging_face_id": "Qwen/Qwen3.8-27B",
+  "pricing": {
+    "prompt": "0.00000099",
+    "completion": "0.00000149"
+  },
+  "capabilities": {
+    "streaming": true,
+    "function_calling": true,
+    "structured_outputs": true,
+    "vision": true,
+    "json_mode": true,
+    "tools": true,
+    "tool_choice": true,
+    "parallel_tool_calls": true,
+    "response_format": true,
+    "reasoning": true
+  },
+  "supported_parameters": {
+    "temperature": true,
+    "top_p": true,
+    "seed": true,
+    "stop": true,
+    "max_completion_tokens": true,
+    "logprobs": true,
+    "top_logprobs": true,
+    "frequency_penalty": true,
+    "presence_penalty": true,
+    "logit_bias": true,
+    "repetition_penalty": false
+  },
+  "architecture": {
+    "modality": "text+vision",
+    "tokenizer": "Qwen",
+    "instruct_type": "qwen"
+  },
+  "limits": {
+    "max_context_length": 65536,
+    "max_completion_tokens": 32768
+  },
+  "datacenter_locations": [],
+  "deprecated": false,
+  "preview": false,
+  "quantization": "FP16/FP8"
+}

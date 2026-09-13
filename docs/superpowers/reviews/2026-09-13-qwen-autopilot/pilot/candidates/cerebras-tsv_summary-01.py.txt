@@ -1,0 +1,104 @@
+"""Utility to produce a TSV summary of observation records.
+
+The function follows the contract described in ``packet.md``. It accepts any
+iterable of mapping objects (including one‑shot generators) where each mapping
+has a ``status`` key and a ``duration_ms`` key. The status must be one of the
+four allowed strings and ``duration_ms`` must be ``None`` or a non‑negative
+integer (``bool`` is explicitly rejected because ``bool`` is a subclass of
+``int``). Extra keys are ignored.
+
+If the input is not iterable, or any record is malformed, a ``ValueError`` is
+raised. The function does **not** mutate the supplied ``records`` – it merely
+reads their values.
+
+The output is a TSV text with a header line followed by a row for each status
+that appears in the data, always ordered ``queued``, ``running``, ``done``,
+``failed``. Each row contains:
+
+* ``status`` – the status string.
+* ``count`` – total number of records with that status.
+* ``total_ms`` – sum of numeric ``duration_ms`` values for that status (``0``
+  if there are none).
+* ``avg_ms`` – the average of numeric durations, rounded to the nearest integer
+  with **half‑up** rounding. If there are no numeric durations for that status
+  the average is represented by a hyphen ``-``.
+
+All numeric calculations use exact integer arithmetic, which preserves
+correctness for arbitrarily large values.
+"""
+
+from typing import Mapping
+
+
+def _is_nonnegative_int(value) -> bool:
+    """Return ``True`` if *value* is an ``int`` >= 0 and not a ``bool``.
+
+    ``bool`` is a subclass of ``int``; we explicitly reject it because the
+    specification says "excluding bool".
+    """
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def summarize(records) -> str:
+    """Return a TSV summary of *records*.
+
+    ``records`` must be an iterable of mapping objects each containing the keys
+    ``status`` and ``duration_ms``.  See the module docstring for the full
+    specification.
+    """
+    # Ensure ``records`` is iterable.
+    try:
+        iterator = iter(records)
+    except TypeError:
+        raise ValueError("records argument is not iterable")
+
+    # Define the required status order.
+    status_order = ["queued", "running", "done", "failed"]
+    # Initialise statistics containers.
+    stats = {s: {"count": 0, "total_ms": 0, "numeric_count": 0} for s in status_order}
+
+    for rec in iterator:
+        # Validate each record is a mapping with required keys.
+        if not isinstance(rec, Mapping):
+            raise ValueError("record is not a mapping")
+        if "status" not in rec or "duration_ms" not in rec:
+            raise ValueError("record missing required keys")
+
+        status = rec["status"]
+        duration = rec["duration_ms"]
+
+        # Validate status.
+        if status not in status_order:
+            raise ValueError(f"invalid status: {status!r}")
+
+        # Validate duration.
+        if duration is not None and not _is_nonnegative_int(duration):
+            raise ValueError(f"invalid duration_ms: {duration!r}")
+
+        # Update statistics.
+        stats[status]["count"] += 1
+        if duration is not None:
+            stats[status]["total_ms"] += duration
+            stats[status]["numeric_count"] += 1
+
+    # Construct TSV output.
+    lines = ["status\tcount\ttotal_ms\tavg_ms\n"]
+    for st in status_order:
+        info = stats[st]
+        if info["count"] == 0:
+            continue  # omit status not present in the input
+        count = info["count"]
+        total = info["total_ms"]
+        num_cnt = info["numeric_count"]
+        if num_cnt == 0:
+            avg = "-"
+        else:
+            # Half‑up rounding using integer arithmetic:
+            # round(total / num_cnt) with .5 rounding up.
+            # Compute floor((2*total + num_cnt) / (2*num_cnt)).
+            avg_int = (total * 2 + num_cnt) // (2 * num_cnt)
+            avg = str(avg_int)
+        lines.append(f"{st}\t{count}\t{total}\t{avg}\n")
+
+    return "".join(lines)
+
