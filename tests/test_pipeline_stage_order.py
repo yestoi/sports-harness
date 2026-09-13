@@ -81,9 +81,11 @@ def _seed_run(session, game, markets, now, run=None):
         run = Run(started_at=now, status="running")
         session.add(run)
         session.flush()
-    fetched_at = now - timedelta(minutes=2)
-    book_last_update = now - timedelta(minutes=3)
+    # Keep each source quote's age: the fixture includes an older conflicting lowvig
+    # moneyline. Flattening timestamps would make latest_book_lines choose an arbitrary tie.
     for r in ROWS:
+        fetched_at = now + (datetime.fromisoformat(r["fetched_at"]) - NOW)
+        book_last_update = now + (datetime.fromisoformat(r["book_last_update"]) - NOW)
         session.add(OddsSnapshot(
             raw_id=next(_raw), run_id=run.id, book=r["book"], game_id=game.id,
             market_type=r["market_type"], outcome_team_id=r["outcome_team_id"],
@@ -129,6 +131,20 @@ def _seed(db_session, suffix="", sport="nfl"):
     db_session.add_all(markets)
     db_session.commit()
     return game, markets
+
+
+def _tie_inputs(rows, markets):
+    # Explicit seeded IDs: matched HOME moneyline and the derived HOME 9.5 spread.
+    # The fuzzy HOME moneyline must never become an input through database row order.
+    direct = next(row for row in rows if row.venue_market_id == markets[0].id)
+    derived = next((row for row in rows if row.venue_market_id == markets[4].id), None)
+    assert (direct.match_status, direct.fair_source, direct.market_type,
+            direct.side_team_id) == ("matched", "direct", "moneyline", HOME)
+    if derived is not None:
+        assert (derived.match_status, derived.fair_source, derived.market_type,
+                derived.side_team_id, derived.threshold) == (
+                    "matched", "derived", "spread", HOME, Decimal("9.5"))
+    return direct, derived
 
 
 def _gap_rows(session, run_id):
@@ -364,8 +380,8 @@ def test_equal_edge_scoring_uses_captured_market_order_and_reconciles_mixed_prio
     compute_derived_fair_values(db_session, direct.pending, run.id, NOW, env_settings)
     build_gap_snapshots(db_session, run.id, NOW, env_settings.tz_local, phase="derived")
     rows = _load_gap_rows(db_session, run.id)
-    d = next(r for r in rows if r.fair_source == "direct" and r.side_team_id == HOME)
-    m = next(r for r in rows if r.fair_source == "derived" and r.side_team_id == HOME)
+    d, m = _tie_inputs(rows, markets)
+    assert m is not None
     assert d.gap_snapshot_id < m.gap_snapshot_id
     assert m.venue_market_id in captured  # the capture occurs before the direct filter
     traversal = [m.venue_market_id, d.venue_market_id]
@@ -413,8 +429,7 @@ def test_pipeline_refreshes_mixed_gate_labels_after_derived_competition(
 
     def tied_rows(session, run_id, *args):
         rows = real_load(session, run_id)
-        direct = next(row for row in rows if row.fair_source == "direct" and row.side_team_id == HOME)
-        derived = next((row for row in rows if row.fair_source == "derived" and row.side_team_id == HOME), None)
+        direct, derived = _tie_inputs(rows, markets)
         # A controlled tie and traversal isolates pipeline reconciliation from model rounding.
         selected = [derived, direct] if derived is not None else [direct]
         return [replace(row, fair_p=Decimal("0.50"), disagreement=Decimal("0"), n_groups=2,
