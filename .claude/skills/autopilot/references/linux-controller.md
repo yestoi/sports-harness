@@ -120,3 +120,29 @@ Cancellation of an MCP request does not currently stop its subprocess: its decla
 deadline still applies (maximum1800s). Reconcile the test lock/process before another
 run; server shutdown terminates tracked launchers. Do not assume a cancelled UI call
 released the suite slot, and never bypass the slot to work around it.
+
+## Index fault-fixture permission (restart setup, 2026-09-12)
+
+The schema tests intentionally invalidate an index to exercise interrupted concurrent
+index recovery. A newly created test database needs one database-local fixture grant;
+`make test` does not provision it. The controller first creates the assigned branch's
+`harness_test_...` database using `scripts/testdb.py` (discard its printed test URL),
+then uses the existing test-container local administrator:
+
+```sh
+# Replace harness_test_BRANCH with the actual assigned test database, never postgres
+# or any runtime database. This command runs on the controller, never in a worker.
+docker exec harness-pg-test psql -X -v ON_ERROR_STOP=1 -U sports_test_admin \
+  -d harness_test_BRANCH \
+  -c 'GRANT UPDATE (indisvalid) ON pg_catalog.pg_index TO harness'
+```
+
+This permits only the fault-fixture column in that isolated database. Do not grant
+whole-table UPDATE, SUPERUSER, role memberships, server-file/program privileges or
+catalog ownership. The worker continues using only `make test` and its restricted
+account. Record the database and grant in the ledger; after its final suite/worker
+finishes, revoke it with the same command and
+`REVOKE UPDATE (indisvalid) ON pg_catalog.pg_index FROM harness`.
+Prepare it again before a later full suite on that database. Never grant it to a
+production database. The final fix45 restricted-role run exposed this prerequisite;
+all85 schema tests passed after only this column grant, with no source/test edits.

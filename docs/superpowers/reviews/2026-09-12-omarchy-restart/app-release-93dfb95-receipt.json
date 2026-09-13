@@ -1,0 +1,62 @@
+{
+  "head": "93dfb95773f5649d582ff39832d94241f1a8cdf3",
+  "sha": "93dfb95",
+  "previous": "b0a3991",
+  "mode": "app",
+  "services": [
+    "app-run",
+    "app-serve",
+    "app-exec",
+    "app-research"
+  ],
+  "started_at": "2026-09-13T01:59:31.803970+00:00",
+  "status": "healthy",
+  "expected_services": {
+    "app-run": {
+      "image": "sha256:e7e8428a27cee32c1ec21e1f9bfa6cbfec10777472a2af3e36c04fea41be0e23",
+      "build": "93dfb95"
+    },
+    "app-serve": {
+      "image": "sha256:e7e8428a27cee32c1ec21e1f9bfa6cbfec10777472a2af3e36c04fea41be0e23",
+      "build": "93dfb95"
+    },
+    "app-exec": {
+      "image": "sha256:e7e8428a27cee32c1ec21e1f9bfa6cbfec10777472a2af3e36c04fea41be0e23",
+      "build": "93dfb95"
+    },
+    "app-research": {
+      "image": "sha256:e7e8428a27cee32c1ec21e1f9bfa6cbfec10777472a2af3e36c04fea41be0e23",
+      "build": "93dfb95"
+    }
+  },
+  "previous_services": {
+    "app-run": {
+      "image": "sha256:61aab7604372fea9b24ccc66262469d9427bcf7fe888bd58e127a3539c54771d",
+      "build": "b0a3991"
+    },
+    "app-serve": {
+      "image": "sha256:61aab7604372fea9b24ccc66262469d9427bcf7fe888bd58e127a3539c54771d",
+      "build": "b0a3991"
+    },
+    "app-exec": {
+      "image": "sha256:61aab7604372fea9b24ccc66262469d9427bcf7fe888bd58e127a3539c54771d",
+      "build": "b0a3991"
+    },
+    "app-research": {
+      "image": "sha256:61aab7604372fea9b24ccc66262469d9427bcf7fe888bd58e127a3539c54771d",
+      "build": "b0a3991"
+    }
+  },
+  "health": {
+    "status": "ok",
+    "last_run_at": "2026-09-13T02:05:29.762002+00:00",
+    "last_status": "running",
+    "seconds_since": 0,
+    "credits_remaining": 4906778,
+    "credits_budget": 5000000,
+    "credits_low": false,
+    "venue_limits": null,
+    "build": "93dfb95"
+  },
+  "finished_at": "2026-09-13T02:05:30.610154+00:00"
+}

@@ -1,0 +1,322 @@
+[
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/main-full.log",
+    "size": 14458,
+    "sha256": "fe71ee096b5a2afc02c03087400dce2f0bee56c7770b4b6fe128b512a92e3925"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/main-full-receipt.json",
+    "size": 418,
+    "sha256": "cc63416d8bf1d963ab2ec08f8e0aa0903e8c2ebd4d195d4b4af69d378d05ebf3"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/fix45-final-full.log",
+    "size": 226934,
+    "sha256": "1bafd288854538560a4bbc7c6cd86475ac68ebfa98546c544e1552abc7466fcc"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/fix45-final-full-receipt.json",
+    "size": 450,
+    "sha256": "9dbabdc899c1f57eec5d8cd10d7c5023625bb1526c48ab135b2fb60883bde802"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/fix45-catalog-fixture-targeted.log",
+    "size": 1240,
+    "sha256": "a5440d3a8ba7eff6f523d10fd92fb739953b43cd7db41ca84d87a6cf9be27c19"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/fix45-catalog-fixture-targeted-receipt.json",
+    "size": 480,
+    "sha256": "94004e064fe841d05ddfbae4071020109c2aea57c59b46f9f42c369c48625771"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/receipt.json",
+    "size": 1809,
+    "sha256": "12b627439a5b10c7b522c7ca7e17bd25deecd778050094c09d36a8b95413baed"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/post-summary.txt",
+    "size": 45652,
+    "sha256": "2168a2f0dd961b1bf4ea3913001337e5d18830acf78bea52d535a5fb807aae23"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/fresh-check-sweep.json",
+    "size": 4218,
+    "sha256": "4c477b125ceca8daf4ac705cdf9ba7ff23f83bbe1dee356a6f7651f3bd543ff7"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/verify-contract-after.log",
+    "size": 15060,
+    "sha256": "1142bed466ca7136416a60b6baa385ddb4a812bfb3e92c9eda1f25e82ffe2a9b"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/verify-supplement-after.log",
+    "size": 20897,
+    "sha256": "c14ad4fb91a0f5c503658b10a10d5e136e5d0e236a4fca460a73b8c3439d4a17"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/normalization-backlog-after.log",
+    "size": 1852,
+    "sha256": "a640e9c200387c04694a4c9ab7704844e21e6f3f010a414c123fd7043b50b055"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/ws-release-continuity.log",
+    "size": 624,
+    "sha256": "94c88107c2cb89fdb642e5f09a9c47759d740db04da72a38da8bb7bb812636d5"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/post-settle.log",
+    "size": 1164,
+    "sha256": "e55abdab25618f34a894ca0bd03966f81368bcb7ba1557658a09ea6521428a33"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/post-gate.log",
+    "size": 3482,
+    "sha256": "df2cc206d872a3bcca770d4fe5174e56932a04271546bfe82cf071f58aad804a"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/runtime-before-release.json",
+    "size": 13779,
+    "sha256": "064a49ef0f9c621a42ad284c8a8ccc8b182135c38099dad8ffa59f63a103793f"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/runtime-after-release.json",
+    "size": 14291,
+    "sha256": "f00071f9bb73af90a2d08ed1cf368d23e2b4fefc781b3825489cb6c1a9868034"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/restart-deployed-93dfb95-browser.json",
+    "size": 843105,
+    "sha256": "e3b981a4ebd60e61c8d2134d593181442febabef3c89eed9364ea7685dc4e326"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/restart-deployed-fresh-93dfb95-browser.json",
+    "size": 887748,
+    "sha256": "d350b27eeb61b2257be50e88f5990676bf913d9bcb021bbcc125e156ca41a7bd"
+  },
+  {
+    "path": ".superpowers/sdd/omarchy-restart-2026-09-12/restart-visual-review-93dfb95.md",
+    "size": 17552,
+    "sha256": "5ee3681e0a4a1d5493e6008796262023325b9933d29b7a23eb801e304332a3b7"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-floor-full.png",
+    "size": 1112503,
+    "sha256": "9df529882de8056c8f8388fdfbfc1b4ec0e74a0a5e0682afc70188bc10936f6c"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-floor-top.png",
+    "size": 146068,
+    "sha256": "6394b6374cd8df9afd82cd8d8e90e94a4905a620be9632b9979c4c79c565a5a9"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-gate-top.png",
+    "size": 56138,
+    "sha256": "98237b34862fc08e339e1e6ac863fd78d8088c092ce630a82cb03ca0f9538605"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-legacy-full.png",
+    "size": 1355217,
+    "sha256": "2d99930f581684a99c4e476288c8b9f87f69b42da934e196f4ecd2bd183e4c0b"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-legacy-top.png",
+    "size": 105232,
+    "sha256": "3dff478d029df215c1812daa611cc12384884175d0c98d70da6511c138afb189"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-pulse-full.png",
+    "size": 341662,
+    "sha256": "24ff02a7685f997fbded8a025f08aae0e05bf4ec39db155cb546b3132f02f190"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-pulse-keyboard.png",
+    "size": 177855,
+    "sha256": "d873ab58272e3bee933d3c6e6fc1b43309490defee0fe1b308ead1aac1d07f18"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-pulse-top.png",
+    "size": 159457,
+    "sha256": "7c5755bdfd94094fa7430ac40aa55becf47b4996d5dc9640287d842d5516f179"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-study-full.png",
+    "size": 2438479,
+    "sha256": "d6b586ebb6d378ef8094efdd28ebd7f1094ffcc0b02ad8b7006fd34be74330e9"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-study-top.png",
+    "size": 174548,
+    "sha256": "45b93cee88d18e9130f5f01b9db2cd65b4fef905ea0f41ab8094c0b70a6af387"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-1440-ticket-top.png",
+    "size": 51323,
+    "sha256": "7fbb0f10b0784f439009891db006b173cbc42b06cfe457e5a47858318d96eea5"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-floor-full.png",
+    "size": 1182725,
+    "sha256": "f888e2cc64e6234bcd764e8f1d6da839857d58096e0b6b972761a5c2c6e9cf27"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-floor-top.png",
+    "size": 63289,
+    "sha256": "ed4feaafc737f88c932137e3914e6616ae4368f96213485dc21abb2a692ea856"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-gate-top.png",
+    "size": 45734,
+    "sha256": "3ca9774a9634ca143c85ce141509e51ffc9cb3f8dc29e6242625725d252c13d0"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-pulse-full.png",
+    "size": 335457,
+    "sha256": "56c22c34d0418678ae59b10783c29d915edd753190d0b5d07bab2552ba48b744"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-pulse-keyboard.png",
+    "size": 74270,
+    "sha256": "37c9855062e60425a9c48cca22cc65cb874041e4c711daa678a25cc1ac5dc3a9"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-pulse-top.png",
+    "size": 62489,
+    "sha256": "20d06b893efacce636f2c032fdb48a39c3a792d58d823064cb1558c3e8801f84"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-study-full.png",
+    "size": 739420,
+    "sha256": "b8a038359a625a8a2fbdfb7dc4b315a6aaa0a62b52e9951a804225a2812f7036"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-study-top.png",
+    "size": 59252,
+    "sha256": "b0f2da7d2ad249506154bc0129fd41c434b071f7bad4503a331085bee5ef24bf"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-ticket-full.png",
+    "size": 45465,
+    "sha256": "2607c3ba36d8f59ee57a612ee3c7b8fc7da972199976a9a429f71298c503b9ef"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-93dfb95-390-ticket-top.png",
+    "size": 45328,
+    "sha256": "d81499d498bc14df702cc01edeb98d1b8e865ca53e7cc7d988f5b07937c3ed77"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-floor-full.png",
+    "size": 1102192,
+    "sha256": "c9490a304e3e4dce71ef9baee1f4141f0a1ab9f5e646f4e59e9442d42be30dcc"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-floor-top.png",
+    "size": 145595,
+    "sha256": "97e440e0765d65ba29c92442121d1fe44ad764dc4ca142f483f00a5d23c7bdf0"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-gate-full.png",
+    "size": 705601,
+    "sha256": "cdc1dc4a3529d33ae9c08834308ce9173a2655b00a780f5ec122fabfd1da7bfb"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-gate-top.png",
+    "size": 217831,
+    "sha256": "2b649f2a66a64cc19072b50e8191525023b987fea64015c23ac07ccfa7b48f31"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-legacy-full.png",
+    "size": 1355069,
+    "sha256": "3204d14eb5ecb1f497d7a848cec0796a24511b8aab1f132bffdfc187c4638afb"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-legacy-top.png",
+    "size": 104785,
+    "sha256": "175b682c92bf93db095626c925f8e814b9b61a2d48d3fa879f7c4843d2d6d5a9"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-pulse-full.png",
+    "size": 342051,
+    "sha256": "a29c5fe40b63d19db6f938ee24d3c4ae9d96b944a39436c9ac5f000abc2a9075"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-pulse-keyboard.png",
+    "size": 177700,
+    "sha256": "c367f3f792f2a48852b4a19c7fa8ffcad7358823a8e293707ec84e1c7eb56d1f"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-pulse-top.png",
+    "size": 159607,
+    "sha256": "842c18d21949e22c2d6d8c1fd48898c52ef049c35875230fa7fe612b41042bbf"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-study-full.png",
+    "size": 2437044,
+    "sha256": "9edb2b69f138a73346ca50e8150d8d70c6dab6d88a76bc0e901ad0bd143388f6"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-study-top.png",
+    "size": 173133,
+    "sha256": "db6b70952b4c921e9e67167ab0106a044218b0ae3c788ca4a509c25577f78e6a"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-ticket-top.png",
+    "size": 50797,
+    "sha256": "79d8b3239cbb2e9d17832538eab33121fcbba009444f65baaf7e14647a8ea48f"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-floor-full.png",
+    "size": 1188684,
+    "sha256": "165d6dab88a07723a0ab03ce4fbf342a394de757ab6fae1efc0721da25b5588d"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-floor-top.png",
+    "size": 64884,
+    "sha256": "8e62ff793e98a543e3ad388d82c4a1d2c7e0ed9176a3cdbce13247c02e5ff5d2"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-gate-full.png",
+    "size": 512550,
+    "sha256": "e68e54e4001277747c008a658f4f09e5ffff39385ddbea91ec895595a2e72290"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-gate-top.png",
+    "size": 76315,
+    "sha256": "c5f83575297148aab0721fb196e058d411608aa2c68ce1101b1423ec5a8392fd"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-pulse-full.png",
+    "size": 336760,
+    "sha256": "2a71a61a957b346785d3d336818b931424c54a9e13192cb8717f734500d819f6"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-pulse-keyboard.png",
+    "size": 74192,
+    "sha256": "fdf44a2c9a0d26f7f4fe5fa2ca29a6dc5e58e20cc60b6295c8f9c09e368bd738"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-pulse-top.png",
+    "size": 62434,
+    "sha256": "d5c06cf946bb738503b0996cbf34544eabdf2e063ae66852d8ac07fc5496fea1"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-study-full.png",
+    "size": 739859,
+    "sha256": "c009020b4241d38acd840cef5ce6917bc5a9169c0582d7a08731a74dea9b389b"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-study-top.png",
+    "size": 58361,
+    "sha256": "56c6c3ffa632d4f0d957883a305a5815728ba22595e517347b76e6fecb34dda1"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-ticket-full.png",
+    "size": 45429,
+    "sha256": "fd9fd0809bd77f3292dc12eb964a262c157b0fa43dbf4246296bc6cb7d99e994"
+  },
+  {
+    "path": ".superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-ticket-top.png",
+    "size": 45318,
+    "sha256": "dfe02414c378c9a3f55a79dbf7999b01b37d8889d10f1d5d134c65a03ead0e56"
+  }
+]

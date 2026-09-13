@@ -1837,3 +1837,50 @@ Times are America/Chicago.
 - Rulings: controller applies the CSS setup patch after the exact accepted branch FF and runs fresh unfiltered main acceptance before release;8631fcd's receipt does not attest to the CSS change. OldMac worktrees and all failed/preview evidence remain preserved. Long fullsuite gates are controller-owned because worker MCP calls have bounded deadlines.
 - Carried forward: original memory acceptance, fix50/51 long-window evidence,6C/6E partial acceptance, and the source-vs-legacy-contract query discrepancies remain explicit; no ruler was relaxed.
 - Next: independent CSS review, final main fullsuite, app release/verification; final45integration and6Bhandoff before any newT3 work.
+
+## 154. deploy and verify - Omarchy app release93dfb95 - 2026-09-12 21:05–21:29 CT
+
+- Orient: bounded restart plan step4; exact main acceptance and journal128 college app-only exception, with release window rechecks.
+- Branch / commits: main93dfb95773f5649d582ff39832d94241f1a8cdf3; isolated fix45candidate4b2f2cd remains unmerged at this transition.
+- Result: deployment healthy; overall verification FAIL, research acceptance remains under audit.
+- Dispatches: setup21Codex calls plus3actualClaude children (2drills,1Sonnetvisualwalk); historical19 retained, conservative CT-day43; verify1/3 dispatches.
+- Tests: pristine exactmain3209passed/6expectedxfails1775.15s; archived main-full-receipt.json, full-log hash in release-and-verification-evidence.md.
+- Review: independent CSS PASS; actual independent visual advisory23PASS/3FAIL/3PENDING, controller rescore adds populated Gate mobile overflow; archived reports retained unchanged.
+- Deploy:93dfb95 via make deploy-omarchy-app at20:59:31–21:05:30CT, expected images/stamps and natural completed tick13135 verified; receipt20260913T015931Z-93dfb95; WS/PostgreSQL/backup IDs unchanged, schema0006.
+- Verification: summary9/9PASS; overallFAIL on positive gaps/candidates, integrity fails/skip, BROKEN and Pulse exception text, populated390Gate overflow. Evidence: docs/superpowers/reviews/2026-09-12-omarchy-restart/release-and-verification-evidence.md; exact SQL/browser/raw logs in restart ledger directory.
+- Rulings: count one failed deployment acceptance for fix48's touched positive-gap/candidate row despite healthy transport; repeated diagnostic reads within this unit are not separate verify passes. No rollback or new patch wave was started.
+- Rulings: deployed pricing stage order works but about12h normalizer backlog yields zero current venue_quotes; carry to6D/48 acceptance without watermark reset, reprocessing, freshness relaxation or budget change. Memory growth remains observed on32GB host.
+- Rulings: authorized existing settle166 completed84.286s with105markouts/all11stage timings; WTD not due. Old-build164 refreshed week37, so due-case waits for next scheduled settle at/after Sun02:10:38CT, not an early forced run.
+- Rulings: existing paper gate command appended3not-passing evaluations at21:17:06CT with unchanged hash5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 and dormant eligibility; no live setting or criterion change. Fresh populated Gate resolves missing data on desktop and exposes764px body at390px.
+- Rulings: summary agreement, rendering of empty tables, sampled executor latency and partial capacity projection do not establish scientific/6E acceptance; full Study pixels beyond16000px and current-week final markdown/annotations remain unreviewed/pending.
+- Carried forward: fixes47–52 dispositions updated;53 captures existing dashboard mobile/exception defects. Keep6C Sunday/Monday deadlines,6E cold-start/corrected-workload, original memory and24h/25h checks open.
+- Next: finish exact index candidate acceptance/source integration, prepare accepted6Bbranch and committed restart handoff; no /autopilot or newT3 dispatch during this setup.
+
+## 155. setup - restricted test index fault fixtures - 2026-09-12 21:32 CT
+
+- Orient: bounded restart plan step3; exact final45 full-suite result consumed before merge.
+- Branch / commits: recovery/fix45-final4b2f2cd, base93dfb95; source unchanged throughout diagnosis and rerun.
+- Result: first final suite FAIL8/3222passed/6expectedxfails; all eight failures are denied fixture UPDATE pg_index.indisvalid; focused environment repair verified, full rerun pending at this entry.
+- Dispatches:0; setup/day totals43 and failed deployment acceptance1 retained; no new implementation round or model retry.
+- Tests: whole tests/test_schema.py85passed22.74s after a single database-local column grant, clean before/after; failed full and targeted receipts archived separately. Unfiltered full rerun uses the same branch/database/shared slot.
+- Review: final45 source and four-comment rebase independently PASS; no source or assertion was changed to repair fixture access.
+- Deploy: none; runtime remains93dfb95/schema0006, fix45 unmerged until exact full acceptance.
+- Verification: controller-local admin granted UPDATE(indisvalid) only on pg_catalog.pg_index in harness_test_recovery_fix45_final; whole-table UPDATE, indisready UPDATE and all three server-file/program memberships remain false; test role remains NOSUPERUSER/NOCREATEROLE/CREATEDB/NOREPLICATION/NOBYPASSRLS.
+- Rulings: preserve restricted worker role; do not restore original bootstrap superuser to make tests green. The fault-fixture permission is database-local, controller provisioned, recorded and revoked after final use. Linux controller reference documents this prerequisite for future branch/full suites; no worker Docker/admin access added.
+- Carried forward: old failed receipt/log and original branch full evidence retained; no assertion that an earlier pass attests to the newer role setup.
+- Next: consume clean exact full rerun, revoke fixture grant, integrate only on pass; then finish handoff before new6B.
+
+## 156. setup - committed Omarchy handoff before new6B - 2026-09-12 22:03 CT
+
+- Orient: bounded restart plan completion, preserving the stopping point requested by the user; no autonomous loop launch.
+- Branch / commits: exact index4b2f2cd FFmerged into main; final checkpoint adds documentation only. Original6B2d0fd71 preserved as recovery/phase6b-before-omarchy-20260912; final prepared base/head and smoke receipt live in the mirrored phase ledger.
+- Result: index prerequisite integrated; handoff documents committed. Final6B rebase/smoke and mirror completion are recorded in the active ledgers before this setup stops; no Task3 or phase completion claimed.
+- Dispatches:0 new; conservative CTday43 retained, verify1/3, one failed deployment acceptance. Historical retry/fix rounds unchanged.
+- Tests: exact4b2f2cd 3230passed/6expectedxfails 1862.90s, clean unfiltered full suite. Temporary test-catalog column grant revoked. Earlier failed full and targeted85pass receipts retained; final-index-acceptance.md records exact provenance.
+- Review: independent final45 review and scoped rebase review PASS; no source/assertion edit after acceptance. Existing6B T10/T1/T2 accepted reviews/rulings retained; clean rebase only, no new implementation dispatch.
+- Deploy: none after healthy93dfb95 app release; WSb0a3991 and schema0006 remain. Full index release waits for fresh exact-main full acceptance and checked game window.
+- Verification: overallFAIL retained from journal154, not rerun or relabelled by setup completion. Fixes47–53, memory/coverage/integrity and6C/6E acceptance remain explicit in state and stopped report.
+- Rulings: source integration and restart readiness do not make research healthy. Do not wait overnight, reset data, relax scientific/operating limits, or dispatchT3 during this setup. Separate untracked Mac dashboard design work remains untouched.
+- Rulings: project memory points to canonical files; original worktrees, three Omarchy migration stashes, ignored ledgers, failed logs and local complete-history bundle retained. NAS SSH authentication unavailable; no identity/key changes or push attempted. Native PushNotification unavailable in this tool session; use the report and local desktop notification.
+- Carried forward: actual user-systemd reminders Sun02:49:59/09:29:59/18:29:59 and Mon07:29:59CT; no timer launches Claude. Native wakeups require actual-session setup. Sun19:00 week37 and Monbefore09:00 diagnostic, original long-window/cold-start/corrected-workload acceptance and6F user amendment remain.
+- Next: user launches scripts/autopilot-session.sh start on Omarchy, selects high effort and /autopilot; controller reconciles failed verify/carried fixes and deadlines before choosing new6B work.

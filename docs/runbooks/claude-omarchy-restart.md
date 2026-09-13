@@ -1,7 +1,9 @@
 # Resume Claude on Omarchy
 
-Restart preparation is still in progress; read the latest committed checkpoint before launching.
-This runbook records the launch path and handoff boundary, not a running controller.
+Read the latest committed checkpoint before launching. This runbook records the
+launch path and the boundary before new 6B work; it does not launch a controller.
+The app release is deployed, but overall live/research verification is **FAIL**.
+See `docs/superpowers/reviews/2026-09-12-omarchy-restart/release-and-verification-evidence.md`.
 
 ## Launch after the preparation handoff
 
@@ -36,16 +38,19 @@ briefs/reviews, original Mac branches and migration stashes are preserved.
 
 All workers use the `sports-worker` custom agent with the plan's model allocation.
 Its only tools are the fixed sandbox shell and controller-provided screenshot tools.
-Native worker shell/browser tools are outside this setup. The controller commits
+Native worker shell/browser tools are outside this setup. Before each branch suite,
+the controller provisions its isolated index fault-fixture permission as described in
+`.claude/skills/autopilot/references/linux-controller.md`, then revokes it after final use.
+Workers keep the restricted SQL role and never receive Docker/admin access. The controller commits
 returned patches and produces clean exact-SHA full-suite receipts; namespace-only
 credential masks are never returned as source edits. Reconcile a cancelled test's
 actual process and host-wide lock before another suite.
 
 ## Boundary before new 6B work
 
-The accepted phase branch contains T10/T1/T2. Task3 has not been dispatched.
-Before T3, the controller integrates the reviewed/tested fix45 source into main and
-rebases the accepted phase branch onto that main, then validates existing task coverage.
+Main contains the reviewed and fully tested fix45 source. The accepted phase branch
+contains T10/T1/T2 only; Task3 has not been dispatched. Its final base/head and existing
+task smoke result are in the mirrored phase ledger. Confirm those before dispatching T3.
 The fresh prepared brief is
 `.superpowers/sdd/2026-09-11-phase6b-repair-execution/task-3-omarchy-brief.md`.
 It uses `0008_phase6b_execution` after `0007_raw_events_lookup`; the original brief
@@ -59,9 +64,28 @@ roughly Sunday03:00CT is an estimate, not permission. The prior migration waiver
 expired. Keep paper/LIVE0, RFQ0, the600GB capacity budget, disk gate and all scientific,
 money, provider, cadence and retention limits.
 
+## Acceptance failures to reconcile at resume
+
+Build93dfb95 is deployed to the four application services; WS retains b0a3991 and
+PostgreSQL remains schema0006. The release receipt is healthy and summary checks9/9pass.
+Broader verification fails: current venue quotes are about12h behind raw collection,
+so corrected pricing order still produces no current gaps/candidates. Recorder RSS
+continues growing. The fresh integrity sweep has23pass/3fail/1timeout; sequence-gap
+markers still appear. Populated Gate overflows390px and Pulse shows historical exception
+names. These findings, counters and evidence are in state/roadmap; do not relabel them
+as accepted simply because the host has more RAM or the release command succeeded.
+
+The resumed controller reconciles the failed verify and carried fixes before choosing
+6B Task3. Separate user dashboard design work remains in the Mac checkout; inspect
+its eventual branch before duplicating UI work. No new correctness task was started
+by the restart setup.
+
 ## Timed acceptance and remaining operational work
 
-The checkpoint retains actual judge-after times. The original memory diagnosis and
+The checkpoint retains actual judge-after times. WTD's next due instant is no earlier
+Sun02:10:38CT (07:10:38Z); inspect the next scheduled settle at/after that instant.
+Fix50's24h judge-after is SunSep13 21:05:30CT (Sep14 02:05:30Z). Fix51's fresh
+duplicate-trades timeout means its25h all-pass history remains unestablished. The original memory diagnosis and
 20-tick/<5% plus6h/500MiB acceptance remain open; additional RAM is not correctness
 evidence. Fix50 needs its full observation window, fix51 a fresh recorded sweep and
 its25h history, and6E still needs cold-start and corrected-workload acceptance.

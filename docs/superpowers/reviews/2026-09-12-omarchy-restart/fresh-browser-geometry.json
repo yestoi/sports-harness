@@ -1,0 +1,172 @@
+{
+  "capture": "restart-deployed-fresh-93dfb95",
+  "runtime_errors": [],
+  "pages": [
+    {
+      "route": "legacy",
+      "width": 1440,
+      "body_scroll_width": 1440,
+      "client_width": 1440,
+      "local_css_preview": null,
+      "full_capture_truncated": false,
+      "fcp_ms": 708,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-legacy-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-legacy-full.png"
+      ]
+    },
+    {
+      "route": "pulse",
+      "width": 1440,
+      "body_scroll_width": 1440,
+      "client_width": 1440,
+      "local_css_preview": null,
+      "full_capture_truncated": false,
+      "fcp_ms": 60,
+      "glossary_expanded": "true",
+      "arrow_from_focused_tab": "#floor",
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-pulse-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-pulse-full.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-pulse-keyboard.png"
+      ]
+    },
+    {
+      "route": "floor",
+      "width": 1440,
+      "body_scroll_width": 1440,
+      "client_width": 1440,
+      "local_css_preview": null,
+      "full_capture_truncated": false,
+      "fcp_ms": 44,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-floor-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-floor-full.png"
+      ]
+    },
+    {
+      "route": "study",
+      "width": 1440,
+      "body_scroll_width": 1440,
+      "client_width": 1440,
+      "local_css_preview": null,
+      "full_capture_truncated": true,
+      "fcp_ms": 64,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-study-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-study-full.png"
+      ]
+    },
+    {
+      "route": "gate",
+      "width": 1440,
+      "body_scroll_width": 1440,
+      "client_width": 1440,
+      "local_css_preview": null,
+      "full_capture_truncated": false,
+      "fcp_ms": 60,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-gate-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-gate-full.png"
+      ]
+    },
+    {
+      "route": "ticket",
+      "width": 1440,
+      "body_scroll_width": 1440,
+      "client_width": 1440,
+      "local_css_preview": null,
+      "full_capture_truncated": null,
+      "fcp_ms": 52,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-1440-ticket-top.png"
+      ]
+    },
+    {
+      "route": "pulse",
+      "width": 390,
+      "body_scroll_width": 390,
+      "client_width": 390,
+      "local_css_preview": null,
+      "full_capture_truncated": false,
+      "fcp_ms": 48,
+      "glossary_expanded": "true",
+      "arrow_from_focused_tab": "#floor",
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-pulse-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-pulse-full.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-pulse-keyboard.png"
+      ]
+    },
+    {
+      "route": "floor",
+      "width": 390,
+      "body_scroll_width": 390,
+      "client_width": 390,
+      "local_css_preview": null,
+      "full_capture_truncated": true,
+      "fcp_ms": 108,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-floor-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-floor-full.png"
+      ]
+    },
+    {
+      "route": "study",
+      "width": 390,
+      "body_scroll_width": 390,
+      "client_width": 390,
+      "local_css_preview": null,
+      "full_capture_truncated": true,
+      "fcp_ms": 48,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-study-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-study-full.png"
+      ]
+    },
+    {
+      "route": "gate",
+      "width": 390,
+      "body_scroll_width": 764,
+      "client_width": 390,
+      "local_css_preview": null,
+      "full_capture_truncated": false,
+      "fcp_ms": 52,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-gate-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-gate-full.png"
+      ]
+    },
+    {
+      "route": "ticket",
+      "width": 390,
+      "body_scroll_width": 390,
+      "client_width": 390,
+      "local_css_preview": null,
+      "full_capture_truncated": false,
+      "fcp_ms": 52,
+      "glossary_expanded": null,
+      "arrow_from_focused_tab": null,
+      "screenshots": [
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-ticket-top.png",
+        "/home/trey/dev/sports/.superpowers/sdd/screenshots/restart-deployed-fresh-93dfb95-390-ticket-full.png"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "branch": "recovery/fix45-final",
+  "database": "harness_test_recovery_fix45_final",
+  "head": "4b2f2cd79c6955067d9af961a1172d17f5d866e4",
+  "started_at": "2026-09-13T02:30:53.799214+00:00",
+  "pid": 182616,
+  "dirty_before": "",
+  "scope": [
+    "tests/test_schema.py"
+  ],
+  "pytest_addopts": "",
+  "pytest_plugins": "",
+  "exit_code": 0,
+  "finished_at": "2026-09-13T02:31:18.101310+00:00",
+  "head_after": "4b2f2cd79c6955067d9af961a1172d17f5d866e4",
+  "dirty_after": ""
+}
