@@ -7,16 +7,20 @@ See `docs/superpowers/reviews/2026-09-12-omarchy-restart/release-and-verificatio
 
 ## Launch after the preparation handoff
 
-In an Omarchy terminal:
+In a fresh herdr tab or pane (run `herdr` first if it is not open):
 
 ```sh
 cd /home/trey/dev/sports
-scripts/autopilot-session.sh start
+scripts/autopilot-session.sh start-herdr
 ```
 
-In Claude, select `/effort` **high**, then enter `/autopilot`. The helper attaches an
-existing `sports-autopilot` tmux session or creates one under a controller lock. It
-loads only the committed worker MCP server and uses the installed Claude binary.
+On a host without herdr, `scripts/autopilot-session.sh start` runs the same command
+inside a `sports-autopilot` tmux session. In Claude, select `/effort` **high**, then
+enter `/autopilot`. Both forms take the controller lock (a second launch fails), load
+only the committed worker MCP server and use the installed Claude binary. Detaching
+from herdr is fine; after a herdr *server* restart, exit the pane herdr auto-resumes
+and launch again, because a plain `claude --resume` has neither the lock nor the
+strict MCP config.
 Claude's user login and official Superpowers plugin have already passed actual drills.
 Authentication does not launch the loop; no reminder launches a model.
 
@@ -47,6 +51,10 @@ credential masks are never returned as source edits. Reconcile a cancelled test'
 actual process and host-wide lock before another suite.
 
 ## Boundary before new 6B work
+
+**Superseded (2026-09-13, journal 161/162):** T3 and T4 are accepted on the phase branch and
+T5 is the next legal action (`task-5-omarchy-brief.md`); phase 4.6 was added to the roadmap.
+`docs/superpowers/autopilot/state.md` is current; the paragraphs below are the 2026-09-12 record.
 
 Main contains the reviewed and fully tested fix45 source. The accepted phase branch
 contains T10/T1/T2 only; Task3 has not been dispatched. Its final base/head and existing

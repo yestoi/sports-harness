@@ -7,9 +7,13 @@ off-host archive. Historical NAS commands are evidence, not current recipes.
 
 ## Start and recover
 
-Use `scripts/autopilot-session.sh start` from the development checkout. It uses
-tmux and a kernel lock so SSH disconnects do not terminate the controller or start
-a second one. Enter `/effort` high, then `/autopilot`. The helper never launches
+Use `scripts/autopilot-session.sh start-herdr` from the development checkout, in a
+fresh herdr tab or pane at its shell prompt (herdr's server keeps the pane alive
+across detach); `start` is the tmux form for a host without herdr. Both run the same
+command under one kernel lock so SSH disconnects do not terminate the controller and a
+second launch cannot start a second one. Enter `/effort` high, then `/autopilot`. After
+a herdr *server* restart, exit the pane herdr auto-resumes (a plain `claude --resume`
+without the lock or the strict MCP config) and launch again. The helper never launches
 itself from a timer. A deliberate launch still requires the user's request.
 
 Run `make preflight`, bootstrap and ledger reconciliation before dispatch. Provider

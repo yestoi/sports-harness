@@ -59,10 +59,15 @@ that need adjudication. Preserve the model allocations, independent reviewers an
 ## Kickoff (a fresh session, the way the user starts it)
 
 ```
-cd /home/trey/dev/sports && scripts/autopilot-session.sh start   # tmux + one controller lock; compact at 500k
+cd /home/trey/dev/sports && scripts/autopilot-session.sh start-herdr   # inside a fresh herdr tab: one controller lock; compact at 500k
 /effort            # high (xhigh and max spend three to four times the tokens for no measured gain on this loop)
 /autopilot
 ```
+
+`start` is the tmux equivalent (same locked command inside a `sports-autopilot` tmux session) for a host without
+herdr. Either way one kernel lock on `~/.cache/sports-harness/controller.lock` prevents a second controller. In herdr,
+never accept the pane herdr auto-resumes after a *server* restart (a plain `claude --resume`: no lock, no strict MCP
+config): exit it and launch again. Detach and reattach are fine.
 
 Then read the state files, run preflight, orient, go. On Omarchy the dashboard is local at `http://127.0.0.1:8180`; no self-SSH tunnel is needed. Listed secrets arrive when the user gets to them; never wait. Announce the plan of the day in one
 short message, then do not wait for a reply.
