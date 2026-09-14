@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from harness.parlay.needs import LegSpec, ScoreState, leg_outcome, needs
+from harness.parlay.needs import LegSpec, ScoreState, StatState, leg_outcome, needs
 
 HOME, AWAY = 1, 2
 
@@ -161,3 +161,76 @@ def test_leg_outcome_reads_the_total_s_own_side():
     """Review C2: an under leg is graded by its own side, never as an over."""
     assert leg_outcome(_total("under", "44"), _score(20, 17, status="final")) == "hit"    # 37
     assert leg_outcome(_total("over", "44"), _score(22, 22, status="final")) == "push"    # 44
+
+
+# --- Phase 4.6 Task 5: prop needs phrases and the final grade per operator (addendum 4.4) ------
+#
+# `StatState` is the second input beside `ScoreState`: one player's newest recorded value for one
+# stat, with the *game's* finality, not the stat's. A value read before the final box score is
+# provisional, because a later poll may correct it downward.
+
+PASS = LegSpec("prop", None, None, Decimal("225"), stat="pass_yds", operator="over",
+               player_id=7)
+ATLEAST = LegSpec("prop", None, None, Decimal("50"), stat="rush_yds", operator="atleast",
+                  player_id=8)
+UNDER = LegSpec("prop", None, None, Decimal("81"), stat="rec_yds", operator="under", player_id=9)
+TD = LegSpec("prop", None, None, None, stat="anytime_td", operator="yes", player_id=10)
+LIVE = ScoreState("in_progress", 1, 2, 14, 10)
+FINAL = ScoreState("final", 1, 2, 24, 21)
+
+
+def _stat(value, final=False, stat="pass_yds"):
+    return StatState(stat=stat, value=Decimal(str(value)), source_ts=None, final=final)
+
+
+def test_a_prop_under_its_line_says_how_much_is_left():
+    assert needs(PASS, LIVE, _stat(208)) == "17 to go"
+
+
+def test_a_prop_over_its_line_before_final_is_provisional():
+    """Addendum §4.4: `reached` and `provisional until final`, because a stat can still be
+    corrected downward and a slip that said `already done` would be lying."""
+    assert needs(PASS, LIVE, _stat(240)) == "reached 240 of 225 · provisional until final"
+
+
+def test_an_under_leg_reads_live_until_the_game_ends():
+    assert needs(UNDER, LIVE, _stat(50, stat="rec_yds")) == "under by 31 · live until the game ends"
+    assert needs(UNDER, LIVE, _stat(95, stat="rec_yds")) == "over by 14"
+
+
+def test_an_anytime_touchdown_reads_yes_or_not_yet():
+    assert needs(TD, LIVE, _stat(0, stat="anytime_td")) == "no touchdown yet"
+    assert needs(TD, LIVE, _stat(1, stat="anytime_td")) == "scored · provisional until final"
+
+
+def test_no_stat_state_reads_no_stat_yet_and_never_zero():
+    """Roadmap phase 4.6 item 2: missing stat state reads unknown, never zero."""
+    assert needs(PASS, LIVE, None) == "no stat yet"
+
+
+def test_a_whole_number_line_pushes_on_over_and_under_but_never_on_atleast():
+    """Computed independently of the code: `over 225` at exactly 225 is a push at DraftKings
+    (the line is whole), `under 81` at exactly 81 is a push, and `225+` (`atleast`) is a hit at
+    exactly 225 -- it is a different market, not the same market read differently.
+    """
+    assert leg_outcome(PASS, FINAL, _stat(225, final=True)) == "push"
+    assert leg_outcome(PASS, FINAL, _stat(226, final=True)) == "hit"
+    assert leg_outcome(PASS, FINAL, _stat(224, final=True)) == "miss"
+    assert leg_outcome(UNDER, FINAL, _stat(81, final=True, stat="rec_yds")) == "push"
+    assert leg_outcome(ATLEAST, FINAL, _stat(50, final=True, stat="rush_yds")) == "hit"
+    assert leg_outcome(ATLEAST, FINAL, _stat(49.9, final=True, stat="rush_yds")) == "miss"
+
+
+def test_a_missing_stat_at_final_is_none_never_a_miss():
+    """Addendum §4.4: absence is not evidence. The leg stays pending and `parlay_grade` counts
+    `stat_missing`; a card that graded a leg missing because the feed never reported it would
+    bust a slip the book will pay."""
+    assert leg_outcome(PASS, FINAL, None) is None
+    assert leg_outcome(PASS, FINAL, _stat(300, final=False)) is None
+
+
+def test_the_game_line_rules_are_unchanged():
+    """This task adds an operator family; it changes nothing about ml/spread/total."""
+    ml = LegSpec("ml", 1, None, None)
+    assert leg_outcome(ml, FINAL) == "hit"
+    assert needs(ml, LIVE) == "any win does it"

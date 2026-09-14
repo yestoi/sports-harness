@@ -15,16 +15,23 @@ leg: `placed_card_favourite_covers_by_three`, `placed_card_underdog_covers`,
 I1); `placed_card_hit_and_push` (review I4); and `placed_card_malformed_beside_a_good_one`,
 which commits rather than merely flushing (review I2 -- see its own docstring for why).
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from itertools import count
 
 import pytest
 from sqlalchemy import text
 
+from harness.db.models import (Game, ParlayCard, ParlayLedger, ParlayLeg, ParlayPlacement,
+                               PlayerStatEvent)
 from harness.settlement.job import Budget, STAGE_MODULES
 from harness.settlement.parlay_grade import MIN_BUDGET_S, grade_parlays
+from tests.conftest import PARLAY_NOW, _make_graded_card, _next_id, _pf_leg
 
 NOW = datetime(2026, 9, 21, 6, 0, tzinfo=timezone.utc)
+#: Phase 4.6 Task 5's moments: the settlement pass, and the same pass run a week later (D20).
+T0 = NOW
+T0_NEXT_WEEK = NOW + timedelta(days=7)
 
 
 def _budget(seconds=600.0):
@@ -201,3 +208,141 @@ def test_a_malformed_card_is_isolated_and_the_good_card_still_grades(
         "select status from parlay_cards where id = :id"), {"id": fixtures.good.id}).scalar()
     assert bad_status == "placed"       # untouched, left for the next pass
     assert good_status == "cashed"      # graded despite the other card's failure
+
+
+# --- Phase 4.6 Task 5: prop legs, computed provenance and the card's own week ------------------
+#
+# The helpers below extend the T12 card helpers (`tests.conftest._make_graded_card`, `_pf_leg`)
+# with the prop columns addendum 9 added, rather than building a second card shape: a prop card
+# is the same placed card, its leg carrying `market_type = 'prop'` (addendum 0's amendment row;
+# the `prop:<stat>` keys are `odds_prop_snapshots`' own), a `player_id`, a `stat` and an
+# `operator`. `_placement` is the only thing conftest cannot supply: addendum 5.1 keys the stake
+# row to the card's `(year, week)`, and D20's test reads every row of the card.
+
+_prop_prefix = count(1)
+
+
+def _placement(session, card, now, stake=None):
+    """The `parlay_placements` row and the `parlay_ledger` `stake` row `mark_placed` writes,
+    keyed to the **card's** week (addendum 5.1) and marked `confirmed`: the owner typed it."""
+    stake = stake if stake is not None else card.stake
+    session.add(ParlayPlacement(card_id=card.id, placed_at=now, stake_actual=stake,
+                                dk_payout_actual=card.dk_payout_est, dk_odds_actual=100,
+                                note=None))
+    session.add(ParlayLedger(ts=now, card_id=card.id, kind="stake", amount=stake,
+                             year=card.year, week=card.week, source="confirmed"))
+    session.flush()
+
+
+def _legs(session, card):
+    return session.query(ParlayLeg).filter_by(card_id=card.id).order_by(ParlayLeg.seq).all()
+
+
+def _prop_card(session, *, stat, line, operator, correlated=False):
+    """One placed card with a single prop leg on a game that has not finished yet."""
+    card = _make_graded_card(session, status="placed", built_at=PARLAY_NOW)
+    card.correlated = correlated
+    # `pending`, not the T12 fixtures' `alive`: a prop leg has nothing recorded against it until
+    # a stat row arrives, and the ungraded-leg assertions below read that word.
+    _pf_leg(session, card, 1, f"PR{next(_prop_prefix)}", home_score=None, away_score=None,
+            status="in_progress", leg_status="pending", market_type="prop", threshold=line)
+    legs = _legs(session, card)
+    for leg in legs:
+        leg.side_team_id = None          # a prop leg names a player, not a side
+        leg.player_id = _next_id()
+        leg.stat = stat
+        leg.period = "game"
+        leg.operator = operator
+    _placement(session, card, PARLAY_NOW)
+    session.flush()
+    return card, legs
+
+
+def _final_game(session, card, *, home, away):
+    """Every game under the card finishes with this score."""
+    for leg in _legs(session, card):
+        game = session.get(Game, leg.game_id)
+        game.status = "final"
+        game.home_score = home
+        game.away_score = away
+    session.flush()
+
+
+def _stat_row(session, leg, *, value, ts, correction=False):
+    """One `player_stat_events` row for the leg's `(game_id, player_id, stat)`."""
+    session.add(PlayerStatEvent(game_id=leg.game_id, player_id=leg.player_id, ts=ts,
+                                source_ts=None, stat=leg.stat, value=value, source="espn",
+                                raw_id=None, correction=correction))
+    session.flush()
+    return leg
+
+
+def _cashing_card(session, *, correlated=False, year=None, week=None):
+    """A placed card whose two moneyline legs both hit: it cashes on the next pass."""
+    card = _make_graded_card(session, status="placed", built_at=PARLAY_NOW)
+    card.correlated = correlated
+    if year is not None:
+        card.year = year
+    if week is not None:
+        card.week = week
+    session.flush()
+    prefix = next(_prop_prefix)
+    _pf_leg(session, card, 1, f"CC{prefix}A", home_score=30, away_score=10)
+    _pf_leg(session, card, 2, f"CC{prefix}B", home_score=27, away_score=24)
+    _placement(session, card, PARLAY_NOW)
+    return card, _legs(session, card)
+
+
+def test_a_prop_leg_grades_from_the_newest_final_stat_row(db_session):
+    card, legs = _prop_card(db_session, stat="pass_yds", line=Decimal("225"), operator="over")
+    _final_game(db_session, card, home=24, away=21)
+    _stat_row(db_session, legs[0], value=Decimal("240"), ts=T0)
+    counts = grade_parlays(db_session, T0, _budget()).counts
+    assert legs[0].status == "hit" and counts["stat_missing"] == 0
+
+
+def test_a_leg_with_no_stat_row_at_final_stays_pending_and_is_counted(db_session):
+    card, legs = _prop_card(db_session, stat="rush_yds", line=Decimal("50"), operator="atleast")
+    _final_game(db_session, card, home=24, away=21)
+    counts = grade_parlays(db_session, T0, _budget()).counts
+    assert legs[0].status == "pending" and counts["stat_missing"] == 1
+    assert db_session.get(ParlayCard, card.id).status == "alive"
+
+
+def test_an_owner_voided_leg_grades_void_and_the_card_re_grades(db_session):
+    """Addendum §5.2: `leg_status:<seq> = void` is the owner recording that DraftKings voided
+    the leg (the player did not play). `parlay_grade` treats it as a push on a non-correlated
+    card, exactly as it treats a pushed line."""
+    card, legs = _prop_card(db_session, stat="anytime_td", line=None, operator="yes")
+    legs[0].status = "void"
+    legs[0].graded_at = T0
+    _final_game(db_session, card, home=24, away=21)
+    grade_parlays(db_session, T0, _budget())
+    assert db_session.get(ParlayCard, card.id).status in ("cashed", "void")
+
+
+def test_every_computed_ledger_row_says_so(db_session):
+    """D18: `parlay_grade` writes provenance `computed`. CASHED, VOID and any sentence naming
+    DraftKings appear only on a `confirmed` row, which only the correction route writes."""
+    card, legs = _cashing_card(db_session)
+    grade_parlays(db_session, T0, _budget())
+    rows = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="return").all()
+    assert [r.source for r in rows] == ["computed"]
+
+
+def test_a_correlated_card_gets_no_computed_return(db_session):
+    """D18/C5: an independence product the book never quoted is not a settlement figure. The
+    owner's confirmed return is the only one on a correlated card."""
+    card, legs = _cashing_card(db_session, correlated=True)
+    grade_parlays(db_session, T0, _budget())
+    assert db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="return").count() == 0
+    assert db_session.get(ParlayCard, card.id).status == "cashed"
+
+
+def test_every_ledger_row_carries_the_card_s_week_not_the_settlement_week(db_session):
+    """D20: the cap and every row read the card's `(year, week)`, so a Saturday-built card
+    settled on Monday stays in its slate's week."""
+    card, legs = _cashing_card(db_session, year=2026, week=37)
+    grade_parlays(db_session, T0_NEXT_WEEK, _budget())
+    rows = db_session.query(ParlayLedger).filter_by(card_id=card.id).all()
+    assert {(r.year, r.week) for r in rows} == {(2026, 37)}
