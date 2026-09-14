@@ -442,22 +442,40 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_eight_revisions():
+def test_the_versions_directory_holds_every_revision():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
-        "0007_raw_events_lookup.py", "0008_positions_open_fill.py"]
+        "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
+        "0009_phase6d_sustained_eval.py"]
 
 
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
 
-def test_positions_open_fill_follows_raw_events_lookup_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_positions_open_fill_follows_raw_events_lookup():
+    """It stopped being the pinned head at phase 6D, which added
+    `0009_phase6d_sustained_eval` on top of it; its place in the chain is what this still
+    pins. The head claim moved to
+    `test_phase6d_follows_the_positions_hotfix_and_is_the_pinned_head`, the same trim fix
+    32/phase 5/fix 35/fix 42/fix 45 gave the revisions before it."""
     module = _load_revision("0008_positions_open_fill.py")
     assert module.revision == "0008_positions_open_fill"
     assert module.down_revision == "0007_raw_events_lookup"
-    assert HEAD_REVISION == "0008_positions_open_fill"
+
+
+# --- 6D: revision 0009 --------------------------------------------------------------------------
+
+def test_phase6d_follows_the_positions_hotfix_and_is_the_pinned_head():
+    """The head moves with the revision or `migrate ensure` upgrades to a revision the checkout
+    does not carry. The parent is the newest revision on this branch's base: `ls
+    migrations/versions/*.py` is the authority, and the controller reconciles both at merge
+    (4.6 addendum D9/D10)."""
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0009_phase6d_sustained_eval.py")
+    assert module.revision == "0009_phase6d_sustained_eval"
+    assert module.down_revision == "0008_positions_open_fill"
+    assert HEAD_REVISION == "0009_phase6d_sustained_eval"
 
 
 def test_the_positions_view_ddl_agrees_between_schema_and_migration():

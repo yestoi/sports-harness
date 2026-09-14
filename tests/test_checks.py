@@ -440,3 +440,147 @@ def test_the_intents_check_rides_the_orders_key_index(db_session):
     present = db_session.execute(text(
         "select 1 from pg_indexes where indexname = 'ix_orders_key_placed'")).first()
     assert present is not None, "T5's ix_orders_key_placed is missing; this check will time out"
+
+
+# --- Phase 6D, Task 1 (addendum §1.9): the checks bounded to the window they judge ----------
+
+#: The fixed instant for the 6D cases that assert on the statement's **text**. A Wednesday, so
+#: `now - 25 h` is inside the same ISO week and the single-partition branch is the one under
+#: test; the crossing case below names its own Monday instant. The cases that run the statement
+#: against the database use the real clock instead -- the window is the server's `now()`, not
+#: this one (see the step's note).
+T51 = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+
+
+def test_duplicate_trades_is_bounded_to_the_window_it_judges():
+    """Fix 51's \"Change\" column: bound the statement to the 24 h window it judges, using the
+    partition the table already has. 25 h, not 24, for the same reason
+    `check_results_unknown_status_25h` uses 25: the sweep is daily and a 24 h window can miss
+    the previous run by minutes.
+
+    Computed independently of the code: the statement must carry the window predicate and the
+    partition name, and must not group the partition as a whole -- the whole-partition grouping
+    is what recorded `skip: timeout` on 2026-09-11, 2026-09-12 and again after 93dfb95.
+    """
+    sql = _check("duplicate_trades").sql_for(T51)
+    assert current_trades_partition(T51) in sql
+    assert "25 hours" in sql
+    assert "from venue_trades\n" not in sql and "from venue_trades " not in sql
+
+
+def test_duplicate_trades_names_the_previous_partition_when_the_window_crosses_the_week():
+    """Ruling I2's last clause. A weekly partition does not contain a 25 h window early in an
+    ISO week, so the statement names the previous weekly partition as well whenever
+    `now - 25 h` falls before `week_bounds(now)` opens.
+
+    Computed independently: 2026-09-14 is a Monday, so at 06:00 UTC the window opens at
+    2026-09-13 05:00 UTC, which is the previous ISO week. Two partitions, one window predicate
+    each.
+    """
+    from harness.db.schema import _partition_name, week_bounds
+
+    monday = datetime(2026, 9, 14, 6, 0, tzinfo=timezone.utc)
+    sql = _check("duplicate_trades").sql_for(monday)
+    previous, _ = week_bounds(monday - timedelta(hours=25))
+    assert current_trades_partition(monday) in sql
+    assert _partition_name("venue_trades", previous) in sql
+    assert sql.count("25 hours") == 2
+
+
+def test_duplicate_trades_answers_the_same_number_as_an_unbounded_reference(db_session):
+    """The bound narrows the scan, not the answer (addendum §1.9's expected result).
+
+    Real clock, not `T51`: the statement's window is the **server's** `now()`, so a frozen
+    instant five days back would put every seeded row outside it, the check would answer 0 and
+    `_zero` would make the status `pass`. Seeding relative to the real clock is this file's own
+    convention for exactly this reason.
+
+    Computed independently of the implementation: two rows share `(venue, trade_id)` inside the
+    window. The bounded statement must report exactly that one in-window duplicate pair, which
+    is also what a reference query written here -- over the parent table, over the same 25 h of
+    the same server clock -- reports.
+    """
+    now = datetime.now(timezone.utc)
+    for i in range(2):
+        db_session.add(VenueTrade(venue="kalshi", trade_id="dup-in", ticker="T",
+                                  ts=now - timedelta(seconds=i), yes_price=Decimal("0.2300"),
+                                  count=Decimal("5.00"), taker_side="yes", is_block=False,
+                                  source="rest", raw_id=None))
+    db_session.flush()
+
+    result = _run_one(db_session, "duplicate_trades", now)
+    reference = db_session.execute(text("""
+        -- The same 25 h the check binds, over the parent table and with no partition named, so
+        -- this answers whether the bound changed the number rather than only the scan.
+        select count(*) from (
+            select venue, trade_id from venue_trades
+            where ts >= now() - interval '25 hours'
+            group by venue, trade_id having count(*) > 1
+        ) d
+    """)).scalar()
+    assert result.status == "fail"          # an answer is the deliverable, not a pass
+    assert result.detail is None            # never `skip: timeout`
+    assert int(result.value) == reference == 1
+
+
+def test_the_intents_check_rides_its_own_created_at_index(db_session):
+    """D9: fix 51's rule is to bound, never to raise. The 24 h intent window was a sequential
+    scan of `intents`, which carried no index on `created_at` at all -- that is why
+    `intents_without_order_or_skip` was the fourth check skipping on 2026-09-13. The statement's
+    logic, including phase 4.5's hold-path excusal, is untouched.
+
+    The third database case, and the one that takes no instant at all: it seeds no row and runs
+    no check, it reads the catalogue. There is no clock here to freeze or to leave real.
+    """
+    from harness.db.schema import _CONCURRENT_INDEX_DDL
+
+    ddl = " ".join(_CONCURRENT_INDEX_DDL).lower()
+    assert "create index concurrently if not exists ix_intents_created on intents (created_at)" in ddl
+    present = db_session.execute(text(
+        "select 1 from pg_indexes where indexname = 'ix_intents_created'")).first()
+    assert present is not None, "create_schema did not build ix_intents_created"
+    invalid = db_session.execute(text(
+        "select count(*) from pg_index i join pg_class c on c.oid = i.indexrelid "
+        "where c.relname = 'ix_intents_created' and not i.indisvalid")).scalar()
+    assert invalid == 0
+
+
+def test_the_bounded_duplicate_trades_statement_prints_its_plan(db_session, capsys):
+    """Ruling I2: the plan is captured before the statement is adopted.
+
+    Real clock again, and for a second reason beyond the window: `sql_for` names partitions,
+    and `tests/conftest.py` builds only *this* week's and next week's through
+    `ensure_partitions`. A frozen instant in another ISO week names a relation that does not
+    exist, the statement raises 42P01, and this case would be explaining a missing table name
+    instead of a plan. So the instant is the real one, and the window's own partitions are
+    created first -- early in an ISO week the 25 h window opens in the previous week, whose
+    partition conftest has not built.
+
+    On this database the numbers are small, so the captured plan is evidence of the statement's
+    *shape* (which relations it touches, and that the window predicate is pushed into each
+    scan), not of its cost. The production plan is re-captured by the controller at the first
+    verification after the deploy -- Task 10 carries that row -- and the two named fallbacks of
+    addendum §1.9 apply if it does not prune: one grouping per calendar day inside the window,
+    unioned, each day bounded the same way; and if neither prunes, the statement stays as it is,
+    the skip is journaled, and no timeout and no threshold is raised either way.
+    """
+    from harness.db.schema import ensure_partitions
+    from harness.ops.checks import DUPLICATE_TRADES_WINDOW_H
+
+    now = datetime.now(timezone.utc)
+    # `ensure_partitions(session, at)` builds the week of `at` and the week after it and skips
+    # names that already exist, so this one call covers both ends of the window.
+    ensure_partitions(db_session, now - timedelta(hours=DUPLICATE_TRADES_WINDOW_H))
+    for i in range(200):
+        db_session.add(VenueTrade(venue="kalshi", trade_id=f"t{i}", ticker="T",
+                                  ts=now - timedelta(minutes=i), yes_price=Decimal("0.2300"),
+                                  count=Decimal("5.00"), taker_side="yes", is_block=False,
+                                  source="rest", raw_id=None))
+    db_session.flush()
+    sql = _check("duplicate_trades").sql_for(now)
+    plan = "\n".join(row[0] for row in db_session.execute(
+        text(f"explain (analyze, buffers) {sql}")).all())
+    with capsys.disabled():
+        print("\n-- EXPLAIN (ANALYZE, BUFFERS), bounded duplicate_trades --\n" + plan)
+    assert current_trades_partition(now).lower() in plan.lower()
+    assert "25 hours" in sql

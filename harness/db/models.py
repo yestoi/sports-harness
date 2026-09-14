@@ -415,6 +415,12 @@ class Intent(Base):
     signal_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Fix 51 (D9). `intents_without_order_or_skip` bounds itself to the last 24 h on
+    #: `created_at`, and this table carried no index on any time column, so that bound was a
+    #: sequential scan and the check recorded `skip: timeout` on 2026-09-13. Built
+    #: CONCURRENTLY by `create_schema` (`_CONCURRENT_INDEX_DDL`) and by the 6D revision;
+    #: declared here so `create_all` gives it to a fresh database, the test database included.
+    __table_args__ = (Index("ix_intents_created", "created_at"),)
 
 
 class Order(Base):

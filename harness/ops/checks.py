@@ -10,7 +10,7 @@ a timeout is recorded as `skip`, not as a failure of the whole stage.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import text
@@ -44,21 +44,62 @@ def _zero(value: object) -> bool:
     return value is not None and float(value) == 0.0
 
 
-def current_trades_partition(now: datetime) -> str:
-    """The `venue_trades` weekly partition holding `now`, named exactly as
-    `harness.db.schema._partition_name` names it."""
-    from harness.db.schema import week_bounds
+#: Fix 51. The window `duplicate_trades` judges. 25 h, not 24, for the same reason
+#: `check_results_unknown_status_25h` uses 25: the sweep is daily, so a 24 h window can miss the
+#: previous sweep's rows by minutes. Not a threshold and not a timeout -- it is the window the
+#: check's own verify.md text now names (D8), and no pass/fail rule moves with it (gate 13).
+DUPLICATE_TRADES_WINDOW_H = 25
 
-    start, _ = week_bounds(now)
-    iso = start.isocalendar()
-    return f"venue_trades_y{iso.year}w{iso.week:02d}"
+
+def trades_partition(at: datetime) -> str:
+    """The `venue_trades` weekly partition holding `at`, named exactly as
+    `harness.db.schema._partition_name` names it."""
+    from harness.db.schema import _partition_name, week_bounds
+
+    start, _ = week_bounds(at)
+    return _partition_name("venue_trades", start)
+
+
+def current_trades_partition(now: datetime) -> str:
+    """The partition holding `now`. Kept as its own name because `verify.md`, the tests and
+    fix 16's fallback all read it."""
+    return trades_partition(now)
 
 
 def _duplicate_trades_sql(now: datetime) -> str:
+    """Duplicates among trades recorded in the last 25 h, across the weekly partitions that
+    window touches.
+
+    Fix 16 named the current weekly partition so the planner prunes at plan time. That was not
+    enough on NAS-sized tape: the statement still grouped the *whole* partition -- up to seven
+    days of prints -- and recorded `skip: timeout` on 2026-09-11, on 2026-09-12 and again after
+    93dfb95 (roadmap fix 51). A bare `ts` predicate cannot narrow it through the table's primary
+    key, because `VenueTrade`'s key is `(venue, trade_id, ts)` with `venue` leading
+    (`harness/db/models.py:206-229`); the only ts-ordered structure on the tape is the BRIN
+    `ix_trades_ts_brin` (`harness/db/schema.py:688-689`, `autosummarize = on` since fix 32). So
+    the grouping runs over a BRIN-driven subquery rather than over the partition, and the
+    partition is still named so plan-time pruning keeps its effect.
+
+    Early in an ISO week the 25 h window opens before this partition does, so the previous
+    weekly partition is named as well and carries the same predicate. A partition that does not
+    exist yet raises `UndefinedTable` (42P01), which `run_checks` already answers by falling
+    back once to the static parent-table statement in `Check.sql` -- also bounded to 25 h.
+    """
+    from harness.db.schema import week_bounds
+
+    window = f"now() - interval '{DUPLICATE_TRADES_WINDOW_H} hours'"
+    partitions = [current_trades_partition(now)]
+    start, _ = week_bounds(now)
+    if now - timedelta(hours=DUPLICATE_TRADES_WINDOW_H) < start:
+        partitions.append(trades_partition(now - timedelta(hours=DUPLICATE_TRADES_WINDOW_H)))
+    scans = "\n            union all\n            ".join(
+        f"select venue, trade_id from {name} where ts >= {window}" for name in partitions)
     return f"""
         select count(*) from (
             select venue, trade_id
-            from {current_trades_partition(now)}
+            from (
+            {scans}
+            ) t
             group by venue, trade_id
             having count(*) > 1
         ) d
@@ -77,7 +118,17 @@ CHECKS: list[Check] = [
         select count(*) from (
             select venue, trade_id, count(*) as c
             from venue_trades
-            where ts >= date_trunc('week', now())
+            where ts >= now() - interval '25 hours'
+              -- The `date_trunc('week', ...)` term is redundant beside the 25 h bound and is
+              -- kept deliberately: `assert_no_tape_reads` requires every `venue_trades`
+              -- statement to carry the literal `date_trunc('week'`
+              -- (`harness/ops/checks.py:360`), and this task changes no static guarantee
+              -- (gate 13). It is *widened* by `- interval '7 days'` so it mirrors the two
+              -- partitions `sql_for` can name early in an ISO week; widened, it binds on
+              -- nothing -- the 25 h predicate beside it is always the narrower of the two, so
+              -- the term selects no row the old text would have excluded and excludes none the
+              -- old text kept.
+              and ts >= date_trunc('week', now()) - interval '7 days'
             group by venue, trade_id
             having count(*) > 1
         ) d

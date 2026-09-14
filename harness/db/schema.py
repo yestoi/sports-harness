@@ -299,6 +299,15 @@ _CONCURRENT_INDEX_DDL = (
     # or the catalogue diff fails.
     "create index concurrently if not exists ix_quotes_run_market "
     "on venue_quotes (run_id, venue_market_id)",
+    # Fix 51 (6D §1.9, D9): the fourth check that was skipping on 2026-09-13.
+    # `intents_without_order_or_skip` is bounded to the last 24 h of `intents.created_at`, and
+    # `intents` carried no index on it -- `ix_intents_key` leads on `variant_id`. CONCURRENTLY
+    # because the executor inserts into `intents` on its 15 s loop and `init-db` runs on every
+    # deploy; the connection is already AUTOCOMMIT, which is what CONCURRENTLY requires.
+    # `Intent.__table_args__` declares the same index by name and
+    # `migrations/versions/0009_phase6d_sustained_eval.py` mirrors it; all three must
+    # land together or `tests/test_alembic.py`'s catalogue diff fails.
+    "create index concurrently if not exists ix_intents_created on intents (created_at)",
 )
 
 #: Fix 45 (the 23:23/23:26/23:27 CT 2026-09-11 and 00:06 CT 2026-09-12 normalize timeouts):

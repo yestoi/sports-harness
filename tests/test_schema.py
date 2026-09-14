@@ -983,7 +983,9 @@ def test_the_concurrent_index_names_are_parsed_from_the_statements():
 
     assert schema_module._CONCURRENT_INDEX_NAMES == {
         "ix_fair_created_brin", "ix_odds_fetched_book", "ix_orders_key_placed",
-        "ix_fair_leg_lookup", "ix_quotes_run_market", "ix_raw_source_endpoint_id"}
+        "ix_fair_leg_lookup", "ix_quotes_run_market", "ix_raw_source_endpoint_id",
+        # Fix 51 (6D §1.9, D9): the index `intents_without_order_or_skip`'s 24 h bound needs.
+        "ix_intents_created"}
     ddl_names = {ddl_target(s)[1] for s in schema_module._CONCURRENT_INDEX_DDL}
     partitioned_names = {name for name, _table, _cols in schema_module._PARTITIONED_CONCURRENT_INDEXES}
     assert ddl_names.isdisjoint(partitioned_names)
