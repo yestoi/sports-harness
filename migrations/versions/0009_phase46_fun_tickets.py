@@ -169,6 +169,11 @@ _TABLES = (
     "new_value varchar(32), "
     "note varchar(200), "
     "primary key (id))",
+    "create table if not exists parlay_slot_state ("
+    "key text not null, "
+    "state jsonb not null, "
+    "updated_at timestamptz not null, "
+    "primary key (key))",
 )
 
 #: Byte-identical to the phase 4.6 block of `harness/db/schema.py`'s `_INDEX_DDL`. Every one

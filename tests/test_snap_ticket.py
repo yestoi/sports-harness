@@ -259,8 +259,8 @@ import json
 
 from harness.dashboard.sentences import (IDEA_PHRASES, idea_reason_phrase, stat_line,
                                           unknown_idea_codes)
-from harness.db.models import JobState, ParlayPlacementCorrection, PlayerStatEvent
-from harness.settlement.parlay_build import _REASON_INDEX, SLOTS, slot_key
+from harness.db.models import ParlayPlacementCorrection, ParlaySlotState, PlayerStatEvent
+from harness.settlement.parlay_build import SLOTS, STAGE_REASON_CODES, slot_key
 
 #: The correction fixture's timestamp, so the payload's `ts` is asserted against a known instant
 #: rather than against whatever the builder happened to read.
@@ -338,13 +338,15 @@ def _prop_leg(session, card, game, *, seq=2, status="pending", stat="pass_yds",
 
 
 def _slot_state(session, sport, shape, *, reason=None, built=None, at=None, value=None):
-    """One slot's recorded outcome, in Task 7's own encoding: a positive card id for a build,
-    `_REASON_INDEX`'s pinned negative for a reason (`harness/settlement/parlay_build.py`).
-    `value` writes a raw integer, for the unrecognized-encoding case."""
+    """One slot's recorded outcome, in `parlay_slot_state`'s `state` JSONB (ruling 13,
+    `harness/settlement/parlay_build.py`): `{"built": id}` or `{"reason": code}`. `value` writes
+    a raw `state` dict directly, for the unrecognized-encoding case."""
     if value is None:
-        value = built if built is not None else _REASON_INDEX[reason]
-    session.merge(JobState(key=slot_key(2026, 37, sport, shape), value=value,
-                           updated_at=at if at is not None else NOW - timedelta(minutes=30)))
+        state = {"built": built} if built is not None else {"reason": reason}
+    else:
+        state = value
+    session.merge(ParlaySlotState(key=slot_key(2026, 37, sport, shape), state=state,
+                                  updated_at=at if at is not None else NOW - timedelta(minutes=30)))
     session.flush()
 
 
@@ -520,7 +522,7 @@ def test_every_reason_the_stage_can_write_now_has_a_sentence(db_session, env_set
     `read_slot_state` reports as `unknown` -- render as prose, not as a token, and neither is a
     gap in the vocabulary any more."""
     _slot_state(db_session, "nfl", "smart", reason="stale_price")
-    _slot_state(db_session, "ncaaf", "lottery", value=-9999)
+    _slot_state(db_session, "ncaaf", "lottery", value={"reason": "brand_new"})
     payload = build_ticket(db_session, NOW, env_settings)
     stale = _slot(payload, "nfl", "smart")
     unknown = _slot(payload, "ncaaf", "lottery")
@@ -532,10 +534,10 @@ def test_every_reason_the_stage_can_write_now_has_a_sentence(db_session, env_set
 
 
 def test_every_reason_code_the_builder_stage_can_record_has_a_phrase():
-    """The thirteen: `parlay_build._REASON_INDEX`'s twelve pinned codes plus the `unknown`
-    `read_slot_state` reports for a value it cannot decode. Closed at both ends, so a code added
+    """The thirteen: `parlay_build.STAGE_REASON_CODES`'s twelve pinned codes plus the `unknown`
+    `read_slot_state` reports for a state it cannot decode. Closed at both ends, so a code added
     to the stage without a sentence, or a sentence for a code nothing writes, fails here."""
-    assert set(IDEA_PHRASES) == set(_REASON_INDEX) | {"unknown"}
+    assert set(IDEA_PHRASES) == set(STAGE_REASON_CODES) | {"unknown"}
     assert len(IDEA_PHRASES) == 13
     for code, phrase in IDEA_PHRASES.items():
         assert phrase and phrase != code and phrase.endswith(".")

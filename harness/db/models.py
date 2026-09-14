@@ -773,6 +773,19 @@ class JobState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ParlaySlotState(Base):
+    """One row per `(year-week, sport, shape)` parlay builder slot (user decision journal 211,
+    ruling 13; `harness/settlement/parlay_build.py`'s `slot_key`), written by the builder stage
+    and read by the Ticket builder (`harness/dashboard/snapshots/ticket.py`). `state` is
+    `{"built": <card_id>}` for a slot with a live card or `{"reason": <code>}` for an empty one
+    -- a dedicated additive table, not a `job_state` (above) row: this phase's migration adds
+    it, and `JobState` is untouched by it."""
+    __tablename__ = "parlay_slot_state"
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 # ---------------------------------------------------------------------------
 # Task 12b: telemetry the dashboard cannot backfill (U6, spec
 # `2026-09-07-dashboard-surfaces-design.md` §3). Every table here is additive and never read

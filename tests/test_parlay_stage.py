@@ -14,11 +14,13 @@ from decimal import Decimal
 
 import pytest
 
-from harness.db.models import JobState, OddsSnapshot, ParlayCard, ParlayLedger, ParlayLeg
+from harness.db.models import (JobState, OddsSnapshot, ParlayCard, ParlayLedger, ParlayLeg,
+                               ParlaySlotState)
 from harness.parlay.build import build_card as _real_build_card
 from harness.settlement.job import Budget
-from harness.settlement.parlay_build import (_REASON_INDEX, RATIONALE_TIMEOUT_S,
-                                              read_slot_state, run_parlay_build)
+from harness.settlement.parlay_build import (RATIONALE_TIMEOUT_S, STAGE_REASON_CODES,
+                                              _write_built, _write_reason, read_slot_state,
+                                              run_parlay_build)
 from tests.conftest import _make_dk_price, _make_game, _make_leg, _make_team
 
 #: Friday 2026-09-12 18:05 CT (America/Chicago, CDT = UTC-5): the two `ncaaf` build times
@@ -114,7 +116,8 @@ def _raises(exc: Exception):
 
 
 def _job_state(session) -> dict:
-    rows = session.query(JobState).filter(JobState.key.like("parlay_build:%")).all()
+    rows = session.query(ParlaySlotState).filter(
+        ParlaySlotState.key.like("parlay_build:%")).all()
     return {row.key: read_slot_state(session, row.key) for row in rows}
 
 
@@ -312,16 +315,55 @@ def test_a_raise_in_one_shape_never_costs_the_expiry_or_an_earlier_shapes_card(d
     assert result.counts["built"] >= 1                             # a later shape still built
 
 
-def test_the_reason_encoding_is_pinned_not_positional(db_session, env_settings):
-    """Review round 1, Important 3: the mapping is a literal, not a derivation from
-    `harness.parlay.build.REASON_CODES`'s position, so reordering that tuple cannot remap an
-    already-written row's meaning."""
-    assert _REASON_INDEX == {
-        "no_anchor_priced": -1, "anchor_bye": -2, "no_props_fresh": -3,
-        "player_unmatched": -4, "market_unsupported": -5, "side_unsupported": -6,
-        "stale_price": -7, "week_at_cap": -8, "gamelog_budget_spent": -9,
-        "not_built_yet": -10, "builder_failed": -11, "replacement_pending": -12,
-    }
+def test_the_reason_set_is_pinned_explicit_and_closed(db_session, env_settings):
+    """Review round 1, Important 3, carried over into the additive `parlay_slot_state` table by
+    ruling 13: the set is a literal tuple, not a derivation from
+    `harness.parlay.build.REASON_CODES`'s position, so reordering that tuple cannot change what
+    these three extra codes mean."""
+    assert STAGE_REASON_CODES == (
+        "no_anchor_priced", "anchor_bye", "no_props_fresh", "player_unmatched",
+        "market_unsupported", "side_unsupported", "stale_price", "week_at_cap",
+        "gamelog_budget_spent", "not_built_yet", "builder_failed", "replacement_pending")
+
+
+def test_every_stage_reason_code_round_trips_through_write_and_read(db_session):
+    """Ruling 13: `_write_reason`/`read_slot_state` are the only surface, and every code in the
+    closed set must survive the round trip unchanged."""
+    for index, code in enumerate(STAGE_REASON_CODES):
+        key = f"parlay_build:test:{index}"
+        _write_reason(db_session, key, code, NOW)
+        assert read_slot_state(db_session, key) == {"reason": code, "at": NOW.isoformat()}
+
+
+def test_an_unknown_reason_code_raises_keyerror(db_session):
+    """Ruling 13 keeps the loud-failure point of the earlier `_REASON_INDEX` encoding: a code
+    outside `STAGE_REASON_CODES` is never silently stored."""
+    with pytest.raises(KeyError):
+        _write_reason(db_session, "parlay_build:test:bad", "brand_new", NOW)
+
+
+def test_a_stored_unrecognized_reason_reads_back_as_unknown(db_session):
+    """A row written by a build this checkout no longer knows how to decode (a code outside
+    `STAGE_REASON_CODES`, stored directly rather than through `_write_reason`) reads as
+    `"unknown"`, never the bare code Task 12's sentence table cannot key on."""
+    db_session.merge(ParlaySlotState(key="parlay_build:test:raw", state={"reason": "brand_new"},
+                                     updated_at=NOW))
+    db_session.flush()
+    assert read_slot_state(db_session, "parlay_build:test:raw") == {
+        "reason": "unknown", "at": NOW.isoformat()}
+
+
+def test_a_built_pointer_reads_back_as_built(db_session):
+    _write_built(db_session, "parlay_build:test:built", 42, NOW)
+    assert read_slot_state(db_session, "parlay_build:test:built") == {"built": 42}
+
+
+def test_job_state_receives_no_parlay_build_row_across_a_full_stage_run(db_session, env_settings):
+    """Ruling 13's point: the builder stage writes only `parlay_slot_state` now, never a
+    `parlay_build:` row in `job_state`."""
+    run_parlay_build(db_session, NOW, _budget(60))
+    count = db_session.query(JobState).filter(JobState.key.like("parlay_build:%")).count()
+    assert count == 0
 
 
 def test_a_replacement_build_records_replacement_pending_until_the_child_exists(db_session,

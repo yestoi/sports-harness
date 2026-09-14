@@ -17,7 +17,7 @@ then has nothing left to try for the week and reads `not_built_yet`.
 
 **An empty slot always has a written reason.** Every branch below -- not due yet, the week's $50
 cap, a `BuildRefused` reason code, an unexpected exception -- ends by writing this run's outcome
-into `job_state` under this slot's key, because that is what the dashboard's Ideas section
+into `parlay_slot_state` under this slot's key, because that is what the dashboard's Ideas section
 renders (Task 12): a slot with no card and no reason would look like the builder forgot it.
 
 **The slot's card is resolved by shape, never guessed from a card property** (review round 1,
@@ -28,27 +28,27 @@ three-way shape (`smart`, `lottery`, `lottery_same_game`) this module actually s
 same-game slot on `kind == "lottery" and correlated` let a cross-game lottery card satisfy the
 same-game slot and starved it, while the plain lottery slot rebuilt (and spent a rationale call)
 every hour. `_resolve_slot_card` fixes this two ways: once this stage has built a slot, its own
-`job_state` pointer (written *by shape*) is authoritative and no card property is consulted at
+`parlay_slot_state` pointer (written *by shape*) is authoritative and no card property is consulted at
 all; before that (a slot's first-ever run, or a card built by hand through `harness/cli.py`
 before this stage ever saw it), the fallback derives each candidate's *actual* shape from its
 own legs -- exact, never a guess -- because a `smart` card is always cross-game by construction
 and a `lottery`-kind card is `lottery_same_game` exactly when every leg shares one `game_id`.
 
-**Where the per-slot state lives.** `job_state` (`harness.db.models.JobState`) is the table
-already named for exactly this ("resumable cursors for the batch jobs"), and it is untouched by
-this phase's migration -- no schema change. Its `value` column is `BigInteger` only, so this
-module's own encoding puts a built card's positive id there directly, and an empty slot's reason
-code as one of the small negative integers `_REASON_INDEX` pins explicitly (review round 1,
-Important 3: never derived from another module's tuple position, so a later reorder of
-`harness.parlay.build.REASON_CODES` cannot silently remap an already-written row's meaning).
-`read_slot_state` below is the one place that decodes either shape back into the
-`{"built": ...}` / `{"reason": ..., "at": ...}` dicts the brief promises, and `updated_at`
-(already a plain timestamp column on that table) is the "at". This encoding is a deviation from
-a plan that named no concrete storage for a JSON-shaped per-slot value with no table of its own
-(see the task report); the phase integration round owns the decision of whether `job_state` gets
-an additive JSON-capable column instead (review round 1, concern 1) -- if it does, only
-`read_slot_state`/`_write_value`/`slot_key` change, since that is the only surface Task 12 or any
-other reader should ever use.
+**Where the per-slot state lives (ruling 13, user decision journal 211).** A dedicated
+additive table, `parlay_slot_state` (`harness.db.models.ParlaySlotState`: `key`, `state` JSONB,
+`updated_at`), added by this phase's own migration -- `harness.db.models.JobState`
+("resumable cursors for the batch jobs") is unchanged and unrelated, and this module no longer
+imports it. `state` holds `{"built": <card_id>}` for a built slot or `{"reason": <code>}` for an
+empty one; `STAGE_REASON_CODES` below pins the closed set of reasons this stage can ever write
+(review round 1, Important 3: never derived from another module's tuple position, so a later
+reorder of `harness.parlay.build.REASON_CODES` cannot silently remap an already-written row's
+meaning) -- `_write_reason` raises `KeyError` on anything outside that set, loudly, rather than
+storing a code no reader can decode. `read_slot_state` below is the one place that decodes a row
+back into the `{"built": ...}` / `{"reason": ..., "at": ...}` dicts the brief promises, and
+`updated_at` is the "at". An earlier task draft reused `job_state`'s `BigInteger` column with a
+private negative-integer encoding instead (see the task report); ruling 13 replaced it with this
+dedicated table, so only `read_slot_state`/`_write_built`/`_write_reason`/`slot_key` are the
+surface Task 12 or any other reader should ever use.
 """
 import logging
 from datetime import datetime, timedelta
@@ -58,7 +58,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from harness.config.settings import get_settings
-from harness.db.models import JobState, ParlayCard, ParlayLeg
+from harness.db.models import ParlayCard, ParlayLeg, ParlaySlotState
 from harness.parlay.build import REASON_CODES as _BUILD_REASON_CODES
 from harness.parlay.build import BuildRefused, build_card
 from harness.parlay.config import load_config
@@ -86,32 +86,16 @@ STAGE_BUDGET_S = 60
 #: B-I9: the one model call a build makes is bounded, and a timeout falls back to the template.
 RATIONALE_TIMEOUT_S = 30
 
-#: Every reason this stage can write into `job_state`, pinned explicitly (review round 1,
-#: Important 3): never `-(harness.parlay.build.REASON_CODES.index(code) + 1)` or any other
-#: derivation from another module's tuple *position*, because a later insertion or reordering in
-#: that tuple would then silently remap an already-written row's meaning with no error anywhere.
-#: `not_built_yet` (before the build time, or a declined replacement that is not replaced
-#: again), `builder_failed` (an uncaught exception from `build_card`), `replacement_pending`
-#: (written the moment a decline is noticed and a replacement is about to be attempted; §2.4).
-_REASON_INDEX: dict[str, int] = {
-    "no_anchor_priced": -1,
-    "anchor_bye": -2,
-    "no_props_fresh": -3,
-    "player_unmatched": -4,
-    "market_unsupported": -5,
-    "side_unsupported": -6,
-    "stale_price": -7,
-    "week_at_cap": -8,
-    "gamelog_budget_spent": -9,
-    "not_built_yet": -10,
-    "builder_failed": -11,
-    "replacement_pending": -12,
-}
-_REASON_BY_VALUE: dict[int, str] = {value: code for code, value in _REASON_INDEX.items()}
-#: A new `harness.parlay.build.REASON_CODES` entry needs an explicit value above before it can
-#: ever reach `_write_reason` (`KeyError` otherwise, loudly, rather than a silent remap).
-assert set(_BUILD_REASON_CODES) <= set(_REASON_INDEX), \
-    "a new harness.parlay.build.REASON_CODES entry needs an explicit value in _REASON_INDEX"
+#: Every reason this stage can write, pinned explicitly as a closed tuple (review round 1,
+#: Important 3, carried into the additive `parlay_slot_state` table by ruling 13): never derived
+#: from `harness.parlay.build.REASON_CODES`'s tuple *position*, because a later insertion or
+#: reordering in that tuple must not silently remap an already-written row's meaning --
+#: `_write_reason` raises `KeyError` on any code outside this set instead. `not_built_yet`
+#: (before the build time, or a declined replacement that is not replaced again),
+#: `builder_failed` (an uncaught exception from `build_card`), `replacement_pending` (written the
+#: moment a decline is noticed and a replacement is about to be attempted; §2.4).
+STAGE_REASON_CODES: tuple[str, ...] = (
+    *_BUILD_REASON_CODES, "not_built_yet", "builder_failed", "replacement_pending")
 
 
 def slot_key(year: int, week: int, sport: str, shape: str) -> str:
@@ -122,40 +106,42 @@ def slot_key(year: int, week: int, sport: str, shape: str) -> str:
 
 def read_slot_state(session: Session, key: str) -> dict | None:
     """This slot's last-written outcome, decoded back into `{"built": id}` or
-    `{"reason": code, "at": iso}` -- the one function a reader needs; the encoding above is
+    `{"reason": code, "at": iso}` -- the one function a reader needs; the row's `state` JSONB is
     private to this module. `populate_existing=True` (review round 1, Minor 2): the Core
-    `pg_insert` statements `_write_value` runs do not expire this row in the ORM identity map,
-    so a caller that already loaded it earlier in the same session -- this module's own
-    `_resolve_slot_card`, mid-run -- must not read a stale value back."""
-    row = session.get(JobState, key, populate_existing=True)
-    if row is None or row.value is None:
+    `pg_insert` statements `_write_built`/`_write_reason` run do not expire this row in the ORM
+    identity map, so a caller that already loaded it earlier in the same session -- this
+    module's own `_resolve_slot_card`, mid-run -- must not read a stale value back."""
+    row = session.get(ParlaySlotState, key, populate_existing=True)
+    if row is None:
         return None
-    if row.value > 0:
-        return {"built": row.value}
-    code = _REASON_BY_VALUE.get(row.value)
-    if code is None:
-        # An unrecognized negative value (a row from a build this module no longer knows how to
-        # decode) is reported as `"unknown"`, never the bare number Task 12's sentence table
-        # cannot key on (review round 1, Minor 3).
+    state = row.state
+    if isinstance(state, dict) and isinstance(state.get("built"), int):
+        return {"built": state["built"]}
+    code = state.get("reason") if isinstance(state, dict) else None
+    if code not in STAGE_REASON_CODES:
+        # An unrecognized reason (a row from a build this module no longer knows how to decode,
+        # or a state with neither key) is reported as `"unknown"`, never the bare value Task
+        # 12's sentence table cannot key on (review round 1, Minor 3).
         code = "unknown"
     return {"reason": code, "at": row.updated_at.isoformat()}
 
 
-def _write_value(session: Session, key: str, value: int, now: datetime) -> None:
-    """One upsert, shared by a built card's positive id and a reason's negative one (review
-    round 1, Minor 1: `_write_built`/`_write_reason` were the same statement twice)."""
-    stmt = pg_insert(JobState).values(key=key, value=value, updated_at=now)
+def _write_built(session: Session, key: str, card_id: int, now: datetime) -> None:
+    state = {"built": card_id}
+    stmt = pg_insert(ParlaySlotState).values(key=key, state=state, updated_at=now)
     stmt = stmt.on_conflict_do_update(index_elements=["key"],
-                                      set_={"value": value, "updated_at": now})
+                                      set_={"state": state, "updated_at": now})
     session.execute(stmt)
 
 
-def _write_built(session: Session, key: str, card_id: int, now: datetime) -> None:
-    _write_value(session, key, card_id, now)
-
-
 def _write_reason(session: Session, key: str, code: str, now: datetime) -> None:
-    _write_value(session, key, _REASON_INDEX[code], now)
+    if code not in STAGE_REASON_CODES:
+        raise KeyError(code)
+    state = {"reason": code}
+    stmt = pg_insert(ParlaySlotState).values(key=key, state=state, updated_at=now)
+    stmt = stmt.on_conflict_do_update(index_elements=["key"],
+                                      set_={"state": state, "updated_at": now})
+    session.execute(stmt)
 
 
 def _is_due(now: datetime, sport: str) -> bool:
@@ -187,9 +173,10 @@ def _resolve_slot_card(session: Session, year: int, week: int, sport: str,
                        shape: str) -> ParlayCard | None:
     """The card this exact slot currently owns, or `None`.
 
-    Once this stage has built (or replaced) a slot, its own `job_state` pointer -- written *by
-    shape* -- is authoritative on every later run and no card property is ever consulted again.
-    Before a slot's first `job_state` row exists (a card built by hand through `harness/cli.py`
+    Once this stage has built (or replaced) a slot, its own `parlay_slot_state` pointer --
+    written *by shape* -- is authoritative on every later run and no card property is ever
+    consulted again. Before a slot's first `parlay_slot_state` row exists (a card built by hand
+    through `harness/cli.py`
     before this stage ever ran, or this stage's very first pass), the fallback below finds the
     slot's card by deriving each same-`(year, week, sport, kind)` candidate's *actual* shape
     from its legs (`_card_shape`) rather than by guessing from `correlated`.
