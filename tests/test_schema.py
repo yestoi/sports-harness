@@ -122,7 +122,16 @@ def test_raw_insert_roundtrip(db_session):
     # whitespace regardless.
     ("alter table fair_values\n    add column if not exists feed_kind varchar(9)",
      ("column", "fair_values", "feed_kind")),
+    # Phase 4.6 (addendum 14.4): the one widening this file carries. A varchar widening has no
+    # `if not exists` spelling, so it is recognized here instead and skipped once the column is
+    # already that wide -- otherwise it would ask for an AccessExclusive lock on every init-db.
+    ("alter table parlay_legs alter column market_type type varchar(12)",
+     ("column_type", "parlay_legs", "market_type", "12")),
+    ('alter table "Parlay_Legs" alter column "Market_Type" type varchar(12)',
+     ("column_type", "parlay_legs", "market_type", "12")),
     # Not recognized -- these always run exactly as before.
+    ("alter table t alter column c type integer", None),          # not a varchar
+    ("alter table t alter column c type varchar(12) using c::varchar", None),
     ("update venue_markets set match_key = null where match_key is null", None),
     ("create or replace view positions as select 1", None),
     ("alter table orders alter column status set default 'open'", None),
@@ -156,6 +165,43 @@ def test_create_schema_second_run_touches_no_column_or_index_ddl(db_session):
 
     ddl = [s for s in seen if s.startswith(("alter table", "create index", "create unique index"))]
     assert ddl == [], ddl
+
+
+def test_create_schema_widens_market_type_on_a_database_that_predates_the_widening(db_session):
+    """Phase 4.6 (addendum 14.4). `parlay_legs.market_type` was `varchar(6)` for `ml|spread|
+    total`; the prop keys of addendum 3.3 (`prop:anytime_td`) need twelve. `create_all` widens
+    nothing on an existing table, so `_COLUMN_DDL` carries the ALTER -- and fix 37's skip means
+    a database that is already wide enough is not asked for the lock a second time.
+
+    The narrowing at the top of this test is the test's own setup, standing in for the deployed
+    database; `create_schema` itself never narrows a column.
+    """
+    engine = db_session.get_bind()
+
+    def width() -> int:
+        return db_session.execute(text(
+            "select character_maximum_length from information_schema.columns "
+            "where table_name = 'parlay_legs' and column_name = 'market_type'")).scalar()
+
+    assert width() == 12                        # the db_session fixture already ran create_schema
+    db_session.execute(text("alter table parlay_legs alter column market_type type varchar(6)"))
+    db_session.commit()
+    assert width() == 6
+
+    create_schema(engine)
+    assert width() == 12
+
+    seen: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement.strip().lower())
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        create_schema(engine)                   # already wide: fix 37 must not send it again
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert not [s for s in seen if "alter column" in s], seen
 
 
 def test_create_schema_adds_no_fair_reason_to_an_existing_table(db_session):
@@ -983,7 +1029,11 @@ def test_the_concurrent_index_names_are_parsed_from_the_statements():
 
     assert schema_module._CONCURRENT_INDEX_NAMES == {
         "ix_fair_created_brin", "ix_odds_fetched_book", "ix_orders_key_placed",
-        "ix_fair_leg_lookup", "ix_quotes_run_market", "ix_raw_source_endpoint_id"}
+        "ix_fair_leg_lookup", "ix_quotes_run_market", "ix_raw_source_endpoint_id",
+        # Phase 4.6 (addendum 7.2, D13): the Floor detail's story indexes, on four tables the
+        # executor writes to on its 15 s loop.
+        "ix_intents_market_created", "ix_order_events_order_ts", "ix_fills_order_ts",
+        "ix_ledger_order"}
     ddl_names = {ddl_target(s)[1] for s in schema_module._CONCURRENT_INDEX_DDL}
     partitioned_names = {name for name, _table, _cols in schema_module._PARTITIONED_CONCURRENT_INDEXES}
     assert ddl_names.isdisjoint(partitioned_names)

@@ -45,11 +45,20 @@ BULK_TABLES = ("raw_responses", "orderbook_events", "venue_trades", "venue_quote
 #: A migration that contains one of these is a gate, not a ruling: the loop never writes one.
 #: `create_or_replace` is the Alembic op spelling; a view lives in `create_schema` instead.
 #: `alter index` is handled separately, below: fix 32 sanctions exactly one shape of it.
+#: `alter column` left this tuple in phase 4.6 (addendum 14.4, plan re-check R1): the widening
+#: below is sanctioned, and both the revision that runs it and the prose explaining it would trip
+#: a grep of the file text. It is checked instead over what a revision *executes*, by
+#: `_ALLOWED_ALTER_COLUMN` in `test_no_migration_drops_or_alters_an_existing_object`, so a second
+#: real one -- in any revision, on any table -- is still a failure.
 FORBIDDEN = ("drop_index", "create_or_replace", "drop view",
-             "drop table", "drop column", "alter column", "rename")
+             "drop table", "drop column", "rename")
 
 #: The one sanctioned `alter index`: a storage-parameter flip, never a rebuild, never a drop.
 _ALLOWED_ALTER_INDEX = re.compile(r"alter index (if exists )?\S+ set \(autosummarize = on\)")
+
+#: The one sanctioned `alter column`: phase 4.6 section 14.4's varchar widening on a small table.
+_ALLOWED_ALTER_COLUMN = re.compile(
+    r"^alter table parlay_legs alter column market_type type varchar\(12\)$")
 
 
 # --- scratch databases --------------------------------------------------------------------
@@ -330,6 +339,13 @@ def test_no_migration_drops_or_alters_an_existing_object(path):
     for line in body.splitlines():
         if "alter index" in line and "op.execute(" in line:
             assert _ALLOWED_ALTER_INDEX.search(line), f"{path.name}: unexpected alter index: {line}"
+    # `alter column` is scoped to what the revision runs, never to what it says: a docstring may
+    # explain one (0009 does), and a second real one anywhere still fails here.
+    for statement in _executable_strings(path):
+        for line in statement.lower().splitlines():
+            if "alter column" in line:
+                assert _ALLOWED_ALTER_COLUMN.search(line.strip()), \
+                    f"{path.name}: unexpected alter column: {line}"
 
 
 #: A create-index statement, with its optional CONCURRENTLY and the table it lands on. Applied
@@ -442,22 +458,23 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_eight_revisions():
+def test_the_versions_directory_holds_nine_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
-        "0007_raw_events_lookup.py", "0008_positions_open_fill.py"]
+        "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
+        "0009_phase46_fun_tickets.py"]
 
 
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
 
-def test_positions_open_fill_follows_raw_events_lookup_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_positions_open_fill_follows_raw_events_lookup():
+    """The pinned-head assertion moved to `test_the_phase46_revision_is_additive_only` when
+    phase 4.6's `0009_phase46_fun_tickets` landed on top of this one; the chain assertions stay
+    here, so a revision inserted between the two still fails."""
     module = _load_revision("0008_positions_open_fill.py")
     assert module.revision == "0008_positions_open_fill"
     assert module.down_revision == "0007_raw_events_lookup"
-    assert HEAD_REVISION == "0008_positions_open_fill"
 
 
 def test_the_positions_view_ddl_agrees_between_schema_and_migration():
@@ -1027,3 +1044,136 @@ def test_the_raw_events_lookup_index_is_in_both_catalogues(two_databases, frozen
                 "select indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid "
                 "where c.relname = 'ix_raw_source_endpoint_id'")).scalar()
         assert valid is True
+
+
+# --- phase 4.6: the additive revision (addendum 9, 14.4; D9) --------------------------------
+
+def _phase46_module():
+    """The revision module, imported by path: its name starts with a digit, so no dotted import
+    reaches it. `_load_revision` (defined further down this file) does the same thing; this is
+    the plan's own name for it and it keeps this section readable on its own."""
+    return _load_revision("0009_phase46_fun_tickets.py")
+
+
+def test_the_phase46_revision_is_additive_only():
+    """Expected: no DROP, RENAME, TRUNCATE, DELETE or backfill anywhere in the revision's
+    statements, every ADD COLUMN and CREATE TABLE `if not exists`, exactly one
+    `alter column ... type` -- the documented `parlay_legs.market_type` widening (addendum
+    14.4) -- and `downgrade()` a pass.
+
+    Computed independently of the code: invariant 5 is a grep over what the revision *runs*, so
+    this walks the module's own statement tuples rather than the file text. The prose in the
+    docstring names `alter column ... type` too (Step 5 requires it), and a count over the file
+    would therefore see two occurrences and fail on its own documentation (plan review IM-1).
+
+    The DML words are matched as a statement's leading verb rather than anywhere in it: this
+    revision creates `odds_prop_snapshots`, whose `book_last_update` column carries the literal
+    "update " inside a `create table` statement.
+    """
+    module = _phase46_module()
+    statements = [" ".join(s.split()).lower() for s in
+                  module._COLUMNS + module._TABLES + module._INDEXES + module._CONCURRENT]
+    for forbidden in ("drop table", "drop column", "rename", "truncate", "drop index"):
+        assert not any(forbidden in s for s in statements), forbidden
+    for verb in ("insert into", "update ", "delete from", "truncate "):
+        assert not any(s.startswith(verb) for s in statements), verb
+    assert all("if not exists" in s for s in statements if s.startswith("alter table")
+               and "add column" in s)
+    assert all("create table if not exists" in s for s in statements
+               if s.startswith("create table"))
+    widenings = [s for s in statements if "alter column" in s]
+    assert widenings == ["alter table parlay_legs alter column market_type type varchar(12)"]
+    assert module.downgrade() is None
+    assert module.revision == "0009_phase46_fun_tickets"
+    assert module.down_revision == "0008_positions_open_fill"
+
+
+def test_the_phase46_revision_is_the_pinned_head():
+    """Controller ruling of 2026-09-14: the plan's `0008_phase46_fun_tickets` on top of
+    `0007_raw_events_lookup` is stale -- fix 56's `0008_positions_open_fill` took that number on
+    main on 2026-09-13 -- so this phase's revision is `0009` on top of it. 6B's
+    `0008_phase6b_execution` and 6D's `0009_phase6d_sustained_evaluation` are unmerged; whichever
+    branch merges second is renumbered by the controller at merge time (D9)."""
+    from harness.db.migrate import HEAD_REVISION
+
+    assert HEAD_REVISION == "0009_phase46_fun_tickets"
+    assert VERSIONS[-1].name == "0009_phase46_fun_tickets.py"
+
+
+def test_the_one_widening_is_the_only_alter_column_any_revision_carries():
+    """The `FORBIDDEN` grep still holds for everything else.
+
+    Computed independently of the code: `_ALLOWED_ALTER_COLUMN` matches one exact statement, so
+    a second widening -- or the same one on another table -- is still a failure. The audit's own
+    grep (`alter column .* type`) finds the one line and Conformance 4 explains it; this asserts
+    the suite agrees with the audit rather than being blind to it.
+    """
+    # `_ALLOWED_ALTER_COLUMN` is this module's own name (defined beside `_ALLOWED_ALTER_INDEX`).
+    assert _ALLOWED_ALTER_COLUMN.pattern.count("alter column") == 1
+    assert _ALLOWED_ALTER_COLUMN.search(
+        "alter table parlay_legs alter column market_type type varchar(12)")
+    assert not _ALLOWED_ALTER_COLUMN.search(
+        "alter table parlay_cards alter column status type varchar(12)")
+    assert not _ALLOWED_ALTER_COLUMN.search(
+        "alter table parlay_legs alter column market_type type varchar(24)")
+    # And the one revision that carries it is the only one that does.
+    carriers = [p.name for p in VERSIONS
+                if any("alter column" in s.lower() for s in _executable_strings(p))]
+    assert carriers == ["0009_phase46_fun_tickets.py"]
+
+
+def test_every_index_on_a_table_taking_live_writes_is_concurrent():
+    """CR-4 / D13: `intents`, `order_events`, `fills` and `ledger` all take the executor's
+    writes while `init-db` runs on every deploy, and fix 25's F65 rule is every index on a table
+    under a live writer CONCURRENTLY, no carve-out.
+
+    Four, not the five the addendum's section 7.2 lists: `ix_gap_outcomes_order on gap_outcomes
+    (order_id)` cannot be written, because `gap_outcomes` is keyed `(gap_snapshot_id,
+    benchmark_type)` and carries no `order_id` column (`harness/db/models.py`, and the same on
+    `phase6b-repair-execution`). Its read reaches a gap outcome through `market_gap_snapshots`,
+    whose id is that table's leading primary-key column, so the primary key already serves it.
+    Asserted here so the gap is visible rather than silent: the day `gap_outcomes` gains an
+    order key, this test is where the fifth index is added.
+    """
+    module = _phase46_module()
+    assert all("create index concurrently" in s or "create unique index concurrently" in s
+               for s in (" ".join(x.split()).lower() for x in module._CONCURRENT))
+    names = " ".join(module._CONCURRENT)
+    for index in ("ix_intents_market_created", "ix_order_events_order_ts", "ix_fills_order_ts",
+                  "ix_ledger_order"):
+        assert index in names, index
+    # And nothing else is in there: the plain tuple's indexes all ride tables this revision
+    # creates, or `parlay_placements`, which one hand writes twice a week.
+    assert len(module._CONCURRENT) == 4
+    from harness.db.models import GapOutcome
+
+    assert "order_id" not in GapOutcome.__table__.columns
+
+
+def test_the_phase46_revision_leaves_odds_snapshots_untouched():
+    """D23 (addendum 9 as amended): a prop outcome is keyed by the player and
+    `uq_odds_snapshot_row` carries no `where` clause, so the only fix inside `odds_snapshots`
+    would be rebuilding a unique index on a bulk table -- not additive. The props go to their own
+    table instead, and neither a column nor an index is added to `odds_snapshots` here."""
+    module = _phase46_module()
+    statements = [s.lower() for s in
+                  module._COLUMNS + module._TABLES + module._INDEXES + module._CONCURRENT]
+    assert not any("odds_snapshots" in s for s in statements)
+    names = " ".join(module._INDEXES)
+    for index in ("uq_odds_prop_row", "ix_odds_prop_lookup", "uq_players_sport_espn",
+                  "ix_player_stat_game_player_ts", "ix_parlay_corrections_card_ts",
+                  "uq_parlay_placement_confirmation"):
+        assert index in names, index
+
+
+def test_the_phase46_statements_match_create_schema_exactly():
+    """The revision and `create_schema` are two copies of one list; the catalogue diff is the
+    judge of the result, and this is the judge of the text, so a later edit to one copy fails
+    here rather than in a 40-line catalogue diff (the shape of
+    `test_the_quotes_run_index_ddl_agrees_between_schema_and_migration`)."""
+    from harness.db import schema as schema_module
+
+    module = _phase46_module()
+    assert set(module._COLUMNS) <= set(schema_module._COLUMN_DDL)
+    assert set(module._INDEXES) <= set(schema_module._INDEX_DDL)
+    assert set(module._CONCURRENT) <= set(schema_module._CONCURRENT_INDEX_DDL)
