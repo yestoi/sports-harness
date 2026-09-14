@@ -413,6 +413,11 @@ def test_the_light_fun_accent_is_measured_and_used_only_for_marks():
     assert _contrast("#ff7f5c", "#1a212b") >= 4.5
     marks = re.findall(r"\.(?:perforation|stamp|mark|fill\.warm)[^{]*\{[^}]*\}", css)
     assert marks, "the accent must be used by at least one mark class"
+    perforation = re.search(r"\.perforation\s*\{[^}]*\}", css)
+    mark = re.search(r"\.mark\s*\{[^}]*\}", css)
+    assert perforation and "dashed var(--fun)" in perforation.group(0), \
+        "the perforation is drawn in the accent (D16)"
+    assert mark and "color: var(--fun)" in mark.group(0), "a mark carries the accent (D16)"
     for rule in re.findall(r"\.slip[^{]*\{[^}]*\}", css):
         selector = rule.split("{", 1)[0]
         if ".lamp" in selector or ".mark" in selector:
