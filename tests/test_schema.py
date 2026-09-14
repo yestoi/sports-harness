@@ -1065,6 +1065,20 @@ def _reset_raw_source_endpoint_id(engine):
             conn.execute(text(f"drop index concurrently if exists {name}"))
 
 
+def _free_future_week(session) -> tuple:
+    """First week from five weeks out whose raw_responses partition does not exist yet."""
+    from harness.db import schema as schema_module
+    from harness.db.schema import week_bounds
+    
+    probe = datetime.now(timezone.utc) + timedelta(weeks=5)
+    for _ in range(60):
+        start, end = week_bounds(probe)
+        if session.execute(text("select to_regclass(:n)"), {"n": schema_module._partition_name("raw_responses", start)}).scalar() is None:
+            return start, end
+        probe += timedelta(weeks=1)
+    raise AssertionError("no free future week within 60 weeks")
+
+
 @pytest.fixture
 def raw_events_index_cleanup(db_session):
     """Restore the shared index after tests that deliberately leave invalid catalog state."""
@@ -1347,7 +1361,7 @@ def test_ensure_partitioned_concurrent_indexes_reindexes_an_attached_invalid_chi
         with _autocommit_conn(engine) as conn:
             schema_module._ensure_partitioned_concurrent_indexes(conn)
 
-    future_start, future_end = week_bounds(datetime.now(timezone.utc) + timedelta(weeks=6))
+    future_start, future_end = _free_future_week(db_session)
     new_partition = schema_module._partition_name("raw_responses", future_start)
     db_session.execute(text(
         f"create table {new_partition} partition of raw_responses "
@@ -1508,10 +1522,10 @@ def test_ensure_partitioned_concurrent_indexes_recognises_a_partition_postgres_i
     db_session.commit()
     assert not schema_module._index_valid(db_session, "ix_raw_source_endpoint_id")
 
-    # A brand new partition, several weeks out so it cannot collide with the fixture's own two.
+    # A brand new partition, via _free_future_week which finds the first week with no partition.
     # Dropped in `finally` (review Minor 3, round 2): the schema is session-scoped, so leaving it
     # behind would be a permanent mutation of a fixture every later test in this file shares.
-    future_start, future_end = week_bounds(datetime.now(timezone.utc) + timedelta(weeks=5))
+    future_start, future_end = _free_future_week(db_session)
     new_partition = schema_module._partition_name("raw_responses", future_start)
     db_session.execute(text(
         f"create table {new_partition} partition of raw_responses "
