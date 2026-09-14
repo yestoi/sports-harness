@@ -9,6 +9,7 @@ from harness.db.models import OrderbookEvent, OrderbookSnapshot, VenueMarket
 from harness.execution import EXECUTOR_VERSION
 from harness.execution.book import (
     BookState,
+    BookWalker,
     advance_book,
     advance_book_at,
     book_age_s,
@@ -61,9 +62,29 @@ def test_from_levels_rest_fixture():
     assert b.resting_at("no", Decimal("0.75")) == Decimal("2692.00")
 
 
-def test_from_ws_raw_raises_without_keys():
-    with pytest.raises(ValueError, match="snapshot without yes_dollars_fp"):
-        BookState.from_ws_raw("K1", {"market_ticker": "K1"}, sid=2, seq=1, as_of=NOW, event_id=7)
+def test_a_snapshot_with_no_side_keys_is_an_empty_book():
+    """Fix 60: since 2026-09-13 18:04Z the venue omits both side keys for an empty book.
+
+    The body below is exactly what the recorder stored for such a market. An empty book is a
+    book with nothing resting on either side, not a broken row: it quotes nothing, so nothing
+    simulates a fill against it.
+    """
+    raw = {"market_id": "", "market_ticker": "K1", "recorder_offset_ms": -353}
+    b = BookState.from_ws_raw("K1", raw, sid=2, seq=1, as_of=NOW, event_id=7)
+    assert (b.yes_bids, b.no_bids) == ({}, {})
+    assert b.mid() is None
+    assert b.best_bid("yes") is None and b.best_bid("no") is None
+    assert b.best_ask("yes") is None and b.best_ask("no") is None
+    assert b.resting_at("yes", Decimal("0.35")) == Decimal("0.00")
+    assert b.resting_at("no", Decimal("0.65")) == Decimal("0.00")
+    assert (b.source, b.sid, b.seq, b.anchor_id, b.last_event_id, b.dirty) == ("ws", 2, 1, 7, 7, False)
+
+
+def test_a_snapshot_body_that_is_not_a_mapping_still_raises():
+    """A body that is not a message at all is still a broken row."""
+    for body in (None, [], "yes_dollars_fp", 0):
+        with pytest.raises(ValueError):
+            BookState.from_ws_raw("K1", body, sid=2, seq=1, as_of=NOW, event_id=7)
 
 
 def test_delta_add_remove_clamp_prune():
@@ -460,6 +481,30 @@ def test_load_book_at_dirties_on_a_gap_inside_the_range_only(db_session):
     _gap(db_session, sid=2, exposed_by="A", ts=NOW + timedelta(seconds=30))
     assert load_book_at(db_session, "A", NOW + timedelta(seconds=10)).dirty is False
     assert load_book_at(db_session, "A", NOW + timedelta(seconds=40)).dirty is True
+
+
+def test_a_keyless_snapshot_on_the_tape_reads_as_an_empty_book(db_session):
+    """Fix 60: the readers the settle job's markouts stage uses do not raise on one either.
+
+    `load_book_at` (and the `BookWalker` behind `compute_markouts`) build from the same
+    `from_ws_raw`, so the venue's keyless empty-book body took both `job_runs` 183 and 184 to
+    `degraded`. An empty book has no mid, which is exactly what a markout at that horizon is
+    entitled to say.
+    """
+    _market(db_session, "A")
+    row = OrderbookEvent(ticker="A", ts=NOW, sid=2, seq=1, kind="snapshot",
+                         raw={"market_id": "", "market_ticker": "A", "recorder_offset_ms": -353})
+    db_session.add(row)
+    db_session.flush()
+    instant = NOW + timedelta(seconds=10)
+
+    book = load_book_at(db_session, "A", instant)
+    assert book is not None
+    assert (book.yes_bids, book.no_bids) == ({}, {})
+    assert book.mid() is None and book.best_bid("yes") is None
+    assert (book.source, book.anchor_id, book.dirty) == ("ws", row.id, False)
+    assert BookWalker(db_session, "A").at(instant).mid() is None
+    assert load_book(db_session, "A", instant).mid() is None
 
 
 # --- Final fix wave, I3: the REST anchor's gap-check id is bounded below --------------------
