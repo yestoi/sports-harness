@@ -2043,3 +2043,64 @@ def test_newest_event_ts_at_widens_once_then_reads_no_tape_at_all(db_session):
     # Inside the widened 24 h window, it is found.
     _tape_row(db_session, AT - timedelta(hours=6))
     assert store.newest_event_ts(db_session, AT) == AT - timedelta(hours=6)
+
+
+# ---- fix 57, round 1: the executor's own readers honour the unsynced-run key --------------
+#
+# Ruling 1 (journal 184): the in-game readers that reach the gap snapshots through
+# `signals.run_id` must exclude a run recorded under an unsynchronized clock, or the annotation
+# on run 14485 is documentation rather than an exclusion.
+
+def test_an_unsynced_run_is_excluded_from_candidates_intents_and_decisions(db_session):
+    import uuid as _uuid
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+    from decimal import Decimal as _D
+
+    from harness.db.models import Intent, Run
+    from harness.execution.store import _NEWEST_DECISIONS, candidate_signals, load_intents
+    from harness.ops.clock import UNSYNCED_NOTE
+    from tests.conftest import _make_leg
+
+    now = _dt(2026, 9, 18, 20, 0, tzinfo=_tz.utc)
+    made = _dt(2026, 9, 18, 19, 30, tzinfo=_tz.utc)
+
+    def leg():
+        return _make_leg(db_session, game_id=9001, market_type="moneyline", side_team_id=None,
+                         side=None, threshold=None, fair_p=_D("0.55"), edge=_D("0.05"),
+                         created_at=made)
+
+    bad, annotated_ok, no_run_row = leg(), leg(), leg()
+    # The run of `bad` carries the key; `annotated_ok`'s run row exists with no key at all;
+    # `no_run_row`'s run was never written (a fixture, a backfill) -- both must be kept.
+    db_session.add(Run(id=bad.signal.run_id, started_at=made, status="ok",
+                       notes=dict(UNSYNCED_NOTE)))
+    db_session.add(Run(id=annotated_ok.signal.run_id, started_at=made, status="ok", notes={}))
+    for made_leg in (bad, annotated_ok, no_run_row):
+        db_session.add(Intent(id=_uuid.uuid4(), signal_id=made_leg.signal.id, variant_id="tiny",
+                              venue="kalshi", venue_market_id=made_leg.venue_market.id,
+                              ticker=made_leg.venue_market.ticker, side="yes",
+                              signal_created_at=made, created_at=made))
+    db_session.commit()
+
+    lower = now - _td(hours=6)
+    # `_CANDIDATES` skips a signal that already has an intent, so candidates are read on a
+    # fresh pair with no intents.
+    bad2, good2 = leg(), leg()
+    db_session.add(Run(id=bad2.signal.run_id, started_at=made, status="ok",
+                       notes=dict(UNSYNCED_NOTE)))
+    db_session.commit()
+    got = {row.signal_id for row in candidate_signals(db_session, ["tiny"], lower, False)}
+    assert good2.signal.id in got and bad2.signal.id not in got
+
+    views, _extras = load_intents(db_session, ["tiny"], lower, False)
+    signal_ids = {v.signal_id for v in views}
+    assert annotated_ok.signal.id in signal_ids and no_run_row.signal.id in signal_ids
+    assert bad.signal.id not in signal_ids
+
+    decisions = db_session.execute(
+        _NEWEST_DECISIONS, {"replay": False, "variants": ["tiny"], "lower": lower}).all()
+    market_ids = {row.venue_market_id for row in decisions}
+    assert annotated_ok.venue_market.id in market_ids
+    assert bad.venue_market.id not in market_ids

@@ -164,3 +164,21 @@ def _legs(session, card_id):
     from harness.db.models import ParlayLeg
 
     return session.query(ParlayLeg).filter_by(card_id=card_id).order_by(ParlayLeg.seq).all()
+
+
+def test_a_pool_signal_from_an_unsynced_run_is_not_a_leg(db_session, env_settings, seeded_pool):
+    """Fix 57, round 1 (ruling 1): `_POOL` reaches `market_gap_snapshots` and `fair_values`
+    through `signals.run_id`, so a run recorded under an unsynchronized clock leaves the pool.
+    The LSU anchor's run carries the key; the rest of the pool keeps its legs (one run row with
+    no key at all, and legs whose run was never written)."""
+    from harness.db.models import Run, Signal
+    from harness.ops.clock import UNSYNCED_NOTE
+
+    signals = db_session.query(Signal).order_by(Signal.id).all()
+    anchor, second = signals[0], signals[1]
+    db_session.add(Run(id=anchor.run_id, started_at=NOW, status="ok", notes=dict(UNSYNCED_NOTE)))
+    db_session.add(Run(id=second.run_id, started_at=NOW, status="ok", notes={}))
+    db_session.commit()
+
+    with pytest.raises(NoAnchorPriced):
+        build_card(db_session, env_settings, sport="ncaaf", week=38, kind="smart", now=NOW)
