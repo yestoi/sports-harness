@@ -2365,3 +2365,93 @@ Controller actions from these rulings (each recorded where it lands):
 - Row 68: 141 of 209 odds_api bodies since 13:00Z carry the Pinnacle bookmaker: the upstream absence has cleared; PASS on presence. Whether Pinnacle prices reach candidates on the latest tick was not checked (next verify). Gate 5 not engaged.
 - Sidecar: its late nightly (~14:20 CT) had not fired at 14:13 CT; backup_runs 35-37 ok this morning. Next verify reads the row it writes.
 - Deploy: main code = runtime ca30ed1; nothing pending for the 17:35 CT window. Tuesday 09:31 CT wakeup is session-only: re-derive from the clock.
+
+## 199. decision - the user's fourteen rulings at resume: preamble and (1) the NAS key - 2026-09-14 15:38 CT
+
+The user, verbatim (the `/autopilot` resume message, received 15:33 CT, recorded 15:38 CT), preamble:
+
+> Resume. Before any dispatch, merge or deploy, record every line below as a `decision` journal entry quoting it verbatim with the time, then make the file edits named. Where a ruling touches a user-owned roadmap section, a gate criterion, a check predicate, a feed cadence, or a spec §0, that edit is user-directed by this message: land it as one commit that quotes the ruling. These are my decisions, not the loop's.
+>
+> User-side items, all done or scheduled:
+> 1. NAS key: authorized. The 2026-09-14 bundle is on the NAS at /volume1/docker/sports-harness/repo-backup/sports-2026-09-14.bundle (44,024,501 bytes, copied 15:27 CT). Close the TODO at docs/superpowers/autopilot/roadmap.md:562. The bundle step in .claude/skills/autopilot/references/operate.md works unchanged from now on.
+
+- Controller: verified read-only at 15:36 CT (`ssh -o BatchMode=yes trey@192.168.12.228 ls .../repo-backup/`): the key is accepted and `sports-2026-09-14.bundle` (44,024,501 bytes, 15:27) is listed. The roadmap TODO at line 562 is closed in the user-directed roadmap commit that follows. `operate.md` is a skill file the loop never edits; its bundle step needs no change.
+
+## 200. decision - (2) the backup age key - 2026-09-14 15:38 CT
+
+> 2. Backup age key: I hold the private key off this host. It is not on the runtime by design. Close roadmap.md:578, drop the daily age-key nag, and ask me for the key only when a restore rehearsal needs to decrypt.
+
+- Controller: TODO line 578 closed; the Daily 09:00 calendar row's age-key nag is dropped by the user-directed roadmap edit (the calendar is user-owned text; this message directs the edit). Carried fix 20 (the nag row) is closed by the same commit. The loop asks for the key only when a 6E restore rehearsal must decrypt a backup.
+
+## 201. decision - (3) Anthropic spending limits - 2026-09-14 15:38 CT
+
+> 3. Anthropic: account-level spending limits are in place and the account cannot auto-buy more. That satisfies the intent of roadmap.md:575 and the Secrets row at roadmap.md:157. Close it. The U4 harness-side caps stay.
+
+- Controller: TODO line 575 closed and the `secrets/anthropic_api_key` Secrets row annotated (user-directed). U4's `veto_daily_usd_cap`/`veto_weekly_usd_cap` and their code are untouched.
+
+## 202. decision - (4) the Kalshi production key is read-scoped - 2026-09-14 15:38 CT
+
+> 4. Kalshi: the production key is read-scoped (rotated 2026-09-07, journal entries 6 and 7). Close roadmap.md:572 and note it on the Secrets row at roadmap.md:155.
+
+- Controller: TODO line 572 closed and the `secrets/kalshi_key_id` Secrets row annotated (user-directed).
+
+## 203. decision - (5) the LUKS window for 6E's cold-start observation - 2026-09-14 15:38 CT
+
+> 5. LUKS window for 6E: Tuesday 2026-09-15 07:00 CT, I will be at the console. Schedule the cold-start/reboot observation for then: checkpoint state, stop the stack cleanly before it, expect the controller session to die with the reboot, and I relaunch per Kickoff afterwards. Update roadmap.md:568 and the 6E row at roadmap.md:29.
+
+- Controller: the 6E row and TODO line 568 are updated (user-directed). Schedule: a session wakeup at 06:35 CT Tue plus a durable reminder file; at the wakeup the controller checkpoints `state.md`, journals, commits, pushes, then stops the stack cleanly (`/srv/sports-harness/sports-compose stop`, executor and recorder first) by 06:50 CT and journals the stop; the controller session is expected to die with the 07:00 CT reboot; the user relaunches per Kickoff; the new session's preflight records the cold-start evidence (boot to first healthy tick, container start order, first tick at the new boot, backup sidecar, RSS after cold cache) for 6E's acceptance. No game is scheduled near 07:00 CT Tuesday; the stop is an operator action, not a deploy. Any suite or worker still running at 06:35 CT is finished or its state recorded before the stop.
+
+## 204. decision - (6) the owner password hash and TLS files - 2026-09-14 15:38 CT
+
+> 6. Owner password hash and TLS files: not due until 4.6 Task 10 reaches main and a release carries `harness owner-password-hash`. Leave roadmap.md:565 open and tell me the day the release lands.
+
+- Controller: TODO line 565 stays open. Task 10 is merged on `phase46-fun-tickets` (journal 190) and reaches `main` at the 4.6 phase merge; the release that carries the command is announced to the user the day it lands (state.md deadline item).
+
+## 205. decision - (7) runs 14485 and 14486 stay as recorded - 2026-09-14 15:38 CT
+
+> 7. Runs 14485 and 14486: leave them as recorded. Run 14485 already carries clock = unsynced in runs.notes; no annotation, no exclusion, no DELETE. Close item (3) of roadmap.md:564.
+
+- Controller: item (3) of the outage TODO closed. No row changes.
+
+## 206. decision - (8) rows 62 and 63: option A - 2026-09-14 15:38 CT
+
+> *8. Rows 62 and 63 (roadmap.md:640-641): option A. Bound both checks, `fills_outside_placement_window` at harness/ops/checks.py:273 and `markouts_at_after_horizon` at harness/ops/checks.py:283, to fills written after the no-watcher cutoff fix ships. The code fix stays in 6B's integration round: bound the NO_WATCHER deadline at harness/execution/loop.py:900 (main) by kickoff minus 10 minutes. The 154 fills and 154 markouts stay as recorded. Gate 13 is authorized for these two predicates only.
+
+- Controller: rows 62 and 63 amended with the ruling (Carried fixes). Implementation (6B integration round, one commit quoting this ruling): the NO_WATCHER deadline becomes `min(now, row.expiry, kickoff - 10 min)`; both check predicates gain a lower bound on the fill instant (`fills` has `filled_at`, no `created_at`), `filled_at >= NO_WATCHER_CUTOFF_FIXED_AT`, a module constant set to the release instant of that fix; the markouts check counts a row only when its order carries a fill at or after the same instant. The constant is set in the same commit so the bound equals the fix's release. Until that release both checks stay red as they are today. Gate 13 is not engaged beyond these two predicates; `verify.md` is touched only if its row quotes the statement text (6B Task 12 owns verify.md rows).
+
+## 207. decision - (9) row 64: source behaviour, the row's own remedy - 2026-09-14 15:38 CT
+
+> *9. Row 64 (roadmap.md:642): source behaviour. Authorize the row's own remedy: the score writer at harness/normalize/espn.py:46 stores a correction marker when a score is lower than the last stored one, and `game_score_went_down_24h` at harness/ops/checks.py:320 excludes marked rows. Sonnet hotfix. Gate 13 is authorized for that predicate only. No row changes.
+
+- Controller: hotfix batch `fix-20260914-score-corrections` from `main` (sonnet implementer, sonnet reviewer: the normalize path). The marker is an additive column `game_score_events.correction boolean not null default false` (the `player_stat_events.correction` precedent from 4.6 Task 8), mirrored in `create_schema` and Alembic revision `0009_score_correction`; `_maybe_score_event` sets it when either score is lower than the game's newest stored row; the check excludes a marked row as the later row and restarts the baseline at the game's newest marked row (a later 17 after a 19 -> 13 correction is not a decrease). The 11 rows and every stored row stay as recorded. Revision numbering: `main` takes `0009`; the 4.6 and 6D branch revisions renumber at their merges (the 4.6 addendum's D9 pattern; 6B's ruling already renumbers `0008_phase6b_execution`). Deploy: the full recipe (a model change); the R4 window blocks deploys from about 17:35 CT tonight to 23:15 CT (NFL kickoff 19:15 CT).
+
+## 208. decision - (10) gate criterion 8 stays - 2026-09-14 15:38 CT
+
+> *10. Gate criterion 8 (roadmap.md:585): no. harness/report/gate.py:609 stays byte for byte, criteria_hash unchanged, no R1 amendment. Run 14485 contributed 7 candidate signals, one per variant, which cannot move a median. Close the decision line.
+
+- Controller: the decision line at roadmap line 585 is closed (user-directed). Nothing in `gate.py` changes; `criteria_hash()` stays `5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5`.
+
+## 209. decision - (11) weekend props: option (a) - 2026-09-14 15:38 CT
+
+> *11. Weekend props (roadmap.md:563): option (a). On phase46-fun-tickets drop the `or cadence != PROPS_CADENCE_S` clause at harness/recorder/tick.py:1150 and the matching `if cadence != PROPS_CADENCE_S` at harness/recorder/tick.py:1402 for the reprice. The 900 s due stamps at tick.py:1153 and tick.py:1409 stay, so props run at most once per 900 s on any day. One test per change beside tests/test_recorder_props.py:180. Annotate docs/superpowers/plans/2026-09-13-phase4.6-fun-tickets.md:3445 and :3493 and docs/superpowers/specs/2026-09-13-phase4.6-fun-tickets-design.md:98 and :284. The monthly prop budget skip is the cap. Gates 5 and 6 are authorized for this change only.
+
+- Controller: TODO line 563 closed. A 4.6 task branch `phase46-props-weekend` from the phase head 379fabb (sonnet implementer; opus reviewer, recorder path), the two clauses dropped as named, the 900 s `is_due` stamps kept, one test per change beside the cadence-guard tests; the reprice's guard at line 1402 keeps refusing a `None` cadence (quiet hours) since the source must not run without a game cadence, and the props guard keeps `cadence not in ALLOWED_CADENCES` (never 120 s or quiet hours). The plan lines 3445/3493 and spec lines 98/284 are annotated by the controller in the same commit (the plan's line numbers as they read on `phase46-fun-tickets`, where the file is newer than on `main`). Gates 5 and 6 engaged for this change only; the monthly prop budget skip remains the cap.
+
+## 210. decision - (12) the 6B manifest gate is scoped to the resting interval - 2026-09-14 15:38 CT
+
+> *12. 6B manifest gate: yes, scope it to the order's resting interval [placed_at, min(cancelled_at, expiry)]. On phase6b-repair-execution change harness/audit.py:316 so only unverifiable_slices overlapping that interval pre-empt the replay; add the §0 amendment in docs/superpowers/specs/2026-09-11-phase6b-repair-execution-design.md (section at line 35) and update §1.7 (lines 286-305); add the fixture case; rerun `harness audit-order` on the real order 157 capsule and replace ORDER_157_VERDICT and the audit document's Result section with the new reading, whatever it is.
+
+- Controller: spec §0 gains amendment 0.16 and §1.7 is updated (user-directed, one commit quoting this ruling on `phase6b-repair-execution`). A task branch `phase6b-audit-interval` from 2452f34 (opus implementer and opus reviewer, the Task 8 allocation): `audit_order` pre-empts only when an `unverifiable_slices` entry overlaps `[placed_at, min(cancelled_at, expiry)]`, a synthetic fixture with a gap outside the interval replays and one with a gap inside stays `unverifiable`. Then the controller reruns `harness audit-order --capsule docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/order-157 --order 157`, writes the JSON to `evidence/`, and replaces `ORDER_157_VERDICT` and the Result section of `docs/superpowers/reviews/order-157-audit.md` with the new reading, whatever it is. Files are disjoint from T9's (`rescore.py`, `cli.py`), so both run at once.
+
+## 211. decision - (13) a dedicated parlay_slot_state table for 4.6 - 2026-09-14 15:38 CT
+
+> *13. job_state for 4.6: a dedicated additive table `parlay_slot_state` (key text primary key, state jsonb, updated_at) in the 4.6 integration round. harness/settlement/parlay_build.py:117 slot_key and :123 read_slot_state stay the public surface; the negative-index encoding goes; JobState at harness/db/models.py:768 is unchanged.
+
+- Controller: recorded as a 4.6 integration-round item in the ledger (the unreleased `0009_phase46_fun_tickets` revision gains the table; `create_schema` mirrors it; `_REASON_INDEX`/`_REASON_BY_VALUE` and `_write_value` go; T12's reader and T7's stage keep `slot_key`/`read_slot_state`; the plan's `job_state` lines are annotated then). Closes the carried "JSON-capable job_state value" item.
+
+## 212. decision - (14) the ESPN game-log host; state update and re-orient - 2026-09-14 15:38 CT
+
+> 14. ESPN game log: approve site.web.api.espn.com as an outbound host for the 4.6 game-log fetcher (roadmap.md:564 item 4, gate 7). Add it to the allowlist and switch T18a off Path B. Then update docs/superpowers/autopilot/state.md:41-42 (user decisions pending and the user-side order) to match, re-orient from files, and announce the plan of the day.
+
+- Controller: invariant 8's host list gains `site.web.api.espn.com` (the path-pinned game-log allowance of journal 184 item 3, GET only) in the user-directed roadmap commit; item (4) of the outage TODO is closed; the 4.6 addendum's §0 "Outbound hosts" row is amended on `phase46-fun-tickets`, where `Settings.espn_gamelog_url` already pins the v3 path and `fetch_gamelog` fails soft (T3 follow-up, journal 184; merged at c7bcfb2). T18a's Path B: the ESPN half is off (the v3 bodies are the recorded game-log shape); the DraftKings half closed with the user's paste at 05:03 CT (`anytime_td` has its verbatim rule). The four yardage/receptions families stay `market_unsupported` for a different reason (DraftKings' page has no family-specific settlement rule for them; state.md's open note), not the host; that question is still the user's. state.md lines 41-42 rewritten at this checkpoint.
+- Session: sports-5e (session_01K7uXN54fkXzh2teuSzb1bo), process 718911 under the flock in tmux `sports-autopilot` (the lock is held by this session). A peer Claude session `herdr-autopilot-68` is alive and unlocked (started about 14:40 CT, busy); it is not a controller (no lock, no strict MCP config); the checkout was clean at 15:33 CT. Preflight `evidence/2026-09-14-preflight-1541.txt`: `paper posture intact`, exit 0; auth claude.ai; worker sandbox smoke on `../sports-wt/phase6b-t9-rescore`: uid 1000, no `/srv`, no SSH keys. Reconciled: T12 fix round 1 committed 37707f5 and T9 fix round 1 committed 08f3ec8 after the 11:55 CT stop (both worktrees clean); 6D T5's suite run 1 at 06e0340 failed only the two `test_cli.py` price-once cases in shard 3 (row 67's ordering flake); run 2 launched 15:38 CT (`t5-full-06e0340-run2.log`). No wakeups exist (session-only ones died); the 14:13 CT items were judged in 198. Deploy trigger: main a91611c.. = ca30ed1 code, nothing pending. Dispatches today so far: 91 (state).
