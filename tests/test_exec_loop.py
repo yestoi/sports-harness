@@ -726,6 +726,69 @@ def test_exception_in_one_order_does_not_abort_the_step(env_settings, db_session
     assert "tape blew up" in heartbeat.last_error
 
 
+def test_a_ticker_whose_book_cannot_load_does_not_abort_the_step(
+        env_settings, db_session, world, monkeypatch, caplog):
+    """Fix 60: one ticker's book failure is one ticker's failure, not the step's.
+
+    The executor spent Sunday and Monday losing every step to the first ticker whose newest
+    snapshot could not be read, so its heartbeat never went green, no order was ever cancelled
+    at kickoff and 3,426 loops were skipped. Here T2's book raises and T3's does not: the step
+    still completes with a null `last_error`, T3's book advances and its order fills, and T2's
+    order holds where it is -- no fill, no cancel -- because a book we could not read says
+    nothing about the queue.
+    """
+    keep_only(db_session, {VM2, VM3})
+    signal3 = db_session.query(Signal).filter_by(venue_market_id=VM3).one()
+    signal3.decision, signal3.rejection_reason = "candidate", None
+    _book2(db_session, NOW - timedelta(seconds=5))
+    _book3(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert len(db_session.query(Order).all()) == 2
+    broken = orders_of(db_session, T2)[0]
+
+    real = executor._book_now
+
+    def explode(session, ticker, now, cached):
+        if ticker == T2:
+            raise ValueError("snapshot without yes_dollars_fp")
+        return real(session, ticker, now, cached)
+
+    monkeypatch.setattr(executor, "_book_now", explode)
+    _print(db_session, T2, clock.now + timedelta(seconds=5), "0.30", "500", trade_id="p2")
+    _print(db_session, T3, clock.now + timedelta(seconds=5), "0.40", "500", trade_id="p3")
+    # A delta on T3's untouched NO side: it lands only if T3's book was advanced this step.
+    _delta(db_session, T3, clock.now + timedelta(seconds=6), "no", "0.48", "-10.00", seq=2)
+    db_session.commit()
+    clock.advance(15)
+    with caplog.at_level("WARNING", logger="harness.execution.loop"):
+        stats = executor.step()
+    refresh(db_session)
+
+    # The step completed and its heartbeat is green: no other ticker failed.
+    heartbeat = db_session.execute(text("select loops, last_error from exec_heartbeat")).one()
+    assert heartbeat.loops == 2
+    assert heartbeat.last_error is None
+    assert stats.book_errors == 1
+    # The healthy ticker advanced and filled.
+    assert executor.books[T3].no_bids == {Decimal("0.4800"): Decimal("50.00")}
+    assert orders_of(db_session, T3)[0].filled_contracts == SIZE3
+    # The broken ticker held: no fill, no cancel, and the hold is recorded as dirty time.
+    broken = orders_of(db_session, T2)[0]
+    assert broken.status == "open"
+    assert broken.filled_contracts == Decimal("0")
+    assert fills_of(db_session, broken.id) == []
+    assert [e for e in events_of(db_session, "cancel") if e.order_id == broken.id] == []
+    assert broken.dirty_seconds == 15
+    # The log line names the ticker and the exception class.
+    assert any(T2 in r.getMessage() and "ValueError" in r.getMessage()
+               for r in caplog.records)
+
+
 def test_heartbeat_fields(env_settings, db_session, world):
     clock = Clock(NOW)
     _book2(db_session, NOW - timedelta(seconds=5))
