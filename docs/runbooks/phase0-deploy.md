@@ -168,6 +168,25 @@ settlement or benchmark row.
   order and fill counts to match the live ones within 2 % (R14); the unit test behind it asserts
   strict equality on a fixed run range. Without `--execute` it re-scores signals only (the
   pre-phase-3 replay path), which is what a measurement amendment cites for a labelling fix.
+- **`harness policy-compare --from-run A --to-run B --variant NAME --policies baseline,... --out -`**
+  runs one recorded slice once per holding/capacity policy and prints the declared baseline
+  (6D §1.6(a): `stale_s = 180`, `exec_book_max_age_s = 120`, `ws_stale_s = 180`,
+  `exec_period_s = 15`, `exec_max_open_orders = 150` with `max_open = 25`,
+  `exec_intent_ttl_s = 900`, `exec_kickoff_cutoff_min = 10` with `min_ttk_min = 20`, read from
+  `Settings` and the registered YAMLs and never edited) above a table of orders placed, unique
+  opportunities, queue-filled orders, clean resting seconds, coverage completed/scheduled and
+  the four exclusion classes. Example: `harness policy-compare --from-run 14200 --to-run 14320
+  --variant sharp_direct --policies baseline,stale_allowance_900 --out -`. It opens no gateway,
+  places nothing and writes no row. **The run on the live tape waits for 6B** -- stepping a
+  replay at the recorded loop instants is 6B's carve-out (its D15) -- and it is a **separate
+  operate duty**, not part of a 6D task. **Every output is counterfactual and exploratory**
+  (M6): the caption and every row carry that label, and no number produced under a
+  non-registered parameter set is ever reported as a registered variant id's performance,
+  entered in a gate, a benchmark or a variant's record. **Adoption is the user's dated
+  decision** (§0.15a); 6D declares the baseline and publishes the comparison and adopts
+  nothing. The selected policy is registered and versioned as a new hashed `config_history`
+  record or a new variant id by dated pre-registration amendment before any prospective period
+  -- never as an edit to a registered id.
 - **`harness export-fixture --kind day|ws-tape --out PATH`** dumps a slice of the record as a
   single self-contained JSON document, for building or refreshing a test fixture from real NAS
   data rather than by hand. `--out` is required; `--out -` writes the document to stdout

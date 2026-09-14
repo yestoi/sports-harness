@@ -42,6 +42,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from harness import execution
 from harness.execution.book import FOUR, QTY, SIDES, YES, ZERO, BookState, book_age_s, side_p
+from harness.execution.policy import BASELINE, HoldingPolicy
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 from harness.strategy.run import CAP_LABELS, CONFIDENT_MATCHES, NO_EDGE, StrategyState
 
@@ -451,7 +452,8 @@ def _newest_by_key(intents: list[IntentView]) -> dict[tuple[str, int, str], Inte
     return {key: value[2] for key, value in best.items()}
 
 
-def _fair_stale(market: MarketNow, cfg: dict, now: datetime) -> bool:
+def _fair_stale(market: MarketNow, cfg: dict, now: datetime,
+                policy: HoldingPolicy = BASELINE) -> bool:
     """`now - fair_ts > max(variant.stale_s, stale_allowance_s)` (F36).
 
     A market with no fair value at all reads as stale: there is nothing to price against, and
@@ -461,7 +463,26 @@ def _fair_stale(market: MarketNow, cfg: dict, now: datetime) -> bool:
     age = market.fair_age_s(now)
     if market.fair_p is None or age is None:
         return True
-    return age > max(int(cfg["stale_s"]), int(market.stale_allowance_s or 0))
+    allowance = max(int(cfg["stale_s"]), int(market.stale_allowance_s or 0))
+    if policy.stale_allowance_s is not None:
+        # 6D §1.6: the one alternative that widens the freshness standard. The baseline passes
+        # None and this branch is dead, so the live path is the rule F36 states and nothing
+        # else.
+        allowance = max(allowance, int(policy.stale_allowance_s))
+    return age > allowance
+
+
+def _best_bid(market: MarketNow, side: str) -> Decimal | None:
+    """The best bid on `side`, from the book when there is one else the recorded quote.
+
+    Only 6D's policy branches read this: the live chain prices from the intent's own target and
+    never asks where the touch is. The mirror is `MarketNow.best_ask`'s -- the venue quotes one
+    book in YES space, so the bid on NO is `side_p` of the YES ask.
+    """
+    if market.book is not None:
+        return market.book.best_bid(side)
+    quote = market.best_bid_yes if side == YES else market.best_ask_yes
+    return None if quote is None else side_p(quote, side)
 
 
 def _venue_moved(order: OpenOrderView, market: MarketNow, s: ExecSettings) -> bool:
@@ -486,7 +507,8 @@ def _edge_now(order: OpenOrderView, market: MarketNow) -> Decimal | None:
 
 def _order_action(order: OpenOrderView, market: MarketNow | None, intent: IntentView | None,
                   cfg: dict, kill_active: bool, now: datetime, s: ExecSettings,
-                  lagging: frozenset[str] = frozenset()) -> Action | None:
+                  lagging: frozenset[str] = frozenset(),
+                  policy: HoldingPolicy = BASELINE) -> Action | None:
     """The open-order chain. Returns the one action for this order, or None to hold it."""
     if order.expiry is not None and now >= order.expiry:
         # `lagging` is the tickers whose delta read filled its batch limit this loop, so the
@@ -498,6 +520,13 @@ def _order_action(order: OpenOrderView, market: MarketNow | None, intent: Intent
         # `Cancel` picked up further down would close the same track just as early
         # (fix 22 round 1, I2). `lagging` empties within a few loops by construction.
         return None if order.ticker in lagging else Expire(order.order_id)
+    if policy.rest_to_expiry:
+        # 6D §1.6, decision 4's rest-to-expiry alternative: an order that reaches this line is
+        # not expired, so under this policy it rests until it is. The branch sits immediately
+        # after the expiry rule because R8's guarantee outranks it and nothing else; that it
+        # also suppresses the kill switch's cancel is one reason the alternative is exploratory
+        # and why the harness that runs it opens no gateway. `BASELINE` leaves it dead.
+        return None
     if kill_active:
         return Cancel(order.order_id, KILL_SWITCH)
     # No `MarketNow` means the market is no longer in the loop's working set at all, which is
@@ -506,7 +535,7 @@ def _order_action(order: OpenOrderView, market: MarketNow | None, intent: Intent
         return Cancel(order.order_id, UNMATCHED)
     if market.dirty(now, s):
         return None
-    if _fair_stale(market, cfg, now):
+    if _fair_stale(market, cfg, now, policy):
         return Cancel(order.order_id, FAIR_STALE)
     if _venue_moved(order, market, s):
         return Cancel(order.order_id, VENUE_MOVE)
@@ -526,16 +555,22 @@ def _order_action(order: OpenOrderView, market: MarketNow | None, intent: Intent
 
 def _intent_actions(intent: IntentView, market: MarketNow | None, cfg: dict,
                     state: StrategyState, kill_active: bool, now: datetime, s: ExecSettings,
-                    has_capacity: bool) -> list[Action]:
+                    has_capacity: bool, policy: HoldingPolicy = BASELINE) -> list[Action]:
     """The intent chain. Returns the actions for this intent, at most one of them a `Place`."""
     if kill_active:
         return [Skip(intent.intent_id, KILL_SWITCH)]
     # No kickoff is no expiry, and R8's expiry is the only guarantee an order stops resting.
     if intent.kickoff_utc is None or intent.kickoff_utc - now < s.cutoff:
         return [Skip(intent.intent_id, KICKOFF)]
+    if (policy.near_kickoff_only_min is not None
+            and intent.kickoff_utc - now > timedelta(minutes=policy.near_kickoff_only_min)):
+        # 6D §1.6: place only inside this many minutes of kickoff. The reason is `kickoff`, the
+        # same rule's own name, so the alternative adds no name §1.4's closed vocabulary lacks.
+        # `BASELINE` passes None and the branch is dead.
+        return [Skip(intent.intent_id, KICKOFF)]
     if market is None or not market.matched:
         return [Skip(intent.intent_id, UNMATCHED)]
-    if _fair_stale(market, cfg, now):
+    if _fair_stale(market, cfg, now, policy):
         return [Skip(intent.intent_id, FAIR_STALE)]
     if market.dirty(now, s):
         return [Skip(intent.intent_id, BOOK_DIRTY)]
@@ -544,8 +579,25 @@ def _intent_actions(intent: IntentView, market: MarketNow | None, cfg: dict,
     # target, but as a backstop rather than as the way the loop finds out.
     if intent.target_prob is None or intent.target_contracts is None:
         return [Skip(intent.intent_id, NO_TARGET)]
+    target = intent.target_prob
+    if policy.join_the_bid:
+        # 6D §1.6: price at the touch instead of at fair. With no bid there is no price to join,
+        # which is this chain's `no_target` and not a new reason. `BASELINE` is False, `target`
+        # stays the intent's own, and every line below reads exactly as it did before 6D.
+        bid = _best_bid(market, intent.side)
+        if bid is None:
+            return [Skip(intent.intent_id, NO_TARGET)]
+        target = _p(bid)
+    if policy.fillability_admission:
+        # 6D §1.6: admit only where the book suggests a fill -- an order resting behind the
+        # touch is behind a queue the tape may never reach. Counted under `post_only_reject`,
+        # the chain's existing "this price would not rest usefully" reason, so the comparison
+        # adds no name §1.4's `CLASS_OF` does not carry. Dead under `BASELINE`.
+        bid = _best_bid(market, intent.side)
+        if bid is None or target < bid:
+            return [Skip(intent.intent_id, POST_ONLY_REJECT)]
     ask = market.best_ask(intent.side)
-    if ask is not None and intent.target_prob >= ask:
+    if ask is not None and target >= ask:
         # A live post-only order at or through the ask is rejected by the venue (F38).
         return [Skip(intent.intent_id, POST_ONLY_REJECT)]
 
@@ -556,10 +608,14 @@ def _intent_actions(intent: IntentView, market: MarketNow | None, cfg: dict,
         out.append(CapGate(intent.intent_id, label, blocking))
         if blocking:
             return out
-    if not has_capacity:
+    if not has_capacity or (policy.per_variant_slots is not None
+                            and state.open_orders >= policy.per_variant_slots):
+        # 6D §1.6: a fixed per-variant slot count in place of the shared pool. The shared ceiling
+        # still binds first; the alternative can only bind earlier, never later, and `BASELINE`
+        # passes None so the test is the live one alone.
         out.append(Skip(intent.intent_id, EXEC_CAPACITY))
         return out
-    out.append(Place(intent.intent_id, intent.side, intent.target_prob, intent.target_contracts,
+    out.append(Place(intent.intent_id, intent.side, target, intent.target_contracts,
                      intent.kickoff_utc - s.cutoff, market.book is None))
     return out
 
@@ -574,7 +630,8 @@ def _copy_state(state: StrategyState | None) -> StrategyState:
 def plan_actions(intents: list[IntentView], open_orders: list[OpenOrderView],
                  markets: dict[int, MarketNow], state_by_variant: dict[str, StrategyState],
                  variant_cfg: dict[str, dict], kill_active: bool, now: datetime,
-                 s: ExecSettings, lagging: frozenset[str] = frozenset()) -> list[Action]:
+                 s: ExecSettings, lagging: frozenset[str] = frozenset(),
+                 policy: HoldingPolicy = BASELINE) -> list[Action]:
     """Every action this loop should take, open orders first and then intents by edge.
 
     A `Cancel` therefore always precedes the `Place` that replaces it, which is what makes a
@@ -585,6 +642,12 @@ def plan_actions(intents: list[IntentView], open_orders: list[OpenOrderView],
     `variant_cfg` must carry a config for every variant with an intent or a resting order: a
     missing one raises rather than defaulting, because both defaults available -- cancel
     everything, or hold everything -- would be a decision nobody asked for.
+
+    `policy` is 6D §1.6's holding/capacity policy, threaded down to both chains. Its default is
+    `BASELINE`, which has every alternative parameter off, so every `if policy.<x>` branch below
+    this line is dead and the live path is the one that was here before 6D. A non-baseline
+    policy produces a **counterfactual** action list (M6): never placed, never written under a
+    registered variant id and never read as that id's performance.
     """
     newest = _newest_by_key(intents)
     states = {variant_id: _copy_state(state_by_variant.get(variant_id))
@@ -598,7 +661,8 @@ def plan_actions(intents: list[IntentView], open_orders: list[OpenOrderView],
     for order in open_orders:
         key = _key(order)
         action = _order_action(order, markets.get(order.venue_market_id), newest.get(key),
-                               variant_cfg[order.variant_id], kill_active, now, s, lagging)
+                               variant_cfg[order.variant_id], kill_active, now, s, lagging,
+                               policy)
         if action is None:
             still_open += 1
             blocked.add(key)
@@ -614,7 +678,7 @@ def plan_actions(intents: list[IntentView], open_orders: list[OpenOrderView],
         state = states[intent.variant_id]
         emitted = _intent_actions(intent, markets.get(intent.venue_market_id),
                                   variant_cfg[intent.variant_id], state, kill_active, now, s,
-                                  still_open < s.max_open_orders)
+                                  still_open < s.max_open_orders, policy)
         actions.extend(emitted)
         if any(isinstance(action, Place) for action in emitted):
             still_open += 1

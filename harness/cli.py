@@ -744,6 +744,55 @@ def replay_cmd(
     )
 
 
+@app.command("policy-compare")
+def policy_compare_cmd(
+    from_run: int = typer.Option(..., "--from-run"),
+    to_run: int = typer.Option(..., "--to-run"),
+    variant: str = typer.Option(..., "--variant"),
+    policies: str = typer.Option("baseline", "--policies",
+                                 help="comma-separated: baseline plus any of "
+                                      "stale_allowance_900, rest_to_expiry, per_variant_slots, "
+                                      "fillability_admission, join_the_bid, near_kickoff_only"),
+    out: Path = typer.Option(None, "--out", help="'-' for stdout"),
+) -> None:
+    """Compare holding/capacity policies over one recorded slice. Counterfactual and
+    exploratory: it places nothing, writes nothing and adopts nothing (6D §1.6, M6).
+
+    The run on the live tape waits for 6B -- stepping a replay at the recorded loop instants is
+    6B's carve-out -- and is a separate operate duty. Adoption is the user's dated decision
+    (§0.15a): the selected policy is registered as a new `config_history` hash or a new variant
+    id by amendment, never as an edit to a registered id.
+    """
+    configure_logging()
+    from harness.execution.policy import BASELINE_RECORD, POLICIES, compare, render
+
+    names = [name.strip() for name in policies.split(",") if name.strip()]
+    unknown = [name for name in names if name not in POLICIES]
+    if unknown or not names:
+        log.error("unknown policy %s; choose from %s",
+                  ", ".join(unknown) or "(none given)", ", ".join(POLICIES))
+        raise typer.Exit(1)
+
+    s = get_settings()
+    with make_session_factory(make_engine(s.database_url))() as session:
+        try:
+            results = compare(session, s, from_run=from_run, to_run=to_run, variant=variant,
+                              policies=[POLICIES[name] for name in names])
+        # A slice with no priced run, no recorded loop instant or no such variant has no
+        # comparison to print: exiting 0 with an empty table would read as "every policy
+        # placed nothing", which is a finding rather than the absence of one.
+        except ValueError as exc:
+            log.error("%s", exc)
+            raise typer.Exit(1) from exc
+
+    body = f"{BASELINE_RECORD}\n\n{render(results)}\n"
+    if out is None or str(out) == "-":
+        print(body)
+    else:
+        out.write_text(body)
+        print(f"wrote {out}")
+
+
 @app.command("export-fixture")
 def export_fixture_cmd(
     from_run: int = typer.Option(None, "--from-run"),
