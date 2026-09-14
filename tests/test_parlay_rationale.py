@@ -1,10 +1,15 @@
 """The rationale: a template unless the key exists, and the template on any error."""
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import text
 
+from harness.parlay.build import build_card
 from harness.parlay.rationale import EFFORT, MAX_OUTPUT_TOKENS, write_rationale
+from tests.conftest import _PARLAY_SPORT
+from tests.test_parlay_build import seed_lottery_prop_pool
 
 NOW = datetime(2026, 9, 18, 20, 0, tzinfo=timezone.utc)
 
@@ -86,14 +91,6 @@ def test_the_text_is_sanitized_at_six_hundred_not_two_hundred(db_session, keyed_
 
 
 # --- Phase 4.6 Task 6: the prop rule in the prompt, and the caller's timeout (B-I9, B-I18) ----
-
-import re
-
-import pytest
-
-from harness.parlay.build import build_card
-from tests.conftest import _PARLAY_SPORT
-from tests.test_parlay_build import seed_lottery_prop_pool
 
 
 class _EchoClient:
@@ -193,9 +190,12 @@ def test_a_model_call_that_times_out_falls_back_to_the_template_and_records_no_r
 
 
 def test_the_timeout_keyword_is_optional_and_the_existing_callers_are_unchanged(
-        db_session, keyed_settings, built_card, fake_client):
-    """`None` is today's behaviour, so the CLI path and every existing caller are unchanged: the
-    keyword is never passed on to a client that was not given a bound."""
+        db_session, keyed_settings, built_card):
+    """`None` is today's behaviour, so the CLI path and every existing caller are unchanged: no
+    bound is forwarded to a client that was never given one (the client here records the
+    keyword, so an accidental `timeout_s=None` on the wire would show)."""
+    echo = _EchoClient("LSU and the Saints on the same slip.")
     out = write_rationale(db_session, keyed_settings, built_card.card, built_card.legs, NOW,
-                          client=fake_client)
-    assert out == "LSU and the Saints on the same slip. Let us cook."
+                          client=echo)
+    assert out == "LSU and the Saints on the same slip."
+    assert echo.calls and echo.calls[0]["timeout_s"] is None

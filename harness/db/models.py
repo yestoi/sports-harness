@@ -1055,6 +1055,12 @@ class ParlayLeg(Base):
     dk_decimal: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     plain_text: Mapped[str] = mapped_column(String(80), nullable=False)
     odds_snapshot_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: Phase 4.6 (D23, fix round 1, Important 2): the `odds_prop_snapshots` row a **prop** leg
+    #: was priced from. Its own column because both tables are `bigserial` from 1, so the id
+    #: spaces overlap: a reader that forgot to branch on `market_type` and resolved a prop leg
+    #: against `odds_snapshots` would get a real but unrelated game line. A prop leg fills this
+    #: and leaves `odds_snapshot_id` null; a game line does the reverse.
+    odds_prop_snapshot_id: Mapped[int | None] = mapped_column(BigInteger)
     #: pending|alive|hit|miss|void
     status: Mapped[str] = mapped_column(String(8), nullable=False)
     graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1068,7 +1074,13 @@ class ParlayLeg(Base):
     period: Mapped[str] = mapped_column(
         String(6), default="game", server_default="game", nullable=False)
     operator: Mapped[str | None] = mapped_column(String(8))
-    market_def: Mapped[str | None] = mapped_column(String(120))
+    #: The recorded DraftKings settlement rule, **whole** (D19): `parlay.yaml`'s verbatim
+    #: `market_defs` entry with its source and date is 353 characters for `anytime_td`, and a
+    #: prefix of it stops before the clause that excludes passing touchdowns -- a leg would
+    #: state a rule that means the opposite of the one it is graded by. 400 is that text plus
+    #: room; the column is widened here rather than by an ALTER because this phase's revision
+    #: has never run outside a test database (fix round 1, Important 1).
+    market_def: Mapped[str | None] = mapped_column(String(400))
     dk_link: Mapped[str | None] = mapped_column(String(300))
     dk_sid: Mapped[str | None] = mapped_column(String(64))
     offered: Mapped[bool] = mapped_column(

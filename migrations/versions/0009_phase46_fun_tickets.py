@@ -15,8 +15,9 @@ schema_exactly` checks; the tables are the one part `create_schema` does not spe
 
 What the phase adds, and why each piece is additive (addendum section 9):
 
-* Twenty-two columns on five existing tables -- eleven on `parlay_legs` (the prop leg's player,
-  stat, period, operator, market definition, deep link, build probability and context line),
+* Twenty-three columns on five existing tables -- twelve on `parlay_legs` (the prop leg's
+  player, stat, period, operator, market definition, deep link, prop snapshot id, build
+  probability and context line),
   eight on `parlay_cards` (the policy version, the replacement link, the decline reason, the
   combined price and its capability), `parlay_placements.confirmation_id`,
   `parlay_ledger.source` and `source_state.credits_used`. Every one is `ADD COLUMN IF NOT
@@ -91,7 +92,8 @@ _COLUMNS = (
     "alter table parlay_legs add column if not exists stat varchar(12)",
     "alter table parlay_legs add column if not exists period varchar(6) not null default 'game'",
     "alter table parlay_legs add column if not exists operator varchar(8)",
-    "alter table parlay_legs add column if not exists market_def varchar(120)",
+    "alter table parlay_legs add column if not exists market_def varchar(400)",
+    "alter table parlay_legs add column if not exists odds_prop_snapshot_id bigint",
     "alter table parlay_legs add column if not exists dk_link varchar(300)",
     "alter table parlay_legs add column if not exists dk_sid varchar(64)",
     "alter table parlay_legs add column if not exists offered boolean not null default true",

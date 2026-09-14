@@ -24,6 +24,7 @@ DraftKings settlement rule is not recorded in `parlay.yaml`'s `market_defs` is
 `market_unsupported` and is never built (D19).
 """
 import logging
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -33,8 +34,7 @@ from sqlalchemy.orm import Session
 from harness.db.models import ParlayCard, ParlayLeg
 from harness.normalize.players import candidates_for_game, match_player, parse_gamelog
 from harness.parlay.config import load_config
-from harness.parlay.pricing import (BOOK, LegPrice, american, decimal_from,
-                                    newest_dk_price)
+from harness.parlay.pricing import LegPrice, american, decimal_from, newest_dk_price
 from harness.research.spend import chicago_day
 
 log = logging.getLogger(__name__)
@@ -59,12 +59,15 @@ _MARKET_NAMES = {"moneyline": "ml", "spread": "spread", "total": "total"}
 
 
 #: Every reason a build can refuse, by code (addendum 2.2, 2.4). The builder raises the middle
-#: five; `week_at_cap` is the settle stage's own refusal before it calls this module at all, and
+#: six; `week_at_cap` is the settle stage's own refusal before it calls this module at all, and
 #: `anchor_bye` is a sport-week with no anchor game to build on. The stage records whichever
 #: code it is given in `job_state`, so the surface can name the reason instead of showing a slot
-#: that silently produced nothing.
+#: that silently produced nothing. `gamelog_budget_spent` is not a refusal: it is the
+#: context-line pass recording, by code, that it stopped fetching at `GAMELOG_BUDGET_S` and that
+#: the legs after it read `no season data yet`.
 REASON_CODES = ("no_anchor_priced", "anchor_bye", "no_props_fresh", "player_unmatched",
-                "market_unsupported", "stale_price", "week_at_cap")
+                "market_unsupported", "side_unsupported", "stale_price", "week_at_cap",
+                "gamelog_budget_spent")
 
 
 class BuildRefused(RuntimeError):
@@ -107,6 +110,13 @@ RELATIONSHIP_NOTES = {
 _GAMELOG_FAMILIES = ("pass_yds", "rush_yds", "rec_yds", "receptions")
 #: The design's bound on one build's free ESPN game-log fetches (addendum 4.1).
 MAX_GAMELOG_FETCHES = 40
+#: And the wall-clock bound over all of them together (fix round 1, Important 3). Forty
+#: sequential fetches at `http_timeout_s` each is up to four hundred seconds of blocking HTTP
+#: inside a stage that runs under a sixty-second budget (B-I9); a per-fetch timeout cannot bound
+#: the pass, only one deadline over the whole pass can. Once it is spent the remaining players
+#: are not fetched: their context line reads `no season data yet` and the pass records
+#: `gamelog_budget_spent` with the count.
+GAMELOG_BUDGET_S = 20.0
 
 #: The fan-facing name of each prop family, for `plain_text`.
 _STAT_NAMES = {"pass_yds": "passing yards", "rush_yds": "rushing yards",
@@ -116,6 +126,13 @@ _STAT_NAMES = {"pass_yds": "passing yards", "rush_yds": "rushing yards",
 _OPPOSITE = {"over": "under", "under": "over", "yes": "no", "no": "yes"}
 #: Which side is built when no side has a probability to rank it by: the side a fan slip means.
 _SIDE_PREFERENCE = ("yes", "over", "under", "no")
+#: The families whose market is `yes`/`no` rather than a line. Addendum 4.4's operator
+#: vocabulary is `over|under|atleast|yes`: there is **no `no` operator**, and Task 5 grades this
+#: leg as hit when a qualifying touchdown is recorded. So a scorer selection is `yes`-only, and
+#: a player whose likelier side is `no` is not a selection at all (fix round 1, Critical 1):
+#: recording the `no` price under a `yes` operator would describe one ticket, ask the owner to
+#: place another, and grade a third.
+_YES_NO_FAMILIES = ("anytime_td",)
 
 
 def _relationship_note(first, second) -> str | None:
@@ -183,9 +200,12 @@ _POOL = text("""
 
 
 #: Bound: one sport's games kicking off inside `prop_window_hours`, DraftKings only, prop rows
-#: only. Index: `ix_odds_prop_lookup` on `odds_prop_snapshots` (D23), driven from `games` by the
-#: kickoff window. The `distinct on` takes the newest row per outcome, the shape `_POOL` already
-#: uses for lines.
+#: only. `ix_odds_prop_lookup (game_id, market_type, player_id, fetched_at desc) where player_id
+#: is not null` is the **access** path -- one seek per game in the kickoff window, driven from
+#: `games` -- not the ordering: the `distinct on` key sorts `point` and `outcome_side` ahead of
+#: `fetched_at`, so Postgres sorts the rows the index returned. That sort is over one sport's
+#: prop rows inside one 24 h fetch window, which is this pool's bound; it is never a walk of the
+#: table.
 #:
 #: `:since` is the **prop window**, not `leg_max_age_minutes`: a selection whose newest price is
 #: older than the age limit has to be *seen* for `stale_price` to be recorded rather than
@@ -201,7 +221,7 @@ _PROP_POOL = text("""
     from odds_prop_snapshots o
     join games g on g.id = o.game_id
     left join players p on p.id = o.player_id
-    where o.book = :book and o.market_type like 'prop:%'
+    where o.book = any(:books) and o.market_type like 'prop:%'
       and o.player_id is not null
       and o.fetched_at >= :since and o.fetched_at <= :now
       and g.sport = :sport
@@ -229,7 +249,9 @@ def _prop_selections(session, config, sport: str, now: datetime, max_age: timede
     """
     props = config.props
     rows = session.execute(_PROP_POOL, {
-        "book": BOOK, "sport": sport, "now": now,
+        # `props.books` is the policy list, not this module's `BOOK` constant: a config commit
+        # that adds or replaces a book takes effect here without a code change.
+        "books": list(props.books), "sport": sport, "now": now,
         "since": now - timedelta(hours=props.prop_window_hours),
         "window_end": now + timedelta(hours=props.prop_window_hours)}).all()
 
@@ -257,9 +279,15 @@ def _prop_selections(session, config, sport: str, now: datetime, max_age: timede
                                            player_id, point, now, max_age)
                    for side, row in priced.items()}
         side = _preferred_side(chances)
+        family = _family_of(market_type)
+        if side not in _buildable_sides(family):
+            # Critical 1: the likelier side of this scorer market is `no`, which addendum 4.4
+            # cannot express and Task 5 cannot grade. Skipped with a code rather than built as
+            # its own opposite.
+            reasons["side_unsupported"] = reasons.get("side_unsupported", 0) + 1
+            continue
         row = priced[side]
         chance, source = chances[side]
-        family = _family_of(market_type)
 
         if game_id not in rosters:
             rosters[game_id] = candidates_for_game(session, sport, game_id)
@@ -360,10 +388,22 @@ def _preferred_side(chances: dict) -> str:
     return sorted(chances)[0]
 
 
+def _buildable_sides(family: str) -> tuple[str, ...]:
+    """The sides of this family that a leg can state (addendum 4.4's operator vocabulary).
+
+    A yardage or receptions line can be taken either way -- `operator` and `plain_text` both
+    carry the side. A scorer market can only be taken `yes`; there is no `no` operator, so the
+    other side is not a selection this harness offers.
+    """
+    return ("yes",) if family in _YES_NO_FAMILIES else ("over", "under")
+
+
 def _operator_for(market_type: str, side: str | None) -> str:
     """`parlay_legs.operator` (design 5.1): `yes` for a scorer market, `atleast` for an
     alternate yardage line, `over`/`under` for a main line."""
-    if _family_of(market_type) == "anytime_td":
+    if _family_of(market_type) in _YES_NO_FAMILIES:
+        # `_prop_selections` has already dropped any scorer selection whose side is not `yes`,
+        # so this is the side that was priced, not a label pasted over the other one.
         return "yes"
     if market_type.endswith(":alt"):
         return "atleast"
@@ -450,9 +490,12 @@ def build_card(session: Session, settings, sport: str, week: int, kind: str, now
             if not same_game and kind == "smart" \
                     and prop_legs >= config.props.max_prop_legs_smart:
                 continue
-        if _distinct_key(item) in used_keys:
-            # `distinct_player_or_market`: one selection per player and market on a card, so a
-            # same-game slip cannot carry the same player twice in the same market.
+        if ((config.props.same_game_distinct or not same_game)
+                and _distinct_key(item) in used_keys):
+            # `distinct_player_or_market` (addendum 2.1) is the same-game shape's own policy
+            # flag, honoured here; a cross-game card can never repeat a player anyway, since
+            # each of its legs comes from a different game, so the rule is applied there too at
+            # no cost.
             continue
         chosen.append(item)
         used_games.add(item["game_id"])
@@ -499,6 +542,13 @@ def build_card(session: Session, settings, sport: str, week: int, kind: str, now
     # rather than a number DraftKings will never quote (D4).
     hold = _hold(true_p, payout, stake) if p_source_min == "sharp" and not correlated else None
 
+    # The context lines are fetched here, before the card and its legs are inserted, so no ESPN
+    # request is ever in flight while this session holds a write open (fix round 1, Important 3).
+    contexts, unfetched = _context_lines(chosen, settings, sport, espn)
+    if unfetched:
+        log.info("parlay build: %s (%.0fs / %d fetches); %d prop legs read `no season data yet`",
+                 "gamelog_budget_spent", GAMELOG_BUDGET_S, MAX_GAMELOG_FETCHES, unfetched)
+
     card_year = year if year is not None else chicago_day(now).isocalendar().year
     card = ParlayCard(year=card_year, week=week, sport=sport, kind=kind, built_at=now,
                       stake=stake.quantize(Decimal("0.01")),
@@ -515,7 +565,6 @@ def build_card(session: Session, settings, sport: str, week: int, kind: str, now
     session.add(card)
     session.flush()
 
-    contexts = _context_lines(chosen, settings, sport, espn)
     legs = []
     for seq, item in enumerate(chosen, start=1):
         price = item["price"]
@@ -527,18 +576,23 @@ def build_card(session: Session, settings, sport: str, week: int, kind: str, now
                         threshold=price.point,
                         dk_american=price.dk_american, dk_decimal=price.dk_decimal,
                         plain_text=_plain_text(item)[:80],
-                        # The two snapshot tables keep separate id spaces (D23) and
-                        # `parlay_legs` has one column for the row a leg was priced from: a
-                        # prop leg records its `odds_prop_snapshots` id here and its
-                        # `market_type = 'prop'` says which table to resolve it in.
-                        odds_snapshot_id=(price.odds_snapshot_id
-                                          if price.odds_snapshot_id is not None
-                                          else price.odds_prop_snapshot_id),
+                        # One column per id space (fix round 1, Important 2): a game line fills
+                        # `odds_snapshot_id`, a prop fills `odds_prop_snapshot_id`, and each
+                        # leaves the other null. Both tables are `bigserial` from 1, so a reader
+                        # that forgot to branch on `market_type` would otherwise resolve a prop
+                        # leg to a real but unrelated game line instead of to nothing.
+                        odds_snapshot_id=price.odds_snapshot_id,
+                        odds_prop_snapshot_id=price.odds_prop_snapshot_id,
                         status="pending", graded_at=None,
                         player_id=item["player_id"], stat=item["family"], period="game",
                         operator=item.get("operator"),
-                        market_def=(config.props.market_defs.get(item["family"], "")[:120]
-                                    or None) if item["kind"] == "prop" else None,
+                        # The recorded rule whole, never a prefix (fix round 1, Important 1):
+                        # `market_def` is `String(400)` and the 353-character `anytime_td` entry
+                        # fits. A prefix stopped before the clause excluding passing touchdowns,
+                        # so the leg stated a rule that meant the opposite of the one Task 5
+                        # grades it by.
+                        market_def=(config.props.market_defs.get(item["family"]) or None)
+                        if item["kind"] == "prop" else None,
                         dk_link=price.link, dk_sid=price.sid, offered=True,
                         p_at_build=item["p"] if item["p_source"] != "none" else None,
                         p_source=item["p_source"], context_text=contexts[seq - 1])
@@ -579,37 +633,45 @@ def _link_capability(chosen) -> str:
     return "none"
 
 
-def _context_lines(chosen, settings, sport: str, espn) -> list[str | None]:
-    """One context line per leg, in leg order (addendum 1.1).
+def _context_lines(chosen, settings, sport: str, espn,
+                   clock=time.monotonic) -> tuple[list[str | None], int]:
+    """One context line per leg, in leg order, and the number of game logs left unfetched.
 
     A game line restates the sharp probability it was built from; a prop restates its own
-    season line from ESPN's game log, or says it has none. The game log is fetched at build
-    time, at most `MAX_GAMELOG_FETCHES` times, only for a family the log can answer, and never
-    for a family it cannot (`anytime_td` has no season column). Any failure is
-    `no season data yet`: a context line is never worth failing a build for.
+    season line from ESPN's game log, or says it has none (addendum 1.1). The game log is
+    fetched at most `MAX_GAMELOG_FETCHES` times and only for a family the log can answer --
+    never for `anytime_td`, which has no season column -- and the whole pass is bounded by one
+    `GAMELOG_BUDGET_S` deadline checked between fetches, so a slow host costs the build one
+    budget rather than forty timeouts. Any failure, and everything after the deadline, is
+    `no season data yet`: a context line is never worth failing a build for, and the caller
+    runs this **before** it inserts the card, so no external call spans a write transaction.
     """
     lines: list[str | None] = []
     fetched = 0
+    skipped = 0
+    deadline = clock() + GAMELOG_BUDGET_S
     for item in chosen:
         if item["kind"] != "prop":
             percent = (item["p"] * 100).quantize(Decimal("1"))
             lines.append(f"sharps say {percent} % at build")
             continue
         log = {}
-        if (item["family"] in _GAMELOG_FAMILIES and item.get("espn_id")
-                and fetched < MAX_GAMELOG_FETCHES):
-            if espn is None:
-                espn = _espn_client(settings)
-            if espn is not None:
-                fetched += 1
-                log = _gamelog(espn, sport, item["espn_id"])
+        if item["family"] in _GAMELOG_FAMILIES and item.get("espn_id"):
+            if fetched >= MAX_GAMELOG_FETCHES or clock() >= deadline:
+                skipped += 1
+            else:
+                if espn is None:
+                    espn = _espn_client(settings)
+                if espn is not None:
+                    fetched += 1
+                    log = _gamelog(espn, sport, item["espn_id"])
         values = log.get(item["family"]) or []
         if not values:
             lines.append("no season data yet")
             continue
         average = (sum(values) / Decimal(len(values))).quantize(Decimal("1"))
         lines.append(f"avg {average} \u00b7 last {values[0]} \u00b7 ESPN"[:80])
-    return lines
+    return lines, skipped
 
 
 def _espn_client(settings):

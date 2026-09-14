@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from harness.parlay.build import (RELATIONSHIP_NOTES, BuildRefused, NoAnchorPriced,
+from harness.parlay.build import (GAMELOG_BUDGET_S, RELATIONSHIP_NOTES, BuildRefused,
+                                  NoAnchorPriced, _context_lines, _link_capability, _main_pair,
                                   _relationship_note, build_card, resolve_iso_week)
 from harness.parlay.config import load_config
 from harness.parlay.pricing import (american, decimal_from, newest_dk_price,
@@ -484,8 +485,7 @@ def test_every_prop_leg_records_its_market_definition_and_deep_link(
     card = build_card(db_session, env_settings, _PARLAY_SPORT, 37, "lottery", T0)
     paired = next(leg for leg in _legs(db_session, card.id)
                   if leg.player_id == seeded_lottery_prop_pool.paired.id)
-    assert paired.market_def and paired.market_def in load_config().props.market_defs[
-        "anytime_td"]
+    assert paired.market_def == load_config().props.market_defs["anytime_td"]
     assert paired.dk_link and paired.dk_sid
     assert paired.period == "game" and paired.offered is True
     assert paired.context_text == "no season data yet"
@@ -508,3 +508,161 @@ def test_a_replacement_card_records_the_card_it_replaces(db_session, env_setting
     card = build_card(db_session, env_settings, _PARLAY_SPORT, 37, "smart", T0,
                       parent_card_id=4242)
     assert card.parent_card_id == 4242
+
+
+# --- Fix round 1 ------------------------------------------------------------------------------
+
+
+def seed_no_favoured_scorer(session):
+    """The review's own pair: a scorer priced `yes` 2.50 / `no` 1.50, so the likelier side is
+    `no` -- 0.3750 against 0.6250 -- which is the ordinary shape of a DraftKings scorer market
+    and the one this builder must refuse to write as a `yes` leg."""
+    _anchor_game(session)
+    game = _prop_game(session, "NFA", "NFB")
+    return _scorer(session, game, game.home_team_id, "Longshot Scorer",
+                   yes=Decimal("2.50"), no=Decimal("1.50"))
+
+
+def test_a_scorer_whose_likelier_side_is_no_is_skipped_by_code_not_built_as_a_yes_leg(
+        db_session, env_settings):
+    """Critical 1. Addendum 4.4's operator vocabulary is `over|under|atleast|yes`: there is no
+    `no` operator, and Task 5 grades this leg as hit when a qualifying touchdown is recorded.
+    Building the `no` price under a `yes` operator would print one selection on the card, have
+    the owner place another, and grade a third; the selection is skipped with a code instead.
+    """
+    seed_no_favoured_scorer(db_session)
+    with pytest.raises(BuildRefused) as excinfo:
+        build_card(db_session, env_settings, _PARLAY_SPORT, 37, "smart", T0)
+    assert excinfo.value.reason_code == "side_unsupported"
+
+
+def test_a_yes_favoured_scorer_is_built_described_and_priced_on_the_yes_side(
+        db_session, env_settings, seeded_smart_prop_pool):
+    """The other half of Critical 1: when `yes` is the likelier side it is built, and the price,
+    the side, the operator and the words on the card are all that same side."""
+    card = build_card(db_session, env_settings, _PARLAY_SPORT, 37, "smart", T0)
+    prop = next(leg for leg in _legs(db_session, card.id) if leg.market_type == "prop")
+    assert prop.side == "yes" and prop.operator == "yes"
+    assert prop.dk_decimal == _YES_PRICE
+    assert prop.p_at_build == Decimal("0.5105")
+    assert "to score a touchdown" in prop.plain_text
+    assert "not" not in prop.plain_text.lower()
+
+
+def test_a_prop_leg_records_its_own_snapshot_column_and_no_game_line_id(
+        db_session, env_settings, seeded_lottery_prop_pool):
+    """Important 2: both snapshot tables are `bigserial` from 1, so a prop id in
+    `odds_snapshot_id` resolves to a real but unrelated game line for any reader that forgets to
+    branch. A prop leg fills `odds_prop_snapshot_id` and leaves the other null; a game line does
+    the reverse."""
+    from harness.db.models import OddsPropSnapshot
+
+    card = build_card(db_session, env_settings, _PARLAY_SPORT, 37, "lottery", T0)
+    legs = _legs(db_session, card.id)
+    props = [leg for leg in legs if leg.market_type == "prop"]
+    lines = [leg for leg in legs if leg.market_type != "prop"]
+    assert props and lines
+    for leg in props:
+        assert leg.odds_snapshot_id is None and leg.odds_prop_snapshot_id is not None
+        row = db_session.get(OddsPropSnapshot, leg.odds_prop_snapshot_id)
+        assert row is not None and row.player_id == leg.player_id
+        assert row.price_decimal == leg.dk_decimal
+    for leg in lines:
+        assert leg.odds_snapshot_id is not None and leg.odds_prop_snapshot_id is None
+
+
+class _CountingEspn:
+    """An ESPN client double that answers one receiver's game log and counts its calls."""
+
+    BODY = {"names": ["receptions", "receivingYards"],
+            "seasonTypes": [{"categories": [{"events": [{"stats": ["8", "122"]},
+                                                        {"stats": ["6", "104"]}]}]}]}
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def fetch_gamelog(self, sport, athlete_id):
+        self.calls.append(athlete_id)
+        return SimpleNamespace(status=200, body=self.BODY)
+
+
+def _prop_item(espn_id, family="rec_yds"):
+    return {"kind": "prop", "family": family, "espn_id": espn_id, "game_id": 1,
+            "player_id": 1, "player_name": "A Receiver", "team_id": 1, "p": None,
+            "p_source": "none", "side": "over", "operator": "over"}
+
+
+def test_the_game_log_pass_stops_at_its_budget_and_the_rest_read_no_season_data(env_settings):
+    """Important 3: forty sequential fetches at the HTTP timeout each is up to four hundred
+    seconds of blocking HTTP inside a stage bounded at sixty (B-I9). One deadline over the whole
+    pass, checked between fetches, with a fake clock so the test sleeps for nothing.
+    """
+    espn = _CountingEspn()
+    # 0.0 sets the deadline, 0.0 lets the first fetch through, and the next reading is past it.
+    ticks = iter([0.0, 0.0, GAMELOG_BUDGET_S + 1, GAMELOG_BUDGET_S + 2])
+    lines, unfetched = _context_lines([_prop_item("1"), _prop_item("2"), _prop_item("3")],
+                                      env_settings, "nfl", espn, clock=lambda: next(ticks))
+    assert espn.calls == ["1"]
+    assert lines[0] == "avg 113 \u00b7 last 122 \u00b7 ESPN"
+    assert lines[1] == "no season data yet" and lines[2] == "no season data yet"
+    assert unfetched == 2
+
+
+def test_a_scorer_leg_never_asks_espn_for_a_game_log_at_all(db_session, env_settings,
+                                                            seeded_smart_prop_pool):
+    """`anytime_td` has no season column in the game log (addendum 4.1), so the only family
+    buildable today spends none of the budget and makes no request."""
+    espn = _CountingEspn()
+    card = build_card(db_session, env_settings, _PARLAY_SPORT, 37, "smart", T0, espn=espn)
+    assert espn.calls == []
+    assert all(leg.context_text == "no season data yet"
+               for leg in _legs(db_session, card.id) if leg.market_type == "prop")
+
+
+def _alt_row(point, side, price, fetched_at):
+    return SimpleNamespace(point=point, outcome_side=side, price_decimal=price,
+                           fetched_at=fetched_at)
+
+
+def test_an_alternate_line_devigs_against_the_closest_fresh_main_pair():
+    """Minor 2: B-I8's fallback, which no buildable family can reach until a yardage rule is
+    recorded (D19). `_main_pair` is pure, so it is tested directly: the closest main line with
+    both sides inside the age limit wins, a stale pair is not a pair, and a one-sided main line
+    is not one either."""
+    fresh = NOW - timedelta(minutes=5)
+    stale = NOW - timedelta(hours=2)
+    max_age = timedelta(minutes=30)
+    close = {"over": _alt_row(Decimal("225"), "over", Decimal("1.87"), fresh),
+             "under": _alt_row(Decimal("225"), "under", Decimal("1.95"), fresh)}
+    far = {"over": _alt_row(Decimal("275"), "over", Decimal("2.60"), fresh),
+           "under": _alt_row(Decimal("275"), "under", Decimal("1.45"), fresh)}
+    mains = {(1, "pass_yds", 7): [(Decimal("275"), far), (Decimal("225"), close)]}
+    pair = _main_pair(mains, 1, "pass_yds", 7, Decimal("250"), "over", NOW, max_age)
+    assert pair is not None and pair[0] is close["over"] and pair[1] is close["under"]
+
+    aged = {"over": _alt_row(Decimal("225"), "over", Decimal("1.87"), stale),
+            "under": _alt_row(Decimal("225"), "under", Decimal("1.95"), stale)}
+    assert _main_pair({(1, "pass_yds", 7): [(Decimal("225"), aged)]}, 1, "pass_yds", 7,
+                      Decimal("250"), "over", NOW, max_age) is None
+    one_sided = {"over": _alt_row(Decimal("225"), "over", Decimal("1.87"), fresh)}
+    assert _main_pair({(1, "pass_yds", 7): [(Decimal("225"), one_sided)]}, 1, "pass_yds", 7,
+                      Decimal("250"), "over", NOW, max_age) is None
+    assert _main_pair({}, 1, "pass_yds", 7, Decimal("250"), "over", NOW, max_age) is None
+
+
+def _capability_item(link, sid):
+    from harness.parlay.pricing import LegPrice
+
+    return {"price": LegPrice(odds_snapshot_id=None, dk_decimal=Decimal("1.87"),
+                              dk_american=-115, point=None, fetched_at=NOW,
+                              odds_prop_snapshot_id=1, link=link, sid=sid)}
+
+
+def test_link_capability_names_the_weakest_link_over_the_legs():
+    """Minor 3: the `selection` and `event` branches, which no card carrying a game line can
+    reach -- `odds_snapshots` stores neither column."""
+    selection = [_capability_item("https://dk/e/1", "sid-1"), _capability_item("https://dk/e/2",
+                                                                              None)]
+    assert _link_capability(selection) == "selection"
+    assert _link_capability([selection[0], _capability_item(None, "sid-2")]) == "event"
+    assert _link_capability([selection[0], _capability_item(None, None)]) == "none"
