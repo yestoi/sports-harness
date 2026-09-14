@@ -41,7 +41,6 @@ import time
 import tracemalloc
 from datetime import timedelta
 
-import pytest
 import respx
 
 from harness.report.tables import weekly_tables
@@ -263,9 +262,8 @@ def test_the_streamed_reads_render_byte_identical_tables(db_session, env_setting
         "the equality fixture produced no populated table-4 cell")
 
 
-@pytest.mark.parametrize("phase", ["settle"])
 def test_the_settle_job_trims_once_and_records_the_mib_it_returned(
-        db_session, env_settings, monkeypatch, phase):
+        db_session, env_settings, monkeypatch):
     """Fix 49 round 3 (ii), settle half: one `malloc_trim` per settle run, recorded.
 
     The settle job runs inside the recorder process and is where the live step happened, so the
@@ -288,7 +286,8 @@ def test_the_settle_job_trims_once_and_records_the_mib_it_returned(
     assert len(calls) == 1, f"malloc_trim ran {len(calls)} times in one settle job"
     rows = db_session.query(MetricSample).filter(
         MetricSample.name == "recorder.malloc_trim_mb").all()
-    assert [(r.source, r.value, r.labels) for r in rows] == [("recorder", 12.5, {"phase": phase})]
+    assert [(r.source, r.value, r.labels) for r in rows] == [
+        ("recorder", 12.5, {"phase": "settle"})]
 
 
 def test_a_platform_without_malloc_trim_is_a_no_op(monkeypatch):
@@ -328,14 +327,21 @@ def test_a_priced_tick_trims_once_and_records_the_mib_it_returned(
 
     runner_mod._EVENTS.clear()
     calls = []
-    monkeypatch.setattr(tick_mod.telemetry, "malloc_trim", lambda: calls.append(1) or 7.5)
+    # Review M5, tick half: the trim happens in the tick body and the RSS sample is taken later
+    # in `_recorder_samples`, so both are marked on one list and the order is asserted rather
+    # than assumed. `telemetry.rss_mb` has exactly one caller in a tick (`tick.py:237`).
+    monkeypatch.setattr(tick_mod.telemetry, "malloc_trim", lambda: calls.append("trim") or 7.5)
+    monkeypatch.setattr(tick_mod.telemetry, "rss_mb", lambda: calls.append("rss") or 201.5)
     try:
         run_tick, _ = _driver(env_settings, db_session, 1)
         run_tick()
     finally:
         runner_mod._EVENTS.clear()
 
-    assert len(calls) == 1, f"malloc_trim ran {len(calls)} times in one tick"
+    assert calls == ["trim", "rss"], calls
     rows = db_session.query(MetricSample).filter(
         MetricSample.name == "recorder.malloc_trim_mb").all()
     assert [(r.source, r.value, r.labels) for r in rows] == [("recorder", 7.5, {"phase": "tick"})]
+    rss_rows = db_session.query(MetricSample).filter(
+        MetricSample.name == "recorder.rss_mb").all()
+    assert [(r.value, r.labels) for r in rss_rows] == [(201.5, {"phase": "tick"})]
