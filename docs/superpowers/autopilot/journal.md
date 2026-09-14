@@ -2282,3 +2282,9 @@ Controller actions from these rulings (each recorded where it lands):
 - Test evidence: full suite at 1e47594 including the recorder soaks: 3,319 passed / 6 xfailed / 1 deselected, pristine, exit 0 (`fix49-full-1e47594.log`; release tree 22a92431…; the rebase onto main before the ff crossed docs commits only, so the tree is main's).
 - Merge: ff-merged as **07a4de8** (rebase-and-ff in one command); pushed. Deploy trigger open: ships app-only together with fix 57/58 (round 1 in flight) and fix 67 (suite running) after verify 185's 05:42 CT judgment. Row 49's 6 h / 500 MiB row is re-judged on that build (08:58 CT).
 - Dispatches this unit: 4 (closed). CT day: 36.
+
+## 188. hotfix - fix 67 (the pipeline eviction test restores the package attributes) merged - 2026-09-14 05:35 CT
+
+- Orient: rule 1 (row 67, tests only). Sonnet implementer (10 min, `results/fix-67-report.md`), sonnet review Approved 0/0/0 (`results/fix-67-review.md`: both file orders 29 passed; 80 passed on pipeline+settle+markouts+stage_order).
+- Test evidence: full suite at 3d026df (main d4527db code + the fix): 3,3xx passed / 6 xfailed / 1 deselected, pristine, exit 0 (`fix67-full-3d026df.log`). The rebase before the ff crossed fix 49's code (journal 187), so the merged tree is untested as a whole: the main full suite runs now on 5395ac9 (`main-full-5395ac9.log`) and is the release receipt.
+- Merge: ff-merged as **5395ac9** (pushed). Row 67 closes when the main suite is green. Dispatches this unit: 2 (closed). CT day: 36.
