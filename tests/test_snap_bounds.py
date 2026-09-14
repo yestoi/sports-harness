@@ -55,6 +55,12 @@ BOUNDED_TABLES = frozenset({
     "runs", "job_runs", "metric_samples", "equity_snapshots", "order_watch_samples",
     "game_score_events", "operator_events", "venue_requests", "veto_decisions", "rfq_quotes",
     "order_events", "gap_outcomes", "ledger",
+    # Phase 4.6 (addendum §4.3, Task 12) adds one more, and it grows exactly as
+    # `game_score_events` does:
+    #   player_stat_events -- one row per *change* in a carded player's stat, per poll, forever
+    # The Ticket builder reads it under the prop legs' own `(game_id, player_id)` id lists plus
+    # a `ts` window, and takes two rows per key.
+    "player_stat_events",
 })
 
 #: Bounded by the shape of the system, not by its age:
@@ -76,6 +82,10 @@ TINY_TABLES = frozenset({
     "games", "teams", "venue_markets", "strategy_variants", "gate_reports", "check_results",
     "exec_heartbeat", "kill_switch", "venue_status", "dashboard_snapshots", "report_runs",
     "report_cells", "report_annotations",
+    # source_state -- one row per feed key (a dozen), read by primary key: phase 4.6's prop
+    # rotation records its monthly credit spend there (addendum §3.2) and Pulse's `prop_budget`
+    # rule reads that one row.
+    "source_state",
 })
 
 #: Not a table: SQL keywords that follow `from`/`join` in these statements.
