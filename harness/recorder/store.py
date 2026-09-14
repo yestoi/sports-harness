@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -58,6 +59,34 @@ def get_source_state(session: Session, key: str) -> datetime | None:
 def set_source_state(session: Session, key: str, ts: datetime) -> None:
     stmt = insert(SourceState).values(key=key, last_fetched_at=ts)
     stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"last_fetched_at": ts})
+    session.execute(stmt)
+
+
+def get_source_credits(session: Session, key: str) -> int | None:
+    """The Odds API credits this source-state key has spent, or `None` when it never spent any.
+
+    Phase 4.6 3.2. `None` and `0` are deliberately different: a month key that has never been
+    written reads `None`, a month whose calls all returned `x-requests-last: 0` reads `0`, and
+    the prop source treats both as "nothing spent yet" while a reader can still tell them apart.
+    Separate from `get_source_state` rather than widening it: every existing caller wants the
+    timestamp alone and none of them should start paying for a second column.
+    """
+    row = session.get(SourceState, key)
+    return row.credits_used if row else None
+
+
+def add_source_credits(session: Session, key: str, ts: datetime, credits: int) -> None:
+    """Add `credits` to this key's running total and stamp it, in one statement.
+
+    Bound: one row by primary key (`source_state.key`). The addition is done in SQL rather than
+    read-modify-written in Python so two processes writing the same month key cannot lose a
+    tick's spend between them.
+    """
+    stmt = insert(SourceState).values(key=key, last_fetched_at=ts, credits_used=credits)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["key"],
+        set_={"last_fetched_at": ts,
+              "credits_used": func.coalesce(SourceState.credits_used, 0) + credits})
     session.execute(stmt)
 
 

@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     build_sha: str = "dev"
     build_time: str | None = None
     odds_monthly_credits: int = 5_000_000  # U1 2026-09-07: Odds API tier upgrade (was 100_000)
+    #: Phase 4.6 3.2 (D2). The prop feed's own monthly allocation, 6 % of the 5M tier against a
+    #: derived need of about 170k. Enforced in code from `x-requests-last`, summed per Chicago
+    #: month in `source_state`; props go dormant for the month at the allocation.
+    odds_prop_monthly_credits: int = 300_000
+    #: The share of the strategy feed's monthly credits that must remain before props may run at
+    #: all. The strategy feed is protected first, well before gate 5's 20 % line is near.
+    credits_watch_fraction: float = 0.40
     # alternates cadence inside 180 min of kickoff (U1 value); Task 3b wires this into
     # alternates_due, replacing the old flat odds_alternates_interval_s setting.
     odds_alt_interval_near_s: int = 120

@@ -18,16 +18,49 @@ from harness.feeds.nws import NwsClient
 from harness.feeds.odds_api import OddsApiClient, parse_credit_headers, parse_event_ids_and_times
 from harness.normalize.runner import normalize_new
 from harness.recorder import store
-from harness.recorder.cadence import (SPORTS, alternates_due, interval_for, is_due, select_ladders,
+from harness.recorder.cadence import (SPORTS, PropEvent, alternates_due, interval_for, is_due,
+                                      prop_events_due, prop_events_watched, select_ladders,
                                       select_trade_tickers)
 from harness.strategy.pipeline import price_and_signal
 from harness.venues.kalshi.public import FOOTBALL_SERIES, KalshiPublic, MarketSummary, parse_market_summaries
+from harness.weeks import chicago_day, chicago_iso_week
 from harness.weather.snapshots import ALLOWED_CADENCES, MIN_TICK_REMAINING_S, run_weather_source
 
 log = logging.getLogger(__name__)
 _ESPN_PATH = {"nfl": "/nfl/scoreboard", "ncaaf": "/college-football/scoreboard"}
 _SERIES_SPORT = {s: ("nfl" if "NFL" in s else "ncaaf") for s in FOOTBALL_SERIES}
 ALTERNATES_BUDGET_S = 40  # alternates may spend at most this much of the tick budget
+#: Phase 4.6 3.2. The prop source's own sub-budget, the `ALTERNATES_BUDGET_S` pattern and a
+#: separate constant: the roster half and the prop calls share it, so the two together can never
+#: take more than this much of a tick.
+PROPS_BUDGET_S = 40
+#: Props run on the 900 s tick and on no other (3.2): never the 120 s game window, never the
+#: 20 s NFL pre-kickoff window, and never in the quiet hours, where `interval_for` returns None.
+PROPS_CADENCE_S = 900
+#: One roster per team per week (4.1). The fetch is skipped for the next seven days per team,
+#: which is what bounds the roster half to a handful of calls even on a full Saturday.
+ROSTER_MAX_AGE = timedelta(days=7)
+#: A safety bound on the per-sport candidate read, not the policy cap: `prop_events_max` (16)
+#: decides what is watched. A 24 h window holds at most about 60 college games.
+PROP_EVENT_SCAN_LIMIT = 200
+#: The collector (4.3): the game-window cadence, its own sub-budget, and at most this many games
+#: a tick.
+PLAYER_STATS_CADENCE_S = 120
+PLAYER_STATS_BUDGET_S = 10
+PLAYER_STATS_MAX_GAMES = 8
+#: A safety bound on the carded-game read; the real bound is the placed/alive cards of one week.
+CARDED_GAMES_SCAN_LIMIT = 32
+#: After a game goes final the collector keeps asking for the box score for at most this long
+#: (4.3). A card still pending after it is the hung-leg state, which the `parlay_pending_final`
+#: WATCH rule reports rather than the collector fetching for ever.
+FINAL_RETRY_CEILING = timedelta(hours=6)
+#: `parlay_legs.market_type` -> the spelling `odds_snapshots` uses for the same market. Prop
+#: legs are the string "prop" and resolve through `odds_prop_snapshots` instead.
+LEG_MARKET_TYPES = {"ml": "moneyline", "spread": "spread", "total": "total"}
+#: The other side of a two-sided prop selection, for the devig the reprice re-derives.
+PROP_OPPOSITE = {"over": "under", "under": "over", "yes": "no", "no": "yes"}
+#: A source-state stamp that sorts before every real one: a key never fetched leads its rotation.
+_NEVER_FETCHED = datetime.min.replace(tzinfo=timezone.utc)
 KALSHI_COMMIT_EVERY = 50  # commit after this many stored trade/ladder responses
 TRADES_MAX_PAGES = 20  # 20,000 trades per window before we stop paginating and record a gap
 # Fix 14: ESPN's undated scoreboard is scoped to "today" in US/Eastern, not the recorder's own
@@ -285,9 +318,100 @@ _LEG_PROB_ROWS = text("""
 """)
 
 
+#: The prop source's candidate events (3.2), one sport at a time.
+#:
+#: Bound: `ix_games_sport_kick (sport, kickoff_utc)` seeks one sport's games inside the 24 h
+#: kickoff window, and `PROP_EVENT_SCAN_LIMIT` caps the read whatever the slate. The `exists`
+#: is the "priced signal" half of the watched rule: `ix_venue_markets_game_id` finds the game's
+#: markets and `ix_signal_market_created (venue_market_id, created_at)` the recent signals on
+#: them. `signals.fair_source` is the signal's own column, so no gap-snapshot hop is needed to
+#: tell a direct fair from a consensus one.
+_PROP_EVENT_CANDIDATES = text("""
+    select g.id as game_id, g.sport, g.odds_api_event_id as event_id, g.kickoff_utc,
+           g.home_team_id, g.away_team_id,
+           th.abbreviation as home_abbr, ta.abbreviation as away_abbr,
+           exists (select 1 from venue_markets vm
+                    join signals s on s.venue_market_id = vm.id
+                    where vm.game_id = g.id and s.replay = false and s.decision = 'candidate'
+                      and s.fair_source = 'direct'
+                      and s.created_at > :since and s.created_at <= :now) as signal
+    from games g
+    left join teams th on th.sport = g.sport and th.id = g.home_team_id
+    left join teams ta on ta.sport = g.sport and ta.id = g.away_team_id
+    where g.sport = :sport and g.kickoff_utc > :now and g.kickoff_utc <= :window_end
+      and g.odds_api_event_id is not null
+    order by g.kickoff_utc
+    limit :scan_limit
+""")
+
+#: The games the collector may fetch a summary for (4.3): one prop leg on a `placed` or `alive`
+#: card, the game in progress or just final.
+#:
+#: Bound: the driving set is the placed/alive cards, which is at most one week's slots (tens of
+#: rows); `ix_parlay_legs_card_seq (card_id, seq)` joins their legs and `games` resolves by
+#: primary key. `final_ts` reads `ix_game_score_events_game_ts (game_id, ts desc)` for one game
+#: and `newest_stat_ts` the leading column of `ix_player_stat_game_player_ts (game_id,
+#: player_id, ts desc)`; together they say whether the final box score has landed yet.
+_CARDED_GAMES = text("""
+    select distinct on (g.id) g.id as game_id, g.sport, g.espn_event_id, g.status,
+           (select max(e.ts) from game_score_events e
+             where e.game_id = g.id and e.status = 'final') as final_ts,
+           (select max(pse.ts) from player_stat_events pse
+             where pse.game_id = g.id) as newest_stat_ts
+    from parlay_cards c
+    join parlay_legs l on l.card_id = c.id
+    join games g on g.id = l.game_id
+    where c.status in ('placed', 'alive') and l.market_type = 'prop'
+      and g.status in ('in_progress', 'final') and g.espn_event_id is not null
+      and g.kickoff_utc >= :since
+    order by g.id
+    limit :scan_limit
+""")
+
+#: The carded players of one game, and the ESPN athlete id each one is keyed by in the box
+#: score. Bound: one game's legs (`ix_parlay_legs_card_seq` after the card filter) and `players`
+#: by primary key. Rows are written for these players and for nobody else (4.3).
+_CARDED_PLAYERS = text("""
+    select distinct l.player_id, p.espn_id
+    from parlay_cards c
+    join parlay_legs l on l.card_id = c.id
+    join players p on p.id = l.player_id
+    where c.status in ('placed', 'alive') and l.market_type = 'prop'
+      and l.game_id = :game_id and l.player_id is not null
+""")
+
+#: The value each carded player's stat currently stands at, so only a *change* is written (the
+#: `game_score_events` rule, 4.3). Bound: one game and its carded players on
+#: `ix_player_stat_game_player_ts (game_id, player_id, ts desc)`; `, id desc` breaks a tie
+#: between two rows written at the same instant.
+_NEWEST_STATS = text("""
+    select distinct on (player_id, stat) player_id, stat, value
+    from player_stat_events
+    where game_id = :game_id and player_id = any(:player_ids)
+    order by player_id, stat, ts desc, id desc
+""")
+
+#: The drafts the reprice may touch (2.3): `proposed` only, this Chicago week only. Bound:
+#: `ix_parlay_cards_week (year, week)` and the limit the caller passes,
+#: `2 sports x (1 + lottery_cards_max)`. A placed card is never in this result.
+_PROPOSED_CARDS = text("""
+    select c.id
+    from parlay_cards c
+    where c.status = 'proposed' and c.year = :year and c.week = :week
+    order by c.id
+    limit :card_limit
+""")
+
+
 class Recorder:
     #: Class attribute, not a module one, so a test can monkeypatch `Recorder._LEG_PROB_ROWS`.
     _LEG_PROB_ROWS = _LEG_PROB_ROWS
+    #: The phase 4.6 sources' queries, class attributes for the same reason.
+    _PROP_EVENT_CANDIDATES = _PROP_EVENT_CANDIDATES
+    _CARDED_GAMES = _CARDED_GAMES
+    _CARDED_PLAYERS = _CARDED_PLAYERS
+    _NEWEST_STATS = _NEWEST_STATS
+    _PROPOSED_CARDS = _PROPOSED_CARDS
 
     def __init__(self, settings: Settings, session_factory: sessionmaker, odds: OddsApiClient, espn: EspnClient,
                  kalshi: KalshiPublic, clock: Callable[[], datetime] = utcnow,
@@ -321,6 +445,12 @@ class Recorder:
         self._force = False
         # Task 12b: the build_sha deploy check runs once per process, at the first tick.
         self._startup_checked = False
+        # Phase 4.6: process-lifetime counters the fun-ticket sources keep. `prop_skipped_budget`
+        # is the month's allocation refusing a tick (3.2), `player_unmatched` the prop outcomes
+        # the normalizer could not resolve to a rostered player (4.2), `stat_missing` the carded
+        # players a fetched box score did not list (4.3). Each tick also reports its own numbers
+        # in `ctx`; these are the running totals a Pulse rule and the weekly report read.
+        self.counters = {"prop_skipped_budget": 0, "player_unmatched": 0, "stat_missing": 0}
 
     # ---- helpers -------------------------------------------------------------------
     def _latest_body_from_db(self, session: Session, source: str, endpoint: str) -> dict | list | None:
@@ -829,6 +959,419 @@ class Recorder:
             ctx["warnings"].append({"leg_probs": repr(e)})
             ctx["leg_probs"] = 0
 
+    # ---- phase 4.6: the fun-ticket sources -------------------------------------------
+    def _prop_events(self, session: Session, now: datetime):
+        """This tick's prop candidates: the database rows by event id, the `PropEvent`s the two
+        cadence functions read, and the loaded parlay policy.
+
+        One bounded read per sport (`_PROP_EVENT_CANDIDATES`); the watched rule itself is pure
+        and lives in `cadence.py`, so what is watched can be reasoned about without a database.
+        """
+        from harness.parlay.config import load_config
+
+        config = load_config()
+        rows: dict[str, object] = {}
+        events: list[PropEvent] = []
+        for sport in SPORTS:
+            for row in session.execute(self._PROP_EVENT_CANDIDATES, {
+                    "sport": sport, "now": now,
+                    "window_end": now + timedelta(hours=config.props.prop_window_hours),
+                    "since": now - timedelta(hours=config.pool_window_hours),
+                    "scan_limit": PROP_EVENT_SCAN_LIMIT}):
+                rows[row.event_id] = row
+                events.append(PropEvent(row.event_id, row.sport, row.kickoff_utc,
+                                        row.home_abbr, row.away_abbr, bool(row.signal)))
+        return rows, events, config
+
+    def _watched_prop_events(self, session: Session, now: datetime):
+        """`(rows by event id, watched events)` -- the same set `_props` fetches from, exposed
+        so a test and a future diagnostic can read the watched set without spending a credit."""
+        rows, events, config = self._prop_events(session, now)
+        return rows, prop_events_watched(now, events,
+                                         window_h=config.props.prop_window_hours,
+                                         per_sport=config.props.prop_events_max,
+                                         anchors=frozenset(config.anchors))
+
+    def _prop_rosters(self, session: Session, run: Run, now: datetime, rows: list,
+                      source_budget: "_Budget", ctx: dict) -> int:
+        """One ESPN roster per watched team per week (addendum 4.1, 4.2; plan review IM-7).
+
+        **Nothing else fills `players`**, and without `players` the normalizer's resolver matches
+        no prop outcome at all: every row keeps `player_id` null and no prop leg is ever built.
+        Bounded by the watched set (at most 16 events x 2 teams a sport) and by the seven-day
+        skip per team, and it shares the prop calls' sub-budget so the two together can never
+        exceed it. A failure here is a warning on the run, never a tick.
+        """
+        from harness.normalize.players import parse_roster, upsert_players
+
+        fetched, seen = 0, set()
+        for row in rows:
+            for team_id in (row.home_team_id, row.away_team_id):
+                if team_id is None or (row.sport, team_id) in seen:
+                    continue
+                seen.add((row.sport, team_id))
+                key = f"espn_roster:{row.sport}:{team_id}"
+                last = store.get_source_state(session, key)
+                if last is not None and now - last < ROSTER_MAX_AGE:
+                    continue
+                if not source_budget.ok():
+                    log.info("props: sub-budget spent before the roster of %s team %s",
+                             row.sport, team_id)
+                    return fetched
+                try:
+                    r = self.espn.fetch_roster(row.sport, team_id)
+                    store.store_raw(session, run.id, "espn",
+                                    f"{_ESPN_PATH[row.sport].rsplit('/', 1)[0]}/teams/{team_id}/roster",
+                                    {"team": str(team_id)}, r)
+                    ctx["n"] += 1
+                    ctx["fetched"] = True
+                    if r.status != 200:
+                        ctx["warnings"].append({key: f"http {r.status}"})
+                        continue
+                    upsert_players(session, row.sport, team_id, parse_roster(r.body), now)
+                    store.set_source_state(session, key, now)
+                    fetched += 1
+                except Exception as e:  # noqa: BLE001 - a roster never fails a tick
+                    log.exception("espn roster failed")
+                    ctx["warnings"].append({key: repr(e)})
+        return fetched
+
+    def _props(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff],
+               budget: "_Budget", ctx: dict) -> None:
+        """DraftKings player props for the watched events, and the weekly roster fetch that
+        makes them resolvable at all (addendum 3.2, 4.1).
+
+        Three guards before a credit is spent. **The cadence**: the 900 s tick only -- never the
+        120 s game window, never the 20 s NFL pre-kickoff window, never the quiet hours. **The
+        month's own allocation**: `x-requests-last` summed per Chicago month in
+        `source_state['odds_props:<YYYY-MM>']` against `odds_prop_monthly_credits`, dormant for
+        the rest of the month at the allocation. **The strategy feed first**: props are skipped
+        whenever the feed's own remaining credits are under `credits_watch_fraction` of the
+        month's tier, well before gate 5's 20 % line is near, and an unknown balance is never a
+        licence to spend.
+
+        Then a 40 s sub-budget covering the roster half and the prop calls together, the
+        rotation from `prop_events_due` (16 events a sport watched, 16 calls a tick,
+        oldest-fetched first, so 32 events refresh inside two ticks), and the month's counter
+        incremented by what the venue actually charged.
+
+        Nothing here can fail a tick: the whole pass sits inside one `try` and a failure is a
+        warning on the run. A single event's failure is a warning and that event is simply first
+        in line on the next tick.
+        """
+        intervals = [interval_for(sport, now, kickoffs, self.s.tz_local) for sport in SPORTS]
+        cadence = min((i for i in intervals if i is not None), default=None)
+        if cadence not in ALLOWED_CADENCES or cadence != PROPS_CADENCE_S:
+            ctx["props"] = {"skipped": f"cadence {cadence}"}
+            return
+        month_key = f"odds_props:{chicago_day(now):%Y-%m}"
+        try:
+            spent = store.get_source_credits(session, month_key) or 0
+            if spent >= self.s.odds_prop_monthly_credits:
+                self.counters["prop_skipped_budget"] += 1
+                ctx["props"] = {"skipped": "budget"}
+                return
+            remaining = ctx.get("remaining")
+            if (remaining is None
+                    or remaining < self.s.credits_watch_fraction * self.s.odds_monthly_credits):
+                ctx["props"] = {"skipped": "remaining"}
+                return
+            counts: dict = {"calls": 0, "credits": 0, "events": 0, "unmatched": 0,
+                            "rosters": 0, "event_ids": []}
+            # The `ALTERNATES_BUDGET_S` pattern: a slow Odds API can spend this much of the tick
+            # and no more, whatever is left of the tick budget when props are reached.
+            source_budget = _Budget(int(min(PROPS_BUDGET_S, max(0.0, budget.remaining_s()))),
+                                    self.monotonic)
+            rows, events, config = self._prop_events(session, now)
+            props = config.props
+            anchors = frozenset(config.anchors)
+            watched = prop_events_watched(now, events, window_h=props.prop_window_hours,
+                                          per_sport=props.prop_events_max, anchors=anchors)
+            counts["events"] = len(watched)
+            counts["rosters"] = self._prop_rosters(
+                session, run, now, [rows[w.event_id] for w in watched], source_budget, ctx)
+            last_fetched = {}
+            for watch in watched:
+                stamp = store.get_source_state(session, f"odds_prop:{watch.event_id}")
+                if stamp is not None:
+                    last_fetched[watch.event_id] = stamp
+            due = prop_events_due(now, events, last_fetched, window_h=props.prop_window_hours,
+                                  per_sport=props.prop_events_max,
+                                  calls=props.prop_calls_per_tick, anchors=anchors)
+            for event_id in due:
+                if not source_budget.ok():
+                    log.info("props: sub-budget spent after %d of %d due calls",
+                             counts["calls"], len(due))
+                    break
+                sport_key = SPORTS[rows[event_id].sport]
+                # Counted before the call, not after: a call that failed cost the same slice of
+                # the sub-budget as one that answered, which is what the budget is measuring.
+                counts["calls"] += 1
+                try:
+                    r = self.odds.fetch_event_props(sport_key, event_id)
+                    store.store_raw(session, run.id, "odds_api",
+                                    f"/sports/{sport_key}/events/{event_id}/odds",
+                                    {"markets": "props"}, r)
+                    ctx["n"] += 1
+                    ctx["fetched"] = True
+                    credits = parse_credit_headers(r.headers)
+                    ctx["credits"] += credits.last
+                    counts["credits"] += credits.last
+                    if "x-requests-remaining" in r.headers:  # I5
+                        ctx["remaining"] = credits.remaining
+                    if r.status == 200:
+                        store.set_source_state(session, f"odds_prop:{event_id}", now)
+                        counts["event_ids"].append(event_id)
+                    else:
+                        # A warning, not an error: the fun surface going quiet degrades a tick,
+                        # it does not fail one. The event is retried on the next tick.
+                        ctx["warnings"].append({f"odds_prop:{event_id}": f"http {r.status}"})
+                except Exception as e:  # noqa: BLE001 - one event never fails a tick
+                    log.exception("odds props failed")
+                    ctx["warnings"].append({f"odds_prop:{event_id}": repr(e)})
+            if counts["credits"]:
+                store.add_source_credits(session, month_key, now, counts["credits"])
+            ctx["props"] = counts
+        except Exception as e:  # noqa: BLE001 - the prop source never fails a tick
+            log.exception("prop source failed")
+            session.rollback()
+            ctx["warnings"].append({"props": repr(e)})
+            ctx["props"] = {"error": type(e).__name__}
+
+    def _player_stats(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff],
+                      budget: "_Budget", ctx: dict) -> None:
+        """ESPN box scores for the carded players of the games on the field (addendum 4.3).
+
+        The game-window tick only (120 s), at most `PLAYER_STATS_MAX_GAMES` games inside a 10 s
+        sub-budget, oldest-fetched first. Rows are written **for carded players only** and
+        **only on a change** (the `game_score_events` rule). ESPN's summary carries no per-stat
+        timestamp and sequential polls of one endpoint return the source's current state, so a
+        later lower value is a **correction**, not an out-of-order arrival: `correction = true`,
+        `source_ts` null, and the surface shows the fetch age. A player the update does not list
+        writes nothing and is counted `stat_missing`.
+
+        After a game goes final the fetch continues each tick until the final box score lands --
+        a stat row written at or after the moment the game went final -- and for at most six
+        hours (`FINAL_RETRY_CEILING`); a leg still pending after that is the hung-leg state the
+        `parlay_pending_final` WATCH rule reports. Never fails a tick.
+        """
+        intervals = [interval_for(sport, now, kickoffs, self.s.tz_local) for sport in SPORTS]
+        cadence = min((i for i in intervals if i is not None), default=None)
+        if cadence != PLAYER_STATS_CADENCE_S:
+            ctx["player_stats"] = {"skipped": f"cadence {cadence}"}
+            return
+        try:
+            source_budget = _Budget(int(min(PLAYER_STATS_BUDGET_S, max(0.0, budget.remaining_s()))),
+                                    self.monotonic)
+            candidates = session.execute(self._CARDED_GAMES, {
+                "since": now - timedelta(hours=24), "scan_limit": CARDED_GAMES_SCAN_LIMIT}).all()
+            due = []
+            for row in candidates:
+                if row.status == "final":
+                    if row.final_ts is None or now - row.final_ts > FINAL_RETRY_CEILING:
+                        # Either the status has not reached `game_score_events` yet (next tick
+                        # sees it) or the six-hour ceiling is spent.
+                        continue
+                    if row.newest_stat_ts is not None and row.newest_stat_ts >= row.final_ts:
+                        continue        # the final box score has landed; nothing more to ask for
+                last = store.get_source_state(session, f"espn_summary:{row.game_id}")
+                if not self._due(last, now, PLAYER_STATS_CADENCE_S):
+                    continue
+                due.append((last or _NEVER_FETCHED, row))
+            due.sort(key=lambda item: item[0])
+            counts = {"games": 0, "rows": 0, "corrections": 0}
+            for _last, row in due[:PLAYER_STATS_MAX_GAMES]:
+                if not source_budget.ok():
+                    log.info("player stats: sub-budget spent after %d games", counts["games"])
+                    break
+                try:
+                    written, corrected = self._collect_game_stats(session, run, now, row, ctx)
+                    counts["games"] += 1
+                    counts["rows"] += written
+                    counts["corrections"] += corrected
+                except Exception as e:  # noqa: BLE001 - one game never fails a tick
+                    log.exception("espn summary failed")
+                    ctx["warnings"].append({f"espn_summary:{row.game_id}": repr(e)})
+            ctx["player_stats"] = counts
+        except Exception as e:  # noqa: BLE001 - the collector never fails a tick
+            log.exception("player stat source failed")
+            session.rollback()
+            ctx["warnings"].append({"player_stats": repr(e)})
+            ctx["player_stats"] = {"error": type(e).__name__}
+
+    def _collect_game_stats(self, session: Session, run: Run, now: datetime, row,
+                            ctx: dict) -> tuple[int, int]:
+        """One game's summary fetched, parsed and written as changes. Returns `(rows,
+        corrections)`."""
+        from harness.db.models import PlayerStatEvent
+        from harness.normalize.players import UNDECIDABLE, parse_scoring_tds, parse_summary_stats
+
+        r = self.espn.fetch_summary(row.sport, row.espn_event_id)
+        raw_id = store.store_raw(session, run.id, "espn",
+                                 f"{_ESPN_PATH[row.sport].rsplit('/', 1)[0]}/summary",
+                                 {"event": str(row.espn_event_id)}, r)
+        ctx["n"] += 1
+        ctx["fetched"] = True
+        if r.status != 200:
+            ctx["warnings"].append({f"espn_summary:{row.game_id}": f"http {r.status}"})
+            return 0, 0
+        store.set_source_state(session, f"espn_summary:{row.game_id}", now)
+        carded = {str(c.espn_id): c.player_id
+                  for c in session.execute(self._CARDED_PLAYERS, {"game_id": row.game_id})}
+        if not carded:
+            return 0, 0
+        previous = {(p.player_id, p.stat): Decimal(str(p.value))
+                    for p in session.execute(self._NEWEST_STATS,
+                                             {"game_id": row.game_id,
+                                              "player_ids": sorted(carded.values())})}
+        scored = parse_scoring_tds(r.body)
+        undecidable = scored.pop(UNDECIDABLE, 0)
+        if undecidable:
+            # Never a miss and never a credit: the leg stays pending and the count is logged so
+            # the vocabulary can be widened against real bodies (plan review MI-2).
+            log.info("player stats: %d undecidable scoring plays in game %s",
+                     undecidable, row.game_id)
+        listed, values = set(), {}
+        for line in parse_summary_stats(r.body):
+            player_id = carded.get(line.player_espn_id)
+            if player_id is None:
+                continue        # carded players only (4.3)
+            listed.add(line.player_espn_id)
+            values[(player_id, line.stat)] = line.value
+        for espn_id in listed:
+            # A listed player with no qualifying touchdown is a value-0 row, not an absent one:
+            # the grader reads 0 as a miss and absence as `stat_missing` (Task 5 review, I3).
+            values[(carded[espn_id], "anytime_td")] = Decimal(scored.get(espn_id, 0))
+        written = corrections = 0
+        for (player_id, stat), value in sorted(values.items()):
+            old = previous.get((player_id, stat))
+            if old is not None and old == value:
+                continue        # change-only writes
+            correction = old is not None and value < old
+            session.add(PlayerStatEvent(game_id=row.game_id, player_id=player_id, ts=now,
+                                        source_ts=None, stat=stat, value=value, source="espn",
+                                        raw_id=raw_id, correction=correction))
+            written += 1
+            corrections += 1 if correction else 0
+        missing = [espn_id for espn_id in carded if espn_id not in listed]
+        self.counters["stat_missing"] += len(missing)
+        return written, corrections
+
+    def _parlay_reprice(self, session: Session, run: Run, now: datetime,
+                        kickoffs: list[Kickoff], ctx: dict) -> None:
+        """This week's drafts repriced in place (addendum 2.3).
+
+        The 900 s tick only. For every `proposed` card of the current Chicago week -- at most
+        `2 sports x (1 + lottery_cards_max)` -- each leg is re-read at the newest DraftKings row
+        for **its exact selection** (`odds_prop_snapshots` for a prop, `odds_snapshots` for a
+        game line) and the card's payout, combined price and hold are recomputed by the build's
+        own arithmetic. **A placed card is never touched** (EXPERIENCE-CONTRACTS 1) and **a
+        leg's line is never changed**: a moved line leaves the price stale and the sheet's
+        `LineMoved` path handles it.
+
+        `offered` goes false only when the event is inside the prop window **and** the last
+        successful prop fetch for it carried no row for the selection; outside the window
+        nothing changes and the surface reads `not repriced - outside the price window`. A
+        failed fetch is not evidence of removal, so the stamp itself has to be fresh. Fetches
+        nothing and never fails a tick.
+        """
+        intervals = [interval_for(sport, now, kickoffs, self.s.tz_local) for sport in SPORTS]
+        cadence = min((i for i in intervals if i is not None), default=None)
+        if cadence != PROPS_CADENCE_S:
+            ctx["reprice"] = {"skipped": f"cadence {cadence}"}
+            return
+        try:
+            from harness.db.models import Game, OddsPropSnapshot, ParlayCard, ParlayLeg
+            # The build's own arithmetic, imported rather than re-derived: 2.3 says the card's
+            # numbers are "recomputed by the same rules as the build", and two copies of a devig
+            # or a hold would be two answers.
+            from harness.parlay.build import _devig, _hold
+            from harness.parlay.config import load_config
+            from harness.parlay.pricing import (american, decimal_from, newest_dk_price,
+                                                newest_dk_prop_price)
+
+            config = load_config()
+            max_age = timedelta(minutes=config.leg_max_age_minutes)
+            window = timedelta(hours=config.props.prop_window_hours)
+            year, week = chicago_iso_week(now)
+            cards = session.execute(self._PROPOSED_CARDS, {
+                "year": year, "week": week,
+                "card_limit": 2 * (1 + config.lottery_cards_max)}).all()
+            counts = {"cards": 0, "legs": 0, "unoffered": 0}
+            for card_row in cards:
+                card = session.get(ParlayCard, card_row.id)
+                legs = (session.query(ParlayLeg).filter_by(card_id=card.id)
+                        .order_by(ParlayLeg.seq).all())
+                if not legs:
+                    continue
+                for leg in legs:
+                    game = session.get(Game, leg.game_id)
+                    if leg.market_type == "prop":
+                        source = (session.get(OddsPropSnapshot, leg.odds_prop_snapshot_id)
+                                  if leg.odds_prop_snapshot_id is not None else None)
+                        # The `prop:<stat>` key lives on the snapshot, never on the leg, whose
+                        # `market_type` is the string "prop" (Task 5 ruling); the family is the
+                        # fallback when the row it was built from has aged out of the table.
+                        market_type = (source.market_type if source is not None
+                                       else f"prop:{leg.stat}")
+                        price = newest_dk_prop_price(session, leg.game_id, market_type,
+                                                     leg.player_id, leg.threshold, leg.side,
+                                                     now, max_age)
+                        if price is not None:
+                            leg.dk_american, leg.dk_decimal = price.dk_american, price.dk_decimal
+                            leg.odds_prop_snapshot_id = price.odds_prop_snapshot_id
+                            leg.dk_link, leg.dk_sid = price.link, price.sid
+                            if leg.p_source == "book_devig":
+                                other = newest_dk_prop_price(
+                                    session, leg.game_id, market_type, leg.player_id,
+                                    leg.threshold, PROP_OPPOSITE.get(leg.side or ""), now,
+                                    max_age)
+                                if other is not None:
+                                    leg.p_at_build = _devig(price.dk_decimal, other.dk_decimal)
+                            counts["legs"] += 1
+                        elif (game is not None
+                              and timedelta(0) <= game.kickoff_utc - now <= window
+                              and game.odds_api_event_id):
+                            stamp = store.get_source_state(
+                                session, f"odds_prop:{game.odds_api_event_id}")
+                            if stamp is not None and now - stamp <= max_age:
+                                leg.offered = False
+                    else:
+                        price = newest_dk_price(session, leg.game_id,
+                                                LEG_MARKET_TYPES.get(leg.market_type,
+                                                                     leg.market_type),
+                                                leg.side_team_id, leg.side, now, max_age)
+                        # A game line whose newest row is at another number is a moved line, not
+                        # a new price for this leg: the leg keeps the line it states.
+                        if price is not None and price.point == leg.threshold:
+                            leg.dk_american, leg.dk_decimal = price.dk_american, price.dk_decimal
+                            leg.odds_snapshot_id = price.odds_snapshot_id
+                            counts["legs"] += 1
+                    counts["unoffered"] += 0 if leg.offered else 1
+                stake = decimal_from(card.stake)
+                payout, true_p, sourced = stake, Decimal("1"), 0
+                for leg in legs:
+                    payout *= decimal_from(leg.dk_decimal)
+                    if leg.p_source != "none" and leg.p_at_build is not None:
+                        true_p *= decimal_from(leg.p_at_build)
+                        sourced += 1
+                card.dk_payout_est = payout.quantize(Decimal("0.01"))
+                card.true_prob_est = (true_p.quantize(Decimal("0.000001")) if sourced else None)
+                # A hold is only meaningful when every leg carries a sharp fair and the legs are
+                # independent (D4); the build's rule, unchanged.
+                card.hold_est = (_hold(true_p, payout, stake)
+                                 if card.p_source_min == "sharp" and not card.correlated
+                                 else None)
+                card.dk_combined_american = american(payout / stake)
+                card.dk_combined_at = now
+                counts["cards"] += 1
+            ctx["reprice"] = counts
+        except Exception as e:  # noqa: BLE001 - the reprice never fails a tick
+            log.exception("parlay reprice failed")
+            session.rollback()
+            ctx["warnings"].append({"reprice": repr(e)})
+            ctx["reprice"] = {"error": type(e).__name__}
+
     # ---- entry point -----------------------------------------------------------------
     def _due(self, last: datetime | None, now: datetime, interval: int | None) -> bool:
         # interval=None is the cadence planner's quiet-window "do not fetch": a forced tick never
@@ -899,6 +1442,15 @@ class Recorder:
                 # raises out to this one; the checkpoint just gives it a clean session.
                 self._leg_probs(session, run, now, ctx)
                 self._checkpoint(session, run)
+                # Phase 4.6: the three fun-ticket sources, in the plan's order. Each carries its
+                # own cadence guard, its own sub-budget and its own try/except, so none of them
+                # can fail a tick or take another source's time.
+                self._props(session, run, now, kickoffs, budget, ctx)
+                self._checkpoint(session, run)
+                self._player_stats(session, run, now, kickoffs, budget, ctx)
+                self._checkpoint(session, run)
+                self._parlay_reprice(session, run, now, kickoffs, ctx)
+                self._checkpoint(session, run)
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed")
                 ctx["errors"].append({"tick": repr(e)})
@@ -912,6 +1464,14 @@ class Recorder:
                 # per-source checkpoints, so nothing is lost.
                 session.rollback()
                 ctx["warnings"].append({"normalize": repr(e)})
+            # 4.2: the prop outcomes the normalizer could not resolve to exactly one rostered
+            # player. It is counted where it is decided -- inside `upsert_odds_rows`, which runs
+            # after the fetch phase -- and folded into this tick's `ctx["props"]` here, so the
+            # number the surface reads is the one this tick produced.
+            prop_unmatched = ctx.get("prop_unmatched", 0)
+            self.counters["player_unmatched"] += prop_unmatched
+            if isinstance(ctx.get("props"), dict) and "unmatched" in ctx["props"]:
+                ctx["props"]["unmatched"] = prop_unmatched
             if summaries:
                 # Only price when this tick actually refreshed Kalshi markets, so gap snapshots
                 # are computed against fresh quotes rather than stale ones from a skipped tick.
@@ -969,7 +1529,10 @@ class Recorder:
                                     "pricing": ctx.get("pricing", {}),
                                     "venue_limits": ctx.get("venue_limits"),
                                     "weather": ctx.get("weather"),
-                                    "leg_probs": ctx.get("leg_probs")},
+                                    "leg_probs": ctx.get("leg_probs"),
+                                    "props": ctx.get("props"),
+                                    "player_stats": ctx.get("player_stats"),
+                                    "reprice": ctx.get("reprice")},
                              finished_at=self.clock())
             log.info("tick %s n=%d credits=%d errors=%d warnings=%d", status, ctx["n"], ctx["credits"],
                      len(ctx["errors"]), len(ctx["warnings"]))
