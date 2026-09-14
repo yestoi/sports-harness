@@ -82,6 +82,8 @@ from harness.execution.gateway import (
     uses_the_simulator,
 )
 from harness.execution.plan import (
+    EXPIRY,
+    NO_BOOK,
     CapGate,
     Cancel,
     ExecSettings,
@@ -1010,7 +1012,7 @@ class Executor:
             if store.expire_order(session, action.order_id):
                 stats.expired += 1
             store.insert_event(session, order_id=action.order_id, ts=now, kind="expire",
-                               reason="expiry", replay=self.replay)
+                               reason=EXPIRY, replay=self.replay)
         elif isinstance(action, CapGate):
             # Written for every exec variant whether or not it blocked, so replay can measure
             # what the caps cost the variants that do not apply them (amendment 2).
@@ -1083,7 +1085,7 @@ class Executor:
         if action.no_book:
             # The order rests, but the record says the queue behind it was unknowable (R10).
             store.insert_event(session, intent_id=action.intent_id, ts=now, kind="skipped",
-                               reason="no_book", replay=self.replay)
+                               reason=NO_BOOK, replay=self.replay)
 
     # --- Task 12b telemetry -------------------------------------------------------------
 

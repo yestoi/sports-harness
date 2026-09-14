@@ -63,6 +63,14 @@ POST_ONLY_REJECT = "post_only_reject"
 EXEC_CAPACITY = "exec_capacity"
 NO_TARGET = "no_target"
 
+#: Ruling I8. These two were string literals at their single write sites in
+#: `harness/execution/loop.py` (`reason="expiry"` at 986, `reason="no_book"` at 1059), which is
+#: why the exhaustiveness test over this block could not see them. Promoting them writes the
+#: same strings and changes no behaviour; `no_book` is an annotation on a placement, not an
+#: exclusion (`harness/ops/exclusions.ANNOTATIONS`).
+EXPIRY = "expiry"
+NO_BOOK = "no_book"
+
 REJECTED = "rejected"
 
 
