@@ -25,6 +25,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -46,7 +47,7 @@ from harness.health import (CREDITS_LOW_FRACTION, CREDITS_WATCH_FRACTION, DB_BRO
                             WS_EVENT_BROKEN_S, WS_EVENT_WATCH_S)
 from harness.research.spend import spend_state
 from harness.telemetry import sanitize_reason
-from harness.weeks import chicago_iso_week
+from harness.weeks import CHICAGO, chicago_iso_week
 
 log = logging.getLogger(__name__)
 
@@ -77,8 +78,12 @@ PENDING_FINAL_S = 6 * 3600
 #: the rule rather than dropping the worst case out of it.
 PENDING_FINAL_WINDOW = timedelta(days=7)
 #: The `source_state` key the prop rotation spends its credits under (addendum §3.2). The
-#: writer is the recorder's prop source, which keys one row per calendar month so the allowance
-#: resets with the Odds API's own billing month.
+#: writer is the recorder's prop source, which keys one row per **America/Chicago** month
+#: (`chicago_day(now)`), so this reader takes the month in the same zone (review round 1, I1).
+#: On the UTC instant, the five hours after 19:00 CT on the last day of a month look up next
+#: month's key, which does not exist yet: the rule would read `not evaluated` -- "nobody took
+#: this measurement" -- during exactly the window in which an exhausted allowance is still
+#: stopping the prop rotation and the ideas section is reading `no_props_fresh`.
 PROP_CREDIT_KEY = "odds_props:{month}"
 
 #: How many operator events the surface shows (spec §2.1 item 6).
@@ -418,7 +423,7 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
     # Phase 4.6 (addendum §3.2, 1.3): the prop rotation's spend this month, and how long the
     # longest-hung card has been `alive` since its last game went final.
     prop_credits_used = _group(session, "prop_credits_used", lambda: session.execute(
-        _PROP_CREDITS, {"key": PROP_CREDIT_KEY.format(month=now.strftime("%Y-%m"))}).scalar())
+        _PROP_CREDITS, {"key": prop_credit_key(now)}).scalar())
     parlay_pending_final_s = _group(session, "parlay_pending_final_s",
                                     lambda: _pending_final_s(session, now), default=None)
     return {
@@ -458,9 +463,23 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
     }
 
 
+def prop_credit_key(now: datetime) -> str:
+    """This month's prop-credit `source_state` key, in the zone the writer uses (addendum §3.2).
+
+    `chicago_iso_week`'s own zone, imported rather than restated, for the reason given on
+    `PROP_CREDIT_KEY`: the recorder keys the row on the Chicago month and a reader on the UTC
+    month disagrees with it for five hours at every month boundary.
+    """
+    return PROP_CREDIT_KEY.format(month=now.astimezone(ZoneInfo(CHICAGO)).strftime("%Y-%m"))
+
+
 def _pending_final_s(session: Session, now: datetime) -> float | None:
     """How long the longest-hung `alive` card has been waiting since its last game went final,
-    or `None` when no card is alive at all (addendum §1.3).
+    or `0.0` when no card is alive at all (addendum §1.3).
+
+    Zero rather than `None` (review round 1, M5): no live card is the normal state for most of
+    the week and it is a real reading -- nothing is hung -- while `None` would put the rule in
+    the `not evaluated` list, which on this wall means "nobody took this measurement".
 
     A card is only counted once *every* one of its games is over: one game still running is a
     card doing exactly what it should. The age is measured from the newest final whistle among
@@ -473,7 +492,7 @@ def _pending_final_s(session: Session, now: datetime) -> float | None:
     for row in session.execute(_PENDING_FINAL, {"since": now - PENDING_FINAL_WINDOW}):
         by_card.setdefault(row.card_id, []).append(row)
     if not by_card:
-        return None
+        return 0.0
     ages = []
     for rows in by_card.values():
         if any(row.game_status not in FINAL_STATUSES for row in rows):

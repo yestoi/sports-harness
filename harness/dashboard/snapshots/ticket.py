@@ -21,12 +21,13 @@ figures it replaced.
 
 **Never shown here.** Any paper number, any research variant, any CLV. No DraftKings account
 state. Placement and corrections are the owner's own writes through the LAN routes; this builder
-only reads what they recorded, and every string it renders but `dk_link` passes
-`sanitize_reason` (the link is validated at normalize time, A-C2, and re-sanitizing it would
-corrupt the query string the deep link needs).
+only reads what they recorded, and every string it renders but `dk_link` passes `_display`,
+this page's own display-safe sanitizer (the link is validated at normalize time, A-C2, and
+sanitizing it at all would corrupt the query string the deep link needs).
 """
 
 import logging
+import re
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -41,7 +42,7 @@ from harness.parlay.config import load_config
 from harness.parlay.needs import FINAL_STATUSES, StatState, leg_spec, needs, score_state
 from harness.parlay.placement import CORRECTIONS_MAX
 from harness.settlement.parlay_build import BUILD_TIMES, SLOTS, read_slot_state, slot_key
-from harness.telemetry import sanitize_reason
+from harness.telemetry import SUMMARY_MAX
 from harness.weeks import CHICAGO, chicago_iso_week
 
 log = logging.getLogger(__name__)
@@ -51,8 +52,6 @@ log = logging.getLogger(__name__)
 #: 30 s, so polling twice a tick only ever re-read the same rows.
 CADENCE_IN_WINDOW_S = 30
 CADENCE_OUT_S = 120
-#: The owner's weekly fun budget (v2 spec §8.1, roadmap phase 5c). Real money.
-WEEKLY_BUDGET = Decimal("50.00")
 #: The badge, in place of PAPER, on this surface and no other.
 BADGE = "FUN MONEY - $50/WEEK - PLACED BY HAND"
 #: How much of a leg's probability history the small bar shows (spec §2.5 item 1).
@@ -90,9 +89,15 @@ BUILD_RETRY = timedelta(hours=1)
 TICKET_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                          "badge", "cards", "ideas", "season", "between", "sentences_gaps"})
 
-#: Phase 4.6 adds columns to this select list and changes nothing else about it: the predicate,
-#: the ordering and the cap are the shipped ones, and a `proposed` card is still invisible to it
-#: (B-I17). The ideas section reads its own statement, below.
+#: Phase 4.6 adds columns to this select list, and one term to its predicate: a `proposed` card
+#: is still invisible to it (B-I17), and so is a card the owner declined or one that expired
+#: unplaced. Both of those are `void` **with a `declined_reason`**, they have no ledger row and
+#: they moved no money (addendum §1.4, design §2.5): showing one among the live tickets put a
+#: stake, a payout and the sentence "Real money, placed by hand at DraftKings" on a bet nobody
+#: made, while the season strip showed the same card as a grey chip (review round 1, C1). A
+#: `void` card with no reason -- the grader's refund on a fully pushed card, or the owner's own
+#: confirmed void -- is money that did move and stays here.
+#: The ordering and the cap are the shipped ones. The ideas section reads its own statement.
 _LIVE_CARDS = text("""
     select c.id, c.year, c.week, c.sport, c.kind, c.built_at, c.stake, c.dk_payout_est,
            c.true_prob_est, c.hold_est, c.rationale, c.status, c.correlated, c.anchor_leg_id,
@@ -102,6 +107,7 @@ _LIVE_CARDS = text("""
     from parlay_cards c
     left join parlay_placements p on p.card_id = c.id
     where c.status in ('placed', 'alive', 'cashed', 'busted', 'void')
+      and c.declined_reason is null
     order by case when c.status in ('placed', 'alive') then 0 else 1 end, c.built_at desc
     limit 10
 """)
@@ -230,6 +236,25 @@ _STREAK_CARDS = text("""
 """)
 
 
+#: This page's own display sanitizer (review round 1, I4). `harness.telemetry.sanitize_reason`
+#: strips everything outside `[\w \-.,:/()]`, which on this surface silently rewrites the bet
+#: itself: "Nussmeier 225+ passing yards" becomes "Nussmeier 225 passing yards" and the
+#: builder's "avg 262 · last 241 · ESPN" runs together. `+` says which side of a prop line
+#: the bet is on and the middle dot is this surface's own separator, so both are kept here --
+#: and nothing else is: the class below is the shared one plus those two characters, so `<`,
+#: `>`, quotes, braces, backslashes, newlines and every other markup character are stripped
+#: exactly as before, and the shared length cap still applies. `harness/telemetry.py` is not
+#: touched: its class is the right one for reason codes and log summaries, which is what it
+#: guards everywhere else (addendum §1.1 mandates *a* sanitizer on every string but `dk_link`;
+#: this is that sanitizer, for the page whose strings are bet names).
+_DISPLAY_SAFE = re.compile(r"[^\w \-.,:/()+\u00b7]")
+
+
+def _display(text_value) -> str:
+    """One recorded string, safe to render, with the bet's own punctuation intact."""
+    return _DISPLAY_SAFE.sub("", text_value or "")[:SUMMARY_MAX]
+
+
 def _dec(value):
     return float(value) if value is not None else None
 
@@ -264,7 +289,7 @@ def _selection(leg, price_age_s) -> str:
         parts = [leg.market_type, leg.side or "",
                  sentences.fmt_stat(leg.threshold) if leg.threshold is not None else ""]
     head = " ".join(part for part in parts if part)
-    return (f"{sanitize_reason(head)} · {sanitize_reason(leg.period or 'game')} · "
+    return (f"{_display(head)} · {_display(leg.period or 'game')} · "
             f"DK {_american(leg.dk_american)} · {sentences.fmt_age(price_age_s)} ago")
 
 
@@ -304,7 +329,20 @@ def _price_note(leg, card_row, price_age_s, config) -> str | None:
     return None
 
 
-def _stat_state(leg, row, score) -> StatState | None:
+def _game_is_final(leg) -> bool:
+    """Whether this leg's game is over, read from the `games` row `_LEGS` already joins.
+
+    Not from the newest `game_score_events` row (review round 1, I3/M4): that read is bounded to
+    `SCORES_WINDOW` (12 h), so a game that finished yesterday has no row inside the window and a
+    leg that has been hung all night would quietly go back to reading "no stat yet" -- which a
+    reader takes to mean the game has not started. `games.status` is a column on a table bounded
+    by the shape of the season, it needs no window, and it is the same status `parlay_grade`
+    settles the leg from.
+    """
+    return (leg.game_status or "") in FINAL_STATUSES
+
+
+def _stat_state(leg, row) -> StatState | None:
     """The newest recorded value of a prop leg's stat as `needs` reads it.
 
     `final` is the *game's*, exactly as `parlay_grade._stat_state` decides it: nothing on a stat
@@ -314,32 +352,35 @@ def _stat_state(leg, row, score) -> StatState | None:
     if row is None:
         return None
     return StatState(stat=leg.stat, value=Decimal(str(row.value)), source_ts=None,
-                     final=score is not None and score.status in FINAL_STATUSES)
+                     final=_game_is_final(leg))
 
 
-def _stat_text(leg, rows, score, score_row, needs_phrase, now: datetime):
+def _stat_text(leg, rows, score_row, needs_phrase, now: datetime):
     """The stat line and the correction note for one prop leg (design §2.3).
 
     `rows` is the newest recorded value and the one before it. Four states, each one a recorded
-    fact rather than an inference: a fresh value reads the full line; a value older than two
-    collector ticks reads `unchanged` with its age, because a player who has not touched the
-    ball writes no row and a zero there would be the surface inventing a fact; no row at all
-    while the game is over reads `no final stat` with the age since the final whistle (the hung
-    leg of addendum §1.3); and no row at all before that reads `no stat yet`.
+    fact rather than an inference: a fresh value reads the full line; a value that has stood for
+    more than two collector ticks keeps its figure and says `unchanged` with its age, because a
+    player who has not touched the ball writes no row and a zero there would be the surface
+    inventing a fact; no row at all while the game is over reads `no final stat · pending` (the
+    hung leg of addendum §1.3), with the age since the final whistle when a final score row is
+    still inside `SCORES_WINDOW` and without one when it is not -- an age this builder cannot
+    read is left unsaid rather than guessed; and no row at all before the game is over reads
+    `no stat yet`.
     """
     if leg.market_type != "prop":
         return None, None
     newest = rows[0] if rows else None
     previous = rows[1] if len(rows) > 1 else None
     if newest is None:
-        if (score is not None and score.status in FINAL_STATUSES
-                and score_row is not None):
-            age = max(0.0, (now - score_row.ts).total_seconds())
+        if _game_is_final(leg):
+            age = (max(0.0, (now - score_row.ts).total_seconds())
+                   if score_row is not None and score_row.status in FINAL_STATUSES else None)
             return sentences.stat_pending_final(age), None
         return "no stat yet", None
     age = max(0.0, (now - newest.ts).total_seconds())
     if age > STAT_UNCHANGED_AFTER_S:
-        line = f"{sentences.stat_unchanged(age)} · {needs_phrase}"
+        line = sentences.stat_unchanged(leg.stat, newest.value, leg.threshold, age)
     else:
         line = sentences.stat_line(leg.stat, newest.value, leg.threshold, needs_phrase, age)
     note = None
@@ -422,7 +463,10 @@ def _footer(card_row, legs, price_age_s, week, config) -> dict:
         chance = (f"no sharp read · "
                   f"{sentences.fmt_prob(_dec(card_row.true_prob_est))} from DraftKings' own "
                   "prices")
-        unpriced = [leg["plain_text"] for leg in legs if leg["p_source"] == "none"]
+        # `p_source` is nullable, and a leg with a NULL source is exactly as unpriced as one
+        # that says `none`: naming only the literal left it silently inside the combined figure
+        # (review round 1, M2), which is the thing B-C8/D4 forbids.
+        unpriced = [leg["plain_text"] for leg in legs if leg["p_source"] in (None, "none")]
         if unpriced:
             chance += " · " + ", ".join(unpriced) + " not included"
     hold = None
@@ -437,7 +481,7 @@ def _footer(card_row, legs, price_age_s, week, config) -> dict:
     return {"combined": combined, "chance": chance, "hold": hold, "age_warning": age_warning,
             "week": f"{sentences.fmt_money(week['recorded'])} recorded · "
                     f"{sentences.fmt_money(week['left'])} left of "
-                    f"{sentences.fmt_money(config.weekly_budget)}"}
+                    f"{sentences.fmt_money(week['budget'])}"}
 
 
 def _stat_rows(session, legs, now: datetime) -> dict:
@@ -467,9 +511,9 @@ def _corrections(session, card_ids) -> dict[int, list]:
     for row in session.execute(_CORRECTIONS, {"card_ids": card_ids,
                                               "limit": CORRECTIONS_LIMIT}):
         found.setdefault(row.card_id, []).append({
-            "field": sanitize_reason(row.field or ""),
-            "old_value": sanitize_reason(row.old_value) if row.old_value is not None else None,
-            "new_value": sanitize_reason(row.new_value) if row.new_value is not None else None,
+            "field": _display(row.field or ""),
+            "old_value": _display(row.old_value) if row.old_value is not None else None,
+            "new_value": _display(row.new_value) if row.new_value is not None else None,
             "ts": row.ts.isoformat()})
     return found
 
@@ -524,10 +568,9 @@ def _render_cards(session: Session, rows: list, now: datetime, week: dict, confi
         state = score_state(leg, score_row) if score_row is not None else None
         rows_for_leg = stat_rows.get((leg.game_id, leg.player_id, leg.stat), [])
         spec = leg_spec(leg)
-        stat = _stat_state(leg, rows_for_leg[0] if rows_for_leg else None, state)
+        stat = _stat_state(leg, rows_for_leg[0] if rows_for_leg else None)
         needs_phrase = needs(spec, state, stat)
-        stat_line, correction_note = _stat_text(leg, rows_for_leg, state, score_row,
-                                                needs_phrase, now)
+        stat_line, correction_note = _stat_text(leg, rows_for_leg, score_row, needs_phrase, now)
         if leg.market_type == "prop":
             gaps.update(sentences.unknown_stat_keys([leg.stat]))
         prob = probs.get(leg.id)
@@ -537,8 +580,10 @@ def _render_cards(session: Session, rows: list, now: datetime, week: dict, confi
             "market_type": leg.market_type, "side": leg.side,
             "threshold": _dec(leg.threshold),
             "dk_american": leg.dk_american, "dk_decimal": _dec(leg.dk_decimal),
-            # Model- or template-written, and its writer ships in phase 5c: sanitized here.
-            "plain_text": sanitize_reason(leg.plain_text or ""),
+            # Model- or template-written, and its writer ships in phase 5c: sanitized here,
+            # through this page's own display-safe class (review round 1, I4) -- markup out,
+            # the bet's `+` and the separator kept.
+            "plain_text": _display(leg.plain_text or ""),
             "status": leg.status,
             "needs": needs_phrase,
             "home_score": int(score_row.home_score)
@@ -546,14 +591,14 @@ def _render_cards(session: Session, rows: list, now: datetime, week: dict, confi
             "away_score": int(score_row.away_score)
                           if score_row and score_row.away_score is not None else None,
             "period": score_row.period if score_row else None,
-            "clock": sanitize_reason(score_row.clock or "") if score_row else None,
+            "clock": _display(score_row.clock or "") if score_row else None,
             "score_age_s": (now - score_row.ts).total_seconds() if score_row else None,
             "sharp_p": _dec(prob.sharp_p) if prob else None,
             "book_p": _dec(prob.book_p) if prob else None,
             "sharp_p_history": prob_history.get(leg.id, []),
             # Phase 4.6 (addendum §1.1, 1.3).
             "selection": _selection(leg, price_age),
-            "context_text": sanitize_reason(leg.context_text) if leg.context_text else None,
+            "context_text": _display(leg.context_text) if leg.context_text else None,
             "p_source": leg.p_source,
             # Validated at normalize time (A-C2) and deliberately not re-sanitized: the deep
             # link's query string is what makes it open the right selection.
@@ -585,7 +630,7 @@ def _render_cards(session: Session, rows: list, now: datetime, week: dict, confi
                            else row.dk_payout_est),
             "true_prob_est": _dec(row.true_prob_est), "hold_est": _dec(row.hold_est),
             "dk_odds_actual": row.dk_odds_actual,
-            "rationale": sanitize_reason(row.rationale or ""),
+            "rationale": _display(row.rationale or ""),
             "placed": row.placed_at is not None,
             "placed_at": row.placed_at.isoformat() if row.placed_at else None,
             "legs": card_legs, "legs_remaining": len(remaining),
@@ -708,7 +753,8 @@ def _ideas(session: Session, now: datetime, week: dict, config, gaps: set) -> di
                       "reason_code": reason,
                       # The sentence travels with the code: the front end renders it verbatim
                       # and never composes prose of its own (spec §1.2).
-                      "reason_text": sentences.idea_reason_phrase(reason) if reason else None,
+                      "reason_text": sentences.idea_reason_phrase(reason, sport)
+                                     if reason else None,
                       "next_build_at": _next_build_at(now, sport, state)})
     return {"slots": slots, "week_recorded": _money(week["recorded"]),
             "week_left": _money(week["left"])}
@@ -734,35 +780,48 @@ def _streak(session: Session) -> int:
 
 
 def _season(session: Session) -> dict:
-    by_source = {(row.kind, row.source): _dec(row.total) for row in session.execute(_SEASON)}
-    totals: dict[str, float] = {}
+    # Decimals all the way through the arithmetic, floats only where the shipped payload keys
+    # already are (review round 1, M3): `_SEASON` now groups by `source` as well as by kind, so
+    # the per-kind total is summed here instead of in SQL, and summing the owner's money in
+    # binary floats to do it would be a step backwards from the statement it replaced.
+    by_source = {(row.kind, row.source): Decimal(str(row.total))
+                 for row in session.execute(_SEASON)}
+    totals: dict[str, Decimal] = {}
     for (kind, _source), total in by_source.items():
-        totals[kind] = totals.get(kind, 0.0) + total
-    staked = totals.get("stake", 0.0)
-    returned = totals.get("return", 0.0)
+        totals[kind] = totals.get(kind, Decimal("0")) + total
+    zero = Decimal("0")
+    staked = totals.get("stake", zero)
+    returned = totals.get("return", zero)
     # A refund is not a loss (fix round 1, ruling I3): a `void` ledger row hands the stake back,
     # so it adds into `net` rather than sitting uncounted while `staked` still carries it.
-    voided = totals.get("void", 0.0)
+    voided = totals.get("void", zero)
     # Addendum §1.4: the part of `returned` that is still the harness's own arithmetic. Shown
     # *beside* the tile, never folded into it silently: a figure the owner has not confirmed is
-    # a different kind of fact from one they typed off their slip (D18).
-    expected = by_source.get(("return", "computed"), 0.0)
+    # a different kind of fact from one they typed off their slip (D18). A decimal string like
+    # every other money figure this phase adds (review round 1, I2): nothing ships reading it,
+    # so it starts out in the convention rather than needing a second key later.
+    expected = by_source.get(("return", "computed"), zero)
     strip = [{"card_id": row.id, "year": row.year, "week": row.week, "kind": row.kind,
               "status": row.status, "stake": _dec(row.stake),
               "payout": _dec(row.dk_payout_est),
               # A declined or expired card is a `void` with a reason and no ledger row at all:
               # it moves no figure, and the strip shows it as a grey chip so the offered history
               # stays visible (addendum §1.4).
-              "declined_reason": sanitize_reason(row.declined_reason)
+              "declined_reason": _display(row.declined_reason)
                                  if row.declined_reason else None}
              for row in session.execute(_STRIP)]
-    return {"staked": staked, "returned": returned, "net": returned + voided - staked,
-            "expected": expected, "strip": strip, "best_hit": _best_hit(session),
-            "streak": _streak(session)}
+    return {"staked": float(staked), "returned": float(returned),
+            "net": float(returned + voided - staked), "expected": _money(expected),
+            "strip": strip, "best_hit": _best_hit(session), "streak": _streak(session)}
 
 
-def _week_money(session: Session, now: datetime) -> dict:
-    """This week's recorded stake and what is left of the $50, as Decimals.
+def _week_money(session: Session, now: datetime, config) -> dict:
+    """This week's recorded stake and what is left of the week's budget, as Decimals.
+
+    The budget is `parlay.yaml`'s `weekly_budget` and nothing else (review round 1, M7). It is
+    the number `harness/parlay/placement.py` refuses a placement against and the one a config
+    commit changes; a module constant beside it was a second source for the same $50 that
+    happened to agree.
 
     Addendum §0.1: the $50 is a weekly budget on the owner's calendar, so the ledger sum and the
     week the surface prints are both the America/Chicago ISO week.
@@ -770,8 +829,8 @@ def _week_money(session: Session, now: datetime) -> dict:
     year, week = chicago_iso_week(now)
     recorded = Decimal(str(session.execute(
         _WEEK_STAKED, {"year": year, "week": week}).scalar() or 0))
-    return {"year": year, "week": week, "recorded": recorded,
-            "left": WEEKLY_BUDGET - recorded}
+    return {"year": year, "week": week, "recorded": recorded, "budget": config.weekly_budget,
+            "left": config.weekly_budget - recorded}
 
 
 def _between(session: Session, now: datetime, week: dict) -> dict:
@@ -781,7 +840,7 @@ def _between(session: Session, now: datetime, week: dict) -> dict:
     next_day = "Friday" if now.weekday() < 4 else "Saturday evening"
     return {"next_build_day": next_day, "anchor_rule": ANCHOR_RULE,
             "budget_left": float(week["left"]),
-            "weekly_budget": float(WEEKLY_BUDGET),
+            "weekly_budget": float(week["budget"]),
             "year": week["year"], "week": week["week"]}
 
 
@@ -792,7 +851,7 @@ def build_ticket(session: Session, now: datetime, settings: Settings) -> dict:
     # Read once for the whole payload: the ideas line, every card's footer and the between-cards
     # sentence are all statements about the same $50, and reading it three times could print
     # three different numbers on one page.
-    week = _week_money(session, now)
+    week = _week_money(session, now, config)
     # Every reason code and stat key this build could not put a sentence to, collected as the
     # sections render and written out below (spec §1.2, ruling A-I2): a vocabulary's blind spot
     # is reported, never blanked.
