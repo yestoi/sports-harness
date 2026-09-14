@@ -74,11 +74,16 @@ replace. If the fingerprints differ, stop and regenerate the pair.
 The files' presence is the switch. There is no flag to flip and no env var to edit:
 
 1. Place the three files.
-2. Run the next full release (`make deploy-omarchy`, controller-run, in an R4 window). The
+2. Run the next **full** release (`make deploy-omarchy`, controller-run, in an R4 window). The
    release script's `lan_active()` sees three non-empty regular files, writes
    `COMPOSE_PROFILES=lan` into the runtime `.env`, includes `app-serve-lan` in the services it
-   builds, starts, waits for and records in the receipt, and validates its paper posture like
-   every other app's.
+   builds, starts, waits for and records in the receipt, and validates its paper posture and
+   its published address (`LAN_ADDR:LAN_PORT -> 8443`, never `0.0.0.0`) like every other app's.
+   An app-only release refuses a switch in either direction with `LAN activation or
+   deactivation requires a full release`: the profile line lives in the runtime `.env`, which
+   every service reads, so flipping it changes every container's rendered configuration.
+   Nothing is written until that check has passed, and any later failure puts the previous
+   line back exactly as it was.
 3. Open `https://192.168.12.127:8443/ui/` and log in with the owner password.
 
 The receipt under `/srv/sports-harness/releases/<stamp>/receipt.json` lists `app-serve-lan` in
@@ -87,11 +92,14 @@ the container's own healthcheck works without a session.
 
 ## Turning it off
 
-Remove (or empty) any one of the three files. The next full release stops including
-`app-serve-lan` and removes the `COMPOSE_PROFILES` line, so it is not started again — but a
-container that is already running is not stopped by that release, and a running container keeps
-the files it bind-mounted even after they are deleted on the host. To take the listener down
-now, on the host:
+Remove (or empty) any one of the three files. The next **full** release stops including
+`app-serve-lan`, removes the `COMPOSE_PROFILES` line and then stops and removes the running
+container, recording it in the receipt as `stopped_services`. That last step matters: a
+container that keeps running holds the hash and the key by inode even after the host files are
+deleted, so removing a file has to be the off switch on its own. If the removal fails the
+release still stands (it is recorded under `warnings`, never a rollback) — check the receipt.
+
+To take the listener down immediately, without waiting for a release:
 
 ```bash
 cd /srv/sports-harness && COMPOSE_PROFILES=lan ./sports-compose rm -sf app-serve-lan
@@ -115,12 +123,17 @@ intended failure direction: no hash, no access — never "no password required".
 
 ## Rollback
 
+Rolling back across the commit that introduced this feature changes `docker-compose.yml`, which
+is in the release script's `FULL_PATHS`, so it is a full release:
+
 ```bash
-git checkout <previous sha> && make deploy-omarchy-app
+git checkout <previous sha> && make deploy-omarchy
 ```
 
-Use `make deploy-omarchy` (full) instead whenever the rollback changes `docker-compose.yml`:
-that file is in the release script's `FULL_PATHS`, so an app-only release refuses it by design.
+The general form for a rollback that touches no `FULL_PATHS` file stays
+`git checkout <previous sha> && make deploy-omarchy-app`; an app-only release refuses anything
+else by design.
+
 A rolled-back compose file has no `app-serve-lan` service, and the release script removes the
 `COMPOSE_PROFILES` line, so the listener does not come back with the older stack; stop any
 container still running from the previous release as under **Turning it off**. Rolling back
@@ -128,8 +141,10 @@ never touches the three files: they are yours, and a later release with the curr
 file switches the listener on again exactly as before.
 
 If a release that included the listener fails, its rollback restores the previous compose file,
-the previous images and the previous `COMPOSE_PROFILES` state before it reports
-`failed-old-apps-restored`.
+the previous images and the previous `COMPOSE_PROFILES` line — verbatim, at its original
+position — before it reports `failed-old-apps-restored`. A listener that release had just
+started, and that the previous stack never had, is stopped and removed as part of that rollback
+(`stopped_services` in the receipt): the rejected build never keeps publishing 8443.
 
 ## What the loop never does
 
@@ -141,3 +156,10 @@ the previous images and the previous `COMPOSE_PROFILES` state before it reports
   `docker-compose.yml` and in `deploy/omarchy/host.env` (`LAN_ADDR`, `LAN_PORT`).
 - Expose the listener beyond the home network, add a second listener, or touch the loopback
   `app-serve` or the recorder `app-ws`.
+
+If the home network is ever renumbered, `192.168.12.127` has to change in all of:
+`deploy/omarchy/host.env` (`LAN_ADDR`, and `NAS_IP` beside it), `docker-compose.yml` (the two
+`${LAN_ADDR:-...}` defaults), `harness/config/settings.py` (`lan_addr`), the runtime
+`/srv/sports-harness/.env`, and the certificate's `subjectAltName` — then reinstall the
+certificate on both devices. The release refuses to publish on an address the container's own
+`LAN_ADDR` does not name, so a half-finished renumber fails the release instead of the login.

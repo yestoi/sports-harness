@@ -492,11 +492,14 @@ def readiness(monkeypatch, tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     monkeypatch.setattr(module, "RUNTIME", runtime)
-    state = SimpleNamespace(module=module, mode=None, calls=[], queries=[])
     names = module.APPS + ["app-ws", "postgres"]
     config = {"services": {name: {"image": f"sports-release/app:{SHA}",
                                   "environment": {"BUILD_SHA": SHA}}
                            for name in names}}
+    # `names` and `config` are handed to the test so it can add a service the standing stack
+    # does not have; `unhealthy` defaults to None, so every existing case is unchanged.
+    state = SimpleNamespace(module=module, mode=None, calls=[], queries=[],
+                            names=names, config=config, unhealthy=None)
     times = iter([0, 0, 10, 10])
     monkeypatch.setattr(module.time, "monotonic", lambda: next(times))
     monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
@@ -510,7 +513,8 @@ def readiness(monkeypatch, tmp_path):
         if "ps" in args:
             if "-q" in args:
                 return args[-1] + "-container"
-            return json.dumps([{"Service": name, "State": "running", "Health": "healthy"}
+            return json.dumps([{"Service": name, "State": "running",
+                                "Health": "unhealthy" if name == state.unhealthy else "healthy"}
                                for name in names])
         if args[:2] == ["docker", "inspect"]:
             service = args[-1].removesuffix("-container")
@@ -710,14 +714,22 @@ def test_the_release_script_copies_no_secret():
     assert "scp" not in source
 
 
-def _activated(release, *, in_previous_stack=False):
+LAN_BINDING = [{"mode": "ingress", "host_ip": "192.168.12.127", "target": 8443,
+                "published": "8443", "protocol": "tcp"}]
+
+
+def _activated(release, *, in_previous_stack=False, ports=None, lan_addr="192.168.12.127"):
     """The fixture's runtime with the user's three LAN files in place.
 
-    `mutate_candidate` stands in for what `docker compose config` does on the host: merge the
-    base compose file's environment into the rendered service. The fake `run` returns the
-    candidate override verbatim, and the override only ever carries images and build stamps,
-    so without this the rendered LAN service would be missing the posture block that
-    docker-compose.yml pins on it.
+    `mutate_candidate` stands in for what `docker compose config` does on the host: resolve
+    `env_file:` and the compose file's own blocks into the rendered service, and render the
+    `ports` line as the long mapping form with the interpolated host address. The fake `run`
+    returns the candidate override verbatim, and the override only ever carries images and
+    build stamps, so without this the rendered LAN service would be missing the posture block
+    and the binding that docker-compose.yml pins on it.
+
+    `ports` and `lan_addr` exist so a test can render the misconfiguration the repository tests
+    cannot see: the host address comes from the runtime `.env`, not from the committed file.
     """
     directory = release.runtime / "secrets"
     directory.mkdir(exist_ok=True)
@@ -725,16 +737,23 @@ def _activated(release, *, in_previous_stack=False):
         (directory / name).write_text("x")
     posture = {"LIVE_TRADING": "0", "HARNESS_MODE": "paper", "RFQ_LISTENER_ENABLED": "0",
                "DB_BUDGET_GB": "600"}
+    rendered = dict(posture, LAN_ADDR=lan_addr, LAN_PORT="8443")
+    binding = LAN_BINDING if ports is None else ports
     if in_previous_stack:
         release.before["services"]["app-serve-lan"] = {
             "image": f"sports-release/app:{OLD}",
-            "environment": dict(posture, BUILD_SHA=OLD, BUILD_TIME="2026-09-11T00:00:00Z")}
+            "ports": copy.deepcopy(binding),
+            "environment": dict(rendered, BUILD_SHA=OLD, BUILD_TIME="2026-09-11T00:00:00Z")}
         (release.runtime / "compose.omarchy.yml").write_text(json.dumps(release.before))
         (release.runtime / ".env").write_text("PRIVATE_VALUE=must-remain-byte-identical\n"
                                               "COMPOSE_PROFILES=lan\n")
 
     def merge(config):
-        config["services"]["app-serve-lan"].setdefault("environment", {}).update(posture)
+        service = config["services"].get("app-serve-lan")
+        if service is None:
+            return          # profile off: `docker compose config` renders no such service
+        service.setdefault("environment", {}).update(rendered)
+        service["ports"] = copy.deepcopy(binding)
 
     release.mutate_candidate = merge
 
@@ -778,11 +797,182 @@ def test_a_release_with_the_listener_already_running_stops_and_restamps_it_like_
     assert (release.runtime / ".env").read_text().count("COMPOSE_PROFILES") == 1
 
 
-def test_removing_a_lan_file_takes_the_profile_line_out_and_deploys_todays_stack(release):
-    """The files are the switch in both directions: no rewritten flag, no edited env var."""
+def test_removing_a_lan_file_takes_the_profile_line_out_and_stops_the_listener(release):
+    """The files are the switch in both directions: no rewritten flag, no edited env var. And
+    the owner's off switch has to be the removal itself -- a container left running keeps the
+    hash and key material it bind-mounted, by inode, after the host files are gone."""
     (release.runtime / ".env").write_text("PRIVATE_VALUE=must-remain-byte-identical\n"
                                           "COMPOSE_PROFILES=lan\n")
-    release.module.deploy("app")
+    release.module.deploy("full")
     env = (release.runtime / ".env").read_text()
     assert "COMPOSE_PROFILES" not in env and "PRIVATE_VALUE=must-remain-byte-identical" in env
+    written = release_receipt(release)
+    assert "app-serve-lan" not in written["services"]
+    assert written["stopped_services"] == ["app-serve-lan"]
+    removal = [call for call in release.calls if "rm" in call][-1]
+    assert removal[-3:] == ["rm", "-sf", "app-serve-lan"] and "--profile" in removal
+    assert "lan" == removal[removal.index("--profile") + 1]
+    # The removal happens after the release is healthy: a listener the owner switched off must
+    # not be able to roll back an otherwise good release.
+    assert release.calls.index(removal) > max(i for i, c in enumerate(release.calls) if "up" in c)
+
+
+def test_a_deactivating_release_drops_the_stale_pinned_lan_image_from_the_overlay(release):
+    """m2: a leftover entry would let a hand-run `up -d app-serve-lan` start an old image."""
+    _activated(release, in_previous_stack=True)
+    for name in LAN_FILES:
+        (release.runtime / "secrets" / name).unlink()
+    release.module.deploy("full")
+    overlay = json.loads((release.runtime / "compose.omarchy.yml").read_text())
+    assert "app-serve-lan" not in overlay["services"]
+
+
+def test_a_removal_failure_warns_and_never_rolls_back_a_healthy_release(release, monkeypatch):
+    (release.runtime / ".env").write_text("COMPOSE_PROFILES=lan\n")
+    original = release.module.run
+
+    def run(args, **kwargs):
+        if "rm" in [str(a) for a in args]:
+            raise subprocess.CalledProcessError(1, args)
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(release.module, "run", run)
+    release.module.deploy("full")
+    written = release_receipt(release)
+    assert written["status"] == "healthy" and "stopped_services" not in written
+    assert any("app-serve-lan removal failed" in warning for warning in written["warnings"])
+
+
+def test_a_profile_flip_is_refused_by_an_app_only_release_in_both_directions(release):
+    """I2: `.env` feeds every `env_file:` service, so `docker compose config` resolves the
+    profile line into app-ws's rendered environment. An app-only release would die on the
+    app-ws drift guard with a message about the recorder; it is refused up front instead, and
+    before anything on disk is touched."""
+    _activated(release)
+    with pytest.raises(RuntimeError, match="requires a full release"):
+        release.module.deploy("app")
+    assert "COMPOSE_PROFILES" not in (release.runtime / ".env").read_text()
+    assert release.calls == [call for call in release.calls if "config" in call]
+    for name in LAN_FILES:
+        (release.runtime / "secrets" / name).unlink()
+    (release.runtime / ".env").write_text("COMPOSE_PROFILES=lan\n")
+    with pytest.raises(RuntimeError, match="requires a full release"):
+        release.module.deploy("app")
+    assert (release.runtime / ".env").read_text() == "COMPOSE_PROFILES=lan\n"
+
+
+def test_the_plan_refuses_a_profile_flip_too_and_a_steady_state_app_release_does_not(release):
+    _activated(release)
+    with pytest.raises(RuntimeError, match="requires a full release"):
+        release.module.deploy("app", plan=True)
+    (release.runtime / ".env").write_text("PRIVATE_VALUE=must-remain-byte-identical\n"
+                                          "COMPOSE_PROFILES=lan\n")
+    _activated(release, in_previous_stack=True)
+    release.module.deploy("app")            # already on: no flip, so app-only is fine
+    assert "app-serve-lan" in release_receipt(release)["services"]
+
+
+def test_an_abort_before_the_rollback_owns_the_release_restores_the_profile_line(release, monkeypatch):
+    """I1: the six raises between the `.env` write and the rollback's own `try` -- here the
+    backup precheck. A flipped switch left behind would be started by the next `up -d` (the
+    boot unit, a manual restart, the restart runbook) with no validation, no health wait and
+    no receipt."""
+    _activated(release)
+    original = release.module.run
+
+    def run(args, **kwargs):
+        if "backup-precheck" in [str(a) for a in args]:
+            raise subprocess.CalledProcessError(1, args)
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(release.module, "run", run)
+    with pytest.raises(subprocess.CalledProcessError):
+        release.module.deploy("full")
+    assert "COMPOSE_PROFILES" not in (release.runtime / ".env").read_text()
+    assert not any("stop" in call or "up" in call for call in release.calls)
+
+
+def test_the_rollback_restores_the_operators_own_profile_line_verbatim(release):
+    """I4: the line is captured verbatim and put back as it was. A boolean plus a substring
+    test would write `COMPOSE_PROFILES=lan` over a line the owner never set."""
+    (release.runtime / ".env").write_text("COMPOSE_PROFILES=lan,extra\n"
+                                          "PRIVATE_VALUE=must-remain-byte-identical\n")
+    _activated(release, in_previous_stack=True)
+    (release.runtime / ".env").write_text("COMPOSE_PROFILES=lan,extra\n"
+                                          "PRIVATE_VALUE=must-remain-byte-identical\n")
+    for name in LAN_FILES:
+        (release.runtime / "secrets" / name).unlink()
+    release.failure = "health"
+    with pytest.raises(RuntimeError):
+        release.module.deploy("full")
+    assert (release.runtime / ".env").read_text() == ("COMPOSE_PROFILES=lan,extra\n"
+                                                      "PRIVATE_VALUE=must-remain-byte-identical\n")
+
+
+def test_a_stray_profile_variable_neither_flips_the_release_nor_is_rewritten(release):
+    """`COMPOSE_PROFILES=` enables no profile, so it is not the LAN switch, is not a flip, and
+    is left exactly as the operator wrote it."""
+    env = "COMPOSE_PROFILES=\n# COMPOSE_PROFILES=lan\nPRIVATE_VALUE=must-remain-byte-identical\n"
+    (release.runtime / ".env").write_text(env)
+    release.module.deploy("app")
+    assert (release.runtime / ".env").read_text() == env
     assert "app-serve-lan" not in release_receipt(release)["services"]
+
+
+@pytest.mark.parametrize("lan_addr,ports,message", [
+    ("0.0.0.0", [{"host_ip": "0.0.0.0", "target": 8443, "published": "8443"}], "home-network address"),
+    ("192.168.12.127", [{"host_ip": "", "target": 8443, "published": "8443"}], "publish exactly"),
+    ("192.168.12.127", LAN_BINDING + [{"host_ip": "0.0.0.0", "target": 8443, "published": "18443"}],
+     "publish exactly"),
+])
+def test_a_rendered_binding_on_every_interface_is_refused(release, lan_addr, ports, message):
+    """I3: the host address is interpolated from the runtime `.env`, which the operator edits
+    by hand, so the committed compose file passing its own tests proves nothing about what the
+    release is about to publish."""
+    _activated(release, lan_addr=lan_addr, ports=ports)
+    with pytest.raises(RuntimeError, match=message):
+        release.module.deploy("full")
+    assert "COMPOSE_PROFILES" not in (release.runtime / ".env").read_text()
+    assert not any("stop" in call or "up" in call for call in release.calls)
+
+
+def test_a_failed_activation_removes_the_listener_it_started(release):
+    """C1: `up -d` published 8443 from the build now being rejected, and the previous stack has
+    no such service to restore it to, so nothing in the ordinary rollback touches it. It is
+    removed against the candidate compose files, before those files are replaced: a
+    rolled-back compose file that predates the service cannot address it at all."""
+    _activated(release)
+    release.failure = "health"
+    with pytest.raises(RuntimeError):
+        release.module.deploy("full")
+    removals = [i for i, call in enumerate(release.calls) if "rm" in call]
+    assert removals, "the rejected build's LAN container must not survive its own rollback"
+    removal = release.calls[removals[-1]]
+    assert removal[-3:] == ["rm", "-sf", "app-serve-lan"]
+    assert "lan" == removal[removal.index("--profile") + 1]
+    assert "candidate-override.json" in " ".join(removal)
+    written = release_receipt(release)
+    assert written["stopped_services"] == ["app-serve-lan"]
+    assert written["status"] == "failed-old-apps-restored"
+    assert "app-serve-lan" not in [call for call in release.calls if "up" in call][-1]
+
+
+def _readiness_with_the_listener(readiness):
+    readiness.names.append("app-serve-lan")
+    readiness.config["services"]["app-serve-lan"] = {"image": f"sports-release/app:{SHA}",
+                                                     "environment": {"BUILD_SHA": SHA}}
+    return readiness.module.APPS + ["app-serve-lan"]
+
+
+def test_wait_healthy_accepts_a_healthy_lan_listener(readiness):
+    services = _readiness_with_the_listener(readiness)
+    assert readiness.module.wait_healthy(SHA, services, timeout=1)["build"] == SHA
+
+
+def test_an_unhealthy_lan_listener_fails_the_release_like_any_other_serving_process(readiness):
+    """m1: the LAN service's TLS healthcheck is part of the readiness contract, not decoration.
+    `running` is not enough -- a listener that answers nothing on 8443 is a failed release."""
+    services = _readiness_with_the_listener(readiness)
+    readiness.unhealthy = "app-serve-lan"
+    with pytest.raises(RuntimeError):
+        readiness.module.wait_healthy(SHA, services, timeout=1)

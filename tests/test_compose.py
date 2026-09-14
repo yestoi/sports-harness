@@ -300,3 +300,14 @@ def test_the_loopback_service_is_unchanged():
     service = _compose()["services"]["app-serve"]
     assert service["ports"] == ["127.0.0.1:${SERVE_PORT:-8080}:8080"]
     assert "--lan" not in json.dumps(service["command"])
+
+
+def test_the_lan_healthcheck_is_the_loopback_form_over_an_unverified_tls_context():
+    """Self-signed by design, so the probe cannot verify a chain -- but it still asserts the
+    status the way `app-serve`'s does, so a 503 marks the container unhealthy by exit code
+    rather than by an unhandled traceback on every probe."""
+    probe = _compose()["services"]["app-serve-lan"]["healthcheck"]["test"]
+    assert probe[0] == "CMD-SHELL"
+    assert "ssl._create_unverified_context()" in probe[1]
+    assert "https://127.0.0.1:8443/healthz" in probe[1]
+    assert "status==200" in probe[1]
