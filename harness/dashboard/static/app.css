@@ -274,8 +274,9 @@ details.event > summary { cursor: pointer; color: inherit; }
    detail and the broadcast type. Every one of these is consumed by ticket.mjs or floor.mjs
    (Tasks 15/16); nothing here is wired to a surface module yet.
 
-   Coral is a mark colour, never slip body text (D16): `.mark`, `.perforation` and `.stamp`
-   (already `.slip .stamp`, the CASHED/BUSTED rubber stamp above) take `--fun`; anything that
+   Coral is a mark colour, never slip body text (D16): `.mark` and `.perforation` take `--fun`;
+   `.stamp` (already `.slip .stamp`, the CASHED/BUSTED rubber stamp above) keeps its own
+   `--hit`/`--miss` colouring, not `--fun`; anything that
    reads as prose inside `.slip` stays on `--slip-ink`/`--ink`. */
 
 /* The draft slip (design §2.1): the same slip anatomy, so there is one object to learn, plus a
