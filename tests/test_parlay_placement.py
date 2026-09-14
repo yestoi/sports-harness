@@ -13,14 +13,102 @@ same age but `placed`.
 """
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from itertools import count
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
-from harness.parlay.placement import (BudgetExceeded, CardNotPlaceable, LineMoved, expire_cards,
-                                      mark_placed, show_cards, week_staked)
+from harness.db.models import (OddsPropSnapshot, ParlayCard, ParlayLedger, ParlayLeg,
+                               ParlayPlacement)
+from harness.parlay.placement import (BudgetExceeded, CardNotPlaceable, ConfirmationReused,
+                                      CorrectionNotAllowed, CorrectionsCapped, LineMoved,
+                                      apply_correction, expire_cards, mark_placed, show_cards,
+                                      week_staked)
+from tests.conftest import _make_parlay_card, _one_leg_game
 
 NOW = datetime(2026, 9, 18, 21, 0, tzinfo=timezone.utc)
+#: The same instant under the name the §5 cases use; one clock for the whole file.
+T0 = NOW
+#: Monday 2026-09-14, ISO week 38: the day a card built on Saturday of week 37 is placed. D20
+#: says the card keeps its slate's week, so nothing this instant touches is keyed to week 38.
+T_MONDAY = datetime(2026, 9, 14, 16, 0, tzinfo=timezone.utc)
+
+_cards = count(1)
+
+
+@pytest.fixture
+def second_db_session(_schema):
+    """A second session on the same engine, committing on its own.
+
+    `db_session` is one transaction that `conftest` rolls back and truncates behind; the week
+    advisory lock is transaction-scoped, so a race against it needs a genuinely second
+    transaction. Cleanup is `db_session`'s truncate, which runs after both are closed.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    with sessionmaker(bind=_schema)() as session:
+        yield session
+        session.rollback()
+
+
+def _card(db_session, *, year: int = 2026, week: int = 37, status: str = "proposed",
+          leg1_graded: bool = False) -> ParlayCard:
+    """One card with a single spread leg and a fresh, unmoved DraftKings price.
+
+    Built from `conftest`'s placement helpers rather than a second card shape, then re-keyed to
+    the `(year, week)` under test: the card's own week is what every ledger row of the card
+    carries (D20), and it is no longer read off the placement instant.
+    """
+    team, game = _one_leg_game(db_session, f"K{next(_cards)}")
+    card = _make_parlay_card(db_session, status=status, built_at=NOW,
+                             legs=[(game.id, team.id, Decimal("-3.5"), Decimal("-3.5"))])
+    card.year, card.week = year, week
+    if leg1_graded:
+        leg = db_session.query(ParlayLeg).filter_by(card_id=card.id, seq=1).one()
+        leg.status, leg.graded_at = "hit", NOW
+    db_session.flush()
+    return card
+
+
+def _stake(db_session, *, week: int, amount: Decimal, year: int = 2026) -> ParlayCard:
+    """A stake already recorded against `week`, on its own card, the way `mark_placed` records
+    one: `source = 'confirmed'` and the card's own `(year, week)`."""
+    card = _card(db_session, year=year, week=week, status="placed")
+    db_session.add(ParlayLedger(ts=NOW, card_id=card.id, kind="stake", amount=amount,
+                                year=year, week=week, source="confirmed"))
+    db_session.flush()
+    return card
+
+
+def _prop_card(db_session, *, dk_point: Decimal, threshold: Decimal = Decimal("62.5"),
+               fetched_at: datetime = datetime(2026, 9, 18, 20, 55, tzinfo=timezone.utc)):
+    """A proposed card whose only leg is a prop (`market_type = 'prop'`, ruling T5/T6), priced
+    from `odds_prop_snapshots`. `dk_point` is the line the newest DraftKings prop row carries;
+    `threshold` is the line the card was built at. No `odds_snapshots` row exists for it, so a
+    prop leg resolved through the game-line table would silently find nothing to compare."""
+    team, game = _one_leg_game(db_session, f"P{next(_cards)}")
+    card = _make_parlay_card(db_session, status="proposed", built_at=NOW,
+                             legs=[(game.id, team.id, Decimal("-3.5"), Decimal("-3.5"))])
+    player = 900_000 + next(_cards)          # any int: `parlay_legs.player_id` has no FK
+    leg = db_session.query(ParlayLeg).filter_by(card_id=card.id, seq=1).one()
+    leg.market_type, leg.stat, leg.side = "prop", "rec_yds", "over"
+    leg.side_team_id, leg.player_id, leg.threshold = None, player, threshold
+    leg.odds_snapshot_id = None
+    db_session.add(OddsPropSnapshot(raw_id=next(_cards), book="draftkings", game_id=game.id,
+                                    market_type="prop:rec_yds", player_name="A Receiver",
+                                    player_id=player, outcome_side="over", point=dk_point,
+                                    price_decimal=Decimal("1.9100"), fetched_at=fetched_at))
+    db_session.flush()
+    return card
+
+
+def _drive_alive(db_session, card):
+    """The state `parlay_grade` leaves a placed card in once one leg has graded: the card is
+    `alive` and its legs are still pending. Written here rather than reached through
+    `grade_parlays`, so a placement test never depends on the grader."""
+    card.status = "alive"
+    db_session.flush()
 
 
 def test_placing_writes_a_placement_and_a_stake_row(db_session, proposed_card):
@@ -60,19 +148,22 @@ def test_the_cap_is_per_iso_week(db_session, proposed_card, last_week_stake):
 
 
 #: Sunday 2026-09-13 20:00 in America/Chicago -- still ISO week 37 there -- is Monday 2026-09-14
-#: 01:00 in UTC, already into ISO week 38. Fix round 1: `mark_placed` used to key the cap off a
-#: raw `now.isocalendar()` on the UTC timestamp, which would attribute a stake placed at this
-#: moment (as late as 7 p.m. Central on a Sunday, for about five hours) to next week's budget
-#: instead of the week the operator was actually in.
+#: 01:00 in UTC, already into ISO week 38. Fix round 1 stopped `mark_placed` keying the cap off a
+#: raw `now.isocalendar()` on the UTC timestamp, which attributed a stake placed at this moment
+#: (as late as 7 p.m. Central on a Sunday, for about five hours) to next week's budget. D20
+#: carries that further: the key is not read off `now` in any zone, it is the card's own week.
 CT_WEEK_BOUNDARY_UTC = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)
 
 
-def test_the_cap_is_keyed_to_the_chicago_week_not_a_raw_utc_isocalendar(
+def test_the_cap_is_keyed_to_the_card_s_week_not_to_any_reading_of_now(
         db_session, proposed_cards_over_budget):
-    """A raw `isocalendar()` on a UTC `now` would put this Sunday-night stake in next week's
-    cap, five hours early. It has to land in the Chicago week the operator was actually
-    placing in (2026-W37), not the UTC calendar's week (2026-W38)."""
+    """The cards are week 37's; the instant they are placed at is week 38 in UTC and week 37 in
+    Chicago. Both stakes belong to week 37 because that is the week of the slate they were
+    built for (D20), and no reading of `now` moves them."""
     first, second = proposed_cards_over_budget
+    for card in (first, second):
+        card.year, card.week = 2026, 37
+    db_session.flush()
     mark_placed(db_session, first.id, payout_american=1450, stake=Decimal("45"),
                 now=CT_WEEK_BOUNDARY_UTC)
     with pytest.raises(BudgetExceeded):
@@ -142,3 +233,321 @@ def test_show_lists_the_week_and_the_remaining_budget(db_session, proposed_card)
     assert rows and rows[0]["card_id"] == proposed_card.id
     assert rows[0]["status"] == "proposed"
     assert rows[0]["week_remaining"] == Decimal("50.00")
+
+
+# --- Task 9: the card's week, confirmation ids, the week lock and the correction table ---------
+#
+# Addendum 5.1-5.4 and 0 (D20). Every case below uses `_card`, whose (year, week) is the card's
+# own, and `T0`/`T_MONDAY`, which are four days apart and in different ISO weeks.
+
+
+def test_the_stake_row_carries_the_card_s_week_not_the_placement_week(db_session):
+    """D20: a Saturday-built card placed on Monday stays in its slate's week, and the cap reads
+    that key. Computed independently: the card fixture is week 37; `T_MONDAY` is in week 38."""
+    card = _card(db_session, year=2026, week=37)
+    mark_placed(db_session, card.id, -110, Decimal("25"), T_MONDAY)
+    row = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="stake").one()
+    assert (row.year, row.week) == (2026, 37) and row.source == "confirmed"
+
+
+def test_two_submits_with_one_confirmation_id_record_one_placement(db_session):
+    card = _card(db_session)
+    cid = "0f9d6a2c-2b2b-4a1e-9a7a-9d5f7a1c3e11"
+    first = mark_placed(db_session, card.id, -110, Decimal("25"), T0, confirmation_id=cid)
+    db_session.commit()
+    with pytest.raises(CardNotPlaceable):
+        mark_placed(db_session, card.id, -110, Decimal("25"), T0, confirmation_id=cid)
+    assert db_session.query(ParlayPlacement).filter_by(card_id=card.id).count() == 1
+    assert db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="stake").count() == 1
+    assert first.confirmation_id == cid
+
+
+def test_a_confirmation_id_used_on_another_card_is_refused(db_session):
+    a, b = _card(db_session), _card(db_session)
+    cid = "0f9d6a2c-2b2b-4a1e-9a7a-9d5f7a1c3e11"
+    mark_placed(db_session, a.id, -110, Decimal("25"), T0, confirmation_id=cid)
+    db_session.commit()
+    with pytest.raises(ConfirmationReused):
+        mark_placed(db_session, b.id, -110, Decimal("5"), T0, confirmation_id=cid)
+
+
+def test_a_reused_confirmation_id_is_refused_before_any_write(db_session):
+    """The refusal is on the code path, not on the unique index: nothing at all is written for
+    the second card, so there is no placement to roll back and no stake row to reconcile."""
+    a, b = _card(db_session), _card(db_session)
+    cid = "b1c4f6d8-1111-4a1e-9a7a-9d5f7a1c3e22"
+    mark_placed(db_session, a.id, -110, Decimal("25"), T0, confirmation_id=cid)
+    db_session.commit()
+    with pytest.raises(ConfirmationReused):
+        mark_placed(db_session, b.id, -110, Decimal("5"), T0, confirmation_id=cid)
+    assert db_session.query(ParlayPlacement).filter_by(card_id=b.id).count() == 0
+    assert db_session.query(ParlayLedger).filter_by(card_id=b.id).count() == 0
+    assert db_session.get(ParlayCard, b.id).status == "proposed"
+
+
+def test_two_different_cards_at_the_cap_record_one_and_refuse_one(db_session, second_db_session):
+    """5.3: the week lock is what serializes the cap across *different* cards. Two sessions,
+    $25 already staked, both submitting $25 against a $50 week: one records, one is refused.
+
+    Deviation from the brief's draft, recorded rather than silent: the first session commits
+    before the second submits. The advisory lock is transaction-scoped, so an uncommitted first
+    transaction would make the second block on the lock until its own timeout rather than reach
+    the cap at all. The lock's mutual exclusion is proved directly in the test below."""
+    _stake(db_session, week=37, amount=Decimal("25"))
+    a, b = _card(db_session, week=37), _card(db_session, week=37)
+    db_session.commit()
+    mark_placed(db_session, a.id, -110, Decimal("25"), T0)
+    db_session.commit()
+    with pytest.raises(BudgetExceeded) as caught:
+        mark_placed(second_db_session, b.id, -110, Decimal("25"), T0)
+    assert caught.value.recorded == Decimal("50.00") and caught.value.left == Decimal("0.00")
+    assert week_staked(db_session, 2026, 37) == Decimal("50")
+    assert db_session.query(ParlayPlacement).filter_by(card_id=b.id).count() == 0
+
+
+def test_the_week_lock_excludes_a_second_transaction_on_the_same_week(db_session,
+                                                                      second_db_session):
+    """The lock itself, not only its consequence. While one transaction is inside `mark_placed`
+    on week 37, a second transaction cannot enter that week at all: it waits, and here it is
+    given a 250 ms `lock_timeout` (with a 2 s statement timeout behind it) so a regression that
+    dropped the lock fails as a passing `mark_placed` rather than hanging the suite."""
+    a, b = _card(db_session, week=37), _card(db_session, week=37)
+    db_session.commit()
+    mark_placed(db_session, a.id, -110, Decimal("5"), T0)          # holds the week lock
+    second_db_session.execute(text("set local lock_timeout = '250ms'"))
+    second_db_session.execute(text("set local statement_timeout = '2s'"))
+    with pytest.raises(DBAPIError):
+        mark_placed(second_db_session, b.id, -110, Decimal("5"), T0)
+    second_db_session.rollback()
+    db_session.commit()
+
+
+def test_a_different_week_is_not_blocked_by_the_lock(db_session, second_db_session):
+    """The lock is per week, not global: week 38's card records while week 37 is held."""
+    a = _card(db_session, week=37)
+    b = _card(db_session, week=38)
+    db_session.commit()
+    mark_placed(db_session, a.id, -110, Decimal("5"), T0)          # holds week 37
+    second_db_session.execute(text("set local lock_timeout = '2s'"))
+    mark_placed(second_db_session, b.id, -110, Decimal("5"), T0)
+    second_db_session.commit()
+    db_session.commit()
+    assert week_staked(db_session, 2026, 38) == Decimal("5.00")
+
+
+def test_a_prop_leg_s_moved_line_is_read_from_the_prop_table(db_session):
+    """A prop leg is `market_type = 'prop'` and its price lives in `odds_prop_snapshots`; the
+    game-line table holds no row for it, so a prop resolved through `odds_snapshots` would find
+    nothing and confirm a line that had moved."""
+    card = _prop_card(db_session, dk_point=Decimal("70.5"))
+    with pytest.raises(LineMoved) as caught:
+        mark_placed(db_session, card.id, 450, Decimal("25"), T0)
+    assert caught.value.legs[1] == (Decimal("62.5"), Decimal("70.5"))
+
+
+def test_a_prop_leg_whose_line_held_is_placed(db_session):
+    card = _prop_card(db_session, dk_point=Decimal("62.5"))
+    placement = mark_placed(db_session, card.id, 450, Decimal("25"), T0)
+    assert placement.stake_actual == Decimal("25.00")
+
+
+def test_a_note_is_sanitized_onto_the_placement(db_session):
+    card = _card(db_session)
+    placement = mark_placed(db_session, card.id, -110, Decimal("25"), T0,
+                            note="typed it <script> off the slip")
+    assert "<" not in placement.note and "off the slip" in placement.note
+
+
+@pytest.mark.parametrize("state,field,value", [
+    ("proposed", "status", "declined"),
+    ("placed", "stake", "30.00"),
+    ("alive", "accepted_odds", "450"),
+    ("placed", "leg_line:1", "227.5"),
+    ("busted", "leg_status:1", "void"),
+    ("cashed", "return", "137.50"),
+    ("busted", "status", "void"),
+])
+def test_every_row_of_the_transition_table_is_accepted(db_session, state, field, value):
+    card = _card(db_session, status=state)
+    row = apply_correction(db_session, card.id, field, value, T0)
+    assert row.field == field and row.new_value == value
+
+
+@pytest.mark.parametrize("state,field,value", [
+    ("cashed", "stake", "30.00"),            # graded: stake is frozen
+    ("busted", "accepted_odds", "450"),
+    ("placed", "status", "cashed"),          # never writable
+    ("placed", "status", "busted"),
+    ("placed", "status", "alive"),
+    ("proposed", "return", "10.00"),
+    ("placed", "leg_line:1", "227.5"),       # with leg 1 already graded
+])
+def test_everything_outside_the_table_is_refused(db_session, state, field, value):
+    card = _card(db_session, status=state, leg1_graded=(field == "leg_line:1"))
+    with pytest.raises((CorrectionNotAllowed,)):
+        apply_correction(db_session, card.id, field, value, T0)
+
+
+def test_a_refused_correction_writes_no_row_at_all(db_session):
+    card = _card(db_session, status="placed")
+    with pytest.raises(CorrectionNotAllowed):
+        apply_correction(db_session, card.id, "status", "cashed", T0)
+    assert db_session.execute(text(
+        "select count(*) from parlay_placement_corrections")).scalar() == 0
+    assert db_session.get(ParlayCard, card.id).status == "placed"
+
+
+def test_a_stake_correction_writes_the_signed_delta_on_the_card_s_week(db_session):
+    card = _card(db_session, year=2026, week=37)
+    mark_placed(db_session, card.id, -110, Decimal("25"), T0)
+    apply_correction(db_session, card.id, "stake", "30.00", T_MONDAY)
+    rows = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="stake").all()
+    assert sorted(r.amount for r in rows) == [Decimal("5.00"), Decimal("25.00")]
+    assert {(r.year, r.week) for r in rows} == {(2026, 37)}
+    assert db_session.get(ParlayPlacement, card.id).stake_actual == Decimal("30.00")
+
+
+def test_a_stake_correction_down_writes_a_negative_delta(db_session):
+    """The ledger's stake rows sum to what is actually staked (9's per-card invariant), so a
+    correction downwards is a negative row, never a deleted one."""
+    card = _card(db_session, year=2026, week=37)
+    mark_placed(db_session, card.id, -110, Decimal("25"), T0)
+    apply_correction(db_session, card.id, "stake", "20.00", T0)
+    rows = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="stake").all()
+    assert sum(r.amount for r in rows) == Decimal("20.00")
+    assert db_session.get(ParlayPlacement, card.id).stake_actual == Decimal("20.00")
+
+
+def test_a_stake_correction_over_the_cap_is_refused(db_session):
+    """5.2: the cap is re-checked on an increase, and it is the card's week that is read."""
+    _stake(db_session, week=37, amount=Decimal("20"))
+    card = _card(db_session, year=2026, week=37)
+    mark_placed(db_session, card.id, -110, Decimal("25"), T0)
+    with pytest.raises(BudgetExceeded):
+        apply_correction(db_session, card.id, "stake", "31.00", T0)
+    assert db_session.get(ParlayPlacement, card.id).stake_actual == Decimal("25.00")
+
+
+def test_an_accepted_odds_correction_recomputes_the_payout(db_session):
+    card = _card(db_session)
+    mark_placed(db_session, card.id, 400, Decimal("25"), T0)
+    apply_correction(db_session, card.id, "accepted_odds", "450", T0)
+    placement = db_session.get(ParlayPlacement, card.id)
+    assert placement.dk_odds_actual == 450
+    assert placement.dk_payout_actual == Decimal("137.50")
+
+
+def test_a_leg_status_correction_voids_the_leg_for_the_next_grading_pass(db_session):
+    card = _card(db_session, status="alive")
+    apply_correction(db_session, card.id, "leg_status:1", "void", T0)
+    leg = db_session.query(ParlayLeg).filter_by(card_id=card.id, seq=1).one()
+    assert leg.status == "void" and leg.graded_at == T0
+
+
+def test_a_confirmed_return_and_a_confirmed_void_are_the_only_confirmed_rows(db_session):
+    # `mark_placed` refuses anything but a `proposed` card, so the card is placed first and
+    # then driven `alive` the way `parlay_grade` drives it (plan review IM-5).
+    card = _card(db_session)
+    mark_placed(db_session, card.id, 450, Decimal("25"), T0)
+    _drive_alive(db_session, card)
+    apply_correction(db_session, card.id, "return", "137.50", T0)
+    row = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="return").one()
+    assert row.source == "confirmed" and row.amount == Decimal("137.50")
+    assert db_session.get(ParlayCard, card.id).status == "cashed"
+
+
+def test_a_second_confirmed_return_replaces_the_computed_row_rather_than_adding_beside_it(
+        db_session):
+    """One return row per card, whoever wrote it: `parlay_ledger` has no unique key, so this is
+    the code's invariant to keep. The grader's computed row is what the owner is correcting,
+    and a confirmed figure replaces it; a second confirmation replaces that."""
+    card = _card(db_session, year=2026, week=37)
+    mark_placed(db_session, card.id, 450, Decimal("25"), T0)
+    _drive_alive(db_session, card)
+    db_session.add(ParlayLedger(ts=T0, card_id=card.id, kind="return", amount=Decimal("137.50"),
+                                year=2026, week=37, source="computed"))
+    db_session.flush()
+    apply_correction(db_session, card.id, "return", "130.00", T0)
+    apply_correction(db_session, card.id, "return", "125.00", T0)
+    row = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="return").one()
+    assert row.source == "confirmed" and row.amount == Decimal("125.00")
+    assert db_session.query(ParlayLedger).filter_by(card_id=card.id).count() == 2   # + the stake
+
+
+def test_a_confirmed_void_returns_the_stake_once(db_session):
+    """DraftKings voided the whole slip. The grader may already have written a computed `void`
+    row for it; the owner's confirmation replaces that row, and there is exactly one."""
+    card = _card(db_session, year=2026, week=37)
+    mark_placed(db_session, card.id, 450, Decimal("25"), T0)
+    _drive_alive(db_session, card)
+    db_session.add(ParlayLedger(ts=T0, card_id=card.id, kind="void", amount=Decimal("25.00"),
+                                year=2026, week=37, source="computed"))
+    db_session.flush()
+    apply_correction(db_session, card.id, "status", "void", T0)
+    row = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="void").one()
+    assert row.source == "confirmed" and row.amount == Decimal("25.00")
+    assert (row.year, row.week) == (2026, 37)
+    assert db_session.get(ParlayCard, card.id).status == "void"
+
+
+def test_declining_a_proposed_card_voids_it_and_moves_no_money(db_session):
+    """5.4: `Not this one` is the first row of the table, not a third route."""
+    card = _card(db_session, status="proposed")
+    row = apply_correction(db_session, card.id, "status", "declined", T0)
+    card = db_session.get(ParlayCard, card.id)
+    assert (card.status, card.declined_reason) == ("void", "declined")
+    assert row.old_value == "proposed"
+    assert db_session.query(ParlayLedger).filter_by(card_id=card.id).count() == 0
+
+
+def test_a_correction_records_the_value_it_replaced(db_session):
+    card = _card(db_session)
+    mark_placed(db_session, card.id, 400, Decimal("25"), T0)
+    row = apply_correction(db_session, card.id, "accepted_odds", "450", T0, note="read it again")
+    assert row.old_value == "400" and row.new_value == "450" and row.note == "read it again"
+    assert row.ts == T0
+
+
+def test_the_same_field_corrected_twice_writes_two_rows(db_session):
+    """5.3: corrections carry no confirmation id; the trail is append-only."""
+    card = _card(db_session)
+    mark_placed(db_session, card.id, 400, Decimal("25"), T0)
+    apply_correction(db_session, card.id, "accepted_odds", "450", T0)
+    apply_correction(db_session, card.id, "accepted_odds", "450", T0)
+    assert db_session.execute(text(
+        "select count(*) from parlay_placement_corrections where card_id = :c"),
+        {"c": card.id}).scalar() == 2
+
+
+def test_a_correction_to_an_unknown_card_is_refused(db_session):
+    with pytest.raises(CardNotPlaceable):
+        apply_correction(db_session, 99_999, "status", "void", T0)
+
+
+def test_the_corrections_cap_is_twenty_per_card(db_session):
+    card = _card(db_session)
+    mark_placed(db_session, card.id, 450, Decimal("25"), T0)
+    _drive_alive(db_session, card)
+    for i in range(20):
+        apply_correction(db_session, card.id, "accepted_odds", str(400 + i), T0)
+    with pytest.raises(CorrectionsCapped):
+        apply_correction(db_session, card.id, "accepted_odds", "999", T0)
+
+
+def test_a_value_longer_than_thirty_two_characters_is_refused_never_truncated(db_session):
+    card = _card(db_session, status="alive")
+    with pytest.raises(ValueError):
+        apply_correction(db_session, card.id, "accepted_odds", "9" * 33, T0)
+
+
+def test_a_field_carrying_a_suffix_the_table_does_not_define_is_refused(db_session):
+    """`field` is the 5.2 name as written; only a leg field carries a `:<seq>`."""
+    card = _card(db_session, status="placed")
+    with pytest.raises(CorrectionNotAllowed):
+        apply_correction(db_session, card.id, "status:void", "void", T0)
+
+
+def test_a_field_longer_than_the_column_is_refused_never_truncated(db_session):
+    card = _card(db_session, status="placed")
+    with pytest.raises(ValueError):
+        apply_correction(db_session, card.id, "leg_line:" + "1" * 30, "227.5", T0)
