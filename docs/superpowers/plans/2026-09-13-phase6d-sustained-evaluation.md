@@ -1,6 +1,6 @@
 # Phase 6D: Sustained evaluation — Implementation Plan
 
-**Revision 1**, 2026-09-13. Author: autopilot (plan writer, opus). Written against the design addendum
+**Revision 2**, 2026-09-14, plan review findings applied. Author: autopilot (plan writer, opus). Written against the design addendum
 `docs/superpowers/specs/2026-09-13-phase6d-sustained-evaluation-design.md` (**revision 2**: every section binding,
 §8 D1–D12 and the Rulings section included), the roadmap's Phase 6 section and its pre-loaded decision 4, and the
 code as it stands on this branch — every signature, constant, line number and fixture name below was read with
@@ -40,7 +40,7 @@ PostgreSQL 16. Standard library only for anything new (`dataclasses`, `datetime`
 §13 and §14 for milestone 6D, and consumes the 6C addendum (§0.3, §0.11, §0.12, D11, rulings C1/I6) and the 6B
 addendum's 6D carve-outs. **Read the addendum section your task names before writing a line of code.** Where this
 plan and the addendum differ, the addendum wins — except where this plan names the difference out loud: the four
-implementation choices the addendum left open ("Four choices this plan makes"), the added dependencies the Wave map
+implementation choices the addendum left open ("Six choices this plan makes"), the added dependencies the Wave map
 states, and two file paths §9 names that do not exist in this tree (Task 7's split proposal, Task 9's replay
 runbook), each corrected in the task that writes it.
 
@@ -96,9 +96,15 @@ timeout 1500 make test TEST_ARGS='tests/<file> -q'
 
   Write that form in every "Run:" step — never a bare `pytest`, never the retired `DATABASE_URL_TEST=... pytest`
   Mac form. Pass `timeout_seconds=1800` on the shell call. Every test passes a fixed tz-aware `now`; no
-  `datetime.now()` inside an assertion (the two pre-existing `datetime.now(timezone.utc)` uses in
+  `datetime.now()` inside an assertion (the fourteen pre-existing `datetime.now(timezone.utc)` uses in
   `tests/test_checks.py` are that file's own convention and are left alone — new cases there define their own
-  constant). The suite stays pristine: no warning, no traceback, no unexpected pass. A strict `XPASS` is a hard
+  constant). **One exemption, and only one** (plan review C1): a test of a check whose *statement* is bounded by
+  the **server's** `now()` seeds its rows against the real clock, never a frozen one. `run_checks` passes its `now`
+  argument to `sql_for` only to choose a partition *name* (`harness/ops/checks.py:404`); the window predicate is
+  `now() - interval '...'` evaluated by PostgreSQL, so rows seeded at a frozen instant days away fall outside the
+  window the check judges and the case asserts on an empty result. Task 1's three database cases take that
+  exemption and say so in their docstrings; every other test in this plan passes a fixed tz-aware `now`. The suite
+  stays pristine: no warning, no traceback, no unexpected pass. A strict `XPASS` is a hard
   failure — stop and report it. The 6 `xfailed` cases in `tests/test_execution_regressions.py` are 6B's and are
   never unmarked here.
 - **The frozen baseline is amended exactly once.** `tests/test_pipeline_stage_order.py`'s parity assertions change
@@ -125,7 +131,7 @@ Claude-Session: https://claude.ai/code/session_016Br3qJepDCchscKZWXNKov
 - **Ops read-backs** the controller performs after the deploy (addendum §4) are written as exact commands with
   their expected output in the task that adds the behaviour, and repeated in Task 10.
 
-## Four choices this plan makes where the addendum leaves the shape open
+## Six choices this plan makes where the addendum leaves the shape open
 
 Each is additive, is named in the task that makes it, and is flagged here so the plan review sees it in one place.
 
@@ -148,6 +154,17 @@ Each is additive, is named in the task that makes it, and is flagged here so the
 4. **Task 7 does not touch `harness/report/tables.py`.** Addendum §1.3's file list names it, but t14 — the table
    that prints `total_runs`, `non_skipped_runs` and `priced_runs` — does not exist until Task 8. Task 7 produces
    `coverage.eligible_runs`; Task 8's t14 calls it. `tables.py` therefore has one owner, Task 8.
+5. **`COVERAGE_RUN_CAP = 25_000`** is the cap Task 7's `runs` read uses, where addendum §2 and §3 rows 4/5 write
+   their own reads at `limit 2000` and `limit 100`. Derivation: `eligible_runs` answers a **weekly** window and a
+   day carries ~1,315 runs (live facts), so a week is ~9,200 rows; 25,000 is that with room for a busier week and
+   for a report rendered days late, and it is the same order as `T13_NOTES_LIMIT = 25_000`
+   (`harness/report/tables.py:1598`), which caps the same table for t13. The §3 rows keep their own literal caps,
+   which bound 24 h reads. Task 7.
+6. **The comparison CLI is `harness policy-compare --from-run --to-run --variant --policies --out -`**, where
+   addendum §1.6(b) writes `--from --to --policies <names> --out -`. The plan's form mirrors the existing
+   `replay_cmd` flags (`harness/cli.py:707-709`: `--from-run`, `--to-run`, `--variant`), so the run range and the
+   variant are named the one way this CLI already names them; nothing about the comparison changes with the
+   spelling. Task 9.
 
 ## Wave map
 
@@ -192,7 +209,7 @@ file is serialized; the `Depends on:` lines and the wave map agree.
 | T2 fix 46: the RFQ yield guard and stored-rows cap | `harness/venues/kalshi/rfq_socket.py`, `harness/venues/kalshi/rfq.py`, `docs/runbooks/research.md`, `tests/test_rfq_listener.py`, `tests/test_rfq_refusal.py` | none | 1 |
 | T3 exclusion classes and coverage outcomes | `harness/ops/exclusions.py` (new), `harness/execution/plan.py` (two constants), `harness/execution/loop.py` (their two write sites), `tests/test_exclusion_classes.py` (new) | none | 1 |
 | T4 `coverage_samples` and the two-phase helper | `harness/ops/coverage.py` (new), `harness/db/models.py`, `migrations/versions/0009_phase6d_sustained_evaluation.py`, `harness/recorder/tick.py`, `harness/strategy/pipeline.py`, `tests/fixtures/run_notes_pricing_14307.json` + its README + `tests/fixtures/run_notes_pricing_exhausted.json` (new), `tests/pricing_baseline.py` (one loader), `tests/test_coverage_samples.py` (new), `tests/test_alembic.py` | T1 (migration, schema, models, `tests/test_alembic.py`), T3 (`COVERAGE_CLASS_OF`) | 2 |
-| T5 fix 48's closure and budget isolation | `harness/strategy/pipeline.py`, `harness/recorder/tick.py`, `tests/test_pipeline_stage_order.py`, `tests/test_pipeline.py` | T4 | 3 |
+| T5 fix 48's closure and budget isolation | `harness/strategy/pipeline.py`, `harness/recorder/tick.py`, `tests/test_pipeline_stage_order.py`, `tests/test_pipeline.py`, `tests/pricing_baseline.py` (the D12 note) | T4 | 3 |
 | T6 the latency decomposition | `harness/recorder/tick.py`, `harness/execution/loop.py`, `harness/execution/plan.py` is **not** touched, `tests/test_latency_decomposition.py` (new) | T4, T5 (`tick.py`), T3 (`loop.py`) | 4 |
 | T7 missing-stage denominator and normalizer evidence | `harness/ops/coverage.py`, `harness/normalize/runner.py`, `harness/recorder/tick.py`, `docs/superpowers/reviews/2026-09-13-normalizer-split-proposal.md` (new), `tests/test_coverage_denominator.py` (new) | T4, T5, T6 (`tick.py`) | 5 |
 | T8 funnel episodes, t14 and Floor | `harness/ops/episodes.py` (new), `harness/db/models.py`, `migrations/versions/0009_phase6d_sustained_evaluation.py`, `harness/strategy/pipeline.py`, `harness/recorder/tick.py` (one `cadence_s=` argument and one sample family), `harness/execution/store.py`, `harness/execution/loop.py`, `harness/report/tables.py`, `harness/report/render_for_model.py`, `harness/dashboard/snapshots/floor.py`, `tests/test_funnel_episodes.py` (new), `tests/test_report_t14.py` (new), `tests/test_snap_floor.py`, `tests/test_render_for_model.py`, `tests/test_alembic.py` | T4, T7 (`coverage.eligible_runs`), T5 (`pipeline.py`), T6 (`loop.py`), T1 (migration) | 6 |
@@ -206,7 +223,9 @@ plain `__table_args__` indexes, so `create_all` builds them and no `_CONCURRENT_
 `tests/test_alembic.py` T1 → T4 → T8; `harness/recorder/tick.py` T4 → T5 → T6 → T7 → T8 (T8 adds one argument
 and one sample family, after T7);
 `harness/strategy/pipeline.py` T4 → T5 → T8; `harness/execution/loop.py` T3 → T6 → T8;
-`harness/execution/plan.py` T3 → T9; `harness/ops/coverage.py` T4 → T7.
+`harness/execution/plan.py` T3 → T9; `harness/ops/coverage.py` T4 → T7;
+`tests/pricing_baseline.py` T4 → T5 (T4 adds the `recorded_pricing_notes` loader, T5 appends §1.5(d)/D12's
+amendment note to the module docstring; neither touches `baseline_pipeline`).
 Every one of these is a chain, never a fork.
 
 No task but T10 edits `docs/superpowers/autopilot/verify.md` — addendum §9 lists `verify.md` rows under tasks 1 and
@@ -220,13 +239,15 @@ threshold, a check's statement timeout, a cadence constant in `harness/recorder/
 ### Task 1: Carried fix 51 — the integrity checks bounded to the window they judge (addendum §1.9, §0.14; ruling I1, I2; decisions D8, D9, D10)
 
 **Files:**
-- Modify: `harness/ops/checks.py` (`current_trades_partition` at lines 47-54 and `_duplicate_trades_sql` at 57-65; the `duplicate_trades` `Check`'s static `sql` at 68-85; a new module constant)
+- Modify: `harness/ops/checks.py` (`current_trades_partition` at lines 47-54 and `_duplicate_trades_sql` at 57-64 (line 65 closes its f-string); the `duplicate_trades` `Check`'s static `sql` at 68-85; a new module constant)
 - Modify: `harness/db/models.py` (`Intent`, lines 395-418: add a `__table_args__` it does not have today)
 - Modify: `harness/db/schema.py` (`_CONCURRENT_INDEX_DDL`, the tuple starting at line 231: one new entry)
-- Modify: `harness/db/migrate.py` (`HEAD_REVISION`, line 34)
+- Modify: `harness/db/migrate.py` (`HEAD_REVISION`, line 35)
 - Create: `migrations/versions/0009_phase6d_sustained_evaluation.py`
-- Modify: `tests/test_checks.py` (four new cases; no existing case is edited)
-- Modify: `tests/test_alembic.py` (`test_the_versions_directory_holds_seven_revisions`, line 419)
+- Modify: `tests/test_checks.py` (five new cases; no existing case is edited)
+- Modify: `tests/test_alembic.py` (`test_the_versions_directory_holds_seven_revisions` at line 419, and
+  `test_raw_events_lookup_follows_quotes_run_index_and_is_the_pinned_head` at line 869, whose
+  `assert HEAD_REVISION == "0007_raw_events_lookup"` at line 875 this task moves)
 
 **Depends on:** none.
 
@@ -280,12 +301,25 @@ Append these four cases. `_check`, `NOW`, `_run_one`, `_intent`, `_order` and th
 already exist; add `timedelta` to the existing `from datetime import ...` line only if it is not already there (it
 is: line 6 reads `from datetime import datetime, timedelta, timezone`).
 
+**Which instant each case takes, and why** (Global Constraints' one exemption; plan review C1). The two cases that
+assert on the statement's *text* take the fixed `T51` below — `sql_for` is a pure function of its argument, so a
+frozen instant is exactly right there and is what makes the crossing case deterministic. The cases that run the
+statement **against the database** take `now = datetime.now(timezone.utc)` and seed their rows at
+`now - timedelta(...)`, because the statement's window is `now() - interval '25 hours'` evaluated by
+**PostgreSQL**: `run_checks` passes its `now` only to `sql_for`, to choose a partition name
+(`harness/ops/checks.py:404`), never as a bind. Rows seeded five days before the real clock fall outside that
+window, the check answers 0, `_zero` makes the status `pass`, and the case asserts on an empty result. This is the
+convention the file's fourteen existing `datetime.now(timezone.utc)` cases already follow (lines 219-238 and
+274-292 among them), and the Global Constraints carry it as the single exemption to the fixed-`now` rule.
+
 ```python
 # --- Phase 6D, Task 1 (addendum §1.9): the checks bounded to the window they judge ----------
 
-#: This file's fixed instant for the 6D cases. A Wednesday, so `now - 25 h` is inside the same
-#: ISO week and the single-partition branch is the one under test; the crossing case below
-#: names its own Monday instant.
+#: The fixed instant for the 6D cases that assert on the statement's **text**. A Wednesday, so
+#: `now - 25 h` is inside the same ISO week and the single-partition branch is the one under
+#: test; the crossing case below names its own Monday instant. The cases that run the statement
+#: against the database use the real clock instead -- the window is the server's `now()`, not
+#: this one (see the step's note).
 T51 = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
 
 
@@ -327,26 +361,34 @@ def test_duplicate_trades_names_the_previous_partition_when_the_window_crosses_t
 def test_duplicate_trades_answers_the_same_number_as_an_unbounded_reference(db_session):
     """The bound narrows the scan, not the answer (addendum §1.9's expected result).
 
+    Real clock, not `T51`: the statement's window is the **server's** `now()`, so a frozen
+    instant five days back would put every seeded row outside it, the check would answer 0 and
+    `_zero` would make the status `pass`. Seeding relative to the real clock is this file's own
+    convention for exactly this reason.
+
     Computed independently of the implementation: two rows share `(venue, trade_id)` inside the
-    window and two more share a different id 30 h back. The bounded statement must report
-    exactly the one in-window duplicate pair, which is also what a reference query written here
-    -- over the parent table, over the same 25 h -- reports.
+    window. The bounded statement must report exactly that one in-window duplicate pair, which
+    is also what a reference query written here -- over the parent table, over the same 25 h of
+    the same server clock -- reports.
     """
+    now = datetime.now(timezone.utc)
     for i in range(2):
         db_session.add(VenueTrade(venue="kalshi", trade_id="dup-in", ticker="T",
-                                  ts=T51 - timedelta(seconds=i), yes_price=Decimal("0.2300"),
+                                  ts=now - timedelta(seconds=i), yes_price=Decimal("0.2300"),
                                   count=Decimal("5.00"), taker_side="yes", is_block=False,
                                   source="rest", raw_id=None))
     db_session.flush()
 
-    result = _run_one(db_session, "duplicate_trades", T51)
+    result = _run_one(db_session, "duplicate_trades", now)
     reference = db_session.execute(text("""
+        -- The same 25 h the check binds, over the parent table and with no partition named, so
+        -- this answers whether the bound changed the number rather than only the scan.
         select count(*) from (
             select venue, trade_id from venue_trades
-            where ts >= :now::timestamptz - interval '25 hours' and ts <= :now::timestamptz
+            where ts >= now() - interval '25 hours'
             group by venue, trade_id having count(*) > 1
         ) d
-    """), {"now": T51}).scalar()
+    """)).scalar()
     assert result.status == "fail"          # an answer is the deliverable, not a pass
     assert result.detail is None            # never `skip: timeout`
     assert int(result.value) == reference == 1
@@ -357,6 +399,9 @@ def test_the_intents_check_rides_its_own_created_at_index(db_session):
     scan of `intents`, which carried no index on `created_at` at all -- that is why
     `intents_without_order_or_skip` was the fourth check skipping on 2026-09-13. The statement's
     logic, including phase 4.5's hold-path excusal, is untouched.
+
+    The third database case, and the one that takes no instant at all: it seeds no row and runs
+    no check, it reads the catalogue. There is no clock here to freeze or to leave real.
     """
     from harness.db.schema import _CONCURRENT_INDEX_DDL
 
@@ -382,9 +427,10 @@ timeout 1500 make test TEST_ARGS='tests/test_checks.py -q -k "duplicate_trades o
 
 Expected, before any implementation: `test_duplicate_trades_is_bounded_to_the_window_it_judges` fails on
 `assert "25 hours" in sql`; the crossing case fails on the same assertion;
-`test_duplicate_trades_answers_the_same_number_as_an_unbounded_reference` fails on
-`assert result.status == "fail"` only if the unbounded statement disagrees, and otherwise passes vacuously — it is
-the *bound* it pins, which the first two cases carry; and
+`test_duplicate_trades_answers_the_same_number_as_an_unbounded_reference` passes before the implementation and
+after it — the unbounded statement today also finds the one seeded duplicate pair, and the case exists to prove the
+*bound did not change the number*, which only the implementation can falsify; the first two cases are what fail red
+for the bound itself. And
 `test_the_intents_check_rides_its_own_created_at_index` fails on
 `assert "create index concurrently if not exists ix_intents_created on intents (created_at)" in ddl`.
 
@@ -470,7 +516,13 @@ Then bound the static text of the `duplicate_trades` `Check` (lines 76-84), whic
             where ts >= now() - interval '25 hours'
               -- The `date_trunc('week', ...)` term is redundant beside the 25 h bound and is
               -- kept deliberately: `assert_no_tape_reads` requires every `venue_trades`
-              -- statement to carry it, and this task changes no static guarantee (gate 13).
+              -- statement to carry the literal `date_trunc('week'`
+              -- (`harness/ops/checks.py:360`), and this task changes no static guarantee
+              -- (gate 13). It is *widened* by `- interval '7 days'` so it mirrors the two
+              -- partitions `sql_for` can name early in an ISO week; widened, it binds on
+              -- nothing -- the 25 h predicate beside it is always the narrower of the two, so
+              -- the term selects no row the old text would have excluded and excludes none the
+              -- old text kept.
               and ts >= date_trunc('week', now()) - interval '7 days'
             group by venue, trade_id
             having count(*) > 1
@@ -496,11 +548,22 @@ the "older partition" case fails, the window predicate is missing from one of th
 Add one more case to `tests/test_checks.py`. It is a **capture**, not a scan-shape assertion: on a test database of
 a few hundred rows PostgreSQL will choose a sequential scan whatever the index says, so the assertion is the one
 that can be made honestly here — the statement completes inside the real `STATEMENT_TIMEOUT_MS` — and the plan text
-is printed for the journal.
+is printed for the journal. Like the reference case it takes the real clock (Step 1's note), and for one further
+reason: `sql_for` names partitions, and `tests/conftest.py` builds only this week's and next week's, so a frozen
+instant in another ISO week would name a relation that does not exist and `explain` would raise 42P01 instead of
+printing a plan.
 
 ```python
 def test_the_bounded_duplicate_trades_statement_prints_its_plan(db_session, capsys):
     """Ruling I2: the plan is captured before the statement is adopted.
+
+    Real clock again, and for a second reason beyond the window: `sql_for` names partitions,
+    and `tests/conftest.py` builds only *this* week's and next week's through
+    `ensure_partitions`. A frozen instant in another ISO week names a relation that does not
+    exist, the statement raises 42P01, and this case would be explaining a missing table name
+    instead of a plan. So the instant is the real one, and the window's own partitions are
+    created first -- early in an ISO week the 25 h window opens in the previous week, whose
+    partition conftest has not built.
 
     On this database the numbers are small, so the captured plan is evidence of the statement's
     *shape* (which relations it touches, and that the window predicate is pushed into each
@@ -510,18 +573,25 @@ def test_the_bounded_duplicate_trades_statement_prints_its_plan(db_session, caps
     unioned, each day bounded the same way; and if neither prunes, the statement stays as it is,
     the skip is journaled, and no timeout and no threshold is raised either way.
     """
+    from harness.db.schema import ensure_partitions
+    from harness.ops.checks import DUPLICATE_TRADES_WINDOW_H
+
+    now = datetime.now(timezone.utc)
+    # `ensure_partitions(session, at)` builds the week of `at` and the week after it and skips
+    # names that already exist, so this one call covers both ends of the window.
+    ensure_partitions(db_session, now - timedelta(hours=DUPLICATE_TRADES_WINDOW_H))
     for i in range(200):
         db_session.add(VenueTrade(venue="kalshi", trade_id=f"t{i}", ticker="T",
-                                  ts=T51 - timedelta(minutes=i), yes_price=Decimal("0.2300"),
+                                  ts=now - timedelta(minutes=i), yes_price=Decimal("0.2300"),
                                   count=Decimal("5.00"), taker_side="yes", is_block=False,
                                   source="rest", raw_id=None))
     db_session.flush()
-    sql = _check("duplicate_trades").sql_for(T51)
+    sql = _check("duplicate_trades").sql_for(now)
     plan = "\n".join(row[0] for row in db_session.execute(
         text(f"explain (analyze, buffers) {sql}")).all())
     with capsys.disabled():
         print("\n-- EXPLAIN (ANALYZE, BUFFERS), bounded duplicate_trades --\n" + plan)
-    assert current_trades_partition(T51).lower() in plan.lower()
+    assert current_trades_partition(now).lower() in plan.lower()
     assert "25 hours" in sql
 ```
 
@@ -625,14 +695,16 @@ def downgrade() -> None:
     pass
 ```
 
-In `harness/db/migrate.py`, change `HEAD_REVISION` (line 34) to `"0009_phase6d_sustained_evaluation"` and append
+In `harness/db/migrate.py`, change `HEAD_REVISION` (line 35) to `"0009_phase6d_sustained_evaluation"` and append
 one sentence to the comment above it: `phase 6D bumps it to "0009_phase6d_sustained_evaluation"; the controller
 assigns the final number at merge (4.6 addendum D9).`
 
-- [ ] **Step 8: Point `tests/test_alembic.py`'s directory listing at what is actually there**
+- [ ] **Step 8: Point `tests/test_alembic.py` at the new head**
 
-Run `ls migrations/versions/*.py` first and write the list it prints, plus the new file, into the assertion.
-Rename the case, because the count is no longer seven:
+`HEAD_REVISION` is pinned by **two** cases in this file, not one, and both have to move together or Step 9 is red.
+
+First the directory listing. Run `ls migrations/versions/*.py` and write the list it prints, plus the new file, into
+the assertion. Rename the case, because the count is no longer seven:
 
 ```python
 def test_the_versions_directory_holds_every_revision():
@@ -646,6 +718,39 @@ def test_the_versions_directory_holds_every_revision():
 If `ls` does not show `0008_positions_open_fill.py` — the stranded-position hotfix has not merged into this
 branch's base — drop that entry from the list **and** set this revision's `down_revision` to the newest name `ls`
 does show, then say so in the commit message: the controller reconciles the number and the parent at merge (D10).
+
+Then the pinned head (line 869). `test_raw_events_lookup_follows_quotes_run_index_and_is_the_pinned_head` asserts
+`HEAD_REVISION == "0007_raw_events_lookup"` at line 875, which Step 7 has just made false. It carries two claims:
+that 0007 follows 0006, which is still true and stays, and that 0007 is the head, which is now 0009's. Split them.
+Rename the existing case and drop only its `HEAD_REVISION` line:
+
+```python
+def test_raw_events_lookup_follows_quotes_run_index():
+    module = _load_revision("0007_raw_events_lookup.py")
+    assert module.revision == "0007_raw_events_lookup"
+    assert module.down_revision == "0006_quotes_run_index"
+```
+
+and add the 6D case beside it, in the same shape the file already uses for a revision plus its head claim:
+
+```python
+# --- 6D: revision 0009 --------------------------------------------------------------------------
+
+def test_phase6d_follows_the_positions_hotfix_and_is_the_pinned_head():
+    """The head moves with the revision or `migrate ensure` upgrades to a revision the checkout
+    does not carry. The parent is the newest revision on this branch's base: `ls
+    migrations/versions/*.py` is the authority, and the controller reconciles both at merge
+    (4.6 addendum D9/D10)."""
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0009_phase6d_sustained_evaluation.py")
+    assert module.revision == "0009_phase6d_sustained_evaluation"
+    assert module.down_revision == "0008_positions_open_fill"
+    assert HEAD_REVISION == "0009_phase6d_sustained_evaluation"
+```
+
+If Step 7 wrote a different `down_revision` because `0008_positions_open_fill.py` is not on this base, write the
+same name here; the two must agree, and the commit message says which it is.
 
 - [ ] **Step 9: Run the three affected files, then the whole suite**
 
@@ -1024,10 +1129,16 @@ computation (lines 427-437) and **before** the `with self._factory() as session:
         # ack are untouched: yielding is not a disconnect, and `_note_data` above has already
         # recorded that the subscription is alive, so the data-idle watchdog does not fire on a
         # listener that is merely standing down.
+        #
+        # The return value is the same expression the method's own tail uses (line 449), and
+        # deliberately so: a *non-data* frame is one more quiet iteration whether or not this
+        # listener is yielding, and returning a bare `True` here would skip fix 44's data-idle
+        # check for exactly the frames it exists to count. A data frame has already restarted
+        # the idle window through `_note_data`, so it returns True either way.
         if self._yielding():
             self.frames_yielded += 1
             self._burst_frames_yielded += 1
-            return True
+            return True if is_data else self._check_data_idle()
 ```
 
 and pass the store gate into the handler:
@@ -1572,9 +1683,13 @@ EOF
 - Modify: `tests/test_alembic.py` (nothing structural: the catalogue diff picks the table up automatically; run it
   and add the table to any explicit list the file keeps)
 
-`harness/db/schema.py` needs **no** edit in this task: `coverage_samples` is a model with two plain indexes on
-`__table_args__`, so `Base.metadata.create_all` builds it and `drop_schema`'s metadata list drops it, and neither
-index is on an existing bulk table.
+`harness/db/schema.py` needs **no** edit in this task, and this is the sentence to read before going looking for
+one (addendum §2 names `schema.py` as one of the two places a new table must be declared, which is true of the
+*model*, not of the DDL tuples): `coverage_samples` is a model with two plain indexes on `__table_args__`, so
+`Base.metadata.create_all` builds it and `drop_schema`'s metadata list drops it. Its indexes need **no**
+`_INDEX_DDL` and **no** `_CONCURRENT_INDEX_DDL` entry, because the table is new and has no live writer at creation
+time — those tuples exist for indexes added to a table that already has one. `harness/db/schema.py` has a single
+owner in this plan, Task 1.
 
 **Depends on:** Task 1 (the migration file, `harness/db/models.py`, `tests/test_alembic.py`), Task 3
 (`COVERAGE_CLASS_OF`, M9).
@@ -1587,8 +1702,10 @@ makes an omission visible rather than inferred.
 - Consumes: `harness.ops.exclusions.COVERAGE_CLASS_OF` (Task 3), `harness.telemetry.record_many`,
   `harness.recorder.cadence.SPORTS` and `interval_for`, `harness.recorder.store.get_source_state`,
   `harness.venues.kalshi.public.FOOTBALL_SERIES`, `harness.recorder.tick._SERIES_SPORT`,
-  `harness.strategy.pipeline._load_gap_rows`'s `GapRow` (`sport`, `market_type`, `ttk_minutes`, `feed_kind`,
-  `venue_market_id`), `harness.strategy.pipeline.pricing_order`'s ordered variants.
+  `harness.strategy.pipeline._load_gap_rows`'s rows — their type `GapRow` is defined in
+  `harness/strategy/run.py:83` and imported by `pipeline.py:45`, with the fields `sport`, `market_type`,
+  `ttk_minutes`, `feed_kind`, `venue_market_id` — and `harness.strategy.pipeline.pricing_order`'s ordered
+  variants.
 - Produces, for Tasks 5, 7, 8 and 10:
   - `harness.db.models.CoverageSample` — `coverage_samples`
   - `harness.ops.coverage.COVERAGE_ROW_CAP = 3072`, `COVERAGE_OUTCOMES = tuple(COVERAGE_CLASS_OF)`,
@@ -2523,8 +2640,12 @@ EOF
 - Modify: `tests/test_pipeline_stage_order.py` (the parity case at lines 172-217 as §1.5(d)/D12 states; three new
   cases; `test_every_stage_records_what_it_cost` extended)
 - Modify: `tests/test_pipeline.py` (one new case for the suppressed count)
+- Modify: `tests/pricing_baseline.py` (one paragraph appended to the module docstring: §1.5(d)/D12's amendment
+  recorded beside the frozen loader, Step 1. `baseline_pipeline` and the frozen producers under
+  `tests/fixtures/pricing_44e8e9c/` are not touched, and neither is Task 4's `recorded_pricing_notes`)
 
-**Depends on:** Task 4 (`pipeline.py`, and the coverage rows this task must not disturb).
+**Depends on:** Task 4 (`pipeline.py`, the coverage rows this task must not disturb, and `tests/pricing_baseline.py`,
+which Task 4 touches first).
 
 **Model:** opus — this is the one task that changes what the harness stores. The candidate set must be provably
 unchanged, the frozen-baseline parity contract is amended here and nowhere else, and the deploy instant becomes a
@@ -2705,6 +2826,26 @@ assertions after its existing `by_name` block, changing nothing above them:
     assert by_name["variants_direct"]["units"] > 0
 ```
 
+Last in this step, record the amendment where a reader of the frozen baseline will meet it. `tests/pricing_baseline.py`
+is the module that loads the frozen pre-hotfix producers the parity case compares against, and Task 4 has already
+added `recorded_pricing_notes` to it; this task is its second and last hand (`T4 → T5`). Append one paragraph to its
+module docstring — no code changes, `baseline_pipeline` and `tests/fixtures/pricing_44e8e9c/` are untouched:
+
+```python
+"""Load the frozen pre-hotfix producers without consulting git or a database at test time.
+
+Phase 6D, decision D12 (addendum §1.5(d)): the parity contract these producers anchor was
+amended. `test_the_stage_order_produces_exactly_what_the_single_pass_produced` no longer
+compares the **whole** stored signal population against the single pass, because stage 6 stopped
+re-scoring direct-only variants over derived rows and therefore stores fewer rejected rows.
+What is still asserted identical is the candidate population and every candidate's `edge`,
+`stake`, `contracts` and labels, plus `fair_direct`, `fair_derived`, `no_sharp`, `gaps`, `order`
+and the fair-row and gap-row parity; the rejected-row difference is asserted separately against
+`notes->'pricing'->'rescore_suppressed'`, per variant and in total. Nothing this module loads
+changed, and no candidate, price, size, label or order moves.
+"""
+```
+
 - [ ] **Step 2: Run them and read the failures**
 
 ```bash
@@ -2731,6 +2872,15 @@ class _Stages:
     so the budget is accounted for at the boundary where it is spent) and `cause` (`budget` or
     `nothing_to_do`: "skipped" alone could not tell a stage the deadline killed from one that
     had nothing to do).
+
+    `cause` is written in exactly two places, and never twice for the same stage. `skip` writes
+    it onto a stage that **never started** -- guarded on `status == "skipped"`, so it can never
+    overwrite a measurement. `record` takes it for a stage that **did** start and did not do all
+    the work it might have: `nothing_to_do` when there was none, `budget` when the deadline
+    stopped it partway. Both are written by the single `record` call that closes the stage, so
+    `status: "ran"` with a `cause` reads "ran, and here is why it stopped", and
+    `status: "skipped"` with a `cause` reads "never started, and why". A stage that ran to the
+    end carries `cause: None`, `units = 0` included.
     """
 
     def __init__(self) -> None:
@@ -2743,11 +2893,16 @@ class _Stages:
         self._entries[name]["remaining_ms"] = remaining_ms
         return _stage_clock()
 
-    def record(self, name: str, started: float, units: int = 0) -> None:
+    def record(self, name: str, started: float, units: int = 0,
+               cause: str | None = None) -> None:
+        """Close a stage that ran. `cause` is `nothing_to_do` when the stage started and had no
+        work, `budget` when the deadline stopped it partway, and None when it ran to the end --
+        one call, so the entry is never written twice."""
         entry = self._entries[name]
         entry["elapsed_ms"] = int((_stage_clock() - started) * 1000)
         entry["status"] = "ran"
         entry["units"] = int(units)
+        entry["cause"] = cause
 
     def skip(self, *names: str, cause: str) -> None:
         """Why the stages that did not run did not run. A stage that already ran is left
@@ -2795,10 +2950,18 @@ Then every `t0 = _stage_clock()` becomes `t0 = stages.start("<stage>", remaining
 | 388-390 `fair_derived` | `stages.record("fair_derived", t0, units=derived_counts.derived)` |
 | 397-399, 408-411 | `stages.skip(*STAGE_NAMES[4:], cause="budget")` / `stages.skip("variants_derived", cause="budget")` |
 | 401-405 `gaps_derived` | `stages.record("gaps_derived", t0, units=new_gaps)` |
-| 417-426 `variants_derived` | `stages.record("variants_derived", t0, units=rescore_units)`, and `stages.skip("variants_derived", cause="nothing_to_do")` when the stage ran with nothing to re-score |
+| 417-426 `variants_derived` | one `stages.record("variants_derived", t0, units=rescore_units, cause=...)` whose `cause` is `"budget"`, `"nothing_to_do"` or `None` (the code block in Step 4 writes the expression) |
 
-`direct_units` and `rescore_units` are accumulated in `score` (next step). A stage that ran with `units = 0` keeps
-`status: "ran"`; only a stage that never started carries a `cause`.
+`direct_units` and `rescore_units` are accumulated in `score` (next step).
+
+**The `cause` rule, stated once here and nowhere else** (plan review I4). A stage that **never started** carries
+`status: "skipped"` with `cause: "budget"`, written by `stages.skip`, whose guard leaves an entry already marked
+`ran` alone. A stage that **started** carries `status: "ran"` and a `cause` written by the one `stages.record` call
+that closes it: `"nothing_to_do"` when it had no work (`units = 0`), `"budget"` when the deadline stopped it
+partway, and `None` when it ran to the end. `variants_derived` is the only stage in this pipeline that can take
+either of the two `ran` causes. **Never call `skip` after `record` for the same stage** — the guard makes it a
+no-op, and `record` is the only writer of a `ran` entry's cause; that is the single rule, and no other paragraph in
+this task restates it.
 
 - [ ] **Step 4: Split the rescore timing, and stop re-scoring the direct-only variants**
 
@@ -2807,7 +2970,7 @@ Then every `t0 = _stage_clock()` becomes `t0 = stages.start("<stage>", remaining
 
 ```python
     def score(variant: Variant, rows: list[GapRow], *, full: bool = False,
-              rescore: bool = False) -> None:
+              rescore: bool = False) -> int:
         t_variant = time.monotonic()
         signals = run_strategy(rows, variant, now, as_measured=as_measured,
                                stopped=variant.variant_id in stopped)
@@ -2837,9 +3000,11 @@ Then every `t0 = _stage_clock()` becomes `t0 = stages.start("<stage>", remaining
 Add `"variant_ms_rescore": {}` and `"rescore_suppressed": {}` to the `result` dict at 237-257, beside
 `"variant_ms": {}`.
 
-The stage-3 loop accumulates its units: `direct_units = 0` before it, `direct_units += score(variant,
-direct_rows, full=direct_complete) or 0` — `score` now returns the row count it scored, so the unit count is
-scored `(variant, row)` pairs.
+`score`'s annotation changes from `-> None` to `-> int` with the `return len(rows)` (plan review M4): it now
+answers the row count it scored, so no caller needs an `or 0`.
+
+The stage-3 loop accumulates its units: `direct_units = 0` before it, then `direct_units += score(variant,
+direct_rows, full=direct_complete)` — the unit count is scored `(variant, row)` pairs.
 
 Stage 6 (lines 413-426) becomes:
 
@@ -2871,22 +3036,23 @@ Stage 6 (lines 413-426) becomes:
                     result["rescore_suppressed"][variant.name] = suppressed
             continue
         if not ok():
+            # No `stages.skip` here: this stage started, so `record` below closes it with
+            # `cause="budget"`. A `skip` call would be a no-op the moment `record` runs, which
+            # is the contradiction Step 3's cause rule exists to prevent.
             result["budget_exhausted"] = True
-            stages.skip("variants_derived", cause="budget")
             break
         rescored_any = True
         rescore_units += score(variant, all_rows, full=True, rescore=True)
-    stages.record("variants_derived", t0, units=rescore_units)
-    if not rescored_any and not result["budget_exhausted"]:
-        stages.skip("variants_derived", cause="nothing_to_do")
+    # Step 3's cause rule, in the one call that closes this stage. The stage started, so its
+    # status is `ran` whichever branch got here; `cause` says why it stopped. `budget` when the
+    # loop broke on the deadline (`result["budget_exhausted"]` is False on entry to stage 6 --
+    # an earlier exhaustion returns before this stage), `nothing_to_do` when no derived consumer
+    # was left to score, and None when it re-scored everything it had.
+    stages.record("variants_derived", t0, units=rescore_units,
+                  cause="budget" if result["budget_exhausted"]
+                  else (None if rescored_any else "nothing_to_do"))
     record_order()
 ```
-
-`stages.skip` only writes a cause onto an entry still marked `skipped`, and `stages.record` has already marked this
-one `ran`, so the `nothing_to_do` line must come **before** `stages.record` or be written directly — read
-`_Stages.skip`'s guard and place the call accordingly; the simplest correct order is to call
-`stages.skip("variants_derived", cause="nothing_to_do")` *before* `stages.record(...)` when `rescored_any` is
-False, and to leave `cause` null when the stage did work.
 
 Finally, the boundary note, as a module constant beside `STAGE_NAMES`:
 
@@ -2959,7 +3125,7 @@ Expected: the usual pass count plus the new cases, 6 xfailed, zero warnings, zer
 
 ```bash
 git add harness/strategy/pipeline.py harness/recorder/tick.py tests/test_pipeline_stage_order.py \
-        tests/test_pipeline.py
+        tests/test_pipeline.py tests/pricing_baseline.py
 git commit -m "$(cat <<'EOF'
 fix 48 (6d): stage 6 stops re-scoring direct-only variants over derived rows
 
@@ -2994,7 +3160,7 @@ EOF
 **Files:**
 - Modify: `harness/recorder/tick.py` (`_pricing_samples` at lines 198-217: the feed-lag percentiles; one new
   module statement; an hourly tape-continuity sample in `_recorder_samples` at 220-239)
-- Modify: `harness/execution/loop.py` (`_MetricsAcc` at lines 142-164, `_write_metric_batch` at 337-383, the
+- Modify: `harness/execution/loop.py` (`_MetricsAcc` at lines 142-164, `_write_metric_batch` at 336-383, the
   fair-age reading in `_body` and the placement site at 1044-1059)
 - Create: `tests/test_latency_decomposition.py`
 
@@ -3875,6 +4041,11 @@ EOF
 - Create: `harness/ops/episodes.py`
 - Modify: `harness/db/models.py` (two new models, after `CoverageSample`)
 - Modify: `migrations/versions/0009_phase6d_sustained_evaluation.py` (`upgrade()` gains the two tables)
+- **Not** modified: `harness/db/schema.py`. Addendum §2 names it as one of the two places a new table must be
+  declared, which is true of the *model*; `opportunity_episodes` and `intent_episodes` are models with plain
+  `__table_args__` indexes, so `Base.metadata.create_all` builds them and `drop_schema`'s metadata list drops
+  them, and their indexes need **no** `_INDEX_DDL` and **no** `_CONCURRENT_INDEX_DDL` entry because both tables
+  are new and have no live writer at creation time. `schema.py` has a single owner in this plan, Task 1.
 - Modify: `harness/strategy/pipeline.py` (the candidate keys and one `episodes.upsert` call)
 - Modify: `harness/recorder/tick.py` (one `cadence_s=` argument at the `price_and_signal` call, line 931; one new
   sample family in `_pricing_samples`)
@@ -3901,8 +4072,10 @@ be sourced from the right table (ruling I3) or it reads ~0 for six of seven vari
   - `harness.db.models.OpportunityEpisode` / `IntentEpisode`
   - `harness.ops.episodes.EPISODE_UPSERT_CAP = 2048`, `gap_rule_s(cadence_s: int) -> int`,
     `upsert(session, model, keys, now, gap_rule_s, kind) -> int`
-  - `harness.report.tables._T14_COLUMNS = ["item", "value", "unit", "note"]`, `TABLE_KEYS` gaining `"t14"`,
-    `RENDER_ORDER` placing it after `t13`
+  - `harness.report.tables._T14_COLUMNS = ["item", "value", "unit", "note"]`, `_table14`, `TABLE_KEYS` gaining
+    `"t14"`, `RENDER_ORDER` placing it after `t13`, and the two module constants t14 prints and Task 10's verify
+    rows quote: `T14_COVERAGE_MIN = 0.95` (§1.7(a)'s declared tolerance, applied to no cell) and
+    `T14_SETTLE_MARGIN_S = 960` (§3 row 2's `16 minutes`, in seconds)
   - Floor's `funnel` payload gaining `opportunity_episodes`, `intent_episodes`, `episode_gap_rule_s`, a `class`
     key on every `skipped` row, and two `units` entries
   - the metric `episodes.truncated` (`{"kind": "opportunity"|"intent"}`) and `pricing.no_fair` (`{"reason": ...}`)
@@ -4337,29 +4510,257 @@ In `harness/report/tables.py`: append `"t14"` to `TABLE_KEYS`; make `RENDER_ORDE
 RENDER_ORDER = ("t13", "t14", *(key for key in TABLE_KEYS if key not in ("t13", "t14")))
 ```
 
-add `_T14_COLUMNS = ["item", "value", "unit", "note"]` beside `_T13_COLUMNS`, and write `_table14(session, window,
-variants, settings, now)` returning a `Table` whose rows are, in order:
+add `_T14_COLUMNS` beside `_T13_COLUMNS`, and write `_table14` in the shape `_table13` already uses
+(`harness/report/tables.py:1600-1841`): the module-level `text()` statements first, each carrying its bound and
+the index it rides in a comment above it, then one function that issues them and assembles the rows. The row spec
+is the function's **docstring**, so the table a reader meets and the code that builds it cannot drift.
 
-| item | value | unit | note |
-|---|---|---|---|
-| `coverage, gate variant` | completed / scheduled for the gate variant | share | "the denominator is the recorded scheduled set, not the sum of the rows (§1.1); tolerance 0.95, declared before the period it judges" |
-| `coverage, primary` | the same for the primary | share | as above |
-| `scheduled units, gate variant` | `sum(n) filter (outcome = 'scheduled')` | units | "`coverage_samples`, `domain = 'evaluation'`, through `ix_coverage_ts_domain`" |
-| one row per non-completed outcome | `sum(n)` | units | "class: `<COVERAGE_CLASS_OF[outcome]>`" |
-| `unexplained omissions` | the reconciliation count | cells | "scheduled cells no completion row closed within one cadence period; the acceptance clause's own test" |
-| `total runs` / `non-skipped runs` / `priced runs` | `coverage.eligible_runs` | runs | "every exhaustion share below is over `priced_runs` and over nothing else (§0.6)" |
-| `budget-exhausted share` | `coverage.exhaustion_share` | share | "over `priced_runs`" |
-| `markets with no fair value` | per variant, from `coverage_samples`' `no_fair` | units | "fix 55's coverage half; the reason split is the rows below" |
-| one row per `no_fair_reason` | from `pricing.no_fair` samples | markets | "`unmapped_market_type` / `no_sharp_line` / `pricing_error`, from `market_gap_snapshots`, never from `signals` (ruling I3)" |
-| `opportunity episodes` / `intent episodes` | `count(*)` over the week | episodes | "gap rule `<gap_rule_s>` s; `candidate_signals` and `intent_verdicts` on Floor count events, not episodes" |
-| `rejected-signal boundary` | the deploy instant the controller journaled, or `--` before it | timestamp | `harness.strategy.pipeline.RESCORE_BOUNDARY_NOTE` |
+At the top of the module add two read-only imports beside the existing `from harness.dashboard.queries import
+recent_runs_pricing`:
 
-Every read is bounded and names its index in a comment: the coverage rows ride
-`ix_coverage_ts_domain (ts, domain)`, the episode counts ride `ix_opportunity_started` /
-`ix_intent_started`, the `pricing.no_fair` and `pricing.rescore_suppressed` sums ride
-`ix_metric_samples_name_ts (name, ts desc)`, and `eligible_runs` is Task 7's capped read. The boundary row's
-value comes from the newest `operator_events` row whose `kind = 'deploy'` inside the window (small table,
-`ix_operator_events_ts`), and is `PLACEHOLDER` when there is none — never a guess.
+```python
+from harness.ops.coverage import eligible_runs, exhaustion_share
+from harness.ops.exclusions import COVERAGE_CLASS_OF
+```
+
+Both are readers — `eligible_runs` and `exhaustion_share` issue `select`s and nothing else, and `COVERAGE_CLASS_OF`
+is a dict — so the module's "nothing imports the executor's or the settler's write paths" rule (6C addendum
+ruling 6) still holds. Then, beside `_T13_COLUMNS` and its statements:
+
+```python
+_T14_COLUMNS = ["item", "value", "unit", "note"]
+
+#: §1.7(a)'s declared tolerance, printed beside the share it judges and declared before the
+#: period it judges. Not a gate criterion and not a threshold in `harness/report/gate.py`
+#: (R1): no cell is greyed, flagged, excluded or scored by it -- t14 prints it and says so.
+T14_COVERAGE_MIN = 0.95
+
+#: How long after a scheduled row a completion row may still arrive before the cell counts as
+#: an unexplained omission: one cadence period (`DEFAULT_CADENCE_S` = 900, the widest in
+#: force) plus a minute for the tick itself. This is addendum §3 row 2's `16 minutes`, in
+#: seconds, and it is the one number this table and that verify row must agree on.
+T14_SETTLE_MARGIN_S = 960
+
+#: Bound: `ts` inside the week. Index: `ix_coverage_ts_domain (ts, domain)` -- the leading
+#: pair, so the domain filter rides the same index as the range. One row per variant, with
+#: the two sums §1.1's share is over: the denominator is the recorded `scheduled` sum, never
+#: the sum of the rows.
+_T14_COVERAGE_BY_VARIANT = text("""
+    select variant_id,
+           coalesce(sum(n) filter (where outcome = 'completed'), 0) as completed,
+           coalesce(sum(n) filter (where outcome = 'scheduled'), 0) as scheduled
+    from coverage_samples
+    where domain = 'evaluation' and ts >= :start and ts < :end
+    group by 1
+""")
+
+#: Bound and index as above. §3 row 3's missingness breakdown for the week: every outcome that
+#: is neither a completion nor the schedule itself, largest first, each printed beside the
+#: class `COVERAGE_CLASS_OF` maps it to.
+_T14_OUTCOMES = text("""
+    select outcome, coalesce(sum(n), 0) as units
+    from coverage_samples
+    where domain = 'evaluation' and ts >= :start and ts < :end
+      and outcome not in ('completed', 'scheduled')
+    group by 1 order by 2 desc
+""")
+
+#: Addendum §3 row 2's reconciliation, as a count over the week rather than a 24 h list: a
+#: `scheduled` cell that no completion row closed. Bound: `s.ts` inside the week **and**
+#: before `:settled`, so a cell scheduled in the last `T14_SETTLE_MARGIN_S` of a still-open
+#: week is not called missing merely because its tick has not finished. Outer scan:
+#: `ix_coverage_ts_domain (ts, domain)`; probe: `ix_coverage_run (run_id)`. All five cell
+#: columns are matched with `is not distinct from` because every one of them is nullable and
+#: `=` is unknown against NULL -- the same shape the verify row uses, for the same reason.
+_T14_UNCLOSED = text("""
+    select count(*) from coverage_samples s
+    where s.domain = 'evaluation' and s.outcome = 'scheduled'
+      and s.ts >= :start and s.ts < :end and s.ts < :settled
+      and not exists (
+          select 1 from coverage_samples c
+          where c.run_id = s.run_id and c.domain = s.domain and c.outcome <> 'scheduled'
+            and c.sport is not distinct from s.sport
+            and c.ttk_bucket is not distinct from s.ttk_bucket
+            and c.feed is not distinct from s.feed
+            and c.market_type is not distinct from s.market_type
+            and c.variant_id is not distinct from s.variant_id)
+""")
+
+#: Bound and index as the first statement. Fix 55's coverage half (ruling I3): the markets
+#: with no fair value at all, per variant, counted where they were **recorded** -- the
+#: `no_fair` outcome `coverage.record` wrote -- and never from `signals`, whose `has_fair`
+#: rejections stage 6 stopped storing at the 6D deploy.
+_T14_NO_FAIR_BY_VARIANT = text("""
+    select variant_id, coalesce(sum(n), 0) as units
+    from coverage_samples
+    where domain = 'evaluation' and ts >= :start and ts < :end and outcome = 'no_fair'
+    group by 1 order by 2 desc
+""")
+
+#: Bound: `ts` inside the week. Index: `ix_metric_samples_name_ts (name, ts desc)`, one range
+#: for the one name. The reason split of the rows above, from the `pricing.no_fair` samples
+#: Step 6 writes out of `market_gap_snapshots.no_fair_reason` by `run_id`.
+_T14_NO_FAIR_REASONS = text("""
+    select coalesce(labels->>'reason', 'unknown') as reason,
+           coalesce(sum(value), 0) as markets
+    from metric_samples
+    where name = 'pricing.no_fair' and ts >= :start and ts < :end
+    group by 1 order by 2 desc
+""")
+
+#: Bound: `started_at` inside the week. Index: `ix_opportunity_started`. `max(gap_rule_s)` is
+#: the rule the rows were written under -- stored per row so a reader knows which one produced
+#: the count (§1.7(b)); a week whose cadence changed mid-week shows the widest rule in force.
+_T14_OPPORTUNITY_EPISODES = text("""
+    select count(*) as episodes, max(gap_rule_s) as gap_rule_s
+    from opportunity_episodes where started_at >= :start and started_at < :end
+""")
+
+#: Bound and shape as above. Index: `ix_intent_started`.
+_T14_INTENT_EPISODES = text("""
+    select count(*) as episodes, max(gap_rule_s) as gap_rule_s
+    from intent_episodes where started_at >= :start and started_at < :end
+""")
+
+#: Bound: `ts` inside the week, `limit 1`. Index: `ix_operator_events_ts (ts desc)`. Ruling
+#: I11's measurement boundary: the deploy the controller journaled. `operator_events` holds a
+#: handful of rows a week and this reads the newest one of one kind.
+_T14_DEPLOY_INSTANT = text("""
+    select ts from operator_events
+    where kind = 'deploy' and ts >= :start and ts < :end
+    order by ts desc limit 1
+""")
+
+
+def _table14(session: Session, window: dict, variants: list[dict], settings,
+             now: datetime) -> Table:
+    """The coverage contract, the denominators and the two episode units (6D §1.7, §3 rows 1-3,
+    6 and 7).
+
+    Rendered straight after t13, because it says what the week's measurements are *of*. One
+    row per quantity, each with its own unit; no row pools variants, and nothing here is a
+    gate input or excludes a cell (R1).
+
+    | item | value | unit | note |
+    |---|---|---|---|
+    | `coverage, gate variant` | completed / scheduled for the gate variant | share | the denominator is the recorded scheduled set, not the sum of the rows (§1.1); tolerance 0.95, declared before the period it judges |
+    | `coverage, primary` | the same for the primary | share | as above |
+    | `scheduled units, gate variant` | `sum(n) filter (outcome = 'scheduled')` | units | `coverage_samples`, `domain = 'evaluation'`, through `ix_coverage_ts_domain` |
+    | one row per non-completed outcome | `sum(n)` | units | class: `COVERAGE_CLASS_OF[outcome]` |
+    | `unexplained omissions` | the reconciliation count | cells | scheduled cells no completion row closed within one cadence period; the acceptance clause's own test |
+    | `total runs` / `non-skipped runs` / `priced runs` | `coverage.eligible_runs` | runs | every exhaustion share is over `priced_runs` and over nothing else (§0.6) |
+    | `budget-exhausted share` | `coverage.exhaustion_share` | share | over `priced_runs` |
+    | `markets with no fair value` | per variant, from `coverage_samples`' `no_fair` | units | fix 55's coverage half; the reason split is the rows below |
+    | one row per `no_fair_reason` | from the `pricing.no_fair` samples | markets | `unmapped_market_type` / `no_sharp_line` / `pricing_error`, from `market_gap_snapshots`, never from `signals` (ruling I3) |
+    | `opportunity episodes` / `intent episodes` | `count(*)` over the week | episodes | the stored `gap_rule_s`; Floor's `candidate_signals` and `intent_verdicts` count events, not episodes |
+    | `rejected-signal boundary` | the deploy instant the controller journaled, or `--` before it | timestamp | `harness.strategy.pipeline.RESCORE_BOUNDARY_NOTE` |
+    """
+    # Local, not module-level: `RESCORE_BOUNDARY_NOTE` is only a string, but importing
+    # `harness.strategy.pipeline` at module scope would pull the whole pricing stack into a
+    # read-only report module.
+    from harness.strategy.pipeline import RESCORE_BOUNDARY_NOTE
+
+    header = (
+        "Decision 4's coverage contract, measured rather than inferred. Sources: "
+        "`coverage_samples` through `ix_coverage_ts_domain`, `metric_samples` through "
+        "`ix_metric_samples_name_ts`, the two episode tables through their `started_at` "
+        "indexes, and `runs` through `coverage.eligible_runs`' capped read. Every share "
+        "names its own denominator. The tolerance was declared before the period this table "
+        "judges and excludes nothing: it is printed beside the share, never applied to a "
+        "cell.")
+    gate = _t13_gate_variant(variants, settings)
+    primary = next((v for v in variants if v["tier"] == "primary" and v["active"]), None)
+    names = {v["variant_id"]: v["name"] for v in variants}
+
+    coverage = {r.variant_id: r for r in session.execute(_T14_COVERAGE_BY_VARIANT, window)}
+    outcomes = [(r.outcome, int(r.units)) for r in session.execute(_T14_OUTCOMES, window)]
+    # A cell scheduled inside the settle margin has not had its cadence period yet; a closed
+    # week is already past it. The cut is the earlier of the two.
+    settled = min(window["end"], now - timedelta(seconds=T14_SETTLE_MARGIN_S))
+    unclosed = int(session.execute(
+        _T14_UNCLOSED, {**window, "settled": settled}).scalar() or 0)
+    no_fair = {r.variant_id: int(r.units)
+               for r in session.execute(_T14_NO_FAIR_BY_VARIANT, window)}
+    reasons = [(r.reason, int(r.markets))
+               for r in session.execute(_T14_NO_FAIR_REASONS, window)]
+    opportunity = session.execute(_T14_OPPORTUNITY_EPISODES, window).one()
+    intent = session.execute(_T14_INTENT_EPISODES, window).one()
+    total_runs, non_skipped_runs, priced_runs = eligible_runs(session, window)
+    exhausted, _priced, exhausted_share = exhaustion_share(session, window)
+    deploy_at = session.execute(_T14_DEPLOY_INSTANT, window).scalar()
+
+    def _coverage_row(item: str, variant: dict | None) -> list:
+        if variant is None:
+            return [item, PLACEHOLDER, "share",
+                    "no active variant of this kind is registered for this week"]
+        row = coverage.get(variant["variant_id"])
+        completed = 0 if row is None else int(row.completed)
+        scheduled = 0 if row is None else int(row.scheduled)
+        return [f"{item}, {variant['name']}", _share(completed, scheduled), "share",
+                f"{completed} completed of {scheduled} scheduled; the denominator is the "
+                f"recorded scheduled set, not the sum of the rows (6D 1.1). Tolerance "
+                f"{T14_COVERAGE_MIN}, declared before the period it judges and applied to "
+                f"no cell"]
+
+    gate_row = None if gate is None else coverage.get(gate["variant_id"])
+    rows: list[list] = [
+        _coverage_row("coverage, gate variant", gate),
+        _coverage_row("coverage, primary", primary),
+        ["scheduled units, gate variant",
+         0 if gate_row is None else int(gate_row.scheduled), "units",
+         "`coverage_samples`, `domain = 'evaluation'`, through `ix_coverage_ts_domain`: the "
+         "recorded enumeration, never a count of what completed"],
+    ]
+    for outcome, units in outcomes:
+        rows.append([f"outcome {outcome}", units, "units",
+                     f"class: {COVERAGE_CLASS_OF.get(outcome, PLACEHOLDER)}"])
+    rows.append(["unexplained omissions", unclosed, "cells",
+                 f"scheduled cells no completion row closed within {T14_SETTLE_MARGIN_S} s "
+                 f"(one cadence period plus a tick); the acceptance clause's own test, and "
+                 f"0 is its only passing value"])
+    rows += [
+        ["total runs", total_runs, "runs",
+         "every exhaustion share below is over `priced_runs` and over nothing else (6D 0.6)"],
+        ["non-skipped runs", non_skipped_runs, "runs",
+         "runs whose `status` is not `skipped`"],
+        ["priced runs", priced_runs, "runs",
+         "runs carrying a `notes.pricing` block: the exhaustion denominator"],
+        ["budget-exhausted share",
+         PLACEHOLDER if exhausted_share is None else exhausted_share, "share",
+         f"{exhausted} of {priced_runs} priced runs, and over `priced_runs` only"],
+    ]
+    for variant_id, units in no_fair.items():
+        rows.append([f"markets with no fair value, {names.get(variant_id, variant_id)}",
+                     units, "units",
+                     "fix 55's coverage half, from `coverage_samples`' `no_fair` outcome; "
+                     "the reason split is the rows below"])
+    for reason, markets in reasons:
+        rows.append([f"no fair, reason {reason}", markets, "markets",
+                     "from `market_gap_snapshots.no_fair_reason` through `pricing.no_fair`, "
+                     "never from `signals` (ruling I3)"])
+    rows += [
+        ["opportunity episodes", int(opportunity.episodes), "episodes",
+         f"gap rule {opportunity.gap_rule_s or PLACEHOLDER} s, as stored on the rows; "
+         f"Floor's `candidate_signals` counts events, not episodes"],
+        ["intent episodes", int(intent.episodes), "episodes",
+         f"gap rule {intent.gap_rule_s or PLACEHOLDER} s, as stored on the rows; Floor's "
+         f"`intent_verdicts` counts events, not episodes"],
+        ["rejected-signal boundary",
+         PLACEHOLDER if deploy_at is None else deploy_at.isoformat(), "timestamp",
+         RESCORE_BOUNDARY_NOTE],
+    ]
+    note = ("Coverage is measured from `coverage_samples`, which the writer that made each "
+            "decision wrote at the moment it made it; it is not inferred from `runs.notes` "
+            "(6C ruling C1). The `no fair` rows are counted where the markets are recorded, "
+            "never from `signals`, whose `has_fair` rejections end at the boundary row "
+            "above.")
+    return Table("Table 14 (t14): coverage contract and denominators", header, _T14_COLUMNS,
+                 rows, note)
+```
+
+Every read above is bounded and names the index it rides. `eligible_runs` and `exhaustion_share` are Task 7's
+capped `runs` reads (`COVERAGE_RUN_CAP`), which is why no statement here puts a predicate on `runs.started_at`
+(ruling I5).
 
 Register it in `weekly_tables`: `"t14": _table14(session, window, variants, settings, now),`.
 
@@ -4843,7 +5244,10 @@ addendum §3's, each with its expected value by time of day:
    is **>= 0.95** on a game day. The denominator is the recorded scheduled set, not the sum of the rows (§1.1).
    *Judged on game days only (Thu-Mon); 01:00-08:00 CT the quiet-hour cadence schedules nothing and the row reads
    "deferred: no scheduled evaluation in the window".*
-2. **Zero unexplained omissions.** §3 row 2's reconciliation query, **verbatim**, returns no rows; the companion
+2. **Zero unexplained omissions.** §3 row 2's reconciliation query, verbatim, returns **no rows**:
+   `select s.run_id, s.sport, s.ttk_bucket, s.feed, s.market_type, s.variant_id, s.ts from coverage_samples s where s.domain = 'evaluation' and s.outcome = 'scheduled' and s.ts > now() - interval '24 hours' and s.ts < now() - interval '16 minutes' and not exists (select 1 from coverage_samples c where c.run_id = s.run_id and c.domain = s.domain and c.outcome <> 'scheduled' and c.sport is not distinct from s.sport and c.ttk_bucket is not distinct from s.ttk_bucket and c.feed is not distinct from s.feed and c.market_type is not distinct from s.market_type and c.variant_id is not distinct from s.variant_id)`
+   — every scheduled cell was closed inside one cadence period (900 s is the widest in force, `DEFAULT_CADENCE_S`,
+   plus a minute for the tick itself, which is the `16 minutes` above). The companion
    integrity count
    `select count(*) from coverage_samples where ts > now() - interval '24 hours' and outcome not in (select unnest(:coverage_outcomes))`
    is also 0. A row it returns is a real unexplained omission — a dead tick, a stage never entered, a pricing block
@@ -4917,7 +5321,7 @@ journal line states (D10).
 
 - [ ] **Step 2: Append the Layer 2b invariant statements**
 
-In the Layer 2b SQL block, after the phase 4 statements, add §2's four invariant queries **verbatim** with a
+In the Layer 2b SQL block, after the phase 4 statements, add §2's five invariant queries **verbatim** with a
 `-- Phase 6D` heading, each returning 0:
 
 ```
@@ -5066,3 +5470,24 @@ switch, the dashboard token, spend caps and outbound hosts.
 **The two questions held for the user** (§0.15) are answered by no task here: (a) which holding/capacity policy
 governs the prospective period, and from what date; (b) whether the deferral of the two funnel units from 6C to 6D
 is accepted. 6D delivers both units whatever the answer, and publishes the comparison without adopting anything.
+
+---
+
+## Rulings
+
+The controller's ruling on every finding of `.superpowers/sdd/results/plan-review-6d.md`, copied verbatim from
+`.superpowers/sdd/plan-next-phase6d/plan-rulings.md`. Revision 2 applies each of them.
+
+# Rulings on the 6D plan review (results/plan-review-6d.md, revision 1 bd59a37) - controller sports-80, 2026-09-14
+
+Every finding is accepted; the amendment applies each "smallest fix" exactly as the review states it unless a line below says otherwise.
+
+- Ruling (C1): accepted - the three database cases in Task 1 open with `now = datetime.now(timezone.utc)` and seed rows at `now - timedelta(seconds=i)`; the two pure-text cases keep `T51`; the Global Constraints exemption gains one sentence: a check statement bounded by the server's `now()` is seeded against the real clock, never a frozen one - why: the statement's bound is server-side and `run_checks` passes `now` only to name the partition; the file's fourteen existing uses do the same - cost if wrong: none (the frozen-clock rule still governs every other test).
+- Ruling (I1): accepted - Step 8 renames `test_raw_events_lookup_follows_quotes_run_index_and_is_the_pinned_head` to `test_raw_events_lookup_follows_quotes_run_index`, drops its `HEAD_REVISION` assertion, adds `test_phase6d_follows_the_positions_hotfix_and_is_the_pinned_head`; `tests/test_alembic.py` line 869 is named on the Files line - cost if wrong: one red test in Step 9.
+- Ruling (I2): accepted - Task 8 Step 7 carries the `_table14` body and every `text()` statement with its bound and index comment, in `_table13`'s shape (`harness/report/tables.py:1600-1841`); the row-spec table becomes the docstring - why: the plan's own Global Constraint; five tests assert the contents - cost if wrong: the implementer of Task 8 reads a longer step.
+- Ruling (I3): accepted, first option - delete the `PLACEHOLDER` clause at plan line 4362; plan line 4352 stands (`--` before the controller journals the instant) - cost if wrong: none.
+- Ruling (I4): accepted, option (c) - `_Stages.record` takes `cause: str | None = None`; the stage that ran with nothing to re-score records `status: "ran", units: 0, cause: "nothing_to_do"` in one call; the `record`-then-`skip` ordering and the contradicting paragraph are deleted; the rule is stated once in Step 3 and the `_Stages` docstring matches - cost if wrong: one test expectation.
+- Ruling (I5): accepted - `tests/pricing_baseline.py` on Task 5's Files line and in the shared-file chain list as `T4 -> T5` - cost if wrong: none.
+- Ruling (M1-M11): all accepted as the review states them; M3 is a behaviour fix inside the plan's code block (the yield branch returns `True if is_data else self._check_data_idle()`); M6 and M7 join "Four choices this plan makes" (now six) with one line each; M9 pastes §3 row 2's reconciliation query verbatim from the addendum.
+- Ruling (second round): the review found a Critical, so the amendment gets one scoped opus re-review of the amended ranges only (plan-next step 4: a Critical residual alone earns a second round); a clean re-review closes the unit - cost if wrong: one dispatch.
+- Ruling (not reached): the ranges the reviewer read for shape only (Task 6 Steps 3-8, Task 7 Steps 2-7, Task 8 Steps 3-6 and 8-10, Task 9 Steps 2-8) are covered by the re-review's second lens: verify signatures and names in those steps with grep, line by line, and report any Important as a finding - why: the reviewer's ~45 spot checks were all accurate, so the risk is low but not zero - cost if wrong: one more amendment round.
