@@ -706,18 +706,44 @@ def price_once(run_id: int = typer.Option(None, "--run-id")) -> None:
 def replay_cmd(
     from_run: int = typer.Option(..., "--from-run"),
     to_run: int = typer.Option(..., "--to-run"),
-    variant: str = typer.Option(..., "--variant"),
+    variant: str = typer.Option(None, "--variant",
+                                help="A registered variant name. Required unless "
+                                     "--population range resolves the set from the record."),
+    population: str = typer.Option(None, "--population",
+                                   help="'range' resolves the executed set from the orders the "
+                                        "replayed range actually placed, and scores every one "
+                                        "of them under a single shared capacity counter (C6). "
+                                        "Omitted, the replay is single-variant and labelled so."),
+    boundary_run_id: int = typer.Option(None, "--boundary-run-id",
+                                        help="The 6B deploy boundary. A range spanning it is "
+                                             "refused: the simulator's arithmetic differs on "
+                                             "the two sides. The controller supplies it; no "
+                                             "default is compiled in."),
     file: Path = typer.Option(None, "--file"),
     execute: bool = typer.Option(False, "--execute",
                                 help="Also re-run the paper executor on a 15 s grid over the range"),
 ) -> None:
-    """Re-score a run range under one variant; with `--execute`, re-run the executor over it.
+    """Re-score a run range under one variant, or under the set the range itself executed.
 
     Places no order anywhere: `--execute` steps a *replay* executor, whose every row is tagged
     `replay = true` and which never touches a live row, the ledger, the heartbeat or telemetry.
+
+    `--population range` is C6: the executed set comes from the range's own orders and the
+    whole set is stepped through one executor, so the replay contends for the same
+    `max_open_orders` slots the live loop contended for. A range spanning a change of that set,
+    or `--boundary-run-id`, is refused with exit 3 and nothing written.
     """
+    if variant is None and population is None:
+        log.error("replay needs --variant, or --population range to resolve the set")
+        raise typer.Exit(1)
     configure_logging()
-    from harness.replay import ReplayStepError, replay
+    if population is not None and variant is not None:
+        # Said out loud rather than refused: the population comes from the record, so naming a
+        # variant beside it cannot narrow the replay, and an operator who reads `mode=` and
+        # `population=` in the summary and nothing else would otherwise think it had.
+        log.warning("--population %s resolves the set from the record; --variant %s is not "
+                    "used", population, variant)
+    from harness.replay import PopulationError, ReplayStepError, replay
 
     s = get_settings()
     # The executor's own statement timeout: `--execute` runs the same loop the service does,
@@ -727,8 +753,18 @@ def replay_cmd(
     factory = make_session_factory(engine)
     with factory() as session:
         try:
-            counts = replay(session, from_run, to_run, variant, variant_file=file,
-                            execute=execute, settings=s)
+            counts = replay(session, s, from_run, to_run, variant_name=variant,
+                            variant_file=file, population=population,
+                            boundary_run_id=boundary_run_id, execute=execute)
+        # Caught before the clause below, so a `PopulationError` is never swallowed as exit 1
+        # if it ever comes to subclass either of those.
+        except PopulationError as exc:
+            log.error("refused: %s", exc)
+            # Exit 3, distinct from 1 (bad arguments) and from Typer's own 2 (a missing or
+            # malformed option): a refusal is a well-formed command over a range that has no
+            # single baseline, and the operator's next move is to split the range, not to fix
+            # the command.
+            raise typer.Exit(3) from exc
         # A replay whose grid did not run cleanly has no counts worth printing: exiting 0 with
         # `orders=0` would read as a total replay-versus-live divergence rather than a failure.
         except (ValueError, ReplayStepError) as exc:
@@ -738,9 +774,21 @@ def replay_cmd(
     total = counts.signals_candidate + counts.signals_rejected
     rate = counts.signals_candidate / total if total else 0.0
     tail = f" orders={counts.orders} fills={counts.fills}" if execute else ""
+    steps = f" grid_steps={counts.grid_steps}"
+    if counts.live_steps is not None:
+        # Published, never compared: the grid steps exactly `exec_period_s` while the live loop
+        # ran 27 steps in the sampled hour where the grid would have run 240. A 2 % pass/fail
+        # across that difference would be a verdict about the timing policy rather than about
+        # the replay, so the verdict is suspended until 6D's instrumentation (D15).
+        steps += f" live_steps={counts.live_steps}"
     print(
-        f"runs={counts.runs} candidate={counts.signals_candidate} rejected={counts.signals_rejected} "
-        f"inserted={counts.inserted} candidate_rate={rate:.4f}{tail}"
+        f"runs={counts.runs} candidate={counts.signals_candidate} "
+        f"rejected={counts.signals_rejected} inserted={counts.inserted} "
+        f"candidate_rate={rate:.4f}{tail} mode={counts.mode} "
+        f"population={','.join(counts.population)} "
+        f"today={','.join(counts.today_variants)} "
+        f"corrections_replayed={','.join(counts.corrections_replayed)} "
+        f"corrections_live={','.join(counts.corrections_live)}{steps}"
     )
 
 
