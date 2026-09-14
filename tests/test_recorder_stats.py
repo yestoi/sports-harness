@@ -2,8 +2,9 @@
 
 Addendum 4.3 and 2.3. The collector runs on the game-window tick only, writes rows for carded
 players only and only on a change, and treats a later lower value as a correction; the reprice
-runs on the 900 s tick, touches `proposed` cards only, and never moves a leg's line. Both use a
-fixed tz-aware `now` and a fake ESPN client -- nothing here reaches the network.
+runs on any allowed cadence, once per 900 s, touches `proposed` cards only, and never moves a
+leg's line. Both use a fixed tz-aware `now` and a fake ESPN client -- nothing here reaches
+the network.
 """
 import itertools
 from datetime import datetime, timedelta, timezone

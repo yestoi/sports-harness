@@ -2,9 +2,10 @@
 
 Addendum 3.2 and 4.1. Every test drives `Recorder._props` (and, through the same harness, the
 two sources beside it) at a **fixed tz-aware `now`**: 2026-09-16 18:00 UTC is a Wednesday
-13:00 CT, which `interval_for` reads as the weekday 900 s period -- the only cadence props are
-allowed to run on. Nothing here reaches the network: the Odds and ESPN clients are fakes that
-count their calls and hand back recorded shapes.
+13:00 CT, which `interval_for` reads as the weekday 900 s period; since journal 209 props and
+the reprice run on any allowed cadence (300 s or 900 s), once per 900 s. Nothing here reaches
+the network: the Odds and ESPN clients are fakes that count their calls and hand back
+recorded shapes.
 """
 import itertools
 import time
@@ -204,13 +205,17 @@ def test_props_run_on_the_weekend_300_second_cadence(recorder, db_session):
     PROPS_CADENCE_S` guard left the prop source dormant every weekend as a result. The
     source's own 900 s stamp still bounds it to one pass a period, on any day."""
     _watchable_events(db_session, nfl=2, base=NOW_SATURDAY)
-    ctx = recorder.tick_ctx(now=NOW_SATURDAY)
+    # A real Saturday always has kickoffs; this one is ten hours out, so `now` is outside
+    # the game band and `interval_for` reaches the weekend branch with a live schedule.
+    later = [Kickoff("ncaaf", "later", NOW_SATURDAY + timedelta(hours=10), "H", "A",
+                     "STATUS_SCHEDULED")]
+    ctx = recorder.tick_ctx(now=NOW_SATURDAY, kickoffs=later)
     assert ctx["props"] != {"skipped": "cadence 300"}
-    assert "skipped" not in ctx["props"]
-    assert recorder.odds.prop_calls > 0
+    assert ctx["props"]["calls"] == 2 and ctx["props"]["events"] == 2
+    assert recorder.odds.prop_calls == 2
     # Same 900 s period, thirty seconds later: the period's own stamp, not the cadence
     # value, is what bounds a weekend pass to once per 900 s.
-    second = recorder.tick_ctx(now=NOW_SATURDAY + timedelta(seconds=30))
+    second = recorder.tick_ctx(now=NOW_SATURDAY + timedelta(seconds=30), kickoffs=later)
     assert second["props"] == {"skipped": "interval"}
 
 
@@ -220,7 +225,10 @@ def test_the_reprice_runs_on_the_weekend_300_second_cadence(recorder, db_session
     on the weekend 300 s cadence too."""
     ctx = recorder.tick_ctx(now=NOW_SATURDAY)
     assert ctx["reprice"] != {"skipped": "cadence 300"}
-    assert "skipped" not in ctx["reprice"]
+    assert ctx["reprice"] == {"cards": 0, "legs": 0, "unoffered": 0}
+    # The reprice's own 900 s stamp bounds the weekend cadence too.
+    second = recorder.tick_ctx(now=NOW_SATURDAY + timedelta(seconds=30))
+    assert second["reprice"] == {"skipped": "interval"}
     game_window = recorder.tick_ctx(now=NOW_IN_GAME_WINDOW, kickoffs=_in_game_kickoffs(NOW))
     assert game_window["reprice"] == {"skipped": "cadence 120"}
     quiet = datetime(2026, 9, 16, 8, 0, tzinfo=timezone.utc)   # 03:00 CT, no game on the field

@@ -34,8 +34,10 @@ ALTERNATES_BUDGET_S = 40  # alternates may spend at most this much of the tick b
 #: separate constant: the roster half and the prop calls share it, so the two together can never
 #: take more than this much of a tick.
 PROPS_BUDGET_S = 40
-#: Props run on the 900 s tick and on no other (3.2): never the 120 s game window, never the
-#: 20 s NFL pre-kickoff window, and never in the quiet hours, where `interval_for` returns None.
+#: The prop source's and the reprice's own period (3.2, and the user's decision of
+#: 2026-09-14, journal 209): both run on any allowed cadence, 300 s or 900 s, and this
+#: stamp bounds each to one pass per 900 s on any day. Never the 120 s game window, never
+#: the 20 s NFL pre-kickoff window, and never in the quiet hours (`interval_for` None).
 PROPS_CADENCE_S = 900
 #: One roster per team per week (4.1). The fetch is skipped for the next seven days per team,
 #: which is what bounds the roster half to a handful of calls even on a full Saturday.
