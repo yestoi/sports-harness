@@ -153,3 +153,21 @@ def test_an_exception_inside_the_walk_is_logged_and_yields_no_season_data(caplog
     with caplog.at_level(logging.WARNING):
         assert parse_gamelog(body, athlete_id="4426348") == {}
     assert "4426348" in caplog.text
+
+
+def test_a_dash_in_a_mapped_column_is_skipped_not_read_as_a_zero():
+    """Task 3 review, carried item 4: ESPN writes an absent stat as `-`, and the measured
+    bodies do it in mapped columns too -- a receiver who did not run the ball has `-` under
+    `rushingYards`. `-` is not a number, so the stat is absent from the log entirely; reading
+    it as a zero would put `avg 0` on a card as though it had been measured.
+    """
+    body = dict(WR_GAMELOG)
+    body["seasonTypes"] = [{"displayName": "2026 Regular Season", "categories": [
+        {"type": "event", "events": [
+            {"eventId": "401872656",
+             "stats": ["8", "11", "122", "15.3", "1", "45", "-", "-", "-", "-", "-", "0", "0",
+                       "-", "-"]}]}]}]
+    log = parse_gamelog(body, athlete_id="4426348")
+    assert log["receptions"] == [Decimal("8")]
+    assert log["rec_yds"] == [Decimal("122")]
+    assert "rush_yds" not in log

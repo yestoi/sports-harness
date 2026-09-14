@@ -86,10 +86,12 @@ class EspnClient:
         That host is browser-facing and less stable than the recorder's, so this fetch **fails
         soft**. A sport other than NFL (the v3 path is NFL-only today, so a college athlete asks
         nothing), an unconfigured URL, a transport error, a non-200, a body that is not a JSON
-        object, and a body carrying neither `names` nor `seasonTypes` (the measured
-        `{"filters": [...]}` body of a player with no games) each return `None` with one WARNING
-        naming the athlete. The caller writes `parse_gamelog(result.body if result else None)`,
-        reads `no season data yet`, and never sees an exception reach a tick.
+        object, and an athlete id that is not ASCII digits each return `None` with one WARNING
+        naming the athlete; a body carrying neither `names` nor `seasonTypes` (the measured
+        `{"filters": [...]}` body of a player with no games) is the expected week-one path and
+        is INFO, counted per pass by the caller. The caller writes
+        `parse_gamelog(result.body if result else None, athlete_id)`, reads `no season data
+        yet`, and never sees an exception reach a tick.
         """
         if sport not in _PATH:      # the same sport validation the other three fetchers get
             raise KeyError(sport)
@@ -97,8 +99,18 @@ class EspnClient:
             log.warning("espn gamelog: no fetch for athlete %s (sport=%s, url configured=%s)",
                         athlete_id, sport, bool(self._gamelog_url))
             return None
-        url = self._gamelog_url.format(athlete_id=athlete_id)
+        # Task 3 review, carried item 1: the id is interpolated into the one pinned path, so
+        # anything but ASCII digits could walk that URL to another path on that host
+        # (`../../teams/1/roster`). ESPN athlete ids are digits; anything else asks nothing.
+        athlete = str(athlete_id)
+        if not (athlete.isascii() and athlete.isdigit()):
+            log.warning("espn gamelog: refusing a non-numeric athlete id %r", athlete_id)
+            return None
         try:
+            # Carried item 2: the `.format()` is inside the try with the request it builds, so
+            # a URL template that lost its placeholder is the same soft failure as a transport
+            # error rather than an exception reaching a tick.
+            url = self._gamelog_url.format(athlete_id=athlete)
             result = self._http.get(url, params=None, redact_params=())
         except Exception as exc:  # fail soft by ruling: a browser-facing host never fails a tick
             log.warning("espn gamelog: fetch failed for athlete %s: %r", athlete_id, exc)
@@ -108,6 +120,10 @@ class EspnClient:
                         athlete_id, result.status, type(result.body).__name__)
             return None
         if "names" not in result.body or "seasonTypes" not in result.body:
-            log.warning("espn gamelog: athlete %s has no season data yet", athlete_id)
+            # The controller's ruling on the Task 3 review: a player with no games yet is the
+            # expected path in week one, not an abnormal one, so it is INFO and is counted per
+            # pass (`ctx["props"]["gamelog_no_season"]`); WARNING stays for the three paths
+            # above, which are the host misbehaving.
+            log.info("espn gamelog: athlete %s has no season data yet", athlete_id)
             return None
         return result

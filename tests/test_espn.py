@@ -106,7 +106,6 @@ def test_another_sport_makes_no_game_log_request_at_all(env_settings, caplog):
     ("404", lambda request: httpx.Response(404, json={"error": "not found"})),
     ("500", lambda request: httpx.Response(500, text="upstream")),
     ("not json", lambda request: httpx.Response(200, text="<html>no</html>")),
-    ("no season data", lambda request: httpx.Response(200, json={"filters": [{"name": "season"}]})),
     ("transport", httpx.ConnectError("boom")),
 ])
 def test_a_game_log_fetch_that_fails_is_soft_and_names_the_athlete(env_settings, caplog, name,
@@ -131,3 +130,33 @@ def test_a_client_built_without_the_game_log_url_never_fetches(env_settings, cap
     with caplog.at_level(logging.WARNING):
         assert c.fetch_gamelog("nfl", GAMELOG_ATHLETE) is None
     assert respx.calls.call_count == 0
+
+
+def test_an_athlete_id_that_is_not_digits_is_never_interpolated_into_the_pinned_url(
+        env_settings, caplog):
+    """Task 3 review, carried item 1: the athlete id is formatted into the one pinned v3 path,
+    so anything but digits could walk that URL to another path on that host (`../../teams/1`).
+    ESPN athlete ids are digits; anything else asks nothing at all.
+    """
+    with respx.mock:
+        route = respx.get(url__regex=r".*").mock(
+            return_value=httpx.Response(200, json=GAMELOG_BODY))
+        with caplog.at_level(logging.WARNING):
+            for bad in ("../../teams/1/roster", "4426348/../../x", "", "abc", "44 26"):
+                assert _gamelog_client(env_settings).fetch_gamelog("nfl", bad) is None
+        assert route.call_count == 0
+    assert "athlete" in caplog.text
+
+
+@respx.mock
+def test_a_player_with_no_season_data_is_logged_at_info_not_as_a_fault(env_settings, caplog):
+    """The controller's ruling on the Task 3 review: a player with no games yet is the expected
+    path in week one, not an abnormal one, so it is INFO and is counted per pass; WARNING stays
+    for the transport, status and shape failures above.
+    """
+    url = env_settings.espn_gamelog_url.format(athlete_id=GAMELOG_ATHLETE)
+    respx.get(url).mock(return_value=httpx.Response(200, json={"filters": [{"name": "season"}]}))
+    with caplog.at_level(logging.INFO):
+        assert _gamelog_client(env_settings).fetch_gamelog("nfl", GAMELOG_ATHLETE) is None
+    records = [r for r in caplog.records if GAMELOG_ATHLETE in r.getMessage()]
+    assert records and all(r.levelno == logging.INFO for r in records)
