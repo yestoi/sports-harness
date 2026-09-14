@@ -2189,3 +2189,9 @@ Times are America/Chicago.
 - Deploy: none. Verification: not run (plan-next).
 - Rulings: every review finding accepted as the reviewer's smallest fix; the amender's judgment calls accepted (the alembic.md stamp chain extended with its row; `_FUNNEL_EPISODE_RULE` as one scalar over a union of the two bounded reads; Step 9 names five expected reds). Open for the user: none new (the design's §0.15 questions stand as recorded in the addendum).
 - Carried forward: none. Next: 6D phase work starts when an implementer slot frees and its gate holds (tasks that need 6B wait for 6B's merge); the loop's other units continue (fix 59 merge chain, fix 60 release, 4.6 waves, 6B T6).
+
+## 180. decision - the user asks for a GitHub push - 2026-09-14 04:01 CT
+
+- User, verbatim (04:01 CT, mid-turn): "When you get a chance, can you push up to github just in case the box crashes again."
+- Ruling: R5 / gate 8 forbids the loop creating a remote or pushing on its own; the user's request is the user's decision. The remote `origin` (https://github.com/yestoi/sports-harness.git) already existed with `main` at fdc351d and `phase6b-repair-execution` at bac35ab; `gh` is logged in as the user. Tracked files under `secrets/` and `.env*`: only `secrets/.gitkeep`, `.env.example`, `.env.nas.example` (the committed templates).
+- Action: `git push origin --all` at 04:0x CT: main fdc351d..ada626c, phase6b-repair-execution bac35ab..86bb8c7, 23 new branches (every fix, phase, task and recovery branch; 28 heads on the remote). Standing practice from here: push `main` and the active branches at each state checkpoint until the user says otherwise; never force-push, never delete a remote branch.
