@@ -379,3 +379,75 @@ def test_details_event_summary_has_a_pointer_cursor_rule():
     css = (STATIC / "app.css").read_text()
     rule = re.search(r"details\.event\s*>\s*summary\s*\{([^}]*)\}", css)
     assert rule and "cursor: pointer" in rule.group(1)
+
+
+def _luminance(hex_colour: str) -> float:
+    """WCAG 2.1 relative luminance. Written out rather than imported: the point of the check is
+    that it is independent of whatever the stylesheet says about itself."""
+    channels = [int(hex_colour.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _luminance(a), _luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def test_the_four_slip_tokens_carry_the_design_values_in_every_theme_block():
+    css = (STATIC / "app.css").read_text()
+    assert css.count("--slip-paper: #1a212b") == 1               # dark
+    assert css.count("--slip-paper: #ebe9e3") == 2               # both light blocks
+    assert css.count("--fun: #ff7f5c") == 1
+    assert css.count("--fun: #d9542e") == 2
+    assert css.count("--slip-ink: #eef2f6") == 1 and css.count("--slip-ink: #17191d") == 2
+    assert css.count("--slip-muted: #8a95a3") == 1 and css.count("--slip-muted: #5f6670") == 2
+
+
+def test_the_light_fun_accent_is_measured_and_used_only_for_marks():
+    """D16: 3.29:1 against the light raised ground is under WCAG AA's 4.5:1 for text, so the
+    accent moves to marks and coral *text* takes --ink. The measurement is redone here from the
+    file so a later token edit cannot quietly reintroduce coral text."""
+    css = (STATIC / "app.css").read_text()
+    assert _contrast("#d9542e", "#ebe9e3") < 4.5
+    assert _contrast("#ff7f5c", "#1a212b") >= 4.5
+    marks = re.findall(r"\.(?:perforation|stamp|mark|fill\.warm)[^{]*\{[^}]*\}", css)
+    assert marks, "the accent must be used by at least one mark class"
+    for rule in re.findall(r"\.slip[^{]*\{[^}]*\}", css):
+        selector = rule.split("{", 1)[0]
+        if ".lamp" in selector or ".mark" in selector:
+            continue  # lamps and marks are the marks the accent is for (D16)
+        assert "color: var(--fun)" not in rule
+
+
+def test_the_two_light_blocks_stay_byte_identical_in_token_names():
+    """The repo's existing rule, re-asserted after a token edit: the media-query block and the
+    explicit `[data-theme=light]` block must declare the same names."""
+    blocks = re.findall(r"--ground:.*?--fun: #[0-9a-f]{6};", (STATIC / "app.css").read_text(),
+                        re.S)
+    names = [sorted(re.findall(r"(--[a-z0-9-]+):", block)) for block in blocks]
+    assert names[1] == names[2] and names[0] == names[1]
+
+
+def test_the_slip_carries_a_one_pixel_track_border():
+    assert "border: 1px solid var(--track)" in (STATIC / "app.css").read_text()
+
+
+def test_no_new_rule_sets_type_below_twelve_pixels_or_a_touch_target_under_44():
+    css = (STATIC / "app.css").read_text()
+    # scoped to the task's own rules: the file's older badge sizes are not this phase's
+    task_rules = re.findall(
+        r"(?:\.slip|\.perforation|\.mark|dialog\.sheet|\.sheet|\.detail|\.board-card)"
+        r"[^{]*\{[^}]*\}", css)
+    sizes = [float(v) for rule in task_rules
+             for v in re.findall(r"font-size:\s*([0-9.]+)px", rule)]
+    assert min(sizes) >= 12
+    for rule in re.findall(r"\.(?:action|tab|board-card|sheet-button)[^{]*\{[^}]*\}", css):
+        if "min-height" in rule:
+            assert float(re.search(r"min-height:\s*([0-9.]+)px", rule).group(1)) >= 44
+
+
+def test_reduced_motion_is_honoured_by_every_new_animation():
+    css = (STATIC / "app.css").read_text()
+    if "animation:" in css or "transition:" in css:
+        assert "@media (prefers-reduced-motion: reduce)" in css
