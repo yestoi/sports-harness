@@ -226,6 +226,12 @@ def _recorder_samples(session: Session, run_id: int, tick_ms: int,
     # `phase` label is there because the hourly settle job shares this process (controller
     # addendum, 01:20 CT): a sample taken at the end of a tick says "tick", so a future sample
     # at the end of a settle run can say "settle" without the two series colliding.
+    # Fix 49 round 3: `malloc_trim` has already run for this tick (`maybe_tick`), so this RSS
+    # is the post-trim one -- the number the 500 MiB criterion is judged on -- and the MiB it
+    # returned rides beside it so the trim's effect is visible on Pulse rather than inferred.
+    trimmed = ctx.get("malloc_trim_mb")
+    if trimmed is not None:
+        samples.append(("recorder.malloc_trim_mb", trimmed, {"phase": "tick"}))
     rss = telemetry.rss_mb()
     if rss is not None:
         samples.append(("recorder.rss_mb", round(rss, 1), {"phase": "tick"}))
@@ -936,6 +942,15 @@ class Recorder:
                     log.exception("pricing failed")
                     session.rollback()
                     ctx["warnings"].append({"pricing": repr(e)})
+                # Fix 49 round 3: the pricing pass is the tick's largest allocation, and glibc
+                # keeps the arenas it freed mapped until something asks for them back. One
+                # `malloc_trim(0)` per priced tick is that ask; the MiB it recovers is recorded
+                # beside `recorder.rss_mb` (which is sampled *after* it, so the series reads
+                # the process's real footprint). A platform without the symbol is a no-op.
+                try:
+                    ctx["malloc_trim_mb"] = telemetry.malloc_trim()
+                except Exception:  # noqa: BLE001 - ruling 1: never fail a tick for housekeeping
+                    log.exception("malloc_trim failed")
             exhausted = (ctx["skipped_trades"] > 0 or ctx["skipped_ladders"] > 0
                          or ctx["skipped_alternates"] > 0)
             if ctx["errors"]:

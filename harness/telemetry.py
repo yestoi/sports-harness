@@ -57,6 +57,62 @@ def rss_mb() -> float | None:
     return maxrss / 1024 if sys.platform.startswith("linux") else maxrss / (1024 * 1024)
 
 
+#: `ctypes.CDLL("libc.so.6").malloc_trim`, looked up once and cached. `False` means "looked and
+#: there is none" (musl, macOS, a static build); `None` means "not looked yet".
+_MALLOC_TRIM: Any = None
+
+
+def _malloc_trim_fn():
+    """glibc's `malloc_trim`, or None where the platform has no such symbol.
+
+    Fix 49 round 3: the recorder process steps up ~370 MiB across one weekly report render and
+    never gives it back. The render's Python objects *are* released -- the traced total returns
+    to its baseline -- but glibc keeps the freed arenas mapped, so RSS stays at the render's
+    high-water mark for the life of the process. `malloc_trim(0)` is the only call that hands
+    those back to the kernel without restarting; nothing else here can lower RSS.
+
+    No new dependency: `ctypes` is stdlib. Looked up once and cached, because `CDLL` on every
+    tick would be a dlopen on every tick.
+    """
+    global _MALLOC_TRIM
+    if _MALLOC_TRIM is None:
+        try:
+            import ctypes
+
+            libc = ctypes.CDLL("libc.so.6")
+            fn = libc.malloc_trim
+            fn.argtypes = [ctypes.c_size_t]
+            fn.restype = ctypes.c_int
+            _MALLOC_TRIM = fn
+        except Exception:  # noqa: BLE001 - a platform without it is a no-op, never a failure
+            _MALLOC_TRIM = False
+    return _MALLOC_TRIM or None
+
+
+def malloc_trim() -> float | None:
+    """Return freed heap to the kernel and answer how many MiB of RSS that recovered.
+
+    `None` where the platform has no `malloc_trim` (a no-op) or where RSS cannot be read; a
+    float -- possibly 0.0, possibly negative by a page or two of noise -- where it ran. The
+    caller records it as `recorder.malloc_trim_mb` so the effect is visible on Pulse instead of
+    having to be taken on faith.
+
+    Ruling 1: this is telemetry-adjacent housekeeping, so it never raises at its caller.
+    """
+    fn = _malloc_trim_fn()
+    if fn is None:
+        return None
+    before = rss_mb()
+    try:
+        fn(0)
+    except Exception:  # noqa: BLE001 - never fail a tick or a stage for this
+        return None
+    after = rss_mb()
+    if before is None or after is None:
+        return None
+    return round(before - after, 1)
+
+
 def sanitize_reason(text: str) -> str:
     """Strip everything but word characters, spaces and a short punctuation set, then
     truncate to the shared summary/reason width (F50)."""
