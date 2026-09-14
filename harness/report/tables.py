@@ -146,6 +146,34 @@ class Table:
         return "" if not row else str(row[0])
 
 
+#: Rows a streamed whole-week read holds in Python at once (fix 49 round 3).
+#:
+#: Four reads here load a whole ISO week into memory before the first row is looked at, and on
+#: the measured week-shaped fixture (`tests/report_week_fixture.py`) they are the render's
+#: high-water mark. Traced peak per table, materialised -> streamed, same week, one process:
+#: table 4's snapshot read 25.6 -> 8.3 MiB, table 5's fair-value scan 25.3 -> 5.2 MiB, table
+#: 4b's 20.3 -> 13.3 MiB, and the whole render 25.7 -> 13.4 MiB, which took the RSS the render
+#: leaves behind from +59.5 MiB to +28.0 MiB. The rows are consumed in one pass and binned into
+#: counters, so nothing needs the whole week resident; fetching through a server-side cursor
+#: bounds the peak at the chunk instead. 2,000 keeps the round trips down (a week is tens of
+#: thousands of rows) while holding well under a megabyte of rows at a time.
+STREAM_ROWS = 2000
+
+
+def _stream(session: Session, statement, params: dict):
+    """`session.execute(statement, params)`, fetched `STREAM_ROWS` rows at a time.
+
+    Identical rows in identical order -- this changes nothing the report computes, only how
+    much of the result set psycopg has decoded into the process at once. The report's numbers
+    are a measurement, so `tests/test_report_memory.py` pins the rendered tables byte-identical
+    across this change.
+    """
+    return session.execute(
+        statement, params,
+        execution_options={"stream_results": True, "max_row_buffer": STREAM_ROWS},
+    ).yield_per(STREAM_ROWS)
+
+
 # --- cells ----------------------------------------------------------------------------------
 
 
@@ -737,11 +765,12 @@ def _table4(session: Session, window: dict) -> Table:
         "not in either family. The §9.6 criterion is judged on `posterior`, and a stratum "
         "with no heterogeneity contributes no significant cell.")
     params = dict(window, benchmark=CONTRAST_BENCHMARK)
-    snapshots = [r for r in session.execute(_T4_SNAPSHOTS, params)]
 
     # (fair_source, price, ttk, sport, market_type) -> panel/stratum -> [(value, game_id)]
     buckets: dict[tuple, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for row in snapshots:
+    # Streamed, not materialised (fix 49 round 3): this read is the whole week's gap snapshots
+    # and every row is binned and dropped here, so holding the week was pure peak.
+    for row in _stream(session, _T4_SNAPSHOTS, params):
         price = _bucket_price(_f(row.venue_mid))
         ttk = _bucket_ttk(row.ttk_minutes)
         if (price is None or ttk is None or row.sport not in SPORTS
@@ -864,7 +893,7 @@ def _table4b(session: Session, window: dict) -> Table:
               "model's own error. Clustered by game.")
     both: dict[tuple, dict[str, float]] = defaultdict(dict)
     shapes: dict[tuple, tuple] = {}
-    for row in session.execute(_T4B_FAIRS, window):
+    for row in _stream(session, _T4B_FAIRS, window):
         key = (row.run_id, row.game_id, row.market_type, row.outcome_team_id,
                row.outcome_side, row.threshold)
         both[key][row.fair_source] = float(row.fair_p)
@@ -923,10 +952,11 @@ def _table5(session: Session, window: dict) -> Table:
         f"observation is censored at {int(MAX_LAG.total_seconds() // 60)} min. The venue mid is "
         "sampled from the WebSocket order-book snapshots on the tape, so the sampling floor is "
         "the interval between snapshots.")
-    fairs = [r for r in session.execute(_T5_FAIRS, window)]
     moves = []
     previous_key, previous = None, None
-    for row in fairs:
+    # Streamed (fix 49 round 3): the scan is one ordered pass that keeps only the previous row
+    # and the moves it found, so the week never needed to be resident.
+    for row in _stream(session, _T5_FAIRS, window):
         key = (row.game_id, row.market_type, row.outcome_team_id, row.outcome_side, row.threshold)
         if key == previous_key and previous is not None:
             delta = float(row.fair_p) - float(previous.fair_p)
@@ -945,8 +975,8 @@ def _table5(session: Session, window: dict) -> Table:
     from_ts = min(m[3] for m in moves)
     to_ts = max(m[3] for m in moves) + MAX_LAG
     samples: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
-    for row in session.execute(_T5_SNAPSHOTS,
-                               {"tickers": tickers, "from_ts": from_ts, "to_ts": to_ts}):
+    for row in _stream(session, _T5_SNAPSHOTS,
+                       {"tickers": tickers, "from_ts": from_ts, "to_ts": to_ts}):
         try:
             mid = BookState.from_ws_raw(row.ticker, row.raw, 0, 0, row.ts, 0).mid()
         except (ValueError, AttributeError, TypeError):
@@ -1701,7 +1731,8 @@ def _t13_coverage(session: Session, window: dict, gate_name: str | None) -> dict
     """
     counts = {"notes_read": 0, "after_window": 0, "pricing_runs": 0, "gate_scored": 0,
               "no_counts": 0, "budget_exhausted": 0}
-    for started_at, note in recent_runs_pricing(session, window["start"], limit=T13_NOTES_LIMIT):
+    for started_at, note in recent_runs_pricing(session, window["start"],
+                                               limit=T13_NOTES_LIMIT, stream=True):
         if started_at >= window["end"]:
             counts["after_window"] += 1
             continue

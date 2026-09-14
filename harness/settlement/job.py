@@ -255,10 +255,22 @@ class Settler:
             # Fix 49: this job shares the recorder process. Sample after all settle work,
             # including the stale probe, with a separate phase; telemetry cannot fail the job.
             try:
+                # Fix 49 round 3: `report_wtd` renders a week of rows in this process and the
+                # peak it allocates is the step the live `recorder.rss_mb` series showed
+                # (245-266 MiB flat, then 700 after settle run 178, then flat at 637-642 for
+                # the next 4.5 h). The Python objects are released -- the traced total returns
+                # to its baseline -- so what is left is glibc holding the freed arenas.
+                # `malloc_trim(0)` hands them back; the sample below is taken *after* it, and
+                # the MiB recovered is recorded beside it. No-op off glibc.
+                trimmed = telemetry.malloc_trim()
+                if trimmed is not None:
+                    telemetry.record(session, "recorder", "recorder.malloc_trim_mb", trimmed,
+                                     labels={"phase": "settle"}, ts=self._clock())
                 rss = telemetry.rss_mb()
                 if rss is not None:
                     telemetry.record(session, "recorder", "recorder.rss_mb", round(rss, 1),
                                      labels={"phase": "settle"}, ts=self._clock())
+                if trimmed is not None or rss is not None:
                     session.commit()
             except Exception:  # noqa: BLE001 - telemetry never fails the job
                 session.rollback()

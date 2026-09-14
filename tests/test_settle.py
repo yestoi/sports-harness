@@ -785,7 +785,12 @@ def test_settler_samples_recorder_rss_after_its_final_probe(db_session, env_sett
         return 0
 
     def rss():
-        assert seen == ["stale"]
+        # Fix 49 round 3: `telemetry.malloc_trim` reads RSS either side of its trim (and this
+        # stub stands in for both), so the stub is called more than once per run where libc has
+        # the symbol. What the test pins is unchanged and is the point of it: every recorder RSS
+        # read in the settle job happens *after* the final `stale_unsettled` probe, so the
+        # sample describes the process once all settle work is done.
+        assert seen and seen[0] == "stale"
         seen.append("rss")
         return 123.46
 
@@ -798,3 +803,7 @@ def test_settler_samples_recorder_rss_after_its_final_probe(db_session, env_sett
     assert sample.source == "recorder" and sample.labels == {"phase": "settle"}
     assert float(sample.value) == 123.5
     assert sample.ts == NOW
+    # One probe, and every RSS read after it: the trim's two reads and the sample's one where
+    # libc has `malloc_trim`, the sample's one alone where it does not.
+    assert seen.count("stale") == 1 and seen[0] == "stale"
+    assert seen.count("rss") in (1, 3), seen

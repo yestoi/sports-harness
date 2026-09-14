@@ -11,6 +11,7 @@ lead on market and variant, not on time. The per-run sums in `runs.notes` answer
 question for the price of one index-ordered read of a ~2 MB table.
 """
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -92,8 +93,8 @@ def recent_runs(session: Session, cutoff: datetime,
             if started_at >= cutoff]
 
 
-def recent_runs_pricing(session: Session, cutoff: datetime,
-                        limit: int | None = None) -> list[tuple[datetime, dict | None]]:
+def recent_runs_pricing(session: Session, cutoff: datetime, limit: int | None = None,
+                        stream: bool = False) -> Iterable[tuple[datetime, dict | None]]:
     """`recent_runs`' own projection: `(started_at, notes['pricing'])` instead of the whole
     `notes` document (design review I4).
 
@@ -113,8 +114,25 @@ def recent_runs_pricing(session: Session, cutoff: datetime,
                 .where(Run.started_at >= cutoff).order_by(desc(Run.id)))
         return [(started_at, pricing) for started_at, pricing in session.execute(stmt).all()]
     stmt = select(Run.started_at, Run.notes["pricing"]).order_by(desc(Run.id)).limit(limit)
+    if stream:
+        # Fix 49 round 3: the weekly report's t13 counts these rows and keeps none of them, but
+        # `limit` is 25,000 and each `pricing` block is a decoded JSONB document -- materialised,
+        # that is one of the render's larger peaks (13.9 MiB traced on the measured fixture,
+        # against 4.7 MiB streamed) for a handful of counters. The generator yields exactly the
+        # same pairs in the same order, and `_t13_coverage` drains it, so the server-side cursor
+        # is always closed. Kept opt-in, and the `list` return is unchanged for every other
+        # caller: Floor's wants the list it already has.
+        return _iter_recent_runs_pricing(session, stmt, cutoff)
     return [(started_at, pricing) for started_at, pricing in session.execute(stmt).all()
             if started_at >= cutoff]
+
+
+def _iter_recent_runs_pricing(session: Session, stmt, cutoff: datetime):
+    result = session.execute(
+        stmt, execution_options={"stream_results": True, "max_row_buffer": 500}).yield_per(500)
+    for started_at, pricing in result:
+        if started_at >= cutoff:
+            yield started_at, pricing
 
 
 def signals_by_variant_from_notes(session: Session, run_notes: list[dict]) -> dict:
