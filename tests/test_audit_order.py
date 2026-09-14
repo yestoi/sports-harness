@@ -120,6 +120,12 @@ def test_a_capsule_with_no_anchoring_snapshot_is_unverifiable(tmp_path):
     result = audit_order(read_capsule(directory), 157)
     assert result.verdict == "unverifiable"
     assert result.hypothesis is None
+    # Gated, not merely different: this capsule has no prints, so the replay path would also
+    # read `unverifiable` and the verdict alone cannot tell the two apart. The absent simulated
+    # quantities are what say the manifest decided it (0.16's fail-closed branch; with that
+    # branch removed this case still passed before these two lines).
+    assert result.repaired_filled is None
+    assert result.repaired_queue is None
 
 
 def test_prints_that_genuinely_exhaust_the_queue_validate_the_record(tmp_path):

@@ -162,8 +162,9 @@ def _slice_overlaps(entry: dict, placed_at: datetime, deadline: datetime) -> boo
 
     An entry with no usable instant and no usable range **fails closed** and is treated as
     overlapping: a slice the gate cannot place in time cannot be ruled out of the interval, and
-    replaying it would be the one direction that invents evidence. The 6A `no_snapshot` entry,
-    which carries a ticker and no timestamp at all, is exactly that shape.
+    replaying it would be the one direction that invents evidence. 6A's own no-anchor entry --
+    `{"reason": "no anchor", "ticker": ...}` (`harness/capsule.py:447`), which the fixtures spell
+    `no_snapshot` -- carries a ticker and no timestamp at all, and is exactly that shape.
     """
     if not isinstance(entry, dict):
         return True
@@ -367,8 +368,8 @@ def audit_order(capsule: dict, order_id: int) -> AuditResult:
     # path, gated or not, so the record says what was in the manifest as well as what decided;
     # the hypotheses' counts are reported either way for the same reason.
     slices = capsule["manifest"].get("unverifiable_slices") or []
-    in_interval = [s for s in slices
-                   if _slice_overlaps(s, _ts(order["placed_at"]), _deadline(order))]
+    placed_at, deadline = _ts(order["placed_at"]), _deadline(order)
+    in_interval = [s for s in slices if _slice_overlaps(s, placed_at, deadline)]
     evidence["manifest_slices_total"] = len(slices)
     evidence["manifest_slices_in_interval"] = len(in_interval)
     if in_interval:
