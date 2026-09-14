@@ -101,7 +101,9 @@ CONFIG_HASHES_C0: tuple[str, ...] = (
 # asserts only that it is one of the three verdicts plus that state (`tests/test_corrections.py`,
 # under §1.11). 6C's t13 reads this constant inside the container, where `docs/` is absent (D9);
 # the undated record is `docs/superpowers/reviews/order-157-audit.md`.
-ORDER_157_VERDICT = "not yet audited"
+ORDER_157_VERDICT = "unverifiable"  # run 2026-09-14 11:40 CT on the committed order-157 capsule:
+# the manifest gate (six gap slices, all after 2026-09-09 22:48Z, outside the resting interval)
+# pre-empted the replay; none of the three hypotheses was met. See the audit document.
 
 
 CORRECTIONS: tuple[Correction, ...] = (
