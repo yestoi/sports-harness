@@ -134,7 +134,7 @@ def _executor_with_books(books: dict) -> Executor:
     executor.books = dict(books)
     executor.replay = False
     executor.settings = NS(exec_period_s=15)
-    executor.exec_settings = NS()
+    executor.exec_settings = NS(book_max_age_s=120)
     executor._dirty_tickers = set()
     executor._book_now = lambda session, ticker, now, cached, ws_connect_at=None: cached
     return executor
@@ -224,3 +224,35 @@ def test_a_dead_recorder_is_its_own_cause_on_a_book_that_names_none(db_session):
     executor._advance_books(db_session, {"B"}, {"B": 2}, at(0), dead_recorder=True)
     assert [r.cause for r in _intervals(db_session, MarketDirtyInterval)
             if r.venue_market_id == 2] == ["session_boundary"]
+
+
+def test_a_tape_silent_past_book_max_age_s_opens_an_event_age_row(db_session):
+    """Expected: a quiet ticker with a live recorder and a clean book opens a dirty row with
+    cause `event_age`, and is not written into the clean set; a step after a fresh event closes
+    it.
+
+    Derived independently from what the measure is for, not from the writer: `MarketNow.dirty`
+    is true three ways, and the third is "this ticker's own newest row is older than
+    `book_max_age_s`" (spec F4). `_simulate_order` accrues nominal dirty seconds on that route
+    every loop, so the elapsed parallel (ruling I-4) has to record the same stretch; writing it
+    into `clean` instead would say the stretch was observed *and* trustworthy, which is the
+    direction ruling IM-15 forbids. The book cannot mark itself: nothing applied a row, so
+    `as_of` simply stopped moving.
+    """
+    quiet = BookState.from_levels("A", [[".30", "5"]], [[".60", "5"]], sid=1, seq=1,
+                                  as_of=T0, source="ws", anchor_id=1)
+    executor = _executor_with_books({"A": quiet})
+    executor._advance_books(db_session, {"A"}, {"A": 1}, at(300), dead_recorder=False)
+
+    assert [(r.cause, r.ended_at) for r in _intervals(db_session, MarketDirtyInterval)] == [
+        ("event_age", None)]
+    assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [None]
+
+    # A row lands on the tape at T+300, so the next step's book is 15 s old: the stretch ended.
+    executor.books["A"] = BookState.from_levels("A", [[".30", "5"]], [[".60", "5"]], sid=1,
+                                                seq=2, as_of=at(300), source="ws", anchor_id=1)
+    executor._advance_books(db_session, {"A"}, {"A": 1}, at(315), dead_recorder=False)
+
+    assert [(r.cause, r.ended_at) for r in _intervals(db_session, MarketDirtyInterval)] == [
+        ("event_age", at(315))]
+    assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [None]
