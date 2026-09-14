@@ -2357,3 +2357,11 @@ Controller actions from these rulings (each recorded where it lands):
 
 - The user asked for a safe stopping point (almost out of usage). Main a91611c/fd746a4 (code ca30ed1, runtime ca30ed1, deploy trigger closed). Phase branches pushed: 6B 2452f34 (order-157 audit: verdict `unverifiable`, the capsule-wide manifest gate; a user/spec decision on scoping it), 4.6 379fabb (T16, T17, T8 merged today), 6D 10921cc (T5 fix round approved, suite running at 06e0340). Task branches pushed: phase6b-t9-rescore d4b95dd (review APPROVED, fix round 1 mid-flight), phase46-t12-ticket 1d2c8e5 (review CHANGES_REQUIRED, fix round 1 mid-flight), phase6d-t5-budget 06e0340.
 - Resume: `state.md` and each ledger's STOP line. Wakeups are session-only and gone: fix 49's 6 h row and row 68's re-judge were due 14:13 CT; Tuesday 09:31 CT futures check. Dispatches today: 91. No gate open.
+
+## 198. verify - 14:13 CT wakeup: fix 49's memory row DEFERRED, row 68 Pinnacle present again - 2026-09-14 14:13 CT
+
+- Done inside the user's usage stop (197): read-only checks, no agents, no deploy. Evidence `evidence/2026-09-14-verify-ca30ed1-1413-fix49-row68.txt`.
+- Fix 49 (6 h / 500 MiB): recorder RSS 128.4 -> 301.9 MiB over six hours, max 303.1, container 283.5 MiB: under the ceiling, but the hourly averages climb from 14Z on (170 -> 292) with a flattening tail (276 -> 287 -> 292). The window straddles the 14:47Z restart to ca30ed1, so the current process has 4.4 h. Ruling: DEFERRED, not FAIL - re-judge on ca30ed1's own 6 h (from 20:47Z = 15:47 CT) and again at the Tuesday 09:31 CT pass; a FAIL needs the climb to continue past 500 MiB or not flatten by then - cost if wrong: fix 49's verdict a day late.
+- Row 68: 141 of 209 odds_api bodies since 13:00Z carry the Pinnacle bookmaker: the upstream absence has cleared; PASS on presence. Whether Pinnacle prices reach candidates on the latest tick was not checked (next verify). Gate 5 not engaged.
+- Sidecar: its late nightly (~14:20 CT) had not fired at 14:13 CT; backup_runs 35-37 ok this morning. Next verify reads the row it writes.
+- Deploy: main code = runtime ca30ed1; nothing pending for the 17:35 CT window. Tuesday 09:31 CT wakeup is session-only: re-derive from the clock.
