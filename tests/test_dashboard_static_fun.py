@@ -141,6 +141,26 @@ def test_the_draft_slip_carries_exactly_the_three_marks():
     assert "would pay" in body
 
 
+def test_the_draft_payout_line_names_the_price_it_would_pay_at():
+    """Design §2: `would pay $137.50 at +450`. The price is a payload key of its own now
+    (`card.combined_american`, the Ticket builder's integration round) -- the footer sentence
+    that also carries it is still rendered verbatim below and is never parsed for it, and a card
+    with no price falls back to the payout alone rather than drawing a placeholder."""
+    body = (STATIC / "js" / "ticket.mjs").read_text()
+    assert "card.combined_american" in body
+    assert "at ${card.combined_american}" in body
+    assert "footer.combined" in body
+
+
+def test_the_slip_names_its_anchor_leg_in_the_legs_own_words():
+    """Design §2's `carries LSU -3.5`: the builder sends `card.anchor` as `{leg_seq, text}`
+    where the text is the leg's own `plain_text`, so this line and the leg below it are the same
+    string and the renderer composes no sentence of its own."""
+    body = (STATIC / "js" / "ticket.mjs").read_text()
+    assert "card.anchor" in body
+    assert "carries ${card.anchor.text}" in body
+
+
 def test_a_live_slip_stamps_what_the_payload_says_not_a_verdict_of_its_own():
     """Addendum §1.3: `CASHED`/`VOID` land on a *confirmed* row and the builder decides that,
     not the renderer. The surface draws `card.stamp` and nothing else."""

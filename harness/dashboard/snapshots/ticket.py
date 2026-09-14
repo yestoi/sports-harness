@@ -360,13 +360,13 @@ def _stat_text(leg, rows, score_row, needs_phrase, now: datetime):
 
     `rows` is the newest recorded value and the one before it. Four states, each one a recorded
     fact rather than an inference: a fresh value reads the full line; a value that has stood for
-    more than two collector ticks keeps its figure and says `unchanged` with its age, because a
-    player who has not touched the ball writes no row and a zero there would be the surface
-    inventing a fact; no row at all while the game is over reads `no final stat · pending` (the
-    hung leg of addendum §1.3), with the age since the final whistle when a final score row is
-    still inside `SCORES_WINDOW` and without one when it is not -- an age this builder cannot
-    read is left unsaid rather than guessed; and no row at all before the game is over reads
-    `no stat yet`.
+    more than two collector ticks keeps its figure, says `unchanged` with its age and still says
+    what the leg needs, because a player who has not touched the ball writes no row and a zero
+    there would be the surface inventing a fact; no row at all while the game is over reads
+    `no final stat · pending` (the hung leg of addendum §1.3), with the age since the final
+    whistle when a final score row is still inside `SCORES_WINDOW` and without one when it is
+    not -- an age this builder cannot read is left unsaid rather than guessed; and no row at all
+    before the game is over reads `no stat yet`.
     """
     if leg.market_type != "prop":
         return None, None
@@ -380,7 +380,12 @@ def _stat_text(leg, rows, score_row, needs_phrase, now: datetime):
         return "no stat yet", None
     age = max(0.0, (now - newest.ts).total_seconds())
     if age > STAT_UNCHANGED_AFTER_S:
-        line = sentences.stat_unchanged(leg.stat, newest.value, leg.threshold, age)
+        # The `to go` half stays on the stale line too (re-review N1): how much is left is the
+        # one fact the fresh line and the hung line both carry, and dropping it for the whole
+        # stale window left the reader of a quiet drive with no answer to the only question the
+        # slip is about. The value and the noun open the sentence either way (round 1, I6).
+        line = (f"{sentences.stat_unchanged(leg.stat, newest.value, leg.threshold, age)} "
+                f"· {needs_phrase}")
     else:
         line = sentences.stat_line(leg.stat, newest.value, leg.threshold, needs_phrase, age)
     note = None
@@ -438,6 +443,28 @@ def _settlement(card_row, card_legs, ledger_rows) -> tuple[dict, str | None]:
                  "text": f"stake returned · {sentences.fmt_money(computed_void.amount)} "
                          "at your recorded stake · awaiting your confirmation"}, None)
     return ({"kind": None, "amount": None, "text": None}, None)
+
+
+#: The two `combined_kind` values whose footer line carries a real price. Any other value reads
+#: `no combined price · DraftKings will quote it in the app`, and there is no figure to put on
+#: the payout line either.
+_PRICED_COMBINED = ("quoted", "calculated")
+
+
+def _combined_american(card_row) -> str | None:
+    """The slip's combined price as the footer prints it, or `None` when there is none.
+
+    Task 15 carry-forward 1: the design's draft line reads `would pay $137.50 at +450`, and the
+    only place that price reached the page was inside `_footer`'s `combined` *sentence* -- which
+    the renderer draws verbatim and must never parse. The identical `_american` string travels
+    as its own key instead, so the payout line and the footer can never quote two prices for one
+    slip. A card with no recorded price says nothing rather than printing `--` as if it were
+    one.
+    """
+    if (card_row.combined_kind not in _PRICED_COMBINED
+            or card_row.dk_combined_american is None):
+        return None
+    return _american(card_row.dk_combined_american)
 
 
 def _footer(card_row, legs, price_age_s, week, config) -> dict:
@@ -621,6 +648,14 @@ def _render_cards(session: Session, rows: list, now: datetime, week: dict, confi
         capability = row.link_capability
         if any(not leg["offered"] for leg in card_legs):
             capability = "none"
+        # The leg the card was built around (design §2), named by the leg's own `plain_text` --
+        # the bet's name as the builder wrote it and as this page already sanitized it -- and by
+        # nothing else: `carries LSU to win` and the leg above it are then the same string, and
+        # this surface writes no second sentence about the same bet (controller ruling
+        # 2026-09-14). `None` when no anchor was recorded, or when the recorded one is not a leg
+        # of this card.
+        anchor = next(({"leg_seq": leg["seq"], "text": leg["plain_text"]}
+                       for leg in card_legs if leg["leg_id"] == row.anchor_leg_id), None)
         card = {
             "card_id": row.id, "year": row.year, "week": row.week, "sport": row.sport,
             "kind": row.kind, "status": row.status, "correlated": bool(row.correlated),
@@ -637,6 +672,8 @@ def _render_cards(session: Session, rows: list, now: datetime, week: dict, confi
             # Phase 4.6 (addendum §1.1, 1.3, 5.2).
             "policy_version": row.policy_version,
             "combined_kind": row.combined_kind,
+            "combined_american": _combined_american(row),
+            "anchor": anchor,
             "link_capability": capability,
             "p_source_min": row.p_source_min,
             "stake_text": _money(row.stake_actual if row.stake_actual is not None
@@ -712,9 +749,9 @@ def _ideas(session: Session, now: datetime, week: dict, config, gaps: set) -> di
     reason, and the week's money line (addendum §1.1, 1.2).
 
     The slot's own recorded state is authoritative and is read only through
-    `parlay_build.read_slot_state` -- the encoding of `job_state.value` is that module's, and
-    this surface never decodes an integer itself. A slot with neither a card nor a reason is not
-    shown at all: an empty row with no sentence would say less than nothing.
+    `parlay_build.read_slot_state` -- the shape of a `parlay_slot_state` row's `state` is that
+    module's, and this surface never reads the table itself. A slot with neither a card nor a
+    reason is not shown at all: an empty row with no sentence would say less than nothing.
     """
     year, week_no = week["year"], week["week"]
     rows = list(session.execute(_IDEAS, {"year": year, "week": week_no, "limit": IDEAS_LIMIT}))
@@ -738,7 +775,7 @@ def _ideas(session: Session, now: datetime, week: dict, config, gaps: set) -> di
             card = by_id.get(state["built"])
         if card is None:
             # A card the stage never recorded -- built by hand through `harness/cli.py` before
-            # this slot had a `job_state` row. Resolved by its own legs, never by `correlated`
+            # this slot had a `parlay_slot_state` row. Resolved by its own legs, not `correlated`
             # (parlay_build review round 1, Critical 1).
             for candidate in cards:
                 if (candidate["card_id"] not in claimed and candidate["sport"] == sport

@@ -170,11 +170,17 @@ function ticketSlip(card) {
   // The stamp is the builder's (addendum §1.3): CASHED and VOID are claims about what a book
   // paid and land only on a confirmed row, which this renderer cannot know for itself.
   const stampWord = card.stamp || null;
+  // `would pay $137.50 at +450` (design §2.1): the price is `card.combined_american`, the same
+  // string the builder wrote the footer's combined sentence from, carried as its own key so
+  // this line never parses a sentence. A card with no recorded price prints the payout alone.
+  const payoutText = card.combined_american
+    ? `would pay ${dollars(card.payout_text)} at ${card.combined_american}`
+    : `would pay ${dollars(card.payout_text)}`;
   const payoutRow = draft
     // The body-size payout line, not the 40 px live payout: the large one is earned by
-    // placement (design §2.1). The price it would pay at is the first footer line below.
+    // placement (design §2.1). The footer below still carries the price's own sentence.
     ? el("div", { class: "row spread" },
-        el("span", { text: `would pay ${dollars(card.payout_text)}` }),
+        el("span", { text: payoutText }),
         el("span", { class: "muted n", text: `stake ${dollars(card.stake_text)}` }))
     : el("div", { class: "row spread" },
         el("span", { class: "payout", style: `opacity:${dim.toFixed(2)}`,
@@ -188,6 +194,10 @@ function ticketSlip(card) {
       el("span", { class: "badge dim", text: kindBadgeText(card) }),
       draft ? el("span", { class: "badge dim mark", text: "PROPOSED · NOT PLACED" })
             : el("span", { class: "n", text: `legs · ${card.legs_remaining ?? "--"} to go` })),
+    // The anchor the card was built around, under the badge (design §2). `card.anchor.text` is
+    // the leg's own `plain_text`, so this line and the leg below it say the same thing in the
+    // same words; nothing is composed here.
+    card.anchor ? el("div", { class: "n", text: `carries ${card.anchor.text}` }) : null,
     sentences(card.sentences),
     // The builder's own rationale, in the fan voice, on the draft it belongs to: a live
     // slip's prose is `card.sentences`, and saying both would be saying it twice.

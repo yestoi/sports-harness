@@ -1,4 +1,4 @@
-"""phase 4.6: the fun-ticket columns, the three new tables and the story indexes
+"""phase 4.6: the fun-ticket columns, the five new tables and the story indexes
 
 Revision ID: 0009_phase46_fun_tickets
 Revises: 0008_positions_open_fill
@@ -24,9 +24,10 @@ What the phase adds, and why each piece is additive (addendum section 9):
   EXISTS`; each not-null one carries the same default the model declares, so an existing row
   reads the documented value and nothing is backfilled. On PostgreSQL 16 an ADD COLUMN with a
   non-volatile default is metadata-only, so none of these rewrites a table.
-* Three tables, each `CREATE TABLE IF NOT EXISTS`: `odds_prop_snapshots` (the prop pool, D23),
-  `parlay_placement_corrections` (the owner's corrections, section 5.2) -- `players` and
-  `player_stat_events` came with Tasks 3's models and are created here for the same reason.
+* Five tables, each `CREATE TABLE IF NOT EXISTS`: `odds_prop_snapshots` (the prop pool, D23),
+  `parlay_placement_corrections` (the owner's corrections, section 5.2) and `parlay_slot_state`
+  (the builder stage's per-slot pointer, ruling 13) -- `players` and `player_stat_events` came
+  with Tasks 3's models and are created here for the same reason.
   Their indexes are built plainly: a table this same revision creates takes no concurrent
   writes, so none of them is a bulk-table index.
 * The story indexes of section 7.2 on `intents`, `order_events`, `fills` and `ledger`, every one
@@ -118,7 +119,7 @@ _COLUMNS = (
     "alter table source_state add column if not exists credits_used bigint",
 )
 
-#: The four tables this phase adds. `create_schema` has no copy of these: `create_all` builds a
+#: The five tables this phase adds. `create_schema` has no copy of these: `create_all` builds a
 #: new table from its model. Written to match what `create_all` emits column for column --
 #: SERIAL/BIGSERIAL for the autoincrementing primary keys, `timestamptz` for every timestamp,
 #: and no server default on `player_stat_events.correction`, whose model default is client-side.

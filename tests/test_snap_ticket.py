@@ -257,8 +257,8 @@ def test_the_budget_week_is_the_chicago_week_on_a_sunday_evening(db_session, env
 
 import json
 
-from harness.dashboard.sentences import (IDEA_PHRASES, idea_reason_phrase, stat_line,
-                                          unknown_idea_codes)
+from harness.dashboard.sentences import (IDEA_PHRASES, PLACEHOLDER, idea_reason_phrase,
+                                          stat_line, unknown_idea_codes)
 from harness.db.models import ParlayPlacementCorrection, ParlaySlotState, PlayerStatEvent
 from harness.settlement.parlay_build import SLOTS, STAGE_REASON_CODES, slot_key
 
@@ -519,7 +519,7 @@ def test_an_empty_slot_carries_one_reason_code_and_its_sentence(db_session, env_
 
 def test_every_reason_the_stage_can_write_now_has_a_sentence(db_session, env_settings):
     """Review round 1, I5. Both shapes that reach the slot -- a code Task 7 pins
-    (`stale_price`) and a `job_state` value this harness can no longer decode, which
+    (`stale_price`) and a `parlay_slot_state` row this harness cannot read, which
     `read_slot_state` reports as `unknown` -- render as prose, not as a token, and neither is a
     gap in the vocabulary any more."""
     _slot_state(db_session, "nfl", "smart", reason="stale_price")
@@ -551,6 +551,18 @@ def test_a_code_outside_the_vocabulary_still_renders_as_itself_and_is_reported()
     assert unknown_idea_codes(["brand_new", "stale_price"]) == ["brand_new"]
 
 
+def test_a_stat_key_with_no_noun_reaches_the_payloads_gap_report(db_session, env_settings):
+    """Re-review N2: `sentences_gaps` is the builder's blind-spot report, and until now nothing
+    asserted it ever carried anything -- deleting either `gaps.update(...)` call left the suite
+    green. A prop leg on a stat this vocabulary has no noun for is the reachable case: the line
+    still renders (the key stands in for the noun) and the key is reported, so the next plan
+    sees the gap instead of a fan reading `tackles` where a noun belongs."""
+    leg = _live_prop_leg(db_session, stat="tackles", value=3, line="4.5", age_s=40)
+    payload = build_ticket(db_session, NOW, env_settings)
+    assert "tackles" in payload["sentences_gaps"]
+    assert "tackles" in _leg_of(payload, leg)["stat_line"]
+
+
 def test_the_college_slot_is_not_told_to_come_back_on_saturday(db_session, env_settings):
     """M1 / design §2.2's parenthetical: college cards build Friday, the NFL's Saturday
     evening, and the sentence follows `BUILD_TIMES` rather than naming one day for both."""
@@ -579,12 +591,14 @@ def test_a_prop_leg_shows_the_stat_line_from_the_newest_recorded_row(db_session,
 
 def test_a_player_absent_from_the_latest_update_reads_unchanged_never_zero(db_session,
                                                                           env_settings):
-    """Review round 1, I6: `player_stat_events` holds one row per change, so a stat that has
-    stood through a defensive drive is the common case and the figure must not vanish with it.
-    The line keeps the value and the noun and says `unchanged` about them."""
+    """Review round 1, I6 and re-review N1: `player_stat_events` holds one row per change, so a
+    stat that has stood through a defensive drive is the common case and the figure must not
+    vanish with it. The line keeps the value and the noun and says `unchanged` about them -- and
+    it still says how much is left, the one fact the fresh line and the hung line both carry and
+    which the stale line dropped for the whole stale window."""
     leg = _live_prop_leg(db_session, value=208, line="225.0", age_s=120)
     assert _leg_of(build_ticket(db_session, NOW, env_settings), leg)["stat_line"] == (
-        "208 of 225 passing yards · unchanged · last seen 2 min ago")
+        "208 of 225 passing yards · unchanged · last seen 2 min ago · 17 to go")
 
 
 def test_a_leg_with_no_row_at_all_reads_no_stat_yet(db_session, env_settings):
@@ -700,6 +714,40 @@ def test_the_footer_of_a_mixed_card_names_no_sharp_read(db_session, env_settings
     # footer that named a leg differently from the leg would be naming a different bet.
     assert mixed["legs"][1]["plain_text"] in mixed["footer"]["chance"]
     assert "not included" in mixed["footer"]["chance"]
+
+
+def test_a_draft_carries_the_combined_price_and_its_anchor_leg(db_session, env_settings):
+    """Task 15 carry-forward 1: the design draws `would pay $137.50 at +450` and `carries LSU
+    -3.5`, and the renderer could draw neither -- the price only ever reached the page inside
+    the footer *sentence* (which this surface renders verbatim and must not parse), and
+    `anchor_leg_id` was selected and dropped. Both are card keys now, and the anchor's text is
+    the leg's own `plain_text` -- the bet's name, already sanitized for this page -- rather than
+    a second sentence about the same bet (controller ruling 2026-09-14)."""
+    card = _draft(db_session)
+    leg = db_session.query(ParlayLeg).filter_by(card_id=card.id, seq=1).one()
+    card.anchor_leg_id = leg.id
+    db_session.flush()
+    shown = _slot_card(build_ticket(db_session, NOW, env_settings), card)
+    assert shown["combined_american"] == "+450"
+    # The same string the footer sentence is built from: one price, two places, never two
+    # figures for one slip.
+    assert shown["combined_american"] in shown["footer"]["combined"]
+    assert shown["anchor"] == {"leg_seq": 1, "text": shown["legs"][0]["plain_text"]}
+    assert shown["anchor"]["text"] == "LSU to win"
+
+
+def test_a_card_with_no_combined_price_and_no_anchor_carries_neither_key_filled(db_session,
+                                                                                env_settings):
+    """The absent half: a card with no recorded combined price has none to print -- its footer
+    line already says so with the placeholder -- and a card no anchor was recorded for names
+    none. Both keys are `None`, never a placeholder the page would draw as a price."""
+    leg = _live_prop_leg(db_session, value=208, line="225.0")
+    card = db_session.get(ParlayCard, leg.card_id)
+    assert card.dk_combined_american is None and card.anchor_leg_id is None
+    shown = _card_of(build_ticket(db_session, NOW, env_settings), card)
+    assert shown["footer"]["combined"].startswith(f"{PLACEHOLDER} ")
+    assert shown["combined_american"] is None
+    assert shown["anchor"] is None
 
 
 def test_the_ticket_payload_carries_no_paper_key(db_session, env_settings):

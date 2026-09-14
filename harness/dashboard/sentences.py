@@ -477,13 +477,13 @@ IDEA_PHRASES: dict[str, str] = {
     "not_built_yet": "The next card is built Saturday evening.",
     "builder_failed": "The builder could not finish; the reason is in the log.",
     "replacement_pending": "A replacement is being built; it lands within the hour.",
-    # Four more the builder stage can actually record (`parlay_build._REASON_INDEX`), closed
-    # here rather than left to render as bare codes on the fun surface (review round 1, I5).
+    # Four more the builder stage can actually record (`parlay_build.STAGE_REASON_CODES`),
+    # closed here rather than left to render as bare codes on the fun surface (round 1, I5).
     # `side_unsupported`: `harness/parlay/build.py` skips a scorer market whose likelier side is
     # `no`, which release one cannot grade. `stale_price`: a selection was seen and its newest
     # price was past `leg_max_age_minutes` -- different from `no_props_fresh`, which is no price
     # at all. `gamelog_budget_spent`: the context-line pass stopped at `GAMELOG_BUDGET_S`.
-    # `unknown`: `read_slot_state` could not decode the value recorded for the slot.
+    # `unknown`: `read_slot_state` could not read the `parlay_slot_state` row for the slot.
     "side_unsupported": "The only side DraftKings priced is one we do not grade.",
     "stale_price": "The prices we found had gone stale before we could build on them.",
     "gamelog_budget_spent": "We ran out of time reading season form; the next build picks it "

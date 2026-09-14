@@ -25,9 +25,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from harness.dashboard import app as app_module
+from harness.dashboard import snapshots
 from harness.dashboard.app import BODY_MAX_BYTES, WRITE_LIMIT_PER_MINUTE, create_dashboard
 from harness.dashboard.auth import hash_password
-from harness.db.models import ParlayCard, ParlayLedger, ParlayLeg, ParlayPlacement
+from harness.dashboard.snapshots import ticket as _ticket_builder  # noqa: F401 - registers it
+from harness.db.models import (DashboardSnapshot, ParlayCard, ParlayLedger, ParlayLeg,
+                               ParlayPlacement)
 from harness.parlay.placement import mark_placed
 from tests.conftest import _make_parlay_card, _one_leg_game
 
@@ -508,6 +511,67 @@ def test_no_refusal_body_carries_a_stack_trace(lan_client, db_session, monkeypat
     assert response.status_code == 500
     assert set(response.json()) <= {"refusal", "placement", "recorded", "left", "moved"}
     assert "Traceback" not in response.text and "a path, a query" not in response.text
+
+
+# --- the Ticket payload the two listeners serve (addendum §6) ----------------------------------
+
+
+def _ticket_cards(payload: dict) -> list[dict]:
+    """Every card in a Ticket payload, wherever it is drawn: the live list and the idea slots.
+
+    A `proposed` card is only ever in `ideas`, and `actions` is only ever non-empty on one, but
+    a filter that only looked at `cards` would pass this test and still ship buttons, so both
+    lists are collected here.
+    """
+    cards = [card for card in payload["cards"] if isinstance(card, dict)]
+    cards += [slot["card"] for slot in payload["ideas"]["slots"] if slot.get("card")]
+    return cards
+
+
+def test_the_loopback_ticket_payload_offers_no_action_and_the_lan_one_offers_three(
+        db_session, lan_settings):
+    """Addendum §6 (Task 15 review, Important 1): the loopback app has no write route, so a
+    draft it serves must carry `actions == []` -- a button there posts to a route that is not
+    registered and the owner reads a refusal for an offer that should never have been drawn.
+    The LAN app serves the same stored row with the three actions intact.
+
+    One `dashboard_snapshots` row feeds both listeners, so this is decided per request rather
+    than at build time; both clients below read the row this test built once.
+    """
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    _card(db_session)                     # a proposed card in this week's ncaaf/smart slot
+    snapshots.run_builder(factory, "ticket", T0, lan_settings, cadence_s=60)
+    lan = _client(db_session, lan_settings)
+    loopback = _client(db_session, lan_settings, lan=False, login=False)
+
+    lan_cards = _ticket_cards(lan.get("/api/snap/ticket").json()["payload"])
+    loopback_cards = _ticket_cards(loopback.get("/api/snap/ticket").json()["payload"])
+    assert [card["actions"] for card in lan_cards] == [["open", "placed", "decline"]]
+    assert [card["actions"] for card in loopback_cards] == [[]]
+    # The rest of the slip is the same slip: only the offer of a write is withheld.
+    assert [card["card_id"] for card in loopback_cards] == [c["card_id"] for c in lan_cards]
+    assert [card["stake_text"] for card in loopback_cards] == [c["stake_text"] for c in lan_cards]
+
+
+def test_the_loopback_listener_leaves_the_stored_snapshot_row_alone(db_session, lan_settings):
+    """The filter is on the way out, not on the table: the loopback app must not edit the row
+    the scheduler wrote, or the next LAN reader would find the buttons gone from a payload
+    nobody rebuilt. Two reads on one row, one per listener, in that order.
+    """
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    _card(db_session)
+    snapshots.run_builder(factory, "ticket", T0, lan_settings, cadence_s=60)
+    loopback = _client(db_session, lan_settings, lan=False, login=False)
+    assert _ticket_cards(loopback.get("/api/snap/ticket").json()["payload"])[0]["actions"] == []
+
+    with factory() as session:
+        stored = session.get(DashboardSnapshot, "ticket")
+        slots = stored.payload["ideas"]["slots"]
+    assert [slot["card"]["actions"] for slot in slots if slot.get("card")] == [
+        ["open", "placed", "decline"]]
+    lan = _client(db_session, lan_settings)
+    assert _ticket_cards(lan.get("/api/snap/ticket").json()["payload"])[0]["actions"] == [
+        "open", "placed", "decline"]
 
 
 def test_the_loopback_app_has_neither_route(db_session, lan_settings):

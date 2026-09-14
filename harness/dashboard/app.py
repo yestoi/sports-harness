@@ -1311,6 +1311,42 @@ def _install_parlay_writes(app: FastAPI, session_factory: sessionmaker, settings
         return {"correction": recorded, "card_status": status}
 
 
+def _payload_for_listener(name: str, payload, *, lan: bool):
+    """A stored snapshot payload as the listener it was asked of may serve it.
+
+    Addendum §6: the three actions on a Ticket slip (`open`, `I placed this`, `Not this one`)
+    are offers to write, and the two write routes are installed on the LAN app alone. A loopback
+    reader shown those buttons would post to routes that are not registered there and read a
+    refusal for an offer that should never have been made, so the loopback listener serves every
+    card with `actions == []` (Task 15 review, Important 1).
+
+    Decided here rather than in the builder because there is exactly one `dashboard_snapshots`
+    row per surface and both listeners read it: an `actions` array chosen at build time would
+    say whatever the process that happened to build last chose, and each app would then serve
+    the other's answer. Which listener was asked is a property of the request, so it is answered
+    on the request path. The stored row is never modified -- the cards are rebuilt into new
+    dicts on the way out -- and every other key of the payload is passed through untouched.
+    """
+    if lan or name != "ticket" or not isinstance(payload, dict):
+        return payload
+
+    def _read_only(card):
+        # A failed section is `{"error": <class name>}`, not a card; it is passed through.
+        return {**card, "actions": []} if isinstance(card, dict) else card
+
+    served = dict(payload)
+    cards = payload.get("cards")
+    if isinstance(cards, list):
+        served["cards"] = [_read_only(card) for card in cards]
+    ideas = payload.get("ideas")
+    if isinstance(ideas, dict) and isinstance(ideas.get("slots"), list):
+        served["ideas"] = {**ideas, "slots": [
+            {**slot, "card": _read_only(slot["card"])}
+            if isinstance(slot, dict) and isinstance(slot.get("card"), dict) else slot
+            for slot in ideas["slots"]]}
+    return served
+
+
 def create_dashboard(session_factory: sessionmaker, settings: Settings,
                      clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                      *, lan: bool = False) -> FastAPI:
@@ -1424,7 +1460,10 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
         return {"name": row.name, "generated_at": _iso(row.generated_at),
                 "elapsed_ms": row.elapsed_ms,
                 "cadence_s": (row.payload or {}).get("cadence_s"),
-                "payload": row.payload, "error": row.error}
+                # The same code on both apps, one rule inside it: the LAN app is the loopback
+                # app plus its additions, and neither reads a different row.
+                "payload": _payload_for_listener(name, row.payload, lan=lan),
+                "error": row.error}
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
