@@ -361,6 +361,27 @@ announce themselves: the hour-long idle after a refusal, which logs its own WARN
 at startup and nothing after. A summary line reading `frames_seen=0` alongside `venue_status`
 `ok` is a quiet market and nothing more.
 
+### The RFQ listener's two bounds (fix 46)
+
+The listener yields to the executor and caps what it stores. Both are read from the listener's own
+summary line, which `app-ws` logs at least once a minute:
+
+    rfq listener: replayed=<n> quoted=<n> skipped_rate=<n> frames_seen=<n> frames_stored=<n>
+    dropped_not_all_football=<n> dropped_unknown_delete=<n> frames_yielded=<n> rows_skipped_rate=<n>
+
+- `frames_yielded` counts frames seen while the executor's last loop was older than 60 s
+  (`RFQ_YIELD_AGE_S`) or longer than three `exec_period_s` periods (45 s). A yielded frame is
+  stored nowhere and quoted nowhere; the subscription and the ack are untouched, so a burst of
+  `frames_yielded` is the listener standing down, not a disconnect. The metric is `rfq.yielded`.
+- `rows_skipped_rate` counts arrivals refused by the stored-rows cap, 60 rows per 60 s
+  (`RFQ_STORE_RATE_MAX`). The metric is `rfq.stored_rows`, which is the number actually written in
+  the same window.
+- Turning the listener on is a deploy step, not a runbook step: the control is the Omarchy host
+  `.env` under `/srv/sports-harness` that `make deploy-omarchy` reads,
+  `Settings.rfq_listener_enabled` **fails open** (an `.env` with no key starts the listener), and
+  the effective value is read back out of the running image after the recipe rather than assumed
+  from the file.
+
 ## What is never done here
 
 No quote is sent. `POST /communications/quotes` is refused by the transport before signing and

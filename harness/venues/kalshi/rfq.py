@@ -421,7 +421,8 @@ def store_rfq(session: Session, event: RfqEvent, now: datetime) -> Rfq:
 def handle_frame(session: Session, msg, now: datetime,
                  on_replay: Callable[[], None] | None = None,
                  allow_quote: Callable[[], bool] | None = None,
-                 on_dropped: Callable[[str], None] | None = None) -> Rfq | None:
+                 on_dropped: Callable[[str], None] | None = None,
+                 allow_store: Callable[[], bool] | None = None) -> Rfq | None:
     """One frame. Returns the stored row, or None when the frame was not an RFQ event, or was
     one but was dropped at the boundary.
 
@@ -447,8 +448,11 @@ def handle_frame(session: Session, msg, now: datetime,
     id is already a row here (`session.get`, the same primary-key probe `store_rfq` itself
     makes). Either drop is counted through `on_dropped` (`DROP_NOT_ALL_FOOTBALL` /
     `DROP_UNKNOWN_DELETE`) and never logged per frame -- at flood volume a log line per drop is
-    the same cost this filter exists to remove. The raw cap and NUL stripping from T13 still
-    apply to whatever does get stored; nothing about parsing or trimming changes.
+    the same cost this filter exists to remove. `allow_store`, when given, is the caller's
+    stored-rows-per-minute cap (fix 46), consulted once a frame has already cleared this filter
+    and immediately before the row is written; a `False` return stores nothing and returns None.
+    The raw cap and NUL stripping from T13 still apply to whatever does get stored; nothing
+    about parsing or trimming changes.
 
     **Fix 35, item 2: never recompute a quote already held.** The venue replays the whole open
     RFQ set on every subscribe (journal 109: ten reconnects, 4,902 frames, in the 03:15-03:45 CT
@@ -479,6 +483,14 @@ def handle_frame(session: Session, msg, now: datetime,
             if on_dropped is not None:
                 on_dropped(DROP_UNKNOWN_DELETE)
             return None
+    # Fix 46: the stored-rows cap, consulted at the one point a row is about to be written and
+    # only after the boundary filter has already accepted the frame -- so a cross-category
+    # combo or an unknown delete never spends the budget. A refused frame is counted by the
+    # caller (`RfqListener.rows_skipped_rate`) and stored nowhere; it is not a drop at the
+    # boundary and is deliberately not passed to `on_dropped`, whose two reasons name the
+    # boundary filter and nothing else.
+    if allow_store is not None and not allow_store():
+        return None
     row = store_rfq(session, event, now)
     if event.kind == "rfq_created":
         existing = session.execute(

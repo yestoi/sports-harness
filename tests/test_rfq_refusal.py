@@ -56,6 +56,21 @@ def test_the_transport_refuses_the_exact_quote_path(tmp_path):
         transport.close()
 
 
+def test_the_listener_quotes_nothing_while_it_is_yielded():
+    """Ruling I9. The yield guard's refusal is structural, not a counter: `run_once` returns
+    before `handle_frame` is called at all, so there is no path from a yielded frame to
+    `compute_quote` -- which is the only place a counterfactual quote is ever computed.
+
+    Asserted on the source, like the other cases in this file: the yield check must come before
+    the `self._factory()` block that calls `handle_frame`, so a refactor that moved it after
+    would fail here rather than in a counter that could be zero for another reason.
+    """
+    body = SOCKET.read_text()
+    yielding = body.index("if self._yielding():")
+    handle = body.index("handle_frame(session, msg")
+    assert yielding < handle, "the yield guard must precede the handler call"
+
+
 def test_no_module_in_the_repository_names_the_quote_path():
     """The whole-repository half. `docs/` and this file are excluded: naming the forbidden path
     in a plan, a runbook or the test that refuses it is the point."""

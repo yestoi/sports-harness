@@ -1279,3 +1279,95 @@ def test_a_subscribed_frame_with_a_hostile_msg_does_not_raise(db_session, env_se
     listener = _listener(db_session, env_settings, ws)
     assert listener.run_once(ws) is True
     assert listener._sid == 7
+
+
+# --- Phase 6D, fix 46 (addendum §1.8): the executor-yield guard and the stored-rows cap ------
+
+def _heartbeat(session, *, last_loop_at, last_loop_ms):
+    """The single `exec_heartbeat` row (id = 1) the guard reads."""
+    from harness.db.models import ExecHeartbeat
+
+    session.merge(ExecHeartbeat(id=1, last_loop_at=last_loop_at, loops=1, open_orders=0,
+                                last_loop_ms=last_loop_ms))
+    session.commit()
+
+
+def test_a_heartbeat_older_than_the_yield_age_stores_nothing(db_session, env_settings):
+    """§1.8: the listener stores and quotes nothing while the executor's last loop is older
+    than `RFQ_YIELD_AGE_S`.
+
+    Computed independently of the code: the heartbeat is stamped 90 s before the listener's
+    clock and `RFQ_YIELD_AGE_S` is 60, so 90 > 60 and every frame this connection carries is
+    yielded. The socket, the subscription and the ack are untouched -- yielding is not a
+    disconnect -- so `run_once` still returns True and `venue_status` is not written.
+    """
+    _heartbeat(db_session, last_loop_at=NOW - timedelta(seconds=90), last_loop_ms=200)
+    clock = [1000.0]
+    listener = _listener(db_session, env_settings, monotonic=lambda: clock[0])
+    ws = FakeWs([_created("rfq_yield_1")])
+    assert listener.run_once(ws) is True
+    assert listener.frames_yielded == 1
+    assert db_session.get(Rfq, "rfq_yield_1") is None
+    assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 0
+
+
+def test_a_fresh_heartbeat_with_a_long_loop_also_yields(db_session, env_settings):
+    """The second half of the rule: `last_loop_ms` above `RFQ_YIELD_LOOP_MULT x exec_period_s`.
+
+    Computed independently: `exec_period_s` is 15 and the multiplier is 3, so the threshold is
+    45,000 ms. The heartbeat below is 10 s old -- fresh by the age rule -- and reports a 50,000
+    ms loop, which is over the threshold, so the frame is yielded on the loop-length rule alone.
+    """
+    _heartbeat(db_session, last_loop_at=NOW - timedelta(seconds=10), last_loop_ms=50_000)
+    listener = _listener(db_session, env_settings, monotonic=lambda: 1000.0)
+    ws = FakeWs([_created("rfq_yield_2")])
+    assert listener.run_once(ws) is True
+    assert listener.frames_yielded == 1
+    assert db_session.get(Rfq, "rfq_yield_2") is None
+
+
+def test_a_healthy_heartbeat_stores(db_session, env_settings):
+    """The control case: 10 s old, a 200 ms loop, so nothing yields and the arrival is stored
+    exactly as it was before this guard existed."""
+    _heartbeat(db_session, last_loop_at=NOW - timedelta(seconds=10), last_loop_ms=200)
+    listener = _listener(db_session, env_settings, monotonic=lambda: 1000.0)
+    ws = FakeWs([_created("rfq_ok_1")])
+    assert listener.run_once(ws) is True
+    assert listener.frames_yielded == 0
+    assert db_session.get(Rfq, "rfq_ok_1") is not None
+
+
+def test_two_hundred_frames_in_one_minute_store_exactly_the_cap(db_session, env_settings):
+    """§1.8's stored-rows cap. 63,443 rows in 50 minutes (journal 136) is the number this
+    bounds.
+
+    Computed independently of the code: `RFQ_STORE_RATE_MAX` is 60 rows per
+    `RFQ_STORE_RATE_WINDOW_S` = 60 s, and the clock below never advances, so all 200 frames fall
+    in one window: 60 stored, 140 counted as `rows_skipped_rate`. 60 x 1,440 minutes is 86,400
+    rows -- the day's ceiling even if the guard never engages once.
+    """
+    _heartbeat(db_session, last_loop_at=NOW - timedelta(seconds=10), last_loop_ms=200)
+    listener = _listener(db_session, env_settings, monotonic=lambda: 2000.0)
+    for i in range(200):
+        listener.run_once(FakeWs([_created(f"rfq_rate_{i}")]))
+    stored = db_session.execute(text("select count(*) from rfqs")).scalar()
+    assert stored == 60
+    assert listener.rows_skipped_rate == 140
+
+
+def test_the_window_slides_so_the_next_minute_stores_again(db_session, env_settings):
+    """The cap is a sliding window, like `_quote_times`, not a per-connection budget: a
+    long-lived connection keeps storing once a burst is behind it.
+
+    Computed independently: 60 frames fill the window at t = 2000; at t = 2061 every one of
+    them is older than 60 s, so the deque empties and the next frame stores.
+    """
+    _heartbeat(db_session, last_loop_at=NOW - timedelta(seconds=10), last_loop_ms=200)
+    clock = [2000.0]
+    listener = _listener(db_session, env_settings, monotonic=lambda: clock[0])
+    for i in range(61):
+        listener.run_once(FakeWs([_created(f"rfq_slide_{i}")]))
+    assert db_session.execute(text("select count(*) from rfqs")).scalar() == 60
+    clock[0] = 2061.0
+    listener.run_once(FakeWs([_created("rfq_slide_after")]))
+    assert db_session.get(Rfq, "rfq_slide_after") is not None

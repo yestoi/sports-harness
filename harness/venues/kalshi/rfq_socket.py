@@ -43,6 +43,8 @@ from email.utils import parsedate_to_datetime
 
 import websocket
 
+from harness import telemetry
+from harness.db.models import ExecHeartbeat
 from harness.execution.venue import (STATUS_OK, STATUS_UNAVAILABLE, mark_status,
                                      sanitize_venue_text)
 from harness.venues.kalshi.auth import sign_request
@@ -71,6 +73,32 @@ BACKOFF_MAX_S = 60.0
 RFQ_QUOTE_RATE_MAX = 500
 #: The sliding window `RFQ_QUOTE_RATE_MAX` is measured over.
 RFQ_QUOTE_RATE_WINDOW_S = 60.0
+#: Fix 46 (journal 136, 2026-09-12 00:10 CT). The listener revived by fix 44 stored 63,443
+#: `rfqs` rows in the 50 minutes after the restart -- about 2,000 a minute, 17k frames a minute
+#: seen, 3,336 quotes an hour reading `fair_values` -- while the executor's loops stretched to
+#: 15 minutes and the sink lagged 250 s. Two bounds answer that, and they answer different
+#: halves of it: the *yield* guard stops the listener competing with an executor that is already
+#: struggling, and the *store* cap bounds what a healthy listener may write however loud the
+#: venue is.
+#:
+#: How often the heartbeat may be read. The tick is not the frame rate: at 17k frames a minute
+#: a read per frame would be its own load, so the verdict is cached for this long.
+RFQ_HEARTBEAT_POLL_S = 5.0
+#: The executor's last loop may be no older than this before the listener yields. 60 s is four
+#: `exec_period_s` periods: a loop that has not completed in four periods is not merely busy.
+RFQ_YIELD_AGE_S = 60.0
+#: ... and its last loop may take no longer than this multiple of `exec_period_s` (3 x 15 s =
+#: 45 s). The age rule alone cannot see a loop that is *running* long right now, because the
+#: heartbeat is written at the end of a loop: a 15-minute loop leaves a heartbeat that ages past
+#: the age rule only after it finally lands. Both rules together cover both shapes.
+RFQ_YIELD_LOOP_MULT = 3
+#: The stored-rows cap, per `RFQ_STORE_RATE_WINDOW_S`, in the same sliding-deque shape as
+#: `_quote_times`. 60 a minute holds the day under 86,400 rows even if the guard never engages
+#: once, against the 2,000 a minute journal 136 measured; fix 40's verify row expected "well
+#: under 1,000 a day", and the *expectation* is rewritten from the first measured Saturday
+#: slate rather than from that pre-incident guess (Task 10 carries the row).
+RFQ_STORE_RATE_MAX = 60
+RFQ_STORE_RATE_WINDOW_S = 60.0
 #: Fix 35 round 1 (review I3). A per-frame log line at burst volume (roughly 490 per reconnect
 #: in the incident) is itself a cost; this is how long a gap between frames must be before the
 #: listener treats a burst as over and logs one INFO summary (`replayed=<n> quoted=<n>
@@ -185,6 +213,20 @@ class RfqListener:
         #: `compute_quote` attempts, oldest first -- `_try_quote` prunes anything older than
         #: `RFQ_QUOTE_RATE_WINDOW_S` before checking whether there is room for one more.
         self._quote_times: deque[float] = deque()
+        #: Fix 46: the sliding window of stored-row timestamps, the same shape as
+        #: `_quote_times` above and bounded the same way.
+        self._store_times: deque[float] = deque()
+        #: Fix 46: frames this listener refused to store or quote because the executor was
+        #: behind, and rows it refused because the store cap was full. Both are reported in the
+        #: burst summary and as `metric_samples` rows.
+        self.frames_yielded = 0
+        self.rows_skipped_rate = 0
+        self._burst_frames_yielded = 0
+        self._burst_rows_skipped_rate = 0
+        #: The cached executor verdict and the monotonic instant it was read at: at most one
+        #: heartbeat read per `RFQ_HEARTBEAT_POLL_S`, in its own short-lived session.
+        self._yield_verdict = False
+        self._yield_read_at: float = float("-inf")
         #: Whether the rate limit is currently engaged, so the WARNING/INFO pair logs only on an
         #: actual transition rather than once per frame.
         self._rate_limited = False
@@ -435,9 +477,26 @@ class RfqListener:
         is_data = kind in RFQ_TYPES
         if is_data:
             self._note_data()
+        # Fix 46: the executor comes first. A frame seen while the executor is behind is
+        # counted and dropped here -- before the session, before `handle_frame`, and therefore
+        # before any quote could be computed (ruling I9). The socket, the subscription and the
+        # ack are untouched: yielding is not a disconnect, and `_note_data` above has already
+        # recorded that the subscription is alive, so the data-idle watchdog does not fire on a
+        # listener that is merely standing down.
+        #
+        # The return value is the same expression the method's own tail uses: a *non-data*
+        # frame is one more quiet iteration whether or not this listener is yielding, and
+        # returning a bare `True` here would skip fix 44's data-idle check for exactly the
+        # frames it exists to count. A data frame has already restarted the idle window through
+        # `_note_data`, so it returns True either way.
+        if self._yielding():
+            self.frames_yielded += 1
+            self._burst_frames_yielded += 1
+            return True if is_data else self._check_data_idle()
         with self._factory() as session:
             row = handle_frame(session, msg, self._clock(), on_replay=self._count_replay,
-                               allow_quote=self._try_quote, on_dropped=self._count_dropped)
+                               allow_quote=self._try_quote, on_dropped=self._count_dropped,
+                               allow_store=self._may_store)
             if row is not None:
                 session.commit()
                 self.arrivals += 1
@@ -538,6 +597,61 @@ class RfqListener:
             self.dropped_unknown_delete += 1
             self._burst_dropped_unknown_delete += 1
 
+    def _yielding(self) -> bool:
+        """Whether the executor is behind enough that this listener must stand down (fix 46).
+
+        Read at most once per `RFQ_HEARTBEAT_POLL_S`, in its **own** short-lived session: the
+        listener's other database work happens inside `run_once`'s `with self._factory()` block,
+        and holding a session open across a socket read is what a listener must never do. A read
+        that fails for any reason leaves the previous verdict in place and never raises -- a
+        guard that crashed the listener would be worse than the load it is guarding against.
+
+        No heartbeat row at all is **not** a yield: a paper deployment with no executor running
+        yet would otherwise silence the listener forever, and the row the guard is about is one
+        an executor writes at the end of every loop.
+        """
+        now = self._monotonic()
+        if now - self._yield_read_at < RFQ_HEARTBEAT_POLL_S:
+            return self._yield_verdict
+        self._yield_read_at = now
+        try:
+            with self._factory() as session:
+                row = session.get(ExecHeartbeat, 1)
+                if row is None:
+                    self._yield_verdict = False
+                    return self._yield_verdict
+                age_s = None
+                if row.last_loop_at is not None:
+                    age_s = (self._clock() - row.last_loop_at).total_seconds()
+                loop_ms = row.last_loop_ms
+            stale = age_s is not None and age_s > RFQ_YIELD_AGE_S
+            slow = loop_ms is not None and loop_ms > RFQ_YIELD_LOOP_MULT * self.s.exec_period_s * 1000
+            if (stale or slow) and not self._yield_verdict:
+                log.warning("rfq listener yielding to the executor: last loop %s s old, "
+                            "last loop %s ms", None if age_s is None else int(age_s), loop_ms)
+            elif self._yield_verdict and not (stale or slow):
+                log.info("rfq listener resuming: the executor's loop is healthy again")
+            self._yield_verdict = bool(stale or slow)
+        except Exception:  # noqa: BLE001 - a guard never takes the listener down
+            log.exception("rfq listener could not read the executor heartbeat")
+        return self._yield_verdict
+
+    def _may_store(self) -> bool:
+        """Whether one more arrival may be written, under `RFQ_STORE_RATE_MAX` per
+        `RFQ_STORE_RATE_WINDOW_S` (fix 46). Called from inside `handle_frame`, at the one point
+        a row is about to be written, so a frame the boundary filter drops never spends the
+        budget -- the same rule `_try_quote` follows for quotes."""
+        now = self._monotonic()
+        window_start = now - RFQ_STORE_RATE_WINDOW_S
+        while self._store_times and self._store_times[0] < window_start:
+            self._store_times.popleft()
+        if len(self._store_times) >= RFQ_STORE_RATE_MAX:
+            self.rows_skipped_rate += 1
+            self._burst_rows_skipped_rate += 1
+            return False
+        self._store_times.append(now)
+        return True
+
     def _try_quote(self) -> bool:
         """Fix 35 round 1 (C1/I2): whether `handle_frame` may run `compute_quote` right now --
         at most `RFQ_QUOTE_RATE_MAX` calls in any trailing `RFQ_QUOTE_RATE_WINDOW_S`, a sliding
@@ -593,7 +707,8 @@ class RfqListener:
         """
         counts = (self._burst_replayed, self._burst_quoted, self._burst_skipped_rate,
                  self._burst_frames_seen, self._burst_frames_stored,
-                 self._burst_dropped_not_all_football, self._burst_dropped_unknown_delete)
+                 self._burst_dropped_not_all_football, self._burst_dropped_unknown_delete,
+                 self._burst_frames_yielded, self._burst_rows_skipped_rate)
         now = self._monotonic()
         silent = (now - self._burst_last_frame_at) >= RFQ_BURST_SILENCE_S
         due = (now - self._last_summary_at) >= RFQ_SUMMARY_PERIOD_S
@@ -607,10 +722,24 @@ class RfqListener:
         if not (silent or due):
             return
         log.info("rfq listener: replayed=%d quoted=%d skipped_rate=%d frames_seen=%d "
-                 "frames_stored=%d dropped_not_all_football=%d dropped_unknown_delete=%d", *counts)
+                 "frames_stored=%d dropped_not_all_football=%d dropped_unknown_delete=%d "
+                 "frames_yielded=%d rows_skipped_rate=%d", *counts)
+        # Fix 46: the two metrics the verify row reads. `ws` is this process's telemetry source
+        # (`app-ws` owns the listener), and a telemetry failure never costs the listener a frame
+        # -- the same rule `_mark` follows for `venue_status`.
+        try:
+            with self._factory() as session:
+                telemetry.record_many(session, "ws", [
+                    ("rfq.stored_rows", self._burst_frames_stored, {}),
+                    ("rfq.yielded", self._burst_frames_yielded, {}),
+                ], ts=self._clock())
+                session.commit()
+        except Exception:  # noqa: BLE001 - telemetry never stops the listener
+            log.exception("rfq listener could not record its metrics")
         (self._burst_replayed, self._burst_quoted, self._burst_skipped_rate,
         self._burst_frames_seen, self._burst_frames_stored, self._burst_dropped_not_all_football,
-        self._burst_dropped_unknown_delete) = (0, 0, 0, 0, 0, 0, 0)
+        self._burst_dropped_unknown_delete, self._burst_frames_yielded,
+        self._burst_rows_skipped_rate) = (0, 0, 0, 0, 0, 0, 0, 0, 0)
         self._last_summary_at = now
 
     def _on_timeout(self) -> bool:
