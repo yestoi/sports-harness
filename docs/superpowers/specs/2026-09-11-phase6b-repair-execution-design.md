@@ -150,6 +150,17 @@ their corrections are applied.
     stretch by an order of magnitude in exactly the conditions it exists for.
 - **0.15 (roadmap 37, journal 128) The 6B deploy is the full recipe.** The additive DDL touches `harness/db/models.py`, on the full-deploy trigger
   list, so journal 128's app-only allowance does not apply and R4 governs.
+- **0.16 (user decision 2026-09-14 15:38 CT, journal 210) The §1.7 manifest gate is scoped to the order's resting interval.** `audit_order`
+  pre-empts the replay with `unverifiable` only when an `unverifiable_slices` entry overlaps `[placed_at, min(cancelled_at, expiry)]` (an entry is
+  an instant `ts` on a `sid`; a range entry overlaps when it intersects the interval). A slice elsewhere in the capsule's window is counted in the
+  evidence and does not decide the verdict: it cannot have moved this order's queue, and the interval already bounds every tape read the replay
+  makes (Task 8 ruling IM-3). The first real-capsule run (2026-09-14 11:40 CT) read `unverifiable` from six gap slices more than a day after
+  order 157's cancel; the rerun under this amendment replaces `ORDER_157_VERDICT` and the record's Result section with whatever it reads. The
+  user, verbatim: "6B manifest gate: yes, scope it to the order's resting interval [placed_at, min(cancelled_at, expiry)]. On
+  phase6b-repair-execution change harness/audit.py:316 so only unverifiable_slices overlapping that interval pre-empt the replay; add the §0
+  amendment ... and update §1.7 ...; add the fixture case; rerun `harness audit-order` on the real order 157 capsule and replace ORDER_157_VERDICT
+  and the audit document's Result section with the new reading, whatever it is." Cost if wrong: none identified (a slice outside the interval
+  touches no read the replay makes). Reversal: restore the capsule-wide test.
 
 ## 1. Components
 
@@ -290,7 +301,8 @@ database and no NAS access, replays it under the repaired simulator and compares
 **recorded** quantities - `filled_contracts` 38.92, `traded_at_price` 63.92 (read under C0's charge-against definition only, which is why §1.3 leaves
 that column null afterwards), `queue_remaining` 0 - rather than against a C0 code path, which C1-C5 remove from the tree. Verdicts: `validated`
 (reproduces the recorded fills within one contract), `corrected` (differs **and** one hypothesis's stated expected counts are met), `unverifiable`
-(the tape does not cover the interval, nothing anchors it - the 6A manifest's `unverifiable_slices` is that call's input - **or** it differs and no
+(the tape does not cover the interval, nothing anchors it - the 6A manifest's `unverifiable_slices` is that call's input, read for the entries
+overlapping the resting interval `[placed_at, min(cancelled_at, expiry)]` only, amendment 0.16 - **or** it differs and no
 hypothesis's counts are met, which is RECONCILIATION.md's "requires tape audit" rather than a causal story the evidence does not support). The
 hypotheses: (i) the equal-timestamp double count, predicting a decrement near -6,376 at our price stamped 15:07:15.332Z beside prints summing to 63.92
 across the six recorded `last_print_ids`; (ii) a recovery anchoring error, predicting a `gap` row on the anchor's sid and a snapshot between 14:36:47Z
@@ -302,7 +314,8 @@ container) beside the record `docs/superpowers/reviews/order-157-audit.md`, unda
 *Expected result, computed independently:* four synthetic capsules, one per outcome. The reconciliation's own counterexample (queue 6,401, a
 same-timestamp decrement of -6,376, prints of 25, 25 and 13.92, reproducing 38.92, 63.92 and queue 0 with no recovery) is `corrected` with a repaired
 fill of 0; one with no anchoring snapshot is `unverifiable`; one whose prints genuinely exhaust the queue is `validated`; one that differs with no
-hypothesis met is `unverifiable`. The controller runs it on the real capsule.
+hypothesis met is `unverifiable`; one whose only manifest slice lies outside the resting interval replays as if the manifest were clean, and one
+with a slice inside it is `unverifiable` with no replay run (0.16). The controller runs it on the real capsule.
 
 ### 1.8 The no-watcher re-score (ROADMAP §6B "re-score no-watcher outcomes only after the same model repairs")
 `harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]` walks each original order's capsule or tape
