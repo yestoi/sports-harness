@@ -77,10 +77,40 @@ def _create_interval_tables() -> None:
                     ["venue_market_id", "started_at"], unique=False, if_not_exists=True)
 
 
+def _create_order_rescores() -> None:
+    """§1.8's estimates table, mirroring `harness/db/models.py` (the 0004_phase5 pattern).
+
+    Unconditional, like the interval tables above: `tests/test_alembic.py` compares a migrated
+    database's catalogue with a `create_schema` one, and a table declared as a model but missing
+    from the revision is a failed diff rather than a tolerated difference. It declares no
+    index of its own -- the primary key is the only access path the command uses -- so nothing
+    is added to `harness/db/schema.py`'s `_INDEX_DDL`.
+    """
+    op.create_table(
+        "order_rescores",
+        sa.Column("order_id", sa.BigInteger(), nullable=False),
+        sa.Column("correction_ids", sa.String(length=64), nullable=False),
+        sa.Column("cancel_policy", sa.String(length=8), nullable=False),
+        sa.Column("watched_filled", sa.Numeric(precision=14, scale=2), nullable=True),
+        sa.Column("counterfactual_filled", sa.Numeric(precision=14, scale=2), nullable=True),
+        sa.Column("queue_remaining", sa.Numeric(precision=14, scale=2), nullable=True),
+        sa.Column("cancels_ahead", sa.Numeric(precision=14, scale=2), nullable=True),
+        sa.Column("watched_dirty_s", sa.Integer(), nullable=True),
+        sa.Column("counterfactual_dirty_s", sa.Integer(), nullable=True),
+        sa.Column("unobserved_s", sa.Integer(), nullable=True),
+        sa.Column("verdict", sa.String(length=16), nullable=False),
+        sa.Column("computed_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("build_sha", sa.String(length=24), nullable=True),
+        sa.PrimaryKeyConstraint("order_id", "correction_ids", "cancel_policy"),
+        if_not_exists=True,
+    )
+
+
 def upgrade() -> None:
     for statement in _STATEMENTS:
         op.execute(statement)
     _create_interval_tables()
+    _create_order_rescores()
 
 
 def downgrade() -> None:

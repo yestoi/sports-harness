@@ -846,6 +846,40 @@ class MarketObservationInterval(Base):
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class OrderRescore(Base):
+    """One order's retrospective estimate under one correction set and one cancel policy.
+
+    A corrected result is a new row, never an edit (§6.7, D8): the original `orders`, `fills`
+    and `ledger` rows are the record of what the measurement was, and 6A preserved them for
+    exactly this. `harness rescore` is the recognised instrument for an order-scoped correction,
+    beside `harness replay`'s `replay = true` rows for a range-scoped one (§0.12).
+
+    Nothing here reaches a gate criterion: an estimate inside a criterion would be a
+    measurement laundering itself into a verdict, which §3 row 9 asserts against.
+
+    Every measured column is nullable, because an `unverifiable` order gets its two policy rows
+    with nothing measured on them: the partition has to sum to the denominator over either
+    policy's rows alone, which it cannot do if an order without evidence is simply absent.
+    """
+    __tablename__ = "order_rescores"
+    order_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The corrections in force, comma-separated and sorted: "C1,C2,C3,C4,C5".
+    correction_ids: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: `ahead` (the point estimate) or `behind` (the other end of the band), §0.7.
+    cancel_policy: Mapped[str] = mapped_column(String(8), primary_key=True)
+    watched_filled: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    counterfactual_filled: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    queue_remaining: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    watched_dirty_s: Mapped[int | None] = mapped_column(Integer)
+    counterfactual_dirty_s: Mapped[int | None] = mapped_column(Integer)
+    unobserved_s: Mapped[int | None] = mapped_column(Integer)
+    #: validated | corrected | unverifiable
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    build_sha: Mapped[str | None] = mapped_column(String(24))
+
+
 class EquitySnapshot(Base):
     """One exec variant's cash and mark-to-market, sampled every `equity_sample_s` by the
     executor and once more by the settler after its `settle` stage (`mtm_open` is NULL there:

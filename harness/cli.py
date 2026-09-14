@@ -957,6 +957,51 @@ def audit_order_cmd(
     typer.echo(json.dumps(asdict(result), default=str, indent=2))
 
 
+@app.command("rescore")
+def rescore_cmd(
+    from_order: int = typer.Option(..., "--from-order"),
+    to_order: int = typer.Option(..., "--to-order"),
+    correction: str = typer.Option(..., "--correction",
+                                   help="comma-separated correction ids, e.g. C1,C2,C3,C4,C5"),
+    limit: int = typer.Option(None, "--limit"),
+    resume: bool = typer.Option(False, "--resume"),
+) -> None:
+    """Re-score an order range under the repaired simulator, as new `order_rescores` rows.
+
+    Read-mostly and resumable: the controller runs it over ssh in the quiet window
+    (01:00-08:00 CT), one at a time, and abandons it if `exec.loop_ms` exceeds 30 s during a
+    run. An abandoned run costs only the orders it had not reached.
+
+    Writes new rows only -- no `orders`, `fills` or `ledger` row is touched (§0.12) -- and
+    prints the result as a partition over an order-level denominator, never as a ratio.
+    """
+    configure_logging()
+    from harness.rescore import rescore
+
+    s = get_settings()
+    # The engine's default timeout, not the executor's: each order's tape read sets its own
+    # `statement_timeout` anyway (§1.8), and this command has no loop deadline of its own.
+    factory = make_session_factory(make_engine(s.database_url))
+    ids = [c.strip() for c in correction.split(",") if c.strip()]
+    with factory() as session:
+        try:
+            counts = rescore(session, from_order=from_order, to_order=to_order,
+                             corrections=ids, limit=limit, resume=resume,
+                             build_sha=s.build_sha)
+        except ValueError as exc:
+            log.error("%s", exc)
+            raise typer.Exit(1) from exc
+    print(f"corrections={','.join(sorted(ids))} denominator={counts.denominator} "
+          f"completed={counts.completed} "
+          f"unverifiable_no_tape={counts.unverifiable_no_tape} "
+          f"unverifiable_read_cancelled={counts.unverifiable_read_cancelled}")
+    # Printed with the counts, every time: the denominator is the orders whose counterfactual
+    # had finished when this ran, so the partition describes what could be scored and is not a
+    # rate over the range. Nothing here divides one cell by another.
+    print("caveat: retrospective estimates, right-censored -- orders whose counterfactual had "
+          "not finished are not in the denominator; the cells are counts, not a rate.")
+
+
 @app.command("manifest")
 def manifest_cmd() -> None:
     """Print the correction manifest as JSON (design addendum §0.3).
