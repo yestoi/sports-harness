@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     ws_lookback_hours: int = 8  # F8: post-kickoff prints still feed settlement and markouts
     ws_stale_s: int = 180  # force a ws reconnect after this much silence on the socket
     espn_base_url: str = "https://site.api.espn.com/apis/site/v2/sports/football"
+    #: The one game-log path, pinned (the user's ruling, journal 184 item 3; invariant 8
+    #: carries the amendment). It is the only thing fetched from ESPN's browser-facing
+    #: `site.web.api.espn.com`, it is the v3 NFL path, and `{athlete_id}` is formatted in.
+    #: That host is less stable than the recorder's, so the fetch fails soft: any failure
+    #: reads `no season data yet` (harness/feeds/espn.py::fetch_gamelog).
+    espn_gamelog_url: str = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/gamelog"
     tick_budget_s: int = 100
     http_timeout_s: float = 10.0
     ladder_cap_per_tick: int = 400

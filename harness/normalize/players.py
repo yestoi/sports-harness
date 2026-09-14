@@ -7,6 +7,7 @@ The identity map is the piece that decides whether a real prop is buildable, and
 addendum's: **exactly one candidate matches, or the outcome is `player_unmatched`**. Ambiguity
 never picks (D14); the box score's own athlete ids are the live key.
 """
+import logging
 import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -16,6 +17,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import Player
+
+log = logging.getLogger(__name__)
 
 #: Box-score category -> the category's own stat key -> the internal stat name. The keys are
 #: read out of the category's own `keys` list, never by column position: ESPN orders `passing`
@@ -159,16 +162,19 @@ def parse_roster(body) -> list[dict]:
     return rows
 
 
-def parse_gamelog(body) -> dict[str, list[Decimal]]:
+def parse_gamelog(body, athlete_id: str | None = None) -> dict[str, list[Decimal]]:
     """Stat -> that stat's per-game values, in the source's own order (ESPN lists newest first).
 
-    The endpoint's shape is measured by the plan's evidence task before the context line is
-    trusted (addendum §4.1); that measurement reports a `names` order that differs per position
-    (so a stat is found by name and never by index), an absent stat written `-`, and a player
-    with no games returning `{"filters": [...]}` and nothing else. **An empty mapping stays the
-    expected path** and the caller's line reads `no season data yet`, so every body this
-    function does not recognise -- including a body whose columns it cannot name -- yields `{}`
-    rather than a guess.
+    The shape is the one the plan's evidence task measured on the pinned v3 path (addendum §4.1;
+    the user's ruling, journal 184 item 3): a top-level `names` column list whose order differs
+    per position -- so a stat is found by ESPN's own name and never by index -- an absent stat
+    written `-`, and a player with no games answering `{"filters": [...]}` and nothing else.
+
+    **An empty mapping stays the expected path** and the caller's line reads `no season data
+    yet`, so every body this function does not recognise -- a body whose columns it cannot name,
+    a body of the wrong type, or a body whose walk raises -- yields `{}` rather than a guess.
+    The v3 host is browser-facing and less stable than the recorder's, so nothing here can raise
+    into a tick; `athlete_id` is carried only to name the athlete in that one WARNING.
     """
     if not isinstance(body, dict):
         return {}
@@ -181,16 +187,21 @@ def parse_gamelog(body) -> dict[str, list[Decimal]]:
     if not columns:
         return {}
     out: dict[str, list[Decimal]] = {}
-    for season in season_types:
-        for category in (season or {}).get("categories") or []:
-            for event in (category or {}).get("events") or []:
-                stats = (event or {}).get("stats") or []
-                for index, stat in columns.items():
-                    if index >= len(stats):
-                        continue
-                    value = _dec(stats[index])
-                    if value is not None:
-                        out.setdefault(stat, []).append(value)
+    try:
+        for season in season_types:
+            for category in (season or {}).get("categories") or []:
+                for event in (category or {}).get("events") or []:
+                    stats = (event or {}).get("stats") or []
+                    for index, stat in columns.items():
+                        if index >= len(stats):
+                            continue
+                        value = _dec(stats[index])
+                        if value is not None:
+                            out.setdefault(stat, []).append(value)
+    except Exception as exc:  # fail soft by ruling: an unreadable body is `no season data yet`
+        log.warning("espn gamelog: unreadable body for athlete %s: %r",
+                    athlete_id or "unknown", exc)
+        return {}
     return out
 
 

@@ -1,8 +1,11 @@
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
 from harness.feeds.http import FetchResult, HttpClient
+
+log = logging.getLogger(__name__)
 
 Sport = Literal["nfl", "ncaaf"]
 _PATH = {"nfl": "/nfl/scoreboard", "ncaaf": "/college-football/scoreboard"}
@@ -40,9 +43,14 @@ def parse_kickoffs(sport: str, body: dict | list | None) -> list[Kickoff]:
 
 
 class EspnClient:
-    def __init__(self, http: HttpClient, base_url: str):
+    def __init__(self, http: HttpClient, base_url: str, gamelog_url: str | None = None):
         self._http = http
         self._base = base_url.rstrip("/")
+        #: `Settings.espn_gamelog_url`: the one pinned path on ESPN's browser-facing host
+        #: (journal 184 item 3). Optional so the existing construction sites are unchanged; a
+        #: client built without it never fetches a game log and every caller reads
+        #: `no season data yet`.
+        self._gamelog_url = gamelog_url
 
     def fetch_scoreboard(self, sport: Sport, dates: str | None = None) -> FetchResult:
         """`dates` (ESPN's own `YYYYMMDD` format) asks for a specific day's scoreboard rather
@@ -66,16 +74,40 @@ class EspnClient:
         return self._http.get(f"{self._base}{_PATH[sport].rsplit('/', 1)[0]}"
                               f"/teams/{team_id}/roster", params=None, redact_params=())
 
-    def fetch_gamelog(self, sport: Sport, athlete_id: str) -> FetchResult:
-        """One athlete's game log, the draft context line's source (addendum §4.1). Its shape is
-        measured by the plan's evidence task before the line is trusted; until then an
-        unrecognised body is the expected path and reads `no season data yet`.
+    def fetch_gamelog(self, sport: Sport, athlete_id: str) -> FetchResult | None:
+        """One athlete's game log, the draft context line's source (addendum §4.1).
 
-        Recorded 2026-09-14: this path -- the addendum's own
-        `{espn_base_url}/{sport}/athletes/{id}/gamelog` -- answered 404 for every athlete tried,
-        while the bodies the evidence task read came from a different ESPN host and API version.
-        Moving the host is the user's call (invariant 8, gate 7), so nothing here moves and this
-        fetcher keeps yielding the `no season data yet` path until that decision is taken.
+        The user's ruling (journal 184 item 3, carried by the plan's invariant 8) pins this to
+        one path -- `Settings.espn_gamelog_url`, ESPN's v3 NFL game log on the browser-facing
+        `site.web.api.espn.com`, with `{athlete_id}` formatted in -- and to nothing else on that
+        host. The recorder's own host (`espn_base_url`) has no game log: its
+        `/{sport}/athletes/{id}/gamelog` answered 404 for every athlete tried.
+
+        That host is browser-facing and less stable than the recorder's, so this fetch **fails
+        soft**. A sport other than NFL (the v3 path is NFL-only today, so a college athlete asks
+        nothing), an unconfigured URL, a transport error, a non-200, a body that is not a JSON
+        object, and a body carrying neither `names` nor `seasonTypes` (the measured
+        `{"filters": [...]}` body of a player with no games) each return `None` with one WARNING
+        naming the athlete. The caller writes `parse_gamelog(result.body if result else None)`,
+        reads `no season data yet`, and never sees an exception reach a tick.
         """
-        return self._http.get(f"{self._base}{_PATH[sport].rsplit('/', 1)[0]}"
-                              f"/athletes/{athlete_id}/gamelog", params=None, redact_params=())
+        if sport not in _PATH:      # the same sport validation the other three fetchers get
+            raise KeyError(sport)
+        if sport != "nfl" or not self._gamelog_url:
+            log.warning("espn gamelog: no fetch for athlete %s (sport=%s, url configured=%s)",
+                        athlete_id, sport, bool(self._gamelog_url))
+            return None
+        url = self._gamelog_url.format(athlete_id=athlete_id)
+        try:
+            result = self._http.get(url, params=None, redact_params=())
+        except Exception as exc:  # fail soft by ruling: a browser-facing host never fails a tick
+            log.warning("espn gamelog: fetch failed for athlete %s: %r", athlete_id, exc)
+            return None
+        if result.status != 200 or not isinstance(result.body, dict):
+            log.warning("espn gamelog: athlete %s answered status %s with %s body",
+                        athlete_id, result.status, type(result.body).__name__)
+            return None
+        if "names" not in result.body or "seasonTypes" not in result.body:
+            log.warning("espn gamelog: athlete %s has no season data yet", athlete_id)
+            return None
+        return result

@@ -1,7 +1,10 @@
 {
-  "names": ["completions", "passingAttempts", "passingYards", "passingTouchdowns",
-            "interceptions", "rushingAttempts", "rushingYards"],
-  "labels": ["CMP", "ATT", "YDS", "TD", "INT", "CAR", "RUSH YDS"],
+  "names": ["completions", "passingAttempts", "passingYards", "completionPct",
+            "yardsPerPassAttempt", "passingTouchdowns", "interceptions", "longPassing", "sacks",
+            "QBRating", "adjQBR", "rushingAttempts", "rushingYards", "yardsPerRushAttempt",
+            "rushingTouchdowns", "longRushing"],
+  "labels": ["CMP", "ATT", "YDS", "CMP%", "AVG", "TD", "INT", "LNG", "SACK", "RTG", "QBR",
+             "CAR", "YDS", "AVG", "TD", "LNG"],
   "seasonTypes": [
     {
       "displayName": "2026 Regular Season",
@@ -9,9 +12,15 @@
         {
           "type": "event",
           "events": [
-            {"eventId": "401772938", "stats": ["22", "31", "241", "2", "0", "8", "47"]},
-            {"eventId": "401772911", "stats": ["25", "34", "283", "1", "1", "5", "19"]},
-            {"eventId": "401772884", "stats": ["18", "29", "196", "0", "1", "11", "62"]}
+            {"eventId": "401872656",
+             "stats": ["22", "31", "241", "71.0", "7.8", "2", "0", "44", "1", "118.2", "78.4",
+                       "8", "47", "5.9", "0", "15"]},
+            {"eventId": "401872611",
+             "stats": ["25", "34", "283", "73.5", "8.3", "1", "1", "39", "2", "101.4", "64.2",
+                       "5", "19", "3.8", "0", "9"]},
+            {"eventId": "401872584",
+             "stats": ["18", "29", "196", "62.1", "6.8", "0", "1", "27", "3", "72.9", "-",
+                       "11", "62", "5.6", "1", "18"]}
           ]
         }
       ]

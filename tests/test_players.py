@@ -4,6 +4,7 @@ No network: every case is a trimmed body under `tests/fixtures/`. `T0` is fixed 
 so an age or a `updated_at` never depends on when the suite runs.
 """
 import json
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -91,9 +92,64 @@ def test_the_roster_upsert_is_idempotent_on_sport_and_espn_id(db_session):
 
 
 def test_the_game_log_parser_returns_per_stat_values_newest_first():
-    """Until Task 18a records the endpoint's real shape, an unrecognised body yields `{}` and
-    the caller's context line reads `no season data yet` (addendum §4.1). The fixture here is
-    the shape the report will confirm or replace."""
+    """The measured v3 shape (Task 18a, journal 184 item 3): a top-level `names` column list and
+    `seasonTypes[].categories[].events[].stats`, newest first. The fixture carries that body's
+    own column order for a quarterback -- `passingYards` at index 2, `rushingYards` at 12 -- so
+    a parser reading a fixed column would fail here.
+    """
     log = parse_gamelog(_body("espn_gamelog_nfl.json"))
     assert log["pass_yds"][:2] == [Decimal("241"), Decimal("283")]
+    assert log["rush_yds"][:2] == [Decimal("47"), Decimal("19")]
     assert parse_gamelog({"nothing": "useful"}) == {}
+
+
+#: The measured receiver body's own column order (Task 18a): a different `names` order from the
+#: quarterback one above, and an absent stat written `-`. One event, no athlete name in it.
+WR_GAMELOG = {
+    "names": ["receptions", "receivingTargets", "receivingYards", "yardsPerReception",
+              "receivingTouchdowns", "longReception", "rushingAttempts", "rushingYards",
+              "yardsPerRushAttempt", "longRushing", "rushingTouchdowns", "fumbles",
+              "fumblesLost", "fumblesForced", "kicksBlocked"],
+    "labels": ["REC", "TGTS", "YDS", "AVG", "TD", "LNG", "CAR", "YDS", "AVG", "LNG", "TD",
+               "FUM", "LST", "FF", "KB"],
+    "seasonTypes": [{"displayName": "2026 Regular Season", "categories": [
+        {"type": "event", "events": [
+            {"eventId": "401872656",
+             "stats": ["8", "11", "122", "15.3", "1", "45", "0", "0", "0.0", "0", "0", "0", "0",
+                       "-", "-"]}]}]}],
+}
+
+
+def test_a_receivers_game_log_reads_receptions_and_receiving_yards():
+    """The same parser on the second measured shape: `receivingYards` is index 2 here and
+    `passingYards` is absent entirely, so the stat is found by ESPN's own name and never by
+    position. `-` (an absent stat) is skipped, not read as a zero.
+    """
+    log = parse_gamelog(WR_GAMELOG)
+    assert log["receptions"] == [Decimal("8")]
+    assert log["rec_yds"] == [Decimal("122")]
+    assert "pass_yds" not in log
+    assert log["rush_yds"] == [Decimal("0")]
+
+
+def test_a_player_with_no_games_is_the_no_season_data_yet_shape():
+    """The third measured shape: a player with no games answers `{"filters": [...]}` and nothing
+    else -- no `names`, no `seasonTypes`. That is the expected path, not an error (addendum
+    §4.1): the caller's line reads `no season data yet`.
+    """
+    assert parse_gamelog(_body("espn_gamelog_nfl_empty.json")) == {}
+
+
+def test_an_exception_inside_the_walk_is_logged_and_yields_no_season_data(caplog):
+    """The v3 host is browser-facing and less stable than the recorder's (journal 184 item 3),
+    so a shape that breaks the walk is the empty mapping plus one WARNING naming the athlete --
+    never an exception that reaches a tick."""
+    class _Explodes(list):
+        def __len__(self):
+            raise RuntimeError("bad shape")
+
+    body = {"names": ["passingYards"], "seasonTypes": [{"categories": [
+        {"events": [{"stats": _Explodes()}]}]}]}
+    with caplog.at_level(logging.WARNING):
+        assert parse_gamelog(body, athlete_id="4426348") == {}
+    assert "4426348" in caplog.text
