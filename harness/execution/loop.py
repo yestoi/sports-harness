@@ -359,6 +359,12 @@ class Executor:
             # It is not an error and never touches `last_error`, whose null the verify row
             # depends on.
             ("exec.tape_lag_tickers", len(heartbeat["tape_lag"]), {}),
+            # Fix 66, M1: a ticker whose book has been unreadable for a while used to be
+            # invisible to verify.md and the dashboard -- only `tests/test_exec_loop.py`
+            # read `stats.book_errors`. Beside `tape_lag_tickers` for the same reason: not
+            # an error, never touches `last_error`, but a steady non-zero reading is a
+            # ticker an operator needs to go looking at.
+            ("exec.book_errors", stats.book_errors, {}),
             # Fix 26: the smallest delta batch any ticker is reading with, `DELTA_BATCH_LIMIT`
             # when none has been shrunk. Read beside `tape_lag_tickers` it separates the two
             # ways of being behind: lag with the batch at the cap is a backlog being walked

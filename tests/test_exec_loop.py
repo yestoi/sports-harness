@@ -749,7 +749,6 @@ def test_a_ticker_whose_book_cannot_load_does_not_abort_the_step(
     executor.step()
     refresh(db_session)
     assert len(db_session.query(Order).all()) == 2
-    broken = orders_of(db_session, T2)[0]
 
     real = executor._book_now
 
@@ -787,6 +786,57 @@ def test_a_ticker_whose_book_cannot_load_does_not_abort_the_step(
     # The log line names the ticker and the exception class.
     assert any(T2 in r.getMessage() and "ValueError" in r.getMessage()
                for r in caplog.records)
+
+
+def _book_error_samples(session):
+    """`exec.book_errors` in write order, as plain ints."""
+    return [int(r.value) for r in session.query(MetricSample)
+            .filter_by(source="exec", name="exec.book_errors")
+            .order_by(MetricSample.id).all()]
+
+
+def test_a_ticker_whose_book_cannot_load_reports_the_exec_book_errors_metric(
+        env_settings, db_session, world, monkeypatch):
+    """Fix 66, M1: `stats.book_errors` used to be counted and read by nothing but the test
+    itself (fix 60) -- a ticker whose book had been unreadable for days was invisible to
+    verify.md and the dashboard, and an operator would have had to grep container logs for
+    "book read failed". `exec.book_errors` is now written beside `exec.tape_lag_tickers` in the
+    same metric batch, so the step from
+    `test_a_ticker_whose_book_cannot_load_does_not_abort_the_step` also leaves a gauge behind.
+    """
+    keep_only(db_session, {VM2, VM3})
+    signal3 = db_session.query(Signal).filter_by(venue_market_id=VM3).one()
+    signal3.decision, signal3.rejection_reason = "candidate", None
+    _book2(db_session, NOW - timedelta(seconds=5))
+    _book3(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert len(db_session.query(Order).all()) == 2
+    # The first step is a fresh Sampler's first call, always due: a clean batch, zero errors.
+    assert _book_error_samples(db_session) == [0]
+
+    real = executor._book_now
+
+    def explode(session, ticker, now, cached):
+        if ticker == T2:
+            raise ValueError("snapshot without yes_dollars_fp")
+        return real(session, ticker, now, cached)
+
+    monkeypatch.setattr(executor, "_book_now", explode)
+    _print(db_session, T2, clock.now + timedelta(seconds=5), "0.30", "500", trade_id="p2")
+    _print(db_session, T3, clock.now + timedelta(seconds=5), "0.40", "500", trade_id="p3")
+    db_session.commit()
+    # `metric_sample_s = 60`: advanced a full period so the second batch is due on this step too.
+    clock.advance(60)
+    stats = executor.step()
+    refresh(db_session)
+
+    assert stats.book_errors == 1
+    assert _book_error_samples(db_session) == [0, 1]
 
 
 def test_heartbeat_fields(env_settings, db_session, world):

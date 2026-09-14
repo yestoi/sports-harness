@@ -240,7 +240,7 @@ class BookState:
                    anchor_id=int(anchor_id), last_event_id=int(anchor_id))
 
     @classmethod
-    def from_ws_raw(cls, ticker: str, raw: dict, sid: int, seq: int, as_of: datetime,
+    def from_ws_raw(cls, ticker: str, raw: object, sid: int, seq: int, as_of: datetime,
                     event_id: int) -> "BookState":
         """Build from a stored `orderbook_snapshot` message body.
 
