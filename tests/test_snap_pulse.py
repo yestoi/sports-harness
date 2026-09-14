@@ -1050,5 +1050,73 @@ def test_parlay_pending_final_is_fine_inside_six_hours(db_session, env_settings)
     assert _rules(db_session, env_settings)["parlay_pending_final"].level == "fine"
 
 
-def test_parlay_pending_final_is_not_evaluated_with_no_alive_card(db_session, env_settings):
+def test_parlay_pending_final_reads_fine_with_no_alive_card(db_session, env_settings):
+    """Review round 1, M5: no live card is the normal state for most of the week and it is a
+    real reading -- nothing is hung. `not evaluated` on this wall means nobody took the
+    measurement, which is what a failed read gets."""
+    rule = _rules(db_session, env_settings)["parlay_pending_final"]
+    assert rule.level == "fine" and rule.value == 0.0
+
+
+def test_parlay_pending_final_is_not_evaluated_when_its_read_fails(db_session, env_settings,
+                                                                   monkeypatch):
+    from sqlalchemy import text as sa_text
+
+    monkeypatch.setattr(pulse, "_PENDING_FINAL", sa_text("select * from no_such_table"))
     assert _rules(db_session, env_settings)["parlay_pending_final"].level == "not_evaluated"
+
+
+class _WithPropBudget:
+    """The real `Settings` plus the one field Task 8 adds (`odds_prop_monthly_credits`).
+
+    `Settings` is a pydantic model that refuses an unknown attribute, and this task does not own
+    that field -- Task 8 does -- so the rule reads it through `getattr` and these tests supply
+    it through a delegating proxy rather than by editing the settings model here.
+    """
+
+    def __init__(self, settings, credits):
+        self._settings = settings
+        self.odds_prop_monthly_credits = credits
+
+    def __getattr__(self, name):
+        return getattr(self._settings, name)
+
+
+def test_prop_budget_watches_through_gather_on_a_recorded_source_state_row(db_session,
+                                                                          env_settings):
+    """Review round 1, I1: the one new read with no end-to-end test. This drives
+    `_PROP_CREDITS` against a real row, through `gather`, with the month key the recorder
+    writes."""
+    from harness.db.models import SourceState
+
+    db_session.add(SourceState(key=pulse.prop_credit_key(NOW),
+                               last_fetched_at=NOW - timedelta(minutes=5),
+                               credits_used=300_000))
+    db_session.flush()
+    rule = _rules(db_session, _WithPropBudget(env_settings, 300_000))["prop_budget"]
+    assert rule.level == "watch"
+    assert rule.value == 300_000.0 and rule.threshold == 300_000.0
+
+
+def test_the_prop_credit_key_is_the_chicago_month_at_the_boundary():
+    """30 September, 20:00 CT is 1 October 01:00 UTC. The recorder keys the counter on the
+    Chicago month (addendum §3.2), so a reader on the UTC month would look up a row that does
+    not exist for five hours -- and report `not evaluated` over an allowance that is spent."""
+    boundary = datetime(2026, 10, 1, 1, 0, tzinfo=timezone.utc)
+    assert pulse.prop_credit_key(boundary) == "odds_props:2026-09"
+    assert pulse.prop_credit_key(datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)) == (
+        "odds_props:2026-10")
+
+
+def test_prop_budget_reads_the_row_the_chicago_month_names(db_session, env_settings):
+    """The same boundary, end to end: the September row is what a 30 September 20:00 CT build
+    reads, and the rule fires on it."""
+    from harness.db.models import SourceState
+
+    boundary = datetime(2026, 10, 1, 1, 0, tzinfo=timezone.utc)
+    db_session.add(SourceState(key="odds_props:2026-09",
+                               last_fetched_at=boundary - timedelta(hours=6),
+                               credits_used=300_000))
+    db_session.flush()
+    rules = _rules(db_session, _WithPropBudget(env_settings, 300_000), now=boundary)
+    assert rules["prop_budget"].level == "watch"

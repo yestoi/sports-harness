@@ -477,10 +477,29 @@ IDEA_PHRASES: dict[str, str] = {
     "not_built_yet": "The next card is built Saturday evening.",
     "builder_failed": "The builder could not finish; the reason is in the log.",
     "replacement_pending": "A replacement is being built; it lands within the hour.",
+    # Four more the builder stage can actually record (`parlay_build._REASON_INDEX`), closed
+    # here rather than left to render as bare codes on the fun surface (review round 1, I5).
+    # `side_unsupported`: `harness/parlay/build.py` skips a scorer market whose likelier side is
+    # `no`, which release one cannot grade. `stale_price`: a selection was seen and its newest
+    # price was past `leg_max_age_minutes` -- different from `no_props_fresh`, which is no price
+    # at all. `gamelog_budget_spent`: the context-line pass stopped at `GAMELOG_BUDGET_S`.
+    # `unknown`: `read_slot_state` could not decode the value recorded for the slot.
+    "side_unsupported": "The only side DraftKings priced is one we do not grade.",
+    "stale_price": "The prices we found had gone stale before we could build on them.",
+    "gamelog_budget_spent": "We ran out of time reading season form; the next build picks it "
+                            "up.",
+    "unknown": "This slot's recorded state could not be read.",
 }
 
+#: Design §2.2's parenthetical on `not_built_yet`: "The next card is built Saturday
+#: evening. (Friday for college, as today.)" The table above carries the default and this holds
+#: the one sport that differs, rather than a second table of nine sentences. The build weekday
+#: itself is `harness/settlement/parlay_build.py`'s `BUILD_TIMES`, which `next_build_at` is
+#: derived from; this is only the sentence.
+_NOT_BUILT_YET_BY_SPORT = {"ncaaf": "The next card is built Friday."}
 
-def idea_reason_phrase(code: str) -> str:
+
+def idea_reason_phrase(code: str, sport: str | None = None) -> str:
     """The plain sentence for one empty slot's reason code, or the code itself when the
     vocabulary has none for it.
 
@@ -488,9 +507,16 @@ def idea_reason_phrase(code: str) -> str:
     `harness/settlement/parlay_build.py`, which is our own code, but this is a place an
     unrecognised string is deliberately shown and the guard belongs here rather than two modules
     away.
+
+    `sport` is optional and changes exactly one sentence: college cards are built on Friday and
+    the NFL's on Saturday evening (design §2.2), so a `not_built_yet` slot must not
+    tell an `ncaaf` reader to come back on the wrong day. Every other code reads the same
+    whatever the sport, and a caller with no sport in hand gets the table's own sentence.
     """
     if not code:
         return "no reason recorded"
+    if code == "not_built_yet" and sport in _NOT_BUILT_YET_BY_SPORT:
+        return _NOT_BUILT_YET_BY_SPORT[sport]
     return IDEA_PHRASES.get(code) or sanitize_reason(code)
 
 
@@ -561,16 +587,31 @@ def stat_line(stat: str, value, line, needs_phrase: str, age_s: float) -> str:
             f"{needs_phrase} \u00b7 {source}")
 
 
-def stat_unchanged(age_s: float) -> str:
-    """A player absent from the latest stat update (design §2.3). Never a zero: the newest
-    recorded value stands and the line says how old it is, because a player who has not touched
-    the ball has no new row, and printing 0 there would be the surface inventing a fact."""
-    return f"unchanged \u00b7 last seen {fmt_age(age_s)} ago"
+def stat_unchanged(stat: str, value, line, age_s: float) -> str:
+    """A player whose newest recorded value has stood for a while (design §2.3).
+
+    Never a zero, and never without the figure either (review round 1, I6): the value and its
+    noun open the line exactly as they do in `stat_line`, and `unchanged` is what is said about
+    them. `player_stat_events` holds one row per *change*, so a quarterback writes no row while
+    the defence is on the field -- a sentence that dropped "208 of 225 passing yards" for the
+    length of a drive would take the slip's whole subject away over a fact about the feed.
+    """
+    if line is None:
+        return f"unchanged \u00b7 last seen {fmt_age(age_s)} ago"
+    return (f"{fmt_stat(value)} of {fmt_stat(line)} {stat_noun(stat)} \u00b7 unchanged \u00b7 "
+            f"last seen {fmt_age(age_s)} ago")
 
 
-def stat_pending_final(age_s: float) -> str:
-    """A hung leg (addendum §1.3): the game is final and the stat never arrived. The age is the
-    game's, measured from the final whistle we recorded."""
+def stat_pending_final(age_s: float | None) -> str:
+    """A hung leg (addendum §1.3): the game is final and the stat never arrived.
+
+    The age is the game's, measured from the final whistle we recorded. `None` when no final
+    score row is inside the builder's window any more (review round 1, I3): the leg still says
+    it is hung -- that is the fact the reader needs -- and simply says nothing about how long,
+    rather than printing an age this build cannot read.
+    """
+    if age_s is None:
+        return "no final stat \u00b7 pending"
     return f"no final stat \u00b7 pending {fmt_age(age_s)}"
 
 

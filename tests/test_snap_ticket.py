@@ -2,13 +2,15 @@
 will write into."""
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from harness.dashboard.snapshots import ticket
-from harness.dashboard.snapshots.ticket import TICKET_KEYS, WEEKLY_BUDGET, build_ticket
+from harness.dashboard.snapshots.ticket import TICKET_KEYS, build_ticket
+from harness.parlay.config import load_config
 from harness.db.models import (Game, GameScoreEvent, ParlayCard, ParlayLedger, ParlayLeg,
                                ParlayPlacement, Team)
 
@@ -47,7 +49,8 @@ def _card(session, *, status="alive", legs=(), stake="20.00", rationale="an LSU 
 def test_with_no_cards_the_surface_shows_the_between_cards_state(db_session, env_settings):
     payload = build_ticket(db_session, NOW, env_settings)
     assert payload["cards"] == []
-    assert payload["between"]["budget_left"] == float(WEEKLY_BUDGET)
+    # One source for the $50, `parlay.yaml`'s own `weekly_budget` (review round 1, M7).
+    assert payload["between"]["budget_left"] == float(load_config().weekly_budget)
     assert payload["between"]["anchor_rule"]
     assert payload["between"]["next_build_day"] in ("Friday", "Saturday evening")
     assert "No card is live" in " ".join(payload["sentences"]["between"])
@@ -254,7 +257,8 @@ def test_the_budget_week_is_the_chicago_week_on_a_sunday_evening(db_session, env
 
 import json
 
-from harness.dashboard.sentences import idea_reason_phrase, stat_line
+from harness.dashboard.sentences import (IDEA_PHRASES, idea_reason_phrase, stat_line,
+                                          unknown_idea_codes)
 from harness.db.models import JobState, ParlayPlacementCorrection, PlayerStatEvent
 from harness.settlement.parlay_build import _REASON_INDEX, SLOTS, slot_key
 
@@ -510,18 +514,49 @@ def test_an_empty_slot_carries_one_reason_code_and_its_sentence(db_session, env_
     assert slot["next_build_at"]
 
 
-def test_an_unknown_reason_code_renders_as_itself_and_is_reported(db_session, env_settings):
-    """A code outside the nine sentences of design §2.2 is never silently blanked. Two shapes
-    reach here: a reason Task 7 pins that the vocabulary has no sentence for (`stale_price`),
-    and a `job_state` value written by a build this harness can no longer decode, which
-    `read_slot_state` reports as `unknown`."""
+def test_every_reason_the_stage_can_write_now_has_a_sentence(db_session, env_settings):
+    """Review round 1, I5. Both shapes that reach the slot -- a code Task 7 pins
+    (`stale_price`) and a `job_state` value this harness can no longer decode, which
+    `read_slot_state` reports as `unknown` -- render as prose, not as a token, and neither is a
+    gap in the vocabulary any more."""
     _slot_state(db_session, "nfl", "smart", reason="stale_price")
     _slot_state(db_session, "ncaaf", "lottery", value=-9999)
     payload = build_ticket(db_session, NOW, env_settings)
-    assert _slot(payload, "nfl", "smart")["reason_code"] == "stale_price"
-    assert _slot(payload, "ncaaf", "lottery")["reason_code"] == "unknown"
-    assert "stale_price" in payload["sentences_gaps"]
-    assert "unknown" in payload["sentences_gaps"]
+    stale = _slot(payload, "nfl", "smart")
+    unknown = _slot(payload, "ncaaf", "lottery")
+    assert stale["reason_code"] == "stale_price"
+    assert stale["reason_text"] == idea_reason_phrase("stale_price") != "stale_price"
+    assert unknown["reason_code"] == "unknown"
+    assert unknown["reason_text"] == idea_reason_phrase("unknown") != "unknown"
+    assert payload["sentences_gaps"] == []
+
+
+def test_every_reason_code_the_builder_stage_can_record_has_a_phrase():
+    """The thirteen: `parlay_build._REASON_INDEX`'s twelve pinned codes plus the `unknown`
+    `read_slot_state` reports for a value it cannot decode. Closed at both ends, so a code added
+    to the stage without a sentence, or a sentence for a code nothing writes, fails here."""
+    assert set(IDEA_PHRASES) == set(_REASON_INDEX) | {"unknown"}
+    assert len(IDEA_PHRASES) == 13
+    for code, phrase in IDEA_PHRASES.items():
+        assert phrase and phrase != code and phrase.endswith(".")
+
+
+def test_a_code_outside_the_vocabulary_still_renders_as_itself_and_is_reported():
+    """The fallback stays: a code this table has never seen is shown, sanitized, and reported in
+    `sentences_gaps` rather than blanked (addendum §1.2)."""
+    assert idea_reason_phrase("brand_new") == "brand_new"
+    assert unknown_idea_codes(["brand_new", "stale_price"]) == ["brand_new"]
+
+
+def test_the_college_slot_is_not_told_to_come_back_on_saturday(db_session, env_settings):
+    """M1 / design §2.2's parenthetical: college cards build Friday, the NFL's Saturday
+    evening, and the sentence follows `BUILD_TIMES` rather than naming one day for both."""
+    _slot_state(db_session, "ncaaf", "smart", reason="not_built_yet")
+    _slot_state(db_session, "nfl", "smart", reason="not_built_yet")
+    payload = build_ticket(db_session, NOW, env_settings)
+    assert _slot(payload, "ncaaf", "smart")["reason_text"] == "The next card is built Friday."
+    assert _slot(payload, "nfl", "smart")["reason_text"] == (
+        "The next card is built Saturday evening.")
 
 
 def test_the_ideas_read_is_its_own_bounded_query_and_leaves_live_cards_alone(db_session,
@@ -541,9 +576,12 @@ def test_a_prop_leg_shows_the_stat_line_from_the_newest_recorded_row(db_session,
 
 def test_a_player_absent_from_the_latest_update_reads_unchanged_never_zero(db_session,
                                                                           env_settings):
+    """Review round 1, I6: `player_stat_events` holds one row per change, so a stat that has
+    stood through a defensive drive is the common case and the figure must not vanish with it.
+    The line keeps the value and the noun and says `unchanged` about them."""
     leg = _live_prop_leg(db_session, value=208, line="225.0", age_s=120)
-    assert _leg_of(build_ticket(db_session, NOW, env_settings), leg)["stat_line"].startswith(
-        "unchanged · last seen 2 min ago")
+    assert _leg_of(build_ticket(db_session, NOW, env_settings), leg)["stat_line"] == (
+        "208 of 225 passing yards · unchanged · last seen 2 min ago")
 
 
 def test_a_leg_with_no_row_at_all_reads_no_stat_yet(db_session, env_settings):
@@ -695,7 +733,27 @@ def test_a_slot_with_a_card_names_the_next_build_a_week_out(db_session, env_sett
     payload = build_ticket(db_session, NOW, env_settings)
     built = _slot(payload, "nfl", "smart")
     assert built["card"]["card_id"] == card.id and built["reason_code"] is None
-    assert built["next_build_at"] > NOW.isoformat()
+    # NOW is Saturday 13:00 CT and the `nfl` build time is Saturday 18:00 CT, so the next build
+    # is still this week's, whatever the slot holds.
+    assert built["next_build_at"] == datetime(2026, 9, 12, 18, 0,
+                                              tzinfo=ZoneInfo("America/Chicago")).isoformat()
+
+    # After that hour, a slot that carries a card is done for the week: the next build is the
+    # same weekday and hour of the next Chicago week.
+    later = NOW + timedelta(hours=6)          # Saturday 19:00 CT, still ISO week 37
+    after = _slot(build_ticket(db_session, later, env_settings), "nfl", "smart")
+    assert after["next_build_at"] == datetime(2026, 9, 19, 18, 0,
+                                              tzinfo=ZoneInfo("America/Chicago")).isoformat()
+
+
+def test_an_empty_slot_is_retried_on_the_settle_jobs_next_hour(db_session, env_settings):
+    """The other `next_build_at` branch: the stage runs hourly, so a slot that recorded a reason
+    at 14:05 is tried again an hour after it recorded it, not next week."""
+    recorded = NOW + timedelta(hours=6)       # Saturday 19:00 CT, past the build time
+    _slot_state(db_session, "nfl", "smart", reason="no_props_fresh", at=recorded)
+    slot = _slot(build_ticket(db_session, recorded + timedelta(minutes=5), env_settings),
+                 "nfl", "smart")
+    assert slot["next_build_at"] == (recorded + timedelta(hours=1)).isoformat()
 
 
 def test_the_stat_line_sentence_is_composed_in_the_sentences_module():
@@ -718,7 +776,8 @@ def test_the_season_shows_the_expected_return_beside_the_confirmed_one(db_sessio
     _all_legs_hit(db_session)
     season = build_ticket(db_session, NOW, env_settings)["season"]
     assert season["returned"] == 137.5
-    assert season["expected"] == 137.5
+    # A decimal string, like every other money figure this phase adds (review round 1, I2).
+    assert season["expected"] == "137.50"
 
 
 def test_a_declined_card_is_a_grey_chip_in_the_strip_and_moves_no_figure(db_session,
@@ -728,7 +787,119 @@ def test_a_declined_card_is_a_grey_chip_in_the_strip_and_moves_no_figure(db_sess
     card = _proposed(db_session, sport="nfl")
     card.status, card.declined_reason = "void", "declined"
     db_session.flush()
-    season = build_ticket(db_session, NOW, env_settings)["season"]
+    payload = build_ticket(db_session, NOW, env_settings)
+    season = payload["season"]
     chip = [row for row in season["strip"] if row["card_id"] == card.id][0]
     assert chip["declined_reason"] == "declined"
     assert season["staked"] == 0.0 and season["net"] == 0.0
+    # C1: and it is **not** a live ticket. A card the owner refused, shown among the live slips,
+    # states a stake and a payout for a bet nobody made, on the one surface whose numbers are
+    # real money -- while the strip beside it says the money never moved.
+    assert all(shown["card_id"] != card.id for shown in payload["cards"])
+
+
+def test_an_expired_card_is_a_grey_chip_too_and_is_not_a_live_ticket(db_session, env_settings):
+    """The other half of C1: `expire_cards` voids a `proposed` card nobody placed and stamps
+    `declined_reason = 'expired'` (addendum §2.3). No ledger row, no placement, no live slip."""
+    card = _proposed(db_session, sport="nfl")
+    card.status, card.declined_reason = "void", "expired"
+    db_session.flush()
+    payload = build_ticket(db_session, NOW, env_settings)
+    chip = [row for row in payload["season"]["strip"] if row["card_id"] == card.id][0]
+    assert chip["declined_reason"] == "expired"
+    assert payload["cards"] == []
+
+
+def test_a_confirmed_void_is_still_a_live_ticket(db_session, env_settings):
+    """The predicate excludes a *declined* void, not every void: the owner's own confirmed void
+    is money that moved and keeps its slip and its VOID stamp."""
+    card = _confirmed_void(db_session)
+    rendered = _card_of(build_ticket(db_session, NOW, env_settings), card)
+    assert rendered["stamp"] == "VOID" and rendered["card_id"] == card.id
+
+
+def test_a_hung_leg_older_than_the_score_window_still_reads_hung(db_session, env_settings):
+    """Review round 1, I3. `_SCORES` is bounded to 12 h, so a game that went final yesterday has
+    no score row inside the window; the leg must still say it is hung -- reverting to
+    `no stat yet` reads as "the game has not started" for a game that has been over all night.
+    The age is the one thing dropped, because this build cannot read it."""
+    leg = _live_prop_leg(db_session, value=None, status="final")
+    db_session.add(GameScoreEvent(game_id=leg.game_id, ts=NOW - timedelta(hours=20),
+                                  status="final", period=4, clock="0:00",
+                                  home_score=24, away_score=21))
+    db_session.flush()
+    assert _leg_of(build_ticket(db_session, NOW, env_settings), leg)["stat_line"] == (
+        "no final stat · pending")
+
+
+def test_a_hung_leg_inside_the_window_still_carries_its_age(db_session, env_settings):
+    leg = _hung_leg(db_session, hours=7)
+    assert _leg_of(build_ticket(db_session, NOW, env_settings), leg)["stat_line"] == (
+        "no final stat · pending 7 h")
+
+
+def test_the_display_sanitizer_keeps_the_bet_and_still_strips_markup(db_session, env_settings):
+    """Review round 1, I4. `sanitize_reason`'s class drops `+` and the middle dot, which on this
+    page rewrites the bet itself ("Nussmeier 225+ passing yards" -> "Nussmeier 225 passing
+    yards") and runs the builder's context line together. This page's own class keeps those two
+    characters and nothing else: every markup character is still stripped."""
+    from harness.dashboard.snapshots.ticket import _display
+
+    assert _display("Nussmeier 225+ passing yards") == "Nussmeier 225+ passing yards"
+    assert _display("Falcons +3.5") == "Falcons +3.5"
+    assert _display("avg 262 · last 241 · ESPN") == "avg 262 · last 241 · ESPN"
+    for hostile in ("<script>alert(1)</script>", 'a"b', "a'b", "a{b}c", "a\\b", "a\nb", "a\rb",
+                    "a\tb", "a&b", "a;b", "a=b", "a`b"):
+        rendered = _display(hostile)
+        for banned in ("<", ">", '"', "'", "{", "}", "\\", "\n", "\r", "\t", "&", ";", "=", "`"):
+            assert banned not in rendered
+    assert len(_display("x" * 500)) == 200
+
+
+def test_a_prop_legs_text_reaches_the_page_with_its_line_intact(db_session, env_settings):
+    """The same fix, end to end: the fan's line and the builder's context line are rendered
+    through the page's sanitizer, so the market's own name survives."""
+    leg = _live_prop_leg(db_session, value=208, line="225.0")
+    rendered = _leg_of(build_ticket(db_session, NOW, env_settings), leg)
+    assert rendered["plain_text"] == "Nussmeier 225+ passing yards"
+    assert rendered["context_text"] == "avg 262 · last 241 · ESPN"
+
+
+def test_hostile_leg_text_is_still_stripped_on_the_page(db_session, env_settings):
+    """The guard the shipped test pins, re-checked through the new sanitizer."""
+    _teams(db_session)
+    game = Game(sport="ncaaf", home_team_id=1, away_team_id=2,
+                kickoff_utc=NOW - timedelta(hours=1), status="in_progress")
+    db_session.add(game)
+    db_session.flush()
+    card = _proposed(db_session, sport="ncaaf")
+    card.rationale = "<img onerror=alert(1) src=x>"
+    db_session.flush()
+    _ml_leg(db_session, card, game, seq=1, plain_text="<script>alert(1)</script>")
+    _slot_state(db_session, "ncaaf", "smart", built=card.id)
+    rendered = _slot_card(build_ticket(db_session, NOW, env_settings), card)
+    assert "<" not in rendered["rationale"] and ">" not in rendered["rationale"]
+    assert "=" not in rendered["rationale"]
+    assert "<" not in rendered["legs"][0]["plain_text"]
+
+
+def test_a_leg_with_no_recorded_probability_source_is_named_and_excluded():
+    """Review round 1, M2. `p_source` is read from a column with a server default, but the
+    footer's rule is about a leg that carries no probability at all: a NULL source is exactly as
+    unpriced as the literal `none`, and B-C8/D4 is that the figure shown names what it left
+    out."""
+    from types import SimpleNamespace
+
+    from harness.dashboard.snapshots.ticket import _footer
+
+    card = SimpleNamespace(combined_kind="calculated", dk_combined_american=450,
+                           correlated=False, true_prob_est=Decimal("0.101000"),
+                           p_source_min="book_devig", hold_est=None, status="proposed",
+                           dk_combined_at=NOW)
+    legs = [{"plain_text": "LSU to win", "p_source": "sharp"},
+            {"plain_text": "Nussmeier 225+ passing yards", "p_source": None}]
+    week = {"recorded": Decimal("25.00"), "left": Decimal("25.00"),
+            "budget": Decimal("50.00")}
+    footer = _footer(card, legs, 60.0, week, load_config())
+    assert footer["chance"].startswith("no sharp read · ")
+    assert "Nussmeier 225+ passing yards not included" in footer["chance"]
