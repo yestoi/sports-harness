@@ -15,7 +15,7 @@ from statistics import median
 from typing import Callable
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func, or_, select, text
@@ -26,7 +26,7 @@ from starlette.responses import Response as StarletteResponse
 from harness import telemetry
 from harness.config.settings import Settings
 
-from harness.dashboard import snapshots as snap
+from harness.dashboard import auth, snapshots as snap
 from harness.dashboard.queries import local_day_bounds_utc, recent_run_notes, signals_by_variant_from_notes
 from harness.db.models import (DashboardSnapshot, ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Ledger,
                                 MetricSample, OddsSnapshot, Order, OrderbookEvent, OrderEvent, RawResponse, Run,
@@ -65,6 +65,26 @@ DB_CEILING_RED_PCT = 80.0
 #: Sec-Fetch-Site values a same-origin browser POST can carry (a direct navigation or a request
 #: with no Sec-Fetch-Site support at all, e.g. curl, sends no header, which is accepted too).
 KILL_ALLOWED_SEC_FETCH_SITE = ("same-origin", "none")
+
+# --- Phase 4.6 (addendum §6): the LAN listener's session gate ------------------------------
+#: What the session check exempts. `/healthz` is the one *data* exemption §6 grants (build sha
+#: and health status, bounded contents, and the container's own healthcheck has no cookie to
+#: offer); `/login` is the page the gate redirects to, so gating it would lock everyone out.
+LAN_EXEMPT_PATHS = frozenset({"/healthz", "/login"})
+#: Paths whose refusal is a JSON code rather than a redirect, whatever the client's `Accept`:
+#: `/api/*` by prefix, plus these. A browser navigating to `/kill` is not a thing that happens.
+LAN_JSON_PATHS = frozenset({"/kill", "/unkill", "/logout"})
+#: §5.5's CSRF header. `/logout` is the only write this task adds; Task 11's two routes take
+#: the same header.
+CSRF_HEADER, CSRF_VALUE = "X-Requested-With", "sports-ui"
+SESSION_REQUIRED = {"refusal": "session_required"}
+#: Every refusal the login page can show. Fixed strings, chosen by code: nothing the client
+#: submitted is ever rendered back (§6).
+LOGIN_REFUSALS = {
+    "bad_password": "That password was not accepted.",
+    "not_configured": "This listener has no owner password on file, so no one can sign in.",
+    "rate_limited": "Too many attempts. Wait a minute and try again.",
+}
 
 # Phase 4.5 (addendum §2): the three `runs.notes` helpers moved to harness/dashboard/queries.py
 # so the Floor surface's funnel and this page's funnel read them through one implementation. The
@@ -691,8 +711,113 @@ def build_summary(session: Session, session_factory: sessionmaker, now: datetime
     }
 
 
+def _install_lan_session(app: FastAPI, templates: Jinja2Templates, settings: Settings,
+                         clock: Callable[[], datetime]) -> None:
+    """The LAN listener's session gate, its login page and its logout (addendum §6).
+
+    Called only from `create_dashboard(..., lan=True)`, so the loopback app is byte-for-byte
+    the app it was before this task: no `/login`, no `/logout`, no middleware, and a kill pair
+    that still answers on its token alone (invariant 9).
+
+    Nothing in here passes a password, a hash line, a key or a cookie value to `log`, to `repr`
+    or to an exception message. The page renders one of `LOGIN_REFUSALS`' fixed strings and
+    never anything the client submitted.
+    """
+    limiter = auth.LoginLimiter()
+
+    def _session_is_valid(request: Request) -> bool:
+        """Fail closed: no usable hash line means no session can be valid, which is the same
+        rule `/unkill` applies to a missing token file."""
+        line = auth.read_hash_line(settings)
+        if line is None:
+            return False
+        value = request.cookies.get(auth.COOKIE_NAME)
+        if not value:
+            return False
+        return auth.read_cookie(auth.session_key(line), value, clock())
+
+    def _refuse_with_json(path: str, request: Request) -> bool:
+        """`/api/*`, the kill pair and `/logout` always get the JSON refusal; every other path
+        is a document navigation and gets the redirect, unless the client explicitly asked for
+        JSON and not HTML (a scripted client on a page path)."""
+        if path.startswith("/api/") or path in LAN_JSON_PATHS:
+            return True
+        accept = request.headers.get("accept", "")
+        return "application/json" in accept and "text/html" not in accept
+
+    @app.middleware("http")
+    async def lan_session_gate(request: Request, call_next):
+        path = request.url.path
+        if path in LAN_EXEMPT_PATHS or _session_is_valid(request):
+            response = await call_next(request)
+        elif _refuse_with_json(path, request):
+            response = JSONResponse(SESSION_REQUIRED, status_code=401)
+        else:
+            response = RedirectResponse("/login", status_code=302)
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
+
+    def _login_page(request: Request, status_code: int = 200, refusal: str | None = None):
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"message": LOGIN_REFUSALS[refusal] if refusal else None},
+            status_code=status_code)
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_page(request: Request):
+        return _login_page(request)
+
+    @app.post("/login", response_class=HTMLResponse)
+    def login(request: Request, password: str = Form(...)):
+        # The socket's address, never a header: `X-Forwarded-For` is attacker-controlled on a
+        # listener with no proxy in front of it, so trusting it would hand out a fresh
+        # allowance per request.
+        address = request.client.host if request.client else "unknown"
+        now = clock()
+        if limiter.blocked(address, now):
+            return _login_page(request, 429, "rate_limited")
+        line = auth.read_hash_line(settings)
+        if line is None:
+            limiter.record_failure(address, now)
+            return _login_page(request, 403, "not_configured")
+        try:
+            accepted = auth.verify_password(password, line)
+        except ValueError:
+            # The hash line is not a pinned scrypt line. Fail closed and say nothing about it
+            # beyond the condition: the message names no field's value.
+            log.warning("owner password hash line is not a pinned scrypt line; login refused")
+            limiter.record_failure(address, now)
+            return _login_page(request, 403, "not_configured")
+        if not accepted:
+            limiter.record_failure(address, now)
+            return _login_page(request, 403, "bad_password")
+        response = RedirectResponse("/ui/", status_code=303)
+        response.set_cookie(auth.COOKIE_NAME, auth.issue_cookie(auth.session_key(line), now),
+                            max_age=auth.COOKIE_MAX_AGE_S, path="/", secure=True,
+                            httponly=True, samesite="strict")
+        return response
+
+    @app.post("/logout")
+    def logout(request: Request) -> Response:
+        if request.headers.get(CSRF_HEADER) != CSRF_VALUE:
+            return JSONResponse({"refusal": "csrf_header_required"}, status_code=403)
+        response = JSONResponse({"signed_out": True})
+        response.delete_cookie(auth.COOKIE_NAME, path="/", secure=True, httponly=True,
+                               samesite="strict")
+        return response
+
+
 def create_dashboard(session_factory: sessionmaker, settings: Settings,
-                     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> FastAPI:
+                     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                     *, lan: bool = False) -> FastAPI:
+    """The dashboard app. `lan` false is the loopback listener exactly as it has always been.
+
+    Phase 4.6, addendum §6: `lan=True` adds the owner login, the session gate over every path
+    but `/healthz` and the login page itself, and `X-Frame-Options: DENY` on every response. It adds no route to the
+    loopback app and changes none of its behaviour -- in particular the kill pair is untouched
+    there (invariant 9); on the LAN app the gate is what makes it need a session as well as its
+    token (D15), and the two route bodies below are the same code either way.
+    """
     scheduler = None
     snapshot_engine = None
 
@@ -856,6 +981,9 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
             telemetry.event(s, "kill_off", "", ts=now)
             s.commit()
         return {"active": False}
+
+    if lan:
+        _install_lan_session(app, templates, settings, clock)
 
     # `html=True` serves `index.html` for `/ui/`. Root `/`, `/api/summary`, `/healthz`, `/kill`
     # and `/unkill` are unchanged and are declared above, so nothing here can shadow them.

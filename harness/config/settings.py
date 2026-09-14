@@ -178,6 +178,21 @@ class Settings(BaseSettings):
     #: into `app-research` and into no other container (ruling A-M2).
     anthropic_api_key_file: Path = Path("/run/secrets/anthropic_api_key")
 
+    # --- phase 4.6: the LAN listener (addendum §6) -------------------------------------------
+    #: The owner's password hash line, the certificate and its key. All three are **the user's**
+    #: (D7): the loop creates, copies, reads and logs none of them, `harness owner-password-hash`
+    #: prints a line and writes no file, and the feature switches on file metadata alone --
+    #: `harness.dashboard.auth.lan_active` requires all three to be non-empty *regular* files
+    #: (`is_file()` and size, never `exists()`, for the same reason as `has_kalshi_credentials`).
+    #: These are the container paths; the host copies live beside the other secrets.
+    owner_password_hash_file: Path = Path("/run/secrets/owner_password_hash")
+    lan_tls_cert_file: Path = Path("/run/secrets/lan_tls.crt")
+    lan_tls_key_file: Path = Path("/run/secrets/lan_tls.key")
+    #: Where Compose publishes the LAN listener, and the only `Origin` the write routes accept
+    #: (§5.5: from settings, never from the request's `Host`). Never `0.0.0.0` (pre-loaded 4).
+    lan_addr: str = "192.168.12.127"
+    lan_port: int = 8443
+
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()
 

@@ -598,13 +598,45 @@ def note_cmd(
 
 
 @app.command("serve")
-def serve(port: int = 8080, host: str = "0.0.0.0") -> None:
+def serve(port: int = 8080, host: str = "0.0.0.0",
+          lan: bool = typer.Option(False, "--lan",
+                                   help="The owner login and the LAN write routes; requires TLS"),
+          tls_cert: Path = typer.Option(None, "--tls-cert", help="Certificate for --lan"),
+          tls_key: Path = typer.Option(None, "--tls-key", help="Private key for --lan")) -> None:
+    """The dashboard. `--lan` adds the owner login and the two write routes and requires TLS;
+    without it this is the loopback listener exactly as it has always been.
+
+    The LAN listener never starts in the clear: both TLS paths are required and each must be a
+    non-empty regular file (`is_file()` and size, never `exists()` -- a missing bind source is
+    an empty directory), or this exits 2 without reaching `uvicorn.run`. The files themselves
+    are the user's; nothing here reads, copies or prints their contents (addendum §6, D7).
+    """
     configure_logging()
     from harness.dashboard.app import create_dashboard
+    from harness.dashboard.auth import is_non_empty_file
 
+    if lan and not (tls_cert and tls_key and is_non_empty_file(tls_cert)
+                    and is_non_empty_file(tls_key)):
+        log.error("serve --lan needs --tls-cert and --tls-key, each a non-empty regular file")
+        raise typer.Exit(2)
     s = get_settings()
     factory = make_session_factory(make_engine(s.database_url))
-    uvicorn.run(create_dashboard(factory, s), host=host, port=port, log_config=None)
+    uvicorn.run(create_dashboard(factory, s, lan=lan), host=host, port=port, log_config=None,
+                ssl_certfile=str(tls_cert) if tls_cert else None,
+                ssl_keyfile=str(tls_key) if tls_key else None)
+
+
+@app.command("owner-password-hash")
+def owner_password_hash_cmd() -> None:
+    """Print one `scrypt$...` line for the LAN login. Reads the password from the terminal with
+    `getpass`; prints the line to stdout and writes no file. The user places it at
+    `/srv/sports-harness/secrets/owner_password_hash` (mode 600) -- the harness never does.
+    """
+    import getpass
+
+    from harness.dashboard.auth import hash_password
+
+    print(hash_password(getpass.getpass("owner password: ")))
 
 
 @app.command("seed-teams")
