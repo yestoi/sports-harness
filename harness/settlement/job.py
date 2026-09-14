@@ -100,6 +100,13 @@ STAGE_MODULES: list[str] = [
     # Phase 5 (addendum §1.3, ruling B-I7): after parlay_grade, so the two fun/counterfactual
     # stages sit together ahead of the long-running benchmark and markout work.
     "harness.settlement.rfq_grade",
+    # Phase 4.6 (addendum §2.4, D11): the scheduled card builder. After parlay_grade (the hour's
+    # finals are settled before a new card is proposed) and, per the brief, after rfq_grade too
+    # rather than between parlay_grade and it -- `test_rfq_grade.py` pins `rfq_grade` as
+    # *immediately* after `parlay_grade` (ruling B-I7), and "after parlay_grade" is satisfied
+    # either way -- and ahead of the long-running benchmark and markout stages so a busy Sunday
+    # cannot starve it.
+    "harness.settlement.parlay_build",
     "harness.settlement.benchmarks", "harness.settlement.order_clv",
     "harness.settlement.markouts", "harness.ops.housekeeping", "harness.settlement.report_wtd",
 ]
