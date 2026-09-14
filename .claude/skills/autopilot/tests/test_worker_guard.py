@@ -386,6 +386,26 @@ class WorkerGuardTests(unittest.TestCase):
                                               '--remount-ro', secrets])
         self.assertNotIn(secrets + '/key', args)
 
+    def test_installed_packages_are_never_credential_masks(self):
+        # anthropic ships `anthropic/lib/credentials/`; masking it with a tmpfs made
+        # `import anthropic` fail inside every worker. Installed distributions under
+        # `site-packages` are code, not host credentials; the repository's own `credentials`
+        # directory and the venv's other entries stay masked.
+        package = self.main / '.venv/lib/python3.12/site-packages/anthropic/lib/credentials'
+        package.mkdir(parents=True)
+        (package / '__init__.py').write_text('class TokenCache: ...\n')
+        (self.main / '.venv/lib/python3.12/site-packages/secrets').mkdir()
+        (self.main / '.venv/.env').write_text('do not disclose')
+        (self.main / 'credentials').mkdir()
+        (self.main / 'credentials/token').write_text('secret')
+        args = shell.sandbox_argv(self.task, self.task, 'true')
+        self.assertNotIn(str(package), args)
+        self.assertNotIn(str(self.main / '.venv/lib/python3.12/site-packages/secrets'), args)
+        idx = args.index(str(self.main / 'credentials'))
+        self.assertEqual(args[idx-1], '--tmpfs')
+        idx = args.index(str(self.main / '.venv/.env'))
+        self.assertEqual(args[idx-2:idx], ['--ro-bind', str(shell.EMPTY_FILE)])
+
     def test_hardlinks_special_files_and_secret_symlinks_fail_closed(self):
         origin = self.main / 'source'
         origin.write_text('main code')
