@@ -2208,3 +2208,12 @@ Times are America/Chicago.
 - Rulings: the interval span was replaced by fixture-only weeks because ISO week 45 is itself a fixture week, so from week 39 the hand-built future partitions would collide with the fixture regardless of the span; the fix therefore also makes those two tests pick a free week (a test-fixture correction, not a check change).
 - Carried forward: none new. Next: the rebase chain (credentials mask suite running; fix 49, T1, T2, T14, T18a rebased; fix 60 suite on the old base is valid by release tree), fix 60 review and app-only release.
 - Push practice addendum to decision 180: `main` is never force-pushed; controller-owned task branches are pushed with `--force-with-lease` after a rebase (their remote copies are backups of this controller's work only).
+
+## 182. user-directed - the worker launcher's credentials mask fix merged - 2026-09-14 02:2x-04:18 CT
+
+- User, verbatim (2026-09-14 02:2x CT): "Fix the credentials mask first, then go". This is the user's setup correction (isolation tooling), not a loop hotfix; recorded here as directed work.
+- Finding (journal 175/176; memory): `scripts/worker-shell.py` `SECRET_NAMES` masked every directory named `credentials`, including `anthropic/lib/credentials/` inside the shared `.venv` site-packages, so `import anthropic` failed only inside workers (the `TokenCache` ImportError that broke the veto worker path in every sandbox).
+- Change: `overlays()` stops descending at any `site-packages` directory (installed distributions are code, never host credentials; the mount stays read-only); skill test `test_installed_packages_are_never_credential_masks` (site-packages never masked; the repo's `credentials` dir still a tmpfs; `.venv/.env` still an empty-file mask). Branch `fix-worker-credentials-mask` 0bf5f3c on main 3b79d79, rebased onto main after fix 59 as 22afb42, ff-merged (main 22afb42, pushed).
+- Tests: the skill's unit tests green; full suite on the rebased branch at 22afb42: **3,310 passed, 6 xfailed, 1 deselected, pristine, exit 0** (`credmask-full-22afb42.log`); the earlier run on 0bf5f3c failed only fix 59's 67 cases.
+- Live check: `import anthropic` inside the sandbox is verified right after this entry (recorded in the hotfix ledger); the loop's own dispatches stopped reporting the ImportError once the fix applied.
+- Deploy: none (controller tooling; excluded from the deploy trigger). No skill, hook or roadmap authority edited.
