@@ -69,7 +69,9 @@ def _capsule(tmp_path, *, prints, deltas, snapshots, recorded_filled, recorded_q
     if unverifiable:
         manifest = json.loads((directory / "manifest.json").read_text())
         manifest["unverifiable_slices"] = list(unverifiable)
-        (directory / "manifest.json").write_text(json.dumps(manifest))
+        # `default=str` as in `_write`: a manifest slice carries an instant, and the 6A manifest
+        # holds it as the same ISO string every other capsule column is written as.
+        (directory / "manifest.json").write_text(json.dumps(manifest, default=str))
     return directory
 
 
@@ -154,7 +156,8 @@ def test_a_difference_no_hypothesis_explains_is_unverifiable(tmp_path):
     result = audit_order(read_capsule(directory), 157)
     assert result.verdict == "unverifiable"
     assert result.hypothesis is None
-    assert set(result.evidence) == {"i", "ii", "iii"}
+    assert set(result.evidence) == {"i", "ii", "iii",
+                                    "manifest_slices_total", "manifest_slices_in_interval"}
 
 
 def test_the_command_prints_the_verdict_and_its_evidence(tmp_path):
@@ -166,7 +169,12 @@ def test_the_command_prints_the_verdict_and_its_evidence(tmp_path):
     assert result.exit_code == 0, result.output
     doc = json.loads(result.stdout)
     assert doc["verdict"] in VERDICTS
-    assert set(doc["evidence"]) == {"i", "ii", "iii"}
+    assert set(doc["evidence"]) == {"i", "ii", "iii",
+                                    "manifest_slices_total", "manifest_slices_in_interval"}
+    # The manifest counts are printed on every path, gated or not, so the record says what was
+    # in the manifest as well as what decided (0.16).
+    assert doc["evidence"]["manifest_slices_total"] == 0
+    assert doc["evidence"]["manifest_slices_in_interval"] == 0
 
 
 # --- the queries themselves (review round 1) --------------------------------------------------
@@ -392,3 +400,123 @@ def test_a_capsule_that_does_not_carry_the_order_refuses(tmp_path):
     result = runner.invoke(app, ["audit-order", "--capsule", str(directory), "--order", "999"])
     assert result.exit_code == 2
     assert "not in this capsule" in (result.stderr or result.output)
+
+
+# --- the manifest gate's scope (spec 0.16, user decision 2026-09-14 15:38 CT) -----------------
+# The gate pre-empts the replay only for a slice that overlaps the order's own resting interval,
+# `[placed_at, min(cancelled_at, expiry)]` -- here [at(0), at(2119)], the fixture's cancel being
+# earlier than its expiry. A slice elsewhere in the capsule's window is counted in the evidence
+# and decides nothing: it cannot have moved this order's queue, and the replay reads no tape
+# outside the interval anyway.
+#
+# The tape below is the `validated` fixture's -- prints that genuinely exhaust the queue -- so an
+# ungated run has a verdict of its own to reach and the two outcomes are told apart by the
+# verdict as well as by the counts.
+
+EXHAUSTING_PRINTS = [{"trade_id": "sweep", "ts": at(1800), "yes_price": "0.45",
+                      "count": "6401.00", "taker_side": "no", "source": "ws"},
+                     {"trade_id": "ours", "ts": at(1810), "yes_price": "0.45", "count": "38.92",
+                      "taker_side": "no", "source": "ws"}]
+
+
+def _gate_capsule(tmp_path, slices):
+    """The `validated` capsule with a manifest that lists `slices`."""
+    return _capsule(tmp_path, prints=EXHAUSTING_PRINTS, deltas=[], snapshots=[],
+                    recorded_filled="38.92", recorded_queue="0.00", unverifiable=slices)
+
+
+def test_a_manifest_slice_outside_the_resting_interval_does_not_pre_empt_the_replay(tmp_path):
+    """Expected verdict `validated`, with the replay actually run.
+
+    Derived from the capsule's rows: the one manifest entry is a `sink_exception` gap stamped a
+    day after the order was cancelled -- the shape the real order 157 capsule carries six of.
+    Nothing was lost while this order rested, the tape does cover its interval, and the prints
+    inside it exhaust the recorded 6,401 and leave 38.92, so the record is reproduced.
+
+    Reading the manifest capsule-wide would rule this `unverifiable` on a hole in another day's
+    tape, which is the reading the user's 0.16 amendment replaced.
+    """
+    directory = _gate_capsule(tmp_path, [{"exposed_by": "sink_exception", "reason": "gap",
+                                          "sid": 1, "ts": at(90_000)}])
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "validated"
+    assert result.repaired_filled is not None
+    assert result.evidence["manifest_slices_total"] == 1
+    assert result.evidence["manifest_slices_in_interval"] == 0
+
+
+def test_a_manifest_slice_inside_the_resting_interval_pre_empts_the_replay(tmp_path):
+    """Expected verdict `unverifiable`, no replay.
+
+    The same capsule with the same single entry moved to 14:46:47Z, ten minutes into the order's
+    35-minute rest: the tape genuinely does not cover the interval the queue arithmetic would
+    walk, so neither agreement nor disagreement with the record would mean anything. No replay is
+    run, so both repaired quantities stay `None` rather than a zero that reads like a simulated
+    fill of nothing.
+    """
+    directory = _gate_capsule(tmp_path, [{"exposed_by": "sink_exception", "reason": "gap",
+                                          "sid": 1, "ts": at(600)}])
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "unverifiable"
+    assert result.hypothesis is None
+    assert result.repaired_filled is None
+    assert result.repaired_queue is None
+    assert result.evidence["manifest_slices_total"] == 1
+    assert result.evidence["manifest_slices_in_interval"] == 1
+
+
+@pytest.mark.parametrize("seconds, pre_empts", [
+    (0, True),        # exactly at placement: the interval is closed at its lower end
+    (2119, True),     # exactly at the cancel, which is this order's deadline
+    (2120, False),    # one second after it: outside
+])
+def test_the_resting_interval_the_gate_reads_is_closed_at_both_ends(tmp_path, seconds,
+                                                                    pre_empts):
+    """The boundary is inclusive at both ends (0.16: `[placed_at, min(cancelled_at, expiry)]`).
+
+    A gap stamped at the instant we were placed, or at the instant we were cancelled, cannot be
+    ruled out as having touched the book this order rested in, so it gates; a second past the
+    cancel is a stretch of tape the replay never reads.
+    """
+    directory = _gate_capsule(tmp_path, [{"exposed_by": "sink_exception", "reason": "gap",
+                                          "sid": 1, "ts": at(seconds)}])
+    result = audit_order(read_capsule(directory), 157)
+    assert result.evidence["manifest_slices_total"] == 1
+    assert result.evidence["manifest_slices_in_interval"] == (1 if pre_empts else 0)
+    assert result.verdict == ("unverifiable" if pre_empts else "validated")
+    assert (result.repaired_filled is None) is pre_empts
+
+
+@pytest.mark.parametrize("entry, pre_empts", [
+    ({"reason": "gap", "start": at(-100), "end": at(50)}, True),      # straddles placement
+    ({"reason": "gap", "start": at(3000), "end": at(4000)}, False),   # wholly after the cancel
+    ({"reason": "gap", "from": at(2100), "to": at(9000)}, True),      # straddles the cancel
+    ({"reason": "gap", "from": at(-9000), "to": at(-100)}, False),    # wholly before placement
+])
+def test_a_manifest_slice_that_carries_a_range_gates_when_the_range_intersects(tmp_path, entry,
+                                                                              pre_empts):
+    """A slice stated as a stretch rather than an instant overlaps when it intersects.
+
+    6A writes an instant today, so both spellings a range could take (`start`/`end` and
+    `from`/`to`) are read: a gate that silently ignored the shape it did not know would replay a
+    slice the manifest says is unreadable.
+    """
+    directory = _gate_capsule(tmp_path, [entry])
+    result = audit_order(read_capsule(directory), 157)
+    assert result.evidence["manifest_slices_in_interval"] == (1 if pre_empts else 0)
+    assert result.verdict == ("unverifiable" if pre_empts else "validated")
+
+
+def test_a_manifest_slice_with_neither_an_instant_nor_a_range_gates(tmp_path):
+    """Fail closed: an entry the gate cannot place in time is treated as overlapping.
+
+    `test_a_capsule_with_no_anchoring_snapshot_is_unverifiable` above is exactly this shape --
+    the 6A `no_snapshot` entry carries a ticker and no timestamp at all -- so the rule is pinned
+    here rather than left as an incident of that case. An unreadable slice cannot be ruled out
+    of the interval, and replaying it would be the one direction that invents evidence.
+    """
+    directory = _gate_capsule(tmp_path, [{"reason": "no_snapshot", "ticker": "K1"}])
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "unverifiable"
+    assert result.repaired_filled is None
+    assert result.evidence["manifest_slices_in_interval"] == 1

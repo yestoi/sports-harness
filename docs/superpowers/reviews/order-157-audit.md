@@ -28,6 +28,12 @@ Every count is taken over the order's own resting interval, `(placed_at, deadlin
 own ticker: a period capsule carries several tickers in one file, and a print an hour after the
 cancel says nothing about the queue this order rested in.
 
+The 6A manifest's `unverifiable_slices` is read over that same interval, closed at both ends --
+`[placed_at, min(cancelled_at, expiry)]` -- and not capsule-wide (spec amendment 0.16, the user's
+decision of 2026-09-14). Only an entry overlapping the interval pre-empts the replay; one
+elsewhere in the capsule's window is counted and reported and decides nothing, because it cannot
+have moved this order's queue and the interval already bounds every tape read the replay makes.
+
 ## The three hypotheses and what each predicts
 
 1. **The equal-timestamp double count.** A decrement near -6,376 at 0.45 stamped 15:07:15.332Z,
@@ -81,24 +87,33 @@ and for an order capsule the window runs to `cancelled_at + 30 min`, so a later 
 
 - `validated` -- the repaired simulation reproduces the recorded fills within one contract.
 - `corrected` -- it differs, and one hypothesis's stated expected counts are met.
-- `unverifiable` -- the tape does not cover the interval and nothing anchors it (the 6A
-  manifest's `unverifiable_slices` is that call's input), **or** it differs and no hypothesis's
-  counts are met. The second case is the reconciliation's "requires tape audit", not a causal
-  story the evidence does not support.
+- `unverifiable` -- the tape does not cover the **resting interval** and nothing anchors it (the
+  6A manifest's `unverifiable_slices` is that call's input, read for the entries overlapping
+  `[placed_at, min(cancelled_at, expiry)]` only, amendment 0.16), **or** it differs and no
+  hypothesis's counts are met. The second case is the reconciliation's "requires tape audit", not
+  a causal story the evidence does not support.
 
-The manifest test is applied first and is decisive: a capsule whose manifest lists any
-`unverifiable_slices` entry is `unverifiable` without a replay, and the three hypotheses' counts
-are reported anyway. Because no replay is run on that path, a gated result carries **no** simulated
-quantities: both `repaired_filled` and `repaired_queue` are `null`, so a gated verdict can never be
-misread as a simulated fill of nothing (which is also the meaningful answer in the `corrected`
-case, and must stay distinguishable from it). One consequence is worth stating plainly, because it bears on hypothesis
-(ii): 6A marks a window containing **any** `gap` row as an unverifiable slice
-(`harness/capsule.py`'s `unverifiable`), so a capsule whose tape has the gap that hypothesis (ii)
-predicts is ruled `unverifiable` on the manifest rather than `corrected` on the hypothesis. That
-is the conservative direction -- a lost frame means the tape genuinely does not cover the
-interval -- but it means a `corrected`/(ii) verdict is not reachable from a gapped capsule, and
-the reader of a `unverifiable` result should look at `evidence["ii"]`'s counts and at the
-manifest's own entries before concluding that no anchoring error occurred.
+The manifest test is applied first and, for an entry inside the resting interval, is decisive: a
+capsule whose manifest lists such an entry is `unverifiable` without a replay, and the three
+hypotheses' counts are reported anyway. An entry outside that interval is not a gate: it is
+counted in the evidence -- `manifest_slices_total` and `manifest_slices_in_interval` are reported
+on every path, gated or not -- and the replay runs as if the manifest were clean, because a hole
+in another stretch of the capsule's window moved nothing this order's queue rested in (0.16). The
+interval is closed at both ends, and an entry the gate cannot place in time (one carrying no
+instant and no range, such as 6A's `no_snapshot`) fails closed and counts as overlapping: an
+unreadable slice cannot be ruled out of the interval. Because no replay is run on the gated path,
+a gated result carries **no** simulated quantities: both `repaired_filled` and `repaired_queue`
+are `null`, so a gated verdict can never be misread as a simulated fill of nothing (which is also
+the meaningful answer in the `corrected` case, and must stay distinguishable from it). One
+consequence is worth stating plainly, because it bears on hypothesis (ii): 6A marks a window
+containing **any** `gap` row as an unverifiable slice (`harness/capsule.py`'s `unverifiable`), so
+a capsule whose tape has the gap that hypothesis (ii) predicts -- which is inside the resting
+interval by hypothesis (ii)'s own terms -- is ruled `unverifiable` on the manifest rather than
+`corrected` on the hypothesis. That is the conservative direction -- a lost frame means the tape
+genuinely does not cover the interval -- but it means a `corrected`/(ii) verdict is not reachable
+from a capsule gapped while this order rested, and the reader of a `unverifiable` result should
+look at `evidence["ii"]`'s counts and at the manifest's own entries before concluding that no
+anchoring error occurred.
 
 ## Result
 

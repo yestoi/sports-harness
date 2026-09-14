@@ -62,6 +62,10 @@ from harness.execution.fills import (
 )
 
 VERDICTS = ("validated", "corrected", "unverifiable")
+#: The three hypothesis keys of the evidence dict, in the order §1.7 states them, which is the
+#: order a `corrected` verdict names them in. The dict also carries the plain-integer manifest
+#: counts of §0.16, so the ruling is read off these keys rather than off everything in it.
+HYPOTHESES = ("i", "ii", "iii")
 
 #: Hypothesis (i)'s predicted decrement, and the tolerance it is recognised within. The
 #: reconciliation's counterexample is -6,376 at our price stamped 15:07:15.332Z; a venue that
@@ -81,9 +85,9 @@ class AuditResult:
     """One order's verdict, with what the repaired simulator said and what each hypothesis saw.
 
     Both repaired quantities are `None` when no replay was run -- the manifest-gated path, where
-    the capsule's own 6A manifest says the slice cannot be replayed. A gated result therefore
-    carries no simulated quantities at all, rather than a zero that reads like a simulated fill
-    of nothing (review round 1, I3).
+    the capsule's own 6A manifest says a slice **overlapping the order's resting interval** cannot
+    be replayed (§0.16). A gated result therefore carries no simulated quantities at all, rather
+    than a zero that reads like a simulated fill of nothing (review round 1, I3).
     """
 
     order_id: int
@@ -140,6 +144,45 @@ def _deadline(order: dict) -> datetime:
     if order.get("cancelled_at") is None:
         return expiry
     return min(expiry, _ts(order["cancelled_at"]))
+
+
+def _slice_overlaps(entry: dict, placed_at: datetime, deadline: datetime) -> bool:
+    """Whether one 6A `unverifiable_slices` entry touches `[placed_at, deadline]` (§0.16).
+
+    The manifest gate is scoped to the order's own resting interval: a slice elsewhere in the
+    capsule's window cannot have moved this order's queue, and the interval already bounds every
+    tape read the replay makes. The interval is **closed at both ends**, so a hole stamped at the
+    instant of placement or at the instant of the cancel still gates -- a gap exactly at
+    placement anchors nothing, and the deadline's own instant is inside the walk.
+
+    6A writes an entry as an instant today (`exposed_by`, `reason`, `sid`, `ts`), so `ts` is the
+    ordinary case. An entry that carries a stretch is read as one, under either spelling a range
+    could take (`start`/`end` or `from`/`to`), and overlaps when the stretch intersects the
+    interval; a half-stated range is unbounded on the side it omits.
+
+    An entry with no usable instant and no usable range **fails closed** and is treated as
+    overlapping: a slice the gate cannot place in time cannot be ruled out of the interval, and
+    replaying it would be the one direction that invents evidence. The 6A `no_snapshot` entry,
+    which carries a ticker and no timestamp at all, is exactly that shape.
+    """
+    if not isinstance(entry, dict):
+        return True
+    start = entry.get("start", entry.get("from"))
+    end = entry.get("end", entry.get("to"))
+    try:
+        if start is not None or end is not None:
+            lower = None if start is None else _ts(start)
+            upper = None if end is None else _ts(end)
+            return ((upper is None or upper >= placed_at)
+                    and (lower is None or lower <= deadline))
+        instant = entry.get("ts")
+        if instant is None:
+            return True
+        return placed_at <= _ts(instant) <= deadline
+    except (TypeError, ValueError):
+        # An unparseable stamp, or one whose awareness does not match the order's, is a slice we
+        # cannot place in time: fail closed, as above.
+        return True
 
 
 def _tape_print(row: dict) -> TapePrint:
@@ -313,13 +356,22 @@ def audit_order(capsule: dict, order_id: int) -> AuditResult:
     recorded_filled = _d(order["filled_contracts"])
     recorded_queue = (None if order.get("queue_remaining") is None
                       else _d(order["queue_remaining"]))
-    if capsule["manifest"].get("unverifiable_slices"):
-        # The 6A manifest already recorded that this slice cannot be replayed from its own
-        # tape, which is that call's input (§1.7): nothing anchors it, so neither agreement nor
-        # disagreement would mean anything. No replay is run, so both repaired quantities are
-        # None rather than a zero indistinguishable from a simulated fill of nothing (I3). The
-        # hypotheses' counts are still reported, so the record says what was in the capsule as
-        # well as why it could not be ruled on.
+    # The 6A manifest recorded which slices cannot be replayed from their own tape, which is
+    # that call's input (§1.7), but only the ones overlapping this order's resting interval
+    # `[placed_at, min(cancelled_at, expiry)]` bear on this order (§0.16, the user's decision of
+    # 2026-09-14): a hole in another day's tape moved nothing this queue rested in, and the
+    # interval already bounds every tape read the replay makes. A slice inside the interval is
+    # decisive: nothing anchors it, so neither agreement nor disagreement would mean anything.
+    # No replay is then run, so both repaired quantities are None rather than a zero
+    # indistinguishable from a simulated fill of nothing (I3). Both counts are reported on every
+    # path, gated or not, so the record says what was in the manifest as well as what decided;
+    # the hypotheses' counts are reported either way for the same reason.
+    slices = capsule["manifest"].get("unverifiable_slices") or []
+    in_interval = [s for s in slices
+                   if _slice_overlaps(s, _ts(order["placed_at"]), _deadline(order))]
+    evidence["manifest_slices_total"] = len(slices)
+    evidence["manifest_slices_in_interval"] = len(in_interval)
+    if in_interval:
         return AuditResult(order_id, "unverifiable", None, None, None,
                            recorded_filled, recorded_queue, evidence)
     result = _replay(capsule, order)
@@ -328,7 +380,7 @@ def audit_order(capsule: dict, order_id: int) -> AuditResult:
         return AuditResult(order_id, "validated", None, repaired_filled,
                            result.state.queue_remaining, recorded_filled, recorded_queue,
                            evidence)
-    met = [name for name, row in evidence.items() if row["met"]]
+    met = [name for name in HYPOTHESES if evidence[name]["met"]]
     verdict = "corrected" if met else "unverifiable"
     return AuditResult(order_id, verdict, met[0] if met else None, repaired_filled,
                        result.state.queue_remaining, recorded_filled, recorded_queue, evidence)
