@@ -7,6 +7,17 @@ from types import SimpleNamespace
 import pytest
 
 
+
+# Every ISO week a committed fixture date falls in (2026-09-01 .. 2026-11-02), built by the schema fixture
+# so the suite does not depend on the calendar it runs on. `ensure_partitions` builds the week of the given
+# instant plus the next, so these four UTC Monday starts cover weeks 36-39, 41-42, 45-46 (carry fix 59).
+FIXTURE_PARTITION_WEEKS = (
+    datetime(2026, 8, 31, tzinfo=timezone.utc),   # ISO 36 + 37
+    datetime(2026, 9, 14, tzinfo=timezone.utc),   # ISO 38 + 39
+    datetime(2026, 10, 5, tzinfo=timezone.utc),   # ISO 41 + 42
+    datetime(2026, 11, 2, tzinfo=timezone.utc),   # ISO 45 + 46
+)
+
 @pytest.fixture
 def env_settings(monkeypatch, tmp_path):
     key_file = tmp_path / "odds_api_key"
@@ -36,8 +47,12 @@ def _schema():
     create_schema(engine)
     # ensure_partitions covers all three partitioned tables (raw_responses, orderbook_events,
     # venue_trades), so every db test can write to the tape without creating a partition first.
-    # It builds this week's and next week's, i.e. rows dated inside [Monday, Monday + 14d).
+    # It builds two weeks from the date it is given: every week a committed fixture date falls in
+    # (FIXTURE_PARTITION_WEEKS; the 2026-09-14 ISO-week rollover broke 67 tests when only the real
+    # current and next week existed), plus this week's and next week's for tests that use the clock.
     with sessionmaker(bind=engine)() as session:
+        for week_start in FIXTURE_PARTITION_WEEKS:
+            ensure_partitions(session, week_start)
         ensure_partitions(session, datetime.now(timezone.utc))
     yield engine
     engine.dispose()
@@ -47,6 +62,19 @@ def _schema():
 def db_session(_schema):
     from sqlalchemy import text
     from sqlalchemy.orm import sessionmaker
+    from harness.db.schema import ensure_partitions, _partition_name
+
+    # Tests in test_partition/test_alembic/test_schema call drop_schema and rebuild only the live two weeks,
+    # so restore fixture weeks' partitions if they have been destroyed. Probe for the first fixture week
+    # partition; if missing, recreate them all. Ensure committed before yielded session starts.
+    with sessionmaker(bind=_schema)() as session:
+        probe_name = _partition_name("orderbook_events", FIXTURE_PARTITION_WEEKS[0])
+        result = session.execute(text("SELECT to_regclass(:n)"), {"n": probe_name}).scalar()
+        if not result:
+            # Fixture weeks' partitions have been destroyed, recreate them all
+            for week_start in FIXTURE_PARTITION_WEEKS:
+                ensure_partitions(session, week_start)
+        session.commit()
 
     from harness.db.models import Base
 
