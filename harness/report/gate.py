@@ -42,7 +42,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import GateReport
-from harness.ops.clock import exclude_unsynced_runs
 from harness.execution.book import side_p
 from harness.report.stats import CI, cluster_ci, cluster_diff_ci
 # The order -> episode mapping the `order_episodes` view encodes. The view answers one row per
@@ -607,7 +606,7 @@ def clv_every_benchmark(session: Session, now: datetime, variant: str, criterion
     return _result(criterion, worst, worst >= criterion.threshold, n_obs, len(games), detail)
 
 
-_STALENESS = text(f"""
+_STALENESS = text("""
     select percentile_disc(0.5) within group (order by v.staleness_s) as median,
            count(v.staleness_s) as n,
            count(distinct v.game_id) as games
@@ -616,7 +615,6 @@ _STALENESS = text(f"""
     join fair_values v on v.id = gs.fair_value_id
     where s.variant_id = :variant and s.replay = false and s.decision = 'candidate'
       and s.created_at <= :now and v.staleness_s is not null
-      and {exclude_unsynced_runs('s.run_id')}
       -- eligibility:run
 """)
 
