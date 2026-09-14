@@ -25,6 +25,10 @@ export const LABELS = [
   { plain: "Simulated cash", technical: "equity_snapshots" },
   { plain: "Authenticated calls to the exchange", technical: "venue_requests" },
   { plain: "Best bid and ask", technical: "order book" },
+  { plain: "Decision story", technical: "story" },
+  { plain: "Not evaluated", technical: "not_evaluated" },
+  { plain: "Gap in the story", technical: "gap" },
+  { plain: "Favourite team", technical: "favourite" },
 ];
 
 //: `fill_method` values that already carry a glossary entry from the vocabulary table; a value
@@ -61,9 +65,18 @@ const venue = section("venue");
 
 // --- 1. game board ------------------------------------------------------------------------
 
+//: Addendum 7.1 / design 4.4: each card opens the game detail (below) at
+//: `#floor/game/<id>`; a favourite game's abbreviations carry the display face at 15 px
+//: (`.board-card .fav-abbr`, Task 14's app.css) with a star in `--ink-2` before them.
 function gameCard(game) {
-  const head = el("div", { class: "row spread" },
-    el("span", { class: "team", text: `${game.away} at ${game.home}` }));
+  const matchup = `${game.away} at ${game.home}`;
+  const favRow = game.favourite
+    ? el("div", { class: "row" },
+        el("span", { "aria-hidden": "true", style: "color:var(--ink-2)", text: "★" }),
+        el("span", { class: "fav-abbr", text: game.abbreviations.away }),
+        el("span", { class: "n", text: "at" }),
+        el("span", { class: "fav-abbr", text: game.abbreviations.home }))
+    : null;
   const body = game.status === "in_progress"
     ? el("div", { class: "row" },
         el("span", { class: "val num",
@@ -72,13 +85,13 @@ function gameCard(game) {
                      text: `${game.period ?? "--"} · ${game.clock || "--"}` }),
         el("span", { class: "n", text: fmtAge(game.score_age_s) }))
     : el("div", { class: "meta", text: `kicks off in ${fmtAge(game.kickoff_in_s)}` });
-  return el("div", { class: "tile" }, head, body,
-    el("div", { class: "row spread" },
-      label("markets we can price", "venue_markets"),
-      el("span", { class: "val num", text: String(game.matched_markets) })),
-    el("div", { class: "row spread" },
-      label("our resting simulated orders", "orders"),
-      el("span", { class: "val num", text: String(game.open_orders) })));
+  const button = el("button", { class: "board-card", type: "button", "aria-label": matchup },
+    el("div", { class: "tile" }, favRow,
+      el("div", { class: "row spread" }, el("span", { class: "team", text: matchup })),
+      body,
+      el("div", { class: "row spread" }, el("span", { class: "n num", text: game.figures }))));
+  button.addEventListener("click", () => { location.hash = `#floor/game/${game.game_id}`; });
+  return button;
 }
 
 function gameBoard(payload) {
@@ -90,6 +103,130 @@ function gameBoard(payload) {
     sentences(payload.sentences?.board),
     games.length ? el("div", { class: "grid3" }, games.map(gameCard))
                  : el("p", { class: "grey", text: "no game to show" }));
+}
+
+// --- 1b. game detail (addendum 7.2, 7.3; design 4) ------------------------------------------
+//
+// `#floor/game/<id>` opens the detail: a full-width card under the board row at 1440 px, a
+// full-height sheet over the board at 390 px (`.detail`/`.detail-sheet`, Task 14's app.css).
+// Escape and the browser's own back button close it, and setting `location.hash` on a board
+// card pushes a fresh history entry, so the back button is already wired for free; the
+// on-screen close control below only mirrors that with `history.back()`. One open at a time:
+// the route is the only place a game id lives, so there is never more than one to show.
+
+//: `null` when the current hash names no game -- any other surface's hash, or plain "#floor".
+function detailRouteGameId() {
+  const parts = String(location.hash || "").replace(/^#/, "").split("/");
+  return parts[0] === "floor" && parts[1] === "game" && parts[2] ? parts[2] : null;
+}
+
+//: One escape handler at a time, matching the one detail the route can ever name.
+let _escapeHandler = null;
+
+function attachEscape(onEscape) {
+  detachEscape();
+  _escapeHandler = (event) => { if (event.key === "Escape") onEscape(); };
+  document.addEventListener("keydown", _escapeHandler);
+}
+
+function detachEscape() {
+  if (_escapeHandler) {
+    document.removeEventListener("keydown", _escapeHandler);
+    _escapeHandler = null;
+  }
+}
+
+//: The close control and Escape both close the detail the same way: back to whatever hash was
+//: current before the board card was tapped, which is what the browser's own back button does
+//: too (design 4.1).
+function closeDetail() {
+  if (history.length > 1) history.back();
+  else location.hash = "#floor";
+}
+
+function scorelineSection(scoreline) {
+  return el("div", { class: "scoreline row spread" },
+    el("span", { class: "team", text: scoreline.abbreviations.away }),
+    el("span", { class: "score num",
+                 text: `${scoreline.away_score ?? "--"}-${scoreline.home_score ?? "--"}` }),
+    el("span", { class: "team", text: scoreline.abbreviations.home }),
+    el("span", { class: "n", text: scoreline.text }));
+}
+
+function positionSection(position) {
+  const lines = [position.text, position.posture].filter(Boolean);
+  if (position.settled_cash !== null && position.settled_cash !== undefined) {
+    lines.push(`settled ${position.settled_cash >= 0 ? "+" : ""}${position.settled_cash} paper`);
+  }
+  return el("div", {}, el("h4", {}, label("Our position", "orders")),
+    ...lines.map((line) => el("p", { text: line })));
+}
+
+//: One story row: its own time and unit, the sentence already phrased server-side, and a
+//: `<details>` disclosure to the ids, the variant and the raw figures (design 4.2).
+function storyRow(row) {
+  const time = row.ts ? new Date(row.ts).toLocaleString() : "--";
+  const kind = row.kind === "gap" ? glossaryTerm("gap", "gap")
+    : row.kind === "not_evaluated" ? glossaryTerm("not_evaluated", "not evaluated")
+    : el("span", { class: "n", text: row.kind });
+  const facts = Object.entries(row.facts || {}).map(([factKey, value]) =>
+    el("div", { class: "n",
+                text: `${factKey}: ${value === null || value === undefined ? "--" : value}` }));
+  return el("li", { class: "row spread" },
+    el("span", { class: "n", text: time }), kind,
+    el("span", { text: row.text }),
+    el("details", {}, el("summary", { text: "ids, variant and raw figures" }), ...facts));
+}
+
+function storySection(story) {
+  return el("div", {}, el("h4", {}, label("Decision story", "story")),
+    el("ul", { class: "story" }, (story || []).map(storyRow)));
+}
+
+function marketsSection(markets) {
+  const rows = (markets || []).map((m) => [
+    [m.market_type, m.side, m.threshold].filter((part) => part !== null && part !== undefined)
+      .join(" ") || (m.ticker || "--"),
+    m.fair_p !== null && m.fair_p !== undefined ? `${Math.round(m.fair_p * 100)}¢` : "--",
+    m.best_bid !== null && m.best_bid !== undefined
+    && m.best_ask !== null && m.best_ask !== undefined
+      ? `${Math.round(m.best_bid * 100)} / ${Math.round(m.best_ask * 100)}` : "--",
+    m.edge_live !== null && m.edge_live !== undefined ? m.edge_live : "--",
+    fmtAge(m.fair_age_s),
+  ]);
+  return el("div", {}, el("h4", {}, label("Markets", "venue_markets")),
+    table(["market", "fair", "book", "edge now", "age"], rows,
+          { label: "Markets priced on this game" }));
+}
+
+//: F02, addendum 7.2 item 5: a card id and a link, no amount, no leg detail -- the only
+//: crossing between the two moneys, and it is one-way.
+function onYourTicketSection(onYourTicket) {
+  if (!onYourTicket) return null;
+  return el("p", {}, el("a", { href: onYourTicket.href, text: "on your ticket" }));
+}
+
+function gameDetail(payload, gameId) {
+  const detailsData = payload.details;
+  const details = (detailsData && typeof detailsData === "object" && !detailsData.error)
+    ? detailsData : {};
+  const detail = details[gameId];
+  const close = el("button", { class: "detail-close", type: "button",
+                                "aria-label": "Close the game detail", text: "Close" });
+  close.addEventListener("click", () => closeDetail());
+  const wrap = el("div", { class: "detail detail-sheet card", role: "region",
+                            "aria-label": "Game detail" }, close);
+  if (!detail) {
+    wrap.appendChild(el("p", { class: "grey", text: "detail is built inside 6 h of kickoff" }));
+    return wrap;
+  }
+  wrap.appendChild(scorelineSection(detail.scoreline));
+  wrap.appendChild(positionSection(detail.position));
+  wrap.appendChild(storySection(detail.story));
+  wrap.appendChild(marketsSection(detail.markets));
+  const ticket = onYourTicketSection(detail.on_your_ticket);
+  if (ticket) wrap.appendChild(ticket);
+  return wrap;
 }
 
 // --- 2. funnel -----------------------------------------------------------------------------
@@ -384,7 +521,12 @@ function venueTile(payload) {
 }
 
 export function render(root, payload, _envelope) {
-  root.replaceChildren(
-    gameBoard(payload), funnelSection(payload), openOrders(payload), fillsStream(payload),
+  const detailGameId = detailRouteGameId();
+  const children = [gameBoard(payload)];
+  if (detailGameId) children.push(gameDetail(payload, detailGameId));
+  children.push(funnelSection(payload), openOrders(payload), fillsStream(payload),
     exposureLanes(payload), vitalsStrip(payload), venueTile(payload));
+  root.replaceChildren(...children);
+  if (detailGameId) attachEscape(closeDetail);
+  else detachEscape();
 }

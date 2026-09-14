@@ -346,5 +346,29 @@
     "plain": "Recorder memory",
     "what": "Resident memory of the recorder process in MiB, sampled separately after ticks and settlement jobs. Linux reports current resident memory; the fallback on macOS reports peak memory.",
     "why": "Separate tick and settlement samples show when recorder memory grows."
+  },
+  "story": {
+    "term": "story",
+    "plain": "decision story",
+    "what": "The chronological list of everything recorded about one game: evaluations, skips, resting orders, fills, cancellations, the closing benchmark and settlement, each row carrying its own time and unit.",
+    "why": "It is the paper trail behind a position, in the order it happened, so a reader can see why a game looks the way it does without asking the researcher."
+  },
+  "not_evaluated": {
+    "term": "not_evaluated",
+    "plain": "not evaluated",
+    "what": "The decision story's first row when no signal touched this game's markets in the story window.",
+    "why": "It tells a reader the silence is not evidence of anything: the story has nothing to show yet, not that nothing happened."
+  },
+  "gap": {
+    "term": "gap",
+    "plain": "a gap in the story",
+    "what": "A row the decision story inserts for any span of time before kickoff with no record in it.",
+    "why": "A story that skipped its silent stretches would read as continuous attention it was not; a gap row says so instead of smoothing it over."
+  },
+  "favourite": {
+    "term": "favourite",
+    "plain": "a favourite-team game",
+    "what": "A board game where either team is on the anchors list in parlay.yaml, marked with a star.",
+    "why": "It says which games the star on the board points to, without implying the star is a signal about the game itself."
   }
 }
