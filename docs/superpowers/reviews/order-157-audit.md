@@ -117,19 +117,26 @@ anchoring error occurred.
 
 ## Result
 
-Run 2026-09-14 11:40 CT (Omarchy, controller checkout of `phase6b-repair-execution` at 97d639e, the
-committed capsule `docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/order-157`, taken
-2026-09-12 04:29 CT; 0.9 s; the command's JSON is
-`docs/superpowers/autopilot/evidence/2026-09-14-audit-order-157-1140.json` on `main`).
+Run 2026-09-14 17:38 CT (Omarchy, controller checkout of `phase6b-repair-execution` at 2a4f3ca,
+the manifest gate scoped to the resting interval by amendment 0.16 -- user decision 2026-09-14
+15:38 CT, journal 210; the committed capsule
+`docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/order-157`, taken 2026-09-12
+04:29 CT; the command's JSON is
+`docs/superpowers/autopilot/evidence/2026-09-14-audit-order-157-1738.json` on `main`). This
+reading replaces the 11:40 CT run's (its JSON, `2026-09-14-audit-order-157-1140.json`, stays on
+`main` as the record of the capsule-wide gate).
 
-**Verdict: `unverifiable`.** `hypothesis`, `repaired_filled` and `repaired_queue` are `null`:
-the manifest gate pre-empted the replay. The capsule's `unverifiable_slices` carries six `gap`
-entries (sids 1 and 2 at 2026-09-09T22:48:52Z, 2026-09-10T00:29:58Z and 2026-09-10T03:25:27Z,
-each exposed by `sink_exception`), `truncated` is empty, and `identity.build_mismatch` is `true`
-in the reading journal 142 ruled expected (main ahead of the deployed build).
+**Verdict: `unverifiable`, on the second definition** (it differs and no hypothesis's counts are
+met). The manifest no longer gates this order: its six `gap` entries (sids 1 and 2 at
+2026-09-09T22:48:52Z, 2026-09-10T00:29:58Z and 2026-09-10T03:25:27Z, each exposed by
+`sink_exception`) all fall more than a day after the order was cancelled, so
+`manifest_slices_total` is 6 and `manifest_slices_in_interval` is 0, and the replay ran.
+`hypothesis` is `null`; `repaired_filled` is **63.92** and `repaired_queue` **0.00** against a
+recorded `filled_contracts` of 38.92 and `queue_remaining` of 0.0. `identity.build_mismatch` is
+`true` in the reading journal 142 ruled expected (main ahead of the deployed build).
 
 Observed counts, each over the resting interval (14:36:47Z, 15:12:06Z] on 2026-09-08 and the
-order's own ticker:
+order's own ticker (unchanged from the 11:40 CT run, which reported them on the gated path):
 
 | Hypothesis | Predicts | Observed | Met |
 |---|---|---|---|
@@ -137,14 +144,13 @@ order's own ticker:
 | (ii) recovery anchoring error | a gap on the anchor's sid inside the interval, and an in-interval snapshot | gaps in interval 0; gaps on the anchor sid 0; snapshots 0 (no in-interval snapshot carries a sid, so any in-interval gap would have counted) | no |
 | (iii) genuine queue collapse | lifting prints of 6,401 or more at or through 0.45 before the fills | hitting volume before the fills 0; hitting volume 63.92; volume at 0.45 any taker 63.92 | no |
 
-Recorded: `filled_contracts` 38.92, `queue_remaining` 0.0.
-
-Reading. All six manifest gaps fall between 2026-09-09 22:48Z and 2026-09-10 03:25Z, more than
-a day after the order was cancelled, so the resting interval itself has no gap and no snapshot:
-the tape covers the interval, and the gate that returned `unverifiable` is the capsule-wide one
-(any `unverifiable_slices` entry), not a hole in the evidence this order rests on. Within the
-interval the tape shows 63.92 contracts lifted at 0.45, all at the fill stamp, against a recorded
-queue of 6,401 ahead: none of the three hypotheses is met on the capsule, and the recorded fill of
-38.92 is not reproduced by any of them. Whether the gate should be scoped to the resting interval
-(which would let the replay run and give a `corrected` or `validated` verdict on this order) is a
-spec change and stays with the user, as the section above records; this run changes no gate.
+Reading. The tape covers the interval and the replay reproduces neither the recorded fill nor
+any hypothesis: the repaired simulation fills the whole 63.92 contracts the tape shows lifted at
+0.45 at the fill stamp and leaves no queue, while the record shows 38.92 filled from a queue of
+6,401 ahead. The difference of 25.00 contracts is outside `FILL_TOLERANCE`, so the verdict is not
+`validated`; and because none of (i), (ii) or (iii) is met on the capsule, it is not `corrected`
+either. The recorded fill remains the reconciliation's "requires tape audit" case with the audit
+now run: the evidence does not support any of the three causal stories, and the audit does not
+invent a fourth. The 6A capsule and the record stand as they are; no fill, markout or order row
+changes (gate 3), and `ORDER_157_VERDICT` in `harness/corrections.py` carries this verdict for
+6C's t13.
