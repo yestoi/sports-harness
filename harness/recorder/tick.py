@@ -16,7 +16,7 @@ from harness.db.schema import ensure_partitions
 from harness.feeds.espn import EspnClient, Kickoff, parse_kickoffs
 from harness.feeds.nws import NwsClient
 from harness.feeds.odds_api import OddsApiClient, parse_credit_headers, parse_event_ids_and_times
-from harness.normalize.runner import normalize_new
+from harness.normalize.runner import backlog_samples, normalize_new
 from harness.ops import coverage
 from harness.recorder import store
 from harness.recorder.cadence import (SPORTS, alternates_due, interval_for, is_due, select_ladders,
@@ -313,6 +313,18 @@ def _recorder_samples(session: Session, run_id: int, tick_ms: int,
             covered = tape_covered_frac(session, tick_now)
             if covered is not None:
                 samples.append(("ws.tape_covered_frac", covered, {"basis": "minutes_without_gap"}))
+    # 6D §1.3(c), §1.5(c): the tick's own division. Live fact (a)'s `budget_s: 20` on a 120 s
+    # cadence is `PRICE_BUDGET_FLOOR_S`, the floor rather than a measurement, so a floor result
+    # says only that fetch plus normalize had spent **at least** ~90 s of the cadence -- a lower
+    # bound, not a measurement (M2). This is what makes the division visible without a log dive.
+    for phase, ms in (ctx.get("phase_ms") or {}).items():
+        samples.append(("recorder.phase_ms", ms, {"phase": phase}))
+    # 6D §1.3(c): the normalizer's backlog per family, from the ids this run itself wrote
+    # (`ix_raw_run`). Guarded on `tick_now` for the same reason the tape sample above is: a
+    # caller that builds `ctx` by hand without `now` (a pre-existing direct-call test) gets no
+    # backlog samples rather than a KeyError, and `backlog_samples` never reads the clock itself.
+    if tick_now is not None:
+        samples.extend(backlog_samples(session, run_id, tick_now))
     return samples
 
 
@@ -1095,6 +1107,10 @@ class Recorder:
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed")
                 ctx["errors"].append({"tick": repr(e)})
+            # 6D §1.3(c): the three phase boundaries, read off the same monotonic clock
+            # `started_mono` came from. Taken *outside* the try above so a fetch that raised
+            # still divides the tick rather than losing the division with the exception.
+            fetch_done = self.monotonic()
             try:
                 ctx["normalized"] = normalize_new(session, ctx=ctx, time_budget_s=30)
             except Exception as e:  # noqa: BLE001
@@ -1105,6 +1121,7 @@ class Recorder:
                 # per-source checkpoints, so nothing is lost.
                 session.rollback()
                 ctx["warnings"].append({"normalize": repr(e)})
+            normalize_done = self.monotonic()
             if summaries:
                 # Only price when this tick actually refreshed Kalshi markets, so gap snapshots
                 # are computed against fresh quotes rather than stale ones from a skipped tick.
@@ -1129,6 +1146,14 @@ class Recorder:
                     log.exception("pricing failed")
                     session.rollback()
                     ctx["warnings"].append({"pricing": repr(e)})
+            pricing_done = self.monotonic()
+            # The three phases as milliseconds, summing to the tick less the telemetry and
+            # coverage writes below. A tick that never priced (no `summaries`) reports a
+            # pricing phase of ~0 rather than no phase at all: zero is the measurement.
+            phase_ms = {"fetch": int((fetch_done - started_mono) * 1000),
+                        "normalize": int((normalize_done - fetch_done) * 1000),
+                        "pricing": int((pricing_done - normalize_done) * 1000)}
+            ctx["phase_ms"] = phase_ms
             exhausted = (ctx["skipped_trades"] > 0 or ctx["skipped_ladders"] > 0
                          or ctx["skipped_alternates"] > 0)
             if ctx["errors"]:

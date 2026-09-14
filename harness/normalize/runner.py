@@ -57,6 +57,90 @@ def _family_filter(family: str):
     }[family]
 
 
+def family_of(source: str, endpoint: str) -> str | None:
+    """Which normalize family a raw row belongs to -- the Python side of `_family_filter`.
+
+    The two must agree for the same row or the backlog number would be about a different queue
+    than the one that drains; `tests/test_coverage_denominator.py` pins one representative
+    endpoint per family against this map. Anything else returns None and is counted nowhere.
+    """
+    if source == "espn":
+        return "espn"
+    if source == "odds_api" and endpoint.startswith("/sports/"):
+        # `_family_filter`'s two LIKE patterns, in the same order and with the same
+        # exclusion: `/sports/%/events/%/odds` is alternates, `/sports/%/odds` that is
+        # *not* under `/events/` is featured (`runner.py` `_family_filter`).
+        if endpoint.endswith("/odds"):
+            return "odds_alternates" if "/events/" in endpoint else "odds_featured"
+        return None
+    if source == "kalshi":
+        if endpoint == "/events":
+            return "kalshi_events"
+        if endpoint == "/markets":
+            return "kalshi_markets"
+        if endpoint == "/markets/trades":
+            return "kalshi_trades"
+        if endpoint.startswith("/markets/") and endpoint.endswith("/orderbook"):
+            return "kalshi_orderbook"
+        if endpoint.startswith("/series/"):
+            return "kalshi_series"
+    return None
+
+
+#: 6D §1.3(c). The newest raw id this run wrote, per (source, endpoint). Bounded by `run_id` on
+#: `ix_raw_run` (`harness/db/schema.py`) -- the ids the tick itself inserted, never a scan of the
+#: tape.
+_RUN_RAW_IDS = text(
+    "select source, endpoint, max(id) as newest from raw_responses "
+    "where run_id = :run_id group by source, endpoint")
+
+#: The oldest unprocessed row's own timestamp, per family. `raw_responses` is range-partitioned
+#: on `fetched_at` and its primary key is `(id, fetched_at)`, so whether this read is
+#: index-ordered across partitions is a question about the plan rather than about the statement:
+#: the plan task captures `EXPLAIN` for it and **abandons it for the id lag alone** if it is not
+#: (§1.3c). `NORMALIZE_AGE_ENABLED` is that switch, and it is a module constant so the decision
+#: is one line rather than a deletion.
+#: The cursor is the family's own watermark but the row returned is the first row after it in
+#: *any* family, so the age is an upper bound on that family's own backlog age -- which is the
+#: direction that cannot understate a backlog. §1.3(d)'s rule reads it against one cadence, and
+#: the id lag beside it is exact.
+_OLDEST_UNPROCESSED = text(
+    "select fetched_at from raw_responses where id > :cursor order by id limit 1")
+NORMALIZE_AGE_ENABLED = True
+
+
+def backlog_samples(session: Session, run_id: int, now: datetime) -> list[tuple[str, object, dict]]:
+    """`normalize.backlog_ids` and `normalize.backlog_age_s` per family (§1.3c).
+
+    Journal 154's finding -- the deployed stage order works but "about 12 h normalizer backlog
+    yields zero current venue_quotes" -- is exactly this number, and §1.3(d) is the decision it
+    feeds. A family at zero is still reported: evidence that a queue is empty is evidence.
+
+    `now` is a parameter, never `datetime.now()`: every age in this suite is computed against a
+    caller-supplied tz-aware instant, which is what lets a test assert an exact number.
+    """
+    newest: dict[str, int] = {}
+    for source, endpoint, last_id in session.execute(_RUN_RAW_IDS, {"run_id": run_id}).all():
+        family = family_of(source, endpoint)
+        if family is not None:
+            newest[family] = max(newest.get(family, 0), int(last_id))
+    if not newest:
+        return []
+    cursors = {row.family: row.last_raw_id for row in session.execute(
+        select(NormalizeState)).scalars().all()}
+    samples: list[tuple[str, object, dict]] = []
+    for family, last_id in newest.items():
+        cursor = int(cursors.get(family, 0))
+        samples.append(("normalize.backlog_ids", max(0, last_id - cursor), {"family": family}))
+        if NORMALIZE_AGE_ENABLED and last_id > cursor:
+            oldest = session.execute(_OLDEST_UNPROCESSED, {"cursor": cursor}).scalar()
+            if oldest is not None:
+                age = (now - oldest).total_seconds()
+                samples.append(("normalize.backlog_age_s", max(0.0, round(age, 1)),
+                                {"family": family}))
+    return samples
+
+
 def _remember_event(ev: dict) -> None:
     """Write one event into the process-wide cache, keeping it under `_EVENTS_MAX`."""
     ticker = ev.get("event_ticker")

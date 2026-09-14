@@ -30,7 +30,7 @@ is what makes "no outcome reaches the table unclassified" true at the write.
 import logging
 from typing import Iterable, NamedTuple
 
-from sqlalchemy import insert
+from sqlalchemy import insert, text
 from sqlalchemy.orm import Session
 
 from harness import telemetry
@@ -64,6 +64,32 @@ _NO_INTERVAL = (SCHEDULED, COMPLETED)
 #: 12 bound parameters is 36,864 parameters, inside psycopg's 65,535 limit, so the write stays
 #: one statement (`SIGNAL_INSERT_CHUNK`'s reasoning, `harness/strategy/pipeline.py:48-52`).
 COVERAGE_ROW_CAP = 3072
+
+#: How many `runs` rows the denominator read walks. A week at the 30 s heartbeat is about 20,160
+#: runs, so this carries the same ~25 % margin `T13_NOTES_LIMIT` does for the report's own
+#: capped read. The cap, not a `started_at` predicate, is what stops the read: `runs` has no
+#: index on `started_at` (ruling I5), so a predicate beside a limit would walk the primary key
+#: backwards discarding rows until it had `limit` matches -- which is the plan fix 31 removed
+#: from Floor's funnel. When the cap binds, the counts describe the newest `COVERAGE_RUN_CAP`
+#: runs rather than the whole window, and `eligible_runs`' caller says so.
+COVERAGE_RUN_CAP = 25_000
+
+#: `(total_runs, non_skipped_runs, priced_runs)` for a window, with the exhausted count the
+#: share below is built from. Cap-then-filter on `runs_pkey`, which is assigned in insertion
+#: order by the one writer that inserts here, so newest-first by id is newest-first by time.
+_ELIGIBLE_RUNS = text("""
+    select count(*) as total,
+           count(*) filter (where r.status <> 'skipped') as non_skipped,
+           count(*) filter (where r.priced) as priced,
+           count(*) filter (where r.priced and r.exhausted) as exhausted
+    from (
+        select started_at, status,
+               (notes ? 'pricing') as priced,
+               coalesce((notes->'pricing'->>'budget_exhausted')::boolean, false) as exhausted
+        from runs order by id desc limit :cap
+    ) r
+    where r.started_at >= :start and r.started_at < :end
+""")
 
 #: The ttk boundaries already in the code: `min_ttk_min: 20` in every registered variant YAML,
 #: the 3 h ladder window (`cadence.select_ladders`), the 36 h alternates window
@@ -241,3 +267,31 @@ def evaluation_completion_rows(cells: dict[int, Cell], variant_ids: Iterable[str
             counts[key] = counts.get(key, 0) + 1
     return [(cell, outcome, n, None if outcome in _NO_INTERVAL else overdue_ms)
             for (cell, outcome), n in counts.items()]
+
+
+def eligible_runs(session: Session, window: dict) -> tuple[int, int, int]:
+    """`(total_runs, non_skipped_runs, priced_runs)` for `window`.
+
+    **`priced_runs` is the denominator of every exhaustion claim** (§1.3b, §0.6). The other two
+    are published beside it because they differ on a real day -- 2,220 / 562 / 243 on
+    2026-09-11 -- and a reader given one of them cannot tell which claim it supports.
+
+    `window` is `{"start": dt, "end": dt}` and is half-open on the right. A window reaching
+    further back than `COVERAGE_RUN_CAP` runs is described by the newest `COVERAGE_RUN_CAP`
+    runs rather than in full, and the caller judging such a window says so beside the numbers.
+    """
+    row = session.execute(_ELIGIBLE_RUNS, {"cap": COVERAGE_RUN_CAP, **window}).one()
+    return int(row.total), int(row.non_skipped), int(row.priced)
+
+
+def exhaustion_share(session: Session, window: dict) -> tuple[int, int, float | None]:
+    """`(exhausted_priced_runs, priced_runs, share)`, the share over `priced_runs` and nothing
+    else. None when nothing priced in the window, which is not a share of zero.
+
+    "Exhausted" here is `notes->'pricing'->'budget_exhausted'`, the *pricing* deadline -- never
+    `runs.budget_exhausted`, which is the collection verdict and a different quantity (§0.2:
+    164 runs carrying the first against 39 pricing blocks carrying the second in the same 24 h).
+    """
+    row = session.execute(_ELIGIBLE_RUNS, {"cap": COVERAGE_RUN_CAP, **window}).one()
+    priced, exhausted = int(row.priced), int(row.exhausted)
+    return exhausted, priced, (exhausted / priced if priced else None)
