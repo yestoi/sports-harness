@@ -17,6 +17,7 @@ from harness.feeds.espn import EspnClient, Kickoff, parse_kickoffs
 from harness.feeds.nws import NwsClient
 from harness.feeds.odds_api import OddsApiClient, parse_credit_headers, parse_event_ids_and_times
 from harness.normalize.runner import normalize_new
+from harness.ops import coverage
 from harness.recorder import store
 from harness.recorder.cadence import (SPORTS, alternates_due, interval_for, is_due, select_ladders,
                                       select_trade_tickers)
@@ -560,6 +561,10 @@ class Recorder:
                     if budget.remaining_s() < alt_floor:
                         ctx["skipped_alternates"] += 1
                         continue
+                    # 6D §1.1: this family enumerates inside the fetch, so its scheduled count
+                    # is captured here, once per due event actually attempted.
+                    ctx["coverage_selected"]["odds_alternates"] = (
+                        ctx["coverage_selected"].get("odds_alternates", 0) + 1)
                     try:
                         r = self.odds.fetch_event_alternates(sport_key, eid)
                         store.store_raw(session, run.id, "odds_api", f"/sports/{sport_key}/events/{eid}/odds",
@@ -696,6 +701,10 @@ class Recorder:
             if not budget.ok():
                 ctx["skipped_trades"] += 1
                 continue
+            # 6D §1.1, as for alternates: counted once per selected ticker the budget let
+            # through, so `selected + skipped` is the selection `select_trade_tickers` made.
+            ctx["coverage_selected"]["kalshi_trades"] = (
+                ctx["coverage_selected"].get("kalshi_trades", 0) + 1)
             try:
                 pages = self.kalshi.fetch_trades(ticker, min_ts, max_pages=TRADES_MAX_PAGES)  # I3: follows the cursor
                 for r in pages:
@@ -739,10 +748,13 @@ class Recorder:
             except Exception as e:  # noqa: BLE001
                 log.exception("kalshi trades failed")
                 ctx["errors"].append({f"kalshi_trades:{ticker}": repr(e)})
-        for ticker in select_ladders(now, summaries, kickoffs, self.s.tz_local, self.s.ladder_cap_per_tick):
+        ladders = select_ladders(now, summaries, kickoffs, self.s.tz_local, self.s.ladder_cap_per_tick)
+        for ticker in ladders:
             if not budget.ok():
                 ctx["skipped_ladders"] += 1
                 continue
+            ctx["coverage_selected"]["kalshi_orderbook"] = (
+                ctx["coverage_selected"].get("kalshi_orderbook", 0) + 1)
             try:
                 r = self.kalshi.fetch_orderbook(ticker)
                 store.store_raw(session, run.id, "kalshi", f"/markets/{ticker}/orderbook", {"depth": 20}, r)
@@ -829,6 +841,87 @@ class Recorder:
             ctx["warnings"].append({"leg_probs": repr(e)})
             ctx["leg_probs"] = 0
 
+    # ---- coverage (6D §1.1) ---------------------------------------------------------------
+    def _collection_units(self, family: str, scope: str, interval: int | None,
+                          now: datetime, kickoffs: list[Kickoff]) -> list[tuple[str, str, int | None]]:
+        """`(source_state key, sport, interval in force)` for one family this tick.
+
+        Built from the same helpers the sources themselves use -- `SPORTS`, `FOOTBALL_SERIES`,
+        `_SERIES_SPORT` and `cadence.interval_for` -- and from the same key strings, so a
+        due-ness recorded here is the due-ness the fetch will act on rather than a second
+        opinion about it.
+        """
+        units = []
+        if scope == "sport":
+            for sport in SPORTS:
+                period = interval if interval is not None else interval_for(
+                    sport, now, kickoffs, self.s.tz_local)
+                units.append((f"{family}:{sport}", sport, period))
+        else:
+            for series in FOOTBALL_SERIES:
+                sport = _SERIES_SPORT[series]
+                period = interval if interval is not None else interval_for(
+                    sport, now, kickoffs, self.s.tz_local)
+                units.append((f"{family}:{series}", sport, period))
+        return units
+
+    def _coverage_plan(self, session: Session, now: datetime, kickoffs: list[Kickoff],
+                       ctx: dict) -> None:
+        """The collection domain's scheduled set, written before the fetch phase (§1.1).
+
+        A tick whose cadence is `None` (quiet hours, `cadence.py`) schedules nothing and is
+        recorded as such -- `cadence_none`, not a miss -- which is the distinction §0.3 exists
+        to make.
+        """
+        due: dict[tuple[str, str], int] = {}
+        not_due: list[tuple] = []
+        #: The state of any family already fetched this tick, read before it was (ESPN's, which
+        #: `maybe_tick` has to run first for the kickoffs `interval_for` reads).
+        before = ctx.get("coverage_state_before", {})
+        for family, scope, interval in coverage.COLLECTION_FAMILIES:
+            for key, sport, period in self._collection_units(family, scope, interval, now, kickoffs):
+                cell = coverage.Cell(sport=sport, source=family)
+                last = before[key] if key in before else store.get_source_state(session, key)
+                if period is None:
+                    not_due.append((cell, "cadence_none", 1, 0))
+                elif self._due(last, now, period):
+                    due[(family, sport)] = due.get((family, sport), 0) + 1
+                else:
+                    not_due.append((cell, "not_due", 1, 0))
+        ctx["coverage_due"] = due
+        ctx["coverage_not_due"] = not_due
+        if due:
+            coverage.record(session, ctx["run_id"], coverage.DOMAIN_COLLECTION,
+                            [(coverage.Cell(sport=sport, source=family), coverage.SCHEDULED, n, None)
+                             for (family, sport), n in due.items()])
+
+    def _coverage_close(self, session: Session, ctx: dict, overdue_ms: int) -> None:
+        """The collection domain's completion rows: what became of the scheduled set, plus the
+        three families that enumerate inside the fetch (`odds_alternates`, `kalshi_trades`,
+        `kalshi_orderbook`), whose scheduled row is written here from the count captured at
+        selection time and whose skipped counters `runs.notes` already carries."""
+        failed = {str(key).split(":", 1)[0] for entry in ctx["errors"] for key in entry}
+        rows = list(ctx["coverage_not_due"])
+        for (family, sport), n in ctx["coverage_due"].items():
+            outcome = "http_error" if family in failed else coverage.COMPLETED
+            rows.append((coverage.Cell(sport=sport, source=family), outcome, n,
+                         None if outcome == coverage.COMPLETED else overdue_ms))
+        for family, skipped_key in (("odds_alternates", "skipped_alternates"),
+                                    ("kalshi_trades", "skipped_trades"),
+                                    ("kalshi_orderbook", "skipped_ladders")):
+            selected = int(ctx["coverage_selected"].get(family, 0))
+            skipped = int(ctx[skipped_key])
+            if not selected and not skipped:
+                continue
+            cell = coverage.Cell(source=family)
+            rows.append((cell, coverage.SCHEDULED, selected + skipped, None))
+            if selected:
+                rows.append((cell, coverage.COMPLETED, selected, None))
+            if skipped:
+                rows.append((cell, skipped_key, skipped, overdue_ms))
+        if rows:
+            coverage.record(session, ctx["run_id"], coverage.DOMAIN_COLLECTION, rows)
+
     # ---- entry point -----------------------------------------------------------------
     def _due(self, last: datetime | None, now: datetime, interval: int | None) -> bool:
         # interval=None is the cadence planner's quiet-window "do not fetch": a forced tick never
@@ -843,7 +936,11 @@ class Recorder:
         started_mono = self.monotonic()
         budget = _Budget(self.s.tick_budget_s, self.monotonic)
         ctx: dict = {"n": 0, "credits": 0, "remaining": None, "errors": [], "warnings": [], "fetched": False,
-                     "skipped_trades": 0, "skipped_ladders": 0, "skipped_alternates": 0, "trade_gaps": []}
+                     "skipped_trades": 0, "skipped_ladders": 0, "skipped_alternates": 0, "trade_gaps": [],
+                     # 6D §1.1: the collection domain's three coverage counters. They travel in
+                     # `ctx` like every other one, so neither coverage method needs the `Run`.
+                     "coverage_selected": {}, "coverage_due": {}, "coverage_not_due": [],
+                     "coverage_state_before": {}}
         with self.session_factory() as session:
             ensure_partitions(session, now)
             # Task 12b: read the newest run's build_sha before this run's own row exists, so
@@ -856,6 +953,7 @@ class Recorder:
             # backstop: every run row must carry its build_sha whether or not the deploy event
             # or the end-of-tick metric batch succeeds).
             session.commit()
+            ctx["run_id"] = run.id
             if not self._startup_checked:
                 self._startup_checked = True
                 if prior_sha is not None and prior_sha != self.s.build_sha:
@@ -876,8 +974,20 @@ class Recorder:
             # quiet weekday period.
             kickoffs: list[Kickoff] = []
             try:
+                # 6D §1.1: ESPN is fetched before the coverage plan is written, because
+                # `interval_for` needs the day's kickoffs -- so its due-ness is read here,
+                # *before* `_espn`'s own `set_source_state` makes every fetched unit look
+                # `not_due`. Scheduled is recorded from what was true before the work, which is
+                # the whole contract; the other five families are planned before they run.
+                ctx["coverage_state_before"] = {
+                    f"espn:{sport}": store.get_source_state(session, f"espn:{sport}")
+                    for sport in SPORTS}
                 kickoffs = self._espn(session, run, now, ctx)
                 self._checkpoint(session, run)
+                # 6D §1.1: the collection domain's scheduled set, recorded before the rest of
+                # the fetch phase and after `kickoffs` is bound, which is what `interval_for`
+                # reads. Never derived from what the fetch achieved.
+                self._coverage_plan(session, now, kickoffs, ctx)
                 self._odds(session, run, now, kickoffs, budget, ctx)
                 self._checkpoint(session, run)
                 summaries = self._kalshi_markets(session, run, now, kickoffs, ctx)
@@ -951,6 +1061,10 @@ class Recorder:
             except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a tick
                 log.exception("recorder metrics failed")
                 session.rollback()
+            # 6D §1.1: the completion rows for exactly the units planned above, written from
+            # inside `maybe_tick` so a fetch that raised still closes what it can and leaves the
+            # rest visible as scheduled rows nothing closed.
+            self._coverage_close(session, ctx, int((self.monotonic() - started_mono) * 1000))
             store.finish_run(session, run, status, error=None if not ctx["errors"] else "see notes",
                              n_requests=ctx["n"], credits_used=ctx["credits"], odds_remaining=ctx["remaining"],
                              budget_exhausted=exhausted,

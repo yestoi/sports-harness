@@ -1,0 +1,22 @@
+{
+  "fair_direct": 1136,
+  "fair_derived": 3079,
+  "fair_derived_skipped": false,
+  "no_sharp": 2140,
+  "no_sharp_skipped": false,
+  "gaps": 0,
+  "budget_s": 20,
+  "budget_exhausted": true,
+  "variants_run": [],
+  "order": [],
+  "signals": {},
+  "variant_ms": {},
+  "stages": [
+    {"name": "fair_direct", "elapsed_ms": 671, "status": "ran"},
+    {"name": "gaps_direct", "elapsed_ms": 552, "status": "ran"},
+    {"name": "variants_direct", "elapsed_ms": 0, "status": "skipped"},
+    {"name": "fair_derived", "elapsed_ms": 0, "status": "skipped"},
+    {"name": "gaps_derived", "elapsed_ms": 0, "status": "skipped"},
+    {"name": "variants_derived", "elapsed_ms": 0, "status": "skipped"}
+  ]
+}

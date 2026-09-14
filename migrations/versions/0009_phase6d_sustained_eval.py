@@ -41,7 +41,8 @@ one. Removing an index or a table is non-additive and therefore a gate the user 
 """
 from collections.abc import Sequence
 
-from alembic import op  # noqa: F401 - used by the table passes Tasks 4 and 8 add
+import sqlalchemy as sa
+from alembic import op
 
 from migrations.env import concurrent_index
 
@@ -52,6 +53,31 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Task 4 (6D §1.1, D1): `coverage_samples` -- what a tick scheduled and what became of it.
+    op.create_table(
+        "coverage_samples",
+        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("run_id", sa.BigInteger(), nullable=False),
+        sa.Column("ts", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("domain", sa.String(length=12), nullable=False),
+        sa.Column("source", sa.String(length=16), nullable=True),
+        sa.Column("sport", sa.String(length=8), nullable=True),
+        sa.Column("ttk_bucket", sa.String(length=12), nullable=True),
+        sa.Column("feed", sa.String(length=9), nullable=True),
+        sa.Column("market_type", sa.String(length=16), nullable=True),
+        sa.Column("variant_id", sa.String(length=12), nullable=True),
+        sa.Column("outcome", sa.String(length=24), nullable=False),
+        sa.Column("n", sa.Integer(), nullable=False),
+        sa.Column("overdue_ms", sa.Integer(), nullable=True),
+        sa.PrimaryKeyConstraint("id"),
+        if_not_exists=True,
+    )
+    # Plain, not CONCURRENTLY: `coverage_samples` is new, so it is empty and has no writer
+    # attached while this runs. F65's rule is about a populated table with a live writer.
+    op.create_index("ix_coverage_ts_domain", "coverage_samples", ["ts", "domain"],
+                    if_not_exists=True)
+    op.create_index("ix_coverage_run", "coverage_samples", ["run_id"], if_not_exists=True)
+
     # Fix 51 (6D §1.9, D9): the index `intents_without_order_or_skip`'s 24 h bound needs.
     concurrent_index("ix_intents_created", "intents", ["created_at"])
 

@@ -1,0 +1,32 @@
+{
+  "fair_direct": 1136,
+  "fair_derived": 3079,
+  "fair_derived_skipped": false,
+  "no_sharp": 2140,
+  "no_sharp_skipped": false,
+  "gaps": 724,
+  "budget_s": 20,
+  "budget_exhausted": false,
+  "order": ["sharp_two_sided", "sharp_direct", "no_velocity", "sharp_plus_derived",
+            "wide_band", "constrained", "nfl_only"],
+  "signals": {
+    "sharp_two_sided": {"candidate": 166, "rejected": 558},
+    "sharp_direct": {"candidate": 141, "rejected": 583},
+    "no_velocity": {"candidate": 128, "rejected": 596},
+    "sharp_plus_derived": {"candidate": 166, "rejected": 1376},
+    "wide_band": {"candidate": 96, "rejected": 628},
+    "constrained": {"candidate": 41, "rejected": 683},
+    "nfl_only": {"candidate": 9, "rejected": 715}
+  },
+  "variant_ms": {"sharp_two_sided": 121, "sharp_direct": 118, "no_velocity": 115,
+                 "sharp_plus_derived": 8331, "wide_band": 113, "constrained": 110,
+                 "nfl_only": 108},
+  "stages": [
+    {"name": "fair_direct", "elapsed_ms": 671, "status": "ran"},
+    {"name": "gaps_direct", "elapsed_ms": 552, "status": "ran"},
+    {"name": "variants_direct", "elapsed_ms": 783, "status": "ran"},
+    {"name": "fair_derived", "elapsed_ms": 708, "status": "ran"},
+    {"name": "gaps_derived", "elapsed_ms": 700, "status": "ran"},
+    {"name": "variants_derived", "elapsed_ms": 8866, "status": "ran"}
+  ]
+}

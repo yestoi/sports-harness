@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 from harness.config.settings import Settings
 from harness.db.models import Game, MarketGapSnapshot, Signal, VenueMarket
 from harness.execution.risk import stopped_variants
+from harness.ops import coverage
 from harness.pricing.fair import compute_derived_fair_values, compute_direct_fair_values
 from harness.pricing.gaps import build_gap_snapshots
 from harness.strategy.as_measured import as_measured_table
@@ -330,6 +331,9 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
 
     scored: set[str] = set()
     complete: set[str] = set()
+    #: 6D §1.1: `(variant_id, venue_market_id) -> outcome` for every market a variant
+    #: actually said something about, filled in by `score` and read once at completion.
+    coverage_outcomes: dict[tuple[str, int], str] = {}
 
     def record_order() -> None:
         """`variants_run`/`variants_skipped` in `pricing_order`, not in the order stages ran.
@@ -356,6 +360,12 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         session.commit()
         result["signals"][variant.name] = {"candidate": candidate,
                                            "rejected": len(signals) - candidate}
+        # 6D §1.1: what this variant actually said about each market. A rejection on `has_fair`
+        # is a market with no fair value at all (§0.12), which is a coverage fact rather than a
+        # strategy one; every other row -- candidate or rejected -- is a completed evaluation.
+        for signal in signals:
+            coverage_outcomes[(variant.variant_id, signal.venue_market_id)] = (
+                "no_fair" if signal.rejection_reason == "has_fair" else "completed")
         result["variant_ms"][variant.name] = (
             result["variant_ms"].get(variant.name, 0) + int((time.monotonic() - t_variant) * 1000))
         scored.add(variant.name)
@@ -368,6 +378,17 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # consumers still need the direct gaps already present. Include this read in stage cost.
     direct_rows = _load_gap_rows(session, run_id, market_order) if ordered else []
     direct_complete = len(direct_rows) == len(market_order)
+
+    # 6D §1.1: the scheduled set, recorded before the work is attempted and never derived from
+    # the completions. The cell each unit is enumerated under is reused at completion, so §3
+    # row 2's reconciliation query -- which matches every cell column with `is not distinct
+    # from` -- closes exactly the rows this call opens.
+    coverage_cells = coverage.evaluation_cells(direct_rows, market_order)
+    coverage_variants = [v.variant_id for v in ordered]
+    coverage_at = _stage_clock()
+    if ordered:
+        coverage.record(session, run_id, coverage.DOMAIN_EVALUATION,
+                        coverage.evaluation_scheduled_rows(coverage_cells, coverage_variants))
 
     for variant in priority:
         if not ok():
@@ -425,5 +446,18 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         score(variant, all_rows, full=True)
     stages.record("variants_derived", t0)
     record_order()
+
+    # 6D §1.1: the completion rows for exactly the units scheduled above. `gapped` is the
+    # markets that ended the run with a gap row, which is what separates `no_gap` from
+    # `no_signal`; the second `_load_gap_rows` result is already in `all_rows`.
+    if ordered:
+        coverage.record(
+            session, run_id, coverage.DOMAIN_EVALUATION,
+            coverage.evaluation_completion_rows(
+                coverage_cells, coverage_variants, coverage_outcomes,
+                gapped={row.venue_market_id for row in all_rows},
+                scored={v.variant_id for v in ordered if v.name in scored},
+                budget_exhausted=result["budget_exhausted"],
+                overdue_ms=int((_stage_clock() - coverage_at) * 1000)))
 
     return finish()

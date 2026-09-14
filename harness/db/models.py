@@ -752,6 +752,47 @@ class MetricSample(Base):
     value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
 
 
+class CoverageSample(Base):
+    """What one tick *scheduled* and what became of it (6D addendum §1.1, decision D1).
+
+    v2 records what a tick did (`runs.notes`); it never records what was due. The acceptance
+    sentence -- "every scheduled eligible primary/gate evaluation completes inside its freshness
+    window **or leaves an explicit reason and interval**" -- cannot be evaluated from an
+    after-the-fact scan, and 6C ruling C1 already conceded that t13's coverage rows are "what the
+    notes can say, not a table-level truth". So the writer that made the decision records it, at
+    the moment it made it, in two phases: one `outcome = 'scheduled'` row per cell at
+    enumeration, closed by a completion row for the same cell in the same tick.
+
+    A **cell** is `(sport, ttk_bucket, feed, market_type, variant_id)`, each nullable (D2: the
+    grain decision 4 names, not a per-`venue_market_id` grain, which would be thousands of rows
+    a tick -- the per-market detail already exists in `fair_values`, `market_gap_snapshots` and
+    `signals` by `run_id`). `source` is the sixth, and is the collection domain's own: a source
+    is fetched for a sport, not for a feed kind or a market type (M7), and §1.1's collection
+    grain is `(source, sport)`, which none of the other five columns can carry. It is NULL in
+    the evaluation domain, where every §3 query lives.
+
+    `overdue_ms` is the interval between the scheduled instant and the moment the row was
+    written: NULL on `scheduled` and on `completed`, **required** on every other outcome, and
+    refused at the write either way (`harness/ops/coverage.py::record`).
+    """
+    __tablename__ = "coverage_samples"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    domain: Mapped[str] = mapped_column(String(12), nullable=False)   # collection|evaluation
+    source: Mapped[str | None] = mapped_column(String(16))
+    sport: Mapped[str | None] = mapped_column(String(8))
+    ttk_bucket: Mapped[str | None] = mapped_column(String(12))
+    feed: Mapped[str | None] = mapped_column(String(9))
+    market_type: Mapped[str | None] = mapped_column(String(16))
+    variant_id: Mapped[str | None] = mapped_column(String(12))
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False)
+    n: Mapped[int] = mapped_column(Integer, nullable=False)
+    overdue_ms: Mapped[int | None] = mapped_column(Integer)
+    __table_args__ = (Index("ix_coverage_ts_domain", "ts", "domain"),
+                      Index("ix_coverage_run", "run_id"))
+
+
 class OperatorEvent(Base):
     """One operator-visible event: a kill, a deploy, a settle error, a check failure, a note.
     `summary` always passes the F50 sanitizer (`harness.telemetry.sanitize_reason`) before
