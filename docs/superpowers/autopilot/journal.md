@@ -2275,3 +2275,10 @@ Controller actions from these rulings (each recorded where it lands):
 - Expected tasks: 10. Wave map: W1 T1 (fix 51 checks bounded to their window; opus), T2 (fix 46 RFQ yield guard; opus), T3 (exclusion classes; sonnet) | W2 T4 (coverage_samples; opus) | W3 T5 (fix 48 closure; opus) | W4 T6 (latency; sonnet) | W5 T7 (denominator; opus) | W6 T8 (episodes/t14/Floor; opus) | W7 T9 (policy harness on fixtures only; opus; may run beside T7/T8) | W8 T10 (verify rows; sonnet).
 - Migration numbering: the plan's `0009_phase6d_sustained_evaluation` on `0008_positions_open_fill` matches main; 4.6's T4 was ruled the same number today; the later merger is renumbered at merge (D9).
 - Dispatched: T1 (opus) 05:2x CT on `phase6d-t1-checks-window`. T2/T3 wait for slots (ceiling 3 with 6B T7 and 4.6 T4 in flight). Dispatches this unit: 1. CT day: 36.
+
+## 187. hotfix - fix 49 (recorder peak memory, rounds 1-3 + Minors) merged - 2026-09-14 05:31 CT
+
+- Orient: rule 1 (row 49; the last open hotfix of the batch with a green suite). Branch `fix-20260913-recorder-peak`: round 3b implemented after the crash (b1dfe6a), opus review Approved with Minors, Minors re-reviewed Approved (haiku, 03:55 CT), rebased onto main twice (47ac626, 1e47594).
+- Test evidence: full suite at 1e47594 including the recorder soaks: 3,319 passed / 6 xfailed / 1 deselected, pristine, exit 0 (`fix49-full-1e47594.log`; release tree 22a92431…; the rebase onto main before the ff crossed docs commits only, so the tree is main's).
+- Merge: ff-merged as **07a4de8** (rebase-and-ff in one command); pushed. Deploy trigger open: ships app-only together with fix 57/58 (round 1 in flight) and fix 67 (suite running) after verify 185's 05:42 CT judgment. Row 49's 6 h / 500 MiB row is re-judged on that build (08:58 CT).
+- Dispatches this unit: 4 (closed). CT day: 36.
