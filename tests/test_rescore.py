@@ -158,6 +158,12 @@ def test_the_four_outcomes_partition_the_denominator(db_session, seeded_world):
     # with its own decrement and leaves nothing.
     measured = {r.order_id: r.watched_filled for r in _rows(db_session, policy="ahead")}
     assert measured[A] == Decimal("3.00") and measured[B] == Decimal("0.00")
+    # Review Minor 4: every row carries the elapsed seconds, the two unverifiable ones included
+    # (C's tape is silent, D's read was cancelled; neither fact says anything about how long
+    # their markets were dirty).
+    timing = {r.order_id: (r.watched_dirty_s, r.counterfactual_dirty_s, r.unobserved_s)
+              for r in _rows(db_session, policy="ahead")}
+    assert timing[C] == (0, 0, 1800) and timing[D] == (0, 0, 1800)
 
 
 def test_the_originals_are_untouched(db_session, seeded_world):
@@ -350,6 +356,11 @@ def test_an_order_with_no_book_at_placement_is_unverifiable_not_corrected(db_ses
     rows = _rows(db_session, policy="ahead")
     assert [(r.order_id, r.verdict, r.watched_filled) for r in rows] == [
         (9105, "unverifiable", None)]
+    # Review Minor 4: the elapsed seconds do not depend on whether the order could be scored,
+    # so they are written on this path too -- otherwise any later aggregate over them would
+    # silently condition on scorability.
+    assert (rows[0].watched_dirty_s, rows[0].counterfactual_dirty_s,
+            rows[0].unobserved_s) == (0, 0, 1800)
 
 
 def test_an_order_with_no_expiry_is_unverifiable_rather_than_a_failed_run(db_session):
@@ -367,7 +378,12 @@ def test_an_order_with_no_expiry_is_unverifiable_rather_than_a_failed_run(db_ses
     counts = rescore(db_session, from_order=9106, to_order=9106,
                      corrections=CORRECTIONS_IN_FORCE)
     assert (counts.denominator, counts.unverifiable_no_tape) == (1, 1)
-    assert [r.verdict for r in _rows(db_session, policy="behind")] == ["unverifiable"]
+    rows = _rows(db_session, policy="behind")
+    assert [r.verdict for r in rows] == ["unverifiable"]
+    # The one path whose timing columns stay NULL (review Minor 4): `order_dirty_time` excludes
+    # NULL-expiry orders by construction (T6's F6), and an order with no resting interval has no
+    # interval for the seconds to be measured over.
+    assert (rows[0].watched_dirty_s, rows[0].unobserved_s) == (None, None)
 
 
 def test_a_correction_set_that_does_not_fit_the_column_is_refused(db_session):
@@ -435,6 +451,9 @@ def test_the_command_prints_the_partition_and_its_caveat_and_never_a_ratio(db_se
     assert ("denominator=4 completed=2 unverifiable_no_tape=1 "
             "unverifiable_read_cancelled=1") in result.output
     assert "right-censored" in result.output and "not a rate" in result.output
+    # Review IMP-2: what the table got, beside what the partition says, and never folded in.
+    assert "rows: written=8 existing=0" in result.output
+    assert "range not exhausted" not in result.output
     assert "27/445" not in result.output
     assert "%" not in result.output and "/4" not in result.output
     # The rows are there, and the originals are not touched by the command either.
@@ -465,5 +484,104 @@ def test_a_tape_read_that_hits_its_row_cap_is_unverifiable_rather_than_scored(db
                      corrections=CORRECTIONS_IN_FORCE)
     assert (counts.denominator, counts.completed, counts.unverifiable_no_tape,
             counts.unverifiable_read_cancelled) == (1, 0, 0, 1)
-    assert [(r.verdict, r.watched_filled) for r in _rows(db_session, policy="ahead")] == [
-        ("unverifiable", None)]
+    rows = _rows(db_session, policy="ahead")
+    assert [(r.verdict, r.watched_filled) for r in rows] == [("unverifiable", None)]
+    assert rows[0].unobserved_s == 1800          # review Minor 4, as above
+
+
+def test_a_run_that_reaches_its_read_limit_says_the_range_was_not_exhausted(db_session,
+                                                                            seeded_world,
+                                                                            monkeypatch):
+    """Expected: `exhausted` false, the last order reached named, and the partition still
+    printed (review IMP-1).
+
+    Derived independently from the module's own rule about bounds: a read that returns exactly
+    its limit returns a *prefix*, which is why a tape read at `DELTA_BATCH_LIMIT` refuses to
+    score. The driving read has the same property one level up -- a partition printed over the
+    first N orders of a longer range reads exactly like a partition over the whole of it -- so a
+    run that hits the ceiling has to say so, and has to name the order `--resume` continues
+    from, or the operator is guessing.
+    """
+    import os
+
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+    from harness.config.settings import get_settings
+
+    counts = rescore(db_session, from_order=seeded_world.first, to_order=seeded_world.last,
+                     corrections=CORRECTIONS_IN_FORCE, limit=2)
+    assert counts.denominator == 2 and counts.exhausted is False
+    assert counts.last_order_id == B
+    # And the whole range, which stops short of the limit, is reported as exhausted.
+    full = rescore(db_session, from_order=seeded_world.first, to_order=seeded_world.last,
+                   corrections=CORRECTIONS_IN_FORCE)
+    assert full.denominator == 4 and full.exhausted is True and full.last_order_id is None
+
+    url = os.environ.get("DATABASE_URL_TEST")
+    if not url:
+        pytest.skip("DATABASE_URL_TEST not set")
+    monkeypatch.setenv("DATABASE_URL", url)
+    get_settings.cache_clear()
+    try:
+        result = CliRunner().invoke(app, ["rescore", "--from-order", str(seeded_world.first),
+                                          "--to-order", str(seeded_world.last),
+                                          "--correction", "C1,C2,C3,C4,C5", "--limit", "2"])
+    finally:
+        get_settings.cache_clear()
+    assert result.exit_code == 0, result.output
+    assert "range not exhausted" in result.output
+    assert f"last order {B}" in result.output
+    assert f"--from-order {B}" in result.output
+    assert "denominator=2" in result.output          # the partition is still printed
+
+
+def test_a_rerun_reports_the_rows_it_did_not_write_and_names_a_stale_verdict(db_session,
+                                                                             seeded_world,
+                                                                             caplog):
+    """Expected: `written`/`existing` count the inserts, the pre-existing row survives
+    unchanged, and its disagreement with the freshly computed verdict is logged (review IMP-2).
+
+    Derived independently from the no-edit rule: `on conflict do nothing` is what makes a
+    correction new rows rather than an edit, so a second run over a range whose tape has since
+    been backfilled recomputes every order and keeps every old row. The counts it prints would
+    then describe rows that are not in the table, and Task 12's verify rows (which read the
+    table) and the journal (which reads the run) would disagree with nothing in the record
+    saying why. Counting the inserts and naming the stale row is what makes the divergence
+    visible without touching the stored row.
+    """
+    import logging
+
+    from harness.db.models import OrderRescore
+
+    ids = ",".join(sorted(CORRECTIONS_IN_FORCE))
+    # Order A's stored verdict is `corrected`; the repaired simulator says `validated`.
+    db_session.add(OrderRescore(order_id=A, correction_ids=ids, cancel_policy="ahead",
+                                verdict="corrected", computed_at=T0, build_sha="oldbuild"))
+    db_session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="harness.rescore"):
+        counts = rescore(db_session, from_order=seeded_world.first,
+                         to_order=seeded_world.last, corrections=CORRECTIONS_IN_FORCE,
+                         build_sha="newbuild")
+    # Eight rows for four orders; one of them was already there, so seven were written.
+    assert (counts.written, counts.existing) == (7, 1)
+    assert counts.written + counts.existing == 2 * counts.denominator
+    stored = db_session.execute(text(
+        "select verdict, build_sha, watched_filled from order_rescores "
+        "where order_id = :i and cancel_policy = 'ahead'"), {"i": A}).one()
+    # Never updated: the stored row is the record of what the earlier run computed.
+    assert stored == ("corrected", "oldbuild", None)
+    divergence = [r.message % r.args for r in caplog.records if "already scored" in r.message]
+    assert len(divergence) == 1, divergence
+    assert (f"order {A}" in divergence[0] and "ahead=corrected" in divergence[0]
+            and "oldbuild" in divergence[0] and "computed validated" in divergence[0])
+
+    # A second full run writes nothing at all and says so, with no stale-verdict line for the
+    # three orders whose stored verdict still agrees.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="harness.rescore"):
+        again = rescore(db_session, from_order=seeded_world.first, to_order=seeded_world.last,
+                        corrections=CORRECTIONS_IN_FORCE, build_sha="newbuild")
+    assert (again.written, again.existing) == (0, 8)
+    assert len([r for r in caplog.records if "already scored" in r.message]) == 1

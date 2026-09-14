@@ -963,8 +963,15 @@ def rescore_cmd(
     to_order: int = typer.Option(..., "--to-order"),
     correction: str = typer.Option(..., "--correction",
                                    help="comma-separated correction ids, e.g. C1,C2,C3,C4,C5"),
-    limit: int = typer.Option(None, "--limit"),
-    resume: bool = typer.Option(False, "--resume"),
+    limit: int = typer.Option(None, "--limit",
+                              help="Orders to read in this run; the default ceiling is "
+                                   "harness.rescore.DEFAULT_ORDER_LIMIT (10,000). A run that "
+                                   "reaches its limit says the range was not exhausted and "
+                                   "names the order to continue from."),
+    resume: bool = typer.Option(False, "--resume",
+                                help="Continue after the highest order already written in the "
+                                     "range under these correction ids; gaps inside the range "
+                                     "are not revisited (name their own --from-order)."),
 ) -> None:
     """Re-score an order range under the repaired simulator, as new `order_rescores` rows.
 
@@ -995,6 +1002,20 @@ def rescore_cmd(
           f"completed={counts.completed} "
           f"unverifiable_no_tape={counts.unverifiable_no_tape} "
           f"unverifiable_read_cancelled={counts.unverifiable_read_cancelled}")
+    # Beside the partition, and never folded into it: `written`/`existing` are about the table,
+    # not about the orders. A repeated run recomputes every order and keeps the rows it already
+    # had (`on conflict do nothing`, because a correction is new rows and never an edit), so
+    # without this line a stale table and a fresh-looking summary could not be told apart
+    # (review IMP-2). Rows that disagree with what is stored are named in the log, one line per
+    # order.
+    print(f"rows: written={counts.written} existing={counts.existing}")
+    if not counts.exhausted:
+        # The read returned exactly its limit, so the partition above describes a prefix of the
+        # range (review IMP-1). Said here as well as in the log, because the operator reads this
+        # line and decides whether to continue.
+        print(f"range not exhausted: stopped at the read limit, last order "
+              f"{counts.last_order_id}; continue with --from-order {counts.last_order_id} "
+              f"--to-order {to_order} --resume")
     # Printed with the counts, every time: the denominator is the orders whose counterfactual
     # had finished when this ran, so the partition describes what could be scored and is not a
     # rate over the range. Nothing here divides one cell by another.
