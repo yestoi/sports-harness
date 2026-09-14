@@ -813,9 +813,10 @@ class MarketDirtyInterval(Base):
     itself. There is no `recovery` cause (ruling IM-11): recovery is what happens when a market
     has *stopped* being dirty.
 
-    `ended_at` NULL means still dirty as of the last observation. Every open row for a market
-    absent from a step's market set is closed at that step, stamped with the last observation
-    that saw it, so a market whose last order closes while dirty cannot leave one open forever.
+    `ended_at` NULL means still dirty as of the last observation. A row is closed at the first
+    step that finds the market clean again, and every open row for a market absent from a
+    step's market set is closed at that step too, stamped with the last observation that saw
+    it, so a market whose last order closes while dirty cannot leave one open forever.
     """
     __tablename__ = "market_dirty_intervals"
     __table_args__ = (Index("ix_mdi_market_started", "venue_market_id", "started_at"),)

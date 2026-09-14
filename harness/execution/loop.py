@@ -417,9 +417,10 @@ class Executor:
 
         # 3. Books and markets.
         working = store.working_orders(session, self.replay)
-        # §3 row 11: the counterfactual retry backlog. Nothing is ever closed (ruling CR-4), so
-        # this is a queue depth rather than an error, and it is published so criterion 4's
-        # population cannot shrink without the metric saying so.
+        # §3 row 11: every counterfactual still running -- the whole pending population, not
+        # only the tickers inside a retry backoff. Nothing is ever closed (ruling CR-4), so this
+        # is a queue depth rather than an error, and it is published so criterion 4's population
+        # cannot shrink without the metric saying so.
         heartbeat["nw_pending"] = sum(1 for row in working if not row.nw_done)
         rows = store.market_rows(session, ({i.venue_market_id for i in intents}
                                            | {w.venue_market_id for w in working}), at)
