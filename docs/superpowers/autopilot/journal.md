@@ -2163,3 +2163,17 @@ Times are America/Chicago.
 - Rulings: (1) the executor failure is a verify FAIL that stops data (no cancels, fills, expiries or markouts since Sunday 13:04 CT): carried fix 60 ships alone ahead of every batch (execution path, opus/opus), app-only release; (2) the three failing integrity checks are unowned by any plan (grep of the 6B/6C/6D plans and the roadmap) and have been failing since at least 2026-09-13 02:11Z under "audit": rows 62-64 opened; fill-, markout- and score-derived numbers are under audit in reports until they clear; (3) `intents_without_order_or_skip` 52,269 and `orders_open_past_expiry` 11 are consequences of row 60, re-judged after its deploy, not new rows; (4) `build_sha_drift` 1,052 is the deploy-day artifact (pre-deploy runs inside 24 h) and clears by itself; (5) the never-autovacuumed small tables are below autovacuum's scale factor: anomaly, not carried; (6) Pulse's `kill_switch not_evaluated` after the restart: anomaly, re-read at the next verify; (7) `_scratch_engine`'s socket-host defect from the T2 reports is row 61 (tests only).
 - Carried forward: rows 60 (executor: keyless snapshots), 61 (`_scratch_engine` socket host), 62-64 (the three failing integrity checks); row 50 annotated (Sunday's venue buffer-overflow storm).
 - Next: hotfix fix 60 as soon as fix 59 lands (its covering tests need the fixture weeks); the fix 59 report is overdue at 03:23 CT (chase); wakeup 08:57 CT unchanged.
+
+## 178. decision - the user reports the hardware failure corrected - 2026-09-14 03:10 CT
+
+- Orient: user message in chat at 03:10 CT, verbatim: "I had a hardware failure that has since been corrected on the box."
+- Branch / commits: n/a.
+- Result: done (recorded).
+- Dispatches: 0.
+- Tests: n/a.
+- Review: n/a.
+- Deploy: none.
+- Verification: n/a.
+- Rulings: the User-side TODO of 2026-09-14 item (1) (CMOS battery / PSU) is annotated done per the user; items (2) time-sync ordering for the compose unit and (3) the ruling on runs 14485/14486 stay open; carried fix 57 (the in-app stale-clock guard) stays, since a corrected board does not remove the boot-ordering risk.
+- Carried forward: none.
+- Next: unchanged (fix 59 chase 03:23 CT; fix 60 after it).
