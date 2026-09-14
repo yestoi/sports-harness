@@ -14,9 +14,11 @@ from decimal import Decimal
 
 import pytest
 
-from harness.db.models import JobState, OddsSnapshot, ParlayCard, ParlayLedger
+from harness.db.models import JobState, OddsSnapshot, ParlayCard, ParlayLedger, ParlayLeg
+from harness.parlay.build import build_card as _real_build_card
 from harness.settlement.job import Budget
-from harness.settlement.parlay_build import RATIONALE_TIMEOUT_S, read_slot_state, run_parlay_build
+from harness.settlement.parlay_build import (_REASON_INDEX, RATIONALE_TIMEOUT_S,
+                                              read_slot_state, run_parlay_build)
 from tests.conftest import _make_dk_price, _make_game, _make_leg, _make_team
 
 #: Friday 2026-09-12 18:05 CT (America/Chicago, CDT = UTC-5): the two `ncaaf` build times
@@ -114,6 +116,17 @@ def _raises(exc: Exception):
 def _job_state(session) -> dict:
     rows = session.query(JobState).filter(JobState.key.like("parlay_build:%")).all()
     return {row.key: read_slot_state(session, row.key) for row in rows}
+
+
+def _add_legs(session, card: ParlayCard, *, game_ids: list[int]) -> None:
+    """Enough of a `ParlayLeg` row to make `_card_shape` (and only `_card_shape`) work: one row
+    per `game_id` given, on the card. Never a real priced leg -- these tests only need the
+    shape a real build would have produced."""
+    for seq, game_id in enumerate(game_ids, start=1):
+        session.add(ParlayLeg(card_id=card.id, seq=seq, game_id=game_id, market_type="ml",
+                              dk_american=-110, dk_decimal=Decimal("1.9100"),
+                              plain_text=f"leg {seq}", status="pending"))
+    session.flush()
 
 
 def test_the_stage_builds_one_card_per_slot_after_its_build_time(db_session, env_settings):
@@ -220,3 +233,125 @@ def test_the_stage_bounds_the_rationale_call(db_session, env_settings, monkeypat
                         lambda *a, **kw: seen.update(kw) or _built_card(db_session))
     run_parlay_build(db_session, NOW, _budget(60))
     assert seen["timeout_s"] == RATIONALE_TIMEOUT_S
+
+
+def test_a_correlated_cross_game_lottery_card_does_not_satisfy_the_same_game_slot(db_session,
+                                                                                  env_settings):
+    """Review round 1, Critical 1 (reviewer's probe): a plain cross-game `lottery` card is
+    routinely `correlated = True` (`build_card` only dedupes games for `smart`), so the slot
+    decision must never consult that flag -- only the card's own legs say which shape it is."""
+    cross_game = _card(db_session, status="proposed", built_at=NOW - timedelta(hours=1),
+                       kind="lottery", correlated=True)
+    _add_legs(db_session, cross_game, game_ids=[9101, 9102, 9103])
+    run_parlay_build(db_session, NOW, _budget(60))
+    state = _job_state(db_session)
+    assert state["parlay_build:2026-37:ncaaf:lottery"] == {"built": cross_game.id}
+    assert state["parlay_build:2026-37:ncaaf:lottery_same_game"].get("built") is None
+
+
+def test_a_same_game_card_satisfies_only_the_same_game_slot(db_session, env_settings):
+    same_game = _card(db_session, status="proposed", built_at=NOW - timedelta(hours=1),
+                      kind="lottery", correlated=True)
+    _add_legs(db_session, same_game, game_ids=[9201, 9201, 9201])
+    run_parlay_build(db_session, NOW, _budget(60))
+    state = _job_state(db_session)
+    assert state["parlay_build:2026-37:ncaaf:lottery_same_game"] == {"built": same_game.id}
+    # The `lottery` slot does not adopt the same-game card either: with the autouse pool still
+    # present it legitimately builds its *own*, separate, cross-game card.
+    assert state["parlay_build:2026-37:ncaaf:lottery"].get("built") != same_game.id
+
+
+def test_a_settled_card_keeps_its_slot_built_for_the_week(db_session, env_settings):
+    """Review round 1, Important 1: a graded card must not re-open its own slot."""
+    card = _card(db_session, status="cashed", built_at=NOW - timedelta(hours=6))
+    run_parlay_build(db_session, NOW, _budget(60))
+    assert _job_state(db_session)["parlay_build:2026-37:ncaaf:smart"] == {"built": card.id}
+    assert db_session.query(ParlayCard).filter_by(sport="ncaaf", kind="smart").count() == 1
+
+
+def test_a_busted_card_also_keeps_its_slot_built_for_the_week(db_session, env_settings):
+    card = _card(db_session, status="busted", built_at=NOW - timedelta(hours=6))
+    run_parlay_build(db_session, NOW, _budget(60))
+    assert _job_state(db_session)["parlay_build:2026-37:ncaaf:smart"] == {"built": card.id}
+
+
+def test_a_raise_during_one_shapes_build_leaves_no_half_built_card(db_session, env_settings,
+                                                                   monkeypatch):
+    """Review round 1, Important 2: `build_card` flushes the card (and its legs) before
+    `write_rationale` can raise; the savepoint around the call means a raise there leaves
+    nothing behind."""
+    def _half_built_then_raise(session, settings, sport, week, kind, now, *args, **kwargs):
+        session.add(ParlayCard(year=2026, week=37, sport=sport, kind=kind, built_at=now,
+                               stake=Decimal("25.00"), status="proposed", correlated=False))
+        session.flush()
+        raise RuntimeError("boom after insert")
+
+    monkeypatch.setattr("harness.settlement.parlay_build.build_card", _half_built_then_raise)
+    run_parlay_build(db_session, NOW, _budget(60))
+    assert db_session.query(ParlayCard).count() == 0
+
+
+def test_a_raise_in_one_shape_never_costs_the_expiry_or_an_earlier_shapes_card(db_session,
+                                                                               env_settings,
+                                                                               monkeypatch):
+    """Review round 1, Important 2: a raise (or a DB error) building one shape must roll back
+    only that shape's savepoint, never this run's expiry write or a card an earlier slot already
+    built."""
+    old = _card(db_session, status="proposed", built_at=NOW - timedelta(days=8))
+    calls = {"n": 0}
+
+    def _raise_once_then_real(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return _real_build_card(*args, **kwargs)
+
+    monkeypatch.setattr("harness.settlement.parlay_build.build_card", _raise_once_then_real)
+    result = run_parlay_build(db_session, NOW, _budget(60))
+    assert db_session.get(ParlayCard, old.id).status == "void"     # expiry unaffected
+    assert result.counts["built"] >= 1                             # a later shape still built
+
+
+def test_the_reason_encoding_is_pinned_not_positional(db_session, env_settings):
+    """Review round 1, Important 3: the mapping is a literal, not a derivation from
+    `harness.parlay.build.REASON_CODES`'s position, so reordering that tuple cannot remap an
+    already-written row's meaning."""
+    assert _REASON_INDEX == {
+        "no_anchor_priced": -1, "anchor_bye": -2, "no_props_fresh": -3,
+        "player_unmatched": -4, "market_unsupported": -5, "side_unsupported": -6,
+        "stale_price": -7, "week_at_cap": -8, "gamelog_budget_spent": -9,
+        "not_built_yet": -10, "builder_failed": -11, "replacement_pending": -12,
+    }
+
+
+def test_a_replacement_build_records_replacement_pending_until_the_child_exists(db_session,
+                                                                                env_settings,
+                                                                                monkeypatch):
+    """§2.4, implemented as the brief specifies (review round 1 ruling): the slot reads
+    `replacement_pending` from the moment the decline is noticed until the replacement actually
+    exists, which this spy observes mid-build."""
+    card = _declined_card(db_session, sport="ncaaf", shape="smart")
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        # `NOW` is also on/after `nfl`'s own due hour (America/Chicago), so `build_card` is
+        # called for every due slot, not only the one this test cares about; only the
+        # `ncaaf`/`smart` call is this test's replacement build.
+        sport = args[2] if len(args) > 2 else kwargs.get("sport")
+        kind = args[4] if len(args) > 4 else kwargs.get("kind")
+        if sport == "ncaaf" and kind == "smart":
+            seen["mid_build"] = _job_state(db_session)["parlay_build:2026-37:ncaaf:smart"]
+        return _real_build_card(*args, **kwargs)
+
+    monkeypatch.setattr("harness.settlement.parlay_build.build_card", _spy)
+    run_parlay_build(db_session, NOW, _budget(60))
+    assert seen["mid_build"] == {"reason": "replacement_pending", "at": NOW.isoformat()}
+    child = db_session.query(ParlayCard).filter_by(parent_card_id=card.id).one()
+    assert _job_state(db_session)["parlay_build:2026-37:ncaaf:smart"] == {"built": child.id}
+
+
+def test_a_budget_break_counts_the_slots_it_never_looked_at(db_session, env_settings):
+    """Review round 1, Minor 6."""
+    result = run_parlay_build(db_session, NOW, _budget(1))
+    assert result.budget_exhausted is True
+    assert result.counts["skipped"] >= 1
