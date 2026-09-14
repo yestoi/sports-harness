@@ -2227,3 +2227,34 @@ Times are America/Chicago.
 - Review evidence: opus implementer (`results/fix-60-report.md`), opus review Approved 0/0/5 (`results/fix-60-review.md`); M3/M4 (cosmetic) held back so the green tree shipped unchanged; M1 (`ExecStats.book_errors` has no metric surface), M2 (`harness/replay.py:259` should treat book_errors like errors) and M5 (`docs/superpowers/plans/2026-09-07-phase3-paper-execution.md:107` still documents the old ValueError contract) opened as carried fix 66.
 - Change: `BookState.from_ws_raw` treats a mapping body without side keys as an empty book (ValueError only for a non-mapping); `_advance_books` isolates a ticker whose book cannot load (warning with the ticker, the ticker joins dirty and its market is built `book_dirty=True` so orders hold; a third `unreadable` return set; `_market_now`'s flag renamed from `dead_recorder` to `book_dirty`), the step continues; `load_book_at`/`BookWalker` agree. Tests: test_book, test_exec_loop.
 - Deferred judge-after rows for the verify that follows: app-exec ERROR lines 0 over 10 minutes; `exec_heartbeat.last_error` null with age under 60 s; the newest `settle` row `ok` (hourly job; the first post-release run decides); markouts growing again; `loops_skipped` no longer climbing; the 30 open orders on played games cancelled by the kickoff sweep. Fix 49's 6 h / 500 MiB row is not on this build (fix 49 rides the next release). Continue to verify.
+
+## 184. decision - the user rules on the nine open decisions - 2026-09-14 04:40 CT
+
+The user, verbatim (mid-turn, 04:40 CT), after the controller's walkthrough of the open decisions:
+
+> 1. Runs 14485/14486: annotate, with one condition. A notes key on the run row only helps if the in-game readers reach the 2,697 gap snapshots through the run id. Make that explicit in fix 57's scope so the readers honor the key, otherwise the annotation is documentation, not exclusion. Let fix 58's ghost sweep close 14486 rather than annotating a row that is about to be swept.
+> 2. Time-sync ordering: do it, knowing the tradeoff. With time-wait-sync enabled, the stack will not start at all if NTP is unreachable at boot. For a paper harness, no data beats mis-stamped data, so I'd accept that. The drop-in is two lines:
+> # /etc/systemd/system/sports-harness.service.d/time-sync.conf
+> [Unit]
+> After=time-sync.target
+> Wants=time-sync.target
+> sudo systemctl enable systemd-time-wait-sync.service && sudo systemctl daemon-reload
+> Fix 57's in-app guard stays as the second layer.
+> 3. ESPN game-log host: allow it, scoped. Keeping the spec makes the T6/T8 stat-line work hollow. This changes invariant 8 in the 4.6 plan at line 73, so it should land as a recorded plan amendment, pinned to the one path pattern, not a host-wide allowance. The web host is browser-facing and less stable, so the fetcher patch should fail soft.
+> 4. DraftKings rules: try the headless capture. Chromium is on the host, and a one-off manual capture is controller evidence, not a harness fetch, so invariant 8 is untouched. Record URL, capture time and the verbatim text. If DraftKings blocks headless, you paste. Props stay market_unsupported until then either way.
+> 5. LAN files: generate after T10 merges to main. The hash command only exists on the branch, and T10 is last in the merge order. Cert and key can be made any time. Nothing in 4.6 needs the LAN profile on until the UI tasks are verified live.
+> 6. 6C deferral: accept. Only ask that 6C's closure record names both units as deferred to 6D, so they cannot quietly drop a second time.
+> 7. Gate boundary: not now. Setting it before 6B and 6D merge lets pre-repair rows into the criteria. Wait for 6F's version boundary.
+> 8. Qwen: approve as recommended, but sequence it. The decision is cheap since nothing activates before the D2 amendment merges. One Qwen implementer counts toward the ceiling of three, and the loop is at capacity with six suites queued. I'd activate the timing reporter only after 6B's integration round, not alongside it.
+> 9. Standing items: none block, but order them by risk. Copy the backup age key off the box first, today. A disk loss without it makes every backup unreadable. Then the spend-limited Anthropic workspace, since the loop burns that key constantly. Then the Kalshi rotation. The LUKS unlock for 6E needs you present, so pick a window. The legal decision only matters before live trading, which is not on the horizon.
+
+Controller actions from these rulings (each recorded where it lands):
+- (1) fix 57's scope widened by resume: a `runs.notes` key marks a run written under an unsynchronized clock, and every in-game reader that reaches `market_gap_snapshots` (and the other child tables) through `run_id` honours it; after fix 57 deploys the controller annotates run 14485 with the same key (an UPDATE on `notes`, no DELETE); 14486 is closed by fix 58's sweep.
+- (2) user-directed host change: the drop-in and the `systemd-time-wait-sync` enable are applied by the controller only if the host unit exists and sudo is available without a prompt; otherwise the exact commands are handed back for the user to run. The loop's own rule (never edit host units) is untouched; this is the user's instruction.
+- (3) plan amendment on `phase46-fun-tickets`: invariant 8 gains one path-pinned allowance (`site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/<id>/gamelog`, GET only, nothing else on that host); T3's `fetch_gamelog` is patched to that URL and fails soft (a non-200 or malformed body is `no season data yet`), as a T3 follow-up round.
+- (4) a controller headless capture of the DraftKings rules page is attempted (evidence only); on success the verbatim text, URL and time go into the T18a evidence report and `props.market_defs` through the named follow-up commit.
+- (5) LAN files after T10 reaches main (user-side).
+- (6) 6C's deferral of the two funnel units accepted; its closure entry must name both as delivered by 6D.
+- (7) gate boundary untouched until 6F.
+- (8) Qwen D1-D6 approved as proposed (D4 as the capped extension); activation of the timing reporter waits for 6B's integration round; nothing is activated by this entry.
+- (9) user-side order: backup age key copy today, then the spend-limited Anthropic workspace, then the Kalshi rotation, then a LUKS window for 6E; legal decision not in scope.
