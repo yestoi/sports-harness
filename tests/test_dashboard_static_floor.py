@@ -2,7 +2,12 @@
 
 This file carries only this task's new cases; Task 14 keeps `tests/test_dashboard_static.py`
 and Task 15 writes its own file (plan review IM-8).
+
+Fix round 1 (review CHANGES_REQUIRED): the `partial` story row's own label and detail-header
+note, and the route-id validation guard against a plain-object bracket lookup.
 """
+
+import json
 
 from tests.test_dashboard_static import STATIC, _js_files  # noqa: F401  (kept for parity)
 
@@ -40,3 +45,41 @@ def test_the_floor_module_writes_only_text_nodes():
     body = (STATIC / "js" / "floor.mjs").read_text()
     for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
         assert forbidden not in body
+
+def test_the_partial_story_row_gets_its_own_label_and_glossary_entry():
+    """Omarchy header ruling, fix round 1: `partial` is never left as a bare, unglossaried
+    string beside the explained `gap` and `not_evaluated` kinds."""
+    body = (STATIC / "js" / "floor.mjs").read_text()
+    assert 'technical: "partial"' in body
+    assert 'glossaryTerm("partial", "partial")' in body
+    glossary = json.loads((STATIC / "glossary.json").read_text())
+    assert "partial" in glossary
+    assert glossary["partial"].get("plain") and glossary["partial"].get("what")
+
+
+def test_a_partial_detail_carries_a_visible_note_on_its_own_header():
+    """The row's own badge is not enough on its own (fix round 1): a detail that hit a
+    per-partition read cap must say so on the detail header too, so it is never presented as
+    the complete story."""
+    body = (STATIC / "js" / "floor.mjs").read_text()
+    assert "partialNotice" in body
+    assert "not the complete story" in body
+    assert 'row.kind === "partial"' in body
+
+
+def test_a_route_id_is_validated_before_any_object_lookup():
+    """Fix round 1 (Important): `#floor/game/constructor` (or `__proto__`, an empty id, or any
+    other non-numeric text) must never reach a bracket lookup on a plain object -- `{}` resolves
+    `details["constructor"]` to the inherited `Object` function, not `undefined`, which would
+    bypass the `!detail` fallback and throw before `replaceChildren` ever runs. The digits-only,
+    length-bounded pattern below rejects all four shapes by construction (none of them is
+    `^[0-9]{1,10}$`), and `hasOwnProperty` is the second, independent guard even for an id that
+    does pass."""
+    body = (STATIC / "js" / "floor.mjs").read_text()
+    assert "GAME_ID_PATTERN" in body
+    assert r"/^[0-9]{1,10}$/" in body
+    assert "Object.prototype.hasOwnProperty.call(details" in body
+    # The three literal danger names named in the ruling appear only in the guard's own
+    # explanation, never as a value this module would pass to a bracket lookup unguarded.
+    for name in ("constructor", "__proto__", "toString"):
+        assert name in body

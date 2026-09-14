@@ -370,5 +370,11 @@
     "plain": "a favourite-team game",
     "what": "A board game where either team is on the anchors list in parlay.yaml, marked with a star.",
     "why": "It says which games the star on the board points to, without implying the star is a signal about the game itself."
+  },
+  "partial": {
+    "term": "partial",
+    "plain": "a partial story",
+    "what": "A decision story row inserted when a per-game read cap bound before every record was read, so some older rows on this game are missing from the story shown here.",
+    "why": "A story that looked complete but was not would be worse than one that visibly says so; this is the row -- and the detail-header note beside it -- that keeps a capped read from being presented as the whole of it."
   }
 }

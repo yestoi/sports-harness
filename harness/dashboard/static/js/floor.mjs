@@ -29,6 +29,7 @@ export const LABELS = [
   { plain: "Not evaluated", technical: "not_evaluated" },
   { plain: "Gap in the story", technical: "gap" },
   { plain: "Favourite team", technical: "favourite" },
+  { plain: "Partial story", technical: "partial" },
 ];
 
 //: `fill_method` values that already carry a glossary entry from the vocabulary table; a value
@@ -114,11 +115,24 @@ function gameBoard(payload) {
 // on-screen close control below only mirrors that with `history.back()`. One open at a time:
 // the route is the only place a game id lives, so there is never more than one to show.
 
-//: `null` when the current hash names no game -- any other surface's hash, or plain "#floor".
+//: `null` when the current hash names no game at all -- any other surface's hash, or plain
+//: "#floor". Otherwise the *raw*, unvalidated route segment -- possibly `""` (a bare
+//: "#floor/game" or "#floor/game/"), `"constructor"`, `"__proto__"` or any other non-numeric
+//: text a reader or a stray link can put in a hash. `gameDetail()` is the one place that
+//: validates it, immediately before the one lookup that matters, so "no game route" (`null`,
+//: never renders a detail at all) and "a game route with a bad id" (renders the detail panel
+//: with the same fallback a game outside the detail set gets) stay two different outcomes.
 function detailRouteGameId() {
   const parts = String(location.hash || "").replace(/^#/, "").split("/");
-  return parts[0] === "floor" && parts[1] === "game" && parts[2] ? parts[2] : null;
+  if (parts[0] !== "floor" || parts[1] !== "game") return null;
+  return parts[2] || "";
 }
+
+//: `floor.py::_details` keys its payload with `str(game_id)` for a database serial id --
+//: digits only, and bounded well under this length in practice. Anything else (empty,
+//: `"constructor"`, `"__proto__"`, `"toString"`, any other property name a plain object
+//: inherits) is rejected here, before any lookup, rather than trusted to a bracket access.
+const GAME_ID_PATTERN = /^[0-9]{1,10}$/;
 
 //: One escape handler at a time, matching the one detail the route can ever name.
 let _escapeHandler = null;
@@ -163,11 +177,14 @@ function positionSection(position) {
 }
 
 //: One story row: its own time and unit, the sentence already phrased server-side, and a
-//: `<details>` disclosure to the ids, the variant and the raw figures (design 4.2).
+//: `<details>` disclosure to the ids, the variant and the raw figures (design 4.2). `gap`,
+//: `not_evaluated` and `partial` each get the same glossary badge treatment -- a reader
+//: should never meet an unexplained technical word beside two explained ones.
 function storyRow(row) {
   const time = row.ts ? new Date(row.ts).toLocaleString() : "--";
   const kind = row.kind === "gap" ? glossaryTerm("gap", "gap")
     : row.kind === "not_evaluated" ? glossaryTerm("not_evaluated", "not evaluated")
+    : row.kind === "partial" ? glossaryTerm("partial", "partial")
     : el("span", { class: "n", text: row.kind });
   const facts = Object.entries(row.facts || {}).map(([factKey, value]) =>
     el("div", { class: "n",
@@ -206,11 +223,30 @@ function onYourTicketSection(onYourTicket) {
   return el("p", {}, el("a", { href: onYourTicket.href, text: "on your ticket" }));
 }
 
-function gameDetail(payload, gameId) {
+//: Ruling (Omarchy header, fix round 1): a detail whose story carries a `partial` row (a
+//: per-partition read cap bound while it was built, `floor.py::_partial_games`) must never be
+//: presented as complete. The row itself already gets the same glossary badge `gap` and
+//: `not_evaluated` get (`storyRow`, above); this is the second half -- a note on the detail's
+//: own header, visible before a reader gets anywhere near the row it describes.
+function partialNotice() {
+  return el("p", { class: "n" }, glossaryTerm("partial", "partial"),
+            " · this detail is partial, not the complete story");
+}
+
+function gameDetail(payload, rawGameId) {
   const detailsData = payload.details;
   const details = (detailsData && typeof detailsData === "object" && !detailsData.error)
     ? detailsData : {};
-  const detail = details[gameId];
+  // The route segment is unvalidated input -- `constructor`, `__proto__`, an empty string or
+  // any other non-numeric text must never reach a bracket lookup on a plain object: a plain
+  // `{}`'s prototype chain resolves `details["constructor"]` to the inherited `Object`
+  // function, not `undefined`, so `!detail` below would be false and every section past the
+  // fallback would throw on a field that function does not have. Reject anything outside
+  // `GAME_ID_PATTERN` before any lookup at all, and use `hasOwnProperty` rather than trust
+  // the bracket even for a validated id, so an inherited name is always a miss.
+  const detail = GAME_ID_PATTERN.test(rawGameId)
+                 && Object.prototype.hasOwnProperty.call(details, rawGameId)
+    ? details[rawGameId] : undefined;
   const close = el("button", { class: "detail-close", type: "button",
                                 "aria-label": "Close the game detail", text: "Close" });
   close.addEventListener("click", () => closeDetail());
@@ -219,6 +255,9 @@ function gameDetail(payload, gameId) {
   if (!detail) {
     wrap.appendChild(el("p", { class: "grey", text: "detail is built inside 6 h of kickoff" }));
     return wrap;
+  }
+  if ((detail.story || []).some((row) => row.kind === "partial")) {
+    wrap.appendChild(partialNotice());
   }
   wrap.appendChild(scorelineSection(detail.scoreline));
   wrap.appendChild(positionSection(detail.position));
@@ -523,10 +562,10 @@ function venueTile(payload) {
 export function render(root, payload, _envelope) {
   const detailGameId = detailRouteGameId();
   const children = [gameBoard(payload)];
-  if (detailGameId) children.push(gameDetail(payload, detailGameId));
+  if (detailGameId !== null) children.push(gameDetail(payload, detailGameId));
   children.push(funnelSection(payload), openOrders(payload), fillsStream(payload),
     exposureLanes(payload), vitalsStrip(payload), venueTile(payload));
   root.replaceChildren(...children);
-  if (detailGameId) attachEscape(closeDetail);
+  if (detailGameId !== null) attachEscape(closeDetail);
   else detachEscape();
 }
