@@ -24,6 +24,10 @@ from harness.recorder.tick import PROP_FAIL_BACKOFF_AFTER, Recorder, _Budget
 
 NOW = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)        # Wed 13:00 CT -> cadence 900
 NOW_IN_GAME_WINDOW = NOW                                       # with `_in_game_kickoffs` below
+# Sat 13:00 CT, three days after NOW: no kickoff in `kickoffs` (empty by default) and outside
+# the 01:00-08:00 CT quiet band, so `interval_for` falls through to the weekend-weekday branch
+# and returns 300 (journal 209, ruling 11).
+NOW_SATURDAY = datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc)
 MONTH_KEY = "odds_props:2026-09"
 
 
@@ -192,6 +196,35 @@ def test_props_never_run_in_quiet_hours(recorder, db_session):
     ctx = recorder.tick_ctx(now=quiet)
     assert ctx["props"] == {"skipped": "cadence None"}
     assert recorder.odds.prop_calls == 0
+
+
+def test_props_run_on_the_weekend_300_second_cadence(recorder, db_session):
+    """User decision 2026-09-14, journal 209, ruling 11: `interval_for` returns 300, never
+    900, on a Saturday or Sunday outside every game window, and the old `cadence !=
+    PROPS_CADENCE_S` guard left the prop source dormant every weekend as a result. The
+    source's own 900 s stamp still bounds it to one pass a period, on any day."""
+    _watchable_events(db_session, nfl=2, base=NOW_SATURDAY)
+    ctx = recorder.tick_ctx(now=NOW_SATURDAY)
+    assert ctx["props"] != {"skipped": "cadence 300"}
+    assert "skipped" not in ctx["props"]
+    assert recorder.odds.prop_calls > 0
+    # Same 900 s period, thirty seconds later: the period's own stamp, not the cadence
+    # value, is what bounds a weekend pass to once per 900 s.
+    second = recorder.tick_ctx(now=NOW_SATURDAY + timedelta(seconds=30))
+    assert second["props"] == {"skipped": "interval"}
+
+
+def test_the_reprice_runs_on_the_weekend_300_second_cadence(recorder, db_session):
+    """The same ruling for `_parlay_reprice`: the reprice must keep refusing the 120 s game
+    window, the 20 s NFL pre-kickoff window and quiet hours (`cadence None`), and now runs
+    on the weekend 300 s cadence too."""
+    ctx = recorder.tick_ctx(now=NOW_SATURDAY)
+    assert ctx["reprice"] != {"skipped": "cadence 300"}
+    assert "skipped" not in ctx["reprice"]
+    game_window = recorder.tick_ctx(now=NOW_IN_GAME_WINDOW, kickoffs=_in_game_kickoffs(NOW))
+    assert game_window["reprice"] == {"skipped": "cadence 120"}
+    quiet = datetime(2026, 9, 16, 8, 0, tzinfo=timezone.utc)   # 03:00 CT, no game on the field
+    assert recorder.tick_ctx(now=quiet)["reprice"] == {"skipped": "cadence None"}
 
 
 # --- the watched set and the rotation -------------------------------------------------------

@@ -1123,9 +1123,11 @@ class Recorder:
         """DraftKings player props for the watched events, and the weekly roster fetch that
         makes them resolvable at all (addendum 3.2, 4.1).
 
-        Four guards before a credit is spent. **The cadence value**: the 900 s period only --
-        never the 120 s game window, never the 20 s NFL pre-kickoff window, never the quiet
-        hours. **The period itself** (fix round 1, review C1): `maybe_tick` runs on the 30 s
+        Four guards before a credit is spent. **The cadence value**: any allowed cadence (300 s
+        or 900 s: `ALLOWED_CADENCES`), never the 120 s game window, never the 20 s pre-kickoff
+        window, never the quiet hours; the source's own 900 s stamp bounds it to one pass per
+        period on any day (user decision 2026-09-14, journal 209). **The period itself** (fix
+        round 1, review C1): `maybe_tick` runs on the 30 s
         heartbeat, so the pass is gated on its own `source_state` stamp exactly like every other
         paid source here, and `prop_events_due` filters the rotation by the same interval.
         `is_due` and not `self._due`: a forced deploy tick must not spend 144 credits, the same
@@ -1147,7 +1149,7 @@ class Recorder:
         """
         intervals = [interval_for(sport, now, kickoffs, self.s.tz_local) for sport in SPORTS]
         cadence = min((i for i in intervals if i is not None), default=None)
-        if cadence not in ALLOWED_CADENCES or cadence != PROPS_CADENCE_S:
+        if cadence not in ALLOWED_CADENCES:
             ctx["props"] = {"skipped": f"cadence {cadence}"}
             return
         if not is_due(store.get_source_state(session, PROPS_STATE_KEY), now, PROPS_CADENCE_S):
@@ -1383,7 +1385,10 @@ class Recorder:
                         kickoffs: list[Kickoff], ctx: dict) -> None:
         """This week's drafts repriced in place (addendum 2.3).
 
-        The 900 s tick only. For every `proposed` card of the current Chicago week -- at most
+        Any allowed cadence (300 s or 900 s: `ALLOWED_CADENCES`), never the 120 s game window,
+        never the 20 s pre-kickoff window, never the quiet hours; the source's own 900 s stamp
+        bounds it to one pass per period on any day (user decision 2026-09-14, journal 209).
+        For every `proposed` card of the current Chicago week -- at most
         `2 sports x (1 + lottery_cards_max)` -- each leg is re-read at the newest DraftKings row
         for **its exact selection** (`odds_prop_snapshots` for a prop, `odds_snapshots` for a
         game line) and the card's payout, combined price and hold are recomputed by the build's
@@ -1399,7 +1404,7 @@ class Recorder:
         """
         intervals = [interval_for(sport, now, kickoffs, self.s.tz_local) for sport in SPORTS]
         cadence = min((i for i in intervals if i is not None), default=None)
-        if cadence != PROPS_CADENCE_S:
+        if cadence not in ALLOWED_CADENCES:
             ctx["reprice"] = {"skipped": f"cadence {cadence}"}
             return
         # Review I2, with the controller's ruling on fix-round concern 1: once per 900 s
