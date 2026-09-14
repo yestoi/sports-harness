@@ -691,10 +691,10 @@ def test_the_footer_of_a_mixed_card_names_no_sharp_read(db_session, env_settings
     mixed = _slot_card(build_ticket(db_session, NOW, env_settings), card)
     assert mixed["footer"]["chance"].startswith("no sharp read · ")
     assert mixed["footer"]["hold"] is None
-    # Named by the same text the leg itself renders. Note that `sanitize_reason` (F50) strips
-    # `+` from `plain_text`, so the recorded "Nussmeier 225+ passing yards" reaches the page as
-    # "Nussmeier 225 passing yards": the leg is named, and the carried-forward finding is that
-    # the shared sanitizer removes a character a prop market's name depends on.
+    # Named by the same text the leg itself renders, through this page's own `_display`
+    # sanitizer, so the recorded "Nussmeier 225+ passing yards" reaches both the leg and this
+    # list with its `+` intact (review round 1, I4). The two must stay the same string: a
+    # footer that named a leg differently from the leg would be naming a different bet.
     assert mixed["legs"][1]["plain_text"] in mixed["footer"]["chance"]
     assert "not included" in mixed["footer"]["chance"]
 
