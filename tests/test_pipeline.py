@@ -19,7 +19,7 @@ from harness.strategy.pipeline import (
     price_and_signal,
     pricing_order,
 )
-from harness.strategy.run import run_strategy
+from harness.strategy.run import run_strategy, sides_for
 from harness.strategy.variants import (
     Variant,
     active_variants,
@@ -207,7 +207,17 @@ def test_the_suppressed_count_is_exactly_the_derived_rows_the_direct_only_varian
     # The derived consumer is still scored over the whole universe, and only it.
     assert db_session.query(Signal).filter_by(run_id=run.id).count() == (
         direct_gap_count + gaps_total)
-    assert set(result["variant_ms_rescore"]) == {"tiny_derived"}
+    # Neither variant was scored twice, so nothing lands in the rescore map: `tiny_derived` is a
+    # secondary derived consumer, not a priority variant, so stage 6 is its *first* pass.
+    assert result["variant_ms_rescore"] == {}
+    assert set(result["variant_ms"]) == {"tiny", "tiny_derived"} == set(result["variants_run"])
+    # The invariant the suppressed arithmetic rests on, pinned locally (review Minor 4): one
+    # stored signal row per (gap row, side), so `rescore_suppressed` may be computed as
+    # (rows stage 5 added) x sides without running the strategy over them.
+    for name, counts in result["signals"].items():
+        variant = next(v for v in active_variants(db_session) if v.name == name)
+        universe = direct_gap_count if name in direct_only else gaps_total
+        assert counts["candidate"] + counts["rejected"] == universe * len(sides_for(variant.config))
 
 
 GRID = [{"start": "0.0000", "end": "1.0000", "step": "0.0001"}]

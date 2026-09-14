@@ -430,12 +430,18 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
                                            "rejected": len(signals) - candidate}
         elapsed_ms = int((time.monotonic() - t_variant) * 1000)
         # §1.5(a): `variant_ms` summed a variant scored twice into one number, which is the one
-        # question it exists to answer. The second pass keeps its own map.
-        if rescore:
+        # question it exists to answer. The two passes are now separate maps and no millisecond
+        # is in both (review Important 2): `variant_ms` is the pass that *scored* the variant,
+        # `variant_ms_rescore` the stage-6 pass that re-scored one already scored in stage 3.
+        # A derived consumer that stage 3 never touched is scored for the first time in stage 6,
+        # so its time is a scoring pass and belongs in `variant_ms` -- which is what keeps
+        # `variant_ms` keyed by exactly `variants_run`.
+        if rescore and variant.name in scored:
             result["variant_ms_rescore"][variant.name] = (
                 result["variant_ms_rescore"].get(variant.name, 0) + elapsed_ms)
-        result["variant_ms"][variant.name] = (
-            result["variant_ms"].get(variant.name, 0) + elapsed_ms)
+        else:
+            result["variant_ms"][variant.name] = (
+                result["variant_ms"].get(variant.name, 0) + elapsed_ms)
         # 6D §1.1: what this variant actually said about each market. A rejection on `has_fair`
         # is a market with no fair value at all (§0.12), which is a coverage fact rather than a
         # strategy one; every other row -- candidate or rejected -- is a completed evaluation.
@@ -475,7 +481,10 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     for variant in priority:
         if not ok():
             result["budget_exhausted"] = True
-            stages.record("variants_direct", t0, units=direct_units)
+            # `_Stages`'s cause rule (review Important 1): this stage started and the deadline
+            # stopped it partway, so the `record` that closes it carries the cause. The brief's
+            # translation table omitted it; the rule the file itself states governs.
+            stages.record("variants_direct", t0, units=direct_units, cause="budget")
             stages.skip(*STAGE_NAMES[3:], cause="budget")
             record_order()
             result["fair_derived_skipped"] = True
@@ -530,6 +539,8 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # (RESCORE_BOUNDARY_NOTE, ruling I11).
     t0 = stages.start("variants_derived", remaining_ms())
     all_rows = _load_gap_rows(session, run_id, market_order) if new_gaps else direct_rows
+    #: The markets stage 3 already scored; everything else in `all_rows` is what stage 5 added.
+    direct_market_ids = {row.venue_market_id for row in direct_rows}
     rescore_units = 0
     rescored_any = False
     for variant in ordered:
@@ -539,12 +550,30 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
                 # `record_order` computes `variants_partial` as `scored - complete`, and it was
                 # this pass that moved the gate and the primary out of it.
                 complete.add(variant.name)
+                suppressed_rows = 0
+                for row in all_rows:
+                    if row.venue_market_id in direct_market_ids:
+                        continue
+                    # 6D §1.1, review Critical 1: not scoring a unit is not the same as not
+                    # evaluating it. `evaluation_cells` schedules every market in `market_order`
+                    # for every variant, so a unit with no `coverage_outcomes` entry falls
+                    # through `evaluation_completion_rows` to `no_signal` -- an `instrument`
+                    # class, counted as missing -- and §3 row 1's completed/scheduled ratio for
+                    # the gate and the primary (both direct-only) would collapse at the deploy.
+                    # The suppressed pass's verdict is decidable without running the strategy:
+                    # `has_fair` is `fair_p is not None` (`run.py::_filters`), and a derived row
+                    # that has a fair is rejected on `source_allowed`, which the old pass
+                    # recorded as `completed`. So this reproduces the old distribution exactly
+                    # and adds no outcome name to Task 3's closed vocabulary.
+                    coverage_outcomes[(variant.variant_id, row.venue_market_id)] = (
+                        "no_fair" if row.fair_p is None else "completed")
+                    suppressed_rows += 1
                 # Signal *rows*, not gap rows: `run_strategy` emits one signal per (row, side)
                 # and the second pass stored every one of them, so a two-sided variant --
                 # `sharp_two_sided`, the production gate variant -- suppressed two rows per gap
                 # row. `pricing.rejected` counts stored signal rows, and this number is only a
                 # bridge across the boundary if it is counted in the same unit.
-                suppressed = (len(all_rows) - len(direct_rows)) * len(sides_for(variant.config))
+                suppressed = suppressed_rows * len(sides_for(variant.config))
                 if suppressed:
                     result["rescore_suppressed"][variant.name] = suppressed
             continue

@@ -392,6 +392,41 @@ def test_the_pipelines_scheduled_rows_survive_the_rollback_of_the_work_that_foll
     assert unclosed and {row.variant_id for row in unclosed} == {variants[0].variant_id}
 
 
+def test_a_suppressed_direct_only_variant_still_closes_its_coverage_units(
+        env_settings, db_session):
+    """Review Critical 1. Stage 6 no longer re-scores a direct-only variant over the rows stage 5
+    added (D4), but `evaluation_cells` still *schedules* every market in `market_order` for every
+    variant, so those units have to be closed with the verdict the suppressed pass would have
+    given. Left open they fall through `evaluation_completion_rows` to `no_signal` -- an
+    `instrument`-class outcome counted as missing -- and §3 row 1's completed/scheduled ratio for
+    the gate variant and the primary, both direct-only, collapses on the first post-deploy verify.
+
+    Computed by hand from the seeded shape: `tests/fixtures/variants` holds one variant
+    (`tiny.yaml`, `sources_allowed: [direct]`) and `_seed` quotes ten venue markets, one of them
+    `match_status="unmatched"` and therefore never enumerated, so the scheduled set is 1 x 9 = 9
+    units. Of those nine markets eight end the run with a fair value (six priced directly, two by
+    the margin model) and one is the `draw` market no fair value is ever produced for, so the
+    accounting is `completed 8, no_fair 1` -- the same distribution the pre-D4 two-pass build
+    wrote -- and `no_signal` never appears. The three rows stage 5 added are still counted in
+    `rescore_suppressed`, which is the *signal* population's bridge and a different quantity.
+    """
+    _game, run, _markets = _seed(db_session)
+    register_variants(db_session, load_variants(VARIANTS_DIR), PIPELINE_NOW, prune=True)
+    db_session.commit()
+
+    result = pipeline_module.price_and_signal(
+        db_session, run.id, PIPELINE_NOW, env_settings, budget_s=600)
+    db_session.commit()
+
+    assert result["rescore_suppressed"] == {"tiny": 3}
+    rows = db_session.execute(text(
+        "select outcome, sum(n) from coverage_samples where run_id = :run"
+        " and domain = 'evaluation' group by 1 order by 1"), {"run": run.id}).all()
+    assert [(outcome, int(n)) for outcome, n in rows] == [
+        ("completed", 8), ("no_fair", 1), ("scheduled", 9)]
+    assert all(COVERAGE_CLASS_OF[outcome] != "instrument" for outcome, _n in rows)
+
+
 @respx.mock
 def test_the_recorders_scheduled_rows_survive_a_rollback_in_the_same_tick(
         env_settings, db_session, monkeypatch):

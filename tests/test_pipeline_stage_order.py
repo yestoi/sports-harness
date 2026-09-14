@@ -358,6 +358,10 @@ def test_nothing_is_re_scored_when_the_derived_phase_adds_no_rows(env_settings, 
     assert result["rescore_suppressed"] == {}
     stage = {s["name"]: s for s in result["stages"]}["variants_derived"]
     assert stage["cause"] in (None, "nothing_to_do")
+    # Ruling I10 on the `new_gaps == 0` path too (review Minor 5): a direct-only variant is
+    # complete because its direct universe is its full universe, whether or not stage 5 added
+    # anything, so `variants_partial` is empty here as well.
+    assert result["variants_partial"] == []
 
 
 def test_every_stage_entry_carries_units_remaining_and_cause(env_settings, db_session):
@@ -386,6 +390,37 @@ def test_every_stage_entry_carries_units_remaining_and_cause(env_settings, db_se
     assert stages["fair_derived"]["units"] == result["fair_derived"]
     assert stages["gaps_direct"]["units"] + stages["gaps_derived"]["units"] == result["gaps"]
     assert result["variant_ms_rescore"].keys() <= result["variant_ms"].keys()
+
+
+def test_the_rescore_pass_time_is_kept_apart_from_the_scoring_pass(
+        env_settings, db_session, monkeypatch):
+    """§1.5(a) and review Important 2: `variant_ms` is the pass that *scored* a variant and
+    `variant_ms_rescore` the stage-6 pass over the completed row set. No millisecond is counted
+    in both, which is what a reader adding the two maps depends on.
+
+    The gate is `sharp_plus_derived`, the only registered variant that consumes derived rows, so
+    it is a priority variant scored in stage 3 *and* re-scored in stage 6 -- after D4 the one
+    variant that still runs twice in a tick.
+
+    Computed independently of the code: the fake clock returns the call number and `score` reads
+    it exactly twice per pass (Amendment 4's per-variant timing), so every pass costs exactly
+    1000 ms. A variant scored once therefore reads 1000 in `variant_ms` and does not appear in
+    `variant_ms_rescore`; the twice-scored one reads 1000 in each, not 2000 in either.
+    """
+    env_settings.gate_variant = "sharp_plus_derived"
+    game, markets = _seed(db_session)
+    register_variants(db_session, load_variants(PROD_VARIANTS), NOW, prune=True)
+    run = _seed_run(db_session, game, markets, NOW)
+    counter = itertools.count()
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(counter))
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=10 ** 6)
+
+    assert result["budget_exhausted"] is False
+    assert result["variant_ms_rescore"] == {"sharp_plus_derived": 1000}
+    assert set(result["variant_ms"]) == set(result["variants_run"])
+    assert set(result["variant_ms"]) == {v.name for v in active_variants(db_session)}
+    assert all(ms == 1000 for ms in result["variant_ms"].values()), result["variant_ms"]
 
 
 def test_the_second_gap_call_never_duplicates_the_first_ones_rows(env_settings, db_session):
