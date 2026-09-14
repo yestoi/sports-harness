@@ -26,10 +26,57 @@ import yaml
 
 RUNTIME = Path('/srv/sports-harness')
 APPS = ['app-run', 'app-serve', 'app-exec', 'app-research']
+#: Phase 4.6 (addendum §6): the home-network listener, behind the `lan` compose profile.
+LAN_APP = 'app-serve-lan'
 FULL_PATHS = ['harness/recorder/ws_sink.py', 'harness/venues/kalshi/ws.py',
               'harness/venues/kalshi/rfq*.py', 'harness/matching',
               'harness/db', 'harness/variants', 'migrations', 'docker-compose.yml', 'Dockerfile',
               'pyproject.toml', 'constraints.txt', 'deploy/backup']
+
+
+def lan_active(runtime=RUNTIME):
+    """True when all three LAN files are non-empty regular files.
+
+    `is_file()` and a size check, never `exists()`: a directory, a dangling symlink or a
+    zero-byte placeholder must not switch a listener on. The script creates, copies and reads
+    none of them -- it only asks the filesystem whether the user has placed them (D7).
+
+    This is a second copy of `harness.dashboard.auth.lan_active`: that one runs in the image,
+    this one runs on the host, and this script imports no `harness` module. The same five-case
+    table runs over both (tests/test_dashboard_auth.py and tests/test_omarchy_release.py).
+    """
+    return all((runtime / 'secrets' / name).is_file()
+               and (runtime / 'secrets' / name).stat().st_size > 0
+               for name in ('owner_password_hash', 'lan_tls.crt', 'lan_tls.key'))
+
+
+def apps_for(runtime=RUNTIME):
+    """The app services a release touches: the standing four, plus the LAN listener when the
+    user's three files are in place. The overlay image loop, `expected_services`,
+    `wait_healthy` and the receipt all follow this one list, so the listener is deployed,
+    waited for and recorded only when it exists."""
+    return APPS + ([LAN_APP] if lan_active(runtime) else [])
+
+
+def set_compose_profiles(env_path, active):
+    """Add, keep or remove the runtime `.env`'s `COMPOSE_PROFILES=lan` line.
+
+    Compose reads `COMPOSE_PROFILES` from the env file, so this single line is what makes
+    `app-serve-lan` exist for every later compose call; the runtime `sports-compose` wrapper
+    needs no change. The file is rewritten only when the line actually changes, so a host
+    without the LAN files keeps a byte-identical `.env` across releases, and no other line is
+    reordered, reformatted or read for its value.
+    """
+    original = env_path.read_text()
+    lines = [line for line in original.splitlines(keepends=True)
+             if line.split('=', 1)[0].strip() != 'COMPOSE_PROFILES']
+    if active:
+        if lines and not lines[-1].endswith('\n'):
+            lines[-1] += '\n'
+        lines.append('COMPOSE_PROFILES=lan\n')
+    text = ''.join(lines)
+    if text != original:
+        env_path.write_text(text)
 
 
 def run(args, *, capture=False, cwd=None, input=None):
@@ -88,7 +135,10 @@ def game_window(mode):
 
 def validate_config(config):
     services = config['services']
-    for name in APPS + ['app-ws']:
+    # The LAN listener is checked exactly like every other app whenever the rendered config
+    # carries it, i.e. whenever its profile is on; a host without the user's three files
+    # renders, and is validated against, exactly the config it renders today.
+    for name in APPS + ['app-ws'] + ([LAN_APP] if LAN_APP in services else []):
         env = services[name].get('environment', {})
         if str(env.get('LIVE_TRADING')) != '0' or env.get('HARNESS_MODE') != 'paper':
             raise RuntimeError(f'Paper posture invalid for {name}')
@@ -128,7 +178,10 @@ def wait_healthy(sha, services, timeout=360, expected=None):
             rows = json.loads(output) if output.lstrip().startswith('[') else [json.loads(l) for l in output.splitlines() if l]
             by_name = {r['Service']: r for r in rows}
             ready = all(by_name.get(s, {}).get('State') == 'running' for s in services)
-            ready &= all(by_name.get(s, {}).get('Health') == 'healthy' for s in ('app-exec', 'app-serve', 'postgres'))
+            # The LAN listener has its own healthcheck (TLS on 8443); when this release
+            # includes it, an unhealthy one fails the release like any other serving process.
+            healthy = ('app-exec', 'app-serve', 'postgres') + ((LAN_APP,) if LAN_APP in services else ())
+            ready &= all(by_name.get(s, {}).get('Health') == 'healthy' for s in healthy)
             for service in services:
                 cid = run([RUNTIME/'sports-compose', 'ps', '-q', service], capture=True).strip()
                 container = json.loads(run(['docker','inspect',cid], capture=True))[0]
@@ -207,7 +260,12 @@ def deploy(mode, plan=False):
     before = json.loads(run([*existing, 'config', '--format', 'json'], capture=True))
     validate_config(before)
     window = game_window(mode)
-    changed = APPS + (['app-ws'] if mode == 'full' else [])
+    apps = apps_for(RUNTIME)      # APPS, plus app-serve-lan when the user's three files are there
+    changed = apps + (['app-ws'] if mode == 'full' else [])
+    # A service this release adds -- app-serve-lan on the first release after the files appear
+    # -- has no previous container or image to restore, and the rolled-back compose file does
+    # not define it. Identical to `changed` on every other release.
+    restored = [service for service in changed if service in before['services']]
     print(json.dumps({'sha': sha, 'previous': old, 'mode': mode, 'services': changed,
                       'window': window, 'full_paths': touched}), flush=True)
     if plan:
@@ -243,9 +301,10 @@ def deploy(mode, plan=False):
     run(['docker', 'build', '-t', image, source])
     overlay = yaml.safe_load((RUNTIME/'compose.omarchy.yml').read_text())
     # Preserve existing override settings; never serialize the rendered environment/secrets.
-    for name in ('postgres', 'app-backup', *APPS, 'app-ws'):
+    for name in ('postgres', 'app-backup', *apps, 'app-ws'):
         entry = overlay['services'].setdefault(name, {})
-        entry['image'] = before['services'][name]['image']
+        if name in before['services']:
+            entry['image'] = before['services'][name]['image']
         if name in changed:
             entry['image'] = image
             entry.setdefault('environment', {}).update({'BUILD_SHA': sha,
@@ -256,6 +315,11 @@ def deploy(mode, plan=False):
         overlay['services'][name] = entry
     candidate = receipt_dir/'candidate-override.json'
     candidate.write_text(json.dumps(overlay, indent=2)+'\n')
+    # Compose reads COMPOSE_PROFILES from the runtime env file, so the line must be in place
+    # before the candidate config is rendered, validated and brought up -- and after the
+    # `before` render, which has to keep describing the stack as it is running now.
+    profile_line = 'COMPOSE_PROFILES' in (RUNTIME/'.env').read_text()
+    set_compose_profiles(RUNTIME/'.env', LAN_APP in changed)
     command = compose(source/'docker-compose.yml', candidate)
     after = json.loads(run([*command, 'config', '--format', 'json'], capture=True))
     validate_config(after)
@@ -270,14 +334,14 @@ def deploy(mode, plan=False):
     if git('rev-parse', 'HEAD') != head or git('status', '--porcelain'):
         raise RuntimeError('Source changed while building')
     receipt['expected_services'] = expected_services(after, changed)
-    receipt['previous_services'] = expected_services(before, changed)
+    receipt['previous_services'] = expected_services(before, restored)
     checkpoint('validated')
     stopped = False
     variants_attempted = False
     try:
         stopped = True  # stop may partially succeed, so failure must restart old services
         checkpoint('stopping')
-        run([*existing, 'stop', *changed])
+        run([*existing, 'stop', *restored])
         if mode == 'full':
             checkpoint('migrating')
             run([*command, 'run', '--rm', '--no-deps', '-T', 'app-run', 'migrate', 'ensure'])
@@ -303,12 +367,13 @@ def deploy(mode, plan=False):
         try:
             atomic_copy(receipt_dir/'previous-docker-compose.yml', RUNTIME/'docker-compose.yml')
             atomic_copy(receipt_dir/'previous-compose.omarchy.yml', RUNTIME/'compose.omarchy.yml')
+            set_compose_profiles(RUNTIME/'.env', profile_line)   # the restored file's services
             if variants_attempted:
                 # Reactivate the previous image's registry before any writer restarts.
                 run([*existing, 'run', '--rm', '--no-deps', '-T', 'app-run', 'variants', 'register'])
             if stopped:
-                run([RUNTIME/'sports-compose', 'up', '-d', '--no-build', '--no-deps', *changed])
-            receipt['rollback_health'] = wait_healthy(old, changed, expected=receipt['previous_services'])
+                run([RUNTIME/'sports-compose', 'up', '-d', '--no-build', '--no-deps', *restored])
+            receipt['rollback_health'] = wait_healthy(old, restored, expected=receipt['previous_services'])
         except BaseException as rollback_error:
             receipt['rollback_error'] = type(rollback_error).__name__
             checkpoint('rollback-failed')

@@ -642,3 +642,147 @@ def test_full_rollback_reactivates_previous_variants_before_restarting_writers(r
     assert registrations[-1] < restarts[-1]
     rollback = release.calls[registrations[-1]]
     assert "candidate-override.json" not in " ".join(rollback)
+
+
+# --- Task 17: the LAN profile the host side switches on (addendum §6, §10; D6/D7) ------
+#
+# The release script runs on the host, outside the image, and imports no `harness` module, so
+# it carries its own copy of `lan_active`. The two copies are kept honest by running the same
+# five-case table over both: this one, and Task 10's over
+# `harness.dashboard.auth.lan_active` in tests/test_dashboard_auth.py.
+
+_release = load_script("release-omarchy")
+lan_active = _release.lan_active
+set_compose_profiles = _release.set_compose_profiles
+apps_for = _release.apps_for
+
+LAN_FILES = ("owner_password_hash", "lan_tls.crt", "lan_tls.key")
+
+
+def _runtime_with(tmp_path, state):
+    """A runtime tree in one of the five states. Only the last file varies in the two
+    degenerate cases, so `empty_file` and `directory` fail on one file out of three rather
+    than on all of them: an all-or-nothing fixture would pass against `any()` as well.
+
+    One runtime per state, so a single test can build two of them from one `tmp_path`.
+    """
+    runtime = tmp_path / state
+    directory = runtime / "secrets"
+    directory.mkdir(parents=True)
+    present = {"none": (), "two_of_three": LAN_FILES[:2]}.get(state, LAN_FILES)
+    for name in present:
+        path = directory / name
+        if state == "directory" and name == LAN_FILES[-1]:
+            path.mkdir()
+        else:
+            path.write_text("" if state == "empty_file" and name == LAN_FILES[-1] else "x")
+    return runtime
+
+
+@pytest.mark.parametrize("state,expected", [
+    ("none", False), ("two_of_three", False), ("empty_file", False),
+    ("directory", False), ("all_three", True)])
+def test_lan_active_requires_three_non_empty_regular_files(tmp_path, state, expected):
+    assert lan_active(_runtime_with(tmp_path, state)) is expected
+
+
+def test_the_profile_line_is_written_when_active_and_removed_when_not(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("SERVE_PORT=8180\n")
+    set_compose_profiles(env, active=True)
+    assert "COMPOSE_PROFILES=lan\n" in env.read_text()
+    set_compose_profiles(env, active=True)                     # idempotent
+    assert env.read_text().count("COMPOSE_PROFILES") == 1
+    set_compose_profiles(env, active=False)
+    assert "COMPOSE_PROFILES" not in env.read_text()
+    assert "SERVE_PORT=8180" in env.read_text()
+
+
+def test_the_lan_service_joins_apps_and_wait_healthy_only_when_active(tmp_path):
+    assert "app-serve-lan" in apps_for(_runtime_with(tmp_path, "all_three"))
+    assert "app-serve-lan" not in apps_for(_runtime_with(tmp_path, "none"))
+
+
+def test_the_release_script_copies_no_secret():
+    """D7 and §14.7: the script has never copied a secret and does not start now."""
+    source = Path("scripts/release-omarchy.py").read_text()
+    assert "secrets/" not in source.replace("lan_active", "")
+    assert "scp" not in source
+
+
+def _activated(release, *, in_previous_stack=False):
+    """The fixture's runtime with the user's three LAN files in place.
+
+    `mutate_candidate` stands in for what `docker compose config` does on the host: merge the
+    base compose file's environment into the rendered service. The fake `run` returns the
+    candidate override verbatim, and the override only ever carries images and build stamps,
+    so without this the rendered LAN service would be missing the posture block that
+    docker-compose.yml pins on it.
+    """
+    directory = release.runtime / "secrets"
+    directory.mkdir(exist_ok=True)
+    for name in LAN_FILES:
+        (directory / name).write_text("x")
+    posture = {"LIVE_TRADING": "0", "HARNESS_MODE": "paper", "RFQ_LISTENER_ENABLED": "0",
+               "DB_BUDGET_GB": "600"}
+    if in_previous_stack:
+        release.before["services"]["app-serve-lan"] = {
+            "image": f"sports-release/app:{OLD}",
+            "environment": dict(posture, BUILD_SHA=OLD, BUILD_TIME="2026-09-11T00:00:00Z")}
+        (release.runtime / "compose.omarchy.yml").write_text(json.dumps(release.before))
+        (release.runtime / ".env").write_text("PRIVATE_VALUE=must-remain-byte-identical\n"
+                                              "COMPOSE_PROFILES=lan\n")
+
+    def merge(config):
+        config["services"]["app-serve-lan"].setdefault("environment", {}).update(posture)
+
+    release.mutate_candidate = merge
+
+
+def test_the_first_release_after_the_files_appear_adds_the_listener_it_cannot_restore(release):
+    """Activation: nothing to stop, nothing to restore, and the profile line appears before the
+    candidate config is rendered -- Compose reads COMPOSE_PROFILES from the runtime .env."""
+    _activated(release)
+    release.module.deploy("full")
+    env = (release.runtime / ".env").read_text()
+    assert "COMPOSE_PROFILES=lan\n" in env and "PRIVATE_VALUE=must-remain-byte-identical" in env
+    written = release_receipt(release)
+    assert "app-serve-lan" in written["services"]
+    assert "app-serve-lan" in written["expected_services"]
+    assert "app-serve-lan" not in written["previous_services"]
+    stop = [call for call in release.calls if "stop" in call][-1]
+    up = [call for call in release.calls if "up" in call][-1]
+    assert "app-serve-lan" not in stop and "app-serve-lan" in up
+    assert "app-serve-lan" in release.health_calls[-1][1]
+
+
+def test_a_failed_activation_rolls_back_the_profile_line_and_waits_on_the_old_services(release):
+    _activated(release)
+    release.failure = "health"
+    with pytest.raises(RuntimeError):
+        release.module.deploy("full")
+    assert "COMPOSE_PROFILES" not in (release.runtime / ".env").read_text()
+    stamp, services, _ = release.health_calls[-1]
+    assert stamp == OLD and "app-serve-lan" not in services
+    assert release_receipt(release)["status"] == "failed-old-apps-restored"
+
+
+def test_a_release_with_the_listener_already_running_stops_and_restamps_it_like_any_app(release):
+    _activated(release, in_previous_stack=True)
+    release.module.deploy("full")
+    overlay = json.loads((release.runtime / "compose.omarchy.yml").read_text())
+    assert overlay["services"]["app-serve-lan"]["environment"]["BUILD_SHA"] == SHA
+    stop = [call for call in release.calls if "stop" in call][-1]
+    assert "app-serve-lan" in stop
+    assert "app-serve-lan" in release_receipt(release)["previous_services"]
+    assert (release.runtime / ".env").read_text().count("COMPOSE_PROFILES") == 1
+
+
+def test_removing_a_lan_file_takes_the_profile_line_out_and_deploys_todays_stack(release):
+    """The files are the switch in both directions: no rewritten flag, no edited env var."""
+    (release.runtime / ".env").write_text("PRIVATE_VALUE=must-remain-byte-identical\n"
+                                          "COMPOSE_PROFILES=lan\n")
+    release.module.deploy("app")
+    env = (release.runtime / ".env").read_text()
+    assert "COMPOSE_PROFILES" not in env and "PRIVATE_VALUE=must-remain-byte-identical" in env
+    assert "app-serve-lan" not in release_receipt(release)["services"]
