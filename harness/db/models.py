@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, Index, Integer, Numeric, SmallInteger, String, Text,
-    UniqueConstraint, Uuid,
+    UniqueConstraint, Uuid, desc, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -127,6 +127,45 @@ class OddsSnapshot(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (Index("ix_odds_game_type_fetched", "game_id", "market_type", "fetched_at"),
                       Index("ix_odds_fetched_book", "fetched_at", "book", "book_last_update"))
+
+
+class OddsPropSnapshot(Base):
+    """One DraftKings player-prop outcome (addendum §3.3 and §9 as amended; D23).
+
+    Its own table rather than four columns on `odds_snapshots`: a prop outcome is keyed by the
+    **player**, and `uq_odds_snapshot_row` keys on `coalesce(outcome_team_id, -1)` with no
+    `where` clause, so two scorers in one `prop:anytime_td` market are one key to it. Making
+    them fit would mean rebuilding a unique index on a bulk table, which is not additive; a new
+    table is. Column spellings are copied from `OddsSnapshot`.
+    """
+    __tablename__ = "odds_prop_snapshots"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    raw_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    book: Mapped[str] = mapped_column(String(32), nullable=False)
+    game_id: Mapped[int | None] = mapped_column(Integer)
+    market_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    player_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: Null until Task 3's resolver fills it; `ix_odds_prop_lookup` is partial on it.
+    player_id: Mapped[int | None] = mapped_column(Integer)
+    outcome_side: Mapped[str | None] = mapped_column(String(8))
+    point: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))
+    #: The only price column, as on `OddsSnapshot`: the venue is asked for decimal odds and
+    #: `pricing.american()` derives the American price for a prop exactly as for a game line.
+    price_decimal: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    book_last_update: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    link: Mapped[str | None] = mapped_column(String(300))
+    sid: Mapped[str | None] = mapped_column(String(64))
+    __table_args__ = (
+        # The prop upsert's conflict target: one row per (fetch, book, market, player, side,
+        # line). `player_name` is the column `uq_odds_snapshot_row` could not carry.
+        Index("uq_odds_prop_row", "raw_id", "book", "market_type", "player_name",
+              text("coalesce(outcome_side, '')"), text("coalesce(point, 0)"), unique=True),
+        # The builder's pool and the reprice read: the three leading columns seek, the fourth
+        # orders. Partial, so a row whose player never resolved costs nothing.
+        Index("ix_odds_prop_lookup", "game_id", "market_type", "player_id", desc("fetched_at"),
+              postgresql_where=text("player_id is not null")),
+    )
 
 
 class VenueMarket(Base):

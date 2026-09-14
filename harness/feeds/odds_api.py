@@ -5,6 +5,12 @@ from harness.feeds.http import FetchResult, HttpClient
 
 FEATURED_MARKETS = "h2h,spreads,totals"
 ALTERNATE_MARKETS = "alternate_spreads,alternate_totals"
+#: Addendum §3.1 (D3): the five release-one families plus the `_alternate` variants of the four
+#: yardage/count families. Nine keys, so at most nine credits a call (cost is unique markets
+#: returned x regions, one region). The bookmakers string is the client's, unchanged (gate 5).
+PROP_MARKETS = ("player_pass_yds,player_rush_yds,player_reception_yds,player_receptions,"
+                "player_anytime_td,player_pass_yds_alternate,player_rush_yds_alternate,"
+                "player_reception_yds_alternate,player_receptions_alternate")
 
 
 @dataclass(frozen=True)
@@ -54,3 +60,11 @@ class OddsApiClient:
     def fetch_event_alternates(self, sport: str, event_id: str) -> FetchResult:
         return self._http.get(f"{self._base}/sports/{sport}/events/{event_id}/odds",
                               params=self._params(ALTERNATE_MARKETS))
+
+    def fetch_event_props(self, sport: str, event_id: str) -> FetchResult:
+        """One event's player props, on the per-event endpoint the recorder already calls for
+        alternates. `includeLinks`/`includeSids` are asked for here and nowhere else: the
+        featured and alternates calls are byte-identical to what they were (gate 5)."""
+        params = dict(self._params(PROP_MARKETS), includeLinks="true", includeSids="true")
+        return self._http.get(f"{self._base}/sports/{sport}/events/{event_id}/odds",
+                              params=params)
