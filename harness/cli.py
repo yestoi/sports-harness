@@ -764,7 +764,8 @@ def policy_compare_cmd(
     id by amendment, never as an edit to a registered id.
     """
     configure_logging()
-    from harness.execution.policy import BASELINE_RECORD, POLICIES, compare, render
+    from harness.execution.policy import (NOT_EXERCISED, NOT_EXERCISED_NOTE, POLICIES,
+                                          baseline_record, compare, render)
 
     names = [name.strip() for name in policies.split(",") if name.strip()]
     unknown = [name for name in names if name not in POLICIES]
@@ -785,7 +786,11 @@ def policy_compare_cmd(
             log.error("%s", exc)
             raise typer.Exit(1) from exc
 
-    body = f"{BASELINE_RECORD}\n\n{render(results)}\n"
+    # `baseline_record(s)` rather than the module-level string: the record must state what
+    # *this* process is configured with, and the cached attribute is built from whatever
+    # environment the first reader had (round 1 review, M4).
+    caveats = "".join(f"{name}: {NOT_EXERCISED_NOTE}\n" for name in names if name in NOT_EXERCISED)
+    body = f"{baseline_record(s)}\n\n{caveats}{render(results)}\n"
     if out is None or str(out) == "-":
         print(body)
     else:

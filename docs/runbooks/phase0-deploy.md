@@ -177,7 +177,11 @@ settlement or benchmark row.
   opportunities, queue-filled orders, clean resting seconds, coverage completed/scheduled and
   the four exclusion classes. Example: `harness policy-compare --from-run 14200 --to-run 14320
   --variant sharp_direct --policies baseline,stale_allowance_900 --out -`. It opens no gateway,
-  places nothing and writes no row. **The run on the live tape waits for 6B** -- stepping a
+  places nothing and writes no row. Two of the six alternatives, `rest_to_expiry` and
+  `per_variant_slots`, are **not exercised by this harness**: it reconstructs no resting order
+  (working orders carry no `at` horizon) and every instant starts from zero open orders, so
+  their rows are marked and an identical row is the harness's silence, never evidence that the
+  alternative changes nothing. **The run on the live tape waits for 6B** -- stepping a
   replay at the recorded loop instants is 6B's carve-out (its D15) -- and it is a **separate
   operate duty**, not part of a 6D task. **Every output is counterfactual and exploratory**
   (M6): the caption and every row carry that label, and no number produced under a

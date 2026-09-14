@@ -520,19 +520,22 @@ def _order_action(order: OpenOrderView, market: MarketNow | None, intent: Intent
         # `Cancel` picked up further down would close the same track just as early
         # (fix 22 round 1, I2). `lagging` empties within a few loops by construction.
         return None if order.ticker in lagging else Expire(order.order_id)
-    if policy.rest_to_expiry:
-        # 6D §1.6, decision 4's rest-to-expiry alternative: an order that reaches this line is
-        # not expired, so under this policy it rests until it is. The branch sits immediately
-        # after the expiry rule because R8's guarantee outranks it and nothing else; that it
-        # also suppresses the kill switch's cancel is one reason the alternative is exploratory
-        # and why the harness that runs it opens no gateway. `BASELINE` leaves it dead.
-        return None
     if kill_active:
         return Cancel(order.order_id, KILL_SWITCH)
     # No `MarketNow` means the market is no longer in the loop's working set at all, which is
     # the same statement about its identity that a match downgrade makes.
     if market is None or not market.matched or market.match_key != order.match_key:
         return Cancel(order.order_id, UNMATCHED)
+    if policy.rest_to_expiry:
+        # 6D §1.6, decision 4's rest-to-expiry alternative: an order that reaches this line is
+        # not expired, so under this policy it rests until it is -- `fair_stale`, `venue_move`,
+        # `edge_decay`, `signal_rejected` and `reprice` all hold instead of cancelling.
+        # Three rules outrank the holding preference and keep their cancel: R8's expiry above,
+        # the operator's kill switch, and a market whose identity we can no longer vouch for.
+        # The kill switch in particular is the emergency stop, and a comparison parameter that
+        # could disable it is not a shape to leave in a signature the live loop calls (round 1
+        # review, I1). `BASELINE` leaves this branch dead.
+        return None
     if market.dirty(now, s):
         return None
     if _fair_stale(market, cfg, now, policy):

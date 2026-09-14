@@ -76,6 +76,21 @@ ALTERNATIVES: dict[str, HoldingPolicy] = {
     "near_kickoff_only": HoldingPolicy(name="near_kickoff_only", near_kickoff_only_min=180),
 }
 
+#: The alternatives this harness **cannot** move, and why (round 1 review, I2). `compare`
+#: hands `plan_actions` an empty open-order list and an empty exposure state at every instant,
+#: because `store.working_orders` carries no `at` horizon: `_order_action` is therefore never
+#: called, so `rest_to_expiry` decides nothing, and `state.open_orders` restarts at 0, so
+#: `per_variant_slots` can only bind if one instant places more than its slot count for one
+#: variant. Their rows are marked in `render()` and by the CLI: a null delta here is the
+#: harness's silence, never evidence that the alternative changes nothing.
+NOT_EXERCISED: frozenset[str] = frozenset({"rest_to_expiry", "per_variant_slots"})
+
+#: The sentence those rows carry, wherever they are printed.
+NOT_EXERCISED_NOTE = (
+    "not exercised by this harness: no resting order is reconstructed (no `at` horizon on "
+    "working orders) and every instant starts from zero open orders, so an identical row is "
+    "this harness's silence and not evidence that the alternative changes nothing.")
+
 #: Every name `policy-compare` resolves, the baseline included. The baseline is a comparison
 #: input like any other here; it is the *declared* policy because §1.6(a) says so, not because
 #: this mapping is shaped differently.
@@ -245,6 +260,9 @@ where name = 'exec.loop_ms' and ts >= :first and ts <= :last
 order by ts
 """)
 
+#: The priced runs of the range, which fix the comparison window. Bound: `r.id` between the two
+#: run ids. Index: `runs_pkey` for the range, and `uq_gap_run_market (run_id, venue_market_id)`
+#: for the `exists`, which stops at the first snapshot of each run rather than counting them.
 _RUN_CLOCKS = text("""
 select r.id, r.started_at, r.finished_at
 from runs r
@@ -253,18 +271,45 @@ where r.id >= :from_run and r.id <= :to_run
 order by r.id
 """)
 
+#: The most orders one comparison reads off the tape. A game day places hundreds per variant
+#: (journal 136's real breakdown), so the cap is loose by two orders of magnitude and exists
+#: only so a mis-specified window cannot turn a read into a table scan; `compare` logs when it
+#: binds, because a truncated read would understate every policy's fills equally and silently.
+ORDER_SCAN_CAP = 20_000
+
 #: What the tape says about the orders these intents actually placed. `queue_model` is the queue
 #: simulator's own fill method: a `snapshot_cross` or a `no_watcher` fill answers a different
 #: question and is not what §1.6(b) means by "actual queue-filled orders".
+#:
+#: Bound: `variant_id` and `placed_at` inside the comparison window, then `order by o.id desc
+#: limit :cap`. Index: `ix_orders_key_placed (variant_id, venue_market_id, side, placed_at)` for
+#: the variant and time bound, with `orders_pkey` backing the capped `order by id desc`.
+#: `orders.intent_id` carries **no** index (fix 51 added `ix_intents_created`, not this one), so
+#: the intent list is applied to that bounded set instead of being the driving predicate -- and
+#: Task 9 adds no schema, so no index is created here.
+#:
+#: Each order's resting interval is summed **once**: the fill count is a separate `exists`
+#: subquery rather than a `left join`, because joining the fills first multiplied a 100 s order
+#: with three fills into 300 clean resting seconds (round 1 review, C1) and ranked the policies
+#: by fill fragmentation.
 _TAPE_OUTCOMES = text("""
-select count(distinct case when f.fill_method = 'queue_model' then o.id end) as filled,
-       coalesce(sum(greatest(
-           extract(epoch from (least(coalesce(o.cancelled_at, o.expiry, :last),
-                                     coalesce(o.expiry, :last)) - o.placed_at))
-           - o.dirty_seconds, 0)), 0) as clean_s
-from orders o
-left join fills f on f.order_id = o.id
-where o.intent_id = any(:intents)
+with placed as (
+    select o.id, o.placed_at, o.expiry, o.cancelled_at, o.dirty_seconds
+    from orders o
+    where o.variant_id = :variant
+      and o.placed_at >= :first and o.placed_at <= :last
+      and o.intent_id = any(:intents)
+    order by o.id desc
+    limit :cap
+)
+select (select count(*) from placed) as n_orders,
+       (select count(*) from placed p
+        where exists (select 1 from fills f
+                      where f.order_id = p.id and f.fill_method = 'queue_model')) as filled,
+       coalesce((select sum(greatest(
+           extract(epoch from (least(coalesce(p.cancelled_at, p.expiry, :last),
+                                     coalesce(p.expiry, :last)) - p.placed_at))
+           - p.dirty_seconds, 0)) from placed p), 0) as clean_s
 """)
 
 
@@ -304,6 +349,26 @@ def _window(session: Session, settings: Settings, from_run: int,
     return min(clocks), max(clocks)
 
 
+@dataclass
+class _Tally:
+    """One policy's running counts while the slice is walked once for every policy (I3).
+
+    Mutable and private: `PolicyResult` is the frozen thing a caller gets, and this is the
+    bookkeeping that produces it. `blocked` is the harness's stand-in for a resting order, and
+    `counted` is `uq_skip_once`'s key, so an exclusion is counted once per (intent, reason)
+    rather than once per instant.
+    """
+
+    policy: HoldingPolicy
+    placed: set = field(default_factory=set)
+    keys: set = field(default_factory=set)
+    blocked: set = field(default_factory=set)
+    counted: set = field(default_factory=set)
+    reasons: dict = field(default_factory=dict)
+    fair_ages: list = field(default_factory=list)
+    completed: int = 0
+
+
 def compare(session: Session, settings: Settings, *, from_run: int, to_run: int, variant: str,
             policies: list[HoldingPolicy], now: datetime | None = None) -> list[PolicyResult]:
     """One `PolicyResult` per policy over the same recorded slice. Writes nothing.
@@ -314,15 +379,34 @@ def compare(session: Session, settings: Settings, *, from_run: int, to_run: int,
     `store.market_rows(at=)`) and handed to `plan_actions(..., policy=policy)`. The counts are
     accumulated in memory: no order, no intent, no signal, no metric and no `session.commit()`.
 
-    Two stated limitations, which is what "counterfactual" means here concretely:
+    **The tape is read once per instant, not once per policy** (round 1 review, I3): the reads
+    depend on the instant alone, so the instant is the outer loop and the policies the inner
+    one. A game-day slice is ~5,760 recorded instants; reading it per policy would be ~40,000
+    "newest as of" reads for the six alternatives instead of ~5,760, which is the difference
+    between a duty that runs and one that trips a statement budget. Nothing is cached across
+    instants, so the memory cost stays one instant's rows.
 
-    * **Each policy starts from an empty set of open orders**, because `store.working_orders`
-      carries no `at` horizon. The comparison is therefore between policies over the same tape
-      and not a reconstruction of the live book. What stands in for a resting order is this
-      function's own bookkeeping: an intent a policy placed blocks its
-      `(venue_market_id, side)` for the rest of the slice, so one intent is one placement, and
-      an exclusion is counted once per `(intent, reason)` exactly as `uq_skip_once` records it
-      live. Without that, a key stale at 240 recorded instants would read as 240 exclusions.
+    `now` **labels the run and does not bound the tape**: every instant comes from the record
+    and the window comes from the run range's own pricing clocks (round 1 review, M2). It is
+    the clock the comparison was taken at, carried into the log line, and is the brief's own
+    parameter name.
+
+    Three stated limitations, which is what "counterfactual" means here concretely:
+
+    * **Each policy starts from an empty set of open orders and an empty exposure state**,
+      because `store.working_orders` carries no `at` horizon. The comparison is therefore
+      between policies over the same tape and not a reconstruction of the live book. What
+      stands in for a resting order is this function's own bookkeeping: an intent a policy
+      placed blocks its `(venue_market_id, side)` for the rest of the slice, so one intent is
+      one placement, and an exclusion is counted once per `(intent, reason)` exactly as
+      `uq_skip_once` records it live. Without that, a key stale at 240 recorded instants would
+      read as 240 exclusions.
+    * **`rest_to_expiry` and `per_variant_slots` cannot move a result here** (`NOT_EXERCISED`,
+      round 1 review I2), and that follows from the line above: with no open orders
+      `_order_action` is never called at all, so the holding preference decides nothing, and
+      with `state.open_orders` restarting at 0 each instant the slot count can only bind if one
+      instant places more than its slots for one variant. Their rows are marked wherever they
+      are printed; an identical row is this harness's silence, never a finding.
     * **No book is rebuilt** (`_market_now`), and the kill switch is taken as inactive: the
       recorded kill state at a past instant is not stored, and reading today's would make a
       re-run's answer depend on when it was run rather than on the window it covers.
@@ -333,12 +417,13 @@ def compare(session: Session, settings: Settings, *, from_run: int, to_run: int,
     cannot know what an order that never existed would have done, and inventing a fill for it
     would be the one number nobody could check.
 
-    `coverage_completed / coverage_scheduled` counts recorded loop instants: `scheduled` is the
-    instants at which this variant had at least one intent due (an evaluation was owed) and
-    `completed` those at which the chain reached a decision for every one of them. With no open
-    orders the two are equal by construction; the pair is carried because §1.7's contract is
-    stated as completed-over-scheduled and because an instant the harness dropped is exactly
-    what it would show.
+    `coverage_completed / coverage_scheduled`: `scheduled` is **policy-independent** (round 1
+    review, M3) -- the recorded loop instants at which this variant had any intent inside the
+    TTL, which is the same denominator for every row -- and `completed` is the instants at
+    which the chain reached a decision for every intent owed one, an instant whose keys are all
+    held by the harness's stand-in resting orders included. The pair is carried because §1.7's
+    contract is stated as completed-over-scheduled and because an instant the harness dropped is
+    exactly what it would show.
     """
     from harness.execution import store
     from harness.execution.plan import CapGate, ExecSettings, Place, Skip, plan_actions
@@ -362,73 +447,92 @@ def compare(session: Session, settings: Settings, *, from_run: int, to_run: int,
             "instants the live executor left behind, never a grid of its own (§1.6(b)).")
     log.info("policy-compare: %d recorded loop instants over [%s, %s], %d policies "
              "(counterfactual, nothing is written)", len(instants), first, last, len(policies))
+    for policy in policies:
+        if policy.name in NOT_EXERCISED:
+            log.warning("policy-compare: %s is %s", policy.name, NOT_EXERCISED_NOTE)
 
     exec_settings = ExecSettings.from_settings(settings)
     ttl = timedelta(seconds=settings.exec_intent_ttl_s)
     variant_cfg = {variant_id: configs[variant_id]}
 
-    results: list[PolicyResult] = []
-    for policy in policies:
-        placed: set = set()
-        keys: set = set()
-        blocked: set = set()
-        counted: set = set()
-        reasons: dict[str, int] = {}
-        fair_ages: list[int] = []
-        scheduled = completed = 0
-
-        for instant in instants:
-            intents, _ = store.load_intents(session, [variant_id], instant - ttl, replay=False,
-                                            at=instant)
-            due = [row for row in intents if (row.venue_market_id, row.side) not in blocked]
+    tallies = [_Tally(policy) for policy in policies]
+    scheduled = 0
+    for instant in instants:
+        intents, _ = store.load_intents(session, [variant_id], instant - ttl, replay=False,
+                                        at=instant)
+        if not intents:
+            continue
+        scheduled += 1
+        rows = store.market_rows(session, {row.venue_market_id for row in intents}, at=instant)
+        markets = {vm_id: _market_now(row) for vm_id, row in rows.items()}
+        by_id = {row.intent_id: row for row in intents}
+        for tally in tallies:
+            due = [row for row in intents
+                   if (row.venue_market_id, row.side) not in tally.blocked]
             if not due:
+                # Every intent owed an evaluation is answered by a standing placement: the
+                # instant is covered, and counting it otherwise would make the denominator and
+                # the numerator disagree about what "owed" means.
+                tally.completed += 1
                 continue
-            scheduled += 1
-            rows = store.market_rows(session, {row.venue_market_id for row in due}, at=instant)
-            markets = {vm_id: _market_now(row) for vm_id, row in rows.items()}
             actions = plan_actions(due, [], markets, {}, variant_cfg, False, instant,
-                                   exec_settings, policy=policy)
+                                   exec_settings, policy=tally.policy)
             decided = {action.intent_id for action in actions
                        if getattr(action, "intent_id", None) is not None}
             if len(decided) == len(due):
-                completed += 1
-            by_id = {row.intent_id: row for row in due}
+                tally.completed += 1
             for action in actions:
                 if isinstance(action, Place):
                     intent = by_id[action.intent_id]
-                    placed.add(action.intent_id)
-                    keys.add((intent.venue_market_id, intent.side))
-                    blocked.add((intent.venue_market_id, intent.side))
+                    tally.placed.add(action.intent_id)
+                    tally.keys.add((intent.venue_market_id, intent.side))
+                    tally.blocked.add((intent.venue_market_id, intent.side))
                     market = markets.get(intent.venue_market_id)
                     age = None if market is None else market.fair_age_s(instant)
                     if age is not None:
-                        fair_ages.append(age)
+                        tally.fair_ages.append(age)
                 elif isinstance(action, Skip) or (isinstance(action, CapGate)
                                                   and action.blocking):
                     # Once per (intent, reason), which is how `uq_skip_once` stores it live.
                     mark = (action.intent_id, action.reason)
-                    if mark not in counted:
-                        counted.add(mark)
-                        reasons[action.reason] = reasons.get(action.reason, 0) + 1
+                    if mark not in tally.counted:
+                        tally.counted.add(mark)
+                        tally.reasons[action.reason] = tally.reasons.get(action.reason, 0) + 1
 
-        filled, clean = _tape_outcomes(session, sorted(placed), last)
+    results = []
+    for tally in tallies:
+        filled, clean = _tape_outcomes(session, sorted(tally.placed), variant_id, first, last)
         results.append(PolicyResult(
-            policy=policy.name, orders_placed=len(placed), unique_opportunities=len(keys),
-            queue_filled_orders=filled, clean_resting_seconds=clean,
-            coverage_completed=completed, coverage_scheduled=scheduled,
-            mean_fair_age_s=(sum(fair_ages) / len(fair_ages)) if fair_ages else None,
-            exclusions=exclusion_totals(reasons)))
+            policy=tally.policy.name, orders_placed=len(tally.placed),
+            unique_opportunities=len(tally.keys), queue_filled_orders=filled,
+            clean_resting_seconds=clean, coverage_completed=tally.completed,
+            coverage_scheduled=scheduled,
+            mean_fair_age_s=((sum(tally.fair_ages) / len(tally.fair_ages))
+                             if tally.fair_ages else None),
+            exclusions=exclusion_totals(tally.reasons)))
     log.info("policy-compare: finished at %s; no row written", resolved_now.isoformat())
     return results
 
 
-def _tape_outcomes(session: Session, intent_ids: list, last: datetime) -> tuple[int, int]:
+def _tape_outcomes(session: Session, intent_ids: list, variant_id: str, first: datetime,
+                   last: datetime) -> tuple[int, int]:
     """What the record holds for the orders these intents actually placed: queue-model fills,
     and resting seconds on a book that was not dirty (`orders.dirty_seconds` against
-    `[placed_at, min(cancelled_at, expiry)]` -- 6B §1.5 owns that interval, 6D reads it)."""
+    `[placed_at, min(cancelled_at, expiry)]` -- 6B §1.5 owns that interval, 6D reads it).
+
+    Each order contributes its interval exactly once, whatever its fill count (round 1 review,
+    C1). The read is bounded to the variant and the comparison window and capped at
+    `ORDER_SCAN_CAP`; a cap that binds is logged rather than swallowed.
+    """
     if not intent_ids:
         return 0, 0
-    row = session.execute(_TAPE_OUTCOMES, {"intents": intent_ids, "last": last}).one()
+    row = session.execute(_TAPE_OUTCOMES, {"intents": intent_ids, "variant": variant_id,
+                                           "first": first, "last": last,
+                                           "cap": ORDER_SCAN_CAP}).one()
+    if int(row.n_orders) >= ORDER_SCAN_CAP:
+        log.warning("policy-compare: the order read hit ORDER_SCAN_CAP (%d) for variant %s over "
+                    "[%s, %s]; fills and clean resting seconds are truncated", ORDER_SCAN_CAP,
+                    variant_id, first, last)
     return int(row.filled), int(Decimal(str(row.clean_s)))
 
 
@@ -452,6 +556,8 @@ def render(results: list[PolicyResult]) -> str:
             f"{age:>12}"
             + "".join(f"{row.exclusions.get(name, 0):>18}" for name in EXCLUSION_CLASSES))
         lines.append(f"    {row.policy}: {row.label}")
+        if row.policy in NOT_EXERCISED:
+            lines.append(f"    {row.policy}: {NOT_EXERCISED_NOTE}")
     lines.append("")
     lines.append("Adoption is the user's dated decision (§0.15a); 6D adopts nothing (D7). The "
                  "selected policy is registered as a new config_history hash or a new variant "

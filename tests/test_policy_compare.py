@@ -14,8 +14,10 @@ from typer.testing import CliRunner
 from harness.cli import app
 from harness.db.models import (
     Base,
+    Fill,
     Game,
     Intent,
+    Order,
     MarketGapSnapshot,
     MetricSample,
     Run,
@@ -195,6 +197,10 @@ def test_a_nine_hundred_second_stale_allowance_places_at_least_as_much(db_sessio
     assert rows["stale_allowance_900"].exclusions["unreliable_data"] == 0
     assert rows["baseline"].unique_opportunities == 2
     assert rows["stale_allowance_900"].unique_opportunities == 3
+    # The coverage denominator is the tape's, not the policy's (round 1 review, M3): one
+    # recorded loop instant at which the variant had intents, for every row of the table.
+    assert [(row.coverage_completed, row.coverage_scheduled) for row in rows.values()] == \
+        [(1, 1), (1, 1)]
 
 
 def test_the_same_slice_has_a_strictly_larger_mean_fair_age_at_placement(db_session,
@@ -312,12 +318,20 @@ def test_the_command_prints_the_baseline_record_above_the_labelled_table(cli_set
     _seed(db_session)
     db_session.commit()
     result = runner.invoke(app, ["policy-compare", "--from-run", "1", "--to-run", "1000000000",
-                                 "--variant", VARIANT_NAME,
-                                 "--policies", "baseline,stale_allowance_900", "--out", "-"])
+                                 "--variant", VARIANT_NAME, "--out", "-",
+                                 "--policies", "baseline,stale_allowance_900,rest_to_expiry"])
     assert result.exit_code == 0, result.output
     assert "The holding and capacity policy in force" in result.output
     assert COUNTERFACTUAL_LABEL in result.output
     assert "baseline" in result.output and "stale_allowance_900" in result.output
+    # Round 1 review, I2/M4: the record is built from the settings the command holds, and a
+    # policy this harness cannot move says so above the table as well as on its own row.
+    from harness.execution.policy import NOT_EXERCISED_NOTE
+
+    # Three times over: the log line the command emits, the caveat above the table and the
+    # marked row itself. Two of those are the printed document; the third is the operator's log.
+    assert result.output.count(NOT_EXERCISED_NOTE) >= 2
+    assert f"rest_to_expiry: {NOT_EXERCISED_NOTE}" in result.output
     # The run left the record exactly as it found it.
     assert db_session.execute(text("select count(*) from orders")).scalar() == 0
     assert db_session.execute(text("select count(*) from order_events")).scalar() == 0
@@ -372,3 +386,143 @@ def test_each_alternative_changes_exactly_the_one_thing_it_names():
     assert any(isinstance(a, plan_module.Place) for a in plan(BASELINE, [far]))
     assert [a.reason for a in plan(ALTERNATIVES["near_kickoff_only"], [far])] == \
         [plan_module.KICKOFF]
+
+
+def _place_order(session, intent_id: uuid.UUID, *, oid: int, resting_s: int, fills: int,
+                 dirty_s: int = 0) -> None:
+    """One recorded order for `intent_id`, resting `resting_s` seconds with `fills` queue fills.
+
+    Placed at the loop instant and cancelled `resting_s` later, so its clean resting interval is
+    `resting_s - dirty_s` whatever the number of fills on it.
+    """
+    session.add(Order(id=oid, intent_id=intent_id, variant_id=VARIANT_ID, venue="kalshi",
+                      mode="paper", client_order_id=f"t9-{oid}", ticker="K1", venue_market_id=1,
+                      side="yes", prob=Decimal("0.4500"), contracts=Decimal("20"),
+                      status="cancelled", placed_at=NOW,
+                      cancelled_at=NOW + timedelta(seconds=resting_s),
+                      expiry=KICKOFF - timedelta(minutes=10), dirty_seconds=dirty_s,
+                      replay=False))
+    session.flush()
+    for n in range(fills):
+        # `uq_fill_source` keys on the tape row a fill came from, so each print gets its own.
+        session.add(Fill(order_id=oid, prob=Decimal("0.4500"), contracts=Decimal("1"),
+                         fee=Decimal("0.0100"), filled_at=NOW + timedelta(seconds=n + 1),
+                         simulated=True, fill_method="queue_model",
+                         source_event_id=oid * 100 + n, replay=False))
+    session.flush()
+
+
+def test_clean_resting_seconds_counts_each_order_once_however_often_it_filled(db_session,
+                                                                             env_settings):
+    """Round 1 review, C1: the interval is a property of the order, not of its fills.
+
+    Computed by hand: both orders rest 100 s with `dirty_seconds = 0`, so the clean resting
+    total is 100 + 100 = 200 and the queue-filled count is 2 -- whether one of them printed
+    once and the other three times, which is what the earlier `left join fills` turned into
+    100 + 300. An order's execution quality must not be ranked by how fragmented its fills were.
+    """
+    _seed(db_session)
+    _place_order(db_session, uuid.UUID(int=1), oid=1, resting_s=100, fills=1)
+    _place_order(db_session, uuid.UUID(int=2), oid=2, resting_s=100, fills=3)
+
+    rows = _compare(db_session, env_settings, [BASELINE])
+
+    assert rows["baseline"].orders_placed == 2      # markets 1 and 2, as above
+    assert rows["baseline"].queue_filled_orders == 2
+    assert rows["baseline"].clean_resting_seconds == 200
+
+
+def test_dirty_seconds_come_off_the_resting_interval_once(db_session, env_settings):
+    """The other half of the same sum: 100 s resting with 40 s of dirty book is 60 clean
+    seconds, counted once for an order that filled three times."""
+    _seed(db_session)
+    _place_order(db_session, uuid.UUID(int=1), oid=1, resting_s=100, fills=3, dirty_s=40)
+
+    rows = _compare(db_session, env_settings, [BASELINE])
+
+    assert rows["baseline"].queue_filled_orders == 1
+    assert rows["baseline"].clean_resting_seconds == 60
+
+
+def test_the_kill_switch_outranks_the_rest_to_expiry_alternative():
+    """Round 1 review, I1: no policy parameter may disable the operator's emergency stop.
+
+    `rest_to_expiry` holds an order through `fair_stale`; it does not hold one through the kill
+    switch, or through a market whose identity the matcher has withdrawn. Computed from the
+    chain's own order: expiry, kill switch and `unmatched` outrank the holding preference and
+    everything below it does not.
+    """
+    from tests.test_exec_plan import NOW as PLAN_NOW
+    from tests.test_exec_plan import S, VARIANTS, market, order
+
+    def plan(policy, kill=False, markets=None):
+        return plan_module.plan_actions([], [order()], markets or {1: market()}, {}, VARIANTS,
+                                        kill, PLAN_NOW, S, frozenset(), policy)
+
+    resting = ALTERNATIVES["rest_to_expiry"]
+    killed = plan(resting, kill=True)
+    assert [type(a).__name__ for a in killed] == ["Cancel"]
+    assert killed[0].reason == plan_module.KILL_SWITCH
+    # ... and the baseline's own answer to the same slice is the same cancel.
+    assert plan(BASELINE, kill=True)[0].reason == plan_module.KILL_SWITCH
+    # A market the matcher withdrew still cancels, too.
+    unmatched = plan(resting, markets={1: market(matched=False)})
+    assert unmatched[0].reason == plan_module.UNMATCHED
+    # And the rule it does hold: a stale fair value.
+    stale = {1: market(fair_ts=PLAN_NOW - timedelta(seconds=STALE_AGE_S))}
+    assert plan(resting, markets=stale) == []
+    assert plan(BASELINE, markets=stale)[0].reason == plan_module.FAIR_STALE
+
+
+def test_the_two_alternatives_this_harness_cannot_move_say_so_on_their_own_rows(db_session,
+                                                                               env_settings):
+    """Round 1 review, I2: `compare` passes no open orders and no exposure state, so
+    `rest_to_expiry` and `per_variant_slots` cannot change a number here. A reader must not be
+    able to take an identical row for a finding, so the row says which it is."""
+    from harness.execution.policy import NOT_EXERCISED, NOT_EXERCISED_NOTE, render
+
+    assert NOT_EXERCISED == {"rest_to_expiry", "per_variant_slots"}
+    _seed(db_session)
+    results = compare(db_session, env_settings, from_run=1, to_run=10 ** 9,
+                      variant=VARIANT_NAME,
+                      policies=[BASELINE, ALTERNATIVES["rest_to_expiry"],
+                                ALTERNATIVES["per_variant_slots"]], now=NOW)
+    # Identical rows, which is exactly why they carry the note.
+    assert {(row.orders_placed, row.unique_opportunities) for row in results} == {(2, 2)}
+    table = render(results)
+    assert table.count(NOT_EXERCISED_NOTE) == 2
+    assert "baseline: not exercised" not in table
+
+
+def test_the_tape_is_read_once_per_instant_not_once_per_policy(db_session, env_settings,
+                                                               monkeypatch):
+    """Round 1 review, I3: the reads depend on the instant, so the instant is the outer loop.
+
+    Counted rather than argued: the fixture has one recorded loop instant, and seven policies
+    are compared over it. One `load_intents` and one `market_rows` call is the whole cost; the
+    per-policy loop that was here before made seven of each, which on a game-day slice is
+    ~40,000 "newest as of" reads instead of ~5,760.
+    """
+    from harness.execution import store
+
+    calls = {"intents": 0, "markets": 0}
+    real_intents, real_markets = store.load_intents, store.market_rows
+
+    def count_intents(*a, **k):
+        calls["intents"] += 1
+        return real_intents(*a, **k)
+
+    def count_markets(*a, **k):
+        calls["markets"] += 1
+        return real_markets(*a, **k)
+
+    monkeypatch.setattr(store, "load_intents", count_intents)
+    monkeypatch.setattr(store, "market_rows", count_markets)
+
+    _seed(db_session)
+    results = compare(db_session, env_settings, from_run=1, to_run=10 ** 9,
+                      variant=VARIANT_NAME, policies=[BASELINE, *ALTERNATIVES.values()],
+                      now=NOW)
+
+    assert len(results) == 7
+    assert calls == {"intents": 1, "markets": 1}
