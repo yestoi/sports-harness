@@ -580,7 +580,7 @@ actual contract count is closed by the centicent fee fix (F11), which makes the 
 - The legal decision before any live trading.
 
 The spec §2 legal-facts correction is being applied by the controller, not by the user.
-- **Decision (2026-09-14 06:04 CT, journal 190 pending):** should gate criterion 8 (`harness/report/gate.py::_STALENESS`, the eligibility staleness median) exclude runs whose `runs.notes` carries `clock = unsynced` (fix 57's key)? The exclusion changes the criterion's SQL text and `criteria_hash()` (R1; skill gate 9), so the loop reverted it from fix 57 and ships the fix without it; the two mis-stamped runs 14485/14486 hold ~2,697 gap snapshots from the wrong-clock window. If yes, it lands as a user-directed R1 amendment with the golden literal and hash updated in one commit; if no, nothing changes.
+- **Decision (2026-09-14 06:02 CT, journal 190 pending):** should gate criterion 8 (`harness/report/gate.py::_STALENESS`, the eligibility staleness median) exclude runs whose `runs.notes` carries `clock = unsynced` (fix 57's key)? The exclusion changes the criterion's SQL text and `criteria_hash()` (R1; skill gate 9), so the loop reverted it from fix 57 and ships the fix without it; the two mis-stamped runs 14485/14486 hold ~2,697 gap snapshots from the wrong-clock window. If yes, it lands as a user-directed R1 amendment with the golden literal and hash updated in one commit; if no, nothing changes.
 
 ## Carried fixes
 
