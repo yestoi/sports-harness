@@ -724,12 +724,28 @@ def _install_lan_session(app: FastAPI, templates: Jinja2Templates, settings: Set
     never anything the client submitted.
     """
     limiter = auth.LoginLimiter()
+    warned_about_the_hash_line = False
 
     def _session_is_valid(request: Request) -> bool:
-        """Fail closed: no usable hash line means no session can be valid, which is the same
-        rule `/unkill` applies to a missing token file."""
+        """Fail closed: no *usable* hash line means no session can be valid, which is the same
+        rule `/unkill` applies to a missing token file.
+
+        Usable is `valid_hash_line`, not merely "the file had bytes in it" (review IM-2). The
+        session key is derived from those bytes, so a file holding anything public -- the
+        certificate every LAN client is handed, the likeliest hand-placement mix-up (D7) --
+        would otherwise let a client derive the key and forge a cookie, reaching every route
+        including the token-less `POST /kill`. §6's fail-closed rule covers the gate, not only
+        `POST /login`.
+        """
+        nonlocal warned_about_the_hash_line
         line = auth.read_hash_line(settings)
-        if line is None:
+        if line is None or not auth.valid_hash_line(line):
+            if line is not None and not warned_about_the_hash_line:
+                # Once per process, not once per request: a polling browser would otherwise
+                # fill the log. The message names the condition and no part of the file.
+                warned_about_the_hash_line = True
+                log.warning("owner password hash file is not a pinned scrypt line; "
+                            "every session on this listener is refused")
             return False
         value = request.cookies.get(auth.COOKIE_NAME)
         if not value:

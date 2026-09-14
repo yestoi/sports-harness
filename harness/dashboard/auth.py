@@ -95,6 +95,26 @@ def verify_password(password: str, line: str) -> bool:
     return hmac.compare_digest(digest, expected)
 
 
+def valid_hash_line(line: str) -> bool:
+    """Whether `line` is a pinned scrypt line, i.e. whether the owner's hash file is usable.
+
+    §6's fail-closed rule is about the **file**, not only about `POST /login`: "a missing,
+    empty, unreadable or malformed hash file makes every login fail ... nothing is ever allowed
+    through". The session key is derived from the file's bytes, so a *session* check that skips
+    this would let a file whose contents are public -- the certificate every LAN client is
+    handed in the TLS handshake, the most likely hand-placement mix-up (D7) -- hand out a
+    derivable key and a forgeable cookie (review IM-2).
+
+    The reason is deliberately not returned: callers refuse, and there is no shape of this
+    answer that should reach a client.
+    """
+    try:
+        _parse_hash_line(line)
+    except ValueError:
+        return False
+    return True
+
+
 def session_key(hash_line: str) -> bytes:
     """The HMAC key for the session cookie, derived from the hash line itself.
 
@@ -119,12 +139,26 @@ def read_cookie(key: bytes, value: str, now: datetime, max_age_days: int = MAX_A
     browser and is never what expires a session here.
     """
     issued_text, _, signature = (value or "").partition(".")
-    if not issued_text or not signature or not issued_text.isdigit():
+    if not issued_text or not signature:
         return False
-    expected = hmac.new(key, issued_text.encode(), hashlib.sha256).hexdigest()
+    # ASCII first, on both halves, and before either reaches `compare_digest` or the hasher
+    # (review IM-1). `hmac.compare_digest` raises `TypeError` when a `str` argument carries a
+    # byte >= 0x80, and a cookie header is latin-1 on the wire, so one byte from an
+    # unauthenticated client would otherwise escape the caller as a 500 instead of a refusal.
+    # ASCII also makes `isdigit()` mean what it looks like it means: `"\u00b2".isdigit()` is
+    # True and `int("\u00b2")` raises, and `"\u0661\u0662".isdigit()` is True of digits that
+    # are not 0-9.
+    if not (issued_text.isascii() and signature.isascii() and issued_text.isdigit()):
+        return False
+    expected = hmac.new(key, issued_text.encode("ascii"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         return False
-    issued = datetime.fromtimestamp(int(issued_text), tz=now.tzinfo)
+    try:
+        issued = datetime.fromtimestamp(int(issued_text), tz=now.tzinfo)
+    except (OverflowError, OSError, ValueError):
+        # A signed but out-of-range instant. Only a key holder can reach this, but a refusal is
+        # still the right answer and a crash never is.
+        return False
     if issued > now + timedelta(seconds=CLOCK_SKEW_S):
         return False
     return now - issued <= timedelta(days=max_age_days)

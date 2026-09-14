@@ -11,8 +11,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from harness.dashboard.app import create_dashboard
-from harness.dashboard.auth import (COOKIE_NAME, hash_password, issue_cookie, lan_active,
-                                    read_cookie, session_key, verify_password)
+from harness.dashboard.auth import (COOKIE_MAX_AGE_S, COOKIE_NAME, hash_password, issue_cookie,
+                                    lan_active, read_cookie, session_key, verify_password)
 
 T0 = datetime(2026, 9, 13, 18, 0, tzinfo=timezone.utc)
 
@@ -21,6 +21,13 @@ T0 = datetime(2026, 9, 13, 18, 0, tzinfo=timezone.utc)
 PASSWORD = "a throwaway password for this test process"
 HASH_LINE = hash_password(PASSWORD)
 TOKEN = "throwaway-dashboard-token"
+
+#: Not a secret and not a hash: the realistic mix-up is the owner putting `lan_tls.crt` -- which
+#: every LAN client is handed in the TLS handshake -- where the hash line belongs (review IM-2).
+#: Shape only; no key material, real or otherwise, is written by this file.
+PUBLIC_MATERIAL = ("-----BEGIN CERTIFICATE-----\n"
+                   "bm90IGEgY2VydGlmaWNhdGU6IHRoaXMgaXMgcHVibGljIHRlc3QgZmlsbGVy\n"
+                   "-----END CERTIFICATE-----\n")
 
 
 @pytest.fixture
@@ -47,6 +54,8 @@ def _lan_settings(env_settings, tmp_path, hash_file: str) -> object:
         path.mkdir()
     elif hash_file == "malformed":
         path.write_text("not-a-hash-line")
+    elif hash_file == "public_material":
+        path.write_text(PUBLIC_MATERIAL)
     elif hash_file != "missing":
         raise AssertionError(f"unknown hash-file state {hash_file!r}")
     token_file = tmp_path / "dashboard_token"
@@ -59,11 +68,14 @@ def _lan_settings(env_settings, tmp_path, hash_file: str) -> object:
 def lan_app(db_session, env_settings, tmp_path):
     """A TestClient over the LAN app. `https://` because the session cookie is `Secure`: a
     client would not send it back over plain http, which is the point of the attribute."""
-    def _make(hash_file: str = "ok") -> TestClient:
+    def _make(hash_file: str = "ok", raise_server_exceptions: bool = True) -> TestClient:
         settings = _lan_settings(env_settings, tmp_path, hash_file)
         factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
         app = create_dashboard(factory, settings, clock=lambda: T0, lan=True)
-        return TestClient(app, base_url="https://testserver")
+        # `raise_server_exceptions=False` is what a real client sees: Starlette's own
+        # `ServerErrorMiddleware` answers instead of the exception reaching the test.
+        return TestClient(app, base_url="https://testserver",
+                          raise_server_exceptions=raise_server_exceptions)
 
     return _make
 
@@ -226,3 +238,107 @@ def test_serve_refuses_the_lan_listener_without_both_tls_paths(tmp_path):
                  ["serve", "--lan", "--tls-cert", str(cert), "--tls-key", str(empty_key)],
                  ["serve", "--lan", "--tls-cert", str(cert), "--tls-key", str(tmp_path)]):
         assert runner.invoke(cli_app, args).exit_code == 2
+
+
+# --- Fix round 1: the review's three Important findings --------------------------------------
+
+
+def test_a_non_ascii_cookie_signature_is_refused_and_never_crashes_the_gate(lan_app):
+    """IM-1. `hmac.compare_digest` raises `TypeError` on two `str`s when either carries a byte
+    >= 0x80, and headers are latin-1 on the wire, so one byte from an unauthenticated client
+    turned the gate into a `500` that carried no `X-Frame-Options` and logged a traceback.
+    Failing closed means 401/302 -- never 500.
+    """
+    client = lan_app(raise_server_exceptions=False)
+    # Raw bytes, not `client.cookies.set`: the header is latin-1 on the wire, which is exactly
+    # how a hostile client sends a byte the client library would refuse to encode itself.
+    latin1_cookie = [(b"cookie", b"sports_session=1789322400.caf\xe9")]
+
+    api = client.get("/api/snap/ticket", headers=latin1_cookie)
+    assert api.status_code == 401
+    assert api.json() == {"refusal": "session_required"}
+    assert api.headers["X-Frame-Options"] == "DENY"
+
+    page = client.get("/ui/", headers=latin1_cookie, follow_redirects=False)
+    assert page.status_code == 302
+    assert page.headers["X-Frame-Options"] == "DENY"
+
+
+def test_a_hash_file_holding_public_material_grants_no_session(lan_app, tmp_path, env_settings):
+    """IM-2. §6's fail-closed rule is about the *file*, not only about `POST /login`: a
+    missing, empty, unreadable or malformed hash file means nothing is ever allowed through.
+    The session key is derived from the file's bytes, so a file whose contents are public --
+    the certificate every LAN client is handed -- let anyone who has seen them derive the key,
+    forge a cookie and reach every route, including the token-less `POST /kill`.
+    """
+    client = lan_app(hash_file="public_material")
+    forged = issue_cookie(session_key(PUBLIC_MATERIAL), T0)
+    client.cookies.set(COOKIE_NAME, forged)
+
+    assert client.get("/ui/app.css", follow_redirects=False).status_code == 302
+    assert client.post("/unkill", headers={"X-Dashboard-Token": TOKEN}).status_code == 401
+    assert client.post("/kill", data={"reason": "forged"}).status_code == 401
+
+
+def test_an_empty_hash_file_grants_no_session_either(lan_app):
+    """IM-2, the same rule on the other fail-closed state: an empty file derives an empty-input
+    key, which is a constant anyone can compute."""
+    client = lan_app(hash_file="empty")
+    client.cookies.set(COOKIE_NAME, issue_cookie(session_key(""), T0))
+
+    assert client.get("/ui/app.css", follow_redirects=False).status_code == 302
+    assert client.post("/unkill", headers={"X-Dashboard-Token": TOKEN}).status_code == 401
+
+
+def test_logout_needs_the_csrf_header_and_then_clears_the_cookie(lan_app):
+    """IM-3(a). §6: `POST /logout` clears the cookie (CSRF header required)."""
+    client = lan_app()
+    _login(client)
+
+    refused = client.post("/logout")
+    assert refused.status_code == 403
+    assert refused.json() == {"refusal": "csrf_header_required"}
+
+    ok = client.post("/logout", headers={"X-Requested-With": "sports-ui"})
+    assert ok.status_code == 200
+    assert "Max-Age=0" in ok.headers["set-cookie"]
+    # The jar is empty again, so the next navigation is back at the login page.
+    assert client.get("/ui/", follow_redirects=False).status_code == 302
+
+
+def test_the_session_cookie_carries_the_whole_attribute_set(lan_app):
+    """IM-3(b). §6's cookie contract, attribute by attribute:
+    `Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=15552000` (180 days)."""
+    client = lan_app()
+    response = client.post("/login", data={"password": PASSWORD}, follow_redirects=False)
+
+    raw = response.headers["set-cookie"]
+    assert raw.startswith(f"{COOKIE_NAME}=")
+    attributes = [part.strip() for part in raw.split(";")[1:]]
+    assert "HttpOnly" in attributes
+    assert "Secure" in attributes
+    assert "Path=/" in attributes
+    assert f"Max-Age={COOKIE_MAX_AGE_S}" in attributes
+    assert COOKIE_MAX_AGE_S == 15_552_000
+    # RFC 6265bis attribute values are case-insensitive; Starlette writes `strict`.
+    assert any(a.lower() == "samesite=strict" for a in attributes)
+
+
+def test_x_frame_options_is_on_every_lan_refusal_and_on_no_loopback_response(lan_app,
+                                                                             loopback_app):
+    """IM-3(c). §5.5: the response headers on the LAN app include `X-Frame-Options: DENY` --
+    on refusals too, which is where a framing attack would land. The loopback app gains no
+    header at all (invariant 9: it is unchanged)."""
+    client = lan_app()
+    unauthorised = client.get("/api/snap/ticket")
+    redirected = client.get("/ui/", follow_redirects=False)
+    forbidden = client.post("/login", data={"password": "no"})
+
+    assert unauthorised.status_code == 401
+    assert redirected.status_code == 302
+    assert forbidden.status_code == 403
+    for response in (unauthorised, redirected, forbidden):
+        assert response.headers["X-Frame-Options"] == "DENY"
+
+    assert "X-Frame-Options" not in loopback_app.get("/healthz").headers
+    assert "X-Frame-Options" not in loopback_app.get("/ui/app.css").headers
