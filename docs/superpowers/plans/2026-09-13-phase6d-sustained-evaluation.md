@@ -705,7 +705,9 @@ assigns the final number at merge (4.6 addendum D9).`
 Then give `docs/runbooks/alembic.md` its row. Its `## Revisions` table (lines 26-31) carries one row per revision
 in four columns — `| Revision | Follows | Adds | `downgrade()` |` — and `alembic.md:31` is fix 45's row for
 `0007_raw_events_lookup`. Append one row for 0009 in the same columns: revision
-`0009_phase6d_sustained_evaluation`, follows `0008_positions_open_fill`, adds `ix_intents_created` on
+`0009_phase6d_sustained_evaluation`; **Follows: the same name Step 7's `down_revision` ended up with**
+(`0008_positions_open_fill` unless Step 8's `ls` sent it elsewhere — the two must agree, and this tree's table
+stops at 0007 precisely because 0008 has not merged into this base); adds `ix_intents_created` on
 `intents (created_at)` built CONCURRENTLY (fix 51, D9) plus `coverage_samples` (Task 4) and
 `opportunity_episodes`/`intent_episodes` (Task 8) with their plain indexes, `downgrade()` `pass` (additive only,
 roadmap invariant 5). Extend the "the stamp moves from ... to ..." chain below the table (lines 33-35) with the
@@ -4080,8 +4082,8 @@ EOF
 - Modify: `tests/test_report_t7_t10.py` (`test_the_table_order_is_unchanged` at lines 461-465: the same tuple
   literal)
 
-**Depends on:** Task 4 (the migration, `models.py`, `pipeline.py`), Task 5 (`pipeline.py`), Task 6 (`loop.py`),
-Task 7 (`coverage.eligible_runs`, `tick.py`).
+**Depends on:** Task 3 (`harness.ops.exclusions.CLASS_OF`), Task 4 (the migration, `models.py`, `pipeline.py`),
+Task 5 (`pipeline.py`), Task 6 (`loop.py`), Task 7 (`coverage.eligible_runs`, `tick.py`).
 
 **Model:** opus — two write paths on hot loops with a cap and a bloat budget, a new report table that
 `test_identity_columns_match_every_table_s_real_first_column` will check, and fix 55's coverage half, which has to
@@ -4349,8 +4351,12 @@ class IntentEpisode(Base):
 ```
 
 and mirror both in `migrations/versions/0009_phase6d_sustained_evaluation.py`'s `upgrade()` with `op.create_table`
-(`if_not_exists=True`) plus `op.create_index` for the unique constraint's partner index, exactly as Task 4's
-`coverage_samples` pass is written. Both tables are new and empty, so their indexes are plain.
+(`if_not_exists=True`) plus **one `op.create_index` per table for its own `started_at` index** —
+`ix_opportunity_started` on `opportunity_episodes (started_at)` and `ix_intent_started` on
+`intent_episodes (started_at)`, the two the models declare above — exactly as Task 4's `coverage_samples` pass is
+written. The unique constraints (`uq_opportunity_episode`, `uq_intent_episode`) come with `create_table` and need
+no statement of their own. Both tables are new and empty, so their indexes are plain (`if_not_exists=True`, never
+CONCURRENTLY), which is also what the `docs/runbooks/alembic.md` row says: "with their plain indexes".
 
 - [ ] **Step 4: `harness/ops/episodes.py`**
 
@@ -4802,7 +4808,11 @@ Every read above is bounded and names the index it rides. `eligible_runs` and `e
 capped `runs` reads (`COVERAGE_RUN_CAP`), which is why no statement here puts a predicate on `runs.started_at`
 (ruling I5).
 
-Register it in `weekly_tables`: `"t14": _table14(session, window, variants, settings, now),`.
+Register it in `weekly_tables` as the dict's **last** entry, after `"t13"`
+(`harness/report/tables.py:1867-1882`): `"t14": _table14(session, window, variants, settings, now),`. The position
+is load-bearing — `test_weekly_tables_return_every_key_with_placeholders` asserts
+`list(tables) == list(TABLE_KEYS)` (`tests/test_report.py:295`) and `TABLE_KEYS` gains `"t14"` at its tail, so a
+registration written anywhere else reddens a case Step 9 runs.
 
 **Four existing assertions pin the old tuple and go red the moment `TABLE_KEYS` gains `"t14"`.** They are in two
 files this task therefore owns. Extend each literal with `"t14"` after `"t13"`:
@@ -4888,9 +4898,14 @@ _FUNNEL_EPISODE_RULE = text("""
 The payload gains `**episodes_count` plus
 `"episode_gap_rule_s": None if gap_rule is None else int(gap_rule)`.
 
-`_reason_rows(skips)` gains the class: each row gains `"class": CLASS_OF.get(reason)` — `.get`, not `class_of`,
-because a surface must render an unclassified reason rather than raise on it, and the exhaustiveness test in Task
-3 is what keeps that `None` from ever appearing.
+`_reason_rows(skips)` (`harness/dashboard/snapshots/floor.py:519`) gains the class: each row gains
+`"class": CLASS_OF.get(reason)` — `.get`, not `class_of`, because a surface must render an unclassified reason
+rather than raise on it, and the exhaustiveness test in Task 3 is what keeps that `None` from ever appearing.
+**Add the import**: `from harness.ops.exclusions import CLASS_OF` beside floor.py's existing `harness.*` imports
+(lines 60-70, alphabetically between `harness.execution.store` and `harness.pricing.fair`). `harness/ops/exclusions.py`
+does not exist in this tree — Task 3 creates it, and `CLASS_OF` is the map it declares — which is why this task's
+Interfaces block already names `harness.ops.exclusions.CLASS_OF` as a Task 3 consumable and why `grep -n CLASS_OF
+harness/dashboard/snapshots/floor.py` returns nothing before Task 3 lands.
 
 Add the matching assertions to `tests/test_snap_floor.py` beside its existing funnel cases: the two new keys are
 present, each is `<=` its 6C counterpart (`candidate_signals`, `intent_verdicts`) — an episode count above its
@@ -4904,11 +4919,13 @@ and its existing test proves that without a change.
 timeout 1500 make test TEST_ARGS='tests/test_funnel_episodes.py tests/test_report_t14.py tests/test_snap_floor.py tests/test_snap_bounds.py tests/test_render_for_model.py tests/test_report.py tests/test_report_t7_t10.py tests/test_alembic.py tests/test_exec_loop.py -q'
 ```
 
-Expected: all pass. Four failures worth naming in advance:
+Expected: all pass. Five failures worth naming in advance:
 `test_identity_columns_match_every_table_s_real_first_column` fails if only one of the two
 `IDENTITY_COLUMNS`/`named` edits landed; `test_a_migrated_database_matches_a_create_schema_database` fails if the
 two models and the revision disagree; `test_t12_is_appended_after_t10_and_t13_after_t12` /
-`test_the_table_order_is_unchanged` fail if one of the two tuple literals was extended and the other was not; and
+`test_the_table_order_is_unchanged` fail if one of the two tuple literals was extended and the other was not;
+`test_t13_renders_first_and_the_model_view_keeps_table_keys_order` fails if `TABLE_KEYS` gained `"t14"` but the
+`RENDER_ORDER` assertion at `tests/test_report.py:1240` was not rewritten; and
 `test_t13_sql_keys_no_pricing_table_by_run_id` fails on `started_at` or `not exists` if the section header or the
 narrowed split of Step 7 is missing.
 
@@ -5625,3 +5642,8 @@ applies each accepted finding; one line each.
 - **Minor 10** — `_OLDEST_UNPROCESSED` carries no family predicate, so `normalize.backlog_age_s{family}` is "the
   oldest unprocessed row of any family above this family's cursor". The statement is addendum §1.3(c) verbatim, so
   the plan is faithful. **Not amended**: carried to the 6D verify design as a note on that metric's semantics.
+- **Re-review 3, Minor 1** — the t14 registration named no position while `tests/test_report.py:295` asserts `list(tables) == list(TABLE_KEYS)`. Applied: it is the `weekly_tables` dict's last entry, after `"t13"`.
+- **Re-review 3, Minor 2** — Step 9's expected-red paragraph did not name the fifth case. Applied: `test_t13_renders_first_and_the_model_view_keeps_table_keys_order` is listed, red if the `RENDER_ORDER` assertion at `tests/test_report.py:1240` is not rewritten.
+- **Re-review 3, Minor 3** — the `alembic.md` row hardcoded `0008_positions_open_fill` where Step 8 makes the parent conditional. Applied: the Follows column is "the same name Step 7's `down_revision` ended up with".
+- **Re-review 3, noted (out of scope) 1** — Task 8 Step 8 used `CLASS_OF` without naming its import. Applied: `from harness.ops.exclusions import CLASS_OF` added to floor.py's imports, with the note that Task 3 creates that module.
+- **Re-review 3, noted (out of scope) 2** — "the unique constraint's partner index" was singular where each episode table needs its own. Applied: one `op.create_index` per table, `ix_opportunity_started` and `ix_intent_started`, consistent with the `alembic.md` row's "with their plain indexes".
