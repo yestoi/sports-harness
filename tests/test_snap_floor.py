@@ -1,6 +1,7 @@
 """The Floor builder: the funnel's sourcing, the game board, the venue tile, and the
 never-shown list."""
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -12,7 +13,8 @@ from sqlalchemy import text
 from harness.dashboard.snapshots import floor
 from harness.dashboard.snapshots.floor import FLOOR_KEYS, QUEUE_HISTORY_LIMIT, build_floor
 from harness.db.models import (EquitySnapshot, FairValue, Fill, Game, GameScoreEvent,
-                               MetricSample, OperatorEvent, Order, OrderWatchSample, Run,
+                               GapOutcome, Intent, Ledger, MetricSample, OperatorEvent, Order,
+                               OrderEvent, OrderWatchSample, ParlayCard, ParlayLeg, Run, Signal,
                                StrategyVariant, Team, VenueMarket, VenueRequest, VenueStatus)
 from harness.pricing.fair import compute_fair_values
 from tests.test_fair import NOW as FAIR_NOW
@@ -27,10 +29,23 @@ def test_the_funnel_reads_runs_notes_and_never_scans_the_gap_or_signal_tables():
     """Ruling A-C1: the indexes on market_gap_snapshots and signals lead on market and variant,
     not time, so a bare 6 h `created_at` predicate is a sequential scan -- 86-92 s measured, and
     permanently `{"error": ...}` under a 2000 ms timeout. Ticks, gaps and signal counts come
-    from `runs.notes`, as the legacy funnel's have since fix 15."""
+    from `runs.notes`, as the legacy funnel's have since fix 15.
+
+    Task 13 narrows this rule rather than loosening it. `signals` may now be read exactly once,
+    by `_DETAIL_SIGNALS`, and only the way the index it rides allows: a `venue_market_id` list
+    from the detail set, a `created_at` window inside it, and the aggregation done in SQL (D12).
+    That is a bounded range per market on `ix_signal_market_created`, which is the thing the
+    funnel cannot have because the funnel has no market list. `market_gap_snapshots` stays
+    unread: no index on it leads anywhere this builder can go.
+    """
     body = Path(floor.__file__).read_text().lower()
     assert "from market_gap_snapshots" not in body
-    assert "from signals" not in body
+    assert body.count("from signals") == 1, "signals is read once, by the detail's summary"
+    summary = floor._DETAIL_SIGNALS.text.lower()
+    assert "from signals" in summary
+    assert "venue_market_id = any(:market_ids)" in summary
+    assert "created_at >= :since" in summary
+    assert "group by venue_market_id, side" in summary
     assert "recent_run_notes" in body and "signals_by_variant_from_notes" in body
 
 
@@ -1080,3 +1095,372 @@ def test_the_exposure_section_states_its_own_coverage_limit(db_session, env_sett
     assert coverage["window_days"] == EXPOSURE_WINDOW.days == 14
     assert coverage["complete"] is False
     assert "not counted" in coverage["note"]
+
+
+# --- the game detail (addendum 7.2, design 4.2; Task 13) ---------------------------------------
+#
+# `T0` is the module's own instant and the four ids are fixed rather than sequence-assigned, so
+# the tests below can name a game the way the brief's assertions do. The world is seeded by an
+# autouse fixture on the class, not on the module: the eleven tests above build their own boards
+# and a module-wide fixture would change every one of their answers.
+
+T0 = NOW
+#: In progress, LSU at home (`parlay.yaml`'s anchor), 46 matched markets, 300 signals.
+IN_PROGRESS = 9101
+#: Kicks off inside `DETAIL_WINDOW`; no signal ever touched it.
+SOON = 9102
+#: Kicks off in 20 h -- outside the window -- but carries orders, fills and a settlement.
+WITH_ORDER = 9103
+#: Kicks off in 20 h and carries nothing, so it is on the board with no detail.
+FAR_AWAY = 9104
+
+_DETAIL_TEAMS = ((101, "LSU"), (102, "ALA"), (103, "TEX"), (104, "OKL"),
+                 (105, "UGA"), (106, "FLA"), (107, "MIA"), (108, "DUK"))
+
+
+def _detail_teams(session):
+    for team_id, abbr in _DETAIL_TEAMS:
+        session.add(Team(sport="ncaaf", id=team_id, display_name=f"{abbr} Tigers",
+                         location=abbr, name=abbr, abbreviation=abbr,
+                         short_display_name=abbr))
+    session.flush()
+
+
+def _detail_game(session, game_id, home, away, kickoff, status="scheduled"):
+    session.add(Game(id=game_id, sport="ncaaf", home_team_id=home, away_team_id=away,
+                     kickoff_utc=kickoff, status=status))
+    session.flush()
+    return game_id
+
+
+def _detail_market(session, game_id, n=0, match_status="matched", side_team_id=None):
+    market = VenueMarket(venue="kalshi", ticker=f"KXNCAAF-{game_id}-{n}", event_ticker="E",
+                         series_ticker="KXNCAAF", game_id=game_id, market_type="moneyline",
+                         side_team_id=side_team_id,
+                         match_status=match_status, first_seen_raw_id=1, last_seen_at=T0)
+    session.add(market)
+    session.flush()
+    return market
+
+
+def _detail_order(session, game_id, market_id, *, status, placed_at, gap_snapshot_id=None,
+                  prob="0.5800", replay=False):
+    order = Order(intent_id=uuid.uuid4(), variant_id="sharp_direct", venue="kalshi",
+                  client_order_id=str(uuid.uuid4()), ticker=f"KXNCAAF-{game_id}-o",
+                  venue_market_id=market_id, side="yes", prob=Decimal(prob),
+                  contracts=Decimal("40.00"), status=status, game_id=game_id,
+                  placed_at=placed_at, edge_at_place=Decimal("0.0300"), replay=replay,
+                  queue_ahead_at_place=Decimal("120.00"), gap_snapshot_id=gap_snapshot_id)
+    session.add(order)
+    session.flush()
+    return order
+
+
+def _detail_fill(session, order, *, method, at, replay=False, contracts="40.00"):
+    session.add(Fill(order_id=order.id, prob=order.prob, contracts=Decimal(contracts),
+                     fee=Decimal("0.1720"), filled_at=at, fill_method=method, replay=replay,
+                     has_print=True, through=False, tape_source="ws"))
+    session.flush()
+
+
+def _seed_detail_world(session):
+    """Four games on one board: one in progress, one kicking off inside the detail window, one
+    outside it that carries a position, and one outside it that carries nothing.
+
+    The counts are the assertions' own: 46 matched markets and no resting order on the LSU game
+    (`46 markets - 0 resting`), and 300 signals across two markets and two sides, which is four
+    `evaluated` rows of 75 each and not 300 rows of one (D12).
+    """
+    _detail_teams(session)
+    _detail_game(session, IN_PROGRESS, 101, 102, T0 - timedelta(hours=1), status="in_progress")
+    _detail_game(session, SOON, 103, 104, T0 + timedelta(hours=2))
+    _detail_game(session, WITH_ORDER, 105, 106, T0 + timedelta(hours=20))
+    _detail_game(session, FAR_AWAY, 107, 108, T0 + timedelta(hours=20))
+
+    session.add(GameScoreEvent(game_id=IN_PROGRESS, ts=T0 - timedelta(seconds=40),
+                               status="in_progress", period=3, clock="8:42",
+                               home_score=17, away_score=10))
+
+    # 46 matched markets, and the two the executor was pricing.
+    live_markets = [_detail_market(session, IN_PROGRESS, n) for n in range(46)]
+    for market in live_markets[:2]:
+        for side in ("yes", "no"):
+            for i in range(75):
+                session.add(Signal(
+                    run_id=5000 + i, variant_id="sharp_direct", gap_snapshot_id=7000 + i,
+                    venue_market_id=market.id, side=side, fair_p=Decimal("0.6200"),
+                    fair_source="direct", venue_best_bid=Decimal("0.5600"),
+                    venue_best_ask=Decimal("0.5800"), decision="rejected",
+                    rejection_reason="edge", labels={}, replay=False,
+                    created_at=T0 - timedelta(minutes=75 - i)))
+    session.add(FairValue(run_id=1, game_id=IN_PROGRESS, market_type="moneyline",
+                          fair_p=Decimal("0.6200"), fair_source="direct", staleness_s=30,
+                          created_at=T0 - timedelta(minutes=2)))
+
+    # The game inside the window: two intents three hours apart and no signal at all.
+    soon_market = _detail_market(session, SOON, 0)
+    for minutes in (240, 60):
+        session.add(Intent(signal_id=8000 + minutes, variant_id="sharp_direct", venue="kalshi",
+                           venue_market_id=soon_market.id, ticker=soon_market.ticker,
+                           side="yes", target_prob=Decimal("0.5500"),
+                           target_contracts=Decimal("20.00"), edge=Decimal("0.0400"),
+                           game_id=SOON, signal_created_at=T0 - timedelta(minutes=minutes),
+                           created_at=T0 - timedelta(minutes=minutes)))
+
+    # The game with a position: one order still holding, one settled, one cancelled.
+    held_market = _detail_market(session, WITH_ORDER, 0, side_team_id=105)
+    held = _detail_order(session, WITH_ORDER, held_market.id, status="filled",
+                         placed_at=T0 - timedelta(minutes=20), gap_snapshot_id=9500)
+    _detail_fill(session, held, method="queue_model", at=T0 - timedelta(minutes=18))
+    _detail_fill(session, held, method="no_watcher", at=T0 - timedelta(minutes=17))
+    # The replayed fill belongs to a replay *order*: `_EXPOSURE` reads that flag on the order,
+    # which is where the harness writes it, so a replay fill under a live order is a state that
+    # cannot happen and a fixture that built one would be testing an impossible payload.
+    replayed = _detail_order(session, WITH_ORDER, held_market.id, status="filled",
+                             placed_at=T0 - timedelta(minutes=25), replay=True)
+    _detail_fill(session, replayed, method="queue_model", at=T0 - timedelta(minutes=16),
+                 replay=True)
+    session.add(GapOutcome(gap_snapshot_id=9500, benchmark_type="kalshi_last_trade_pre_kick",
+                           p_bench=Decimal("0.6400"), clv_target_p_net=Decimal("0.0500"),
+                           p_used_kind="trade"))
+    settled = _detail_order(session, WITH_ORDER, held_market.id, status="settled",
+                            placed_at=T0 - timedelta(hours=3))
+    _detail_fill(session, settled, method="queue_model", at=T0 - timedelta(hours=2))
+    settled_fill = session.execute(
+        text("select id from fills where order_id = :o order by id desc limit 1"),
+        {"o": settled.id}).scalar()
+    session.add(Ledger(ts=T0 - timedelta(minutes=30), variant_id="sharp_direct",
+                       kind="settlement", order_id=settled.id, fill_id=settled_fill,
+                       ticker=settled.ticker, side="yes", contracts=Decimal("40.00"),
+                       price=Decimal("0.5800"), fee=Decimal("0.1720"),
+                       payout=Decimal("40.00"), cash_delta=Decimal("16.80")))
+    cancelled = _detail_order(session, WITH_ORDER, held_market.id, status="cancelled",
+                              placed_at=T0 - timedelta(hours=5))
+    session.add(OrderEvent(order_id=cancelled.id, ts=T0 - timedelta(hours=4), kind="cancel",
+                           reason="venue_move", prob=Decimal("0.5800"),
+                           contracts=Decimal("40.00")))
+
+    # F02's one crossing: a placed card with a leg on that game.
+    card = ParlayCard(year=2026, week=38, sport="ncaaf", kind="smart", built_at=T0,
+                      stake=Decimal("10.00"), status="placed")
+    session.add(card)
+    session.flush()
+    session.add(ParlayLeg(card_id=card.id, seq=1, game_id=WITH_ORDER, market_type="ml",
+                          dk_american=-120, dk_decimal=Decimal("1.8300"),
+                          plain_text="UGA to win", status="pending"))
+
+    _detail_market(session, FAR_AWAY, 0)
+    session.flush()
+    return card.id
+
+
+def _degraded_run_without_pricing_notes(session):
+    """A run degraded by a Kalshi timeout. Its pricing stage ran and wrote nothing to complain
+    about, so nothing here may put `evaluation failed` on a market (B-C7)."""
+    session.add(Run(started_at=T0 - timedelta(minutes=10), status="degraded", build_sha="abc",
+                    notes={"warnings": [{"kalshi_orderbook:KXNCAAF-1": "http 500"}],
+                           "pricing": {"ticks": 12, "gaps": 40, "budget_exhausted": False}}))
+    session.flush()
+
+
+def _run_with_pricing_warning(session, sport="ncaaf"):
+    """A run whose pricing stage itself raised -- `{"pricing": repr(exc)}` in `notes.warnings`,
+    which is what `harness/recorder/tick.py` writes.
+
+    `sport` names the game these tests then read. `runs.notes` carries no sport dimension for
+    this evidence (one warnings list and one `budget_exhausted` flag per tick, covering every
+    sport that tick priced), so the builder applies it to the window rather than to a sport; the
+    argument is kept because the addendum asks the question in those terms and the writer is
+    where an answer would have to start.
+    """
+    session.add(Run(started_at=T0 - timedelta(minutes=5), status="degraded", build_sha="abc",
+                    notes={"warnings": [{"pricing": f"RuntimeError('{sport} pricing failed')"}],
+                           "pricing": {}}))
+    session.flush()
+
+
+def _first_row_kind(session, settings, game_id):
+    return build_floor(session, T0, settings)["details"][str(game_id)]["story"][0]["kind"]
+
+
+class TestTheGameDetail:
+    """Addendum 7.2 / design 4.2. The world above is seeded before each of these, and only these.
+
+    The brief's assertions read `payload["board"]` as a list; this builder's board section is
+    (and stays) `{"games": [...]}` -- the shape the eleven tests above and the phase 4.5 surface
+    already use -- so the board assertions read `payload["board"]["games"]`. Nothing else about
+    them changes.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _world(self, db_session):
+        _seed_detail_world(db_session)
+
+    def test_a_board_card_carries_one_figures_row_and_a_favourite_star(self, db_session,
+                                                                       env_settings):
+        payload = build_floor(db_session, T0, env_settings)
+        board = payload["board"]["games"]
+        card = board[0]
+        assert card["figures"] == "46 markets \u00b7 0 resting"
+        assert board[0]["favourite"] is True        # the LSU game sorts first
+        assert [c["favourite"] for c in board] == sorted(
+            [c["favourite"] for c in board], reverse=True)
+        assert card["abbreviations"] == {"home": "LSU", "away": "ALA"}
+
+    def test_the_detail_set_is_in_progress_or_within_six_hours_or_carrying_a_position(
+            self, db_session, env_settings):
+        payload = build_floor(db_session, T0, env_settings)
+        assert set(payload["details"]) == {str(IN_PROGRESS), str(SOON), str(WITH_ORDER)}
+        far = next(c for c in payload["board"]["games"] if c["game_id"] == FAR_AWAY)
+        assert far["detail_available"] is False
+
+    def test_each_detail_payload_stays_under_sixteen_kibibytes(self, db_session, env_settings):
+        payload = build_floor(db_session, T0, env_settings)
+        for game_id, detail in payload["details"].items():
+            assert len(json.dumps(detail).encode()) <= 16 * 1024, game_id
+        assert payload["readings"]["detail_bytes"] == sum(
+            len(json.dumps(detail).encode()) for detail in payload["details"].values())
+        assert payload["readings"]["detail_games"] == 3
+
+    def test_the_decision_story_summarizes_signals_in_sql_to_one_row_per_market_and_side(
+            self, db_session, env_settings):
+        """D12: one `evaluated` row per market and side, never one per tick. Computed
+        independently: the fixture writes 300 signals across two markets and two sides, so the
+        story carries four evaluated rows and each names its count and its span."""
+        story = build_floor(db_session, T0, env_settings)["details"][str(IN_PROGRESS)]["story"]
+        evaluated = [r for r in story if r["kind"] == "evaluated"]
+        assert len(evaluated) == 4
+        assert evaluated[0]["text"].startswith("75 evaluations from ")
+        # The span and the last figures, in the reader's own zone (T0 is 13:00 in Chicago), and
+        # each side read against its own half of the book: the ask is what a YES pays.
+        for row in evaluated:
+            book = "58\u00a2" if row["facts"]["side"] == "yes" else "56\u00a2"
+            assert row["text"] == (
+                "75 evaluations from 11:45 AM to 12:59 PM \u00b7 "
+                f"last: fair 62\u00a2 against {book} on the book \u00b7 not enough edge")
+            assert row["facts"]["evaluations"] == 75
+
+    def test_the_first_row_is_not_evaluated_when_no_signal_exists_in_the_window(self, db_session,
+                                                                               env_settings):
+        story = build_floor(db_session, T0, env_settings)["details"][str(SOON)]["story"]
+        assert story[0]["kind"] == "not_evaluated"
+
+    def test_evaluation_failed_comes_only_from_the_run_s_own_pricing_notes(self, db_session,
+                                                                          env_settings):
+        """B-C7/D12: never from `runs.status = 'degraded'` -- a run degraded by a Kalshi timeout
+        evaluated this market perfectly well."""
+        _degraded_run_without_pricing_notes(db_session)
+        assert _first_row_kind(db_session, env_settings, SOON) == "not_evaluated"
+        _run_with_pricing_warning(db_session, sport="ncaaf")
+        assert _first_row_kind(db_session, env_settings, SOON) == "evaluation_failed"
+
+    def test_a_market_that_was_evaluated_is_never_called_a_failure(self, db_session,
+                                                                   env_settings):
+        """The precedence the three first rows need: a pricing warning in the window says the
+        step failed *somewhere*, and a market with 300 signals on it is not that somewhere."""
+        _run_with_pricing_warning(db_session)
+        assert _first_row_kind(db_session, env_settings, IN_PROGRESS) == "evaluated"
+
+    def test_a_gap_longer_than_thirty_minutes_before_kickoff_is_its_own_row(self, db_session,
+                                                                           env_settings):
+        story = build_floor(db_session, T0, env_settings)["details"][str(SOON)]["story"]
+        assert any(r["kind"] == "gap" for r in story)
+        assert any(r["text"].endswith("and 12:00 PM") for r in story if r["kind"] == "gap")
+
+    def test_a_fill_is_labelled_by_its_recorded_method_and_replay_flag(self, db_session,
+                                                                      env_settings):
+        story = build_floor(db_session, T0, env_settings)["details"][str(WITH_ORDER)]["story"]
+        labels = {r["text"] for r in story if r["kind"] == "fill"}
+        assert labels <= {"filled \u00b7 queue model", "filled \u00b7 no watcher", "replayed"}
+        assert labels == {"filled \u00b7 queue model", "filled \u00b7 no watcher", "replayed"}
+
+    def test_on_your_ticket_carries_no_amount_and_the_payload_no_fun_money_key(self, db_session,
+                                                                              env_settings):
+        """F02, ruling A-I15. The `$` assertion is scoped to `on_your_ticket`; the key assertion
+        covers the whole payload, because a fun-money number could arrive under any name."""
+        payload = build_floor(db_session, T0, env_settings)
+        ticket = payload["details"][str(WITH_ORDER)]["on_your_ticket"]
+        assert set(ticket) == {"card_id", "href"} and "$" not in json.dumps(ticket)
+        assert ticket["href"] == f"#ticket/card/{ticket['card_id']}"
+        blob = json.dumps(payload)
+        for forbidden in ('"stake"', '"payout"', '"parlay_', '"dk_american"', '"dk_payout'):
+            assert forbidden not in blob
+
+    def test_a_game_with_no_live_card_has_no_ticket_line(self, db_session, env_settings):
+        payload = build_floor(db_session, T0, env_settings)
+        assert payload["details"][str(SOON)]["on_your_ticket"] is None
+
+    def test_the_position_is_the_open_money_fills_and_says_what_it_needs(self, db_session,
+                                                                        env_settings):
+        """The `_EXPOSURE` shape: `queue_model` and `venue` fills only, the settled order's own
+        fill excluded by its ledger row, and never a word implying in-play trading."""
+        detail = build_floor(db_session, T0, env_settings)["details"][str(WITH_ORDER)]
+        position = detail["position"]
+        assert position["has_position"] is True
+        assert [row["contracts"] for row in position["rows"]] == [40.0]
+        assert position["rows"][0]["needs"] == "needs UGA to win"
+        assert position["rows"][0]["entry_p"] == pytest.approx(0.58)
+        assert position["posture"] == "placed \u00b7 waiting for kickoff"
+        assert "in-play" not in json.dumps(position) and "hedge" not in json.dumps(position)
+
+    def test_a_game_with_no_position_says_so_with_the_story_s_reason(self, db_session,
+                                                                     env_settings):
+        position = build_floor(db_session, T0, env_settings)["details"][str(SOON)]["position"]
+        assert position["has_position"] is False
+        assert position["text"] == "no position on this game"
+        assert position["reason"].startswith("not evaluated \u00b7 ")
+
+    def test_the_settlement_row_is_paper_dollars(self, db_session, env_settings):
+        story = build_floor(db_session, T0, env_settings)["details"][str(WITH_ORDER)]["story"]
+        settled = [row for row in story if row["kind"] == "settled"]
+        assert [row["text"] for row in settled] == ["settled \u00b7 +$16.80 paper"]
+
+    def test_the_closing_benchmark_rides_the_orders_own_gap_snapshot(self, db_session,
+                                                                     env_settings):
+        """`ix_gap_outcomes_order` does not exist and cannot: `gap_outcomes` has no `order_id`.
+        The join is `orders.gap_snapshot_id` into that table's primary key."""
+        story = build_floor(db_session, T0, env_settings)["details"][str(WITH_ORDER)]["story"]
+        benchmarks = [row for row in story if row["kind"] == "benchmark"]
+        assert [row["text"] for row in benchmarks] == [
+            "closing 64\u00a2 \u00b7 we entered at 58\u00a2"]
+
+    def test_the_scoreline_is_the_sources_own_state(self, db_session, env_settings):
+        scoreline = build_floor(db_session, T0, env_settings)["details"][str(IN_PROGRESS)][
+            "scoreline"]
+        assert scoreline["home_score"] == 17 and scoreline["away_score"] == 10
+        assert scoreline["clock"] == "8:42" and scoreline["period"] == 3
+        assert scoreline["text"] == "Q3 \u00b7 8:42 \u00b7 40 s ago"
+
+    def test_the_markets_table_carries_the_newest_fair_for_the_exact_contract(self, db_session,
+                                                                             env_settings):
+        markets = build_floor(db_session, T0, env_settings)["details"][str(IN_PROGRESS)][
+            "markets"]
+        assert len(markets) <= floor.DETAIL_MARKETS_PER_GAME
+        assert markets and all(row["fair_p"] == pytest.approx(0.62) for row in markets)
+        # No open order on this game, so there is no book and no live edge to claim.
+        assert all(row["best_bid"] is None and row["edge_live"] is None for row in markets)
+
+    def test_a_story_longer_than_the_cap_drops_its_oldest_rows_first(self, db_session,
+                                                                    env_settings):
+        """The cap is load-bearing: a detail is served down a tunnel to a phone. What survives
+        is the part of the story that is still happening, and the truncation is a row a reader
+        can see rather than a story that quietly starts late."""
+        market_id = db_session.execute(
+            text("select id from venue_markets where game_id = :g"), {"g": SOON}).scalar()
+        for minute in range(1, 301):
+            db_session.add(Intent(signal_id=20000 + minute, variant_id="sharp_direct",
+                                  venue="kalshi", venue_market_id=market_id, ticker="KX",
+                                  side="yes", target_prob=Decimal("0.5500"),
+                                  target_contracts=Decimal("20.00"), edge=Decimal("0.0400"),
+                                  game_id=SOON,
+                                  signal_created_at=T0 - timedelta(minutes=minute),
+                                  created_at=T0 - timedelta(minutes=minute)))
+        db_session.flush()
+
+        detail = build_floor(db_session, T0, env_settings)["details"][str(SOON)]
+        assert len(json.dumps(detail).encode()) <= floor.DETAIL_KIB * 1024
+        story = detail["story"]
+        assert story[0]["kind"] == "not_evaluated" and story[1]["kind"] == "truncated"
+        assert story[1]["facts"]["dropped"] > 0
+        # The newest intent is the one that survived; the oldest went.
+        assert story[-1]["ts"] == (T0 - timedelta(minutes=1)).isoformat()
