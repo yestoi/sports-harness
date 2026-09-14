@@ -26,12 +26,13 @@ judge.
 
 | Metric | Where | What it says |
 |---|---|---|
-| `normalize.backlog_ids{family}` | `metric_samples`, per tick | rows written by this tick minus the family's watermark |
+| `normalize.backlog_ids{family}` | `metric_samples`, per tick | the newest id this tick wrote for the family minus the family's watermark -- an id lag, so an upper bound on its unprocessed rows |
 | `normalize.backlog_age_s{family}` | `metric_samples`, per tick | how old the oldest unprocessed row is |
 | `recorder.phase_ms{phase}` | `metric_samples`, per tick | fetch / normalize / pricing, the tick's own division |
 | `priced_runs` | `coverage.eligible_runs` | the denominator above |
 
-The age sample was kept rather than abandoned: §1.3(c) required its plan to be looked at first,
+*Implementation note, added when the code landed (the rule above predates it):* the age sample was
+kept rather than abandoned. §1.3(c) required its plan to be looked at first,
 and `EXPLAIN (ANALYZE, BUFFERS)` on the read is a `Limit` over a `Merge Append` of per-partition
 index-only scans on `raw_responses_*_pkey`, one row returned, 20 shared buffer hits
 (`tests/test_coverage_denominator.py::test_the_oldest_unprocessed_read_prints_its_plan` prints

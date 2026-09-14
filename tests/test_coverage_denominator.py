@@ -56,6 +56,31 @@ def test_the_exhaustion_share_is_over_priced_runs_and_never_over_the_whole_day(d
     assert round(share, 4) == 0.25
 
 
+def test_the_share_is_not_over_non_skipped_runs_either(db_session):
+    """Expected: (22, 10, 8) and 2/8 = 25 %, never 2/10 = 20 % and never 2/22 = 9.1 %.
+
+    The addendum's seeded day has `non_skipped == priced == 8`, so the two cases above pass
+    unchanged if an implementation divides by `non_skipped_runs`: they cannot fail on the exact
+    confusion §1.3(b) names (2,220 / 562 / 243 are three different numbers on a real day).
+    This case seeds the middle count separately -- two runs that ran, errored and never priced,
+    written with the notes a real tick writes -- so all three differ and only `priced_runs`
+    gives 25 %.
+    """
+    for i in range(12):
+        db_session.add(Run(started_at=NOW - timedelta(minutes=i + 1), status="skipped", notes={}))
+    for i in range(2):
+        db_session.add(Run(started_at=NOW - timedelta(minutes=20 + i), status="error",
+                           notes={"errors": [{"tick": "boom"}], "skipped_trades": 0}))
+    for i in range(8):
+        db_session.add(Run(started_at=NOW - timedelta(minutes=30 + i), status="ok",
+                           notes={"pricing": {"gaps": 10, "budget_exhausted": i < 2}}))
+    db_session.flush()
+    assert coverage.eligible_runs(db_session, WINDOW) == (22, 10, 8)
+    exhausted, priced, share = coverage.exhaustion_share(db_session, WINDOW)
+    assert (exhausted, priced) == (2, 8)
+    assert round(share, 4) == 0.25
+
+
 def test_the_read_is_capped_then_filtered_and_puts_no_predicate_on_started_at(db_session):
     """Ruling I5: `runs` carries no index on `started_at`, so the SQL carries the cap and the
     window is applied to the capped rows. Asserted on the statement text, which is where the

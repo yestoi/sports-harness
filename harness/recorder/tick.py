@@ -1109,7 +1109,10 @@ class Recorder:
                 ctx["errors"].append({"tick": repr(e)})
             # 6D §1.3(c): the three phase boundaries, read off the same monotonic clock
             # `started_mono` came from. Taken *outside* the try above so a fetch that raised
-            # still divides the tick rather than losing the division with the exception.
+            # still divides the tick rather than losing the division with the exception -- on
+            # such a tick `fetch` is time-to-raise, not time-to-complete. `started_mono` is
+            # taken before the run row is inserted, so the tick's preamble (partitions, the
+            # run insert and its commit, the deploy event, `_read_limits`) is inside `fetch`.
             fetch_done = self.monotonic()
             try:
                 ctx["normalized"] = normalize_new(session, ctx=ctx, time_budget_s=30)

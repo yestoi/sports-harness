@@ -96,7 +96,9 @@ _RUN_RAW_IDS = text(
 
 #: The oldest unprocessed row's own timestamp, per family. `raw_responses` is range-partitioned
 #: on `fetched_at` and its primary key is `(id, fetched_at)`, so whether this read is
-#: index-ordered across partitions is a question about the plan rather than about the statement:
+#: index-ordered across partitions is a question about the plan rather than about the statement;
+#: the plan captured on the fixture is a `Limit` over a `Merge Append` of
+#: `raw_responses_<partition>_pkey` index-only scans, which is the index this rides.
 #: the plan task captures `EXPLAIN` for it and **abandons it for the id lag alone** if it is not
 #: (§1.3c). `NORMALIZE_AGE_ENABLED` is that switch, and it is a module constant so the decision
 #: is one line rather than a deletion.
@@ -111,6 +113,11 @@ NORMALIZE_AGE_ENABLED = True
 
 def backlog_samples(session: Session, run_id: int, now: datetime) -> list[tuple[str, object, dict]]:
     """`normalize.backlog_ids` and `normalize.backlog_age_s` per family (§1.3c).
+
+    Reported for the families *this run wrote rows for*: a family the tick did not fetch emits
+    nothing rather than a stale number. A family it did fetch is reported even at zero, because
+    evidence that a queue is empty is evidence. `backlog_ids` is an **id lag**, not a row count:
+    ids interleave across families, so it is an upper bound in the same direction the age is.
 
     Journal 154's finding -- the deployed stage order works but "about 12 h normalizer backlog
     yields zero current venue_quotes" -- is exactly this number, and §1.3(d) is the decision it
