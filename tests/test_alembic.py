@@ -13,6 +13,7 @@ import re
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
@@ -60,6 +61,31 @@ def _test_url() -> str:
     return url
 
 
+def _with_database(url: str, name: str, *, raw: bool = False) -> str:
+    """`url` with its path database swapped for `name`; scheme, netloc and query untouched.
+
+    The sandbox's `SPORTS_TEST_SOCKET` URL form carries the socket directory as a `?host=`
+    query (fix 61): rebuilding only the path through `urlsplit`/`urlunsplit`, rather than
+    string-splitting on `/`, keeps that query on both the admin DSN and the scratch engine
+    URL. `raw=True` also drops the `+psycopg` driver suffix, for a bare `psycopg.connect` DSN.
+    """
+    parts = urlsplit(url)
+    scheme = parts.scheme.replace("+psycopg", "") if raw else parts.scheme
+    return urlunsplit((scheme, parts.netloc, f"/{name}", parts.query, parts.fragment))
+
+
+def test_the_scratch_url_keeps_the_socket_query():
+    url = "postgresql+psycopg://u:p@/harness_test_x?host=/run/sports-test-db"
+    assert _with_database(url, "postgres", raw=True) == "postgresql://u:p@/postgres?host=/run/sports-test-db"
+    assert (_with_database(url, "harness_test_x_a")
+            == "postgresql+psycopg://u:p@/harness_test_x_a?host=/run/sports-test-db")
+
+    tcp = "postgresql+psycopg://u:p@localhost:5433/harness_test_x"
+    assert _with_database(tcp, "postgres", raw=True) == "postgresql://u:p@localhost:5433/postgres"
+    assert (_with_database(tcp, "harness_test_x_a")
+            == "postgresql+psycopg://u:p@localhost:5433/harness_test_x_a")
+
+
 def _scratch_engine(suffix: str):
     """An engine on `<branch test db>_<suffix>`, created on demand and emptied.
 
@@ -67,13 +93,13 @@ def _scratch_engine(suffix: str):
     database with nothing in it, and the suite's shared schema is built once per session.
     """
     base = _test_url()
-    head, _, name = base.rpartition("/")
+    name = urlsplit(base).path.lstrip("/")
     target = f"{name}_{suffix}"[:63]
-    admin = head.replace("postgresql+psycopg://", "postgresql://") + "/postgres"
+    admin = _with_database(base, "postgres", raw=True)
     with psycopg.connect(admin, autocommit=True) as conn:
         if not conn.execute("select 1 from pg_database where datname = %s", (target,)).fetchone():
             conn.execute(f'create database "{target}"')
-    engine = create_engine(f"{head}/{target}")
+    engine = create_engine(_with_database(base, target))
     _empty(engine)
     return engine
 
