@@ -149,6 +149,17 @@ def _stake_this_week(db_session, amount: str) -> None:
     db_session.commit()
 
 
+def _integrity_error(*_args, **_kwargs):
+    """`mark_placed` as the request that lost a race sees it: the insert tripped an index.
+
+    Provoked rather than raced, because a genuine race needs a second transaction to commit
+    between this request's own read and its flush. What each case then pins is what the route
+    does with it, which is where the three answers differ (review I-1).
+    """
+    raise IntegrityError("insert into parlay_placements", {},
+                         Exception("duplicate key value violates a unique constraint"))
+
+
 def _body(card, **over) -> dict:
     body = {"card_id": card.id, "confirmation_id": CID, "stake": "25.00",
             "accepted_odds": 450, "leg_lines": None, "note": "typed on the phone"}
@@ -240,15 +251,38 @@ def test_an_integrity_error_on_the_unique_index_returns_the_existing_placement(l
     """The partial unique index on `confirmation_id` is the backstop, not the check: a request
     that lost the race answers with what is recorded rather than with a 500."""
     card = _placed_card(db_session, confirmation_id=CID2)
-
-    def _duplicate(*_args, **_kwargs):
-        raise IntegrityError("insert into parlay_placements", {},
-                             Exception("duplicate key value violates a unique constraint"))
-
-    monkeypatch.setattr(app_module, "mark_placed", _duplicate)
+    monkeypatch.setattr(app_module, "mark_placed", _integrity_error)
     response = lan_client.post("/api/parlay/placed", json=_body(card), headers=HEADERS)
     assert response.status_code == 200
     assert response.json()["placement"]["stake_actual"] == "25.00"
+
+
+def test_an_integrity_error_with_nothing_recorded_is_never_a_200(lan_client, db_session,
+                                                                 monkeypatch):
+    """I-1: a 200 whose `placement` is null would tell the owner's phone that a $25 slip is in
+    the ledger when the transaction wrote nothing -- and the week's cap would then let another
+    $25 through. The unique index is one integrity error; every other one is a failure."""
+    card = _card(db_session)
+    monkeypatch.setattr(app_module, "mark_placed", _integrity_error)
+    response = lan_client.post("/api/parlay/placed", json=_body(card), headers=HEADERS)
+    assert response.status_code == 500
+    assert response.json() == {"refusal": "internal_error"}
+    assert db_session.query(ParlayPlacement).count() == 0
+    db_session.expire_all()
+    assert db_session.get(ParlayCard, card.id).status == "proposed"
+
+
+def test_an_integrity_error_on_an_id_another_card_holds_is_confirmation_reused(lan_client,
+                                                                               db_session,
+                                                                               monkeypatch):
+    """The one integrity error that has a name of its own: the id landed on another card while
+    this request was in flight, which is 5.3's refusal and not an unnamed failure."""
+    _placed_card(db_session, confirmation_id=CID)
+    card = _card(db_session)
+    monkeypatch.setattr(app_module, "mark_placed", _integrity_error)
+    response = lan_client.post("/api/parlay/placed", json=_body(card), headers=HEADERS)
+    assert response.status_code == 409
+    assert response.json() == {"refusal": "confirmation_reused"}
 
 
 @pytest.mark.parametrize("over,code", [
@@ -259,6 +293,9 @@ def test_an_integrity_error_on_the_unique_index_returns_the_existing_placement(l
     ({"confirmation_id": "not-a-uuid"}, 400),
     ({"note": "x" * 201}, 400),
     ({"accepted_odds": "long"}, 400),
+    ({"accepted_odds": 0}, 400),                    # not a price at all (M-1)
+    ({"accepted_odds": 45}, 400),                   # `450` fat-fingered on the phone
+    ({"accepted_odds": -99}, 400),                  # the band no American price lies in
     ({"leg_lines": {"1": "not-a-line"}}, 400),
     ({"nonsense": 1}, 400),
 ])
@@ -268,6 +305,18 @@ def test_every_field_is_type_validated(lan_client, db_session, over, code):
     assert response.status_code == code
     assert response.json() == {"refusal": "bad_value"}
     assert db_session.query(ParlayPlacement).count() == 0
+
+
+@pytest.mark.parametrize("odds,payout", [(450, "137.50"), (-110, "47.73"), (100, "50.00")])
+def test_an_american_price_at_the_edge_of_the_band_is_recorded(lan_client, db_session, odds,
+                                                               payout):
+    """The other half of M-1: `+100` and `-110` are prices and are recorded as typed."""
+    card = _card(db_session)
+    response = lan_client.post("/api/parlay/placed", json=_body(card, accepted_odds=odds),
+                               headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["placement"]["dk_odds_actual"] == odds
+    assert response.json()["placement"]["dk_payout_actual"] == payout
 
 
 def test_a_body_that_is_not_a_json_object_is_a_code_not_a_stack_trace(lan_client):
@@ -376,11 +425,38 @@ def test_the_origin_comes_from_settings_not_from_the_request_host(lan_client, db
     assert response.status_code == 403 and response.json() == {"refusal": "forbidden"}
 
 
+def test_the_default_https_port_is_left_out_of_the_origin_that_is_compared(db_session,
+                                                                           lan_settings):
+    """M-3: a browser omits `:443` from `Origin`, so a listener on 443 that compared
+    `https://<addr>:443` would refuse every write while the page itself still loaded."""
+    client = _client(db_session, lan_settings.model_copy(update={"lan_port": 443}))
+    card = _card(db_session)
+    headers = {**HEADERS, "Origin": f"https://{LAN_ADDR}"}
+    assert client.post("/api/parlay/placed", json=_body(card),
+                       headers=headers).status_code == 200
+    other = _card(db_session)
+    assert client.post("/api/parlay/placed", json=_body(other, confirmation_id=CID2),
+                       headers=HEADERS).status_code == 403      # the 8443 origin, on a 443 page
+
+
 def test_a_body_over_four_kibibytes_is_413_regardless_of_content_length(lan_client):
     response = lan_client.post("/api/parlay/placed",
                                content=b"{" + b"x" * (BODY_MAX_BYTES + 1000),
                                headers={**HEADERS, "Content-Length": "10"})
     assert response.status_code == 413 and response.json() == {"refusal": "body_too_large"}
+
+
+def test_an_over_cap_body_still_spends_the_session_s_allowance(lan_client, db_session):
+    """M-2: a body refused at the cap that the limiter never saw would be an unmetered way to
+    make this listener read 4 KiB at a time, over and over."""
+    over = b"{" + b"x" * (BODY_MAX_BYTES + 1000)
+    for _ in range(WRITE_LIMIT_PER_MINUTE):
+        assert lan_client.post("/api/parlay/placed", content=over,
+                               headers=HEADERS).status_code == 413
+    card = _card(db_session)
+    response = lan_client.post("/api/parlay/placed", json=_body(card), headers=HEADERS)
+    assert response.status_code == 429 and response.json() == {"refusal": "rate_limited"}
+    assert db_session.query(ParlayPlacement).count() == 0
 
 
 def test_a_body_just_under_the_cap_is_read(lan_client, db_session):

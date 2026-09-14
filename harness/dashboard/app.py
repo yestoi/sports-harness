@@ -117,6 +117,12 @@ STAKE_MAX = Decimal("999999.99")
 #: the data, so a body carrying a thousand legs is refused before a query is planned.
 LEG_SEQ_MAX = 50
 LEG_POINT_MAX = Decimal("1000")
+#: A browser omits the scheme's default port from `Origin`, so the one origin the write routes
+#: accept omits it too (review M-3).
+HTTPS_DEFAULT_PORT = 443
+#: American odds are `<= -100` or `>= +100`. Nothing lies between and `0` is not a price
+#: (review M-1).
+ODDS_MIN_MAGNITUDE = 100
 #: Every refusal the login page can show. Fixed strings, chosen by code: nothing the client
 #: submitted is ever rendered back (§6).
 LOGIN_REFUSALS = {
@@ -957,6 +963,19 @@ class PlacedBody(BaseModel):
             raise ValueError("stake is a positive amount the column can hold")
         return value
 
+    @field_validator("accepted_odds")
+    @classmethod
+    def _an_american_price(cls, value: int) -> int:
+        """American odds are `<= -100` or `>= +100`; `0` and the `-99..99` band are not prices.
+
+        `_payout_from_american` reads `>= 0` as the plus branch, so `0` would record a payout
+        equal to the stake and a fat-fingered `45` for `450` would record $36.25 on a $25 slip
+        instead of $137.50 -- a wrong figure in the fun-money ledger, quietly (review M-1).
+        """
+        if abs(value) < ODDS_MIN_MAGNITUDE:
+            raise ValueError("an American price is at most -100 or at least +100")
+        return value
+
     @field_validator("confirmation_id")
     @classmethod
     def _a_uuid(cls, value: str | None) -> str | None:
@@ -1014,6 +1033,36 @@ def _lan_session_is_valid(settings: Settings, request: Request, now: datetime) -
     if not value:
         return False
     return auth.read_cookie(auth.session_key(line), value, now)
+
+
+def _allowed_origin(settings: Settings) -> str:
+    """The one origin a write may carry, stated once (review M-3).
+
+    From settings, never from the request: a spoofed `Host:` must not be able to name the origin
+    it is then compared against (A-I8). The port is dropped when it is HTTPS's own default,
+    because a browser drops it from `Origin` -- with `lan_port = 443` an exact
+    `https://<addr>:443` comparison would refuse every write while the page itself still loaded.
+    Any other address, port or scheme than the settings' own is a different origin and is
+    refused: that is the hostname case the runbook has to carry.
+    """
+    if settings.lan_port == HTTPS_DEFAULT_PORT:
+        return f"https://{settings.lan_addr}"
+    return f"https://{settings.lan_addr}:{settings.lan_port}"
+
+
+def _confirmation_on_another_card(session: Session, card_id: int,
+                                  confirmation_id: str | None) -> bool:
+    """Whether some *other* card already holds this confirmation id.
+
+    One row at most and it rides `uq_parlay_placement_confirmation`, the partial unique index the
+    id is unique under. Asked only on the integrity-error path, to tell the one refusal that has
+    a name apart from the ones that do not (review I-1).
+    """
+    if confirmation_id is None:
+        return False
+    return session.query(ParlayPlacement).filter(
+        ParlayPlacement.confirmation_id == confirmation_id,
+        ParlayPlacement.card_id != card_id).first() is not None
 
 
 def _session_digest(request: Request) -> str:
@@ -1078,9 +1127,7 @@ def _install_parlay_writes(app: FastAPI, session_factory: sessionmaker, settings
     There is no third route: the confirm sheet's decline is a `status` correction (D5).
     """
     limiter = _WriteLimiter()
-    #: From settings, never from the request: a spoofed `Host:` must not be able to name the
-    #: origin it is then compared against (A-I8).
-    allowed_origin = f"https://{settings.lan_addr}:{settings.lan_port}"
+    allowed_origin = _allowed_origin(settings)
 
     @app.exception_handler(_WriteRefused)
     async def _write_refused(_request: Request, exc: _WriteRefused) -> JSONResponse:
@@ -1105,8 +1152,16 @@ def _install_parlay_writes(app: FastAPI, session_factory: sessionmaker, settings
             raise _WriteRefused(403, "forbidden")
         if request.headers.get("origin") != allowed_origin:
             raise _WriteRefused(403, "forbidden")
-        raw = await _read_capped_body(request)
-        if not limiter.allow(_session_digest(request), clock()):
+        # The allowance is spent whatever the read does. A body refused at the cap that the
+        # limiter never saw is an unmetered way to make this listener read 4 KiB at a time, over
+        # and over, from a page left open on a borrowed phone -- which is the threat the limiter
+        # exists for (review M-2). The 413 still wins the response when both apply: the body was
+        # refused before the allowance was even looked at.
+        try:
+            raw = await _read_capped_body(request)
+        finally:
+            spent = limiter.allow(_session_digest(request), clock())
+        if not spent:
             raise _WriteRefused(429, "rate_limited")
         try:
             payload = json.loads(raw.decode("utf-8"))
@@ -1187,7 +1242,19 @@ def _install_parlay_writes(app: FastAPI, session_factory: sessionmaker, settings
                 # The partial unique index on `confirmation_id` is the backstop, not the check
                 # (5.3): the request that lost the race answers with what is recorded.
                 s.rollback()
-                return {"placement": _placement_json(_placement_of(s, body.card_id))}
+                landed = _placement_of(s, body.card_id)
+                if landed is not None:
+                    return {"placement": _placement_json(landed)}
+                # Nothing is recorded, so this was some other constraint, not the race the line
+                # above answers. A 200 here would tell the owner's phone that a $25 slip is in
+                # the ledger when the transaction wrote nothing at all, and the week's cap would
+                # then let a further $25 through (review I-1). Name the one case that has a
+                # name; everything else is an unnamed failure and answers as one.
+                if _confirmation_on_another_card(s, body.card_id, body.confirmation_id):
+                    raise _WriteRefused(409, "confirmation_reused") from None
+                log.exception("the parlay placed route hit an integrity error with no placement "
+                              "recorded")
+                raise _WriteRefused(500, "internal_error") from None
             except Exception:
                 # Anything the two modules above did not name: the owner's page gets a code and
                 # the process gets the traceback. A refusal body never carries one.
