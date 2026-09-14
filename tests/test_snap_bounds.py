@@ -261,10 +261,15 @@ def test_every_floor_detail_statement_is_bounded_by_a_list_of_ids_and_a_row_cap(
 
     The general rule is "a bound or a row cap". The detail is built for up to `BOARD_LIMIT`
     games four times a minute inside a game window, so each of its statements carries *both*: a
-    list of ids the board has already bounded (`= any(:...)`), which is what makes the read an
-    index range rather than a scan, and a `limit`, which is what stops one busy game from
-    handing the builder an unbounded sort. Neither the 2000 ms statement timeout nor the
-    forbidden-table list is loosened for any of them.
+    list of ids the board has already bounded (`= any(:...)`), which is the bound that makes the
+    read an index range rather than a scan, and a `limit`, which is the backstop fix 31 requires
+    of every statement in that file.
+
+    The `limit` is **not** what keeps the sort small: in every `order by ... desc limit`
+    statement the sort precedes the limit, so the ids are doing that work (review round 1, M1).
+    What the limit does here is cap what crosses the wire and land the read inside the 2000 ms
+    timeout if an id list ever arrives larger than the board can produce. Neither that timeout
+    nor the forbidden-table list is loosened for any of these statements.
     """
     sql = dict((n, s) for m, n, s in ALL_STATEMENTS if m == "floor")[name]
     body = _code(sql)
@@ -273,6 +278,24 @@ def test_every_floor_detail_statement_is_bounded_by_a_list_of_ids_and_a_row_cap(
     for table in ("orderbook_events", "venue_trades", "raw_responses", "odds_snapshots",
                   "venue_quotes"):
         assert table not in body.lower(), f"{name} reads {table}"
+
+
+#: The detail reads that gather rows per game, market or order. Each must rank inside its own
+#: partition: a flat `limit` over a batch of twenty games is a race between the games, not a cap
+#: (review round 1, I2), and the game that loses it is told its markets were never priced.
+FLOOR_PARTITIONED_STATEMENTS = ("_DETAIL_MARKETS", "_DETAIL_SIGNALS", "_DETAIL_INTENTS",
+                                "_DETAIL_ORDERS", "_DETAIL_FILLS", "_DETAIL_ORDER_EVENTS",
+                                "_DETAIL_LEDGER")
+
+
+@pytest.mark.parametrize("name", FLOOR_PARTITIONED_STATEMENTS)
+def test_every_batched_floor_detail_read_caps_each_game_market_or_order_separately(name):
+    sql = dict((n, s) for m, n, s in ALL_STATEMENTS if m == "floor")[name]
+    body = _code(sql).lower()
+    assert "row_number() over (partition by" in body, (
+        f"{name} shares one row cap across the whole detail set, so a busy game starves the "
+        "games after it")
+    assert re.search(r"rn <= :\w+", body), f"{name} does not apply its per-partition cap"
 
 
 def test_the_detail_runs_under_the_same_statement_timeout_as_every_other_section():

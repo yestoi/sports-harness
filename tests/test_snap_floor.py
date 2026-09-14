@@ -2,6 +2,7 @@
 never-shown list."""
 
 import json
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -10,7 +11,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from harness.dashboard.snapshots import floor
+from harness.dashboard.snapshots import FLOOR_P95_BUDGET_MS, floor
+from tests.test_snap_bounds import _statements, _tables
 from harness.dashboard.snapshots.floor import FLOOR_KEYS, QUEUE_HISTORY_LIMIT, build_floor
 from harness.db.models import (EquitySnapshot, FairValue, Fill, Game, GameScoreEvent,
                                GapOutcome, Intent, Ledger, MetricSample, OperatorEvent, Order,
@@ -25,7 +27,7 @@ NOW = datetime(2026, 9, 12, 18, 0, tzinfo=timezone.utc)
 LOCAL_DAY_START = datetime(2026, 9, 12, 5, 0, tzinfo=timezone.utc)
 
 
-def test_the_funnel_reads_runs_notes_and_never_scans_the_gap_or_signal_tables():
+def test_the_funnel_reads_runs_notes_and_the_only_signals_read_is_the_details_bounded_one():
     """Ruling A-C1: the indexes on market_gap_snapshots and signals lead on market and variant,
     not time, so a bare 6 h `created_at` predicate is a sequential scan -- 86-92 s measured, and
     permanently `{"error": ...}` under a 2000 ms timeout. Ticks, gaps and signal counts come
@@ -40,9 +42,13 @@ def test_the_funnel_reads_runs_notes_and_never_scans_the_gap_or_signal_tables():
     """
     body = Path(floor.__file__).read_text().lower()
     assert "from market_gap_snapshots" not in body
-    assert body.count("from signals") == 1, "signals is read once, by the detail's summary"
-    summary = floor._DETAIL_SIGNALS.text.lower()
-    assert "from signals" in summary
+    # Over the extracted statements, not over the raw file: `from  signals` with two spaces, or a
+    # newline between the words, would evade a text count and is the same read (review round 1,
+    # M2). `_statements` is the scanner `tests/test_snap_bounds.py` already trusts for this file.
+    reads = [(name, sql) for name, sql in _statements(floor)
+             if "signals" in _tables(sql)]
+    assert [name for name, _ in reads] == ["_DETAIL_SIGNALS"]
+    summary = reads[0][1].lower()
     assert "venue_market_id = any(:market_ids)" in summary
     assert "created_at >= :since" in summary
     assert "group by venue_market_id, side" in summary
@@ -1097,6 +1103,86 @@ def test_the_exposure_section_states_its_own_coverage_limit(db_session, env_sett
     assert "not counted" in coverage["note"]
 
 
+class _CountingJson:
+    """`json` with a tape measure on `dumps`. `_cap_detail` reaches its serializer through the
+    module global, so swapping this in counts every byte the cap spends."""
+
+    def __init__(self, real):
+        self._real = real
+        self.calls = 0
+        self.bytes = 0
+
+    def dumps(self, obj, *args, **kwargs):
+        out = self._real.dumps(obj, *args, **kwargs)
+        self.calls += 1
+        self.bytes += len(out)
+        return out
+
+
+def _synthetic_detail(rows: int) -> dict:
+    """A detail payload with a `rows`-row story of realistic width, for the cap's own cost."""
+    story = [{"ts": f"2026-09-12T{12 + i // 60:02d}:{i % 60:02d}:00+00:00", "kind": "fill",
+              "text": "filled \u00b7 queue model",
+              "facts": {"fill_id": 100000 + i, "order_id": 900 + i, "prob": 0.58,
+                        "contracts": 40.0, "fee": 0.172, "fill_method": "queue_model",
+                        "replay": False, "has_print": True, "through": False}}
+             for i in range(rows)]
+    return {"scoreline": {"home": "LSU Tigers", "away": "ALA Tigers", "text": "Q3 \u00b7 8:42"},
+            "position": {"has_position": False, "text": "no position on this game", "rows": []},
+            "story": story,
+            "markets": [{"venue_market_id": i, "market_type": "moneyline", "fair_p": 0.62}
+                        for i in range(12)],
+            "on_your_ticket": None, "detail_available": True}
+
+
+def test_the_payload_cap_is_linear_in_the_story_it_drops(monkeypatch):
+    """Review round 1, I1. The first version re-serialized the whole payload once per dropped
+    row: 11.2 ms for one game at `STORY_ROWS_PER_GAME`, 224 ms for a twenty-game Saturday, which
+    is the whole of `FLOOR_P95_BUDGET_MS` spent before a statement runs. The bound asserted here
+    is on **bytes serialized**, not on calls: the quadratic form makes fewer, much larger dumps,
+    so counting calls would not tell the two apart."""
+    detail = _synthetic_detail(floor.STORY_ROWS_PER_GAME)
+    start = len(json.dumps(detail).encode())
+    assert start > floor.DETAIL_KIB * 1024, "the fixture has to be over the cap to be a test"
+
+    counter = _CountingJson(json)
+    monkeypatch.setattr(floor, "json", counter)
+    dropped = floor._cap_detail(detail)
+    monkeypatch.undo()
+
+    assert dropped > 0
+    assert len(json.dumps(detail).encode()) <= floor.DETAIL_KIB * 1024
+    # One dump in, one row each, one marker, one or two to verify: about two payloads. The
+    # quadratic form spent 82 x 40 KB, forty times this bound.
+    assert counter.bytes <= 4 * start, f"{counter.bytes} bytes serialized against {start}"
+
+
+def test_capping_a_full_saturdays_details_stays_inside_the_floor_budget():
+    """The same finding at the size that matters: `BOARD_LIMIT` is 60 and a college Saturday is
+    about twenty games in the detail set. Forty details at `STORY_ROWS_PER_GAME` measured ~40 ms
+    here; the shape this rejects measured 450 ms, against `FLOOR_P95_BUDGET_MS = 250` for the
+    whole builder."""
+    details = [_synthetic_detail(floor.STORY_ROWS_PER_GAME) for _ in range(40)]
+    started = time.monotonic()
+    for detail in details:
+        floor._cap_detail(detail)
+    elapsed_ms = (time.monotonic() - started) * 1000
+
+    assert all(len(json.dumps(detail).encode()) <= floor.DETAIL_KIB * 1024 for detail in details)
+    assert elapsed_ms < FLOOR_P95_BUDGET_MS, f"{elapsed_ms:.0f} ms for forty details"
+
+
+def test_the_cap_never_drops_the_verdict_or_the_partial_row():
+    """The two untimed rows at the head are the lines a truncated story still has to carry."""
+    detail = _synthetic_detail(floor.STORY_ROWS_PER_GAME)
+    detail["story"] = [{"ts": None, "kind": "not_evaluated", "text": "not evaluated", "facts": {}},
+                       {"ts": None, "kind": "partial", "text": "partial", "facts": {}},
+                       *detail["story"]]
+    floor._cap_detail(detail)
+    assert [row["kind"] for row in detail["story"][:3]] == [
+        "not_evaluated", "partial", "truncated"]
+
+
 # --- the game detail (addendum 7.2, design 4.2; Task 13) ---------------------------------------
 #
 # `T0` is the module's own instant and the four ids are fixed rather than sequence-assigned, so
@@ -1444,12 +1530,51 @@ class TestTheGameDetail:
                                                                     env_settings):
         """The cap is load-bearing: a detail is served down a tunnel to a phone. What survives
         is the part of the story that is still happening, and the truncation is a row a reader
-        can see rather than a story that quietly starts late."""
-        market_id = db_session.execute(
-            text("select id from venue_markets where game_id = :g"), {"g": SOON}).scalar()
-        for minute in range(1, 301):
-            db_session.add(Intent(signal_id=20000 + minute, variant_id="sharp_direct",
-                                  venue="kalshi", venue_market_id=market_id, ticker="KX",
+        can see rather than a story that quietly starts late.
+
+        Four markets at the per-market read cap, so this case holds both lines at once: the read
+        cap binds and says so (`partial`), and the payload cap then drops the oldest of what was
+        read and says that too (`truncated`).
+        """
+        markets = [_detail_market(db_session, SOON, n) for n in range(1, 4)]
+        markets.append(db_session.execute(
+            text("select id, ticker from venue_markets where game_id = :g order by id limit 1"),
+            {"g": SOON}).one())
+        seq = 0
+        for market in markets:
+            for minute in range(1, floor.STORY_ROWS_PER_MARKET + 1):
+                seq += 1
+                db_session.add(Intent(signal_id=20000 + seq, variant_id="sharp_direct",
+                                      venue="kalshi", venue_market_id=market.id, ticker="KX",
+                                      side="yes", target_prob=Decimal("0.5500"),
+                                      target_contracts=Decimal("20.00"), edge=Decimal("0.0400"),
+                                      game_id=SOON,
+                                      signal_created_at=T0 - timedelta(minutes=minute),
+                                      created_at=T0 - timedelta(minutes=minute)))
+        db_session.flush()
+
+        payload = build_floor(db_session, T0, env_settings)
+        detail = payload["details"][str(SOON)]
+        assert len(json.dumps(detail).encode()) <= floor.DETAIL_KIB * 1024
+        story = detail["story"]
+        assert [row["kind"] for row in story[:3]] == ["not_evaluated", "partial", "truncated"]
+        assert story[2]["facts"]["dropped"] > 0
+        assert payload["readings"]["detail_partial_games"] == 1
+        # The newest intent is the one that survived; the oldest went.
+        assert story[-1]["ts"] == (T0 - timedelta(minutes=1)).isoformat()
+
+    def test_a_read_cap_that_binds_never_starves_a_later_game_of_the_set(self, db_session,
+                                                                        env_settings):
+        """Review round 1, I2. The caps are per game, per market and per order, so a game that
+        fills its own cap costs itself rows and no other game one: the set-wide `limit` this
+        replaced handed the first games every row and the last games none, and a game with no
+        markets reads as `not evaluated` about a game that was evaluated all morning."""
+        market = db_session.execute(
+            text("select id from venue_markets where game_id = :g order by id limit 1"),
+            {"g": SOON}).scalar()
+        for minute in range(1, floor.STORY_ROWS_PER_MARKET + 20):
+            db_session.add(Intent(signal_id=30000 + minute, variant_id="sharp_direct",
+                                  venue="kalshi", venue_market_id=market, ticker="KX",
                                   side="yes", target_prob=Decimal("0.5500"),
                                   target_contracts=Decimal("20.00"), edge=Decimal("0.0400"),
                                   game_id=SOON,
@@ -1457,10 +1582,29 @@ class TestTheGameDetail:
                                   created_at=T0 - timedelta(minutes=minute)))
         db_session.flush()
 
-        detail = build_floor(db_session, T0, env_settings)["details"][str(SOON)]
-        assert len(json.dumps(detail).encode()) <= floor.DETAIL_KIB * 1024
-        story = detail["story"]
-        assert story[0]["kind"] == "not_evaluated" and story[1]["kind"] == "truncated"
-        assert story[1]["facts"]["dropped"] > 0
-        # The newest intent is the one that survived; the oldest went.
-        assert story[-1]["ts"] == (T0 - timedelta(minutes=1)).isoformat()
+        payload = build_floor(db_session, T0, env_settings)
+        # The game that filled its cap reads exactly its cap and says it is partial ...
+        soon = payload["details"][str(SOON)]
+        assert sum(1 for row in soon["story"] if row["kind"] == "intent") == \
+            floor.STORY_ROWS_PER_MARKET
+        assert any(row["kind"] == "partial" for row in soon["story"])
+        # ... and the other two games in the set are untouched by it.
+        in_progress = payload["details"][str(IN_PROGRESS)]
+        assert len([row for row in in_progress["story"] if row["kind"] == "evaluated"]) == 4
+        assert not any(row["kind"] == "partial" for row in in_progress["story"])
+        with_order = payload["details"][str(WITH_ORDER)]
+        assert with_order["position"]["has_position"] is True
+        assert not any(row["kind"] == "partial" for row in with_order["story"])
+
+    def test_a_settled_fill_is_never_counted_as_an_open_position(self, db_session, env_settings):
+        """Review round 1, I2, the correctness half: `settled_fills` comes from `_DETAIL_LEDGER`,
+        so a settlement row that a set-wide cap dropped would turn a closed position back into
+        contracts the detail claims we are holding. The ledger cap is per order and larger than
+        the per-order fills cap, so the settled order's fill stays recognised as settled."""
+        position = build_floor(db_session, T0, env_settings)["details"][str(WITH_ORDER)][
+            "position"]
+        assert [row["order_id"] for row in position["rows"]] == [
+            db_session.execute(text(
+                "select id from orders where game_id = :g and status = 'filled' "
+                "and replay = false order by id limit 1"), {"g": WITH_ORDER}).scalar()]
+        assert position["settled_cash"] == pytest.approx(16.8)

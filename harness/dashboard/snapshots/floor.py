@@ -196,11 +196,35 @@ STORY_WINDOW = timedelta(hours=12)
 #: A span longer than this between two story rows before kickoff is its own `gap` row (design
 #: 4.2: gaps are rows, never smoothed over).
 STORY_GAP = timedelta(minutes=30)
-#: Row caps for the batched detail reads. Each is the whole detail set's budget, not one game's:
-#: twenty games at twenty rows apiece, with headroom. They are backstops on top of the id lists
-#: and the window, in the shape fix 31 requires of every statement in this file.
-DETAIL_MARKET_IDS_LIMIT = 1000
-DETAIL_ROWS_LIMIT = 400
+#: Row caps for the batched detail reads. **Per partition, not per set** (review round 1, I2).
+#: A single `limit` over a batch of twenty games is not a cap, it is a race: `order by ... desc
+#: limit 400` across the set hands the first games every row and the last games none, so the
+#: 22nd game's story reads "no price was evaluated on this game's markets" about a game that was
+#: evaluated all morning, and a settlement row that fell off the end turns a closed position into
+#: contracts the detail claims we are still holding. Each read below therefore ranks its rows
+#: inside its own game, market or order (`row_number() over (partition by ...)`) and the
+#: statement's `limit` is `len(ids) * <the cap>` -- a bound derived from a list the board has
+#: already bounded, which can never truncate one game to feed another.
+#:
+#: Where a cap does bind, the game says so: `_details` marks that detail's story with a `partial`
+#: row and `readings["detail_partial_games"]` counts it, because a row of this story that is
+#: silently missing is worse than one that is visibly missing.
+#: At most every market of one game (46 on a real NFL game; 60 is headroom, not a trim).
+DETAIL_MARKETS_PER_GAME_READ = 60
+#: One aggregate row per market and side; `signals.side` is `yes`/`no`, so four is headroom.
+STORY_SIDES_PER_MARKET = 4
+#: Intents on one market inside `STORY_WINDOW`, newest first. `STORY_ROWS_PER_GAME` caps what a
+#: story shows in any case, so this only has to be larger than a story can display.
+STORY_ROWS_PER_MARKET = 40
+#: Orders on one game, and the rows hanging off one order.
+STORY_ORDERS_PER_GAME = 20
+STORY_ROWS_PER_ORDER = 12
+#: Settlement rows of one order. Deliberately larger than `STORY_ROWS_PER_ORDER`: these rows are
+#: not only a story line, they are the `not exists` half of `OPEN_FILL_SQL`, and a settlement
+#: this read misses is a position `_position` would report as still open.
+SETTLEMENTS_PER_ORDER = 30
+#: Benchmarks of one gap snapshot: one row per `benchmark_type`.
+BENCHMARKS_PER_GAP = 8
 #: How many of a game's markets the detail prices and shows. The board card's own count is the
 #: figure a reader sees (`46 markets`); this is the table under it, and twelve rows is a phone
 #: screen of one. It is a cost as well as a layout: the read behind it is one `join lateral` per
@@ -537,14 +561,21 @@ _LAST_SMOKE = text("""
 # per-game split is done in Python on rows that are already in memory.
 
 #: The detail set's markets. Bound: `game_id = any(:game_ids)` -- at most `BOARD_LIMIT` (60) ids
-#: and about twenty in practice -- plus `limit :limit`. Index: `ix_venue_markets_game_id`.
-#: `venue_markets` is one row per tradable market (`TINY_TABLES`), so the limit is a backstop
-#: against a matcher that has written thousands of markets on one game, not the real bound.
+#: and about twenty in practice -- ranked inside each game to `:per_game`, with `limit :limit` set
+#: by the caller to `len(game_ids) * :per_game`. Index: `ix_venue_markets_game_id`.
+#: `venue_markets` is one row per tradable market (`TINY_TABLES`), so the caps are a backstop
+#: against a matcher that has written thousands of markets on one game, not the real bound -- but
+#: the *partition* is load-bearing: a flat `limit` here starves the last games of the set of
+#: every market, and a game with no markets has no evaluations and lies about having been priced.
 _DETAIL_MARKETS = text("""
     select id, game_id, market_type, side, side_team_id, threshold, ticker, match_status,
            fee_type, fee_multiplier
-    from venue_markets
-    where game_id = any(:game_ids)
+    from (
+        select m.*, row_number() over (partition by m.game_id order by m.id) as rn
+        from venue_markets m
+        where m.game_id = any(:game_ids)
+    ) ranked
+    where rn <= :per_game
     order by game_id, id
     limit :limit
 """)
@@ -564,19 +595,28 @@ _DETAIL_MARKETS = text("""
 #:
 #: `(array_agg(... order by created_at desc))[1]` is the newest value of each column in the
 #: group, so the counts and the "last" figures come out of one pass rather than a second query.
+#: The `row_number()` is over the *aggregated* rows (a window function runs after `group by`),
+#: so it ranks sides inside a market and never touches the rows the aggregate read.
 _DETAIL_SIGNALS = text("""
-    select venue_market_id, side, count(*) as n,
-           min(created_at) as first_ts, max(created_at) as last_ts,
-           (array_agg(fair_p order by created_at desc))[1] as last_fair,
-           (array_agg(venue_best_bid order by created_at desc))[1] as last_bid,
-           (array_agg(venue_best_ask order by created_at desc))[1] as last_ask,
-           (array_agg(decision order by created_at desc))[1] as last_decision,
-           (array_agg(rejection_reason order by created_at desc))[1] as last_reason,
-           (array_agg(variant_id order by created_at desc))[1] as last_variant
-    from signals
-    where venue_market_id = any(:market_ids) and created_at >= :since and replay = false
-    group by venue_market_id, side
-    order by max(created_at) desc
+    select venue_market_id, side, n, first_ts, last_ts, last_fair, last_bid, last_ask,
+           last_decision, last_reason, last_variant
+    from (
+        select venue_market_id, side, count(*) as n,
+               min(created_at) as first_ts, max(created_at) as last_ts,
+               (array_agg(fair_p order by created_at desc))[1] as last_fair,
+               (array_agg(venue_best_bid order by created_at desc))[1] as last_bid,
+               (array_agg(venue_best_ask order by created_at desc))[1] as last_ask,
+               (array_agg(decision order by created_at desc))[1] as last_decision,
+               (array_agg(rejection_reason order by created_at desc))[1] as last_reason,
+               (array_agg(variant_id order by created_at desc))[1] as last_variant,
+               row_number() over (partition by venue_market_id
+                                  order by max(created_at) desc) as rn
+        from signals
+        where venue_market_id = any(:market_ids) and created_at >= :since and replay = false
+        group by venue_market_id, side
+    ) ranked
+    where rn <= :per_market
+    order by last_ts desc
     limit :limit
 """)
 
@@ -587,8 +627,14 @@ _DETAIL_SIGNALS = text("""
 #: have been the same sequential scan fix 31 took out of the funnel.
 _DETAIL_INTENTS = text("""
     select id, venue_market_id, variant_id, side, target_prob, target_contracts, edge, created_at
-    from intents
-    where venue_market_id = any(:market_ids) and created_at >= :since and replay = false
+    from (
+        select i.*, row_number() over (partition by i.venue_market_id
+                                       order by i.created_at desc) as rn
+        from intents i
+        where i.venue_market_id = any(:market_ids) and i.created_at >= :since
+          and i.replay = false
+    ) ranked
+    where rn <= :per_market
     order by created_at desc
     limit :limit
 """)
@@ -598,13 +644,18 @@ _DETAIL_INTENTS = text("""
 #: `placed_at` predicate stops a game whose orders go back weeks -- the pair `_BOARD` already
 #: uses for its own two subqueries.
 _DETAIL_ORDERS = text("""
-    select o.id, o.game_id, o.venue_market_id, o.variant_id, o.ticker, o.side, o.prob,
-           o.contracts, o.filled_contracts, o.status, o.placed_at, o.cancelled_at,
-           o.cancel_reason, o.queue_ahead_at_place, o.queue_remaining, o.edge_at_place,
-           o.intent_id, o.gap_snapshot_id, o.replay
-    from orders o
-    where o.game_id = any(:game_ids) and o.placed_at >= :since
-    order by o.placed_at desc
+    select id, game_id, venue_market_id, variant_id, ticker, side, prob,
+           contracts, filled_contracts, status, placed_at, cancelled_at,
+           cancel_reason, queue_ahead_at_place, queue_remaining, edge_at_place,
+           intent_id, gap_snapshot_id, replay
+    from (
+        select o.*, row_number() over (partition by o.game_id
+                                       order by o.placed_at desc) as rn
+        from orders o
+        where o.game_id = any(:game_ids) and o.placed_at >= :since
+    ) ranked
+    where rn <= :per_game
+    order by placed_at desc
     limit :limit
 """)
 
@@ -614,8 +665,13 @@ _DETAIL_ORDERS = text("""
 #: `ts`; this table's time column is `filled_at`, and the index keeps the addendum's name).
 _DETAIL_FILLS = text("""
     select id, order_id, prob, contracts, fee, fill_method, filled_at, replay, has_print, through
-    from fills
-    where order_id = any(:order_ids) and filled_at >= :since
+    from (
+        select f.*, row_number() over (partition by f.order_id
+                                       order by f.filled_at desc) as rn
+        from fills f
+        where f.order_id = any(:order_ids) and f.filled_at >= :since
+    ) ranked
+    where rn <= :per_order
     order by filled_at desc
     limit :limit
 """)
@@ -630,8 +686,13 @@ _DETAIL_FILLS = text("""
 #: asks for, and the reason it names those two sources for skips rather than this table.
 _DETAIL_ORDER_EVENTS = text("""
     select id, order_id, ts, kind, reason, prob, contracts
-    from order_events
-    where order_id = any(:order_ids) and ts >= :since and kind in ('cancel', 'expire')
+    from (
+        select e.*, row_number() over (partition by e.order_id order by e.ts desc) as rn
+        from order_events e
+        where e.order_id = any(:order_ids) and e.ts >= :since
+          and e.kind in ('cancel', 'expire')
+    ) ranked
+    where rn <= :per_order
     order by ts desc
     limit :limit
 """)
@@ -657,8 +718,12 @@ _DETAIL_WATCH = text("""
 #: memory instead of issuing a ninth statement to ask it again.
 _DETAIL_LEDGER = text("""
     select id, order_id, fill_id, ts, kind, contracts, price, fee, payout, cash_delta, variant_id
-    from ledger
-    where order_id = any(:order_ids) and kind = 'settlement'
+    from (
+        select l.*, row_number() over (partition by l.order_id order by l.ts desc) as rn
+        from ledger l
+        where l.order_id = any(:order_ids) and l.kind = 'settlement'
+    ) ranked
+    where rn <= :per_order
     order by ts desc
     limit :limit
 """)
@@ -770,6 +835,10 @@ def _board(session: Session, now: datetime) -> dict:
     return {"games": games}
 
 
+#: Whether `_anchors` has already reported an unreadable policy file (review round 1, M6).
+_anchors_warned = False
+
+
 def _anchors() -> frozenset[str]:
     """The favourite teams, as abbreviations, out of `parlay.yaml` (design 5.5: no new table).
 
@@ -781,7 +850,12 @@ def _anchors() -> frozenset[str]:
     try:
         return frozenset(load_config().anchors)
     except Exception:  # noqa: BLE001 - a policy file must not cost the board
-        log.warning("parlay policy unreadable; the board shows no favourites")
+        # Once per process, not four times a minute for as long as the file stays broken: a log
+        # line that repeats at a builder's cadence buries the next real one (review round 1, M6).
+        global _anchors_warned  # noqa: PLW0603 - one latch, like `_disabled_builders`
+        if not _anchors_warned:
+            _anchors_warned = True
+            log.warning("parlay policy unreadable; the board shows no favourites")
         return frozenset()
 
 
@@ -824,7 +898,7 @@ def _qty(value) -> str:
     return f"{float(value):g}"
 
 
-def _pricing_failure(session: Session, now: datetime) -> str | None:
+def _pricing_failure(run_notes: list) -> str | None:
     """Why the story's first row is `evaluation failed`, or `None` (B-C7 / D12).
 
     The run's own pricing evidence and nothing else: a `warnings` entry whose key is `pricing`,
@@ -838,14 +912,14 @@ def _pricing_failure(session: Session, now: datetime) -> str | None:
     `price_and_signal` returns one `budget_exhausted` flag and one warnings list per tick,
     covering every sport that tick priced. So the evidence is applied to every sport in the
     window, which is what the writer's shape supports; a per-sport reading needs a per-sport
-    writer first. **Window:** 6 h, the funnel's, rather than the story's 12 h: a pricing failure
-    older than six hours is not why this game has no evaluation now, and the read is the same
-    capped walk of `runs` the funnel documents at `FUNNEL_NOTES_LIMIT`.
+    writer first. **Window:** the funnel's 6 h rather than the story's 12 h -- a pricing
+    failure older than six hours is not why this game has no evaluation now.
 
-    Called lazily and at most once per build, from `_details`: a detail set whose games were all
-    evaluated never issues it at all.
+    `run_notes` is the funnel's own capped list, read once per build by `build_floor` and handed
+    to both sections, so this function costs no read at all (review round 1, I4). It is still
+    consulted at most once per build, and not at all when every game in the set has an evaluation.
     """
-    for notes in recent_run_notes(session, now - WINDOW_6H, limit=FUNNEL_NOTES_LIMIT):
+    for notes in run_notes:
         if not isinstance(notes, dict):
             continue
         for warning in notes.get("warnings") or []:
@@ -904,12 +978,16 @@ def _label(market, ticker: str, side: str, abbr_by_team: dict) -> str:
     """The market as a reader names it: the team (or the market type) and the side."""
     team = abbr_by_team.get(market.side_team_id) if market is not None else None
     market_type = (market.market_type if market is not None else "") or ""
-    parts = [part for part in (team, market_type) if part] or [sanitize_reason(ticker or "")]
+    # An unresolved market with an empty ticker would otherwise leave a label beginning with a
+    # space (review round 1, M4); "market" is what it is, said plainly.
+    parts = [part for part in (team, market_type) if part] or [
+        sanitize_reason(ticker or "") or "market"]
     return " ".join(parts + [side])
 
 
 def _story(kickoff: datetime, now: datetime, tz, *, evaluations, intents, orders, fills, events,
-           benchmarks, settlements, watch, markets_by_id, pricing_failure) -> list[dict]:
+           benchmarks, settlements, watch, markets_by_id, abbr_by_team, pricing_failure,
+           partial: bool = False) -> list[dict]:
     """The decision story for one game: chronological rows from records that already exist.
 
     Each row is `{ts, kind, text, facts}` -- the sentence a reader sees and, under `facts`, the
@@ -945,7 +1023,9 @@ def _story(kickoff: datetime, now: datetime, tz, *, evaluations, intents, orders
                      else sentences.reason_phrase(agg.last_reason))
         rows.append({"ts": agg.last_ts, "kind": "evaluated", "text": " \u00b7 ".join(parts),
                      "facts": {"venue_market_id": agg.venue_market_id, "side": agg.side,
-                               "market": _label(market, "", agg.side, {}),
+                               "market": _label(market,
+                                                market.ticker if market is not None else "",
+                                                agg.side, abbr_by_team),
                                "evaluations": int(agg.n),
                                "first": agg.first_ts.isoformat(),
                                "last": agg.last_ts.isoformat(),
@@ -1053,8 +1133,46 @@ def _story(kickoff: datetime, now: datetime, tz, *, evaluations, intents, orders
                   "facts": {}})
         rows.insert(0, first)
 
+    if partial:
+        # A per-partition read cap bound on this game, so some of its rows were never read. The
+        # story says so rather than presenting what it has as the whole of it (review round 1,
+        # I2): a row that is silently missing is worse than one that is visibly missing. It goes
+        # after the verdict row, which is the one line a truncated story still has to carry.
+        rows.insert(1 if not evaluations else 0,
+                    {"ts": None, "kind": "partial",
+                     "text": "some older rows on this game were not read \u00b7 "
+                             "the per-game read caps bound",
+                     "facts": {"cap": "per-partition"}})
+
     return [{"ts": row["ts"].isoformat() if row["ts"] is not None else None,
              "kind": row["kind"], "text": row["text"], "facts": row["facts"]} for row in rows]
+
+
+def _partial_games(cards, markets_by_game, orders_by_game, intents_by_market, fills_by_order,
+                   events_by_order, settlements_by_order) -> set[int]:
+    """The games whose detail could not be read in full, because a per-partition cap bound.
+
+    Every cap is per game, per market or per order, so one that binds costs *this* game rows and
+    no other -- which is the point of the partitions (review round 1, I2). A partition that came
+    back exactly at its cap is the only evidence available that there was more of it, and it can
+    be a false positive (a game with exactly 60 markets); saying "some rows were not read" when
+    they all were is the safe direction of that error.
+    """
+    partial = set()
+    for card in cards:
+        game_id = card["game_id"]
+        game_markets = markets_by_game.get(game_id, [])
+        game_orders = orders_by_game.get(game_id, [])
+        if (len(game_markets) >= DETAIL_MARKETS_PER_GAME_READ
+                or len(game_orders) >= STORY_ORDERS_PER_GAME
+                or any(len(intents_by_market.get(market.id, ())) >= STORY_ROWS_PER_MARKET
+                       for market in game_markets)
+                or any(len(fills_by_order.get(order.id, ())) >= STORY_ROWS_PER_ORDER
+                       or len(events_by_order.get(order.id, ())) >= STORY_ROWS_PER_ORDER
+                       or len(settlements_by_order.get(order.id, ())) >= SETTLEMENTS_PER_ORDER
+                       for order in game_orders)):
+            partial.add(game_id)
+    return partial
 
 
 def _with_gaps(rows: list[dict], kickoff: datetime, now: datetime, tz) -> list[dict]:
@@ -1200,37 +1318,76 @@ def _markets(game_markets, fair: dict, watch_by_market: dict, now: datetime) -> 
     return rows
 
 
+def _truncated_row(dropped: int) -> dict:
+    return {"ts": None, "kind": "truncated",
+            "text": f"{dropped} older rows dropped to fit the {DETAIL_KIB} KiB cap",
+            "facts": {"dropped": dropped}}
+
+
+def _sizeof(value) -> int:
+    """The bytes `value` costs inside the payload: its own JSON plus the comma that separates it
+    from its neighbour. `json.dumps` with its defaults, which is the call the payload meets on
+    its way into `dashboard_snapshots`, so "16 KiB" means one thing everywhere."""
+    return len(json.dumps(value).encode()) + 1
+
+
 def _cap_detail(detail: dict) -> int:
     """Truncate one detail payload to `DETAIL_KIB`, dropping the **oldest** story rows first.
 
     A cap that dropped the newest rows would hide what is happening now; a cap that dropped the
-    whole story would hide why. So the oldest go, one at a time, and the row that replaces them
-    says how many went and that they were the oldest -- a truncation a reader can see is a
-    different thing from a story that quietly starts late. A game whose market table alone is
-    over the cap loses market rows from the end once the story is gone.
+    whole story would hide why. So the oldest go, and the row that replaces them says how many
+    went and that they were the oldest -- a truncation a reader can see is a different thing from
+    a story that quietly starts late. A game whose market table alone is over the cap loses
+    market rows from the end once the story is gone.
 
-    `json.dumps` here is the same call, defaults included, that the payload meets on its way into
-    `dashboard_snapshots`, so "16 KiB" means one thing to this function and to the stored row.
+    **Linear, not quadratic (review round 1, I1).** The first version re-serialized the whole
+    payload once per dropped row: measured in this worktree, 11.2 ms for one game at
+    `STORY_ROWS_PER_GAME` and 25.2 ms at 180 rows, which is 224 ms for a twenty-game college
+    Saturday -- the whole of `FLOOR_P95_BUDGET_MS` spent on `json.dumps` before a single
+    statement runs, and then the scheduler backs Floor off during the games it was built for.
+    Each row is sized once instead, the drop count is taken off a running total, and one full
+    dump at the end verifies the arithmetic (JSON is deterministic, so the only drift is the
+    marker's own digits). Total bytes serialized are about two payloads rather than n/2 of them.
+
+    The untimed rows at the head -- the verdict row, and the `partial` row when a read cap bound
+    -- are never dropped: they are the two lines a truncated story still has to carry.
+
     Returns the number of story rows dropped.
     """
     limit = DETAIL_KIB * 1024
+    total = len(json.dumps(detail).encode())
+    if total <= limit:
+        return 0
+
+    head = [row for row in detail["story"] if row["ts"] is None]
+    timed = [row for row in detail["story"] if row["ts"] is not None]
+    sizes = [_sizeof(row) for row in timed]
     dropped = 0
-    while len(json.dumps(detail).encode()) > limit:
-        story = detail["story"]
-        # The oldest *timed* row. The verdict row `_story` puts first carries no `ts` and is not
-        # a row of the story: dropping it would take away the answer to "was this market even
-        # evaluated", which is the one thing a truncated story still has to say.
-        index = next((i for i, row in enumerate(story) if row["ts"] is not None), None)
-        if index is not None:
-            story.pop(index)
+    if timed:
+        total += _sizeof(_truncated_row(1))     # the marker is about to join the story
+        while total > limit and dropped < len(timed):
+            total -= sizes[dropped]
             dropped += 1
-            marker = {"ts": None, "kind": "truncated",
-                      "text": f"{dropped} older rows dropped to fit the {DETAIL_KIB} KiB cap",
-                      "facts": {"dropped": dropped}}
-            if dropped == 1:
-                story.insert(index, marker)
-            else:
-                story[index - 1] = marker
+    detail["story"] = head + ([_truncated_row(dropped)] if dropped else []) + timed[dropped:]
+
+    # Markets, from the end, for the game whose table alone is over the cap. Sized the same way.
+    if total > limit and detail["markets"]:
+        market_sizes = [_sizeof(row) for row in detail["markets"]]
+        while total > limit and detail["markets"]:
+            total -= market_sizes.pop()
+            detail["markets"].pop()
+
+    # One verification dump, and a bounded exact loop for the drift the marker's digits can cost
+    # (a three-digit `dropped` is two bytes wider than the one-digit row that was measured).
+    while len(json.dumps(detail).encode()) > limit:
+        timed_rows = [row for row in detail["story"] if row["ts"] is not None]
+        if timed_rows:
+            detail["story"].remove(timed_rows[0])
+            dropped += 1
+            for row in detail["story"]:
+                if row["kind"] == "truncated":
+                    row.update(_truncated_row(dropped))
+                    break
         elif detail["markets"]:
             detail["markets"].pop()
         else:
@@ -1264,7 +1421,8 @@ def _scoreline(card: dict, tz) -> dict:
             "kickoff_local": kickoff_local, "text": line}
 
 
-def _details(session: Session, now: datetime, settings: Settings, cards: list[dict]) -> dict:
+def _details(session: Session, now: datetime, settings: Settings, cards: list[dict],
+             run_notes) -> dict:
     """One payload per game in the detail set, keyed by game id as a string (addendum 7.2).
 
     Eleven reads for the whole set, not eleven per game: every statement takes a list of ids
@@ -1289,38 +1447,49 @@ def _details(session: Session, now: datetime, settings: Settings, cards: list[di
     # `BOARD_LOOKBACK` back, so this is at worst `now - 16 h`.
     since = min([now, *kickoffs.values()]) - STORY_WINDOW
 
-    markets = list(session.execute(_DETAIL_MARKETS, {"game_ids": game_ids,
-                                                     "limit": DETAIL_MARKET_IDS_LIMIT}))
+    markets = list(session.execute(_DETAIL_MARKETS, {
+        "game_ids": game_ids, "per_game": DETAIL_MARKETS_PER_GAME_READ,
+        "limit": len(game_ids) * DETAIL_MARKETS_PER_GAME_READ}))
     markets_by_game: dict[int, list] = {}
     for market in markets:
         markets_by_game.setdefault(market.game_id, []).append(market)
     markets_by_id = {market.id: market for market in markets}
     market_ids = [market.id for market in markets]
 
-    window = {"market_ids": market_ids, "since": since, "limit": DETAIL_ROWS_LIMIT}
-    evaluations = list(session.execute(_DETAIL_SIGNALS, window)) if market_ids else []
-    intents = list(session.execute(_DETAIL_INTENTS, window)) if market_ids else []
-    orders = list(session.execute(_DETAIL_ORDERS, {"game_ids": game_ids, "since": since,
-                                                   "limit": DETAIL_ROWS_LIMIT}))
+    # Every `limit` below is `len(ids) * <the per-partition cap>`: the statement still carries a
+    # row cap (fix 31's rule, and `tests/test_snap_bounds.py` enforces it), and the number is
+    # derived from a list the board has already bounded rather than being a set-wide budget the
+    # games compete for.
+    evaluations = list(session.execute(_DETAIL_SIGNALS, {
+        "market_ids": market_ids, "since": since, "per_market": STORY_SIDES_PER_MARKET,
+        "limit": len(market_ids) * STORY_SIDES_PER_MARKET})) if market_ids else []
+    intents = list(session.execute(_DETAIL_INTENTS, {
+        "market_ids": market_ids, "since": since, "per_market": STORY_ROWS_PER_MARKET,
+        "limit": len(market_ids) * STORY_ROWS_PER_MARKET})) if market_ids else []
+    orders = list(session.execute(_DETAIL_ORDERS, {
+        "game_ids": game_ids, "since": since, "per_game": STORY_ORDERS_PER_GAME,
+        "limit": len(game_ids) * STORY_ORDERS_PER_GAME}))
     order_ids = [order.id for order in orders]
-    order_window = {"order_ids": order_ids, "since": since, "limit": DETAIL_ROWS_LIMIT}
+    order_window = {"order_ids": order_ids, "since": since, "per_order": STORY_ROWS_PER_ORDER,
+                    "limit": len(order_ids) * STORY_ROWS_PER_ORDER}
     fills = list(session.execute(_DETAIL_FILLS, order_window)) if order_ids else []
     events = list(session.execute(_DETAIL_ORDER_EVENTS, order_window)) if order_ids else []
     watch = {row.order_id: row for row in session.execute(
         _DETAIL_WATCH, {"order_ids": order_ids, "since": now - WATCH_WINDOW,
-                        "limit": DETAIL_ROWS_LIMIT})} if order_ids else {}
+                        "limit": len(order_ids)})} if order_ids else {}
     settlements = list(session.execute(_DETAIL_LEDGER, {
-        "order_ids": order_ids, "limit": DETAIL_ROWS_LIMIT})) if order_ids else []
+        "order_ids": order_ids, "per_order": SETTLEMENTS_PER_ORDER,
+        "limit": len(order_ids) * SETTLEMENTS_PER_ORDER})) if order_ids else []
     gap_ids = sorted({order.gap_snapshot_id for order in orders
                       if order.gap_snapshot_id is not None})
     benchmarks: dict[int, list] = {}
     if gap_ids:
-        for row in session.execute(_DETAIL_GAP_OUTCOMES, {"gap_ids": gap_ids,
-                                                          "limit": DETAIL_ROWS_LIMIT}):
+        for row in session.execute(_DETAIL_GAP_OUTCOMES, {
+                "gap_ids": gap_ids, "limit": len(gap_ids) * BENCHMARKS_PER_GAP}):
             benchmarks.setdefault(row.gap_snapshot_id, []).append(row)
     tickets = {row.game_id: row.card_id for row in session.execute(
         _DETAIL_TICKET, {"game_ids": game_ids, "statuses": list(DETAIL_TICKET_STATUSES),
-                         "limit": BOARD_LIMIT})}
+                         "limit": len(game_ids)})}
 
     # Group the batch by game before the fairs are asked for, because which markets are worth a
     # `join lateral` depends on which ones this game's story touched.
@@ -1360,15 +1529,20 @@ def _details(session: Session, now: datetime, settings: Settings, cards: list[di
     fair = {row.venue_market_id: row for row in session.execute(
         _FAIR_FOR_ORDERS, {"market_ids": priced, "since": now - FAIR_WINDOW})} if priced else {}
 
-    # At most one `_pricing_failure` read per build, and none at all when every game in the set
-    # was evaluated: the evidence is only ever consulted to tell `not evaluated` from
-    # `evaluation failed`.
+    # `run_notes` is the funnel's own capped `runs.notes` list, read once per build and handed to
+    # both sections (review round 1, I4): a Saturday-morning board is games that have not been
+    # priced yet, which is exactly when the evidence is consulted, so the lazy call was a second
+    # 2,000-row JSONB read on the common case. The phrase is still computed at most once, and not
+    # at all when every game in the set has an evaluation.
     cache: dict[str, str | None] = {}
 
     def pricing_failure() -> str | None:
         if "phrase" not in cache:
-            cache["phrase"] = _pricing_failure(session, now)
+            cache["phrase"] = _pricing_failure(run_notes())
         return cache["phrase"]
+
+    partial = _partial_games(cards, markets_by_game, orders_by_game, intents_by_market,
+                             fills_by_order, events_by_order, settlements_by_order)
 
     details: dict[str, dict] = {}
     for card in cards:
@@ -1394,7 +1568,8 @@ def _details(session: Session, now: datetime, settings: Settings, cards: list[di
             events=[event for order in game_orders
                     for event in events_by_order.get(order.id, ())],
             benchmarks=benchmarks, settlements=game_settlements, watch=watch,
-            markets_by_id=markets_by_id, pricing_failure=pricing_failure)
+            markets_by_id=markets_by_id, abbr_by_team=abbr_by_team,
+            pricing_failure=pricing_failure, partial=game_id in partial)
         card_id = tickets.get(game_id)
         detail = {
             "scoreline": _scoreline(card, tz),
@@ -1445,7 +1620,25 @@ def _reason_rows(counts: dict[str, float]) -> list[dict]:
              "plain": sentences.reason_phrase(reason)} for reason, count in top]
 
 
-def _funnel(session: Session, now: datetime) -> dict:
+def _run_notes(session: Session, now: datetime):
+    """A callable returning the funnel's capped `runs.notes` list, read at most once per build.
+
+    The one read both `_funnel` and `_pricing_failure` use (review round 1, I4). Lazy, so a
+    build whose sections both fail before asking issues nothing; cached on the first call, so
+    the second caller pays nothing.
+    """
+    cache: list[list] = []
+
+    def notes() -> list:
+        if not cache:
+            cache.append(recent_run_notes(session, now - FUNNEL_WINDOW,
+                                          limit=FUNNEL_NOTES_LIMIT))
+        return cache[0]
+
+    return notes
+
+
+def _funnel(session: Session, now: datetime, run_notes) -> dict:
     """Ticks, gaps, candidates and rejections out of `runs.notes`; placed, skipped and cancelled
     out of the executor's own per-minute `metric_samples`; fills out of `fills` itself.
 
@@ -1463,7 +1656,7 @@ def _funnel(session: Session, now: datetime) -> dict:
     `units` with what it counts and, where it matters, what it is *not* -- see `FUNNEL_UNITS`.
     """
     since = now - FUNNEL_WINDOW
-    notes = recent_run_notes(session, since, limit=FUNNEL_NOTES_LIMIT)
+    notes = run_notes()
     by_variant = signals_by_variant_from_notes(session, notes)
     ticks = gaps = 0
     for note in notes:
@@ -1720,12 +1913,20 @@ def _venue(session: Session, now: datetime) -> dict:
 
 def build_floor(session: Session, now: datetime, settings: Settings) -> dict:
     payload = base_payload("floor", now, settings, CADENCE_IN_WINDOW_S)
+    # `runs.notes` is read once per build and shared (review round 1, I4). `recent_run_notes`
+    # with a limit reads exactly `FUNNEL_NOTES_LIMIT` rows of JSONB by design, and both the
+    # funnel and the detail's `evaluation failed` evidence want the same 6 h window and the same
+    # cap -- on a Saturday-morning board, where every game is inside 6 h of kickoff and none has
+    # been priced yet, that was two of those reads four times a minute. It stays lazy so a build
+    # that needs neither pays nothing, and it is a closure rather than a value so a failure of
+    # the read marks whichever section asked for it, not the whole payload.
+    run_notes = _run_notes(session, now)
     section(session, payload, "board", lambda: _board(session, now))
     # After the board and from its cards: the detail set is a subset of the board, the scoreline
     # is the board card, and a board that failed has no games to build details for.
     section(session, payload, "details",
-            lambda: _details(session, now, settings, _board_games(payload)))
-    section(session, payload, "funnel", lambda: _funnel(session, now))
+            lambda: _details(session, now, settings, _board_games(payload), run_notes))
+    section(session, payload, "funnel", lambda: _funnel(session, now, run_notes))
     section(session, payload, "orders", lambda: _orders(session, now))
     section(session, payload, "fills", lambda: _fills(session, now, settings))
     section(session, payload, "exposure", lambda: _exposure(session, now, settings))
@@ -1746,6 +1947,12 @@ def build_floor(session: Session, now: datetime, settings: Settings) -> dict:
         "detail_bytes": _detail_bytes(payload.get("details")),
         "detail_games": len(_dict("details")),
         "detail_cap_bytes": DETAIL_KIB * 1024,
+        # How many details could not be read in full because a per-partition cap bound. Zero in
+        # normal operation; a number here is the dial (`STORY_ROWS_PER_MARKET` and its siblings)
+        # asking to be looked at (review round 1, I2).
+        "detail_partial_games": sum(
+            1 for detail in _dict("details").values()
+            if any(row["kind"] == "partial" for row in detail["story"])),
     }
     # Ruling A-I2: the skip and cancel reason codes the funnel just rendered, so a code outside
     # `REASON_PHRASES` is not silently lost -- the next plan sees it.
