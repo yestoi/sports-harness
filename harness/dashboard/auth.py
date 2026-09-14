@@ -69,7 +69,7 @@ def _parse_hash_line(line: str) -> tuple[bytes, bytes]:
     """
     parts = line.strip().split("$")
     if len(parts) != 6 or parts[0] != "scrypt":
-        raise ValueError("hash line is not a scrypt line of five fields")
+        raise ValueError("hash line is not a scrypt line of six $-separated fields")
     if (parts[1], parts[2], parts[3]) != (str(SCRYPT_N), str(SCRYPT_R), str(SCRYPT_P)):
         raise ValueError("hash line does not carry the pinned scrypt n/r/p")
     try:
@@ -143,8 +143,8 @@ def lan_active(settings) -> bool:
     """Whether the LAN listener has everything it needs: all three of the user's files present,
     regular and non-empty. Metadata only -- the contents are never read here (D7)."""
     return all(is_non_empty_file(Path(p)) for p in (settings.owner_password_hash_file,
-                                                     settings.lan_tls_cert_file,
-                                                     settings.lan_tls_key_file))
+                                                    settings.lan_tls_cert_file,
+                                                    settings.lan_tls_key_file))
 
 
 def read_hash_line(settings) -> str | None:

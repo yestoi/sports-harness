@@ -813,10 +813,11 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
     """The dashboard app. `lan` false is the loopback listener exactly as it has always been.
 
     Phase 4.6, addendum §6: `lan=True` adds the owner login, the session gate over every path
-    but `/healthz` and the login page itself, and `X-Frame-Options: DENY` on every response. It adds no route to the
-    loopback app and changes none of its behaviour -- in particular the kill pair is untouched
-    there (invariant 9); on the LAN app the gate is what makes it need a session as well as its
-    token (D15), and the two route bodies below are the same code either way.
+    but `/healthz` and the login page itself, and `X-Frame-Options: DENY` on every response. It
+    adds no route to the loopback app and changes none of its behaviour -- in particular the
+    kill pair is untouched there (invariant 9); on the LAN app the gate is what makes it need a
+    session as well as its token (D15), and the two route bodies below are the same code either
+    way.
     """
     scheduler = None
     snapshot_engine = None
