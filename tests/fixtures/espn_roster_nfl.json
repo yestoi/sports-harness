@@ -1,0 +1,25 @@
+{
+  "team": {"id": "17", "abbreviation": "NE", "displayName": "New England Patriots"},
+  "athletes": [
+    {
+      "position": "offense",
+      "items": [
+        {"id": "4426348", "displayName": "Jayden Daniels", "jersey": "5",
+         "position": {"abbreviation": "QB"}},
+        {"id": "4430807", "displayName": "Malik Nabers", "jersey": "9",
+         "position": {"abbreviation": "WR"}},
+        {"id": "4431611", "displayName": "Wan'Dale Robinson", "jersey": "17",
+         "position": {"abbreviation": "WR"}},
+        {"id": "4432708", "displayName": "Marvin Harrison Jr.", "jersey": "18",
+         "position": {"abbreviation": "WR"}}
+      ]
+    },
+    {
+      "position": "specialTeam",
+      "items": [
+        {"id": "4241479", "displayName": "Odell Beckham Jr.", "jersey": "3",
+         "position": {"abbreviation": "WR"}}
+      ]
+    }
+  ]
+}

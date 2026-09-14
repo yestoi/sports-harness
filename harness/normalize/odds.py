@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from harness.db.models import Game, OddsPropSnapshot, OddsSnapshot
 from harness.matching.teams import resolve_team
+from harness.normalize.players import candidates_for_game, match_player
 
 #: Venue market key -> the short internal key stored in `odds_prop_snapshots.market_type`
 #: (D22). The column is String(24), copied from `odds_snapshots`: `prop:receptions:alt` is 19
@@ -123,20 +124,30 @@ def upsert_odds_rows(session: Session, sport: str, rows: list[OddsRow], raw_id: 
         select(Game).where(Game.odds_api_event_id.in_({r.event_id for r in rows}))).scalars()}
     inserted = no_game = no_team = link_rejected = prop_unmatched = 0
     cache: dict[str, int | None] = {}
+    # One bounded roster read per game in this pass, never one per outcome (addendum §4.2).
+    roster_cache: dict[int, list] = {}
     for r in rows:
         gid = games.get(r.event_id)
         if gid is None:
             no_game += 1
             continue
-        team_id, side, player_name = None, None, None
+        team_id, side, player_name, player_id = None, None, None, None
         if r.market_type.startswith(PROP_PREFIX):
             # A prop outcome names a player, never a team: the team resolver is never called
-            # for one (addendum §3.3). `player_id` stays null here; Task 3's resolver fills it.
+            # for one (addendum §3.3).
             side = _PROP_SIDES.get((r.outcome_name or "").strip().lower())
             player_name = (r.description or "").strip()[:80] or None
             if side is None or player_name is None:
                 prop_unmatched += 1
                 continue
+            if gid not in roster_cache:
+                roster_cache[gid] = candidates_for_game(session, sport, gid)
+            player_id = match_player(player_name, roster_cache[gid])
+            if player_id is None:
+                # §4.2: ambiguity never picks and an absent player is never guessed. The row is
+                # still stored -- `player_name` keeps it auditable and `uq_odds_prop_row` keys
+                # on it -- but with `player_id` null it can never be built into a leg.
+                prop_unmatched += 1
         elif r.outcome_name in ("Over", "Under"):
             side = r.outcome_name.lower()
         else:
@@ -162,7 +173,7 @@ def upsert_odds_rows(session: Session, sport: str, rows: list[OddsRow], raw_id: 
             # `on conflict do nothing` swallows a violation of *any* index.
             stmt = insert(OddsPropSnapshot).values(
                 raw_id=raw_id, book=r.book, game_id=gid, market_type=r.market_type,
-                player_name=player_name, player_id=None, outcome_side=side, point=r.point,
+                player_name=player_name, player_id=player_id, outcome_side=side, point=r.point,
                 price_decimal=r.price, book_last_update=r.last_update, fetched_at=fetched_at,
                 link=link, sid=valid_sid(r.sid))
             stmt = stmt.on_conflict_do_nothing(

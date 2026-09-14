@@ -7,6 +7,9 @@ from harness.feeds.http import FetchResult, HttpClient
 Sport = Literal["nfl", "ncaaf"]
 _PATH = {"nfl": "/nfl/scoreboard", "ncaaf": "/college-football/scoreboard"}
 _PARAMS = {"nfl": None, "ncaaf": {"groups": "80", "limit": "400"}}
+#: The summary endpoint of addendum §4.1, on the same host and the same sport
+#: segment as the scoreboard above it.
+_SUMMARY_PATH = {"nfl": "/nfl/summary", "ncaaf": "/college-football/summary"}
 
 
 @dataclass(frozen=True)
@@ -50,3 +53,22 @@ class EspnClient:
         if dates:
             params["dates"] = dates
         return self._http.get(f"{self._base}{_PATH[sport]}", params=params or None, redact_params=())
+
+    def fetch_summary(self, sport: Sport, espn_event_id: str) -> FetchResult:
+        """One game's box score and scoring plays (addendum §4.1). The recorder's own host; no
+        key, no credential, no new outbound host (invariant 8)."""
+        return self._http.get(f"{self._base}{_SUMMARY_PATH[sport]}",
+                              params={"event": str(espn_event_id)}, redact_params=())
+
+    def fetch_roster(self, sport: Sport, team_id: int | str) -> FetchResult:
+        """One team's roster (addendum §4.1), fetched once per team per week for the teams of
+        the watched prop events. The sport segment is taken from `_PATH` rather than repeated."""
+        return self._http.get(f"{self._base}{_PATH[sport].rsplit('/', 1)[0]}"
+                              f"/teams/{team_id}/roster", params=None, redact_params=())
+
+    def fetch_gamelog(self, sport: Sport, athlete_id: str) -> FetchResult:
+        """One athlete's game log, the draft context line's source (addendum §4.1). Its shape is
+        measured by the plan's evidence task before the line is trusted; until then an
+        unrecognised body is the expected path and reads `no season data yet`."""
+        return self._http.get(f"{self._base}{_PATH[sport].rsplit('/', 1)[0]}"
+                              f"/athletes/{athlete_id}/gamelog", params=None, redact_params=())

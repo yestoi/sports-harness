@@ -38,3 +38,20 @@ def test_fetch_scoreboard_dates_param_added_alongside_existing_params():
     c.fetch_scoreboard("ncaaf", dates="20260908")
     assert dict(r1.calls[0].request.url.params) == {"dates": "20260908"}
     assert dict(r2.calls[0].request.url.params) == {"groups": "80", "limit": "400", "dates": "20260908"}
+
+
+@respx.mock
+def test_the_three_new_fetchers_use_the_recorder_s_own_host_and_paths():
+    """Invariant 8: the recorder's own ESPN host and no other. The sport segment is ESPN's own
+    (`nfl` / `college-football`), the same mapping `fetch_scoreboard` already uses."""
+    summary = respx.get("https://e/nfl/summary").mock(return_value=httpx.Response(200, json={}))
+    roster = respx.get("https://e/college-football/teams/99/roster").mock(
+        return_value=httpx.Response(200, json={}))
+    gamelog = respx.get("https://e/nfl/athletes/4426348/gamelog").mock(
+        return_value=httpx.Response(200, json={}))
+    c = EspnClient(HttpClient(1, sleep=lambda s: None), "https://e")
+    c.fetch_summary("nfl", "401671789")
+    c.fetch_roster("ncaaf", "99")
+    c.fetch_gamelog("nfl", "4426348")
+    assert dict(summary.calls[0].request.url.params) == {"event": "401671789"}
+    assert roster.called and gamelog.called

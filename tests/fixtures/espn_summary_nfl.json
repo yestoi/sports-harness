@@ -1,0 +1,71 @@
+{
+  "header": {"id": "401671789", "season": {"year": 2026, "type": 2}},
+  "boxscore": {
+    "players": [
+      {
+        "team": {"id": "17", "abbreviation": "NE"},
+        "statistics": [
+          {
+            "name": "passing",
+            "keys": ["C/ATT", "YDS", "AVG", "TD", "INT", "SACKS", "QBR", "RTG"],
+            "labels": ["C/ATT", "YDS", "AVG", "TD", "INT", "SACKS", "QBR", "RTG"],
+            "athletes": [
+              {"athlete": {"id": "4426348", "displayName": "Jayden Daniels"},
+               "stats": ["19/28", "208", "7.4", "1", "0", "1-7", "72.4", "104.2"]}
+            ]
+          },
+          {
+            "name": "rushing",
+            "keys": ["CAR", "YDS", "AVG", "TD", "LONG"],
+            "labels": ["CAR", "YDS", "AVG", "TD", "LONG"],
+            "athletes": [
+              {"athlete": {"id": "4426348", "displayName": "Jayden Daniels"},
+               "stats": ["7", "41", "5.9", "0", "12"]}
+            ]
+          },
+          {
+            "name": "receiving",
+            "keys": ["REC", "YDS", "AVG", "TD", "LONG", "TGTS"],
+            "labels": ["REC", "YDS", "AVG", "TD", "LONG", "TGTS"],
+            "athletes": [
+              {"athlete": {"id": "4430807", "displayName": "Malik Nabers"},
+               "stats": ["5", "64", "12.8", "1", "22", "8"]},
+              {"athlete": {"id": "4431611", "displayName": "Wan'Dale Robinson"},
+               "stats": ["3", "22", "7.3", "0", "11", "4"]}
+            ]
+          }
+        ]
+      },
+      {
+        "team": {"id": "26", "abbreviation": "SEA"},
+        "statistics": [
+          {
+            "name": "receiving",
+            "keys": ["REC", "YDS", "AVG", "TD", "LONG", "TGTS"],
+            "labels": ["REC", "YDS", "AVG", "TD", "LONG", "TGTS"],
+            "athletes": [
+              {"athlete": {"id": "4241479", "displayName": "Odell Beckham Jr."},
+               "stats": ["4", "51", "12.8", "0", "19", "6"]}
+            ]
+          },
+          {
+            "name": "interceptions",
+            "keys": ["INT", "YDS", "TD"],
+            "labels": ["INT", "YDS", "TD"],
+            "athletes": []
+          }
+        ]
+      }
+    ]
+  },
+  "scoringPlays": [
+    {"type": {"abbreviation": "REC"},
+     "text": "Malik Nabers 22 Yd pass from Jayden Daniels (Kick good)",
+     "athlete": {"id": "4430807"}, "period": {"number": 2}},
+    {"type": {"abbreviation": "KR"},
+     "text": "Odell Beckham Jr. 98 Yd kickoff return (Kick good)",
+     "athlete": {"id": "4241479"}, "period": {"number": 3}},
+    {"type": {"abbreviation": "FG"},
+     "text": "38 Yd Field Goal", "period": {"number": 4}}
+  ]
+}

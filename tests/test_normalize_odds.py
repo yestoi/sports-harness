@@ -4,12 +4,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from harness.db.models import Game, OddsPropSnapshot, OddsSnapshot
+from harness.db.models import Game, OddsPropSnapshot, OddsSnapshot, Player
 from harness.matching.games import upsert_games_from_odds
 from harness.matching.teams import seed_teams_from_espn
 from harness.normalize.odds import (
     parse_odds_body, upsert_odds_rows, valid_dk_link, valid_sid,
 )
+from harness.normalize.players import upsert_players
 
 FIXD = Path(__file__).parent / "fixtures"
 FEAT = json.loads((FIXD / "odds_featured_nfl.json").read_text())
@@ -191,3 +192,42 @@ def test_re_normalizing_the_same_body_stores_nothing_new(db_session):
     upsert_odds_rows(db_session, "nfl", rows, raw_id=7, run_id=7, fetched_at=T0)
     again = upsert_odds_rows(db_session, "nfl", rows, raw_id=7, run_id=7, fetched_at=T0)
     assert again.inserted == 0
+
+
+ROSTERED = [("4430807", "Malik Nabers"), ("4431611", "Wan'Dale Robinson")]
+
+
+def test_a_prop_outcome_for_a_rostered_player_stores_its_player_id(db_session):
+    """Expected: `player_id` is the `players` row's id, not the ESPN athlete id.
+
+    Addendum §3.3: the outcome's `description` is matched to a player of the game's two teams.
+    Without this, `ix_odds_prop_lookup` (partial on `player_id is not null`) indexes nothing and
+    `newest_dk_prop_price` can never find a row (plan review CR-1).
+    """
+    game = _seed_game(db_session, "evt-1")
+    upsert_players(db_session, "nfl", team_id=17, rows=[
+        {"espn_id": eid, "name": name, "position": "WR"} for eid, name in ROSTERED], now=T0)
+    db_session.flush()
+    rows = parse_odds_body(COLLISION_BODY, "nfl")
+    result = upsert_odds_rows(db_session, "nfl", rows, raw_id=9, run_id=9, fetched_at=T0)
+    stored = db_session.query(OddsPropSnapshot).filter_by(game_id=game.id).all()
+    assert result.prop_unmatched == 0
+    assert all(row.player_id is not None for row in stored)
+    nabers = db_session.query(Player).filter_by(espn_id="4430807").one()
+    assert {row.player_id for row in stored if row.player_name == "Malik Nabers"} == {nabers.id}
+
+
+def test_an_ambiguous_or_absent_name_stores_null_and_is_counted(db_session):
+    """D14: ambiguity never picks. Two rostered players normalizing alike leave `player_id`
+    null and count `prop_unmatched`; the leg is then never built (§4.2)."""
+    _seed_game(db_session, "evt-1")
+    upsert_players(db_session, "nfl", team_id=17, rows=[
+        {"espn_id": "1", "name": "Malik Nabers", "position": "WR"},
+        {"espn_id": "2", "name": "Malik Nabers Jr.", "position": "WR"}], now=T0)
+    db_session.flush()
+    rows = parse_odds_body(COLLISION_BODY, "nfl")
+    result = upsert_odds_rows(db_session, "nfl", rows, raw_id=11, run_id=11, fetched_at=T0)
+    stored = db_session.query(OddsPropSnapshot).all()
+    assert result.prop_unmatched == 4          # two Nabers rows ambiguous, two Robinson absent
+    assert all(row.player_id is None for row in stored)
+    assert result.inserted == 4                # the rows are still stored, keyed by player_name

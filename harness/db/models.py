@@ -1061,6 +1061,44 @@ class ParlayLegProb(Base):
     book_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
 
 
+class Player(Base):
+    """One rostered player (addendum §4.2). Filled from ESPN's roster endpoint, once per team
+    per week, for the teams of the watched prop events. The box score's own athlete ids are the
+    live key; this table is what turns a prop outcome's `description` into one of them."""
+    __tablename__ = "players"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sport: Mapped[str] = mapped_column(String(8), nullable=False)
+    espn_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    team_id: Mapped[int | None] = mapped_column(Integer)
+    position: Mapped[str | None] = mapped_column(String(6))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (Index("uq_players_sport_espn", "sport", "espn_id", unique=True),)
+
+
+class PlayerStatEvent(Base):
+    """One *change* in a carded player's stat (addendum §4.3), the `game_score_events` rule.
+
+    ESPN's summary carries no per-stat timestamp and sequential polls of one endpoint return the
+    source's current state, so a later poll reporting a lower value is a correction, not an
+    out-of-order arrival: `correction = true` and `source_ts` stays null. The surface shows the
+    fetch age, never a zero.
+    """
+    __tablename__ = "player_stat_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stat: Mapped[str] = mapped_column(String(12), nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    source: Mapped[str] = mapped_column(String(12), nullable=False)
+    raw_id: Mapped[int | None] = mapped_column(BigInteger)
+    correction: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    __table_args__ = (Index("ix_player_stat_game_player_ts", "game_id", "player_id",
+                            desc("ts")),)
+
+
 # ---------------------------------------------------------------------------
 # Phase 5: the research layer (addendum §2). Ten additive tables and one view.
 #

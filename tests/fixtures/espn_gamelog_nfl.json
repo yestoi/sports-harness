@@ -1,0 +1,20 @@
+{
+  "names": ["completions", "passingAttempts", "passingYards", "passingTouchdowns",
+            "interceptions", "rushingAttempts", "rushingYards"],
+  "labels": ["CMP", "ATT", "YDS", "TD", "INT", "CAR", "RUSH YDS"],
+  "seasonTypes": [
+    {
+      "displayName": "2026 Regular Season",
+      "categories": [
+        {
+          "type": "event",
+          "events": [
+            {"eventId": "401772938", "stats": ["22", "31", "241", "2", "0", "8", "47"]},
+            {"eventId": "401772911", "stats": ["25", "34", "283", "1", "1", "5", "19"]},
+            {"eventId": "401772884", "stats": ["18", "29", "196", "0", "1", "11", "62"]}
+          ]
+        }
+      ]
+    }
+  ]
+}
