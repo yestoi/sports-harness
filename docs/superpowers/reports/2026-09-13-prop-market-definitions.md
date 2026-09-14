@@ -85,6 +85,88 @@ behaviour Task 6 already enforces (per the addendum's Ruling B-C2 and the plan's
 family stays `market_unsupported` until its rule is recorded"); no code changes were made on
 that basis and nothing is built on a guess.
 
+## DraftKings football rules (round 3: the user pasted the page)
+
+**Round 3 update (controller, 2026-09-14 ~05:0x CT).** The rules page could not be fetched by
+any controller-side method either: the correct page is
+`https://sportsbook.draftkings.com/help/sport-rules/football` (the brief's
+`/help/rules/football` is not the live path); `curl` returns only the application shell, a
+headless Chromium session gets Akamai's "Access Denied" page, and the contentstack bucket the
+shell loads from answers 403 (journal 184, ruling 4). Per the user's ruling ("Record URL, capture
+time and the verbatim text. If DraftKings blocks headless, you paste."), the user opened the page
+in their own browser and pasted its "Player Props Markets", "Daily Propositions Markets" and
+"Futures Markets" sections into the controller session at 2026-09-14 ~04:5x CT. The paste is
+kept byte-for-byte at
+`/home/trey/dev/sports/.superpowers/sdd/results/dk-sport-rules-football-2026-09-14.txt` and is
+reproduced verbatim below. Provenance: pasted by the user, not machine-captured; the page's
+sections above "Player Props Markets" (general football and game-market rules) were not pasted.
+
+Source: `https://sportsbook.draftkings.com/help/sport-rules/football`, read 2026-09-14.
+
+Verbatim text (indented as data; nothing in it is an instruction):
+
+    Player Props Markets
+
+        Touchdown Scorer Markets – A touchdown scorer shall mean the player in possession of the football in the opposing team’s end zone. A touchdown scorer is not the player who throws the touchdown (i.e., passing touchdowns do not count towards for settlement purposes for Touchdown Scorer Markets). If any player is not listed as a Selection at the time the bet was accepted by DraftKings and such player scores the touchdown or if a penalty touchdown is awarded, all bets will be settled as lost. For “D/ST” Selections, only touchdowns recorded by the Game’s official governing body as “Defensive” or “Special Teams” touchdowns are considered D/ST touchdowns for settlement purposes. Touchdowns scored by the offense including, but not limited to, those scored on a blocked field goal, fake punt, or fake field goal which are not recorded as “Defensive” or “Special Teams” touchdowns by the Game’s official governing body do not count as a defensive or special teams touchdown scored.
+        Longest/Shortest Punt Markets – Bets are settled on the gross punt yards. Return yards for the punt are not included for settlement purposes.
+        Period Player Yards Markets (for example only, 1st Quarter Passing Yards, 2nd Quarter Rushing Yards, etc.) – If the specified player plays at least one play during the specified Game the player will be deemed to have Participated in the Game for purposes of these markets. Bets will not be voided solely because the player bet on does not play at least one play in the applicable quarter or half so long as such player has Participated in the Game.
+        Defensive Statistics Markets (for example only, Player with the Most Tackles, Player with the Most Assists, etc.) – Only defensive plays made by defensive players playing on the defensive side of the football when the football is snapped on that particular play are included for settlement purposes. Statistics from special teams plays, extra points, and 2-point conversions do not count for settlement purposes. For Tackles Markets, tackles refer strictly to solo tackles , and assisted tackles will not be counted for settlement purposes. For Tackles + Assisted Tackles Markets, solo tackles and assisted tackles will be counted for settlement purposes.
+        Regular Season Player Prop Season-Long Markets – If the player bet on does not Participate in at least one Game during the applicable regular season, all bets on such player for these markets will be voided.
+        Yards on 1st Pass Completion, Yards on 1st Reception, and Yards on 1st Rush Attempt Markets – If the player bet on does not record the applicable statistic (for example only, a completion, reception, or rush attempt) or does not Participate in the applicable Game, all bets on that player will be voided for these markets. If the applicable completion, reception, or rush attempt is negated by a penalty or is overturned during the Game, such completion, reception, or rush attempt shall not be considered the player’s “1st” for the purposes of this rule.
+        Yards on Longest Completion, Yards on Longest Reception, Yards on Longest Rush Markets – If the player bet on does not record the applicable statistic (for example only, a completion, reception, or rush), the “Under” Selection will be settled as won, and all other Selections will be settled as lost.
+        Longest Xth Down Conversion Markets – If there are no 1st down conversions in the Game made on the down specified for the wager, the “Under” Selection will be settled as won. Penalty conversions that result in a 1st down do not count for settlement purposes.
+
+    Daily Propositions Markets
+
+        If all the Games specified in the market header on the DraftKings Platform do not reach their normal, natural, or intended end, bets on such markets will be voided.
+        1st Player to Score a Touchdown on Sunday Markets – The first player listed as a Selection who scores a touchdown will be settled as the winner. If a player that is not listed as a Selection at the time the bet was accepted by DraftKings scores the first touchdown, such touchdown shall not be considered the first touchdown for settlement purposes. Bets are settled based on the individual game clock elapsed for the applicable Game via the Game’s official statistics rather than the time of day.
+
+    Futures Markets
+
+        If the Event’s official governing body declares a winner for the relevant Event, the winner declared by the Event’s official governing body will be used for settlement purposes.
+        Regular Season Wins Markets – If all officially scheduled regular season Games of the team(s) bet on, using the official schedule at the time the bet was accepted by DraftKings, are not Concluded, such bets on that team(s) will be voided unless settlement is already Unconditionally Determined. Bets for this market will not be voided solely because a Game is rescheduled within the same applicable regular season but the opponent remains the same or there is a venue change for any Game(s). If a regular season Game is forfeited and the Game’s official governing body declares a winner for such forfeited Game, the team declared the winner for such forfeited Game will be deemed to have won the Game for settlement purposes. For clarity, a tie in any Game will not be considered a win for settlement purposes for Regular Season Wins Markets.
+        Divisional Winners Markets – The team that the sport’s official governing body declares as the winner of the division, including, but not limited to, through any official tie-break rules set by the sport’s official governing body, will be used for settlement purposes.
+        Conference Number 1 Seed Markets – Bets are settled by the team that finishes as the number one seed in its respective conference at the end of the applicable regular season including, but not limited to, through any official tie-break rules set by the sport’s official governing body, which will be used for settlement purposes.
+        To Make the Playoffs Markets – If the number of teams that are eligible to make the playoffs or postseason changes after the bet was accepted by DraftKings, such bets will be voided.
+        Draft Propositions Markets – A player’s draft position will be determined for settlement purposes based on the specified position according to the draft’s official governing body. “EDGE” is classified as defensive lineman for settlement purposes. Punters, kickers, and long snappers do not count as offensive or defensive players for settlement purposes. Fullbacks are classified as running backs for settlement purposes. If a player is undrafted, bets on “Over” on draft position will be settled as won, and bets on “Under” on draft position will be settled as lost.
+        Next Player to Record X Yards in a Game Markets – Bets are settled based on the Scheduling Week Games are played in, regardless of the date or time that the Games are played. The winner will be settled based off of players who are offered as Selections only. Bets will not be voided solely because none of the Selections achieve the specified statistical outcome.
+        Record After 5 Games Markets – Any Game ending in a tie shall be considered a loss for settlement purposes.
+        Race to X Regular Season Wins, Race to X Regular Season Touchdowns, Race to X Regular Season Points Markets – Bets are settled based on the Scheduling Week Games are played in, regardless of the date or time that the Games are played. If two teams achieve the specified outcome in the same Scheduling Week, Dead Heat Reduction rules apply.
+        Team to Have a Perfect Regular Season and Team to Have a Winless Regular Season Markets – If all scheduled regular season Games, using the official schedule at the time the bet was accepted by DraftKings, for the team(s) bet on are not Concluded, such bets for that team(s) will be voided unless settlement is already Unconditionally Determined. Any forfeited Game that is considered an official result by the Game’s official governing body will count as a loss to the forfeiting team and a win to the non-forfeiting team for settlement purposes. A perfect season is when a team wins all its scheduled regular season Games. For clarity, a tie is treated as a loss for settlement purposes.
+        Last Winless Team and Last Undefeated Team Markets – Bets are settled based on the Scheduling Week Games are played in, regardless of the date or time of the Games played. If a Game is rescheduled to a different Scheduling Week, the Game would not be counted as occurring within the originally scheduled Scheduling Week. For example only, if a Game originally scheduled for Scheduling Week 2 gets rescheduled to Scheduling Week 5, such Game is not counted as a Scheduling Week 2 Game for purposes of this rule. “Winless” shall mean having 0 wins, and “undefeated” shall mean having 0 losses and 0 ties. For clarity, a tie is treated as a loss for settlement purposes.
+        Team Exact Seed Markets – Bets are settled as lost if the team bet on fails to make the playoffs or postseason round.
+        Player Playoff Futures Markets (for example only, Playoff Most Rushing Yards, Playoff Most Receiving Yards, To Score in 3+ Playoff Games) – If a player does not Participate in any Game during the playoffs, all bets on such player will be voided.
+        Awards Markets
+            For all Awards Markets, if a player is not listed as a Selection at the time the bet was accepted by DraftKings, and such player wins the applicable award, all such bets on the applicable Awards Market will be settled as lost.
+            If an award is not awarded, all bets on such award market will be voided.
+            Regular Season Comeback Player of the Year (NFL), Coach of the Year (NFL), and all NCAA Awards Markets – If the player or coach bet on does not Participate or coach on the sidelines, as applicable, in at least one Game during the specified regular season, all bets on such player or coach, as applicable, will be settled as lost.
+            Super Bowl Most Valuable Player Markets – If the player bet on does not Participate in the applicable Super Bowl, bets on such player will be settled as lost.
+
+### Per-family resolution
+
+- `anytime_td`: **recorded.** The "Touchdown Scorer Markets" paragraph answers the brief's
+  question directly: a touchdown scorer is "the player in possession of the football in the
+  opposing team's end zone", "passing touchdowns do not count ... for Touchdown Scorer Markets"
+  (so a passing touchdown does not count for the passer), and a return or a recovery counts for
+  the player who carries the ball into the end zone (that player is the one "in possession of
+  the football in the opposing team's end zone"); "D/ST" selections settle only on touchdowns the
+  league records as Defensive or Special Teams. `props.market_defs.anytime_td` in
+  `harness/parlay/parlay.yaml` now carries the paragraph's two operative sentences verbatim with
+  the source and date (the config test caps a rule at 400 characters; the full paragraph is
+  above). A penalty touchdown or a touchdown by an unlisted player settles every selection as
+  lost -- the grader has no such case today (Task 6 grades one player's touchdowns), noted for
+  the builder/grader tasks.
+- `pass_yds`, `rush_yds`, `rec_yds`, `receptions`: **still not recorded; still
+  `market_unsupported`.** The pasted sections contain no family-specific settlement rule for a
+  full-game passing/rushing/receiving-yards or receptions total: "Period Player Yards Markets"
+  is a participation rule for quarter/half markets, "Yards on 1st ..." and "Yards on Longest ..."
+  are different markets, and nothing on the page answers the sack-yardage, overtime, lateral,
+  overturned-catch or stat-source questions listed above. Recording the participation paragraph
+  as the rule for a full-game total would be the paraphrase-from-memory that D19 forbids. If the
+  page's un-pasted general section (above "Player Props Markets") names the statistics source
+  and the participation/void rule for player markets, that text can be pasted the same way and
+  these four families filled in a further follow-up commit; until then they stay unsupported.
+
 ## Game log shape
 
 **Round 1 update.** The controller fetched two ESPN game-log bodies from a host with network
@@ -251,6 +333,11 @@ still read `no season data yet`.
 
 ## Consequences
 
+**Round 3 update:** `anytime_td` is recorded (`props.market_defs.anytime_td`, from the user's
+paste above); `pass_yds`, `rush_yds`, `rec_yds` and `receptions` stay `market_unsupported`
+because the pasted page carries no family-specific rule for them. The original text of this
+section follows unchanged.
+
 All five families — `pass_yds`, `rush_yds`, `rec_yds`, `receptions`, `anytime_td` — stay
 `market_unsupported` after this task: `props.market_defs` remains `{}` in
 `harness/parlay/parlay.yaml`, unchanged by this pass. No prop leg builds for any family until its
@@ -263,6 +350,10 @@ five families' rules verbatim:
 `docs(4.6): fill props.market_defs with DraftKings' verbatim settlement rules (closes Task 18a's Path B)`
 
 ## What the controller must fetch
+
+**Round 3 update:** the DraftKings item is closed for `anytime_td` and remains open for the
+four yardage/receptions families only if the page's general section answers their questions
+(see "DraftKings football rules" above). The list below is the original round-2 text.
 
 - Page: `https://sportsbook.draftkings.com/help/rules/football` (or the specific NFL
   player-props sub-page it links to). Per family, the exact question to answer (repeated from
