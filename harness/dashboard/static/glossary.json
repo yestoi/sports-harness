@@ -376,5 +376,29 @@
     "plain": "a partial story",
     "what": "A decision story row inserted when a per-game read cap bound before every record was read, so some older rows on this game are missing from the story shown here.",
     "why": "A story that looked complete but was not would be worse than one that visibly says so; this is the row -- and the detail-header note beside it -- that keeps a capped read from being presented as the whole of it."
+  },
+  "replacement pending": {
+    "term": "replacement pending",
+    "plain": "a replacement is being built",
+    "what": "The state a shape is in after its draft was declined: the builder has been asked for one more card of the same shape and it lands within the hour.",
+    "why": "It says the empty slot is temporary and that the decline did something, rather than leaving the shape silent until the next build."
+  },
+  "expected return": {
+    "term": "expected return",
+    "plain": "expected return",
+    "what": "What the recorded stake and the recorded odds multiply out to once every leg has hit, while DraftKings has not settled the slip yet.",
+    "why": "It is the harness's own arithmetic and is shown beside, never inside, the figure the owner confirms off their slip, so the two kinds of fact stay apart."
+  },
+  "confirmed return": {
+    "term": "confirmed return",
+    "plain": "confirmed return",
+    "what": "The amount the owner typed off their settled DraftKings slip and recorded as a correction; it is what stamps a card CASHED.",
+    "why": "The harness has no sportsbook account to read, so what a book actually paid is only ever stated from a figure the owner confirmed."
+  },
+  "hung leg": {
+    "term": "hung leg",
+    "plain": "a leg with no final stat",
+    "what": "A leg whose game has gone final but whose deciding stat never arrived from the feed, so it can be graded neither hit nor missed.",
+    "why": "It keeps a stalled leg visibly stalled instead of letting it read as if the game had not started, and Pulse watches for a card left that way."
   }
 }
