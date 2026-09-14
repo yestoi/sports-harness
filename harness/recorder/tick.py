@@ -212,6 +212,11 @@ def _pricing_samples(session: Session, run_id: int, pricing: dict) -> list[tuple
             samples.append(("pricing.staleness_median_s", float(median_staleness), label))
     for variant, counts in (pricing or {}).get("signals", {}).items():
         samples.append(("pricing.candidates", counts.get("candidate", 0), {"variant": variant}))
+    # 6D §1.5(b): the bridge series across the measurement boundary. `pricing.rejected` below
+    # counts what was *stored*; this counts what stage 6 no longer stores, so the two together
+    # reconstruct the pre-deploy quantity for any window that straddles the deploy instant.
+    for variant, suppressed in ((pricing or {}).get("rescore_suppressed") or {}).items():
+        samples.append(("pricing.rescore_suppressed", suppressed, {"variant": variant}))
     for variant, reason, count in session.execute(
             _REJECTED_BY_VARIANT_REASON, {"run_id": run_id}).all():
         samples.append(("pricing.rejected", count, {"variant": variant, "reason": reason}))

@@ -170,6 +170,14 @@ def _fair_rows(session, run_id):
         for row in session.query(FairValue).filter_by(run_id=run_id)}
 
 
+def _candidate_rows(session, run_id):
+    """The parity population after D12: `decision = 'candidate'` rows, with every field
+    `_signal_rows` already compares -- `edge`, `stake`, `contracts`, `labels`, the prices and
+    the reasons among them."""
+    return {key: row for key, row in _signal_rows(session, run_id).items()
+            if row["decision"] == "candidate"}
+
+
 @pytest.mark.parametrize("gate", ["sharp_direct", "sharp_two_sided", "sharp_plus_derived"])
 def test_the_stage_order_produces_exactly_what_the_single_pass_produced(
         env_settings, db_session, monkeypatch, gate):
@@ -208,12 +216,33 @@ def test_the_stage_order_produces_exactly_what_the_single_pass_produced(
     new = price_and_signal(db_session, new_run.id, NOW, env_settings, budget_s=600)
 
     assert new["budget_exhausted"] is False
-    for key in ("fair_direct", "fair_derived", "no_sharp", "gaps", "order", "signals"):
+    for key in ("fair_direct", "fair_derived", "no_sharp", "gaps", "order"):
         assert new[key] == old[key], key
 
+    # D12 amends fix 48's parity contract. What remains identical is what made the reorder
+    # scientifically safe: no candidate, price, size, label or order moves.
     assert _fair_rows(db_session, new_run.id) == _fair_rows(db_session, old_run.id)
     assert _gap_rows(db_session, new_run.id) == _gap_rows(db_session, old_run.id)
-    assert _signal_rows(db_session, new_run.id) == _signal_rows(db_session, old_run.id)
+    assert _candidate_rows(db_session, new_run.id) == _candidate_rows(db_session, old_run.id)
+    assert ({name: counts["candidate"] for name, counts in new["signals"].items()}
+            == {name: counts["candidate"] for name, counts in old["signals"].items()})
+
+    # ... and what changed is asserted separately, against the suppressed set the pipeline
+    # recorded. Per variant and in total: the rows the new run did not store are exactly the
+    # derived-row rejections of the direct-only variants, and it stored nothing the old run
+    # did not.
+    old_rows = _signal_rows(db_session, old_run.id)
+    new_rows = _signal_rows(db_session, new_run.id)
+    assert set(new_rows) - set(old_rows) == set()
+    missing = set(old_rows) - set(new_rows)
+    assert all(old_rows[key]["decision"] == "rejected" for key in missing)
+    names = {v.variant_id: v.name for v in active_variants(db_session)}
+    by_variant = {}
+    for variant_id, _market_id, _side in missing:
+        by_variant[names[variant_id]] = by_variant.get(names[variant_id], 0) + 1
+    assert by_variant == new["rescore_suppressed"]
+    assert sum(by_variant.values()) == sum(new["rescore_suppressed"].values())
+    assert (len(old_rows) - len(new_rows)) == sum(new["rescore_suppressed"].values())
 
 
 def test_every_stage_records_what_it_cost(env_settings, db_session, monkeypatch):
@@ -286,6 +315,77 @@ def test_a_budget_that_dies_after_the_direct_variants_still_scored_the_gate_and_
     by_name = {s["name"]: s for s in result["stages"]}
     assert [by_name[n]["status"] for n in STAGE_NAMES] == [
         "ran", "ran", "ran", "skipped", "skipped", "skipped"]
+    assert [by_name[n]["cause"] for n in ("fair_derived", "gaps_derived", "variants_derived")] == [
+        "budget", "budget", "budget"]
+    assert by_name["variants_direct"]["units"] > 0
+
+
+def test_a_suppressed_direct_only_variant_is_marked_complete(env_settings, db_session):
+    """Ruling I10. `record_order` computes `variants_partial` as `scored - complete`, and it is
+    today's stage-6 `full=True` pass that moves the six direct-only variants out of it: stage 3
+    scores with `full=direct_complete`, and `direct_complete` is False whenever any quoted
+    matched market has no direct fair (`no_sharp: 2140` in production). So the branch that
+    suppresses a direct-only variant marks it complete in the same place -- its direct universe
+    **is** its full universe -- and `variants_partial` stays empty.
+
+    Computed independently of the code: the fixture seeds a market whose shape no fair value is
+    ever produced for (`_vm(..., "draw")`), so `direct_complete` is False, and every registered
+    variant but `sharp_plus_derived` is direct-only.
+    """
+    game, markets = _seed(db_session)
+    register_variants(db_session, load_variants(PROD_VARIANTS), NOW, prune=True)
+    run = _seed_run(db_session, game, markets, NOW)
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=600)
+
+    direct_only = [v.name for v in active_variants(db_session) if not consumes_derived(v)]
+    assert result["variants_partial"] == []
+    assert sorted(result["variants_run"]) == sorted(v.name for v in active_variants(db_session))
+    assert set(result["rescore_suppressed"]) <= set(direct_only)
+
+
+def test_nothing_is_re_scored_when_the_derived_phase_adds_no_rows(env_settings, db_session):
+    """The control case: stage 5 adds nothing, so there is nothing to suppress and
+    `rescore_suppressed` is empty. `cause` says why the stage did no work, which is the
+    distinction `status: skipped` alone could not make (§1.5(a))."""
+    game, markets = _seed(db_session)
+    direct_markets = [m for m in markets if m.market_type == "moneyline"]
+    register_variants(db_session, load_variants(PROD_VARIANTS), NOW, prune=True)
+    run = _seed_run(db_session, game, direct_markets, NOW)
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=600)
+
+    assert result["rescore_suppressed"] == {}
+    stage = {s["name"]: s for s in result["stages"]}["variants_derived"]
+    assert stage["cause"] in (None, "nothing_to_do")
+
+
+def test_every_stage_entry_carries_units_remaining_and_cause(env_settings, db_session):
+    """§1.5(a): ms alone cannot separate an expensive stage from a busy one, and a skipped stage
+    with no cause beyond "budget" cannot be told from one with nothing to do.
+
+    Computed independently: with budget to spare all six stages run, so every `cause` is null
+    and every `remaining_ms` is positive; `units` is the work each stage did -- fair rows, gap
+    rows, or scored (variant, row) pairs -- so the three variant stages' units are multiples of
+    the gap-row count and the two fair stages' units match `fair_direct`/`fair_derived`.
+    """
+    game, markets = _seed(db_session)
+    register_variants(db_session, load_variants(PROD_VARIANTS), NOW, prune=True)
+    run = _seed_run(db_session, game, markets, NOW)
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=600)
+
+    stages = {s["name"]: s for s in result["stages"]}
+    assert [s["name"] for s in result["stages"]] == list(STAGE_NAMES)
+    for entry in result["stages"]:
+        assert set(entry) == {"name", "elapsed_ms", "status", "units", "remaining_ms", "cause"}
+        assert isinstance(entry["units"], int) and entry["units"] >= 0
+        assert isinstance(entry["remaining_ms"], int)
+        assert entry["cause"] is None
+    assert stages["fair_direct"]["units"] == result["fair_direct"]
+    assert stages["fair_derived"]["units"] == result["fair_derived"]
+    assert stages["gaps_direct"]["units"] + stages["gaps_derived"]["units"] == result["gaps"]
+    assert result["variant_ms_rescore"].keys() <= result["variant_ms"].keys()
 
 
 def test_the_second_gap_call_never_duplicates_the_first_ones_rows(env_settings, db_session):

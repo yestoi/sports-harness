@@ -18,8 +18,11 @@ is recorded in `notes->'pricing'->'stages'`.
                            including either priority variant when it also consumes derived rows.
   4. `fair_derived`     -- the margin-model fair values for the shapes with no sharp line.
   5. `gaps_derived`     -- gap snapshots for the markets the first call left alone.
-  6. `variants_derived` -- the derived consumers, plus a second scoring of the direct-only
-                           variants over the rows stage 5 added (see `_score`).
+  6. `variants_derived` -- the derived consumers only. Until the 6D deploy this stage also
+                           re-scored every direct-only variant over the rows stage 5 added;
+                           that pass could add no candidate and only stored rejections, so it
+                           was removed (6D addendum §0.8, decision D4) and the rows it no longer
+                           stores are counted in `rescore_suppressed` (`RESCORE_BOUNDARY_NOTE`).
 
 Until 2026-09-12 stage 1 computed direct *and* derived fair values before anything else, and on
 the NAS that alone spent the whole 45 s budget: 172 consecutive runs recorded
@@ -43,7 +46,7 @@ from harness.ops import coverage
 from harness.pricing.fair import compute_derived_fair_values, compute_direct_fair_values
 from harness.pricing.gaps import build_gap_snapshots
 from harness.strategy.as_measured import as_measured_table
-from harness.strategy.run import GapRow, run_strategy
+from harness.strategy.run import GapRow, run_strategy, sides_for
 from harness.strategy.variants import Variant, active_variants
 
 #: Rows per INSERT statement in `_insert_signals`. A signal binds 21 parameters, and
@@ -189,6 +192,18 @@ def pricing_order(variants: list[Variant], gate_variant_name: str,
 STAGE_NAMES = ("fair_direct", "gaps_direct", "variants_direct",
                "fair_derived", "gaps_derived", "variants_derived")
 
+#: Ruling I11. Stage 6 stopped storing the direct-only variants' derived-row rejections at the
+#: 6D deploy, so every series built on the *stored rejected* population steps at that instant:
+#: `pricing.rejected{variant,reason}` (`harness/recorder/tick.py:188-193`), the weekly report's
+#: t12 rejection tables, Floor's `rejected` sum and fix 55's 54,435-a-day number. The instant is
+#: journaled with the deploy, printed on t14 and pinned in verify.md, and `rescore_suppressed`
+#: is the bridge across it. No reader compares across the boundary silently.
+RESCORE_BOUNDARY_NOTE = (
+    "rejected-signal counts step at the 6D deploy instant: stage 6 no longer stores a "
+    "direct-only variant's derived-row rejections (addendum 0.8, D4). "
+    "notes->'pricing'->'rescore_suppressed' is the bridge across that boundary."
+)
+
 #: Stage timing reads this clock, never `time.monotonic`. The budget's deadline is on
 #: `time.monotonic` and Amendment 4's ordering test drives it with a counter that returns the
 #: call number, so every extra read of that clock would move the budget in a test that is
@@ -208,21 +223,55 @@ def consumes_derived(variant: Variant) -> bool:
 
 
 class _Stages:
-    """`notes->'pricing'->'stages'`: what each stage cost and whether it ran at all.
+    """`notes->'pricing'->'stages'`: what each stage cost, what it cost it *on*, what budget it
+    started with, and why it did not run when it did not.
 
     A cost is only useful next to the thing it was spent instead of, which is why a skipped
-    stage still gets an entry. "skipped" here always means the budget was gone before the stage
-    started; a stage that ran and had nothing to do is "ran" with a small number.
+    stage still gets an entry. 6D §1.5(a) adds the three things the entry lacked: `units` (fair
+    rows, gap rows, or scored (variant, row) pairs -- ms alone cannot separate an expensive
+    stage from a busy one), `remaining_ms` (the deadline minus the clock at the stage's start,
+    so the budget is accounted for at the boundary where it is spent) and `cause` (`budget` or
+    `nothing_to_do`: "skipped" alone could not tell a stage the deadline killed from one that
+    had nothing to do).
+
+    `cause` is written in exactly two places, and never twice for the same stage. `skip` writes
+    it onto a stage that **never started** -- guarded on `status == "skipped"`, so it can never
+    overwrite a measurement. `record` takes it for a stage that **did** start and did not do all
+    the work it might have: `nothing_to_do` when there was none, `budget` when the deadline
+    stopped it partway. Both are written by the single `record` call that closes the stage, so
+    `status: "ran"` with a `cause` reads "ran, and here is why it stopped", and
+    `status: "skipped"` with a `cause` reads "never started, and why". A stage that ran to the
+    end carries `cause: None`, `units = 0` included.
     """
 
     def __init__(self) -> None:
         self._entries: dict[str, dict] = {
-            name: {"name": name, "elapsed_ms": 0, "status": "skipped"} for name in STAGE_NAMES}
+            name: {"name": name, "elapsed_ms": 0, "status": "skipped", "units": 0,
+                   "remaining_ms": 0, "cause": None} for name in STAGE_NAMES}
 
-    def record(self, name: str, started: float) -> None:
+    def start(self, name: str, remaining_ms: int) -> float:
+        """Open a stage: record the budget it starts with and return its clock reading."""
+        self._entries[name]["remaining_ms"] = remaining_ms
+        return _stage_clock()
+
+    def record(self, name: str, started: float, units: int = 0,
+               cause: str | None = None) -> None:
+        """Close a stage that ran. `cause` is `nothing_to_do` when the stage started and had no
+        work, `budget` when the deadline stopped it partway, and None when it ran to the end --
+        one call, so the entry is never written twice."""
         entry = self._entries[name]
         entry["elapsed_ms"] = int((_stage_clock() - started) * 1000)
         entry["status"] = "ran"
+        entry["units"] = int(units)
+        entry["cause"] = cause
+
+    def skip(self, *names: str, cause: str) -> None:
+        """Why the stages that did not run did not run. A stage that already ran is left
+        alone, so a `cause` never overwrites a measurement."""
+        for name in names:
+            entry = self._entries[name]
+            if entry["status"] == "skipped":
+                entry["cause"] = cause
 
     def as_list(self) -> list[dict]:
         return [self._entries[name] for name in STAGE_NAMES]
@@ -230,9 +279,18 @@ class _Stages:
 
 def price_and_signal(session: Session, run_id: int, now: datetime, settings: Settings, budget_s: float) -> dict:
     deadline = time.monotonic() + budget_s
+    #: The most recent reading of the budget clock. `ok()` takes one every time it is called
+    #: and every stage boundary calls it, so `remaining_ms` costs no additional read -- which
+    #: matters because `test_a_budget_that_dies_after_the_direct_variants_still_scored_the_gate
+    #: _and_the_primary` counts the calls.
+    clock = {"mono": deadline - budget_s}
 
     def ok() -> bool:
-        return time.monotonic() < deadline
+        clock["mono"] = time.monotonic()
+        return clock["mono"] < deadline
+
+    def remaining_ms() -> int:
+        return int((deadline - clock["mono"]) * 1000)
 
     stages = _Stages()
     result = {
@@ -251,6 +309,11 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         "variants_partial": [],
         "no_sharp_skipped": True,
         "variant_ms": {},
+        #: §1.5(a): the second pass's own time, per variant, no longer summed into `variant_ms`.
+        "variant_ms_rescore": {},
+        #: §1.5(b): the rejected rows stage 6 no longer stores, per direct-only variant. The
+        #: bridge across the measurement boundary (`RESCORE_BOUNDARY_NOTE`, ruling I11).
+        "rescore_suppressed": {},
         "order": [],
         "gate_variant_missing": False,
         "gate_variant_id": None,
@@ -264,9 +327,9 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # Stage 1 always runs, even with no budget left, so direct fair values keep advancing every
     # tick. Unlike the single pass this replaces, it is the cheap half: 190 direct rows against
     # 3,079 derived ones on the NAS slate that stalled on 2026-09-11.
-    t0 = _stage_clock()
+    t0 = stages.start("fair_direct", remaining_ms())
     direct = compute_direct_fair_values(session, run_id, now, settings)
-    stages.record("fair_direct", t0)
+    stages.record("fair_direct", t0, units=direct.counts.direct)
     result["fair_direct"] = direct.counts.direct
     result["fair_errors"] = direct.counts.errors
     errored_game_ids = direct.counts.errored_game_ids
@@ -274,24 +337,26 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     if not ok():
         result["budget_exhausted"] = True
         result["fair_derived_skipped"] = True
+        stages.skip(*STAGE_NAMES[1:], cause="budget")
         return finish()
 
     market_order: list[int] = []
-    t0 = _stage_clock()
+    t0 = stages.start("gaps_direct", remaining_ms())
     result["gaps"] = build_gap_snapshots(
         session, run_id, now, tz=settings.tz_local, errored_game_ids=errored_game_ids,
         phase="direct", market_order=market_order)
-    stages.record("gaps_direct", t0)
+    stages.record("gaps_direct", t0, units=result["gaps"])
 
     if not ok():
         result["budget_exhausted"] = True
         result["fair_derived_skipped"] = True
+        stages.skip(*STAGE_NAMES[2:], cause="budget")
         return finish()
 
     # A registry with no active variant scores nothing, but it still prices: stages 4 and 5 run
     # below on an empty `ordered`, so the fair values and gap snapshots a later tick (or a
     # backfill) reads keep being written.
-    t0 = _stage_clock()
+    t0 = stages.start("variants_direct", remaining_ms())
     variants = active_variants(session)
     as_measured: dict | None = None
     stopped: set = set()
@@ -346,10 +411,13 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         result["variants_skipped"] = [v.name for v in ordered if v.name not in scored]
         result["variants_partial"] = [v.name for v in ordered if v.name in scored - complete]
 
-    def score(variant: Variant, rows: list[GapRow], *, full: bool = False) -> None:
+    def score(variant: Variant, rows: list[GapRow], *, full: bool = False,
+              rescore: bool = False) -> int:
         """Persist scoring over the available universe, then reconcile a mixed-source priority
         variant when the full universe exists. Direct-only rows retain their original IDs.
         `variants_partial` distinguishes any scoring from a complete market evaluation.
+
+        Answers the number of rows it scored, which is the stage's unit count (§1.5(a)).
         """
         t_variant = time.monotonic()
         signals = run_strategy(rows, variant, now, as_measured=as_measured,
@@ -360,17 +428,24 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         session.commit()
         result["signals"][variant.name] = {"candidate": candidate,
                                            "rejected": len(signals) - candidate}
+        elapsed_ms = int((time.monotonic() - t_variant) * 1000)
+        # §1.5(a): `variant_ms` summed a variant scored twice into one number, which is the one
+        # question it exists to answer. The second pass keeps its own map.
+        if rescore:
+            result["variant_ms_rescore"][variant.name] = (
+                result["variant_ms_rescore"].get(variant.name, 0) + elapsed_ms)
+        result["variant_ms"][variant.name] = (
+            result["variant_ms"].get(variant.name, 0) + elapsed_ms)
         # 6D §1.1: what this variant actually said about each market. A rejection on `has_fair`
         # is a market with no fair value at all (§0.12), which is a coverage fact rather than a
         # strategy one; every other row -- candidate or rejected -- is a completed evaluation.
         for signal in signals:
             coverage_outcomes[(variant.variant_id, signal.venue_market_id)] = (
                 "no_fair" if signal.rejection_reason == "has_fair" else "completed")
-        result["variant_ms"][variant.name] = (
-            result["variant_ms"].get(variant.name, 0) + int((time.monotonic() - t_variant) * 1000))
         scored.add(variant.name)
         if full:
             complete.add(variant.name)
+        return len(rows)
 
     priority = [v for v in ordered if not consumes_derived(v)
                 or v.name == settings.gate_variant or v.tier == "primary"]
@@ -396,25 +471,28 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         # "Scheduled before the work" has to mean durable before the work.
         session.commit()
 
+    direct_units = 0
     for variant in priority:
         if not ok():
             result["budget_exhausted"] = True
-            stages.record("variants_direct", t0)
+            stages.record("variants_direct", t0, units=direct_units)
+            stages.skip(*STAGE_NAMES[3:], cause="budget")
             record_order()
             result["fair_derived_skipped"] = True
             return finish()
-        score(variant, direct_rows, full=direct_complete)
-    stages.record("variants_direct", t0)
+        direct_units += score(variant, direct_rows, full=direct_complete)
+    stages.record("variants_direct", t0, units=direct_units)
     record_order()
 
     if not ok():
         result["budget_exhausted"] = True
         result["fair_derived_skipped"] = True
+        stages.skip(*STAGE_NAMES[3:], cause="budget")
         return finish()
 
-    t0 = _stage_clock()
+    t0 = stages.start("fair_derived", remaining_ms())
     derived_counts = compute_derived_fair_values(session, direct.pending, run_id, now, settings)
-    stages.record("fair_derived", t0)
+    stages.record("fair_derived", t0, units=derived_counts.derived)
     result["fair_derived"] = derived_counts.derived
     result["no_sharp"] = derived_counts.no_sharp
     result["no_sharp_skipped"] = False
@@ -423,34 +501,69 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
 
     if not ok():
         result["budget_exhausted"] = True
+        stages.skip(*STAGE_NAMES[4:], cause="budget")
         return finish()
 
-    t0 = _stage_clock()
+    t0 = stages.start("gaps_derived", remaining_ms())
     new_gaps = build_gap_snapshots(
         session, run_id, now, tz=settings.tz_local, errored_game_ids=errored_game_ids,
         phase="derived")
-    stages.record("gaps_derived", t0)
+    stages.record("gaps_derived", t0, units=new_gaps)
     result["gaps"] += new_gaps
 
     if not ok():
         result["budget_exhausted"] = True
+        stages.skip("variants_derived", cause="budget")
         record_order()
         return finish()
 
-    # Stage 6 scores every variant over the complete row set, which is exactly what the single
-    # pass did. A direct-only variant already scored in stage 3 is re-scored only when stage 5
-    # actually added rows; when it added none, stage 3 already saw the whole set and a second
-    # pass could not produce a row it has not produced.
-    t0 = _stage_clock()
+    # Stage 6 scores the derived consumers over the complete row set. It no longer re-scores a
+    # direct-only variant over the rows stage 5 added (6D §0.8, §1.5(b), decision D4): a variant
+    # whose `sources_allowed` is `[direct]` rejects every derived row on `source_allowed` -- or
+    # earlier, on `has_fair`, for the rows carrying no fair value at all -- because `_decide`
+    # walks `LABEL_ORDER` with `has_fair` and `source_allowed` first, and only a `candidate`
+    # decision mutates `StrategyState`. So the second pass could add no candidate and consume no
+    # cap; it added only rejected rows, and on run 14307 it cost 8,866 ms against 783 ms for the
+    # direct pass. The rows it no longer stores are counted in `rescore_suppressed`, so the
+    # population change is visible rather than silent, and the deploy instant is a labelled
+    # measurement boundary for every series built on the stored rejected population
+    # (RESCORE_BOUNDARY_NOTE, ruling I11).
+    t0 = stages.start("variants_derived", remaining_ms())
     all_rows = _load_gap_rows(session, run_id, market_order) if new_gaps else direct_rows
+    rescore_units = 0
+    rescored_any = False
     for variant in ordered:
-        if not consumes_derived(variant) and not new_gaps:
+        if not consumes_derived(variant):
+            if variant.name in scored:
+                # Its direct universe is its full universe, so it is complete (ruling I10):
+                # `record_order` computes `variants_partial` as `scored - complete`, and it was
+                # this pass that moved the gate and the primary out of it.
+                complete.add(variant.name)
+                # Signal *rows*, not gap rows: `run_strategy` emits one signal per (row, side)
+                # and the second pass stored every one of them, so a two-sided variant --
+                # `sharp_two_sided`, the production gate variant -- suppressed two rows per gap
+                # row. `pricing.rejected` counts stored signal rows, and this number is only a
+                # bridge across the boundary if it is counted in the same unit.
+                suppressed = (len(all_rows) - len(direct_rows)) * len(sides_for(variant.config))
+                if suppressed:
+                    result["rescore_suppressed"][variant.name] = suppressed
             continue
         if not ok():
+            # No `stages.skip` here: this stage started, so `record` below closes it with
+            # `cause="budget"`. A `skip` call would be a no-op the moment `record` runs, which
+            # is the contradiction `_Stages`'s cause rule exists to prevent.
             result["budget_exhausted"] = True
             break
-        score(variant, all_rows, full=True)
-    stages.record("variants_derived", t0)
+        rescored_any = True
+        rescore_units += score(variant, all_rows, full=True, rescore=True)
+    # `_Stages`'s cause rule, in the one call that closes this stage. The stage started, so its
+    # status is `ran` whichever branch got here, and `cause` says why it stopped: `budget` when
+    # the loop broke on the deadline (`result["budget_exhausted"]` is False on entry to stage 6
+    # -- an earlier exhaustion returns before this stage), `nothing_to_do` when no derived
+    # consumer was left to score, and None when it re-scored everything it had.
+    stages.record("variants_derived", t0, units=rescore_units,
+                  cause="budget" if result["budget_exhausted"]
+                  else (None if rescored_any else "nothing_to_do"))
     record_order()
 
     # 6D §1.1: the completion rows for exactly the units scheduled above. `gapped` is the

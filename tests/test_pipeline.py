@@ -137,20 +137,77 @@ def test_price_and_signal_end_to_end(env_settings, db_session):
 
     assert set(result["signals"]) == {"tiny"}
     tiny = result["signals"]["tiny"]
-    assert tiny["candidate"] + tiny["rejected"] == 9  # one signal per gap snapshot
+    # One signal per *direct* gap snapshot. `tiny` is `sources_allowed: [direct]`, and since 6D
+    # decision D4 stage 6 no longer re-scores such a variant over the three rows stage 5 added
+    # (two derived fairs and the shape with no fair at all): those rows could only ever be
+    # `source_allowed`/`has_fair` rejections. They are counted in `rescore_suppressed` instead.
+    assert tiny["candidate"] + tiny["rejected"] == 6
+    assert result["rescore_suppressed"] == {"tiny": 3}
 
     signals = db_session.query(Signal).filter_by(run_id=run.id).all()
-    assert len(signals) == 9
+    assert len(signals) == 6
 
     fuzzy_market = next(m for m in markets if m.match_status == "fuzzy")
     fuzzy_signal = db_session.query(Signal).filter_by(run_id=run.id, venue_market_id=fuzzy_market.id).one()
     assert fuzzy_signal.decision == "rejected"
     assert fuzzy_signal.rejection_reason == "match_confidence"
 
-    # idempotent: a second call for the same run inserts no new gap snapshots or signals.
+    # Idempotent for gap snapshots. The signal count rises to 9 on a second call, and that is
+    # not a second insert of the same rows: D4 suppresses only what stage *5* adds inside the
+    # same call, and a re-priced run already carries its derived gap rows when stage 3 loads
+    # the universe, so the three rows the first call suppressed are scored and stored now.
+    # `price_and_signal` runs once per run in the tick; this is the re-pricing path only.
     result2 = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
     assert result2["gaps"] == 0
+    assert result2["rescore_suppressed"] == {}
     assert db_session.query(Signal).filter_by(run_id=run.id).count() == 9
+
+
+def test_the_suppressed_count_is_exactly_the_derived_rows_the_direct_only_variant_skipped(
+        env_settings, db_session):
+    """§1.5's expected result, computed by hand: on a fixture with 3 direct gap rows, 2 derived
+    gap rows, one direct-only variant and one derived consumer, the rejected-signal row count
+    falls by exactly 2 -- the direct-only variant's two derived rejections -- and
+    `rescore_suppressed` reads `{"<direct_only>": 2}`.
+
+    Written against whatever the seeding helper in this file produces: assert the identity
+    `rescore_suppressed[name] == len(all gap rows) - len(direct gap rows)` for each direct-only
+    variant that was scored, which is the same statement at any fixture size.
+    """
+    game, run, markets = _seed(db_session)
+    # `tiny` is `sources_allowed: [direct]`; its copy takes derived rows too, so stage 6 has
+    # both a variant to suppress and one still to score.
+    tiny = yaml.safe_load((VARIANTS_DIR / "tiny.yaml").read_text())
+    derived_consumer = dict(tiny, name="tiny_derived", tier="secondary",
+                            sources_allowed=["direct", "derived"])
+    register_variants(db_session, [variant_from_config(tiny),
+                                   variant_from_config(derived_consumer)], NOW, prune=True)
+
+    result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=600)
+
+    # Read back from the database rather than recomputing the pipeline's arithmetic: the direct
+    # phase writes a gap row only for a market that already has a direct fair value
+    # (`gaps.py`'s `phase == "direct" and fair is None: continue`), so the direct universe is
+    # exactly the `fair_source = 'direct'` rows and everything else is what stage 5 added.
+    rows = db_session.execute(text(
+        "select fair_source, count(*) from market_gap_snapshots where run_id = :run_id "
+        "group by fair_source"), {"run_id": run.id}).all()
+    gaps_total = sum(count for _source, count in rows)
+    direct_gap_count = sum(count for source, count in rows if source == "direct")
+    assert (gaps_total, direct_gap_count) == (9, 6)  # this fixture, counted once
+    assert gaps_total == result["gaps"] > direct_gap_count > 0
+
+    direct_only = [v.name for v in active_variants(db_session)
+                   if "derived" not in (v.config.get("sources_allowed") or ())]
+    assert direct_only == ["tiny"]
+    for name in direct_only:
+        assert name in result["variants_run"]
+        assert result["rescore_suppressed"][name] == gaps_total - direct_gap_count
+    assert set(result["rescore_suppressed"]) == set(direct_only)
+    # The derived consumer is still scored over the whole universe, and only it.
+    assert db_session.query(Signal).filter_by(run_id=run.id).count() == (
+        direct_gap_count + gaps_total)
+    assert set(result["variant_ms_rescore"]) == {"tiny_derived"}
 
 
 GRID = [{"start": "0.0000", "end": "1.0000", "step": "0.0001"}]
@@ -168,7 +225,10 @@ def test_pipeline_persists_no_side_signals(env_settings, db_session):
     result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
     assert result["gaps"] == 9
     counts = result["signals"]["tiny_two_sided"]
-    assert counts["candidate"] + counts["rejected"] == 18  # 9 gap snapshots, both sides
+    # 6 direct gap snapshots, both sides (6D D4: the three rows stage 5 added are no longer
+    # re-scored for a direct-only variant, and a two-sided variant suppresses two rows each).
+    assert counts["candidate"] + counts["rejected"] == 12
+    assert result["rescore_suppressed"] == {"tiny_two_sided": 6}
 
     # `_load_gap_rows` carries the venue's price grid through to the strategy
     rows = {r.venue_market_id: r for r in _load_gap_rows(db_session, run.id)}
@@ -176,14 +236,19 @@ def test_pipeline_persists_no_side_signals(env_settings, db_session):
     assert rows[markets[1].id].price_ranges is None
 
     signals = db_session.query(Signal).filter_by(run_id=run.id).all()
-    assert len(signals) == 18
+    assert len(signals) == 12
     assert {s.side for s in signals} == {"yes", "no"}
     # uq_signal_key holds both sides of the same market in the same run
     assert set(Counter(s.venue_market_id for s in signals).values()) == {2}
 
-    # idempotent: re-running the same run inserts nothing new on either side
+    # Re-running the same run inserts no duplicate of a side already stored; the count rises
+    # to 18 because the re-priced run's stage 3 already sees the derived gap rows the first
+    # call's stage 6 suppressed (see `test_price_and_signal_end_to_end`).
     price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
     assert db_session.query(Signal).filter_by(run_id=run.id).count() == 18
+    assert set(Counter(
+        s.venue_market_id for s in db_session.query(Signal).filter_by(run_id=run.id)
+    ).values()) == {2}
 
 
 def test_price_and_signal_stops_when_budget_is_spent(env_settings, db_session):
@@ -476,7 +541,12 @@ def test_price_and_signal_annotates_a_stopped_variant_and_decides_nothing_differ
     assert all(s.rejection_reason != "drawdown_stop" for s in rows)
 
     variant = next(v for v in active_variants(db_session) if v.name == "tiny")
-    unstopped = run_strategy(_load_gap_rows(db_session, run.id), variant, NOW)
+    # The reference run has to be over the universe the pipeline actually priced: since 6D
+    # decision D4 a direct-only variant is scored on the direct gap rows alone, and the rows
+    # stage 5 added are counted in `rescore_suppressed` rather than stored as rejections.
+    priced = [r for r in _load_gap_rows(db_session, run.id) if r.fair_source == "direct"]
+    assert result["rescore_suppressed"] == {"tiny": result["gaps"] - len(priced)}
+    unstopped = run_strategy(priced, variant, NOW)
     want = {(s.venue_market_id, s.side): (s.decision, s.rejection_reason, s.price_target,
                                           s.edge, s.stake, s.contracts) for s in unstopped}
     got = {(s.venue_market_id, s.side): (s.decision, s.rejection_reason, s.price_target,

@@ -1,4 +1,15 @@
-"""Load the frozen pre-hotfix producers without consulting git or a database at test time."""
+"""Load the frozen pre-hotfix producers without consulting git or a database at test time.
+
+Phase 6D, decision D12 (addendum §1.5(d)): the parity contract these producers anchor was
+amended. `test_the_stage_order_produces_exactly_what_the_single_pass_produced` no longer
+compares the **whole** stored signal population against the single pass, because stage 6 stopped
+re-scoring direct-only variants over derived rows and therefore stores fewer rejected rows.
+What is still asserted identical is the candidate population and every candidate's `edge`,
+`stake`, `contracts` and labels, plus `fair_direct`, `fair_derived`, `no_sharp`, `gaps`, `order`
+and the fair-row and gap-row parity; the rejected-row difference is asserted separately against
+`notes->'pricing'->'rescore_suppressed'`, per variant and in total. Nothing this module loads
+changed, and no candidate, price, size, label or order moves.
+"""
 import importlib.util
 import json
 import sys

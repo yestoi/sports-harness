@@ -33,26 +33,34 @@ def test_replay_matches_live_signals_and_second_call_inserts_nothing(env_setting
 
     live_result = price_and_signal(db_session, run.id, NOW, env_settings, budget_s=20)
     live = live_result["signals"]["sharp_direct"]
-    assert live["candidate"] + live["rejected"] == 9
+    stored = live["candidate"] + live["rejected"]
+    # 6D decision D4: `sharp_direct` here is `sources_allowed: [direct]`, so the live pass stores
+    # only the 6 direct gap rows; the 3 rows stage 5 added could only be `source_allowed` or
+    # `has_fair` rejections and are counted in `rescore_suppressed` instead of stored.
+    suppressed = live_result["rescore_suppressed"]["sharp_direct"]
+    assert (stored, suppressed) == (6, 3)
 
     counts = replay(db_session, run.id, run.id, "sharp_direct")
     assert counts.runs == 1
+    # What replay reproduces is every live *decision*: `replay` re-derives over every gap row
+    # the run recorded, so its rejected population is the pre-D4 one and the difference from
+    # the live population is exactly the suppressed count, all of it rejections.
     assert counts.signals_candidate == live["candidate"]
-    assert counts.signals_rejected == live["rejected"]
-    assert counts.inserted == live["candidate"] + live["rejected"]
+    assert counts.signals_rejected == live["rejected"] + suppressed
+    assert counts.inserted == stored + suppressed
 
     replay_signals = (
         db_session.query(Signal).filter_by(run_id=run.id, replay=True).all()
     )
-    assert len(replay_signals) == live["candidate"] + live["rejected"]
+    assert len(replay_signals) == stored + suppressed
     live_signals = db_session.query(Signal).filter_by(run_id=run.id, replay=False).all()
-    assert len(live_signals) == live["candidate"] + live["rejected"]
+    assert len(live_signals) == stored
 
     # Second call over the same range re-derives the same decisions but inserts nothing new.
     counts2 = replay(db_session, run.id, run.id, "sharp_direct")
     assert counts2.runs == 1
     assert counts2.signals_candidate == live["candidate"]
-    assert counts2.signals_rejected == live["rejected"]
+    assert counts2.signals_rejected == live["rejected"] + suppressed
     assert counts2.inserted == 0
 
 
