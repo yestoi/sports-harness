@@ -442,22 +442,78 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_eight_revisions():
+def test_the_versions_directory_holds_nine_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
-        "0007_raw_events_lookup.py", "0008_positions_open_fill.py"]
+        "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
+        "0009_score_correction.py"]
 
 
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
 
-def test_positions_open_fill_follows_raw_events_lookup_and_is_the_pinned_head():
-    from harness.db.migrate import HEAD_REVISION
-
+def test_positions_open_fill_follows_raw_events_lookup():
+    """The pinned-head assertion moved to `test_score_correction_follows_positions_open_fill_and_
+    is_the_pinned_head` when fix 64's `0009_score_correction` landed on top of this one; the
+    chain assertion stays here, so a revision inserted between the two still fails."""
     module = _load_revision("0008_positions_open_fill.py")
     assert module.revision == "0008_positions_open_fill"
     assert module.down_revision == "0007_raw_events_lookup"
-    assert HEAD_REVISION == "0008_positions_open_fill"
+
+
+# --- fix 64 (journal 207): revision 0009 ---------------------------------------------------------
+
+def test_score_correction_follows_positions_open_fill_and_is_the_pinned_head():
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0009_score_correction.py")
+    assert module.revision == "0009_score_correction"
+    assert module.down_revision == "0008_positions_open_fill"
+    assert HEAD_REVISION == "0009_score_correction"
+    assert VERSIONS[-1].name == "0009_score_correction.py"
+
+
+def test_the_score_correction_revision_only_adds_the_column_and_undoes_nothing():
+    """`upgrade()` runs exactly the one additive `ADD COLUMN IF NOT EXISTS` statement, byte-
+    identical to `harness/db/schema.py`'s `_COLUMN_DDL` entry, and `downgrade()` is `pass`
+    (roadmap invariant 5): dropping the column would be exactly the data-loss risk that rule
+    guards against (unlike `0007_raw_events_lookup`'s index drop), and it would cross the user's
+    own "No row changes" ruling (journal 207) if a downgrade ever ran against a database holding
+    rows the writer had already marked."""
+    from harness.db.schema import _COLUMN_DDL
+
+    module = _load_revision("0009_score_correction.py")
+    assert module._COLUMNS == (
+        "alter table game_score_events add column if not exists correction boolean not null "
+        "default false",)
+    assert set(module._COLUMNS) <= set(_COLUMN_DDL)
+    assert module.downgrade() is None
+
+
+def test_the_game_score_events_correction_column_is_in_both_catalogues(two_databases, frozen_now):
+    """Belt-and-suspenders on top of the whole-catalogue
+    `test_a_migrated_database_matches_a_create_schema_database`: the column's type, nullability
+    and (most load-bearing) server default agree between the `create_schema` database (built by
+    `create_all` straight from the model, since `game_score_events` predates `0001_baseline`) and
+    the migrated one (built from the baseline's frozen shape, then this revision's `ADD COLUMN`)
+    -- the parity the server default on both the model and this revision exists to guarantee.
+    """
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    cols = {}
+    for label, engine in (("a", a), ("b", b)):
+        with Session(engine) as s:
+            ensure_partitions(s, frozen_now)
+        by_name = {c["name"]: c for c in inspect(engine).get_columns("game_score_events")}
+        assert "correction" in by_name
+        cols[label] = by_name["correction"]
+    assert cols["a"]["nullable"] is cols["b"]["nullable"] is False
+    assert str(cols["a"]["type"]).upper() == str(cols["b"]["type"]).upper() == "BOOLEAN"
+    assert cols["a"]["default"] == cols["b"]["default"]
+    assert cols["a"]["default"] is not None      # the server default this fix depends on
 
 
 def test_the_positions_view_ddl_agrees_between_schema_and_migration():

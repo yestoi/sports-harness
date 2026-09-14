@@ -318,15 +318,26 @@ CHECKS: list[Check] = [
         "== 0", _zero),
     Check(
         "game_score_went_down_24h",
-        # A game's score can never go down: a later event carrying a lower home or away score
-        # than one of its own game's earlier events is a normalizer bug, not a comeback. The
-        # inner scan is bounded by `p.game_id = e.game_id` on the same 24 h slice.
+        # Fix 64 (journal 207): ESPN's own scoreboard body is sometimes corrected downward
+        # (a linescore fix, not a comeback), and `link_espn_scoreboard` appends every body it
+        # sees rather than updating one row -- so "a game's score never goes down" is false for
+        # this feed exactly on a correction. `_maybe_score_event` marks the row that carries the
+        # lower score `correction = true`; this predicate excludes a marked row as the later
+        # (`e`) row, and restarts the "never goes down" baseline at that correction: a decrease
+        # is only real when no correction row exists between the earlier (`p`) and later (`e`)
+        # row for the same game, so a score recorded after a correction is compared against the
+        # correction, not against the pre-correction high. Every subquery stays bounded by
+        # `game_id` on the same 24 h slice, as before.
         """
         select count(*) from game_score_events e
         where e.ts > now() - interval '24 hours'
+          and not e.correction
           and exists (select 1 from game_score_events p
                       where p.game_id = e.game_id and p.ts < e.ts
-                        and (p.home_score > e.home_score or p.away_score > e.away_score))
+                        and (p.home_score > e.home_score or p.away_score > e.away_score)
+                        and not exists (select 1 from game_score_events c
+                                        where c.game_id = e.game_id and c.correction
+                                          and c.ts >= p.ts and c.ts <= e.ts))
         """,
         "== 0", _zero),
     Check(

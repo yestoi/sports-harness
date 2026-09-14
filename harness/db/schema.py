@@ -128,6 +128,12 @@ _COLUMN_DDL = (
     "alter table orders add column if not exists venue_order_id varchar(64)",
     "alter table orders add column if not exists order_group_id varchar(64)",
     "alter table orders add column if not exists exchange_index_at_place integer",
+    # Fix 64 (journal 207): the score-correction marker. `GameScoreEvent.correction` carries the
+    # same not-null default on the model (`server_default=text("false")`) as this ALTER, so
+    # `create_all` on a fresh database and this statement on an existing one leave the identical
+    # column -- what `tests/test_alembic.py`'s catalogue diff compares.
+    # `migrations/versions/0009_score_correction.py` holds the identical statement.
+    "alter table game_score_events add column if not exists correction boolean not null default false",
 )
 
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).
