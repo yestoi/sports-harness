@@ -1309,6 +1309,11 @@ def test_a_heartbeat_older_than_the_yield_age_stores_nothing(db_session, env_set
     assert listener.frames_yielded == 1
     assert db_session.get(Rfq, "rfq_yield_1") is None
     assert db_session.execute(text("select count(*) from rfq_quotes")).scalar() == 0
+    # Review: the addendum's expected result names three facts asserted separately, and the
+    # third is the subscription's own status. A yield is not a disconnect, so nothing marks
+    # `venue_status` at all on this path.
+    assert db_session.execute(text("select count(*) from venue_status where venue = :v"),
+                              {"v": VENUE}).scalar() == 0
 
 
 def test_a_fresh_heartbeat_with_a_long_loop_also_yields(db_session, env_settings):
