@@ -39,7 +39,7 @@ PostgreSQL 16. Standard library only for anything new (`dataclasses`, `datetime`
 `docs/superpowers/specs/2026-09-06-sportsbook-harness-design.md` (v2) §4.1, §4.2, §6.2, §7.2, §8.2, §9.2, §9.5, §11,
 §13 and §14 for milestone 6D, and consumes the 6C addendum (§0.3, §0.11, §0.12, D11, rulings C1/I6) and the 6B
 addendum's 6D carve-outs. **Read the addendum section your task names before writing a line of code.** Where this
-plan and the addendum differ, the addendum wins — except where this plan names the difference out loud: the four
+plan and the addendum differ, the addendum wins — except where this plan names the difference out loud: the six
 implementation choices the addendum left open ("Six choices this plan makes"), the added dependencies the Wave map
 states, and two file paths §9 names that do not exist in this tree (Task 7's split proposal, Task 9's replay
 runbook), each corrected in the task that writes it.
@@ -102,8 +102,9 @@ timeout 1500 make test TEST_ARGS='tests/<file> -q'
   the **server's** `now()` seeds its rows against the real clock, never a frozen one. `run_checks` passes its `now`
   argument to `sql_for` only to choose a partition *name* (`harness/ops/checks.py:404`); the window predicate is
   `now() - interval '...'` evaluated by PostgreSQL, so rows seeded at a frozen instant days away fall outside the
-  window the check judges and the case asserts on an empty result. Task 1's three database cases take that
-  exemption and say so in their docstrings; every other test in this plan passes a fixed tz-aware `now`. The suite
+  window the check judges and the case asserts on an empty result. Task 1's two clock-bearing database cases take
+  that exemption and say so in their docstrings; its third database case reads the catalogue and takes no instant
+  at all. Every other test in this plan passes a fixed tz-aware `now`. The suite
   stays pristine: no warning, no traceback, no unexpected pass. A strict `XPASS` is a hard
   failure — stop and report it. The 6 `xfailed` cases in `tests/test_execution_regressions.py` are 6B's and are
   never unmarked here.
@@ -155,11 +156,11 @@ Each is additive, is named in the task that makes it, and is flagged here so the
    that prints `total_runs`, `non_skipped_runs` and `priced_runs` — does not exist until Task 8. Task 7 produces
    `coverage.eligible_runs`; Task 8's t14 calls it. `tables.py` therefore has one owner, Task 8.
 5. **`COVERAGE_RUN_CAP = 25_000`** is the cap Task 7's `runs` read uses, where addendum §2 and §3 rows 4/5 write
-   their own reads at `limit 2000` and `limit 100`. Derivation: `eligible_runs` answers a **weekly** window and a
-   day carries ~1,315 runs (live facts), so a week is ~9,200 rows; 25,000 is that with room for a busier week and
-   for a report rendered days late, and it is the same order as `T13_NOTES_LIMIT = 25_000`
-   (`harness/report/tables.py:1598`), which caps the same table for t13. The §3 rows keep their own literal caps,
-   which bound 24 h reads. Task 7.
+   their own reads at `limit 2000` and `limit 100`. The derivation is Task 7's own constant comment, quoted so the
+   two do not diverge: *"A week at the 30 s heartbeat is about 20,160 runs, so this carries the same ~25 % margin
+   `T13_NOTES_LIMIT` does for the report's own capped read"* — `T13_NOTES_LIMIT = 25_000` at
+   `harness/report/tables.py:1598` caps the same table for t13. `eligible_runs` answers a **weekly** window, where
+   the §3 rows keep their own literal caps because they bound 24 h reads. Task 7.
 6. **The comparison CLI is `harness policy-compare --from-run --to-run --variant --policies --out -`**, where
    addendum §1.6(b) writes `--from --to --policies <names> --out -`. The plan's form mirrors the existing
    `replay_cmd` flags (`harness/cli.py:707-709`: `--from-run`, `--to-run`, `--variant`), so the run range and the
@@ -212,7 +213,7 @@ file is serialized; the `Depends on:` lines and the wave map agree.
 | T5 fix 48's closure and budget isolation | `harness/strategy/pipeline.py`, `harness/recorder/tick.py`, `tests/test_pipeline_stage_order.py`, `tests/test_pipeline.py`, `tests/pricing_baseline.py` (the D12 note) | T4 | 3 |
 | T6 the latency decomposition | `harness/recorder/tick.py`, `harness/execution/loop.py`, `harness/execution/plan.py` is **not** touched, `tests/test_latency_decomposition.py` (new) | T4, T5 (`tick.py`), T3 (`loop.py`) | 4 |
 | T7 missing-stage denominator and normalizer evidence | `harness/ops/coverage.py`, `harness/normalize/runner.py`, `harness/recorder/tick.py`, `docs/superpowers/reviews/2026-09-13-normalizer-split-proposal.md` (new), `tests/test_coverage_denominator.py` (new) | T4, T5, T6 (`tick.py`) | 5 |
-| T8 funnel episodes, t14 and Floor | `harness/ops/episodes.py` (new), `harness/db/models.py`, `migrations/versions/0009_phase6d_sustained_evaluation.py`, `harness/strategy/pipeline.py`, `harness/recorder/tick.py` (one `cadence_s=` argument and one sample family), `harness/execution/store.py`, `harness/execution/loop.py`, `harness/report/tables.py`, `harness/report/render_for_model.py`, `harness/dashboard/snapshots/floor.py`, `tests/test_funnel_episodes.py` (new), `tests/test_report_t14.py` (new), `tests/test_snap_floor.py`, `tests/test_render_for_model.py`, `tests/test_alembic.py` | T4, T7 (`coverage.eligible_runs`), T5 (`pipeline.py`), T6 (`loop.py`), T1 (migration) | 6 |
+| T8 funnel episodes, t14 and Floor | `harness/ops/episodes.py` (new), `harness/db/models.py`, `migrations/versions/0009_phase6d_sustained_evaluation.py`, `harness/strategy/pipeline.py`, `harness/recorder/tick.py` (one `cadence_s=` argument and one sample family), `harness/execution/store.py`, `harness/execution/loop.py`, `harness/report/tables.py`, `harness/report/render_for_model.py`, `harness/dashboard/snapshots/floor.py`, `tests/test_funnel_episodes.py` (new), `tests/test_report_t14.py` (new), `tests/test_snap_floor.py`, `tests/test_render_for_model.py`, `tests/test_alembic.py`, `tests/test_report.py`, `tests/test_report_t7_t10.py` | T4, T7 (`coverage.eligible_runs`), T5 (`pipeline.py`), T6 (`loop.py`), T1 (migration) | 6 |
 | T9 policy baseline and comparison harness | `harness/execution/policy.py` (new), `harness/execution/plan.py`, `harness/cli.py`, `docs/runbooks/phase0-deploy.md`, `tests/test_policy_compare.py` (new) | T3 (`plan.py`) | 7 |
 | T10 verification rows | `docs/superpowers/autopilot/verify.md` | T1–T9 | 8 |
 
@@ -248,6 +249,8 @@ threshold, a check's statement timeout, a cadence constant in `harness/recorder/
 - Modify: `tests/test_alembic.py` (`test_the_versions_directory_holds_seven_revisions` at line 419, and
   `test_raw_events_lookup_follows_quotes_run_index_and_is_the_pinned_head` at line 869, whose
   `assert HEAD_REVISION == "0007_raw_events_lookup"` at line 875 this task moves)
+- Modify: `docs/runbooks/alembic.md` (the `## Revisions` table at lines 26-31: one new row for 0009, in the same
+  columns. No test catches an omission here, so it is on this list rather than left to the reader)
 
 **Depends on:** none.
 
@@ -699,6 +702,16 @@ In `harness/db/migrate.py`, change `HEAD_REVISION` (line 35) to `"0009_phase6d_s
 one sentence to the comment above it: `phase 6D bumps it to "0009_phase6d_sustained_evaluation"; the controller
 assigns the final number at merge (4.6 addendum D9).`
 
+Then give `docs/runbooks/alembic.md` its row. Its `## Revisions` table (lines 26-31) carries one row per revision
+in four columns — `| Revision | Follows | Adds | `downgrade()` |` — and `alembic.md:31` is fix 45's row for
+`0007_raw_events_lookup`. Append one row for 0009 in the same columns: revision
+`0009_phase6d_sustained_evaluation`, follows `0008_positions_open_fill`, adds `ix_intents_created` on
+`intents (created_at)` built CONCURRENTLY (fix 51, D9) plus `coverage_samples` (Task 4) and
+`opportunity_episodes`/`intent_episodes` (Task 8) with their plain indexes, `downgrade()` `pass` (additive only,
+roadmap invariant 5). Extend the "the stamp moves from ... to ..." chain below the table (lines 33-35) with the
+same step, so the page does not stop at 0007. Nothing else on that page moves; no test reads it, which is why it is
+on the Files line.
+
 - [ ] **Step 8: Point `tests/test_alembic.py` at the new head**
 
 `HEAD_REVISION` is pinned by **two** cases in this file, not one, and both have to move together or Step 9 is red.
@@ -773,7 +786,8 @@ Expected: the suite's usual pass count plus the five new cases, 6 xfailed, zero 
 
 ```bash
 git add harness/ops/checks.py harness/db/models.py harness/db/schema.py harness/db/migrate.py \
-        migrations/versions/0009_phase6d_sustained_evaluation.py tests/test_checks.py tests/test_alembic.py
+        migrations/versions/0009_phase6d_sustained_evaluation.py docs/runbooks/alembic.md \
+        tests/test_checks.py tests/test_alembic.py
 git commit -m "$(cat <<'EOF'
 fix 51 (6d): bound duplicate_trades to the 25 h it judges and index intents.created_at
 
@@ -3439,8 +3453,9 @@ In `harness/execution/loop.py`, `_MetricsAcc` gains two fields and their reset:
 with `self.fair_age_s = self.fair_age_s or []` and `self.signal_to_order_ms = self.signal_to_order_ms or {}` in
 `__post_init__`, and `self.fair_age_s = []` / `self.signal_to_order_ms = {}` in `reset`.
 
-A small percentile helper beside `_p95` (the loop already has one for `p95_loop_ms`; read it with
-`grep -n "def _p95" harness/execution/loop.py` and put this next to it):
+A small percentile helper, **as a module-level function beside `_MetricsAcc`** (`harness/execution/loop.py:142`).
+Not beside `_p95`: `_p95` at `harness/execution/loop.py:1221` is a *method* of the executor class, and the test
+above imports `_percentile` from the module, so a helper indented into the class would not resolve.
 
 ```python
 def _percentile(values: list[float], q: float) -> float | None:
@@ -3467,7 +3482,7 @@ In `_body`, where the loop holds its `markets` mapping, record the ages against 
                 if age is not None)
 ```
 
-and at the placement site (`_place`, after `stats.placed += 1` at line 1051):
+and at the placement site (`_place`, after `stats.placed += 1` at line 1050):
 
 ```python
             # 6D §1.2: decision to placement, per variant. `signal_created_at` is on the intent
@@ -3931,8 +3946,10 @@ and in `_recorder_samples`:
 ```
 
 with `from harness.normalize.runner import backlog_samples, normalize_new` extending the existing import at line
-19, and `"now": now` added to `maybe_tick`'s `ctx` dict literal (`tick.py:845-846`) so `_recorder_samples` has the
-tick's own instant without a second signature change. Both additions sit inside the existing `try` around `telemetry.record_many` (lines 947-953), so a metric
+19, and — **if Task 6 has not already added it** (Task 6 Step 4 writes `ctx["now"] = now` beside
+`ctx["run_id"] = run.id`, and Task 6 runs first, so the usual case is that it is already there) — `"now": now`
+added to `maybe_tick`'s `ctx` dict literal (`tick.py:845-846`) so `_recorder_samples` has the tick's own instant
+without a second signature change. Both additions sit inside the existing `try` around `telemetry.record_many` (lines 947-953), so a metric
 failure still cannot fail a tick.
 
 - [ ] **Step 6: The split proposal**
@@ -4056,6 +4073,12 @@ EOF
 - Modify: `harness/dashboard/snapshots/floor.py` (`FUNNEL_UNITS`, `_funnel`, `_reason_rows`' caller)
 - Create: `tests/test_funnel_episodes.py`, `tests/test_report_t14.py`
 - Modify: `tests/test_snap_floor.py`, `tests/test_render_for_model.py`, `tests/test_alembic.py`
+- Modify: `tests/test_report.py` (four places the `TABLE_KEYS`/`RENDER_ORDER` edit reddens: the key set at
+  lines 296-297, `test_t12_is_appended_after_t10_and_t13_after_t12` at 973-975,
+  `test_t13_renders_first_and_the_model_view_keeps_table_keys_order` at 1239-1240, and
+  `test_t13_sql_keys_no_pricing_table_by_run_id`'s source split at 1262 — Step 7 says what each becomes)
+- Modify: `tests/test_report_t7_t10.py` (`test_the_table_order_is_unchanged` at lines 461-465: the same tuple
+  literal)
 
 **Depends on:** Task 4 (the migration, `models.py`, `pipeline.py`), Task 5 (`pipeline.py`), Task 6 (`loop.py`),
 Task 7 (`coverage.eligible_runs`, `tick.py`).
@@ -4264,7 +4287,9 @@ Write the four empty bodies with this repository's own report-test idiom: read
 `tests/test_report_t7_t10.py` for how a table test seeds rows and calls `weekly_tables(db_session, year, week,
 env_settings, now=NOW)`, and follow it exactly — the same fixtures, the same `week_bounds` helper, the same
 `{row[0]: row for row in table.rows}` lookup. Every expectation is written by hand from the seeded counts, as the
-first docstring does.
+first docstring does. **This step is not done until every one of those four bodies asserts a hand-computed
+number**: a docstring-only body passes vacuously, so a case left empty would report green while proving nothing —
+the one failure mode a test written before the code cannot survive.
 
 - [ ] **Step 2: Run and read the failures**
 
@@ -4525,9 +4550,24 @@ from harness.ops.exclusions import COVERAGE_CLASS_OF
 
 Both are readers — `eligible_runs` and `exhaustion_share` issue `select`s and nothing else, and `COVERAGE_CLASS_OF`
 is a dict — so the module's "nothing imports the executor's or the settler's write paths" rule (6C addendum
-ruling 6) still holds. Then, beside `_T13_COLUMNS` and its statements:
+ruling 6) still holds.
+
+Then the t14 code, **after t13's section and before `# --- entry point`** (`harness/report/tables.py:1844`),
+opened by its own section header — and narrow t13's structural test to t13. `tests/test_report.py:1248-1271`'s
+`test_t13_sql_keys_no_pricing_table_by_run_id` computes its block as
+`source.split("# --- table 13", 1)[1].split("# --- entry point", 1)[0]` (line 1262), collects **every**
+`text("""...""")` literal in it and asserts `"started_at" not in statements` and `"not exists" not in statements`
+(plus `fair_values`, `market_gap_snapshots`, `signals`, `orderbook_events`, `venue_trades`, `from runs`). Three of
+t14's statements break that by design: `_T14_OPPORTUNITY_EPISODES` and `_T14_INTENT_EPISODES` are bounded on
+`started_at`, and `_T14_UNCLOSED` reconciles with `not exists`. So **change the block at line 1262 to
+`source.split("# --- table 13", 1)[1].split("# --- table 14", 1)[0]`** and open the new code with a
+`# --- table 14: the coverage contract ...` section header, so t13's guarantee still binds t13 and t14's own reads
+are not judged by a rule written for t13. A header alone would not do it: the old split runs to `# --- entry
+point` and would swallow t14 whatever sits between.
 
 ```python
+# --- table 14: the coverage contract, the denominators and the episode units (6D §1.7) ---------
+
 _T14_COLUMNS = ["item", "value", "unit", "note"]
 
 #: §1.7(a)'s declared tolerance, printed beside the share it judges and declared before the
@@ -4764,6 +4804,21 @@ capped `runs` reads (`COVERAGE_RUN_CAP`), which is why no statement here puts a 
 
 Register it in `weekly_tables`: `"t14": _table14(session, window, variants, settings, now),`.
 
+**Four existing assertions pin the old tuple and go red the moment `TABLE_KEYS` gains `"t14"`.** They are in two
+files this task therefore owns. Extend each literal with `"t14"` after `"t13"`:
+
+- `tests/test_report.py:296-297` — `assert set(TABLE_KEYS) == {"t1", ..., "t13"}`;
+- `tests/test_report.py:973-975` (`test_t12_is_appended_after_t10_and_t13_after_t12`) — the exact tuple literal,
+  and `TABLE_KEYS[-1] == "t13"` at 973 becomes `TABLE_KEYS[-1] == "t14"`;
+- `tests/test_report.py:1239-1240` (`test_t13_renders_first_and_the_model_view_keeps_table_keys_order`) —
+  `TABLE_KEYS[-1] == "t13"` becomes `TABLE_KEYS[-1] == "t14"`, and the render-order assertion at 1240 becomes
+  `assert RENDER_ORDER[:2] == ("t13", "t14")` followed by
+  `assert list(RENDER_ORDER[2:]) == [k for k in TABLE_KEYS if k not in ("t13", "t14")]`;
+- `tests/test_report_t7_t10.py:461-465` (`test_the_table_order_is_unchanged`) — the same exact tuple.
+
+`assert set(RENDER_ORDER) == set(TABLE_KEYS)` (test_report.py:1238) and `text.index("(t13)") < text.index("(t1)")`
+(1245) hold unchanged and are not edited. Nothing else in either file moves.
+
 In `harness/report/render_for_model.py`, add `"t14": "item"` to `IDENTITY_COLUMNS`, and in
 `tests/test_render_for_model.py` add `"t14": tables_module._T14_COLUMNS` to the `named` dict inside
 `test_identity_columns_match_every_table_s_real_first_column` — that case also asserts
@@ -4796,8 +4851,43 @@ and in `_funnel`, two bounded counts and the class annotation:
     gap_rule = session.execute(_FUNNEL_EPISODE_RULE, window).scalar()
 ```
 
-with the three statements written beside the funnel's existing ones, each carrying its bound and index comment,
-and the payload gaining `**episodes_count` plus `"episode_gap_rule_s": None if gap_rule is None else int(gap_rule)`.
+The three statements go beside the funnel's existing ones (`_FUNNEL_COUNTS`, `_FILLS_COUNT`,
+`_FUNNEL_ORDER_FILLS`, `_FUNNEL_FILL_ROWS` at `harness/dashboard/snapshots/floor.py:238-272`), in the same shape
+and bound by the same `window = {"since": since}` the funnel already builds (`floor.py:562`):
+
+```python
+#: Bound: `started_at >= :since` (`FUNNEL_WINDOW`, 6 h). Index: `ix_opportunity_started`. An
+#: indexed `count(*)` over a time range is the whole point of the episode tables: 6C deferred
+#: this unit because the only way to count it was a `distinct` over `signals`, the scan fix 31
+#: removed for starving the box (addendum §0.11).
+_FUNNEL_OPPORTUNITY_EPISODES = text("""
+    select count(*) from opportunity_episodes where started_at >= :since
+""")
+
+#: Bound and shape as above. Index: `ix_intent_started`.
+_FUNNEL_INTENT_EPISODES = text("""
+    select count(*) from intent_episodes where started_at >= :since
+""")
+
+#: Bound: `started_at >= :since` on both arms, each riding its own `started_at` index
+#: (`ix_opportunity_started`, `ix_intent_started`). The gap rule the rows in this window were
+#: written under, so the payload can label the two counts with the rule that produced them
+#: (§1.7(b)/(c)). `max` rather than a single value because the two tables derive their rule
+#: from different periods -- the pricing cadence and `exec_period_s` -- and each row stores its
+#: own, so the payload reports the widest in force. NULL when the window holds no episode at
+#: all, which the caller renders as `None`.
+_FUNNEL_EPISODE_RULE = text("""
+    select max(gap_rule_s) from (
+        select gap_rule_s from opportunity_episodes where started_at >= :since
+        union all
+        select gap_rule_s from intent_episodes where started_at >= :since
+    ) e
+""")
+```
+
+The payload gains `**episodes_count` plus
+`"episode_gap_rule_s": None if gap_rule is None else int(gap_rule)`.
+
 `_reason_rows(skips)` gains the class: each row gains `"class": CLASS_OF.get(reason)` — `.get`, not `class_of`,
 because a surface must render an unclassified reason rather than raise on it, and the exhaustiveness test in Task
 3 is what keeps that `None` from ever appearing.
@@ -4805,18 +4895,22 @@ because a surface must render an unclassified reason rather than raise on it, an
 Add the matching assertions to `tests/test_snap_floor.py` beside its existing funnel cases: the two new keys are
 present, each is `<=` its 6C counterpart (`candidate_signals`, `intent_verdicts`) — an episode count above its
 event count is an integrity anomaly, which is also §3 row 7 — and every `skipped` row carries a `class` in
-`EXCLUSION_CLASSES`. Do not edit `tests/test_snap_bounds.py`: the two new statements name no forbidden table, and
-its existing test proves that without a change.
+`EXCLUSION_CLASSES`. Do not edit `tests/test_snap_bounds.py`: the three new statements name no forbidden table,
+and its existing test proves that without a change.
 
 - [ ] **Step 9: Run everything this touches, then the suite**
 
 ```bash
-timeout 1500 make test TEST_ARGS='tests/test_funnel_episodes.py tests/test_report_t14.py tests/test_snap_floor.py tests/test_snap_bounds.py tests/test_render_for_model.py tests/test_report.py tests/test_alembic.py tests/test_exec_loop.py -q'
+timeout 1500 make test TEST_ARGS='tests/test_funnel_episodes.py tests/test_report_t14.py tests/test_snap_floor.py tests/test_snap_bounds.py tests/test_render_for_model.py tests/test_report.py tests/test_report_t7_t10.py tests/test_alembic.py tests/test_exec_loop.py -q'
 ```
 
-Expected: all pass. Two failures worth naming in advance: `test_identity_columns_match_every_table_s_real_first_column`
-fails if only one of the two `IDENTITY_COLUMNS`/`named` edits landed, and
-`test_a_migrated_database_matches_a_create_schema_database` fails if the two models and the revision disagree.
+Expected: all pass. Four failures worth naming in advance:
+`test_identity_columns_match_every_table_s_real_first_column` fails if only one of the two
+`IDENTITY_COLUMNS`/`named` edits landed; `test_a_migrated_database_matches_a_create_schema_database` fails if the
+two models and the revision disagree; `test_t12_is_appended_after_t10_and_t13_after_t12` /
+`test_the_table_order_is_unchanged` fail if one of the two tuple literals was extended and the other was not; and
+`test_t13_sql_keys_no_pricing_table_by_run_id` fails on `started_at` or `not exists` if the section header or the
+narrowed split of Step 7 is missing.
 
 ```bash
 timeout 1500 make test
@@ -4831,7 +4925,8 @@ git add harness/ops/episodes.py harness/db/models.py migrations/versions/0009_ph
         harness/strategy/pipeline.py harness/recorder/tick.py harness/execution/store.py \
         harness/execution/loop.py harness/report/tables.py harness/report/render_for_model.py \
         harness/dashboard/snapshots/floor.py tests/test_funnel_episodes.py tests/test_report_t14.py \
-        tests/test_snap_floor.py tests/test_render_for_model.py tests/test_alembic.py
+        tests/test_snap_floor.py tests/test_render_for_model.py tests/test_alembic.py \
+        tests/test_report.py tests/test_report_t7_t10.py
 git commit -m "$(cat <<'EOF'
 6d: the two deferred funnel units as episodes, table t14, and fix 55's coverage half
 
@@ -5021,7 +5116,10 @@ def test_the_comparison_never_writes_a_row(db_session, env_settings):
 Write the empty bodies and `_slice()` against `tests/test_exec_plan.py`'s own helpers — that file already builds
 `IntentView`, `OpenOrderView`, `MarketNow` and `StrategyState` fixtures, and reusing them is what keeps this test
 about the policy rather than about fixture construction. `from tests.test_exec_plan import ...` resolves
-(`tests/__init__.py` exists and `pyproject.toml:62` sets `pythonpath = ["."]`).
+(`tests/__init__.py` exists and `pyproject.toml:62` sets `pythonpath = ["."]`). **This step is not done until every
+one of those bodies asserts a hand-computed number** — the two directional cases against §1.6's own worked
+example, and `test_the_comparison_never_writes_a_row` against a counted `select count(*)` before and after: a
+docstring-only body passes vacuously and would report green while proving nothing.
 
 - [ ] **Step 2: Run and read the failure**
 
@@ -5491,3 +5589,39 @@ Every finding is accepted; the amendment applies each "smallest fix" exactly as 
 - Ruling (M1-M11): all accepted as the review states them; M3 is a behaviour fix inside the plan's code block (the yield branch returns `True if is_data else self._check_data_idle()`); M6 and M7 join "Four choices this plan makes" (now six) with one line each; M9 pastes §3 row 2's reconciliation query verbatim from the addendum.
 - Ruling (second round): the review found a Critical, so the amendment gets one scoped opus re-review of the amended ranges only (plan-next step 4: a Critical residual alone earns a second round); a clean re-review closes the unit - cost if wrong: one dispatch.
 - Ruling (not reached): the ranges the reviewer read for shape only (Task 6 Steps 3-8, Task 7 Steps 2-7, Task 8 Steps 3-6 and 8-10, Task 9 Steps 2-8) are covered by the re-review's second lens: verify signatures and names in those steps with grep, line by line, and report any Important as a finding - why: the reviewer's ~45 spot checks were all accurate, so the risk is low but not zero - cost if wrong: one more amendment round.
+
+### Round 2
+
+The scoped re-review of revision 2 (`.superpowers/sdd/results/plan-rereview-6d.md`, 0 Critical / 2 Important /
+10 Minor) and the controller's Round 2 rulings in `.superpowers/sdd/plan-next-phase6d/plan-rulings.md`. Revision 3
+applies each accepted finding; one line each.
+
+- **Important 1** — Task 8's `TABLE_KEYS`/`RENDER_ORDER` edit reddens four assertions in `tests/test_report.py`
+  and `tests/test_report_t7_t10.py`, files Task 8 neither listed nor edited. **Accepted as the smallest fix**:
+  both files are on Task 8's Files line, in the conformance-12 T8 row, in Step 9's targeted run and in Step 10's
+  `git add`, and Step 7 names the four assertions and the new `RENDER_ORDER` assertion shape.
+- **Important 2** — the eight `_T14_*` statements land inside the source block
+  `test_t13_sql_keys_no_pricing_table_by_run_id` scans, whose `started_at` and `not exists` assertions three of
+  them break. **Accepted as the smallest fix**: the t14 code opens with a `# --- table 14: the coverage contract
+  ...` section header and that test's split narrows to `"# --- table 14"`.
+- **Minor 1** — "the four implementation choices" beside the renamed section. Accepted: "the six".
+- **Minor 2** — "Task 1's three database cases take that exemption" is false of the third, which takes no
+  instant. Accepted: "two clock-bearing database cases ... its third database case reads the catalogue and takes
+  no instant at all".
+- **Minor 3** — `_percentile` was to go "beside `_p95`", but `_p95` (`harness/execution/loop.py:1221`) is a
+  method while the test imports `_percentile` from the module. Accepted: module-level, beside `_MetricsAcc`.
+- **Minor 4** — `stats.placed += 1` is at `harness/execution/loop.py:1050`, not 1051. Accepted.
+- **Minor 5** — Task 6 and Task 7 each add `ctx["now"]`, and Task 6 runs first. Accepted: Task 7 reads "if Task 6
+  has not already added it".
+- **Minor 6** — `COVERAGE_RUN_CAP`'s derivation was stated twice with different arithmetic. Accepted: choice 5
+  quotes Task 7's own constant comment.
+- **Minor 7** — Step 8 named three `text()` statements it did not write. Accepted: `_FUNNEL_OPPORTUNITY_EPISODES`,
+  `_FUNNEL_INTENT_EPISODES` and `_FUNNEL_EPISODE_RULE` are written in full with their `:since` bound and index
+  comment.
+- **Minor 8** — docstring-only test bodies in Tasks 8 and 9 pass vacuously if forgotten. Accepted: one sentence
+  in each step that the step is not done until every body asserts a hand-computed number.
+- **Minor 9** — Task 1's Files line omitted `docs/runbooks/alembic.md`, which carries one table row per revision
+  and has no test to catch the omission. Accepted: on the Files line, with one row for 0009 in the same columns.
+- **Minor 10** — `_OLDEST_UNPROCESSED` carries no family predicate, so `normalize.backlog_age_s{family}` is "the
+  oldest unprocessed row of any family above this family's cursor". The statement is addendum §1.3(c) verbatim, so
+  the plan is faithful. **Not amended**: carried to the 6D verify design as a note on that metric's semantics.
