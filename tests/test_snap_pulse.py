@@ -48,6 +48,9 @@ def _absent_values() -> dict:
         "disabled": [],
         "research_spend": None,
         "veto_rate": None,
+        # Phase 4.6 Task 12 (addendum §3.2, 1.3).
+        "prop_credits_used": None,
+        "parlay_pending_final_s": None,
     }
 
 
@@ -126,6 +129,7 @@ RULE_NAMES = [
     "check_fail", "check_skipped", "settle_error_24h", "snapshot_stale",
     "credits_low", "budget_exhausted", "book_dirty_in_game", "drawdown_stop",
     "snapshot_budget", "snapshot_disabled", "research_budget", "veto_rate",
+    "prop_budget", "parlay_pending_final",
 ]
 
 
@@ -757,7 +761,7 @@ def test_no_pulse_query_names_a_forbidden_table():
 
 
 def test_the_judged_study_week_is_the_chicago_week(db_session, env_settings):
-    """Addendum 0.1: `rule_snapshot_stale` judges `study:2026-37` at 20:00 CT Sunday, which is
+    """Addendum §0.1: `rule_snapshot_stale` judges `study:2026-37` at 20:00 CT Sunday, which is
     the name the scheduler is writing at that hour."""
     from harness.dashboard.snapshots.pulse import rule_snapshot_stale
 
@@ -778,7 +782,7 @@ def test_the_judged_study_week_is_the_chicago_week(db_session, env_settings):
 
 
 def test_the_ages_panel_carries_the_study_cell_age(db_session, env_settings):
-    """Addendum 0.5: a `study:` row's build cadence and the age of the report cells under it
+    """Addendum §0.5: a `study:` row's build cadence and the age of the report cells under it
     are two different numbers, and the ages panel is where an operator sees both."""
     db_session.add(DashboardSnapshot(name="study:2026-37", generated_at=NOW - timedelta(minutes=2),
                                      payload={"cell_age_s": 5400.0}, elapsed_ms=12, error=None))
@@ -950,3 +954,101 @@ def test_operator_events_carry_the_humanized_check_name_for_check_failed(db_sess
     row = next(e for e in events if e["kind"] == "check_failed")
     assert row["summary"] == "the duplicate trades check failed"
     assert row["technical"] == "duplicate_trades"
+
+
+# --- phase 4.6 Task 12: the two parlay WATCH rules (addendum §3.2, 1.3) ------------------------
+
+def test_prop_budget_watches_when_the_month_reaches_its_allocation():
+    """Addendum §3.2: the prop feed has its own monthly allocation inside the Odds API tier, and
+    a month that has spent it is a WATCH -- the rotation stops, and the ideas section starts
+    reading `no_props_fresh` without saying why."""
+    values = _absent_values()
+    values["settings"] = SimpleNamespace(db_budget_gb=2000, odds_monthly_credits=5_000_000,
+                                         odds_prop_monthly_credits=300_000)
+    values["prop_credits_used"] = 299_999
+    assert pulse.rule_prop_budget(values).level == "fine"
+    values["prop_credits_used"] = 300_000
+    fired = pulse.rule_prop_budget(values)
+    assert fired.level == "watch"
+    assert fired.value == 300_000.0 and fired.threshold == 300_000.0
+
+
+def test_prop_budget_is_not_evaluated_before_the_prop_feed_has_spent_anything():
+    """An absent input is `not evaluated`, never `fine` (ruling A-C2): no `source_state` row for
+    this month, or a build whose settings have no prop allocation defined yet."""
+    values = _absent_values()
+    values["settings"] = SimpleNamespace(db_budget_gb=2000, odds_monthly_credits=5_000_000,
+                                         odds_prop_monthly_credits=300_000)
+    assert pulse.rule_prop_budget(values).level == "not_evaluated"
+    values["prop_credits_used"] = 10
+    values["settings"] = SimpleNamespace(db_budget_gb=2000, odds_monthly_credits=5_000_000)
+    assert pulse.rule_prop_budget(values).level == "not_evaluated"
+
+
+def test_parlay_pending_final_watches_a_card_alive_six_hours_after_its_last_final(db_session,
+                                                                                 env_settings):
+    """Addendum §1.3: a card still `alive` long after its games are over is a stat that never
+    arrived, not a game still running. The leg reads `no final stat` and this rule is what says
+    so on the wall."""
+    from harness.db.models import GameScoreEvent, ParlayCard, ParlayLeg, Team
+
+    db_session.add(Team(sport="ncaaf", id=1, display_name="LSU", location="Baton Rouge",
+                        name="Tigers", abbreviation="LSU", short_display_name="LSU"))
+    db_session.add(Team(sport="ncaaf", id=2, display_name="Alabama", location="Tuscaloosa",
+                        name="Tide", abbreviation="ALA", short_display_name="Bama"))
+    game = Game(sport="ncaaf", home_team_id=1, away_team_id=2,
+                kickoff_utc=NOW - timedelta(hours=10), status="final")
+    db_session.add(game)
+    db_session.flush()
+    db_session.add(GameScoreEvent(game_id=game.id, ts=NOW - timedelta(hours=7), status="final",
+                                  period=4, clock="0:00", home_score=24, away_score=21))
+    card = ParlayCard(year=2026, week=37, sport="ncaaf", kind="smart",
+                      built_at=NOW - timedelta(days=1), stake=Decimal("25.00"),
+                      dk_payout_est=Decimal("137.50"), rationale="an LSU anchor",
+                      status="alive", correlated=False)
+    db_session.add(card)
+    db_session.flush()
+    db_session.add(ParlayLeg(card_id=card.id, seq=1, game_id=game.id, market_type="prop",
+                             dk_american=-115, dk_decimal=Decimal("1.8696"),
+                             plain_text="Nussmeier 225+ passing yards", status="alive",
+                             player_id=7, stat="pass_yds", operator="over",
+                             threshold=Decimal("225.0")))
+    db_session.flush()
+
+    rule = _rules(db_session, env_settings)["parlay_pending_final"]
+    assert rule.level == "watch"
+    assert rule.value == pytest.approx(7 * 3600, abs=1)
+    assert rule.threshold == float(pulse.PENDING_FINAL_S)
+
+
+def test_parlay_pending_final_is_fine_inside_six_hours(db_session, env_settings):
+    from harness.db.models import GameScoreEvent, ParlayCard, ParlayLeg, Team
+
+    db_session.add(Team(sport="ncaaf", id=1, display_name="LSU", location="Baton Rouge",
+                        name="Tigers", abbreviation="LSU", short_display_name="LSU"))
+    db_session.add(Team(sport="ncaaf", id=2, display_name="Alabama", location="Tuscaloosa",
+                        name="Tide", abbreviation="ALA", short_display_name="Bama"))
+    game = Game(sport="ncaaf", home_team_id=1, away_team_id=2,
+                kickoff_utc=NOW - timedelta(hours=5), status="final")
+    db_session.add(game)
+    db_session.flush()
+    db_session.add(GameScoreEvent(game_id=game.id, ts=NOW - timedelta(hours=1), status="final",
+                                  period=4, clock="0:00", home_score=24, away_score=21))
+    card = ParlayCard(year=2026, week=37, sport="ncaaf", kind="smart",
+                      built_at=NOW - timedelta(days=1), stake=Decimal("25.00"),
+                      dk_payout_est=Decimal("137.50"), rationale="an LSU anchor",
+                      status="alive", correlated=False)
+    db_session.add(card)
+    db_session.flush()
+    db_session.add(ParlayLeg(card_id=card.id, seq=1, game_id=game.id, market_type="prop",
+                             dk_american=-115, dk_decimal=Decimal("1.8696"),
+                             plain_text="Nussmeier 225+ passing yards", status="alive",
+                             player_id=7, stat="pass_yds", operator="over",
+                             threshold=Decimal("225.0")))
+    db_session.flush()
+
+    assert _rules(db_session, env_settings)["parlay_pending_final"].level == "fine"
+
+
+def test_parlay_pending_final_is_not_evaluated_with_no_alive_card(db_session, env_settings):
+    assert _rules(db_session, env_settings)["parlay_pending_final"].level == "not_evaluated"
