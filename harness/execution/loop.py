@@ -157,10 +157,18 @@ class _MetricsAcc:
     skipped: dict = None
     filled_contracts: Decimal = ZERO
     loops_skipped: int = 0
+    #: 6D §1.2: the fair-calculation age this loop saw, one entry per market the loop priced
+    #: against, and the signal-to-order delay of each placement, per variant. Both are in-memory
+    #: values the loop already holds -- neither costs a query -- and both are cleared with the
+    #: rest of the accumulator when a batch is written.
+    fair_age_s: list = None
+    signal_to_order_ms: dict = None
 
     def __post_init__(self) -> None:
         self.cancelled = self.cancelled or {}
         self.skipped = self.skipped or {}
+        self.fair_age_s = self.fair_age_s or []
+        self.signal_to_order_ms = self.signal_to_order_ms or {}
 
     def reset(self) -> None:
         self.intents_considered = 0
@@ -169,6 +177,19 @@ class _MetricsAcc:
         self.skipped = {}
         self.filled_contracts = ZERO
         self.loops_skipped = 0
+        self.fair_age_s = []
+        self.signal_to_order_ms = {}
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    """The `percentile_disc` rule, in Python: the smallest observed value at or above the
+    quantile. An observed value, never an interpolation, so the number a reader sees is a
+    number the loop actually measured."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, math.ceil(q * len(ordered)) - 1))
+    return ordered[index]
 
 
 @dataclass
@@ -370,6 +391,12 @@ class Executor:
             ("exec.placed", acc.placed, {}),
             ("exec.filled_contracts", acc.filled_contracts, {}),
         ]
+        for quantile in (0.5, 0.95):
+            samples.append(("exec.fair_age_s", _percentile(acc.fair_age_s, quantile),
+                            {"q": f"p{int(quantile * 100)}"}))
+        for variant_id, delays in acc.signal_to_order_ms.items():
+            samples.append(("exec.signal_to_order_ms", _percentile(delays, 0.5),
+                            {"variant": variant_id, "q": "p50"}))
         # Fix round 1, M2: always written, NULL when there is nothing to report yet
         # (`MetricSample.value` is nullable precisely for these two), so the verify.md query
         # "every exec.* name younger than 5 minutes" never reads a legitimate gap as a miss.
@@ -437,6 +464,12 @@ class Executor:
         markets = {vm_id: self._market_now(row, dead_recorder or row.ticker in unreadable)
                    for vm_id, row in rows.items()}
         heartbeat["book_dirty_markets"] = sum(1 for m in markets.values() if m.dirty(now, s))
+        if not self.replay:
+            # 6D §1.2: fair-calculation age at the moment the loop used it. In memory, from the
+            # `MarketNow` rows this step already built -- no query.
+            self._metrics_acc.fair_age_s.extend(
+                age for age in (market.fair_age_s(now) for market in markets.values())
+                if age is not None)
 
         # 4. Fills.
         outcomes = self._simulate(session, working, markets, bases, recovering, now, stats,
@@ -1079,6 +1112,12 @@ class Executor:
         stats.placed += 1
         if not self.replay:
             self._metrics_acc.placed += 1
+            # 6D §1.2: decision to placement, per variant. `signal_created_at` is on the intent
+            # the placement came from, so this is `orders.placed_at - signals.created_at`
+            # without the join -- the two stamps are both in hand here.
+            delay_ms = int((now - intent.signal_created_at).total_seconds() * 1000)
+            self._metrics_acc.signal_to_order_ms.setdefault(intent.variant_id, []).append(
+                max(0, delay_ms))
         store.insert_event(session, order_id=order_id, intent_id=action.intent_id, ts=now,
                            kind="place", prob=action.prob, contracts=action.contracts,
                            fair_p_at_event=market.fair_p, replay=self.replay)

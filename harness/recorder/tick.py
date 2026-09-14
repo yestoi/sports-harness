@@ -188,6 +188,20 @@ _FAIR_VALUES_BY_FEED_KIND = text("""
     group by coalesce(feed_kind, 'none')
 """)
 
+#: 6D §1.2: transport lag, `odds_snapshots.fetched_at - book_last_update`, stored on the fair
+#: value as `feed_lag_s` (`harness/pricing/fair.py:285, 367`). Read from this run's own rows:
+#: `uq_fair_value_row` leads with `run_id` (`harness/db/schema.py:141`), so this is that key's
+#: range and nothing wider. `percentile_disc` picks an observed value rather than interpolating,
+#: which is what every other percentile in this tree does.
+_FEED_LAG_BY_FEED = text("""
+    select coalesce(feed_kind, 'none') as feed_kind,
+           percentile_disc(0.5) within group (order by feed_lag_s) as p50,
+           percentile_disc(0.95) within group (order by feed_lag_s) as p95
+    from fair_values
+    where run_id = :run_id and feed_lag_s is not null
+    group by coalesce(feed_kind, 'none')
+""")
+
 _REJECTED_BY_VARIANT_REASON = text("""
     select v.name, coalesce(s.rejection_reason, 'unknown'), count(*)
     from signals s join strategy_variants v on v.variant_id = s.variant_id
@@ -210,6 +224,11 @@ def _pricing_samples(session: Session, run_id: int, pricing: dict) -> list[tuple
         samples.append(("pricing.fair_values", count, label))
         if median_staleness is not None:
             samples.append(("pricing.staleness_median_s", float(median_staleness), label))
+    for feed_kind, p50, p95 in session.execute(_FEED_LAG_BY_FEED, {"run_id": run_id}).all():
+        for quantile, value in (("p50", p50), ("p95", p95)):
+            if value is not None:
+                samples.append(("pricing.feed_lag_s", int(value),
+                                {"feed": feed_kind, "q": quantile}))
     for variant, counts in (pricing or {}).get("signals", {}).items():
         samples.append(("pricing.candidates", counts.get("candidate", 0), {"variant": variant}))
     # 6D §1.5(b): the bridge series across the measurement boundary. `pricing.rejected` below
@@ -221,6 +240,37 @@ def _pricing_samples(session: Session, run_id: int, pricing: dict) -> list[tuple
             _REJECTED_BY_VARIANT_REASON, {"run_id": run_id}).all():
         samples.append(("pricing.rejected", count, {"variant": variant, "reason": reason}))
     return samples
+
+
+#: 6D §1.2: the previous whole hour's `ws.gaps` samples, through
+#: `ix_metric_samples_name_ts (name, ts desc)`. Bounded to one hour, and it reads the metric
+#: table rather than the tape -- `orderbook_events` is forbidden to every report path
+#: (`harness/ops/checks.py::assert_no_tape_reads`).
+_WS_GAP_MINUTES = text("""
+    select date_trunc('minute', ts) as minute, max(value) as gaps
+    from metric_samples
+    where name = 'ws.gaps' and ts >= :start and ts < :end
+    group by 1
+""")
+
+
+def tape_covered_frac(session: Session, now: datetime) -> float | None:
+    """The share of the previous whole hour's sampled minutes that carried no gap event.
+
+    Not "covered seconds" -- the tape's own gap rows are in `orderbook_events`, which no report
+    path may read -- but the same question answered from what the sink already publishes: a
+    minute in which `ws.gaps` was non-zero is a minute the tape was not continuous. The label
+    `basis = minutes_without_gap` says so on every sample, so no reader mistakes it for a
+    seconds-level measurement. None when the hour carries no samples at all, which is a
+    different thing from a fraction of 0 and is written as no sample rather than as a zero.
+    """
+    end = now.replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(hours=1)
+    rows = session.execute(_WS_GAP_MINUTES, {"start": start, "end": end}).all()
+    if not rows:
+        return None
+    clean = sum(1 for _minute, gaps in rows if not gaps)
+    return round(clean / len(rows), 4)
 
 
 def _recorder_samples(session: Session, run_id: int, tick_ms: int,
@@ -242,6 +292,21 @@ def _recorder_samples(session: Session, run_id: int, tick_ms: int,
         samples.append(("recorder.credits_remaining", ctx["remaining"], {}))
     samples.append(("recorder.trade_gaps", len(ctx["trade_gaps"]), {}))
     samples.extend(_pricing_samples(session, run_id, ctx.get("pricing") or {}))
+    # 6D §1.2: one sample an hour, on the first tick of the hour. The guard is a bounded read of
+    # the metric this very function writes, through `ix_metric_samples_name_ts`. `ctx["now"]` is
+    # set from `maybe_tick` (beside `ctx["run_id"]`); a caller that builds `ctx` by hand without
+    # it (a pre-existing direct-call test) gets no tape sample rather than a KeyError -- this
+    # function's other samples still depend only on the keys it already required.
+    tick_now = ctx.get("now")
+    if tick_now is not None:
+        hour_start = tick_now.replace(minute=0, second=0, microsecond=0)
+        already = session.execute(text(
+            "select 1 from metric_samples where name = \'ws.tape_covered_frac\' and ts >= :start "
+            "limit 1"), {"start": hour_start}).first()
+        if already is None:
+            covered = tape_covered_frac(session, tick_now)
+            if covered is not None:
+                samples.append(("ws.tape_covered_frac", covered, {"basis": "minutes_without_gap"}))
     return samples
 
 
@@ -965,6 +1030,7 @@ class Recorder:
             # or the end-of-tick metric batch succeeds).
             session.commit()
             ctx["run_id"] = run.id
+            ctx["now"] = now
             if not self._startup_checked:
                 self._startup_checked = True
                 if prior_sha is not None and prior_sha != self.s.build_sha:
