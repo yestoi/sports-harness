@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from harness.db.models import CheckResult
+from harness.ops.clock import exclude_unsynced_runs
 
 log = logging.getLogger(__name__)
 
@@ -175,8 +176,12 @@ CHECKS: list[Check] = [
         # Carried fix 16: unbounded, this scanned 475 MB and timed out. The 24 h bound rides
         # the additive `ix_fair_created_brin` (harness/db/schema.py); `ix_fair_game_type_created`
         # leads on game_id and cannot serve a bare created_at predicate.
+        # Fix 57: a run recorded under an unsynchronized clock produces exactly this kind of
+        # arithmetic (a staleness computed against a clock that then jumped), so its rows are
+        # excluded here rather than failing an invariant about the pricing path.
         "select count(*) from fair_values "
-        "where created_at > now() - interval '24 hours' and staleness_s < 0",
+        "where created_at > now() - interval '24 hours' and staleness_s < 0 "
+        f"and {exclude_unsynced_runs('fair_values.run_id')}",
         "== 0", _zero),
     Check(
         "runs_taker_side_missing_24h",
@@ -255,8 +260,10 @@ CHECKS: list[Check] = [
         # the registry and had been recording `skip` on timeout every day, so the invariant wall
         # was grey over a check that never ran. The 24 h bound rides `ix_fair_created_brin`,
         # exactly as fix 16 did for `fair_values_negative_staleness`.
+        # Fix 57, as for `fair_values_negative_staleness` above.
         "select count(*) from fair_values "
-        "where created_at > now() - interval '24 hours' and feed_lag_s < 0",
+        "where created_at > now() - interval '24 hours' and feed_lag_s < 0 "
+        f"and {exclude_unsynced_runs('fair_values.run_id')}",
         "== 0", _zero),
     Check(
         "benchmarks_source_after_target",

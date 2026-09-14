@@ -21,6 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from harness.db.models import ReportCell, ReportRun
+from harness.ops.clock import exclude_unsynced_runs
 from harness.report import criteria_hash
 from harness.report.amendments import AMENDMENTS
 from harness.report.tables import (
@@ -341,11 +342,12 @@ _PREVIOUS_HASH = text("""
 #: `run_id`, so the run an order came from is its gap snapshot's. An order with no gap snapshot
 #: cannot be attributed to a run and is not counted, which is the honest answer rather than a
 #: guess.
-_ELIGIBILITY_ORDERS = text("""
+_ELIGIBILITY_ORDERS = text(f"""
     select count(*) from orders o
     join market_gap_snapshots g on g.id = o.gap_snapshot_id
     where o.replay = false and o.placed_at >= :start and o.placed_at < :end
       and g.run_id between :lo and :hi
+      and {exclude_unsynced_runs('g.run_id')}
 """)
 
 #: Bound: the same week window `_T1_SIGNALS` (`harness/report/tables.py:298`) and `_T1_COVERAGE`
@@ -354,10 +356,11 @@ _ELIGIBILITY_ORDERS = text("""
 #: render and the hourly provisional stage that shares it already perform twice. This adds two
 #: more of the same scan per render (one per amendment that carries a range), not a new kind of
 #: read. Making it an index seek is a schema change and is out of scope (§2, no DDL).
-_ELIGIBILITY_SIGNALS = text("""
+_ELIGIBILITY_SIGNALS = text(f"""
     select count(*) from signals
     where replay = false and created_at >= :start and created_at < :end
       and run_id between :lo and :hi
+      and {exclude_unsynced_runs('signals.run_id')}
 """)
 
 #: The annotator writes one `report_annotations` row per `report_runs` row, keyed off whichever

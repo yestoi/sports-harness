@@ -36,6 +36,8 @@ from sqlalchemy.orm import Session
 
 from harness import telemetry
 from harness.db.models import JobRun
+from harness.ops.clock import CLOCK_WARN_PERIOD_S, clock_synchronized
+from harness.recorder.store import sweep_interrupted
 
 log = logging.getLogger(__name__)
 
@@ -168,15 +170,63 @@ class Settler:
         self._kalshi = kalshi
         self._clock = clock
         self._monotonic = monotonic
+        # Fix 57, read on the monotonic clock for the reason `harness/recorder/tick.py` gives:
+        # the wall clock is what is untrustworthy during an unsynchronized spell.
+        self._clock_warned: float | None = None
+        # Fix 58: the ghost sweep runs once per process, on the first run that proceeds.
+        self._swept = False
 
-    def run(self) -> JobRun:
+    def _clock_ready(self) -> bool:
+        """Fix 57: may this run write at all? False while the kernel reports its clock
+        unsynchronized -- the job then writes no `job_runs` row and does no settling, because a
+        settlement, a ledger row or an equity snapshot stamped from a clock the kernel disowns
+        cannot be told apart afterwards from work done at that time. One warning a minute at
+        most. True when the clock is synchronized *and* when the probe cannot answer
+        (`clock_synchronized()` is None), so an unavailable probe changes nothing."""
+        if clock_synchronized() is not False:
+            self._clock_warned = None
+            return True
+        mono = self._monotonic()
+        if self._clock_warned is None or mono - self._clock_warned >= CLOCK_WARN_PERIOD_S:
+            self._clock_warned = mono
+            log.warning("clock_unsynced: the kernel reports an unsynchronized clock; "
+                        "this settle run writes nothing")
+        return False
+
+    def _sweep_ghost_job_runs(self, session: Session, process_start: datetime) -> None:
+        """Fix 58, once per process: every `job_runs` row left `running` by a killed process
+        (the settle job's own, and the futures snapshot's -- they share this table and this
+        process). The hook is the first run that proceeds, guarded by `self._swept`, for the
+        reasons `Recorder._sweep_ghost_runs` gives: the sweep writes `finished_at`, so it must
+        sit behind fix 57's clock guard, and `build_settler` opens no session. A failure here
+        is logged and the settlement goes on."""
+        if self._swept:
+            return
+        self._swept = True
+        try:
+            swept = sweep_interrupted(session, JobRun, process_start)
+            session.commit()
+            if swept:
+                log.warning("swept %d stale running job_runs to interrupted at process start",
+                            swept)
+        except Exception:  # noqa: BLE001 - startup housekeeping never fails the job
+            log.exception("ghost job_run sweep failed")
+            session.rollback()
+
+    def run(self) -> JobRun | None:
+        """One settlement pass, or None when fix 57's clock guard held this one back (the
+        scheduler ignores the return value; `harness settle` reports the skip)."""
         from harness.settlement.report_wtd import is_due as report_wtd_is_due
         from harness.settlement.settle import stale_unsettled
 
+        if not self._clock_ready():
+            return None
         stages = load_stages()
         stage_fns = dict(stages)
         now = self._clock()
         with self._factory() as session:
+            # Fix 58, before this run's own row exists so the sweep can never see it.
+            self._sweep_ghost_job_runs(session, now)
             row = JobRun(job="settle", started_at=now, status="running", notes={})
             session.add(row)
             session.commit()

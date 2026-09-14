@@ -19,6 +19,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from harness.db.models import Run, StrategyVariant
+from harness.ops.clock import UNSYNCED_NOTE_KEY, UNSYNCED_NOTE_VALUE, notes_are_unsynced
 
 WINDOW_24H = timedelta(hours=24)
 #: The Floor funnel's window (spec §2.2).
@@ -62,9 +63,11 @@ def recent_run_notes(session: Session, cutoff: datetime, limit: int | None = Non
     """
     if limit is None:
         stmt = select(Run.notes).where(Run.started_at >= cutoff).order_by(desc(Run.id))
-        return session.execute(stmt).scalars().all()
+        return [notes for notes in session.execute(stmt).scalars().all()
+                if not notes_are_unsynced(notes)]
     stmt = select(Run.started_at, Run.notes).order_by(desc(Run.id)).limit(limit)
-    return [notes for started_at, notes in session.execute(stmt).all() if started_at >= cutoff]
+    return [notes for started_at, notes in session.execute(stmt).all()
+            if started_at >= cutoff and not notes_are_unsynced(notes)]
 
 
 def recent_runs(session: Session, cutoff: datetime,
@@ -87,10 +90,11 @@ def recent_runs(session: Session, cutoff: datetime,
     if limit is None:
         stmt = (select(Run.started_at, Run.notes)
                 .where(Run.started_at >= cutoff).order_by(desc(Run.id)))
-        return [(started_at, notes) for started_at, notes in session.execute(stmt).all()]
+        return [(started_at, notes) for started_at, notes in session.execute(stmt).all()
+                if not notes_are_unsynced(notes)]
     stmt = select(Run.started_at, Run.notes).order_by(desc(Run.id)).limit(limit)
     return [(started_at, notes) for started_at, notes in session.execute(stmt).all()
-            if started_at >= cutoff]
+            if started_at >= cutoff and not notes_are_unsynced(notes)]
 
 
 def recent_runs_pricing(session: Session, cutoff: datetime, limit: int | None = None,
@@ -109,11 +113,17 @@ def recent_runs_pricing(session: Session, cutoff: datetime, limit: int | None = 
     `Index Scan Backward using runs_pkey`, `Limit N`, no predicate -- and drops the transferred
     payload to the one part the caller reads.
     """
+    # Fix 57's exclusion rides the projection: `notes->'clock'` comes back beside
+    # `notes->'pricing'` so an unsynchronized run's pricing counts are dropped here too,
+    # without deserialising the rest of the document (design review I4's whole point).
+    unsynced = Run.notes[UNSYNCED_NOTE_KEY].astext == UNSYNCED_NOTE_VALUE
     if limit is None:
-        stmt = (select(Run.started_at, Run.notes["pricing"])
+        stmt = (select(Run.started_at, Run.notes["pricing"], unsynced)
                 .where(Run.started_at >= cutoff).order_by(desc(Run.id)))
-        return [(started_at, pricing) for started_at, pricing in session.execute(stmt).all()]
-    stmt = select(Run.started_at, Run.notes["pricing"]).order_by(desc(Run.id)).limit(limit)
+        return [(started_at, pricing) for started_at, pricing, bad in session.execute(stmt).all()
+                if not bad]
+    stmt = (select(Run.started_at, Run.notes["pricing"], unsynced)
+            .order_by(desc(Run.id)).limit(limit))
     if stream:
         # Fix 49 round 3: the weekly report's t13 counts these rows and keeps none of them, but
         # `limit` is 25,000 and each `pricing` block is a decoded JSONB document -- materialised,
@@ -125,8 +135,8 @@ def recent_runs_pricing(session: Session, cutoff: datetime, limit: int | None = 
         # `recent_runs`). `stream` applies to the capped read only: without a `limit` the
         # branch above has already returned the list.
         return _iter_recent_runs_pricing(session, stmt, cutoff)
-    return [(started_at, pricing) for started_at, pricing in session.execute(stmt).all()
-            if started_at >= cutoff]
+    return [(started_at, pricing) for started_at, pricing, bad in session.execute(stmt).all()
+            if started_at >= cutoff and not bad]
 
 
 def _iter_recent_runs_pricing(session: Session, stmt, cutoff: datetime):
@@ -138,8 +148,11 @@ def _iter_recent_runs_pricing(session: Session, stmt, cutoff: datetime):
     """
     result = session.execute(
         stmt, execution_options={"stream_results": True, "max_row_buffer": 500}).yield_per(500)
-    for started_at, pricing in result:
-        if started_at >= cutoff:
+    # The third projected column is fix 57's `notes->'clock'` flag: an unsynchronized run's
+    # pricing counts are dropped here exactly as in the materialised branches, and the pairs
+    # yielded are unchanged for every other run.
+    for started_at, pricing, bad in result:
+        if started_at >= cutoff and not bad:
             yield started_at, pricing
 
 

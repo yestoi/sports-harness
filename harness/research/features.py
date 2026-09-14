@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from harness.ops.clock import exclude_unsynced_runs
 from harness.research.text import sanitize_model_text
 
 log = logging.getLogger(__name__)
@@ -48,38 +49,46 @@ _CT = ZoneInfo("America/Chicago")
 #: because the block it lands in is a prompt.
 _FORECAST_MAX = 80
 
-_FAIR_HISTORY = text("""
+#: Fix 57: every read in this module that comes off a run-keyed table drops the rows of a run
+#: recorded under an unsynchronized kernel clock (`exclude_unsynced_runs`). These are the
+#: numbers a model is handed as the market's history, so a row stamped at a time it did not
+#: happen at is worse here than a missing one.
+_FAIR_HISTORY = text(f"""
     select date_bin(:bucket, created_at, :origin) as ts,
            avg(fair_p) as fair_p, count(*) as n
     from fair_values
     where game_id = :game_id and market_type = :market_type
       and created_at > :since and created_at <= :as_of
+      and {exclude_unsynced_runs('fair_values.run_id')}
     group by 1 order by 1
 """)
 
-_VENUE_HISTORY = text("""
+_VENUE_HISTORY = text(f"""
     select date_bin(:bucket, fetched_at, :origin) as ts,
            avg((yes_bid + yes_ask) / 2.0) as mid, count(*) as n
     from venue_quotes
     where venue_market_id = :venue_market_id
       and fetched_at > :since and fetched_at <= :as_of
       and yes_bid is not null and yes_ask is not null
+      and {exclude_unsynced_runs('venue_quotes.run_id')}
     group by 1 order by 1
 """)
 
-_BOOK_HISTORY = text("""
+_BOOK_HISTORY = text(f"""
     select book, date_bin(:bucket, fetched_at, :origin) as ts,
            avg(1.0 / price_decimal) as implied, count(*) as n
     from odds_snapshots
     where game_id = :game_id and market_type = :market_type
       and fetched_at > :since and fetched_at <= :as_of and price_decimal > 0
+      and {exclude_unsynced_runs('odds_snapshots.run_id')}
     group by 1, 2 order by 1, 2
 """)
 
-_NEWEST_FAIR = text("""
+_NEWEST_FAIR = text(f"""
     select fair_p, disagreement, staleness_s, fair_source, created_at
     from fair_values
     where game_id = :game_id and market_type = :market_type and created_at <= :as_of
+      and {exclude_unsynced_runs('fair_values.run_id')}
     order by created_at desc limit 1
 """)
 
@@ -101,11 +110,12 @@ _NEWEST_STATUS = text("""
     order by ts desc limit 1
 """)
 
-_NEWEST_WEATHER = text("""
+_NEWEST_WEATHER = text(f"""
     select fetched_at, period_start, temperature_f, wind_mph, wind_dir, precip_pct,
            short_forecast, roof
     from weather_snapshots
     where game_id = :game_id and fetched_at <= :as_of
+      and {exclude_unsynced_runs('weather_snapshots.run_id')}
     order by fetched_at desc limit 1
 """)
 

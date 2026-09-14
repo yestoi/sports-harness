@@ -1,11 +1,48 @@
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import RawResponse, Run, SourceState, TradeWatermark
 from harness.feeds.http import FetchResult
+
+log = logging.getLogger(__name__)
+
+#: Carried fix 58: what a swept row's `notes` records, and the status it lands in.
+INTERRUPTED_STATUS = "interrupted"
+INTERRUPTED_NOTE = "process restart"
+
+
+def sweep_interrupted(session: Session, model, process_start: datetime) -> int:
+    """Mark every `running` row of `model` that no live process can own as `interrupted`.
+
+    Carried fix 58: a process killed mid-run leaves its `runs` / `job_runs` row `running`
+    forever, and every reader that counts `running` or takes `max(started_at)` per status then
+    sees a ghost. At its own start a process owns none of the rows that were already running,
+    so each one is marked `interrupted` with `finished_at` at the process start and the reason
+    in `notes`. `started_at < process_start` is the whole guard: a row started at or after this
+    instant belongs to a live run (this process's own, or a second process's) and is never
+    touched, no other status is touched, and nothing is ever deleted.
+
+    `model` is the caller's *own* table -- `Run` for the recorder, `JobRun` for the settler --
+    which is why this takes one rather than sweeping both: neither process may write the
+    other's rows. It lives here, beside `start_run`/`finish_run`, because this is the module
+    that owns the lifecycle of a run row; `harness/ops/housekeeping.py` already reads this
+    module from the settlement side, so the import direction is an established one.
+
+    Returns the number of rows swept. `notes` is merged, not replaced (`||`), so a row that
+    carried notes before it was killed keeps them.
+    """
+    stmt = (update(model)
+            .where(model.status == "running", model.started_at < process_start)
+            .values(status=INTERRUPTED_STATUS, finished_at=process_start,
+                    notes=model.notes.op("||")(
+                        func.jsonb_build_object("interrupted", INTERRUPTED_NOTE)))
+            .execution_options(synchronize_session=False))
+    return session.execute(stmt).rowcount
 
 
 def start_run(session: Session, now: datetime) -> Run:
