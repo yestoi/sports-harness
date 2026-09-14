@@ -785,17 +785,26 @@ def test_settler_samples_recorder_rss_after_its_final_probe(db_session, env_sett
         return 0
 
     def rss():
-        # Fix 49 round 3: `telemetry.malloc_trim` reads RSS either side of its trim (and this
-        # stub stands in for both), so the stub is called more than once per run where libc has
-        # the symbol. What the test pins is unchanged and is the point of it: every recorder RSS
-        # read in the settle job happens *after* the final `stale_unsettled` probe, so the
-        # sample describes the process once all settle work is done.
+        # Fix 49 round 3: every recorder RSS read in the settle job happens *after* the final
+        # `stale_unsettled` probe, so the sample describes the process once all settle work is
+        # done. `telemetry.malloc_trim` reads RSS either side of its trim, so this stub stands
+        # in for those two reads as well as for the sample's own.
         assert seen and seen[0] == "stale"
         seen.append("rss")
         return 123.46
 
+    def malloc_trim():
+        # Review M5. Stubbed with the real function's shape -- read RSS, trim, read RSS -- so
+        # `seen` records where the trim sits among the RSS reads, and so the ordering is the
+        # same here as on a platform whose libc has no `malloc_trim` symbol at all.
+        rss()
+        seen.append("trim")
+        rss()
+        return 4.25
+
     monkeypatch.setattr(Settler, "_stale", stale)
     monkeypatch.setattr(job_module.telemetry, "rss_mb", rss)
+    monkeypatch.setattr(job_module.telemetry, "malloc_trim", malloc_trim)
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     row = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
     assert row.status == "ok"
@@ -803,7 +812,12 @@ def test_settler_samples_recorder_rss_after_its_final_probe(db_session, env_sett
     assert sample.source == "recorder" and sample.labels == {"phase": "settle"}
     assert float(sample.value) == 123.5
     assert sample.ts == NOW
-    # One probe, and every RSS read after it: the trim's two reads and the sample's one where
-    # libc has `malloc_trim`, the sample's one alone where it does not.
-    assert seen.count("stale") == 1 and seen[0] == "stale"
-    assert seen.count("rss") in (1, 3), seen
+    trim_sample = db_session.query(MetricSample).filter_by(name="recorder.malloc_trim_mb").one()
+    assert float(trim_sample.value) == 4.25 and trim_sample.labels == {"phase": "settle"}
+    # Review M5: the order, not just the membership. One stale probe, and it comes first; then
+    # the trim's own two RSS reads either side of the trim; then the sample's read -- *after*
+    # the trim, which is the property `harness/settlement/job.py` claims and the reason the
+    # deployed `recorder.rss_mb` series carries the trimmed figure. Move `telemetry.malloc_trim()`
+    # below the `recorder.rss_mb` record in `Settler.run` and this assertion sees
+    # ["stale", "rss", "rss", "trim", "rss"] and fails.
+    assert seen == ["stale", "rss", "trim", "rss", "rss"], seen
