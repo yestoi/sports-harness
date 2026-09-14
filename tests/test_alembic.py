@@ -452,6 +452,33 @@ def test_the_phase6b_ledger_ddl_agrees_between_schema_and_migration():
         assert statement in _COLUMN_DDL, statement
 
 
+def test_the_phase6b_tables_are_in_both_catalogues(two_databases):
+    """§1.5's two interval tables and §1.8's `order_rescores` are models *and* revision
+    statements, added in the same task: the catalogue diff above fails if either half lands
+    without the other, and this names which table went missing when it does.
+
+    `order_rescores`' composite primary key is asserted by name because it is the whole of the
+    table's access path -- it is what makes a resumed run a no-op (§1.8) -- and because a key
+    that silently became `(order_id)` would make one order's second correction set overwrite
+    its first.
+    """
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        insp = inspect(engine)
+        names = set(insp.get_table_names())
+        assert {"market_dirty_intervals", "market_observation_intervals",
+                "order_rescores"} <= names
+        assert tuple(insp.get_pk_constraint("order_rescores")["constrained_columns"]) == (
+            "order_id", "correction_ids", "cancel_policy")
+        # No index of its own: the primary key is the only access path, so the model declares
+        # no `__table_args__` and `harness/db/schema.py`'s `_INDEX_DDL` gains nothing.
+        assert [i["name"] for i in insp.get_indexes("order_rescores")] == []
+
+
 def test_the_phase6b_ledger_columns_are_nullable_with_no_default(scratch_db):
     """Spec §2, row 1: nullable with no default, so no pre-6B order is backfilled and the
     boundary invariant (`every ledger column null at or below the boundary order id`) holds by
