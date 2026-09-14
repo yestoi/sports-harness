@@ -24,6 +24,7 @@ from sqlalchemy import text
 
 from harness.db.models import (Game, ParlayCard, ParlayLedger, ParlayLeg, ParlayPlacement,
                                PlayerStatEvent)
+from harness.research.spend import chicago_day
 from harness.settlement.job import Budget, STAGE_MODULES
 from harness.settlement.parlay_grade import MIN_BUDGET_S, grade_parlays
 from tests.conftest import PARLAY_NOW, _make_graded_card, _next_id, _pf_leg
@@ -238,8 +239,16 @@ def _legs(session, card):
     return session.query(ParlayLeg).filter_by(card_id=card.id).order_by(ParlayLeg.seq).all()
 
 
-def _prop_card(session, *, stat, line, operator, correlated=False):
-    """One placed card with a single prop leg on a game that has not finished yet."""
+_UNSET = object()
+
+
+def _prop_card(session, *, stat, line, operator, correlated=False, period="game",
+               player_id=_UNSET):
+    """One placed card with a single prop leg on a game that has not finished yet.
+
+    `period` and `player_id` are the fix-round-1 handles: a leg the harness cannot grade (a
+    period prop, D3; a leg with no player) has to reach `grade_parlays` to be counted.
+    """
     card = _make_graded_card(session, status="placed", built_at=PARLAY_NOW)
     card.correlated = correlated
     # `pending`, not the T12 fixtures' `alive`: a prop leg has nothing recorded against it until
@@ -249,9 +258,9 @@ def _prop_card(session, *, stat, line, operator, correlated=False):
     legs = _legs(session, card)
     for leg in legs:
         leg.side_team_id = None          # a prop leg names a player, not a side
-        leg.player_id = _next_id()
+        leg.player_id = _next_id() if player_id is _UNSET else player_id
         leg.stat = stat
-        leg.period = "game"
+        leg.period = period
         leg.operator = operator
     _placement(session, card, PARLAY_NOW)
     session.flush()
@@ -319,6 +328,13 @@ def test_an_owner_voided_leg_grades_void_and_the_card_re_grades(db_session):
     _final_game(db_session, card, home=24, away=21)
     grade_parlays(db_session, T0, _budget())
     assert db_session.get(ParlayCard, card.id).status in ("cashed", "void")
+    # Fix round 1, review M1: "exactly as it treats a pushed line" means the stake comes back,
+    # once, as this stage's own figure, in the card's week -- assert it rather than the
+    # two-way status alone.
+    rows = db_session.query(ParlayLedger).filter(
+        ParlayLedger.card_id == card.id, ParlayLedger.kind != "stake").all()
+    assert [(r.kind, r.source, r.amount, r.year, r.week) for r in rows] == \
+        [("void", "computed", card.stake, card.year, card.week)]
 
 
 def test_every_computed_ledger_row_says_so(db_session):
@@ -346,3 +362,68 @@ def test_every_ledger_row_carries_the_card_s_week_not_the_settlement_week(db_ses
     grade_parlays(db_session, T0_NEXT_WEEK, _budget())
     rows = db_session.query(ParlayLedger).filter_by(card_id=card.id).all()
     assert {(r.year, r.week) for r in rows} == {(2026, 37)}
+    # Fix round 1, review M7: the stake row above was written by this file's own helper, so name
+    # the discriminating row -- the `return` the grader wrote -- and the week it must not carry.
+    settled = chicago_day(T0_NEXT_WEEK).isocalendar()
+    ret = [r for r in rows if r.kind == "return"]
+    assert [(r.year, r.week) for r in ret] == [(2026, 37)]
+    assert (settled.year, settled.week) != (2026, 37)
+
+
+# --- Fix round 1 (review I2, I3, I4, M5) ------------------------------------------------------
+
+
+def test_a_correction_that_lowers_a_value_is_the_one_that_grades(db_session):
+    """Review I2: `_NEWEST_STAT` exists for this. ESPN's summary carries no per-stat timestamp
+    and sequential polls return the source's current state, so a later poll reporting a lower
+    value is a correction (models.py, addendum 4.3), and it is the correction -- not the high
+    water mark -- that settles the leg. 240 then 218 on an `over 225` leg is a miss."""
+    card, legs = _prop_card(db_session, stat="pass_yds", line=Decimal("225"), operator="over")
+    _final_game(db_session, card, home=24, away=21)
+    _stat_row(db_session, legs[0], value=Decimal("240"), ts=T0 - timedelta(hours=1))
+    _stat_row(db_session, legs[0], value=Decimal("218"), ts=T0, correction=True)
+    counts = grade_parlays(db_session, T0, _budget()).counts
+    assert legs[0].status == "miss" and counts["stat_missing"] == 0
+    assert db_session.get(ParlayCard, card.id).status == "busted"
+
+
+def test_a_recorded_zero_touchdowns_at_final_is_a_miss_not_a_missing_stat(db_session):
+    """Review I3 (controller ruling): the collector writes a value-0 row for every listed player
+    of a final game who scored no touchdown, so zero and absence are different facts. A recorded
+    zero at final grades the `anytime_td` leg a miss; only an absent row is `stat_missing`."""
+    card, legs = _prop_card(db_session, stat="anytime_td", line=None, operator="yes")
+    _final_game(db_session, card, home=24, away=21)
+    _stat_row(db_session, legs[0], value=Decimal("0"), ts=T0)
+    counts = grade_parlays(db_session, T0, _budget()).counts
+    assert legs[0].status == "miss" and counts["stat_missing"] == 0
+    assert db_session.get(ParlayCard, card.id).status == "busted"
+
+
+def test_a_period_prop_is_counted_an_error_and_never_graded(db_session):
+    """Review I4 (controller ruling): release one grades the full game only (D3). A `1h` leg
+    graded off the game-long value would be a wrong money grade with no error at all, so it
+    raises: the card is isolated, left for the next pass, and counted in `errors`."""
+    card, legs = _prop_card(db_session, stat="pass_yds", line=Decimal("120"), operator="over",
+                            period="1h")
+    _final_game(db_session, card, home=24, away=21)
+    _stat_row(db_session, legs[0], value=Decimal("240"), ts=T0)
+    # Committed, not merely flushed: `grade_parlays` rolls the failing card's savepoint back
+    # (and the session with it), so an uncommitted fixture would vanish with the error it is
+    # about -- the same reason `placed_card_malformed_beside_a_good_one` commits.
+    db_session.commit()
+    counts = grade_parlays(db_session, T0, _budget()).counts
+    assert counts["errors"] == 1 and counts["stat_missing"] == 0
+    assert db_session.get(ParlayLeg, legs[0].id).status == "pending"
+    assert db_session.get(ParlayCard, card.id).status == "placed"
+
+
+def test_a_prop_leg_with_no_player_is_an_error_not_a_quiet_feed(db_session):
+    """Review M5: a leg the harness can never grade must not hide in `stat_missing`, which the
+    operator reads as "the feed has gone quiet"."""
+    card, legs = _prop_card(db_session, stat="rush_yds", line=Decimal("50"), operator="atleast",
+                            player_id=None)
+    _final_game(db_session, card, home=24, away=21)
+    db_session.commit()                  # see the period test above
+    counts = grade_parlays(db_session, T0, _budget()).counts
+    assert counts["errors"] == 1 and counts["stat_missing"] == 0
+    assert db_session.get(ParlayCard, card.id).status == "placed"

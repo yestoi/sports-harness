@@ -234,3 +234,26 @@ def test_the_game_line_rules_are_unchanged():
     ml = LegSpec("ml", 1, None, None)
     assert leg_outcome(ml, FINAL) == "hit"
     assert needs(ml, LIVE) == "any win does it"
+
+
+def test_a_prop_sitting_on_a_whole_number_line_is_called_a_push():
+    """Fix round 1, review I6: this module's contract (lines 9-10) is that a push on a
+    whole-number line is called a push, in progress and at the final whistle alike. A live slip
+    reading `reached 225 of 225` about a leg that will refund is lying to its reader. `atleast`
+    is the exception, because `225+` at exactly 225 is a hit."""
+    assert needs(PASS, LIVE, _stat(225)) == "on the line · push as it stands"
+    assert needs(UNDER, LIVE, _stat(81, stat="rec_yds")) == "on the line · push as it stands"
+    assert needs(ATLEAST, LIVE, _stat(50, stat="rush_yds")) == \
+        "reached 50 of 50 · provisional until final"
+
+
+def test_a_period_prop_is_never_graded_from_the_game_long_value():
+    """Fix round 1, review I4 (controller ruling): release one grades the full game only (D3).
+    A `1h` leg graded off the game-long stat would be a wrong money grade with no error, so it
+    raises -- `grade_parlays` isolates the card and counts `errors` -- and the live phrase says
+    there is no rule rather than quoting a number that is not this leg's."""
+    half = LegSpec("prop", None, None, Decimal("120"), stat="pass_yds", operator="over",
+                   player_id=7, period="1h")
+    with pytest.raises(ValueError):
+        leg_outcome(half, FINAL, _stat(240, final=True))
+    assert needs(half, LIVE, _stat(240)) == "no rule for this bet"

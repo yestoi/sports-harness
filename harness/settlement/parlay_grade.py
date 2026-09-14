@@ -25,17 +25,27 @@ counted in `counts["errors"]`, and every other card in the pass still grades. A 
 game must never cost the pass every card it already settled.
 
 **Prop legs grade from the stat, never from absence** (phase 4.6, addendum 4.4). A prop leg's
-result is the newest `player_stat_events` row for its `(game_id, player_id, stat)`, read once its
-game is final; a stat that never arrived, or one recorded before the final box score, leaves the
-leg pending and is counted `stat_missing` rather than graded a miss. A feed that goes quiet must
-never bust a slip the book will pay.
+result is the newest recorded `player_stat_events` value for its `(game_id, player_id, stat)`,
+graded once the *game* is final; only a total absence -- no row at all -- leaves the leg pending
+and counted `stat_missing`. A feed that goes quiet must never bust a slip the book will pay.
+
+**Finality is the game's, not the stat's** (review I1). Nothing on a stat row says "this came
+from the final box score", so the newest value grades the leg the moment `games.status` reaches
+`FINAL_STATUSES`, whatever its age: a value read at the two-minute warning is what the grader
+sees if the collector's post-final polls (addendum 4.3, up to 6 h) have not landed yet. A later
+poll writes a newer row and the next hourly pass re-reads it, but a leg already settled is not
+re-graded -- the owner's `leg_status:<seq>` correction (addendum 5.2) is the remedy until the
+collector can mark the final box score.
 
 **Every row this stage writes says `computed`** (D18) and carries the **card's** `(year, week)`
 (D20), not the settlement day's. The owner's own figures -- the stake, a corrected stake, a
-confirmed return or void -- are written `confirmed` by the placement and correction routes, and
-`_pay`'s one-row guard matches on `source`, so the two can sit side by side for one kind. A
-`correlated` card gets no computed return at all: multiplying its legs assumes an independence
-they do not have, and a number the book never quoted is not a settlement figure.
+confirmed return or void -- are written `confirmed` by the placement and correction routes.
+`_pay` still writes **one row per `(card_id, kind)`** (review I5): a confirmed result replaces
+this stage's computed row rather than landing beside it, which is Task 9/12's job, because every
+reader of `parlay_ledger` (`_SEASON`, `_BEST_HIT`, `_WEEK_STAKED`) sums by kind with no `source`
+filter and a second row for one kind would be counted twice. A `correlated` card gets no
+computed return at all: multiplying its legs assumes an independence they do not have, and a
+number the book never quoted is not a settlement figure.
 
 **The vocabulary is `parlay_cards.status`'s own**: `cashed | busted | void`. Never `won | lost`
 -- the shipped Ticket builder filters on that vocabulary in five places and a card outside it
@@ -67,10 +77,15 @@ _GAME = text("select status, home_team_id, away_team_id, home_score, away_score 
              "from games where id = :game_id")
 #: Bound: one leg's `(game_id, player_id, stat)`, newest row only. Index:
 #: `ix_player_stat_game_player_ts (game_id, player_id, ts desc)` -- the head of one bounded run.
+#: The `stat` filter is residual (the index does not carry it), so the run walked is one
+#: player's rows in one game: a few dozen at most, and the whole run only when nothing matches.
+#: `id desc` breaks a tie on `ts` (a re-poll inside one second, a backfill): the arbitrary
+#: choice would otherwise grade money. `ts` and `correction` are read by T7's surface (the fetch
+#: age and the `corrected from 12 to 8` note), not by grading, which needs `value` alone.
 _NEWEST_STAT = text("""
     select value, ts, correction from player_stat_events
     where game_id = :game_id and player_id = :player_id and stat = :stat
-    order by ts desc limit 1
+    order by ts desc, id desc limit 1
 """)
 
 #: A ledger row's week is the card's own, never the settlement day's (D20); the shape matches
@@ -100,13 +115,17 @@ def _score_state(game) -> ScoreState | None:
 def _stat_state(session: Session, leg: ParlayLeg, score: ScoreState | None) -> StatState | None:
     """The newest recorded value of this prop leg's stat, or `None` when none exists yet.
 
-    `final` is the *game's* (addendum 4.4): a value read before the final box score is
-    provisional, because a later poll may correct it downward, so `leg_outcome` refuses to
-    settle on it. `source_ts` stays null -- ESPN's summary carries no per-stat timestamp
-    (addendum 4.3) -- and the row's own `ts` is the fetch moment the surface ages from.
+    `final` is the *game's*, read from its status (addendum 4.4 and review I1): no column marks a
+    row as the final box score's, so the newest value is what grades once the game is over.
+    `source_ts` stays null -- ESPN's summary carries no per-stat timestamp (addendum 4.3) -- and
+    the row's own `ts` is the fetch moment the surface ages from.
+
+    A prop leg with no player or no stat is data this stage cannot grade, not a quiet feed:
+    it raises (review M5), `grade_parlays` isolates the card and counts `errors`, and the leg
+    never hides in `stat_missing`, which the operator reads as "the feed has gone quiet".
     """
     if leg.player_id is None or leg.stat is None:
-        return None
+        raise ValueError(f"prop leg {leg.id} has no player_id/stat to grade")
     row = session.execute(_NEWEST_STAT, {"game_id": leg.game_id, "player_id": leg.player_id,
                                          "stat": leg.stat}).first()
     if row is None:
@@ -125,9 +144,12 @@ def _grade_leg(session: Session, leg: ParlayLeg, now: datetime, counts: dict) ->
     outcome = leg_outcome(spec, score, stat)
     if outcome is None:
         if spec.market_type == "prop" and score is not None and score.status in FINAL_STATUSES:
-            # The game is over and the stat never arrived (or arrived before the final box
-            # score): absence is not a miss (addendum 4.4). The leg stays pending, the card
-            # stays `alive`, and the count is what the hung-leg surface and the WATCH rule read.
+            # The game is over and no stat row exists: absence is not a miss (addendum 4.4). The
+            # leg stays ungraded, the card stays `alive`, and the count is what the hung-leg
+            # surface and the WATCH rule read. `score is not None` is doing work: a `final` game
+            # whose score was never recorded leaves the leg ungraded *and* uncounted here, so
+            # `stat_missing == 0` does not mean "no hung legs" -- `parlay_pending_final`
+            # (addendum 1.3) is the rule that catches that one.
             counts["stat_missing"] += 1
         return leg.status
     # A refund is not a win: `push` and `void` both land on the leg as `void`.
@@ -230,17 +252,19 @@ def _settle_card(session: Session, card: ParlayCard, legs, now: datetime, counts
 
 def _pay(session: Session, card: ParlayCard, kind: str, amount: Decimal, iso, now,
          source: str = "computed") -> None:
-    """One ledger row per `(card, kind, source)`.
+    """One ledger row per `(card_id, kind)`, carrying where its figure came from.
 
-    The guard matches on `source` as well as `kind` so the owner's `confirmed` row (the
-    correction route's, addendum 5.2) can land beside this stage's `computed` one for the same
-    kind: the two say different things -- what DraftKings paid, and what the harness derived --
-    and the surface shows the confirmed figure while the computed one keeps the expectation
-    honest (D18).
+    The guard matches on `(card_id, kind)` alone (review I5). `source` says whether the harness
+    derived the figure (`computed`) or the owner typed it (`confirmed`, D18), but it is not part
+    of the key: `parlay_ledger`'s readers (`_SEASON`, `_BEST_HIT`, `_WEEK_STAKED`) sum by kind
+    with no `source` filter, so a confirmed row beside a computed one for the same kind would be
+    counted twice in the season tiles and the week's stake. The owner's confirmed result
+    **replaces** this stage's computed row -- the correction route's job (addendum 5.2, Tasks 9
+    and 12) -- and never adds to it.
     """
     exists = session.execute(text(
-        "select 1 from parlay_ledger where card_id = :c and kind = :k and source = :s"),
-        {"c": card.id, "k": kind, "s": source}).first()
+        "select 1 from parlay_ledger where card_id = :c and kind = :k"),
+        {"c": card.id, "k": kind}).first()
     if exists:
         return
     session.add(ParlayLedger(ts=now, card_id=card.id, kind=kind,

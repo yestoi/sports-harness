@@ -172,6 +172,16 @@ def _whole(line: Decimal) -> bool:
 
 
 def _prop_needs(leg: LegSpec, stat: StatState | None) -> str:
+    """The live phrase for one prop leg.
+
+    A whole-number line sitting on its number is called a push (review I6), in progress as at
+    the final whistle, because this module's contract is that a refund is not a win and a slip
+    that reads `reached 225 of 225` about a leg that will refund is lying to its reader.
+    `atleast` keeps `reached ...`: `225+` at 225 is a hit, not a push.
+    """
+    if leg.period != "game":
+        #: Release one grades the full game only (D3); a period leg has no rule here.
+        return "no rule for this bet"
     if stat is None:
         return "no stat yet"
     if leg.operator == "yes":
@@ -182,10 +192,14 @@ def _prop_needs(leg: LegSpec, stat: StatState | None) -> str:
     if leg.operator in ("over", "atleast"):
         if stat.value < line:
             return f"{_points(line - stat.value)} to go"
+        if leg.operator == "over" and stat.value == line and _whole(line):
+            return "on the line · push as it stands"
         return (f"reached {_points(stat.value)} of {_points(line)} · provisional until final")
     #: under
     if stat.value < line:
         return f"under by {_points(line - stat.value)} · live until the game ends"
+    if stat.value == line and _whole(line):
+        return "on the line · push as it stands"
     return f"over by {_points(stat.value - line)}"
 
 
@@ -194,10 +208,16 @@ def _prop_outcome(leg: LegSpec, stat: StatState | None) -> str | None:
 
     `None` on a missing `StatState` and on a non-final one: absence is not a miss (4.4). A
     whole-number line pushes on `over` and `under` and never on `atleast` -- `225+` is a
-    different market, not the same market read differently.
+    different market, not the same market read differently. A leg whose `period` is not the
+    full game raises rather than grading off the game-long value (review I4).
     """
     if stat is None or not stat.final:
         return None
+    if leg.period != "game":
+        #: Release one is the full game only (D3). A period leg graded off the game-long value
+        #: would be a wrong money grade with no error, so it raises: `grade_parlays` isolates
+        #: the card and counts it in `errors` (review I4).
+        raise ValueError(f"cannot grade prop period {leg.period!r}; release one is game only")
     if leg.operator == "yes":
         return "hit" if stat.value > 0 else "miss"
     line = leg.threshold
