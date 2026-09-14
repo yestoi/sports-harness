@@ -65,8 +65,8 @@ class StatLine:
 
 
 def _dec(value) -> Decimal | None:
-    """ESPN reports a stat as a string, sometimes `--` and sometimes `19/28`; only a number is
-    a stat line."""
+    """ESPN reports a stat as a string, sometimes `-` or `--` and sometimes `19/28`; only a
+    number is a stat line (the measured game-log bodies write an absent stat as `-`)."""
     try:
         return Decimal(str(value).strip().replace(",", ""))
     except (InvalidOperation, AttributeError, ValueError):
@@ -160,13 +160,15 @@ def parse_roster(body) -> list[dict]:
 
 
 def parse_gamelog(body) -> dict[str, list[Decimal]]:
-    """Stat -> that stat's per-game values, in the source's own order (newest first).
+    """Stat -> that stat's per-game values, in the source's own order (ESPN lists newest first).
 
     The endpoint's shape is measured by the plan's evidence task before the context line is
-    trusted (addendum §4.1). **Until that report exists an empty mapping is the expected path**
-    and the caller's line reads `no season data yet`, so every body this function does not
-    recognise -- including a body whose columns it cannot name -- yields `{}` rather than a
-    guess.
+    trusted (addendum §4.1); that measurement reports a `names` order that differs per position
+    (so a stat is found by name and never by index), an absent stat written `-`, and a player
+    with no games returning `{"filters": [...]}` and nothing else. **An empty mapping stays the
+    expected path** and the caller's line reads `no season data yet`, so every body this
+    function does not recognise -- including a body whose columns it cannot name -- yields `{}`
+    rather than a guess.
     """
     if not isinstance(body, dict):
         return {}

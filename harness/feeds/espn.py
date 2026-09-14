@@ -69,6 +69,13 @@ class EspnClient:
     def fetch_gamelog(self, sport: Sport, athlete_id: str) -> FetchResult:
         """One athlete's game log, the draft context line's source (addendum §4.1). Its shape is
         measured by the plan's evidence task before the line is trusted; until then an
-        unrecognised body is the expected path and reads `no season data yet`."""
+        unrecognised body is the expected path and reads `no season data yet`.
+
+        Recorded 2026-09-14: this path -- the addendum's own
+        `{espn_base_url}/{sport}/athletes/{id}/gamelog` -- answered 404 for every athlete tried,
+        while the bodies the evidence task read came from a different ESPN host and API version.
+        Moving the host is the user's call (invariant 8, gate 7), so nothing here moves and this
+        fetcher keeps yielding the `no season data yet` path until that decision is taken.
+        """
         return self._http.get(f"{self._base}{_PATH[sport].rsplit('/', 1)[0]}"
                               f"/athletes/{athlete_id}/gamelog", params=None, redact_params=())
