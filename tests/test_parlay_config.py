@@ -1,5 +1,7 @@
 """The config file's values, which are the user's and are not the model's to tune."""
+import re
 from decimal import Decimal
+from pathlib import Path
 
 from harness.parlay.config import ParlayConfig, load_config
 
@@ -88,3 +90,26 @@ def test_the_stakes_and_the_anchors_are_untouched():
         Decimal("50"), Decimal("25"), Decimal("5"))
     assert config.anchors == ("LSU", "NO")
     assert config.leg_max_age_minutes == 30
+
+
+def test_every_recorded_market_def_names_its_source_and_the_date_it_was_read():
+    """Expected: each rule string ends with `Source: <text>, read <YYYY-MM-DD>.` (D19).
+
+    An unsourced rule is a paraphrase from memory, which is exactly what reviewer B's C2
+    refused: the grader's behaviour must be traceable to a document and a date.
+    """
+    defs = load_config().props.market_defs
+    for family, rule in defs.items():
+        assert re.search(r"Source: .+, read \d{4}-\d{2}-\d{2}\.$", rule), (family, rule)
+        assert len(rule) <= 400
+
+
+def test_a_family_without_a_recorded_rule_is_documented_as_unsupported():
+    """The evidence report names every family that has no rule yet, so `market_unsupported` on
+    the surface always has a written reason behind it."""
+    report = (Path(__file__).resolve().parents[1] / "docs" / "superpowers" / "reports"
+              / "2026-09-13-prop-market-definitions.md").read_text()
+    for family in load_config().props.families:
+        if family not in load_config().props.market_defs:
+            assert family in report
+
