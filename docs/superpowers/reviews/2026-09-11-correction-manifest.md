@@ -52,6 +52,7 @@ is repaired in 6A.
 5. The watched track is simulated to the loop instant rather than to the order's expiry, so an
    order can fill after it stopped existing.
 6. A rejected latest verdict cancels a resting order but does not stop a new one being placed.
+
 ## C1 — Subscription continuity: the per-book seq check read multiplexed interleaving as a lost frame
 
 C1 reads book continuity from the subscription's own gap rows (`WsSink._check_seq`'s sid-level

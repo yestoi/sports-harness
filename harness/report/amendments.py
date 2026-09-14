@@ -52,4 +52,10 @@ AMENDMENTS: tuple[Amendment, ...] = (
         "the America/Chicago ISO week as the measurement key. The pre-fix range is empty: the "
         "only Sunday 19:00-23:59 CT provisional window before the deploy precedes the first "
         "paper order"),
+    Amendment(
+        6, "2026-09-14", None, None, ("t1", "t2", "t3", "t4"),
+        "the 6B execution repairs C1-C6 and EXECUTOR_VERSION 4.5. The record states the "
+        "order-id and run-id range as `<filled at merge>`, so nothing is counted here until "
+        "the controller fills `deploy_sha` and `excluded_runs` in the same commit that fills "
+        "`harness.corrections`' ranges"),
 )
