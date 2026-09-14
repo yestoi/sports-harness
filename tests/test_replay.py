@@ -13,6 +13,7 @@ from harness.cli import app
 from harness.config.settings import get_settings
 from harness.db.models import (
     Intent,
+    OrderEvent,
     OddsSnapshot,
     Order,
     Run,
@@ -380,7 +381,53 @@ def _cli(db_session, monkeypatch, args) -> object:
         get_settings.cache_clear()
 
 
-def test_a_range_population_replay_shares_one_capacity_counter(db_session, seeded_range):
+@pytest.fixture
+def capacity_skips(monkeypatch):
+    """Every `exec_capacity` skip the planner *decided*, as planner actions rather than rows.
+
+    Counted here and not off `order_events` because the two quantities differ by construction:
+    `uq_skip_once` keys on `(intent_id, kind, reason)`, so an intent skipped for capacity at
+    six consecutive instants leaves one row. Spec 1.6 asks for the occurrences, and the only
+    place they exist is `plan_actions`'s return value -- `ExecStats.skipped` is incremented
+    only when the row was actually written (`harness/execution/loop.py`), so it is already the
+    row count, and it carries no reason. Wrapping the loop module's own reference is the same
+    instrument `test_replay_advances_its_book_instead_of_rebuilding_it` uses for `load_book_at`
+    and changes no production code.
+    """
+    from harness.execution import loop as loop_mod
+    from harness.execution.plan import EXEC_CAPACITY, Skip
+
+    real = loop_mod.plan_actions
+    seen: list = []
+
+    def counting(*args, **kwargs):
+        actions = real(*args, **kwargs)
+        seen.extend(a for a in actions
+                    if isinstance(a, Skip) and a.reason == EXEC_CAPACITY)
+        return actions
+
+    monkeypatch.setattr(loop_mod, "plan_actions", counting)
+    return seen
+
+
+def _intent_keys(session) -> set:
+    """Every `(variant, market, side)` key the replay's intents carry.
+
+    The planner's own placement key (`plan._key`), so this is the set it ranks and the set the
+    two capacity slots are taken from.
+    """
+    return {(row.variant_id, row.venue_market_id, row.side)
+            for row in session.query(Intent).filter_by(replay=True).all()}
+
+
+def _capacity_skip_rows(session) -> int:
+    """Distinct replay intents carrying an `exec_capacity` skip row."""
+    return (session.query(OrderEvent)
+            .filter_by(replay=True, kind="skipped", reason="exec_capacity").count())
+
+
+def test_a_range_population_replay_shares_one_capacity_counter(db_session, seeded_range,
+                                                               capacity_skips):
     """Expected: at most two orders open at any instant, over the whole population.
 
     Derived from the planner's own rule rather than from the code: `plan_actions` handles open
@@ -400,6 +447,42 @@ def test_a_range_population_replay_shares_one_capacity_counter(db_session, seede
     assert counts.orders > 0, "a replay that placed nothing tests no capacity rule"
     assert _max_concurrent_open(db_session) <= 2
     assert _replay_order_count(db_session) <= 2
+
+    # The skip *occurrences*, derived from the ordering rule rather than from the code: at every
+    # one of the grid's instants the planner ranks the whole population's placeable keys and can
+    # place only while `still_open < 2`, so every key that is neither holding one of the two
+    # resting orders nor winning a slot is skipped for capacity -- at that instant and at every
+    # instant after it, since the two orders rest to their expiry. That is
+    # `grid_steps * (keys - 2)` decisions, and it is the quantity a single-variant executor
+    # could not produce: with the counter to itself each variant would place instead of skip.
+    keys = _intent_keys(db_session)
+    assert len(keys) == 12 and counts.orders == 2
+
+    # The capacity rule binds while the newest signal on a key is still a candidate: the
+    # `latest_decision == REJECTED` test precedes the capacity test (D14, T5), so once a later
+    # run's signal rejects a key, that key stops reaching the capacity rule at all. Here every
+    # key's signals after the first run are rejected -- asserted, not assumed -- so the binding
+    # instants are the grid instants from the first run's clock up to the second run's.
+    later = {row.decision for row in db_session.query(Signal)
+             .filter(Signal.replay.is_(True), Signal.run_id > seeded_range.first,
+                     Signal.venue_market_id.in_({key[1] for key in keys})).all()}
+    assert later == {"rejected"}
+    binding = GRID_S // seeded_range.settings.exec_period_s
+    assert binding == 3
+
+    # 12 keys compete for 2 slots at the first instant: 2 place and 10 are skipped for
+    # capacity. At each of the next two instants the two resting orders hold their own keys, so
+    # the same 10 compete for no slot at all and are skipped again. 3 x 10 = 30 planner
+    # actions, and not one of them would exist under a per-variant executor, where each
+    # variant's 4 keys would meet 2 slots of its own.
+    assert len(capacity_skips) == binding * (len(keys) - counts.orders) == 30
+
+    # The rows are a different quantity, asserted separately so the two are never confused:
+    # `uq_skip_once` keys on `(intent_id, kind, reason)`, so the 30 occurrences above are 10
+    # rows -- one per intent the counter turned away, whatever number of instants it turned it
+    # away at. That gap is why spec 1.6 asks for the planner actions and the rows apart.
+    assert counts.capacity_skips == _capacity_skip_rows(db_session)
+    assert counts.capacity_skips == len(keys) - counts.orders == 10
 
 
 def test_a_single_variant_replay_of_the_same_range_produces_more_orders(db_session,
@@ -518,3 +601,58 @@ def test_the_counts_carry_both_step_counts_and_both_correction_sets(db_session, 
     assert counts.population != counts.today_variants
     assert counts.corrections_replayed and counts.corrections_live
     assert set(counts.corrections_replayed) <= set(counts.corrections_live)
+
+
+def test_a_truncated_population_read_is_refused_rather_than_answered(db_session, seeded_range):
+    """Expected: `PopulationError` naming the cap, and nothing written.
+
+    Derived independently: `_POPULATION_BY_RUN` ends in `limit :cap`, and a truncated read is
+    indistinguishable from a complete one -- the rows that were cut are the *tail*, which is
+    where a later change of the executed set would be. Answering from a truncated read would
+    replay a wide range under the population of its earlier half and say nothing about it,
+    which is the one failure this refusal exists to prevent; a range that hits the cap is
+    therefore refused exactly like a range that spans a change. Reaching the cap exactly is
+    refused too, because the query cannot tell the two apart -- the operator splits the range
+    either way.
+    """
+    from harness.replay import resolve_population
+
+    # Three runs, three variants: nine (run, variant) rows, so a cap of two truncates.
+    with pytest.raises(PopulationError, match="cap"):
+        resolve_population(db_session, seeded_range.first, seeded_range.last, None, cap=2)
+    assert _replay_order_count(db_session) == 0
+    assert db_session.query(Signal).filter_by(replay=True).count() == 0
+
+    # Above the cap the same range answers, which is what makes the refusal above a statement
+    # about the truncation rather than about the range.
+    assert resolve_population(db_session, seeded_range.first, seeded_range.last, None,
+                              cap=10) == sorted(seeded_range.variants)
+
+
+def test_an_unfilled_correction_range_is_in_force_and_a_numeric_one_is_tested(monkeypatch):
+    """Expected: prose covers any range; `A-B` covers only the ranges it overlaps.
+
+    Derived from the manifest rather than from the code: C0's `affected_run_id_range` is still
+    the controller's prose placeholder, and reporting "no corrections in force" from a field
+    nobody has filled in would turn a missing value into a measurement claim. The numeric branch
+    is the one the ranges get parsed by the day they are filled in, so it is asserted now rather
+    than on the merge commit that first exercises it.
+    """
+    from dataclasses import replace as _dc_replace
+
+    from harness import replay as replay_mod
+    from harness.corrections import CORRECTIONS
+    from harness.replay import _corrections_for, _parse_run_range
+
+    assert _parse_run_range("all runs through the 6B deploy") is None
+    assert _parse_run_range("100-200") == (100, 200)
+    assert _parse_run_range("100-two hundred") is None
+    assert _corrections_for(1, 2) == tuple(c.id for c in CORRECTIONS)
+
+    numeric = _dc_replace(CORRECTIONS[0], id="CX", affected_run_id_range="100-200")
+    monkeypatch.setattr(replay_mod, "CORRECTIONS", [numeric])
+    assert _corrections_for(300, 400) == ()
+    assert _corrections_for(50, 99) == ()
+    assert _corrections_for(150, 400) == ("CX",)
+    assert _corrections_for(200, 400) == ("CX",)
+

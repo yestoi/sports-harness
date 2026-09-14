@@ -67,6 +67,16 @@ class ReplayCounts:
     grid_steps: int = 0
     live_steps: int | None = None
     mode: str = "single_variant"
+    #: Distinct replay intents this range skipped for `exec_capacity` -- the record's own
+    #: count, since `uq_skip_once` keys an `order_events` skip on `(intent_id, kind, reason)`
+    #: and one intent skipped at six consecutive instants leaves one row. It is **not** the
+    #: planner-action count spec 1.6 also names: the occurrences exist only inside
+    #: `plan_actions`'s return value (`ExecStats.skipped` is incremented only when the row was
+    #: written, and carries no reason), and surfacing them would mean a new per-reason counter
+    #: in `harness/execution/loop.py`, which this task's scope fences off. The occurrences are
+    #: asserted in `tests/test_replay.py` through the loop module's own `plan_actions`, and the
+    #: two quantities are asserted separately there so they are never confused.
+    capacity_skips: int = 0
 
 
 class ReplayStepError(RuntimeError):
@@ -138,6 +148,17 @@ def resolve_population(session: Session, first_run: int, last_run: int,
     """
     rows = session.execute(
         _POPULATION_BY_RUN, {"first": first_run, "last": last_run, "cap": cap}).all()
+    if len(rows) == cap:
+        # A truncated read is indistinguishable from a complete one, and what `limit` cuts is
+        # the *tail* -- exactly where a later change of the executed set would be. Answering
+        # from it would replay a wide range under the population of its earlier half and say
+        # nothing about having done so, so reaching the cap is refused like any other range
+        # with no single answer. Reaching it exactly, with nothing cut, is refused too: the
+        # query cannot tell that case apart, and the operator's move is the same either way.
+        raise PopulationError(
+            f"runs {first_run}-{last_run} reached the {cap}-row population cap: the read may "
+            f"be truncated, and a change of the executed set after the cut would be invisible. "
+            f"Replay the range in narrower pieces.")
     if not rows:
         raise PopulationError(
             f"runs {first_run}-{last_run} placed no non-replay order: there is no executed set "
@@ -399,9 +420,10 @@ def replay(
         )
 
     if execute and clocks:
-        orders, fills, grid_steps = _execute(session, settings, variant_ids,
-                                             clocks[0], clocks[-1])
-        counts = replace(counts, orders=orders, fills=fills, grid_steps=grid_steps)
+        orders, fills, grid_steps, capacity_skips = _execute(session, settings, variant_ids,
+                                                             clocks[0], clocks[-1])
+        counts = replace(counts, orders=orders, fills=fills, grid_steps=grid_steps,
+                         capacity_skips=capacity_skips)
     # Published, never compared (D15): `live_steps` stays None until 6D measures it.
     return replace(counts, population=tuple(variant_ids),
                    today_variants=tuple(settings.exec_variants),
@@ -411,14 +433,14 @@ def replay(
 
 
 def _execute(session: Session, settings: Settings, variant_ids: list[str],
-             first: datetime, last: datetime) -> tuple[int, int, int]:
+             first: datetime, last: datetime) -> tuple[int, int, int, int]:
     """Step one replay executor over every variant in the population, once per `exec_period_s`.
 
     One executor, not one per variant (spec 0.11): `plan_actions` applies a single shared
     `max_open_orders` counter, which is what the live loop did, and a per-variant executor
     would give each variant the whole capacity. Returns the orders, the fills and the number of
-    grid steps, the last of which the caller publishes beside the live step count instead of a
-    parity verdict.
+    grid steps and the capacity skips the record holds, the third of which the caller publishes
+    beside the live step count instead of a parity verdict.
 
     The executor gets its own session factory bound to the caller's engine, because a step owns
     its connection and its transaction: it takes an advisory lock, commits per step and must
@@ -450,8 +472,8 @@ def _execute(session: Session, settings: Settings, variant_ids: list[str],
                 f"{stats.last_error or 'see the executor log'}")
         grid.advance()
     log.info("replay executor stepped %s times over [%s, %s]", steps, first, last)
-    orders, fills = _replay_row_counts(session, variant_ids, first, last)
-    return orders, fills, steps
+    orders, fills, capacity_skips = _replay_row_counts(session, variant_ids, first, last)
+    return orders, fills, steps, capacity_skips
 
 
 _REPLAY_COUNTS = text("""
@@ -460,17 +482,26 @@ select (select count(*) from orders o
           and o.placed_at >= :first and o.placed_at <= :last) as orders,
        (select count(*) from fills f join orders o on o.id = f.order_id
         where o.replay = true and o.variant_id = any(:v)
-          and o.placed_at >= :first and o.placed_at <= :last) as fills
+          and o.placed_at >= :first and o.placed_at <= :last) as fills,
+       (select count(*) from order_events e
+        join intents i on i.id = e.intent_id
+        where e.replay = true and e.kind = 'skipped' and e.reason = 'exec_capacity'
+          and i.variant_id = any(:v)
+          and e.ts >= :first and e.ts <= :last) as capacity_skips
 """)
 
 
 def _replay_row_counts(session: Session, variant_ids: list[str], first: datetime,
-                       last: datetime) -> tuple[int, int]:
-    """This range's replay orders and their fills, as the record holds them.
+                       last: datetime) -> tuple[int, int, int]:
+    """This range's replay orders, their fills and its capacity skips, as the record holds them.
 
     Scoped to the whole population rather than to one variant (C6): the number the caller
     publishes is what the range's executed set placed, and a per-variant count would be a
-    different quantity under the same name.
+    different quantity under the same name. The third count is the `exec_capacity` skip
+    *rows* -- one per intent the counter turned away, however many instants it turned it away
+    at -- which is the quantity the record can answer and the one the Monday duty can
+    reproduce from it (spec 1.6 asks for the planner-action count beside it; see
+    `ReplayCounts.capacity_skips`).
 
     Counted rather than accumulated from `ExecStats`: a second replay over the same range
     re-derives every decision and inserts nothing (`on conflict do nothing`), and what the
@@ -486,4 +517,4 @@ def _replay_row_counts(session: Session, variant_ids: list[str], first: datetime
     with Session(bind=session.get_bind()) as reader:
         row = reader.execute(_REPLAY_COUNTS,
                              {"v": list(variant_ids), "first": first, "last": last}).one()
-    return int(row.orders), int(row.fills)
+    return int(row.orders), int(row.fills), int(row.capacity_skips)

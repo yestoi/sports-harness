@@ -774,7 +774,7 @@ def replay_cmd(
     total = counts.signals_candidate + counts.signals_rejected
     rate = counts.signals_candidate / total if total else 0.0
     tail = f" orders={counts.orders} fills={counts.fills}" if execute else ""
-    steps = f" grid_steps={counts.grid_steps}"
+    steps = f" grid_steps={counts.grid_steps} capacity_skips={counts.capacity_skips}"
     if counts.live_steps is not None:
         # Published, never compared: the grid steps exactly `exec_period_s` while the live loop
         # ran 27 steps in the sampled hour where the grid would have run 240. A 2 % pass/fail

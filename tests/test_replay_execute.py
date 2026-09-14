@@ -512,8 +512,9 @@ def test_replay_row_counts_leave_the_callers_transaction_alone(env_settings, db_
     db_session.add(Run(started_at=marker, status="running"))
     db_session.flush()
 
-    orders, fills = _replay_row_counts(db_session, ["deadbeef1234"], NOW, marker)
-    assert (orders, fills) == (0, 0)
+    orders, fills, capacity_skips = _replay_row_counts(db_session, ["deadbeef1234"], NOW,
+                                                       marker)
+    assert (orders, fills, capacity_skips) == (0, 0, 0)
 
     db_session.rollback()
     assert db_session.query(Run).filter(Run.started_at == marker).count() == 0
