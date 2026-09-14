@@ -253,6 +253,14 @@ _WS_GAP_MINUTES = text("""
     group by 1
 """)
 
+#: 6D 1.2: has this hour's tape sample already been written? One `limit 1` probe through
+#: `ix_metric_samples_name_ts (name, ts desc)` (`harness/db/schema.py:180`), so the hour's
+#: sample is written on the first tick of the hour and a restart inside the hour cannot
+#: write it twice. A module statement like every other read in this file, rather than a
+#: `text()` rebuilt on every tick.
+_TAPE_SAMPLE_PRESENT = text(
+    "select 1 from metric_samples where name = 'ws.tape_covered_frac' and ts >= :start limit 1")
+
 
 def tape_covered_frac(session: Session, now: datetime) -> float | None:
     """The share of the previous whole hour's sampled minutes that carried no gap event.
@@ -300,9 +308,7 @@ def _recorder_samples(session: Session, run_id: int, tick_ms: int,
     tick_now = ctx.get("now")
     if tick_now is not None:
         hour_start = tick_now.replace(minute=0, second=0, microsecond=0)
-        already = session.execute(text(
-            "select 1 from metric_samples where name = \'ws.tape_covered_frac\' and ts >= :start "
-            "limit 1"), {"start": hour_start}).first()
+        already = session.execute(_TAPE_SAMPLE_PRESENT, {"start": hour_start}).first()
         if already is None:
             covered = tape_covered_frac(session, tick_now)
             if covered is not None:

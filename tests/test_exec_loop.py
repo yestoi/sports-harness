@@ -1803,6 +1803,46 @@ def test_exec_writes_metric_batch_every_metric_sample_s_not_every_loop(env_setti
     assert db_session.query(MetricSample).filter_by(source="exec").count() > first_count
 
 
+def test_exec_writes_fair_age_and_signal_to_order_ms_from_the_placement_it_just_made(
+        env_settings, db_session, world):
+    """Fix round 1, I1(a): a wiring test for `_body`'s `fair_age_s` feed and `_place`'s
+    `signal_to_order_ms` feed into the batch `_write_metric_batch` actually writes -- the plan's
+    own tests exercise `_MetricsAcc`/`_percentile` as units and `_pricing_samples` separately,
+    but nothing before this test called `executor.step()` and read `exec.fair_age_s` or
+    `exec.signal_to_order_ms` back out of `metric_samples`. Deleting any of the three wiring
+    sites (the `_body` reading, the `_place` reading, or the two `_write_metric_batch` loops)
+    leaves this test failing while every other test in this suite stays green (fix round 1
+    finding I1, confirmed by mutation).
+
+    Computed by hand: `world`'s `tiny` signal for T2 is created at `NOW`
+    (`price_and_signal(db_session, run.id, NOW, ...)`); the executor's clock reads `NOW + 12s`
+    for this one step, so the one market the loop prices (T2, the only surviving candidate)
+    has `fair_age_s(now) = 12`, giving p50 = p95 = 12 over the single observation, and the
+    placement's `signal_to_order_ms` is `(NOW + 12s) - NOW = 12,000` ms for the `tiny` variant.
+    The Sampler's first call is always due (established by
+    `test_exec_writes_metric_batch_every_metric_sample_s_not_every_loop` above), so this single
+    step both places the order and writes the batch that samples it -- a second step would
+    reset the accumulator before writing nothing for `signal_to_order_ms` (fix round 1, I4)
+    since no further placement occurs, so this test deliberately reads the first step's batch.
+    """
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    clock = Clock(NOW + timedelta(seconds=12))
+    executor = make_executor(env_settings, db_session, clock)
+
+    stats = executor.step()
+    refresh(db_session)
+    assert stats.placed == 1
+    order = orders_of(db_session)[0]
+
+    rows = {(r.name, r.labels.get("q"), r.labels.get("variant")): r.value
+           for r in db_session.query(MetricSample).filter(
+               MetricSample.name.in_(["exec.fair_age_s", "exec.signal_to_order_ms"])).all()}
+    assert rows[("exec.fair_age_s", "p50", None)] == 12
+    assert rows[("exec.fair_age_s", "p95", None)] == 12
+    assert rows[("exec.signal_to_order_ms", "p50", order.variant_id)] == 12_000
+
+
 def _ws_age_samples(env_settings, db_session, clock, ws_last):
     """One `_write_metric_batch` with a hand-built heartbeat, returning the WS-clock pair
     `(exec.ws_event_age_s, exec.ws_event_ahead_s)` it wrote."""
@@ -1952,6 +1992,12 @@ def test_replay_writes_no_telemetry(env_settings, db_session, world):
     assert db_session.query(OperatorEvent).count() == 0
     assert db_session.query(OrderWatchSample).count() == 0
     assert db_session.query(EquitySnapshot).count() == 0
+    # 6D 1.2: an empty `metric_samples` cannot prove the latency accumulator was left alone --
+    # a replay executor never reaches `_write_metric_batch` at all (loop.py:325). It never
+    # reaches `reset()` either, so a fed list would grow for the whole replay.
+    # `fair_age_s` is a bounded deque (fix round 1, I3); compare by contents, not container type.
+    assert list(executor._metrics_acc.fair_age_s) == []
+    assert executor._metrics_acc.signal_to_order_ms == {}
 
 
 def test_exec_startup_deploy_and_config_change_events(env_settings, db_session, world):

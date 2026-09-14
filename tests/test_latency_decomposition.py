@@ -7,8 +7,6 @@ hand in the docstring from the fixture's stamps -- never by calling the code tha
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import text
-
 from harness.db.models import FairValue, MetricSample, Run
 
 #: A book stamped 12:00:00, fetched at 12:00:30, priced at 12:00:45, signalled at 12:00:45 and
@@ -117,11 +115,49 @@ def test_the_tape_continuity_fraction_is_derived_from_metric_samples_alone(db_se
 def test_no_new_read_touches_a_tape_table():
     """The structural half (`checks.assert_no_tape_reads`' rule, extended to the new builders):
     none of the statements this task adds names `orderbook_events` or `raw_responses`."""
-    from pathlib import Path
+    from harness.recorder.tick import (_FEED_LAG_BY_FEED, _TAPE_SAMPLE_PRESENT,
+                                       _WS_GAP_MINUTES)
 
-    import harness.recorder.tick as tick_module
+    # By name, all three: the 2,000-character source window this test used to slice ends
+    # inside `_pricing_samples` and never reached the two tape-continuity statements.
+    for statement in (_FEED_LAG_BY_FEED, _WS_GAP_MINUTES, _TAPE_SAMPLE_PRESENT):
+        body = str(statement)
+        assert "orderbook_events" not in body and "raw_responses" not in body
 
-    body = Path(tick_module.__file__).read_text()
-    start = body.index("_FEED_LAG_BY_FEED")
-    block = body[start:start + 2_000]
-    assert "orderbook_events" not in block and "raw_responses" not in block
+
+def test_recorder_samples_writes_the_hourly_tape_sample_exactly_once(db_session, env_settings):
+    """Fix round 1, I1(b): a wiring test for the `ctx["now"]` guard inside `_recorder_samples`
+    itself -- `tape_covered_frac` and the guard's own `_TAPE_SAMPLE_PRESENT` probe are each
+    covered as units above, but nothing before this test called `_recorder_samples` twice in
+    the same hour and checked that the second call, after the first row is actually committed,
+    adds no second `ws.tape_covered_frac` sample.
+
+    Computed by hand: the same 60-minute fixture as the unit test above (57 clean minutes of
+    60 -> 0.95); `_recorder_samples`'s first call in the hour after the measured one writes it,
+    the second call -- once that row is committed -- writes none.
+    """
+    from harness.telemetry import record_many
+    from harness.recorder.tick import _recorder_samples
+
+    hour = datetime(2026, 9, 13, 11, 0, tzinfo=timezone.utc)
+    for minute in range(60):
+        db_session.add(MetricSample(ts=hour + timedelta(minutes=minute), source="ws",
+                                    name="ws.gaps", value=Decimal("1" if minute < 3 else "0"),
+                                    labels={}))
+    run = Run(started_at=hour, status="running")
+    db_session.add(run)
+    db_session.flush()
+
+    now = hour + timedelta(hours=1)
+    ctx = {"errors": [], "trade_gaps": [], "remaining": None, "now": now}
+
+    first = _recorder_samples(db_session, run.id, 0, ctx)
+    first_tape = [(n, v, l) for n, v, l in first if n == "ws.tape_covered_frac"]
+    assert first_tape == [("ws.tape_covered_frac", 0.95, {"basis": "minutes_without_gap"})]
+
+    record_many(db_session, "recorder", first, ts=now)
+    db_session.commit()
+
+    second = _recorder_samples(db_session, run.id, 0, ctx)
+    second_tape = [(n, v, l) for n, v, l in second if n == "ws.tape_covered_frac"]
+    assert second_tape == []

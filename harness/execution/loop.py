@@ -160,14 +160,18 @@ class _MetricsAcc:
     #: 6D §1.2: the fair-calculation age this loop saw, one entry per market the loop priced
     #: against, and the signal-to-order delay of each placement, per variant. Both are in-memory
     #: values the loop already holds -- neither costs a query -- and both are cleared with the
-    #: rest of the accumulator when a batch is written.
-    fair_age_s: list = None
+    #: rest of the accumulator when a batch is written. `fair_age_s` is a bounded `deque`
+    #: (fix round 1, I3): the accumulator resets only when a batch is actually *written*
+    #: (`_write_metric_batch`'s guard, then `reset()`), so a metric write or step commit that
+    #: keeps failing would otherwise grow this list for as long as the failure lasts -- the
+    #: `maxlen` bounds the deque, not the process, while that path is broken.
+    fair_age_s: object = None
     signal_to_order_ms: dict = None
 
     def __post_init__(self) -> None:
         self.cancelled = self.cancelled or {}
         self.skipped = self.skipped or {}
-        self.fair_age_s = self.fair_age_s or []
+        self.fair_age_s = self.fair_age_s if self.fair_age_s is not None else deque(maxlen=10_000)
         self.signal_to_order_ms = self.signal_to_order_ms or {}
 
     def reset(self) -> None:
@@ -177,7 +181,7 @@ class _MetricsAcc:
         self.skipped = {}
         self.filled_contracts = ZERO
         self.loops_skipped = 0
-        self.fair_age_s = []
+        self.fair_age_s = deque(maxlen=10_000)
         self.signal_to_order_ms = {}
 
 
