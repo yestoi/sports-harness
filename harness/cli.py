@@ -946,7 +946,14 @@ def audit_order_cmd(
     """
     from harness.audit import audit_order, read_capsule
 
-    result = audit_order(read_capsule(capsule), order)
+    try:
+        result = audit_order(read_capsule(capsule), order)
+    except ValueError as exc:
+        # A capsule that does not carry the order is an operator mistake -- the wrong capsule,
+        # or the wrong id -- so it refuses with the message on stderr and exit 2, as
+        # `capsule_cmd` does, rather than handing the quiet-window run a traceback.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
     typer.echo(json.dumps(asdict(result), default=str, indent=2))
 
 

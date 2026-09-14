@@ -7,6 +7,12 @@ reads it.
 Every expected verdict below is derived from the capsule's own rows, never from what the
 repaired simulator happens to output -- a verdict that agreed with the code by construction
 would be a tautology rather than an audit.
+
+The first five cases are the four outcomes and the command. The cases after them pin the
+queries themselves (review round 1, C1, I1, I2, I4): each one is a capsule that *would* meet a
+hypothesis under a looser reading of its prose and must not meet it under the simulator's own
+matching rules, or a capsule whose evidence lives in the part of the 6A layout a naive reader
+would miss. Those are the cases that decide the real capsule's permanent verdict.
 """
 
 import gzip
@@ -41,7 +47,13 @@ def _write(directory, tables: dict) -> None:
 
 
 def _capsule(tmp_path, *, prints, deltas, snapshots, recorded_filled, recorded_queue,
-             unverifiable=()):
+             unverifiable=(), gaps=(), fills=()):
+    """`gaps` and `fills` default to empty, so the five cases above are unchanged by them.
+
+    `gaps` is its own file because that is where a 6A capsule puts them (`capsule.py:197-200`,
+    a projection with no `kind` column); `fills` is the capsule's record of what C0 booked, which
+    is what dates hypothesis (iii)'s "before the fills".
+    """
     directory = tmp_path / "capsule"
     _write(directory, {
         "orders": [{"id": 157, "ticker": "K1", "side": "yes", "prob": "0.45",
@@ -51,7 +63,8 @@ def _capsule(tmp_path, *, prints, deltas, snapshots, recorded_filled, recorded_q
                     "traded_at_price": "63.92", "venue_market_id": 1}],
         "venue_trades": prints,
         "orderbook_events": deltas + snapshots,
-        "fills": [], "order_events": [], "ledger": [], "order_watch_samples": [],
+        "orderbook_events_gaps": list(gaps),
+        "fills": list(fills), "order_events": [], "ledger": [], "order_watch_samples": [],
     })
     if unverifiable:
         manifest = json.loads((directory / "manifest.json").read_text())
@@ -154,3 +167,228 @@ def test_the_command_prints_the_verdict_and_its_evidence(tmp_path):
     doc = json.loads(result.stdout)
     assert doc["verdict"] in VERDICTS
     assert set(doc["evidence"]) == {"i", "ii", "iii"}
+
+
+# --- the queries themselves (review round 1) --------------------------------------------------
+# Helpers for the cases below: the counterexample's own rows, reused so each case differs from
+# the reconciliation's tape in exactly one respect.
+
+DOUBLE_COUNT_PRINTS = [{"trade_id": f"p{i}", "ts": at(1828.332), "yes_price": "0.45",
+                        "count": c, "taker_side": "no", "source": "ws"}
+                       for i, c in enumerate(["25.00", "25.00", "13.92"])]
+DOUBLE_COUNT_DELTA = {"id": 9, "ts": at(1828.332), "kind": "delta", "side": "yes",
+                      "price": "0.45", "delta": "-6376.00", "sid": 7, "seq": 2}
+
+
+def _count(evidence_value) -> Decimal:
+    """One evidence number, as the number it is: the JSON carries them as strings."""
+    return Decimal(evidence_value)
+
+
+def test_prints_our_order_could_not_have_filled_are_not_a_queue_collapse(tmp_path):
+    """Expected verdict `unverifiable`, no hypothesis.
+
+    Derived from the rows: 6,401 contracts trade at 0.45 while we rest at yes 0.45, but every
+    one of those prints has `taker_side = "yes"` -- the taker lifted a resting *ask*, so these
+    trades happened against the other side of the book and cannot have touched our resting bid
+    (`hits()`, `harness/execution/fills.py`). Nothing ahead of us traded, so there is no queue
+    collapse to find and the difference from the recorded 38.92 has no supported cause.
+
+    A query that read only "prints of 6,401 or more at 0.45" would call this `corrected` and
+    name a genuine queue collapse, which is the causal story ruling IM-3 forbids -- on tape that
+    is entirely ordinary: taker-yes prints at our price are a normal minute of a market.
+    """
+    prints = [{"trade_id": "wrong-side", "ts": at(1800), "yes_price": "0.45",
+               "count": "6401.00", "taker_side": "yes", "source": "ws"}]
+    directory = _capsule(tmp_path, prints=prints, deltas=[], snapshots=[],
+                         recorded_filled="38.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "unverifiable"
+    assert result.hypothesis is None
+    assert result.repaired_filled == Decimal("0.00")
+    assert result.evidence["iii"]["met"] is False
+    assert _count(result.evidence["iii"]["observed_hitting_volume"]) == 0
+    # The literal reading is still reported, so the record shows what was on the tape.
+    assert _count(result.evidence["iii"]["observed_volume_at_price_any_taker"]) == Decimal("6401")
+
+
+def test_a_sweep_through_our_price_is_a_queue_collapse_although_the_price_differs(tmp_path):
+    """Expected verdict `corrected`, hypothesis (iii).
+
+    Derived from the rows: 6,401 contracts trade at 0.44 with `taker_side = "no"`. A taker-no
+    trade at 0.44 lifted resting yes size at 0.44, which is *through* our 0.45 bid: everything
+    resting at and above our price is gone, and the repaired simulator fills our whole 87
+    (`price < prob`, the swept-through branch). The record says 38.92, so the two differ and the
+    queue genuinely collapsed -- hypothesis (iii).
+
+    A query demanding `yes_price == 0.45` exactly would report `observed volume 0` here and rule
+    `unverifiable`, missing the one hypothesis the tape does support. The at-price-only count is
+    reported beside it and is 0, which is the point.
+    """
+    prints = [{"trade_id": "sweep", "ts": at(1800), "yes_price": "0.44", "count": "6401.00",
+               "taker_side": "no", "source": "ws"}]
+    directory = _capsule(tmp_path, prints=prints, deltas=[], snapshots=[],
+                         recorded_filled="38.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "corrected"
+    assert result.hypothesis == "iii"
+    assert result.repaired_filled == Decimal("87.00")
+    before = _count(result.evidence["iii"]["observed_hitting_volume_before_fills"])
+    assert before == Decimal("6401")
+    assert _count(result.evidence["iii"]["observed_volume_at_price_any_taker"]) == 0
+
+
+def test_a_decrement_on_the_other_side_of_the_book_is_not_the_double_count(tmp_path):
+    """Expected verdict `unverifiable`, no hypothesis.
+
+    Derived from the rows: the counterexample's -6,376 is stamped on the **no** side. A no-side
+    level at 0.45 is yes 0.55 -- a different level of a different queue -- and the repaired
+    simulator ignores it (`_apply_queue_delta` acts only on our side at our price, shrinking).
+    Our 6,401 are still ahead of us, the three prints take 63.92 of them, nothing reaches us, and
+    the difference from 38.92 has no supported cause.
+
+    Hypothesis (i) is "the equal-timestamp double count": a decrement that moved *our* queue at
+    the same instant a print reported the same trade. A sum over both sides would call this
+    `corrected` and write a double count into the record that could not have happened.
+    """
+    deltas = [dict(DOUBLE_COUNT_DELTA, side="no")]
+    directory = _capsule(tmp_path, prints=DOUBLE_COUNT_PRINTS, deltas=deltas, snapshots=[],
+                         recorded_filled="38.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "unverifiable"
+    assert result.hypothesis is None
+    assert result.evidence["i"]["met"] is False
+    assert _count(result.evidence["i"]["observed_decrement"]) == 0
+
+
+def test_a_gap_in_its_own_file_on_the_anchors_sid_is_a_recovery_error(tmp_path):
+    """Expected verdict `corrected`, hypothesis (ii).
+
+    Derived from the rows: subscription 7 lost a frame at 14:51:47Z, inside our resting
+    interval, and the book was re-anchored a second later from a snapshot on that same
+    subscription. Our queue position was carried across a hole in the tape, which is exactly
+    what hypothesis (ii) describes, and the repaired simulator -- given no tape at all after the
+    anchor -- fills nothing against the recorded 38.92.
+
+    The gap row lives in `orderbook_events_gaps.jsonl.gz` and carries no `kind` column, because
+    that is what `harness/capsule.py` writes; a query that looked for `kind = "gap"` inside
+    `orderbook_events` would find nothing on any real capsule and (ii) could never be met.
+    """
+    gaps = [{"id": 5, "ts": at(900), "sid": 7, "seq": None, "ticker": "",
+             "raw": {"exposed_by": 4}}]
+    snapshots = [{"id": 6, "ts": at(901), "kind": "snapshot", "sid": 7, "seq": 1,
+                  "ticker": "K1", "raw": {}}]
+    directory = _capsule(tmp_path, prints=[], deltas=[], snapshots=snapshots, gaps=gaps,
+                         recorded_filled="38.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "corrected"
+    assert result.hypothesis == "ii"
+    assert result.evidence["ii"]["observed_gaps_in_interval"] == 1
+    assert result.evidence["ii"]["observed_gaps_on_anchor_sid"] == 1
+    assert result.evidence["ii"]["observed_snapshots"] == 1
+
+
+def test_a_stale_gap_or_one_on_another_subscription_is_not_this_orders_recovery(tmp_path):
+    """Expected verdict `unverifiable`, no hypothesis.
+
+    Derived from the rows: one gap is stamped 27 hours before this order was placed -- a period
+    capsule's gap slice spans the whole capsule window, not our resting interval -- and the other
+    is inside the interval but on subscription 999, while the snapshot that anchored our book is
+    on subscription 7. Neither can have disturbed this order's anchor, so §1.7's "a gap row on
+    the anchor's sid" is not satisfied and the difference from 38.92 keeps no cause.
+    """
+    gaps = [{"id": 4, "ts": at(-97200), "sid": 999, "seq": None, "ticker": "", "raw": {}},
+            {"id": 5, "ts": at(900), "sid": 999, "seq": None, "ticker": "", "raw": {}}]
+    snapshots = [{"id": 6, "ts": at(901), "kind": "snapshot", "sid": 7, "seq": 1,
+                  "ticker": "K1", "raw": {}}]
+    directory = _capsule(tmp_path, prints=[], deltas=[], snapshots=snapshots, gaps=gaps,
+                         recorded_filled="38.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "unverifiable"
+    assert result.hypothesis is None
+    assert result.evidence["ii"]["observed_gaps_in_interval"] == 1
+    assert result.evidence["ii"]["observed_gaps_on_anchor_sid"] == 0
+    assert result.evidence["ii"]["met"] is False
+
+
+def test_only_a_snapshot_inside_the_resting_interval_anchors_the_recovery_hypothesis(tmp_path):
+    """Expected verdict `unverifiable`, no hypothesis.
+
+    Derived from the rows: the only snapshot is the one every capsule carries at its own
+    window's start, half an hour before we were placed. Nothing re-anchored while we rested, so
+    a gap inside the interval has no recovery to point at.
+
+    Counting that window-start anchor would make hypothesis (ii) met by construction on every
+    capsule that has any gap, which is a tautology rather than evidence.
+    """
+    gaps = [{"id": 5, "ts": at(900), "sid": 7, "seq": None, "ticker": "", "raw": {}}]
+    snapshots = [{"id": 1, "ts": at(-1800), "kind": "snapshot", "sid": 7, "seq": 1,
+                  "ticker": "K1", "raw": {}}]
+    directory = _capsule(tmp_path, prints=[], deltas=[], snapshots=snapshots, gaps=gaps,
+                         recorded_filled="38.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "unverifiable"
+    assert result.hypothesis is None
+    assert result.evidence["ii"]["observed_snapshots"] == 0
+    assert result.evidence["ii"]["met"] is False
+
+
+def test_another_tickers_tape_and_a_post_cancel_print_are_not_this_orders_evidence(tmp_path):
+    """Expected verdict `corrected`, hypothesis (i), repaired fill 0 -- unchanged by the noise.
+
+    Derived from the rows: this is the reconciliation's own counterexample, in a capsule that
+    also carries 9,999 contracts traded on ticker K2 at the same instant and 500 more on K1 after
+    we were cancelled. A period capsule merges every ticker into one `venue_trades` file, and an
+    order capsule's window runs past the cancel, so both rows are ordinary.
+
+    Neither is evidence about this order's queue: K2 is a different market, and a print after
+    15:12:06Z happened when we no longer rested. Counted, the 9,999 would both meet hypothesis
+    (iii) and -- fed to the simulator -- invent a fill of our whole remaining size, turning the
+    audit's own answer into an artefact of the file layout.
+    """
+    prints = DOUBLE_COUNT_PRINTS + [
+        {"trade_id": "other-ticker", "ts": at(1828.332), "yes_price": "0.45", "count": "9999.00",
+         "taker_side": "no", "source": "ws", "ticker": "K2"},
+        {"trade_id": "after-cancel", "ts": at(3000), "yes_price": "0.45", "count": "500.00",
+         "taker_side": "no", "source": "ws", "ticker": "K1"}]
+    directory = _capsule(tmp_path, prints=prints, deltas=[DOUBLE_COUNT_DELTA], snapshots=[],
+                         recorded_filled="38.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "corrected"
+    assert result.hypothesis == "i"
+    assert result.repaired_filled == Decimal("0.00")
+    assert _count(result.evidence["iii"]["observed_hitting_volume"]) == Decimal("63.92")
+    assert result.evidence["iii"]["met"] is False
+
+
+def test_prints_after_the_recorded_fills_do_not_show_a_queue_collapse(tmp_path):
+    """Expected verdict `unverifiable`, no hypothesis.
+
+    Derived from the rows: the record books its fills at 14:53:27Z and the 6,401 contracts trade
+    ten minutes *later*. Trading that happened after we were reported filled cannot be the
+    reason we were reported filled, so hypothesis (iii)'s "before the fills" is not satisfied,
+    and the difference from 38.92 keeps no cause. The whole-interval volume is reported beside
+    the pre-fill one, so the record still shows that the 6,401 exist.
+    """
+    fills = [{"id": 1, "order_id": 157, "filled_at": at(1000), "contracts": "38.92"}]
+    prints = [{"trade_id": "late-sweep", "ts": at(1600), "yes_price": "0.45",
+               "count": "6401.00", "taker_side": "no", "source": "ws"}]
+    directory = _capsule(tmp_path, prints=prints, deltas=[], snapshots=[], fills=fills,
+                         recorded_filled="38.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.verdict == "unverifiable"
+    assert result.hypothesis is None
+    assert _count(result.evidence["iii"]["observed_hitting_volume_before_fills"]) == 0
+    assert _count(result.evidence["iii"]["observed_hitting_volume"]) == Decimal("6401")
+
+
+def test_a_capsule_that_does_not_carry_the_order_refuses(tmp_path):
+    """The wrong capsule, or the wrong id, is an operator mistake in the quiet window: the
+    command says so on stderr and exits 2 rather than printing a traceback."""
+    directory = _capsule(tmp_path, prints=[], deltas=[], snapshots=[],
+                         recorded_filled="38.92", recorded_queue="0.00")
+    with pytest.raises(ValueError, match="not in this capsule"):
+        audit_order(read_capsule(directory), 999)
+    result = runner.invoke(app, ["audit-order", "--capsule", str(directory), "--order", "999"])
+    assert result.exit_code == 2
+    assert "not in this capsule" in (result.stderr or result.output)

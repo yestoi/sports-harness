@@ -37,19 +37,45 @@ cancel says nothing about the queue this order rested in.
 3. **A genuine queue collapse.** Prints of 6,401 or more at 0.45 before the fills.
 
 Each is a query over the capsule's own files, and each reports its observed count whether or not
-it is met, so an `unverifiable` verdict still says what was seen:
+it is met, so an `unverifiable` verdict still says what was seen. Every query is written with the
+**simulator's own matching rules**, never with a looser reading of the sentence that states it: a
+hypothesis a print that could not have lifted us can satisfy would name a cause the evidence does
+not support, which is the failure ruling IM-3 exists to prevent.
 
 | Hypothesis | Query | Met when |
 |---|---|---|
-| (i) | decrements at 0.45 on our side stamped at an instant a print at 0.45 also carries | their sum is within 1 % of -6,376 |
-| (ii) | the capsule's gap rows (`orderbook_events_gaps`, or `kind = 'gap'` inline) and its `kind = 'snapshot'` rows inside the resting interval | both are present |
-| (iii) | prints at 0.45 before the earliest recorded fill (the whole resting interval when the record has no fill) | their sum is 6,401 or more |
+| (i) | decrements **on our side at our price, shrinking** (exactly `_apply_queue_delta`'s test), stamped at an instant a print that could have lifted us also carries | their sum is within 1 % of -6,376 |
+| (ii) | gap rows (`orderbook_events_gaps`, or `kind = 'gap'` inline, deduplicated) **inside the resting interval and on the sid** an in-interval `kind = 'snapshot'` row anchored | a gap on that sid and an in-interval snapshot are both present |
+| (iii) | prints that **could have lifted us** -- `hits()` (canonical taker side opposite ours) and `price_on_side() <= 0.45`, at or *through* our level -- before the earliest recorded fill, the whole resting interval when the record has no fill | their sum is 6,401 or more |
+
+Three consequences of writing them this way, each pinned by a test:
+
+- A print at 0.45 whose taker side is *ours* lifted a resting ask on the other side of the book
+  and never touched us; it is not a queue collapse, however large. The literal "volume at 0.45,
+  whoever the taker was" count is still reported, as `observed_volume_at_price_any_taker`, so the
+  record shows what was on the tape; it never meets a hypothesis.
+- A print at 0.44 that a taker-no lifted swept *through* our 0.45 bid and is exactly a queue
+  collapse, although an equality test on the price would not see it.
+- A decrement on the no side at 0.45 is a different level of a different queue (no 0.45 is yes
+  0.55) and moves nothing of ours, so it cannot be the double count.
 
 Hypothesis (ii)'s snapshot is deliberately the one *inside* the resting interval -- a re-anchor
 while we rested -- and not the anchor every capsule carries at its own window's start, which
-would make the hypothesis met by construction. Hypothesis (i)'s `met` test is on the decrement
-alone; the print volume stamped with it is reported beside it as evidence rather than folded
-into the test, because 63.92 is itself a C0 recorded quantity.
+would make the hypothesis met by construction; its gap must be inside that interval too, and on
+the anchor's `sid`, because a period capsule's gap slice spans the whole capsule window and gap
+detection is subscription-level. Where no in-interval snapshot carries a `sid` there is nothing
+to compare against, and the evidence dict says so in `sid_rule` rather than silently loosening.
+Hypothesis (i)'s `met` test is on the decrement alone; the print volume stamped with it is
+reported beside it as evidence rather than folded into the test, because 63.92 is itself a C0
+recorded quantity.
+
+**Hypothesis (ii) not being met is weak evidence, and should be read as such.** A capsule carries
+at most **one** snapshot per ticker: `export_ws_tape` takes the newest anchoring snapshot with
+`order by ts desc, id desc limit 1` (`harness/fixtures.py`), and the capsule appends that single
+row. A re-anchor at 14:50 is therefore invisible in the file whenever any later snapshot exists --
+and for an order capsule the window runs to `cancelled_at + 30 min`, so a later one usually does.
+`observed_snapshots = 0` means "this capsule's one snapshot is outside the resting interval", not
+"no re-anchor happened". Ruling (ii) out properly needs a tape read the capsule does not carry.
 
 ## Verdicts
 
@@ -62,7 +88,10 @@ into the test, because 63.92 is itself a C0 recorded quantity.
 
 The manifest test is applied first and is decisive: a capsule whose manifest lists any
 `unverifiable_slices` entry is `unverifiable` without a replay, and the three hypotheses' counts
-are reported anyway. One consequence is worth stating plainly, because it bears on hypothesis
+are reported anyway. Because no replay is run on that path, a gated result carries **no** simulated
+quantities: both `repaired_filled` and `repaired_queue` are `null`, so a gated verdict can never be
+misread as a simulated fill of nothing (which is also the meaningful answer in the `corrected`
+case, and must stay distinguishable from it). One consequence is worth stating plainly, because it bears on hypothesis
 (ii): 6A marks a window containing **any** `gap` row as an unverifiable slice
 (`harness/capsule.py`'s `unverifiable`), so a capsule whose tape has the gap that hypothesis (ii)
 predicts is ruled `unverifiable` on the manifest rather than `corrected` on the hypothesis. That
