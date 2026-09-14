@@ -38,13 +38,17 @@ _cards = count(1)
 
 
 @pytest.fixture
-def second_db_session(_schema):
+def second_db_session(db_session):
     """A second session on the same engine, committing on its own.
 
     `db_session` is one transaction that `conftest` rolls back and truncates behind; the week
     advisory lock is transaction-scoped, so a race against it needs a genuinely second
-    transaction. Cleanup is `db_session`'s truncate, which runs after both are closed.
+    transaction. Cleanup is `db_session`'s truncate, and this fixture depends on `db_session`
+    for that ordering alone: pytest tears a fixture down before the fixtures it requested, so
+    this session is always closed before the truncate runs, whichever order a test lists them
+    in (fix round 1, MI-5; `truncate_all` would otherwise block on an open transaction).
     """
+    _schema = db_session.get_bind()
     from sqlalchemy.orm import sessionmaker
 
     with sessionmaker(bind=_schema)() as session:
@@ -67,6 +71,22 @@ def _card(db_session, *, year: int = 2026, week: int = 37, status: str = "propos
     if leg1_graded:
         leg = db_session.query(ParlayLeg).filter_by(card_id=card.id, seq=1).one()
         leg.status, leg.graded_at = "hit", NOW
+    db_session.flush()
+    return card
+
+
+def _placed_card(db_session, *, status: str = "placed", year: int = 2026, week: int = 37,
+                 stake: Decimal = Decimal("25"), odds: int = 400) -> ParlayCard:
+    """A card that went through `mark_placed` and was then driven to `status`.
+
+    Every state after `proposed` has a `parlay_placements` row behind it in production --
+    `mark_placed` writes the placement and the stake row in one transaction -- and 9's
+    invariant forbids a corrections row on a card that has none, so the correction cases build
+    their cards this way rather than by writing a status straight onto a bare card.
+    """
+    card = _card(db_session, year=year, week=week)
+    mark_placed(db_session, card.id, odds, stake, T0)
+    card.status = status
     db_session.flush()
     return card
 
@@ -368,9 +388,14 @@ def test_a_note_is_sanitized_onto_the_placement(db_session):
     ("busted", "status", "void"),
 ])
 def test_every_row_of_the_transition_table_is_accepted(db_session, state, field, value):
-    card = _card(db_session, status=state)
+    card = (_card(db_session, status="proposed") if state == "proposed"
+            else _placed_card(db_session, status=state))
     row = apply_correction(db_session, card.id, field, value, T0)
-    assert row.field == field and row.new_value == value
+    # The brief's blanket `row.new_value == value` is amended for the decline row only (fix
+    # round 1, IM-1): 5.2's Effect column records that row as `(status, proposed, void)`, so
+    # the persisted value is the card's new state, not the word the route body carried.
+    recorded = "void" if (field, value) == ("status", "declined") else value
+    assert row.field == field and row.new_value == recorded
 
 
 @pytest.mark.parametrize("state,field,value", [
@@ -438,7 +463,7 @@ def test_an_accepted_odds_correction_recomputes_the_payout(db_session):
 
 
 def test_a_leg_status_correction_voids_the_leg_for_the_next_grading_pass(db_session):
-    card = _card(db_session, status="alive")
+    card = _placed_card(db_session, status="alive")
     apply_correction(db_session, card.id, "leg_status:1", "void", T0)
     leg = db_session.query(ParlayLeg).filter_by(card_id=card.id, seq=1).one()
     assert leg.status == "void" and leg.graded_at == T0
@@ -496,7 +521,9 @@ def test_declining_a_proposed_card_voids_it_and_moves_no_money(db_session):
     row = apply_correction(db_session, card.id, "status", "declined", T0)
     card = db_session.get(ParlayCard, card.id)
     assert (card.status, card.declined_reason) == ("void", "declined")
-    assert row.old_value == "proposed"
+    # 5.2's Effect column: the row is `(status, proposed, void)`. The owner's own word is on
+    # the card, in `declined_reason`, which is what the Season chip reads.
+    assert (row.field, row.old_value, row.new_value) == ("status", "proposed", "void")
     assert db_session.query(ParlayLedger).filter_by(card_id=card.id).count() == 0
 
 
@@ -551,3 +578,74 @@ def test_a_field_longer_than_the_column_is_refused_never_truncated(db_session):
     card = _card(db_session, status="placed")
     with pytest.raises(ValueError):
         apply_correction(db_session, card.id, "leg_line:" + "1" * 30, "227.5", T0)
+
+
+# --- Fix round 1 -------------------------------------------------------------------------------
+
+
+def test_a_half_cent_rounds_up_the_way_the_column_does(db_session):
+    """IM-2: money is quantized `ROUND_HALF_UP` here, as `numeric(10,2)` rounds and as the rest
+    of the repo does. `decimal`'s default half-even would store the stake as $25.00 and the
+    return as $137.50, each a cent under what PostgreSQL's own cast of the same string gives."""
+    card = _card(db_session, year=2026, week=37)
+    placement = mark_placed(db_session, card.id, 450, Decimal("25.005"), T0)
+    assert placement.stake_actual == Decimal("25.01")
+    row = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="stake").one()
+    assert row.amount == Decimal("25.01")
+    _drive_alive(db_session, card)
+    apply_correction(db_session, card.id, "return", "137.505", T0)
+    paid = db_session.query(ParlayLedger).filter_by(card_id=card.id, kind="return").one()
+    assert paid.amount == Decimal("137.51")
+
+
+def test_a_stake_correction_of_a_half_cent_rounds_up(db_session):
+    card = _card(db_session, year=2026, week=37)
+    mark_placed(db_session, card.id, 400, Decimal("25"), T0)
+    apply_correction(db_session, card.id, "stake", "30.005", T0)
+    assert db_session.get(ParlayPlacement, card.id).stake_actual == Decimal("30.01")
+    assert sum(r.amount for r in db_session.query(ParlayLedger).filter_by(
+        card_id=card.id, kind="stake")) == Decimal("30.01")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("stake", "30.00"),
+    ("accepted_odds", "450"),
+    ("leg_status:1", "void"),
+    ("return", "137.50"),
+])
+def test_a_correction_on_a_card_with_no_placement_is_refused(db_session, field, value):
+    """MI-2 and 9's invariant: no corrections row whose card has no placement and whose field
+    is not `status`. `mark_placed` writes both rows in one transaction, so the only way to this
+    state is hand-made data, and a refusal keeps the invariant true by construction."""
+    card = _card(db_session, status="placed")          # no `parlay_placements` row behind it
+    with pytest.raises(CorrectionNotAllowed):
+        apply_correction(db_session, card.id, field, value, T0)
+    assert db_session.execute(text(
+        "select count(*) from parlay_placement_corrections")).scalar() == 0
+
+
+def test_a_status_correction_needs_no_placement(db_session):
+    """The one field the invariant exempts: a `proposed` card has no placement by definition,
+    and declining it is the first row of the table."""
+    card = _card(db_session, status="proposed")
+    apply_correction(db_session, card.id, "status", "declined", T0)
+    assert db_session.get(ParlayCard, card.id).status == "void"
+
+
+def test_a_confirmed_return_leaves_every_other_card_s_ledger_alone(db_session):
+    """MI-4: the delete behind the one-row-per-kind rule is scoped to one card and one kind.
+    Card B is settled and confirmed; correcting card A must not touch a row of B's."""
+    a = _card(db_session, year=2026, week=37)
+    b = _card(db_session, year=2026, week=37)
+    mark_placed(db_session, a.id, 450, Decimal("5"), T0)
+    mark_placed(db_session, b.id, 450, Decimal("5"), T0)
+    _drive_alive(db_session, a)
+    _drive_alive(db_session, b)
+    apply_correction(db_session, b.id, "return", "27.50", T0)
+    apply_correction(db_session, a.id, "return", "27.50", T0)
+    apply_correction(db_session, a.id, "return", "30.00", T0)
+    kept = db_session.query(ParlayLedger).filter_by(card_id=b.id, kind="return").one()
+    assert kept.amount == Decimal("27.50") and kept.source == "confirmed"
+    assert db_session.query(ParlayLedger).filter_by(card_id=b.id, kind="stake").count() == 1
+    assert db_session.query(ParlayLedger).filter_by(card_id=a.id, kind="return").one().amount \
+        == Decimal("30.00")

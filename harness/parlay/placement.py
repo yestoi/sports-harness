@@ -120,14 +120,16 @@ class LineMoved(RuntimeError):
 _WEEK_STAKED = text("""
     select coalesce(sum(amount), 0) from parlay_ledger
     where kind = 'stake' and year = :year and week = :week
-""")
+""")   # `parlay_ledger` is small (a week of fun-money rows) and carries no index: a walk.
 
 _WEEK_LOCK = text("select pg_advisory_xact_lock(hashtext('parlay_week:' || :year || ':' || :week))")
 _CARD_FOR_UPDATE = text("select status from parlay_cards where id = :id for update")
 
 #: The newest DraftKings prop row for one leg's outcome (addendum 3.3; D23). Keyed by the
 #: player, which is exactly what `odds_snapshots` cannot key on, and by the internal
-#: `prop:<stat>` market key the normalizer writes.
+#: `prop:<stat>` market key the normalizer writes. Rides `ix_odds_prop_lookup
+#: (game_id, market_type, player_id, fetched_at desc) where player_id is not null`, whose
+#: leading three columns are this statement's three equalities and whose fourth is its order.
 _NEWEST_PROP = text("""
     select point, fetched_at from odds_prop_snapshots
     where book = 'draftkings' and game_id = :game_id and market_type = :market_type
@@ -249,7 +251,10 @@ def mark_placed(session: Session, card_id: int, payout_american: int, stake: Dec
 
     # D20: the card's own week, not the placement instant's. A Saturday-built card placed on
     # Monday counts against its slate's $50, and `week_staked` reads the same key.
-    stake = Decimal(str(stake)).quantize(Decimal("0.01"))
+    # ROUND_HALF_UP, as everywhere money is quantized in this repo and as `numeric(10,2)`
+    # itself rounds: decimal's default half-even would store a slip's $25.005 as $25.00 while
+    # the column's own cast of the same string gives $25.01 (fix round 1, IM-2).
+    stake = Decimal(str(stake)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     already = week_staked(session, card.year, card.week)
     if already + stake > config.weekly_budget:
         raise BudgetExceeded(already, config.weekly_budget - already, config.weekly_budget)
@@ -318,11 +323,11 @@ TRANSITIONS: dict[tuple[str, str], set[str]] = {
 #: A leg with one of these has been graded; its line is never corrected afterwards.
 _LEG_GRADED = ("hit", "miss", "void")
 
+#: Rides `ix_parlay_corrections_card_ts (card_id, ts)`, bounded to one card.
 _CORRECTION_COUNT = text(
     "select count(*) from parlay_placement_corrections where card_id = :card_id")
-_CARD_STAKED = text(
-    "select coalesce(sum(amount), 0) from parlay_ledger where card_id = :card_id "
-    "and kind = 'stake'")
+#: `parlay_ledger` carries no index: it is a handful of fun-money rows a week ($50 of cards),
+#: so this is a walk of a small table, bounded to one card and one kind.
 _DROP_LEDGER_KIND = text("delete from parlay_ledger where card_id = :card_id and kind = :kind")
 
 
@@ -356,10 +361,6 @@ def _leg_of(session: Session, card: ParlayCard, seq_text: str) -> ParlayLeg | No
     return session.query(ParlayLeg).filter_by(card_id=card.id, seq=seq).one_or_none()
 
 
-def _card_staked(session: Session, card: ParlayCard) -> Decimal:
-    return session.execute(_CARD_STAKED, {"card_id": card.id}).scalar() or Decimal("0")
-
-
 def _confirm_pay(session: Session, card: ParlayCard, kind: str, amount: Decimal,
                  now: datetime) -> None:
     """The owner's own figure for a card's `return` or `void`, as the *only* row of that kind.
@@ -373,7 +374,8 @@ def _confirm_pay(session: Session, card: ParlayCard, kind: str, amount: Decimal,
     session.flush()
     session.execute(_DROP_LEDGER_KIND, {"card_id": card.id, "kind": kind})
     session.add(ParlayLedger(ts=now, card_id=card.id, kind=kind,
-                             amount=amount.quantize(Decimal("0.01")),
+                             amount=amount.quantize(Decimal("0.01"),
+                                                    rounding=ROUND_HALF_UP),
                              year=card.year, week=card.week, source="confirmed"))
 
 
@@ -383,8 +385,8 @@ def _old_value(session: Session, card: ParlayCard, placement: ParlayPlacement | 
     if kind == "status":
         return status
     if kind == "stake":
-        staked = placement.stake_actual if placement is not None else _card_staked(session, card)
-        return str(staked)
+        # Read before the table lookup refuses a placement-free card, so it stays None-safe.
+        return None if placement is None else str(placement.stake_actual)
     if kind == "accepted_odds":
         if placement is None or placement.dk_odds_actual is None:
             return None
@@ -423,6 +425,17 @@ def _check_allowed(status: str, kind: str, field: str, seq_text: str, new_value:
                 f"leg {leg.seq} is {leg.status}: a graded leg's line is never corrected")
 
 
+def _recorded_value(kind: str, new_value: str) -> str:
+    """The value the correction row persists, which is the Effect column's, not always the one
+    the owner submitted (fix round 1, IM-1).
+
+    The only divergence is the decline: 5.4 has the route body carry `new_value = "declined"`
+    and 5.2's Effect column records the row as `(status, proposed, void)`, because `void` is
+    what the card becomes. The owner's own word is not lost -- `declined_reason` holds it.
+    """
+    return "void" if kind == "status" and new_value == "declined" else new_value
+
+
 def _apply(session: Session, card: ParlayCard, placement: ParlayPlacement | None,
            leg: ParlayLeg | None, kind: str, new_value: str, now: datetime) -> None:
     """The Effect column of 5.2, and nothing else."""
@@ -430,6 +443,8 @@ def _apply(session: Session, card: ParlayCard, placement: ParlayPlacement | None
         card.status, card.declined_reason = "void", "declined"
         return                                  # a card nobody placed moved no money
     if kind == "status":                        # new_value == "void" (the table's only other)
+        # `parlay_cards.stake` is not-null, so the fallback is a figure, never None: a card
+        # can reach this branch with no placement row only through hand-made data.
         stake = placement.stake_actual if placement is not None else card.stake
         _confirm_pay(session, card, "void", Decimal(str(stake)), now)
         card.status = "void"
@@ -443,11 +458,6 @@ def _apply(session: Session, card: ParlayCard, placement: ParlayPlacement | None
         return
     if kind == "accepted_odds":
         odds = _as_int(new_value)
-        if placement is None:
-            # Correctable per the table (the card is placed|alive); with no placement row there
-            # is nothing to set, and the correction row still records what the owner said.
-            log.warning("card %s has no placement row; accepted_odds recorded only", card.id)
-            return
         placement.dk_odds_actual = odds
         placement.dk_payout_actual = _payout_from_american(placement.stake_actual, odds)
         return
@@ -458,7 +468,7 @@ def _apply(session: Session, card: ParlayCard, placement: ParlayPlacement | None
         leg.status, leg.graded_at = "void", now
 
 
-def _correct_stake(session: Session, card: ParlayCard, placement: ParlayPlacement | None,
+def _correct_stake(session: Session, card: ParlayCard, placement: ParlayPlacement,
                    new_stake: Decimal, now: datetime) -> None:
     """`stake_actual` set and the signed delta written, on the card's week.
 
@@ -466,16 +476,13 @@ def _correct_stake(session: Session, card: ParlayCard, placement: ParlayPlacemen
     per-card invariant of 9 and the week's cap keeps reading one column.
     """
     config = load_config()
-    new_stake = new_stake.quantize(Decimal("0.01"))
-    old = (Decimal(str(placement.stake_actual)) if placement is not None
-           else _card_staked(session, card))
-    delta = new_stake - old
+    new_stake = new_stake.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    delta = new_stake - Decimal(str(placement.stake_actual))
     if delta > 0:
         already = week_staked(session, card.year, card.week)
         if already + delta > config.weekly_budget:
             raise BudgetExceeded(already, config.weekly_budget - already, config.weekly_budget)
-    if placement is not None:
-        placement.stake_actual = new_stake
+    placement.stake_actual = new_stake
     if delta:
         session.add(ParlayLedger(ts=now, card_id=card.id, kind="stake", amount=delta,
                                  year=card.year, week=card.week, source="confirmed"))
@@ -514,9 +521,16 @@ def apply_correction(session: Session, card_id: int, field: str, new_value: str,
             f"card {card_id} already carries {CORRECTIONS_MAX} corrections")
 
     _check_allowed(status, kind, field, seq_text, new_value, leg)
+    if placement is None and kind != "status":
+        # 9's invariant: no corrections row whose card has no placement and whose field is not
+        # `status`. `mark_placed` writes the placement and the stake row in one transaction, so
+        # this is unreachable from either write path; refusing keeps it unreachable by
+        # construction rather than by habit, and there is no money to correct here anyway.
+        raise CorrectionNotAllowed(
+            f"card {card_id} has no placement: only a status correction applies")
     _apply(session, card, placement, leg, kind, new_value, now)
     row = ParlayPlacementCorrection(card_id=card.id, ts=now, field=field, old_value=old_value,
-                                    new_value=new_value,
+                                    new_value=_recorded_value(kind, new_value),
                                     note=sanitize_reason(note) if note else None)
     session.add(row)
     session.flush()
