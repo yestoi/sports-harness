@@ -108,6 +108,12 @@ def overlays(root: Path, *, writable: bool) -> list[tuple[Path, bool]]:
     masks: list[tuple[Path, bool]] = []
     for parent, dirs, files in os.walk(root, followlinks=False):
         base = Path(parent)
+        if base.name == 'site-packages':
+            # Installed distributions are code, never host credentials: the anthropic SDK ships
+            # `anthropic/lib/credentials/`, and a tmpfs over it broke `import anthropic` in every
+            # worker. Nothing below site-packages is masked or walked; the mount stays read-only.
+            dirs[:] = []
+            continue
         for name in list(dirs) + files:
             path = base / name
             mode = path.lstat().st_mode
