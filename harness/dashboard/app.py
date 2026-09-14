@@ -1,25 +1,32 @@
 """One-page operator dashboard: health, funnel, match report, signals, and a kill switch.
 
 Every query here is read-only and bounded by a time window (24h for most sections, 1h for
-the WebSocket/data-quality sections per spec) plus a `LIMIT`, except `/kill` and `/unkill`
-which are the only writes in this module. `/healthz` and the page's Health section both call
-into `harness.health.compute_health` rather than re-deriving the staleness/error rule.
+the WebSocket/data-quality sections per spec) plus a `LIMIT`. The writes are `/kill`, `/unkill`
+and -- on the LAN listener only (phase 4.6, addendum 5) -- the owner's two parlay write routes.
+`/healthz` and the page's Health section both call into `harness.health.compute_health` rather
+than re-deriving the staleness/error rule.
 """
 
+import hashlib
 import hmac
+import json
 import logging
 import importlib.resources
+from collections import deque
 from contextlib import ExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from statistics import median
 from typing import Callable
+from uuid import UUID
 
-from fastapi import FastAPI, Form, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import desc, func, or_, select, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.responses import Response as StarletteResponse
 
@@ -29,10 +36,14 @@ from harness.config.settings import Settings
 from harness.dashboard import auth, snapshots as snap
 from harness.dashboard.queries import local_day_bounds_utc, recent_run_notes, signals_by_variant_from_notes
 from harness.db.models import (DashboardSnapshot, ExecHeartbeat, Fill, Game, JobRun, KillSwitch, Ledger,
-                                MetricSample, OddsSnapshot, Order, OrderbookEvent, OrderEvent, RawResponse, Run,
+                                MetricSample, OddsSnapshot, Order, OrderbookEvent, OrderEvent, ParlayCard,
+                                ParlayPlacement, ParlayPlacementCorrection, RawResponse, Run,
                                 Signal, StrategyVariant, Team, VenueMarket, VenueQuote)
 from harness.execution.plan import POST_ONLY_REJECT
 from harness.health import HEARTBEAT_WATCH_S, WS_EVENT_BROKEN_S, compute_health
+from harness.parlay.placement import (FIELD_MAX, VALUE_MAX, BudgetExceeded, CardNotPlaceable,
+                                      ConfirmationReused, CorrectionNotAllowed, CorrectionsCapped,
+                                      LineMoved, apply_correction, mark_placed)
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_model_for
 from harness.settlement.settle import stale_unsettled
 
@@ -78,6 +89,34 @@ LAN_JSON_PATHS = frozenset({"/kill", "/unkill", "/logout"})
 #: the same header.
 CSRF_HEADER, CSRF_VALUE = "X-Requested-With", "sports-ui"
 SESSION_REQUIRED = {"refusal": "session_required"}
+
+# --- Phase 4.6 (addendum 5.1, 5.2, 5.5): the two owner write routes ------------------------
+#: Writes one session may make in a minute. The confirm sheet sends one per submit and a
+#: correction is a tap; thirty is a whole evening of an owner's fumbling and still bounds what a
+#: page left open on a borrowed phone can do before the session is revoked.
+WRITE_LIMIT_PER_MINUTE = 30
+WRITE_WINDOW_S = 60
+#: How many sessions the write table may hold, bounded for the reason `auth.LoginLimiter`'s
+#: address table is: this LAN has one owner and a handful of devices, and an unbounded table is
+#: a way to grow the process rather than a way to count.
+WRITE_MAX_SESSIONS = 64
+#: The most a write body may carry. A confirm body is a few hundred bytes and a correction is
+#: less. The cap is applied to the *stream*: `Content-Length` is a claim, not a measurement.
+BODY_MAX_BYTES = 4096
+WRITE_CONTENT_TYPE = "application/json"
+#: `parlay_placements.note` and `parlay_placement_corrections.note` are String(200). A longer
+#: note is refused, never truncated (addendum 9).
+NOTE_MAX = 200
+#: The American price the owner read off their slip, bounded because it reaches an Integer
+#: column and is multiplied by the stake.
+ODDS_MIN, ODDS_MAX = -100_000, 100_000
+#: `parlay_placements.stake_actual` is Numeric(8, 2); the $50 weekly cap refuses long before
+#: this, and this is only what keeps a number the column cannot hold out of the transaction.
+STAKE_MAX = Decimal("999999.99")
+#: A card has a handful of legs and a line is a football number; both bounds are the shape of
+#: the data, so a body carrying a thousand legs is refused before a query is planned.
+LEG_SEQ_MAX = 50
+LEG_POINT_MAX = Decimal("1000")
 #: Every refusal the login page can show. Fixed strings, chosen by code: nothing the client
 #: submitted is ever rendered back (§6).
 LOGIN_REFUSALS = {
@@ -823,6 +862,388 @@ def _install_lan_session(app: FastAPI, templates: Jinja2Templates, settings: Set
         return response
 
 
+
+class _WriteRefused(Exception):
+    """One write route's refusal: a code and the fields addendum 5 names, never a message.
+
+    Raised from the request rules and from the exception translation below, and turned into a
+    JSON body by the handler `_install_parlay_writes` registers. `HTTPException` would have put
+    the text under `detail`, and the rule here is that a refusal the owner's page reads is a
+    fixed code plus the figures 5.1 lists -- never a sentence about what went wrong, which is
+    how a query, a path or a value gets into a page that is open on a phone.
+    """
+
+    def __init__(self, status_code: int, refusal: str, **fields) -> None:
+        super().__init__(refusal)          # the code itself: fixed text, never client data
+        self.status_code = status_code
+        self.body = {"refusal": refusal, **fields}
+
+
+class _WriteLimiter:
+    """Write requests per session and minute, in a bounded table (addendum 5.5).
+
+    Shaped like `auth.LoginLimiter`, which counts failed logins per address: one deque of
+    instants per key, pruned to the window on every look, and a dict that is capped so that a
+    flood of keys cannot grow it without bound. What differs is what is counted -- every write
+    that passes the request rules, refused or not, because the point is to bound how fast a
+    session can ask, not how often it is wrong.
+    """
+
+    def __init__(self, limit: int = WRITE_LIMIT_PER_MINUTE, window_s: int = WRITE_WINDOW_S,
+                 max_sessions: int = WRITE_MAX_SESSIONS) -> None:
+        self._limit = limit
+        self._window = timedelta(seconds=window_s)
+        self._max_sessions = max_sessions
+        self._writes: dict[str, deque[datetime]] = {}
+
+    def _prune(self, key: str, now: datetime) -> deque[datetime]:
+        writes = self._writes.get(key)
+        if writes is None:
+            return deque()
+        while writes and now - writes[0] > self._window:
+            writes.popleft()
+        if not writes:
+            self._writes.pop(key, None)
+        return writes
+
+    def allow(self, key: str, now: datetime) -> bool:
+        writes = self._prune(key, now)
+        if len(writes) >= self._limit:
+            return False
+        if key not in self._writes:
+            if len(self._writes) >= self._max_sessions:
+                self._evict(now)
+            self._writes[key] = writes
+        writes.append(now)
+        return True
+
+    def _evict(self, now: datetime) -> None:
+        """Drop every key whose window has emptied; failing that, the least recently active
+        one. Either way the dict is back under its cap before the next insert."""
+        for key in list(self._writes):
+            self._prune(key, now)
+        while len(self._writes) >= self._max_sessions:
+            oldest = min(self._writes, key=lambda k: self._writes[k][-1])
+            self._writes.pop(oldest, None)
+
+
+class PlacedBody(BaseModel):
+    """The body of `POST /api/parlay/placed` (addendum 5.1).
+
+    Every field is typed and bounded here rather than in the route, and an unknown field is
+    refused rather than ignored: the sheet and this model are one contract, and a body carrying
+    a key nobody reads is a page talking to a listener it does not know. The refusal the client
+    sees is `bad_value` and nothing else -- pydantic's own message quotes the submitted value
+    back, which is not something this listener says out loud.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    card_id: int = Field(ge=1)
+    stake: Decimal
+    #: The plan calls this `accepted_odds`; `mark_placed` calls it `payout_american`. The wire
+    #: name is the sheet's, and the route maps it.
+    accepted_odds: int = Field(ge=ODDS_MIN, le=ODDS_MAX)
+    confirmation_id: str | None = None
+    leg_lines: dict[int, Decimal] | None = None
+    note: str | None = Field(default=None, max_length=NOTE_MAX)
+
+    @field_validator("stake")
+    @classmethod
+    def _a_finite_amount(cls, value: Decimal) -> Decimal:
+        """`Decimal("nan")` and `Decimal("inf")` parse, and either one in the ledger poisons
+        every sum taken over it afterwards -- including the weekly cap."""
+        if not value.is_finite() or not Decimal("0") < value <= STAKE_MAX:
+            raise ValueError("stake is a positive amount the column can hold")
+        return value
+
+    @field_validator("confirmation_id")
+    @classmethod
+    def _a_uuid(cls, value: str | None) -> str | None:
+        """The confirm sheet mints `crypto.randomUUID()`; anything else is refused before it
+        reaches a String(36) column and the partial unique index over it (5.3)."""
+        if value is None:
+            return None
+        try:
+            return str(UUID(str(value)))
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError("confirmation_id is a UUID") from None
+
+    @field_validator("leg_lines")
+    @classmethod
+    def _bounded_lines(cls, value: dict | None) -> dict | None:
+        if value is None:
+            return None
+        for seq, point in value.items():
+            if not 1 <= seq <= LEG_SEQ_MAX:
+                raise ValueError("a leg line is keyed by a leg's seq")
+            if not point.is_finite() or abs(point) > LEG_POINT_MAX:
+                raise ValueError("a leg line is a bounded number")
+        return value
+
+
+class CorrectionBody(BaseModel):
+    """The body of `POST /api/parlay/correct` (addendum 5.2).
+
+    The two lengths are `harness.parlay.placement`'s own, imported rather than restated: they
+    are the widths of `parlay_placement_corrections.field` and `.new_value`, and a value past
+    them is refused here and again there, never truncated.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    card_id: int = Field(ge=1)
+    field: str = Field(min_length=1, max_length=FIELD_MAX)
+    new_value: str = Field(min_length=1, max_length=VALUE_MAX)
+    note: str | None = Field(default=None, max_length=NOTE_MAX)
+
+
+def _lan_session_is_valid(settings: Settings, request: Request, now: datetime) -> bool:
+    """Whether this request carries a live owner session, by the rule the gate applies.
+
+    The session gate already refuses every `/api/*` request without one, so this is the second
+    of two checks rather than the only one: a write route that is reachable only because a
+    middleware happens to be installed above it is one edit away from being reachable without
+    it. Fail closed exactly as the gate does -- no *usable* hash line means no session can be
+    valid -- and nothing here reaches `log`, a `repr` or an exception message.
+    """
+    line = auth.read_hash_line(settings)
+    if line is None or not auth.valid_hash_line(line):
+        return False
+    value = request.cookies.get(auth.COOKIE_NAME)
+    if not value:
+        return False
+    return auth.read_cookie(auth.session_key(line), value, now)
+
+
+def _session_digest(request: Request) -> str:
+    """The limiter's key for this session: a digest of the cookie, never the cookie itself.
+
+    A dict key is not a log line, but it is one `repr` away from being one and this table is
+    exactly the kind of object a traceback prints.
+    """
+    return hashlib.sha256(
+        request.cookies.get(auth.COOKIE_NAME, "").encode("utf-8", "replace")).hexdigest()
+
+
+async def _read_capped_body(request: Request) -> bytes:
+    """The request body, refused at `BODY_MAX_BYTES` while it is still arriving.
+
+    Streamed on purpose: `Content-Length` is a number the client wrote, so a body claiming ten
+    bytes and sending five kilobytes is refused on what it actually sends (addendum 5.5).
+    """
+    size, chunks = 0, []
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > BODY_MAX_BYTES:
+            raise _WriteRefused(413, "body_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _placement_json(placement: ParlayPlacement | None) -> dict | None:
+    """One placement as the confirm sheet reads it, or None when the card has none.
+
+    Money as strings, because a payout that reaches a page as a float is a payout that can be
+    displayed as $137.49999999999999. Nothing here is a secret and nothing here is a message.
+    """
+    if placement is None:
+        return None
+    return {"card_id": placement.card_id,
+            "placed_at": _iso(placement.placed_at),
+            "stake_actual": (None if placement.stake_actual is None
+                             else str(placement.stake_actual)),
+            "dk_payout_actual": (None if placement.dk_payout_actual is None
+                                 else str(placement.dk_payout_actual)),
+            "dk_odds_actual": placement.dk_odds_actual,
+            "confirmation_id": placement.confirmation_id,
+            "note": placement.note}
+
+
+def _correction_json(row: ParlayPlacementCorrection) -> dict:
+    return {"card_id": row.card_id, "ts": _iso(row.ts), "field": row.field,
+            "old_value": row.old_value, "new_value": row.new_value, "note": row.note}
+
+
+def _install_parlay_writes(app: FastAPI, session_factory: sessionmaker, settings: Settings,
+                           clock: Callable[[], datetime]) -> None:
+    """The owner's two write routes (addendum 5.1, 5.2, 5.5; D5).
+
+    Called only from `create_dashboard(..., lan=True)`, so the loopback app is byte-for-byte the
+    app it was: no write route, no exception handler, no limiter (invariant 9). Both routes
+    record; neither places. Every refusal is a code, the `card_not_placeable` body carries the
+    placement that already exists so a retry after a lost response shows the owner what is
+    recorded (A-I17), and no body carries a message, a query or a stack trace.
+
+    There is no third route: the confirm sheet's decline is a `status` correction (D5).
+    """
+    limiter = _WriteLimiter()
+    #: From settings, never from the request: a spoofed `Host:` must not be able to name the
+    #: origin it is then compared against (A-I8).
+    allowed_origin = f"https://{settings.lan_addr}:{settings.lan_port}"
+
+    @app.exception_handler(_WriteRefused)
+    async def _write_refused(_request: Request, exc: _WriteRefused) -> JSONResponse:
+        return JSONResponse(exc.body, status_code=exc.status_code)
+
+    async def write_rules(request: Request) -> dict:
+        """The request rules both routes share, cheapest refusal first (addendum 5.5).
+
+        The session, the CSRF header, the content type, the origin, the body cap and then the
+        limiter -- so a request that fails a header check is never read off the socket, and a
+        body over the cap is refused on the bytes it sends rather than on the length it claims.
+        The body is parsed here and handed on, so neither route declares a body parameter:
+        FastAPI reads and parses a declared body *before* any dependency runs, which would put
+        the whole 5 KiB in memory and answer a malformed body with a validation message.
+        """
+        if not _lan_session_is_valid(settings, request, clock()):
+            raise _WriteRefused(401, "session_required")
+        if request.headers.get(CSRF_HEADER) != CSRF_VALUE:
+            raise _WriteRefused(403, "forbidden")
+        content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type != WRITE_CONTENT_TYPE:
+            raise _WriteRefused(403, "forbidden")
+        if request.headers.get("origin") != allowed_origin:
+            raise _WriteRefused(403, "forbidden")
+        raw = await _read_capped_body(request)
+        if not limiter.allow(_session_digest(request), clock()):
+            raise _WriteRefused(429, "rate_limited")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise _WriteRefused(400, "bad_value") from None
+        if not isinstance(payload, dict):
+            raise _WriteRefused(400, "bad_value")
+        return payload
+
+    def _validated(model: type[BaseModel], payload: dict):
+        try:
+            return model.model_validate(payload)
+        except ValidationError:
+            # The code, and only the code: pydantic's message quotes the body back.
+            raise _WriteRefused(400, "bad_value") from None
+
+    def _placement_of(session: Session, card_id: int) -> ParlayPlacement | None:
+        """The card's placement. `card_id` is `parlay_placements`' primary key: one per card."""
+        return session.get(ParlayPlacement, card_id)
+
+    def _placement_by_confirmation(session: Session, card_id: int,
+                                   confirmation_id: str | None) -> ParlayPlacement | None:
+        """The placement this exact submit already recorded, or None.
+
+        A double tap, a retry over a flaky phone connection or a second tab sends the same
+        `(card_id, confirmation_id)` and gets the same 200 and the same placement back (5.1).
+        The same id against *another* card is a different thing entirely and `mark_placed`
+        refuses it (`ConfirmationReused`).
+        """
+        if confirmation_id is None:
+            return None
+        placement = session.get(ParlayPlacement, card_id)
+        if placement is None or placement.confirmation_id != confirmation_id:
+            return None
+        return placement
+
+    @app.post("/api/parlay/placed")
+    def parlay_placed(payload: dict = Depends(write_rules)):
+        """Record a slip the owner placed by hand at DraftKings (addendum 5.1).
+
+        This route records; it never places. Every refusal `mark_placed` makes is kept and
+        translated to its code, and the `card_not_placeable` body carries the existing placement
+        so a retry after a lost response shows the owner what is already recorded rather than a
+        bare refusal (A-I17).
+        """
+        body = _validated(PlacedBody, payload)
+        now = clock()
+        with session_factory() as s:
+            existing = _placement_by_confirmation(s, body.card_id, body.confirmation_id)
+            if existing is not None:
+                return {"placement": _placement_json(existing)}
+            try:
+                placement = mark_placed(s, body.card_id, body.accepted_odds, body.stake, now,
+                                        body.leg_lines, confirmation_id=body.confirmation_id,
+                                        note=body.note)
+                # Serialized before the commit, so the response is the row this request wrote
+                # whatever the factory's `expire_on_commit` is.
+                recorded = _placement_json(placement)
+                s.commit()
+            except ConfirmationReused:
+                s.rollback()
+                raise _WriteRefused(409, "confirmation_reused") from None
+            except CardNotPlaceable:
+                s.rollback()
+                raise _WriteRefused(409, "card_not_placeable",
+                                    placement=_placement_json(
+                                        _placement_of(s, body.card_id))) from None
+            except BudgetExceeded as exc:
+                s.rollback()
+                raise _WriteRefused(409, "budget_exceeded", recorded=str(exc.recorded),
+                                    left=str(exc.left)) from None
+            except LineMoved as exc:
+                s.rollback()
+                raise _WriteRefused(409, "line_moved", moved={
+                    str(seq): [str(was), str(moved_to)]
+                    for seq, (was, moved_to) in exc.legs.items()}) from None
+            except IntegrityError:
+                # The partial unique index on `confirmation_id` is the backstop, not the check
+                # (5.3): the request that lost the race answers with what is recorded.
+                s.rollback()
+                return {"placement": _placement_json(_placement_of(s, body.card_id))}
+            except Exception:
+                # Anything the two modules above did not name: the owner's page gets a code and
+                # the process gets the traceback. A refusal body never carries one.
+                s.rollback()
+                log.exception("the parlay placed route failed unexpectedly")
+                raise _WriteRefused(500, "internal_error") from None
+        return {"placement": recorded}
+
+    @app.post("/api/parlay/correct")
+    def parlay_correct(payload: dict = Depends(write_rules)):
+        """Correct one placed card through the closed table of addendum 5.2.
+
+        The same shape as the route above, over `apply_correction`, and the same rule about
+        refusals: a triple the table does not define is `correction_not_allowed`, not an
+        explanation of the table. The decline of 5.4 rides this route as `(status, declined)`
+        and writes `void` with the owner's word in `declined_reason` -- there is no third
+        route (D5).
+        """
+        body = _validated(CorrectionBody, payload)
+        now = clock()
+        with session_factory() as s:
+            try:
+                row = apply_correction(s, body.card_id, body.field, body.new_value, now,
+                                       body.note)
+                recorded = _correction_json(row)
+                card = s.get(ParlayCard, body.card_id)
+                status = None if card is None else card.status
+                s.commit()
+            except CardNotPlaceable:
+                s.rollback()
+                raise _WriteRefused(409, "card_not_placeable",
+                                    placement=_placement_json(
+                                        _placement_of(s, body.card_id))) from None
+            except CorrectionsCapped:
+                s.rollback()
+                raise _WriteRefused(409, "corrections_capped") from None
+            except CorrectionNotAllowed:
+                s.rollback()
+                raise _WriteRefused(409, "correction_not_allowed") from None
+            except BudgetExceeded as exc:
+                s.rollback()
+                raise _WriteRefused(409, "budget_exceeded", recorded=str(exc.recorded),
+                                    left=str(exc.left)) from None
+            except ValueError:
+                # A field or a value past the column's width: refused, never truncated.
+                s.rollback()
+                raise _WriteRefused(400, "bad_value") from None
+            except Exception:
+                # Anything the two modules above did not name: the owner's page gets a code and
+                # the process gets the traceback. A refusal body never carries one.
+                s.rollback()
+                log.exception("the parlay correct route failed unexpectedly")
+                raise _WriteRefused(500, "internal_error") from None
+        return {"correction": recorded, "card_status": status}
+
+
 def create_dashboard(session_factory: sessionmaker, settings: Settings,
                      clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                      *, lan: bool = False) -> FastAPI:
@@ -1001,6 +1422,7 @@ def create_dashboard(session_factory: sessionmaker, settings: Settings,
 
     if lan:
         _install_lan_session(app, templates, settings, clock)
+        _install_parlay_writes(app, session_factory, settings, clock)
 
     # `html=True` serves `index.html` for `/ui/`. Root `/`, `/api/summary`, `/healthz`, `/kill`
     # and `/unkill` are unchanged and are declared above, so nothing here can shadow them.
