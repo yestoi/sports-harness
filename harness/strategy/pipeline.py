@@ -389,6 +389,12 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     if ordered:
         coverage.record(session, run_id, coverage.DOMAIN_EVALUATION,
                         coverage.evaluation_scheduled_rows(coverage_cells, coverage_variants))
+        # Committed here, not left to the first variant's commit (review rev-6d-t4 Important 1):
+        # a stage that raises between here and `score`'s own commit is rolled back by the
+        # recorder (`tick.py`'s `except Exception: session.rollback()` around `price_and_signal`),
+        # which would discard the very rows that are supposed to record that the work was due.
+        # "Scheduled before the work" has to mean durable before the work.
+        session.commit()
 
     for variant in priority:
         if not ok():

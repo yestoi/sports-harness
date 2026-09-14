@@ -110,6 +110,20 @@ def ttk_bucket(minutes: int | None) -> str | None:
     return _TTK_LAST
 
 
+def _validate(outcome: str, n: int, overdue_ms: int | None) -> None:
+    """One coverage row's programming-error checks, shared by the caller's rows and by the
+    `truncated` row the cap appends. Raises before anything is written."""
+    if outcome not in COVERAGE_CLASS_OF:
+        raise ValueError(f"coverage outcome {outcome!r} has no class; "
+                         f"add it to COVERAGE_CLASS_OF")
+    if int(n) < 0:
+        raise ValueError(f"coverage row for {outcome!r} carries n = {n}")
+    if outcome in _NO_INTERVAL and overdue_ms is not None:
+        raise ValueError(f"{outcome!r} must carry no overdue_ms")
+    if outcome not in _NO_INTERVAL and overdue_ms is None:
+        raise ValueError(f"{outcome!r} must carry an overdue_ms")
+
+
 def record(session: Session, run_id: int, domain: str, rows) -> int:
     """One multi-row insert of `(cell, outcome, n, overdue_ms)` tuples. Returns rows written.
 
@@ -125,34 +139,41 @@ def record(session: Session, run_id: int, domain: str, rows) -> int:
     rows = list(rows)
     if not rows:
         return 0
-    for cell, outcome, n, overdue_ms in rows:
-        if outcome not in COVERAGE_CLASS_OF:
-            raise ValueError(f"coverage outcome {outcome!r} has no class; "
-                             f"add it to COVERAGE_CLASS_OF")
-        if int(n) < 0:
-            raise ValueError(f"coverage row for {outcome!r} carries n = {n}")
-        if outcome in _NO_INTERVAL and overdue_ms is not None:
-            raise ValueError(f"{outcome!r} must carry no overdue_ms")
-        if outcome not in _NO_INTERVAL and overdue_ms is None:
-            raise ValueError(f"{outcome!r} must carry an overdue_ms")
+    # Every programming error is refused here, before the database is touched, so the docstring
+    # above is true of the domain as well as of the rows (review rev-6d-t4 Minor 2).
+    if domain not in DOMAINS:
+        raise ValueError(f"coverage domain {domain!r}")
+    for _cell, outcome, n, overdue_ms in rows:
+        _validate(outcome, n, overdue_ms)
     dropped = 0
     if len(rows) > COVERAGE_ROW_CAP:
         dropped = len(rows) - COVERAGE_ROW_CAP
         rows = rows[:COVERAGE_ROW_CAP]
+        # Validated like every other row rather than trusted because it is ours (Minor 4): the
+        # row that reports a cut must not be the one row that could carry an uninterpretable one.
+        _validate(TRUNCATED, dropped, 0)
         rows.append((Cell(), TRUNCATED, dropped, 0))
     now = telemetry._ts(None)
     values = [{"run_id": run_id, "ts": now, "domain": domain, "outcome": outcome,
                "n": int(n), "overdue_ms": None if overdue_ms is None else int(overdue_ms),
                **cell._asdict()}
               for cell, outcome, n, overdue_ms in rows]
+    # Outside the guard below, deliberately (review rev-6d-t4 Important 2):
+    # `Session.begin_nested()` flushes the session's pending ORM state before it takes its
+    # snapshot, and a failure in the *caller's* pending rows is not a coverage failure to
+    # swallow -- logging it as `coverage.record failed` would hide the caller's own bug and
+    # leave the outer transaction aborted with nobody told. Only the two statements inside the
+    # savepoint are the helper's to swallow.
+    session.flush()
     try:
         with session.begin_nested():
-            if domain not in DOMAINS:
-                raise ValueError(f"coverage domain {domain!r}")
             session.execute(insert(CoverageSample).values(values))
             if dropped:
-                telemetry.record(session, "recorder", "coverage.truncated", dropped,
-                                 {"domain": domain}, ts=now)
+                # `record_many`, not `record`: one INSERT statement rather than pending ORM
+                # state a later `session.expunge_all()` could drop unflushed (Minor 4).
+                telemetry.record_many(session, "recorder",
+                                      [("coverage.truncated", dropped, {"domain": domain})],
+                                      ts=now)
     except Exception:  # noqa: BLE001 - coverage never fails a tick
         log.exception("coverage.record failed for run %s domain %s", run_id, domain)
         return 0

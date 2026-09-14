@@ -10,10 +10,16 @@ import httpx
 import pytest
 import respx
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from harness.db.models import CoverageSample, Run
 from harness.ops import coverage
 from harness.ops.exclusions import COVERAGE_CLASS_OF
+from harness.recorder.tick import Recorder
+from harness.strategy import pipeline as pipeline_module
+from harness.strategy.variants import load_variants, register_variants
+from tests.test_pipeline import NOW as PIPELINE_NOW
+from tests.test_pipeline import VARIANTS_DIR, _seed
 from tests.test_tick import ESPN, KM, ODDS, _recorder
 
 NOW = datetime(2026, 9, 13, 18, 0, tzinfo=timezone.utc)
@@ -205,13 +211,61 @@ def test_the_cap_writes_a_truncated_row_and_a_metric_instead_of_a_silent_cut(db_
     assert samples == 1
 
 
-def test_a_database_failure_in_the_helper_never_reaches_the_caller(db_session):
+def test_a_database_failure_in_the_helper_never_reaches_the_caller(db_session, monkeypatch):
     """The tick's rule: telemetry never fails a tick (`run_checks`, `telemetry.record_many`).
-    A write that raises is logged and swallowed, and the caller gets 0 back."""
+    A write that raises is logged and swallowed, the caller gets 0 back, and the session is
+    still usable afterwards -- the savepoint is what makes the last part true.
+
+    The failure is a real one: the INSERT itself raises `OperationalError`, the way a lost
+    connection or a full disk would present (review rev-6d-t4 Minor 1; the earlier version of
+    this case passed a bad domain, which proved the domain guard instead).
+    """
     run = _run(db_session)
-    written = coverage.record(db_session, run.id, "not_a_domain",
+    db_session.commit()
+    run_id = run.id   # read before the patch: an expired attribute would refresh through `execute`
+    real_execute = db_session.execute
+
+    def boom(statement, *args, **kwargs):
+        raise OperationalError("INSERT INTO coverage_samples", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(db_session, "execute", boom)
+    written = coverage.record(db_session, run_id, coverage.DOMAIN_EVALUATION,
                               [(coverage.Cell(sport="nfl"), "completed", 1, None)])
     assert written == 0
+    monkeypatch.setattr(db_session, "execute", real_execute)
+    # The savepoint rolled back, the transaction did not: the next write goes through.
+    assert coverage.record(db_session, run_id, coverage.DOMAIN_EVALUATION,
+                           [(coverage.Cell(sport="nfl"), "completed", 1, None)]) == 1
+    db_session.commit()
+    assert db_session.query(CoverageSample).filter_by(run_id=run_id).count() == 1
+
+
+def test_record_refuses_a_domain_that_is_not_one_of_the_two(db_session):
+    """Minor 2: the domain is a programming error like every other, refused before the database
+    is touched rather than swallowed inside the savepoint -- which is what the docstring on
+    `record` has always claimed."""
+    run = _run(db_session)
+    with pytest.raises(ValueError, match="not_a_domain"):
+        coverage.record(db_session, run.id, "not_a_domain",
+                        [(coverage.Cell(sport="nfl"), "completed", 1, None)])
+
+
+def test_the_callers_own_pending_failure_is_not_reported_as_a_coverage_failure(db_session):
+    """Important 2: `Session.begin_nested()` flushes the session's pending ORM state before it
+    takes its snapshot. That flush is the *caller's*, so it happens before the helper's guard:
+    a caller with a broken pending row gets its own error, not `coverage.record failed` and a
+    silent 0 with an aborted transaction underneath.
+
+    The pending row here violates `runs.status NOT NULL`, so the flush raises `IntegrityError`.
+    """
+    run = _run(db_session)
+    db_session.commit()
+    db_session.add(Run(started_at=NOW, status=None))
+    with pytest.raises(Exception) as caught:
+        coverage.record(db_session, run.id, coverage.DOMAIN_EVALUATION,
+                        [(coverage.Cell(sport="nfl"), "completed", 1, None)])
+    assert "status" in str(caught.value)
+    assert not isinstance(caught.value, ValueError)   # not one of the helper's own refusals
 
 
 def test_ttk_buckets_are_the_boundaries_already_in_the_code():
@@ -296,3 +350,78 @@ def test_a_tick_reads_espn_due_ness_before_its_own_fetch_moves_the_source_state(
     scheduled = {(source, sport) for (source, sport, outcome) in totals if outcome == "scheduled"}
     closed = {(source, sport) for (source, sport, outcome) in totals if outcome != "scheduled"}
     assert scheduled and scheduled <= closed
+
+
+# --- durability: scheduled is written *and committed* before the work (Important 1) -----------
+
+def test_the_pipelines_scheduled_rows_survive_the_rollback_of_the_work_that_followed(
+        env_settings, db_session, monkeypatch):
+    """The recorder rolls the tick's transaction back when `price_and_signal` raises
+    (`tick.py`: `except Exception: ... session.rollback()`). If the scheduled write were still
+    pending at that moment it would be discarded, and the run would show neither a scheduled row
+    nor a completion row -- the omission would be invisible to §3 row 2, which looks for
+    scheduled rows nothing closed.
+
+    Computed by hand: `tests/fixtures/variants` holds one variant (`tiny.yaml`) and `_seed` quotes
+    ten venue markets, one of them `match_status="unmatched"` and therefore never enumerated, so
+    the direct gap build's `market_order` is 9 and the scheduled set is 1 x 9 = 9 units.
+    `run_strategy` then raises inside the first `score`, so no completion row is ever written and
+    every one of those units is still outstanding after the rollback. (The rows are aggregated per
+    cell, so the reconciliation read returns cells rather than units; what it must name is the
+    variant that never finished.)
+    """
+    _game, run, _markets = _seed(db_session)
+    variants = load_variants(VARIANTS_DIR)
+    register_variants(db_session, variants, PIPELINE_NOW, prune=True)
+    db_session.commit()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("stage 3 died before any variant committed")
+
+    monkeypatch.setattr(pipeline_module, "run_strategy", boom)
+    with pytest.raises(RuntimeError):
+        pipeline_module.price_and_signal(db_session, run.id, PIPELINE_NOW, env_settings,
+                                         budget_s=30)
+    db_session.rollback()
+
+    rows = db_session.execute(text(
+        "select outcome, sum(n) from coverage_samples where run_id = :run"
+        " and domain = 'evaluation' group by 1"), {"run": run.id}).all()
+    assert dict(rows) == {"scheduled": 9}
+    unclosed = _unclosed(db_session)
+    assert unclosed and {row.variant_id for row in unclosed} == {variants[0].variant_id}
+
+
+@respx.mock
+def test_the_recorders_scheduled_rows_survive_a_rollback_in_the_same_tick(
+        env_settings, db_session, monkeypatch):
+    """The recorder's half of Important 1. A source that raises sends the tick to its handler,
+    and a `normalize` failure right after it calls `session.rollback()` -- which, before the
+    plan's write was committed, discarded the scheduled rows while `_coverage_close` went on to
+    write the completion rows, leaving completions with no scheduled row for the run at all.
+
+    Computed by hand: ESPN is fetched and planned first, so its 2 units (one per sport) are
+    scheduled; `_odds` then raises before any later `_checkpoint` can commit anything, and
+    `normalize` raises after it. The 2 ESPN scheduled rows must still be there.
+    """
+    respx.get(url__regex=r"https://e/.*").mock(return_value=httpx.Response(200, json=ESPN))
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={}))
+
+    def boom_odds(self, *args, **kwargs):
+        raise RuntimeError("odds died before the next checkpoint")
+
+    def boom_normalize(*args, **kwargs):
+        raise RuntimeError("normalize died with the tick's work still pending")
+
+    monkeypatch.setattr(Recorder, "_odds", boom_odds)
+    monkeypatch.setattr("harness.recorder.tick.normalize_new", boom_normalize)
+
+    rec, _clock = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run.status == "error"
+
+    scheduled = db_session.execute(text(
+        "select coalesce(sum(n), 0) from coverage_samples where run_id = :run"
+        " and domain = 'collection' and source = 'espn' and outcome = 'scheduled'"),
+        {"run": run.id}).scalar()
+    assert scheduled == 2

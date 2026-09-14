@@ -894,6 +894,12 @@ class Recorder:
             coverage.record(session, ctx["run_id"], coverage.DOMAIN_COLLECTION,
                             [(coverage.Cell(sport=sport, source=family), coverage.SCHEDULED, n, None)
                              for (family, sport), n in due.items()])
+            # Durable before the fetch phase runs (review rev-6d-t4 Important 1). Without this
+            # commit the rows live only until the next `_checkpoint`, and a source that raises
+            # followed by a `normalize` failure -- which rolls the tick's transaction back at
+            # `normalize_new`'s handler -- would discard them while `_coverage_close` still
+            # wrote the completion rows, leaving completions with no scheduled row at all.
+            session.commit()
 
     def _coverage_close(self, session: Session, ctx: dict, overdue_ms: int) -> None:
         """The collection domain's completion rows: what became of the scheduled set, plus the
