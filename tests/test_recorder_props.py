@@ -20,7 +20,7 @@ from harness.db.models import Game, Player, SourceState, Team
 from harness.feeds.espn import Kickoff
 from harness.feeds.http import FetchError, FetchResult
 from harness.recorder import store
-from harness.recorder.tick import Recorder, _Budget
+from harness.recorder.tick import PROP_FAIL_BACKOFF_AFTER, Recorder, _Budget
 
 NOW = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)        # Wed 13:00 CT -> cadence 900
 NOW_IN_GAME_WINDOW = NOW                                       # with `_in_game_kickoffs` below
@@ -202,6 +202,35 @@ def test_at_most_sixteen_events_a_sport_and_sixteen_calls_a_tick(recorder, db_se
     assert ctx["props"]["events"] == 32 and ctx["props"]["calls"] == 16
 
 
+def test_a_second_heartbeat_inside_the_900_second_period_spends_nothing(recorder, db_session):
+    """Review C1. `maybe_tick` runs on the 30 s heartbeat; the cadence *value* being 900 says
+    which period is in force, not that 900 s have passed. Without the pass's own `source_state`
+    gate the rotation paid for sixteen events every 30 s -- 17,280 credits an hour against the
+    design's 576, and the month's whole allocation in about a day."""
+    _watchable_events(db_session, nfl=2)
+    first = recorder.tick_ctx(now=NOW)["props"]
+    assert first["calls"] == 2 and recorder.odds.prop_calls == 2
+    second = recorder.tick_ctx(now=NOW + timedelta(seconds=30))
+    assert second["props"] == {"skipped": "interval"}
+    assert recorder.odds.prop_calls == 2
+    assert recorder.tick_ctx(now=NOW + timedelta(seconds=899))["props"] == {"skipped": "interval"}
+    assert recorder.odds.prop_calls == 2
+    resumed = recorder.tick_ctx(now=NOW + timedelta(seconds=900))["props"]
+    assert resumed["calls"] == 2 and recorder.odds.prop_calls == 4
+
+
+def test_a_dormant_month_does_not_consume_the_period_or_stop_the_rosters(recorder, db_session):
+    """Reviews M3 and C1. The free ESPN roster half runs above the paid guards -- the identity
+    map must not go stale in the same moment the feed goes dormant -- and a skipped pass does
+    not stamp the period."""
+    _watchable_events(db_session, nfl=1)
+    _record_credits(db_session, month="2026-09", used=300_000)
+    ctx = recorder.tick_ctx(now=NOW)
+    assert ctx["props"] == {"skipped": "budget"}
+    assert recorder.espn.roster_calls and db_session.query(Player).count() > 0
+    assert db_session.get(SourceState, "odds_props") is None
+
+
 def test_the_rotation_takes_the_oldest_fetched_first_so_32_events_refresh_in_two_ticks(
         recorder, db_session):
     _watchable_events(db_session, nfl=16, ncaaf=16)
@@ -274,6 +303,65 @@ def test_the_credit_counter_accumulates_across_ticks(recorder, db_session):
     assert row.credits_used == recorder.odds.prop_credits_returned == 4 * 9
 
 
+def test_a_database_failure_mid_rotation_keeps_the_earlier_events_and_their_credits(
+        recorder, db_session, monkeypatch):
+    """Review I1. A failure on call 3 used to abort the transaction and roll the whole pass
+    back: the venue had charged for every call, the paid bodies were gone, and the month's
+    counter never learned about the spend, so the 300,000 allocation guard read low for ever."""
+    from harness.recorder import store as store_module
+
+    real = store_module.store_raw
+    seen = {"n": 0}
+
+    def flaky(session, run_id, source, endpoint, params, result):
+        if source == "odds_api":
+            seen["n"] += 1
+            if seen["n"] == 3:
+                session.execute(text("select 1/0"))       # aborts the transaction, as a real
+                                                          # database error does
+        return real(session, run_id, source, endpoint, params, result)
+
+    monkeypatch.setattr(store_module, "store_raw", flaky)
+    _watchable_events(db_session, nfl=4)
+    ctx = recorder.tick_ctx(now=NOW)
+    assert ctx["props"]["calls"] == 4 and ctx["errors"] == [] and len(ctx["warnings"]) == 1
+    stored = db_session.execute(text(
+        "select count(*) from raw_responses where source = 'odds_api'")).scalar()
+    assert stored == 3                       # the three that wrote; the fourth call still ran
+    # Every call the venue charged for is on the month's counter, including the one whose own
+    # write failed.
+    assert db_session.get(SourceState, MONTH_KEY).credits_used == 4 * 9
+    assert ctx["props"]["credits"] == 4 * 9
+
+
+def test_a_repeatedly_failing_event_stops_taking_a_call_slot(recorder, db_session):
+    """Review I4. Sixteen events whose ids were re-keyed answer 404 for ever; stamped only on
+    success they held the head of the oldest-first rotation and burned the whole allowance."""
+    _watchable_events(db_session, nfl=1)
+    recorder.odds.fail_next(1000)
+    for tick in range(PROP_FAIL_BACKOFF_AFTER):
+        ctx = recorder.tick_ctx(now=NOW + timedelta(seconds=900 * tick))
+        assert ctx["props"]["calls"] == 1
+    assert recorder.odds.prop_calls == PROP_FAIL_BACKOFF_AFTER
+    rested = recorder.tick_ctx(now=NOW + timedelta(seconds=900 * PROP_FAIL_BACKOFF_AFTER))
+    assert rested["props"]["calls"] == 0 and rested["props"]["rested"] == 1
+    assert recorder.odds.prop_calls == PROP_FAIL_BACKOFF_AFTER
+    # Past the backoff (the last failure was at NOW + 1800 s) and still inside the event's
+    # 24 h kickoff window, it is tried again.
+    recorder.odds.fail_next(0)
+    back = recorder.tick_ctx(now=NOW + timedelta(seconds=5460))
+    assert back["props"]["calls"] == 1 and back["props"]["rested"] == 0
+
+
+def test_a_success_clears_the_failure_count(recorder, db_session):
+    _watchable_events(db_session, nfl=1)
+    recorder.odds.fail_next(2)
+    for tick in range(3):
+        recorder.tick_ctx(now=NOW + timedelta(seconds=900 * tick))
+    row = db_session.get(SourceState, "odds_prop_fail:nfl-0")
+    assert row is not None and row.credits_used == 0
+
+
 def test_a_prop_fetch_failure_counts_against_the_sub_budget_and_never_fails_the_tick(
         recorder, db_session):
     _watchable_events(db_session, nfl=16)
@@ -304,7 +392,7 @@ def test_each_watched_team_s_roster_is_fetched_once_a_week(recorder, db_session)
     """IM-7 / addendum 4.1: `players` is filled from the roster endpoint, once per team per
     week, for the teams of the watched prop events -- and nothing else fills it, so without this
     the identity map is empty and every prop row stays unresolved."""
-    games = _watchable_events(db_session, nfl=2)
+    game_ids = [game.id for game in _watchable_events(db_session, nfl=2)]
     first = recorder.tick_ctx(now=NOW)["props"]
     assert first["rosters"] == 4                      # two events, two teams each
     assert db_session.query(Player).count() > 0
@@ -313,8 +401,8 @@ def test_each_watched_team_s_roster_is_fetched_once_a_week(recorder, db_session)
     # The same two events, eight days later: a prop event is only watched inside the 24 h
     # kickoff window, so the games move with the clock (the sketch in the plan left them behind).
     later_now = NOW + timedelta(days=8)
-    for game in games:
-        db_session.get(Game, game.id).kickoff_utc = later_now + timedelta(hours=2)
+    for game_id in game_ids:
+        db_session.get(Game, game_id).kickoff_utc = later_now + timedelta(hours=2)
     db_session.execute(text("update signals set created_at = :ts"),
                        {"ts": later_now - timedelta(hours=2)})
     db_session.flush()
@@ -362,8 +450,8 @@ def test_a_stored_prop_body_normalizes_into_odds_prop_snapshots(recorder, db_ses
     from harness.db.models import OddsPropSnapshot
     from harness.normalize.runner import normalize_new
 
-    games = _watchable_events(db_session, nfl=1)
-    recorder.odds.bodies[games[0].odds_api_event_id] = _prop_body(games[0].odds_api_event_id)
+    event_id = _watchable_events(db_session, nfl=1)[0].odds_api_event_id
+    recorder.odds.bodies[event_id] = _prop_body(event_id)
     recorder.tick_ctx(now=NOW)
     normalize_new(db_session, ctx={"warnings": []})
     rows = db_session.query(OddsPropSnapshot).order_by(OddsPropSnapshot.outcome_side).all()
@@ -378,9 +466,8 @@ def test_an_unrostered_prop_outcome_is_counted_unmatched(recorder, db_session):
     in the normalizer, and the tick folds it into `ctx["props"]["unmatched"]`."""
     from harness.normalize.runner import normalize_new
 
-    games = _watchable_events(db_session, nfl=1)
-    recorder.odds.bodies[games[0].odds_api_event_id] = _prop_body(
-        games[0].odds_api_event_id, player="Nobody On This Roster")
+    event_id = _watchable_events(db_session, nfl=1)[0].odds_api_event_id
+    recorder.odds.bodies[event_id] = _prop_body(event_id, player="Nobody On This Roster")
     recorder.tick_ctx(now=NOW)
     ctx = {"warnings": []}
     normalize_new(db_session, ctx=ctx)

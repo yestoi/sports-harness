@@ -120,23 +120,31 @@ def prop_events_watched(now: datetime, events: list[PropEvent], *, window_h: int
 
 
 def prop_events_due(now: datetime, events: list[PropEvent], last_fetched: dict[str, datetime], *,
-                    window_h: int, per_sport: int, calls: int,
+                    window_h: int, per_sport: int, calls: int, interval_s: int,
                     anchors: frozenset[str]) -> list[str]:
     """The prop events to fetch on this tick (3.2).
 
     Watched: events kicking off inside `window_h` that carry an anchor team or a priced signal,
-    ordered anchor first then by kickoff, at most `per_sport` a sport. Due: of those, the
-    `calls` oldest-fetched first, across both sports -- a rotation, so 32 events refresh inside
-    two 900 s ticks, which is 30 minutes and therefore inside `leg_max_age_minutes`.
+    ordered anchor first then by kickoff, at most `per_sport` a sport. Due: of those, the ones
+    whose last *attempt* is at least `interval_s` old, `calls` oldest-first across both sports --
+    a rotation, so 32 events refresh inside two 900 s ticks, which is 30 minutes and therefore
+    inside `leg_max_age_minutes`.
 
-    An event never fetched sorts oldest of all; ties keep the watched order, so a first tick
+    An event never attempted sorts oldest of all; ties keep the watched order, so a first tick
     takes the first sport's cap and the next tick takes the other's.
+
+    `interval_s` is the review's C1 (fix round 1). The recorder ticks every `heartbeat_s` (30 s
+    in production) and the caller's cadence guard only says *which* 900 s period is in force, not
+    that 900 s have passed; without this filter a second heartbeat inside the same period sorts
+    the same stamps oldest-first and pays for all sixteen events again. `last_fetched` carries
+    the last **attempt**, success or failure (I4), so a failing event also waits its turn.
     """
     watched = prop_events_watched(now, events, window_h=window_h, per_sport=per_sport,
                                   anchors=anchors)
     order = {w.event_id: index for index, w in enumerate(watched)}
-    due = sorted(watched, key=lambda w: (last_fetched.get(w.event_id) or _NEVER,
-                                         order[w.event_id]))
+    fresh = [w for w in watched if is_due(last_fetched.get(w.event_id), now, interval_s)]
+    due = sorted(fresh, key=lambda w: (last_fetched.get(w.event_id) or _NEVER,
+                                       order[w.event_id]))
     return [w.event_id for w in due[:calls]]
 
 

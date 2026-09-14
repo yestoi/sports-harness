@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -87,6 +87,33 @@ def add_source_credits(session: Session, key: str, ts: datetime, credits: int) -
         index_elements=["key"],
         set_={"last_fetched_at": ts,
               "credits_used": func.coalesce(SourceState.credits_used, 0) + credits})
+    session.execute(stmt)
+
+
+def get_source_rows(session: Session, keys: list[str]) -> dict[str, tuple[datetime, int | None]]:
+    """`{key: (last_fetched_at, credits_used)}` for the keys that exist, in one statement.
+
+    Bound: an explicit list of keys against `source_state`'s primary key (`source_state_pkey`);
+    the caller passes at most a few dozen. The prop source reads three keys per watched event
+    every pass, and one batched read is one round trip where `session.get` per key is a hundred.
+    """
+    if not keys:
+        return {}
+    rows = session.execute(
+        select(SourceState.key, SourceState.last_fetched_at, SourceState.credits_used)
+        .where(SourceState.key.in_(keys)))
+    return {row.key: (row.last_fetched_at, row.credits_used) for row in rows}
+
+
+def reset_source_credits(session: Session, key: str, ts: datetime) -> None:
+    """Set this key's counter back to zero and stamp it (one primary-key row).
+
+    The prop source's per-event failure counter is *consecutive* failures, so a success has to
+    clear it; `add_source_credits` can only add.
+    """
+    stmt = insert(SourceState).values(key=key, last_fetched_at=ts, credits_used=0)
+    stmt = stmt.on_conflict_do_update(index_elements=["key"],
+                                      set_={"last_fetched_at": ts, "credits_used": 0})
     session.execute(stmt)
 
 

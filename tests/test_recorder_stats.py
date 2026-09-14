@@ -8,6 +8,7 @@ fixed tz-aware `now` and a fake ESPN client -- nothing here reaches the network.
 import itertools
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
@@ -119,7 +120,7 @@ def _carded_prop_leg(session, player_id: int, game_id: int, game_status: str = "
                           status="pending", player_id=player_id, stat=stat, period="game",
                           operator="over", p_at_build=Decimal("0.5000"), p_source="book_devig"))
     session.flush()
-    return card
+    return SimpleNamespace(id=card.id, game_id=game_id, player_id=player_id)
 
 
 def _prop_row(session, *, game_id: int, player_id: int, price: Decimal, fetched_at: datetime,
@@ -164,9 +165,9 @@ def _card(session, status: str, kickoff_in: timedelta = timedelta(hours=6),
                           stat="pass_yds", period="game", operator="over",
                           p_at_build=Decimal("0.5000"), p_source="book_devig", offered=True))
     session.flush()
-    card.player_id = player_id     # convenience for the helpers below
-    card.game_id = game_id
-    return card
+    # Plain ids, not the ORM object: the prop source commits and expunges per event now
+    # (review I1), so an instance held across a tick would be detached.
+    return SimpleNamespace(id=card.id, game_id=game_id, player_id=player_id)
 
 
 def _legs(session, card_id: int) -> list[ParlayLeg]:
@@ -241,8 +242,18 @@ def test_a_higher_value_later_is_not_a_correction(recorder, db_session):
 def test_a_player_missing_from_an_update_writes_nothing(recorder, db_session):
     _carded_prop_leg(db_session, player_id=7, game_id=G)
     recorder.espn.drop_player("7")
-    recorder.tick_ctx(now=NOW_IN_GAME_WINDOW)
+    ctx = recorder.tick_ctx(now=NOW_IN_GAME_WINDOW)
     assert db_session.query(PlayerStatEvent).filter_by(player_id=7).count() == 0
+    assert ctx["player_stats"]["missing"] == 1
+    # Review M1: a player absent from an *in-progress* box score is normal play, so the
+    # process counter a WATCH rule thresholds on does not move.
+    assert recorder.counters["stat_missing"] == 0
+
+
+def test_a_player_missing_from_a_final_box_score_is_counted_stat_missing(recorder, db_session):
+    _carded_prop_leg(db_session, player_id=7, game_id=G, game_status="final")
+    recorder.espn.drop_player("7")
+    recorder.tick_ctx(now=NOW_FINAL)
     assert recorder.counters["stat_missing"] == 1
 
 
@@ -279,6 +290,24 @@ def test_the_six_hour_ceiling_stops_a_final_game_whose_box_score_never_lands(rec
     assert recorder.espn.calls_at(NOW_FINAL + timedelta(hours=5)) == 1
     recorder.tick_ctx(now=NOW_FINAL + timedelta(hours=7))
     assert recorder.espn.calls_at(NOW_FINAL + timedelta(hours=7)) == 0
+
+
+def test_an_unchanged_final_box_score_stops_the_retry(recorder, db_session):
+    """Review I3. The last in-progress poll usually already holds the final line, so the final
+    box score writes nothing; a stop condition made of *write* timestamps never fires and the
+    game is re-fetched every 120 s for six hours. The stop condition is a fetch fact."""
+    _carded_prop_leg(db_session, player_id=7, game_id=G)
+    recorder.tick_ctx(now=NOW_IN_GAME_WINDOW)                    # in progress: 312 recorded
+    rows_before = db_session.query(PlayerStatEvent).count()
+    db_session.execute(text("update games set status = 'final' where id = :g"), {"g": G})
+    db_session.add(GameScoreEvent(game_id=G, ts=NOW_FINAL + timedelta(seconds=120),
+                                  status="final", home_score=20, away_score=17))
+    db_session.flush()
+    recorder.tick_ctx(now=NOW_FINAL + timedelta(seconds=120))    # the same values, at final
+    assert db_session.query(PlayerStatEvent).count() == rows_before   # nothing changed
+    calls = len(recorder.espn.calls)
+    recorder.tick_ctx(now=NOW_FINAL + timedelta(seconds=240))
+    assert len(recorder.espn.calls) == calls                     # the box score landed
 
 
 def test_a_proposed_card_is_not_collected_for(recorder, db_session):
@@ -324,7 +353,9 @@ def test_offered_goes_false_only_inside_the_window_after_a_successful_fetch(reco
     assert _legs(db_session, card.id)[0].offered is True
     card2 = _card(db_session, "proposed", kickoff_in=timedelta(hours=6))
     _return_no_row_for(db_session, card2)
-    ctx = recorder.tick_ctx(now=NOW, kickoffs=[])
+    # A period later: the reprice runs once per prop rotation (review I2), never twice inside
+    # one 900 s period.
+    ctx = recorder.tick_ctx(now=NOW + timedelta(seconds=900), kickoffs=[])
     assert _legs(db_session, card2.id)[0].offered is False
     assert ctx["reprice"]["unoffered"] == 1
 
@@ -362,3 +393,44 @@ def test_the_reprice_never_fails_a_tick(recorder, db_session, monkeypatch):
                         property(lambda self: (_ for _ in ()).throw(RuntimeError("boom"))))
     ctx = recorder.tick_ctx(now=NOW, kickoffs=[])
     assert ctx["reprice"] == {"error": "RuntimeError"} and ctx["errors"] == []
+
+
+def test_a_second_pass_with_no_new_price_leaves_the_card_alone(recorder, db_session):
+    """Review I2: a card whose inputs did not move is not rewritten, so `dk_combined_at` stays
+    the moment its price was actually current."""
+    card = _card(db_session, "proposed")
+    recorder.tick_ctx(now=NOW, kickoffs=[])
+    first = db_session.get(ParlayCard, card.id)
+    stamped, payout = first.dk_combined_at, first.dk_payout_est
+    ctx = recorder.tick_ctx(now=NOW + timedelta(seconds=900), kickoffs=[])
+    again = db_session.get(ParlayCard, card.id)
+    assert ctx["reprice"] == {"cards": 0, "legs": 0, "unoffered": 0}
+    assert again.dk_combined_at == stamped and again.dk_payout_est == payout
+
+
+def test_the_reprice_runs_once_per_900_second_period(recorder, db_session):
+    """Its own 900 s stamp, not the 30 s heartbeat (review I2)."""
+    _card(db_session, "proposed")
+    assert "skipped" not in recorder.tick_ctx(now=NOW, kickoffs=[])["reprice"]
+    second = recorder.tick_ctx(now=NOW + timedelta(seconds=30), kickoffs=[])
+    assert second["props"] == {"skipped": "interval"}
+    assert second["reprice"] == {"skipped": "interval"}
+    third = recorder.tick_ctx(now=NOW + timedelta(seconds=900), kickoffs=[])
+    assert "skipped" not in third["reprice"]
+
+
+def test_a_draft_is_repriced_while_the_prop_feed_is_dormant(recorder, db_session):
+    """The controller's ruling on fix-round concern 1: the reprice reads stored rows and spends
+    no credit, so a dormant month (or the 40 % watch fraction, or a weekend) must not stop a
+    draft from following the prices that keep arriving."""
+    from tests.test_recorder_props import _record_credits
+
+    card = _card(db_session, "proposed")
+    _record_credits(db_session, month="2026-09", used=300_000)
+    ctx = recorder.tick_ctx(now=NOW, kickoffs=[])
+    assert ctx["props"] == {"skipped": "budget"}
+    assert ctx["reprice"]["cards"] == 1
+    assert _legs(db_session, card.id)[0].dk_american == NEW_PRICE
+    # ... and still only once per period.
+    assert recorder.tick_ctx(now=NOW + timedelta(seconds=30),
+                             kickoffs=[])["reprice"] == {"skipped": "interval"}

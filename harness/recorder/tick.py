@@ -61,6 +61,27 @@ LEG_MARKET_TYPES = {"ml": "moneyline", "spread": "spread", "total": "total"}
 PROP_OPPOSITE = {"over": "under", "under": "over", "yes": "no", "no": "yes"}
 #: A source-state stamp that sorts before every real one: a key never fetched leads its rotation.
 _NEVER_FETCHED = datetime.min.replace(tzinfo=timezone.utc)
+#: Fix round 1 (review C1). The prop pass's own `source_state` key, the gate every other paid
+#: source in this file already has. `maybe_tick` runs on the 30 s heartbeat, so the cadence
+#: *value* being 900 says which period is in force, not that 900 s have passed: without this the
+#: rotation paid for sixteen events thirty times an hour (17,280 credits) where the design prices
+#: four (576), and the month's 300,000 allocation was gone in about a day.
+PROPS_STATE_KEY = "odds_props"
+#: The reprice's own gate (fix round 1, the controller's ruling on concern 1). Same 900 s
+#: interval as the prop rotation and deliberately **independent** of it: the reprice spends no
+#: credit and reads only stored rows, so a draft -- and its game-line legs, whose prices keep
+#: arriving from the featured feed -- must keep repricing while props are dormant for the month,
+#: held back by the 40 % watch fraction, or absent because it is a weekend.
+REPRICE_STATE_KEY = "parlay_reprice"
+#: The roster half's slice of the prop sub-budget (review M2): on the first pass after a weekly
+#: expiry a full watched set is up to 64 teams, and without a slice of its own the free ESPN half
+#: could spend the whole 40 s and leave no prop call at all.
+PROPS_ROSTER_BUDGET_S = 15
+#: Review I4. Consecutive failures on one event before it is rested, and for how long. Sixteen
+#: dead events (re-keyed ids answering 404) would otherwise hold the head of the oldest-first
+#: rotation and convert the entire 16-call allowance into waste until their kickoffs pass.
+PROP_FAIL_BACKOFF_AFTER = 3
+PROP_FAIL_BACKOFF = timedelta(hours=1)
 KALSHI_COMMIT_EVERY = 50  # commit after this many stored trade/ladder responses
 TRADES_MAX_PAGES = 20  # 20,000 trades per window before we stop paginating and record a gap
 # Fix 14: ESPN's undated scoreboard is scoped to "today" in US/Eastern, not the recorder's own
@@ -350,14 +371,12 @@ _PROP_EVENT_CANDIDATES = text("""
 #: Bound: the driving set is the placed/alive cards, which is at most one week's slots (tens of
 #: rows); `ix_parlay_legs_card_seq (card_id, seq)` joins their legs and `games` resolves by
 #: primary key. `final_ts` reads `ix_game_score_events_game_ts (game_id, ts desc)` for one game
-#: and `newest_stat_ts` the leading column of `ix_player_stat_game_player_ts (game_id,
-#: player_id, ts desc)`; together they say whether the final box score has landed yet.
+#: (review I3: whether the final box score has landed is a *fetch* fact, kept in
+#: `source_state['espn_final:<game_id>']`, never a change-only write timestamp).
 _CARDED_GAMES = text("""
     select distinct on (g.id) g.id as game_id, g.sport, g.espn_event_id, g.status,
            (select max(e.ts) from game_score_events e
-             where e.game_id = g.id and e.status = 'final') as final_ts,
-           (select max(pse.ts) from player_stat_events pse
-             where pse.game_id = g.id) as newest_stat_ts
+             where e.game_id = g.id and e.status = 'final') as final_ts
     from parlay_cards c
     join parlay_legs l on l.card_id = c.id
     join games g on g.id = l.game_id
@@ -1036,36 +1055,122 @@ class Recorder:
                     ctx["warnings"].append({key: repr(e)})
         return fetched
 
+    def _prop_attempts(self, session: Session, now: datetime, events: list[PropEvent]):
+        """`({event_id: last attempt}, {resting after repeated failures}, {ever failed})`.
+
+        One batched `source_state` read (review I4 and C1). The last **attempt** is the newer of
+        the success stamp `odds_prop:<id>` and the failure stamp `odds_prop_fail:<id>`, so a
+        failing event waits its turn in the rotation exactly like a fetched one; the failure
+        key's `credits_used` column carries the consecutive-failure count, and an event that has
+        failed `PROP_FAIL_BACKOFF_AFTER` times in a row rests for `PROP_FAIL_BACKOFF`.
+        """
+        keys = []
+        for event in events:
+            keys.append(f"odds_prop:{event.event_id}")
+            keys.append(f"odds_prop_fail:{event.event_id}")
+        rows = store.get_source_rows(session, keys)
+        attempts: dict[str, datetime] = {}
+        rested: set[str] = set()
+        failed: set[str] = set()
+        for event in events:
+            ok = rows.get(f"odds_prop:{event.event_id}")
+            bad = rows.get(f"odds_prop_fail:{event.event_id}")
+            stamps = [row[0] for row in (ok, bad) if row is not None and row[0] is not None]
+            if stamps:
+                attempts[event.event_id] = max(stamps)
+            if bad is not None:
+                failed.add(event.event_id)
+            failures = (bad[1] or 0) if bad is not None else 0
+            if (failures >= PROP_FAIL_BACKOFF_AFTER and bad is not None
+                    and now - bad[0] < PROP_FAIL_BACKOFF):
+                rested.add(event.event_id)
+        return attempts, rested, failed
+
+    def _stamp_prop_failure(self, session: Session, run: Run, event_id: str, now: datetime,
+                            charged: int, month_key: str, ctx: dict, counts: dict) -> None:
+        """Record a failed prop call durably: the event's failure stamp and, when the venue
+        charged for the call anyway, the month's credits (review I1 and I4).
+
+        Its own transaction, because the caller has just rolled one back: the accounting for a
+        metered call must survive whatever broke the call's own writes, or the allocation guard
+        reads a number that is too low for the rest of the month.
+        """
+        try:
+            store.add_source_credits(session, f"odds_prop_fail:{event_id}", now, 1)
+            if charged:
+                store.add_source_credits(session, month_key, now, charged)
+            self._checkpoint(session, run)
+            if charged:
+                ctx["credits"] += charged
+                counts["credits"] += charged
+        except Exception:  # noqa: BLE001 - accounting never fails a tick either
+            log.exception("prop failure accounting failed")
+            session.rollback()
+
+    def _prop_watched(self, session: Session, now: datetime, events: list[PropEvent], config):
+        """`(watched, events, attempts, failed, rested)` -- the watched set with the rested events
+        removed, so a dead event frees its slot for a healthy one instead of holding it."""
+        attempts, rested, failed = self._prop_attempts(session, now, events)
+        if rested:
+            events = [event for event in events if event.event_id not in rested]
+        watched = prop_events_watched(now, events, window_h=config.props.prop_window_hours,
+                                      per_sport=config.props.prop_events_max,
+                                      anchors=frozenset(config.anchors))
+        return watched, events, attempts, failed, len(rested)
+
     def _props(self, session: Session, run: Run, now: datetime, kickoffs: list[Kickoff],
                budget: "_Budget", ctx: dict) -> None:
         """DraftKings player props for the watched events, and the weekly roster fetch that
         makes them resolvable at all (addendum 3.2, 4.1).
 
-        Three guards before a credit is spent. **The cadence**: the 900 s tick only -- never the
-        120 s game window, never the 20 s NFL pre-kickoff window, never the quiet hours. **The
-        month's own allocation**: `x-requests-last` summed per Chicago month in
-        `source_state['odds_props:<YYYY-MM>']` against `odds_prop_monthly_credits`, dormant for
-        the rest of the month at the allocation. **The strategy feed first**: props are skipped
-        whenever the feed's own remaining credits are under `credits_watch_fraction` of the
-        month's tier, well before gate 5's 20 % line is near, and an unknown balance is never a
-        licence to spend.
+        Four guards before a credit is spent. **The cadence value**: the 900 s period only --
+        never the 120 s game window, never the 20 s NFL pre-kickoff window, never the quiet
+        hours. **The period itself** (fix round 1, review C1): `maybe_tick` runs on the 30 s
+        heartbeat, so the pass is gated on its own `source_state` stamp exactly like every other
+        paid source here, and `prop_events_due` filters the rotation by the same interval.
+        `is_due` and not `self._due`: a forced deploy tick must not spend 144 credits, the same
+        rule the alternates source keeps. **The month's own allocation**: `x-requests-last`
+        summed per Chicago month in `source_state['odds_props:<YYYY-MM>']` against
+        `odds_prop_monthly_credits`, dormant for the rest of the month at the allocation. **The
+        strategy feed first**: skipped whenever the feed's remaining credits are under
+        `credits_watch_fraction` of the month's tier, and an unknown balance is never a licence
+        to spend.
 
-        Then a 40 s sub-budget covering the roster half and the prop calls together, the
-        rotation from `prop_events_due` (16 events a sport watched, 16 calls a tick,
-        oldest-fetched first, so 32 events refresh inside two ticks), and the month's counter
-        incremented by what the venue actually charged.
+        The free ESPN roster half runs **above** the two paid guards (review M3): the identity
+        map every other task reads must not go stale in the same moment the paid feed goes
+        dormant. It has its own slice of the 40 s sub-budget (M2), and the two halves together
+        can never exceed it.
 
-        Nothing here can fail a tick: the whole pass sits inside one `try` and a failure is a
-        warning on the run. A single event's failure is a warning and that event is simply first
-        in line on the next tick.
+        Each event's raw row, its stamp and its credits are committed **per event** (review I1):
+        a database failure on call 4 keeps calls 1-3 and their credits instead of rolling back a
+        pass the venue has already charged for. Nothing here can fail a tick.
         """
         intervals = [interval_for(sport, now, kickoffs, self.s.tz_local) for sport in SPORTS]
         cadence = min((i for i in intervals if i is not None), default=None)
         if cadence not in ALLOWED_CADENCES or cadence != PROPS_CADENCE_S:
             ctx["props"] = {"skipped": f"cadence {cadence}"}
             return
+        if not is_due(store.get_source_state(session, PROPS_STATE_KEY), now, PROPS_CADENCE_S):
+            ctx["props"] = {"skipped": "interval"}
+            return
         month_key = f"odds_props:{chicago_day(now):%Y-%m}"
         try:
+            counts: dict = {"calls": 0, "credits": 0, "events": 0, "unmatched": 0,
+                            "rosters": 0, "rested": 0, "event_ids": []}
+            # The `ALTERNATES_BUDGET_S` pattern: a slow Odds API can spend this much of the tick
+            # and no more, whatever is left of the tick budget when props are reached.
+            source_budget = _Budget(int(min(PROPS_BUDGET_S, max(0.0, budget.remaining_s()))),
+                                    self.monotonic)
+            roster_budget = _Budget(
+                int(min(PROPS_ROSTER_BUDGET_S, max(0.0, source_budget.remaining_s()))),
+                self.monotonic)
+            rows, events, config = self._prop_events(session, now)
+            props = config.props
+            watched, events, attempts, failed, rested = self._prop_watched(
+                session, now, events, config)
+            counts["events"], counts["rested"] = len(watched), rested
+            counts["rosters"] = self._prop_rosters(
+                session, run, now, [rows[w.event_id] for w in watched], roster_budget, ctx)
             spent = store.get_source_credits(session, month_key) or 0
             if spent >= self.s.odds_prop_monthly_credits:
                 self.counters["prop_skipped_budget"] += 1
@@ -1076,28 +1181,10 @@ class Recorder:
                     or remaining < self.s.credits_watch_fraction * self.s.odds_monthly_credits):
                 ctx["props"] = {"skipped": "remaining"}
                 return
-            counts: dict = {"calls": 0, "credits": 0, "events": 0, "unmatched": 0,
-                            "rosters": 0, "event_ids": []}
-            # The `ALTERNATES_BUDGET_S` pattern: a slow Odds API can spend this much of the tick
-            # and no more, whatever is left of the tick budget when props are reached.
-            source_budget = _Budget(int(min(PROPS_BUDGET_S, max(0.0, budget.remaining_s()))),
-                                    self.monotonic)
-            rows, events, config = self._prop_events(session, now)
-            props = config.props
-            anchors = frozenset(config.anchors)
-            watched = prop_events_watched(now, events, window_h=props.prop_window_hours,
-                                          per_sport=props.prop_events_max, anchors=anchors)
-            counts["events"] = len(watched)
-            counts["rosters"] = self._prop_rosters(
-                session, run, now, [rows[w.event_id] for w in watched], source_budget, ctx)
-            last_fetched = {}
-            for watch in watched:
-                stamp = store.get_source_state(session, f"odds_prop:{watch.event_id}")
-                if stamp is not None:
-                    last_fetched[watch.event_id] = stamp
-            due = prop_events_due(now, events, last_fetched, window_h=props.prop_window_hours,
+            due = prop_events_due(now, events, attempts, window_h=props.prop_window_hours,
                                   per_sport=props.prop_events_max,
-                                  calls=props.prop_calls_per_tick, anchors=anchors)
+                                  calls=props.prop_calls_per_tick, interval_s=PROPS_CADENCE_S,
+                                  anchors=frozenset(config.anchors))
             for event_id in due:
                 if not source_budget.ok():
                     log.info("props: sub-budget spent after %d of %d due calls",
@@ -1107,30 +1194,47 @@ class Recorder:
                 # Counted before the call, not after: a call that failed cost the same slice of
                 # the sub-budget as one that answered, which is what the budget is measuring.
                 counts["calls"] += 1
+                charged = 0
                 try:
                     r = self.odds.fetch_event_props(sport_key, event_id)
+                    credits = parse_credit_headers(r.headers)
+                    # Read before anything can fail: the venue has already charged for this call.
+                    charged = credits.last
                     store.store_raw(session, run.id, "odds_api",
                                     f"/sports/{sport_key}/events/{event_id}/odds",
                                     {"markets": "props"}, r)
-                    ctx["n"] += 1
-                    ctx["fetched"] = True
-                    credits = parse_credit_headers(r.headers)
-                    ctx["credits"] += credits.last
-                    counts["credits"] += credits.last
-                    if "x-requests-remaining" in r.headers:  # I5
-                        ctx["remaining"] = credits.remaining
                     if r.status == 200:
                         store.set_source_state(session, f"odds_prop:{event_id}", now)
+                        if event_id in failed:
+                            # A success clears the consecutive-failure count (I4).
+                            store.reset_source_credits(session, f"odds_prop_fail:{event_id}", now)
                         counts["event_ids"].append(event_id)
                     else:
                         # A warning, not an error: the fun surface going quiet degrades a tick,
-                        # it does not fail one. The event is retried on the next tick.
+                        # it does not fail one. The event goes to the back of the rotation.
                         ctx["warnings"].append({f"odds_prop:{event_id}": f"http {r.status}"})
+                        store.add_source_credits(session, f"odds_prop_fail:{event_id}", now, 1)
+                    store.add_source_credits(session, month_key, now, charged)
+                    # Durable per event (I1): calls 1..k-1 and their credits survive a failure
+                    # at call k, so the month's counter never under-reads what was spent.
+                    self._checkpoint(session, run)
+                    ctx["n"] += 1
+                    ctx["fetched"] = True
+                    ctx["credits"] += charged
+                    counts["credits"] += charged
+                    charged = 0
                 except Exception as e:  # noqa: BLE001 - one event never fails a tick
                     log.exception("odds props failed")
+                    session.rollback()
                     ctx["warnings"].append({f"odds_prop:{event_id}": repr(e)})
-            if counts["credits"]:
-                store.add_source_credits(session, month_key, now, counts["credits"])
+                    self._stamp_prop_failure(session, run, event_id, now, charged, month_key,
+                                             ctx, counts)
+            # The period is spent once the rotation has run, whatever it returned (the
+            # controller's ruling on C1): the next heartbeat 30 s from now finds this stamp and
+            # skips. Committed here rather than left to `finish_run`, so a later failure in the
+            # tick cannot roll the gate back and re-open the rotation.
+            store.set_source_state(session, PROPS_STATE_KEY, now)
+            self._checkpoint(session, run)
             ctx["props"] = counts
         except Exception as e:  # noqa: BLE001 - the prop source never fails a tick
             log.exception("prop source failed")
@@ -1172,23 +1276,32 @@ class Recorder:
                         # Either the status has not reached `game_score_events` yet (next tick
                         # sees it) or the six-hour ceiling is spent.
                         continue
-                    if row.newest_stat_ts is not None and row.newest_stat_ts >= row.final_ts:
+                    # Review I3: the stop condition is a *fetch* fact, never a write one. A
+                    # final box score that repeats the last in-progress value writes nothing --
+                    # the common case -- so comparing the newest `player_stat_events` row to
+                    # `final_ts` never terminated and the game was re-fetched for six hours.
+                    # `espn_final:<game_id>` is stamped when a post-final fetch actually carries
+                    # a box score.
+                    landed = store.get_source_state(session, f"espn_final:{row.game_id}")
+                    if landed is not None and landed >= row.final_ts:
                         continue        # the final box score has landed; nothing more to ask for
                 last = store.get_source_state(session, f"espn_summary:{row.game_id}")
                 if not self._due(last, now, PLAYER_STATS_CADENCE_S):
                     continue
                 due.append((last or _NEVER_FETCHED, row))
             due.sort(key=lambda item: item[0])
-            counts = {"games": 0, "rows": 0, "corrections": 0}
+            counts = {"games": 0, "rows": 0, "corrections": 0, "missing": 0}
             for _last, row in due[:PLAYER_STATS_MAX_GAMES]:
                 if not source_budget.ok():
                     log.info("player stats: sub-budget spent after %d games", counts["games"])
                     break
                 try:
-                    written, corrected = self._collect_game_stats(session, run, now, row, ctx)
+                    written, corrected, missing = self._collect_game_stats(
+                        session, run, now, row, ctx)
                     counts["games"] += 1
                     counts["rows"] += written
                     counts["corrections"] += corrected
+                    counts["missing"] += missing
                 except Exception as e:  # noqa: BLE001 - one game never fails a tick
                     log.exception("espn summary failed")
                     ctx["warnings"].append({f"espn_summary:{row.game_id}": repr(e)})
@@ -1200,9 +1313,9 @@ class Recorder:
             ctx["player_stats"] = {"error": type(e).__name__}
 
     def _collect_game_stats(self, session: Session, run: Run, now: datetime, row,
-                            ctx: dict) -> tuple[int, int]:
+                            ctx: dict) -> tuple[int, int, int]:
         """One game's summary fetched, parsed and written as changes. Returns `(rows,
-        corrections)`."""
+        corrections, carded players the update did not list)`."""
         from harness.db.models import PlayerStatEvent
         from harness.normalize.players import UNDECIDABLE, parse_scoring_tds, parse_summary_stats
 
@@ -1214,12 +1327,16 @@ class Recorder:
         ctx["fetched"] = True
         if r.status != 200:
             ctx["warnings"].append({f"espn_summary:{row.game_id}": f"http {r.status}"})
-            return 0, 0
+            return 0, 0, 0
         store.set_source_state(session, f"espn_summary:{row.game_id}", now)
+        lines = parse_summary_stats(r.body)
+        if row.status == "final" and lines:
+            # Review I3: the box score landed, whether or not any value changed.
+            store.set_source_state(session, f"espn_final:{row.game_id}", now)
         carded = {str(c.espn_id): c.player_id
                   for c in session.execute(self._CARDED_PLAYERS, {"game_id": row.game_id})}
         if not carded:
-            return 0, 0
+            return 0, 0, 0
         previous = {(p.player_id, p.stat): Decimal(str(p.value))
                     for p in session.execute(self._NEWEST_STATS,
                                              {"game_id": row.game_id,
@@ -1232,7 +1349,7 @@ class Recorder:
             log.info("player stats: %d undecidable scoring plays in game %s",
                      undecidable, row.game_id)
         listed, values = set(), {}
-        for line in parse_summary_stats(r.body):
+        for line in lines:
             player_id = carded.get(line.player_espn_id)
             if player_id is None:
                 continue        # carded players only (4.3)
@@ -1254,8 +1371,13 @@ class Recorder:
             written += 1
             corrections += 1 if correction else 0
         missing = [espn_id for espn_id in carded if espn_id not in listed]
-        self.counters["stat_missing"] += len(missing)
-        return written, corrections
+        if row.status == "final" and missing:
+            # Review M1: a player absent from an *in-progress* box score is normal play (a
+            # receiver with no catch yet), and counting that every 120 s made the counter
+            # useless as a threshold. `stat_missing` is a carded player absent from a **final**
+            # box score, which is the same fact Task 5's grading counter of that name records.
+            self.counters["stat_missing"] += len(missing)
+        return written, corrections, len(missing)
 
     def _parlay_reprice(self, session: Session, run: Run, now: datetime,
                         kickoffs: list[Kickoff], ctx: dict) -> None:
@@ -1279,6 +1401,13 @@ class Recorder:
         cadence = min((i for i in intervals if i is not None), default=None)
         if cadence != PROPS_CADENCE_S:
             ctx["reprice"] = {"skipped": f"cadence {cadence}"}
+            return
+        # Review I2, with the controller's ruling on fix-round concern 1: once per 900 s
+        # period, on the reprice's **own** stamp -- never on every 30 s heartbeat, and never
+        # coupled to whether the prop rotation ran. It costs nothing to run and a dormant prop
+        # feed is exactly when a draft's stored prices most need re-reading.
+        if not is_due(store.get_source_state(session, REPRICE_STATE_KEY), now, PROPS_CADENCE_S):
+            ctx["reprice"] = {"skipped": "interval"}
             return
         try:
             from harness.db.models import Game, OddsPropSnapshot, ParlayCard, ParlayLeg
@@ -1304,6 +1433,9 @@ class Recorder:
                         .order_by(ParlayLeg.seq).all())
                 if not legs:
                     continue
+                # Review I2: a card whose inputs did not move is left exactly as it is --
+                # including `dk_combined_at`, which is the freshness the surface shows.
+                changed = False
                 for leg in legs:
                     game = session.get(Game, leg.game_id)
                     if leg.market_type == "prop":
@@ -1318,24 +1450,35 @@ class Recorder:
                                                      leg.player_id, leg.threshold, leg.side,
                                                      now, max_age)
                         if price is not None:
-                            leg.dk_american, leg.dk_decimal = price.dk_american, price.dk_decimal
-                            leg.odds_prop_snapshot_id = price.odds_prop_snapshot_id
-                            leg.dk_link, leg.dk_sid = price.link, price.sid
+                            if (leg.dk_american != price.dk_american
+                                    or decimal_from(leg.dk_decimal) != price.dk_decimal
+                                    or leg.odds_prop_snapshot_id != price.odds_prop_snapshot_id
+                                    or leg.dk_link != price.link or leg.dk_sid != price.sid):
+                                leg.dk_american = price.dk_american
+                                leg.dk_decimal = price.dk_decimal
+                                leg.odds_prop_snapshot_id = price.odds_prop_snapshot_id
+                                leg.dk_link, leg.dk_sid = price.link, price.sid
+                                counts["legs"] += 1
+                                changed = True
                             if leg.p_source == "book_devig":
                                 other = newest_dk_prop_price(
                                     session, leg.game_id, market_type, leg.player_id,
                                     leg.threshold, PROP_OPPOSITE.get(leg.side or ""), now,
                                     max_age)
                                 if other is not None:
-                                    leg.p_at_build = _devig(price.dk_decimal, other.dk_decimal)
-                            counts["legs"] += 1
+                                    devigged = _devig(price.dk_decimal, other.dk_decimal)
+                                    if (leg.p_at_build is None
+                                            or decimal_from(leg.p_at_build) != devigged):
+                                        leg.p_at_build = devigged
+                                        changed = True
                         elif (game is not None
                               and timedelta(0) <= game.kickoff_utc - now <= window
                               and game.odds_api_event_id):
                             stamp = store.get_source_state(
                                 session, f"odds_prop:{game.odds_api_event_id}")
-                            if stamp is not None and now - stamp <= max_age:
+                            if stamp is not None and now - stamp <= max_age and leg.offered:
                                 leg.offered = False
+                                changed = True
                     else:
                         price = newest_dk_price(session, leg.game_id,
                                                 LEG_MARKET_TYPES.get(leg.market_type,
@@ -1343,10 +1486,15 @@ class Recorder:
                                                 leg.side_team_id, leg.side, now, max_age)
                         # A game line whose newest row is at another number is a moved line, not
                         # a new price for this leg: the leg keeps the line it states.
-                        if price is not None and price.point == leg.threshold:
-                            leg.dk_american, leg.dk_decimal = price.dk_american, price.dk_decimal
+                        if (price is not None and price.point == leg.threshold
+                                and (leg.dk_american != price.dk_american
+                                     or decimal_from(leg.dk_decimal) != price.dk_decimal
+                                     or leg.odds_snapshot_id != price.odds_snapshot_id)):
+                            leg.dk_american = price.dk_american
+                            leg.dk_decimal = price.dk_decimal
                             leg.odds_snapshot_id = price.odds_snapshot_id
                             counts["legs"] += 1
+                            changed = True
                     counts["unoffered"] += 0 if leg.offered else 1
                 stake = decimal_from(card.stake)
                 payout, true_p, sourced = stake, Decimal("1"), 0
@@ -1355,16 +1503,30 @@ class Recorder:
                     if leg.p_source != "none" and leg.p_at_build is not None:
                         true_p *= decimal_from(leg.p_at_build)
                         sourced += 1
-                card.dk_payout_est = payout.quantize(Decimal("0.01"))
-                card.true_prob_est = (true_p.quantize(Decimal("0.000001")) if sourced else None)
-                # A hold is only meaningful when every leg carries a sharp fair and the legs are
-                # independent (D4); the build's rule, unchanged.
-                card.hold_est = (_hold(true_p, payout, stake)
+                fresh = {
+                    "dk_payout_est": payout.quantize(Decimal("0.01")),
+                    "true_prob_est": (true_p.quantize(Decimal("0.000001")) if sourced else None),
+                    # A hold is only meaningful when every leg carries a sharp fair and the legs
+                    # are independent (D4); the build's rule, unchanged.
+                    "hold_est": (_hold(true_p, payout, stake)
                                  if card.p_source_min == "sharp" and not card.correlated
-                                 else None)
-                card.dk_combined_american = american(payout / stake)
-                card.dk_combined_at = now
-                counts["cards"] += 1
+                                 else None),
+                    "dk_combined_american": american(payout / stake)}
+                for name, value in fresh.items():
+                    current = getattr(card, name)
+                    if current is None and value is None:
+                        continue
+                    if (current is None or value is None
+                            or decimal_from(current) != decimal_from(value)):
+                        setattr(card, name, value)
+                        changed = True
+                if changed:
+                    # The one timestamp the surface reads as "this price is current".
+                    card.dk_combined_at = now
+                    counts["cards"] += 1
+            # The period is spent once the pass has run, whatever it changed. Written in the
+            # same transaction as the cards it just repriced, so the two can never disagree.
+            store.set_source_state(session, REPRICE_STATE_KEY, now)
             ctx["reprice"] = counts
         except Exception as e:  # noqa: BLE001 - the reprice never fails a tick
             log.exception("parlay reprice failed")
@@ -1468,6 +1630,10 @@ class Recorder:
             # player. It is counted where it is decided -- inside `upsert_odds_rows`, which runs
             # after the fetch phase -- and folded into this tick's `ctx["props"]` here, so the
             # number the surface reads is the one this tick produced.
+            # Review M8, for Task 18b: this is a *normalizer-pass* count. `normalize_new` works
+            # through whatever raw rows it reaches inside its 30 s budget, so on a tick with a
+            # backlog the number can include earlier ticks' bodies and exclude this one's. The
+            # counter always gets it; `ctx["props"]["unmatched"]` only when props ran.
             prop_unmatched = ctx.get("prop_unmatched", 0)
             self.counters["player_unmatched"] += prop_unmatched
             if isinstance(ctx.get("props"), dict) and "unmatched" in ctx["props"]:
