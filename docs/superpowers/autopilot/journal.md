@@ -2181,7 +2181,7 @@ Times are America/Chicago.
 ## 179. plan-next - 6D sustained evaluation planned (U8 parallel planning) - 2026-09-13 10:56 CT to 2026-09-14 03:58 CT
 
 - Orient: rule 6 under U8's parallel-planning allowance (journal 166's sibling unit); 6D row `not planned`, gate "instrumentation none; the policy comparison needs 6B" (the plan's policy-comparison tasks depend on 6B's merge and say so). Unit clock: started Sat 10:56 CT, the user-directed stop and the Sunday host outage excluded; ~190 min of the 4 h ceiling used.
-- Branch / commits: `plan6d-sustained-eval` rebased onto main and ff-merged at  (design addendum revisions 1-2 earlier on the same branch; plan bd59a37 rev 1, b5b990c rev 2, a97e7dd rev 3, 99c0582 rev 4). Worktree and branch removed after the merge.
+- Branch / commits: `plan6d-sustained-eval` rebased onto main and ff-merged at bc72305 after a first attempt that failed because the branch was still checked out in its worktree (design addendum revisions 1-2 earlier on the same branch; plan bd59a37 rev 1, b5b990c rev 2, a97e7dd rev 3, 99c0582 rev 4). Worktree and branch removed after the merge.
 - Result: done. Plan `docs/superpowers/plans/2026-09-13-phase6d-sustained-evaluation.md` (revision 4; 5,649 lines; Tasks 1-10 with a Rulings section carrying every review ruling). Roadmap 6D `planned`.
 - Dispatches: 8 of 12 (design author, design reviewer, design amender, plan writer, plan reviewer, plan amender, re-reviewer round 2, re-reviewer round 3; all opus). Revisions 3 and 4 were resumes of the amender, not dispatches.
 - Tests: n/a (documents only). Pre-merge audit on the plan branch vs main: variants diff empty; pyproject/constraints additions empty; the non-additive grep matches only plan prose that forbids those statements.
