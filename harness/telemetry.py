@@ -94,8 +94,10 @@ def malloc_trim() -> float | None:
 
     `None` where the platform has no `malloc_trim` (a no-op) or where RSS cannot be read; a
     float -- possibly 0.0, possibly negative by a page or two of noise -- where it ran. The
-    caller records it as `recorder.malloc_trim_mb` so the effect is visible on Pulse instead of
-    having to be taken on faith.
+    caller records it as `recorder.malloc_trim_mb` so the effect is readable from
+    `metric_samples` instead of having to be taken on faith. Not a Pulse tile:
+    `harness/dashboard/snapshots/pulse.py::_VITALS` is a closed allowlist of the names a tile
+    reads (ruling B-C3) and this name is not in it, so the series is read by query.
 
     Ruling 1: this is telemetry-adjacent housekeeping, so it never raises at its caller.
     """

@@ -228,7 +228,9 @@ def _recorder_samples(session: Session, run_id: int, tick_ms: int,
     # at the end of a settle run can say "settle" without the two series colliding.
     # Fix 49 round 3: `malloc_trim` has already run for this tick (`maybe_tick`), so this RSS
     # is the post-trim one -- the number the 500 MiB criterion is judged on -- and the MiB it
-    # returned rides beside it so the trim's effect is visible on Pulse rather than inferred.
+    # returned rides beside it, so the trim's effect is readable from `metric_samples` rather
+    # than inferred and the pre-trim reading is recoverable as the sum of the two samples.
+    # Not a Pulse tile: `pulse.py::_VITALS` is a closed allowlist and does not carry this name.
     trimmed = ctx.get("malloc_trim_mb")
     if trimmed is not None:
         samples.append(("recorder.malloc_trim_mb", trimmed, {"phase": "tick"}))

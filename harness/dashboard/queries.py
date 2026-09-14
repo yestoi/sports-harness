@@ -121,13 +121,21 @@ def recent_runs_pricing(session: Session, cutoff: datetime, limit: int | None = 
         # against 4.7 MiB streamed) for a handful of counters. The generator yields exactly the
         # same pairs in the same order, and `_t13_coverage` drains it, so the server-side cursor
         # is always closed. Kept opt-in, and the `list` return is unchanged for every other
-        # caller: Floor's wants the list it already has.
+        # caller (`_t13_coverage` is the only caller of this function today; Floor reads
+        # `recent_runs`). `stream` applies to the capped read only: without a `limit` the
+        # branch above has already returned the list.
         return _iter_recent_runs_pricing(session, stmt, cutoff)
     return [(started_at, pricing) for started_at, pricing in session.execute(stmt).all()
             if started_at >= cutoff]
 
 
 def _iter_recent_runs_pricing(session: Session, stmt, cutoff: datetime):
+    """`recent_runs_pricing`'s streaming half: the same pairs, 500 rows resident at a time.
+
+    500 rather than `harness/report/tables.py::STREAM_ROWS`: a row here carries a whole
+    `notes['pricing']` document, so a chunk of 500 already holds as much Python as a couple of
+    thousand rows of the narrow week-shaped reads that constant sizes.
+    """
     result = session.execute(
         stmt, execution_options={"stream_results": True, "max_row_buffer": 500}).yield_per(500)
     for started_at, pricing in result:

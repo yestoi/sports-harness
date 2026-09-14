@@ -28,6 +28,11 @@ So the fix is two things, measured separately: bound the peak (the whole-week re
 high-water mark now stream -- `harness/report/tables.py::_stream`), and give the rest back
 (`harness.telemetry.malloc_trim`, called once per settle run and once per priced tick).
 
+The materialised (pre-fix) half of those numbers is re-derived by rendering the same seeded week
+in the same process with `tables._stream` patched to `session.execute(statement, params).all()`
+and `tables.recent_runs_pricing` patched to its non-streaming call -- exactly the substitution
+`test_the_streamed_reads_render_byte_identical_tables` makes below.
+
 Run with `-s` for the table and the top growing tracebacks.
 """
 
