@@ -118,7 +118,7 @@ _COLUMNS = (
     "alter table source_state add column if not exists credits_used bigint",
 )
 
-#: The three tables this phase adds. `create_schema` has no copy of these: `create_all` builds a
+#: The four tables this phase adds. `create_schema` has no copy of these: `create_all` builds a
 #: new table from its model. Written to match what `create_all` emits column for column --
 #: SERIAL/BIGSERIAL for the autoincrementing primary keys, `timestamptz` for every timestamp,
 #: and no server default on `player_stat_events.correction`, whose model default is client-side.

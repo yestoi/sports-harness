@@ -28,8 +28,9 @@ three-way shape (`smart`, `lottery`, `lottery_same_game`) this module actually s
 same-game slot on `kind == "lottery" and correlated` let a cross-game lottery card satisfy the
 same-game slot and starved it, while the plain lottery slot rebuilt (and spent a rationale call)
 every hour. `_resolve_slot_card` fixes this two ways: once this stage has built a slot, its own
-`parlay_slot_state` pointer (written *by shape*) is authoritative and no card property is consulted at
-all; before that (a slot's first-ever run, or a card built by hand through `harness/cli.py`
+`parlay_slot_state` pointer (written *by shape*) is authoritative and no card property is
+consulted at all; before that (a slot's first-ever run, or a card built by hand through
+`harness/cli.py`
 before this stage ever saw it), the fallback derives each candidate's *actual* shape from its
 own legs -- exact, never a guess -- because a `smart` card is always cross-game by construction
 and a `lottery`-kind card is `lottery_same_game` exactly when every leg shares one `game_id`.

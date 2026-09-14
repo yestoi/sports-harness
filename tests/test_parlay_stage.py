@@ -397,3 +397,15 @@ def test_a_budget_break_counts_the_slots_it_never_looked_at(db_session, env_sett
     result = run_parlay_build(db_session, NOW, _budget(1))
     assert result.budget_exhausted is True
     assert result.counts["skipped"] >= 1
+
+
+def test_a_rewrite_of_the_same_slot_refreshes_the_timestamp(db_session):
+    """The plan's Task 7 idempotence property: a later run rewrites the slot's state *and* its
+    `updated_at`, which is the `at` the Ticket surface derives `next_build_at` from."""
+    key = "parlay_build:test:rewrite"
+    _write_reason(db_session, key, "not_built_yet", NOW)
+    later = NOW + timedelta(hours=1)
+    _write_reason(db_session, key, "week_at_cap", later)
+    assert read_slot_state(db_session, key) == {"reason": "week_at_cap", "at": later.isoformat()}
+    _write_built(db_session, key, 7, later + timedelta(hours=1))
+    assert read_slot_state(db_session, key) == {"built": 7}

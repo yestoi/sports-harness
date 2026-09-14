@@ -345,8 +345,9 @@ def _slot_state(session, sport, shape, *, reason=None, built=None, at=None, valu
         state = {"built": built} if built is not None else {"reason": reason}
     else:
         state = value
-    session.merge(ParlaySlotState(key=slot_key(2026, 37, sport, shape), state=state,
-                                  updated_at=at if at is not None else NOW - timedelta(minutes=30)))
+    session.merge(ParlaySlotState(
+        key=slot_key(2026, 37, sport, shape), state=state,
+        updated_at=at if at is not None else NOW - timedelta(minutes=30)))
     session.flush()
 
 
