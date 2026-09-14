@@ -536,8 +536,10 @@ class Executor:
         # §1.5: dirtiness and observation are properties of the market, recorded as intervals
         # with a cause, and per-order time is derived from them at read time. A market the step
         # stepped has an open observation row; a market that is dirty has an open dirty row
-        # carrying the book's own cause, or `recorder_dead` when the loop has declared every
-        # ladder stale and the book names no cause of its own.
+        # carrying the book's own cause, `recorder_dead` when the loop has declared every ladder
+        # stale and the book names no cause of its own, or `event_age` when this ticker's own
+        # tape has been silent past `book_max_age_s` -- the same three routes `MarketNow.dirty`
+        # takes, so the elapsed measure and the nominal accrual cover the same stretches.
         clean: list[int] = []
         for ticker in sorted(tickers):
             vm_id = market_ids.get(ticker)
@@ -547,6 +549,11 @@ class Executor:
             cause = None if book is None else book.dirty_cause
             if dead_recorder and book is not None:
                 cause = cause or "recorder_dead"
+            if cause is None and book is not None and \
+                    book_age_s(book, now) > self.exec_settings.book_max_age_s:
+                # `MarketNow.dirty` third route (spec F4): nothing applied a row for longer than
+                # the ceiling, so the book is stale without being able to mark itself. Review F1.
+                cause = "event_age"
             store.open_interval(session, "market_observation_intervals", vm_id, ticker, now,
                                 self.replay)
             if cause is not None:
