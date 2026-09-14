@@ -45,3 +45,9 @@ ncaaf:
     "Grambling State Tigers": 2755                # ESPN: Grambling Tigers
     "Southern University Jaguars": 2582           # ESPN: Southern Jaguars
     "UMass Minutemen": 113                        # ESPN: Massachusetts Minutemen
+    # 2026-09-14 alias pass (7-day unresolved Odds API names in the 09-14 match-report):
+    # both teams already have a confirmed ESPN team id from the 2026-09-06 kalshi_name
+    # entries above (Nicholls St. -> 2447, Southeastern Louisiana -> 2545); Odds API uses
+    # the full state name / mascot instead of ESPN's abbreviated display name.
+    "Nicholls State Colonels": 2447                # ESPN: Nicholls Colonels
+    "Southeastern Louisiana Lions": 2545           # ESPN: SE Louisiana Lions
