@@ -4,6 +4,7 @@ import json
 import logging
 import signal
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -930,6 +931,23 @@ def capsule_cmd(
                   ", ".join(manifest["truncated"]), row_cap)
         raise typer.Exit(2)
     log.info("capsule written: %s", json.dumps(manifest["counts"], sort_keys=True))
+
+
+@app.command("audit-order")
+def audit_order_cmd(
+    capsule: str = typer.Option(..., "--capsule", help="a 6A capsule directory"),
+    order: int = typer.Option(..., "--order"),
+) -> None:
+    """Replay one capsule's order under the repaired simulator and print the verdict as JSON.
+
+    No database and no network: a capsule is files. The controller runs this on order 157's
+    real capsule in the quiet window and pastes the verdict into `harness/corrections.py` and
+    into `docs/superpowers/reviews/order-157-audit.md`.
+    """
+    from harness.audit import audit_order, read_capsule
+
+    result = audit_order(read_capsule(capsule), order)
+    typer.echo(json.dumps(asdict(result), default=str, indent=2))
 
 
 @app.command("manifest")

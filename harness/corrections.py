@@ -95,6 +95,15 @@ CONFIG_HASHES_C0: tuple[str, ...] = (
 )  # filled 2026-09-11 18:55 CT from select distinct config_hash from orders where replay = false
 # ----------------------------------------------------------------------------------------------
 
+# --- FILLED BY THE CONTROLLER AFTER THE AUDIT RUN ---------------------------------------------
+# `harness audit-order --capsule <dir> --order 157` on the real 6A capsule, in the quiet window.
+# Agents have no NAS access and never run it, so this ships as the unrun state and its test
+# asserts only that it is one of the three verdicts plus that state (`tests/test_corrections.py`,
+# under §1.11). 6C's t13 reads this constant inside the container, where `docs/` is absent (D9);
+# the undated record is `docs/superpowers/reviews/order-157-audit.md`.
+ORDER_157_VERDICT = "not yet audited"
+
+
 CORRECTIONS: tuple[Correction, ...] = (
     Correction(
         id="C0",
