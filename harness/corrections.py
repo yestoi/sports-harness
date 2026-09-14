@@ -13,6 +13,13 @@ carry the same ids.
 
 6A ships one entry, `C0`: the baseline. It corrects nothing -- it records what the measurement
 was before 6B touched it, so that every later entry has something to be "before" of.
+
+6B appends six more, `C1`-`C6` (spec §0.1, §1.11): collectively **Amendment 6** to
+`docs/superpowers/reviews/2026-09-07-phase2-preregistration.md`, because a bug fix that changes a
+label falls under the pre-registration record's amendment protocol item 1 and the Amendment 5
+precedent governs. `MANIFEST_VERSION` becomes 7. `EXECUTOR_VERSION` moves 4.4 -> 4.5 once for the
+whole milestone (§7.3, D10): the boundary and the amendment are one act, so every 6B correction
+records the same before/after measurement version.
 """
 
 from dataclasses import asdict, dataclass
@@ -20,7 +27,7 @@ from dataclasses import asdict, dataclass
 #: Bumped by every 6B entry appended to `CORRECTIONS`. `harness manifest` prints it and 6C's
 #: t13 prints it beside `MEASUREMENT_VERSION`, so a report always says which manifest it was
 #: written under.
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 7
 
 
 def measurement_version() -> str:
@@ -38,7 +45,16 @@ def measurement_version() -> str:
 
 @dataclass(frozen=True)
 class Correction:
-    """One correction: everything needed to decide what a number from before it still means."""
+    """One correction: everything needed to decide what a number from before it still means.
+
+    `rescore_command` names the instrument that re-derives the affected range, and there are two
+    (§0.12). An **order-scoped** correction -- one whose repair changes what a given order's
+    simulation produces -- is re-derived by `harness rescore --from-order A --to-order B
+    --correction <ids>`, which writes `order_rescores` rows beside the originals. A
+    **range-scoped** one -- a repair that changes which orders exist at all -- is re-derived by
+    `harness replay --from-run A --to-run B --population range`, whose `replay = true` rows are
+    the estimate. Either way the originals are never rewritten.
+    """
 
     id: str
     title: str
@@ -95,6 +111,26 @@ CONFIG_HASHES_C0: tuple[str, ...] = (
 )  # filled 2026-09-11 18:55 CT from select distinct config_hash from orders where replay = false
 # ----------------------------------------------------------------------------------------------
 
+# --- FILLED BY THE CONTROLLER AT MERGE TIME (Amendment 6, C1-C6) ---------------------------------
+# Agents have no NAS access, so each of the six 6B corrections ships with an empty config_hashes
+# tuple and a "<filled at merge>" order/run range placeholder; the controller fills all three
+# from the NAS at merge time (D11, the same pattern as VARIANT_IDS_C0/CONFIG_HASHES_C0), adding
+# the count assertions in the same commit. `variant_ids` for C1-C6 stands at VARIANT_IDS_C0
+# unchanged: no variant config changed and the registered ids stand (Amendment 6's Change
+# paragraph). `deploy_sha` and `code_version_after` are the same "<sha>" placeholder for all six,
+# because one deploy carries the whole amendment; `code_version_before` is C0's own `deploy_sha`
+# (7c3d555), the last measurement-affecting production state before any 6B repair.
+#
+#   select distinct config_hash from orders where replay = false and config_hash not in (<C0's>);
+#
+CONFIG_HASHES_C1: tuple[str, ...] = ()
+CONFIG_HASHES_C2: tuple[str, ...] = ()
+CONFIG_HASHES_C3: tuple[str, ...] = ()
+CONFIG_HASHES_C4: tuple[str, ...] = ()
+CONFIG_HASHES_C5: tuple[str, ...] = ()
+CONFIG_HASHES_C6: tuple[str, ...] = ()
+# ----------------------------------------------------------------------------------------------
+
 # --- FILLED BY THE CONTROLLER AFTER THE AUDIT RUN ---------------------------------------------
 # `harness audit-order --capsule <dir> --order 157` on the real 6A capsule, in the quiet window.
 # Agents have no NAS access and never run it, so this ships as the unrun state and its test
@@ -124,6 +160,109 @@ CORRECTIONS: tuple[Correction, ...] = (
         eligible_measurements="raw historical cleanliness and counts, labelled retrospective",
         excluded_measurements="none yet",
         rescore_command="none: the baseline is the record",
+    ),
+    Correction(
+        id="C1",
+        title="Subscription continuity: the per-book seq check read multiplexed interleaving as a lost frame",
+        code_version_before="7c3d555",
+        code_version_after="<sha>",
+        measurement_version_before="4.4",
+        measurement_version_after="4.5",
+        deploy_sha="<sha>",
+        variant_ids=VARIANT_IDS_C0,
+        config_hashes=CONFIG_HASHES_C1,
+        affected_order_id_range="<filled at merge>",
+        affected_run_id_range="<filled at merge>",
+        eligible_measurements="post-boundary book_source/dirty_minutes classifications, read from the subscription's own gap rows",
+        excluded_measurements="pre-boundary book_source/dirty_minutes classifications, which counted ordinary interleaving as dirty",
+        rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
+    ),
+    Correction(
+        id="C2",
+        title="Recovery anchoring: the print floor was not anchored with the queue",
+        code_version_before="7c3d555",
+        code_version_after="<sha>",
+        measurement_version_before="4.4",
+        measurement_version_after="4.5",
+        deploy_sha="<sha>",
+        variant_ids=VARIANT_IDS_C0,
+        config_hashes=CONFIG_HASHES_C2,
+        affected_order_id_range="<filled at merge>",
+        affected_run_id_range="<filled at merge>",
+        eligible_measurements="post-boundary filled_contracts, anchored with the queue on both re-anchor branches",
+        excluded_measurements="pre-boundary filled_contracts on any order that recovered from a dirty stretch",
+        rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
+    ),
+    Correction(
+        id="C3",
+        title="Trade and decrement reconciliation: a print and its own delta moved the queue twice",
+        code_version_before="7c3d555",
+        code_version_after="<sha>",
+        measurement_version_before="4.4",
+        measurement_version_after="4.5",
+        deploy_sha="<sha>",
+        variant_ids=VARIANT_IDS_C0,
+        config_hashes=CONFIG_HASHES_C3,
+        affected_order_id_range="<filled at merge>",
+        affected_run_id_range="<filled at merge>",
+        eligible_measurements="post-boundary queue_remaining, reconciled against a trade inside its own horizon",
+        excluded_measurements="pre-boundary queue_remaining and traded_at_price; the two are not comparable across the boundary, and traded_at_price is null afterwards",
+        rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
+    ),
+    Correction(
+        id="C4",
+        title="Expiry clamp and rejected-signal placement",
+        code_version_before="7c3d555",
+        code_version_after="<sha>",
+        measurement_version_before="4.4",
+        measurement_version_after="4.5",
+        deploy_sha="<sha>",
+        variant_ids=VARIANT_IDS_C0,
+        config_hashes=CONFIG_HASHES_C4,
+        affected_order_id_range="<filled at merge>",
+        affected_run_id_range="<filled at merge>",
+        eligible_measurements="post-boundary fills clamped to the order's own expiry, and skip-reason counts re-attributed ahead of capacity",
+        excluded_measurements="pre-boundary fills stamped after their order's expiry, and pre-boundary skip-reason counts, which C4 re-attributes",
+        rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
+    ),
+    Correction(
+        id="C5",
+        title="Dirty-time scope, observation coverage and counterfactual backoff",
+        code_version_before="7c3d555",
+        code_version_after="<sha>",
+        measurement_version_before="4.4",
+        measurement_version_after="4.5",
+        deploy_sha="<sha>",
+        variant_ids=VARIANT_IDS_C0,
+        config_hashes=CONFIG_HASHES_C5,
+        affected_order_id_range="<filled at merge>",
+        affected_run_id_range="<filled at merge>",
+        eligible_measurements="post-boundary dirty_seconds/dirty_minutes scoped to the watched resting interval, with the counterfactual's own nw_dirty_seconds column and a bounded backoff on unreadable tickers",
+        excluded_measurements="pre-boundary dirty_seconds/dirty_minutes on any cancelled or expired order",
+        rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
+    ),
+    Correction(
+        id="C6",
+        title="Capacity-equivalent baseline replay",
+        code_version_before="7c3d555",
+        code_version_after="<sha>",
+        measurement_version_before="4.4",
+        measurement_version_after="4.5",
+        deploy_sha="<sha>",
+        variant_ids=VARIANT_IDS_C0,
+        config_hashes=CONFIG_HASHES_C6,
+        affected_order_id_range="<filled at merge>",
+        affected_run_id_range="<filled at merge>",
+        eligible_measurements="a range replay under the executor configuration in force over that range, sharing one capacity counter",
+        excluded_measurements=(
+            "pre-boundary single-variant replay counts as a baseline for a shared-capacity live "
+            "loop. The population is resolved from the placed-order chain of the range, spec "
+            "§1.6's parenthetical '(config_history by the range's runs)' not being "
+            "implementable (config_history has no run column); that population is a lower bound "
+            "on the executed set, because a configured variant that placed nothing in the range "
+            "is invisible to it. A per-run exact comparison is out of scope."
+        ),
+        rescore_command="harness replay --from-run <a> --to-run <b> --population range",
     ),
 )
 

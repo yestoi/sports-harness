@@ -12,11 +12,13 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from harness.audit import VERDICTS
 from harness.cli import app
 from harness.corrections import (
     CONFIG_HASHES_C0,
     CORRECTIONS,
     MANIFEST_VERSION,
+    ORDER_157_VERDICT,
     VARIANT_IDS_C0,
     Correction,
     measurement_version,
@@ -26,6 +28,8 @@ runner = CliRunner()
 
 RECORD = (Path(__file__).resolve().parents[1]
           / "docs/superpowers/reviews/2026-09-11-correction-manifest.md")
+AMENDMENT = (Path(__file__).resolve().parents[1]
+             / "docs/superpowers/reviews/2026-09-07-phase2-preregistration.md")
 
 
 def test_measurement_version_is_read_at_call_time(monkeypatch):
@@ -39,15 +43,22 @@ def test_measurement_version_is_read_at_call_time(monkeypatch):
     assert measurement_version() == "9.9"
 
 
-def test_c0_is_the_baseline_entry():
-    """6A ships exactly one correction: the record of what the baseline was."""
-    assert MANIFEST_VERSION == 1
-    assert [c.id for c in CORRECTIONS] == ["C0"]
-    c0 = CORRECTIONS[0]
-    assert c0.measurement_version_before == c0.measurement_version_after == "4.4"
-    assert c0.rescore_command == "none: the baseline is the record"
-    assert c0.variant_ids == VARIANT_IDS_C0
-    assert c0.config_hashes == CONFIG_HASHES_C0
+def test_the_manifest_carries_c0_through_c6():
+    """6B ships six corrections beside the baseline, and bumps the manifest to 7."""
+    assert MANIFEST_VERSION == 7
+    assert [c.id for c in CORRECTIONS] == ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+    for c in CORRECTIONS[1:]:
+        assert c.measurement_version_before == "4.4"
+        assert c.measurement_version_after == "4.5"
+        assert c.rescore_command, c.id
+
+
+def test_order_157_verdict_is_a_recognised_verdict_or_not_yet_audited():
+    """`ORDER_157_VERDICT` ships as the controller's real-capsule run recorded it, or as the
+    unrun placeholder; either way it must be a value 6C's reader can act on, never an arbitrary
+    string. Not pinned to a particular verdict: a parallel task re-scopes the audit's manifest
+    gate and the controller rewrites this constant after its rerun."""
+    assert ORDER_157_VERDICT in (*VERDICTS, "not yet audited")
 
 
 def test_variant_ids_are_registered_variant_ids():
@@ -89,11 +100,51 @@ def test_config_hashes_are_executor_config_hashes():
         assert re.fullmatch(r"[0-9a-f]{64}", value), value
 
 
-def test_the_record_headings_equal_the_tuple_ids():
-    """The record is where 6B writes prose; the tuple is what the container reads. A heading
-    without an entry, or an entry without a heading, is the drift this test exists to catch."""
-    headings = re.findall(r"^## (C\d+)\b", RECORD.read_text(), flags=re.MULTILINE)
-    assert headings == [c.id for c in CORRECTIONS]
+def test_the_ids_agree_across_the_code_the_record_and_the_amendment():
+    """The three-way parity the reviews required (CR-1). A correction named in one place and not
+    the other two is drift: the container reads the code, a human reads the record, and the
+    pre-registration amendment is what the experiment is judged against.
+
+    The amendment's id set is read from its own heading and its Change paragraph, so a heading
+    that says "C1-C6" while the tuple holds five entries fails here rather than at the report.
+    """
+    ids = [c.id for c in CORRECTIONS]
+    record = re.findall(r"^## (C\d+)\b", RECORD.read_text(), flags=re.MULTILINE)
+    assert record == ids
+    amendment = AMENDMENT.read_text()
+    section = amendment.split("## Amendment 6")[1].split("\n## ")[0]
+    assert sorted(set(re.findall(r"\bC[1-6]\b", section))) == ids[1:]
+
+
+def test_every_6b_correction_ships_its_tuples_for_the_controller():
+    """Shape only while the tuples are empty: agents have no NAS access, and the controller
+    fills `config_hashes` and the two numeric ranges at merge time (D11), adding the count
+    assertions in that same commit. The loop below runs in both states, so an entry of the
+    wrong width fails the moment it is pasted in.
+    """
+    for c in CORRECTIONS[1:]:
+        for value in c.config_hashes:
+            assert re.fullmatch(r"[0-9a-f]{64}", value), (c.id, value)
+        for field_value in (c.affected_order_id_range, c.affected_run_id_range):
+            assert field_value == "<filled at merge>" or re.fullmatch(
+                r"\d+-\d+|>\s*\d+", field_value), (c.id, field_value)
+
+
+def test_the_rescore_command_is_a_recognised_instrument():
+    """§0.12: `harness rescore` stands beside `harness replay`, an order-scoped correction
+    against a range-scoped one, and all three standing documents say so.
+
+    Asserted on `Correction.__doc__`, not on the field's `#:` comment: Python discards those at
+    runtime, so `__dataclass_fields__["rescore_command"].__doc__` is `dataclasses.Field`'s own
+    class docstring and an assertion against it would pass whatever the field said (review
+    IM-12). The sentence therefore lives in the class docstring, which is readable.
+    """
+    from harness.corrections import Correction
+
+    assert "harness rescore" in Correction.__doc__
+    assert "harness replay" in Correction.__doc__
+    assert "harness rescore" in RECORD.read_text()
+    assert "harness rescore" in AMENDMENT.read_text()
 
 
 def test_manifest_command_prints_the_tuple():
@@ -102,7 +153,7 @@ def test_manifest_command_prints_the_tuple():
     doc = json.loads(result.stdout)
     assert doc["manifest_version"] == MANIFEST_VERSION
     assert doc["measurement_version"] == measurement_version()
-    assert [c["id"] for c in doc["corrections"]] == ["C0"]
+    assert [c["id"] for c in doc["corrections"]] == ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
     assert doc["corrections"][0]["variant_ids"] == list(VARIANT_IDS_C0)
     assert doc["corrections"][0]["config_hashes"] == list(CONFIG_HASHES_C0)
 
