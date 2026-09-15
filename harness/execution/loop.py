@@ -61,9 +61,9 @@ from harness.execution.book import (
     advance_book,
     advance_book_at,
     book_age_s,
-    book_at,
     load_book,
     load_book_at,
+    newest_ws_connect,
     side_p,
 )
 from harness.execution.fills import (
@@ -96,6 +96,7 @@ from harness.execution.plan import (
     rebuild_state,
 )
 from harness.execution.risk import compute_drawdown, peak_equity_7d
+from harness.execution.state import _state_columns, _state_of
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_for_order
 
 log = logging.getLogger(__name__)
@@ -106,6 +107,14 @@ CENT = Decimal("0.01")
 DURATION_WINDOW = 100
 QUEUE_MODEL = "queue_model"
 NO_WATCHER = "no_watcher"
+#: How far before kickoff the no-watcher counterfactual stops, per the user's ruling of
+#: 2026-09-14 15:38 CT (journal 206): "bound the NO_WATCHER deadline at
+#: harness/execution/loop.py:900 (main) by kickoff minus 10 minutes". A literal ten minutes, not
+#: `exec_kickoff_cutoff_min`: the invariant that measures it
+#: (`harness/ops/checks.fills_outside_placement_window`) writes `interval '10 minutes'`, and a
+#: settings change that moved one of the two without the other would make the check fail on
+#: fills the loop had just been told to write.
+NO_WATCHER_KICKOFF_MARGIN = timedelta(minutes=10)
 #: The `order_events.kind` of a venue fill that arrived after its order left the book.
 LATE_FILL = "late_fill"
 #: The `fills.fill_method` of a fill the venue reported, as against one the queue model
@@ -370,6 +379,10 @@ class Executor:
             # ways of being behind: lag with the batch at the cap is a backlog being walked
             # off, lag with the batch on the floor is a ticker whose reads keep timing out.
             ("exec.tape_batch_min", self._tape_batch_min(), {}),
+            # §3 row 11: the counterfactual retry backlog, published so it is visible beside
+            # criterion 4's `n_obs` and cannot silently become an exclusion. Nothing is closed,
+            # so this is a queue depth, not an error.
+            ("exec.nw_pending", heartbeat.get("nw_pending", 0), {}),
             ("exec.intents_considered", acc.intents_considered, {}),
             ("exec.placed", acc.placed, {}),
             ("exec.filled_contracts", acc.filled_contracts, {}),
@@ -423,6 +436,11 @@ class Executor:
 
         # 3. Books and markets.
         working = store.working_orders(session, self.replay)
+        # §3 row 11: every counterfactual still running -- the whole pending population, not
+        # only the tickers inside a retry backoff. Nothing is ever closed (ruling CR-4), so this
+        # is a queue depth rather than an error, and it is published so criterion 4's population
+        # cannot shrink without the metric saying so.
+        heartbeat["nw_pending"] = sum(1 for row in working if not row.nw_done)
         rows = store.market_rows(session, ({i.venue_market_id for i in intents}
                                            | {w.venue_market_id for w in working}), at)
         ws_last = store.newest_event_ts(session, at)
@@ -436,7 +454,8 @@ class Executor:
         dead_recorder = (ws_last is None
                          or (now - ws_last).total_seconds() > s.book_max_age_s)
         bases, recovering, unreadable = self._advance_books(
-            session, {r.ticker for r in rows.values()}, now)
+            session, {r.ticker for r in rows.values()},
+            {r.ticker: vm_id for vm_id, r in rows.items()}, now, dead_recorder)
         stats.book_errors += len(unreadable)
         markets = {vm_id: self._market_now(row, dead_recorder or row.ticker in unreadable)
                    for vm_id, row in rows.items()}
@@ -484,13 +503,18 @@ class Executor:
 
     # --- books ------------------------------------------------------------------------
 
-    def _advance_books(self, session: Session, tickers: set[str],
-                       now: datetime) -> tuple[dict[str, BookState | None], set[str], set[str]]:
+    def _advance_books(self, session: Session, tickers: set[str], market_ids: dict[str, int],
+                       now: datetime, dead_recorder: bool
+                       ) -> tuple[dict[str, BookState | None], set[str], set[str]]:
         """Advance the cache to now and hand back the book each cursor still points at.
 
         `base` is the previous step's book, copied before the cache moves; the fill step gives
         it to the simulator, which walks its own copy. The cache itself is never handed out and
         never mutated by a simulation.
+
+        The newest `ws_connect` is read once for the whole step (§0.3) and written onto the
+        cached books: a book anchored before it kept folding in a new subscription's deltas, and
+        the verdict has to land on the cached object so that the re-anchor branch can clear it.
 
         The third return is the tickers whose book could not be read at all this step. One
         ticker, not the step (fix 60): an unreadable book used to raise out of `_body` and cost
@@ -498,8 +522,16 @@ class Executor:
         did to 3,426 consecutive loops from 2026-09-13 13:04 CT. Such a ticker keeps the cache
         entry it had (or none), gets no base, and joins `dirty`, and its caller marks its market
         dirty for this step: a book we could not read says nothing about the queue, so its
-        orders hold rather than fill and no intent on it is placed.
+        orders hold rather than fill and no intent on it is placed. That is the union with 6B's
+        anchoring: the guard wraps the `ws_connect`-aware load, and a book that cannot be read
+        is never handed to `simulate_fills` as an empty one.
+
+        §1.5's interval bookkeeping happens here too, because this is the one place that knows
+        both which markets the step is stepping and which have just left it. `market_ids` maps
+        ticker to `venue_market_id` and `dead_recorder` is the loop's own verdict about the
+        recorder, both already in `_body`'s hand at the call site.
         """
+        connected_at = newest_ws_connect(session, self._at(now))
         bases: dict[str, BookState | None] = {}
         re_anchored: set[str] = set()
         unreadable: set[str] = set()
@@ -507,13 +539,13 @@ class Executor:
             cached = self.books.get(ticker)
             try:
                 if cached is None:
-                    book = self._book_now(session, ticker, now, None)
+                    book = self._book_now(session, ticker, now, None, connected_at)
                     self.books[ticker] = book
                     bases[ticker] = book
                 else:
                     base = cached.copy()
                     bases[ticker] = base
-                    advanced = self._book_now(session, ticker, now, cached)
+                    advanced = self._book_now(session, ticker, now, cached, connected_at)
                     self.books[ticker] = advanced
                     if (advanced.anchor_id, advanced.source) != (base.anchor_id, base.source):
                         # `advance_book` re-anchors inside a single call when a gap is followed by
@@ -536,12 +568,54 @@ class Executor:
         recovering = ({t for t in tickers if t in self._dirty_tickers} | re_anchored) - dirty
         self._dirty_tickers = dirty
         # One BookState per ticker ever traded would accumulate all season, and a dormant entry
-        # would later be advanced from a very old `as_of`.
+        # would later be advanced from a very old `as_of`. `gone` is read off the cache *before*
+        # the prune, because pruning is what loses the names.
+        gone = [market_ids[t] for t in set(self.books) - tickers if t in market_ids]
         self.books = {t: book for t, book in self.books.items() if t in tickers}
+
+        # §1.5: dirtiness and observation are properties of the market, recorded as intervals
+        # with a cause, and per-order time is derived from them at read time. A market the step
+        # stepped has an open observation row; a market that is dirty has an open dirty row
+        # carrying the book's own cause, `recorder_dead` when the loop has declared every ladder
+        # stale and the book names no cause of its own, or `event_age` when this ticker's own
+        # tape has been silent past `book_max_age_s` -- the same three routes `MarketNow.dirty`
+        # takes, so the elapsed measure and the nominal accrual cover the same stretches.
+        clean: list[int] = []
+        for ticker in sorted(tickers):
+            vm_id = market_ids.get(ticker)
+            if vm_id is None:
+                continue
+            book = self.books.get(ticker)
+            cause = None if book is None else book.dirty_cause
+            if dead_recorder and book is not None:
+                cause = cause or "recorder_dead"
+            if cause is None and book is not None and \
+                    book_age_s(book, now) > self.exec_settings.book_max_age_s:
+                # `MarketNow.dirty` third route (spec F4): nothing applied a row for longer than
+                # the ceiling, so the book is stale without being able to mark itself. Review F1.
+                cause = "event_age"
+            store.open_interval(session, "market_observation_intervals", vm_id, ticker, now,
+                                self.replay)
+            if cause is not None:
+                store.open_interval(session, "market_dirty_intervals", vm_id, ticker, now,
+                                    self.replay, cause=cause)
+            else:
+                # Collected and closed in the one statement below, never one per ticker: about
+                # 110 statements per step on a 55-ticker loop is what the per-ticker shape would
+                # cost against a p95 loop of 227 s (controller note, plan re-check).
+                clean.append(vm_id)
+        # A market that left the step's set is stamped closed at the last observation that saw
+        # it (review I-6), so one whose last order closes while dirty cannot leave a row open
+        # forever and §3 row 5's "no open row older than two hours at 01:00-08:00 CT" holds. It
+        # goes in the same statement as the clean ones: both are "this market is not dirty as of
+        # now", and the observation row is the only thing the two cases treat differently.
+        store.close_intervals(session, "market_dirty_intervals", clean + gone, now, self.replay)
+        store.close_intervals(session, "market_observation_intervals", gone, now, self.replay)
         return bases, recovering, unreadable
 
     def _book_now(self, session: Session, ticker: str, now: datetime,
-                  cached: BookState | None) -> BookState | None:
+                  cached: BookState | None,
+                  ws_connect_at: datetime | None = None) -> BookState | None:
         """The ticker's book at `now`: the tape's head live, the past instant in replay.
 
         The two paths are the same two calls. `load_book`/`advance_book` run to the head of the
@@ -551,12 +625,17 @@ class Executor:
         bound (fix round 1, I1 and I2). Both paths build once and advance afterwards: a replay
         that rebuilt each book from its anchor at every 15 s step would be quadratic in the
         day's tape.
+
+        The reconnect instant goes to the load branch as well as the advance branch (review
+        Important 2): the cache is pruned to the active ticker set each step, so a ticker that
+        leaves and re-enters takes the load branch again, and every ticker takes it after a
+        restart.
         """
         if self.replay:
-            return (load_book_at(session, ticker, now) if cached is None
-                    else advance_book_at(session, cached, now))
-        return (load_book(session, ticker, now) if cached is None
-                else advance_book(session, cached, now))
+            return (load_book_at(session, ticker, now, ws_connect_at) if cached is None
+                    else advance_book_at(session, cached, now, ws_connect_at))
+        return (load_book(session, ticker, now, ws_connect_at) if cached is None
+                else advance_book(session, cached, now, ws_connect_at))
 
     def _market_now(self, row, book_dirty: bool) -> MarketNow:
         """`book_dirty` is the loop's own verdict on this ticker's book: the recorder is dead
@@ -584,17 +663,20 @@ class Executor:
         """
         if not uses_the_simulator(self.gateway):
             return self._venue_fills(session, working, now, stats, heartbeat)
-        tape, unread, lagging = self._tape(session, working, now, heartbeat)
+        tape, unread, lagging, deferred = self._tape(session, working, now, heartbeat)
         stats.errors += len(unread)
         outcomes: dict[int, tuple[str, Decimal]] = {}
         for row in working:
             outcomes[row.id] = (row.status, row.filled_contracts)
-            if row.ticker in unread:
-                # This ticker's tape read failed (fix 22: a statement timeout is the one we have
-                # actually seen). Simulating its orders against an empty tape would move their
-                # print watermarks and their cross flags on evidence we do not have, so the
-                # whole ticker sits this loop out with its cursors where they are. Every other
-                # ticker in this loop keeps its progress.
+            if row.ticker in unread or row.ticker in deferred:
+                # Unread: this ticker's tape read failed (fix 22: a statement timeout is the one
+                # we have actually seen). Deferred: its counterfactual is inside its retry
+                # backoff (§0.14). Either way this step read none of its tape, and simulating
+                # against an empty one would move the print watermarks, the cross flags and --
+                # in the no-watcher branch below -- `nw_done` itself, closing a past-expiry
+                # track on a loop that saw nothing. Ruling CR-4 forbids exactly that close. The
+                # whole ticker sits this loop out with its cursors where they are, and every
+                # other ticker in this loop keeps its progress.
                 continue
             try:
                 with session.begin_nested():
@@ -705,7 +787,8 @@ class Executor:
         return status, filled
 
     def _tape(self, session: Session, working, now: datetime,
-              heartbeat: dict) -> tuple[dict[str, tuple[list, list]], set[str], set[str]]:
+              heartbeat: dict) -> tuple[dict[str, tuple[list, list]], set[str], set[str],
+                                        set[str]]:
         """One print scan and one delta scan per ticker, shared by every order on it.
 
         Prints have no cursor (§1) and are rescanned from `placed_at - 60 s` every loop; the
@@ -717,10 +800,15 @@ class Executor:
         (fix 22). Both scans stop at `_at(now)` in replay: `simulate_fills` already refuses to
         walk past its deadline, but `has_print` reads the whole print list.
 
-        Returns the tape, the set of tickers whose read failed, and the set whose delta read
-        came back full and so is still behind the tape. Each ticker is read inside its own
-        savepoint, so one ticker's statement timeout rolls back to the savepoint and leaves
-        this transaction -- and every cursor already advanced in this loop -- intact.
+        Returns the tape, the set of tickers whose read failed, the set whose delta read came
+        back full and so is still behind the tape, and the set deferred by §0.14's counterfactual
+        backoff. A deferred ticker is not read at all this step, which is the cadence working
+        rather than an error, which is why it is its own member and is never folded into
+        `unread` -- whose length feeds `stats.errors` (review CR-2).
+
+        Each ticker is read inside its own savepoint, so one ticker's statement timeout rolls
+        back to the savepoint and leaves this transaction -- and every cursor already advanced
+        in this loop -- intact.
 
         How full is full is per ticker and adapts (fix 26): the read asks for
         `self._delta_batch[ticker]` rows, quartered down to `DELTA_BATCH_FLOOR` every time the
@@ -730,7 +818,22 @@ class Executor:
         decides whether it makes any progress at all.
         """
         windows: dict[str, tuple[datetime, int | None]] = {}
+        deferred: set[str] = set()
         for row in working:
+            # §0.14: a counterfactual whose ticker's tape read keeps failing is retried on an
+            # exponential delay in elapsed wall seconds, evaluated *here* -- where the step
+            # chooses which tickers to read -- so a ticker whose next attempt is in the future is
+            # simply not read this step. The track is not closed and never will be (ruling
+            # CR-4): closing it would remove its order from gate criterion 4's population,
+            # non-randomly and on the worst-taped tickers.
+            #
+            # A row whose *watched* track is still resting is read whatever the counterfactual's
+            # backoff says: the order we actually placed is not deferrable, and its cursor has
+            # to keep moving.
+            if (row.nw_next_attempt_at is not None and not row.nw_done
+                    and row.nw_next_attempt_at > now and row.status not in store.OPEN_STATUSES):
+                deferred.add(row.ticker)
+                continue
             lower, cursor = windows.get(row.ticker, (row.placed_at, None))
             lower = min(lower, row.placed_at)
             live = []
@@ -760,6 +863,7 @@ class Executor:
                 # would bury it (fix 22 round 1, minor).
                 log.warning("tape read failed for %s: %s", ticker, exc, exc_info=not unread)
                 unread.add(ticker)
+                self._note_backoff(session, working, ticker, now, failed=True)
                 _note_error(heartbeat, f"tape {ticker}: {type(exc).__name__}: {exc}")
                 if _is_statement_timeout(exc):
                     # Fix 26: the batch, not the plan, is what this ticker cannot afford. A
@@ -811,6 +915,7 @@ class Executor:
                 # short keeps its size -- one short read says the backlog is gone, not that the
                 # pages are warm, and the next full read is what earns the size back.
                 self._delta_batch.pop(ticker, None)
+            self._note_backoff(session, working, ticker, now, failed=False)
             out[ticker] = (prints, deltas)
         for stale in set(self._delta_batch) - set(windows):
             # A ticker with no working order left is not going to be read again, and its size
@@ -822,7 +927,55 @@ class Executor:
             log.info("tape lag: %d ticker(s) behind (%s)",
                      len(lagging), ", ".join(sorted(lagging)))
         heartbeat["tape_lag"] = sorted(lagging)
-        return out, unread, lagging
+        # A ticker any other row needed was read anyway, so it is not deferred for anybody.
+        deferred -= set(windows)
+        heartbeat["tape_deferred"] = sorted(deferred)
+        return out, unread, lagging, deferred
+
+    def _nw_backoff(self, attempts: int | None, now: datetime) -> datetime:
+        """The next attempt instant after `attempts` failed reads, capped and elapsed.
+
+        `exec_period_s` doubling per failed read, ceiling `store.NW_RETRY_MAX_S` (3600 s). Every
+        bound here is elapsed wall time, never a loop count (ruling CR-5).
+        """
+        delay = self.settings.exec_period_s * (2 ** int(attempts or 0))
+        return now + timedelta(seconds=min(store.NW_RETRY_MAX_S, delay))
+
+    def _note_backoff(self, session: Session, working, ticker: str, now: datetime,
+                      *, failed: bool) -> None:
+        """Move every pending counterfactual on `ticker` forward, or reset it on a good read."""
+        for row in working:
+            if row.ticker != ticker or row.nw_done:
+                continue
+            if failed:
+                attempts = int(row.nw_attempts or 0) + 1
+                store.set_nw_backoff(session, row.id, attempts, self._nw_backoff(attempts - 1, now))
+            elif row.nw_attempts:
+                store.set_nw_backoff(session, row.id, 0, None)
+
+    def _anchor_tracks(self, states, book: BookState, *, queue: Decimal | None) -> None:
+        """Take both tracks to a freshly anchored book: queue, cursor and print floor together.
+
+        The defect this repairs is that they were set apart (§0.4). The recovery branch took the
+        queue to what was resting now and advanced the delta cursor but left the print
+        watermark, so a trade from inside the gap -- already inside the snapshot it anchored on
+        -- was applied a second time against the newly anchored queue; the no-book branch set
+        the watermark to `now`, the recorder's clock rather than the book's.
+
+        The two clocks are not the same clock and the floor is stated on the book's. A snapshot
+        carries the recorder's receive time (`harness/recorder/ws_sink.py:151`) while a print
+        carries the venue's own `ts_ms` (`ws_sink.py:124-126`), so the floor is the anchor
+        instant less `DELTA_LOOKBACK` (5 s, `book.py:45-49`). A print inside that slack is
+        reconciled by §1.3's ledger, not dropped.
+
+        `queue` is the caller's, because the two branches decide it differently: the no-book
+        branch joins the back of the first book it sees, and the recovery branch clamps to the
+        smaller of what it believed and what is resting (review I-2). §1.3's `anchor` empties
+        the ledger, keeps `cancels_ahead` and prunes the trade-id set to the new floor.
+        """
+        for state in states:
+            state.anchor(queue=queue, cursor_event_id=book.last_event_id,
+                         anchor_as_of=book.anchor_as_of)
 
     def _simulate_order(self, session: Session, row, markets, bases, recovering, tape, lagging,
                         now: datetime, stats: ExecStats) -> tuple[str, Decimal]:
@@ -831,8 +984,18 @@ class Executor:
         book = self.books.get(row.ticker)
         if market is not None and market.dirty(now, s):
             # A book we cannot read tells us nothing about the queue, so neither track advances
-            # and the order records how long it spent in that state (D6).
-            store.add_dirty_seconds(session, row.id, self.settings.exec_period_s)
+            # and the record of how long that lasted is kept per track (§0.9). The watched
+            # column accrues only while the order is actually resting -- a cancelled order is
+            # not sitting against anything -- and each increment is clamped to what is left of
+            # the resting interval, because `_order_action` deliberately holds `Expire` on a
+            # lagging ticker and a past-expiry order can therefore stay `open`.
+            period = self.settings.exec_period_s
+            if row.status in store.OPEN_STATUSES:
+                store.add_dirty_seconds(session, row.id, _clamped(period, row, now, watched=True),
+                                        watched=True)
+            if not row.nw_done:
+                store.add_dirty_seconds(session, row.id,
+                                        _clamped(period, row, now, watched=False), watched=False)
             self._close_nw_if_expired(session, row, now)
             return row.status, row.filled_contracts
 
@@ -849,23 +1012,31 @@ class Executor:
                 self._close_nw_if_expired(session, row, now)
                 return row.status, row.filled_contracts
             queue = book.resting_at(row.side, row.prob)
-            for state in (watched, no_watcher):
-                state.queue_remaining = queue
-                state.traded_at_price = ZERO
-                state.cursor_event_id = book.last_event_id
-                state.last_print_ts = now
-                state.last_print_ids = ()
+            # The queue, the delta cursor, the ledger and the print floor are anchored together,
+            # from the anchoring book itself, by the one helper both re-anchor branches call so
+            # they cannot drift (6B §0.4, §1.2). The floor is what this branch used to spell as a
+            # watermark at `now`, the recorder's clock rather than the book's: the prints of the
+            # no-book window are already inside the queue this book establishes, so they are
+            # discarded (D7) rather than applied against it.
+            self._anchor_tracks((watched, no_watcher), book, queue=queue)
             anchor = book
             updates.update(queue_ahead_at_place=queue, book_source=book.source,
                            book_age_s=book_age_s(book, now), book_first_seen_at=now)
         elif row.ticker in recovering and book is not None:
             # The first clean book after a dirty stretch. Our queue was built from a tape with
-            # a hole in it, so it is taken down to whatever is actually resting there now.
+            # a hole in it, so it is taken down to whatever is actually resting there now --
+            # never up (review I-2) -- and the print floor is anchored with it, so a trade from
+            # inside the gap that the snapshot already reflects cannot be applied again (§0.4).
             resting = book.resting_at(row.side, row.prob)
             for state in (watched, no_watcher):
-                if state.queue_remaining is not None:
-                    state.queue_remaining = min(state.queue_remaining, resting)
-                state.cursor_event_id = book.last_event_id
+                # A track whose queue is None has no book to have joined behind (R10/D7), and a
+                # recovery says nothing about that: it is still out of simulation until the
+                # no-book branch above admits it. Today's code leaves the None alone and so does
+                # this -- turning it into `resting` here would be a behaviour change with no
+                # correction id (review IM-13).
+                clamped = (None if state.queue_remaining is None
+                           else min(state.queue_remaining, resting))
+                self._anchor_tracks((state,), book, queue=clamped)
             anchor = book
 
         prints, deltas = tape.get(row.ticker, ([], []))
@@ -878,11 +1049,41 @@ class Executor:
         # different deadlines, so after a cancel their cursors diverge and `_sim_book` hands
         # them different books, which would stamp two different crossing ids on one order.
         crossed_already = bool(row.crossed or row.nw_crossed)
+        # R8: the expiry is the only guarantee an order stops resting, so both tracks stop
+        # there too -- one variable, read by both calls below, so they cannot drift apart again
+        # the way the watched track (handed `now`) and the counterfactual (already clamped)
+        # once did, which is how a print in the seconds between expiry and the loop instant
+        # filled an order that was no longer on the market (§0.8).
+        deadline = min(now, row.expiry) if row.expiry is not None else now
+        # The user's ruling of 2026-09-14 15:38 CT (journal 206): the counterfactual is bounded
+        # by `kickoff - 10 minutes` as well as by the expiry. An order placed normally already
+        # expires there (`plan._intent_actions` places with `expiry = kickoff - s.cutoff`), so
+        # this only bites where the two came apart -- a kickoff moved after placement, a
+        # NULL-expiry order, a row whose expiry outlived the window -- which is how fills landed
+        # past the window `ops/checks.fills_outside_placement_window` measures. The watched track
+        # keeps `deadline` unchanged: what it did is a fact about an order we were holding, and
+        # R8's expiry is still the only guarantee it stopped resting.
+        # This bounds where the counterfactual's *fills* stop, not what its interval measures:
+        # its dirty and unobserved seconds still accrue over §0.10's `[placed_at, expiry]`
+        # (`_clamped`, `execution/dirty_time.py`, both unchanged by the ruling), so past this
+        # bound `counterfactual_dirty_s` is time in which the counterfactual could no longer
+        # fill -- no stored row changes, and a reader of that column needs to know it
+        # (review m-2).
+        # `getattr`, as this frame already reads `sport`: the two pure-unit modules
+        # (`tests/test_execution_pure.py`, `tests/test_execution_regressions.py`) build the row
+        # by hand from what `_simulate_order` reads, and a hand-built row without a kickoff is
+        # the same case as a row whose kickoff is NULL. The real projection carries the column
+        # (`store._WORKING_ORDERS`, `o.kickoff_utc`), and the loop test above proves the bound
+        # bites on it, so dropping it from the projection would fail that test rather than
+        # silently unbound the counterfactual.
+        kickoff = getattr(row, "kickoff_utc", None)
+        nw_deadline = (deadline if kickoff is None
+                       else min(deadline, kickoff - NO_WATCHER_KICKOFF_MARGIN))
 
         if row.status in store.OPEN_STATUSES:
             result = simulate_fills(order, watched, self._sim_book(session, row, watched, bases,
                                                                    anchor),
-                                    prints, deltas, now, QUEUE_MODEL)
+                                    prints, deltas, deadline, QUEUE_MODEL)
             track = self._persist_track(session, row, order, result, prints, ledger=True,
                                         crossed_already=crossed_already)
             crossed_already = crossed_already or track.cross_written
@@ -897,10 +1098,9 @@ class Executor:
             filled, status = row.filled_contracts, row.status
 
         if not row.nw_done:
-            deadline = min(now, row.expiry) if row.expiry is not None else now
             result = simulate_fills(order, no_watcher,
                                     self._sim_book(session, row, no_watcher, bases, anchor),
-                                    prints, deltas, deadline, NO_WATCHER)
+                                    prints, deltas, nw_deadline, NO_WATCHER)
             track = self._persist_track(session, row, order, result, prints, ledger=False,
                                         crossed_already=crossed_already)
             stats.nw_fills += track.inserted
@@ -935,7 +1135,16 @@ class Executor:
         if cursor is not None:
             at = store.event_ts(session, cursor)
             if at is not None:
-                return book_at(session, row.ticker, at)
+                # `book_at` takes no gap verdict on purpose: every gap after the instant also
+                # has a higher id, so the live test would dirty every historical book on that
+                # sid for the rest of the season and take the markouts with it. But this branch
+                # is asking what the *live loop* believed at that cursor, and a gap the live
+                # loop had already seen dirtied its book. `load_book_at` is `book_at` plus
+                # exactly that verdict, bounded at the instant (ruling I-14). The session test
+                # is bounded the same way: a reconnect recorded after the cursor instant is not
+                # something the live loop knew at it (review Important 2).
+                return load_book_at(session, row.ticker, at,
+                                    newest_ws_connect(session, at))
         return None if base is None else base.copy()
 
     def _persist_track(self, session: Session, row, order: PaperOrder, result, prints,
@@ -1059,8 +1268,11 @@ class Executor:
             "venue_ask_at_place": market.best_ask_yes,
             "venue_mid_at_place": market.mid_yes,
             "queue_ahead_at_place": queue, "queue_remaining": queue,
-            "traded_at_price": ZERO, "nw_queue_remaining": queue,
-            "nw_traded_at_price": ZERO,
+            "nw_queue_remaining": queue,
+            # `traded_at_price` and `nw_traded_at_price` are left NULL from here on (6B §1.3,
+            # ruling CR-3): C0's charge-against quantity is not one of the ledger's terms, and
+            # the 6B boundary is visible by that nullness. Writing a 0 at placement would make
+            # every order placed after the deploy but never simulated look pre-boundary.
             "book_source": book.source if book is not None else "none",
             "book_age_s": None if book is None else book_age_s(book, now),
             "book_first_seen_at": None if book is None else now,
@@ -1291,36 +1503,6 @@ def _note_error(heartbeat: dict, message: str) -> None:
         heartbeat["last_error"] = message[:2000]
 
 
-def _state_of(row, prefix: str) -> SimState:
-    """The persisted `SimState` of one track, read off the order row."""
-    return SimState(
-        queue_remaining=getattr(row, f"{prefix}queue_remaining"),
-        traded_at_price=getattr(row, f"{prefix}traded_at_price") or ZERO,
-        filled_contracts=getattr(row, f"{prefix}filled_contracts"),
-        cursor_event_id=getattr(row, f"{prefix}tape_cursor_event_id"),
-        crossed=bool(getattr(row, f"{prefix}crossed")),
-        last_print_ts=getattr(row, f"{prefix}last_print_ts"),
-        last_print_ids=tuple(getattr(row, f"{prefix}last_print_ids") or ()))
-
-
-def _state_columns(prefix: str, state: SimState) -> dict:
-    """The columns one track's `SimState` is persisted in.
-
-    The cursor is the last tape row the simulation actually consumed and nothing else. The
-    cache's own head runs ahead of it -- `advance_book` folds a delta in on `id` with no upper
-    `ts` bound while `_merge_events` stops at the track's deadline -- so writing the head back
-    would jump the order over a delta stamped ahead of our clock. The next step reaches that
-    delta through `_sim_book`'s `book_at(ts_of(cursor))` branch instead.
-    """
-    cursor = state.cursor_event_id
-    return {f"{prefix}queue_remaining": state.queue_remaining,
-            f"{prefix}traded_at_price": state.traded_at_price,
-            f"{prefix}tape_cursor_event_id": cursor,
-            f"{prefix}crossed": state.crossed,
-            f"{prefix}last_print_ts": state.last_print_ts,
-            f"{prefix}last_print_ids": list(state.last_print_ids)}
-
-
 def _venue_status(was: str, filled: Decimal, contracts: Decimal) -> str:
     """The status a venue fill leaves an order in. An order that had already left the book keeps
     the status it left with: the fill is recorded, the position is real, and the order is still
@@ -1328,6 +1510,28 @@ def _venue_status(was: str, filled: Decimal, contracts: Decimal) -> str:
     if was not in store.OPEN_STATUSES:
         return was
     return _next_status(was, filled, contracts)
+
+
+def _clamped(period: int, row, now: datetime, *, watched: bool) -> int:
+    """This observation's nominal accrual, clamped to what is left of the track's interval.
+
+    The watched interval is `[placed_at, min(cancelled_at, expiry)]` and the counterfactual's is
+    `[placed_at, expiry]` (§0.10). An observation at `now` can only account for the part of the
+    period that lies inside the interval, so the clamp is the seconds between `now` and the
+    interval's end, floored at zero and capped at the period. A past-expiry order held open on a
+    lagging ticker therefore accrues nothing, which is I-15's rule and what makes §3 row 5's
+    first clause -- `dirty_seconds` never exceeding the resting interval -- true by construction
+    rather than by luck.
+
+    An order with no expiry at all accrues the whole period: there is no interval to clamp to,
+    and R8 makes that case rare enough that guessing a bound would be worse than not having one.
+    """
+    end = row.expiry
+    if watched and row.cancelled_at is not None:
+        end = row.cancelled_at if end is None else min(end, row.cancelled_at)
+    if end is None:
+        return period
+    return max(0, min(period, int((end - now).total_seconds())))
 
 
 def _next_status(status: str, filled: Decimal, contracts: Decimal) -> str:

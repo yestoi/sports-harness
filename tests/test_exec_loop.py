@@ -177,7 +177,7 @@ def fills_of(session, order_id=None, method=None):
 
 
 def test_executor_version_is_bumped_for_the_loop():
-    assert EXECUTOR_VERSION == "4.4"
+    assert EXECUTOR_VERSION == "4.5"
 
 
 # --- the gateway seam -----------------------------------------------------------------
@@ -277,6 +277,15 @@ def test_no_book_order_is_placed_with_marker_and_fills_only_after_a_snapshot(env
     assert order.tape_cursor_event_id is not None
     assert fills_of(db_session, order.id) == []
     assert order.filled_contracts == Decimal("0.00")
+    # D7 is enforced by the print floor the anchoring book sets, so the rule is pinned on the
+    # floor itself and not only on its consequence (6B §0.4, §0.6, round 1 minor): the book was
+    # taken at NOW + 10 s, the floor is that instant less `DELTA_LOOKBACK`, and `_merge_events`
+    # admits only prints strictly above it -- which is why the print at exactly NOW + 5 s, inside
+    # the no-book window, is discarded rather than applied against the queue this book
+    # established. `last_print_ts` carries the same instant for any reader still on that column.
+    floor = NOW + timedelta(seconds=5)
+    assert datetime.fromisoformat(order.recon_state["print_floor"]) == floor
+    assert order.last_print_ts == floor
 
     # A print after the book was adopted does fill.
     _print(db_session, T2, clock.now + timedelta(seconds=5), "0.35", "60", trade_id="late")
@@ -327,6 +336,62 @@ def test_print_at_price_fills_after_queue_and_writes_ledger(env_settings, db_ses
     assert ledger[0].fill_id == watched[0].id
     assert ledger[0].order_id == order.id
     assert ledger[0].cash_delta < 0
+
+
+def test_the_ledger_columns_are_written_and_traded_at_price_stays_null(env_settings, db_session,
+                                                                      world):
+    """6B §1.3 and §2: the ledger's own columns carry the state, `traded_at_price` carries NULL.
+
+    Computed independently: 40 rest ahead of us and a print of 50 goes off at our price, so 40
+    clears the queue and 10 is ours -- and the whole 50 is print volume whose decrement has not
+    arrived, because this tape has no delta at our level at all. So `print_unmatched` is 50,
+    both bucket sums are 0 (nothing unclaimed came off the book), `cancels_ahead` is 0 (nothing
+    retired) and `recon_state` holds the print's own id with an empty bucket list.
+
+    `traded_at_price` must be NULL on both tracks: it is C0's charge-against quantity, not a
+    ledger term, and §3's boundary query reads exactly that nullness to tell a post-6B order
+    from a pre-6B one (ruling CR-3). It is NULL from placement, not merely after the first
+    simulation, so an order placed and never stepped cannot read as pre-boundary either.
+    """
+    clock = Clock(NOW)
+    _place_and_print(env_settings, db_session, clock)
+
+    order = orders_of(db_session)[0]
+    assert order.filled_contracts == Decimal("10.00")
+    assert order.traded_at_price is None and order.nw_traded_at_price is None
+    assert order.print_unmatched == Decimal("50.00")
+    assert order.pending_unmatched == Decimal("0.00")
+    assert order.pending_surplus == Decimal("0.00")
+    assert order.cancels_ahead == Decimal("0.00")
+    assert order.recon_state["buckets"] == []
+    assert [tid for _ts, tid in order.recon_state["trade_ids"]] == ["t1"]
+    assert order.recon_state["print_floor"] is None
+    # The counterfactual ran the same tape on its own columns (F3).
+    assert order.nw_print_unmatched == Decimal("50.00")
+    assert order.nw_recon_state["trade_ids"] == order.recon_state["trade_ids"]
+    # §2's invariant, on this row: the two scalars are the surviving buckets' sums.
+    sums = sum(Decimal(size) for _ts, _kind, size in order.recon_state["buckets"])
+    assert order.pending_unmatched + order.pending_surplus == sums
+
+
+def test_a_placed_order_carries_no_traded_at_price_before_any_simulation(env_settings, db_session,
+                                                                        world):
+    """The same boundary rule at placement: the insert leaves both columns NULL (§1.3, §2).
+
+    Computed independently: the column's meaning is "the C0 quantity this build charged prints
+    against", and this build charges nothing against it. An order placed after the 6B deploy and
+    cancelled before its first fill step would otherwise carry a 0 there and read as a pre-6B row
+    in §3's boundary query, which is the one thing that query is for.
+    """
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    make_executor(env_settings, db_session, clock).step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.filled_contracts == Decimal("0.00")
+    assert order.traded_at_price is None and order.nw_traded_at_price is None
 
 
 def test_print_through_price_fills_fully(env_settings, db_session, world):
@@ -398,6 +463,86 @@ def test_no_watcher_track_keeps_filling_after_a_cancel(env_settings, db_session,
     assert len(nw) == 1 and nw[0].contracts == Decimal("20.00")
     assert order.nw_filled_contracts == Decimal("20.00")
     assert stats.nw_fills == 1
+
+
+def test_no_watcher_fills_stop_ten_minutes_before_kickoff(env_settings, db_session, world):
+    """The user's ruling of 2026-09-14 15:38 CT (journal 206): the counterfactual's deadline is
+    bounded by `kickoff - 10 minutes`, the same instant `fills_outside_placement_window` calls
+    the end of the placement window. The watched track is not bounded by it.
+
+    Derived independently of the loop. The order rests with 40 contracts ahead of it at 0.35.
+    A print of 60 lands three seconds after placement -- inside the bound -- so 40 of it is the
+    queue and 20 reaches the order on both tracks. A print of 500 lands eight seconds after
+    placement, three seconds past `kickoff - 10 min`, and is tape the counterfactual never sees:
+    it fills the watched track to its whole 97 contracts and leaves the counterfactual at 20.
+
+    The order's kickoff and expiry are moved after placement, because an order placed normally
+    expires at `kickoff - exec_kickoff_cutoff_min` already (`plan.py:564`) -- the case the bound
+    exists for is the one where they differ: a kickoff moved after placement, or an order whose
+    expiry outlives the window.
+    """
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.queue_ahead_at_place == Decimal("40.00")
+    # `kickoff - 10 min` is NOW + 5 s; the expiry is deliberately far past it.
+    db_session.query(Order).filter_by(id=order.id).update(
+        {"kickoff_utc": NOW + timedelta(minutes=10, seconds=5),
+         "expiry": NOW + timedelta(minutes=20)})
+    db_session.commit()
+
+    inside = NOW + timedelta(seconds=3)
+    outside = NOW + timedelta(seconds=8)
+    _print(db_session, T2, inside, "0.35", "60", trade_id="inside-the-window")
+    _print(db_session, T2, outside, "0.35", "500", trade_id="past-the-window")
+    db_session.commit()
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    watched = fills_of(db_session, order.id, "queue_model")
+    nw = fills_of(db_session, order.id, "no_watcher")
+    assert [f.filled_at for f in nw] == [inside]
+    assert order.nw_filled_contracts == Decimal("20.00")
+    assert [f.filled_at for f in watched] == [inside, outside]
+    assert order.filled_contracts == SIZE2
+    assert order.status == "filled"
+
+
+def test_a_counterfactual_with_no_kickoff_keeps_the_expiry_deadline(env_settings, db_session,
+                                                                   world):
+    """The bound is `min(deadline, kickoff - 10 min)` only when the order carries a kickoff.
+    With no kickoff there is no window to bound to, so the counterfactual stops at the expiry
+    exactly as it did before -- the same tape as the test above, scored the other way.
+    """
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    db_session.query(Order).filter_by(id=order.id).update(
+        {"kickoff_utc": None, "expiry": NOW + timedelta(minutes=20)})
+    db_session.commit()
+
+    _print(db_session, T2, NOW + timedelta(seconds=3), "0.35", "60", trade_id="inside-nk")
+    _print(db_session, T2, NOW + timedelta(seconds=8), "0.35", "500", trade_id="later-nk")
+    db_session.commit()
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.nw_filled_contracts == SIZE2
+    assert order.filled_contracts == SIZE2
 
 
 def test_nw_fill_writes_no_ledger_or_position_row(env_settings, db_session, world):
@@ -596,6 +741,53 @@ def test_skip_recorded_once_across_two_steps(env_settings, db_session, world):
     assert second.skipped == 0
 
 
+def test_a_rejected_latest_decision_writes_one_skip_row_and_no_order(env_settings, db_session,
+                                                                     world):
+    """Review round 1, Important 2 (C4): the spec's idempotence claim -- one `order_events` row,
+    not just a stable planner action -- for the `signal_rejected` reason, modelled on
+    `test_skip_recorded_once_across_two_steps` above.
+
+    Derived independently: VM2's own candidate signal is what `insert_intents` turns into the
+    one intent this test acts on, but a *newer* signal for the same `(variant, venue_market,
+    side)` key already exists with decision `rejected` before the loop ever runs -- exactly a
+    strategy that withdrew its own signal before the executor got to it. `load_intents` reads
+    `latest_decision` from that newer row (`store.py`'s `_NEWEST_DECISIONS`), so the intent is
+    skipped with reason `signal_rejected` on its very first loop, and every loop after, and
+    `uq_skip_once` (partial on `kind in ('skipped', 'cap_gate')`) is what keeps the second and
+    later loops' writes from adding a second row.
+    """
+    old = db_session.query(Signal).filter_by(venue_market_id=VM2, decision="candidate").one()
+    db_session.add(Signal(run_id=old.run_id + 1000, variant_id=old.variant_id,
+                          gap_snapshot_id=old.gap_snapshot_id, venue_market_id=VM2, side="yes",
+                          fair_p=old.fair_p, fair_source=old.fair_source,
+                          venue_best_bid=old.venue_best_bid, venue_best_ask=old.venue_best_ask,
+                          price_target=old.price_target, fee_at_target=old.fee_at_target,
+                          as_estimate=old.as_estimate, edge=old.edge, edge_min=old.edge_min,
+                          stake=old.stake, contracts=old.contracts, decision="rejected",
+                          rejection_reason="edge", labels={},
+                          created_at=old.created_at + timedelta(seconds=5)))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    first = executor.step()
+    refresh(db_session)
+    intent = db_session.query(Intent).one()
+    assert intent.venue_market_id == VM2
+    assert orders_of(db_session, T2) == []
+    skips = [e for e in events_of(db_session, "skipped") if e.reason == "signal_rejected"]
+    assert len(skips) == 1 and skips[0].intent_id == intent.id
+    assert first.skipped == 1
+
+    clock.advance(15)
+    second = executor.step()
+    refresh(db_session)
+    assert len([e for e in events_of(db_session, "skipped")
+               if e.reason == "signal_rejected"]) == 1
+    assert second.skipped == 0
+    assert orders_of(db_session, T2) == []
+
+
 def test_cap_gate_event_written_for_a_non_apply_caps_variant(env_settings, db_session, world):
     # `tiny` has apply_caps: false. A stake past per_bet_cap (0.03 * 3000 = 90) must record the
     # cap it would have failed and still place the order.
@@ -752,10 +944,11 @@ def test_a_ticker_whose_book_cannot_load_does_not_abort_the_step(
 
     real = executor._book_now
 
-    def explode(session, ticker, now, cached):
+    def explode(session, ticker, now, cached, ws_connect_at=None):
+        # 6B §0.3 gave `_book_now` the reconnect instant; the stub takes it and hands it on.
         if ticker == T2:
             raise ValueError("snapshot without yes_dollars_fp")
-        return real(session, ticker, now, cached)
+        return real(session, ticker, now, cached, ws_connect_at)
 
     monkeypatch.setattr(executor, "_book_now", explode)
     _print(db_session, T2, clock.now + timedelta(seconds=5), "0.30", "500", trade_id="p2")
@@ -821,10 +1014,11 @@ def test_a_ticker_whose_book_cannot_load_reports_the_exec_book_errors_metric(
 
     real = executor._book_now
 
-    def explode(session, ticker, now, cached):
+    def explode(session, ticker, now, cached, ws_connect_at=None):
+        # 6B §0.3 gave `_book_now` the reconnect instant; the stub takes it and hands it on.
         if ticker == T2:
             raise ValueError("snapshot without yes_dollars_fp")
-        return real(session, ticker, now, cached)
+        return real(session, ticker, now, cached, ws_connect_at)
 
     monkeypatch.setattr(executor, "_book_now", explode)
     _print(db_session, T2, clock.now + timedelta(seconds=5), "0.30", "500", trade_id="p2")
@@ -1030,9 +1224,14 @@ def test_a_fresh_executor_resumes_from_the_persisted_cursor(env_settings, db_ses
     refresh(db_session)
 
     order = orders_of(db_session)[0]
-    # 40 resting, 10 cancelled by the delta, 60 printed: 30 clears the queue, 30 is ours.
+    # 40 resting, a -10 delta, then a print of 60 three seconds later. 6B §1.3 reconciles the two
+    # instead of counting both: the -10 took 10 off the queue when it arrived, and the print
+    # claims those 10 as the trade it is reporting, so they neither move the queue again nor
+    # fill. 50 of the print's 60 is volume no ledger term explains -- 30 clears the rest of the
+    # queue and 20 reaches us. (Pre-6B the decrement was read as a cancellation and the whole 60
+    # moved the queue a second time, which is the double count C3 removes; that answer was 30.)
     assert order.queue_remaining == Decimal("0.00")
-    assert order.filled_contracts == Decimal("30.00")
+    assert order.filled_contracts == Decimal("20.00")
 
 
 # --- fix 22: the delta read ------------------------------------------------------------
@@ -1314,7 +1513,12 @@ def _two_working_tickers(env_settings, db_session, clock):
 
 
 def _read_tape(executor, db_session, clock):
-    """One `_tape` pass over every working order, the way a step makes it."""
+    """One `_tape` pass over every working order, the way a step makes it.
+
+    Four members since 6B §1.5: the tape, `unread`, `lagging` and `deferred` -- the tickers the
+    counterfactual backoff kept this step from reading at all, which is deliberately not folded
+    into `unread`, whose length feeds `stats.errors` (review CR-2).
+    """
     return executor._tape(db_session, store.working_orders(db_session, False), clock.now,
                           {"last_error": None, "tape_lag": []})
 
@@ -1342,7 +1546,7 @@ def test_a_statement_timeout_shrinks_that_tickers_batch_alone_and_stops_at_the_f
     monkeypatch.setattr(store, "load_deltas", explode)
     sizes = []
     for _ in range(6):
-        _, unread, _ = _read_tape(executor, db_session, clock)
+        _, unread, _, _ = _read_tape(executor, db_session, clock)
         assert unread == {T3}
         sizes.append(executor._delta_batch[T3])
 
@@ -1371,8 +1575,8 @@ def test_a_non_timeout_failure_leaves_the_batch_size_alone(env_settings, db_sess
 
     monkeypatch.setattr(store, "load_deltas", explode)
     heartbeat = {"last_error": None, "tape_lag": []}
-    _, unread, _ = executor._tape(db_session, store.working_orders(db_session, False),
-                                  clock.now, heartbeat)
+    _, unread, _, _ = executor._tape(db_session, store.working_orders(db_session, False),
+                                     clock.now, heartbeat)
     assert unread == {T3}
     assert executor._delta_batch == {}
     assert "ProgrammingError" in heartbeat["last_error"]
@@ -1405,7 +1609,7 @@ def test_a_full_batch_doubles_a_shrunk_ticker_back_and_never_past_the_cap(
     executor._delta_batch[T3] = store.DELTA_BATCH_FLOOR
     sizes = []
     for _ in range(4):
-        _, _, lagging = _read_tape(executor, db_session, clock)
+        _, _, lagging, _ = _read_tape(executor, db_session, clock)
         assert T3 in lagging
         sizes.append(executor._delta_batch[T3])
     assert sizes == [500, 1_000, 2_000, 4_000]

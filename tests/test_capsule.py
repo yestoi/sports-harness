@@ -8,7 +8,10 @@ that a capped file says so and makes the command exit 2. No test runs against an
 
 import gzip
 import hashlib
+import io
 import json
+import sys
+import tarfile
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -595,3 +598,52 @@ def test_capsule_command_period_without_a_ticker_exits_one(monkeypatch, env_sett
         assert result.exit_code == 1
     finally:
         get_settings.cache_clear()
+
+
+def test_the_tar_stream_equals_the_directory_capsule_byte_for_byte(db_session, tmp_path,
+                                                                   capsys, monkeypatch):
+    """Expected: n + 1 members, `manifest.json` last, each member's bytes equal to the
+    directory path's and its sha256 equal to the manifest's entry.
+
+    Derived independently: both paths gzip through the same `_jsonl_gz`, which writes with
+    `mtime=0` so two extractions of the same rows are byte-identical. A capsule of *n* slices is
+    therefore *n* files plus the manifest, in that order, and the manifest's digest of each file
+    is a digest of exactly those bytes. The ordering matters as much as the equality: the
+    manifest lands last because it attests the members, and a reader that saw it first could not
+    know whether the stream finished.
+
+    The second assertion is what makes this worth a test at all: nothing but the tar may reach
+    `stdout`. A log line or a progress bar on that stream corrupts the archive on the
+    controller's ssh pipe, and it would corrupt it silently -- `tarfile` would read the members
+    it could and stop.
+
+    Capture: `capsys` cannot capture `sys.stdout.buffer` here -- pytest's default `SysCapture`
+    snapshots stdout by decoding its captured `BytesIO` as UTF-8, which raises
+    `UnicodeDecodeError` on the raw gzip bytes the tar stream carries. So this test monkeypatches
+    `sys.stdout` with a `TextIOWrapper` over its own `BytesIO` and reads that buffer directly;
+    `capsys` is left in place only to confirm `stderr` stayed silent.
+    """
+    from harness.capsule import write_capsule
+
+    _seed_order(db_session)
+    slices = order_slices(db_session, 1)
+    meta = {"build": "test", "kind": "order", "order_id": 1}
+
+    directory = tmp_path / "written"
+    manifest = write_capsule(slices, str(directory), dict(meta))
+
+    buffer = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(buffer))
+    write_capsule(slices, "-", dict(meta))
+    assert capsys.readouterr().err == ""
+    stream = io.BytesIO(buffer.getvalue())
+
+    with tarfile.open(fileobj=stream, mode="r") as tar:
+        names = tar.getnames()
+        assert names[-1] == "manifest.json"
+        assert len(names) == len(manifest["files"]) + 1
+        digests = {f["name"]: f["sha256"] for f in manifest["files"]}
+        for name in names[:-1]:
+            body = tar.extractfile(name).read()
+            assert body == (directory / name).read_bytes(), name
+            assert hashlib.sha256(body).hexdigest() == digests[name], name

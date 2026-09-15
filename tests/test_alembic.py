@@ -458,12 +458,13 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_ten_revisions():
+def test_the_versions_directory_holds_eleven_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
         "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
-        "0009_score_correction.py", "0010_phase46_fun_tickets.py"]
+        "0009_score_correction.py", "0010_phase46_fun_tickets.py",
+        "0011_phase6b_execution.py"]
 
 
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
@@ -576,6 +577,93 @@ def test_the_positions_open_fill_revision_only_issues_the_view_and_undoes_nothin
     downgrade = next(n for n in ast.walk(tree)
                      if isinstance(n, ast.FunctionDef) and n.name == "downgrade")
     assert all(isinstance(node, ast.Pass) for node in downgrade.body)
+
+
+# --- 6B §1.3: revision 0011 (written as `0008_phase6b_execution` on the phase branch) --------
+
+def test_phase6b_execution_follows_phase46_fun_tickets_and_is_the_pinned_head():
+    """D9 applied at merge time, the third time on this chain.
+
+    The plan's `0008_phase6b_execution` on top of `0007_raw_events_lookup` went stale when fix
+    56's `0008_positions_open_fill` took that number on main on 2026-09-13, fix 64's
+    `0009_score_correction` took the next one on 2026-09-14, and phase 4.6's revision was
+    renumbered `0010_phase46_fun_tickets` on top of *that* -- so this phase's revision is
+    `0011_phase6b_execution` on top of 4.6's, renumbered in the merge of `main` into the phase
+    branch. These two pinned-head assertions carry over from
+    `test_the_phase46_revision_is_the_pinned_head`, which kept its chain assertions under its
+    new name, the same pattern 0008, 0009 and 0010 used before it. 6D's
+    `0009_phase6d_sustained_evaluation` is still unmerged and is renumbered the same way at its
+    own merge time.
+    """
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0011_phase6b_execution.py")
+    assert module.revision == "0011_phase6b_execution"
+    assert module.down_revision == "0010_phase46_fun_tickets"
+    assert HEAD_REVISION == "0011_phase6b_execution"
+    assert VERSIONS[-1].name == "0011_phase6b_execution.py"
+
+
+def test_the_phase6b_ledger_ddl_agrees_between_schema_and_migration():
+    """The two copies of 6B's additive DDL must be the same strings, character for character.
+
+    `harness/db/schema.py` stays the schema authority and the revision carries the identical
+    statements (spec §2); the catalogue diff above would eventually catch a divergence, but only
+    as an unexplained column difference. This names it.
+    """
+    from harness.db.schema import _COLUMN_DDL
+
+    module = _load_revision("0011_phase6b_execution.py")
+    # §1.3's ten ledger statements plus §1.5's three (`nw_dirty_seconds`,
+    # `nw_next_attempt_at`, `nw_attempts`). The count is here so a task appending to one
+    # copy and not the other is named by this test rather than by a catalogue diff.
+    assert len(module._STATEMENTS) == 13
+    for statement in module._STATEMENTS:
+        assert statement in _COLUMN_DDL, statement
+
+
+def test_the_phase6b_tables_are_in_both_catalogues(two_databases):
+    """§1.5's two interval tables and §1.8's `order_rescores` are models *and* revision
+    statements, added in the same task: the catalogue diff above fails if either half lands
+    without the other, and this names which table went missing when it does.
+
+    `order_rescores`' composite primary key is asserted by name because it is the whole of the
+    table's access path -- it is what makes a resumed run a no-op (§1.8) -- and because a key
+    that silently became `(order_id)` would make one order's second correction set overwrite
+    its first.
+    """
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        insp = inspect(engine)
+        names = set(insp.get_table_names())
+        assert {"market_dirty_intervals", "market_observation_intervals",
+                "order_rescores"} <= names
+        assert tuple(insp.get_pk_constraint("order_rescores")["constrained_columns"]) == (
+            "order_id", "correction_ids", "cancel_policy")
+        # No index of its own: the primary key is the only access path, so the model declares
+        # no `__table_args__` and `harness/db/schema.py`'s `_INDEX_DDL` gains nothing.
+        assert [i["name"] for i in insp.get_indexes("order_rescores")] == []
+
+
+def test_the_phase6b_ledger_columns_are_nullable_with_no_default(scratch_db):
+    """Spec §2, row 1: nullable with no default, so no pre-6B order is backfilled and the
+    boundary invariant (`every ledger column null at or below the boundary order id`) holds by
+    construction rather than by a later UPDATE."""
+    from harness.db.migrate import upgrade_head
+
+    upgrade_head(_url(scratch_db))
+    names = ("print_unmatched", "pending_unmatched", "pending_surplus", "cancels_ahead",
+             "recon_state")
+    columns = {c["name"]: c for c in inspect(scratch_db).get_columns("orders")}
+    for prefix in ("", "nw_"):
+        for name in names:
+            column = columns[f"{prefix}{name}"]
+            assert column["nullable"] is True, name
+            assert column["default"] is None, name
 
 
 def _load_baseline():
@@ -1023,7 +1111,11 @@ def test_the_quotes_run_index_is_never_built_without_concurrently():
 
 def test_raw_events_lookup_follows_quotes_run_index():
     """It stopped being the pinned head at carried fix 56 (second row), which added
-    `0008_positions_open_fill` on top of it; its place in the chain is what this still pins."""
+    `0008_positions_open_fill` on top of it; its place in the chain is what this still pins.
+
+    6B's revision was written as `0008_phase6b_execution` on top of *this* one on the phase
+    branch and was renumbered `0011_phase6b_execution` on top of `0010_phase46_fun_tickets` at
+    merge time (D9), so nothing in this phase follows 0007 any more."""
     module = _load_revision("0007_raw_events_lookup.py")
     assert module.revision == "0007_raw_events_lookup"
     assert module.down_revision == "0006_quotes_run_index"
@@ -1145,21 +1237,25 @@ def test_the_phase46_revision_is_additive_only():
     assert module.down_revision == "0009_score_correction"
 
 
-def test_the_phase46_revision_is_the_pinned_head():
+def test_the_phase46_revision_follows_score_correction():
     """D9 applied at merge time. The plan's `0008_phase46_fun_tickets` on top of
     `0007_raw_events_lookup` went stale when fix 56's `0008_positions_open_fill` took that number
     on main on 2026-09-13, and the phase branch's own `0009` went stale when fix 64's
     `0009_score_correction` took *that* number on main on 2026-09-14 -- so this phase's revision
     is `0010_phase46_fun_tickets` on top of fix 64's, renumbered in the merge of `main` into the
-    phase branch. These two pinned-head assertions carry over from
-    `test_score_correction_follows_positions_open_fill`, which keeps its chain assertions, the
-    same pattern 0008 and 0009 used before it. 6B's `0008_phase6b_execution` and 6D's
-    `0009_phase6d_sustained_evaluation` are still unmerged and are renumbered the same way at
-    their own merge time."""
-    from harness.db.migrate import HEAD_REVISION
+    phase branch.
 
-    assert HEAD_REVISION == "0010_phase46_fun_tickets"
-    assert VERSIONS[-1].name == "0010_phase46_fun_tickets.py"
+    The two pinned-head assertions this test used to carry moved on to
+    `test_phase6b_execution_follows_phase46_fun_tickets_and_is_the_pinned_head` when 6B's own
+    revision was renumbered `0011_phase6b_execution` on top of this one at *its* merge time --
+    the same pattern 0008 and 0009 used before it. The chain assertions stay here, so a revision
+    inserted between `0009_score_correction` and this one still fails. 6D's
+    `0009_phase6d_sustained_evaluation` is still unmerged and is renumbered the same way at its
+    own merge time."""
+    module = _phase46_module()
+
+    assert module.revision == "0010_phase46_fun_tickets"
+    assert module.down_revision == "0009_score_correction"
 
 
 def test_the_one_widening_is_the_only_alter_column_any_revision_carries():

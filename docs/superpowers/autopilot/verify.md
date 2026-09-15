@@ -329,11 +329,11 @@ make test 2>&1 | tail -3
 
 | Check | Expected | When |
 |---|---|---|
-| Correction manifest | `harness manifest` on Omarchy prints `"manifest_version": 1` and `"measurement_version": "4.4"` — or whatever `EXECUTOR_VERSION` carries at deploy time, which the journal line states. One correction, id `C0`, with seven `variant_ids` of 12 hex characters and six `config_hashes` of 64. | after the 6A deploy |
+| Correction manifest | `harness manifest` on Omarchy prints `"manifest_version": 1` and `"measurement_version": "4.4"`, one correction, id `C0`, with seven `variant_ids` of 12 hex characters and six `config_hashes` of 64. **Superseded by the Phase 6B "Manifest and amendment" row after the 6B deploy**, which expects manifest 7, measurement 4.5 and seven corrections; until that deploy this row stands as written. | after the 6A deploy |
 | Gate eligibility dormant | `select count(*) from gate_reports where criteria_json ? 'eligibility'` returns **0**. A non-zero count means a setting was switched on without a dated user decision: an integrity anomaly and a carried fix, not a fix-forward. | every verify after the 6A deploy |
 | Criteria hash | the newest `gate_reports` row's `criteria_hash` is `5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5`. A different value means a criterion definition moved, which is an R1 event. | every verify after the 6A deploy |
 | Capsules | six capsules exist (order 157 plus the five named periods), each with a `manifest.json` whose `build` equals the deploy sha, whose `truncated` is `[]`, and every `unverifiable_slices` entry journaled with its `sid`/`ts` or its ticker. | taken in the Sat 2026-09-12 04:30–08:00 CT quiet window, after the 03:30 CT dump and before the 10:45 CT game window; **at any other hour this row reads "deferred: judge after the extraction"** |
-| Execution regressions | `make test`'s summary line reports exactly **6 xfailed** from `tests/test_execution_regressions.py` and **zero** `XPASS`. An unexpected pass means 6B's repair landed early or a case passes for the wrong reason; either way it is read before it is unmarked. | every verify after the 6A deploy, until 6B unmarks them |
+| Execution regressions | `make test`'s summary line reports exactly **6 xfailed** from `tests/test_execution_regressions.py` and **zero** `XPASS`. An unexpected pass means 6B's repair landed early or a case passes for the wrong reason; either way it is read before it is unmarked. **Superseded by the Phase 6B "Regressions" row after the 6B deploy**, which expects **0 xfailed** and zero `XPASS`: 6B unmarks all six, one per component. | every verify after the 6A deploy, until 6B unmarks them |
 
 ### Phase 6C additions, wave 2 (after the confirmation, join and units deploy)
 
@@ -351,6 +351,111 @@ Pulse's ages panel shows the study cell age; Floor's exposure note is visible be
 Floor's funnel table shows a unit column. Until the bridge answers, the wave-1 block's
 deterministic stand-in row is what these are accepted on, and the walker re-scores the pixels at
 the first verification after it returns.
+
+### Phase 6B additions (after the execution repairs, the audit, the re-score and Amendment 6 ship)
+
+The boundary values are the controller's, read and journaled immediately before the deploy and
+written into C1-C6's numeric range fields at merge time:
+`:boundary_order_id`, `:boundary_fill_id`, `:boundary_event_id`, `:boundary_ledger_id`, and the
+pre-deploy sums row 1 compares against.
+
+```
+bash -c 'cd /srv/sports-harness && /srv/sports-harness/sports-compose run --rm -T app-run manifest'
+```
+
+```
+-- 1. originals intact
+select count(*), sum(contracts), max(id) from fills where replay = false and id <= :boundary_fill_id;
+select sum(filled_contracts), sum(dirty_seconds), sum(traded_at_price), sum(nw_traded_at_price),
+       sum(queue_remaining) from orders where replay = false and id <= :boundary_order_id;
+select count(*), sum(contracts), max(id) from ledger where replay = false and id <= :boundary_ledger_id;
+
+-- 2. no post-expiry fill (unfiltered by fill_method: it is a test of the entry-cross clamp)
+select count(*) from fills f join orders o on o.id = f.order_id
+where f.replay = false and f.id > :boundary_fill_id and o.expiry is not null
+  and f.filled_at > o.expiry;
+
+-- 3. no placement from a rejected target, and the skip itself is being written
+select count(*) from order_events e where e.kind = 'place' and e.id > :boundary_event_id
+  and (select s.kind || ':' || coalesce(s.reason, '') from order_events s
+       where s.intent_id = e.intent_id and s.id < e.id order by s.id desc limit 1)
+      = 'skipped:signal_rejected';
+select count(*) from order_events where kind = 'skipped' and reason = 'signal_rejected'
+  and id > :boundary_event_id;
+
+-- 4. liquidity conservation: the invariant, then the ten-order check beside it
+select count(*) from fills where replay = false and id > :boundary_fill_id
+  and fill_method = 'queue_model' and has_print = false;
+
+select o.id, o.filled_contracts, sum(t.count) as hitting_volume
+from orders o
+join fills f on f.order_id = o.id and f.replay = false and f.fill_method = 'queue_model'
+join venue_trades t on t.ticker = o.ticker
+ and t.ts >= o.placed_at and t.ts <= coalesce(o.cancelled_at, o.expiry)
+ and t.taker_side = case when o.side = 'yes' then 'no' else 'yes' end
+ and case when o.side = 'yes' then t.yes_price else 1 - t.yes_price end <= o.prob
+where o.replay = false and o.id > :boundary_order_id
+group by o.id, o.filled_contracts
+having o.filled_contracts > sum(t.count)
+limit 10;
+  -- expected: no rows. We cannot fill more than the volume that printed at or through our
+  -- price while we rested. Read `(ticker, ts)` on venue_trades; bounded by each order's own
+  -- resting interval.
+
+-- 5. dirty scope and the backoff cadence
+select count(*) from orders where replay = false and id > :boundary_order_id
+  and status in ('cancelled','expired')
+  and dirty_seconds > extract(epoch from (coalesce(cancelled_at, expiry) - placed_at));
+select count(*) from orders where replay = false and nw_done = false
+  and nw_next_attempt_at < now() - interval '3600 seconds';
+
+select 'dirty' as table, count(*) from market_dirty_intervals
+where ended_at is null and started_at < now() - interval '2 hours'
+union all
+select 'observation', count(*) from market_observation_intervals
+where ended_at is null and started_at < now() - interval '2 hours';
+  -- expected: 0 and 0 at 01:00-08:00 CT. Inside a game window open rows are expected and are
+  -- journaled beside exec.dirty_markets instead.
+
+-- 8. gate untouched
+select criteria_hash, evaluated_at, gate_variant from gate_reports order by id desc limit 3;
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+
+-- 11. the counterfactual backlog, beside criterion 4's n_obs
+select count(*) from orders where replay = false and nw_done = false and expiry < now();
+select name, value, ts from metric_samples where name = 'exec.nw_pending'
+  order by ts desc limit 3;
+```
+
+In the Omarchy development checkout:
+```
+make test 2>&1 | tail -3
+PYTHONPATH=. .venv/bin/python -c "from harness.report.gate import criteria_hash; print(criteria_hash())"
+```
+
+| Check | Expected | When |
+|---|---|---|
+| Originals intact | the three queries return exactly the triples journaled before the deploy. Any difference means a pre-6B row was rewritten, which invariant 5 forbids: an integrity anomaly and a carried fix, never a fix-forward. | every verify, any hour |
+| No post-expiry fill | **0**. Unfiltered by `fill_method`, so it stays a real test of §1.4's entry-cross clamp rather than of the walk alone. | judged from the first game window after the deploy; **before that it reads "deferred: no post-boundary fills yet"** |
+| No placement from a rejected target | the first query returns **0**, narrowed to intents whose *newest* prior event is the rejection skip so a key whose verdict lawfully flips back is not flagged; the second is **above 0** by the first game window, which is what says the skip is being written at all. | the first query every verify; the second from the first game window |
+| Liquidity conservation | `has_print = false` on a post-boundary `queue_model` fill returns **0**. For ten post-deploy orders with a `queue_model` fill, `filled_contracts <= sum(count)` over hitting prints at or through the order's price inside its resting interval, from `venue_trades` by `(ticker, ts)`. | game days; **deferred and journaled as such when the sample is empty** |
+| Dirty scope and the backoff | both **0**. The first holds by construction under §0.9's clamp; the second's interval is `NW_RETRY_MAX_S` itself, so the cadence verifies itself. | every verify |
+| Manifest and amendment | `harness manifest` prints `"manifest_version": 7`, `"measurement_version": "4.5"`, seven corrections `C0`-`C6` with each of C1-C6 carrying a **non-empty** `config_hashes` tuple and a numeric `affected_order_id_range`, and the order 157 verdict: **`unverifiable`**, on the second definition (Amendment 0.16's manifest gate, scoped to the resting interval, differs with no hypothesis met) — `repaired_filled` 63.92 / `repaired_queue` 0.00 against 38.92 / 0.0, `manifest_slices_total` 6, `manifest_slices_in_interval` 0, evidence `docs/superpowers/autopilot/evidence/2026-09-14-audit-order-157-1738.json`; this reading carries non-null simulated quantities, unlike a gated result. Amendment 6 exists in the pre-registration record with the same id set. | after the 6B deploy |
+| Regressions | `make test`'s summary line reports **0 xfailed** from `tests/test_execution_regressions.py` and zero `XPASS`; the two passing guards and §1.1-§1.5's new cases are green. This replaces the 6A row's "exactly 6 xfailed". | every verify after the 6B deploy |
+| Gate untouched | the newest `gate_reports` row's `criteria_hash` is still `5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5`, and `select count(*) from gate_reports where criteria_json ? 'eligibility'` is still **0**. | every verify |
+| Re-scores outside every criterion | `make test` passes `test_no_gate_criterion_reads_order_rescores`: no `gate.py` criterion names `order_rescores`, and `criteria_hash` is unchanged. An estimate reaching a criterion is an integrity anomaly. | every verify |
+| Mixed-population disclosure | `render_gate`'s output carries the correction ids in force and the sentence naming the mixed population, until the eligibility boundary question is answered. | checked in `make test`; read once after the deploy |
+| Counterfactual pending count | `exec.nw_pending` and the count of `nw_done = false` orders past expiry are journaled beside criterion 4's `n_obs` in every report, so the retry backlog is visible and cannot silently become an exclusion. | every verify |
+| No pending track counted as complete | `make test` passes the report-builder test: no report cell counts an `nw_done = false` order as a completed counterfactual. The 6C separation, the funnel denominators and the re-score all filter on `nw_done`. | every verify |
+
+The deploy is judged on the originals, the post-expiry fills, the rejected placements, the dirty
+scope and the regressions, with the executor's own health beside them: `exec.loop_ms` p95 no
+worse than the pre-deploy hour it is compared against, and `exec.open_orders`, `exec.nw_pending`
+and the `exec.skipped` reasons journaled before and after — because §1.4's rejection skip
+re-attributes reasons and §1.1's repair changes how many orders rest.
+
+Time of day: at 01:00-08:00 CT neither interval table has an open row older than two hours;
+inside a game window open rows are expected and journaled beside `exec.dirty_markets`.
 
 ## Layer 2b: invariants and plausibility bands
 
@@ -377,14 +482,67 @@ select count(*) from venue_settlements d join venue_settlements v on v.venue=d.v
 select count(*) from fair_values where feed_lag_s < 0;
 select count(*) from benchmarks where source_ts > target_ts;
 select count(*) from fills f join orders o on o.id=f.order_id join games g on g.id=o.game_id
-  where f.replay=false and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
-select count(*) from markouts where at_ts > horizon_ts;
+  where f.replay=false and f.filled_at >= :cutoff
+    and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
+  -- :cutoff = NO_WATCHER_CUTOFF_FIXED_AT (harness/ops/checks.py; set to the release instant at the
+  -- release commit, user ruling 2026-09-14 15:38 CT, journal 206): the 154 pre-cutoff no-watcher
+  -- fills stay as recorded. By hand, substitute the constant's timestamp.
+select count(*) from markouts m
+  where m.at_ts > m.horizon_ts
+    and (exists (select 1 from fills f where f.order_id = m.order_id and f.filled_at >= :cutoff)
+         or (m.at_ts >= :cutoff
+             and not exists (select 1 from fills f where f.order_id = m.order_id)));
+  -- Same :cutoff. A markout counts when its order carries a fill at or after the cutoff, or when the
+  -- markout itself is at or after the cutoff and the order has no fill at all (the amnesty is a
+  -- date, not a population; integration round review C-1).
 -- after phase 6a
 select count(*) from gate_reports where criteria_json ? 'eligibility';
   -- gate_eligible_from_order_id / gate_eligible_from_run_id are None by design (addendum §0.4).
   -- A row carrying the key means the measurement boundary was switched on; only a dated user
   -- decision may do that (R1), so a non-zero count is an integrity anomaly, not a fix-forward.
--- the remaining CHECKS (harness/ops/checks.py), same SQL: verify.md and CHECKS agree
+-- after phase 6b
+select count(*) from orders where replay = false and id <= :boundary_order_id
+  and (print_unmatched is not null or pending_unmatched is not null
+       or pending_surplus is not null or cancels_ahead is not null
+       or nw_print_unmatched is not null or nw_pending_unmatched is not null
+       or nw_pending_surplus is not null or nw_cancels_ahead is not null
+       or nw_dirty_seconds is not null);
+  -- No pre-6B row is backfilled (spec §2). A non-zero count means a write reached the
+  -- preserved record, which invariant 5 forbids.
+
+select count(*) from orders where recon_state is not null
+  and (pending_unmatched + pending_surplus)
+      <> (select coalesce(sum((b->>2)::numeric), 0)
+          from jsonb_array_elements(recon_state->'buckets') b);
+  -- The two scalar columns are the surviving buckets' sums, by construction. A disagreement
+  -- means the jsonb and the scalars were written from different states.
+
+select count(*) from orders where replay = false and id > :boundary_order_id
+  and (traded_at_price is not null or nw_traded_at_price is not null);
+  -- C0's charge-against quantity is never written again, so the boundary is visible by
+  -- nullness rather than by a date (ruling CR-3).
+
+select count(*) from orders where nw_dirty_seconds < 0;
+select count(*) from orders where nw_done = true and nw_next_attempt_at is not null;
+  -- A finished counterfactual carries no pending retry.
+
+select count(*) from market_dirty_intervals where ended_at < started_at;
+select count(*) from (select venue_market_id from market_dirty_intervals
+                      where ended_at is null and replay = false
+                      group by 1 having count(*) > 1) x;
+  -- At most one open dirty interval per market.
+
+select count(*) from market_observation_intervals i
+where i.ended_at is null
+  and not exists (select 1 from orders o where o.venue_market_id = i.venue_market_id
+                  and (o.status in ('open','partially_filled') or o.nw_done = false));
+  -- No open observation row whose market has no working order (review I-6).
+
+select count(*) from order_rescores r left join orders o on o.id = r.order_id
+where o.id is null or r.verdict not in ('validated','corrected','unverifiable');
+  -- Every estimate points at a real order and carries one of the three verdicts.
+-- the remaining CHECKS (harness/ops/checks.py), same SQL: verify.md and CHECKS agree (the two
+-- cutoff-bounded predicates above carry `:cutoff` as a bound parameter in CHECKS)
 select count(*) from (
     select venue, trade_id
     from venue_trades_y<current ISO year>w<current ISO week, zero-padded to 2 digits>

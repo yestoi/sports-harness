@@ -41,6 +41,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from harness.corrections import CORRECTIONS
 from harness.db.models import GateReport
 from harness.execution.book import side_p
 from harness.report.stats import CI, cluster_ci, cluster_diff_ci
@@ -864,6 +865,14 @@ def render_gate(results: list[GateResult], names: dict[str, str],
                          f"vs {_format(row.threshold):<8} "
                          f"n={row.n_obs:<6} games={row.n_clusters:<5} {row.status}")
     lines.append(f"criteria_hash={results[0].criteria_hash if results else criteria_hash()}")
+    # §3 row 10 / ruling IM-10. The gate reads the whole non-replay history until §0.13a is
+    # answered, which after the 6B deploy is orders placed under two different simulators. The
+    # reader is told so in the gate's own output. This adds no criterion, moves no threshold and
+    # changes no `criteria_hash` input: it is a line of text after the results.
+    ids = ",".join(c.id for c in CORRECTIONS)
+    lines.append(f"corrections_in_force={ids}")
+    lines.append("note: mixed population -- orders placed before and after the 6B deploy are "
+                 "scored by different simulators; see the correction manifest.")
     if eligibility is not None and eligibility.active:
         lines.append(f"eligibility=from_order_id:{eligibility.from_order_id} "
                      f"from_run_id:{eligibility.from_run_id}")

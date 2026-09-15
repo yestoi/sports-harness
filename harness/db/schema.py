@@ -173,6 +173,23 @@ _COLUMN_DDL = (
     "alter table parlay_ledger add column if not exists source varchar(10) not null "
     "default 'computed'",
     "alter table source_state add column if not exists credits_used bigint",
+    # Phase 6B §1.3: the reconciliation ledger per track, and the bounded jsonb it persists in.
+    # Nullable with no default, so no pre-6B row is backfilled and §3 row 1's invariant holds by
+    # construction (spec §2).
+    "alter table orders add column if not exists print_unmatched numeric(14,2)",
+    "alter table orders add column if not exists pending_unmatched numeric(14,2)",
+    "alter table orders add column if not exists pending_surplus numeric(14,2)",
+    "alter table orders add column if not exists cancels_ahead numeric(14,2)",
+    "alter table orders add column if not exists nw_print_unmatched numeric(14,2)",
+    "alter table orders add column if not exists nw_pending_unmatched numeric(14,2)",
+    "alter table orders add column if not exists nw_pending_surplus numeric(14,2)",
+    "alter table orders add column if not exists nw_cancels_ahead numeric(14,2)",
+    "alter table orders add column if not exists recon_state jsonb",
+    "alter table orders add column if not exists nw_recon_state jsonb",
+    # Phase 6B §1.5: the counterfactual's own nominal accrual and its retry bookkeeping.
+    "alter table orders add column if not exists nw_dirty_seconds integer",
+    "alter table orders add column if not exists nw_next_attempt_at timestamptz",
+    "alter table orders add column if not exists nw_attempts integer",
 )
 
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).

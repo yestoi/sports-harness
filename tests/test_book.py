@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.db.models import OrderbookEvent, OrderbookSnapshot, VenueMarket
+from harness.db.models import OperatorEvent, OrderbookEvent, OrderbookSnapshot, VenueMarket
 from harness.execution import EXECUTOR_VERSION
 from harness.execution.book import (
     BookState,
@@ -16,6 +16,7 @@ from harness.execution.book import (
     book_at,
     load_book,
     load_book_at,
+    newest_ws_connect,
     opp,
     side_p,
 )
@@ -33,7 +34,7 @@ def _rest_ladders():
 
 
 def test_executor_version_is_pinned():
-    assert EXECUTOR_VERSION == "4.4"
+    assert EXECUTOR_VERSION == "4.5"
 
 
 def test_from_ws_raw_builds_ladder_and_resting_at():
@@ -104,14 +105,40 @@ def test_delta_add_remove_clamp_prune():
     assert b.no_bids == {Decimal("0.6000"): Decimal("4.00")}
 
 
-def test_seq_gap_marks_dirty():
+def test_a_skipped_seq_no_longer_dirties_the_book():
+    """Expected `dirty` False, `seq` 4, the level at 12.00 (spec §0.2, correction C1).
+
+    Computed independently of the code: `seq` counts per subscription and one `sid` carries up
+    to 500 tickers, so frames 2 and 3 of subscription 2 may have been addressed to other
+    markets entirely. Nothing addressed to K1 was lost -- the recorder's own subscription-level
+    detector (`WsSink._check_seq`) is what can tell, and it wrote no gap row -- so no level of
+    K1 is stale. `seq` is still recorded, because it is the last frame this book applied, and
+    both deltas are applied, so 10.00 + 1.00 + 1.00 = 12.00.
+    """
     b = BookState.from_ws_raw("K1", WS_RAW, sid=2, seq=1, as_of=NOW, event_id=7)
     b.apply_delta("yes", Decimal("0.35"), Decimal("1.00"), seq=2, ts=NOW, event_id=8)
     assert b.dirty is False
     b.apply_delta("yes", Decimal("0.35"), Decimal("1.00"), seq=4, ts=NOW, event_id=9)
-    assert b.dirty is True
+    assert b.dirty is False and b.dirty_cause is None
     assert b.seq == 4
     assert b.yes_bids[Decimal("0.3500")] == Decimal("12.00")
+
+
+def test_the_anchor_instant_does_not_move_with_the_deltas():
+    """Expected: `as_of` follows the newest delta, `anchor_as_of` stays at the snapshot.
+
+    Computed independently: `as_of` answers "how fresh is this book", which every delta
+    changes; `anchor_as_of` answers "when were these ladders last rebuilt from a snapshot",
+    which only a re-anchor changes. §0.3's session test needs the second, and a test written on
+    the first would read 10:06 for a book anchored at 10:00 whose reconnect was at 10:05 -- it
+    would pass while measuring nothing.
+    """
+    b = BookState.from_ws_raw("K1", WS_RAW, sid=2, seq=1, as_of=NOW, event_id=7)
+    later = NOW + timedelta(seconds=90)
+    b.apply_delta("yes", Decimal("0.35"), Decimal("1.00"), seq=2, ts=later, event_id=8)
+    assert b.as_of == later
+    assert b.anchor_as_of == NOW
+    assert b.copy().anchor_as_of == NOW
 
 
 def test_best_ask_no_is_one_minus_best_bid_yes():
@@ -620,3 +647,211 @@ def test_book_walker_reports_a_stale_instant_and_keeps_walking_afterwards(db_ses
     walked, rebuilt = walker.at(later), book_at(db_session, "W", later)
     assert walked is not None and rebuilt is not None
     assert walked.yes_bids == rebuilt.yes_bids == {Decimal("0.4000"): Decimal("13.00")}
+
+
+# --- 6B correction C1: continuity from the subscription, the anchor and a probe -------------
+
+
+def test_a_book_anchored_before_a_reconnect_is_dirty_until_it_re_anchors(db_session):
+    """Expected: dirty with cause `session_boundary` after the reconnect; clean again once a
+    snapshot taped after the reconnect anchors it (spec §0.3).
+
+    Computed independently: on a reconnect the client drops its sids and clears its remembered
+    sequences (`harness/recorder/ws.py:358-368`), so frames lost across the outage produce no
+    gap row at all and a book anchored before the outage would go on folding the new
+    subscription's deltas into ladders that missed everything in between. The only evidence the
+    consumer has is that its anchor predates the newest `ws_connect`. The fixture advances
+    `as_of` past the reconnect on purpose, so a test written on `as_of` could not pass.
+    """
+    _market(db_session, "A")
+    _ws_snapshot(db_session, "A", NOW - timedelta(minutes=6))
+    db_session.add(OperatorEvent(ts=NOW - timedelta(minutes=5), kind="ws_connect",
+                                 summary="resubscribed", ref={}))
+    _delta(db_session, "A", NOW - timedelta(minutes=4), "yes", "0.3500", "-1.00", sid=2, seq=2)
+    db_session.flush()
+
+    connected_at = newest_ws_connect(db_session)
+    assert connected_at == NOW - timedelta(minutes=5)
+
+    book = load_book(db_session, "A", NOW)
+    advanced = advance_book(db_session, book, NOW, ws_connect_at=connected_at)
+    assert advanced.as_of > connected_at          # the delta moved `as_of` past the reconnect
+    assert advanced.dirty is True
+    assert advanced.dirty_cause == "session_boundary"
+
+    # A snapshot taped after the reconnect is what a resubscribe forces, and re-anchoring on it
+    # is what clears the verdict: the ladders are now built from frames the new subscription
+    # sent, not folded onto ones it did not.
+    _ws_snapshot(db_session, "A", NOW - timedelta(minutes=3), sid=3, seq=1)
+    db_session.flush()
+    recovered = advance_book(db_session, advanced, NOW, ws_connect_at=connected_at)
+    assert recovered.dirty is False and recovered.dirty_cause is None
+    assert recovered.anchor_as_of == NOW - timedelta(minutes=3)
+
+
+def test_a_delta_dropped_by_the_ts_floor_dirties_the_book(db_session):
+    """Expected: dirty with cause `event_age` (spec §0.2, the consumer-side probe).
+
+    Computed independently: the live delta scan is `id > :cursor and ts >= :lower` with
+    `lower = as_of - DELTA_LOOKBACK` (5 s). A delta whose venue timestamp is six seconds behind
+    the book's `as_of` clears the id cursor and is excluded by the `ts` floor, so it is applied
+    nowhere -- and because it was received in order, the recorder saw no sequence break and
+    wrote no gap row. The level it carried is therefore wrong in our ladders and nothing else in
+    the system can say so. One bounded `limit 1` probe on `ix_obe_ticker_id` is what says it.
+    """
+    _market(db_session, "B")
+    _ws_snapshot(db_session, "B", NOW - timedelta(seconds=30))
+    fresh = _delta(db_session, "B", NOW - timedelta(seconds=10), "yes", "0.3500", "-1.00",
+                   sid=2, seq=2)
+    db_session.flush()
+    book = load_book(db_session, "B", NOW)
+    assert book.dirty is False
+
+    # Taped after the book's cursor (a higher id) but stamped 6 s behind its `as_of`: past the
+    # DELTA_LOOKBACK floor, so no scan will ever pick it up.
+    _delta(db_session, "B", book.as_of - timedelta(seconds=6), "yes", "0.3500", "-5.00",
+           sid=2, seq=3)
+    db_session.flush()
+    assert fresh is not None
+    advanced = advance_book(db_session, book, NOW)
+    assert advanced.dirty is True
+    assert advanced.dirty_cause == "event_age"
+
+
+def test_a_snapshot_from_before_the_reconnect_does_not_clear_the_boundary(db_session):
+    """Expected: still dirty with cause `session_boundary`; clean only once a snapshot taped
+    after the reconnect lands (review CR-7).
+
+    Computed independently: the re-anchor branch fires on `_CLEAN_SNAPSHOT_AFTER`, which asks
+    only for a snapshot newer than the book's anchor on a sid with no later gap. It knows
+    nothing about reconnects. So a book anchored at 10:00 with a snapshot at 10:02 and a
+    reconnect at 10:05 would be marked dirty and then immediately reloaded onto the 10:02
+    anchor -- which is *also* before the reconnect -- and returned clean, erasing the verdict
+    §0.3 exists to produce. On a ticker dropped from the subscription set and never resubscribed
+    the erasure is permanent, because the pre-reconnect snapshot satisfies that query forever.
+    The reloaded book therefore has to be re-tested, not trusted.
+    """
+    _market(db_session, "C")
+    _ws_snapshot(db_session, "C", NOW - timedelta(minutes=6))
+    _ws_snapshot(db_session, "C", NOW - timedelta(minutes=4), sid=3, seq=1)
+    db_session.add(OperatorEvent(ts=NOW - timedelta(minutes=3), kind="ws_connect",
+                                 summary="resubscribed", ref={}))
+    db_session.flush()
+    connected_at = newest_ws_connect(db_session)
+
+    book = BookState.from_ws_raw("C", WS_RAW, sid=2, seq=1,
+                                 as_of=NOW - timedelta(minutes=6), event_id=1)
+    advanced = advance_book(db_session, book, NOW, ws_connect_at=connected_at)
+    assert advanced.anchor_as_of < connected_at
+    assert advanced.dirty is True and advanced.dirty_cause == "session_boundary"
+
+    _ws_snapshot(db_session, "C", NOW - timedelta(minutes=2), sid=4, seq=1)
+    db_session.flush()
+    recovered = advance_book(db_session, advanced, NOW, ws_connect_at=connected_at)
+    assert recovered.anchor_as_of > connected_at
+    assert recovered.dirty is False and recovered.dirty_cause is None
+
+
+def test_a_book_rebuilt_at_a_cursor_carries_its_subscriptions_gap_verdict(db_session):
+    """Expected: the book `_sim_book` rebuilds at a past cursor is dirty when its sid gapped by
+    that instant (ruling I-14).
+
+    Computed independently: `book_at` deliberately applies no gap verdict -- every gap after the
+    instant also has a higher id, so the live test would dirty every historical book on that sid
+    for the rest of the season and take the markouts with it. But `_sim_book`'s restart and
+    recovery branch is asking a different question: what did the *live loop* believe at that
+    cursor? A gap the live loop had already seen dirtied its book, so it has to dirty this one.
+    `load_book_at` is `book_at` plus exactly that verdict, bounded at the instant, which is why
+    the ruling names it rather than changing `book_at`.
+
+    The fixture sits inside `BOOK_MAX_AGE` of the instant: F36 answers None for a ticker whose
+    newest row is over 120 s old, and a None book carries no verdict either way.
+    """
+    _market(db_session, "D")
+    _ws_snapshot(db_session, "D", NOW - timedelta(seconds=60))
+    _gap(db_session, sid=2, exposed_by="D", ts=NOW - timedelta(seconds=30))
+    db_session.flush()
+    assert book_at(db_session, "D", NOW).dirty is False
+    assert load_book_at(db_session, "D", NOW).dirty is True
+
+
+# --- 6B C1 fix round 1: the probe's scan floor and the freshly loaded session verdict --------
+
+
+def test_a_rest_anchored_quiet_ticker_stays_clean_through_advance(db_session):
+    """Expected: `dirty` False through `advance_book` (review Important 1).
+
+    Computed independently: a REST ladder fetched at `fetched_at` already contains every delta
+    stamped before it, so the ticker's pre-fetch history is not evidence of anything missing.
+    The cursor cannot say that on its own -- a REST anchor selects deltas by `ts >= fetched_at`
+    rather than by id, so `last_event_id` stays 0 until one lands at or after the fetch, and an
+    unbounded `id > 0` probe reads the whole history as dropped. The floor is the anchor's own
+    tape head, `gap_check_id`. This is the C2 recovery path: during the WebSocket outage that
+    produced the REST anchor there is no later snapshot, so `_CLEAN_SNAPSHOT_AFTER` cannot
+    re-anchor and a false verdict here would block fills for the length of the outage.
+    """
+    vm = _market(db_session, "Q")
+    _delta(db_session, "Q", NOW - timedelta(minutes=9), "yes", "0.2000", "-1.00", sid=2, seq=5)
+    _delta(db_session, "Q", NOW - timedelta(minutes=8), "yes", "0.2000", "-1.00", sid=2, seq=6)
+    _rest_snapshot(db_session, vm, NOW - timedelta(seconds=20), raw_id=1)
+    db_session.flush()
+
+    book = load_book(db_session, "Q", NOW)
+    assert book.source == "rest"
+    assert book.last_event_id == 0        # nothing taped at or after the fetch
+    assert book.dirty is False
+
+    out = advance_book(db_session, book, NOW)
+    assert out.dirty is False and out.dirty_cause is None
+
+
+def test_a_rest_book_still_reports_a_delta_dropped_by_the_scan_floor(db_session):
+    """Expected: dirty with cause `event_age` (review Important 1, the other direction).
+
+    Computed independently: the floor suppresses only rows at or below the anchor's tape head.
+    A delta taped after the cursor and stamped after the fetch, but further behind `as_of` than
+    `DELTA_LOOKBACK` allows, is above that head and below the scan's own `ts` floor, so it is
+    applied nowhere and no gap row exists. Here the book advances to a delta at -40 s, which
+    puts the scan floor at -45 s; the row stamped -50 s is after the -60 s fetch and past that
+    floor. The probe is what says so, and bounding it must not cost that.
+    """
+    vm = _market(db_session, "P")
+    _delta(db_session, "P", NOW - timedelta(minutes=9), "yes", "0.2000", "-1.00", sid=2, seq=4)
+    _rest_snapshot(db_session, vm, NOW - timedelta(seconds=60), raw_id=1)
+    _delta(db_session, "P", NOW - timedelta(seconds=40), "yes", "0.2000", "-1.00", sid=2, seq=5)
+    db_session.flush()
+
+    book = load_book(db_session, "P", NOW)
+    assert book.source == "rest"
+    assert book.as_of == NOW - timedelta(seconds=40)
+    assert book.dirty is False
+
+    _delta(db_session, "P", NOW - timedelta(seconds=50), "yes", "0.2000", "-5.00", sid=2, seq=6)
+    db_session.flush()
+    out = advance_book(db_session, book, NOW)
+    assert out.dirty is True and out.dirty_cause == "event_age"
+
+
+def test_a_freshly_loaded_book_anchored_before_the_reconnect_is_dirty(db_session):
+    """Expected: `session_boundary` straight out of `load_book` (review Important 2).
+
+    Computed independently: the executor prunes its book cache to the active ticker set every
+    step, so a ticker that leaves and re-enters takes the load path again, and every ticker
+    takes it after a restart. A verdict that lived only in `advance_book` would therefore read
+    clean on each of those first steps -- and for a ticker dropped from the subscription set,
+    the case CR-7 exists for, its newest snapshot predates the reconnect permanently, so every
+    step is a first step. The default keeps the old behaviour for a caller with no reconnect to
+    offer, which is why both readings are asserted here.
+    """
+    _market(db_session, "E")
+    _ws_snapshot(db_session, "E", NOW - timedelta(minutes=6))
+    db_session.add(OperatorEvent(ts=NOW - timedelta(minutes=5), kind="ws_connect",
+                                 summary="resubscribed", ref={}))
+    db_session.flush()
+    connected_at = newest_ws_connect(db_session)
+
+    assert load_book(db_session, "E", NOW).dirty is False
+
+    book = load_book(db_session, "E", NOW, ws_connect_at=connected_at)
+    assert book.anchor_as_of < connected_at
+    assert book.dirty is True and book.dirty_cause == "session_boundary"

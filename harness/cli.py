@@ -4,6 +4,7 @@ import json
 import logging
 import signal
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -746,18 +747,44 @@ def price_once(run_id: int = typer.Option(None, "--run-id")) -> None:
 def replay_cmd(
     from_run: int = typer.Option(..., "--from-run"),
     to_run: int = typer.Option(..., "--to-run"),
-    variant: str = typer.Option(..., "--variant"),
+    variant: str = typer.Option(None, "--variant",
+                                help="A registered variant name. Required unless "
+                                     "--population range resolves the set from the record."),
+    population: str = typer.Option(None, "--population",
+                                   help="'range' resolves the executed set from the orders the "
+                                        "replayed range actually placed, and scores every one "
+                                        "of them under a single shared capacity counter (C6). "
+                                        "Omitted, the replay is single-variant and labelled so."),
+    boundary_run_id: int = typer.Option(None, "--boundary-run-id",
+                                        help="The 6B deploy boundary. A range spanning it is "
+                                             "refused: the simulator's arithmetic differs on "
+                                             "the two sides. The controller supplies it; no "
+                                             "default is compiled in."),
     file: Path = typer.Option(None, "--file"),
     execute: bool = typer.Option(False, "--execute",
                                 help="Also re-run the paper executor on a 15 s grid over the range"),
 ) -> None:
-    """Re-score a run range under one variant; with `--execute`, re-run the executor over it.
+    """Re-score a run range under one variant, or under the set the range itself executed.
 
     Places no order anywhere: `--execute` steps a *replay* executor, whose every row is tagged
     `replay = true` and which never touches a live row, the ledger, the heartbeat or telemetry.
+
+    `--population range` is C6: the executed set comes from the range's own orders and the
+    whole set is stepped through one executor, so the replay contends for the same
+    `max_open_orders` slots the live loop contended for. A range spanning a change of that set,
+    or `--boundary-run-id`, is refused with exit 3 and nothing written.
     """
+    if variant is None and population is None:
+        log.error("replay needs --variant, or --population range to resolve the set")
+        raise typer.Exit(1)
     configure_logging()
-    from harness.replay import ReplayStepError, replay
+    if population is not None and variant is not None:
+        # Said out loud rather than refused: the population comes from the record, so naming a
+        # variant beside it cannot narrow the replay, and an operator who reads `mode=` and
+        # `population=` in the summary and nothing else would otherwise think it had.
+        log.warning("--population %s resolves the set from the record; --variant %s is not "
+                    "used", population, variant)
+    from harness.replay import PopulationError, ReplayStepError, replay
 
     s = get_settings()
     # The executor's own statement timeout: `--execute` runs the same loop the service does,
@@ -767,8 +794,18 @@ def replay_cmd(
     factory = make_session_factory(engine)
     with factory() as session:
         try:
-            counts = replay(session, from_run, to_run, variant, variant_file=file,
-                            execute=execute, settings=s)
+            counts = replay(session, s, from_run, to_run, variant_name=variant,
+                            variant_file=file, population=population,
+                            boundary_run_id=boundary_run_id, execute=execute)
+        # Caught before the clause below, so a `PopulationError` is never swallowed as exit 1
+        # if it ever comes to subclass either of those.
+        except PopulationError as exc:
+            log.error("refused: %s", exc)
+            # Exit 3, distinct from 1 (bad arguments) and from Typer's own 2 (a missing or
+            # malformed option): a refusal is a well-formed command over a range that has no
+            # single baseline, and the operator's next move is to split the range, not to fix
+            # the command.
+            raise typer.Exit(3) from exc
         # A replay whose grid did not run cleanly has no counts worth printing: exiting 0 with
         # `orders=0` would read as a total replay-versus-live divergence rather than a failure.
         except (ValueError, ReplayStepError) as exc:
@@ -778,9 +815,21 @@ def replay_cmd(
     total = counts.signals_candidate + counts.signals_rejected
     rate = counts.signals_candidate / total if total else 0.0
     tail = f" orders={counts.orders} fills={counts.fills}" if execute else ""
+    steps = f" grid_steps={counts.grid_steps} capacity_skips={counts.capacity_skips}"
+    if counts.live_steps is not None:
+        # Published, never compared: the grid steps exactly `exec_period_s` while the live loop
+        # ran 27 steps in the sampled hour where the grid would have run 240. A 2 % pass/fail
+        # across that difference would be a verdict about the timing policy rather than about
+        # the replay, so the verdict is suspended until 6D's instrumentation (D15).
+        steps += f" live_steps={counts.live_steps}"
     print(
-        f"runs={counts.runs} candidate={counts.signals_candidate} rejected={counts.signals_rejected} "
-        f"inserted={counts.inserted} candidate_rate={rate:.4f}{tail}"
+        f"runs={counts.runs} candidate={counts.signals_candidate} "
+        f"rejected={counts.signals_rejected} inserted={counts.inserted} "
+        f"candidate_rate={rate:.4f}{tail} mode={counts.mode} "
+        f"population={','.join(counts.population)} "
+        f"today={','.join(counts.today_variants)} "
+        f"corrections_replayed={','.join(counts.corrections_replayed)} "
+        f"corrections_live={','.join(counts.corrections_live)}{steps}"
     )
 
 
@@ -922,6 +971,103 @@ def capsule_cmd(
                   ", ".join(manifest["truncated"]), row_cap)
         raise typer.Exit(2)
     log.info("capsule written: %s", json.dumps(manifest["counts"], sort_keys=True))
+
+
+@app.command("audit-order")
+def audit_order_cmd(
+    capsule: str = typer.Option(..., "--capsule", help="a 6A capsule directory"),
+    order: int = typer.Option(..., "--order"),
+) -> None:
+    """Replay one capsule's order under the repaired simulator and print the verdict as JSON.
+
+    No database and no network: a capsule is files. The controller runs this on order 157's
+    real capsule in the quiet window and pastes the verdict into `harness/corrections.py` and
+    into `docs/superpowers/reviews/order-157-audit.md`.
+    """
+    from harness.audit import audit_order, read_capsule
+
+    try:
+        result = audit_order(read_capsule(capsule), order)
+    except ValueError as exc:
+        # A capsule that does not carry the order is an operator mistake -- the wrong capsule,
+        # or the wrong id -- so it refuses with the message on stderr and exit 2, as
+        # `capsule_cmd` does, rather than handing the quiet-window run a traceback.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    typer.echo(json.dumps(asdict(result), default=str, indent=2))
+
+
+@app.command("rescore")
+def rescore_cmd(
+    from_order: int = typer.Option(..., "--from-order"),
+    to_order: int = typer.Option(..., "--to-order"),
+    correction: str = typer.Option(..., "--correction",
+                                   help="comma-separated correction ids, e.g. C1,C2,C3,C4,C5"),
+    limit: int = typer.Option(None, "--limit",
+                              help="Orders to read in this run; the default ceiling is "
+                                   "harness.rescore.DEFAULT_ORDER_LIMIT (10,000). A run that "
+                                   "reaches its limit says the range was not exhausted and "
+                                   "names the order to continue from."),
+    resume: bool = typer.Option(False, "--resume",
+                                help="Continue after the highest order already written in the "
+                                     "range under these correction ids; gaps inside the range "
+                                     "are not revisited (name their own --from-order)."),
+) -> None:
+    """Re-score an order range under the repaired simulator, as new `order_rescores` rows.
+
+    Read-mostly and resumable: the controller runs it over ssh in the quiet window
+    (01:00-08:00 CT), one at a time, and abandons it if `exec.loop_ms` exceeds 30 s during a
+    run. An abandoned run costs only the orders it had not reached.
+
+    Writes new rows only -- no `orders`, `fills` or `ledger` row is touched (§0.12) -- and
+    prints the result as a partition over an order-level denominator, never as a ratio.
+    """
+    configure_logging()
+    from harness.rescore import rescore
+
+    s = get_settings()
+    # The engine's default timeout, not the executor's: each order's tape read sets its own
+    # `statement_timeout` anyway (§1.8), and this command has no loop deadline of its own.
+    # Disposed in the `finally` below (review Minor 5): the controller runs this command over
+    # and over in the quiet window beside a live executor, and a pool left open at exit is a
+    # connection the loop cannot have.
+    engine = make_engine(s.database_url)
+    factory = make_session_factory(engine)
+    ids = [c.strip() for c in correction.split(",") if c.strip()]
+    try:
+        with factory() as session:
+            try:
+                counts = rescore(session, from_order=from_order, to_order=to_order,
+                                 corrections=ids, limit=limit, resume=resume,
+                                 build_sha=s.build_sha)
+            except ValueError as exc:
+                log.error("%s", exc)
+                raise typer.Exit(1) from exc
+    finally:
+        engine.dispose()
+    typer.echo(f"corrections={','.join(sorted(ids))} denominator={counts.denominator} "
+               f"completed={counts.completed} "
+               f"unverifiable_no_tape={counts.unverifiable_no_tape} "
+               f"unverifiable_read_cancelled={counts.unverifiable_read_cancelled}")
+    # Beside the partition, and never folded into it: `written`/`existing` are about the table,
+    # not about the orders. A repeated run recomputes every order and keeps the rows it already
+    # had (`on conflict do nothing`, because a correction is new rows and never an edit), so
+    # without this line a stale table and a fresh-looking summary could not be told apart
+    # (review IMP-2). Rows that disagree with what is stored are named in the log, one line per
+    # order.
+    typer.echo(f"rows: written={counts.written} existing={counts.existing}")
+    if not counts.exhausted:
+        # The read returned exactly its limit, so the partition above describes a prefix of the
+        # range (review IMP-1). Said here as well as in the log, because the operator reads this
+        # line and decides whether to continue.
+        typer.echo(f"range not exhausted: stopped at the read limit, last order "
+                   f"{counts.last_order_id}; continue with --from-order "
+                   f"{counts.last_order_id} --to-order {to_order} --resume")
+    # Printed with the counts, every time: the denominator is the orders whose counterfactual
+    # had finished when this ran, so the partition describes what could be scored and is not a
+    # rate over the range. Nothing here divides one cell by another.
+    typer.echo("caveat: retrospective estimates, right-censored -- orders whose counterfactual "
+               "had not finished are not in the denominator; the cells are counts, not a rate.")
 
 
 @app.command("manifest")

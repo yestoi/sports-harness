@@ -528,6 +528,26 @@ class Order(Base):
     nw_traded_at_price: Mapped[Decimal | None] = mapped_column(CONTRACTS)
     nw_tape_cursor_event_id: Mapped[int | None] = mapped_column(BigInteger)
     nw_done: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 6B §1.3's reconciliation ledger, per track. `print_unmatched` is print volume whose
+    #: decrement has not arrived; `pending_unmatched` and `pending_surplus` are the surviving
+    #: decrement buckets' sums by kind; `cancels_ahead` is decrement volume that aged out of the
+    #: horizon unclaimed -- a real cancellation ahead of us, retired and unclaimable.
+    #: C0's charge-against quantity is not a ledger term and the two must never be read as one
+    #: (ruling CR-3): `traded_at_price` above stays NULL on every post-boundary order, which is
+    #: what makes the boundary visible by nullness, while a pre-boundary order still being
+    #: simulated keeps the value it already had -- the repaired writer carries it back unchanged
+    #: and never computes it (round 2, Important A).
+    print_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    pending_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    pending_surplus: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_print_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_pending_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_pending_surplus: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    #: The buckets, the trade-id set and the print floor, bounded and pruned on every write.
+    recon_state: Mapped[dict | None] = mapped_column(JSONB)
+    nw_recon_state: Mapped[dict | None] = mapped_column(JSONB)
     #: The rest of `execution.fills.SimState`, per track (Task 4 review ruling). `crossed` makes
     #: the worst-case fill happen once even though the book keeps crossing on every later loop;
     #: the print watermark makes a print idempotent even though the executor keeps no print
@@ -538,6 +558,15 @@ class Order(Base):
     nw_crossed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     nw_last_print_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     nw_last_print_ids: Mapped[list | None] = mapped_column(JSONB)
+    #: 6B §1.5: the counterfactual's own nominal dirty accrual, moved off `dirty_seconds` so a
+    #: cancelled order stops accruing on the watched column (§0.9). Nullable with no default: no
+    #: pre-6B row is backfilled.
+    nw_dirty_seconds: Mapped[int | None] = mapped_column(Integer)
+    #: §0.14's backoff. A counterfactual whose ticker's tape read failed is retried on an
+    #: exponential delay in *elapsed wall seconds* -- never a loop count (ruling CR-5) -- and is
+    #: never closed: closing one would remove its order from gate criterion 4's population.
+    nw_next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    nw_attempts: Mapped[int | None] = mapped_column(Integer)
     #: Minutes this order's book spent dirty after a WS gap (D6), so an optimistic queue is visible.
     dirty_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: The same quantity in seconds, which is what the loop can actually accumulate: one dirty
@@ -839,6 +868,84 @@ class OrderWatchSample(Base):
     fair_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
     book_dirty: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     terminal: Mapped[str | None] = mapped_column(String(12))
+
+
+class MarketDirtyInterval(Base):
+    """One contiguous stretch a market's book could not be trusted, with its cause.
+
+    An interval is a measurement where an accrual is a running total (D6): 136 markets went
+    dirty against 7,998 orders, so recording it once per market and intersecting at read time
+    costs far less than a column per order and answers questions a running total cannot --
+    when, for how long, and why. `cause` is one of `harness.execution.book.DIRTY_CAUSES` plus
+    `recorder_dead`, which is the loop's verdict about the recorder rather than the book's about
+    itself. There is no `recovery` cause (ruling IM-11): recovery is what happens when a market
+    has *stopped* being dirty.
+
+    `ended_at` NULL means still dirty as of the last observation. A row is closed at the first
+    step that finds the market clean again, and every open row for a market absent from a
+    step's market set is closed at that step too, stamped with the last observation that saw
+    it, so a market whose last order closes while dirty cannot leave one open forever.
+    """
+    __tablename__ = "market_dirty_intervals"
+    __table_args__ = (Index("ix_mdi_market_started", "venue_market_id", "started_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cause: Mapped[str] = mapped_column(String(20), nullable=False)
+    replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class MarketObservationInterval(Base):
+    """One contiguous stretch the executor actually stepped a market.
+
+    The companion to `MarketDirtyInterval` and the reason `order_dirty_time` can report
+    unobserved seconds instead of folding them into clean time (ruling IM-15): absence of a
+    dirty row means "not observed", not "observed clean".
+    """
+    __tablename__ = "market_observation_intervals"
+    __table_args__ = (Index("ix_moi_market_started", "venue_market_id", "started_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class OrderRescore(Base):
+    """One order's retrospective estimate under one correction set and one cancel policy.
+
+    A corrected result is a new row, never an edit (§6.7, D8): the original `orders`, `fills`
+    and `ledger` rows are the record of what the measurement was, and 6A preserved them for
+    exactly this. `harness rescore` is the recognised instrument for an order-scoped correction,
+    beside `harness replay`'s `replay = true` rows for a range-scoped one (§0.12).
+
+    Nothing here reaches a gate criterion: an estimate inside a criterion would be a
+    measurement laundering itself into a verdict, which §3 row 9 asserts against.
+
+    Every measured column is nullable, because an `unverifiable` order gets its two policy rows
+    with nothing measured on them: the partition has to sum to the denominator over either
+    policy's rows alone, which it cannot do if an order without evidence is simply absent.
+    """
+    __tablename__ = "order_rescores"
+    order_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The corrections in force, comma-separated and sorted: "C1,C2,C3,C4,C5".
+    correction_ids: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: `ahead` (the point estimate) or `behind` (the other end of the band), §0.7.
+    cancel_policy: Mapped[str] = mapped_column(String(8), primary_key=True)
+    watched_filled: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    counterfactual_filled: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    queue_remaining: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    watched_dirty_s: Mapped[int | None] = mapped_column(Integer)
+    counterfactual_dirty_s: Mapped[int | None] = mapped_column(Integer)
+    unobserved_s: Mapped[int | None] = mapped_column(Integer)
+    #: validated | corrected | unverifiable
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    build_sha: Mapped[str | None] = mapped_column(String(24))
 
 
 class EquitySnapshot(Base):

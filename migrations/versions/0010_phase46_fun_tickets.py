@@ -77,7 +77,9 @@ therefore lands on this branch, the second to merge: the revision is `0010_phase
 with `down_revision = "0009_score_correction"`, renumbered in the scoped, re-reviewed merge of
 `main` into the phase branch. 6B's unmerged `0008_phase6b_execution` and 6D's unmerged
 `0009_phase6d_sustained_evaluation` are the remaining claims on the earlier numbers, and each is
-renumbered the same way at its own merge time. No task in this plan waits for 6B or 6D, and
+renumbered the same way at its own merge time (6B merged on 2026-09-14 as
+`0011_phase6b_execution` on this revision; 6D follows as `0012_phase6d_sustained_eval`). No task
+in this plan waits for 6B or 6D, and
 neither plan is changed by this one.
 """
 from collections.abc import Sequence
