@@ -685,6 +685,92 @@ def test_settlement_counts_games_and_is_bounded_by_now(db_session):
     assert result.passed is True
 
 
+# --- roadmap row 72 / spec amendment 0.17: criterion 4's disclosure ---------------------------
+
+#: The identity of the pre-registered criteria, pinned here so the row 72 disclosure line cannot
+#: be mistaken for a criteria change: `criteria_hash` is the sha256 of the sorted definition
+#: strings, and `CRITERIA_SHAPE` is a sha256 over every `(name, definition, threshold)` triple --
+#: the three fields R1 protects, including the two the hash deliberately leaves out. Both values
+#: are the ones `git show HEAD:harness/report/gate.py` produces (the row72 report lists the
+#: twelve triples in full).
+CRITERIA_HASH = "5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5"
+CRITERIA_SHAPE = "045ee708dbddd153dda28e62538d6686ed24c789cc9798090dd94a2b5cf8fede"
+
+
+def _criteria_shape(criteria) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(json.dumps(
+        [(c.name, c.definition, c.threshold) for c in criteria],
+        sort_keys=True).encode()).hexdigest()
+
+
+def _markout_result(n_obs: int):
+    """One criterion-4 row, as `evaluate_gate` builds it."""
+    from harness.report.gate import CriterionResult
+
+    criterion = next(c for c in CRITERIA if c.name == "markout_30m")
+    return CriterionResult(value=0.004, threshold=criterion.threshold, passed=True,
+                           n_obs=n_obs, n_clusters=41, definition=criterion.definition,
+                           fn=criterion.fn)
+
+
+def test_the_gate_render_discloses_criterion_4s_counterfactual_sub_population():
+    """Spec amendment 0.17 (user decision 2026-09-15, journal 224 item 5), applied under the
+    ruling that this is rendering: criterion 4 reads the `nw_fill` anchor, and the 1,176
+    pre-boundary orders whose `no_watcher` track was still pending at the 2026-09-15T05:23:44Z
+    stop instant went on filling under the repaired 4.5 executor. Their counterfactual is inside
+    criterion 4's population, so the gate's own output says so and gives the `n` it is part of.
+
+    The count comes from the rendered results, never a literal: a disclosure that could drift
+    from the number beside it would be worse than none."""
+    from harness.report.gate import GateResult, criteria_hash, render_gate
+
+    result = GateResult(variant_id="v1", gate_variant=True, passed=False,
+                        criteria={"markout_30m": _markout_result(4321)},
+                        criteria_hash=criteria_hash())
+    text = render_gate([result], {"v1": "one"}, {"v1": "primary"})
+    lines = text.splitlines()
+
+    disclosure = next(line for line in lines if "markout_30m)" in line)
+    assert "criterion 4" in disclosure
+    assert "1,176 pre-boundary orders" in disclosure
+    assert "nw_done = false" in disclosure
+    assert "2026-09-15T05:23:44Z" in disclosure
+    assert "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt" in disclosure
+    assert "executor 4.5" in disclosure
+    assert "amendment 0.17" in disclosure
+    assert "n=4321" in disclosure
+    # Directly after the mixed-population note, which it qualifies.
+    mixed = next(i for i, line in enumerate(lines) if "mixed population" in line)
+    assert lines[mixed + 1] == disclosure
+
+
+def test_the_criterion_4_disclosure_reads_unknown_when_no_result_carries_it():
+    """A render with no criterion-4 row still discloses the sub-population -- it is a property of
+    the population, not of one evaluation -- and says plainly that it has no `n` to give."""
+    from harness.report.gate import GateResult, criteria_hash, render_gate
+
+    empty = GateResult(variant_id="v1", gate_variant=True, passed=False, criteria={},
+                       criteria_hash=criteria_hash())
+    disclosure = next(line for line in render_gate([empty], {}, {}).splitlines()
+                      if "markout_30m)" in line)
+    assert "n=unknown" in disclosure
+    assert "1,176 pre-boundary orders" in disclosure
+
+
+def test_the_row72_disclosure_moves_no_criterion_definition_or_threshold():
+    """R1 / roadmap gate 9: the disclosure is a line of text after the results. Every criterion's
+    name, definition and threshold is what the parent commit carries, and `criteria_hash` -- the
+    identity of every stored gate row -- is unchanged."""
+    assert criteria_hash() == CRITERIA_HASH
+    assert _criteria_shape(CRITERIA) == CRITERIA_SHAPE
+    assert len(CRITERIA) == 12
+    markout = CRITERIA[3]
+    assert markout.name == "markout_30m" and markout.threshold == 0.0
+
+
 def test_hash_is_over_the_definition_strings_only(monkeypatch):
     """The brief defines `criteria_hash` as the sha256 of the sorted definition strings, so the
     other `Criterion` fields are outside it.

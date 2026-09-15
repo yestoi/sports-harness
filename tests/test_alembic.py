@@ -505,13 +505,14 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_twelve_revisions():
+def test_the_versions_directory_holds_thirteen_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
         "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
         "0009_score_correction.py", "0010_phase46_fun_tickets.py",
-        "0011_phase6b_execution.py", "0012_phase6d_sustained_eval.py"]
+        "0011_phase6b_execution.py", "0012_phase6d_sustained_eval.py",
+        "0013_nw_executor_version.py"]
 
 
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
@@ -521,7 +522,7 @@ def test_positions_open_fill_follows_raw_events_lookup():
     then phase 4.6's `0010_phase46_fun_tickets` landed on top of this one; it moved on to
     `test_phase6b_execution_follows_phase46_fun_tickets` when 6B's revision was renumbered
     `0011_phase6b_execution`, and it now lives on
-    `test_phase6d_follows_phase6b_execution_and_is_the_pinned_head` (6D's revision, written as
+    `test_nw_executor_version_follows_phase6d_and_is_the_pinned_head` (6D's revision, written as
     `0009_phase6d_sustained_eval` on its branch, was renumbered `0012_phase6d_sustained_eval`
     at this merge, D9). The chain assertions stay here, so a revision inserted between this one
     and `0009_score_correction` still fails -- the same trim fix 32/phase 5/fix 35/fix 42/fix 45
@@ -538,7 +539,8 @@ def test_score_correction_follows_positions_open_fill():
     `0010_phase46_fun_tickets` on top of this one at merge time (D9) -- the same pattern
     `0008_positions_open_fill` used when this revision landed on top of *it* -- and they moved on
     again to `test_phase6b_execution_follows_phase46_fun_tickets` when 6B merged, and to
-    `test_phase6d_follows_phase6b_execution_and_is_the_pinned_head` when 6D did. The chain
+    `test_nw_executor_version_follows_phase6d_and_is_the_pinned_head` when 6D did and roadmap
+    row 72's `0013_nw_executor_version` landed on top of that. The chain
     assertions stay here, so a revision inserted between the two still fails."""
     module = _load_revision("0009_score_correction.py")
     assert module.revision == "0009_score_correction"
@@ -645,9 +647,10 @@ def test_phase6b_execution_follows_phase46_fun_tickets():
     branch. These two pinned-head assertions carry over from
     `test_the_phase46_revision_is_the_pinned_head`, which kept its chain assertions under its
     new name, the same pattern 0008, 0009 and 0010 used before it -- and they moved on again to
-    `test_phase6d_follows_phase6b_execution_and_is_the_pinned_head` when 6D's revision, written
-    as `0009_phase6d_sustained_eval` on its branch, was renumbered `0012_phase6d_sustained_eval`
-    on top of this one at *its* merge time. The chain assertions stay here, so a revision
+    6D's own test when its revision, written as `0009_phase6d_sustained_eval` on its branch, was
+    renumbered `0012_phase6d_sustained_eval` on top of this one at *its* merge time, and on again
+    to `test_nw_executor_version_follows_phase6d_and_is_the_pinned_head` when roadmap row 72's
+    `0013_nw_executor_version` landed. The chain assertions stay here, so a revision
     inserted between `0010_phase46_fun_tickets` and this one still fails.
     """
     module = _load_revision("0011_phase6b_execution.py")
@@ -719,24 +722,21 @@ def test_the_phase6b_ledger_columns_are_nullable_with_no_default(scratch_db):
 
 # --- 6D: revision 0012 (written as `0009_phase6d_sustained_eval` on the phase branch) ---------
 
-def test_phase6d_follows_phase6b_execution_and_is_the_pinned_head():
+def test_phase6d_follows_phase6b_execution():
     """D9 applied at merge time, the fourth time on this chain.
 
-    The head moves with the revision or `migrate ensure` upgrades to a revision the checkout
-    does not carry. The phase branch wrote `0009_phase6d_sustained_eval` on top of
+    The phase branch wrote `0009_phase6d_sustained_eval` on top of
     `0008_positions_open_fill`; fix 64 took 0009 on main, 4.6's revision was renumbered
     `0010_phase46_fun_tickets` and 6B's `0011_phase6b_execution`, so this phase's revision is
     `0012_phase6d_sustained_eval` on top of 6B's, renumbered in the merge of `main` into the
-    phase branch. The two pinned-head assertions carry over from
-    `test_phase6b_execution_follows_phase46_fun_tickets`, which kept its chain assertions under
-    its new name -- the same pattern 0008, 0009, 0010 and 0011 used before it."""
-    from harness.db.migrate import HEAD_REVISION
-
+    phase branch. The two pinned-head assertions moved on to
+    `test_nw_executor_version_follows_phase6d_and_is_the_pinned_head` (roadmap row 72's
+    `0013_nw_executor_version`), the same trim 0008, 0009, 0010 and 0011 took before it; the
+    chain assertions stay here, so a revision inserted between this one and
+    `0011_phase6b_execution` still fails."""
     module = _load_revision("0012_phase6d_sustained_eval.py")
     assert module.revision == "0012_phase6d_sustained_eval"
     assert module.down_revision == "0011_phase6b_execution"
-    assert HEAD_REVISION == "0012_phase6d_sustained_eval"
-    assert VERSIONS[-1].name == "0012_phase6d_sustained_eval.py"
 
 
 def test_the_episode_tables_and_their_indexes_are_in_both_catalogues(two_databases):
@@ -766,6 +766,58 @@ def test_the_episode_tables_and_their_indexes_are_in_both_catalogues(two_databas
         assert "uq_opportunity_episode" in uniques
         assert "uq_intent_episode" in {
             u["name"] for u in inspect(engine).get_unique_constraints("intent_episodes")}
+
+
+# --- roadmap row 72 / spec amendment 0.17: revision 0013 -------------------------------------
+
+def test_nw_executor_version_follows_phase6d_and_is_the_pinned_head():
+    """The additive column amendment 0.17 names, on top of 6D's revision.
+
+    The head moves with the revision or `migrate ensure` upgrades to a revision the checkout
+    does not carry. The id is 24 characters, well inside the `String(32)` Alembic creates
+    `alembic_version.version_num` as (0012's own docstring records the 33-character revision
+    that aborted every upgrade), and the file name equals the id as all twelve before it do."""
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0013_nw_executor_version.py")
+    assert module.revision == "0013_nw_executor_version"
+    assert module.down_revision == "0012_phase6d_sustained_eval"
+    assert len(module.revision) <= 32
+    assert HEAD_REVISION == "0013_nw_executor_version"
+    assert VERSIONS[-1].name == "0013_nw_executor_version.py"
+
+
+def test_the_nw_executor_version_revision_only_adds_the_column_and_undoes_nothing():
+    """One additive `ADD COLUMN IF NOT EXISTS`, byte-identical to `harness/db/schema.py`'s
+    `_COLUMN_DDL` entry (the `0009_score_correction` pattern), and `downgrade()` is `pass`
+    (roadmap invariant 5). Nullable with no default, so the statement is metadata-only and no
+    pre-existing row is backfilled: a row carrying non-null `nw_` twins and a null version is
+    exactly the anomaly amendment 0.17 wants visible."""
+    from harness.db.schema import _COLUMN_DDL
+
+    module = _load_revision("0013_nw_executor_version.py")
+    assert module._COLUMNS == (
+        "alter table orders add column if not exists nw_executor_version numeric",)
+    for statement in module._COLUMNS:
+        assert statement in _COLUMN_DDL
+    assert module.downgrade() is None
+
+
+def test_nw_executor_version_is_in_both_catalogues(two_databases):
+    """The model (so `create_schema` builds it) and the revision (so a migrated database has
+    it) declare the same column: nullable numeric with no server default."""
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        columns = {c["name"]: c for c in inspect(engine).get_columns("orders")}
+        assert "nw_executor_version" in columns, engine.url.database
+        column = columns["nw_executor_version"]
+        assert str(column["type"]) == "NUMERIC"
+        assert column["nullable"] is True
+        assert column["default"] is None
 
 
 def _load_baseline():

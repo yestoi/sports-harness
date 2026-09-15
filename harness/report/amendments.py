@@ -58,5 +58,12 @@ AMENDMENTS: tuple[Amendment, ...] = (
         "2026-09-15 00:23 CT. Runs 1-17016 (orders 1-10886) were scored by the pre-repair "
         "simulators; the ranges were filled by the controller in the same commit as "
         "`harness.corrections`' (D11). Run 17016 was a skipped heartbeat that priced nothing: "
-        "the last ca30ed1 run is 17015 and the first c1066b5 run is 17017"),
+        "the last ca30ed1 run is 17015 and the first c1066b5 run is 17017. The pre-boundary "
+        "orders whose counterfactual (`no_watcher`) track was still pending at the stop instant "
+        "2026-09-15T05:23:44Z (1,176 orders, ids at or below 10886 carrying `nw_done = false` "
+        "then; docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt) are a disclosed "
+        "sub-population whose counterfactual continued under the repaired executor 4.5: their "
+        "`nw_*` columns mix the pre-repair simulator up to 05:23:44Z and the repaired one after "
+        "it, and from this build each counterfactual write stamps `orders.nw_executor_version` "
+        "(spec amendment 0.17)"),
 )

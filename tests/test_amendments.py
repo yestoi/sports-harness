@@ -64,6 +64,29 @@ def test_amendment_3_is_a_registration_and_excludes_nothing():
     assert three.tables == ()
 
 
+def test_amendment_6_names_the_disclosed_counterfactual_sub_population():
+    """Spec amendment 0.17 (user decision 2026-09-15, journal 224 item 5): the pre-boundary
+    orders whose `no_watcher` track was still pending at the c1066b5 stop instant are a
+    disclosed sub-population whose counterfactual ran on under the repaired executor, so their
+    `nw_*` columns mix the two simulators. A reader of a weekly report has to be told that from
+    inside the container, which is where this list is read.
+
+    The run range, the tables and the existing run-17016 sentence are unchanged: the amendment
+    is appended to, never rewritten (the record is append-only)."""
+    six = next(a for a in AMENDMENTS if a.number == 6)
+    assert six.excluded_runs == (1, 17016)
+    assert six.tables == ("t1", "t2", "t3", "t4")
+    assert six.deploy_sha == "c1066b5"
+    assert "Run 17016 was a skipped heartbeat that priced nothing" in six.what
+    assert "1,176 orders" in six.what
+    assert "2026-09-15T05:23:44Z" in six.what
+    assert "`nw_done = false`" in six.what
+    assert "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt" in six.what
+    assert "disclosed sub-population" in six.what
+    assert "continued under the repaired executor 4.5" in six.what
+    assert "amendment 0.17" in six.what
+
+
 def test_every_entry_is_frozen():
     import dataclasses
 

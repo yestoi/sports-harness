@@ -578,6 +578,13 @@ class Order(Base):
     #: never closed: closing one would remove its order from gate criterion 4's population.
     nw_next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     nw_attempts: Mapped[int | None] = mapped_column(Integer)
+    #: Spec amendment 0.17 (roadmap row 72): the `EXECUTOR_VERSION` of the build that last wrote
+    #: any of the `nw_` columns above on this row. Nullable with no default and never
+    #: backfilled -- no statement touches it on a row it is not otherwise writing -- so a
+    #: pre-boundary row carrying non-null `nw_` twins and a null version is the anomaly the
+    #: narrowed §2 invariant looks for, and a row whose counterfactual continued under the
+    #: repaired executor says so in its own column instead of by inference.
+    nw_executor_version: Mapped[Decimal | None] = mapped_column(Numeric())
     #: Minutes this order's book spent dirty after a WS gap (D6), so an optimistic queue is visible.
     dirty_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: The same quantity in seconds, which is what the loop can actually accumulate: one dirty

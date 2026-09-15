@@ -687,9 +687,45 @@ def orders_for_intent(session: Session, intent_id) -> int:
                                {"i": intent_id}).scalar() or 0)
 
 
+#: The `nw_` column that is not a counterfactual measurement but the record of who wrote them.
+NW_VERSION_COLUMN = "nw_executor_version"
+
+
+def executor_version_numeric() -> Decimal:
+    """`EXECUTOR_VERSION` as the numeric `orders.nw_executor_version` stores.
+
+    Read off the package at call time rather than bound at import, exactly as
+    `execution.plan.config_hash` reads it: a test that moves the version sees the move, and a
+    build that bumps it stamps the new value without a reload. `Decimal` rather than the string,
+    because the column is `numeric` and psycopg would otherwise send a text parameter for it.
+    """
+    from harness import execution
+
+    return Decimal(execution.EXECUTOR_VERSION)
+
+
+def stamp_nw_writer(values: dict) -> dict:
+    """`values` plus `nw_executor_version`, when it writes any counterfactual column.
+
+    Spec amendment 0.17 (roadmap row 72): every counterfactual write carries its writer's
+    version, and nothing else touches the column -- a statement that writes no `nw_` column
+    returns its own dict unchanged, so a purely watched update and a row nobody is writing are
+    both left exactly as they were. Never a backfill.
+    """
+    if any(key.startswith("nw_") and key != NW_VERSION_COLUMN for key in values):
+        return {**values, NW_VERSION_COLUMN: executor_version_numeric()}
+    return values
+
+
 def insert_order(session: Session, values: dict) -> int | None:
-    """Insert one paper order, keyed on its client order id. None means it was already there."""
-    stmt = (insert(Order).values(**values)
+    """Insert one paper order, keyed on its client order id. None means it was already there.
+
+    Placement writes the counterfactual's opening state (`nw_queue_remaining`,
+    `nw_tape_cursor_event_id`), so it is a counterfactual write and carries the writer's version
+    like every other one (amendment 0.17). `stamp_nw_writer` is the single rule, so this and
+    `update_order` cannot drift apart.
+    """
+    stmt = (insert(Order).values(**stamp_nw_writer(values))
             .on_conflict_do_nothing(index_elements=["client_order_id"])
             .returning(Order.id))
     row = session.execute(stmt).first()
@@ -721,10 +757,19 @@ def insert_ledger_fill(session: Session, **values) -> int | None:
 
 def update_order(session: Session, order_id: int, values: dict) -> None:
     """Write back one order's columns through the model, so the JSONB and Numeric ones are
-    bound with their real types rather than whatever psycopg would infer from a Python value."""
+    bound with their real types rather than whatever psycopg would infer from a Python value.
+
+    Spec amendment 0.17 (roadmap row 72): a write that touches any `nw_` column also stamps
+    `nw_executor_version` with this build's `EXECUTOR_VERSION`. The stamp lives here rather
+    than at the call sites because this is the one statement every counterfactual column of an
+    order goes through, so a future `nw_` writer cannot forget it. It is never a backfill: a
+    row nobody is writing is not in this statement at all, and a purely watched update (no
+    `nw_` key) leaves the column exactly as it was.
+    """
     if not values:
         return
-    session.execute(update(Order).where(Order.id == order_id).values(**values))
+    session.execute(update(Order).where(Order.id == order_id)
+                    .values(**stamp_nw_writer(values)))
 
 
 #: The ceiling on the counterfactual retry delay, in *elapsed wall seconds* (§0.14, ruling
@@ -759,9 +804,13 @@ def add_dirty_seconds(session: Session, order_id: int, seconds: int, *,
             "dirty_minutes = (dirty_seconds + :s) / 60 where id = :i"),
             {"s": int(seconds), "i": order_id})
         return
+    # The counterfactual's own accrual carries the writer's version with it (amendment 0.17),
+    # like every other `nw_` write; the watched branch above writes no `nw_` column and so
+    # leaves the version alone.
     session.execute(text(
-        "update orders set nw_dirty_seconds = coalesce(nw_dirty_seconds, 0) + :s "
-        "where id = :i"), {"s": int(seconds), "i": order_id})
+        "update orders set nw_dirty_seconds = coalesce(nw_dirty_seconds, 0) + :s, "
+        "nw_executor_version = :v where id = :i"),
+        {"s": int(seconds), "v": executor_version_numeric(), "i": order_id})
 
 
 def set_nw_backoff(session: Session, order_id: int, attempts: int,
@@ -772,7 +821,8 @@ def set_nw_backoff(session: Session, order_id: int, attempts: int,
     pending one (ruling I-16), and every consumer of the `nw_*` columns filters or labels on it.
     """
     session.execute(update(Order).where(Order.id == order_id)
-                    .values(nw_attempts=attempts, nw_next_attempt_at=next_attempt_at))
+                    .values(nw_attempts=attempts, nw_next_attempt_at=next_attempt_at,
+                            nw_executor_version=executor_version_numeric()))
 
 
 #: One statement per table, built once at import and indexed by the table literal, so a caller

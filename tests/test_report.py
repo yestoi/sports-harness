@@ -182,6 +182,19 @@ def _fill(session, order, fill_method="queue_model", filled_at=None, prob="0.500
     return f
 
 
+def _fill_with_id(session, order, fill_id, fill_method="queue_model") -> Fill:
+    """One fill with a chosen `fills.id`, which is what the 6C boundary is read on (amendment
+    0.17). The id is the only thing the boundary looks at, so a test about it has to set it."""
+    f = Fill(id=fill_id, order_id=order.id, prob=Decimal("0.5000"),
+             contracts=Decimal("10.00"), fee=Decimal("0.2500"),
+             filled_at=WED + timedelta(minutes=5), fill_method=fill_method,
+             source_trade_id=f"boundary-{fill_id}",
+             tape_source="ws", through=False, has_print=True)
+    session.add(f)
+    session.flush()
+    return f
+
+
 def _order_clv(session, order, benchmark_type="pinnacle_t5", clv_p_net="0.0200",
                stale=False) -> OrderClv:
     row = OrderClv(order_id=order.id, benchmark_type=benchmark_type, p_bench=Decimal("0.5600"),
@@ -1087,6 +1100,39 @@ def _t13(db_session, env_settings, year=YEAR, week=WEEK, now=None):
                           now=now or (WEEK_START + timedelta(days=7)))["t13"]
     assert table.columns == ["item", "value", "unit", "note"]
     return {row[0]: (row[1], row[2], row[3]) for row in table.rows}
+
+
+def test_t13_separates_counterfactual_fills_at_the_boundary_fill_not_the_boundary_order(
+        db_session, env_settings):
+    """Spec amendment 0.17 (roadmap row 72, journal 224 item 5): 6C separates counterfactual
+    fills by `fills.id > 1878` -- the boundary fill of the c1066b5 release -- and never by order
+    id.
+
+    The 1,176 pre-boundary orders whose `no_watcher` track was still pending at the stop instant
+    kept running under the repaired 4.5 executor, so one order's counterfactual can hold fills
+    from both simulators. This fixture is that order: two `no_watcher` fills, one either side of
+    the boundary fill. A split on `orders.id > 10886` would file both under the pre-repair
+    simulator; the fill-id split reads one each."""
+    from harness.report.tables import BOUNDARY_FILL_ID
+
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    game = _game(db_session)
+    straddler = _order(db_session, _market(db_session, game.id, "T13BND1"), PRIMARY)
+    later = _order(db_session, _market(db_session, game.id, "T13BND2"), PRIMARY)
+    for fill_id in (BOUNDARY_FILL_ID - 1, BOUNDARY_FILL_ID, BOUNDARY_FILL_ID + 1):
+        _fill_with_id(db_session, straddler, fill_id, fill_method="no_watcher")
+    _fill_with_id(db_session, later, BOUNDARY_FILL_ID + 2, fill_method="no_watcher")
+    db_session.flush()
+
+    rows = _t13(db_session, env_settings)
+    assert BOUNDARY_FILL_ID == 1878
+    assert rows["fill rows, no_watcher, week"][0] == 4
+    assert rows["fill rows, no_watcher, post-boundary, week"][0] == 2
+    assert rows["fill rows, no_watcher, pre-boundary, week"][0] == 2
+    assert rows["fill rows, no_watcher, post-boundary, week"][1] == "fill rows"
+    assert "`fills.id > 1878`" in rows["fill rows, no_watcher, post-boundary, week"][2]
+    assert "`fills.id <= 1878`" in rows["fill rows, no_watcher, pre-boundary, week"][2]
+    assert "never on the order id" in rows["fill rows, no_watcher, pre-boundary, week"][2]
 
 
 def test_t13_counts_actual_fills_apart_from_the_counterfactual_ones(db_session, env_settings):

@@ -112,6 +112,16 @@ CONTRAST_BENCHMARK = "pinnacle_t5"
 FILL_SETS = (("queue_model", "fill", ("queue_model",)),
              ("queue_model + no_watcher", "nw_fill", ("queue_model", "no_watcher")),
              ("queue_model + snapshot_cross", "cross_fill", ("queue_model", "snapshot_cross")))
+#: Spec amendment 0.17 (roadmap row 72, journal 224 item 5): the last fill the pre-repair
+#: simulator wrote. The 6B release stopped at 2026-09-15T05:23:44Z with order 10886 and fill
+#: 1878 as the last pre-release rows (`harness/corrections.py`'s boundary note), so a
+#: counterfactual fill is pre-repair exactly when its own id is at or below this.
+#:
+#: The *fill* id, never the order id: the 1,176 pre-boundary orders whose `no_watcher` track was
+#: still `nw_done = false` at that instant kept running under the repaired 4.5 executor
+#: (§0.14, §1.5), so one order's counterfactual can hold fills from both simulators and a split
+#: on `orders.id > 10886` would file the later ones under the earlier simulator.
+BOUNDARY_FILL_ID = 1878
 #: Key numbers for table 4b's distance buckets (F57).
 KEY_NUMBERS = (3.0, 7.0)
 KEY_DISTANCE_BUCKETS = (("<= 0.5", 0.5), ("0.5-1.5", 1.5), ("1.5-3", 3.0), ("> 3", None))
@@ -1778,13 +1788,17 @@ _T13_ORDER_FILLS = text("""
 #: silently diverge the first week a second variant fills. `:variant_id` is bound to
 #: `PLACEHOLDER` when there is no gate variant, which matches no real `variant_id` and so reads
 #: zero rows rather than branching in Python.
+#:
+#: The second grouping key is amendment 0.17's boundary: `f.id > :boundary_fill_id` is a
+#: projection of the id the row already carries, so this stays one scan of the same window and
+#: the per-method totals are its two buckets summed.
 _T13_FILL_ROWS = text("""
-    select f.fill_method, count(*) as n
+    select f.fill_method, f.id > :boundary_fill_id as post_boundary, count(*) as n
     from fills f
     join orders o on o.id = f.order_id
     where f.replay = false and o.replay = false and o.variant_id = :variant_id
       and f.filled_at >= :start and f.filled_at < :end
-    group by 1
+    group by 1, 2
 """)
 
 #: Bound: `f.filled_at >= :since` (`FIRST_PAPER_ORDER_AT`) and `< :end`. Index:
@@ -1904,9 +1918,13 @@ def _table13(session: Session, window: dict, variants: list[dict], settings,
     mine = [r for r in per_order if gate_id is not None and r["variant_id"] == gate_id]
     actual = [r for r in mine if r["has_queue_model"]]
     counterfactual = [r for r in mine if not r["has_queue_model"] and r["has_no_watcher"]]
-    fill_rows_params = {**window, "variant_id": gate_id if gate_id is not None else PLACEHOLDER}
-    fill_rows = {r.fill_method: int(r.n)
-                for r in session.execute(_T13_FILL_ROWS, fill_rows_params)}
+    fill_rows_params = {**window, "variant_id": gate_id if gate_id is not None else PLACEHOLDER,
+                        "boundary_fill_id": BOUNDARY_FILL_ID}
+    fill_rows: dict[str, int] = {}
+    fill_rows_by_side: dict[tuple[str, bool], int] = {}
+    for r in session.execute(_T13_FILL_ROWS, fill_rows_params):
+        fill_rows[r.fill_method] = fill_rows.get(r.fill_method, 0) + int(r.n)
+        fill_rows_by_side[(r.fill_method, bool(r.post_boundary))] = int(r.n)
 
     cumulative = None
     if gate_id is not None:
@@ -1951,6 +1969,15 @@ def _table13(session: Session, window: dict, variants: list[dict], settings,
          "the gate variant's rows, not orders: one order can carry several"],
         ["fill rows, no_watcher, week", fill_rows.get("no_watcher", 0), "fill rows",
          "the gate variant's rows, not orders"],
+        ["fill rows, no_watcher, post-boundary, week",
+         fill_rows_by_side.get(("no_watcher", True), 0), "fill rows",
+         f"of the row above, `fills.id > {BOUNDARY_FILL_ID}` -- the boundary fill of the 6B "
+         "release -- so written by the repaired 4.5 executor (amendment 0.17)"],
+        ["fill rows, no_watcher, pre-boundary, week",
+         fill_rows_by_side.get(("no_watcher", False), 0), "fill rows",
+         f"of the same row, `fills.id <= {BOUNDARY_FILL_ID}`: the pre-repair simulator. The "
+         "split is on the fill id and never on the order id -- a pre-boundary order whose "
+         "counterfactual was still pending at the stop instant went on filling under 4.5"],
         ["pricing runs, week", coverage["pricing_runs"], "runs",
          "runs whose `notes.pricing` block is non-empty"],
         ["runs scoring the gate variant", coverage["gate_scored"], "runs",

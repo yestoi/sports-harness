@@ -473,6 +473,83 @@ def test_no_watcher_track_keeps_filling_after_a_cancel(env_settings, db_session,
     assert stats.nw_fills == 1
 
 
+def _bystander(session, ticker="KXNFL-P-BYSTANDER"):
+    """A finished order the step never selects: `status = 'expired'` and `nw_done = true`, which
+    is exactly what `store.working_orders` filters out. It carries the pre-repair twins a
+    pre-boundary row has, so the assertion that it keeps a NULL version is the "never
+    backfilled" half of amendment 0.17."""
+    from uuid import uuid4
+
+    order = Order(
+        intent_id=uuid4(), variant_id="p00000000001", venue="kalshi",
+        client_order_id=f"bystander-{uuid4()}", ticker=ticker, venue_market_id=99,
+        side="yes", prob=Decimal("0.30"), contracts=Decimal("10.00"), status="expired",
+        placed_at=NOW - timedelta(hours=1), expiry=NOW - timedelta(minutes=30),
+        filled_contracts=Decimal("0.00"), nw_filled_contracts=Decimal("5.00"),
+        nw_print_unmatched=Decimal("3.00"), nw_dirty_seconds=15, nw_done=True, replay=False)
+    session.add(order)
+    session.flush()
+    return order
+
+
+def test_a_counterfactual_step_stamps_the_executor_version_and_backfills_nothing(
+        env_settings, db_session, world):
+    """Spec amendment 0.17 (roadmap row 72): every counterfactual write carries its writer's
+    version, and no statement touches the column on a row it is not otherwise writing.
+
+    The stepped order's counterfactual state is written by `_state_columns("nw_", ...)` through
+    `store.update_order`, so that is where the stamp has to be -- not at a call site, which the
+    next `nw_` writer would forget. The bystander is a finished pre-boundary-shaped row with
+    non-null twins: it must still read NULL afterwards, because that combination is what the
+    narrowed §2 invariant calls an anomaly."""
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    bystander = _bystander(db_session)
+    db_session.commit()
+
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()                      # placement writes the counterfactual's opening state
+    refresh(db_session)
+    assert orders_of(db_session)[0].nw_executor_version == Decimal(EXECUTOR_VERSION)
+
+    clock.advance(15)
+    executor.step()                      # the first step of both tracks
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.nw_done is False
+    assert order.nw_executor_version == Decimal(EXECUTOR_VERSION)
+    assert db_session.get(Order, bystander.id).nw_executor_version is None
+
+
+def test_the_counterfactual_dirty_and_backoff_writers_stamp_the_version_too(
+        env_settings, db_session, world):
+    """The two `nw_` writers that do not go through `_state_columns`: §1.5's own nominal accrual
+    (`orders.nw_dirty_seconds`, a raw UPDATE) and §0.14's retry bookkeeping. Both write an
+    `nw_` column on the counterfactual's behalf, so both carry the version; the watched
+    accrual, which writes no `nw_` column, leaves it alone."""
+    order = _bystander(db_session, ticker="KXNFL-P-WRITERS")
+    db_session.commit()
+
+    store.add_dirty_seconds(db_session, order.id, 15, watched=True)
+    db_session.flush()
+    db_session.expire_all()
+    assert db_session.get(Order, order.id).nw_executor_version is None
+
+    store.add_dirty_seconds(db_session, order.id, 15, watched=False)
+    db_session.flush()
+    db_session.expire_all()
+    assert db_session.get(Order, order.id).nw_executor_version == Decimal(EXECUTOR_VERSION)
+
+    db_session.query(Order).filter_by(id=order.id).update({"nw_executor_version": None})
+    db_session.flush()
+    store.set_nw_backoff(db_session, order.id, attempts=1,
+                         next_attempt_at=NOW + timedelta(seconds=30))
+    db_session.flush()
+    db_session.expire_all()
+    assert db_session.get(Order, order.id).nw_executor_version == Decimal(EXECUTOR_VERSION)
+
+
 def test_no_watcher_fills_stop_ten_minutes_before_kickoff(env_settings, db_session, world):
     """The user's ruling of 2026-09-14 15:38 CT (journal 206): the counterfactual's deadline is
     bounded by `kickoff - 10 minutes`, the same instant `fills_outside_placement_window` calls

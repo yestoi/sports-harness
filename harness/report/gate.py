@@ -65,6 +65,9 @@ GATE_BENCHMARKS = ("pinnacle_t5", "consensus_t5", "consensus_t60", "consensus_t1
 PINNACLE = "pinnacle_t5"
 #: Criterion 4's anchor and horizon (F3, F15: the no-watcher fill against the sharp fair).
 MARKOUT_ANCHOR, MARKOUT_HORIZON, DRIFT_HORIZON = "nw_fill", "30m", "0m"
+#: Criterion 4's name, so `render_gate`'s amendment-0.17 disclosure names the same criterion the
+#: results are keyed by rather than a second copy of the string.
+MARKOUT_CRITERION = "markout_30m"
 #: Criterion 4's t threshold, and criterion 6's minimum game clusters per side.
 MARKOUT_T = 2.0
 MIN_CLUSTERS_PER_SIDE = 20
@@ -873,6 +876,25 @@ def render_gate(results: list[GateResult], names: dict[str, str],
     lines.append(f"corrections_in_force={ids}")
     lines.append("note: mixed population -- orders placed before and after the 6B deploy are "
                  "scored by different simulators; see the correction manifest.")
+    # Spec amendment 0.17 (user decision 2026-09-15, journal 224 item 5), on IM-10's footing: a
+    # line of text after the results, adding no criterion, moving no threshold and changing no
+    # `criteria_hash` input. Criterion 4 reads the `nw_fill` anchor, and the counterfactual of
+    # the 1,176 pre-boundary orders that were still `nw_done = false` at the release's stop
+    # instant went on running under the repaired executor, so those orders' `no_watcher` fills
+    # are inside this criterion's population. The `n` is read off the rendered results, never
+    # written as a literal: a disclosure that could drift from the number beside it would be
+    # worse than none. The gate variant's row is preferred, because that is the variant the
+    # phase gate is judged on; any other result carrying the criterion answers if it does not.
+    markout = next(
+        (r.criteria[MARKOUT_CRITERION] for r in
+         sorted(results, key=lambda r: not r.gate_variant)
+         if MARKOUT_CRITERION in r.criteria), None)
+    lines.append(
+        f"note: criterion 4 ({MARKOUT_CRITERION}) counts the counterfactual of 1,176 "
+        "pre-boundary orders (nw_done = false at the 2026-09-15T05:23:44Z stop instant; "
+        "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt) whose no_watcher track "
+        "continued under executor 4.5 (amendment 0.17); its "
+        f"n={'unknown' if markout is None else markout.n_obs} includes them.")
     if eligibility is not None and eligibility.active:
         lines.append(f"eligibility=from_order_id:{eligibility.from_order_id} "
                      f"from_run_id:{eligibility.from_run_id}")

@@ -190,6 +190,10 @@ _COLUMN_DDL = (
     "alter table orders add column if not exists nw_dirty_seconds integer",
     "alter table orders add column if not exists nw_next_attempt_at timestamptz",
     "alter table orders add column if not exists nw_attempts integer",
+    # Spec amendment 0.17 (roadmap row 72): the writer's own version, stamped on every
+    # counterfactual write. Nullable with no default, so the ALTER is metadata-only and no
+    # existing row is backfilled; `migrations/versions/0013_nw_executor_version.py` mirrors it.
+    "alter table orders add column if not exists nw_executor_version numeric",
 )
 
 #: Indexes and constraints Postgres can only express as raw DDL (partial, functional, BRIN).
