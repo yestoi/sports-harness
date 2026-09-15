@@ -274,9 +274,10 @@ def drain_gap_outcomes(session: Session, batch: int = 50_000, budget: Budget | N
                 clv_bid_p = None if row.best_bid is None else p_bench - Decimal(row.best_bid)
                 clv_target_p = clv_target_p_net = clv_target_roi_net = None
                 if used.p is not None:
-                    # Fix 73: a zero best bid is a real price (the row is not skipped and
-                    # `p_used_kind` still says `best_bid`), but its all-in cost is zero, so
-                    # `roi_net` comes back None into the nullable `clv_target_roi_net`.
+                    # Fix 73: a zero used price is a real price (the row is not skipped and
+                    # `p_used_kind` still names it -- `best_bid` for the deployed zero-bid
+                    # books, `target` for a zero price target), but its all-in cost is zero,
+                    # so `roi_net` comes back None into the nullable `clv_target_roi_net`.
                     clv, clv_net, roi_net = clv_formulas(p_bench, used.p)
                     clv_target_p = clv if used.kind == "target" else None
                     clv_target_p_net = clv_net

@@ -153,7 +153,10 @@ def test_formulas_on_a_zero_used_price_return_null_roi():
     venue's own space."""
     clv, clv_net, roi_net = clv_formulas(Decimal("0.0088"), Decimal("0"))
     assert clv == Decimal("0.0088")
-    assert clv_net == clv - fee_per_contract(KALSHI_FOOTBALL, "maker", Decimal("0"), CLV_CONTRACTS)
+    # Asserted against literals rather than against the same fee call the implementation makes:
+    # the maker fee at a price of 0 is 0, so clv_net is the whole price difference.
+    assert fee_per_contract(KALSHI_FOOTBALL, "maker", Decimal("0"), CLV_CONTRACTS) == Decimal(0)
+    assert clv_net == Decimal("0.0088")
     assert roi_net is None
 
 
