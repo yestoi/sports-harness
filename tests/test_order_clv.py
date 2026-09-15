@@ -20,9 +20,11 @@ from harness.db.models import (
     VenueMarket,
 )
 from harness.execution.book import side_p
+from harness.pricing.fees import KALSHI_FOOTBALL, fee_per_contract
 from harness.settlement.benchmarks import BENCHMARK_TYPES, GAP_OUTCOME_TYPES
 from harness.settlement.job import Budget
 from harness.settlement.order_clv import (
+    CLV_CONTRACTS,
     GAP_OUTCOMES_WATERMARK_KEY,
     clv_formulas,
     compute_order_clv,
@@ -142,6 +144,17 @@ def test_formulas_on_fixed_numbers():
     assert clv == Decimal("0.0500")
     assert clv_net == Decimal("0.0457")
     assert roi_net == Decimal("0.60") / Decimal("0.5543") - Decimal(1)
+
+
+def test_formulas_on_a_zero_used_price_return_null_roi():
+    """Fix 73: a zero used price has no defined return on all-in cost -- at a used price of 0
+    the maker fee is 0 too, so the all-in-cost division raised decimal.DivisionByZero. roi_net
+    is NULL for such a row; clv and clv_net are still ordinary price differences in the
+    venue's own space."""
+    clv, clv_net, roi_net = clv_formulas(Decimal("0.0088"), Decimal("0"))
+    assert clv == Decimal("0.0088")
+    assert clv_net == clv - fee_per_contract(KALSHI_FOOTBALL, "maker", Decimal("0"), CLV_CONTRACTS)
+    assert roi_net is None
 
 
 # --- order_clv -----------------------------------------------------------------------------
@@ -328,6 +341,49 @@ def test_gap_outcomes_skip_rows_without_fair(db_session):
     # benchmarks, so neither is left to revisit even though only one produced rows.
     watermark = db_session.get(JobState, GAP_OUTCOMES_WATERMARK_KEY)
     assert watermark.value == with_fair.id
+
+
+def test_gap_outcomes_on_a_zero_best_bid_write_null_roi_and_keep_draining(db_session):
+    """Fix 73: a book whose best bid is 0 (the deployed snapshot 51342 had a fair price of
+    0.0088 and a best bid of 0.0000) falls back to a used price of 0, where the maker fee is 0
+    as well, and the all-in-cost division raised decimal.DivisionByZero. The whole stage
+    session then rolled back, so no snapshot after it in the batch landed either. The row must
+    be written with a NULL clv_target_roi_net, and the batch must continue."""
+    game = _game(db_session)
+    market = _market(db_session, game.id)
+    for kind in GAP_OUTCOME_TYPES:
+        _benchmark(db_session, game.id, kind, "0.6000")
+    zero_bid = _gap(db_session, market.id, fair_p="0.0088", venue_mid="0.0050", best_bid="0.0000")
+    later = _gap(db_session, market.id, fair_p="0.5600", venue_mid="0.55", best_bid="0.50")
+    db_session.commit()
+
+    n = drain_gap_outcomes(db_session, batch=50_000)
+
+    assert n == 2 * len(GAP_OUTCOME_TYPES)
+    zero_rows = {r.benchmark_type: r for r in
+                 db_session.query(GapOutcome).filter_by(gap_snapshot_id=zero_bid.id).all()}
+    assert set(zero_rows) == set(GAP_OUTCOME_TYPES)
+    clv, clv_net, roi_net = clv_formulas(Decimal("0.6000"), Decimal("0"))
+    assert roi_net is None
+    for row in zero_rows.values():
+        # No primary target for this snapshot: the price used is the (zero) best bid, and a
+        # zero bid is still a price that was there.
+        assert row.p_used_kind == "best_bid"
+        assert row.clv_bid_p == Decimal("0.6000")
+        assert row.clv_target_p is None  # only a target kind fills this column
+        assert row.clv_target_p_net == clv_net
+        assert row.clv_target_roi_net is None
+
+    # The later snapshot in the same batch is processed, not lost with the raising one.
+    later_rows = {r.benchmark_type: r for r in
+                  db_session.query(GapOutcome).filter_by(gap_snapshot_id=later.id).all()}
+    assert set(later_rows) == set(GAP_OUTCOME_TYPES)
+    _, later_net, later_roi = clv_formulas(Decimal("0.6000"), Decimal("0.50"))
+    assert later_roi is not None
+    for row in later_rows.values():
+        assert row.clv_target_p_net == later_net
+        assert row.clv_target_roi_net == _q4(later_roi)
+    assert db_session.get(JobState, GAP_OUTCOMES_WATERMARK_KEY).value == later.id
 
 
 def test_drain_gap_outcomes_uses_primary_signal_target_when_present(db_session):

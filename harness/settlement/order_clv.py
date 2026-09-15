@@ -33,18 +33,23 @@ CLV_CONTRACTS = 100
 GAP_OUTCOMES_WATERMARK_KEY = "gap_outcomes_watermark"
 
 
-def clv_formulas(p_bench: Decimal, p_used: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+def clv_formulas(p_bench: Decimal, p_used: Decimal) -> tuple[Decimal, Decimal, Decimal | None]:
     """`(clv, clv_net, roi_net)` for one benchmark against one price, pure (spec F42):
 
     `clv = p_bench - p_used`; `clv_net = clv - fee_per_contract(maker, p_used)`;
     `roi_net = p_bench / (p_used + fee) - 1` -- the return on the all-in cost of buying at
     `p_used`. Both callers (`order_clv` in the order's side space, `gap_outcomes.clv_target_*`
-    in the venue market's own space) pass an already side-resolved `p_bench`.
+    in the venue market's own space) pass an already side-resolved `p_bench`. Fix 73: a zero
+    all-in cost (`p_used + fee == 0`, i.e. a zero used price, where the maker fee is zero too)
+    has no defined return, so `roi_net` is None for that row rather than a raised
+    `decimal.DivisionByZero` -- `clv` and `clv_net` are still ordinary price differences and
+    are returned as usual, and the formula is unchanged for every non-zero price.
     """
     fee = fee_per_contract(KALSHI_FOOTBALL, "maker", p_used, CLV_CONTRACTS)
     clv = p_bench - p_used
     clv_net = clv - fee
-    roi_net = p_bench / (p_used + fee) - Decimal(1)
+    cost_all_in = p_used + fee
+    roi_net = None if cost_all_in == 0 else p_bench / cost_all_in - Decimal(1)
     return clv, clv_net, roi_net
 
 
@@ -140,6 +145,9 @@ def compute_order_clv(session: Session, now: datetime, budget: Budget) -> int:
             p, stale = bench
             p_bench = side_p(p, row.side)
             p_used = Decimal(row.prob)
+            # Fix 73: `clv_roi_net` is None when the all-in cost is zero (a paper order cannot
+            # have been placed at price 0, but the pure function must not raise); the
+            # `order_clv.clv_roi_net` column is nullable.
             clv_p, clv_p_net, clv_roi_net = clv_formulas(p_bench, p_used)
             inserted += _insert_order_clv(
                 session, order_id=row.order_id, benchmark_type=benchmark_type, p_bench=p_bench,
@@ -266,6 +274,9 @@ def drain_gap_outcomes(session: Session, batch: int = 50_000, budget: Budget | N
                 clv_bid_p = None if row.best_bid is None else p_bench - Decimal(row.best_bid)
                 clv_target_p = clv_target_p_net = clv_target_roi_net = None
                 if used.p is not None:
+                    # Fix 73: a zero best bid is a real price (the row is not skipped and
+                    # `p_used_kind` still says `best_bid`), but its all-in cost is zero, so
+                    # `roi_net` comes back None into the nullable `clv_target_roi_net`.
                     clv, clv_net, roi_net = clv_formulas(p_bench, used.p)
                     clv_target_p = clv if used.kind == "target" else None
                     clv_target_p_net = clv_net
