@@ -1,8 +1,8 @@
 # Context hygiene for the autopilot loop (design)
 
 Date: 2026-09-15. Author: the review session with the user, from the audit of the week 2026-09-08 to 2026-09-15.
-Revision 2 after two adversarial reviews (design logic; loop operations). Status: for the user's review, then the
-implementation plan. Executed by a fresh user-directed session while the controller lock is free; never by the
+Revision 3 after two adversarial reviews (design logic; loop operations) and a re-check. Status: for the user's
+approval, then the implementation plan. Executed by a fresh user-directed session while the controller lock is free; never by the
 loop (the loop may not edit its skill, scripts, launcher or authority).
 
 ## 1. Problem
@@ -16,7 +16,7 @@ reports) survived a hard crash and eleven compactions. Three things drifted in o
 | `journal.md` | 178 KB | 699 KB, 245 entries; no entry since 236 has `- Result:`; 17 of the last 40 bodies exceed 3,000 characters; 55 of 245 headings exceed 120 |
 | `state.md` | 5.6 KB | 13.4 KB with two history sections (Evidence receipts, Rulings landed) |
 | `context.py bootstrap` output | about 35 KB (estimated) | 159.6 KB |
-| Evidence images in git | | 85 PNG (average 620 KB, 14 over 1 MB, largest 6.9 MB) and 59 JPEG (average 98 KB); 63 MB added this week |
+| Evidence images in git | | 85 PNG (average 620 KB, 13 over 1 MB, largest 6.9 MB) and 59 JPEG (average 98 KB); 63 MB added this week |
 
 1. The harness persists any Bash result over about 30,000 characters to a file and shows a 2 KB preview
    (observed: smallest persisted result 30.5 KB; no inline Bash result above 30 KB). The bootstrap has been
@@ -50,10 +50,11 @@ accumulating history; (d) per-turn context drops and the change is measured agai
 (e) evidence images stop inflating the repository while staying inside the Monday git bundle; (f) instruction
 text that no longer applies stops loading.
 
-Non-goals (user rulings 2026-09-15): no change to `verify.md` beyond the one-word question in 3.6 (its
-cadence tagging is a follow-up spec); no git history rewriting; no change to gates, invariants, ceilings, the
-Decisions table or the model allocations; no change to hooks (`.claude/settings.json`, the hook scripts) or
-the worker sandbox; no edit to the v2 spec; no renumbering of fix rows.
+Non-goals (user rulings 2026-09-15): no change to `verify.md` beyond the one-word edit the user authorised in
+3.6 (its cadence tagging is a follow-up spec); no git history rewriting; no change to any gate's trigger or
+outcome, to invariants, ceilings, the Decisions table or the model allocations; no change to hooks
+(`.claude/settings.json`, the hook scripts) or the worker sandbox; no edit to the v2 spec; no renumbering of
+fix rows.
 
 ## 3. Components
 
@@ -61,23 +62,32 @@ All new and changed scripts live in `.claude/skills/autopilot/scripts/`. A new f
 appear in the deploy trigger's diff (SKILL.md Orient rule 2: `git diff --stat "$DEPLOYED"..main -- . ':!docs'
 ':!*.md' ':!.claude' ':!scripts/autopilot-session.sh'`) and make the loop redeploy; `.claude/` is excluded.
 The one change under `scripts/` is to `autopilot-session.sh`, which the trigger already excludes. Note that
-`.claude/` and the launcher are inside the release tree (`scripts/release_tree.py` excludes only
-`docs/superpowers/autopilot/`), so after the merge main's release tree differs from the deployed tree without
-any deployable code change; the migrated state says so (3.4) and the deploy trigger still reads empty.
+`scripts/release_tree.py` excludes only `docs/superpowers/autopilot/`, so `.claude/`, the launcher, root
+`CLAUDE.md`, the runbook and this spec are all inside the release tree: after the merge main's release tree
+differs from the deployed tree without any deployable code change, the deploy trigger still reads empty, and
+no pre-existing full-suite receipt matches main. The next deploy needs a receipt for the post-merge tree; fix
+78 part 2's full suite after its rebase onto the merged main supplies it in the normal flow (deploy.md step
+2). The migrated state says so (3.4).
 
 ### 3.1 Bootstrap in three parts (`context.py bootstrap [checkpoint|authority|operator]`)
 
-- Budget: each part's rendered output, `Source:` lines included, is at most 27,000 characters (10 percent
-  under the observed 30,000 limit). A part over budget still prints in full but begins with one line
-  `BUDGET EXCEEDED: <part> <n> chars > 27000; largest sections: <title> <n>, ...` so the loop sees it in the
-  harness preview and reads the persisted file by the `Source:` ranges.
+- Budget: each part's rendered output, `Source:` lines included and measured after the degrade rules below,
+  is at most 27,000 characters (10 percent under the observed 30,000 limit). A part over budget still prints
+  in full but begins with one line `BUDGET EXCEEDED: <part> <n> chars > 27000; largest sections: <title> <n>,
+  ...` so the loop sees it in the harness preview and reads the persisted file by the `Source:` ranges.
 - `checkpoint` (the default when no part is named): `state.md` verbatim, the last two complete journal
-  entries, the `Open` section of `fixes.md`, then the footer `Next: run context.py bootstrap authority, then
-  context.py bootstrap operator; then the selected procedure, applicable Pre-loaded decisions and active
-  ledgers.` Degrade rule: when the part would exceed the budget with two journal entries, it prints only the
-  last entry and the line `journal entry N-1 omitted for budget: run context.py journal
-  docs/superpowers/autopilot/journal.md --count 2`; after that the only remaining signal is the
-  `BUDGET EXCEEDED` line. Missing `state.md` prints the existing `STATE MISSING` line. Missing `fixes.md` or
+  entries, the first ten rows of the `Open` section of `fixes.md` (more rows print the line `N more Open
+  rows: run context.py section docs/superpowers/autopilot/fixes.md Open`), then the footer `Next: run
+  context.py bootstrap authority, then context.py bootstrap operator; then the selected procedure, applicable
+  Pre-loaded decisions and active ledgers.` Degrade rules, applied in order until the part fits: (1) print
+  only the last journal entry plus `journal entry N-1 omitted for budget: run context.py journal
+  docs/superpowers/autopilot/journal.md --count 2`; (2) if the last entry alone still overflows, print its
+  heading and its non-quoted lines plus `quoted block omitted for budget: run context.py journal
+  docs/superpowers/autopilot/journal.md --count 1` (the user's words stay in the journal; only the bootstrap
+  elides them). Worst case under the caps of 3.3 and 3.4 after both rules: about 13,000 of state and
+  overhead, 6,150 of entry and 6,000 of rows, under 27,000. An overage that remains after both rules is the
+  `BUDGET EXCEEDED` line and, in `check`, `NEEDS USER` when the last entry is a decision or gate entry,
+  otherwise `BLOCK`. Missing `state.md` prints the existing `STATE MISSING` line. Missing `fixes.md` or
   a missing `Open` heading prints `FIXES MISSING: reconstruct fixes.md from roadmap.md history and the
   journal before Orient; do not select idle` (and `check` reports a BLOCK, 3.3).
 - `authority`: the roadmap preamble (text before the first level-2 heading) and every level-2 section of
@@ -87,7 +97,8 @@ any deployable code change; the migrated state says so (3.4) and the deploy trig
   changes (hard-forbidden; always a gate, never a ruling)`, `Carried fixes` (the pointer section of 3.2, kept
   because the unchanged `verify.md` names it), `Pre-loaded decisions`. A missing required heading raises, as
   today. New level-2 sections are included automatically, as today; nothing is filtered by phase status or
-  date. Measured today: 22.8 KB plus the pointer section, about 23 KB; headroom about 4 KB.
+  date. Measured today: 22.5 KB plus `Source:` lines and the pointer section, about 23.2 KB; headroom about
+  3.8 KB.
 - `operator`: `Current host and restart setup (user-directed, 2026-09-12)`, `Secrets (provision when
   convenient; the loop never blocks on them)`, `Operator calendar (America/Chicago)` and `User-side TODOs`,
   all required. Measured today 26.0 KB; after 3.7's pruning about 17 KB.
@@ -99,6 +110,11 @@ any deployable code change; the migrated state says so (3.4) and the deploy trig
   (line 62, "compact at 500k"), `docs/runbooks/claude-omarchy-restart.md` line 34, and root `CLAUDE.md` line
   12 ("run ... bootstrap" becomes "run ... bootstrap, all three parts"). The hooks' text is unchanged (non-goal);
   it still says "run its scripts/context.py bootstrap", which prints the checkpoint part with the footer.
+- The skill's tests are not part of `make test` (`pyproject.toml` testpaths is `tests`). `preflight.md`
+  therefore runs `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests` once per session, after
+  `check`; a failure is a `BLOCK`-class repair before any dispatch. The live tests assert only what the loop
+  owns (no `BLOCK` from `check`; the checkpoint part under budget); an `authority` or `operator` overage
+  surfaces as a `NEEDS USER` line, never as a test failure.
 
 ### 3.2 Fix rows: `docs/superpowers/autopilot/fixes.md`
 
@@ -107,10 +123,11 @@ any deployable code change; the migrated state says so (3.4) and the deploy trig
   one line `Baseline numbers (2026-09-15): 16, 20, ..., 80` listing every row number present at migration
   (the duplicate 56 listed twice). New rows continue from the highest number.
 - `Open` holds actionable hotfix rows only; Orient rule 1 selects hotfix rows from `Open` and nowhere else
-  (its second trigger, the last entry ending in FAIL, stands). `Watch` holds rows assigned to a phase, owned by
-  the user, recorded as observations, or ruled follow-ups; hotfix, phase and plan-next briefs read it with
-  `context.py section docs/superpowers/autopilot/fixes.md Watch` when they touch its area. `Closed` holds done
-  rows.
+  (its second trigger, the last entry ending in FAIL, stands; its second sentence, that rows assigned to
+  phase work, user actions or already closed do not keep selecting hotfix, becomes "such rows live in `Watch`
+  or `Closed`"). `Watch` holds rows assigned to a phase, owned by the user, recorded as observations, or ruled
+  follow-ups; hotfix, phase and plan-next briefs read it with `context.py section
+  docs/superpowers/autopilot/fixes.md Watch` when they touch its area. `Closed` holds done rows.
 - An `Open` or `Watch` row is at most 600 characters and has exactly six cells. The Finding cell states the
   symptom in one clause and points to where the numbers live (`journal N`, `evidence/<file>`, a ledger path).
   Numbers, time series and query output never go in a row.
@@ -119,8 +136,11 @@ any deployable code change; the migrated state says so (3.4) and the deploy trig
   entry. A transient (references/hotfix.md lines 5 and 23, which today say "remove") moves the row to `Closed`
   with `transient (journal N)`; a passed item (line 23) likewise with `PASS (journal N)`. A user ruling that
   assigns or defers a row moves it from `Open` to `Watch`; a ruling that makes a `Watch` row actionable moves it
-  to `Open`. A row added by a verify FAIL or an integrity anomaly leaves `Open` only to `Closed` on PASS or by
-  the user's ruling, never by the loop's own ruling. Rows are never deleted; `check` proves it against the
+  to `Open`. The loop itself moves an `Open` row to `Watch` in exactly one case: references/hotfix.md's scope
+  rule (lines 15-17) makes the fix phase work (a new table, a dependency); the Deploy cell gains `watch: phase
+  work (journal N)` and the next plan-next brief names the row. Otherwise a row added by a verify FAIL or an
+  integrity anomaly leaves `Open` only to `Closed` on PASS or by the user's ruling. Every move happens in the
+  same commit as the journal entry that records it. Rows are never deleted; `check` proves it against the
   baseline line. `Closed` rows have no size cap.
 - Migration (one time, in the implementation session). Facts: the roadmap table has 63 rows numbered 16 to 80
   with 17, 18 and 19 absent and 56 used twice; rows 78, 79 and 80 have four cells (Files, Change, Covering
@@ -142,9 +162,10 @@ any deployable code change; the migrated state says so (3.4) and the deploy trig
 - `roadmap.md` keeps the level-2 heading `Carried fixes` as a pointer section with no table rows: "Rows live
   in `fixes.md` (`Open`, `Watch`, `Closed`). A verify FAIL adds a row to `fixes.md` `Open`. This section holds
   no rows." The unchanged `verify.md` lines 765 and 897 and `roadmap.md` line 232 resolve through it. The
-  edit-rights sentence in `Files and sections the loop may edit` names `fixes.md` as loop-editable, states that
-  rows move and are never deleted, and adds `scripts/autopilot-session.sh` and the skill's scripts to the
-  never-edited list (3.5). The skill files that say "roadmap Carried fixes" (SKILL.md Orient rule 1 and Files
+  pointer text is the user's; the edit-rights sentence in `Files and sections the loop may edit` (roadmap line
+  119) and SKILL.md's "Files the loop may edit" (line 180) replace `Carried fixes` with `fixes.md`, state that
+  rows move and are never deleted, and add `scripts/autopilot-session.sh` and the skill's scripts to the
+  never-edited list (3.5). The rows leave the roadmap in the same commit that creates `fixes.md`. The skill files that say "roadmap Carried fixes" (SKILL.md Orient rule 1 and Files
   the loop may edit; references/hotfix.md lines 5 and 23; references/verify.md step 5; references/recording.md
   `Carried forward`) say `fixes.md Open` (or `Watch` where a row is deferred).
 
@@ -155,29 +176,37 @@ any deployable code change; the migrated state says so (3.4) and the deploy trig
 - `BLOCK <file>: <rule>: <measured> vs <limit>`: something the loop owns and must fix before the commit.
 - `NEEDS USER <file>: <rule>: <measured> vs <limit>`: something only the user may edit.
 
-Exit 1 when any `BLOCK`; exit 0 with `check: ok` or with only `NEEDS USER` lines; exit 2 when a reader fails
-(missing or ambiguous file or heading), with the existing "read the canonical file directly" message.
+Exit 1 when any `BLOCK`; exit 0 with `check: ok` or with only `NEEDS USER` lines; exit 2 only when
+`roadmap.md` or `journal.md` is unreadable or has an ambiguous required heading, with the existing "read the
+canonical file directly" message. An absent `fixes.md`, an absent `fixes.md` or `state.md` section, or an
+absent `state.md` is a `BLOCK`, not a reader failure.
 
 | Target | Rule | Class |
 |---|---|---|
-| bootstrap `checkpoint` | at most 27,000 characters | BLOCK (state, journal tail and Open rows are loop-owned) |
+| bootstrap `checkpoint` | at most 27,000 characters after the degrade rules | BLOCK; NEEDS USER when the overage remains with a decision or gate entry last |
 | bootstrap `authority`, `operator` | at most 27,000 characters | NEEDS USER |
-| `state.md` | fixed level-2 headings only, exact titles, no suffix (3.4); required ones present; the fixed sections together at most 8,000 characters; `Resume first` at most 4,000 more | BLOCK |
-| `fixes.md` | `Open`, `Watch`, `Closed` present; every `Open` and `Watch` row at most 600 characters; every row in every section has six cells; every number on the baseline line still present somewhere in the file | BLOCK |
+| `state.md` | fixed level-2 headings only, exact titles, no suffix (3.4); required ones present; the file minus the `Resume first` section (header line included) at most 8,000 characters; the `Resume first` section at most 4,000 | BLOCK |
+| `fixes.md` | `Open`, `Watch`, `Closed` present; every `Open` and `Watch` row at most 600 characters; every row in every section has six cells; # cells parse as `\d+( \(dup\))?` and the multiset of parsed numbers over the three tables contains the baseline line's multiset (56 twice) | BLOCK |
+| `roadmap.md` `Carried fixes` | the section has no table rows | BLOCK |
 | `journal.md` last entry, or `--entry N` (the entry whose heading starts `## N.`) | heading grammar and limits below | BLOCK |
 
 Journal entry rules (checked on the last entry only; older entries are never checked, and an entry may be
 edited until the commit that lands it, after which recording.md's append-only rule applies):
 
-- Heading: `## N. <unit> - <slug> - <YYYY-MM-DD> <HH:MM>[-<HH:MM>] CT`, at most 120 characters. `<unit>` is
-  one token matching `[a-z][a-z0-9-]*`; qualifiers go in the slug (`verify - re-read: ...`, `phase - start:
-  ...`, `paused - rate limit: ...`); the timestamp follows the last ` - `; nothing follows ` CT`.
+- Heading: `## N. <unit> - <slug> - <YYYY-MM-DD> <HH:MM>[-<HH:MM>] CT`, the text after `## ` at most 120
+  characters. `<unit>` is one token matching `[a-z][a-z0-9-]*`; qualifiers go in the slug (`verify - re-read:
+  ...`, `phase - start: ...`, `paused - rate limit: ...`); the timestamp follows the last ` - `; nothing
+  follows ` CT`. Result values (`done | FAIL | transient | gated: | paused: rate limit | ceiling`) are
+  unchanged; `paused: rate limit` stays a Result value and gate 14's text is untouched.
 - Required lines: `- Result:` and `- Next:` in every entry (a decision entry writes `- Result: recorded`);
   `- Orient:` when the unit is one of preflight, hotfix, deploy, verify, operate, phase, plan-next, idle,
   repair; `- Verification:` when the unit is verify or deploy. Unknown units need only Result and Next.
 - Body (characters after the heading line, trailing whitespace stripped): at most 6,000 for verify, deploy and
   repair (their contracts require one line per item); at most 3,000 for every other unit; in decision and gate
-  entries the quoted block (lines starting `>`) is exempt and the rest is at most 3,000.
+  entries the quoted block (lines starting `>`) is exempt and the rest is at most 3,000. Three of the last
+  eight verify bodies exceed 6,000 (entries 219: 13,355; 231: 11,037; 234: 6,917): per-item numbers go to the
+  `-layer2.txt` and `-summary.txt` evidence files as recording.md already says, and the entry keeps one
+  verdict clause per item.
 
 `context.py append` refuses a ledger line longer than 400 characters with the message `ledger line <n> chars
 > 400: write the detail to the report or brief and reference its path`, exit 1, nothing written.
@@ -185,14 +214,15 @@ edited until the commit that lands it, after which recording.md's append-only ru
 Rule text. `recording.md` gains: "Run `python3 .claude/skills/autopilot/scripts/context.py check` before every
 docs commit. A `BLOCK` is fixed before the commit by moving detail to evidence, the journal body, a report or
 `fixes.md`, never by dropping an unresolved fact. A `NEEDS USER` line is copied once into the entry's
-`Anomalies:` line and into the next report's Needs you; it is never a repair entry and never blocks." The
+`Anomalies:` line and into the next report's Needs you; it is never a repair entry and never blocks. An entry
+may be edited until the commit that lands it; from that commit on it is appended to, never edited." The
 journal format block gains the heading grammar, the limits, the unit list and one decision-entry example.
-`preflight.md` runs `check` once per session: a `BLOCK` is fixed inside the preflight's own commit; a
-`NEEDS USER` line is reported as above.
+`preflight.md` runs `check` and the skill's tests once per session: a `BLOCK` is fixed inside the preflight's
+own commit; a `NEEDS USER` line is reported as above.
 
 Tests: fixture-based tests for each rule (passing and failing cases), the two classes and three exit codes,
-the append refusal, and a live test that runs `check` against the real repository and asserts no `BLOCK`, so
-the migration cannot land failing.
+the append refusal, and a live test that runs `check` against the real repository and asserts no `BLOCK` and
+the checkpoint part under budget, so the migration cannot land failing.
 
 ### 3.4 `state.md` schema
 
@@ -204,10 +234,10 @@ field list maps onto the headings: active units, plans, ledgers, branches and ne
 deploy, verify) as one pointer line per stage under `Pending results`; CT-day counters, failure counts,
 wakeup IDs, judge-after times and next duties under `Counters and deadlines`; standing constraints and the
 applicable unresolved lessons and risks with their evidence pointers under `Constraints`. Receipts and
-rulings are pointers (`journal N`, ledger line time, evidence path), never pasted. The fixed sections
-together are at most 8,000 characters; `Resume first` may add up to 4,000 and is removed at the first
-checkpoint after the resumed session consumes it, every fact it carried moving to its section or the resume
-journal entry in the same commit.
+rulings are pointers (`journal N`, ledger line time, evidence path), never pasted. The file minus the
+`Resume first` section, header line included, is at most 8,000 characters; `Resume first` is at most 4,000
+and is removed at the first checkpoint after the resumed session consumes it, every fact it carried moving
+to its section or the resume journal entry in the same commit.
 
 Migration: the implementer writes a fact inventory (every sentence of the current `state.md` mapped to its
 destination: a schema section, a `fixes.md` row, the journal entry that already records it, or the migration
@@ -217,16 +247,19 @@ by pointers, not by dropping facts; the independent reviewer of 3.2 checks the r
 Before the Evidence receipts and Rulings landed sections are dropped, each evidence path and release stamp
 they name is grepped in `journal.md` and the active ledgers; any that appear nowhere else are listed in the
 migration report and cited from the `repair` entry (3.7). The migrated `Right now` states that main's
-release tree differs from the deployed tree by `.claude/` and the launcher only (section 3). `recovery.md`'s
+release tree differs from the deployed tree by non-deployable files only (section 3) and that the next
+deploy needs a post-merge suite receipt. The migrated `Resume first` records the user's ruling of 2026-09-15:
+the stop at 17:34 CT suspends the hotfix batch wall-clock, which resumes at relaunch with 35 minutes consumed. `recovery.md`'s
 checkpoint section names the fixed headings, the mapping and the caps.
 
 ### 3.5 Compaction at 300k, measured (`autopilot-session.sh`, `usage.py`)
 
 - `controller_cmd` passes `--autocompact 300k`; the comment line says 300k and cites this spec; SKILL.md's
   Kickoff comment (line 62) says 300k.
-- `scripts/autopilot-session.sh`, `.claude/skills/autopilot/scripts/` and their tests are added to the
-  never-edited list in `Files and sections the loop may edit` (roadmap) and SKILL.md's "Files the loop may
-  edit"; gate 10 already covers the skill's supporting files and now names the launcher.
+- `scripts/autopilot-session.sh` is added to the never-edited list in `Files and sections the loop may edit`
+  (roadmap line 124, which today names only the skill and the v2 spec) and to SKILL.md's "Files the loop may
+  edit" (line 181, which already forbids the skill's references, scripts and tests); gate 10's list (line
+  203) gains the launcher. No gate's trigger or outcome changes.
 - New `.claude/skills/autopilot/scripts/usage.py [--since YYYY-MM-DD] [--project DIR]` reads the Claude Code
   transcripts for this project (`~/.claude/projects/-home-trey-dev-sports/*.jsonl` by default) and prints one
   row per session with at least 20 assistant turns: start time (CT), session id prefix, assistant turns,
@@ -258,9 +291,10 @@ checkpoint section names the fixed headings, the mapping and the caps.
   keep `<date>-<unit>-<HHMM>-<nn>-<slug>.jpg` (verify.md line 887; line 793 already says screenshots are
   JPEG). The controller re-scores FAIL items from the originals in `.superpowers/sdd/screenshots/` and cites
   the `evidence/` path. The walker reviewer keeps reading the originals.
-- `verify.md` line 886 says "copies ... with `cp -n`". Question for the user (gate 10): authorise the one-word
-  edit "archives ... with `evidence_image.py`", or leave the line and let the migration `repair` entry record
-  that the tool implements it. The spec does not decide this.
+- `verify.md` line 886 says "copies ... with `cp -n`". The user authorised (2026-09-15, this session) the
+  one-line edit under gate 10: the line says the controller archives each returned path with
+  `evidence_image.py`, which keeps `cp -n`'s no-overwrite behaviour. No other line of `verify.md` changes;
+  the `repair` entry quotes the ruling.
 - Existing PNGs in `evidence/` stay. No history rewrite.
 - Tests: a generated image round-trips under the cap; an existing DEST is kept with exit 0; skipped when
   `magick` is absent.
@@ -272,21 +306,22 @@ User-owned text, edited in the implementation session under the user's direction
 - `SKILL.md` U8 scheduling exception: the dated 6C deadline (Sun 2026-09-13) has passed; the paragraph shrinks
   to the still-live rule that ready 6x milestones may be planned in parallel with separate plans, branches and
   ledgers, controller git serial, ceilings unchanged, and 6C `planned` until full acceptance. The same
-  deadline text in `recovery.md` line 35 ("Recheck U8's 6C deadline at every task boundary") and `phase.md`
-  line 63 (the 6C deadline-slice sentence) is removed.
+  deadline text in SKILL.md Orient rule 0 (lines 82-83, the 6C deadline-slice sentence), `recovery.md` line 35
+  ("Recheck U8's 6C deadline at every task boundary"), `phase.md` line 63 and the roadmap calendar row "At
+  resume, and each unit/task boundary until the Sunday/Monday duties" (line 556) is removed.
 - `SKILL.md` kickoff block and `docs/runbooks/claude-omarchy-restart.md`: "select `/effort` high explicitly;
   the saved default may be xhigh, which the skill measured at three to four times the tokens for no gain."
 - `roadmap.md` Secrets: the production Kalshi key row keeps one clause, `done, read-scoped, journal 202`.
 - `roadmap.md` Operator calendar: the four past-dated rows (the drill before 2026-09-12, journaled as entries
-  18, 29 and 133; Sun 2026-09-13; Mon 2026-09-14; Tue 2026-09-15) are removed; rows whose Duty is an NAS `ssh`
-  command or names an NAS path (`/volume1`) are rewritten to the Omarchy equivalent only where a Makefile
-  target or runbook command exists, otherwise left as they are with the note `(NAS command; see
-  linux-controller.md)`.
+  18, 29 and 133; Sun 2026-09-13; Mon 2026-09-14; Tue 2026-09-15) are removed; rows whose Duty names the NAS in any
+  form (an `ssh` command, a `/volume1` path, or the words "on the NAS") are rewritten to the Omarchy
+  equivalent only where a Makefile target or runbook command exists, otherwise left as they are with the note
+  `(NAS command; see linux-controller.md)`.
 - `roadmap.md` User-side TODOs: the twelve `- [x]` items are deleted; each cites its journal entry.
 - The Decisions table, Standing authorizations, Invariants, Phases and Pre-loaded decisions are not touched.
 
-The migration is recorded as one `repair` journal entry in the template (body at most 6,000): files
-restructured, the classification counts (Open n, Watch n, Closed n) with the ambiguous row numbers under
+The migration is recorded as one `repair` journal entry in the template (body at most 6,000; `- Orient: none
+(user-directed session)`): files restructured, the classification counts (Open n, Watch n, Closed n) with the ambiguous row numbers under
 `Needs you`, the count of receipts not found elsewhere, the launcher change, the new commands, and the path of
 the migration report that carries the tables.
 
@@ -330,9 +365,9 @@ the three bootstrap parts and recovery.md as today.
    user-owned roadmap sections and the skill. Then `--ff-only` to main; commits: scripts and tests; migration
    (fixes.md, state, report, repair entry); skill and roadmap text; launcher. No push (U7 governs pushes).
    Verification that nothing else moved: `git diff <pre-migration sha>..HEAD --stat --
-   docs/superpowers/autopilot/verify.md .claude/settings.json` is empty (unless the user authorised the 3.6
-   one-word edit, in which case it shows one line changed in verify.md); `git diff <pre-migration sha>..HEAD --
-   docs/superpowers/autopilot/journal.md | grep -c '^-[^-]'` is 0 (append-only); the deploy trigger diff is
+   docs/superpowers/autopilot/verify.md .claude/settings.json` shows exactly one line changed in verify.md
+   (the 3.6 edit) and nothing in settings.json; `git diff --numstat <pre-migration sha>..HEAD --
+   docs/superpowers/autopilot/journal.md` shows 0 in the deletions column (append-only); the deploy trigger diff is
    empty; `git diff --stat <pre-migration sha>..HEAD -- scripts` shows only `autopilot-session.sh`.
 4. `git checkout main` with a clean tree before the user relaunches the controller with the launcher; its
    first preflight runs `check`.
@@ -343,10 +378,11 @@ the three bootstrap parts and recovery.md as today.
 1. `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests` passes with the new tests.
 2. `python3 .claude/skills/autopilot/scripts/context.py check` exits 0 on main after the merge with no
    `BLOCK` line.
-3. Each bootstrap part measured on main is under 27,000 characters (the live test).
-4. `state.md` has only the fixed headings, its fixed sections total at most 8,000 characters, `Resume first`
-   at most 4,000, and `Resume first` carries every fact of the 17:34 CT stopping point (commit 9fcff02) per
-   the fact inventory.
+3. `check` on main prints neither `BLOCK` nor `NEEDS USER`: every bootstrap part is under 27,000 characters
+   at merge time (the live test holds the checkpoint part to it permanently).
+4. `state.md` has only the fixed headings, the file minus `Resume first` is at most 8,000 characters, `Resume
+   first` at most 4,000, and `Resume first` carries every fact of the 17:34 CT stopping point (commit 9fcff02)
+   per the fact inventory plus the batch-clock ruling.
 5. `fixes.md` exists with `Open`, `Watch` and `Closed`; their rows total 63; every row has six cells; the
    baseline line lists 63 numbers; the roadmap's `Carried fixes` section has no table rows; `grep -rn
    'Carried fixes' .claude/skills/autopilot/SKILL.md .claude/skills/autopilot/references` returns nothing.
@@ -388,6 +424,5 @@ the three bootstrap parts and recovery.md as today.
 - The check's unit list may reject a legitimate new unit name: unknown units require only Result and Next.
 - The day-after measurement depends on a full controller day at 300k; a short, quiet or interrupted day is
   reported as inconclusive, not as a pass.
-- Open question for the user, recorded in `Resume first` by the migration: the hotfix batch wall-clock (3 h,
-  started 16:59 CT Sep 15) was interrupted by the user's stop at 17:34 CT; the user states whether the stop
-  suspends it, so the first wake does not journal `ceiling`.
+- The hotfix batch wall-clock (3 h, started 16:59 CT Sep 15) was interrupted by the user's stop at 17:34 CT;
+  the user ruled that the stop suspends it (3.4), so the first wake does not journal `ceiling`.
