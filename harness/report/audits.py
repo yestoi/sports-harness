@@ -31,7 +31,8 @@ class Audit:
     since: str
 
 
-#: U8's "order 157". Seeded with the one order the roadmap names; 6B replaces the status.
+#: U8's "order 157". Seeded with the one order the roadmap names; 6B replaced the seeded
+#: `pending` with the capsule audit's own verdict (journal 224 item 14).
 ORDER_AUDITS: dict[int, Audit] = {
     157: Audit("unverifiable_differs",
                "the 2026-09-14 17:38 CT capsule audit replayed 63.92 filled against the "

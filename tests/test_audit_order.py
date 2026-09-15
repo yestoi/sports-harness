@@ -120,10 +120,11 @@ def test_a_capsule_with_no_anchoring_snapshot_is_unverifiable_uncovered(tmp_path
     result = audit_order(read_capsule(directory), 157)
     assert result.verdict == "unverifiable_uncovered"
     assert result.hypothesis is None
-    # Gated, not merely different: this capsule has no prints, so the replay path would also
-    # read `unverifiable_differs` and the verdict alone cannot tell the two apart. The absent
-    # simulated quantities are what say the manifest decided it (0.16's fail-closed branch; with
-    # that branch removed this case still passed before these two lines).
+    # Gated, not merely different: this capsule has no prints, so the replay path would have
+    # read `unverifiable_differs` on the same rows. Since amendment 0.18 the verdict itself
+    # separates the two, and the absent simulated quantities say it a second way -- that the
+    # manifest decided it (0.16's fail-closed branch; with that branch removed this case still
+    # passed before these two lines).
     assert result.repaired_filled is None
     assert result.repaired_queue is None
 

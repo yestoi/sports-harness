@@ -854,13 +854,15 @@ def open_interval_market_ids(session: Session, table: str, replay: bool) -> set[
     a market whose row is still open in the database can become invisible to every later step's
     `gone`, and the row never closes. This is the database's own answer to "what is still open",
     which nothing in memory can get out of sync with: `_advance_books` reads it once per step
-    and treats `self._market_ids` as a cache only. Rides `ix_mdi_market_started` /
-    `ix_moi_market_started`, the same index `open_interval`'s own read does, or a seq scan of a
-    small live set either way.
+    and keeps no cross-step map of its own. The predicate leads on `ended_at`, not on
+    `venue_market_id`, so it does not ride `ix_mdi_market_started` / `ix_moi_market_started`
+    the way `open_interval`'s own read does: it is one sequential scan of a table whose live
+    (open) set is a few dozen rows, and a partial index on the open rows is the answer if the
+    table itself ever grows enough for the scan to matter.
     """
     model = _MODELS[table]
     stmt = select(model.venue_market_id).where(model.ended_at.is_(None),
-                                                model.replay == replay)
+                                               model.replay == replay)
     return {row[0] for row in session.execute(stmt).all()}
 
 

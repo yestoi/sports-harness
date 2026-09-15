@@ -657,7 +657,7 @@ def test_an_unfilled_correction_range_is_in_force_and_a_numeric_one_is_tested(mo
     assert _parse_run_range("100-two hundred") is None
 
     unfilled = _dc_replace(CORRECTIONS[0], id="CY",
-                            affected_run_id_range="all runs through the 6B deploy")
+                           affected_run_id_range="all runs through the 6B deploy")
     monkeypatch.setattr(replay_mod, "CORRECTIONS", [unfilled])
     assert _corrections_for(1, 2) == ("CY",)
 
