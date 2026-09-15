@@ -470,10 +470,11 @@ def test_the_versions_directory_holds_eleven_revisions():
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
 
 def test_positions_open_fill_follows_raw_events_lookup():
-    """The pinned-head assertion moved to `test_the_phase46_revision_is_the_pinned_head` when
-    fix 64's `0009_score_correction` and then phase 4.6's `0010_phase46_fun_tickets` landed on
-    top of this one; the chain assertions stay here, so a revision inserted between this one and
-    `0009_score_correction` still fails."""
+    """The pinned-head assertion moved off this test when fix 64's `0009_score_correction` and
+    then phase 4.6's `0010_phase46_fun_tickets` landed on top of this one, and it now lives on
+    `test_phase6b_execution_follows_phase46_fun_tickets_and_is_the_pinned_head` (6B's revision
+    was renumbered `0011_phase6b_execution` at its own merge time, D9); the chain assertions stay
+    here, so a revision inserted between this one and `0009_score_correction` still fails."""
     module = _load_revision("0008_positions_open_fill.py")
     assert module.revision == "0008_positions_open_fill"
     assert module.down_revision == "0007_raw_events_lookup"
@@ -482,10 +483,11 @@ def test_positions_open_fill_follows_raw_events_lookup():
 # --- fix 64 (journal 207): revision 0009 ---------------------------------------------------------
 
 def test_score_correction_follows_positions_open_fill():
-    """The pinned-head assertions moved to `test_the_phase46_revision_is_the_pinned_head` when
-    phase 4.6's revision was renumbered `0010_phase46_fun_tickets` on top of this one at merge
-    time (D9) -- the same pattern `0008_positions_open_fill` used when this revision landed on
-    top of *it*. The chain assertions stay here, so a revision inserted between the two still
+    """The pinned-head assertions moved off this test when phase 4.6's revision was renumbered
+    `0010_phase46_fun_tickets` on top of this one at merge time (D9) -- the same pattern
+    `0008_positions_open_fill` used when this revision landed on top of *it* -- and they moved on
+    again to `test_phase6b_execution_follows_phase46_fun_tickets_and_is_the_pinned_head` when 6B
+    merged. The chain assertions stay here, so a revision inserted between the two still
     fails."""
     module = _load_revision("0009_score_correction.py")
     assert module.revision == "0009_score_correction"
