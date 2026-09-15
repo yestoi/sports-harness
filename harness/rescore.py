@@ -48,6 +48,9 @@ log = logging.getLogger(__name__)
 #: Per-order ceiling on the re-score's own reads. Lower than the executor's, because this runs
 #: beside a live loop in the quiet window and the loop's step is what must not stall (§4.4).
 RESCORE_STATEMENT_TIMEOUT_MS = 15_000
+#: The order_rescores contract row's three values, verbatim; amendment 0.18 (journal 224
+#: item 14) split harness/audit.py's third value into two, but extending that split here
+#: changes the contract invariant and is the user's decision, not made in this hotfix.
 VERDICTS = ("validated", "corrected", "unverifiable")
 #: `validated` means the repaired simulator reproduces the recorded fill within one contract,
 #: the tolerance `harness/audit.py` uses, and **strictly** within it (see `_verdict`).

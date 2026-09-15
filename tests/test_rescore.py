@@ -401,17 +401,30 @@ def test_a_correction_set_that_does_not_fit_the_column_is_refused(db_session):
 
 
 def test_the_verdict_vocabulary_is_the_audits(db_session, seeded_world):
-    """Expected: the same three verdicts `harness/audit.py` uses, and nothing else written.
+    """Expected: rescore's three verdicts are the order_rescores contract row's three values,
+    verbatim, and audit's four values agree with rescore on `validated` and `corrected` while
+    every audit value that is not shared starts with `unverifiable`.
 
     Derived independently from §2's invariant query for `order_rescores`, which asserts
     `verdict not in ('validated','corrected','unverifiable')` returns no row. Two instruments
     answering the same question -- `harness audit-order` for one order, `harness rescore` for a
-    range -- have to answer it in one vocabulary or the query is written twice and drifts.
+    range -- used to answer it in one vocabulary; amendment 0.18 (journal 224 item 14) split the
+    audit's third value into `unverifiable_uncovered` / `unverifiable_differs`, so `audit.VERDICTS`
+    is now four values while rescore keeps the order_rescores contract row's original three
+    (rescore's `unverifiable` is the pre-0.18 collapse of the audit's two split values). Whether
+    0.18 extends to `order_rescores` -- which would change its contract invariant -- is the user's
+    decision, recorded in the roadmap's User-side TODOs on 2026-09-15.
     """
     from harness.audit import VERDICTS as AUDIT_VERDICTS
     from harness.rescore import VERDICTS
 
-    assert VERDICTS == AUDIT_VERDICTS == ("validated", "corrected", "unverifiable")
+    assert VERDICTS == ("validated", "corrected", "unverifiable")
+    assert AUDIT_VERDICTS == ("validated", "corrected", "unverifiable_uncovered",
+                               "unverifiable_differs")
+    shared = set(VERDICTS) & set(AUDIT_VERDICTS)
+    assert shared == {"validated", "corrected"}
+    unshared_audit = set(AUDIT_VERDICTS) - shared
+    assert all(value.startswith("unverifiable") for value in unshared_audit)
     rescore(db_session, from_order=seeded_world.first, to_order=seeded_world.last,
             corrections=CORRECTIONS_IN_FORCE)
     written = db_session.execute(text("select distinct verdict from order_rescores")).scalars()
