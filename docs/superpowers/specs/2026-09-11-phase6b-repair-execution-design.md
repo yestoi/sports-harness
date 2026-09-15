@@ -161,6 +161,25 @@ their corrections are applied.
   amendment ... and update §1.7 ...; add the fixture case; rerun `harness audit-order` on the real order 157 capsule and replace ORDER_157_VERDICT
   and the audit document's Result section with the new reading, whatever it is." Cost if wrong: none identified (a slice outside the interval
   touches no read the replay makes). Reversal: restore the capsule-wide test.
+- **0.17 (user decision 2026-09-15, journal 224 item 5) The §2 "no pre-6B row is backfilled" invariant is narrowed to what §1.5 and §0.14 already
+  promise, and every counterfactual write carries its writer's version.** §0.14 keeps every order's `no_watcher` track running to its natural expiry
+  "whatever we did", and §1.5 closes nothing, so the 6B executor advancing the 1,176 pre-boundary tracks that were `nw_done = false` at the c1066b5 stop
+  instant (2026-09-15T05:23:44Z; ids in `docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt`) is the design, and the §2 sentence written as if
+  the `nw_` twins were only ever written post-boundary was the error. The invariant now reads: the four non-`nw_` ledger columns are never non-null on a
+  pre-boundary row (unconditional); the `nw_` twins are never non-null on a pre-boundary row that was `nw_done = true` at the boundary (the pre-boundary
+  rows not listed in that evidence file). Additive column `orders.nw_executor_version` (numeric, nullable, no default; revision 0013; mirrored in
+  `create_schema`) is stamped with `EXECUTOR_VERSION` on every counterfactual write and never backfilled, so a pre-boundary row carrying non-null twins
+  and a null version is the anomaly once the column exists. Amendment 6 names the listed orders as a disclosed sub-population whose counterfactual
+  continued under 4.5; 6C separates counterfactual fills by `fills.id > 1878` (the boundary fill), not by order id; criterion 4's disclosure text names
+  the sub-population and its `n_obs`, and the criterion's definition and thresholds do not change (R1). Cost if wrong: a mixed simulator within one
+  order's counterfactual (old to 05:23:44Z, repaired after), disclosed rather than hidden. Reversal: option (a) of roadmap row 72 (bound the tracker to
+  `id > 10886`), which cannot null the twins already written without a by-hand UPDATE that 0.1 forbids.
+- **0.18 (user decision 2026-09-15, journal 224 item 14) §1.7's `unverifiable` verdict splits into two values.** `unverifiable_uncovered` (no tape over
+  the resting interval: a manifest slice inside `[placed_at, min(cancelled_at, expiry)]`, 0.16) and `unverifiable_differs` (the tape covers it, the
+  repaired replay differs from the recorded fills and no hypothesis's counts are met). The single string collapsed two readings 6C's reader cannot
+  distinguish without the audit document. `ORDER_157_VERDICT` becomes `unverifiable_differs` in the hotfix that lands this vocabulary; until then the
+  constant reads `unverifiable` and the audit document's Verdict section (2026-09-14 17:38 CT run) is the record. Cost if wrong: none identified.
+  Reversal: collapse the two values back to `unverifiable`.
 
 ## 1. Components
 
@@ -300,10 +319,10 @@ crossing a registered change of the executed set exits non-zero with nothing wri
 database and no NAS access, replays it under the repaired simulator and compares against the
 **recorded** quantities - `filled_contracts` 38.92, `traded_at_price` 63.92 (read under C0's charge-against definition only, which is why §1.3 leaves
 that column null afterwards), `queue_remaining` 0 - rather than against a C0 code path, which C1-C5 remove from the tree. Verdicts: `validated`
-(reproduces the recorded fills within one contract), `corrected` (differs **and** one hypothesis's stated expected counts are met), `unverifiable`
+(reproduces the recorded fills within one contract), `corrected` (differs **and** one hypothesis's stated expected counts are met), `unverifiable_uncovered`
 (the tape does not cover the interval, nothing anchors it - the 6A manifest's `unverifiable_slices` is that call's input, read for the entries
-overlapping the resting interval `[placed_at, min(cancelled_at, expiry)]` only, amendment 0.16 - **or** it differs and no
-hypothesis's counts are met, which is RECONCILIATION.md's "requires tape audit" rather than a causal story the evidence does not support). The
+overlapping the resting interval `[placed_at, min(cancelled_at, expiry)]` only, amendment 0.16 - **or** `unverifiable_differs`: it differs and no
+hypothesis's counts are met (amendment 0.18 split the one `unverifiable` string into these two values), which is RECONCILIATION.md's "requires tape audit" rather than a causal story the evidence does not support). The
 hypotheses: (i) the equal-timestamp double count, predicting a decrement near -6,376 at our price stamped 15:07:15.332Z beside prints summing to 63.92
 across the six recorded `last_print_ids`; (ii) a recovery anchoring error, predicting a `gap` row on the anchor's sid and a snapshot between 14:36:47Z
 and 15:07:15Z; (iii) a genuine queue collapse, predicting prints of 6,401 or more at 0.45 before the fills. Each is a capsule query with a stated
@@ -368,7 +387,7 @@ abandoned under §4.4's rule if it does not.
 
 | Addition | Shape | Invariant query (must return 0) |
 |---|---|---|
-| `orders.print_unmatched`, `.pending_unmatched`, `.pending_surplus`, `.cancels_ahead` and the four `nw_` twins | `numeric(14,2)`, nullable, no default | `select count(*) from orders where replay = false and id <= :boundary_order_id and (print_unmatched is not null or pending_unmatched is not null or pending_surplus is not null or cancels_ahead is not null or nw_print_unmatched is not null or nw_pending_unmatched is not null or nw_pending_surplus is not null or nw_cancels_ahead is not null or nw_dirty_seconds is not null)` - no pre-6B row is backfilled |
+| `orders.print_unmatched`, `.pending_unmatched`, `.pending_surplus`, `.cancels_ahead` and the four `nw_` twins | `numeric(14,2)`, nullable, no default | `select count(*) from orders where replay = false and id <= :boundary_order_id and (print_unmatched is not null or pending_unmatched is not null or pending_surplus is not null or cancels_ahead is not null or nw_print_unmatched is not null or nw_pending_unmatched is not null or nw_pending_surplus is not null or nw_cancels_ahead is not null or nw_dirty_seconds is not null)` - no pre-6B row is backfilled **on the four non-`nw_` columns**; over the `nw_` twins the count is taken over pre-boundary rows **not** listed in `docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt` (the 1,176 tracks that were `nw_done = false` at 2026-09-15T05:23:44Z, which the design keeps advancing; amendment 0.17), and once `orders.nw_executor_version` exists a pre-boundary row with non-null twins and a null version is the anomaly |
 | `orders.recon_state`, `.nw_recon_state` | `jsonb`, nullable: buckets, trade ids, `print_floor`, pruned to the horizon and the track window on every write | `select count(*) from orders where recon_state is not null and (pending_unmatched + pending_surplus) <> (select coalesce(sum((b->>2)::numeric), 0) from jsonb_array_elements(recon_state->'buckets') b)` - the scalars are the surviving buckets' sums |
 | `orders.traded_at_price`, `.nw_traded_at_price` after the boundary | unchanged columns, left **null** by the repaired writer | `select count(*) from orders where replay = false and id > :boundary_order_id and (traded_at_price is not null or nw_traded_at_price is not null)` - the C0 quantity is never written again |
 | `orders.nw_dirty_seconds` | `integer`, nullable, no default | `select count(*) from orders where nw_dirty_seconds < 0` |

@@ -436,6 +436,7 @@ PYTHONPATH=. .venv/bin/python -c "from harness.report.gate import criteria_hash;
 | Check | Expected | When |
 |---|---|---|
 | Originals intact | the three queries return exactly the triples journaled before the deploy. Any difference means a pre-6B row was rewritten, which invariant 5 forbids: an integrity anomaly and a carried fix, never a fix-forward. | every verify, any hour |
+| Dirty intervals by cause (user-directed 2026-09-15, journal 224 item 8) | `select cause, count(*) from market_dirty_intervals where replay = false and ended_at is null group by 1 order by 1` and the same over `started_at > now() - interval '24 hours'`: every cause is one of the six the spec names after amendment 0.19 (`gap`, `session_boundary`, `recorder_dead`, `event_age`, `malformed_row`, `book_unreadable`); a `book_unreadable` row that is still open has a `started_at` younger than the recorder cadence plus one executor step, since it closes on the next successful read (row 69). An unknown cause, or an open `book_unreadable` older than that, is a FAIL. Evidence: the two by-cause lines in `evidence/<date>-verify-*.txt` (the 02:08 CT file carries two GROUP BY errors before the corrected query; the blank cell in journal 222 is that error). |
 | No post-expiry fill | **0**. Unfiltered by `fill_method`, so it stays a real test of §1.4's entry-cross clamp rather than of the walk alone. | judged from the first game window after the deploy; **before that it reads "deferred: no post-boundary fills yet"** |
 | No placement from a rejected target | the first query returns **0**, narrowed to intents whose *newest* prior event is the rejection skip so a key whose verdict lawfully flips back is not flagged; the second is **above 0** by the first game window, which is what says the skip is being written at all. | the first query every verify; the second from the first game window |
 | Liquidity conservation | `has_print = false` on a post-boundary `queue_model` fill returns **0**. For ten post-deploy orders with a `queue_model` fill, `filled_contracts <= sum(count)` over hitting prints at or through the order's price inside its resting interval, from `venue_trades` by `(ticker, ts)`. | game days; **deferred and journaled as such when the sample is empty** |
@@ -527,15 +528,21 @@ select count(*) from gate_reports where criteria_json ? 'eligibility';
   -- gate_eligible_from_order_id / gate_eligible_from_run_id are None by design (addendum §0.4).
   -- A row carrying the key means the measurement boundary was switched on; only a dated user
   -- decision may do that (R1), so a non-zero count is an integrity anomaly, not a fix-forward.
--- after phase 6b
+-- after phase 6b (narrowed by the user 2026-09-15, journal 224 item 5; spec amendment 0.17)
 select count(*) from orders where replay = false and id <= :boundary_order_id
   and (print_unmatched is not null or pending_unmatched is not null
-       or pending_surplus is not null or cancels_ahead is not null
-       or nw_print_unmatched is not null or nw_pending_unmatched is not null
+       or pending_surplus is not null or cancels_ahead is not null);
+  -- The four non-nw_ ledger columns: no pre-6B row is backfilled, unconditionally. A non-zero
+  -- count means a write reached the preserved record, which invariant 5 forbids.
+select count(*) from orders where replay = false and id <= :boundary_order_id
+  and id <> all(:row72_ids)
+  and (nw_print_unmatched is not null or nw_pending_unmatched is not null
        or nw_pending_surplus is not null or nw_cancels_ahead is not null
        or nw_dirty_seconds is not null);
-  -- No pre-6B row is backfilled (spec §2). A non-zero count means a write reached the
-  -- preserved record, which invariant 5 forbids.
+  -- The nw_ twins, over the pre-boundary rows that were nw_done = true at the c1066b5 stop
+  -- instant: :row72_ids is the 1,176-id list in evidence/2026-09-15-row72-ids.txt (the tracks
+  -- the design keeps advancing, spec §0.14 and §1.5). Once orders.nw_executor_version exists,
+  -- the second query reads instead: pre-boundary rows with a non-null twin and a null version.
 
 select count(*) from orders where recon_state is not null
   and (pending_unmatched + pending_surplus)
@@ -747,6 +754,13 @@ Any FAIL is a dashboard FAIL and triggers the Chrome walkthrough below for the f
 
 Cross-checks the controller fills from the screenshots and the Layer 2 numbers. A mismatch is a
 FAIL of the dashboard, not of the data.
+
+**Standing items (user ruling 2026-09-15, journal 224 item 10).** Walkthrough items 14 (days-to-budget) and
+18 (the status word reading `BROKEN`) are standing data items: their FAILs are recorded as FAIL in the walker's
+report and re-scored in the journal beside it, never over it, and they do not count toward the ceiling clause
+"the same verify item failing twice running". Item 14's exemption holds until the storage retention decision
+(roadmap User-side TODO, decide by 2026-09-22); item 18's holds only while every fired rule behind the word is a
+deploy-caused `tape_gap` or a `check_fail` on a row already carried in Carried fixes.
 
 | Cross-check | Tolerance |
 |---|---|
