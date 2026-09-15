@@ -1,0 +1,17 @@
+verify_at_utc=2026-09-15T07:07:41Z (02:07 CT) deploy 0d04804 (fix 69/70)
+open_obs_without_working_order|0
+obs_rows_27_28|27|866|2026-09-15 05:25:45.591492+00|
+obs_rows_27_28|28|865|2026-09-15 05:25:45.591492+00|
+ERROR:  column "market_dirty_intervals.cause" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select 'open_dirty_by_cause', cause, count(*) from market_di...
+                                      ^
+ERROR:  column "market_dirty_intervals.cause" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select 'dirty_causes_24h', cause, count(*) from market_dirty...
+                                   ^
+closed_since_deploy|0|0
+exec_heartbeat|2026-09-15 07:07:31.825103+00|00:00:10.375084|0
+gap_rows_since_0200|0
+open_dirty_by_cause|gap|42
+open_dirty_by_cause|event_age|66
+dirty_causes_24h|event_age|951
+dirty_causes_24h|gap|42
