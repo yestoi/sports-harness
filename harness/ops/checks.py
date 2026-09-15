@@ -37,13 +37,13 @@ _FORBIDDEN_TABLES = ("orderbook_events", "raw_responses")
 #:   The 154 fills and 154 markouts stay as recorded. Gate 13 is authorized for these two
 #:   predicates only."
 #:
-#: The value below is the release instant of that fix (2026-09-15T05:15Z, set at the phase's release
+#: The value below is the release instant of that fix (2026-09-15T05:45Z, set at the phase's release
 #: commit by the controller, the only edit this constant takes). Nothing pins
 #: the value -- the tests seed relative to whatever it holds -- so replacing it is a one-line
 #: change with no test to follow it. The two predicates below bind it as a parameter rather
 #: than writing it into their SQL, so the statement text stays the static text `verify.md` and
 #: `assert_no_tape_reads` read.
-NO_WATCHER_CUTOFF_FIXED_AT: datetime = datetime(2026, 9, 15, 5, 15, tzinfo=timezone.utc)
+NO_WATCHER_CUTOFF_FIXED_AT: datetime = datetime(2026, 9, 15, 5, 45, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
