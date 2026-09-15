@@ -63,7 +63,11 @@ def release(monkeypatch, tmp_path):
                             test_receipt=test_receipt, receipt=receipt, calls=[], health_calls=[],
                             failure=None, failed=False, dirty="", head=HEAD, tree=TREE, old=OLD,
                             listing="100644 blob 1111111111111111111111111111111111111111\tharness/x.py\n",
-                            touched=[], mutate_candidate=None)
+                            touched=[], mutate_candidate=None,
+                            # Fix 71: what the postgres container's psql reports for the harness
+                            # client backends left behind by the apps this release just stopped,
+                            # and whether terminating them actually closes them.
+                            backends=[], backends_drain=True, psql_calls=[])
     monkeypatch.setattr(module, "RUNTIME", runtime)
     monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("SPORTS_TEST_STATE_DIR", str(cache))
@@ -106,6 +110,14 @@ def release(monkeypatch, tmp_path):
             return json.dumps(rendered)
         if args[:3] == ["docker", "image", "inspect"]:
             return "sha256:old-image" if OLD in args[3] else "sha256:new-image"
+        if "psql" in args:
+            state.psql_calls.append(args)
+            if "pg_terminate_backend" in args[-1]:
+                terminated = list(state.backends)
+                if state.backends_drain:
+                    state.backends = []
+                return "".join("t\n" for _ in terminated)
+            return "".join(row + "\n" for row in state.backends)
         stage = ("stop" if "stop" in args else "migrate" if "migrate" in args else
                  "init-db" if "init-db" in args else "variants" if "variants" in args else
                  "seed-teams" if "seed-teams" in args else "up" if "up" in args else None)
@@ -976,3 +988,87 @@ def test_an_unhealthy_lan_listener_fails_the_release_like_any_other_serving_proc
     readiness.unhealthy = "app-serve-lan"
     with pytest.raises(RuntimeError):
         readiness.module.wait_healthy(SHA, services, timeout=1)
+
+
+# --- fix 71: the orphaned backends a stopped app leaves on the server -----------------------
+
+#: What `psql -At` prints for two harness client backends whose containers are already stopped:
+#: pid | client_addr | application_name | state | age of the open transaction.
+BACKENDS = ["26902|172.18.0.7|app-serve|idle in transaction|00:00:13.284",
+            "26903|172.18.0.5|app-research|active|00:01:02.5"]
+
+
+def _psql_sql(release, needle):
+    return [call[-1] for call in release.psql_calls if needle in call[-1]]
+
+
+def test_a_full_release_drains_orphaned_backends_between_the_stop_and_the_migration(release, capsys):
+    """Deploy 2026-09-14 23:34 CT: `docker compose stop` returned, but a stopped container's
+    streaming cursor left its server backend -- and its snapshot -- open, so the migration's
+    `create index concurrently` waited on it and `lock_timeout` cancelled the build."""
+    release.backends = list(BACKENDS)
+    release.module.deploy("full")
+    receipt = release_receipt(release)
+    assert receipt["status"] == "healthy"
+    assert receipt["drained_backends"] == [
+        {"pid": 26902, "client_addr": "172.18.0.7", "application_name": "app-serve",
+         "state": "idle in transaction", "xact_age": "00:00:13.284"},
+        {"pid": 26903, "client_addr": "172.18.0.5", "application_name": "app-research",
+         "state": "active", "xact_age": "00:01:02.5"}]
+    assert isinstance(receipt["drain_seconds"], float)
+    stop = next(i for i, call in enumerate(release.calls) if "stop" in call)
+    drained = next(i for i, call in enumerate(release.calls)
+                   if "psql" in call and "pg_terminate_backend" in call[-1])
+    migrate = next(i for i, call in enumerate(release.calls) if "migrate" in call)
+    assert stop < drained < migrate
+    assert "draining 2 orphaned backends" in capsys.readouterr().out
+
+
+def test_backends_that_never_drain_abort_before_the_migration_and_restore_the_old_apps(release, monkeypatch):
+    """A snapshot the recipe cannot close is not a migration it may run anyway."""
+    monkeypatch.setattr(release.module.time, "sleep", lambda seconds: None)
+    originals = {name: (release.runtime / name).read_bytes()
+                 for name in ("docker-compose.yml", "compose.omarchy.yml", ".env")}
+    release.backends = list(BACKENDS)
+    release.backends_drain = False
+    with pytest.raises(RuntimeError, match="orphaned backends still open"):
+        release.module.deploy("full")
+    assert not any("migrate" in call or "init-db" in call for call in release.calls)
+    for name, expected in originals.items():
+        assert (release.runtime / name).read_bytes() == expected
+    up = [call for call in release.calls if "up" in call]
+    assert up and all(service in up[-1] for service in release.module.APPS + ["app-ws"])
+    assert release.health_calls[-1][0] == OLD
+    assert release_receipt(release)["status"] == "failed-old-apps-restored"
+
+
+def test_an_app_only_release_never_touches_a_backend(release):
+    """An app-only release runs no migration, so it has no reason to end anyone's session."""
+    release.backends = list(BACKENDS)
+    release.module.deploy("app")
+    assert release.psql_calls == []
+    assert "drained_backends" not in release_receipt(release)
+
+
+def test_the_drain_never_touches_the_backup_or_the_controller(release):
+    """`pg_dump` is the backup and `psql` is the operator: the predicate that lists the
+    backends and the predicate that terminates them are the same text, and both exclude them."""
+    release.backends = list(BACKENDS)
+    release.module.deploy("full")
+    listing = _psql_sql(release, "pg_stat_activity")
+    assert len(listing) >= 2
+    for sql in listing:
+        assert release.module.ORPHAN_PREDICATE in sql
+        assert "not in ('pg_dump', 'psql', 'pg_restore')" in sql
+        assert "backend_type = 'client backend'" in sql
+        assert "pid <> pg_backend_pid()" in sql
+        assert "datname = 'harness'" in sql
+        assert "drop" not in sql.lower()
+    assert len(_psql_sql(release, "pg_terminate_backend")) == 1
+
+
+def test_a_full_release_with_nothing_orphaned_runs_straight_into_the_migration(release):
+    release.module.deploy("full")
+    assert len(_psql_sql(release, "pg_stat_activity")) == 1
+    assert _psql_sql(release, "pg_terminate_backend") == []
+    assert release_receipt(release)["status"] == "healthy"

@@ -142,6 +142,86 @@ def remove_lan_service(compose_command, receipt, key):
               flush=True)
 
 
+#: Fix 71 (deploy 2026-09-14 23:34 CT, release 20260915T043416Z-f28cf4d): the harness client
+#: backends a release must not migrate underneath. `docker compose stop` kills a container, but
+#: the server backend its connection was attached to survives until TCP notices -- the server has
+#: `tcp_keepalives_* = 0` and `idle_in_transaction_session_timeout = 0`, so an app's streaming
+#: cursor (`harness/report/tables.py`, `harness/dashboard/queries.py`) can hold its transaction,
+#: and its snapshot, for hours. That is what cancelled revision 0010's
+#: `create index concurrently ... on intents` after the migration connection's `lock_timeout` of
+#: 5 s (Postgres log `04:36:49 ERROR: canceling statement due to lock timeout`, then backend 26902
+#: dying on `FETCH FORWARD 2000 FROM "c_7f9fcc770d70_8" / connection to client lost` thirteen
+#: seconds later) and left the index `indisvalid = false`.
+#:
+#: `pg_dump` is the backup, `psql` is an operator's or the controller's own shell and
+#: `pg_restore` is a recovery: none of the three is an app this recipe stopped, so none is ever
+#: listed or terminated. The one predicate is shared by the listing and the termination, so a
+#: connection can never be terminated on terms other than the ones it was listed on.
+ORPHAN_PREDICATE = ("datname = 'harness' and backend_type = 'client backend' "
+                    "and pid <> pg_backend_pid() "
+                    "and coalesce(application_name, '') not in ('pg_dump', 'psql', 'pg_restore')")
+ORPHAN_LIST_SQL = ("select pid, coalesce(client_addr::text, ''), coalesce(application_name, ''), "
+                   "state, coalesce(now() - xact_start, interval '0')::text "
+                   f"from pg_stat_activity where {ORPHAN_PREDICATE} order by pid")
+ORPHAN_TERMINATE_SQL = f"select pg_terminate_backend(pid) from pg_stat_activity where {ORPHAN_PREDICATE}"
+#: One poll a second. A backend the server has already been told to terminate disappears in
+#: milliseconds; thirty seconds is the budget before the release gives up and rolls back.
+DRAIN_POLLS = 30
+
+
+def drain_orphaned_backends(existing, receipt):
+    """End the harness sessions left behind by the app containers this release just stopped.
+
+    Session management, never data and never schema: `pg_terminate_backend` closes a connection
+    whose client the recipe itself has already killed, and an aborted transaction on a stopped
+    app rolls back exactly as it would have when its container died. Nothing is dropped, altered
+    or written (roadmap invariant 5). It runs after the recipe's own `stop`, only in a full
+    release, and only against the four (or five) app sessions: `pg_dump`, `psql` and
+    `pg_restore` are excluded by `ORPHAN_PREDICATE`, so the backup and the operator's own shell
+    are never in the list and never terminated.
+
+    A backend still open after `DRAIN_POLLS` seconds raises, which puts the release on its
+    existing rollback path -- the old apps come back and no migration runs. A migration run
+    under a snapshot this recipe could not close is exactly the failure this step exists for.
+    """
+    def listing():
+        output = run([*existing, 'exec', '-T', 'postgres', 'psql', '-X',
+                      '-v', 'ON_ERROR_STOP=1', '-U', 'harness', '-d', 'harness',
+                      '-At', '-c', ORPHAN_LIST_SQL], capture=True)
+        rows = []
+        for line in (output or '').splitlines():
+            if not line.strip():
+                continue
+            pid, client_addr, application_name, state, xact_age = line.split('|', 4)
+            rows.append({'pid': int(pid), 'client_addr': client_addr,
+                         'application_name': application_name, 'state': state,
+                         'xact_age': xact_age})
+        return rows
+
+    orphans = listing()
+    if not orphans:
+        return []
+    print(f'[release] draining {len(orphans)} orphaned backends: '
+          + '; '.join(f"{row['pid']} {row['application_name']} {row['state']} {row['xact_age']}"
+                      for row in orphans), flush=True)
+    started = time.monotonic()
+    run([*existing, 'exec', '-T', 'postgres', 'psql', '-X', '-v', 'ON_ERROR_STOP=1',
+         '-U', 'harness', '-d', 'harness', '-At', '-c', ORPHAN_TERMINATE_SQL], capture=True)
+    remaining = listing()
+    for _ in range(DRAIN_POLLS):
+        if not remaining:
+            break
+        time.sleep(1)
+        remaining = listing()
+    receipt['drained_backends'] = orphans
+    receipt['drain_seconds'] = round(time.monotonic() - started, 3)
+    if remaining:
+        raise RuntimeError('orphaned backends still open after the stop: '
+                           + ', '.join(f"{row['pid']} ({row['application_name']}, {row['state']})"
+                                       for row in remaining))
+    return orphans
+
+
 def run(args, *, capture=False, cwd=None, input=None):
     return subprocess.run([str(a) for a in args], check=True, cwd=cwd, input=input,
                           text=True, stdout=subprocess.PIPE if capture else None).stdout
@@ -472,6 +552,10 @@ def deploy(mode, plan=False):
         stopped = True  # stop may partially succeed, so failure must restart old services
         checkpoint('stopping')
         run([*existing, 'stop', *restored])
+        if mode == 'full':
+            # Fix 71: the stop returns before the server has noticed the connections it killed.
+            checkpoint('draining')
+            drain_orphaned_backends(existing, receipt)
         if mode == 'full':
             checkpoint('migrating')
             run([*command, 'run', '--rm', '--no-deps', '-T', 'app-run', 'migrate', 'ensure'])
