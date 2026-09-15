@@ -620,7 +620,9 @@ def test_pricing_clock_is_read_after_the_fetches_not_at_tick_start(env_settings,
 
     seen = {}
 
-    def capture(session, run_id, now, settings, budget_s):
+    # `cadence_s` is 6D §1.7(b)'s episode gap-rule input, which the tick now passes from the
+    # cadence it already computed for the pricing budget; this stub only records the clock.
+    def capture(session, run_id, now, settings, budget_s, cadence_s=900):
         seen["now"] = now
         return {"gaps": 0}
 

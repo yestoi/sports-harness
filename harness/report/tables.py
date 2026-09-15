@@ -35,6 +35,8 @@ from sqlalchemy.orm import Session
 
 from harness.dashboard.queries import recent_runs_pricing
 from harness.execution.book import BookState, side_p
+from harness.ops.coverage import COVERAGE_RUN_CAP, eligible_runs, exhaustion_share
+from harness.ops.exclusions import COVERAGE_CLASS_OF
 from harness.pricing.fees import KALSHI_FOOTBALL
 from harness.report.audits import ORDER_AUDITS
 from harness.report.stats import (
@@ -55,13 +57,13 @@ from harness.settlement.order_clv import clv_formulas
 #: t13 is appended at the end for the same reason, and `RENDER_ORDER` below -- not this tuple --
 #: is what puts it first on the page (addendum 0.3).
 TABLE_KEYS = ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9", "t10", "t12",
-              "t13")
+              "t13", "t14")
 
 #: What `render_markdown` renders in, as opposed to what `weekly_tables` keys and
 #: `render_for_model` iterates. The operational diagnostic goes first for the person reading on
 #: Monday morning; the model keeps `TABLE_KEYS` order and reads it last, which is cosmetic there
 #: because its bullets cite cells by table key (design review Minor 3).
-RENDER_ORDER = ("t13", *(key for key in TABLE_KEYS if key != "t13"))
+RENDER_ORDER = ("t13", "t14", *(key for key in TABLE_KEYS if key not in ("t13", "t14")))
 
 #: What an empty cell prints. Never "" (the brief's `test_render_has_no_empty_cells`).
 PLACEHOLDER = "--"
@@ -1841,6 +1843,246 @@ def _table13(session: Session, window: dict, variants: list[dict], settings,
     return Table("Table 13 (t13): operational diagnostic", header, _T13_COLUMNS, rows, note)
 
 
+# --- table 14: the coverage contract, the denominators and the episode units (6D §1.7) ---------
+
+_T14_COLUMNS = ["item", "value", "unit", "note"]
+
+#: §1.7(a)'s declared tolerance, printed beside the share it judges and declared before the
+#: period it judges. Not a gate criterion and not a threshold in `harness/report/gate.py`
+#: (R1): no cell is greyed, flagged, excluded or scored by it -- t14 prints it and says so.
+T14_COVERAGE_MIN = 0.95
+
+#: How long after a scheduled row a completion row may still arrive before the cell counts as
+#: an unexplained omission: one cadence period (`DEFAULT_CADENCE_S` = 900, the widest in
+#: force) plus a minute for the tick itself. This is addendum §3 row 2's `16 minutes`, in
+#: seconds, and it is the one number this table and that verify row must agree on.
+T14_SETTLE_MARGIN_S = 960
+
+#: Bound: `ts` inside the week. Index: `ix_coverage_ts_domain (ts, domain)` -- the leading
+#: pair, so the domain filter rides the same index as the range. One row per variant, with
+#: the two sums §1.1's share is over: the denominator is the recorded `scheduled` sum, never
+#: the sum of the rows.
+_T14_COVERAGE_BY_VARIANT = text("""
+    select variant_id,
+           coalesce(sum(n) filter (where outcome = 'completed'), 0) as completed,
+           coalesce(sum(n) filter (where outcome = 'scheduled'), 0) as scheduled
+    from coverage_samples
+    where domain = 'evaluation' and ts >= :start and ts < :end
+    group by 1
+""")
+
+#: Bound and index as above. §3 row 3's missingness breakdown for the week: every outcome that
+#: is neither a completion nor the schedule itself, largest first, each printed beside the
+#: class `COVERAGE_CLASS_OF` maps it to.
+_T14_OUTCOMES = text("""
+    select outcome, coalesce(sum(n), 0) as units
+    from coverage_samples
+    where domain = 'evaluation' and ts >= :start and ts < :end
+      and outcome not in ('completed', 'scheduled')
+    group by 1 order by 2 desc
+""")
+
+#: Addendum §3 row 2's reconciliation, as a count over the week rather than a 24 h list: a
+#: `scheduled` cell that no completion row closed. Bound: `s.ts` inside the week **and**
+#: before `:settled`, so a cell scheduled in the last `T14_SETTLE_MARGIN_S` of a still-open
+#: week is not called missing merely because its tick has not finished. Outer scan:
+#: `ix_coverage_ts_domain (ts, domain)`; probe: `ix_coverage_run (run_id)`. All five cell
+#: columns are matched with `is not distinct from` because every one of them is nullable and
+#: `=` is unknown against NULL -- the same shape the verify row uses, for the same reason.
+_T14_UNCLOSED = text("""
+    select count(*) from coverage_samples s
+    where s.domain = 'evaluation' and s.outcome = 'scheduled'
+      and s.ts >= :start and s.ts < :end and s.ts < :settled
+      and not exists (
+          select 1 from coverage_samples c
+          where c.run_id = s.run_id and c.domain = s.domain and c.outcome <> 'scheduled'
+            and c.sport is not distinct from s.sport
+            and c.ttk_bucket is not distinct from s.ttk_bucket
+            and c.feed is not distinct from s.feed
+            and c.market_type is not distinct from s.market_type
+            and c.variant_id is not distinct from s.variant_id)
+""")
+
+#: Bound and index as the first statement. Fix 55's coverage half (ruling I3): the markets
+#: with no fair value at all, per variant, counted where they were **recorded** -- the
+#: `no_fair` outcome `coverage.record` wrote -- and never from the signal table, whose
+#: `has_fair` rejections stage 6 stopped storing at the 6D deploy.
+_T14_NO_FAIR_BY_VARIANT = text("""
+    select variant_id, coalesce(sum(n), 0) as units
+    from coverage_samples
+    where domain = 'evaluation' and ts >= :start and ts < :end and outcome = 'no_fair'
+    group by 1 order by 2 desc
+""")
+
+#: Bound: `ts` inside the week. Index: `ix_metric_samples_name_ts (name, ts desc)`, one range
+#: for the one name. The reason split of the rows above, from the `pricing.no_fair` samples
+#: the recorder writes out of `market_gap_snapshots.no_fair_reason` by `run_id`.
+_T14_NO_FAIR_REASONS = text("""
+    select coalesce(labels->>'reason', 'unknown') as reason,
+           coalesce(sum(value), 0) as markets
+    from metric_samples
+    where name = 'pricing.no_fair' and ts >= :start and ts < :end
+    group by 1 order by 2 desc
+""")
+
+#: Bound: `started_at` inside the week. Index: `ix_opportunity_started`. `max(gap_rule_s)` is
+#: the rule the rows were written under -- stored per row so a reader knows which one produced
+#: the count (§1.7(b)); a week whose cadence changed mid-week shows the widest rule in force.
+_T14_OPPORTUNITY_EPISODES = text("""
+    select count(*) as episodes, max(gap_rule_s) as gap_rule_s
+    from opportunity_episodes where started_at >= :start and started_at < :end
+""")
+
+#: Bound and shape as above. Index: `ix_intent_started`.
+_T14_INTENT_EPISODES = text("""
+    select count(*) as episodes, max(gap_rule_s) as gap_rule_s
+    from intent_episodes where started_at >= :start and started_at < :end
+""")
+
+#: Bound: `ts` inside the week, `limit 1`. Index: `ix_operator_events_ts (ts desc)`. Ruling
+#: I11's measurement boundary: the deploy the controller journaled. `operator_events` holds a
+#: handful of rows a week and this reads the newest one of one kind.
+_T14_DEPLOY_INSTANT = text("""
+    select ts from operator_events
+    where kind = 'deploy' and ts >= :start and ts < :end
+    order by ts desc limit 1
+""")
+
+
+def _table14(session: Session, window: dict, variants: list[dict], settings,
+             now: datetime) -> Table:
+    """The coverage contract, the denominators and the two episode units (6D §1.7, §3 rows
+    1-3, 6 and 7).
+
+    Rendered straight after t13, because it says what the week's measurements are *of*. One
+    row per quantity, each with its own unit; no row pools variants, and nothing here is a
+    gate input or excludes a cell (R1).
+
+    | item | value | unit | note |
+    |---|---|---|---|
+    | `coverage, gate variant` | completed / scheduled for the gate variant | share | the denominator is the recorded scheduled set, not the sum of the rows (§1.1); tolerance 0.95, declared before the period it judges |
+    | `coverage, primary` | the same for the primary | share | as above |
+    | `scheduled units, gate variant` | `sum(n) filter (outcome = 'scheduled')` | units | `coverage_samples`, `domain = 'evaluation'`, through `ix_coverage_ts_domain` |
+    | one row per non-completed outcome | `sum(n)` | units | class: `COVERAGE_CLASS_OF[outcome]` |
+    | `unexplained omissions` | the reconciliation count | cells | scheduled cells no completion row closed within one cadence period; the acceptance clause's own test |
+    | `total runs` / `non-skipped runs` / `priced runs` | `coverage.eligible_runs` | runs | every exhaustion share is over `priced_runs` and over nothing else (§0.6) |
+    | `budget-exhausted share` | `coverage.exhaustion_share` | share | over `priced_runs` |
+    | `markets with no fair value` | per variant, from `coverage_samples`' `no_fair` | units | fix 55's coverage half; the reason split is the rows below |
+    | one row per `no_fair_reason` | from the `pricing.no_fair` samples | markets | `unmapped_market_type` / `no_sharp_line` / `pricing_error`, from `market_gap_snapshots`, never from the signal table (ruling I3) |
+    | `opportunity episodes` / `intent episodes` | `count(*)` over the week | episodes | the stored `gap_rule_s`; Floor's `candidate_signals` and `intent_verdicts` count events, not episodes |
+    | `rejected-signal boundary` | the deploy instant the controller journaled, or `--` before it | timestamp | `harness.strategy.pipeline.RESCORE_BOUNDARY_NOTE` |
+    """
+    # Local, not module-level: `RESCORE_BOUNDARY_NOTE` is only a string, but importing
+    # `harness.strategy.pipeline` at module scope would pull the whole pricing stack into a
+    # read-only report module.
+    from harness.strategy.pipeline import RESCORE_BOUNDARY_NOTE
+
+    header = (
+        "Decision 4's coverage contract, measured rather than inferred. Sources: "
+        "`coverage_samples` through `ix_coverage_ts_domain`, `metric_samples` through "
+        "`ix_metric_samples_name_ts`, the two episode tables through their `started_at` "
+        "indexes, and `runs` through `coverage.eligible_runs`' capped read. Every share "
+        "names its own denominator. The tolerance was declared before the period this table "
+        "judges and excludes nothing: it is printed beside the share, never applied to a "
+        "cell.")
+    gate = _t13_gate_variant(variants, settings)
+    primary = next((v for v in variants if v["tier"] == "primary" and v["active"]), None)
+    names = {v["variant_id"]: v["name"] for v in variants}
+
+    coverage = {r.variant_id: r for r in session.execute(_T14_COVERAGE_BY_VARIANT, window)}
+    outcomes = [(r.outcome, int(r.units)) for r in session.execute(_T14_OUTCOMES, window)]
+    # A cell scheduled inside the settle margin has not had its cadence period yet; a closed
+    # week is already past it. The cut is the earlier of the two.
+    settled = min(window["end"], now - timedelta(seconds=T14_SETTLE_MARGIN_S))
+    unclosed = int(session.execute(
+        _T14_UNCLOSED, {**window, "settled": settled}).scalar() or 0)
+    no_fair = {r.variant_id: int(r.units)
+               for r in session.execute(_T14_NO_FAIR_BY_VARIANT, window)}
+    reasons = [(r.reason, int(r.markets))
+               for r in session.execute(_T14_NO_FAIR_REASONS, window)]
+    opportunity = session.execute(_T14_OPPORTUNITY_EPISODES, window).one()
+    intent = session.execute(_T14_INTENT_EPISODES, window).one()
+    total_runs, non_skipped_runs, priced_runs = eligible_runs(session, window)
+    exhausted, _priced, exhausted_share = exhaustion_share(session, window)
+    deploy_at = session.execute(_T14_DEPLOY_INSTANT, window).scalar()
+    # The cap is what stops `eligible_runs`' read, not a `started_at` predicate (ruling I5), so
+    # a window holding more runs than the cap is described by the newest `COVERAGE_RUN_CAP` of
+    # them. One equality at the call site says so, rather than a second read asking how far
+    # back the read reached (Task 7's carry-forward).
+    cap_note = ("" if total_runs < COVERAGE_RUN_CAP else
+                f" These three counts describe the newest {COVERAGE_RUN_CAP} runs rather than "
+                f"the whole week: the cap bound.")
+
+    def _coverage_row(item: str, variant: dict | None) -> list:
+        if variant is None:
+            return [item, PLACEHOLDER, "share",
+                    "no active variant of this kind is registered for this week"]
+        row = coverage.get(variant["variant_id"])
+        completed = 0 if row is None else int(row.completed)
+        scheduled = 0 if row is None else int(row.scheduled)
+        return [f"{item}, {variant['name']}", _share(completed, scheduled), "share",
+                f"{completed} completed of {scheduled} scheduled; the denominator is the "
+                f"recorded scheduled set, not the sum of the rows (6D 1.1). Tolerance "
+                f"{T14_COVERAGE_MIN}, declared before the period it judges and applied to "
+                f"no cell"]
+
+    gate_row = None if gate is None else coverage.get(gate["variant_id"])
+    rows: list[list] = [
+        _coverage_row("coverage, gate variant", gate),
+        _coverage_row("coverage, primary", primary),
+        ["scheduled units, gate variant",
+         0 if gate_row is None else int(gate_row.scheduled), "units",
+         "`coverage_samples`, `domain = 'evaluation'`, through `ix_coverage_ts_domain`: the "
+         "recorded enumeration, never a count of what completed"],
+    ]
+    for outcome, units in outcomes:
+        rows.append([f"outcome {outcome}", units, "units",
+                     f"class: {COVERAGE_CLASS_OF.get(outcome, PLACEHOLDER)}"])
+    rows.append(["unexplained omissions", unclosed, "cells",
+                 f"scheduled cells no completion row closed within {T14_SETTLE_MARGIN_S} s "
+                 f"(one cadence period plus a tick); the acceptance clause's own test, and "
+                 f"0 is its only passing value"])
+    rows += [
+        ["total runs", total_runs, "runs",
+         "every exhaustion share below is over `priced_runs` and over nothing else (6D 0.6)."
+         + cap_note],
+        ["non-skipped runs", non_skipped_runs, "runs",
+         "runs whose `status` is not `skipped`"],
+        ["priced runs", priced_runs, "runs",
+         "runs carrying a `notes.pricing` block: the exhaustion denominator"],
+        ["budget-exhausted share",
+         PLACEHOLDER if exhausted_share is None else exhausted_share, "share",
+         f"{exhausted} of {priced_runs} priced runs, and over `priced_runs` only"],
+    ]
+    for variant_id, units in no_fair.items():
+        rows.append([f"markets with no fair value, {names.get(variant_id, variant_id)}",
+                     units, "units",
+                     "fix 55's coverage half, from `coverage_samples`' `no_fair` outcome; "
+                     "the reason split is the rows below"])
+    for reason, markets in reasons:
+        rows.append([f"no fair, reason {reason}", markets, "markets",
+                     "from `market_gap_snapshots.no_fair_reason` through `pricing.no_fair`, "
+                     "never from `signals` (ruling I3)"])
+    rows += [
+        ["opportunity episodes", int(opportunity.episodes), "episodes",
+         f"gap rule {opportunity.gap_rule_s or PLACEHOLDER} s, as stored on the rows; "
+         f"Floor's `candidate_signals` counts events, not episodes"],
+        ["intent episodes", int(intent.episodes), "episodes",
+         f"gap rule {intent.gap_rule_s or PLACEHOLDER} s, as stored on the rows; Floor's "
+         f"`intent_verdicts` counts events, not episodes"],
+        ["rejected-signal boundary",
+         PLACEHOLDER if deploy_at is None else deploy_at.isoformat(), "timestamp",
+         RESCORE_BOUNDARY_NOTE],
+    ]
+    note = ("Coverage is measured from `coverage_samples`, which the writer that made each "
+            "decision wrote at the moment it made it; it is not inferred from `runs.notes` "
+            "(6C ruling C1). The `no fair` rows are counted where the markets are recorded, "
+            "never from the signal table, whose `has_fair` rejections end at the boundary row "
+            "above.")
+    return Table("Table 14 (t14): coverage contract and denominators", header, _T14_COLUMNS,
+                 rows, note)
+
+
 # --- entry point --------------------------------------------------------------------------------
 
 _VARIANTS = text("""
@@ -1851,7 +2093,7 @@ _VARIANTS = text("""
 
 def weekly_tables(session: Session, year: int, week: int, settings,
                   now: datetime | None = None) -> dict[str, Table]:
-    """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t13` (with `t4b`).
+    """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t14` (with `t4b`).
 
     Read-only. Each table is restricted to the week's non-replay rows and each per-variant table
     groups by variant first; a table with nothing in it still answers a placeholder row.
@@ -1879,6 +2121,7 @@ def weekly_tables(session: Session, year: int, week: int, settings,
         "t10": _table10(session, window),
         "t12": _table12(session, window),
         "t13": _table13(session, window, variants, settings, now),
+        "t14": _table14(session, window, variants, settings, now),
     }
 
 

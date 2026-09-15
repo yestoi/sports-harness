@@ -202,6 +202,17 @@ _FEED_LAG_BY_FEED = text("""
     group by coalesce(feed_kind, 'none')
 """)
 
+#: Fix 55's coverage half (6D §0.12, §1.7(d), ruling I3). The markets with **no fair value at
+#: all**, split by the reason the gap row recorded. Bounded by `run_id`, riding
+#: `uq_gap_run_market (run_id, venue_market_id)` (`harness/db/models.py`, `MarketGapSnapshot`).
+#: Not read from `signals`: those 54,435 rows a variant a day carry `rejection_reason =
+#: has_fair` and `fair_p` null, and they are produced by exactly the stage-6 pass 6D §1.5(b)
+#: removed, so a count over `signals` reads ~0 for six of the seven variants the day after the
+#: deploy.
+_NO_FAIR_BY_REASON = text(
+    "select coalesce(no_fair_reason, 'unknown'), count(*) from market_gap_snapshots "
+    "where run_id = :run_id and fair_p is null group by 1")
+
 _REJECTED_BY_VARIANT_REASON = text("""
     select v.name, coalesce(s.rejection_reason, 'unknown'), count(*)
     from signals s join strategy_variants v on v.variant_id = s.variant_id
@@ -239,6 +250,11 @@ def _pricing_samples(session: Session, run_id: int, pricing: dict) -> list[tuple
     for variant, reason, count in session.execute(
             _REJECTED_BY_VARIANT_REASON, {"run_id": run_id}).all():
         samples.append(("pricing.rejected", count, {"variant": variant, "reason": reason}))
+    # 6D §0.12, §1.7(d): fix 55's coverage half, counted where the markets are recorded. t14
+    # reads the per-variant total from `coverage_samples`' `no_fair` outcome and this reason
+    # split from `pricing.no_fair`; neither is a count over `signals` (ruling I3).
+    for reason, count in session.execute(_NO_FAIR_BY_REASON, {"run_id": run_id}).all():
+        samples.append(("pricing.no_fair", count, {"reason": reason}))
     return samples
 
 
@@ -1136,12 +1152,15 @@ class Recorder:
                 # Amendment 4 fix round 1: `price_budget_s` is what pricing may spend, not what
                 # it always gets. Fetch and normalization have already run, so pricing takes what
                 # is left of the cadence in force less a margin, and never less than the floor.
+                # Hoisted into a local rather than called twice: the pricing budget and the
+                # episode gap rule (6D §1.7(b)) are both derived from the cadence in force at
+                # this instant, and two calls could straddle a window boundary and disagree.
+                cadence = cadence_in_force(pricing_now, kickoffs, self.s.tz_local)
                 budget_s, budget_capped = pricing_budget(
-                    self.s.price_budget_s,
-                    cadence_in_force(pricing_now, kickoffs, self.s.tz_local),
-                    self.monotonic() - started_mono)
+                    self.s.price_budget_s, cadence, self.monotonic() - started_mono)
                 try:
-                    pricing = price_and_signal(session, run.id, pricing_now, self.s, budget_s)
+                    pricing = price_and_signal(session, run.id, pricing_now, self.s, budget_s,
+                                               cadence_s=cadence)
                     pricing["budget_s"] = budget_s
                     pricing["budget_capped"] = budget_capped
                     ctx["pricing"] = pricing

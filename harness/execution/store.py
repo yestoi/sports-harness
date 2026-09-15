@@ -205,11 +205,17 @@ def _write_queue_batch(session: Session, queue_values: list[dict]) -> None:
                     .on_conflict_do_nothing(index_elements=["signal_id"]))
 
 
-def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool) -> int:
+def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool,
+                   keys_out: list | None = None) -> int:
     """One intent per candidate signal; returns how many rows this call actually wrote.
 
     Phase 5 hangs the veto queue off this loop, because it is already exactly once per signal:
     the insert is `on conflict do nothing` on `signal_id` and only a returned row counts.
+
+    `keys_out`, when given, collects one `(variant_id, venue_market_id, side)` tuple per intent
+    this call actually wrote, for the caller's `intent_episodes` upsert (6D §1.7(c)). It is an
+    out-parameter rather than a second return value because `stats.intents_new =
+    store.insert_intents(...)` reads at every call site and the count is what those sites want.
     """
     from harness.config.settings import get_settings
 
@@ -232,6 +238,8 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
         ).on_conflict_do_nothing(index_elements=["signal_id"]).returning(Intent.id)
         if session.execute(stmt).first() is not None:
             written += 1
+            if keys_out is not None:
+                keys_out.append((row.variant_id, row.venue_market_id, row.side))
             if not replay:
                 written_rows.append(row)
     if written_rows:

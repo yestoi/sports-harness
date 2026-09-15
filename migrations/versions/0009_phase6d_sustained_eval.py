@@ -78,6 +78,46 @@ def upgrade() -> None:
                     if_not_exists=True)
     op.create_index("ix_coverage_run", "coverage_samples", ["run_id"], if_not_exists=True)
 
+    # Task 8 (6D §1.7(b)/(c), D6): the two episode tables -- 6C's deferred funnel units as
+    # rows, so the count is an indexed `count(*)` instead of a `distinct` over `signals`.
+    op.create_table(
+        "opportunity_episodes",
+        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("variant_id", sa.String(length=12), nullable=False),
+        sa.Column("venue_market_id", sa.Integer(), nullable=False),
+        sa.Column("side", sa.String(length=4), nullable=False),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("ended_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("gap_rule_s", sa.Integer(), nullable=False),
+        sa.Column("n_signals", sa.Integer(), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("variant_id", "venue_market_id", "side", "started_at",
+                            name="uq_opportunity_episode"),
+        if_not_exists=True,
+    )
+    op.create_table(
+        "intent_episodes",
+        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("variant_id", sa.String(length=12), nullable=False),
+        sa.Column("venue_market_id", sa.Integer(), nullable=False),
+        sa.Column("side", sa.String(length=4), nullable=False),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("ended_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("gap_rule_s", sa.Integer(), nullable=False),
+        sa.Column("n_intents", sa.Integer(), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("variant_id", "venue_market_id", "side", "started_at",
+                            name="uq_intent_episode"),
+        if_not_exists=True,
+    )
+    # Plain, not CONCURRENTLY, for `coverage_samples`' reason above: both tables are created
+    # empty by this statement and have no writer attached while it runs. The unique constraints
+    # come with `create_table` and need no statement of their own; these two `started_at`
+    # indexes are what the bounded `count(*)` in t14 and Floor's funnel ride.
+    op.create_index("ix_opportunity_started", "opportunity_episodes", ["started_at"],
+                    if_not_exists=True)
+    op.create_index("ix_intent_started", "intent_episodes", ["started_at"], if_not_exists=True)
+
     # Fix 51 (6D §1.9, D9): the index `intents_without_order_or_skip`'s 24 h bound needs.
     concurrent_index("ix_intents_created", "intents", ["created_at"])
 

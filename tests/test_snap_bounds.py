@@ -42,11 +42,15 @@ MODULES = (pulse, floor, study, gate, ticket, scheduler_mod, window_mod)
 #: and `venue_requests` are appended because they are append-only logs with the same property,
 #: and every read of them here is already bounded. Phase 5 (addendum §1.4, §1.6) adds
 #: `veto_decisions` (one row per decided signal, indefinitely) and `rfq_quotes` (one row per
-#: computed quote, indefinitely); both are read here bounded on their own timestamp.
+#: computed quote, indefinitely); both are read here bounded on their own timestamp. 6D
+#: (addendum §0.11, §1.7) adds `opportunity_episodes` and `intent_episodes`: a few thousand
+#: live rows a day, appended indefinitely, so they grow with the season exactly as the logs
+#: above do, and Floor's three reads of them are bounded on their own `started_at` index.
 BOUNDED_TABLES = frozenset({
     "orderbook_events", "venue_trades", "fair_values", "intents", "orders", "fills", "signals",
     "runs", "job_runs", "metric_samples", "equity_snapshots", "order_watch_samples",
     "game_score_events", "operator_events", "venue_requests", "veto_decisions", "rfq_quotes",
+    "opportunity_episodes", "intent_episodes",
 })
 
 #: Bounded by the shape of the system, not by its age:

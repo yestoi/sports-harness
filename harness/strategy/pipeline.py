@@ -40,9 +40,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.config.settings import Settings
-from harness.db.models import Game, MarketGapSnapshot, Signal, VenueMarket
+from harness.db.models import (Game, MarketGapSnapshot, OpportunityEpisode, Signal,
+                              VenueMarket)
 from harness.execution.risk import stopped_variants
-from harness.ops import coverage
+from harness.ops import coverage, episodes
 from harness.pricing.fair import compute_derived_fair_values, compute_direct_fair_values
 from harness.pricing.gaps import build_gap_snapshots
 from harness.strategy.as_measured import as_measured_table
@@ -277,7 +278,12 @@ class _Stages:
         return [self._entries[name] for name in STAGE_NAMES]
 
 
-def price_and_signal(session: Session, run_id: int, now: datetime, settings: Settings, budget_s: float) -> dict:
+def price_and_signal(session: Session, run_id: int, now: datetime, settings: Settings,
+                     budget_s: float, cadence_s: int = 900) -> dict:
+    #: The default is `harness.recorder.tick.DEFAULT_CADENCE_S`, the weekday period
+    #: `cadence.interval_for` returns outside every game window, so a caller that does not
+    #: know the cadence in force gets the widest one rather than the narrowest gap rule
+    #: (6D §1.7(b)). The real tick passes the cadence it already computed.
     deadline = time.monotonic() + budget_s
     #: The most recent reading of the budget clock. `ok()` takes one every time it is called
     #: and every stage boundary calls it, so `remaining_ms` costs no additional read -- which
@@ -399,6 +405,9 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     #: 6D §1.1: `(variant_id, venue_market_id) -> outcome` for every market a variant
     #: actually said something about, filled in by `score` and read once at completion.
     coverage_outcomes: dict[tuple[str, int], str] = {}
+    #: 6D §1.7(b): every `(variant_id, venue_market_id, side)` this run scored `candidate`,
+    #: collected here and written once as episodes below -- never one statement per key.
+    candidate_keys: set[tuple[str, int, str]] = set()
 
     def record_order() -> None:
         """`variants_run`/`variants_skipped` in `pricing_order`, not in the order stages ran.
@@ -448,6 +457,8 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         for signal in signals:
             coverage_outcomes[(variant.variant_id, signal.venue_market_id)] = (
                 "no_fair" if signal.rejection_reason == "has_fair" else "completed")
+            if signal.decision == "candidate":
+                candidate_keys.add((variant.variant_id, signal.venue_market_id, signal.side))
         scored.add(variant.name)
         if full:
             complete.add(variant.name)
@@ -607,5 +618,10 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
                 scored={v.variant_id for v in ordered if v.name in scored},
                 budget_exhausted=result["budget_exhausted"],
                 overdue_ms=int((_stage_clock() - coverage_at) * 1000)))
+
+    # 6D §1.7(b): one multi-row upsert per run, never one per key.
+    if candidate_keys:
+        episodes.upsert(session, OpportunityEpisode, sorted(candidate_keys), now,
+                        episodes.gap_rule_s(cadence_s), kind="opportunity")
 
     return finish()

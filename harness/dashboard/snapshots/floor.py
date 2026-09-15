@@ -67,6 +67,7 @@ from harness.db.models import StrategyVariant
 from harness.db.schema import OPEN_FILL_SQL
 from harness.execution.book import side_p
 from harness.execution.store import MONEY_FILL_METHODS, OPEN_STATUSES
+from harness.ops.exclusions import CLASS_OF
 from harness.pricing.fair import MATCHED_STATUSES
 from harness.pricing.fees import fee_model_for, fee_per_contract
 from harness.telemetry import sanitize_reason
@@ -113,6 +114,11 @@ FUNNEL_UNITS = {
     "gaps": "gap snapshots, from runs.notes",
     "candidate_signals": "candidate signal rows, not distinct opportunities",
     "intent_verdicts": "intent verdicts (placed + skipped), not distinct episodes",
+    # 6D §0.11 and §1.7: the two units 6C deferred, now episode rows rather than distinct
+    # scans, so each is an indexed `count(*)`. They sit beside the labelled event counts above
+    # and never replace them -- an episode and a sighting are different units.
+    "opportunity_episodes": "unique candidate opportunities, grouped by the stored gap rule",
+    "intent_episodes": "distinct intent episodes, grouped by the stored gap rule",
     "placements": "orders placed",
     "orders_filled_actual": "orders with at least one queue_model fill",
     "orders_filled_counterfactual": "orders whose only fills are no_watcher",
@@ -271,6 +277,34 @@ _FUNNEL_FILL_ROWS = text("""
     from fills f
     where f.replay = false and f.filled_at >= :since
     group by 1
+""")
+
+#: Bound: `started_at >= :since` (`FUNNEL_WINDOW`, 6 h). Index: `ix_opportunity_started`. An
+#: indexed `count(*)` over a time range is the whole point of the episode tables: 6C deferred
+#: this unit because the only way to count it was a `distinct` over the signal table, the scan
+#: fix 31 removed for starving the box (addendum §0.11).
+_FUNNEL_OPPORTUNITY_EPISODES = text("""
+    select count(*) from opportunity_episodes where started_at >= :since
+""")
+
+#: Bound and shape as above. Index: `ix_intent_started`.
+_FUNNEL_INTENT_EPISODES = text("""
+    select count(*) from intent_episodes where started_at >= :since
+""")
+
+#: Bound: `started_at >= :since` on both arms, each riding its own `started_at` index
+#: (`ix_opportunity_started`, `ix_intent_started`). The gap rule the rows in this window were
+#: written under, so the payload can label the two counts with the rule that produced them
+#: (§1.7(b)/(c)). `max` rather than a single value because the two tables derive their rule
+#: from different periods -- the pricing cadence and `exec_period_s` -- and each row stores its
+#: own, so the payload reports the widest in force. NULL when the window holds no episode at
+#: all, which the caller renders as `None`.
+_FUNNEL_EPISODE_RULE = text("""
+    select max(gap_rule_s) from (
+        select gap_rule_s from opportunity_episodes where started_at >= :since
+        union all
+        select gap_rule_s from intent_episodes where started_at >= :since
+    ) e
 """)
 
 #: Bound: `o.placed_at >= :since` (`OPEN_ORDERS_WINDOW`, 7 d) and `limit :limit`
@@ -521,17 +555,25 @@ def _board(session: Session, now: datetime) -> dict:
 
 
 def _reason_rows(counts: dict[str, float]) -> list[dict]:
-    """One `{reason, count, plain}` row per reason, largest first, capped at `REASON_LIMIT`.
+    """One `{reason, count, plain, class}` row per reason, largest first, capped at
+    `REASON_LIMIT`.
 
     The cap used to be the SQL's `limit` on a `group by reason`; the counts now arrive already
     grouped from `_FUNNEL_COUNTS`, so the ordering and the cap moved here rather than a second
     query being issued to do them. Ruling A-M6 still holds: the raw code is our own vocabulary,
     but it is the only string in this payload that travels both raw and sanitized, so it takes
     one sanitize call for consistency with `plain`.
+
+    6D §1.4: every row also carries the exclusion class the reason maps to, so a surface can
+    total capacity exclusions apart from strategy rejections and unreliable-data skips without
+    a vocabulary of its own. `.get`, not `class_of`: a surface must render an unclassified
+    reason rather than raise on it, and the exhaustiveness test over `CLASS_OF` is what keeps
+    that `None` from ever appearing.
     """
     top = sorted(counts.items(), key=lambda kv: -kv[1])[:REASON_LIMIT]
     return [{"reason": sanitize_reason(reason), "count": int(count),
-             "plain": sentences.reason_phrase(reason)} for reason, count in top]
+             "plain": sentences.reason_phrase(reason), "class": CLASS_OF.get(reason)}
+            for reason, count in top]
 
 
 def _funnel(session: Session, now: datetime) -> dict:
@@ -583,6 +625,15 @@ def _funnel(session: Session, now: datetime) -> dict:
             cancels[row.reason] = cancels.get(row.reason, 0.0) + count
     per_order = [dict(r._mapping) for r in session.execute(_FUNNEL_ORDER_FILLS, window)]
     fill_rows = {r.fill_method: int(r.n) for r in session.execute(_FUNNEL_FILL_ROWS, window)}
+    # Bound: `started_at >= :since` (`FUNNEL_WINDOW`, 6 h). Index: `ix_opportunity_started` /
+    # `ix_intent_started`. 6C's `candidate_signals` and `intent_verdicts` keep their names and
+    # their units beside these two, which count episodes rather than events (addendum §0.11).
+    episodes_count = {
+        "opportunity_episodes": int(
+            session.execute(_FUNNEL_OPPORTUNITY_EPISODES, window).scalar() or 0),
+        "intent_episodes": int(session.execute(_FUNNEL_INTENT_EPISODES, window).scalar() or 0),
+    }
+    gap_rule = session.execute(_FUNNEL_EPISODE_RULE, window).scalar()
     actual = sum(1 for r in per_order if r["has_queue_model"])
     counterfactual = sum(1 for r in per_order
                          if not r["has_queue_model"] and r["has_no_watcher"])
@@ -602,6 +653,8 @@ def _funnel(session: Session, now: datetime) -> dict:
         "orders_filled_actual": actual,
         "orders_filled_counterfactual": counterfactual,
         "fill_rows": fill_rows,
+        **episodes_count,
+        "episode_gap_rule_s": None if gap_rule is None else int(gap_rule),
         "units": FUNNEL_UNITS,
         "skipped": _reason_rows(skips),
         "cancelled": _reason_rows(cancels),

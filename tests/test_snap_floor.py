@@ -12,8 +12,11 @@ from sqlalchemy import text
 from harness.dashboard.snapshots import floor
 from harness.dashboard.snapshots.floor import FLOOR_KEYS, QUEUE_HISTORY_LIMIT, build_floor
 from harness.db.models import (EquitySnapshot, FairValue, Fill, Game, GameScoreEvent,
-                               MetricSample, OperatorEvent, Order, OrderWatchSample, Run,
-                               StrategyVariant, Team, VenueMarket, VenueRequest, VenueStatus)
+                               IntentEpisode, MetricSample, OperatorEvent, OpportunityEpisode,
+                               Order, OrderWatchSample, Run, StrategyVariant, Team, VenueMarket,
+                               VenueRequest, VenueStatus)
+from harness.ops import episodes
+from harness.ops.exclusions import EXCLUSION_CLASSES
 from harness.pricing.fair import compute_fair_values
 from tests.test_fair import NOW as FAIR_NOW
 from tests.test_fair import _seed as _seed_priced_game
@@ -87,8 +90,10 @@ def test_the_funnel_sums_the_run_notes_and_the_executors_own_per_minute_counts(d
     assert funnel["candidates"] == 12 and funnel["rejected_total"] == 88
     assert funnel["orders"] == 5
     assert funnel["intents"] == 6
-    assert {"reason": "kickoff", "count": 1, "plain": "too close to kickoff"} in \
-        funnel["skipped"]
+    # 6D §1.4: every reason row also carries its exclusion class, and `kickoff` is a strategy
+    # rejection -- the strategy said "no longer", not the venue and not our own operations.
+    assert {"reason": "kickoff", "count": 1, "plain": "too close to kickoff",
+            "class": "strategy_rejection"} in funnel["skipped"]
     assert [row["reason"] for row in funnel["cancelled"]] == ["reprice"]
 
 
@@ -1058,6 +1063,75 @@ def test_the_funnel_labels_each_count_with_its_own_unit(db_session, env_settings
     assert set(funnel["units"]) >= {"candidate_signals", "intent_verdicts", "placements",
                                     "orders_filled_actual", "orders_filled_counterfactual",
                                     "fill_rows"}
+
+
+def test_the_funnel_counts_the_two_episode_units_beside_their_event_counts(db_session,
+                                                                          env_settings):
+    """Addendum §0.11 and §1.7: 6C's two deferred units, delivered as episodes so each is an
+    indexed `count(*)` rather than the `distinct` scan fix 31 removed.
+
+    Computed by hand: one candidate key sighted three times inside the window (one episode, and
+    `candidate_signals` reads 1 from this run's notes, since the notes carry the count the run
+    itself wrote), and one intent key with two verdicts (one episode against two verdicts). Each
+    episode count is `<=` its 6C counterpart -- an episode count above its event count is an
+    integrity anomaly, which is also §3 row 7 -- and both are labelled with the stored gap rule.
+    """
+    db_session.add(Run(started_at=NOW - timedelta(hours=1), status="ok", build_sha="abc",
+                       notes={"pricing": {"gaps": 3, "signals": {"sharp_direct":
+                                                                 {"candidate": 3,
+                                                                  "rejected": 0}}}}))
+    _exec_metric(db_session, "exec.placed", 1)
+    _exec_metric(db_session, "exec.skipped", 1, reason="kickoff")
+    rule = episodes.gap_rule_s(120)
+    for minutes in (120, 118, 116):
+        episodes.upsert(db_session, OpportunityEpisode,
+                        [("aaaaaaaaaaaa", 4242, "yes")], NOW - timedelta(minutes=minutes),
+                        rule, kind="opportunity")
+    episodes.upsert(db_session, IntentEpisode, [("aaaaaaaaaaaa", 4242, "yes")],
+                    NOW - timedelta(minutes=120), episodes.gap_rule_s(15), kind="intent")
+    db_session.flush()
+
+    funnel = build_floor(db_session, NOW, env_settings)["funnel"]
+    assert funnel["opportunity_episodes"] == 1
+    assert funnel["intent_episodes"] == 1
+    assert funnel["candidate_signals"] == 3 and funnel["intent_verdicts"] == 2
+    assert funnel["opportunity_episodes"] <= funnel["candidate_signals"]
+    assert funnel["intent_episodes"] <= funnel["intent_verdicts"]
+    assert funnel["episode_gap_rule_s"] == 600
+    assert "gap rule" in funnel["units"]["opportunity_episodes"]
+    assert "gap rule" in funnel["units"]["intent_episodes"]
+
+
+def test_an_episode_outside_the_window_is_no_number_at_all(db_session, env_settings):
+    """The 6 h `FUNNEL_WINDOW` bounds both new statements on their own `started_at` index, so an
+    episode seven hours old is not a smaller count, it is absent -- and with no episode in the
+    window the gap rule is `None`, never 0, which would claim a rule of zero seconds."""
+    episodes.upsert(db_session, OpportunityEpisode, [("aaaaaaaaaaaa", 7, "yes")],
+                    NOW - timedelta(hours=7), 600, kind="opportunity")
+    db_session.flush()
+
+    funnel = build_floor(db_session, NOW, env_settings)["funnel"]
+    assert funnel["opportunity_episodes"] == 0 and funnel["intent_episodes"] == 0
+    assert funnel["episode_gap_rule_s"] is None
+
+
+def test_every_skipped_row_carries_an_exclusion_class(db_session, env_settings):
+    """6D §1.4: a surface that reports why work did not complete uses one vocabulary, so every
+    reason row names the class `CLASS_OF` maps it to. Computed by hand from the three seeded
+    skips: `max_open` is capacity, `kickoff` is a strategy rejection, `book_dirty` is
+    unreliable data."""
+    _exec_metric(db_session, "exec.skipped", 5, reason="max_open")
+    _exec_metric(db_session, "exec.skipped", 3, reason="kickoff")
+    _exec_metric(db_session, "exec.skipped", 1, reason="book_dirty")
+    _exec_metric(db_session, "exec.cancelled", 2, reason="reprice")
+    db_session.flush()
+
+    funnel = build_floor(db_session, NOW, env_settings)["funnel"]
+    classes = {row["reason"]: row["class"] for row in funnel["skipped"]}
+    assert classes == {"max_open": "capacity", "kickoff": "strategy_rejection",
+                       "book_dirty": "unreliable_data"}
+    assert all(row["class"] in EXCLUSION_CLASSES for row in funnel["skipped"])
+    assert [row["class"] for row in funnel["cancelled"]] == ["operational"]
 
 
 def test_the_old_funnel_keys_stay_for_one_release(db_session, env_settings):

@@ -793,6 +793,50 @@ class CoverageSample(Base):
                       Index("ix_coverage_run", "run_id"))
 
 
+class OpportunityEpisode(Base):
+    """One candidate opportunity, from its first sighting to its last (6D §1.7(b), D6).
+
+    6C deferred "unique candidate opportunities" because the only way to count it was a
+    `distinct` over `signals`, which is the scan fix 31 removed for starving the box. An episode
+    row makes the same unit an indexed `count(*)`: a run extends the open episode when the
+    previous sighting is within `gap_rule_s`, and opens a new one otherwise. The rule is stored
+    on the row so a reader knows which one produced it and can re-count under another without
+    new data.
+    """
+    __tablename__ = "opportunity_episodes"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    variant_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    gap_rule_s: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_signals: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("variant_id", "venue_market_id", "side", "started_at",
+                         name="uq_opportunity_episode"),
+        Index("ix_opportunity_started", "started_at"))
+
+
+class IntentEpisode(Base):
+    """The same shape for `intents` (6D §1.7(c)): 6C's second deferred unit. Written by the
+    executor where it writes the intent, in the same single multi-row upsert under the same cap
+    -- an executor loop places far fewer intents than a pricing run scores candidates."""
+    __tablename__ = "intent_episodes"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    variant_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    gap_rule_s: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_intents: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("variant_id", "venue_market_id", "side", "started_at",
+                         name="uq_intent_episode"),
+        Index("ix_intent_started", "started_at"))
+
+
 class OperatorEvent(Base):
     """One operator-visible event: a kill, a deploy, a settle error, a check failure, a note.
     `summary` always passes the F50 sanitizer (`harness.telemetry.sanitize_reason`) before

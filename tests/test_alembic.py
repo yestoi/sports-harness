@@ -478,6 +478,34 @@ def test_phase6d_follows_the_positions_hotfix_and_is_the_pinned_head():
     assert HEAD_REVISION == "0009_phase6d_sustained_eval"
 
 
+def test_the_episode_tables_and_their_indexes_are_in_both_catalogues(two_databases):
+    """6D §1.7(b)/(c): the two episode tables are declared as models (so `create_schema` builds
+    them) and mirrored in this revision with one plain index each, in the same task. The
+    catalogue diff would catch a disagreement; this names the tables and the two indexes, so a
+    half-landed pass says which half is missing.
+
+    Plain indexes, never CONCURRENTLY: both tables are created empty by this revision and have
+    no writer attached while it runs, which is the same reading `coverage_samples` took.
+    """
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        names = set(inspect(engine).get_table_names())
+        assert {"opportunity_episodes", "intent_episodes"} <= names
+        indexes = {i["name"] for i in inspect(engine).get_indexes("opportunity_episodes")}
+        assert "ix_opportunity_started" in indexes
+        assert "ix_intent_started" in {
+            i["name"] for i in inspect(engine).get_indexes("intent_episodes")}
+        uniques = {u["name"] for u in inspect(engine).get_unique_constraints(
+            "opportunity_episodes")}
+        assert "uq_opportunity_episode" in uniques
+        assert "uq_intent_episode" in {
+            u["name"] for u in inspect(engine).get_unique_constraints("intent_episodes")}
+
+
 def test_the_positions_view_ddl_agrees_between_schema_and_migration():
     """`create_schema` owns the views; this revision exists so a *migrated* database carries the
     same text, because `0001_baseline` holds the view's previous one and

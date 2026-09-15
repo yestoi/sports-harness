@@ -54,6 +54,7 @@ from psycopg.errors import QueryCanceled
 from sqlalchemy.orm import Session
 
 from harness import execution, telemetry
+from harness.db.models import IntentEpisode
 from harness.execution import store
 from harness.execution.book import (
     ZERO,
@@ -98,6 +99,7 @@ from harness.execution.plan import (
     rebuild_state,
 )
 from harness.execution.risk import compute_drawdown, peak_equity_7d
+from harness.ops import episodes
 from harness.pricing.fees import KALSHI_FOOTBALL, fee_for_order
 
 log = logging.getLogger(__name__)
@@ -445,7 +447,14 @@ class Executor:
 
         # 2. Intake.
         candidates = store.candidate_signals(session, variant_ids, lower, self.replay, at)
-        stats.intents_new = store.insert_intents(session, candidates, now, self.replay)
+        intent_keys: list = []
+        stats.intents_new = store.insert_intents(session, candidates, now, self.replay,
+                                                 intent_keys)
+        if intent_keys and not self.replay:
+            # 6D §1.7(c): the executor writes the episode where it writes the intent, under the
+            # same cap. A replay writes none: these are live units.
+            episodes.upsert(session, IntentEpisode, intent_keys, now,
+                            episodes.gap_rule_s(s.period_s), kind="intent")
         intents, extras = store.load_intents(session, variant_ids, lower, self.replay, at)
 
         # 3. Books and markets.

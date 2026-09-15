@@ -337,6 +337,7 @@ def test_identity_columns_match_every_table_s_real_first_column():
         "t7": tables_module._T7_COLUMNS, "t8": tables_module._T8_COLUMNS,
         "t10": tables_module._T10_COLUMNS, "t11": tables_module._T11_COLUMNS,
         "t12": tables_module._T12_COLUMNS, "t13": tables_module._T13_COLUMNS,
+        "t14": tables_module._T14_COLUMNS,
     }
     for key, columns in named.items():
         assert IDENTITY_COLUMNS[key] == columns[0]

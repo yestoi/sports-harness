@@ -294,7 +294,7 @@ def test_weekly_tables_return_every_key_with_placeholders(db_session, env_settin
     tables = _tables(db_session, env_settings)
     assert list(tables) == list(TABLE_KEYS)
     assert set(TABLE_KEYS) == {"t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9",
-                               "t10", "t12", "t13"}
+                               "t10", "t12", "t13", "t14"}
     for key, table in tables.items():
         assert isinstance(table, Table), key
         assert table.title and table.header, key
@@ -970,9 +970,9 @@ def test_table1_stopped_share_ignores_rows_outside_the_week_and_unevaluated_ones
 def test_t12_is_appended_after_t10_and_t13_after_t12():
     from harness.report.tables import TABLE_KEYS
 
-    assert TABLE_KEYS[-1] == "t13"
+    assert TABLE_KEYS[-1] == "t14"
     assert TABLE_KEYS == ("t1", "t2", "t3", "t4", "t4b", "t5", "t6", "t7", "t8", "t11", "t9",
-                          "t10", "t12", "t13")
+                          "t10", "t12", "t13", "t14")
 
 
 def test_t12_row_keys_are_composite_and_unique(db_session, env_settings):
@@ -1236,8 +1236,9 @@ def test_t13_renders_first_and_the_model_view_keeps_table_keys_order(db_session,
 
     assert RENDER_ORDER[0] == "t13"
     assert set(RENDER_ORDER) == set(TABLE_KEYS)
-    assert TABLE_KEYS[-1] == "t13"
-    assert list(RENDER_ORDER[1:]) == [k for k in TABLE_KEYS if k != "t13"]
+    assert TABLE_KEYS[-1] == "t14"
+    assert RENDER_ORDER[:2] == ("t13", "t14")
+    assert list(RENDER_ORDER[2:]) == [k for k in TABLE_KEYS if k not in ("t13", "t14")]
 
     tables = weekly_tables(db_session, YEAR, WEEK, env_settings, now=WEEK_START)
     text = render_markdown(tables, {"year": YEAR, "week": WEEK, "build_sha": "abc",
@@ -1259,7 +1260,7 @@ def test_t13_sql_keys_no_pricing_table_by_run_id():
     from harness.report import tables as tables_module
 
     source = Path(tables_module.__file__).read_text()
-    block = source.split("# --- table 13", 1)[1].split("# --- entry point", 1)[0]
+    block = source.split("# --- table 13", 1)[1].split("# --- table 14", 1)[0]
     statements = " ".join(re.findall(r'text\("""(.*?)"""\)', block, flags=re.S)).lower()
     assert statements, "t13 defines no SQL, so this test would be checking nothing"
     assert "started_at" not in statements
