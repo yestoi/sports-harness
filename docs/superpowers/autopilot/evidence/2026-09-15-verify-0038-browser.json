@@ -1,0 +1,197 @@
+{
+  "prefix": "verify-c1066b5",
+  "pages": [
+    {
+      "name": "legacy",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/",
+      "surface": null,
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 9226,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5 \u00b7 deployed 2026"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-1440-legacy.png"
+    },
+    {
+      "name": "pulse",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "pulse",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 2728,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-1440-pulse.png"
+    },
+    {
+      "name": "floor",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "floor",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 8039,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-1440-floor.png"
+    },
+    {
+      "name": "study",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "study",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 42935,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-1440-study.png"
+    },
+    {
+      "name": "gate",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "gate",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 3273,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-1440-gate.png"
+    },
+    {
+      "name": "ticket",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "ticket",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 900,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-1440-ticket.png"
+    },
+    {
+      "name": "legacy",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/",
+      "surface": null,
+      "measure": {
+        "client": 980,
+        "scrollW": 980,
+        "body": 980,
+        "height": 9943,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5 \u00b7 deployed 2026"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-390-legacy.png"
+    },
+    {
+      "name": "pulse",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "pulse",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 5248,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-390-pulse.png"
+    },
+    {
+      "name": "floor",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "floor",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 11836,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-390-floor.png"
+    },
+    {
+      "name": "study",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "study",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 54568,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-390-study.png"
+    },
+    {
+      "name": "gate",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "gate",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 6223,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-390-gate.png"
+    },
+    {
+      "name": "ticket",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "ticket",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 1012,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build c1066b5"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-c1066b5-390-ticket.png"
+    }
+  ]
+}

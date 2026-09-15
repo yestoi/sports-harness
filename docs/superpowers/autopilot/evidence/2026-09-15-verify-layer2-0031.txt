@@ -1,0 +1,49 @@
+verify_at_utc=2026-09-15T05:31:06Z (00:31 CT) deploy c1066b5
+-- containers are checked with make status-omarchy; this block is data
+17024 | 2026-09-15 05:29:30.735284+00 | ok | 3 | 4897473 | []
+17005 | 2026-09-15 05:17:51.408407+00 | ok | 3 | 4897476 | []
+17002 | 2026-09-15 05:16:21.408376+00 | ok | 0 |  | []
+17001 | 2026-09-15 05:15:51.408333+00 | ok | 0 |  | []
+17000 | 2026-09-15 05:15:21.408354+00 | ok | 0 |  | []
+ok | 73
+skipped | 267
+17027 | 2026-09-15 05:31:00.735199+00 | skipped
+candidate | 21927
+rejected | 584025
+delta | 101850
+gap | 3
+snapshot | 975
+00:00:00.907687
+fair_values | 4485350 | 6349 |  | 2026-09-15 03:32:52.355047+00
+runs | 16914 | 1853 |  | 2026-09-15 01:40:46.226379+00
+orders | 10970 | 1290 | 2026-09-15 05:30:57.386556+00 | 2026-09-15 05:30:57.699691+00
+veto_queue | 60896 | 1242 | 2026-09-15 04:37:55.435192+00 | 2026-09-15 04:58:56.051978+00
+market_gap_snapshots | 3190136 | 884 |  | 2026-09-14 23:57:41.899983+00
+64 | 1024 MB
+130 GB
+build_sha_since_deploy | c1066b5
+gap_rows_2h | 3 | 2
+post_start_events_on_preboundary_orders | 0
+post_boundary_orders_by_era | 6b | open | 102
+post_boundary_orders_by_era | ca30ed1 | cancelled | 3
+fill_post_boundary | 1878 | 10603 | 2026-09-15 05:20:31.116+00 | 2026-09-14 23:42:00.393081+00
+skipped_reasons_since_start | book_dirty | 7
+== make status-omarchy
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED         STATUS                   PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     2 days ago      Up 33 hours              5432/tcp
+sports-harness-app-exec-1       sports-release/app:c1066b5                                                         "harness exec"           app-exec       5 minutes ago   Up 5 minutes (healthy)   
+sports-harness-app-research-1   sports-release/app:c1066b5                                                         "harness research-wo…"   app-research   5 minutes ago   Up 5 minutes             
+sports-harness-app-run-1        sports-release/app:c1066b5                                                         "harness run"            app-run        5 minutes ago   Up 5 minutes             
+sports-harness-app-serve-1      sports-release/app:c1066b5                                                         "harness serve --por…"   app-serve      5 minutes ago   Up 5 minutes (healthy)   127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:c1066b5                                                         "harness ws-record"      app-ws         5 minutes ago   Up 5 minutes             
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       2 days ago      Up 33 hours (healthy)    5432/tcp
+{"status":"ok","last_run_at":"2026-09-15T05:31:00.735199+00:00","last_status":"skipped","seconds_since":6,"credits_remaining":4897473,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":210.0,"read_at":"2026-09-15T05:26:00.735519+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"c1066b5"} [200]
+/dev/mapper/root  952G  145G  804G  16% /srv/sports-harness
+               total        used        free      shared  buff/cache   available
+Mem:           31904        7583        2925        1446       24768       24321
+== dashboard section count (10m)
+0
+== ERROR app-run
+== ERROR app-serve
+== ERROR app-ws
+== ERROR app-exec
