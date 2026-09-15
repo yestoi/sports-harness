@@ -58,9 +58,10 @@ BOOK_MAX_AGE = timedelta(seconds=120)
 #: `ts` floor dropped or a REST-anchored book saw arrive behind itself (`event_age`), and a tape
 #: row the recorder stored without a side, price or delta (`malformed_row`). There is
 #: deliberately no `recovery` cause (ruling IM-11): the recovery branch is the one taken when a
-#: market has *stopped* being dirty. §1.5's interval rows carry one of these, and `recorder_dead`
-#: beside them, which is the loop's verdict about the recorder rather than this book's about
-#: itself.
+#: market has *stopped* being dirty. §1.5's interval rows carry one of these, and
+#: `recorder_dead` and `book_unreadable` (row 69) beside them, which are the loop's own
+#: verdicts -- about the recorder, and about one ticker's failed read this step -- rather
+#: than this book's about itself. Neither is ever passed to `mark_dirty`.
 DIRTY_CAUSES = ("gap", "session_boundary", "event_age", "malformed_row")
 
 # The consumer-side probe of §0.2, on `ix_obe_ticker_id`: is there a delta this ticker taped

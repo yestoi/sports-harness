@@ -177,6 +177,11 @@ def test_a_market_that_leaves_the_step_closes_both_of_its_rows(db_session):
     Nothing will ever look at it again, so an open row would say "still dirty" for the rest of
     the season and `order_dirty_time` would clamp it to every later order's deadline. The close
     is stamped at `now` of the step that noticed, which is the last instant anyone observed it.
+
+    This case hands the departed ticker's id into `market_ids` at the departing step, a shape
+    production never produces (both sets are built from the same `rows`), so it is a guard on
+    the close itself and not on row 70's real one:
+    `test_a_market_absent_from_both_sets_at_the_departing_step_still_closes` below is that.
     """
     executor = _executor_with_books({"A": _dirty_book("gap")})
     executor._advance_books(db_session, {"A"}, {"A": 1}, at(0), dead_recorder=False)
@@ -302,7 +307,8 @@ def test_a_market_absent_from_both_sets_at_the_departing_step_still_closes(db_se
     call ever fired: two production rows (markets 865/866, journal 219) were left open forever
     this way. `gone` is now read off the *previous* step's ticker map, so a market that
     disappears from both sets at once still closes its dirty and observation intervals,
-    stamped at the last step that saw it.
+    stamped at `now` of the step that noticed it was gone -- the same instant a clean
+    market's close carries.
     """
     executor = _executor_with_books({"A": _dirty_book("gap")})
     executor._advance_books(db_session, {"A"}, {"A": 1}, at(0), dead_recorder=False)
