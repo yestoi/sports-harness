@@ -25,6 +25,7 @@ from harness.db.models import (
     VenueTrade,
 )
 from harness.feeds.http import FetchError
+from harness.recorder import ws_sink as ws_sink_module
 from harness.recorder.ws_sink import WsSink
 from harness.venues.kalshi import ws as ws_module
 from harness.venues.kalshi.ws import WsRecorder, diff_subscriptions, is_stale, select_ws_tickers, should_reconnect
@@ -198,7 +199,8 @@ class _FakeSink:
         self.closed = True
 
     def drain_counts(self):
-        return {"events": 0, "trades": 0, "gaps": 0}
+        return {"events": 0, "trades": 0, "gaps": 0, "seq_advances_accounted": 0,
+                "acks_out_of_sequence": 0}
 
     def sink_lag_s(self, now):
         return None
@@ -342,7 +344,8 @@ class _CountingSink(_FakeSink):
 
     def __init__(self, on_handle, counts=None, lag=None):
         super().__init__(on_handle)
-        self._counts = counts or {"events": 0, "trades": 0, "gaps": 0}
+        self._counts = counts or {"events": 0, "trades": 0, "gaps": 0,
+                                  "seq_advances_accounted": 0, "acks_out_of_sequence": 0}
         self._lag = lag
 
     def drain_counts(self):
@@ -356,7 +359,9 @@ def test_ws_metrics_once_per_minute_and_connect_disconnect_events(monkeypatch):
     """`_write_ws_metrics` batches the design spec §3.1 `ws.*` names once a minute
     (`Sampler`), and `run_forever` writes a `ws_connect`/`ws_disconnect` event on every
     connect/disconnect transition, through the sink's own session."""
-    sink = _CountingSink(lambda m, t: None, counts={"events": 5, "trades": 2, "gaps": 1}, lag=3.5)
+    sink = _CountingSink(lambda m, t: None,
+                         counts={"events": 5, "trades": 2, "gaps": 1,
+                                 "seq_advances_accounted": 4, "acks_out_of_sequence": 3}, lag=3.5)
     recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
                           ws_factory=lambda *a, **kw: None, clock=lambda: NOW)
     recorder._current = ["A", "B"]
@@ -375,6 +380,10 @@ def test_ws_metrics_once_per_minute_and_connect_disconnect_events(monkeypatch):
     assert by_name["ws.subscribed_tickers"] == (2, {})
     assert by_name["ws.reconnects"] == (2, {})
     assert by_name["ws.gaps"] == (1, {})
+    # Fix 77 round 1 (M-4): the fix's own counters ride the same per-minute batch, so the
+    # row-77 closing read is a metric and not only an app-ws log line.
+    assert by_name["ws.seq_advances_accounted"] == (4, {})
+    assert by_name["ws.acks_out_of_sequence"] == (3, {})
     assert by_name["ws.sink_lag_s"] == (3.5, {})
     assert recorder._reconnects_since == 0  # reset once the batch is written
 
@@ -475,6 +484,12 @@ def test_ws_real_sink_writes_metrics_and_connect_event(db_session):
     assert gaps_row.value == 1
     lag_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.sink_lag_s").one()
     assert lag_row.value is not None
+    # Fix 77 round 1 (M-4): through the real sink too -- this tape had a genuine gap and no
+    # subscription update, so both of the fix's counters read zero.
+    advances_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.seq_advances_accounted").one()
+    assert advances_row.value == 0
+    acks_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.acks_out_of_sequence").one()
+    assert acks_row.value == 0
 
     sink.write_event("ws_connect", "connected", ts=NOW)
     event = db_session.query(OperatorEvent).filter_by(kind="ws_connect").one()
@@ -1667,3 +1682,114 @@ def test_gap_recovery_expects_its_own_two_frames_and_keeps_the_chain(db_session,
     assert [(g.sid, g.raw["expected"], g.raw["got"]) for g in gaps] == [(7, 3, 5)]
     # The sequence was followed through the recovery, not forgotten.
     assert sink._last_seq[7] == 8
+
+
+# --- fix 77, review round 1 ------------------------------------------------------------
+
+def test_an_unknown_frame_with_no_allowance_pending_leaves_the_chain_alone(db_session):
+    """Round 1, Important 1: a frame that is neither a trade nor a book message is followed
+    only inside a window the recorder's own `update_subscription` frames bought. With nothing
+    pending -- an unknown or renamed venue message, a delta whose `type` is garbled -- it is
+    a message this tape never stored, so the chain must not swallow it: the next delta still
+    writes the `gap` row that records it."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.handle(_ack(2, 11), NOW)                    # nothing booked: not ours to follow
+    assert sink._last_seq[2] == 10
+    assert sink.handle(_delta(2, 12, "K-A"), NOW) == "orderbook_delta"
+
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.sid, gap.raw["expected"], gap.raw["got"]) == (2, 11, 12)
+
+
+def test_an_accepted_acknowledgement_is_logged(db_session, caplog):
+    """Round 1, Important 1: the accepted ack path was silent, so reading A would have been
+    invisible on production. It logs the same shape `_check_seq` does."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    with caplog.at_level("INFO", logger="harness.recorder.ws_sink"):
+        sink.handle(_ack(2, 11), NOW)
+
+    assert sink._last_seq[2] == 11
+    assert any("sid=2" in r.getMessage() and "subscription update" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_backwards_frame_keeps_an_allowance_booked_for_an_update(db_session):
+    """Round 1, Minor 1: a replayed or out-of-order frame (`seq <= last`) is not a range that
+    can contain the update's own seq numbers, so it must not drop the allowance. Dropping it
+    turned one row into two -- the reviewer's probe read `[(11, 9), (10, 11)]`."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    assert sink.handle(_delta(2, 9, "K-A"), NOW) == "orderbook_delta"    # backwards: one row
+    assert sink.handle(_delta(2, 11, "K-A"), NOW) == "orderbook_delta"   # the update's number
+
+    gaps = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
+    assert [(g.raw["expected"], g.raw["got"]) for g in gaps] == [(11, 9)]
+
+
+def test_expect_advances_does_not_re_date_a_live_allowance_past_its_own_ttl(db_session, monkeypatch):
+    """Round 1, Minor 2: booking a second allowance while the first is still live must keep
+    the earlier deadline, or a steady trickle of updates would keep an unspent expectation
+    alive indefinitely and it could absorb a much later real loss."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    sink = WsSink(factory, commit_every=1, advance_ttl_s=10.0)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)          # deadline 1010
+    clock["t"] += 9.0
+    sink.expect_advances(2, 1)          # still 1010, not 1019
+    clock["t"] += 2.0                   # 1011: both are stale
+    assert sink.handle(_delta(2, 12, "K-A"), NOW) == "orderbook_delta"
+
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.sid, gap.raw["expected"], gap.raw["got"]) == (2, 11, 12)
+
+
+def test_the_allowance_is_capped_no_matter_how_many_updates_were_sent(db_session):
+    """Round 1, Minor 3: `MAX_PENDING_ADVANCES` is the bound the brief asks for -- repeated
+    resubscribes cannot buy an unbounded tolerance. Twenty bookings of two still explain a
+    skip of exactly eight, and no more."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    assert ws_sink_module.MAX_PENDING_ADVANCES == 8
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    for _ in range(20):
+        sink.expect_advances(2, 2)
+    assert sink.handle(_delta(2, 19, "K-A"), NOW) == "orderbook_delta"   # skip of 8: absorbed
+    assert db_session.query(OrderbookEvent).filter_by(kind="gap").count() == 0
+
+    for _ in range(20):
+        sink.expect_advances(2, 2)
+    assert sink.handle(_delta(2, 29, "K-A"), NOW) == "orderbook_delta"   # skip of 9: a loss
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.sid, gap.raw["expected"], gap.raw["got"]) == (2, 20, 29)
+
+
+def test_the_fix_77_counters_are_drained_into_the_ws_metric_batch(db_session):
+    """Round 1, Minor 4: the counters ride `drain_counts` like every other `ws.*` number, so
+    they reset with the batch and reach `metric_samples` at the same per-minute cadence."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 2)
+    assert sink.handle(_delta(2, 12, "K-A"), NOW) == "orderbook_delta"   # one advance absorbed
+    sink.handle(_ack(2, 900_001), NOW)                                   # one ack refused
+
+    counts = sink.drain_counts()
+    assert (counts["seq_advances_accounted"], counts["acks_out_of_sequence"]) == (1, 1)
+    # Drained means reset: the next minute counts its own advances, not the running total.
+    assert sink.drain_counts()["seq_advances_accounted"] == 0
+    assert sink.drain_counts()["acks_out_of_sequence"] == 0

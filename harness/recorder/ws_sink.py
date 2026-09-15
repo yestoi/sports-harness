@@ -60,10 +60,11 @@ class WsSink:
         # have bought and the monotonic instant that allowance expires at: {sid: (count, deadline)}.
         self._advances: dict[int, tuple[int, float]] = {}
         self._advance_ttl_s = advance_ttl_s
-        # Fix 77 telemetry, for reading the fix on production: seq numbers accounted for as
-        # subscription updates rather than gaps, and frames whose seq did not fit the chain.
-        self.seq_advances_accounted = 0
-        self.acks_out_of_sequence = 0
+        # Fix 77 telemetry, drained by `drain_counts` with the other per-minute counters
+        # (round 1, Minor 4): seq numbers accounted for as subscription updates rather than
+        # gaps, and non-data frames whose seq did not fit the chain and were ignored.
+        self._advances_since = 0
+        self._acks_out_since = 0
         # Which subscriptions have rows in the batch right now. `_pending` is one count for the
         # whole batch, but the batch spans every sid that landed a row since the last commit and
         # a rollback discards all of them, so the exception mark needs the set as well as the
@@ -104,8 +105,14 @@ class WsSink:
         if n <= 0:
             return
         now = time.monotonic()
-        pending = self._pending_advances(sid, now)
-        self._advances[sid] = (min(pending + n, MAX_PENDING_ADVANCES), now + self._advance_ttl_s)
+        pending = self._pending_advances(sid, now)   # prunes a stale entry before it is added to
+        deadline = now + self._advance_ttl_s
+        if pending:
+            # Round 1 (Minor 2): keep the live entry's own deadline. Re-dating it would let a
+            # steady trickle of updates carry an unspent expectation indefinitely, and it could
+            # then absorb a loss long after the frame that bought it.
+            deadline = min(self._advances[sid][1], deadline)
+        self._advances[sid] = (min(pending + n, MAX_PENDING_ADVANCES), deadline)
 
     def _pending_advances(self, sid: int, now: float) -> int:
         """How much allowance `sid` still has, dropping it once it has gone stale: an
@@ -155,15 +162,18 @@ class WsSink:
                 # Fix 77: the recorder's own `update_subscription` frames spent these seq
                 # numbers, so nothing was lost. Spend the allowance and follow the chain.
                 self._spend_advances(sid, skipped)
-                self.seq_advances_accounted += skipped
+                self._advances_since += skipped
                 log.info("seq advance sid=%s expected=%s got=%s accounted by %d subscription update(s)",
                          sid, last + 1, seq, skipped)
                 self._last_seq[sid] = seq
                 return
-            # A skip the allowance cannot explain is a real loss. The pending advances go with
-            # the row: their seq numbers are inside the range this gap already covers, and
-            # carrying them forward would let them absorb the next message instead.
-            self._advances.pop(sid, None)
+            # A forward skip the allowance cannot explain is a real loss. The pending advances
+            # go with the row: their seq numbers are inside the range this gap already covers,
+            # and carrying them forward would let them absorb the next message instead. Round 1
+            # (Minor 1): only forward. A replayed or out-of-order frame (`seq <= last`) covers
+            # no such range, and dropping the allowance there turned one row into two.
+            if skipped > 0:
+                self._advances.pop(sid, None)
             log.warning("seq gap sid=%s expected=%s got=%s exposed_by=%s", sid, last + 1, seq, ticker)
             self._session.add(OrderbookEvent(ticker="", ts=ts, sid=sid, seq=seq, kind="gap",
                                              raw={"sid": sid, "expected": last + 1, "got": seq, "exposed_by": ticker or None}))
@@ -310,14 +320,19 @@ class WsSink:
         pending = self._pending_advances(sid, time.monotonic())
         skipped = seq - (last + 1)
         # The ack occupies one seq number itself; anything it is ahead by must be other update
-        # frames' numbers, so it can never account for more than the allowance bought.
-        if skipped < 0 or skipped > max(pending - 1, 0):
-            self.acks_out_of_sequence += 1
+        # frames' numbers, so it can never account for more than the allowance bought. Round 1
+        # (Important 1): with nothing pending it is not ours to follow at all. Such a frame is
+        # a message this tape never stored, and swallowing it here would take with it the `gap`
+        # row the next delta would otherwise write.
+        if pending <= 0 or skipped < 0 or skipped > pending - 1:
+            self._acks_out_since += 1
             log.debug("ws frame seq out of sequence sid=%s expected=%s got=%s; ignored", sid, last + 1, seq)
             return
         self._spend_advances(sid, skipped + 1)
-        self.seq_advances_accounted += skipped + 1
+        self._advances_since += skipped + 1
         self._last_seq[sid] = seq
+        log.info("seq advance sid=%s expected=%s got=%s accounted by %d subscription update(s) (acknowledged)",
+                 sid, last + 1, seq, skipped + 1)
 
     def flush(self) -> None:
         """Commit whatever the batch holds right now. The recorder calls this whenever the
@@ -333,10 +348,13 @@ class WsSink:
 
     def drain_counts(self) -> dict:
         """Message counts since the last drain, reset to zero. `WsRecorder` calls this once a
-        minute to batch `ws.events_per_min`/`ws.trades_per_min`/`ws.gaps` (design spec §3.1)."""
+        minute to batch `ws.events_per_min`/`ws.trades_per_min`/`ws.gaps` (design spec §3.1)
+        and, since fix 77, `ws.seq_advances_accounted`/`ws.acks_out_of_sequence`."""
         counts = {"events": self._events_since, "trades": self._trades_since,
-                 "gaps": self._gaps_since}
+                 "gaps": self._gaps_since, "seq_advances_accounted": self._advances_since,
+                 "acks_out_of_sequence": self._acks_out_since}
         self._events_since = self._trades_since = self._gaps_since = 0
+        self._advances_since = self._acks_out_since = 0
         return counts
 
     def sink_lag_s(self, now: datetime) -> float | None:

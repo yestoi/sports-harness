@@ -285,6 +285,12 @@ class WsRecorder:
                 ("ws.subscribed_tickers", len(self._current), {}),
                 ("ws.reconnects", self._reconnects_since, {}),
                 ("ws.gaps", counts["gaps"], {}),
+                # Fix 77: the seq numbers the venue spent on this recorder's own
+                # `update_subscription` frames -- gaps that are not losses -- and the non-data
+                # frames whose seq the sink refused to follow. Same batch, same cadence, so
+                # row 77 can be read off `metric_samples` and not only the app-ws log.
+                ("ws.seq_advances_accounted", counts["seq_advances_accounted"], {}),
+                ("ws.acks_out_of_sequence", counts["acks_out_of_sequence"], {}),
             ]
             lag = self.sink.sink_lag_s(now)
             if lag is not None:
