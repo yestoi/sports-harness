@@ -1,0 +1,72 @@
+settle|211|2026-09-15 18:31:25.975671+00|2026-09-15 18:33:06.125582+00|ok|f|[{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 0.006, "budget_exhausted": false}, {"name": "result_benchmarks", "error": null, "counts": {"result_benchmarks": 0}, "elapsed_s": 0.021, "budget_exhausted": false}, {"name": "gap_outcomes_drain", "error": null, "counts": {"gap_outcomes_drain": 69875}, "elapsed_s": 53.53, "budget_exhausted": false}, {"name": "order_clv", "error": null, "counts": {"no_game": 0, "order_clv": 0}, "elapsed_s": 9.632, "budget_exhausted": false}, {"name": "report_wtd", "error": null, "counts": {"skipped": true}, "elapsed_s": 0.001, "budget_exhausted": false}, {"name": "settle", "error": null, "counts": {"games": 0, "orders": 0, "markets": 0, "ledger_rows": 0}, "elapsed_s": 0.001, "budget_exhausted": false}, {"name": "venue_result", "error": null, "counts": {"mismatches": 0, "venue_rows": 0}, "elapsed_s": 0.003, "budget_exhausted": false}, {"name": "parlay_grade", "error": null, "counts": {"legs": 0, "void": 0, "cards": 0, "busted": 0, "cashed": 0, "errors": 0, "stat_missing": 0}, "elapsed_s": 0.001, "budget_exhausted": false}, {"name": "rfq_grade", "error": null, "counts": {"stale": 0, "errors": 0, "graded": 0, "voided": 0, "waiting": 0}, "elapsed_s": 0.006, "budget_exhausted": false}, {"name": "parlay_build", "error": null, "counts": {"built": 0, "errors": 0, "expired": 0, "refused": 0, "skipped": 0, "replaced": 0}, "elapsed_s": 0.02, "budget_exhausted": false}, {"name": "markouts", "error": null, "counts": {"markouts": 11640}, "elapsed_s": 36.896, "budget_exhausted": false}, {"name": "housekeeping", "error": null, "counts": {"skipped": true}, "elapsed_s": 0.001, "budget_exhausted": false}]
+settle_error_events|0
+p95|8423.000000|2026-09-15 18:40:10.831469+00
+p95|8423.000000|2026-09-15 18:38:55.83148+00
+p95|8423.000000|2026-09-15 18:37:25.831428+00
+p95|8251.000000|2026-09-15 18:36:25.831447+00
+ws_tickers_steps|197.000000|2026-09-15 17:31:27.438589+00|2026-09-15 18:10:41.657246+00
+ws_tickers_steps|204.000000|2026-09-15 18:11:41.668903+00|2026-09-15 18:40:49.048468+00
+ws_tickers_steps|205.000000|2026-09-15 18:26:46.081399+00|2026-09-15 18:35:47.904478+00
+ws_advances|ws.acks_out_of_sequence|0.000000|2026-09-15 18:40:49.048468+00
+ws_advances|ws.gaps|0.000000|2026-09-15 18:40:49.048468+00
+ws_advances|ws.seq_advances_accounted|3.000000|2026-09-15 18:40:49.048468+00
+gap_rows_since_restart|0|
+tape_covered|0.950000|2026-09-15 18:00:25.946191+00
+tape_covered|0.932200|2026-09-15 17:00:24.0692+00
+gap_outcomes_rows|149327
+p95_pre_release|6206.000000|17314.000000|2026-09-15 17:27:38.84666+00
+p95_by_10min|15:00|7986.000000
+p95_by_10min|15:10|4743.000000
+p95_by_10min|15:20|4843.000000
+p95_by_10min|15:30|4925.000000
+p95_by_10min|15:40|6111.000000
+p95_by_10min|15:50|6238.000000
+p95_by_10min|16:00|6111.000000
+p95_by_10min|16:10|6468.000000
+p95_by_10min|16:20|8943.000000
+p95_by_10min|16:30|12555.000000
+p95_by_10min|16:40|16208.000000
+p95_by_10min|16:50|17314.000000
+p95_by_10min|17:00|17314.000000
+p95_by_10min|17:10|13330.000000
+p95_by_10min|17:20|6861.000000
+p95_by_10min|17:30|12964.000000
+p95_by_10min|17:40|12964.000000
+p95_by_10min|17:50|10208.000000
+p95_by_10min|18:00|7471.000000
+p95_by_10min|18:10|7574.000000
+p95_by_10min|18:20|8068.000000
+p95_by_10min|18:30|8423.000000
+p95_by_10min|18:40|8423.000000
+loop_ms_by_10min|16:30|9824|12555.000000|8
+loop_ms_by_10min|16:40|11615|17882.000000|9
+loop_ms_by_10min|16:50|9552|25235.000000|8
+loop_ms_by_10min|17:00|7909|24530.000000|8
+loop_ms_by_10min|17:10|5586|5950.000000|10
+loop_ms_by_10min|17:20|5845|6861.000000|8
+loop_ms_by_10min|17:30|6792|12964.000000|9
+loop_ms_by_10min|17:40|6246|7201.000000|8
+loop_ms_by_10min|17:50|7394|20102.000000|9
+loop_ms_by_10min|18:00|8907|25649.000000|8
+loop_ms_by_10min|18:10|6926|8251.000000|9
+loop_ms_by_10min|18:20|9423|24181.000000|8
+loop_ms_by_10min|18:30|10068|27158.000000|8
+loop_ms_by_10min|18:40|7650|7863.000000|2
+nw_pending_by_30min|14:30|2878.000000
+nw_pending_by_30min|15:00|3178.000000
+nw_pending_by_30min|15:30|3473.000000
+nw_pending_by_30min|16:00|3764.000000
+nw_pending_by_30min|16:30|4042.000000
+nw_pending_by_30min|17:00|4320.000000
+nw_pending_by_30min|17:30|4620.000000
+nw_pending_by_30min|18:00|4905.000000
+nw_pending_by_30min|18:30|5055.000000
+skips_since_restart|no_book|13
+skips_since_restart|fair_stale|1615
+skips_since_restart|exec_capacity|448
+skips_since_restart|book_dirty|856
+skips_prev_70min|no_book|3
+skips_prev_70min|fair_stale|1538
+skips_prev_70min|exec_capacity|753
+skips_prev_70min|book_dirty|520
+heartbeat|35352|3435|7863|8423|65|
