@@ -29,6 +29,7 @@ from harness.db.models import (
     Intent,
     KillSwitch,
     Ledger,
+    MarketDirtyInterval,
     MetricSample,
     Order,
     OrderEvent,
@@ -171,6 +172,12 @@ def fills_of(session, order_id=None, method=None):
     if method is not None:
         q = q.filter_by(fill_method=method)
     return q.order_by(Fill.id).all()
+
+
+def dirty_intervals_of(session, venue_market_id):
+    return (session.query(MarketDirtyInterval)
+            .filter_by(venue_market_id=venue_market_id)
+            .order_by(MarketDirtyInterval.id).all())
 
 
 # --- version pin ---------------------------------------------------------------------
@@ -979,6 +986,56 @@ def test_a_ticker_whose_book_cannot_load_does_not_abort_the_step(
     # The log line names the ticker and the exception class.
     assert any(T2 in r.getMessage() and "ValueError" in r.getMessage()
                for r in caplog.records)
+
+
+def test_a_ticker_unreadable_with_a_fresh_cached_book_opens_a_book_unreadable_dirty_interval(
+        env_settings, db_session, world, monkeypatch):
+    """Row 69 (6B merge review, carried item 2): T2's book raises on the second step while its
+    step-1 cached book is still fresh (age 15 s, well under `book_max_age_s`). `_market_now`
+    already marked this market `book_dirty` here (fix 60's guard), which makes `MarketNow.dirty`
+    true, but `_advance_books` opened no `market_dirty_intervals` row for it at all -- no cause
+    named "could not read" existed, so the interval ledger under-reported this dirtiness. A
+    `book_unreadable` row now opens at the guard site and closes on the next successful read.
+    """
+    keep_only(db_session, {VM2, VM3})
+    signal3 = db_session.query(Signal).filter_by(venue_market_id=VM3).one()
+    signal3.decision, signal3.rejection_reason = "candidate", None
+    _book2(db_session, NOW - timedelta(seconds=5))
+    _book3(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    # The first step's book is clean: no dirty row yet.
+    assert dirty_intervals_of(db_session, VM2) == []
+
+    real = executor._book_now
+
+    def explode(session, ticker, now, cached, ws_connect_at=None):
+        # 6B §0.3 gave `_book_now` the reconnect instant; the stub takes it and hands it on.
+        if ticker == T2:
+            raise ValueError("snapshot without yes_dollars_fp")
+        return real(session, ticker, now, cached, ws_connect_at)
+
+    monkeypatch.setattr(executor, "_book_now", explode)
+    clock.advance(15)
+    stats = executor.step()
+    refresh(db_session)
+    assert stats.book_errors == 1
+
+    rows = dirty_intervals_of(db_session, VM2)
+    assert [(r.cause, r.ended_at) for r in rows] == [("book_unreadable", None)]
+
+    # The next step reads T2's book again: the interval closes.
+    monkeypatch.setattr(executor, "_book_now", real)
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+
+    rows = dirty_intervals_of(db_session, VM2)
+    assert [(r.cause, r.ended_at) for r in rows] == [("book_unreadable", clock.now)]
 
 
 def _book_error_samples(session):

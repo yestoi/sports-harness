@@ -136,6 +136,7 @@ def _executor_with_books(books: dict) -> Executor:
     executor.settings = NS(exec_period_s=15)
     executor.exec_settings = NS(book_max_age_s=120)
     executor._dirty_tickers = set()
+    executor._market_ids = {}
     executor._book_now = lambda session, ticker, now, cached, ws_connect_at=None: cached
     return executor
 
@@ -256,3 +257,57 @@ def test_a_tape_silent_past_book_max_age_s_opens_an_event_age_row(db_session):
     assert [(r.cause, r.ended_at) for r in _intervals(db_session, MarketDirtyInterval)] == [
         ("event_age", at(315))]
     assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [None]
+
+
+def test_book_unreadable_is_its_own_cause_and_flows_into_the_by_cause_breakdown(
+        db_session, seeded_order):
+    """Row 69 (6B merge review, carried item 2): a ticker unreadable this step while its cached
+    book is still fresh is `book_dirty` for `MarketNow` (fix 60's guard), which makes
+    `MarketNow.dirty` true, but `_advance_books` opened no interval row for it at all -- no
+    cause named "could not read" existed, so the interval ledger under-reported it.
+    `book_unreadable` is the loop's own verdict, like `recorder_dead`, not a `BookState`
+    self-diagnosis: the failed read never touches the cached book, which stays clean. It feeds
+    `order_dirty_time`'s by-cause breakdown exactly like any other cause, with no change to
+    that query -- the breakdown is grouped by whatever string `cause` holds.
+    """
+    clean = BookState.from_levels("A", [[".30", "5"]], [[".60", "5"]], sid=1, seq=1,
+                                  as_of=T0, source="ws", anchor_id=1)
+    executor = _executor_with_books({"A": clean})
+    executor._advance_books(db_session, {"A"}, {"A": 1}, at(0), dead_recorder=False)
+    assert _intervals(db_session, MarketDirtyInterval) == []
+
+    def explode(session, ticker, now, cached, ws_connect_at=None):
+        raise ValueError("snapshot without yes_dollars_fp")
+
+    executor._book_now = explode
+    executor._advance_books(db_session, {"A"}, {"A": 1}, at(15), dead_recorder=False)
+    rows = _intervals(db_session, MarketDirtyInterval)
+    assert [(r.cause, r.ended_at) for r in rows] == [("book_unreadable", None)]
+    # The cached book that stayed fresh is untouched: `book_unreadable` is the loop's own
+    # verdict, not a mark on the book.
+    assert executor.books["A"].dirty_cause is None
+
+    order_id = seeded_order(placed_at=T0, expiry=at(600))
+    breakdown = order_dirty_time(db_session, at(30), boundary_order_id=order_id - 1, limit=10)
+    assert breakdown[0].by_cause == {"book_unreadable": 15}
+
+
+def test_a_market_absent_from_both_sets_at_the_departing_step_still_closes(db_session):
+    """Row 70 (6B merge review, out-of-scope observation): production always builds `tickers`
+    and `market_ids` from the same `rows` at the call site, so a departed market's ticker is
+    absent from *both* at the step that no longer sees it -- unlike the older test above, which
+    hands the departed ticker's id into `market_ids` anyway and so never exercised the real
+    shape. `gone` used to be read off the *current* step's `market_ids`, which can never
+    contain a ticker not in `tickers`, so it was always empty and neither `close_intervals`
+    call ever fired: two production rows (markets 865/866, journal 219) were left open forever
+    this way. `gone` is now read off the *previous* step's ticker map, so a market that
+    disappears from both sets at once still closes its dirty and observation intervals,
+    stamped at the last step that saw it.
+    """
+    executor = _executor_with_books({"A": _dirty_book("gap")})
+    executor._advance_books(db_session, {"A"}, {"A": 1}, at(0), dead_recorder=False)
+    executor._advance_books(db_session, set(), {}, at(30), dead_recorder=False)
+
+    assert [r.ended_at for r in _intervals(db_session, MarketDirtyInterval)] == [at(30)]
+    assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [at(30)]
+    assert _open_count(db_session) == 0

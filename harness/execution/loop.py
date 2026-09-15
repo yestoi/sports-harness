@@ -247,6 +247,11 @@ class Executor:
         #: cannot anchor yet -- R10's `no_book` case, retried every loop.
         self.books: dict[str, BookState | None] = {}
         self._dirty_tickers: set[str] = set()
+        #: The previous step's ticker -> venue_market_id map (row 70, 6B merge review): a
+        #: departed market is absent from *this* step's own `market_ids` by construction (both
+        #: it and `tickers` are built from the same `rows`), so `gone` cannot be read off the
+        #: current step's map and has to be read off the map the market was last seen in.
+        self._market_ids: dict[str, int] = {}
         #: Fix 26: the delta batch size in force per ticker, absent meaning `DELTA_BATCH_LIMIT`.
         #: It shrinks on a statement timeout and doubles back on a full read, so a cold ticker
         #: asks for what it can actually finish and a warm one returns to the cap in a few
@@ -617,17 +622,25 @@ class Executor:
         self._dirty_tickers = dirty
         # One BookState per ticker ever traded would accumulate all season, and a dormant entry
         # would later be advanced from a very old `as_of`. `gone` is read off the cache *before*
-        # the prune, because pruning is what loses the names.
-        gone = [market_ids[t] for t in set(self.books) - tickers if t in market_ids]
+        # the prune, because pruning is what loses the names. Row 70 (6B merge review): `tickers`
+        # and `market_ids` are always built from the same `rows` at the call site, so a departed
+        # ticker is never a key of *this* step's `market_ids` either -- `set(self.books) -
+        # tickers` can never intersect it, which made `gone` always empty and left the two
+        # production rows (markets 865/866, journal 219) open forever. The departed ticker's id
+        # comes from `self._market_ids`, the map the market was last stepped under.
+        gone = [self._market_ids[t] for t in set(self.books) - tickers if t in self._market_ids]
         self.books = {t: book for t, book in self.books.items() if t in tickers}
+        self._market_ids = dict(market_ids)
 
         # §1.5: dirtiness and observation are properties of the market, recorded as intervals
         # with a cause, and per-order time is derived from them at read time. A market the step
         # stepped has an open observation row; a market that is dirty has an open dirty row
         # carrying the book's own cause, `recorder_dead` when the loop has declared every ladder
-        # stale and the book names no cause of its own, or `event_age` when this ticker's own
-        # tape has been silent past `book_max_age_s` -- the same three routes `MarketNow.dirty`
-        # takes, so the elapsed measure and the nominal accrual cover the same stretches.
+        # stale and the book names no cause of its own, `book_unreadable` (row 69, 6B merge
+        # review) when this ticker's own read failed this step and the book names no cause of
+        # its own either, or `event_age` when this ticker's own tape has been silent past
+        # `book_max_age_s` -- the same three routes `MarketNow.dirty` takes, so the elapsed
+        # measure and the nominal accrual cover the same stretches.
         clean: list[int] = []
         for ticker in sorted(tickers):
             vm_id = market_ids.get(ticker)
@@ -635,8 +648,13 @@ class Executor:
                 continue
             book = self.books.get(ticker)
             cause = None if book is None else book.dirty_cause
-            if dead_recorder and book is not None:
-                cause = cause or "recorder_dead"
+            if book is not None and (dead_recorder or ticker in unreadable):
+                # Fix 60's guard already tells `_market_now` this market is `book_dirty` on
+                # either route; naming a cause here keeps the interval ledger from
+                # under-reporting it. A book that failed to read this step never touched the
+                # cached copy (it keeps whatever cause, if any, it already carried), so
+                # `book_unreadable` only fires when that cache is otherwise clean.
+                cause = cause or ("recorder_dead" if dead_recorder else "book_unreadable")
             if cause is None and book is not None and \
                     book_age_s(book, now) > self.exec_settings.book_max_age_s:
                 # `MarketNow.dirty` third route (spec F4): nothing applied a row for longer than
