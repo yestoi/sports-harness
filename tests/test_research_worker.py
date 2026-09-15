@@ -129,21 +129,10 @@ def test_run_forever_releases_a_stale_reservation_and_writes_one_event(
     db_session.commit()
     register_pass("nop", lambda *_: {})
 
-    stops = iter([False, True])
-
-    def sleep(_):
-        pass
-
-    def stop_check():
-        return next(stops)
-
     worker = _worker(db_session, settings)
-    calls = {"n": 0}
 
     def fake_sleep(_):
-        calls["n"] += 1
-        if calls["n"] >= 1:
-            worker.stop()
+        worker.stop()
 
     worker._sleep = fake_sleep
     worker.run_forever()
@@ -155,7 +144,12 @@ def test_run_forever_releases_a_stale_reservation_and_writes_one_event(
         "select kind, summary, ref from operator_events")).all()
     assert len(events) == 1
     assert events[0].kind == "research_spend_released"
-    assert "1.2972" in events[0].summary
+    # Exact text, not a substring (review round 1 Minor 1): `telemetry.sanitize_reason` strips
+    # any character outside `[\w \-.,:/()]`, so a `$` in the f-string would be silently
+    # dropped from what is actually stored, and a substring check on the digits alone would
+    # not catch that.
+    assert events[0].summary == \
+        "released USD 1.2972 of stale research reservations at worker start (1 rows)"
     assert events[0].ref["rows"] == [["2026-09-15", "veto", "claude-opus-5", "1.2972"]]
 
 

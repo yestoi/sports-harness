@@ -156,20 +156,32 @@ class ResearchWorker:
         """
         if not self.s.research_worker_enabled or not self.s.has_anthropic_key():
             return
-        with self._factory() as session:
-            try:
-                released = release_stale_reservations(session, self._clock())
-                if released:
-                    total = sum(amount for _, _, _, amount in released)
-                    event(session, kind="research_spend_released",
-                         summary=f"released ${total} of stale research reservations at "
-                                 f"worker start ({len(released)} rows)",
-                         ref={"rows": [[day.isoformat(), kind, model, str(amount)]
-                                       for day, kind, model, amount in released]})
-                session.commit()
-            except Exception:  # noqa: BLE001 - a failed reconcile must not stop the worker
-                session.rollback()
-                log.exception("research reservation reconcile at start failed")
+        try:
+            # `with self._factory() as session:` lives *inside* this try (review round 1
+            # Minor 2): a session-open failure (the DB briefly unreachable at the exact
+            # instant of start) is logged and swallowed here too, not just a failure inside
+            # an already-open session -- either way `run_forever` must still reach its loop.
+            with self._factory() as session:
+                try:
+                    released = release_stale_reservations(session, self._clock())
+                    if released:
+                        total = sum(amount for _, _, _, amount in released)
+                        # No `$` (review round 1 Minor 1): `telemetry.sanitize_reason`'s
+                        # allowed-character set has no currency sign and silently drops it.
+                        event(session, kind="research_spend_released",
+                             summary=f"released USD {total} of stale research reservations "
+                                     f"at worker start ({len(released)} rows)",
+                             ref={"rows": [[day.isoformat(), kind, model, str(amount)]
+                                           for day, kind, model, amount in released]})
+                    session.commit()
+                except Exception:
+                    # Rollback only runs here, where a session actually exists; the outer
+                    # except (which logs) also catches a factory() failure with no session
+                    # to roll back.
+                    session.rollback()
+                    raise
+        except Exception:  # noqa: BLE001 - a failed reconcile must not stop the worker
+            log.exception("research reservation reconcile at start failed")
 
     def run_forever(self) -> None:
         signal.signal(signal.SIGTERM, self.stop)
