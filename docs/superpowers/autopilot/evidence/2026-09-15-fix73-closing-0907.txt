@@ -5,3 +5,7 @@ futures_future_ts 0
 futures_notes_keys week,errors,trigger,requests,categories,resume_after,resume_reset,resumed_from,series_reached,category_fallback,series_discovered
 futures_notes {"week": "2026-W38", "errors": [], "trigger": "cron", "requests": 468, "categories": ["Sports", "Transportation"], "resume_after": "KXNFLWPMOTY", "resume_reset": false, "resumed_from": null, "category_fallback": false, "series_discovered": 460}
 futures_208 budget_exhausted=false
+closing_read_at 2026-09-15 14:27:09.74315+00
+settle 209 2026-09-15 14:20:10.49383+00 -> running running budget_exhausted=false errors=?
+settle209 running 2026-09-15 14:20:10.49383+00 -> running
+gap_outcomes total 79452
