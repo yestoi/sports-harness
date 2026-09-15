@@ -1029,6 +1029,12 @@ class Executor:
         # past the window `ops/checks.fills_outside_placement_window` measures. The watched track
         # keeps `deadline` unchanged: what it did is a fact about an order we were holding, and
         # R8's expiry is still the only guarantee it stopped resting.
+        # This bounds where the counterfactual's *fills* stop, not what its interval measures:
+        # its dirty and unobserved seconds still accrue over §0.10's `[placed_at, expiry]`
+        # (`_clamped`, `execution/dirty_time.py`, both unchanged by the ruling), so past this
+        # bound `counterfactual_dirty_s` is time in which the counterfactual could no longer
+        # fill -- no stored row changes, and a reader of that column needs to know it
+        # (review m-2).
         # `getattr`, as this frame already reads `sport`: the two pure-unit modules
         # (`tests/test_execution_pure.py`, `tests/test_execution_regressions.py`) build the row
         # by hand from what `_simulate_order` reads, and a hand-built row without a kickoff is

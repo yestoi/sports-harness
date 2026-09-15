@@ -402,7 +402,9 @@ def _page_timing(session: Session, rows, instant: datetime) -> dict:
     can stop short of the page's last id. It is continued from the last id it returned until the
     page's last id is covered -- still `id >` plus a ceiling every time, never an unbounded scan,
     and one call in the ordinary case. Each pass advances the boundary by at least one order, so
-    it terminates.
+    it terminates. The worst case is an extremely sparse page, where it costs about
+    `2 * (id span / page size)` statements -- the same order as the old two-per-order read in the
+    pathological case, far fewer in every ordinary one, and bounded on every pass (review m-3).
 
     An order the reads do not carry keeps no entry and therefore NULL timing columns: that is
     the NULL-expiry order, which `order_dirty_time` excludes by construction (T6 carry-forward

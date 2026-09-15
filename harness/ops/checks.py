@@ -309,11 +309,17 @@ CHECKS: list[Check] = [
         # only when its order carries a fill at or after the cutoff, so the 154 markouts hanging
         # off the pre-cutoff fills stay as recorded. The subquery is bounded by the order id and
         # by the cutoff, as every subquery in this file must be.
+        # An order with no fill at all was never one of the 154 and keeps its coverage above the
+        # cutoff: `place`/`close` rows on an unfilled order whose kickoff moved are the same
+        # defect, and the ruling's amnesty is a date, not a population. Below the cutoff it is
+        # silent either way, so nothing already recorded can fail.
         """
         select count(*) from markouts m
         where m.at_ts > m.horizon_ts
-          and exists (select 1 from fills f
-                      where f.order_id = m.order_id and f.filled_at >= :cutoff)
+          and (exists (select 1 from fills f
+                       where f.order_id = m.order_id and f.filled_at >= :cutoff)
+               or (m.at_ts >= :cutoff
+                   and not exists (select 1 from fills f where f.order_id = m.order_id)))
         """,
         "== 0", _zero, params={"cutoff": NO_WATCHER_CUTOFF_FIXED_AT}),
     # --- Final fix wave, I1: the eight Task 12b telemetry statements (verify.md:191-208).

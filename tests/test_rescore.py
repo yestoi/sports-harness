@@ -693,3 +693,42 @@ def test_the_rescore_command_echoes_through_typer_and_disposes_its_engine(db_ses
     assert result.exit_code == 0, result.output
     assert "denominator=4" in result.output
     assert built and all(engine in disposed for engine in built)
+
+
+def test_a_sparse_page_still_carries_every_orders_elapsed_seconds(db_session):
+    """Review I-1: the page's ids are not contiguous, so one bounded `order_dirty_time` read of
+    `len(rows)` rows can stop short of the page's last id.
+
+    Derived independently of the implementation: the driving read selects `nw_done` orders inside
+    an id range (`_ORDERS`), while `order_dirty_time` selects every order with an expiry, so a
+    page of {1, 8} drawn from eight orders is answered by a two-row read as {1, 2} -- and order 8
+    would silently get NULL timing columns where the per-order read wrote numbers. Eight orders,
+    six of them pending, and the two scored rows must carry exactly what the old per-order read
+    (`boundary_order_id = id - 1, limit = 1`) says.
+    """
+    from harness.execution.dirty_time import order_dirty_time
+
+    for order_id in range(1, 9):
+        _order(db_session, order_id, f"KXSPARSE{order_id}", "2.00", "3.00")
+    db_session.commit()
+    db_session.execute(text("update orders set nw_done = false where id between 2 and 7"))
+    db_session.commit()
+    page = db_session.execute(
+        text("select id from orders where nw_done = true order by id")).scalars().all()
+    assert page == [1, 8]
+
+    instant = T0 + timedelta(hours=1)
+    counts = rescore(db_session, from_order=1, to_order=8, corrections=CORRECTIONS_IN_FORCE,
+                     now=instant)
+    assert counts.denominator == 2
+
+    written = {r.order_id: (r.watched_dirty_s, r.counterfactual_dirty_s, r.unobserved_s)
+               for r in _rows(db_session, policy="ahead")}
+    expected = {}
+    for order_id in page:
+        elapsed = order_dirty_time(db_session, instant, boundary_order_id=order_id - 1, limit=1)
+        assert elapsed and elapsed[0].order_id == order_id
+        expected[order_id] = (elapsed[0].watched_dirty_s, elapsed[0].counterfactual_dirty_s,
+                              elapsed[0].unobserved_s)
+    assert written == expected
+    assert written == {1: (0, 0, 1800), 8: (0, 0, 1800)}

@@ -549,6 +549,36 @@ def test_a_markout_past_its_horizon_on_a_post_cutoff_fill_still_fails(db_session
     assert float(result.value) == 1.0
 
 
+def test_a_markout_past_its_horizon_on_an_unfilled_order_after_the_cutoff_still_fails(db_session):
+    """Review C-1: the amnesty is a date, not a population. `compute_markouts` writes the `place`
+    anchor for every non-replay order, filled or not, and `close`'s horizon is
+    `kickoff_utc - 5 min` for every anchor, so an unfilled order whose kickoff moved after
+    placement carries `at_ts > horizon_ts` -- the same defect, and never one of the 154, which
+    hang off fills. Reached through the markout's own `at_ts`, because an order with no fill has
+    no fill timestamp to bound.
+    """
+    at_ts = _cutoff() + timedelta(days=2)
+    order = _order(db_session, placed_at=at_ts, status="expired")
+    db_session.add(Markout(order_id=order.id, anchor="place", horizon="close",
+                           at_ts=at_ts, horizon_ts=at_ts - timedelta(minutes=5)))
+    db_session.flush()
+
+    assert _run_one(db_session, "markouts_at_after_horizon",
+                    _cutoff() + timedelta(days=3)).status == "fail"
+
+
+def test_the_same_unfilled_markout_before_the_cutoff_is_not_counted(db_session):
+    """The other side of the same boundary: below the cutoff the predicate is silent on the
+    unfilled population too, so nothing already recorded can be resurrected by C-1's clause."""
+    at_ts = _cutoff() - timedelta(days=2)
+    order = _order(db_session, placed_at=at_ts, status="expired")
+    db_session.add(Markout(order_id=order.id, anchor="place", horizon="close",
+                           at_ts=at_ts, horizon_ts=at_ts - timedelta(minutes=5)))
+    db_session.flush()
+
+    assert _run_one(db_session, "markouts_at_after_horizon", _cutoff()).status == "pass"
+
+
 def test_the_two_bounded_predicates_pass_the_cutoff_as_a_parameter(db_session):
     """The statement text stays static -- `verify.md`, `assert_no_tape_reads` and the record all
     read it -- and the instant is bound, so the controller replaces one constant at the release
