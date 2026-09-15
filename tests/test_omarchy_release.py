@@ -1071,4 +1071,8 @@ def test_a_full_release_with_nothing_orphaned_runs_straight_into_the_migration(r
     release.module.deploy("full")
     assert len(_psql_sql(release, "pg_stat_activity")) == 1
     assert _psql_sql(release, "pg_terminate_backend") == []
-    assert release_receipt(release)["status"] == "healthy"
+    receipt = release_receipt(release)
+    assert receipt["status"] == "healthy"
+    # review m1: the drain's absence is evidence too -- record it, not just skip it silently.
+    assert receipt["drained_backends"] == []
+    assert isinstance(receipt["drain_seconds"], float)

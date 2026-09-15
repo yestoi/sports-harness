@@ -183,6 +183,10 @@ def drain_orphaned_backends(existing, receipt):
     A backend still open after `DRAIN_POLLS` seconds raises, which puts the release on its
     existing rollback path -- the old apps come back and no migration runs. A migration run
     under a snapshot this recipe could not close is exactly the failure this step exists for.
+
+    `receipt['drained_backends']` and `receipt['drain_seconds']` are written on every full
+    release, an empty list included when nothing was orphaned: evidence the step ran, not
+    only evidence it found something (review m1).
     """
     def listing():
         output = run([*existing, 'exec', '-T', 'postgres', 'psql', '-X',
@@ -198,21 +202,21 @@ def drain_orphaned_backends(existing, receipt):
                          'xact_age': xact_age})
         return rows
 
-    orphans = listing()
-    if not orphans:
-        return []
-    print(f'[release] draining {len(orphans)} orphaned backends: '
-          + '; '.join(f"{row['pid']} {row['application_name']} {row['state']} {row['xact_age']}"
-                      for row in orphans), flush=True)
     started = time.monotonic()
-    run([*existing, 'exec', '-T', 'postgres', 'psql', '-X', '-v', 'ON_ERROR_STOP=1',
-         '-U', 'harness', '-d', 'harness', '-At', '-c', ORPHAN_TERMINATE_SQL], capture=True)
-    remaining = listing()
-    for _ in range(DRAIN_POLLS):
-        if not remaining:
-            break
-        time.sleep(1)
+    orphans = listing()
+    remaining = []
+    if orphans:
+        print(f'[release] draining {len(orphans)} orphaned backends: '
+              + '; '.join(f"{row['pid']} {row['application_name']} {row['state']} {row['xact_age']}"
+                          for row in orphans), flush=True)
+        run([*existing, 'exec', '-T', 'postgres', 'psql', '-X', '-v', 'ON_ERROR_STOP=1',
+             '-U', 'harness', '-d', 'harness', '-At', '-c', ORPHAN_TERMINATE_SQL], capture=True)
         remaining = listing()
+        for _ in range(DRAIN_POLLS):
+            if not remaining:
+                break
+            time.sleep(1)
+            remaining = listing()
     receipt['drained_backends'] = orphans
     receipt['drain_seconds'] = round(time.monotonic() - started, 3)
     if remaining:
