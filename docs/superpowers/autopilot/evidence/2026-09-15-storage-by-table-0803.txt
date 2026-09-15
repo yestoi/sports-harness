@@ -1,0 +1,138 @@
+## database size
+139592694807|130 GB
+## top relations by total size (parents with children summed): name | total_bytes | table_bytes | index_bytes | est_rows
+orderbook_events|105620144128|66284470272|39335673856|177884576
+signals|13315735552|10299260928|3016474624|19298820
+odds_snapshots|6958219264|3121831936|3836387328|24956936
+raw_responses|4131487744|4031283200|100204544|683800
+fair_values|3091955712|2561949696|530006016|4399150
+venue_trades|2478579712|917217280|1561362432|5695556
+venue_quotes|1676189696|785227776|890961920|5536532
+market_gap_snapshots|936214528|615350272|320864256|3027906
+orders|426721280|394551296|32169984|11544
+rfqs|408887296|382312448|26574848|211374
+orderbook_snapshots|193437696|180854784|12582912|127357
+intents|53985280|29540352|24444928|149532
+metric_samples|52035584|26058752|25976832|258155
+order_watch_samples|46669824|30883840|15785984|341090
+order_events|35315712|16441344|18874368|173646
+report_cells|25419776|15540224|9879552|100674
+runs|19742720|19316736|425984|17635
+venue_markets|18661376|15613952|3047424|10478
+gap_outcomes|11730944|7634944|4096000|77592
+markouts|11665408|7864320|3801088|55271
+order_clv|11460608|6938624|4521984|74642
+rfq_quotes|9764864|4587520|5177344|36161
+veto_decisions|9748480|6275072|3473408|56538
+veto_queue|7446528|5201920|2244608|60591
+research_notes|6021120|5758976|262144|2028
+## partition children: name | total | rows
+ix_obe_gap_legacy|16384|2
+ix_obe_snapshot_legacy|442368|6949
+ix_obe_ticker_id_legacy|1886838784|29868566
+ix_obe_ticker_ts_legacy|2559213568|27371908
+ix_obe_ts_brin_legacy|401408|10527
+ix_raw_source_endpoint_id_y2026w37|46964736|649666
+ix_raw_source_endpoint_id_y2026w38|3301376|34135
+ix_trades_ticker_ts_legacy|70541312|831351
+ix_trades_ts_brin_legacy|49152|831351
+ix_trades_venue_trade_id_legacy|59121664|870050
+orderbook_events_legacy|16519618560|29868566
+orderbook_events_pkey_legacy|940818432|29868566
+orderbook_events_y2026w37|84304617472|139835536
+orderbook_events_y2026w37_pkey|4417298432|139835536
+orderbook_events_y2026w37_sid_id_idx|32768|0
+orderbook_events_y2026w37_ticker_id_idx|15634333696|139835536
+orderbook_events_y2026w37_ticker_ts_idx|12059246592|139835536
+orderbook_events_y2026w37_ticker_ts_idx1|28876800|288994
+orderbook_events_y2026w37_ts_idx|1736704|139835536
+orderbook_events_y2026w38|4795809792|8180477
+orderbook_events_y2026w38_pkey|260161536|7631679
+orderbook_events_y2026w38_sid_id_idx|16384|255
+orderbook_events_y2026w38_ticker_id_idx|878395392|7631679
+orderbook_events_y2026w38_ticker_ts_idx|666992640|7631679
+orderbook_events_y2026w38_ticker_ts_idx1|622592|5597
+orderbook_events_y2026w38_ts_idx|139264|2821
+orderbook_events_y2026w39|98304|-1
+orderbook_events_y2026w39_pkey|8192|0
+orderbook_events_y2026w39_sid_id_idx|8192|0
+orderbook_events_y2026w39_ticker_id_idx|8192|0
+orderbook_events_y2026w39_ticker_ts_idx|8192|0
+orderbook_events_y2026w39_ticker_ts_idx1|8192|0
+orderbook_events_y2026w39_ts_idx|49152|1
+raw_responses_y2026w37|3901530112|649666
+raw_responses_y2026w37_fetched_at_idx|57344|649666
+raw_responses_y2026w37_pkey|20832256|649666
+raw_responses_y2026w37_run_id_idx|5087232|649666
+raw_responses_y2026w37_source_fetched_at_idx|21356544|649666
+raw_responses_y2026w38|229867520|34135
+raw_responses_y2026w38_fetched_at_idx|49152|34135
+raw_responses_y2026w38_pkey|1089536|34135
+raw_responses_y2026w38_run_id_idx|270336|34135
+raw_responses_y2026w38_source_fetched_at_idx|1114112|34135
+raw_responses_y2026w39|90112|-1
+raw_responses_y2026w39_fetched_at_idx|49152|1
+raw_responses_y2026w39_pkey|8192|0
+raw_responses_y2026w39_run_id_idx|8192|0
+raw_responses_y2026w39_source_endpoint_id_idx|8192|0
+raw_responses_y2026w39_source_fetched_at_idx|8192|0
+venue_trades_legacy|329269248|870050
+venue_trades_pkey_legacy|67395584|870050
+venue_trades_y2026w37|1931239424|4320046
+venue_trades_y2026w37_pkey|463519744|4320046
+venue_trades_y2026w37_ticker_ts_idx|347660288|4320046
+venue_trades_y2026w37_ts_idx|65536|4320046
+venue_trades_y2026w37_venue_trade_id_idx|411475968|4320046
+venue_trades_y2026w38|217997312|505461
+venue_trades_y2026w38_pkey|51675136|505461
+venue_trades_y2026w38_ticker_ts_idx|43917312|505461
+venue_trades_y2026w38_ts_idx|49152|505461
+venue_trades_y2026w38_venue_trade_id_idx|45817856|505461
+venue_trades_y2026w39|73728|-1
+venue_trades_y2026w39_pkey|8192|0
+venue_trades_y2026w39_ticker_ts_idx|8192|0
+venue_trades_y2026w39_ts_idx|49152|1
+venue_trades_y2026w39_venue_trade_id_idx|8192|0
+## housekeeping growth samples (db.*), last 5 days
+db.brin_ranges_summarized|2026-09-11 00:00:00+00|0.000000
+db.growth_gb_per_day|2026-09-11 00:00:00+00|8.942088
+db.size_gb|2026-09-11 00:00:00+00|46.302000
+db.table_gb|2026-09-11 00:00:00+00|31.705200
+db.brin_ranges_summarized|2026-09-12 00:00:00+00|0.000000
+db.growth_gb_per_day|2026-09-12 00:00:00+00|10.663956
+db.rfqs_pruned|2026-09-12 00:00:00+00|0.000000
+db.size_gb|2026-09-12 00:00:00+00|62.397200
+db.table_gb|2026-09-12 00:00:00+00|41.717300
+db.brin_ranges_summarized|2026-09-13 00:00:00+00|0.000000
+db.growth_gb_per_day|2026-09-13 00:00:00+00|16.063563
+db.rfqs_pruned|2026-09-13 00:00:00+00|0.000000
+db.size_gb|2026-09-13 00:00:00+00|99.464200
+db.table_gb|2026-09-13 00:00:00+00|74.236800
+db.brin_ranges_summarized|2026-09-14 00:00:00+00|0.000000
+db.growth_gb_per_day|2026-09-14 00:00:00+00|16.942907
+db.rfqs_pruned|2026-09-14 00:00:00+00|0.000000
+db.size_gb|2026-09-14 00:00:00+00|121.878400
+db.table_gb|2026-09-14 00:00:00+00|93.935700
+db.brin_ranges_summarized|2026-09-15 00:00:00+00|0.000000
+db.growth_gb_per_day|2026-09-15 00:00:00+00|15.817933
+db.rfqs_pruned|2026-09-15 00:00:00+00|0.000000
+db.size_gb|2026-09-15 00:00:00+00|129.921900
+db.table_gb|2026-09-15 00:00:00+00|98.308000
+## row age spans of the bulk tables (min/max ts)
+raw_responses|2026-09-07 00:13:33.022081+00|2026-09-15 13:02:44.115318+00|694784
+orderbook_events|2026-09-07 00:34:24.406+00|2026-09-15 13:02:51.227+00|178369699
+venue_trades|2026-09-06 00:14:02.492099+00|2026-09-15 13:03:29.765+00|5958616
+nightly|ok|2026-09-15 08:30:00+00|2026-09-15 08:32:13+00|1456 MB|/backups/nightly/harness-nightly-20260915T083000Z.dump|{"exit_code": 0}
+partition|ok|2026-09-14 19:27:29+00|2026-09-14 19:27:35+00|127 MB|/backups/partitions/harness-partitions-venue_trades_y2026w37-20260914T192729Z.dump|{"exit_code": 0}
+partition|ok|2026-09-14 19:22:07+00|2026-09-14 19:27:21+00|4195 MB|/backups/partitions/harness-partitions-orderbook_events_y2026w37-20260914T192207Z.dump|{"exit_code": 0}
+nightly|ok|2026-09-14 19:19:55+00|2026-09-14 19:22:03+00|1385 MB|/backups/nightly/harness-nightly-20260914T191955Z.dump|{"exit_code": 0}
+nightly|ok|2026-09-14 13:07:46+00|2026-09-14 13:10:56+00|1367 MB|/backups/nightly/harness-nightly-20260914T130746Z.dump|{"exit_code": 0}
+weekly|ok|2026-09-13 08:31:54+00|2026-09-13 08:34:48+00|1323 MB|/backups/weekly/harness-weekly-20260913T083154Z.dump|{"exit_code": 0}
+nightly|ok|2026-09-13 08:30:00+00|2026-09-13 08:31:51+00|1323 MB|/backups/nightly/harness-nightly-20260913T083000Z.dump|{"exit_code": 0}
+drill|ok|2026-09-12 23:03:37.214442+00|2026-09-12 23:03:37.214442+00|||{"decrypt_ok": true}
+nightly|ok|2026-09-12 22:11:40+00|2026-09-12 22:14:43+00|1308 MB|/backups/nightly/harness-nightly-20260912T221140Z.dump|{"exit_code": 0}
+nightly|ok|2026-09-12 08:30:00+00|2026-09-12 08:41:24+00|1304 MB|/backups/nightly/harness-nightly-20260912T083000Z.dump|{"exit_code": 0}
+nightly|ok|2026-09-11 08:30:01+00|2026-09-11 08:45:19+00|1243 MB|/backups/nightly/harness-nightly-20260911T083001Z.dump|{"exit_code": 0}
+nightly|ok|2026-09-10 08:30:03+00|2026-09-10 08:39:38+00|1107 MB|/backups/nightly/harness-nightly-20260910T083003Z.dump|{"exit_code": 0}
+drill|ok|2026-09-09 16:10:35.05898+00|2026-09-09 16:10:35.05898+00|||{"decrypt_ok": true}
+nightly|ok|2026-09-09 08:30:02+00|2026-09-09 08:34:16+00|1028 MB|/backups/nightly/harness-nightly-20260909T083002Z.dump|{"exit_code": 0}

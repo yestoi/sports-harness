@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-15 08:00 CT (13:00Z) by the post-reboot controller session (tmux `sports-autopilot`, flock held; PID 6734) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 229. Paper-only. Runtime build: **0d04804** (fix 69/70 full release 02:05-02:07 CT, journal 222), restarted by the cold start 07:44:41 CT. Main: 0d04804 + docs (deploy trigger diff empty). origin/main = 35f7180 (pushed 07:17 CT; this checkpoint is not pushed: U7 pushes after phases and on Mondays).
+Updated 2026-09-15 08:00 CT (13:00Z) by the post-reboot controller session (tmux `sports-autopilot`, flock held; PID 6734) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 230. Paper-only. Runtime build: **0d04804** (fix 69/70 full release 02:05-02:07 CT, journal 222), restarted by the cold start 07:44:41 CT. Main: 0d04804 + docs (deploy trigger diff empty). origin/main = 35f7180 (pushed 07:17 CT; this checkpoint is not pushed: U7 pushes after phases and on Mondays).
 
 ## Right now: two hotfix implementers running (journal 228-229 done; the 6E cold start is observed)
 
@@ -14,7 +14,7 @@ Updated 2026-09-15 08:00 CT (13:00Z) by the post-reboot controller session (tmux
 2. Hotfix batch B (item 9's fix 71 narrowing: application_name per service, drain by listed pid and stopped-service names, partition children as bulk, healer lock_timeout, dump-in-progress refusal); opus impl, sonnet review; own release.
 3. Row 72 batch (own release, full recipe: revision 0013 `orders.nw_executor_version`, Amendment 6 sub-population sentence, verify.md Layer 2b narrowed queries read 0/0 against evidence/2026-09-15-row72-ids.txt); opus impl, opus review.
 4. Verify after each release: journal 219's deferred rows (fix 64's check row, the two cutoff-bounded checks now at 05:23:44Z, `intents_without_order_or_skip`, the 01:00-08:00 open-interval rule, c1066b5-era orphan intents), item 12's exec-health windows on 0d04804 (02:30-06:30 CT vs ca30ed1's 23:38-00:23 CT and Monday's quiet hours), item 16's tape-gap read for 23:34-23:37 CT Sep 14 (journal 229 offers the reading: a clean stop writes no gap row), durable re-reads of rows 49 and 68, the 6B by-cause row, fix 73's closing read (next settle run `ok`).
-5. Operate: daily 09:00 CT line; Tue 09:30 CT futures snapshot check (the job runs 09:00 CT; confirm it ran after the reboot); the storage retention proposal (item 11, decision by 2026-09-22), no execution. 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT). The user does the LAN files (roadmap TODO line 567).
+5. Operate: daily 09:00 CT line; Tue 09:30 CT futures snapshot check (the job runs 09:00 CT; confirm it ran after the reboot); the storage retention proposal is written (item 11; `reports/2026-09-15-storage-retention-proposal.md`, journal 230; the user decides by 2026-09-22; nothing executed). 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT). The user does the LAN files (roadmap TODO line 567).
 
 ## Active units
 
