@@ -8,6 +8,8 @@ the files named as "your edit".
 
 ## Decide this week
 
+**Revised 13:46 CT.** Items 2-10 were ruled at 12:42 CT (relayed, journal 239) and confirmed in the loop's session at 12:53 CT (journal 240; the four one-time edits landed as ab353cc). Open: items 1 and 16.
+
 1. **Storage retention** (due 2026-09-22; invariant 5, the user executes). 121.88 of 600 GB, 13-16 GB/day; 480 GB band
    about Oct 7-12, 600 GB about Oct 14-21, filesystem gate about a week later. Options 0-5 as sized in the proposal.
    Loop's lean: option 1 with a one-week lag after an off-host checksummed copy and a partition decrypt drill.
@@ -35,3 +37,11 @@ the files named as "your edit".
 13. 6F dated pre-registration amendment (revised selection/confirmation dates; U8 overrides R7's Sep 21/28).
 14. Off-site copies (R5/U7): standing, nothing to decide.
 15. The legal decision before any live trading (gate 1; never autonomous).
+
+## Added 13:46 CT
+
+16. **Executor backlog: the loop-metrics verify row reads FAIL** (carried fix 78, journal 241). p95 8,423 ms against 7,500 at 13:40 CT with 0 open orders;
+    `exec.nw_pending` 2,878 (09:30 CT) -> 5,055 (13:30 CT), about 300 per 30 minutes; not a restart artifact (17,314 on 7c3d750 at 12:00 CT).
+    Options: (a) a per-loop time budget for counterfactual advances (opus hotfix on the user's yes; loop's lean); (b) accept until Thursday's
+    window drains the backlog and settle the cadence in 6D's policy (the loop gates at the next FAIL reading); (c) other. Item 1 note: the
+    trailing 22.5 GB/day rate reported by the user's other session is recorded, unverified, in journal 239.
