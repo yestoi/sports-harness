@@ -187,6 +187,20 @@ _RELEASE = text("""
 """)
 
 
+_RELEASE_STALE = text("""
+    with stale as (
+        select day, kind, model, usd_reserved
+          from research_spend
+         where day between :monday and :sunday and usd_reserved > 0
+    )
+    update research_spend rs
+       set usd_reserved = 0
+      from stale
+     where rs.day = stale.day and rs.kind = stale.kind and rs.model = stale.model
+     returning stale.day, stale.kind, stale.model, stale.usd_reserved
+""")
+
+
 def _ensure_rows(session: Session, day: date, kind: str, models: Sequence[str]) -> None:
     for model in models:
         session.execute(insert(ResearchSpend).values(
@@ -262,6 +276,46 @@ def release_spend(session: Session, reservation: Reservation,
             "searches": usage.searches if usage is not None else 0,
             "day": reservation.day, "kind": reservation.kind, "model": model})
     return total
+
+
+def release_stale_reservations(session: Session, now: datetime) -> list[tuple[date, str, str, Decimal]]:
+    """Zero every non-zero `usd_reserved` of the current ISO week: a reservation a process
+    restart abandoned (finding, journal 231, 2026-09-15).
+
+    `reserve_spend` and `release_spend` are unchanged (roadmap invariant 7); this is a third,
+    narrower operation for one caller only -- `ResearchWorker.run_forever`, before its first
+    sweep. A `finally` (`veto.py:317`) normally pairs every reservation with a release, but a
+    SIGKILL (a container recreate, mid-call) skips a `finally` entirely, and nothing else ever
+    reconciles what it left behind: the leaked amount sits in `usd_reserved` and eats the day's
+    and the week's cap for no call in flight. A process that is just starting has, by
+    definition, no call of its own in flight, so every non-zero `usd_reserved` it finds is safe
+    to zero -- the design's single worker is what makes "just starting" mean "nothing else is
+    running" (see `ResearchWorker` and the ruling this fix carries).
+
+    Takes the same ISO-week advisory lock `reserve_spend` takes (`_LOCK`, keyed on the Monday of
+    `chicago_day(now)`) so this cannot race a concurrent `reserve_spend` on the same week, and
+    scopes to that week's rows only: **not** the previous ISO week. A leak that happened late
+    Sunday night sits on last week's row, and last week's cap is already closed -- there is
+    nothing left for that reservation to block, and zeroing it would rewrite a closed week's
+    accounting for no operational reason. `usd`, `calls` and the token counters are never
+    touched; only `usd_reserved` moves, and only down to zero.
+
+    Returns `(day, kind, model, amount)` for every row it zeroed, oldest first, so the caller can
+    log and record what happened. The caller commits: this function only executes statements.
+    """
+    day = chicago_day(now)
+    monday, sunday = iso_week_bounds(day)
+    session.execute(_LOCK, {"monday": monday.isoformat()})
+    rows = session.execute(_RELEASE_STALE, {"monday": monday, "sunday": sunday}).all()
+    released = [(row.day, row.kind, row.model, row.usd_reserved) for row in rows]
+    for released_day, kind, model, amount in released:
+        log.info("research reservation released at start: %s %s %s %s",
+                 released_day, kind, model, amount)
+    if released:
+        total = sum(amount for _, _, _, amount in released)
+        log.warning("research reservations released at start: %s total across %d row(s)",
+                    total, len(released))
+    return released
 
 
 def spend_state(session: Session, now: datetime, settings) -> SpendState:

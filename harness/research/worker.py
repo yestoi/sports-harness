@@ -32,6 +32,8 @@ from importlib import import_module
 from sqlalchemy.orm import Session, sessionmaker
 
 from harness.config.settings import Settings
+from harness.research.spend import release_stale_reservations
+from harness.telemetry import event
 
 log = logging.getLogger(__name__)
 
@@ -141,11 +143,40 @@ class ResearchWorker:
         status = "degraded" if any(r["error"] for r in results) else "ok"
         return {"status": status, "passes": results}
 
+    def _release_stale_reservations_at_start(self) -> None:
+        """Reconcile a reservation a process restart abandoned (finding, journal 231).
+
+        The only place this runs: here, before `run_forever`'s first sweep. A process that is
+        just starting has, by definition, no call of its own in flight (the design's single
+        worker is what makes that true), so every non-zero `usd_reserved`
+        `release_stale_reservations` finds this ISO week is safe to zero. `run_once` is
+        unchanged -- this is not a per-sweep step, and it never runs there.
+
+        Guarded like a pass: a failed reconcile must not stop the worker from starting.
+        """
+        if not self.s.research_worker_enabled or not self.s.has_anthropic_key():
+            return
+        with self._factory() as session:
+            try:
+                released = release_stale_reservations(session, self._clock())
+                if released:
+                    total = sum(amount for _, _, _, amount in released)
+                    event(session, kind="research_spend_released",
+                         summary=f"released ${total} of stale research reservations at "
+                                 f"worker start ({len(released)} rows)",
+                         ref={"rows": [[day.isoformat(), kind, model, str(amount)]
+                                       for day, kind, model, amount in released]})
+                session.commit()
+            except Exception:  # noqa: BLE001 - a failed reconcile must not stop the worker
+                session.rollback()
+                log.exception("research reservation reconcile at start failed")
+
     def run_forever(self) -> None:
         signal.signal(signal.SIGTERM, self.stop)
         signal.signal(signal.SIGINT, self.stop)
         log.info("research worker started, poll=%ss passes=%s", POLL_S,
                  ", ".join(name for name, _ in load_passes()) or "none")
+        self._release_stale_reservations_at_start()
         while not self._stop:
             result = self.run_once()
             log.info("research sweep %s: %s", result["status"],

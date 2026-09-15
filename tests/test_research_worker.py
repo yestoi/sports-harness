@@ -112,3 +112,68 @@ def test_the_pass_module_registry_starts_empty_and_is_a_list_of_strings():
     exist yet must not be able to break this one."""
     assert isinstance(worker_module.PASS_MODULES, list)
     assert all(isinstance(name, str) for name in worker_module.PASS_MODULES)
+
+
+# --- reconciliation at worker start (fix 74) -------------------------------------------------
+
+def test_run_forever_releases_a_stale_reservation_and_writes_one_event(
+        db_session, env_settings, tmp_path, clean_registry):
+    from sqlalchemy import text
+    key = tmp_path / "anthropic_api_key"
+    key.write_text("sk-ant-not-a-real-key")
+    settings = env_settings.model_copy(update={"anthropic_api_key_file": key})
+    db_session.execute(text(
+        "insert into research_spend (day, kind, model, usd_reserved, usd, calls, "
+        "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, searches) "
+        "values ('2026-09-15', 'veto', 'claude-opus-5', 1.2972, 14.9630, 3, 0, 0, 0, 0, 0)"))
+    db_session.commit()
+    register_pass("nop", lambda *_: {})
+
+    stops = iter([False, True])
+
+    def sleep(_):
+        pass
+
+    def stop_check():
+        return next(stops)
+
+    worker = _worker(db_session, settings)
+    calls = {"n": 0}
+
+    def fake_sleep(_):
+        calls["n"] += 1
+        if calls["n"] >= 1:
+            worker.stop()
+
+    worker._sleep = fake_sleep
+    worker.run_forever()
+
+    row = db_session.execute(text(
+        "select usd_reserved from research_spend where model = 'claude-opus-5'")).scalar()
+    assert row == 0
+    events = db_session.execute(text(
+        "select kind, summary, ref from operator_events")).all()
+    assert len(events) == 1
+    assert events[0].kind == "research_spend_released"
+    assert "1.2972" in events[0].summary
+    assert events[0].ref["rows"] == [["2026-09-15", "veto", "claude-opus-5", "1.2972"]]
+
+
+def test_run_forever_writes_no_event_when_nothing_is_stale(
+        db_session, env_settings, tmp_path, clean_registry):
+    from sqlalchemy import text
+    key = tmp_path / "anthropic_api_key"
+    key.write_text("sk-ant-not-a-real-key")
+    settings = env_settings.model_copy(update={"anthropic_api_key_file": key})
+    register_pass("nop", lambda *_: {})
+
+    worker = _worker(db_session, settings)
+
+    def fake_sleep(_):
+        worker.stop()
+
+    worker._sleep = fake_sleep
+    worker.run_forever()
+
+    events = db_session.execute(text("select kind from operator_events")).all()
+    assert events == []

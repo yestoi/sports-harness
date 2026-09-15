@@ -301,3 +301,69 @@ def test_without_the_lock_two_workers_both_reserve(db_session, env_settings, mon
         assert session.execute(text(
             "select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == \
             Decimal("0.8648")
+
+
+# --- reconciliation at worker start (fix 74) -------------------------------------------------
+
+def _insert_row(session, day, kind, model, reserved, usd=Decimal("0"), calls=0):
+    session.execute(text(
+        "insert into research_spend (day, kind, model, usd_reserved, usd, calls, "
+        "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, searches) "
+        "values (:day, :kind, :model, :reserved, :usd, :calls, 0, 0, 0, 0, 0)"),
+        {"day": day, "kind": kind, "model": model, "reserved": reserved, "usd": usd,
+         "calls": calls})
+
+
+def test_a_stale_reservation_is_released_usd_and_calls_untouched(db_session, env_settings):
+    from harness.research.spend import release_stale_reservations
+    _insert_row(db_session, date(2026, 9, 14), "veto", OPUS,
+               reserved=Decimal("1.2972"), usd=Decimal("14.9630"), calls=3)
+    db_session.commit()
+    released = release_stale_reservations(db_session, NOW)
+    assert released == [(date(2026, 9, 14), "veto", OPUS, Decimal("1.2972"))]
+    row = db_session.execute(text(
+        "select usd_reserved, usd, calls from research_spend where model = :model"),
+        {"model": OPUS}).first()
+    assert row.usd_reserved == Decimal("0")
+    assert row.usd == Decimal("14.9630")
+    assert row.calls == 3
+
+
+def test_a_zero_reservation_is_untouched_and_not_returned(db_session, env_settings):
+    from harness.research.spend import release_stale_reservations
+    _insert_row(db_session, date(2026, 9, 14), "veto", OPUS, reserved=Decimal("0"))
+    db_session.commit()
+    released = release_stale_reservations(db_session, NOW)
+    assert released == []
+    row = db_session.execute(text(
+        "select usd_reserved from research_spend where model = :model"), {"model": OPUS}).first()
+    assert row.usd_reserved == Decimal("0")
+
+
+def test_a_previous_iso_week_s_reservation_is_left_alone(db_session, env_settings):
+    from harness.research.spend import release_stale_reservations
+    _insert_row(db_session, date(2026, 9, 6), "veto", OPUS, reserved=Decimal("0.4324"))
+    db_session.commit()
+    released = release_stale_reservations(db_session, NOW)
+    assert released == []
+    row = db_session.execute(text(
+        "select usd_reserved from research_spend where day = :day"),
+        {"day": date(2026, 9, 6)}).first()
+    assert row.usd_reserved == Decimal("0.4324")
+
+
+def test_after_the_release_a_call_the_leak_had_blocked_succeeds(db_session, env_settings):
+    from harness.research.spend import release_stale_reservations
+    settings = _settings(env_settings, daily="25")
+    _insert_row(db_session, date(2026, 9, 14), "veto", OPUS, reserved=Decimal("1.2972"),
+               usd=Decimal("14.9630"))
+    _insert_row(db_session, date(2026, 9, 14), "veto", SONNET, reserved=Decimal("0.5730"),
+               usd=Decimal("7.5998"))
+    db_session.commit()
+    # 14.9630 + 7.5998 + 1.2972 + 0.5730 = 24.433; +0.62336 (a worst-case pair) would exceed 25.
+    with pytest.raises(BudgetRefused):
+        reserve_spend(db_session, NOW, settings, "veto", [OPUS, SONNET])
+    db_session.rollback()
+    release_stale_reservations(db_session, NOW)
+    db_session.commit()
+    reserve_spend(db_session, NOW, settings, "veto", [OPUS, SONNET])   # no longer refused
