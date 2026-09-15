@@ -1,0 +1,45 @@
+daily_line_at=2026-09-15T14:07:25Z (09:07 CT)
+== df
+/dev/mapper/root  952G  151G  796G  16% /srv/sports-harness
+== free -m
+Mem:           31904        9083        3009        1923       23660       22820
+Swap:          63808           0       63808
+== db size / growth (db.size_gb samples, one per day, last 4 days) / credits / spend / heartbeat
+db_size_gb 139.7 GB (130 GB)
+db.size_gb sample 2026-09-12 09:57:37.956701+00 62.397200
+db.size_gb sample 2026-09-13 09:02:29.762524+00 99.464200
+db.size_gb sample 2026-09-14 10:36:24.861016+00 121.878400
+db.size_gb sample 2026-09-15 09:06:16.646967+00 129.921900
+credits_now 4897434.000000 at 2026-09-15 14:01:10.468355+00
+credits_24h_ago 4898999.000000 at 2026-09-14 14:05:52.695002+00
+spend_today_ct 2026-09-15 usd 22.5628 reserved 1.8702 calls 302
+spend_by_kind_model_today veto/claude-opus-5 usd 14.9630 reserved 1.2972 calls 151
+spend_by_kind_model_today veto/claude-sonnet-5 usd 7.5998 reserved 0.5730 calls 151
+spend_iso_week usd 46.9847 from 2026-09-14 to 2026-09-15
+spend_yesterday usd 24.4219
+exec_heartbeat age_s 46 loop_ms 4129.000000 at 2026-09-15 14:06:39.734358+00
+exec_open_orders 0.000000 at 2026-09-15 14:06:39.734358+00
+exec_nw_pending 2431.000000 at 2026-09-15 14:06:39.734358+00
+last_run 17974 2026-09-15 14:07:10.558428+00 skipped build 762bde4
+settle_last 207 2026-09-15 12:06:16.646989+00 2026-09-15 12:06:28.357724+00 degraded notes {"order": ["benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "report_wtd", "settle", "venue_result", "parlay_grade", "rfq_grade", "parlay_build", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 0.002, "budget_exhausted": false}, {"name": "result_benchmarks", "error": null, "counts": {"result_b
+settle_last 206 2026-09-15 11:06:16.647163+00 2026-09-15 11:06:28.191778+00 degraded notes {"order": ["benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "report_wtd", "settle", "venue_result", "parlay_grade", "rfq_grade", "parlay_build", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 0.001, "budget_exhausted": false}, {"name": "result_benchmarks", "error": null, "counts": {"result_b
+futures_snapshots max_fetched 2026-09-15 14:02:02.864835+00 rows_total 22438
+operator_events_1h deploy x1
+== ERROR lines last hour per service (messages)
+-- app-run
+-- app-serve
+-- app-ws
+-- app-exec
+-- app-research
+== kill switch / summary
+PASS build: page 762bde4 vs deploy 762bde4
+PASS sections: no section errors
+PASS page_time: / 0.2s, /api/summary 0.2s
+PASS run_id: page 17974 vs sql 17974
+PASS ws_last_event: page age 1s vs sql 4s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4897434
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+== age key (ls -l only)
+ls: cannot access '/srv/sports-harness/secrets/backup_age_key': No such file or directory

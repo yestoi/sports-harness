@@ -1,0 +1,7 @@
+settle_last 207 2026-09-15 12:06:16.646989+00 -> 2026-09-15 12:06:28.357724+00 degraded
+futures_job 208 2026-09-15 14:00:00.006023+00 -> 2026-09-15 14:00:00.006023+00 ok trigger=cron requests=468 series_reached=460 series_discovered=460 resume_after=KXNFLWPMOTY resume_reset=false week=2026-W38
+futures_coverage 2026-W38 series 217 rows 22438 first 2026-09-15 14:00:01.365213+00 last 2026-09-15 14:02:02.864835+00
+futures_future_ts 0
+futures_notes_keys week,errors,trigger,requests,categories,resume_after,resume_reset,resumed_from,series_reached,category_fallback,series_discovered
+futures_notes {"week": "2026-W38", "errors": [], "trigger": "cron", "requests": 468, "categories": ["Sports", "Transportation"], "resume_after": "KXNFLWPMOTY", "resume_reset": false, "resumed_from": null, "category_fallback": false, "series_discovered": 460}
+futures_208 budget_exhausted=false
