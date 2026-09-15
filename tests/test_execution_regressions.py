@@ -33,7 +33,7 @@ from harness.execution.book import BookState
 from harness.execution.fills import TapeDelta, TapePrint
 from harness.execution.loop import ExecStats, Executor, _TrackResult
 from harness.execution.plan import Place, plan_actions
-from harness.recorder.ws_sink import WsSink
+from harness.recorder.ws_sink import SEQ_ADVANCE_TTL_S, WsSink
 from harness.report.gate import CRITERIA, fill_events
 from tests.test_exec_plan import NOW, S, cfg, intent, market
 from tests.test_fills import DEADLINE, T0, at, order, run, tdelta, tprint
@@ -68,11 +68,22 @@ def test_multiplexed_subscription_sequence_does_not_dirty_the_book():
 
 
 def _sink() -> tuple[WsSink, list]:
-    """A `WsSink` with only the attributes `_check_seq` touches, and the rows it would add.
+    """A `WsSink` with only the attributes `_check_seq` and its helpers touch, and the rows it
+    would add: `_last_seq`, `_session`, `_pending`, `_pending_sids`, `gap_sids`, `_gaps_since`,
+    and, since fix 77, the seq-advance allowance `_check_seq` consults -- `_advances`,
+    `_advance_ttl_s`, `_advances_since` and `_acks_out_since` -- each initialised exactly as
+    `__init__` does.
 
     `WsSink.__init__` opens a session factory and a telemetry accumulator, neither of which
     `_check_seq` reads; constructing through `__new__` keeps the case to the one method under
-    test (the same bypass the probe uses for `Executor`).
+    test (the same bypass the probe uses for `Executor`). The cost is that this helper has to
+    track what that method reads: when fix 77 taught `_check_seq` to spend an allowance of seq
+    numbers bought by the recorder's own `update_subscription` frames, the missing `_advances`
+    raised `AttributeError` here. That is the bypass's bill, not a defect in the sink -- a
+    `getattr` default in production code would hide a genuinely half-built sink -- so the
+    helper is what grows. With no allowance ever booked (this case books none, as a tape that
+    lost a frame has), every assertion below is unchanged: the skip is a real loss and writes
+    its row.
     """
     added: list = []
     sink = WsSink.__new__(WsSink)
@@ -82,6 +93,10 @@ def _sink() -> tuple[WsSink, list]:
     sink._pending_sids = set()
     sink.gap_sids = set()
     sink._gaps_since = 0
+    sink._advances = {}
+    sink._advance_ttl_s = SEQ_ADVANCE_TTL_S
+    sink._advances_since = 0
+    sink._acks_out_since = 0
     return sink, added
 
 
