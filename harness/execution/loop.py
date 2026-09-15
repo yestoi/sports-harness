@@ -231,6 +231,15 @@ class Executor:
     live executor is working.
     """
 
+    #: Fix 78: whether a loop's cancelled pending counterfactuals are written set-based
+    #: (`_batch_pending`) rather than one savepoint and one UPDATE each. A class attribute, not
+    #: an instance one, because `tests/test_execution_pure.py` and
+    #: `tests/test_execution_regressions.py` build an executor through `__new__` and set only
+    #: what the frame under test reads -- and the production default has to be the one such an
+    #: object gets. `tests/test_exec_loop.py` turns it off on an executor of its own to run the
+    #: per-row path it compares column for column against this one; nothing else ever does.
+    _batch_pending_writes = True
+
     def __init__(self, settings, session_factory,
                  clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
                  replay: bool = False, variants: list[str] | None = None,
@@ -740,8 +749,19 @@ class Executor:
         tape, unread, lagging, deferred = self._tape(session, working, now, heartbeat)
         stats.errors += len(unread)
         outcomes: dict[int, tuple[str, Decimal]] = {}
+        # Fix 78: the cancelled pending population -- 5,055 rows at 13:50 CT, 4,822 of them on
+        # dirty markets -- costs one statement per row per loop and a savepoint around each,
+        # which is what took the loop's p95 past its bound. What those rows are owed is settled
+        # set-based here, and `settled` is every row that needs no savepoint of its own: one
+        # whose whole write this batch has just made, and one whose per-row write would have
+        # moved nothing at all. Both keep the outcome recorded above, which is the same pair
+        # `_simulate_order` returns on either path.
+        settled = self._batch_pending(session, working, markets, bases, recovering, tape,
+                                      lagging, unread | deferred, now, heartbeat)
         for row in working:
             outcomes[row.id] = (row.status, row.filled_contracts)
+            if row.id in settled:
+                continue
             if row.ticker in unread or row.ticker in deferred:
                 # Unread: this ticker's tape read failed (fix 22: a statement timeout is the one
                 # we have actually seen). Deferred: its counterfactual is inside its retry
@@ -762,6 +782,124 @@ class Executor:
                 stats.errors += 1
                 _note_error(heartbeat, f"order {row.id}: {type(exc).__name__}: {exc}")
         return outcomes
+
+    def _batch_pending(self, session: Session, working, markets, bases, recovering, tape,
+                       lagging, held: set[str], now: datetime, heartbeat: dict) -> set[int]:
+        """Settle this loop's cancelled pending counterfactuals set-based (fix 78).
+
+        Every row here is one the fill step has nothing to simulate for and one column-group to
+        write: the order itself left the market, so only the `no_watcher` track is still
+        running. There were 5,055 of them at 13:50 CT on 2026-09-15, 4,822 on dirty markets,
+        growing ~600 a day against expiries that stand until Monday. One savepoint and one
+        UPDATE each is what took the loop's p95 to 8,423 ms against its 7,500 ms bound; the
+        same population measured 4 ms as one statement.
+
+        Two populations, and neither changes a stored value:
+
+        * **A dirty market.** The whole branch for such a row is `add_dirty_seconds(...,
+          watched=False)` and `_close_nw_if_expired` (there is no watched accrual: a cancelled
+          order is not resting against anything). Both are now one statement for the whole
+          population, with the same clamp, the same rows and the same version stamp.
+        * **A clean ticker with nothing past its cursors.** `_writes_nothing` runs the same
+          pure simulation the per-row path would and keeps the row only if every column that
+          path would write already holds the value it would write. Nothing is guessed: a row
+          whose cursor, watermark, ledger, flag, `nw_done` or version stamp would move is not
+          in this set and takes its ordinary savepoint below.
+
+        An **open** order is never here. Its watched track is still resting, it accrues on the
+        watched columns, and every write of it stays exactly where it was (the user's ruling).
+        So is a row on a ticker this loop could not read (`held`): that whole ticker sits the
+        loop out with its cursors where they are, which is ruling CR-4 and is decided by the
+        caller for the batched and the per-row rows alike.
+
+        A failure of the batch is one batch's failure: the savepoint rolls it back, the rows it
+        would have settled are not in the returned set, and each of them takes the per-row path
+        it would have taken before this fix -- where a genuine per-row failure is counted and
+        stepped over as it always was.
+        """
+        if not self._batch_pending_writes:
+            return set()
+        s = self.exec_settings
+        #: Rows whose dirty-market branch this batch owes the two statements to.
+        dirty: list[int] = []
+        #: Rows this loop owes nothing at all, batch or no batch.
+        quiet: set[int] = set()
+        for row in working:
+            if row.ticker in held or row.status in store.OPEN_STATUSES:
+                continue
+            market = markets.get(row.venue_market_id)
+            if market is not None and market.dirty(now, s):
+                # `nw_done` is the whole branch's remaining work: a finished track accrues
+                # nothing and cannot be closed twice, so its per-row path writes nothing.
+                if row.nw_done:
+                    quiet.add(row.id)
+                else:
+                    dirty.append(row.id)
+                continue
+            if row.nw_done:
+                continue
+            try:
+                skip = self._writes_nothing(row, bases, recovering, tape, lagging, now)
+            except Exception:  # noqa: BLE001 - one row, and it keeps its own savepoint below
+                # Nothing here has executed a statement or written anything, so a row whose
+                # state will not load (a `recon_state` the simulator does not know, say) simply
+                # takes the path it took before this fix: its own savepoint, where the same
+                # failure is counted against the step and stepped over as it always was.
+                log.debug("pre-checking order %s failed; it keeps the per-row path", row.id,
+                          exc_info=True)
+                skip = False
+            if skip:
+                quiet.add(row.id)
+        if not dirty:
+            return quiet
+        try:
+            with session.begin_nested():
+                store.add_nw_dirty_seconds_batch(session, dirty, self.settings.exec_period_s,
+                                                 now)
+                store.close_nw_expired_batch(session, dirty, now)
+        except Exception as exc:  # noqa: BLE001 - one batch, not the step
+            log.exception("batched counterfactual writes failed for %d order(s)", len(dirty))
+            _note_error(heartbeat, f"nw batch: {type(exc).__name__}: {exc}")
+            return quiet
+        return quiet | set(dirty)
+
+    def _writes_nothing(self, row, bases, recovering, tape, lagging, now: datetime) -> bool:
+        """Would this cancelled pending row's own step leave every column as it is (fix 78)?
+
+        The question is answered from the row and the tape, never from a guess. Three branches
+        of `_simulate_order` are refused outright because each of them writes by construction:
+        an order that has never had a book (`queue_ahead_at_place is None`) either anchors on
+        the first one or closes at its expiry, a ticker recovering from a dirty stretch
+        re-anchors both tracks, and a cursor `_sim_book` would have to go to the database for is
+        a read this loop is trying not to make. What is left is the ordinary case: the track's
+        own cursor sits exactly at the book this step already holds.
+
+        From there the simulation is pure and is run exactly as the per-row path runs it. A fill
+        or a crossing means `_persist_track` would insert a row, so the answer is no. Otherwise
+        the columns that path would write are assembled by the same helper it uses and compared
+        with what the row already holds, `nw_executor_version` included. A write of the same
+        values is not free -- it is a row version, a WAL record and a share of the 1,042 MB the
+        table has grown to -- but nothing reads it, so not making it changes no measured value.
+        """
+        if row.queue_ahead_at_place is None:
+            return False
+        if row.ticker in recovering and self.books.get(row.ticker) is not None:
+            return False
+        state = _state_of(row, "nw_")
+        base = bases.get(row.ticker)
+        if state.cursor_event_id is not None and (
+                base is None or state.cursor_event_id != base.last_event_id):
+            return False
+        prints, deltas = tape.get(row.ticker, ([], []))
+        result = simulate_fills(_paper_order(row, row.queue_ahead_at_place, now), state,
+                                None if base is None else base.copy(), prints, deltas,
+                                _nw_deadline(row, now), NO_WATCHER)
+        if result.fills or result.cross is not None:
+            return False
+        # `_persist_track` inserted nothing, so the running total it would have returned is the
+        # one the row already carries.
+        return _unchanged(row, _nw_columns(row, result.state, row.nw_filled_contracts,
+                                           result.crossed, lagging, now))
 
     def _venue_fills(self, session: Session, working, now: datetime, stats: ExecStats,
                      heartbeat: dict) -> dict[int, tuple[str, Decimal]]:
@@ -1114,11 +1252,8 @@ class Executor:
             anchor = book
 
         prints, deltas = tape.get(row.ticker, ([], []))
-        order = PaperOrder(order_id=row.id, ticker=row.ticker, side=row.side, prob=row.prob,
-                           contracts=row.contracts, placed_at=row.placed_at,
-                           expiry=row.expiry or now,
-                           queue_ahead_at_place=updates.get("queue_ahead_at_place",
-                                                            row.queue_ahead_at_place))
+        order = _paper_order(
+            row, updates.get("queue_ahead_at_place", row.queue_ahead_at_place), now)
         # F41's worst case is one fill per order, not one per track. The two tracks stop at
         # different deadlines, so after a cancel their cursors diverge and `_sim_book` hands
         # them different books, which would stamp two different crossing ids on one order.
@@ -1128,7 +1263,7 @@ class Executor:
         # the way the watched track (handed `now`) and the counterfactual (already clamped)
         # once did, which is how a print in the seconds between expiry and the loop instant
         # filled an order that was no longer on the market (§0.8).
-        deadline = min(now, row.expiry) if row.expiry is not None else now
+        deadline = _deadline(row, now)
         # The user's ruling of 2026-09-14 15:38 CT (journal 206): the counterfactual is bounded
         # by `kickoff - 10 minutes` as well as by the expiry. An order placed normally already
         # expires there (`plan._intent_actions` places with `expiry = kickoff - s.cutoff`), so
@@ -1143,16 +1278,12 @@ class Executor:
         # bound `counterfactual_dirty_s` is time in which the counterfactual could no longer
         # fill -- no stored row changes, and a reader of that column needs to know it
         # (review m-2).
-        # `getattr`, as this frame already reads `sport`: the two pure-unit modules
-        # (`tests/test_execution_pure.py`, `tests/test_execution_regressions.py`) build the row
-        # by hand from what `_simulate_order` reads, and a hand-built row without a kickoff is
-        # the same case as a row whose kickoff is NULL. The real projection carries the column
-        # (`store._WORKING_ORDERS`, `o.kickoff_utc`), and the loop test above proves the bound
-        # bites on it, so dropping it from the projection would fail that test rather than
+        # The bound itself, and why it is read with `getattr`, are in `_nw_deadline`: fix 78
+        # moved both deadlines into helpers so the batched pending path and this one compute
+        # them from one expression. The loop test above proves the bound bites on the real
+        # projection's `kickoff_utc`, so dropping that column would fail that test rather than
         # silently unbound the counterfactual.
-        kickoff = getattr(row, "kickoff_utc", None)
-        nw_deadline = (deadline if kickoff is None
-                       else min(deadline, kickoff - NO_WATCHER_KICKOFF_MARGIN))
+        nw_deadline = _nw_deadline(row, now)
 
         if row.status in store.OPEN_STATUSES:
             result = simulate_fills(order, watched, self._sim_book(session, row, watched, bases,
@@ -1178,17 +1309,8 @@ class Executor:
             track = self._persist_track(session, row, order, result, prints, ledger=False,
                                         crossed_already=crossed_already)
             stats.nw_fills += track.inserted
-            # A track on a ticker whose delta read truncated this loop is not finished, even
-            # at its own expiry: the tape between its cursor and now has not been fed to it
-            # yet, and closing here would leave those fills in the replay and out of the live
-            # record. It closes on the first loop that catches up (fix 22 round 1, I2).
-            done = (row.ticker not in lagging
-                    and ((row.expiry is not None and row.expiry <= now)
-                         or track.filled >= row.contracts))
-            updates.update(nw_filled_contracts=track.filled, nw_done=done,
-                           **_state_columns("nw_", track.state))
-            if track.crossed:
-                updates["worst_case_fill"] = True
+            updates.update(_nw_columns(row, track.state, track.filled, track.crossed,
+                                       lagging, now))
 
         store.update_order(session, row.id, updates)
         return status, filled
@@ -1590,6 +1712,72 @@ def _venue_status(was: str, filled: Decimal, contracts: Decimal) -> str:
     if was not in store.OPEN_STATUSES:
         return was
     return _next_status(was, filled, contracts)
+
+
+def _paper_order(row, queue, now: datetime) -> PaperOrder:
+    """The order under simulation, off the row. `queue` is the caller's because a step that has
+    just anchored knows a queue the row does not carry yet."""
+    return PaperOrder(order_id=row.id, ticker=row.ticker, side=row.side, prob=row.prob,
+                      contracts=row.contracts, placed_at=row.placed_at,
+                      expiry=row.expiry or now, queue_ahead_at_place=queue)
+
+
+def _deadline(row, now: datetime) -> datetime:
+    """Where the watched track stops. R8: the expiry is the only guarantee an order stopped
+    resting, so both tracks read this one term rather than the loop instant (§0.8)."""
+    return min(now, row.expiry) if row.expiry is not None else now
+
+
+def _nw_deadline(row, now: datetime) -> datetime:
+    """Where the counterfactual's *fills* stop: `_deadline` and, since the user's ruling of
+    2026-09-14 15:38 CT (journal 206), `kickoff - 10 minutes` as well.
+
+    `getattr`, because the two pure-unit modules build the row by hand from what
+    `_simulate_order` reads and a hand-built row without a kickoff is the same case as a row
+    whose kickoff is NULL. The real projection carries the column (`store._WORKING_ORDERS`,
+    `o.kickoff_utc`).
+    """
+    kickoff = getattr(row, "kickoff_utc", None)
+    deadline = _deadline(row, now)
+    return deadline if kickoff is None else min(deadline, kickoff - NO_WATCHER_KICKOFF_MARGIN)
+
+
+def _nw_columns(row, state, filled: Decimal, crossed: bool, lagging, now: datetime) -> dict:
+    """The columns one counterfactual step writes back. One place, so the path that makes the
+    write and the one that decides the write would change nothing cannot drift apart (fix 78).
+
+    A track on a ticker whose delta read truncated this loop is not finished, even at its own
+    expiry: the tape between its cursor and now has not been fed to it yet, and closing here
+    would leave those fills in the replay and out of the live record. It closes on the first
+    loop that catches up (fix 22 round 1, I2).
+    """
+    done = (row.ticker not in lagging
+            and ((row.expiry is not None and row.expiry <= now) or filled >= row.contracts))
+    columns = {"nw_filled_contracts": filled, "nw_done": done,
+               **_state_columns("nw_", state)}
+    if crossed:
+        columns["worst_case_fill"] = True
+    return columns
+
+
+def _unchanged(row, updates: dict) -> bool:
+    """Would `store.update_order(session, row.id, updates)` leave every column as it is?
+
+    Value equality per column, read off the same projection the writer's own caller read, plus
+    the stamp `update_order` adds by itself: a write that touches any `nw_` column also writes
+    `nw_executor_version`, so a row last written by an older build has a column that would move
+    and is not unchanged. `stamp_nw_writer` is asked rather than re-implemented -- it returns
+    the caller's own dict when nothing counterfactual is being written -- so the rule stays in
+    the one place that owns it (amendment 0.17).
+
+    `orders` has no `updated_at` and no trigger, so a write of identical values is invisible in
+    the data: this is the whole test for skipping one.
+    """
+    for column, value in updates.items():
+        if getattr(row, column) != value:
+            return False
+    return (store.stamp_nw_writer(updates) is updates
+            or row.nw_executor_version == store.executor_version_numeric())
 
 
 def _clamped(period: int, row, now: datetime, *, watched: bool) -> int:

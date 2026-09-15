@@ -359,6 +359,13 @@ select o.id, o.intent_id, o.variant_id, o.ticker, o.venue_market_id, o.side, o.p
        -- caller comparing it with the document should not need a second read.
        o.print_unmatched, o.cancels_ahead, o.recon_state,
        o.nw_print_unmatched, o.nw_cancels_ahead, o.nw_recon_state,
+       -- Fix 78. The counterfactual's own two bucket sums and the version that last wrote any
+       -- of these columns are read, not written, by `loop._unchanged`: it decides whether the
+       -- per-row write this loop would make on a cancelled pending row would move anything at
+       -- all, and a column it cannot see is a column it cannot compare -- including
+       -- `nw_executor_version`, which `update_order` stamps itself, so a row last written by an
+       -- older build is never mistaken for one with nothing to write.
+       o.nw_pending_unmatched, o.nw_pending_surplus, o.nw_executor_version,
        o.nw_done, o.book_source, o.dirty_seconds, o.worst_case_fill,
        -- 6B §1.5. `cancelled_at` bounds the watched resting interval the dirty accrual is
        -- clamped to (`loop._clamped`); the two retry columns are read by `_tape`, which decides
@@ -825,6 +832,79 @@ def add_dirty_seconds(session: Session, order_id: int, seconds: int, *,
         "update orders set nw_dirty_seconds = coalesce(nw_dirty_seconds, 0) + :s, "
         "nw_executor_version = :v where id = :i"),
         {"s": int(seconds), "v": executor_version_numeric(), "i": order_id})
+
+
+#: Fix 78: the counterfactual dirty accrual of a whole loop's cancelled pending population, in
+#: one statement. The clamp is `loop._clamped(period, row, now, watched=False)` written in SQL
+#: and nothing else: an order with no expiry accrues the whole period, and one with an expiry
+#: accrues the seconds between `now` and it, floored at zero and capped at the period.
+#:
+#: The arithmetic is equal to Python's term for term. `expiry` and `:now` are both
+#: `timestamptz`, so their difference is an interval between two instants exactly as
+#: `(end - now)` is between two aware datetimes -- neither side reads a wall-clock field, so no
+#: zone can enter. `trunc` is Python's `int()` on the resulting seconds: both truncate toward
+#: zero, and where they could disagree (below zero, on a fraction) `greatest(0, ...)` sends both
+#: to the same 0. The `::int` cast rounds rather than truncates, which is why it is applied
+#: *after* `least(:p, ...)`: the value it sees is a whole number no larger than the period, so
+#: the rounding is exact and a far-future expiry cannot overflow the cast.
+#:
+#: `least()` ignoring NULL is never reached: a null expiry is answered by the `case` above it.
+#: `seconds > 0` is `add_dirty_seconds`'s own early return, so a row whose clamp is zero is not
+#: written at all and keeps whatever version last wrote it.
+_NW_DIRTY_BATCH = text("""
+update orders o
+   set nw_dirty_seconds = coalesce(o.nw_dirty_seconds, 0) + c.seconds,
+       nw_executor_version = :v
+  from (select id,
+               (case when expiry is null then :p
+                     else greatest(0, least(:p, trunc(extract(epoch from (expiry - :now)))))
+                end)::int as seconds
+        from orders where id = any(:ids) and not nw_done) c
+ where o.id = c.id and c.seconds > 0
+""")
+
+#: Fix 78's other set-based write: `loop._close_nw_if_expired` for the same population. The
+#: predicate is that helper's own (`not nw_done and expiry is not None and expiry <= now`) and
+#: the stamp is the one `update_order` adds to any `nw_` write (amendment 0.17).
+_NW_CLOSE_BATCH = text("""
+update orders set nw_done = true, nw_executor_version = :v
+ where id = any(:ids) and not nw_done and expiry is not null and expiry <= :now
+""")
+
+
+def add_nw_dirty_seconds_batch(session: Session, order_ids: Sequence[int], period: int,
+                               now: datetime) -> None:
+    """One loop's no-watcher dirty accrual for many orders, in one statement (fix 78).
+
+    Same rows and same values as calling `add_dirty_seconds(..., watched=False)` per row with
+    `loop._clamped(period, row, now, watched=False)`: the clamp is that function transcribed
+    into SQL (see `_NW_DIRTY_BATCH`), the stamp is the same `nw_executor_version`, and a row
+    whose clamp is zero is left alone exactly as the per-row writer's early return leaves it.
+    A finished track (`nw_done`) is excluded here as the caller's `if not row.nw_done` excludes
+    it there.
+
+    The watched columns are never touched. `dirty_seconds` accrues only while the order is
+    actually resting and derives its `dirty_minutes` twin in the same statement; both belong to
+    the per-row path, which this batch does not serve -- the caller passes cancelled rows only.
+    """
+    if not order_ids:
+        return
+    session.execute(_NW_DIRTY_BATCH, {"ids": list(order_ids), "p": int(period),
+                                      "now": now, "v": executor_version_numeric()})
+
+
+def close_nw_expired_batch(session: Session, order_ids: Sequence[int], now: datetime) -> None:
+    """Close every past-expiry counterfactual in `order_ids`, in one statement (fix 78).
+
+    The per-row twin is `loop._close_nw_if_expired`, which writes `nw_done = true` through
+    `update_order` and is stamped by it; this writes the same column on the same predicate with
+    the same stamp. A track with no expiry is never closed, which is R8's point: the expiry is
+    the only guarantee an order stopped resting.
+    """
+    if not order_ids:
+        return
+    session.execute(_NW_CLOSE_BATCH,
+                    {"ids": list(order_ids), "now": now, "v": executor_version_numeric()})
 
 
 def set_nw_backoff(session: Session, order_id: int, attempts: int,

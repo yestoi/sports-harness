@@ -43,7 +43,7 @@ from harness.db.models import (
 )
 from harness.execution import EXECUTOR_VERSION, store
 from harness.execution.gateway import PaperGateway
-from harness.execution.loop import ExecStats, Executor
+from harness.execution.loop import ExecStats, Executor, _clamped
 from harness.strategy.pipeline import price_and_signal
 from harness.strategy.variants import load_variants, register_variants
 from tests.test_pipeline import NOW, VARIANTS_DIR, _seed
@@ -2643,3 +2643,310 @@ def test_an_unsynced_run_is_excluded_from_candidates_intents_and_decisions(db_se
     market_ids = {row.venue_market_id for row in decisions}
     assert annotated_ok.venue_market.id in market_ids
     assert bad.venue_market.id not in market_ids
+
+
+# --- fix 78: the pending counterfactual population, written set-based -------------------
+#
+# The production backlog this fix exists for: 5,055 cancelled orders whose `no_watcher` track
+# is still running (133 tickers, 56 games; 4,822 of them on dirty markets at 13:50 CT on
+# 2026-09-15), each costing one savepoint and one UPDATE every 15 s loop. The cases below are
+# the acceptance the user's ruling of 13:55 CT asked for: the same columns as the per-row path
+# row for row, a statement count that does not grow with the population, and the SQL clamp
+# compared against `_clamped` itself for every shape of row it can meet.
+
+#: Far above the sequence the loop's own placements draw from, so a fixed id here cannot
+#: collide with one the executor inserts.
+PENDING_BASE_ID = 900_000
+#: A fourth market of `_seed`, on its own subscription, so a print can move one order's tape
+#: without touching the quiet population's trade-id set on T3.
+T4, VM4 = "KXNFL-P-4", 4
+#: The print that reaches the T4 row in the measured step. Its id is fixed so the reset can
+#: take it out again between the two runs.
+LATE_PRINT = "fix78-late-print"
+#: Where each shape sits in `_mixed_shapes`, so an assertion can name the row it is about. The
+#: first six are the dirty market's clamp; the last six are the clean ticker's, two of which a
+#: loop owes nothing and four of which it still owes a write.
+FAR, INSIDE, FRACTION, SUBSECOND, NO_EXPIRY, PAST = range(6)
+QUIET_FAR, QUIET_NONE, NO_BOOK, EXPIRES_BETWEEN, STALE_VERSION, TAPE_MOVES = range(6, 12)
+
+
+def _pending_book(session, ticker, ts, sid):
+    """A book with our own price resting on it, on a subscription of its own."""
+    return _ws_snapshot(session, ticker, ts, [("0.50", "20.00"), ("0.35", "40.00")],
+                        [("0.48", "50.00")], sid=sid)
+
+
+def _pending_order(session, index, *, now, ticker, vm, expiry, queue=Decimal("5.00"),
+                   version=None, prob=Decimal("0.3500")):
+    """One cancelled order whose counterfactual is still running, as the backlog's rows are.
+
+    The watched track is over -- the order left the market when it was cancelled, which is why
+    it accrues no watched dirty seconds (§0.9) -- and `nw_done` is false, so `working_orders`
+    keeps returning it every loop until its own expiry.
+    """
+    row = Order(id=PENDING_BASE_ID + index, intent_id=uuid.UUID(int=PENDING_BASE_ID + index),
+                variant_id="tiny",
+                venue="kalshi", mode="paper", client_order_id=f"fix78-{index}", ticker=ticker,
+                venue_market_id=vm, side="yes", prob=prob, contracts=Decimal("10.00"),
+                status="cancelled", placed_at=now - timedelta(minutes=5),
+                cancelled_at=now - timedelta(minutes=4), expiry=expiry,
+                queue_ahead_at_place=queue, queue_remaining=queue, nw_queue_remaining=queue,
+                nw_filled_contracts=Decimal("0.00"), nw_done=False,
+                nw_executor_version=version, replay=False)
+    session.add(row)
+    return row
+
+
+def _dirty_shapes(t0):
+    """The clamp's every shape on a dirty market, as `_clamped(15, row, t0, watched=False)`
+    reads them: no expiry at all (the whole period), one further off than the period, one
+    inside it, one whose fraction has to truncate, one under a second, and one already past."""
+    return [
+        {"ticker": T2, "vm": VM2, "expiry": t0 + timedelta(hours=1)},
+        {"ticker": T2, "vm": VM2, "expiry": t0 + timedelta(seconds=7)},
+        {"ticker": T2, "vm": VM2, "expiry": t0 + timedelta(seconds=15, microseconds=500_000)},
+        {"ticker": T2, "vm": VM2, "expiry": t0 + timedelta(milliseconds=400)},
+        {"ticker": T2, "vm": VM2, "expiry": None},
+        {"ticker": T2, "vm": VM2, "expiry": t0 - timedelta(minutes=1)},
+    ]
+
+
+def _quiet_shapes(t0):
+    """Clean-ticker rows with nothing past their cursors: the population a loop owes nothing."""
+    return [
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1)},
+        {"ticker": T3, "vm": VM3, "expiry": None},
+    ]
+
+
+def _mixed_shapes(t0):
+    """Both populations plus every row that must still take the per-row path: one that has
+    never had a book (it anchors on the first one), one whose expiry falls between the two
+    steps (`nw_done` moves), one stamped by an older build (the version moves) and one whose
+    ticker gets a print between the steps (the tape moves)."""
+    return _dirty_shapes(t0) + _quiet_shapes(t0) + [
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1), "queue": None},
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(seconds=5)},
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1),
+         "version": Decimal("4.4")},
+        {"ticker": T4, "vm": VM4, "expiry": t0 + timedelta(hours=1)},
+    ]
+
+
+def seed_pending(session, t0, n, shapes):
+    """`n` rows cycling `shapes`, so the same mix is present at every population size."""
+    ids = [_pending_order(session, i, now=t0, **shapes[i % len(shapes)]).id
+           for i in range(n)]
+    session.commit()
+    return ids
+
+
+def reset_pending(session):
+    """Everything one step of the loop writes, so two runs start from the same database.
+
+    The interval tables and the heartbeat are in the list because the loop's own statement
+    count depends on them -- an observation row that is already open is not opened again -- and
+    the comparison below is of statement counts as much as of columns.
+    """
+    for table in ("fills", "ledger", "order_events", "order_watch_samples", "equity_snapshots",
+                  "orders", "market_dirty_intervals", "market_observation_intervals",
+                  "exec_heartbeat", "metric_samples"):
+        session.execute(text(f"delete from {table}"))  # noqa: S608 - a fixed literal list
+    session.execute(text("delete from venue_trades where trade_id = :t"), {"t": LATE_PRINT})
+    session.commit()
+
+
+def pending_columns(session, ids):
+    """Every column of the population, by id: the comparison is column for column, so it is
+    read as `select *` rather than as a list this test would have to keep up to date."""
+    rows = session.execute(text("select * from orders where id = any(:ids) order by id"),
+                           {"ids": ids}).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
+    """Two loops over the seeded population, with the fix on or off, and the columns after.
+
+    The second loop is the one that matters: by then every row has been written once, so a
+    clean ticker with nothing new on its tape is a row whose write would move nothing -- which
+    is the case the fix skips. The print and the stale version stamp are introduced between the
+    steps, identically for both runs, so that the *measured* loop still contains rows the fix
+    must refuse to skip.
+
+    Returns the columns and how many statements that second loop sent, because the identity
+    only means something between two paths that are actually different: with the fix off, this
+    population costs a savepoint, an UPDATE and a release per row.
+    """
+    clock = Clock(t0)
+    executor = make_executor(env_settings, session, clock)
+    executor._batch_pending_writes = batched
+    executor.step()
+    refresh(session)
+    _print(session, T4, t0 + timedelta(seconds=14), "0.35", "500", trade_id=LATE_PRINT)
+    session.execute(
+        text("update orders set nw_executor_version = 4.4 where id = any(:ids)"),
+        {"ids": [oid for i, oid in enumerate(ids) if i % len(shapes) == STALE_VERSION]})
+    session.commit()
+    clock.advance(15)
+    with capture_sql(session) as seen:
+        executor.step()
+    refresh(session)
+    return pending_columns(session, ids), len(seen)
+
+
+def test_the_set_based_pending_writes_match_the_per_row_path_column_for_column(
+        env_settings, db_session, world):
+    """Fix 78 acceptance (a): no measured value changes.
+
+    The same population, the same tape and the same clock are run twice -- once with the
+    per-row savepoint and UPDATE this fix replaces, once with the set-based writes -- and every
+    column of every row is compared. `select *` is the comparison, so `nw_dirty_seconds`,
+    `nw_done`, `nw_executor_version` and each of the counterfactual's state columns
+    (`nw_queue_remaining`, `nw_tape_cursor_event_id`, `nw_last_print_ts`, `nw_last_print_ids`,
+    `nw_recon_state`, the three ledger sums, `nw_cancels_ahead`, `nw_next_attempt_at`,
+    `nw_attempts`) are in it by construction rather than by enumeration.
+
+    The clamp's own arithmetic is asserted separately below, from values computed here rather
+    than from the code: the loop runs at `t0` and `t0 + 15 s` with a 15 s period, so an order
+    expiring an hour out accrues the whole period twice, one expiring 7 s after the first loop
+    accrues 7 and then nothing, one expiring 15.5 s after it accrues 15 (the fraction truncates
+    toward zero, as `int()` does) and then nothing, and one expiring 0.4 s after it accrues
+    nothing at all -- so its column is never written and stays NULL rather than becoming 0.
+    """
+    keep_only(db_session, set())
+    t0 = NOW + timedelta(seconds=10)
+    snapshot = _pending_book(db_session, T2, NOW - timedelta(seconds=5), sid=2)
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    _pending_book(db_session, T4, NOW - timedelta(seconds=5), sid=4)
+    # The gap is what makes T2's book -- and only T2's -- unreadable for the rest of the test.
+    _gap(db_session, NOW - timedelta(seconds=1), sid=snapshot.sid)
+    db_session.commit()
+    shapes = _mixed_shapes(t0)
+    n = 2 * len(shapes)
+
+    ids = seed_pending(db_session, t0, n, shapes)
+    per_row, per_row_statements = run_pending_steps(env_settings, db_session, t0, ids, shapes,
+                                                    batched=False)
+    reset_pending(db_session)
+    ids = seed_pending(db_session, t0, n, shapes)
+    set_based, set_based_statements = run_pending_steps(env_settings, db_session, t0, ids,
+                                                        shapes, batched=True)
+
+    assert len(set_based) == n
+    assert set_based == per_row
+    # The identity is between two different paths, not between one path and itself.
+    assert set_based_statements < per_row_statements
+
+    row = dict(enumerate(set_based))
+    assert row[FAR]["nw_dirty_seconds"] == 30         # an hour out: the whole period, twice
+    assert row[INSIDE]["nw_dirty_seconds"] == 7       # 7 s left, then none
+    assert row[FRACTION]["nw_dirty_seconds"] == 15    # 15.5 s truncates to 15, then none
+    assert row[SUBSECOND]["nw_dirty_seconds"] is None  # 0.4 s truncates to 0: never written
+    assert row[NO_EXPIRY]["nw_dirty_seconds"] == 30   # no expiry: no interval to clamp to
+    assert row[PAST]["nw_dirty_seconds"] is None      # already expired: nothing to accrue
+    # The close is the same batch's other statement, on the same predicate as the per-row one.
+    assert [row[i]["nw_done"] for i in (FAR, INSIDE, FRACTION, SUBSECOND, NO_EXPIRY, PAST)] == [
+        False, True, False, True, False, True]
+    # Four clean-ticker rows the fix must not skip, each because one column would move: the
+    # expiry that falls between the two steps closes the track, the stamp set back to an older
+    # build is re-stamped, the tape that moved fills, and the row that never had a book anchors.
+    assert row[EXPIRES_BETWEEN]["nw_done"] is True
+    assert row[STALE_VERSION]["nw_executor_version"] == Decimal(EXECUTOR_VERSION)
+    assert row[TAPE_MOVES]["nw_filled_contracts"] == Decimal("10.00")
+    assert row[NO_BOOK]["queue_ahead_at_place"] == Decimal("40.00")
+    # ... and the two beside them that it does skip, which moved nothing.
+    assert row[QUIET_FAR]["nw_filled_contracts"] == Decimal("0.00")
+    assert row[QUIET_FAR]["nw_done"] is False
+    assert row[QUIET_NONE]["nw_done"] is False
+    assert row[FAR]["nw_executor_version"] == Decimal(EXECUTOR_VERSION)
+
+
+def _pending_statements(env_settings, session, t0, n, shapes) -> int:
+    """Statements the second loop over `n` seeded rows actually sends."""
+    reset_pending(session)
+    seed_pending(session, t0, n, shapes)
+    clock = Clock(t0)
+    executor = make_executor(env_settings, session, clock)
+    executor.step()
+    refresh(session)
+    clock.advance(15)
+    with capture_sql(session) as seen:
+        executor.step()
+    refresh(session)
+    return len(seen)
+
+
+def test_the_pending_population_costs_a_flat_number_of_statements(env_settings, db_session,
+                                                                  world):
+    """Fix 78 acceptance (b): the cost of a loop does not scale with the backlog.
+
+    Ten times the population, the same statements. Before the fix each row cost its own
+    savepoint, its own UPDATE and its own savepoint release, so the two sizes differed by about
+    3 x 45 statements; the dirty population now costs two statements however many rows are in
+    it, and a clean row with nothing past its cursors costs none.
+
+    Only the pending population is seeded here, so there is no open order and no per-open-order
+    statement to allow for; `reset_pending` puts the interval tables and the heartbeat back so
+    that the two measurements differ in nothing but `n`.
+    """
+    t0 = NOW + timedelta(seconds=10)
+    snapshot = _pending_book(db_session, T2, NOW - timedelta(seconds=5), sid=2)
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    _gap(db_session, NOW - timedelta(seconds=1), sid=snapshot.sid)
+    keep_only(db_session, set())
+    db_session.commit()
+
+    dirty = [_pending_statements(env_settings, db_session, t0, n, _dirty_shapes(t0))
+             for n in (5, 50)]
+    quiet = [_pending_statements(env_settings, db_session, t0, n, _quiet_shapes(t0))
+             for n in (5, 50)]
+
+    assert dirty[0] == dirty[1], f"dirty population: {dirty}"
+    assert quiet[0] == quiet[1], f"clean no-change population: {quiet}"
+
+
+def test_the_batched_clamp_equals_the_per_row_clamp_for_every_row_shape(db_session):
+    """Fix 78 acceptance: the set-based accrual is `_clamped(period, row, now, watched=False)`.
+
+    One row per shape the clamp can meet -- no expiry at all, long past, a fraction of a second
+    past, exactly now, fractions on either side of the period's own boundary, the period
+    exactly, an hour out and the year 9999 -- and the column each one ends with is compared
+    against the Python function the per-row path calls, computed here from the same row and the
+    same instant. A clamp of zero is not a write at all, so its column stays NULL rather than
+    becoming 0, which is `add_dirty_seconds`'s early return.
+
+    The year 9999 row is the cast's own case: `extract(epoch from ...)` on that interval is
+    about 2.5e11 seconds, which is why the `::int` cast is applied after the period caps it.
+    The row with a `cancelled_at` inside the period is the other track's case: the
+    counterfactual's interval is `[placed_at, expiry]` and knows nothing about when the order
+    we placed was cancelled (§0.10), so its clamp must ignore it.
+    """
+    now = NOW + timedelta(seconds=10)
+    period = 15
+    offsets = [None, timedelta(days=-365), timedelta(seconds=-15.5), timedelta(milliseconds=-1),
+               timedelta(0), timedelta(milliseconds=400), timedelta(seconds=1),
+               timedelta(seconds=7), timedelta(seconds=14, milliseconds=999),
+               timedelta(seconds=15), timedelta(seconds=15, milliseconds=500),
+               timedelta(seconds=16), timedelta(hours=1)]
+    rows = [_pending_order(db_session, i, now=now, ticker=T2, vm=VM2,
+                           expiry=None if offset is None else now + offset)
+            for i, offset in enumerate(offsets)]
+    # The far-future shape, and one whose watched interval closed inside the period.
+    rows.append(_pending_order(db_session, len(offsets), now=now, ticker=T2, vm=VM2,
+                               expiry=datetime(9999, 1, 1, tzinfo=timezone.utc)))
+    rows.append(_pending_order(db_session, len(offsets) + 1, now=now, ticker=T2, vm=VM2,
+                               expiry=now + timedelta(hours=1)))
+    rows[-1].cancelled_at = now + timedelta(seconds=3)
+    db_session.commit()
+    expected = {row.id: (_clamped(period, row, now, watched=False) or None) for row in rows}
+
+    store.add_nw_dirty_seconds_batch(db_session, [row.id for row in rows], period, now)
+    db_session.commit()
+    db_session.expire_all()
+
+    assert {row.id: row.nw_dirty_seconds
+            for row in db_session.query(Order).order_by(Order.id).all()} == expected
+    # Computed here, not read off the code: 1 s, 7 s and 14.999 s left clamp to 1, 7 and 14,
+    # everything from the period's own boundary outwards to 15, and everything at or before
+    # `now` to nothing at all.
+    assert sorted(set(expected.values()), key=lambda v: (v is None, v)) == [1, 7, 14, 15, None]
