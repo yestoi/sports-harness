@@ -202,6 +202,10 @@ class WsRecorder:
             self._current = list(wanted)
             return msg_id
         sent = 0
+        # Fix 77: how many frames went out per sid. The venue spends one of that
+        # subscription's seq numbers on each of them, so the sink is told to expect exactly
+        # that many advances; without this every wanted-set change was booked as a tape gap.
+        sent_per_sid: dict[int, int] = {}
         for action, tickers in (("add_markets", add), ("delete_markets", remove)):
             if not tickers:
                 continue
@@ -210,16 +214,22 @@ class WsRecorder:
                                     "params": {"sids": [sid], "market_tickers": tickers, "action": action}}))
                 msg_id += 1
                 sent += 1
+                sent_per_sid[sid] = sent_per_sid.get(sid, 0) + 1
         # Without a sid nothing was sent, so the venue still holds the old set. Advancing
         # _current here would make every later diff empty and silence the recorder for good.
         if sent:
             self._current = list(wanted)
+        if self.sink is not None:
+            for sid, frames in sent_per_sid.items():
+                self.sink.expect_advances(sid, frames)
         return msg_id
 
     def _recover_gap(self, ws, sid: int, msg_id: int) -> int:
         """A gap leaves every ticker on `sid` with an unknown book until something forces a
         fresh `orderbook_snapshot`, and Kalshi only re-sends one when a market is (re)added to
-        a subscription. So delete and re-add the sid's markets. Returns the next free msg id."""
+        a subscription. So delete and re-add the sid's markets. Returns the next free msg id.
+        The two frames it sends are accounted to the sink (fix 77) so the seq numbers the venue
+        spends on them are not read as a second gap."""
         now = time.monotonic()
         last = self._last_recovery.get(sid)
         if last is not None and now - last < 60:
@@ -237,7 +247,13 @@ class WsRecorder:
             msg_id += 1
         self._last_recovery[sid] = now
         recent.append(now)
-        self.sink.clear_sequence(sid)
+        # Fix 77: the pair above costs this subscription two seq numbers, so the sink expects
+        # them instead of reading them as a second loss (production wrote exactly that row,
+        # `expected=6962 got=6964`, after every recovery). This replaces `clear_sequence`:
+        # forgetting the chain here also forgot any genuine loss that followed the recovery,
+        # and the venue does not restart the numbering when markets are re-added -- 2026-09-15
+        # the seqs ran 6957, .., 6961, 6964 straight through a recovery.
+        self.sink.expect_advances(sid, 2)
         log.warning("gap on sid %s: resubscribed %d tickers for fresh snapshots", sid, len(self._current))
         return msg_id
 

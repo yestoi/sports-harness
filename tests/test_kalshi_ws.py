@@ -174,7 +174,8 @@ class _FakeSink:
         self.flushes = 0
         self.gap_sids: set[int] = set()
         self.offset_ms = 0
-        self.cleared: list[int] = []
+        # Fix 77: (sid, frames) the recorder told this sink to expect seq advances for.
+        self.expected: list[tuple[int, int]] = []
         # Task 12b: a test double for the writer methods `WsRecorder` calls through the sink,
         # so a test that never cares about telemetry doesn't have to see it fail and log.
         self.events: list[tuple[str, str, dict | None]] = []
@@ -187,8 +188,8 @@ class _FakeSink:
     def reset_sequences(self):
         self.reset_count += 1
 
-    def clear_sequence(self, sid):
-        self.cleared.append(sid)
+    def expect_advances(self, sid, n):
+        self.expected.append((sid, n))
 
     def flush(self):
         self.flushes += 1
@@ -1033,7 +1034,10 @@ def test_sequence_gap_resubscribes_the_sid_once_inside_the_recovery_window(db_se
     monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: ["K-A", "K-B"])
 
     script = [json.dumps({"type": "subscribed", "msg": {"sid": 7}})]
-    script += [json.dumps(_delta(7, seq, "K-A")) for seq in (1, 2, 5, 6, 9)]
+    # Fix 77: the second skip has to be wider than the two seq numbers the recovery's own
+    # delete/add pair spends (6 -> 10, not 6 -> 9), or it is the venue answering the recovery
+    # rather than a lost message.
+    script += [json.dumps(_delta(7, seq, "K-A")) for seq in (1, 2, 5, 6, 10)]
     sockets: list[_ScriptedWs] = []
 
     def ws_factory(url, header, timeout):
@@ -1045,16 +1049,16 @@ def test_sequence_gap_resubscribes_the_sid_once_inside_the_recovery_window(db_se
     monkeypatch.setattr(recorder, "_headers", lambda: [])
     monkeypatch.setattr(time, "sleep", lambda _s: recorder.stop())
 
-    # The recovery drops the sid's remembered seq so the fresh snapshot is not judged against
-    # the pre-gap sequence. That is only observable while the recovery is running.
-    cleared: list[tuple[int, dict]] = []
-    original_clear = sink.clear_sequence
+    # Fix 77: the recovery books its own two frames with the sink instead of dropping the
+    # sid's remembered seq. That is only observable while the recovery is running.
+    expected: list[tuple[int, int, dict]] = []
+    original_expect = sink.expect_advances
 
-    def spy(sid):
-        original_clear(sid)
-        cleared.append((sid, dict(sink._last_seq)))
+    def spy(sid, n):
+        original_expect(sid, n)
+        expected.append((sid, n, dict(sink._last_seq)))
 
-    sink.clear_sequence = spy
+    sink.expect_advances = spy
     recorder.run_forever()
 
     frames = _subscription_frames(sockets[0])
@@ -1063,10 +1067,10 @@ def test_sequence_gap_resubscribes_the_sid_once_inside_the_recovery_window(db_se
     # One id per frame: two `update_subscription` commands sharing an id leave the venue's
     # acks and errors uncorrelatable, so the recorder could not tell which frame failed.
     assert [f["id"] for f in frames] == [2, 3]
-    assert cleared == [(7, {})]
+    assert expected == [(7, 2, {7: 5})]
     # Both gaps are still on the tape: recovering from one does not hide that it happened.
     gaps = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
-    assert [(g.sid, g.raw["expected"], g.raw["got"]) for g in gaps] == [(7, 3, 5), (7, 7, 9)]
+    assert [(g.sid, g.raw["expected"], g.raw["got"]) for g in gaps] == [(7, 3, 5), (7, 7, 10)]
 
 
 def test_third_gap_inside_five_minutes_falls_through_to_a_reconnect(db_session, monkeypatch):
@@ -1139,7 +1143,9 @@ def test_recv_loop_ids_never_collide_across_a_plan_and_a_gap_recovery(db_session
               json.dumps(_delta(7, 4, "K-A")),    # gap -> recovery 1, ids 2 and 3
               301.0,                              # cross the 300 s plan interval
               json.dumps(_delta(7, 5, "K-A")),    # handled, then the plan -> ids 4 and 5
-              json.dumps(_delta(7, 8, "K-A"))]    # gap -> recovery 2, ids 6 and 7
+              # Fix 77: the plan's two frames account for two seq numbers, so a gap here has to
+              # be wider than that pair (6 -> 9) to be a lost message rather than the update.
+              json.dumps(_delta(7, 9, "K-A"))]    # gap -> recovery 2, ids 6 and 7
     sockets: list[_ScriptedWs] = []
 
     def ws_factory(url, header, timeout):
@@ -1428,7 +1434,7 @@ def test_a_stale_gap_sid_does_not_survive_into_the_next_connection(monkeypatch):
     assert observed["at_first_recv"] == set()
     assert sink.gap_sids == set()
     assert not [f for f in _subscription_frames(sockets[0]) if 99 in f["params"]["sids"]]
-    assert sink.cleared == []
+    assert sink.expected == []
 
 
 def test_ws_disconnect_summary_goes_through_the_log_redactor(monkeypatch):
@@ -1466,3 +1472,198 @@ def test_ws_disconnect_summary_goes_through_the_log_redactor(monkeypatch):
     assert secret not in disconnects[0]
     assert "abc123def" not in disconnects[0]
     assert "[REDACTED]" in disconnects[0]
+
+
+# --- fix 77: a subscription update is not a tape gap -----------------------------------
+#
+# Production 2026-09-15 (roadmap row 77, journal 235): every sid-2 `gap` row landed at the
+# instant `ws.subscribed_tickers` changed, one seq number per `update_subscription` frame the
+# recorder had just sent (`expected=6956 got=6957` after a plan's single frame,
+# `expected=6962 got=6964` after `_recover_gap`'s delete/add pair). The venue consumes one seq
+# per update frame; the recorder must account for it without forgetting the chain.
+
+def _ack(sid: int, seq: int, kind: str = "subscription_updated") -> dict:
+    """An acknowledgement of `update_subscription`: a frame that is neither a trade nor a
+    book message but carries the subscription's `sid` and `seq`."""
+    return {"type": kind, "sid": sid, "seq": seq, "msg": {"sids": [sid]}}
+
+
+def test_one_update_subscription_frame_advances_the_seq_without_a_gap(db_session):
+    """(a) The plan sent one `update_subscription` frame on the sid; the venue spends one seq
+    number on it, so the next delta lands at `last + 2`. That is the whole of row 77's
+    spurious gap: no row, no recovery, and the chain still follows the delta."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    assert sink.handle(_delta(2, 12, "K-A"), NOW) == "orderbook_delta"
+
+    assert db_session.query(OrderbookEvent).filter_by(kind="gap").count() == 0
+    assert sink.gap_sids == set()
+    kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
+    assert kinds == ["delta", "delta"]
+
+
+def test_a_skip_past_a_single_update_still_writes_a_gap(db_session):
+    """(b) The allowance is exactly the frames the recorder sent. One update frame explains
+    one seq number; a delta at `last + 3` lost a message and still goes on the tape."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    assert sink.handle(_delta(2, 13, "K-A"), NOW) == "orderbook_delta"
+
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.sid, gap.raw["expected"], gap.raw["got"]) == (2, 11, 13)
+    assert sink.gap_sids == {2}
+
+
+def test_the_recovery_pair_accounts_for_two_advances_but_not_three(db_session):
+    """(c) `_recover_gap` sends `delete_markets` then `add_markets` on the sid, so two seq
+    numbers are the venue's; a delta at `last + 3` is explained and one at `last + 4` is not."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 2)
+    assert sink.handle(_delta(2, 13, "K-A"), NOW) == "orderbook_delta"
+    assert db_session.query(OrderbookEvent).filter_by(kind="gap").count() == 0
+
+    sink.expect_advances(2, 2)
+    assert sink.handle(_delta(2, 17, "K-A"), NOW) == "orderbook_delta"
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.sid, gap.raw["expected"], gap.raw["got"]) == (2, 14, 17)
+
+
+def test_an_absorbed_advance_is_consumed_and_never_hides_a_second_loss(db_session):
+    """One update frame buys exactly one seq number, once. After the delta that consumed it,
+    the next single skip on the same sid is a lost message again."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    assert sink.handle(_delta(2, 12, "K-A"), NOW) == "orderbook_delta"   # absorbed
+    assert sink.handle(_delta(2, 14, "K-A"), NOW) == "orderbook_delta"   # a real loss
+
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.sid, gap.raw["expected"], gap.raw["got"]) == (2, 13, 14)
+
+
+def test_a_gap_beyond_the_allowance_drops_it_instead_of_carrying_it(db_session):
+    """A skip the allowance cannot explain is a real loss: the row goes on the tape and the
+    pending advances go with it, so they cannot silently absorb a later message."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    assert sink.handle(_delta(2, 20, "K-A"), NOW) == "orderbook_delta"   # gap 11..20
+    assert sink.handle(_delta(2, 22, "K-A"), NOW) == "orderbook_delta"   # nothing left to spend
+
+    gaps = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
+    assert [(g.raw["expected"], g.raw["got"]) for g in gaps] == [(11, 20), (21, 22)]
+
+
+def test_a_pending_advance_expires_and_cannot_hide_a_later_loss(db_session, monkeypatch):
+    """The allowance is bounded in time as well as in count: if the venue never spends the seq
+    number, the expectation is dropped rather than left to absorb a loss minutes later."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    clock["t"] += 600.0
+    assert sink.handle(_delta(2, 12, "K-A"), NOW) == "orderbook_delta"
+
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.sid, gap.raw["expected"], gap.raw["got"]) == (2, 11, 12)
+
+
+def test_an_acknowledgement_that_carries_sid_and_seq_keeps_the_chain_continuous(db_session):
+    """Reading A of row 77: if the venue's acknowledgement of `update_subscription` carries the
+    subscription's `sid` and `seq`, it is the seq number the update spent. Following it keeps
+    the chain continuous -- it writes no tape row of its own, and the next delta is in
+    sequence behind it."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    sink.handle(_ack(2, 11), NOW)
+    assert sink.handle(_delta(2, 12, "K-A"), NOW) == "orderbook_delta"
+    # The ack spent the expectation, so the next single skip is a loss again.
+    assert sink.handle(_delta(2, 14, "K-A"), NOW) == "orderbook_delta"
+
+    kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
+    assert kinds == ["delta", "delta", "gap", "delta"]
+    gap = db_session.query(OrderbookEvent).filter_by(kind="gap").one()
+    assert (gap.sid, gap.raw["expected"], gap.raw["got"]) == (2, 13, 14)
+
+
+def test_an_acknowledgement_outside_the_allowance_leaves_the_chain_alone(db_session):
+    """An unknown frame whose `seq` is not the next number (a command echo, say) is not part
+    of the data sequence: it must neither write a gap nor move `_last_seq`, or one odd frame
+    would desynchronise every delta behind it."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+
+    assert sink.handle(_delta(2, 10, "K-A"), NOW) == "orderbook_delta"
+    sink.expect_advances(2, 1)
+    sink.handle(_ack(2, 900_001), NOW)
+    assert sink.handle(_delta(2, 11, "K-A"), NOW) == "orderbook_delta"
+
+    assert db_session.query(OrderbookEvent).filter_by(kind="gap").count() == 0
+    kinds = [e.kind for e in db_session.query(OrderbookEvent).order_by(OrderbookEvent.id).all()]
+    assert kinds == ["delta", "delta"]
+
+
+def test_resubscribe_expects_one_advance_per_frame_it_sent():
+    """The plan's frames are what the sink is told to expect: one per frame actually sent, per
+    sid, and nothing at all when the diff sent nothing."""
+    recorder = _recorder_with_sids([7, 8], ["K-A", "K-B"])
+    ws = _FakeWs([])
+
+    recorder._resubscribe(ws, ["K-B", "K-C"], 2)          # one add and one delete per sid
+    assert sorted(recorder.sink.expected) == [(7, 2), (8, 2)]
+
+    recorder.sink.expected.clear()
+    recorder._resubscribe(ws, ["K-B", "K-C"], 6)          # empty diff: no frame, no expectation
+    assert recorder.sink.expected == []
+
+
+def test_gap_recovery_expects_its_own_two_frames_and_keeps_the_chain(db_session, monkeypatch):
+    """(c) end to end: the recovery's `delete_markets`/`add_markets` pair spends two seq
+    numbers, so the delta that lands at `last + 3` behind it is not a second gap -- which is
+    exactly the `expected=6962 got=6964` row production wrote after every recovery. The chain
+    is kept, not cleared: a delta further ahead than the pair explains still writes a row."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=1)
+    monkeypatch.setattr(ws_module, "select_ws_tickers", lambda *a, **kw: ["K-A"])
+
+    script = [json.dumps({"type": "subscribed", "msg": {"sid": 7}})]
+    # 1, 2 in sequence; 5 is a genuine loss -> recovery (two frames); 8 = 5 + 3 is the pair.
+    script += [json.dumps(_delta(7, seq, "K-A")) for seq in (1, 2, 5, 8)]
+    sockets: list[_ScriptedWs] = []
+
+    def ws_factory(url, header, timeout):
+        sockets.append(_ScriptedWs(script if not sockets else []))
+        return sockets[-1]
+
+    recorder = WsRecorder(_FakeSettings(), lambda: contextlib.nullcontext(None), sink,
+                          ws_factory=ws_factory, clock=lambda: NOW)
+    monkeypatch.setattr(recorder, "_headers", lambda: [])
+    monkeypatch.setattr(time, "sleep", lambda _s: recorder.stop())
+
+    recorder.run_forever()
+
+    frames = _subscription_frames(sockets[0])
+    assert [f["params"]["action"] for f in frames] == ["delete_markets", "add_markets"]
+    gaps = db_session.query(OrderbookEvent).filter_by(kind="gap").order_by(OrderbookEvent.id).all()
+    assert [(g.sid, g.raw["expected"], g.raw["got"]) for g in gaps] == [(7, 3, 5)]
+    # The sequence was followed through the recovery, not forgotten.
+    assert sink._last_seq[7] == 8

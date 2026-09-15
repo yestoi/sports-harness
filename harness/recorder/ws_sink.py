@@ -12,6 +12,23 @@ from harness.normalize.kalshi import taker_side_of, truncate_ms
 
 log = logging.getLogger(__name__)
 
+# Fix 77 (roadmap row 77, journal 235). The venue spends one `seq` number of a subscription on
+# every `update_subscription` frame the recorder sends on it -- on 2026-09-15 each plan that
+# changed the wanted set was booked as a lost message (`expected=6956 got=6957`) and each
+# `_recover_gap` pair as two (`expected=6962 got=6964`). The recorder therefore tells the sink
+# how many advances it has just paid for (`expect_advances`), and the sink spends that
+# allowance instead of writing a gap row. Two bounds keep the allowance from ever hiding a
+# real loss: it is never more than the frames actually sent (capped), and it is dropped if the
+# venue has not spent it within `SEQ_ADVANCE_TTL_S`. Production put ~130 ms and four frames
+# between a recovery pair and the seq numbers it spent, so the window is seconds, not minutes.
+SEQ_ADVANCE_TTL_S = 10.0
+MAX_PENDING_ADVANCES = 8
+
+
+def _is_int(v) -> bool:
+    """A JSON `true` is an `int` in Python; a frame carrying one is malformed, not a seq."""
+    return isinstance(v, int) and not isinstance(v, bool)
+
 
 def _dec(v):
     try:
@@ -29,7 +46,7 @@ def _ts(ms, fallback: datetime) -> datetime:
 
 class WsSink:
     def __init__(self, session_factory: sessionmaker, commit_every: int = 100, commit_interval_s: float = 2.0,
-                 offset_ms: int = 0):
+                 offset_ms: int = 0, advance_ttl_s: float = SEQ_ADVANCE_TTL_S):
         self._factory = session_factory
         # The recorder's clock offset to Kalshi's server, refreshed at every connect and
         # written onto every snapshot row (see `handle`). Public: the recorder assigns it.
@@ -39,6 +56,14 @@ class WsSink:
         self._last_commit = time.monotonic()
         self._commit_every, self._interval = commit_every, commit_interval_s
         self._last_seq: dict[int, int] = {}
+        # Fix 77: per sid, how many seq numbers the recorder's own `update_subscription` frames
+        # have bought and the monotonic instant that allowance expires at: {sid: (count, deadline)}.
+        self._advances: dict[int, tuple[int, float]] = {}
+        self._advance_ttl_s = advance_ttl_s
+        # Fix 77 telemetry, for reading the fix on production: seq numbers accounted for as
+        # subscription updates rather than gaps, and frames whose seq did not fit the chain.
+        self.seq_advances_accounted = 0
+        self.acks_out_of_sequence = 0
         # Which subscriptions have rows in the batch right now. `_pending` is one count for the
         # whole batch, but the batch spans every sid that landed a row since the last commit and
         # a rollback discards all of them, so the exception mark needs the set as well as the
@@ -70,16 +95,46 @@ class WsSink:
             self._pending, self._last_commit = 0, time.monotonic()
             self._pending_sids.clear()
 
-    def clear_sequence(self, sid: int) -> None:
-        """Forget one subscription's remembered seq. The recorder calls this after a gap
-        recovery: the venue restarts the sid's numbering when its markets are re-added, so the
-        old seq would make the very first frame of the fresh snapshot look like another gap."""
-        self._last_seq.pop(sid, None)
+    def expect_advances(self, sid: int, n: int) -> None:
+        """Fix 77: the recorder has just sent `n` `update_subscription` frames on `sid`, and the
+        venue spends one of that subscription's seq numbers on each of them. Book the allowance
+        so the next frame that lands `n` ahead is read as those updates rather than as lost
+        messages. This is deliberately *not* `clear_sequence`: the chain is kept, so a skip
+        wider than the frames we sent is still a gap and still goes on the tape."""
+        if n <= 0:
+            return
+        now = time.monotonic()
+        pending = self._pending_advances(sid, now)
+        self._advances[sid] = (min(pending + n, MAX_PENDING_ADVANCES), now + self._advance_ttl_s)
+
+    def _pending_advances(self, sid: int, now: float) -> int:
+        """How much allowance `sid` still has, dropping it once it has gone stale: an
+        expectation the venue never spent must not sit there absorbing a later real loss."""
+        entry = self._advances.get(sid)
+        if entry is None:
+            return 0
+        count, deadline = entry
+        if now >= deadline:
+            del self._advances[sid]
+            return 0
+        return count
+
+    def _spend_advances(self, sid: int, n: int) -> None:
+        entry = self._advances.get(sid)
+        if entry is None:
+            return
+        count, deadline = entry
+        if count <= n:
+            del self._advances[sid]
+        else:
+            self._advances[sid] = (count - n, deadline)
 
     def reset_sequences(self) -> None:
         """Forget remembered seq numbers so a fresh subscription's restart-at-1 doesn't
-        look like a gap against the previous connection's sequence."""
+        look like a gap against the previous connection's sequence. The pending advances go
+        with them: they were bought on the sids of a subscription that no longer exists."""
         self._last_seq.clear()
+        self._advances.clear()
 
     def _check_seq(self, sid: int, seq: int, ticker: str, ts: datetime) -> None:
         """`seq` counts per subscription, and one `sid` carries up to 500 tickers, so a gap
@@ -87,9 +142,28 @@ class WsSink:
         The row therefore goes in under `ticker = ""` (the whole-subscription sentinel) with
         the exposing ticker kept in `raw` (null, never "", when the message carried no
         ticker at all, so a malformed frame is not read as the sentinel). A first message on
-        an unseen sid has nothing to follow, so it records its seq and writes no gap."""
+        an unseen sid has nothing to follow, so it records its seq and writes no gap.
+
+        Fix 77: a skip the recorder's own `update_subscription` frames paid for (see
+        `expect_advances`) is not a loss -- it is spent from the allowance and the chain
+        follows it. Anything wider still writes the row."""
         last = self._last_seq.get(sid)
         if last is not None and seq != last + 1:
+            now = time.monotonic()
+            skipped = seq - (last + 1)
+            if 0 < skipped <= self._pending_advances(sid, now):
+                # Fix 77: the recorder's own `update_subscription` frames spent these seq
+                # numbers, so nothing was lost. Spend the allowance and follow the chain.
+                self._spend_advances(sid, skipped)
+                self.seq_advances_accounted += skipped
+                log.info("seq advance sid=%s expected=%s got=%s accounted by %d subscription update(s)",
+                         sid, last + 1, seq, skipped)
+                self._last_seq[sid] = seq
+                return
+            # A skip the allowance cannot explain is a real loss. The pending advances go with
+            # the row: their seq numbers are inside the range this gap already covers, and
+            # carrying them forward would let them absorb the next message instead.
+            self._advances.pop(sid, None)
             log.warning("seq gap sid=%s expected=%s got=%s exposed_by=%s", sid, last + 1, seq, ticker)
             self._session.add(OrderbookEvent(ticker="", ts=ts, sid=sid, seq=seq, kind="gap",
                                              raw={"sid": sid, "expected": last + 1, "got": seq, "exposed_by": ticker or None}))
@@ -167,6 +241,14 @@ class WsSink:
                 if sid is not None:
                     self._pending_sids.add(sid)
             else:
+                # Fix 77, the other reading of row 77: if the venue acknowledges an
+                # `update_subscription` with a frame that carries the subscription's own `sid`
+                # and `seq`, that frame *is* the seq number the update spent. It is not tape
+                # data -- no row -- but following it keeps the chain continuous, so the delta
+                # behind it is in sequence. `subscribed` and `error` never reach the sink;
+                # `WsRecorder` handles both.
+                if _is_int(sid) and _is_int(seq):
+                    self._note_ack_seq(sid, seq)
                 return None
         except Exception:
             log.exception("ws sink failed on %s %s", kind, ticker)
@@ -214,6 +296,28 @@ class WsSink:
             return None
         self._maybe_commit()
         return kind
+
+    def _note_ack_seq(self, sid: int, seq: int) -> None:
+        """Follow the seq of a non-data frame -- conservatively. The venue does not document
+        what its `update_subscription` acknowledgement carries, so a frame whose seq is not the
+        next number this subscription owes (a command echo, an id, a counter of its own) is
+        counted and dropped: it writes no gap and does not move `_last_seq`. Moving the chain
+        to an arbitrary number would desynchronise every delta behind it, and writing a gap
+        from one would put a false row on the tape."""
+        last = self._last_seq.get(sid)
+        if last is None:
+            return  # nothing to follow yet; the first data frame opens the chain
+        pending = self._pending_advances(sid, time.monotonic())
+        skipped = seq - (last + 1)
+        # The ack occupies one seq number itself; anything it is ahead by must be other update
+        # frames' numbers, so it can never account for more than the allowance bought.
+        if skipped < 0 or skipped > max(pending - 1, 0):
+            self.acks_out_of_sequence += 1
+            log.debug("ws frame seq out of sequence sid=%s expected=%s got=%s; ignored", sid, last + 1, seq)
+            return
+        self._spend_advances(sid, skipped + 1)
+        self.seq_advances_accounted += skipped + 1
+        self._last_seq[sid] = seq
 
     def flush(self) -> None:
         """Commit whatever the batch holds right now. The recorder calls this whenever the
