@@ -35,7 +35,9 @@ LOCK_SPAN = 1 << 20
 # Linux open-file-description lock commands (fcntl exports them only when its build saw them).
 F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW = 36, 37, 38
 DEFAULT_SHARDS = 6
-PINNED = ('tests/test_schema.py', 'tests/test_alembic.py')
+# Files that need the base database's fixture grant (UPDATE (indisvalid) ON pg_catalog.pg_index):
+# the shard databases carry no grant, so these never move off `<database>` (fix 71 learned it).
+PINNED = ('tests/test_schema.py', 'tests/test_alembic.py', 'tests/test_migrate_heal.py')
 SEED = Path('tests/test-durations.json')
 TEST_DEF = re.compile(r'^\s*(?:async\s+)?def\s+test_', re.M)
 SUMMARY = re.compile(r'^=+ (.*) in ([0-9.]+)s.*=+$', re.M)
