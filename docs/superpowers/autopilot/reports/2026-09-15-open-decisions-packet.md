@@ -47,3 +47,11 @@ the files named as "your edit".
     trailing 22.5 GB/day rate reported by the user's other session is recorded, unverified, in journal 239.
 
 **Item 16 ruled 2026-09-15 13:55 CT (journal 242): option (c), a set-based counterfactual write path as an executor hotfix (`fix-2026-09-15-executor-batch`, opus/opus); no budget (§0.13c stays the user's); rows 79/80 added as follow-ups. Open: item 1.**
+
+## Added 16:03 CT
+
+17. **Residual executor loop time after fix 78 (§0.13c; carried fixes 78/79, journal 244).** Fix 78 live 15:40 CT: median loop 10.2 -> 7.6 s, p95 27.9 -> 13.9 s
+    over the surrounding half hours, errors 0, no measured value changed; heartbeat p95 13,850 ms still over 7,500 at 6,387 pending tracks (+280 per 25 min).
+    Residual is the read side: row 79's per-ticker print rescan from the earliest placement (34,014 rows a loop at 13:50 CT) and one simulation walk per pending row.
+    Options: (a) bound the rescan as a second hotfix (loop's lean; read-side, no measured value moves); (b) a per-observation budget or round-robin (the user's §0.13c amendment);
+    (c) accept until the weekend drains the backlog; (d) other. The FAIL stands and does not gate (journal 242).
