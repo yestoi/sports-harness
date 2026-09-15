@@ -317,3 +317,34 @@ def test_a_market_absent_from_both_sets_at_the_departing_step_still_closes(db_se
     assert [r.ended_at for r in _intervals(db_session, MarketDirtyInterval)] == [at(30)]
     assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [at(30)]
     assert _open_count(db_session) == 0
+
+
+def test_a_market_whose_first_read_raises_still_closes_its_observation_row_on_departure(
+        db_session):
+    """Review round 1, I-1: `self.books` is not the set of markets with an open interval row.
+    A ticker whose read *raises* on its very first step never becomes a key of `self.books` at
+    all -- the cache assignment lives inside the `try`, only reached on success -- while its
+    observation row still opened unconditionally at the call below `market_ids` had its id.
+    Deriving `gone` from `set(self.books) - tickers` therefore misses exactly this market when
+    it later departs, and the row stays open forever (reviewer probe on the previous fix:
+    `open_rows=1` after departure). `gone` is now read off `self._market_ids`, the map the
+    *previous* step opened rows from, whether or not that step's own read succeeded.
+    """
+    executor = _executor_with_books({})
+
+    def explode(session, ticker, now, cached, ws_connect_at=None):
+        raise ValueError("no anchor yet")
+
+    executor._book_now = explode
+    executor._advance_books(db_session, {"A"}, {"A": 1}, at(0), dead_recorder=False)
+
+    # The failed read never enters the book cache, and a ticker with no book at all opens no
+    # dirty row (review checks-cleared 1): only the observation row is at stake here.
+    assert executor.books == {}
+    assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [None]
+    assert _intervals(db_session, MarketDirtyInterval) == []
+
+    executor._advance_books(db_session, set(), {}, at(30), dead_recorder=False)
+
+    assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [at(30)]
+    assert _open_count(db_session) == 0

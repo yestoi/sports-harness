@@ -621,14 +621,20 @@ class Executor:
         recovering = ({t for t in tickers if t in self._dirty_tickers} | re_anchored) - dirty
         self._dirty_tickers = dirty
         # One BookState per ticker ever traded would accumulate all season, and a dormant entry
-        # would later be advanced from a very old `as_of`. `gone` is read off the cache *before*
-        # the prune, because pruning is what loses the names. Row 70 (6B merge review): `tickers`
-        # and `market_ids` are always built from the same `rows` at the call site, so a departed
-        # ticker is never a key of *this* step's `market_ids` either -- `set(self.books) -
-        # tickers` can never intersect it, which made `gone` always empty and left the two
-        # production rows (markets 865/866, journal 219) open forever. The departed ticker's id
-        # comes from `self._market_ids`, the map the market was last stepped under.
-        gone = [self._market_ids[t] for t in set(self.books) - tickers if t in self._market_ids]
+        # would later be advanced from a very old `as_of`. `self.books` is pruned right after
+        # `gone` is read, but `gone` is not derived from it (review round 1, I-1): a ticker whose
+        # read *raises* on its very first step never becomes a key of `self.books` at all (the
+        # cache assignment lives inside the `try`, only reached on success), while its
+        # observation row was still opened unconditionally below because `market_ids` had its
+        # id -- so deriving `gone` from `set(self.books) - tickers` misses exactly that market
+        # when it later departs, and its row never closes. `self._market_ids` is precisely the
+        # set of markets whose rows the *previous* step opened, whether or not their read
+        # succeeded, so it is what a departure has to be read against. Row 70 (6B merge review):
+        # `tickers` and `market_ids` are always built from the same `rows` at the call site, so
+        # a departed ticker is never a key of *this* step's `market_ids` either -- the earlier
+        # `set(self.books) - tickers` shape made `gone` always empty and left the two production
+        # rows (markets 865/866, journal 219) open forever.
+        gone = [vm_id for t, vm_id in self._market_ids.items() if t not in tickers]
         self.books = {t: book for t, book in self.books.items() if t in tickers}
         self._market_ids = dict(market_ids)
 
