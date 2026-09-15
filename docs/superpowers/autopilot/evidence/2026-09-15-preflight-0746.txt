@@ -1,0 +1,43 @@
+2026-09-15T12:46:01.319193+00:00
+?? docs/superpowers/autopilot/evidence/2026-09-15-preflight-0746.txt
+35f7180 docs: journal 225-227 (preflight PASS on 0d04804; decision: the 6E cold-start timing is the loop's, taken now; clean stack stop 07:11-07:16 CT before the user's console reboot), state checkpoint, preflight evidence
+1c27a51 docs: journal 223-224 (the 06:35 CT wakeup missed; U7 push; row 72 ids captured; the user's eighteen rulings after the 2026-09-15 review) with the user-directed edits: spec 0.17 (row 72 option (b), narrowed §2 invariant, nw_executor_version) and 0.18 (order 157 verdict vocabulary), verify.md Layer 2b narrowed and Layer 3b standing-items ruling and the 6B by-cause row, roadmap rows 62/63/69/70/72, RFQ0 stays, storage retention TODO by 2026-09-22, 6E cold-start missed, state checkpoint with the order of work
+89116e8 docs: journal 222 (fix 69/70 released as 0d04804), rows 69/70 closed, state checkpoint (runtime 0d04804, no units pending until the 06:35 CT wakeup)
+/home/trey/dev/sports                               35f7180 [main]
+/home/trey/dev/sports-wt/fix-45-raw-events-index    003375e [fix-45-raw-events-index]
+/home/trey/dev/sports-wt/fix-48-pricing-stage-order b447827 [fix-48-pricing-stage-order]
+/home/trey/dev/sports-wt/phase6d-merge-main         ffbecd5 [phase6d-merge-main]
+/home/trey/dev/sports-wt/recovery-fix45-final       4b2f2cd [recovery/fix45-final]
+/home/trey/dev/sports-wt/recovery-fix45-round3      8c24df2 [recovery/fix45-round3]
+/home/trey/dev/sports-wt/recovery-fix48-review      8631fcd [recovery/fix48-review]
+/home/trey/dev/sports-wt/recovery-fix52             073732f [recovery/fix52]
+/home/trey/dev/sports-wt/restart-worker-smoke       bb90c7a [recovery/worker-smoke]
+               total        used        free      shared  buff/cache   available
+Mem:           31904        6077       20940        1207        7827       25827
+Swap:          63808           0       63808
+Filesystem        Size  Used Avail Use% Mounted on
+/dev/mapper/root  952G  150G  799G  16% /srv/sports-harness
+test-db state=running memory=4294967296 cpus=4000000000
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED       STATUS                        PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     2 days ago    Up About a minute             5432/tcp
+sports-harness-app-exec-1       sports-release/app:0d04804                                                         "harness exec"           app-exec       6 hours ago   Up About a minute (healthy)   
+sports-harness-app-research-1   sports-release/app:0d04804                                                         "harness research-wo…"   app-research   6 hours ago   Up About a minute             
+sports-harness-app-run-1        sports-release/app:0d04804                                                         "harness run"            app-run        6 hours ago   Up About a minute             
+sports-harness-app-serve-1      sports-release/app:0d04804                                                         "harness serve --por…"   app-serve      6 hours ago   Up About a minute (healthy)   127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:0d04804                                                         "harness ws-record"      app-ws         6 hours ago   Up About a minute             
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       2 days ago    Up About a minute (healthy)   5432/tcp
+paper posture intact
+{"status": "ok", "last_run_at": "2026-09-15T12:45:42.289847+00:00", "last_status": "skipped", "seconds_since": 19, "credits_remaining": 4897464, "credits_budget": 5000000, "credits_low": false, "venue_limits": {"tier": "basic", "age_s": 0.0, "read_at": "2026-09-15T12:45:12.290102+00:00", "page_pause_s": 0.05, "read_capacity": 600.0, "write_capacity": 100.0, "read_refill_rate": 200.0, "write_refill_rate": 100.0}, "build": "0d04804"}
+0012_phase6d_sustained_eval
+17821|2026-09-15 12:45:42.289847+00|skipped|0d04804
+17820|2026-09-15 12:45:12.290102+00|ok|0d04804
+17819|2026-09-15 12:11:16.646331+00|skipped|0d04804
+2026-09-15 12:45:57.232743+00|1393|2593|
+178360416|2026-09-15 12:46:01.322+00
+
+Durable reminder: 2026091201.txt 2026-09-13T00:04:07Z Omarchy restart reminder drill completed; no controller was launched
+Durable reminder: 2026091301.txt 2026-09-13T07:50:07Z Inspect game window before fix45 full release; no model auto-start
+Durable reminder: 2026091302.txt 2026-09-13T14:30:07Z Last pre-NFL readiness check: fix47 must be deployed for Sunday6C checks
+Durable reminder: 2026091401.txt 2026-09-14T13:30:47Z Autopilot durable reminder: Monday duties and the 6C 09:00 CT diagnostic report are due; if no controller is running, the wakeup was lost
+Durable reminder: 2026091502.txt 2026-09-15T12:11:22Z armed-at-arm-time: Tue 07:50 CT backstop (journal 226): 6E cold-start stop done ~07:20 CT; if uptime has not reset, bring the stack back up (sports-compose up -d --no-build --pull never), journal the missed slot, continue batch A; if a new session is running per Kickoff, ignore
+Provider auth, native wakeups, browser and worker-isolation smoke must be checked in the controller session.

@@ -111,3 +111,16 @@ Claude session's native wakeups. Console LUKS unlock remains a user action.
 Omarchy-to-NAS SSH authentication is currently unavailable. Local bundles and the
 original archive are preserved; failed off-host copying is recorded. No login key
 or NAS account authorization was silently changed.
+
+## Host restart unit (user, 2026-09-15, journal 224 item 15)
+
+`/etc/systemd/system/sports-harness.service` is a oneshot `sports-compose up -d --no-build --pull never`
+with `RemainAfterExit`, no `Restart=` line and no timer; the path unit activates it only on the
+production-enabled marker. The release reviewer's race finding (a restart unit re-raising the stack
+while a release was mid-recipe) is closed on that shape: the unit runs once per boot, never on a
+schedule, and a release never touches the marker. Observed at the 2026-09-15 07:43 CT cold start:
+docker.service up 07:44:01 CT, the unit ran 07:44:30-07:44:41 CT (postgres healthy at 07:44:41, the
+six app containers started in the same second), first recorder tick 07:45:12 CT
+(`docs/superpowers/autopilot/evidence/2026-09-15-coldstart-0746.txt`). A clean `sports-compose stop`
+or the systemd stop at reboot SIGKILLs `app-backup` after the stop timeout (Exited 137, journal 227):
+the sidecar does not handle SIGTERM; no dump was in progress either time.

@@ -180,6 +180,15 @@ their corrections are applied.
   distinguish without the audit document. `ORDER_157_VERDICT` becomes `unverifiable_differs` in the hotfix that lands this vocabulary; until then the
   constant reads `unverifiable` and the audit document's Verdict section (2026-09-14 17:38 CT run) is the record. Cost if wrong: none identified.
   Reversal: collapse the two values back to `unverifiable`.
+- **0.19 (loop-owned, 2026-09-15, journal 224 item 8) `book_unreadable` is the sixth dirty cause and `book.DIRTY_CAUSES` is the vocabulary.**
+  §1.5 named five causes (`gap`, `session_boundary`, `recorder_dead`, `event_age`, `malformed_row`); 0d04804 (roadmap row 69, journal 222) added
+  `book_unreadable`, opened at the fix 60 guard site when a ticker's own read fails while its cached book is otherwise clean, and closed on the
+  next successful read. The cause vocabulary lives in `harness/execution/book.py`'s `DIRTY_CAUSES` (hotfix batch A makes the tuple carry all six
+  and has the interval writer reject any other value); verify.md's 6B block reads the by-cause counts against these six. Correction of record:
+  §1.5's sentence "both close every open row for a market absent from the step's market set" was not true before 0d04804 (row 70: `gone` was
+  always empty, so the departed-market close never fired; two production observation rows stayed open from 00:25 CT to the 0d04804 release).
+  Cost if wrong: a dirty-interval row with a cause the report groups under an unknown label. Reversal: drop the two loop-only causes back to
+  a comment beside the tuple.
 
 ## 1. Components
 

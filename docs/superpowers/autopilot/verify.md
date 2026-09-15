@@ -512,9 +512,11 @@ select count(*) from benchmarks where source_ts > target_ts;
 select count(*) from fills f join orders o on o.id=f.order_id join games g on g.id=o.game_id
   where f.replay=false and f.filled_at >= :cutoff
     and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
-  -- :cutoff = NO_WATCHER_CUTOFF_FIXED_AT (harness/ops/checks.py; set to the release instant at the
-  -- release commit, user ruling 2026-09-14 15:38 CT, journal 206): the 154 pre-cutoff no-watcher
-  -- fills stay as recorded. By hand, substitute the constant's timestamp.
+  -- :cutoff = NO_WATCHER_CUTOFF_FIXED_AT (harness/ops/checks.py) = 2026-09-15T05:23:44Z, the c1066b5
+  -- stop instant read from evidence/2026-09-15-release-boundary-6b.txt (user ruling 2026-09-15, journal
+  -- 224 item 2, under journal 206's gate 13 authorization for these two predicates): the 154 pre-cutoff
+  -- no-watcher fills stay as recorded. The 04:45Z, 05:15Z, 05:45Z and 06:15Z values the constant held
+  -- before were pre-release estimates, never the release. By hand, substitute the timestamp.
 select count(*) from markouts m
   where m.at_ts > m.horizon_ts
     and (exists (select 1 from fills f where f.order_id = m.order_id and f.filled_at >= :cutoff)

@@ -154,3 +154,11 @@ now run: the evidence does not support any of the three causal stories, and the 
 invent a fourth. The 6A capsule and the record stand as they are; no fill, markout or order row
 changes (gate 3), and `ORDER_157_VERDICT` in `harness/corrections.py` carries this verdict for
 6C's t13.
+
+**Vocabulary after amendment 0.18 (user decision 2026-09-15, journal 224 item 14; appended, the paragraphs above are the 2026-09-14 record).**
+The single `unverifiable` value above splits into `unverifiable_uncovered` (the first definition in Verdicts: a manifest slice inside the resting
+interval, no replay run) and `unverifiable_differs` (the second: the tape covers the interval, the repaired replay differs by at least
+`FILL_TOLERANCE`, and no hypothesis's counts are met). Order 157's verdict is therefore **`unverifiable_differs`**: `manifest_slices_in_interval`
+0, the replay ran, 63.92 against 38.92, no hypothesis met. `ORDER_157_VERDICT`, `harness/audit.py`'s `VERDICTS` and 6C's reader
+(`harness/report/audits.py`) carry the two values from hotfix batch A; the JSON evidence files of the 11:40 CT and 17:38 CT runs keep the
+string they were written with.

@@ -1,0 +1,169 @@
+# 6E cold-start evidence, captured 2026-09-15 07:46:08 CDT (12:46:08Z)
+## uptime -s
+2026-09-15 07:43:17
+## last boot / previous boot
+reboot   system boot  7.2.3-arch1-3    Tue Sep 15 07:43   still running
+shutdown system down  7.2.3-arch1-3    Tue Sep 15 07:42 - 07:43  (00:01)
+reboot   system boot  7.2.3-arch1-3    Sun Sep 13 15:31 - 07:42 (1+16:11)
+reboot   system boot  7.2.3-arch1-3    Sat Sep 12 15:17 - crash (1+00:13)
+reboot   system boot  7.2.3-arch1-3    Sat Sep 12 14:57 - crash  (00:20)
+ -2 a6cc87e003804cd6a1872db9ff17dab0 Sat 2026-09-12 15:17:44 CDT Sun 2026-09-13 15:32:02 CDT
+ -1 0f6d2d65deef4b2f8407d1ef289a5f7a Sun 2026-09-13 15:31:18 CDT Tue 2026-09-15 07:42:54 CDT
+  0 bbbca5858048430fbdde3093a86fce60 Tue 2026-09-15 07:43:58 CDT Tue 2026-09-15 07:45:35 CDT
+## sports-harness.service
+● sports-harness.service - Sports harness on Omarchy
+     Loaded: loaded (/etc/systemd/system/sports-harness.service; enabled; preset: disabled)
+    Drop-In: /etc/systemd/system/sports-harness.service.d
+             └─time-sync.conf
+     Active: active (exited) since Tue 2026-09-15 07:44:41 CDT; 1min 27s ago
+ Invocation: b04ce61199aa4de2995d5e4e0770425f
+    Process: 4871 ExecStart=/srv/sports-harness/sports-compose up -d --no-build --pull never (code=exited, status=0/SUCCESS)
+   Main PID: 4871 (code=exited, status=0/SUCCESS)
+   Mem peak: 46.1M
+        CPU: 185ms
+
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-app-ws-1 Starting
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Healthy
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-app-research-1 Starting
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-app-backup-1 Started
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-app-run-1 Started
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-app-exec-1 Started
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-app-serve-1 Started
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-app-ws-1 Started
+Sep 15 07:44:41 omarchy sports-compose[4892]:  Container sports-harness-app-research-1 Started
+Sep 15 07:44:41 omarchy systemd[1]: Finished Sports harness on Omarchy.
+## sports-harness.service journal this boot
+2026-09-15T07:44:30-05:00 omarchy systemd[1]: Starting Sports harness on Omarchy...
+2026-09-15T07:44:30-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Starting
+2026-09-15T07:44:30-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Started
+2026-09-15T07:44:30-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Waiting
+2026-09-15T07:44:30-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Waiting
+2026-09-15T07:44:30-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Waiting
+2026-09-15T07:44:30-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Waiting
+2026-09-15T07:44:30-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Waiting
+2026-09-15T07:44:30-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Waiting
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Healthy
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-backup-1 Starting
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Healthy
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Healthy
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-run-1 Starting
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Healthy
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-exec-1 Starting
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Healthy
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-serve-1 Starting
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-ws-1 Starting
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-postgres-1 Healthy
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-research-1 Starting
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-backup-1 Started
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-run-1 Started
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-exec-1 Started
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-serve-1 Started
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-ws-1 Started
+2026-09-15T07:44:41-05:00 omarchy sports-compose[4892]:  Container sports-harness-app-research-1 Started
+2026-09-15T07:44:41-05:00 omarchy systemd[1]: Finished Sports harness on Omarchy.
+## sports-harness path/timer units
+  UNIT                          LOAD   ACTIVE   SUB     DESCRIPTION
+  sports-backup-publish.service loaded inactive dead    Publish encrypted sports backups for NAS pull
+  sports-harness.service        loaded active   exited  Sports harness on Omarchy
+  sports-backup-publish.timer   loaded active   waiting Publish completed encrypted sports backups every 15 minutes
+
+Legend: LOAD   → Reflects whether the unit definition was properly loaded.
+        ACTIVE → The high-level unit activation state, i.e. generalization of SUB.
+        SUB    → The low-level unit activation state, values depend on unit type.
+
+3 loaded units listed.
+To show all installed unit files use 'systemctl list-unit-files'.
+## docker container start times
+/gods-eye-view-app-1\trunning\t2026-09-15T12:44:02.350314703Z\thealthy
+/sports-harness-app-exec-1\trunning\t2026-09-15T12:44:41.292812286Z\thealthy
+/sports-harness-app-serve-1\trunning\t2026-09-15T12:44:41.376954758Z\thealthy
+/sports-harness-postgres-1\trunning\t2026-09-15T12:44:30.535317404Z\thealthy
+template parsing error: template: :1:60: executing "" at <.State.Health.Status>: map has no entry for key "Health"
+template parsing error: template: :1:60: executing "" at <.State.Health.Status>: map has no entry for key "Health"
+template parsing error: template: :1:60: executing "" at <.State.Health.Status>: map has no entry for key "Health"
+template parsing error: template: :1:60: executing "" at <.State.Health.Status>: map has no entry for key "Health"
+template parsing error: template: :1:60: executing "" at <.State.Health.Status>: map has no entry for key "Health"
+template parsing error: template: :1:60: executing "" at <.State.Health.Status>: map has no entry for key "Health"
+## docker daemon start
+2026-09-15T07:44:01-05:00 omarchy systemd[1]: Starting Docker Application Container Engine...
+2026-09-15T07:44:01-05:00 omarchy dockerd[1231]: time="2026-09-15T07:44:01.372025341-05:00" level=info msg="Starting up"
+2026-09-15T07:44:01-05:00 omarchy dockerd[1231]: time="2026-09-15T07:44:01.372277641-05:00" level=info msg="OTEL tracing is not configured, using no-op tracer provider"
+2026-09-15T07:44:01-05:00 omarchy dockerd[1231]: time="2026-09-15T07:44:01.372322258-05:00" level=info msg="CDI directory does not exist, skipping" dir=/etc/cdi
+2026-09-15T07:44:01-05:00 omarchy dockerd[1231]: time="2026-09-15T07:44:01.372332464-05:00" level=info msg="CDI directory does not exist, skipping" dir=/var/run/cdi
+## memory now
+               total        used        free      shared  buff/cache   available
+Mem:           31904        6054       20950        1207        7841       25850
+Swap:          63808           0       63808
+## container RSS
+sports-harness-app-run-1	120MiB / 31.16GiB	0.00%
+sports-harness-app-ws-1	75.59MiB / 31.16GiB	0.00%
+sports-harness-app-serve-1	97.41MiB / 31.16GiB	0.06%
+sports-harness-app-research-1	91.85MiB / 31.16GiB	0.00%
+sports-harness-app-exec-1	104.5MiB / 31.16GiB	0.00%
+gods-eye-view-app-1	111MiB / 2GiB	3.68%
+sports-harness-app-backup-1	756KiB / 31.16GiB	0.00%
+sports-harness-postgres-1	309MiB / 31.16GiB	0.01%
+harness-pg-test	653.9MiB / 4GiB	3.20%
+## health
+{"status":"ok","last_run_at":"2026-09-15T12:45:42.289847+00:00","last_status":"skipped","seconds_since":28,"credits_remaining":4897464,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":0.0,"read_at":"2026-09-15T12:45:12.290102+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"0d04804"}
+## disk
+Filesystem        Size  Used Avail Use% Mounted on
+/dev/mapper/root  952G  150G  799G  16% /srv/sports-harness
+/dev/mapper/root  952G  150G  799G  16% /home
+## metric_samples columns
+id,ts,source,name,labels,value
+## exec_heartbeat
+{"id":1,"last_loop_at":"2026-09-15T12:48:42.232569+00:00","loops":33969,"open_orders":0,"last_error":null,"last_loop_ms":1770,"p95_loop_ms":2593,"loops_skipped":3432,"book_dirty_markets":109,"ws_last_event_at":"2026-09-15T12:48:40.712+00:00","executor_version":"4.5"}
+## first exec loop / rss after boot (ts > 12:44Z)
+exec.loop_ms|2026-09-15 12:44:57.242884+00|4|1433.000000|2593.000000
+exec.loops_skipped|2026-09-15 12:44:57.242884+00|4|0.000000|0.000000
+exec.nw_pending|2026-09-15 12:44:57.242884+00|4|1683.000000|1683.000000
+exec.open_orders|2026-09-15 12:44:57.242884+00|4|0.000000|0.000000
+recorder.rss_mb|2026-09-15 12:45:12.290102+00|8|147.400000|158.200000
+## ws gap rows since 12:00Z (ws_events kind)
+
+## tape gap rows since 07:00 CT (orderbook_events kind = gap) and the first snapshot after the boot
+id,ticker,ts,sid,seq,kind,side,price,delta,raw
+0||
+2026-09-15 12:44:42.948696+00|1195
+2026-09-15 12:11:23.554+00
+## ws_connect operator events around the stop
+ERROR:  column "detail" does not exist
+LINE 1: select id, kind, ts, left(detail::text, 120) from operator_e...
+                                  ^
+## operator_events since 12:00Z
+id,ts,kind,summary,ref
+{"id":1520,"ts":"2026-09-15T12:06:16.646989+00:00","kind":"settle_error","summary":"gap_outcomes_drain: DivisionByZero: class decimal.DivisionByZero","ref":{"stage": "gap_outcomes_drain"}}
+{"id":1521,"ts":"2026-09-15T12:10:02.943819+00:00","kind":"ws_disconnect","summary":"WebSocketConnectionClosedException(Connection to remote host was lost.)","ref":{}}
+{"id":1522,"ts":"2026-09-15T12:10:04.378287+00:00","kind":"ws_connect","summary":"connected","ref":{}}
+{"id":1523,"ts":"2026-09-15T12:44:42.874551+00:00","kind":"ws_connect","summary":"connected","ref":{}}
+## sids: last event before the stop and first after the boot
+2|2026-09-15 11:30:00.1+00|2026-09-15 12:52:47.961+00|27080
+## settle_error operator events, last 48 h
+2026-09-15 11:06:16.647163+00|gap_outcomes_drain: DivisionByZero: class decimal.DivisionByZero
+2026-09-15 12:06:16.646989+00|gap_outcomes_drain: DivisionByZero: class decimal.DivisionByZero
+## job_runs settle, last 6 (columns)
+id,job,started_at,finished_at,status,budget_exhausted,notes
+207|settle|degraded|2026-09-15 12:06:16.646989+00|2026-09-15 12:06:28.357724+00|{"order": ["benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "report_wtd", "settle", "venue_result", "parlay_grade", "rfq_grade", "parlay_build", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 
+206|settle|degraded|2026-09-15 11:06:16.647163+00|2026-09-15 11:06:28.191778+00|{"order": ["benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "report_wtd", "settle", "venue_result", "parlay_grade", "rfq_grade", "parlay_build", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 
+205|settle|ok|2026-09-15 10:06:16.647097+00|2026-09-15 10:07:39.640918+00|{"order": ["benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "report_wtd", "settle", "venue_result", "parlay_grade", "rfq_grade", "parlay_build", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 
+204|settle|ok|2026-09-15 09:06:16.646967+00|2026-09-15 09:07:50.561601+00|{"order": ["benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "report_wtd", "settle", "venue_result", "parlay_grade", "rfq_grade", "parlay_build", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 
+203|settle|ok|2026-09-15 08:06:16.681732+00|2026-09-15 09:04:55.06667+00|{"order": ["report_wtd", "benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "settle", "venue_result", "parlay_grade", "rfq_grade", "parlay_build", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 
+202|settle|interrupted|2026-09-15 03:48:45.08515+00|2026-09-15 08:06:16.681732+00|{"interrupted": "process restart"}
+201|settle|ok|2026-09-15 02:48:45.084998+00|2026-09-15 02:50:38.834889+00|{"order": ["benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "report_wtd", "settle", "venue_result", "parlay_grade", "rfq_grade", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 0.002, "budget_e
+200|settle|ok|2026-09-15 01:48:45.084853+00|2026-09-15 01:50:17.640055+00|{"order": ["benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "report_wtd", "settle", "venue_result", "parlay_grade", "rfq_grade", "markouts", "housekeeping"], "errors": [], "stages": [{"name": "benchmarks", "error": null, "counts": {"benchmarks": 0}, "elapsed_s": 0.002, "budget_e
+## settle 207 stages (name, error, counts)
+benchmarks||{"benchmarks": 0}
+result_benchmarks||{"result_benchmarks": 0}
+gap_outcomes_drain|DivisionByZero: [<class 'decimal.DivisionByZero'>]|{}
+order_clv||{"no_game": 0, "order_clv": 0}
+report_wtd||{"skipped": true}
+settle||{"games": 0, "orders": 0, "markets": 0, "ledger_rows": 0}
+venue_result||{"mismatches": 0, "venue_rows": 0}
+parlay_grade||{"legs": 0, "void": 0, "cards": 0, "busted": 0, "cashed": 0, "errors": 0, "stat_missing": 0}
+rfq_grade||{"stale": 0, "errors": 0, "graded": 0, "voided": 0, "waiting": 0}
+parlay_build||{"built": 0, "errors": 0, "expired": 0, "refused": 0, "skipped": 0, "replaced": 0}
+markouts||{"markouts": 0}
+housekeeping||{"skipped": true}
+## settle 205 (ok) gap_outcomes_drain count
+{"gap_outcomes_drain": 690}

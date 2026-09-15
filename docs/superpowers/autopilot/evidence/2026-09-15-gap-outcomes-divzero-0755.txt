@@ -1,0 +1,33 @@
+## job_state
+{"key":"report_wtd_last","value":0,"updated_at":"2026-09-15T08:06:16.681732+00:00"}
+{"key":"gap_outcomes_watermark","value":50028,"updated_at":"2026-09-15T10:07:29.597964+00:00"}
+{"key":"markouts.cursor","value":0,"updated_at":"2026-09-15T12:06:16.646989+00:00"}
+## market_gap_snapshots columns
+id,run_id,venue_market_id,fair_value_id,fair_source,fair_p,no_fair_reason,prev_fair_p,prev_fair_ts,venue_mid,best_bid,best_ask,bid_size,ask_size,n_groups,disagreement,staleness_s,gap_mid,gap_taker_net,gap_maker_net,ttk_minutes,dow,hour_ct,price_bucket,volume_24h,open_interest,soft_minus_sharp,home_popularity_tier,away_popularity_tier,created_at,feed_kind,feed_lag_s,stale_allowance_s
+## next 6 snapshots past the gap_outcomes watermark
+ERROR:  column "game_id" does not exist
+LINE 1: select id, run_id, venue_market_id, game_id, market_type, fa...
+                                            ^
+HINT:  Perhaps you meant to reference the column "market_gap_snapshots.gap_mid".
+## snapshots past watermark 50028 with best_bid = 0 (id, run, market, fair_p, best_bid, best_ask, venue_mid, created_at)
+51249|1402|1012|KXNCAAFGAME-26SEP12CHARMISS-CHAR||0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+51274|1402|1057|KXNCAAFGAME-26SEP12TOWSSCAR-TOWS||0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+51295|1402|1104|KXNCAAFGAME-26SEP12CAMPFLA-CAMP||0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+51306|1402|1127|KXNCAAFGAME-26SEP12WAGJMU-WAG||0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+51342|1402|1181|KXNCAAFGAME-26SEP12WKUUGA-WKU|0.0088|0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+51349|1402|1190|KXNCAAFGAME-26SEP12HOWIND-HOW||0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+51371|1402|1216|KXNCAAFGAME-26SEP11NORFUVA-NORF||0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+51373|1402|1220|KXNCAAFGAME-26SEP10FAMUMIA-FAMU||0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+51378|1402|1249|KXNCAAFGAME-26SEP12RICEND-RICE||0.0000|0.0100|0.0050|2026-09-07 13:01:59.854501+00
+54826|1429|1012|KXNCAAFGAME-26SEP12CHARMISS-CHAR||0.0000|0.0100|0.0050|2026-09-07 13:16:21.874236+00
+## count of pending snapshots past the watermark, and how many have best_bid = 0 / fair_p not null
+3145121|15787|1806851|50029|3195901
+## primary signals with price_target = 0 past the watermark
+0
+## best_bid = 0 history by day (all time)
+2026-09-15 00:00:00+00|697
+2026-09-14 00:00:00+00|572
+2026-09-13 00:00:00+00|5790
+2026-09-11 00:00:00+00|2375
+2026-09-10 00:00:00+00|2504
+2026-09-09 00:00:00+00|610
