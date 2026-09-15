@@ -189,15 +189,18 @@ def test_report_wtd_records_a_budget_exhausted_rebuild_and_stays_due(db_session,
     """
     from harness.settlement.report_wtd import JOB_STATE_KEY, _GET_LAST
 
-    # 0.0: Budget.__init__. 0.0: the MIN_BUDGET_S guard at entry, which passes. Then the
-    # budget is gone, and the first streamed read (table 4's) is where that is noticed.
-    budget = Budget(300, _Mono(0.0, 0.0, 10_000.0))
+    # The budget is read once by `Budget.__init__`, once by the `MIN_BUDGET_S` guard at entry
+    # (which passes: 300 s left), and then once before each table is built. It runs out on the
+    # fourth of those, so t1, t2 and t3 are finished and table 4 is never started.
+    budget = Budget(300, _Mono(0.0, 0.0, 0.0, 0.0, 0.0, 10_000.0))
     with use_ctx(new_ctx(settings=env_settings)):
         result = report_wtd_stage(db_session, NOW, budget)
+    # What `Settler._run_stage` does after every stage, and the point of the exercise: the
+    # transaction whose server-side cursor was closed mid-rebuild is handed back and committed.
+    db_session.commit()
 
     assert result.budget_exhausted is True
     assert result.error is None
-    # t1, t2 and t3 are built before table 4, the first table with a streamed read.
     assert result.counts == {"budget_exhausted": True, "tables_completed": 3}
     assert db_session.query(ReportRun).count() == 0
     assert db_session.execute(_GET_LAST, {"k": JOB_STATE_KEY}).scalar() is None
@@ -209,3 +212,22 @@ def test_report_wtd_records_a_budget_exhausted_rebuild_and_stays_due(db_session,
     assert again.budget_exhausted is False
     assert db_session.query(ReportRun).count() == 1
     assert db_session.execute(_GET_LAST, {"k": JOB_STATE_KEY}).scalar() is not None
+
+
+def test_a_rebuild_that_has_no_budget_left_at_all_completes_no_table(db_session, env_settings):
+    """Review minor M2/M1: the budget is observable *between* tables as well as inside the three
+    streamed reads, so `tables_completed` reports where the rebuild actually stopped rather than
+    only ever 3, 4 or 5. A budget that is gone before the first table yields immediately and
+    completes none of them -- and still leaves the report due."""
+    from harness.settlement.report_wtd import JOB_STATE_KEY, _GET_LAST
+
+    # 0.0: Budget.__init__. 0.0: the entry guard, which passes. Then nothing is left.
+    budget = Budget(300, _Mono(0.0, 0.0, 10_000.0))
+    with use_ctx(new_ctx(settings=env_settings)):
+        result = report_wtd_stage(db_session, NOW, budget)
+    db_session.commit()
+
+    assert result.budget_exhausted is True
+    assert result.counts == {"budget_exhausted": True, "tables_completed": 0}
+    assert db_session.query(ReportRun).count() == 0
+    assert db_session.execute(_GET_LAST, {"k": JOB_STATE_KEY}).scalar() is None

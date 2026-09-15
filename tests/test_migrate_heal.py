@@ -164,3 +164,38 @@ def test_the_healer_sets_a_lock_timeout_beside_its_statement_timeout(_schema):
     assert "set lock_timeout = '5s'" in statements
     rebuild = next(i for i, sql in enumerate(statements) if sql.startswith("reindex index"))
     assert statements.index("set lock_timeout = '5s'") < rebuild
+
+
+# --- fix 76 (roadmap row 76), review minor M3: these engines name their backends too ---------
+
+
+def test_the_migrate_engines_send_the_service_name(_schema, monkeypatch):
+    """`migrate ensure` opens three short-lived engines of its own -- the index healer's, the
+    revision read and the `_state` probe -- and they used to be the last client backends in the
+    stack with no `application_name`. `scripts/release-omarchy.py` classifies exactly that as
+    `unnamed_backends`, and row 76's closing read counts them, so a `harness migrate` running
+    beside a release would have tripped it. Same lookup as both engine factories, so there is
+    one place a service name comes from."""
+    import harness.db.migrate as migrate_mod
+
+    monkeypatch.setenv("HARNESS_SERVICE", "app-run")
+    url = _url(_schema)
+    captured = []
+    real_create_engine = migrate_mod.create_engine
+
+    def recording(engine_url, **kwargs):
+        captured.append(kwargs.get("connect_args"))
+        return real_create_engine(engine_url, **kwargs)
+
+    monkeypatch.setattr(migrate_mod, "create_engine", recording)
+    migrate_mod.current_revision(url)
+    migrate_mod._state(url)
+    assert heal_invalid_indexes(url) == []      # a healthy database heals nothing
+
+    assert captured == [{"application_name": "app-run"}] * 3
+
+    # And unset -- the suite, a developer shell -- keeps libpq's default, as everywhere else.
+    monkeypatch.delenv("HARNESS_SERVICE", raising=False)
+    captured.clear()
+    migrate_mod.current_revision(url)
+    assert captured == [{}]

@@ -171,15 +171,26 @@ STREAM_ROWS = 2000
 #: row, in one pass, by a loop that bins rows and drops them; the cost that matters is the cost
 #: of the whole result, which is what 1.0 asks for.
 #:
-#: What the default cost in production (roadmap row 75, EXPLAIN evidence
-#: `docs/superpowers/autopilot/evidence/2026-09-15-t4-explain-1000.txt`, 2026-09-15): the
-#: cursor plan for `_T5_FAIRS` over a week of `fair_values` was a full walk of
-#: `ix_fair_game_type_created` -- `created_at` is not on that index's leading columns, so every
-#: entry is read and filtered -- merge-joined to `venue_markets` and then anti-joined to `runs`
-#: by a Nested Loop whose inner side is a Seq Scan *per output row*, about 12 ms a row. The
-#: same statement planned for the whole result is a BRIN bitmap scan on `ix_fair_created_brin`,
-#: a hash join and an index-probe anti join: minutes rather than hours. The `report_wtd` stage
-#: took 3,518 s on settle run 203 and held two later runs inside the stage because of it.
+#: Both plans are measured on production, read-only, and both are *cursor* plans -- a
+#: `DECLARE ... CURSOR` is always serial, so the parallel `Gather` plan a plain `EXPLAIN` of the
+#: same statement shows is not on offer here and is not the comparison. Roadmap row 75, EXPLAIN
+#: evidence `docs/superpowers/autopilot/evidence/2026-09-15-t4-explain-1000.txt`, sections
+#: "T5_FAIRS as a cursor" (the 0.1 default) and "T5_FAIRS as a cursor WITH set local
+#: cursor_tuple_fraction = 1.0 (review I-1)":
+#:
+#: * At 0.1, over a week of `fair_values`: an Incremental Sort over a Merge Join whose outer
+#:   side walks `ix_fair_game_type_created` end to end -- `created_at` is not on that index's
+#:   leading columns, so every entry is read and filtered -- and a Nested Loop Anti Join whose
+#:   inner side is a Seq Scan on `runs` *per output row* (the `exclude_unsynced_runs`
+#:   predicate, evaluated as a join filter). Total cost 637,876; about 12 ms a row in practice,
+#:   which is the 3,518 s `report_wtd` stage on settle run 203 and the two later runs it held.
+#: * At 1.0, same statement, same transaction: a Bitmap Heap Scan on `fair_values` driven by
+#:   `ix_fair_created_brin`, a Hash Join to `venue_markets`/`games`, an anti join that probes
+#:   `runs_pkey` once per row instead of scanning the table, and one Sort. Total cost 464,750.
+#:
+#: `_T4_SNAPSHOTS`' cursor plan barely moves (101,189 -> 101,946: it was already a hash anti
+#: join on an index scan); it is `_T5_FAIRS`, the third and largest stream, that the setting is
+#: for, and `_T4B_FAIRS` that it keeps safe as the table grows.
 #:
 #: This changes no row, no order and no number: it changes which plan the same statement runs
 #: under. `tests/test_report_memory.py` pins the rendered tables byte-identical either way.
@@ -190,10 +201,17 @@ class BudgetSpent(Exception):
     """A streamed read gave up because the settlement job's shared budget ran out (fix 75).
 
     Raised at a page boundary, so the work done past the budget is bounded by `STREAM_ROWS`
-    rows. It exists as its own class rather than as a bare `Exception` because exactly one
-    caller may swallow it -- `harness/settlement/report_wtd.py`, which turns it into a
-    `budget_exhausted` stage result and leaves the rebuild due -- and anything else raising out
-    of a report read is still a failure that must reach the job's error handling.
+    rows. Rows, not seconds (review minor M5/M4): the check cannot interrupt a `FETCH` already
+    in flight, so the one page that is running when the budget goes is bounded only by the
+    settler engine's `BATCH_STATEMENT_TIMEOUT_MS` (900 s), and under the whole-result plan the
+    first fetch is the slowest because it includes the sort. Deriving a `statement_timeout`
+    from `budget.remaining_s()` would harden that into seconds, at the price of turning a clean
+    yield into a stage error, which is worse; the page bound is the deliberate choice.
+
+    It exists as its own class rather than as a bare `Exception` because exactly one caller may
+    swallow it -- `harness/settlement/report_wtd.py`, which turns it into a `budget_exhausted`
+    stage result and leaves the rebuild due -- and anything else raising out of a report read is
+    still a failure that must reach the job's error handling.
     """
 
     def __init__(self, rows: int) -> None:
@@ -249,7 +267,14 @@ def _stream(session: Session, statement, params: dict, budget=None):
     # is in force for the cursor the next statement declares on the same connection, and no
     # work on a later transaction of the same session inherits it. That is why this is `LOCAL`
     # and not `SET`, and why it is issued here rather than as a connect-time option: it belongs
-    # to these reads, not to every statement the recorder process runs.
+    # to this transaction's reads, not to every statement the recorder process runs.
+    #
+    # Transaction-scoped means exactly that, though (review minor M4/M3): once one `_stream`
+    # has run, every *other* cursor declared in the same transaction is planned under 1.0 too
+    # -- in a render that is t13's streamed run-notes read,
+    # `harness/dashboard/queries.py::_iter_recent_runs_pricing`, which shares this transaction.
+    # That is benign and wanted for the same reason: it is drained in full (and already carries
+    # its own `limit`), so the whole result is the cost that matters there as well.
     session.execute(_PLAN_FOR_THE_WHOLE_RESULT)
     result = session.execute(
         statement, params,
@@ -2234,9 +2259,10 @@ def weekly_tables(session: Session, year: int, week: int, settings,
     passes it explicitly.
 
     `budget` (fix 75) is the settlement job's shared wall-clock allowance, or `None` for
-    `harness report`, which has none. The three tables that stream a week of rows check it once
-    per fetched page; a spent one raises `BudgetSpent` out of this function, carrying the
-    number of tables that were finished before it. The tables are therefore built one at a time
+    `harness report`, which has none. It is checked before each table is built, and the three
+    tables that stream a week of rows also check it once per fetched page; a spent one raises
+    `BudgetSpent` out of this function, carrying the number of tables that were finished
+    before it. The tables are therefore built one at a time
     into the dict rather than in one literal -- same keys, same order, same values -- so that
     count is a fact rather than a guess.
     """
@@ -2263,6 +2289,14 @@ def weekly_tables(session: Session, year: int, week: int, settings,
     )
     tables: dict[str, Table] = {}
     for key, build in builders:
+        # Between tables as well as inside the streamed reads (review minor M2/M1). Only three
+        # of the fifteen builders stream, and they are the fourth, fifth and sixth, so a check
+        # only inside them could report just 3, 4 or 5 tables completed and could not stop a
+        # rebuild that went long anywhere else. One check per table costs one `ok()` call.
+        if budget is not None and not budget.ok():
+            spent = BudgetSpent(0)
+            spent.tables_completed = len(tables)
+            raise spent
         try:
             tables[key] = build()
         except BudgetSpent as spent:

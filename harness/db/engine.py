@@ -18,7 +18,9 @@ def service_connect_args() -> dict:
     app-serve builds for its snapshot scheduler -- and only the first sent a name, so
     app-serve's snapshot backends were the one kind of client backend the release drain could
     not attribute to a service and so left open across a release. The lookup lives in one place
-    now: a third factory gets the name by calling this rather than by remembering the variable.
+    now: `harness/db/migrate.py`'s three short-lived engines (the index healer's, the revision
+    read and the `_state` probe) take it from here too, and a fourth factory gets the name by
+    calling this rather than by remembering the variable.
 
     Unset or empty -- the test suite, a developer shell, any process outside compose -- sends no
     `application_name` at all and keeps libpq's default.

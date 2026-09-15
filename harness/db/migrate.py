@@ -19,6 +19,8 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, text
 
+from harness.db.engine import service_connect_args
+
 log = logging.getLogger(__name__)
 
 #: The revision this checkout carries. `ensure` stamps or upgrades to it **by name**, so a typo
@@ -149,7 +151,11 @@ def heal_invalid_indexes(url: str) -> list[str]:
     """
     bulk_tables = _bulk_tables()
     is_partition_relation = _is_partition_relation()
-    engine = create_engine(url)
+    # Fix 76 (roadmap row 76), review minor M3: `migrate ensure` opens its own short-lived
+    # engines, and they were the last backends in the stack with no `application_name` -- the
+    # release drain reports exactly those as `unnamed_backends`. The timeouts here are still
+    # set per connection below, where the healer's recipe wants them.
+    engine = create_engine(url, connect_args=service_connect_args())
     try:
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(text("set statement_timeout = '300s'"))
@@ -191,7 +197,7 @@ def stamp_head(url: str) -> None:
 
 def current_revision(url: str) -> str | None:
     """The revision the database records, or None when it has never been stamped."""
-    engine = create_engine(url)
+    engine = create_engine(url, connect_args=service_connect_args())
     try:
         with engine.connect() as conn:
             return MigrationContext.configure(conn).get_current_revision()
@@ -201,7 +207,7 @@ def current_revision(url: str) -> str | None:
 
 def _state(url: str) -> tuple[bool, bool]:
     """(alembic_version exists, runs exists) -- one short connection, read from pg_tables."""
-    engine = create_engine(url)
+    engine = create_engine(url, connect_args=service_connect_args())
     try:
         with engine.connect() as conn:
             present = {row[0] for row in conn.execute(text(
