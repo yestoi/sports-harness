@@ -326,6 +326,53 @@ def test_stamp_head_records_the_revision_without_building_the_schema(scratch_db)
             "select 1 from pg_tables where tablename = 'orders'")).first() is None
 
 
+# --- fix 71: the upgrade heals what a cancelled concurrent build left behind -----------------
+
+def _heal_spy(monkeypatch):
+    """Record every `heal_invalid_indexes` and `command.upgrade` call, in order, and keep both
+    real: the upgrade must still build the database the other tests inspect."""
+    from alembic import command
+
+    from harness.db import migrate
+
+    order, real_heal, real_upgrade = [], migrate.heal_invalid_indexes, command.upgrade
+
+    def heal(url):
+        order.append("heal")
+        return real_heal(url)
+
+    def upgrade(config, revision, **kwargs):
+        order.append("upgrade")
+        return real_upgrade(config, revision, **kwargs)
+
+    monkeypatch.setattr(migrate, "heal_invalid_indexes", heal)
+    monkeypatch.setattr(command, "upgrade", upgrade)
+    return order
+
+
+def test_ensure_heals_invalid_indexes_before_every_upgrade(scratch_db, monkeypatch):
+    """Both upgrading branches heal first. A release retries `migrate ensure` after a cancelled
+    `create index concurrently`, and `if not exists` would otherwise skip the invalid index."""
+    from harness.db.migrate import ensure
+
+    order = _heal_spy(monkeypatch)
+    assert ensure(_url(scratch_db)) == "upgraded"
+    assert order == ["heal", "upgrade"]
+    assert ensure(_url(scratch_db)) == "current"
+    assert order == ["heal", "upgrade", "heal", "upgrade"]
+
+
+def test_the_stamp_branch_never_heals(scratch_db, monkeypatch):
+    """A populated pre-Alembic database is recorded, not executed against, so nothing is
+    rebuilt on it either."""
+    from harness.db.migrate import ensure
+
+    create_schema(scratch_db)
+    order = _heal_spy(monkeypatch)
+    assert ensure(_url(scratch_db)) == "stamped"
+    assert order == []
+
+
 # --- migrations never touch views or existing indexes (A-I11) -------------------------------
 
 @pytest.mark.parametrize("path", VERSIONS, ids=lambda p: p.name)

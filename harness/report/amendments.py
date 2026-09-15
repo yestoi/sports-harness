@@ -53,9 +53,9 @@ AMENDMENTS: tuple[Amendment, ...] = (
         "only Sunday 19:00-23:59 CT provisional window before the deploy precedes the first "
         "paper order"),
     Amendment(
-        6, "2026-09-14", None, None, ("t1", "t2", "t3", "t4"),
-        "the 6B execution repairs C1-C6 and EXECUTOR_VERSION 4.5. The record states the "
-        "order-id and run-id range as `<filled at merge>`, so nothing is counted here until "
-        "the controller fills `deploy_sha` and `excluded_runs` in the same commit that fills "
-        "`harness.corrections`' ranges"),
+        6, "2026-09-14", "c1066b5", (1, 17016), ("t1", "t2", "t3", "t4"),
+        "the 6B execution repairs C1-C6 and EXECUTOR_VERSION 4.5, released as c1066b5 on "
+        "2026-09-15 00:23 CT. Runs 1-17016 (orders 1-10886) were scored by the pre-repair "
+        "simulators; the ranges were filled by the controller in the same commit as "
+        "`harness.corrections`' (D11)"),
 )

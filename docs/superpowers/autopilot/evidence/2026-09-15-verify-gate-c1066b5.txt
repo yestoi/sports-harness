@@ -1,0 +1,48 @@
+harness gate run at 2026-09-15T05:41:09Z on c1066b5 (the disclosure read-once row)
+== sharp_direct (f259ca109084) [primary] passed=False
+   fill_events                     1 vs 150      n=1      games=1     failed
+   marquee_share              1.0000 vs 0.3000   n=1      games=1     passed
+   clv_pinnacle_lb                 - vs 0.0000   n=0      games=0     failed
+   markout_30m                0.0165 vs 0.0000   n=117    games=7     passed
+   adverse_drift                   - vs -0.0100  n=0      games=0     failed
+   filled_vs_unfilled              - vs 0.0100   n=1022   games=22    insufficient
+   clv_every_benchmark             - vs 0.0000   n=0      games=0     insufficient
+   staleness_median               49 vs 90       n=58717  games=128   passed
+   settlement                 1.0000 vs 0.9000   n=1      games=1     passed
+   mismatched_markets              0 vs 0        n=3598   games=121   passed
+   legal_decision              False vs True     n=0      games=0     failed
+   live_trading_env            False vs True     n=0      games=0     failed
+== constrained (ff363c8ac08d) [secondary] passed=False
+   fill_events                     0 vs 150      n=0      games=0     failed
+   marquee_share                   - vs 0.3000   n=0      games=0     failed
+   clv_pinnacle_lb                 - vs 0.0000   n=0      games=0     failed
+   markout_30m                0.0222 vs 0.0000   n=15     games=3     passed
+   adverse_drift                   - vs -0.0100  n=0      games=0     failed
+   filled_vs_unfilled              - vs 0.0100   n=229    games=16    insufficient
+   clv_every_benchmark             - vs 0.0000   n=0      games=0     insufficient
+   staleness_median               41 vs 90       n=10512  games=87    passed
+   settlement                      - vs 0.9000   n=0      games=0     failed
+   mismatched_markets              0 vs 0        n=636    games=69    passed
+   legal_decision              False vs True     n=0      games=0     failed
+   live_trading_env            False vs True     n=0      games=0     failed
+== sharp_two_sided (5632da729fa7) [gate] [secondary] passed=False
+   fill_events                     0 vs 150      n=0      games=0     failed
+   marquee_share                   - vs 0.3000   n=0      games=0     failed
+   clv_pinnacle_lb                 - vs 0.0000   n=0      games=0     failed
+   markout_30m                0.0141 vs 0.0000   n=141    games=10    passed
+   adverse_drift                   - vs -0.0100  n=0      games=0     failed
+   filled_vs_unfilled              - vs 0.0100   n=1951   games=24    insufficient
+   clv_every_benchmark             - vs 0.0000   n=0      games=0     insufficient
+   staleness_median               55 vs 90       n=94488  games=127   passed
+   settlement                      - vs 0.9000   n=0      games=0     failed
+   mismatched_markets              0 vs 0        n=6886   games=126   passed
+   legal_decision              False vs True     n=0      games=0     failed
+   live_trading_env            False vs True     n=0      games=0     failed
+criteria_hash=5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5
+corrections_in_force=C0,C1,C2,C3,C4,C5,C6
+note: mixed population -- orders placed before and after the 6B deploy are scored by different simulators; see the correction manifest.
+{"asctime": "2026-09-15 05:41:16,755", "levelname": "INFO", "name": "harness", "message": "gate evaluated at 2026-09-15T05:41:09.998648+00:00 for 3 variant(s)"}
+exit 0
+gate_reports_newest|5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5|2026-09-15 05:41:09.998648+00|t
+eligibility_key|0
+one_gate_variant_violations|0

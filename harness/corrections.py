@@ -111,24 +111,40 @@ CONFIG_HASHES_C0: tuple[str, ...] = (
 )  # filled 2026-09-11 18:55 CT from select distinct config_hash from orders where replay = false
 # ----------------------------------------------------------------------------------------------
 
-# --- FILLED BY THE CONTROLLER AT MERGE TIME (Amendment 6, C1-C6) ---------------------------------
-# Agents have no NAS access, so each of the six 6B corrections ships with an empty config_hashes
-# tuple and a "<filled at merge>" order/run range placeholder; the controller fills all three
-# from the NAS at merge time (D11, the same pattern as VARIANT_IDS_C0/CONFIG_HASHES_C0), adding
-# the count assertions in the same commit. `variant_ids` for C1-C6 stands at VARIANT_IDS_C0
-# unchanged: no variant config changed and the registered ids stand (Amendment 6's Change
-# paragraph). `deploy_sha` and `code_version_after` are the same "<sha>" placeholder for all six,
-# because one deploy carries the whole amendment; `code_version_before` is C0's own `deploy_sha`
-# (7c3d555), the last measurement-affecting production state before any 6B repair.
+# --- FILLED BY THE CONTROLLER AT THE RELEASE (Amendment 6, C1-C6; D11) ---------------------------
+# Agents have no production access, so each of the six 6B corrections shipped with an empty
+# config_hashes tuple and a "<filled at merge>" order/run range placeholder. Filled by the
+# controller on 2026-09-15 00:50 CT from the Omarchy production database after the release of
+# c1066b5 (full recipe, 00:23:44-00:26:34 CT; journal 218), the same pattern as
+# VARIANT_IDS_C0/CONFIG_HASHES_C0, with the count assertions in the same commit
+# (tests/test_corrections.py). `variant_ids` for C1-C6 stands at VARIANT_IDS_C0 unchanged: no
+# variant config changed and the registered ids stand (Amendment 6's Change paragraph).
+# `deploy_sha` and `code_version_after` are the one release sha for all six, because one deploy
+# carries the whole amendment; `code_version_before` is C0's own `deploy_sha` (7c3d555), the
+# last measurement-affecting production state before any 6B repair.
+#
+# The boundary is the release's stop instant, 2026-09-15T05:23:44Z: the last pre-release order is
+# 10886 (fill 1878, order event 2562407, ledger 4) and the last pre-release recorder run is
+# 17016 (17015 real, 17016 a skipped heartbeat); the first c1066b5 order is 10887 and the first
+# c1066b5 run 17017 (docs/superpowers/autopilot/evidence/2026-09-15-release-boundary-6b.txt).
+# The 23:22 CT capture (orders 10883) was superseded by the rolled-back 23:34 CT attempt, after
+# which the old runtime ran another 50 minutes.
 #
 #   select distinct config_hash from orders where replay = false and config_hash not in (<C0's>);
 #
-CONFIG_HASHES_C1: tuple[str, ...] = ()
-CONFIG_HASHES_C2: tuple[str, ...] = ()
-CONFIG_HASHES_C3: tuple[str, ...] = ()
-CONFIG_HASHES_C4: tuple[str, ...] = ()
-CONFIG_HASHES_C5: tuple[str, ...] = ()
-CONFIG_HASHES_C6: tuple[str, ...] = ()
+# returned the three hashes below at 00:40 CT (252 orders, ids 10887-11138, all placed by the
+# c1066b5 executor). One tuple serves all six corrections: the amendment is one deploy.
+CONFIG_HASHES_6B: tuple[str, ...] = (
+    "29d26852169bc0b1057de891f2ad73a7cc5c1d35f59ee5669da5fc1ccd063adb",
+    "68718edb44fceeb2a1f0adbb092c3deb132069f87fc62d3e095c1e71ca8f7775",
+    "ab68a5e5525e8b57b5036306645a12663df82b2d218d2ac3e0ab7ddbc272c414",
+)
+CONFIG_HASHES_C1: tuple[str, ...] = CONFIG_HASHES_6B
+CONFIG_HASHES_C2: tuple[str, ...] = CONFIG_HASHES_6B
+CONFIG_HASHES_C3: tuple[str, ...] = CONFIG_HASHES_6B
+CONFIG_HASHES_C4: tuple[str, ...] = CONFIG_HASHES_6B
+CONFIG_HASHES_C5: tuple[str, ...] = CONFIG_HASHES_6B
+CONFIG_HASHES_C6: tuple[str, ...] = CONFIG_HASHES_6B
 # ----------------------------------------------------------------------------------------------
 
 # --- FILLED BY THE CONTROLLER AFTER THE AUDIT RUN ---------------------------------------------
@@ -165,14 +181,14 @@ CORRECTIONS: tuple[Correction, ...] = (
         id="C1",
         title="Subscription continuity: the per-book seq check read multiplexed interleaving as a lost frame",
         code_version_before="7c3d555",
-        code_version_after="<sha>",
+        code_version_after="c1066b5",
         measurement_version_before="4.4",
         measurement_version_after="4.5",
-        deploy_sha="<sha>",
+        deploy_sha="c1066b5",
         variant_ids=VARIANT_IDS_C0,
         config_hashes=CONFIG_HASHES_C1,
-        affected_order_id_range="<filled at merge>",
-        affected_run_id_range="<filled at merge>",
+        affected_order_id_range="> 10886",
+        affected_run_id_range="> 17016",
         eligible_measurements="post-boundary book_source/dirty_minutes classifications, read from the subscription's own gap rows",
         excluded_measurements="pre-boundary book_source/dirty_minutes classifications, which counted ordinary interleaving as dirty",
         rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
@@ -181,14 +197,14 @@ CORRECTIONS: tuple[Correction, ...] = (
         id="C2",
         title="Recovery anchoring: the print floor was not anchored with the queue",
         code_version_before="7c3d555",
-        code_version_after="<sha>",
+        code_version_after="c1066b5",
         measurement_version_before="4.4",
         measurement_version_after="4.5",
-        deploy_sha="<sha>",
+        deploy_sha="c1066b5",
         variant_ids=VARIANT_IDS_C0,
         config_hashes=CONFIG_HASHES_C2,
-        affected_order_id_range="<filled at merge>",
-        affected_run_id_range="<filled at merge>",
+        affected_order_id_range="> 10886",
+        affected_run_id_range="> 17016",
         eligible_measurements="post-boundary filled_contracts, anchored with the queue on both re-anchor branches",
         excluded_measurements="pre-boundary filled_contracts on any order that recovered from a dirty stretch",
         rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
@@ -197,14 +213,14 @@ CORRECTIONS: tuple[Correction, ...] = (
         id="C3",
         title="Trade and decrement reconciliation: a print and its own delta moved the queue twice",
         code_version_before="7c3d555",
-        code_version_after="<sha>",
+        code_version_after="c1066b5",
         measurement_version_before="4.4",
         measurement_version_after="4.5",
-        deploy_sha="<sha>",
+        deploy_sha="c1066b5",
         variant_ids=VARIANT_IDS_C0,
         config_hashes=CONFIG_HASHES_C3,
-        affected_order_id_range="<filled at merge>",
-        affected_run_id_range="<filled at merge>",
+        affected_order_id_range="> 10886",
+        affected_run_id_range="> 17016",
         eligible_measurements="post-boundary queue_remaining, reconciled against a trade inside its own horizon",
         excluded_measurements="pre-boundary queue_remaining and traded_at_price; the two are not comparable across the boundary, and traded_at_price is null afterwards",
         rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
@@ -213,14 +229,14 @@ CORRECTIONS: tuple[Correction, ...] = (
         id="C4",
         title="Expiry clamp and rejected-signal placement",
         code_version_before="7c3d555",
-        code_version_after="<sha>",
+        code_version_after="c1066b5",
         measurement_version_before="4.4",
         measurement_version_after="4.5",
-        deploy_sha="<sha>",
+        deploy_sha="c1066b5",
         variant_ids=VARIANT_IDS_C0,
         config_hashes=CONFIG_HASHES_C4,
-        affected_order_id_range="<filled at merge>",
-        affected_run_id_range="<filled at merge>",
+        affected_order_id_range="> 10886",
+        affected_run_id_range="> 17016",
         eligible_measurements="post-boundary fills clamped to the order's own expiry, and skip-reason counts re-attributed ahead of capacity",
         excluded_measurements="pre-boundary fills stamped after their order's expiry, and pre-boundary skip-reason counts, which C4 re-attributes",
         rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
@@ -229,14 +245,14 @@ CORRECTIONS: tuple[Correction, ...] = (
         id="C5",
         title="Dirty-time scope, observation coverage and counterfactual backoff",
         code_version_before="7c3d555",
-        code_version_after="<sha>",
+        code_version_after="c1066b5",
         measurement_version_before="4.4",
         measurement_version_after="4.5",
-        deploy_sha="<sha>",
+        deploy_sha="c1066b5",
         variant_ids=VARIANT_IDS_C0,
         config_hashes=CONFIG_HASHES_C5,
-        affected_order_id_range="<filled at merge>",
-        affected_run_id_range="<filled at merge>",
+        affected_order_id_range="> 10886",
+        affected_run_id_range="> 17016",
         eligible_measurements="post-boundary dirty_seconds/dirty_minutes scoped to the watched resting interval, with the counterfactual's own nw_dirty_seconds column and a bounded backoff on unreadable tickers",
         excluded_measurements="pre-boundary dirty_seconds/dirty_minutes on any cancelled or expired order",
         rescore_command="harness rescore --from-order <a> --to-order <b> --correction C1,C2,C3,C4,C5 [--limit N] [--resume]",
@@ -245,14 +261,14 @@ CORRECTIONS: tuple[Correction, ...] = (
         id="C6",
         title="Capacity-equivalent baseline replay",
         code_version_before="7c3d555",
-        code_version_after="<sha>",
+        code_version_after="c1066b5",
         measurement_version_before="4.4",
         measurement_version_after="4.5",
-        deploy_sha="<sha>",
+        deploy_sha="c1066b5",
         variant_ids=VARIANT_IDS_C0,
         config_hashes=CONFIG_HASHES_C6,
-        affected_order_id_range="<filled at merge>",
-        affected_run_id_range="<filled at merge>",
+        affected_order_id_range="> 10886",
+        affected_run_id_range="> 17016",
         eligible_measurements="a range replay under the executor configuration in force over that range, sharing one capacity counter",
         excluded_measurements=(
             "pre-boundary single-variant replay counts as a baseline for a shared-capacity live "

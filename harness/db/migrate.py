@@ -11,6 +11,7 @@ full, so its first deploy must record the baseline rather than execute it.
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 from alembic import command
@@ -74,9 +75,85 @@ def alembic_config(url: str) -> Config:
     return config
 
 
-def upgrade_head(url: str) -> None:
-    """Bring a database up to the pinned head revision."""
+#: Every index `pg_index` records as not valid, in the schema the migrations own, with the table
+#: it belongs to. A cancelled `create index concurrently` leaves exactly this: the index is in
+#: the catalogue, so a retry's `if not exists` skips it, but no plan may use it and no unique
+#: constraint it carries is enforced.
+_INVALID_INDEX_SQL = (
+    "select c.relname, t.relname from pg_index x "
+    "join pg_class c on c.oid = x.indexrelid "
+    "join pg_class t on t.oid = x.indrelid "
+    "join pg_namespace n on n.oid = c.relnamespace "
+    "where n.nspname = 'public' and not x.indisvalid order by c.relname"
+)
+
+
+def _bulk_tables() -> tuple[str, ...]:
+    """`migrations.env.BULK_TABLES`, the one list of append-only tables.
+
+    Imported here rather than copied, and with the same `sys.path` treatment `alembic_config`
+    gives `prepend_sys_path`, so this works from a checkout and from `/app` inside the image.
+    """
+    directory = migrations_dir()
+    if str(directory.parent) not in sys.path:
+        sys.path.insert(0, str(directory.parent))
+    from migrations.env import BULK_TABLES
+
+    return tuple(BULK_TABLES)
+
+
+def heal_invalid_indexes(url: str) -> list[str]:
+    """Rebuild the indexes a cancelled concurrent build left invalid. Returns their names.
+
+    Fix 71 (deploy 2026-09-14 23:34 CT): revision 0010's
+    `create index concurrently if not exists ix_intents_market_created on intents (...)` waited on
+    the snapshot of a backend orphaned by a stopped app container and was cancelled by the
+    migration connection's `lock_timeout = '5s'`
+    (`04:36:49 ERROR: canceling statement due to lock timeout`). The half-built index stayed in
+    the catalogue with `indisvalid = false`, where the next release's `if not exists` would skip
+    it and the deploy would ship an index nothing can use.
+
+    `REINDEX INDEX` and nothing else: no DROP of any kind (roadmap invariant 5) -- the index is
+    already in the catalogue and comes back valid in place. Non-concurrent, because the recipe
+    has stopped every writer by the time `migrate ensure` runs and these are small tables;
+    `statement_timeout` is the 300 s `migrations/env.py` gives a migration.
+
+    An invalid index on one of `migrations.env.BULK_TABLES` raises instead, before anything is
+    rebuilt: a blocking rebuild of a multi-gigabyte append-only table is the controller's
+    decision, made with the tape's size in front of it, never a step a release takes on its own.
+    """
+    bulk_tables = _bulk_tables()
+    engine = create_engine(url)
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text("set statement_timeout = '300s'"))
+            invalid = [(row[0], row[1]) for row in conn.execute(text(_INVALID_INDEX_SQL))]
+            blocked = [f"{name} on {table}" for name, table in invalid if table in bulk_tables]
+            if blocked:
+                raise RuntimeError(
+                    "invalid index on a bulk table: rebuild it deliberately, never inside a "
+                    f"release ({', '.join(blocked)})")
+            healed = []
+            for name, table in invalid:
+                quoted = '"' + name.replace('"', '""') + '"'
+                conn.execute(text(f"reindex index public.{quoted}"))
+                log.info("migrate: rebuilt invalid index %s on %s", name, table)
+                healed.append(name)
+            return healed
+    finally:
+        engine.dispose()
+
+
+def upgrade_head(url: str) -> list[str]:
+    """Bring a database up to the pinned head revision, healing invalid indexes first.
+
+    The heal runs before `command.upgrade`, because it is the upgrade's own
+    `create index concurrently if not exists` that would otherwise skip an index a previous
+    attempt left invalid. Returns the names it rebuilt, for the release receipt and the log.
+    """
+    healed = heal_invalid_indexes(url)
     command.upgrade(alembic_config(url), HEAD_REVISION)
+    return healed
 
 
 def stamp_head(url: str) -> None:
@@ -123,9 +200,16 @@ def ensure(url: str) -> str:
         log.info("alembic: stamped %s on a populated pre-Alembic database", HEAD_REVISION)
         return "stamped"
     if not has_version:
-        upgrade_head(url)
+        _report(upgrade_head(url))
         log.info("alembic: upgraded an empty database to %s", HEAD_REVISION)
         return "upgraded"
-    upgrade_head(url)
+    _report(upgrade_head(url))
     log.info("alembic: at %s", current_revision(url))
     return "current"
+
+
+def _report(healed: list[str]) -> None:
+    """Put the rebuilt index names in the deploy's own output, not only in the log: a release
+    that healed an index a cancelled build left behind is a thing the receipt reader must see."""
+    for name in healed:
+        print(f"migrate: rebuilt invalid index {name}", flush=True)

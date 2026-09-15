@@ -1,0 +1,125 @@
+at_utc=2026-09-15T05:33:49Z
+== pre-boundary rows with 6B columns: by column
+col_counts|0|0|0|0|1091|1091|1091|1091|1031|0
+== by nw_done/status
+backfilled|f|cancelled|1173|9602|10883|2026-09-13 20:02:27.543061+00|2026-09-15 04:18:00.393515+00
+== nw_done=false pre-boundary total
+nw_pending_pre|1173|0||
+== sample backfilled rows
+10883|cancelled|f|375|0.00|0.00|0.00|0.00||0.00
+10882|cancelled|f|375|0.00|0.00|0.00|0.00||0.00
+10881|cancelled|f|375|0.00|0.00|0.00|0.00||0.00
+10880|cancelled|f|375|0.00|0.00|0.00|0.00||0.00
+10879|cancelled|f|375|0.00|0.00|0.00|0.00||0.00
+== observation intervals without working order
+27|866|2026-09-15 05:25:45.591492+00|f|0|
+28|865|2026-09-15 05:25:45.591492+00|f|0|
+== boundary at the stop instant 2026-09-15T05:23:44Z
+stop_boundary|10886|1878|2562407|4|17015
+first_6b|10887|17017|2569835
+== intents on markets 865/866 since start
+21ffe1b1-f4c1-4f9f-96ed-d8f9e14891f2|865|2026-09-15 05:33:30.581168+00|skipped:book_dirty,cap_gate:cap_daily,place:
+81761fe7-aa6c-4c58-a2c7-ce92548b732d|866|2026-09-15 05:33:30.581168+00|skipped:book_dirty,cap_gate:cap_daily,place:
+8720ec57-b039-4892-b251-6f505056a6c6|866|2026-09-15 05:33:30.581168+00|skipped:book_dirty,cap_gate:cap_daily,place:
+c20fcd71-4e80-4d69-9ccb-74fd65172af3|865|2026-09-15 05:33:30.581168+00|skipped:book_dirty,cap_gate:cap_daily,place:
+d65e53e0-b59b-4c67-8026-997c9e7f21a9|865|2026-09-15 05:33:30.581168+00|skipped:book_dirty,cap_gate:cap_daily,place:
+e3ff6939-12d6-4d77-886d-c638364f60f5|866|2026-09-15 05:33:30.581168+00|skipped:book_dirty,cap_gate:cap_per_game,place:
+== dirty intervals on those markets
+27|865|2026-09-15 05:27:45.581911+00|2026-09-15 05:34:45.58126+00|event_age
+26|866|2026-09-15 05:27:45.581911+00|2026-09-15 05:34:45.58126+00|event_age
+== nw write timing: order_watch_samples or nw fields on pre-boundary orders after start?
+nw_samples_pre_after_start|0||
+nw_samples_pre_ca30ed1_hour|2508
+order_id ts queue_remaining nw_queue_remaining best_bid best_ask fair_p book_dirty terminal 
+at_utc=2026-09-15T05:38:29Z
+== 6B-era orders (id > 10886) by status
+cancelled|252|2026-09-15 05:29:45.581211+00|2026-09-15 05:35:45.581416+00
+== order events since start by kind/reason
+skipped|fair_stale|317
+place||252
+cancel|fair_stale|252
+cap_gate|cap_daily|204
+skipped|book_dirty|153
+cap_gate|cap_per_game|83
+skipped|exec_capacity|65
+== exec metrics trend
+exec.open_orders:  05:27:00=0.000000 05:28:15=0.000000 05:29:30=0.000000 05:30:30=102.000000 05:31:30=102.000000 05:32:30=102.000000 05:33:30=75.000000 05:34:45=147.000000 05:36:00=150.000000 05:37:00=0.000000 05:38:15=0.000000
+exec.nw_pending:  05:27:00=1176.000000 05:28:15=1176.000000 05:29:30=1176.000000 05:30:30=1278.000000 05:31:30=1278.000000 05:32:30=1278.000000 05:33:30=1278.000000 05:34:45=1377.000000 05:36:00=1428.000000 05:37:00=1428.000000 05:38:15=1428.000000
+exec.dirty_markets:  05:27:00=12.000000 05:28:15=62.000000 05:29:30=69.000000 05:30:30=72.000000 05:31:30=71.000000 05:32:30=74.000000 05:33:30=65.000000 05:34:45=44.000000 05:36:00=13.000000 05:37:00=13.000000 05:38:15=54.000000
+exec.loop_ms:  05:27:00=3601.000000 05:28:15=1833.000000 05:29:30=1637.000000 05:30:30=1730.000000 05:31:30=1787.000000 05:32:30=1798.000000 05:33:30=3903.000000 05:34:45=3314.000000 05:36:00=2441.000000 05:37:00=2543.000000 05:38:15=2021.000000
+== exec log tail (last 10 min, WARNING+)
+== churn by 15-min bucket, ca30ed1 era 02:00-05:23Z vs 6B era
+02:00|0|0|0|210|434
+02:15|0|0|0|212|12
+02:30|3|0|3|210|216
+02:45|5|0|1|210|219
+03:00|47|33|2|204|233
+03:15|0|0|0|204|225
+03:30|0|0|0|198|216
+03:45|0|0|0|198|225
+04:00|0|0|0|198|222
+04:15|107|74|0|169|275
+04:30|0|128|0|295|188
+04:45|0|0|0|292|292
+05:00|0|0|0|292|292
+05:15|101|25|0|317|202
+05:30|154|252|0|317|146
+== fair staleness allowance
+harness/execution/plan.py:206:    stale_allowance_s: int | None
+at_utc=2026-09-15T05:45:10Z
+== db metrics
+== db size samples over 4 days (daily first)
+2026-09-10 00:00:00+00|34.429200|34.429200
+2026-09-11 00:00:00+00|46.302000|46.302000
+2026-09-12 00:00:00+00|62.397200|62.397200
+2026-09-13 00:00:00+00|99.464200|99.464200
+2026-09-14 00:00:00+00|121.878400|121.878400
+db.brin_ranges_summarized db.growth_gb_per_day db.rfqs_pruned db.size_gb db.table_gb 
+== orphan intents: newest and per day
+2026-09-15 00:00:00+00|11365
+2026-09-14 00:00:00+00|6041
+2026-09-13 00:00:00+00|12735
+2026-09-11 00:00:00+00|13099
+2026-09-10 00:00:00+00|13010
+2026-09-09 00:00:00+00|12063
+at_utc=2026-09-15T05:46:23Z
+== six largest tables (total incl. indexes/toast)
+orderbook_events_y2026w37|79 GB|49 GB
+orderbook_events_legacy|15 GB|10 GB
+signals|12 GB|9804 MB
+odds_snapshots|6635 MB|2976 MB
+orderbook_events_y2026w38|4478 MB|2792 MB
+raw_responses_y2026w37|3721 MB|543 MB
+fair_values|2945 MB|2439 MB
+venue_trades_y2026w37|1842 MB|675 MB
+== growth samples
+2026-09-09 00:00:00+00|3.9
+2026-09-10 00:00:00+00|7.4
+2026-09-11 00:00:00+00|8.9
+2026-09-12 00:00:00+00|10.7
+2026-09-13 00:00:00+00|16.1
+2026-09-14 00:00:00+00|16.9
+== db size now
+130 GB|139.2
+== orphan intents by hour (last 12 h)
+2026-09-14 18:00:00+00|152
+2026-09-14 19:00:00+00|433
+2026-09-14 20:00:00+00|551
+2026-09-14 21:00:00+00|836
+2026-09-14 22:00:00+00|1549
+2026-09-14 23:00:00+00|1938
+2026-09-15 00:00:00+00|2779
+2026-09-15 01:00:00+00|2573
+2026-09-15 02:00:00+00|2687
+2026-09-15 03:00:00+00|2694
+2026-09-15 04:00:00+00|618
+2026-09-15 05:00:00+00|14
+== orphan intents (6B era) by event signature
+== operator_events with QueryCanceled, by day and kind
+ERROR:  column "detail" does not exist
+LINE 1: ...eled%' or summary ilike '%timed out%' or coalesce(detail::te...
+                                                             ^
+== newest three
+2026-09-12 21:03:10.439485+00|ws_disconnect|OperationalError((psycopg.errors.QueryCanceled) canceling statement due to statement timeout)
+2026-09-12 21:02:38.971474+00|ws_disconnect|OperationalError((psycopg.errors.QueryCanceled) canceling statement due to statement timeout)
+2026-09-12 20:56:37.680931+00|ws_disconnect|OperationalError((psycopg.errors.QueryCanceled) canceling statement due to statement timeout)

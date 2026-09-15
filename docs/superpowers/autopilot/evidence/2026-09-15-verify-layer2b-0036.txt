@@ -1,0 +1,141 @@
+verify_at_utc=2026-09-15T05:32:46Z (00:32 CT) deploy c1066b5; :cutoff=2026-09-15T06:15Z :boundary_order_id=10883 partition=venue_trades_y2026w38
+select count(*) from fair_values
+  where created_at > now() - interval '24 hours' and staleness_s < 0;
+0
+select count(*) from runs where started_at > now() - interval '24 hours'
+  and coalesce((notes->>'taker_side_missing')::int, 0) > 0;
+0
+select count(*) from orders o where replay=false and not exists (select 1 from order_events e where e.order_id=o.id and e.kind='place');
+0
+select count(*) from intents i where replay=false and created_at < now()-interval '2 minutes'
+  and not exists (select 1 from orders o where o.intent_id=i.id)
+  and not exists (select 1 from order_events e where e.intent_id=i.id and e.kind='skipped');
+69675
+select count(*) from fills f join orders o on o.id=f.order_id where f.replay=false and f.contracts > o.contracts;
+0
+select count(*) from orders where replay=false and filled_contracts > contracts;
+0
+select count(*) from fills f where f.replay=false and f.fill_method='queue_model' and f.has_print=false and f.filled_at < now()-interval '2 minutes';
+0
+select count(*) from venue_settlements d join venue_settlements v on v.venue=d.venue and v.ticker=d.ticker
+  where d.source='derived' and v.source='venue' and d.result <> v.result;
+0
+select count(*) from fair_values where feed_lag_s < 0;
+0
+select count(*) from benchmarks where source_ts > target_ts;
+0
+select count(*) from fills f join orders o on o.id=f.order_id join games g on g.id=o.game_id
+  where f.replay=false and f.filled_at >= '2026-09-15T06:15:00Z'::timestamptz
+    and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
+0
+select count(*) from markouts m
+  where m.at_ts > m.horizon_ts
+    and (exists (select 1 from fills f where f.order_id = m.order_id and f.filled_at >= '2026-09-15T06:15:00Z'::timestamptz)
+         or (m.at_ts >= '2026-09-15T06:15:00Z'::timestamptz
+             and not exists (select 1 from fills f where f.order_id = m.order_id)));
+0
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+0
+select count(*) from orders where replay = false and id <= 10883
+  and (print_unmatched is not null or pending_unmatched is not null
+       or pending_surplus is not null or cancels_ahead is not null
+       or nw_print_unmatched is not null or nw_pending_unmatched is not null
+       or nw_pending_surplus is not null or nw_cancels_ahead is not null
+       or nw_dirty_seconds is not null);
+1173
+select count(*) from orders where recon_state is not null
+  and (pending_unmatched + pending_surplus)
+      <> (select coalesce(sum((b->>2)::numeric), 0)
+          from jsonb_array_elements(recon_state->'buckets') b);
+0
+select count(*) from orders where replay = false and id > 10883
+  and (traded_at_price is not null or nw_traded_at_price is not null);
+3
+select count(*) from orders where nw_dirty_seconds < 0;
+0
+select count(*) from orders where nw_done = true and nw_next_attempt_at is not null;
+0
+select count(*) from market_dirty_intervals where ended_at < started_at;
+0
+select count(*) from (select venue_market_id from market_dirty_intervals
+                      where ended_at is null and replay = false
+                      group by 1 having count(*) > 1) x;
+0
+select count(*) from market_observation_intervals i
+where i.ended_at is null
+  and not exists (select 1 from orders o where o.venue_market_id = i.venue_market_id
+                  and (o.status in ('open','partially_filled') or o.nw_done = false));
+2
+select count(*) from order_rescores r left join orders o on o.id = r.order_id
+where o.id is null or r.verdict not in ('validated','corrected','unverifiable');
+0
+select count(*) from (
+    select venue, trade_id
+    from venue_trades_y2026w38
+    group by venue, trade_id
+    having count(*) > 1
+) d;
+0
+select count(*) from order_clv c join orders o on o.id = c.order_id
+  where c.p_used_kind = 'order' and c.p_used <> o.prob;
+0
+select count(*) from job_runs
+  where job = 'settle' and started_at >= now() - interval '24 hours' and status = 'error';
+0
+select count(*) from venue_settlements d
+  where d.source = 'derived' and d.settled_at < now() - interval '48 hours'
+    and not exists (select 1 from venue_settlements v
+                    where v.venue = d.venue and v.ticker = d.ticker and v.source = 'venue');
+0
+select count(*) from runs
+  where started_at >= now() - interval '24 hours' and build_sha is not null
+    and build_sha <> (select build_sha from runs where build_sha is not null order by id desc limit 1);
+2510
+select count(*) from orders
+  where status in ('open', 'partially_filled') and replay = false
+    and expiry is not null and expiry < now() - interval '5 minutes';
+0
+select count(*) from (
+    select evaluated_at from gate_reports group by evaluated_at
+    having count(*) filter (where gate_variant) <> 1
+) g;
+0
+select count(*) from metric_samples where ts > now() - interval '24 hours' and value < 0;
+0
+select count(*) from operator_events where ts > now() - interval '24 hours' and trim(summary) = '';
+0
+select count(*) from order_watch_samples
+  where ts > now() - interval '24 hours' and (queue_remaining < 0 or nw_queue_remaining < 0);
+0
+select count(*) from equity_snapshots
+  where ts > now() - interval '24 hours' and mtm_coverage is not null
+    and (mtm_coverage < 0 or mtm_coverage > 1);
+0
+select count(*) from game_score_events e
+  where e.ts > now() - interval '24 hours'
+    and exists (select 1 from game_score_events p
+                where p.game_id = e.game_id and p.ts < e.ts
+                  and (p.home_score > e.home_score or p.away_score > e.away_score));
+0
+select count(*) from check_results
+  where ts > now() - interval '25 hours' and status not in ('pass', 'fail', 'skip');
+0
+select count(*) from report_runs where generated_at > now();
+0
+select count(*) from report_cells rc
+  where not exists (select 1 from report_runs rr where rr.id = rc.report_run_id);
+0
+select count(*) from venue_requests
+  where env = 'prod' and method not in ('GET', 'HEAD');
+0
+select count(*) from venue_status where updated_at > now();
+0
+select count(*) from backup_runs where finished_at is not null and finished_at < started_at;
+0
+select count(*) from equity_snapshots
+  where ts > now() - interval '24 hours' and drawdown_pct is not null
+    and (drawdown_pct < -1 or drawdown_pct > 0);
+0
+select count(*) from runs where started_at > now() - interval '24 hours'
+  and (notes->'pricing'->>'gate_variant_missing')::boolean = true;
+0

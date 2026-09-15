@@ -130,6 +130,22 @@ def test_every_6b_correction_ships_its_tuples_for_the_controller():
                 r"\d+-\d+|>\s*\d+", field_value), (c.id, field_value)
 
 
+def test_the_6b_tuples_are_filled_with_the_release_values():
+    """D11's count assertions, added in the commit that filled the tuples (2026-09-15, release
+    c1066b5): one config-hash tuple of three serves C1-C6, the two ranges are the numeric
+    open-ended form the release boundary produced, and no C1-C6 field still carries a
+    placeholder. The values themselves are the controller's fill and are not pinned here beyond
+    their width (T11 review M-4).
+    """
+    for c in CORRECTIONS[1:]:
+        assert len(c.config_hashes) == 3, c.id
+        assert c.config_hashes == CORRECTIONS[1].config_hashes, c.id
+        assert re.fullmatch(r">\s*\d+", c.affected_order_id_range), (c.id, c.affected_order_id_range)
+        assert re.fullmatch(r">\s*\d+", c.affected_run_id_range), (c.id, c.affected_run_id_range)
+        assert c.deploy_sha != "<sha>" and c.code_version_after == c.deploy_sha, c.id
+        assert c.code_version_before == CORRECTIONS[0].deploy_sha, c.id
+
+
 def test_the_rescore_command_is_a_recognised_instrument():
     """§0.12: `harness rescore` stands beside `harness replay`, an order-scoped correction
     against a range-scoped one, and all three standing documents say so.

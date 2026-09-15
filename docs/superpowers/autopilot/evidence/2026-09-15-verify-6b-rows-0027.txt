@@ -1,0 +1,21 @@
+verify_at_utc=2026-09-15T05:26:57Z  (00:26 CT)
+originals_fills|1877|70471.76|1877
+originals_orders|38.92|1557550125|1529.92|11006049.45|154374551.18
+originals_ledger|4|77.84|4
+post_boundary_fills|1
+post_expiry_fills|0
+place_after_rejected_skip|0
+signal_rejected_skips|0
+queue_model_no_print|0
+dirty_over_resting|0
+nw_backoff_stale|0
+open_intervals_dirty|0
+open_intervals_observation|0
+gate_reports_newest|5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5|2026-09-14 14:00:35.006961+00|t
+gate_eligibility_key|0
+nw_pending_past_expiry|0
+exec_nw_pending|exec.nw_pending|1176.000000|2026-09-15 05:25:45.591492+00
+alembic_version|0011_phase6b_execution
+exec_loop_ms_p95_post|2807.25
+exec_open_orders_latest|0.000000|2026-09-15 05:25:45.591492+00
+ix_intents_market_created|t|t
