@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from harness import telemetry
 from harness.config.settings import Settings
+from harness.db.engine import service_connect_args
 from harness.db.models import DashboardSnapshot
 
 log = logging.getLogger(__name__)
@@ -131,7 +132,14 @@ def builder_for(name: str) -> Builder | None:
 
 
 def make_snapshot_engine(settings: Settings) -> Engine:
-    """The second engine, and the only one a builder ever sees."""
+    """The second engine, and the only one a builder ever sees.
+
+    Its pool bounds (`SNAPSHOT_POOL_SIZE`, `max_overflow=0`: ruling A-I10) and its own short
+    statement timeout are why this is not simply `make_engine`. The service name is not: fix 76
+    (roadmap row 76) takes it from `service_connect_args()`, the same lookup `make_engine` uses,
+    so app-serve's snapshot backends are named after the service like every other backend the
+    stack opens and the release drain can attribute them.
+    """
     return create_engine(
         settings.database_url,
         pool_pre_ping=True,
@@ -139,7 +147,8 @@ def make_snapshot_engine(settings: Settings) -> Engine:
         pool_size=SNAPSHOT_POOL_SIZE,
         max_overflow=0,
         connect_args={"connect_timeout": 5,
-                      "options": f"-c statement_timeout={SNAPSHOT_STATEMENT_TIMEOUT_MS}"},
+                      "options": f"-c statement_timeout={SNAPSHOT_STATEMENT_TIMEOUT_MS}",
+                      **service_connect_args()},
     )
 
 

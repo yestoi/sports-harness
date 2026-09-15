@@ -325,3 +325,52 @@ def test_no_snapshot_module_names_a_forbidden_table():
 
 def test_settings_carry_the_scheduler_off_switch(env_settings):
     assert env_settings.snapshots_enabled is True
+
+
+# --- fix 76 (roadmap row 76): the second engine names its backends too -----------------------
+
+
+def test_the_snapshot_engine_names_its_backends_after_the_service(env_settings, monkeypatch):
+    """Row 76: `make_snapshot_engine` built its own `connect_args` and so opened the only
+    backends in the stack with no `application_name`. app-serve's release drain lists the
+    sessions of the services it stopped *by name*, so those two idle backends survived the
+    09:41 CT release as `unnamed_backends`. The service name now comes from the one helper
+    `make_engine` uses, and the pool bounds (ruling A-I10) and the snapshot statement timeout
+    are unchanged beside it.
+    """
+    from harness.dashboard.snapshots import SNAPSHOT_POOL_SIZE
+
+    monkeypatch.setenv("HARNESS_SERVICE", "app-serve")
+    captured = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return "engine"
+
+    monkeypatch.setattr(snapshots, "create_engine", fake_create_engine)
+    assert make_snapshot_engine(env_settings) == "engine"
+    assert captured["connect_args"] == {
+        "connect_timeout": 5,
+        "options": f"-c statement_timeout={SNAPSHOT_STATEMENT_TIMEOUT_MS}",
+        "application_name": "app-serve"}
+    assert captured["pool_size"] == SNAPSHOT_POOL_SIZE
+    assert captured["max_overflow"] == 0
+    assert captured["pool_pre_ping"] is True
+
+
+def test_the_snapshot_engine_sends_no_name_outside_the_stack(env_settings, monkeypatch):
+    """Unset -- the suite, a developer shell -- keeps libpq's default, exactly as `make_engine`
+    does, so nothing outside compose changes."""
+    monkeypatch.delenv("HARNESS_SERVICE", raising=False)
+    captured = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured.update(kwargs)
+        return "engine"
+
+    monkeypatch.setattr(snapshots, "create_engine", fake_create_engine)
+    make_snapshot_engine(env_settings)
+    assert captured["connect_args"] == {
+        "connect_timeout": 5,
+        "options": f"-c statement_timeout={SNAPSHOT_STATEMENT_TIMEOUT_MS}"}

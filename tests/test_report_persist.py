@@ -160,3 +160,52 @@ def test_the_provisional_run_is_stamped_with_the_chicago_week(db_session, env_se
     assert (result.counts["year"], result.counts["week"]) == (2026, 37)
     row = db_session.query(ReportRun).one()
     assert (row.year, row.week) == (2026, 37)
+
+
+# --- fix 75 (roadmap row 75): the rebuild yields inside the stream, not only at its entry ----
+
+
+class _Mono:
+    """A monotonic clock the test steps by hand; the last value repeats forever."""
+
+    def __init__(self, *values: float) -> None:
+        self.values = list(values)
+        self.i = 0
+
+    def __call__(self) -> float:
+        value = self.values[min(self.i, len(self.values) - 1)]
+        self.i += 1
+        return value
+
+
+def test_report_wtd_records_a_budget_exhausted_rebuild_and_stays_due(db_session, env_settings):
+    """Row 75: the shared settle budget used to be read once, at this stage's entry, so a
+    rebuild that went long held the hourly settle slot (`max_instances=1`) until it finished --
+    3,518 s on settle run 203, and two later runs discarded inside the stage. A budget spent
+    mid-rebuild now ends the stage within one page: it records `budget_exhausted` with the
+    tables it did complete, it persists nothing, and -- the half that makes the next run pick
+    it up -- it does not stamp `report_wtd_last`, so the report is still due an hour later.
+    The stage *returns* rather than raising, so the remaining settle stages still run.
+    """
+    from harness.settlement.report_wtd import JOB_STATE_KEY, _GET_LAST
+
+    # 0.0: Budget.__init__. 0.0: the MIN_BUDGET_S guard at entry, which passes. Then the
+    # budget is gone, and the first streamed read (table 4's) is where that is noticed.
+    budget = Budget(300, _Mono(0.0, 0.0, 10_000.0))
+    with use_ctx(new_ctx(settings=env_settings)):
+        result = report_wtd_stage(db_session, NOW, budget)
+
+    assert result.budget_exhausted is True
+    assert result.error is None
+    # t1, t2 and t3 are built before table 4, the first table with a streamed read.
+    assert result.counts == {"budget_exhausted": True, "tables_completed": 3}
+    assert db_session.query(ReportRun).count() == 0
+    assert db_session.execute(_GET_LAST, {"k": JOB_STATE_KEY}).scalar() is None
+
+    # Still due: the next hour's settle run rebuilds it with a budget of its own.
+    with use_ctx(new_ctx(settings=env_settings)):
+        again = report_wtd_stage(db_session, NOW + timedelta(hours=1), Budget(300, lambda: 0.0))
+    db_session.commit()
+    assert again.budget_exhausted is False
+    assert db_session.query(ReportRun).count() == 1
+    assert db_session.execute(_GET_LAST, {"k": JOB_STATE_KEY}).scalar() is not None

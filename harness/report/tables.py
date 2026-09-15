@@ -163,18 +163,99 @@ class Table:
 STREAM_ROWS = 2000
 
 
-def _stream(session: Session, statement, params: dict):
+#: What a streamed read asks the planner to cost (fix 75).
+#:
+#: Postgres plans a `DECLARE ... CURSOR` under `cursor_tuple_fraction`, whose default 0.1 means
+#: "optimise for the first tenth of the rows": a fast first row, at any cost per row after it.
+#: That is the wrong bargain here. Every streamed read in this module is consumed to the last
+#: row, in one pass, by a loop that bins rows and drops them; the cost that matters is the cost
+#: of the whole result, which is what 1.0 asks for.
+#:
+#: What the default cost in production (roadmap row 75, EXPLAIN evidence
+#: `docs/superpowers/autopilot/evidence/2026-09-15-t4-explain-1000.txt`, 2026-09-15): the
+#: cursor plan for `_T5_FAIRS` over a week of `fair_values` was a full walk of
+#: `ix_fair_game_type_created` -- `created_at` is not on that index's leading columns, so every
+#: entry is read and filtered -- merge-joined to `venue_markets` and then anti-joined to `runs`
+#: by a Nested Loop whose inner side is a Seq Scan *per output row*, about 12 ms a row. The
+#: same statement planned for the whole result is a BRIN bitmap scan on `ix_fair_created_brin`,
+#: a hash join and an index-probe anti join: minutes rather than hours. The `report_wtd` stage
+#: took 3,518 s on settle run 203 and held two later runs inside the stage because of it.
+#:
+#: This changes no row, no order and no number: it changes which plan the same statement runs
+#: under. `tests/test_report_memory.py` pins the rendered tables byte-identical either way.
+_PLAN_FOR_THE_WHOLE_RESULT = text("set local cursor_tuple_fraction = 1.0")
+
+
+class BudgetSpent(Exception):
+    """A streamed read gave up because the settlement job's shared budget ran out (fix 75).
+
+    Raised at a page boundary, so the work done past the budget is bounded by `STREAM_ROWS`
+    rows. It exists as its own class rather than as a bare `Exception` because exactly one
+    caller may swallow it -- `harness/settlement/report_wtd.py`, which turns it into a
+    `budget_exhausted` stage result and leaves the rebuild due -- and anything else raising out
+    of a report read is still a failure that must reach the job's error handling.
+    """
+
+    def __init__(self, rows: int) -> None:
+        super().__init__(f"the settlement budget ran out after {rows} streamed rows")
+        #: Rows this read had already yielded.
+        self.rows = rows
+        #: Tables `weekly_tables` had finished before the one that ran out; it fills this in as
+        #: the exception passes it, so the stage can record how far the rebuild got.
+        self.tables_completed = 0
+
+
+def _budgeted(result, budget):
+    """`result`, row by row, checking `budget.ok()` once per fetched page.
+
+    The check is at the page boundary and not per row for the reason the whole stream exists:
+    a page is one `FETCH FORWARD STREAM_ROWS`, the unit of work the server actually does, and
+    checking between pages bounds the overshoot at one page without adding a call per row.
+    The budget is only ever asked `ok()`; a streamed read reads no clock of its own.
+    """
+    fetched = 0
+    try:
+        if not budget.ok():
+            raise BudgetSpent(0)
+        for row in result:
+            if fetched and fetched % STREAM_ROWS == 0 and not budget.ok():
+                raise BudgetSpent(fetched)
+            fetched += 1
+            yield row
+    finally:
+        # The server-side cursor closes with the generator, whether it was exhausted, abandoned
+        # or cut short by the budget: a settle stage that yields must not leave one open on the
+        # transaction it is about to hand back.
+        result.close()
+
+
+def _stream(session: Session, statement, params: dict, budget=None):
     """`session.execute(statement, params)`, fetched `STREAM_ROWS` rows at a time.
 
     Identical rows in identical order -- this changes nothing the report computes, only how
     much of the result set psycopg has decoded into the process at once. The report's numbers
     are a measurement, so `tests/test_report_memory.py` pins the rendered tables byte-identical
     across this change.
+
+    Two things happen before the rows do (fix 75). The statement is planned for the whole
+    result rather than for a fast first row (`_PLAN_FOR_THE_WHOLE_RESULT`), and, when the
+    caller is the settlement job's `report_wtd` stage, `budget` is checked once per fetched
+    page and a spent one raises `BudgetSpent` rather than holding the hourly settle slot until
+    the read finishes. `harness report` (the CLI) has no budget, passes `None`, and streams to
+    the end exactly as before.
     """
-    return session.execute(
+    # `SET LOCAL` lasts for this transaction and ends with it. The Session autobegins one on
+    # its first statement and holds it until the caller commits or rolls back, so the setting
+    # is in force for the cursor the next statement declares on the same connection, and no
+    # work on a later transaction of the same session inherits it. That is why this is `LOCAL`
+    # and not `SET`, and why it is issued here rather than as a connect-time option: it belongs
+    # to these reads, not to every statement the recorder process runs.
+    session.execute(_PLAN_FOR_THE_WHOLE_RESULT)
+    result = session.execute(
         statement, params,
         execution_options={"stream_results": True, "max_row_buffer": STREAM_ROWS},
     ).yield_per(STREAM_ROWS)
+    return result if budget is None else _budgeted(result, budget)
 
 
 # --- cells ----------------------------------------------------------------------------------
@@ -757,7 +838,7 @@ _T4_COLUMNS = ["fair_source", "price_bucket", "ttk", "sport", "market_type",
                "stale < 120", "stale 120-300", "stale 300-1000", "stale > 1000"]
 
 
-def _table4(session: Session, window: dict) -> Table:
+def _table4(session: Session, window: dict, budget=None) -> Table:
     header = (
         "Mispricing map: price x time-to-kickoff x sport x market type, 72 cells per fair "
         "source. Sign convention: `gap_mid` is stored as `fair - mid`, so a positive value "
@@ -782,7 +863,7 @@ def _table4(session: Session, window: dict) -> Table:
     buckets: dict[tuple, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     # Streamed, not materialised (fix 49 round 3): this read is the whole week's gap snapshots
     # and every row is binned and dropped here, so holding the week was pure peak.
-    for row in _stream(session, _T4_SNAPSHOTS, params):
+    for row in _stream(session, _T4_SNAPSHOTS, params, budget):
         price = _bucket_price(_f(row.venue_mid))
         ttk = _bucket_ttk(row.ttk_minutes)
         if (price is None or ttk is None or row.sport not in SPORTS
@@ -899,14 +980,14 @@ def _key_distance_bucket(market_type: str, threshold: Decimal | None) -> str:
     return NOT_APPLICABLE
 
 
-def _table4b(session: Session, window: dict) -> Table:
+def _table4b(session: Session, window: dict, budget=None) -> Table:
     header = ("Derived fair minus direct fair on shapes where the pricing tick produced both, "
               "bucketed by the rung's distance to the nearest key number (3, 7). Positive means "
               "the margin model prices the rung above the sharp line, so H4 is read net of the "
               "model's own error. Clustered by game.")
     both: dict[tuple, dict[str, float]] = defaultdict(dict)
     shapes: dict[tuple, tuple] = {}
-    for row in _stream(session, _T4B_FAIRS, window):
+    for row in _stream(session, _T4B_FAIRS, window, budget):
         key = (row.run_id, row.game_id, row.market_type, row.outcome_team_id,
                row.outcome_side, row.threshold)
         both[key][row.fair_source] = float(row.fair_p)
@@ -957,7 +1038,7 @@ _T5_COLUMNS = ["sport", "market_type", "moves", "km_median_lag_s", "lag_interval
                "censored_share", "negative_share", "sampling_floor_s"]
 
 
-def _table5(session: Session, window: dict) -> Table:
+def _table5(session: Session, window: dict, budget=None) -> Table:
     header = (
         "Convergence lag on featured shapes: seconds from a sharp move of at least "
         f"{MOVE_PTS * 100:.0f} pts (`fair_values.newest_book_ts`) to the first venue mid that "
@@ -970,7 +1051,7 @@ def _table5(session: Session, window: dict) -> Table:
     previous_key, previous = None, None
     # Streamed (fix 49 round 3): the scan is one ordered pass that keeps only the previous row
     # and the moves it found, so the week never needed to be resident.
-    for row in _stream(session, _T5_FAIRS, window):
+    for row in _stream(session, _T5_FAIRS, window, budget):
         key = (row.game_id, row.market_type, row.outcome_team_id, row.outcome_side, row.threshold)
         if key == previous_key and previous is not None:
             delta = float(row.fair_p) - float(previous.fair_p)
@@ -990,7 +1071,7 @@ def _table5(session: Session, window: dict) -> Table:
     to_ts = max(m[3] for m in moves) + MAX_LAG
     samples: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
     for row in _stream(session, _T5_SNAPSHOTS,
-                       {"tickers": tickers, "from_ts": from_ts, "to_ts": to_ts}):
+                       {"tickers": tickers, "from_ts": from_ts, "to_ts": to_ts}, budget):
         try:
             mid = BookState.from_ws_raw(row.ticker, row.raw, 0, 0, row.ts, 0).mid()
         except (ValueError, AttributeError, TypeError):
@@ -2142,7 +2223,7 @@ _VARIANTS = text("""
 
 
 def weekly_tables(session: Session, year: int, week: int, settings,
-                  now: datetime | None = None) -> dict[str, Table]:
+                  now: datetime | None = None, budget=None) -> dict[str, Table]:
     """Every table of spec §7.2 for ISO week `week` of `year`, keyed `t1`..`t14` (with `t4b`).
 
     Read-only. Each table is restricted to the week's non-replay rows and each per-variant table
@@ -2151,28 +2232,43 @@ def weekly_tables(session: Session, year: int, week: int, settings,
     `now` is the render instant t13's freshness pair reports; it defaults to the wall clock so
     `harness/cli.py` and `harness/settlement/report_wtd.py` need no change, and every test
     passes it explicitly.
+
+    `budget` (fix 75) is the settlement job's shared wall-clock allowance, or `None` for
+    `harness report`, which has none. The three tables that stream a week of rows check it once
+    per fetched page; a spent one raises `BudgetSpent` out of this function, carrying the
+    number of tables that were finished before it. The tables are therefore built one at a time
+    into the dict rather than in one literal -- same keys, same order, same values -- so that
+    count is a fact rather than a guess.
     """
     now = now or datetime.now(timezone.utc)
     start, end = week_bounds(year, week, settings.tz_local)
     window = {"start": start, "end": end, "tz": settings.tz_local}
     variants = [dict(r._mapping) for r in session.execute(_VARIANTS)]
-    return {
-        "t1": _table1(session, window, variants),
-        "t2": _table2(session, window, variants),
-        "t3": _table3(session, window, variants),
-        "t4": _table4(session, window),
-        "t4b": _table4b(session, window),
-        "t5": _table5(session, window),
-        "t6": _table6(session, window, variants),
-        "t7": _table7(session, window),
-        "t8": _table8(session, window),
-        "t11": _table11(session, window),
-        "t9": _not_collected("t9", "flow", "H3's flow imbalance is a later phase."),
-        "t10": _table10(session, window),
-        "t12": _table12(session, window),
-        "t13": _table13(session, window, variants, settings, now),
-        "t14": _table14(session, window, variants, settings, now),
-    }
+    builders = (
+        ("t1", lambda: _table1(session, window, variants)),
+        ("t2", lambda: _table2(session, window, variants)),
+        ("t3", lambda: _table3(session, window, variants)),
+        ("t4", lambda: _table4(session, window, budget)),
+        ("t4b", lambda: _table4b(session, window, budget)),
+        ("t5", lambda: _table5(session, window, budget)),
+        ("t6", lambda: _table6(session, window, variants)),
+        ("t7", lambda: _table7(session, window)),
+        ("t8", lambda: _table8(session, window)),
+        ("t11", lambda: _table11(session, window)),
+        ("t9", lambda: _not_collected("t9", "flow", "H3's flow imbalance is a later phase.")),
+        ("t10", lambda: _table10(session, window)),
+        ("t12", lambda: _table12(session, window)),
+        ("t13", lambda: _table13(session, window, variants, settings, now)),
+        ("t14", lambda: _table14(session, window, variants, settings, now)),
+    )
+    tables: dict[str, Table] = {}
+    for key, build in builders:
+        try:
+            tables[key] = build()
+        except BudgetSpent as spent:
+            spent.tables_completed = len(tables)
+            raise
+    return tables
 
 
 def with_rows(table: Table, rows: list[list], note: str | None = None) -> Table:

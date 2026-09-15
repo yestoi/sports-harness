@@ -10,6 +10,23 @@ EXEC_STATEMENT_TIMEOUT_MS = 10_000
 BATCH_STATEMENT_TIMEOUT_MS = 900_000
 
 
+def service_connect_args() -> dict:
+    """The `application_name` connect arg for this process, or nothing at all.
+
+    Fix 76 (roadmap row 76): the harness has two engine factories -- this module's `make_engine`
+    and `harness/dashboard/snapshots/__init__.py::make_snapshot_engine`, the second engine
+    app-serve builds for its snapshot scheduler -- and only the first sent a name, so
+    app-serve's snapshot backends were the one kind of client backend the release drain could
+    not attribute to a service and so left open across a release. The lookup lives in one place
+    now: a third factory gets the name by calling this rather than by remembering the variable.
+
+    Unset or empty -- the test suite, a developer shell, any process outside compose -- sends no
+    `application_name` at all and keeps libpq's default.
+    """
+    service = os.environ.get("HARNESS_SERVICE")
+    return {"application_name": service} if service else {}
+
+
 def make_engine(url: str, statement_timeout_ms: int = 30000) -> Engine:
     """The one engine factory, with the per-engine statement timeout and the service's name.
 
@@ -23,10 +40,8 @@ def make_engine(url: str, statement_timeout_ms: int = 30000) -> Engine:
     `application_name` at all and keeps libpq's default, so nothing outside compose changes.
     """
     connect_args = {"connect_timeout": 5,
-                    "options": f"-c statement_timeout={statement_timeout_ms}"}
-    service = os.environ.get("HARNESS_SERVICE")
-    if service:
-        connect_args["application_name"] = service
+                    "options": f"-c statement_timeout={statement_timeout_ms}",
+                    **service_connect_args()}
     return create_engine(url, pool_pre_ping=True, future=True, connect_args=connect_args)
 
 

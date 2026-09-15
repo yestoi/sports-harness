@@ -238,7 +238,10 @@ def test_the_streamed_reads_render_byte_identical_tables(db_session, env_setting
     original_runs = tables_mod.recent_runs_pricing
     materialised_calls = []
 
-    def materialise(session, statement, params):
+    def materialise(session, statement, params, budget=None):
+        # `budget` is fix 75's per-page yield for the settle job; `harness report` and this
+        # substitution pass none, and materialising the read is exactly what it used to do.
+        assert budget is None
         materialised_calls.append(statement)
         return session.execute(statement, params).all()
 
@@ -345,3 +348,111 @@ def test_a_priced_tick_trims_once_and_records_the_mib_it_returned(
     rss_rows = db_session.query(MetricSample).filter(
         MetricSample.name == "recorder.rss_mb").all()
     assert [(r.value, r.labels) for r in rss_rows] == [(201.5, {"phase": "tick"})]
+
+
+# --- fix 75 (roadmap row 75): the stream is planned for the whole result, and budgeted --------
+#
+# Row 75, measured in production on 2026-09-15: the due six-hourly `report_wtd` stage grew from
+# 111 s (row 47's close) to 3,518 s on settle run 203 and held two later runs inside the stage,
+# fetching one 2,000-row page every 25-30 s. The cause is in the two lines below the fix
+# touches, and the EXPLAIN evidence (`docs/superpowers/autopilot/evidence/
+# 2026-09-15-t4-explain-1000.txt`) reads it off the live database: a cursor is planned under
+# `cursor_tuple_fraction = 0.1`, which optimises for the *first row*, and for `_T5_FAIRS` that
+# plan is a full walk of `ix_fair_game_type_created` joined to a Nested Loop Anti Join whose
+# inner side is a Seq Scan on `runs` per output row -- about 12 ms per row, hours for a week.
+# The same statement planned for the whole result is a BRIN bitmap scan, a hash join and an
+# index-probe anti join: about a minute. The report consumes every row of every streamed read,
+# so the whole result is what the planner should be costing.
+
+
+class _SpentAfter:
+    """A budget spent after `allowed` checks. Duck-typed on `Budget.ok()`, which is all a
+    streamed read may call: the stream must not read a clock of its own."""
+
+    def __init__(self, allowed: int) -> None:
+        self.allowed = allowed
+        self.checks = 0
+
+    def ok(self) -> bool:
+        self.checks += 1
+        return self.checks <= self.allowed
+
+
+def test_a_streamed_read_plans_the_cursor_for_the_whole_result(db_session):
+    """The `SET LOCAL` goes out on the same connection, inside the same transaction, before the
+    streamed statement -- so the cursor the next statement declares is planned under it -- and
+    it is `LOCAL`, so it ends with the transaction and no later work on that session inherits
+    it by accident."""
+    from sqlalchemy import event, text
+
+    from harness.report import tables as tables_mod
+
+    statements: list[str] = []
+    connection = db_session.connection()
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()).lower())
+
+    event.listen(connection, "before_cursor_execute", record)
+    try:
+        rows = list(tables_mod._stream(db_session, text("select 7 as n"), {}))
+    finally:
+        event.remove(connection, "before_cursor_execute", record)
+
+    assert [row.n for row in rows] == [7]
+    setting = [i for i, s in enumerate(statements) if "cursor_tuple_fraction" in s]
+    streamed = [i for i, s in enumerate(statements) if "select 7" in s]
+    assert setting and streamed, statements
+    assert setting[0] < streamed[0], statements
+    assert "set local" in statements[setting[0]], statements
+    # The end of the wire: the setting is in force in this transaction, which is where the
+    # cursor lives. A `SET LOCAL` outside a transaction block only warns and does nothing.
+    assert float(db_session.execute(text("show cursor_tuple_fraction")).scalar()) == 1.0
+
+
+def test_a_streamed_read_stops_within_one_page_of_a_spent_budget(db_session):
+    """The settle job's shared budget is checked between stages and at `report_wtd`'s entry,
+    never inside a stream, which is how one due report held the hourly settle slot for an hour.
+    A stream checks it once per fetched page, so the overshoot is bounded by one page."""
+    import pytest
+    from sqlalchemy import text
+
+    from harness.report import tables as tables_mod
+
+    budget = _SpentAfter(1)          # the entry check passes; the second page's does not
+    statement = text("select g as n from generate_series(1, :rows) as g")
+    rows = []
+    with pytest.raises(tables_mod.BudgetSpent):
+        for row in tables_mod._stream(db_session, statement,
+                                      {"rows": 3 * tables_mod.STREAM_ROWS}, budget):
+            rows.append(row.n)
+
+    assert len(rows) == tables_mod.STREAM_ROWS
+    assert budget.checks == 2
+
+
+def test_a_streamed_read_without_a_budget_is_the_cli_s_whole_read(db_session):
+    """`harness report` has no settle budget and must stream to the end exactly as before."""
+    from sqlalchemy import text
+
+    from harness.report import tables as tables_mod
+
+    statement = text("select g as n from generate_series(1, :rows) as g")
+    rows = list(tables_mod._stream(db_session, statement, {"rows": 2 * tables_mod.STREAM_ROWS}))
+    assert len(rows) == 2 * tables_mod.STREAM_ROWS
+
+
+def test_an_ample_budget_renders_the_same_tables_as_no_budget(db_session, env_settings):
+    """The budget may bound how long a rebuild runs; it may not change a number in it."""
+    from harness.settlement.job import Budget
+
+    seed_week(db_session, games=4, gaps_per_market=4, fairs_per_shape=4,
+              snapshots_per_ticker=4, orders=12, runs=8)
+    now = WEEK_END - timedelta(hours=1)
+    unbudgeted = weekly_tables(db_session, YEAR, WEEK, env_settings, now=now)
+    budgeted = weekly_tables(db_session, YEAR, WEEK, env_settings, now=now,
+                             budget=Budget(10_000, lambda: 0.0))
+
+    assert set(unbudgeted) == set(budgeted)
+    for key in unbudgeted:
+        assert unbudgeted[key] == budgeted[key], f"table {key} differs under a budget"

@@ -84,3 +84,21 @@ def test_the_service_name_reaches_the_server(monkeypatch):
                                      "where pid = pg_backend_pid()")).scalar() == "app-research"
     finally:
         engine.dispose()
+
+
+# --- fix 76 (roadmap row 76): one lookup, shared by both engine factories --------------------
+
+
+def test_service_connect_args_is_the_one_place_the_service_name_is_read(monkeypatch):
+    """`make_engine` and `harness/dashboard/snapshots/__init__.py::make_snapshot_engine` are
+    the two engine factories in the harness, and row 76 was the second one quietly missing the
+    `application_name` the first one sends. The lookup lives here now, so a third factory gets
+    it by using the helper rather than by remembering the environment variable's name."""
+    from harness.db.engine import service_connect_args
+
+    monkeypatch.setenv("HARNESS_SERVICE", "app-serve")
+    assert service_connect_args() == {"application_name": "app-serve"}
+    monkeypatch.setenv("HARNESS_SERVICE", "")
+    assert service_connect_args() == {}
+    monkeypatch.delenv("HARNESS_SERVICE", raising=False)
+    assert service_connect_args() == {}

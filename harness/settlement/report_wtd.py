@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from harness.report.tables import weekly_tables
+from harness.report.tables import BudgetSpent, weekly_tables
 from harness.report.weekly import build_meta, persist_report
 from harness.settlement.job import Budget, StageResult, current_ctx, register_stage
 from harness.weeks import chicago_iso_week
@@ -50,7 +50,9 @@ def is_due(session: Session, now: datetime, settings) -> bool:
 
 def report_wtd_stage(session: Session, now: datetime, budget: Budget) -> StageResult:
     """Rebuild the week-to-date tables when `report_wtd_period_s` has elapsed since the last
-    rebuild, unless the shared settlement budget is already below `MIN_BUDGET_S`.
+    rebuild, unless the shared settlement budget is already below `MIN_BUDGET_S` -- or runs out
+    while the rebuild is streaming (fix 75), which ends the stage within one page of rows and
+    leaves the report due.
 
     The cadence is a setting rather than a constant, and its default is six hours rather than
     the hourly one the design spec's §3.7 named (final review I6). Two of the ten tables
@@ -77,7 +79,26 @@ def report_wtd_stage(session: Session, now: datetime, budget: Budget) -> StageRe
     # Addendum 0.1 / Amendment 5: the provisional run's week is the America/Chicago ISO week.
     # A raw `now.isocalendar()` stamped a Sunday-evening rebuild with the *next* week's number.
     year, week = chicago_iso_week(now)
-    tables = weekly_tables(session, year, week, settings, now=now)
+    try:
+        tables = weekly_tables(session, year, week, settings, now=now, budget=budget)
+    except BudgetSpent as spent:
+        # Fix 75 (roadmap row 75). The budget used to be read once, here at the entry, so a
+        # rebuild that went long ran to the end whatever the job's clock said: `report_wtd`
+        # took 3,518 s on settle run 203 (2026-09-15) and held two later runs inside the
+        # stage, one of which a release then discarded whole. Now a spent budget ends the
+        # rebuild within one page of rows.
+        #
+        # Nothing is persisted and `_SET_LAST` is deliberately not written, so the report
+        # stays due and the next hourly run rebuilds it from the start. That is the cheap and
+        # correct resumption for a *provisional* week-to-date rendering: every table is a
+        # whole-week aggregate, so a half-built one is not a thing that can be stored and
+        # continued, and the rows it would have read are still there next hour.
+        log.info("report_wtd yielded to the settlement budget after %d tables (%d rows)",
+                 spent.tables_completed, spent.rows)
+        return StageResult("report_wtd",
+                           {"budget_exhausted": True,
+                            "tables_completed": spent.tables_completed}, True, None)
+
     meta = build_meta(session, settings, year, week, now=now)
     report_run_id = persist_report(session, tables, meta, year, week,
                                    provisional=True, markdown=None)
