@@ -482,8 +482,19 @@ select count(*) from venue_settlements d join venue_settlements v on v.venue=d.v
 select count(*) from fair_values where feed_lag_s < 0;
 select count(*) from benchmarks where source_ts > target_ts;
 select count(*) from fills f join orders o on o.id=f.order_id join games g on g.id=o.game_id
-  where f.replay=false and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
-select count(*) from markouts where at_ts > horizon_ts;
+  where f.replay=false and f.filled_at >= :cutoff
+    and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
+  -- :cutoff = NO_WATCHER_CUTOFF_FIXED_AT (harness/ops/checks.py; set to the release instant at the
+  -- release commit, user ruling 2026-09-14 15:38 CT, journal 206): the 154 pre-cutoff no-watcher
+  -- fills stay as recorded. By hand, substitute the constant's timestamp.
+select count(*) from markouts m
+  where m.at_ts > m.horizon_ts
+    and (exists (select 1 from fills f where f.order_id = m.order_id and f.filled_at >= :cutoff)
+         or (m.at_ts >= :cutoff
+             and not exists (select 1 from fills f where f.order_id = m.order_id)));
+  -- Same :cutoff. A markout counts when its order carries a fill at or after the cutoff, or when the
+  -- markout itself is at or after the cutoff and the order has no fill at all (the amnesty is a
+  -- date, not a population; integration round review C-1).
 -- after phase 6a
 select count(*) from gate_reports where criteria_json ? 'eligibility';
   -- gate_eligible_from_order_id / gate_eligible_from_run_id are None by design (addendum §0.4).
@@ -530,7 +541,8 @@ where i.ended_at is null
 select count(*) from order_rescores r left join orders o on o.id = r.order_id
 where o.id is null or r.verdict not in ('validated','corrected','unverifiable');
   -- Every estimate points at a real order and carries one of the three verdicts.
--- the remaining CHECKS (harness/ops/checks.py), same SQL: verify.md and CHECKS agree
+-- the remaining CHECKS (harness/ops/checks.py), same SQL: verify.md and CHECKS agree (the two
+-- cutoff-bounded predicates above carry `:cutoff` as a bound parameter in CHECKS)
 select count(*) from (
     select venue, trade_id
     from venue_trades_y<current ISO year>w<current ISO week, zero-padded to 2 digits>
