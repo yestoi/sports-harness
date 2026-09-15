@@ -20,11 +20,20 @@ BOOK = "draftkings"
 
 @dataclass(frozen=True)
 class LegPrice:
-    odds_snapshot_id: int
+    odds_snapshot_id: int | None
     dk_decimal: Decimal
     dk_american: int
     point: Decimal | None
     fetched_at: datetime
+    #: Phase 4.6 (addendum 2.2, D23): a prop outcome lives in `odds_prop_snapshots`, whose ids
+    #: are their own space. A game line still fills `odds_snapshot_id` and leaves this null; a
+    #: prop fills this and leaves that null, and the leg's `market_type` says which table the
+    #: id it recorded belongs to. Defaulted, so every existing construction is unchanged.
+    odds_prop_snapshot_id: int | None = None
+    #: The prop row's validated deep link and the venue's selection id (addendum 3.3); null on
+    #: a game line, whose table carries neither column.
+    link: str | None = None
+    sid: str | None = None
 
 
 def american(decimal_odds: Decimal) -> int:
@@ -68,3 +77,43 @@ def newest_dk_price(session: Session, game_id: int, market_type: str, team_id: i
         return None
     return LegPrice(odds_snapshot_id=row.id, dk_decimal=price, dk_american=american(price),
                     point=row.point, fetched_at=row.fetched_at)
+
+
+#: Bound: one `(game_id, market_type, player_id, point, side)` and `fetched_at <= :now`, newest
+#: row only. Index: `ix_odds_prop_lookup (game_id, market_type, player_id, fetched_at desc)
+#: where player_id is not null` -- the three leading columns seek and the fourth orders, so this
+#: reads the head of one bounded run on a bulk table rather than walking it.
+_NEWEST_PROP = text("""
+    select id, price_decimal, point, fetched_at, link, sid
+    from odds_prop_snapshots
+    where book = :book and game_id = :game_id and market_type = :market_type
+      and player_id = :player_id
+      and point is not distinct from :point
+      and outcome_side is not distinct from :side
+      and fetched_at <= :now
+    order by fetched_at desc
+    limit 1
+""")
+
+
+def newest_dk_prop_price(session: Session, game_id: int, market_type: str, player_id: int,
+                         point: Decimal | None, side: str | None, now: datetime,
+                         max_age: timedelta) -> LegPrice | None:
+    """The newest DraftKings row for one prop outcome, or None inside `max_age`.
+
+    Separate from `newest_dk_price` rather than a branch inside it: a prop outcome is keyed by
+    player and line, a game line by team and side, they live in two tables since D23, and the
+    two ride different indexes. Making one function serve both would put a `player_id is null`
+    predicate on the game-line read.
+    """
+    row = session.execute(_NEWEST_PROP, {"book": BOOK, "game_id": game_id,
+                                         "market_type": market_type, "player_id": player_id,
+                                         "point": point, "side": side, "now": now}).first()
+    if row is None or now - row.fetched_at > max_age:
+        return None
+    price = decimal_from(row.price_decimal)
+    if price <= 1:
+        return None
+    return LegPrice(odds_snapshot_id=None, dk_decimal=price, dk_american=american(price),
+                    point=row.point, fetched_at=row.fetched_at, odds_prop_snapshot_id=row.id,
+                    link=row.link, sid=row.sid)

@@ -1,0 +1,95 @@
+def ready_jobs(jobs, completed):
+    if not isinstance(jobs, list):
+        raise ValueError("jobs must be a list")
+    if not isinstance(completed, set):
+        raise ValueError("completed must be a set")
+
+    ids = set()
+    job_data = {}  # id -> (priority, submitted, depends_on tuple)
+    order = []  # preserve encounter order isn't needed for output, but keep list
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            raise ValueError("each job must be a dict")
+
+        if "id" not in job:
+            raise ValueError("job missing 'id'")
+        jid = job["id"]
+        if not isinstance(jid, str) or jid == "":
+            raise ValueError("job 'id' must be a nonempty string")
+        if jid in ids:
+            raise ValueError("duplicate job id: %r" % (jid,))
+
+        if "priority" not in job:
+            raise ValueError("job missing 'priority'")
+        priority = job["priority"]
+        if isinstance(priority, bool) or not isinstance(priority, int):
+            raise ValueError("job 'priority' must be an int (not bool)")
+        if not (0 <= priority <= 9):
+            raise ValueError("job 'priority' must be between 0 and 9")
+
+        if "submitted" not in job:
+            raise ValueError("job missing 'submitted'")
+        submitted = job["submitted"]
+        if isinstance(submitted, bool) or not isinstance(submitted, int):
+            raise ValueError("job 'submitted' must be an int (not bool)")
+        if submitted < 0:
+            raise ValueError("job 'submitted' must be nonnegative")
+
+        if "depends_on" not in job:
+            raise ValueError("job missing 'depends_on'")
+        depends_on = job["depends_on"]
+        if not isinstance(depends_on, list):
+            raise ValueError("job 'depends_on' must be a list")
+        for dep in depends_on:
+            if not isinstance(dep, str) or dep == "":
+                raise ValueError("job 'depends_on' entries must be nonempty strings")
+        if len(set(depends_on)) != len(depends_on):
+            raise ValueError("job 'depends_on' must contain distinct ids")
+        if jid in depends_on:
+            raise ValueError("job cannot depend on itself: %r" % (jid,))
+
+        ids.add(jid)
+        job_data[jid] = (priority, submitted, tuple(depends_on))
+        order.append(jid)
+
+    # Validate dependency references exist.
+    for jid, (_, _, deps) in job_data.items():
+        for dep in deps:
+            if dep not in ids:
+                raise ValueError("job %r depends on unknown job %r" % (jid, dep))
+
+    # Validate completed is a subset of known ids.
+    for cid in completed:
+        if not isinstance(cid, str):
+            raise ValueError("completed entries must be strings")
+        if cid not in ids:
+            raise ValueError("completed contains unknown job id: %r" % (cid,))
+
+    # Cycle detection (including completed jobs) via DFS.
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {jid: WHITE for jid in ids}
+
+    def visit(node, stack):
+        color[node] = GRAY
+        for dep in job_data[node][2]:
+            if color[dep] == GRAY:
+                raise ValueError("dependency cycle detected involving %r" % (dep,))
+            if color[dep] == WHITE:
+                visit(dep, stack)
+        color[node] = BLACK
+
+    for jid in order:
+        if color[jid] == WHITE:
+            visit(jid, [])
+
+    result = []
+    for jid in order:
+        if jid in completed:
+            continue
+        _, _, deps = job_data[jid]
+        if all(dep in completed for dep in deps):
+            result.append(jid)
+
+    result.sort(key=lambda jid: (-job_data[jid][0], job_data[jid][1], jid))
+    return result

@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, Index, Integer, Numeric, SmallInteger, String, Text,
-    UniqueConstraint, Uuid,
+    UniqueConstraint, Uuid, desc, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -73,6 +73,9 @@ class SourceState(Base):
     __tablename__ = "source_state"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)  # e.g. odds_featured:americanfootball_nfl
     last_fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Phase 4.6 (addendum 3.2): the Odds API credits this key has spent, so the prop cadence
+    #: can be capped inside the existing tier. Null on every row that predates the column.
+    credits_used: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class Team(Base):
@@ -127,6 +130,45 @@ class OddsSnapshot(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (Index("ix_odds_game_type_fetched", "game_id", "market_type", "fetched_at"),
                       Index("ix_odds_fetched_book", "fetched_at", "book", "book_last_update"))
+
+
+class OddsPropSnapshot(Base):
+    """One DraftKings player-prop outcome (addendum §3.3 and §9 as amended; D23).
+
+    Its own table rather than four columns on `odds_snapshots`: a prop outcome is keyed by the
+    **player**, and `uq_odds_snapshot_row` keys on `coalesce(outcome_team_id, -1)` with no
+    `where` clause, so two scorers in one `prop:anytime_td` market are one key to it. Making
+    them fit would mean rebuilding a unique index on a bulk table, which is not additive; a new
+    table is. Column spellings are copied from `OddsSnapshot`.
+    """
+    __tablename__ = "odds_prop_snapshots"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    raw_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    book: Mapped[str] = mapped_column(String(32), nullable=False)
+    game_id: Mapped[int | None] = mapped_column(Integer)
+    market_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    player_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: Null until Task 3's resolver fills it; `ix_odds_prop_lookup` is partial on it.
+    player_id: Mapped[int | None] = mapped_column(Integer)
+    outcome_side: Mapped[str | None] = mapped_column(String(8))
+    point: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))
+    #: The only price column, as on `OddsSnapshot`: the venue is asked for decimal odds and
+    #: `pricing.american()` derives the American price for a prop exactly as for a game line.
+    price_decimal: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    book_last_update: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    link: Mapped[str | None] = mapped_column(String(300))
+    sid: Mapped[str | None] = mapped_column(String(64))
+    __table_args__ = (
+        # The prop upsert's conflict target: one row per (fetch, book, market, player, side,
+        # line). `player_name` is the column `uq_odds_snapshot_row` could not carry.
+        Index("uq_odds_prop_row", "raw_id", "book", "market_type", "player_name",
+              text("coalesce(outcome_side, '')"), text("coalesce(point, 0)"), unique=True),
+        # The builder's pool and the reprice read: the three leading columns seek, the fourth
+        # orders. Partial, so a row whose player never resolved costs nothing.
+        Index("ix_odds_prop_lookup", "game_id", "market_type", "player_id", desc("fetched_at"),
+              postgresql_where=text("player_id is not null")),
+    )
 
 
 class VenueMarket(Base):
@@ -415,6 +457,10 @@ class Intent(Base):
     signal_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 7.2, D13): the Floor detail's skip rows for one game's markets, in
+    #: time order. Built CONCURRENTLY by `_CONCURRENT_INDEX_DDL`, which is why this declaration
+    #: is subtracted from `_model_indexes` on a populated database.
+    __table_args__ = (Index("ix_intents_market_created", "venue_market_id", "created_at"),)
 
 
 class Order(Base):
@@ -551,6 +597,8 @@ class OrderEvent(Base):
     fair_p_at_event: Mapped[Decimal | None] = mapped_column(PROB)
     reason: Mapped[str | None] = mapped_column(String(48))
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 7.2, D13): one order's cancelled/expired rows, in time order.
+    __table_args__ = (Index("ix_order_events_order_ts", "order_id", "ts"),)
 
 
 class Fill(Base):
@@ -575,6 +623,11 @@ class Fill(Base):
     tape_source: Mapped[str | None] = mapped_column(String(4))  # ws|rest
     has_print: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 7.2, D13): one order's fills, in time order, for the method/replay
+    #: labelling. The addendum spells the second column `ts`; this table's time column is
+    #: `filled_at` (there is no `ts` here), so the index keeps the addendum's *name* and takes
+    #: the column the table actually has.
+    __table_args__ = (Index("ix_fills_order_ts", "order_id", "filled_at"),)
 
 
 class Markout(Base):
@@ -696,6 +749,8 @@ class Ledger(Base):
     payout: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     cash_delta: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 7.2, D13): the settlement row of one order, in paper dollars.
+    __table_args__ = (Index("ix_ledger_order", "order_id"),)
 
 
 class ExecHeartbeat(Base):
@@ -744,6 +799,19 @@ class JobState(Base):
     __tablename__ = "job_state"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[int | None] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ParlaySlotState(Base):
+    """One row per `(year-week, sport, shape)` parlay builder slot (user decision journal 211,
+    ruling 13; `harness/settlement/parlay_build.py`'s `slot_key`), written by the builder stage
+    and read by the Ticket builder (`harness/dashboard/snapshots/ticket.py`). `state` is
+    `{"built": <card_id>}` for a slot with a live card or `{"reason": <code>}` for an empty one
+    -- a dedicated additive table, not a `job_state` (above) row: this phase's migration adds
+    it, and `JobState` is untouched by it."""
+    __tablename__ = "parlay_slot_state"
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -923,6 +991,17 @@ class GameScoreEvent(Base):
     home_score: Mapped[int | None] = mapped_column(SmallInteger)
     away_score: Mapped[int | None] = mapped_column(SmallInteger)
     raw_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: Fix 64 (journal 207): ESPN's linescore is corrected, not monotone -- a later poll can
+    #: legitimately report a lower home or away score than an earlier row for the same game
+    #: (the source republished its own body; the harness's own rows are appended, never
+    #: updated). `_maybe_score_event` sets this true on the row that carries the lower score, so
+    #: `game_score_went_down_24h` can tell a correction from the normalizer bug it exists to
+    #: catch. Carries a server default (as `ParlayCard`/`ParlayLeg`'s phase 4.6 not-null columns
+    #: do) so `create_all` on a fresh database and the migration's `ADD COLUMN` on an existing
+    #: one leave the identical column -- the same reason `tests/test_alembic.py`'s catalogue
+    #: diff compares defaults, not just types and nullability.
+    correction: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"),
+                                             nullable=False)
 
 
 class CheckResult(Base):
@@ -1067,6 +1146,24 @@ class ParlayCard(Base):
     #: proposed|placed|alive|cashed|busted|void
     status: Mapped[str] = mapped_column(String(8), nullable=False)
     correlated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 9). `parent_card_id` links a replacement card to the one it replaces
+    #: (5.2); `declined_reason` records `Not this one` (D5); `combined_kind` says whether the
+    #: card's price is DraftKings' own combined number or ours; `link_capability` how far the
+    #: deep link reaches; `p_source_min` the weakest probability source any leg was built from.
+    #: The four not-null columns carry a server default so a row written before this phase, and
+    #: a row inserted by old code, both read the same value as a fresh one -- and so the
+    #: catalogue built by `create_all` matches the one built by the revision's ADD COLUMN.
+    policy_version: Mapped[str | None] = mapped_column(String(16))
+    parent_card_id: Mapped[int | None] = mapped_column(Integer)
+    declined_reason: Mapped[str | None] = mapped_column(String(16))
+    combined_kind: Mapped[str] = mapped_column(
+        String(10), default="calculated", server_default="calculated", nullable=False)
+    dk_combined_american: Mapped[int | None] = mapped_column(Integer)
+    dk_combined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    link_capability: Mapped[str] = mapped_column(
+        String(10), default="none", server_default="none", nullable=False)
+    p_source_min: Mapped[str] = mapped_column(
+        String(10), default="sharp", server_default="sharp", nullable=False)
     __table_args__ = (Index("ix_parlay_cards_week", "year", "week"),)
 
 
@@ -1079,7 +1176,9 @@ class ParlayLeg(Base):
     card_id: Mapped[int] = mapped_column(Integer, nullable=False)
     seq: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     game_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    market_type: Mapped[str] = mapped_column(String(6), nullable=False)   # ml|spread|total
+    #: ml|spread|total and, from phase 4.6, the prop keys of addendum 3.3 (`prop:anytime_td`);
+    #: widened String(6) -> String(12) by the one `alter column ... type` of addendum 14.4.
+    market_type: Mapped[str] = mapped_column(String(12), nullable=False)
     side_team_id: Mapped[int | None] = mapped_column(Integer)
     side: Mapped[str | None] = mapped_column(String(5))                   # over|under
     threshold: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
@@ -1087,9 +1186,40 @@ class ParlayLeg(Base):
     dk_decimal: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     plain_text: Mapped[str] = mapped_column(String(80), nullable=False)
     odds_snapshot_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: Phase 4.6 (D23, fix round 1, Important 2): the `odds_prop_snapshots` row a **prop** leg
+    #: was priced from. Its own column because both tables are `bigserial` from 1, so the id
+    #: spaces overlap: a reader that forgot to branch on `market_type` and resolved a prop leg
+    #: against `odds_snapshots` would get a real but unrelated game line. A prop leg fills this
+    #: and leaves `odds_snapshot_id` null; a game line does the reverse.
+    odds_prop_snapshot_id: Mapped[int | None] = mapped_column(BigInteger)
     #: pending|alive|hit|miss|void
     status: Mapped[str] = mapped_column(String(8), nullable=False)
     graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Phase 4.6 (addendum 9): the prop leg's player, stat, period and operator; the market
+    #: definition and the deep link the placement needs; the probability the leg was built at
+    #: and where that probability came from; and the one-line context the ticket surface shows.
+    #: `period`, `offered` and `p_source` carry server defaults for the reason given on
+    #: `ParlayCard`.
+    player_id: Mapped[int | None] = mapped_column(Integer)
+    stat: Mapped[str | None] = mapped_column(String(12))
+    period: Mapped[str] = mapped_column(
+        String(6), default="game", server_default="game", nullable=False)
+    operator: Mapped[str | None] = mapped_column(String(8))
+    #: The recorded DraftKings settlement rule, **whole** (D19): `parlay.yaml`'s verbatim
+    #: `market_defs` entry with its source and date is 353 characters for `anytime_td`, and a
+    #: prefix of it stops before the clause that excludes passing touchdowns -- a leg would
+    #: state a rule that means the opposite of the one it is graded by. 400 is that text plus
+    #: room; the column is widened here rather than by an ALTER because this phase's revision
+    #: has never run outside a test database (fix round 1, Important 1).
+    market_def: Mapped[str | None] = mapped_column(String(400))
+    dk_link: Mapped[str | None] = mapped_column(String(300))
+    dk_sid: Mapped[str | None] = mapped_column(String(64))
+    offered: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False)
+    p_at_build: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    p_source: Mapped[str] = mapped_column(
+        String(10), default="none", server_default="none", nullable=False)
+    context_text: Mapped[str | None] = mapped_column(String(80))
     __table_args__ = (Index("ix_parlay_legs_card_seq", "card_id", "seq"),)
 
 
@@ -1103,6 +1233,14 @@ class ParlayPlacement(Base):
     dk_payout_actual: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     dk_odds_actual: Mapped[int | None] = mapped_column(Integer)
     note: Mapped[str | None] = mapped_column(String(200))
+    #: Phase 4.6 (addendum 5.1, 5.3): the confirm sheet's `crypto.randomUUID()`, so a retried
+    #: or double-tapped placement is recorded once. Null on every row that predates the column,
+    #: which is why the unique index below is partial.
+    confirmation_id: Mapped[str | None] = mapped_column(String(36))
+    __table_args__ = (
+        Index("uq_parlay_placement_confirmation", "confirmation_id", unique=True,
+              postgresql_where=text("confirmation_id is not null")),
+    )
 
 
 class ParlayLedger(Base):
@@ -1116,6 +1254,11 @@ class ParlayLedger(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     week: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    #: Phase 4.6 (addendum 9): `confirmed` when the owner typed the figure (the stake row and
+    #: every correction delta), `computed` when the grader derived it. Existing rows read
+    #: `computed`, which is what the server default gives them.
+    source: Mapped[str] = mapped_column(
+        String(10), default="computed", server_default="computed", nullable=False)
 
 
 class ParlayLegProb(Base):
@@ -1127,6 +1270,61 @@ class ParlayLegProb(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     sharp_p: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     book_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+
+
+class ParlayPlacementCorrection(Base):
+    """One owner correction to a placed card (addendum §5.2). Append-only: the same field
+    corrected twice writes two rows, and the surface shows the newest values with one
+    `corrected` mark. `field` holds the §5.2 names as written -- `leg_status:<seq>` is 13
+    characters at two digits -- and a value over 32 characters is refused with 400, never
+    truncated."""
+    __tablename__ = "parlay_placement_corrections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    card_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    field: Mapped[str] = mapped_column(String(16), nullable=False)
+    old_value: Mapped[str | None] = mapped_column(String(32))
+    new_value: Mapped[str | None] = mapped_column(String(32))
+    note: Mapped[str | None] = mapped_column(String(200))
+    __table_args__ = (Index("ix_parlay_corrections_card_ts", "card_id", "ts"),)
+
+
+class Player(Base):
+    """One rostered player (addendum §4.2). Filled from ESPN's roster endpoint, once per team
+    per week, for the teams of the watched prop events. The box score's own athlete ids are the
+    live key; this table is what turns a prop outcome's `description` into one of them."""
+    __tablename__ = "players"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sport: Mapped[str] = mapped_column(String(8), nullable=False)
+    espn_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    team_id: Mapped[int | None] = mapped_column(Integer)
+    position: Mapped[str | None] = mapped_column(String(6))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (Index("uq_players_sport_espn", "sport", "espn_id", unique=True),)
+
+
+class PlayerStatEvent(Base):
+    """One *change* in a carded player's stat (addendum §4.3), the `game_score_events` rule.
+
+    ESPN's summary carries no per-stat timestamp and sequential polls of one endpoint return the
+    source's current state, so a later poll reporting a lower value is a correction, not an
+    out-of-order arrival: `correction = true` and `source_ts` stays null. The surface shows the
+    fetch age, never a zero.
+    """
+    __tablename__ = "player_stat_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stat: Mapped[str] = mapped_column(String(12), nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    source: Mapped[str] = mapped_column(String(12), nullable=False)
+    raw_id: Mapped[int | None] = mapped_column(BigInteger)
+    correction: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    __table_args__ = (Index("ix_player_stat_game_player_ts", "game_id", "player_id",
+                            desc("ts")),)
 
 
 # ---------------------------------------------------------------------------

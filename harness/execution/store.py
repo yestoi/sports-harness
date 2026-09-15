@@ -45,6 +45,8 @@ from harness.db.models import (
     EquitySnapshot, Fill, Intent, Ledger, MarketDirtyInterval, MarketObservationInterval,
     Order, OrderEvent, OrderWatchSample,
 )
+from harness.db.schema import OPEN_FILL_SQL
+from harness.ops.clock import exclude_unsynced_runs
 from harness.execution.fills import TapeDelta, TapePrint
 from harness.execution.plan import FillView, IntentView, PositionView
 from harness.strategy.variants import with_defaults
@@ -127,7 +129,12 @@ def _live_and_at(sql: str, bound: str) -> tuple:
     return text(sql.format(at="")), text(sql.format(at=bound))
 
 
-_CANDIDATES, _CANDIDATES_AT = _live_and_at("""
+#: Fix 57, ruling 1 (journal 184): these three statements are the in-game readers that reach a
+#: run's gap snapshots through `signals.run_id`, so each excludes a run recorded under an
+#: unsynchronized kernel clock (the key is named once in `harness/ops/clock.py`). An absent run
+#: row, a NULL `notes` and a run without the key all keep their rows, so no live number moves.
+#: `{{at}}` in these f-strings stays the literal `{at}` `_live_and_at`'s own `.format` fills.
+_CANDIDATES, _CANDIDATES_AT = _live_and_at(f"""
 select s.id as signal_id, s.variant_id, s.venue_market_id, s.side, s.price_target, s.contracts,
        s.edge, s.edge_min, s.fair_p, s.stake, s.created_at, s.as_estimate, s.gap_snapshot_id,
        m.ticker, m.venue, m.game_id, g.kickoff_utc, gs.fair_value_id
@@ -137,7 +144,8 @@ left join games g on g.id = m.game_id
 left join market_gap_snapshots gs on gs.id = s.gap_snapshot_id
 left join intents i on i.signal_id = s.id
 where s.decision = 'candidate' and s.replay = :replay and s.variant_id = any(:variants)
-  and s.created_at >= :lower{at} and i.signal_id is null
+  and s.created_at >= :lower{{at}} and i.signal_id is null
+  and {exclude_unsynced_runs('s.run_id')}
 order by s.id
 """, " and s.created_at <= :at")
 
@@ -257,7 +265,7 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
     return written
 
 
-_NEWEST_INTENTS, _NEWEST_INTENTS_AT = _live_and_at("""
+_NEWEST_INTENTS, _NEWEST_INTENTS_AT = _live_and_at(f"""
 select distinct on (i.variant_id, i.venue_market_id, i.side)
        i.id, i.signal_id, i.variant_id, i.venue_market_id, i.ticker, i.side, i.target_prob,
        i.target_contracts, i.edge, i.edge_min, i.fair_p, i.fair_row_id, i.game_id,
@@ -266,16 +274,18 @@ select distinct on (i.variant_id, i.venue_market_id, i.side)
 from intents i
 left join signals s on s.id = i.signal_id
 where i.replay = :replay and i.variant_id = any(:variants)
-  and i.signal_created_at >= :lower{at}
+  and i.signal_created_at >= :lower{{at}}
+  and {exclude_unsynced_runs('s.run_id')}
 order by i.variant_id, i.venue_market_id, i.side, i.signal_created_at desc, i.created_at desc,
          i.signal_id desc, i.id desc
 """, " and i.signal_created_at <= :at")
 
-_NEWEST_DECISIONS, _NEWEST_DECISIONS_AT = _live_and_at("""
+_NEWEST_DECISIONS, _NEWEST_DECISIONS_AT = _live_and_at(f"""
 select distinct on (s.variant_id, s.venue_market_id, s.side)
        s.variant_id, s.venue_market_id, s.side, s.decision
 from signals s
-where s.replay = :replay and s.variant_id = any(:variants) and s.created_at >= :lower{at}
+where s.replay = :replay and s.variant_id = any(:variants) and s.created_at >= :lower{{at}}
+  and {exclude_unsynced_runs('s.run_id')}
 order by s.variant_id, s.venue_market_id, s.side, s.created_at desc, s.id desc
 """, " and s.created_at <= :at")
 
@@ -611,13 +621,17 @@ def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
 #: is dormant, so every paper and replay number is byte-identical.
 MONEY_FILL_METHODS = ("queue_model", "venue")
 
-_POSITIONS = text("""
+#: `OPEN_FILL_SQL` is the shared "this fill has not been settled yet" predicate, imported so the
+#: view, this read and Floor's exposure read cannot drift apart (carried fix 56: an order that
+#: was partially filled and then cancelled or expired keeps its own status forever, so its
+#: settled fill stayed in the caps).
+_POSITIONS = text(f"""
 select o.variant_id, o.game_id, m.side_team_id, o.side,
        sum(f.contracts * f.prob) as stake, max(o.edge_at_place) as edge
 from fills f
 join orders o on o.id = f.order_id
 join venue_markets m on m.id = o.venue_market_id
-where f.fill_method = any(:methods) and o.replay = :replay and o.status <> 'settled'
+where f.fill_method = any(:methods) and o.replay = :replay and {OPEN_FILL_SQL}
 group by o.variant_id, o.game_id, m.side_team_id, o.side
 """)
 

@@ -1,0 +1,81 @@
+{
+  "at": "2026-09-13T13:08:59.148136+00:00",
+  "mapping": {
+    "duration/A": {
+      "job": "qwen-duration-02",
+      "sha256": "fb69b36a7604403995161ac7d1c848e61f6a22e7fca51c24e93ccd73f6c2f731"
+    },
+    "duration/B": {
+      "job": "claude-duration-01",
+      "sha256": "ff25c56f40c36e361de3c7a14d7f663bfd81f89d10317e927ac2a7055354f4bd"
+    },
+    "duration/C": {
+      "job": "cerebras-duration-02",
+      "sha256": "a41219415d7c71aa60094cc210bb3ba9551fddb1a41aa592d22c42a74015d795"
+    },
+    "utf8_tail/A": {
+      "job": "qwen-utf8_tail-02",
+      "sha256": "ac48fb6f9e69feaeb98109ee98720c748fe88dfc487b5d4f9175787e4b6de091"
+    },
+    "utf8_tail/B": {
+      "job": "claude-utf8_tail-01",
+      "sha256": "2d1cb987e0937213aa4e89ab8005bba86216c43d163ebe03a948852a8068a0b9"
+    },
+    "utf8_tail/C": {
+      "job": "cerebras-utf8_tail-02",
+      "sha256": null
+    },
+    "atomic_json/A": {
+      "job": "qwen-atomic_json-01",
+      "sha256": "123eb1d85dbc75b1029c4da941320ed2fd96a048518b230fe4b343291e552721"
+    },
+    "atomic_json/B": {
+      "job": "claude-atomic_json-01",
+      "sha256": "785d62ebe1cb0e1c2e2bfb363aa208b064369ffd2d8273720e466c447d8bbc3d"
+    },
+    "atomic_json/C": {
+      "job": "cerebras-atomic_json-01",
+      "sha256": "51ae870aaf55d104a7378213414c63c7752263f84eb184e4aaf56fb76cf4e6b4"
+    },
+    "receipt/A": {
+      "job": "claude-receipt-01",
+      "sha256": "f4e45aa0bb7c5d903ad4b7461b630b766a6c7fdde9fc6184bfbec148b5dacadc"
+    },
+    "receipt/B": {
+      "job": "qwen-receipt-01",
+      "sha256": "6aad6ab7daa784b342e3d93ff4cd2ab825601e0aa4a7ce69ca1772be065499ab"
+    },
+    "receipt/C": {
+      "job": "cerebras-receipt-01",
+      "sha256": "a20b5017e8335b3885221084b9649a1de73e427fc9b38559e6a38f4aa99751f4"
+    },
+    "job_order/A": {
+      "job": "qwen-job_order-01",
+      "sha256": "d642c36d0506302f8c549c4a33dc58ccb430ac83c6ba722dfe8c9ce1ee4d8c13"
+    },
+    "job_order/B": {
+      "job": "claude-job_order-01",
+      "sha256": "5ff8a8b42c7b242f5507bf12276aec312a24043f9bf58273626b3c3839410a23"
+    },
+    "job_order/C": {
+      "job": "cerebras-job_order-01",
+      "sha256": "6e835cc8e62554ed9876a280bacc07132a92f36ec478f4eb8c4d871599db9459"
+    },
+    "tsv_summary/A": {
+      "job": "claude-tsv_summary-01",
+      "sha256": "1cc9a642bbf783b26d86409afabe815ee88ec7c8f22e931c964456716c38bb6e"
+    },
+    "tsv_summary/B": {
+      "job": "qwen-tsv_summary-01",
+      "sha256": "8324004e8d30d5888ada072e3c9e82a1dbd04bd4ba0fcb985a68432eb56c3db8"
+    },
+    "tsv_summary/C": {
+      "job": "cerebras-tsv_summary-01",
+      "sha256": "3a5bec1906489c7424b6cc4c7addedeccda61cc6e8b1b81f27ab07ae334baa1c"
+    }
+  },
+  "system_prompt": "You are an independent senior code reviewer in a bounded offline comparison. Review ONE task packet and its anonymous candidates A/B/C. The /work tree is READ-ONLY. Use only the pilot shell; no network, credentials, installation, or edits to /work. IMPORTANT: every shell invocation gets a FRESH /tmp. Scratch files DO NOT persist between tool calls. Put setup and a check in the SAME shell call. You may read /work throughout. You have at most FOUR shell calls: first read the packet and ALL candidates together; then at most three focused checks if needed. Prefer source reasoning to broad fuzzing. Aim to finish within two minutes. Judge ONLY the written contract; do not invent stronger requirements. Find blocking correctness violations, memory/resource violations explicitly in the packet, and atomicity/exception-preservation issues if relevant. Ordinary finite inputs only, not hostile subclasses or arbitrary monkeypatches unless the packet requires them. Distinguish real contract defects from optional enhancements. Do not infer authorship. Return a concise final verdict for EACH candidate: PASS (no blocking finding), FAIL (a blocking finding), or MISSING. For every FAIL give file:line, a concrete ordinary counterexample and expected versus actual result; clearly say if unexecuted. A candidate missing entirely is MISSING, not PASS. Keep the final under 700 words. No repair edits. Stop investigating in time to return the verdict.",
+  "script_sha256": "48eef1dcd9a5138d37bcfe0255044b8904940b86edcbabb207df247d93dffcb9",
+  "max_active_reviewers": 2,
+  "note": "Native reviewers make no Cerebras calls or budget writes. Task workspaces are read-only."
+}

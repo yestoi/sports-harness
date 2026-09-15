@@ -1,0 +1,271 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; background: #0b0e13; color: #eef2f6; font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif; font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
+    a { color: #35c9d9; text-decoration: none; } a:hover { color: #7fe0eb; }
+    .num { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .display { font-family: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif; }
+    .hdr { height: 56px; display: flex; align-items: center; gap: 18px; padding: 0 24px; border-bottom: 1px solid #1f2733; background: #0f131a; }
+    .brand { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.14em; font-size: 12px; color: #eef2f6; }
+    .tabs { display: flex; gap: 2px; }
+    .tab { padding: 7px 12px; border-radius: 6px; color: #aab4c0; font-weight: 500; }
+    .tab.on { background: #1a212b; color: #eef2f6; }
+    .tab.fun { color: #f5a524; }
+    .tab.legacy { color: #7c8794; font-size: 12px; }
+    .spacer { flex: 1; }
+    .status { display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.08em; font-size: 13px; color: #2bc257; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #2bc257; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; border: 1px solid #35c9d9; color: #35c9d9; white-space: nowrap; }
+    .pill.muted { border-color: #2a3441; color: #7c8794; }
+    .funbadge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; border: 1px solid #f5a524; color: #f5a524; white-space: nowrap; }
+    .meta { color: #7c8794; font-size: 12px; font-family: 'IBM Plex Mono', monospace; }
+    .card { background: #131820; border: 1px solid #1f2733; border-radius: 10px; padding: 14px 16px; min-width: 0; }
+    .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c8794; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .card h3 .tech { font-size: 11px; color: #7c8794; font-family: 'IBM Plex Mono', monospace; text-transform: none; letter-spacing: 0; font-weight: 400; text-decoration: underline dotted; }
+    .muted { color: #7c8794; } .sec { color: #aab4c0; }
+    .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .spread { justify-content: space-between; }
+    .col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+    .grid6 { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+    .tile { background: #0f131a; border: 1px solid #1f2733; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .tile .lbl { font-size: 11px; color: #7c8794; }
+    .tile .val { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: #eef2f6; }
+    table { border-collapse: collapse; width: 100%; }
+    th { text-align: left; font-size: 11px; color: #7c8794; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #1f2733; letter-spacing: 0.04em; white-space: nowrap; }
+    td { padding: 7px 8px; border-bottom: 1px solid #171d26; vertical-align: top; }
+    td.r, th.r { text-align: right; white-space: nowrap; }
+    .n { font-size: 11px; color: #7c8794; }
+    .ok { color: #2bc257; } .warn { color: #fab219; } .bad { color: #e05252; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; background: #1a212b; color: #7c8794; }
+    .badge.ok { color: #2bc257; } .badge.warn { color: #fab219; } .badge.bad { color: #e05252; }
+    .lead { font-size: 14.5px; line-height: 1.5; color: #eef2f6; margin: 0 0 12px; max-width: 72ch; text-wrap: pretty; }
+    .lead b { font-weight: 600; }
+    .tech { font-size: 11px; color: #7c8794; font-family: 'IBM Plex Mono', monospace; }
+    .tabbar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; display: flex; border-top: 1px solid #1f2733; background: #0f131a; }
+    .tabbar div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: #7c8794; }
+    .tabbar div.on { color: #eef2f6; box-shadow: inset 0 2px 0 #35c9d9; }
+    .tabbar div.on.fun { color: #f5a524; box-shadow: inset 0 2px 0 #f5a524; }
+    .tabbar svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .sample { position: absolute; left: 0; right: 0; top: 0; text-align: center; font-size: 10px; letter-spacing: 0.1em; color: #7c8794; background: #0b0e13; padding: 3px 0; z-index: 5; }
+
+    /* the slip: night paper */
+    .slip { background: #2b2517; color: #f1e6cf; border-radius: 6px; position: relative; padding: 18px 18px 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.45); overflow: hidden; min-width: 0; }
+    .slip::before, .slip::after { content: ""; position: absolute; left: 0; right: 0; height: 10px; background: radial-gradient(circle at 5px 5px, #0b0e13 5px, transparent 5.5px) 0 0 / 14px 10px repeat-x; }
+    .slip::before { top: -4px; } .slip::after { bottom: -4px; transform: rotate(180deg); }
+    /* draft mark 1: a dashed perforation instead of the dotted one */
+    .slip.draft::before, .slip.draft::after { background: repeating-linear-gradient(90deg, #0b0e13 0 9px, transparent 9px 16px); height: 5px; }
+    .slip.draft::before { top: 0; } .slip.draft::after { bottom: 0; }
+    .slip .kind { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.12em; font-size: 11px; color: #b9ad95; }
+    /* draft mark 2: the PROPOSED badge */
+    .slip .draftbadge { display: inline-block; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.1em; font-size: 10px; color: #2b2517; background: #b9ad95; border-radius: 3px; padding: 2px 6px; margin-left: 8px; vertical-align: 1px; }
+    .slip .pay { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 48px; letter-spacing: -0.03em; line-height: 1; color: #f1e6cf; }
+    .slip .pay small { font-size: 16px; letter-spacing: 0; color: #b9ad95; font-weight: 500; }
+    .slip .would { font-size: 13px; color: #d6cab0; margin-top: 4px; }
+    .slip .would b { font-family: 'IBM Plex Mono', monospace; color: #f1e6cf; font-weight: 500; }
+    .slip .anchor { font-size: 12px; color: #f5a524; font-weight: 600; letter-spacing: 0.02em; margin-top: 8px; }
+    .slip .sub { font-size: 12.5px; color: #d6cab0; font-style: italic; margin-top: 6px; line-height: 1.45; }
+    .leg { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start; padding: 12px 0; border-top: 1px dashed #5c503c; position: relative; }
+    .leg .lamp { width: 14px; height: 14px; border-radius: 50%; margin-top: 3px; background: #5a5040; box-shadow: inset 0 0 0 2px #6a5f4c; }
+    .leg .lamp.alive { background: #f5a524; box-shadow: 0 0 0 4px rgba(245,165,36,0.28), 0 0 14px rgba(245,165,36,0.7); }
+    .leg .lamp.hit { background: #4fc46f; box-shadow: 0 0 0 3px rgba(79,196,111,0.25); }
+    .leg .lamp.miss { background: #ef5a6e; box-shadow: 0 0 0 3px rgba(239,90,110,0.22); }
+    /* draft mark 3: a hollow ring where a placed card has a lamp */
+    .leg .ring { width: 14px; height: 14px; border-radius: 50%; margin-top: 3px; background: transparent; border: 2px solid #8d8370; box-sizing: border-box; }
+    .leg .what { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 16px; }
+    .leg .odds { font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #f1e6cf; text-align: right; }
+    .leg .odds small { display: block; font-size: 10px; color: #b9ad95; }
+    .leg .line { font-size: 12px; color: #d6cab0; margin-top: 2px; }
+    .leg .sel { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #b9ad95; margin-top: 3px; }
+    .leg .ctx { font-size: 11px; color: #b9ad95; margin-top: 3px; }
+    .leg .stat { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #f1e6cf; margin-top: 4px; }
+    .leg .stat .src { color: #b9ad95; }
+    .leg .corr { display: inline-block; font-size: 10.5px; color: #2b2517; background: #d6cab0; border-radius: 3px; padding: 1px 6px; margin-top: 4px; }
+    .leg .prov { font-size: 11px; color: #f5a524; margin-top: 3px; }
+    .leg .says { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #b9ad95; margin-top: 5px; }
+    .leg .bar { width: 90px; height: 5px; border-radius: 3px; background: #4a4031; overflow: hidden; }
+    .leg .bar div { height: 100%; background: #f1e6cf; border-radius: 3px; }
+    .leg.miss .what { color: #8d8370; text-decoration: line-through; text-decoration-color: #ef5a6e; }
+    .leg.gone .what { color: #8d8370; }
+    .rel { font-size: 11.5px; color: #d6cab0; padding: 6px 10px; border-left: 2px solid #8d8370; margin: 0 0 4px 32px; }
+    .stamp { position: absolute; font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.16em; border: 3px solid; border-radius: 6px; padding: 2px 10px; font-size: 13px; transform: rotate(-8deg); opacity: 0.92; }
+    .stamp.hit { color: #4fc46f; border-color: #4fc46f; } .stamp.miss { color: #ef5a6e; border-color: #ef5a6e; }
+    .stamp.void { color: #b9ad95; border-color: #b9ad95; }
+    .stamp.big { font-size: 34px; padding: 6px 18px; border-width: 5px; transform: rotate(-14deg); left: 50%; top: 42%; translate: -50% -50%; letter-spacing: 0.22em; }
+    .foot { border-top: 2px solid #f1e6cf; margin-top: 8px; padding-top: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #d6cab0; }
+    .foot b { font-family: 'IBM Plex Mono', monospace; color: #f1e6cf; font-weight: 500; }
+    .foot .week { color: #b9ad95; }
+    .acts { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 0 14px; border-radius: 6px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 13px; letter-spacing: 0.02em; border: 1.5px solid #f1e6cf; color: #f1e6cf; background: transparent; }
+    .btn.primary { background: #f1e6cf; color: #2b2517; }
+    .btn.quiet { border-color: #8d8370; color: #b9ad95; }
+    .btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .pending { font-size: 12.5px; color: #f5a524; font-weight: 600; margin-top: 10px; }
+    .noidea { background: #131820; border: 1px dashed #2a3441; border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .noidea .kind { font-family: 'Space Grotesk', sans-serif; font-weight: 700; letter-spacing: 0.12em; font-size: 11px; color: #7c8794; }
+    .noidea .why { font-size: 14.5px; line-height: 1.45; color: #eef2f6; }
+    .noidea .facts { font-size: 11px; color: #7c8794; display: flex; flex-direction: column; gap: 3px; }
+    .mini { background: #2b2517; color: #f1e6cf; border-radius: 4px; padding: 8px 10px; position: relative; overflow: hidden; min-height: 78px; display: flex; flex-direction: column; gap: 3px; }
+    .mini .k { font-size: 10px; letter-spacing: 0.1em; color: #b9ad95; font-weight: 700; }
+    .mini .p { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 18px; }
+    .mini .stamp { right: 6px; top: 6px; font-size: 10px; padding: 1px 6px; border-width: 2px; }
+    .mini.grey { background: #1a212b; color: #7c8794; }
+    .mini.grey .k, .mini.grey .p { color: #7c8794; }
+    .mini.grey .p { font-size: 13px; font-weight: 600; }
+
+    /* the confirm sheet */
+    .scrim { position: absolute; inset: 0; background: rgba(11,14,19,0.72); z-index: 8; }
+    .sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 9; background: #2b2517; color: #f1e6cf; border-radius: 12px 12px 0 0; padding: 16px 16px 20px; box-shadow: 0 -12px 40px rgba(0,0,0,0.6); display: flex; flex-direction: column; gap: 12px; }
+    .sheet .grip { width: 36px; height: 4px; border-radius: 2px; background: #6a5f4c; margin: 0 auto; }
+    .sheet h2 { margin: 0; font-family: 'Space Grotesk', sans-serif; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+    .sheet .sub { font-size: 12px; color: #b9ad95; }
+    .fld { display: flex; flex-direction: column; gap: 4px; }
+    .fld label { font-size: 11px; color: #b9ad95; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
+    .fld label .req { color: #f5a524; }
+    .inp { min-height: 44px; border: 1.5px solid #6a5f4c; border-radius: 6px; background: #221d12; color: #f1e6cf; font-family: 'IBM Plex Mono', monospace; font-size: 16px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; }
+    .inp .was { font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; color: #b9ad95; }
+    .inp.moved { border-color: #f5a524; box-shadow: 0 0 0 3px rgba(245,165,36,0.2); }
+    .inp.empty { color: #8d8370; }
+    .legs-in { display: flex; flex-direction: column; gap: 8px; }
+    .legrow { display: grid; grid-template-columns: 1fr 96px; gap: 8px; align-items: center; }
+    .legrow .t { font-size: 13px; font-weight: 600; }
+    .legrow .s { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #b9ad95; }
+    .refuse { border: 1.5px solid #ef5a6e; border-radius: 6px; padding: 10px 12px; font-size: 13px; color: #f1e6cf; background: rgba(239,90,110,0.1); line-height: 1.45; }
+    .refuse b { color: #ef5a6e; }
+    .notice { border: 1.5px solid #f5a524; border-radius: 6px; padding: 10px 12px; font-size: 13px; color: #f1e6cf; background: rgba(245,165,36,0.1); line-height: 1.45; }
+    .notice b { color: #f5a524; }
+    .btn.disabled { opacity: 0.45; }
+
+    /* floor board and game detail */
+    .board { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+    .gtile { background: #0f131a; border: 1px solid #1f2733; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; text-align: left; }
+    .gtile.fav { border-color: #2a3441; }
+    .gtile.open { border-color: #35c9d9; box-shadow: inset 0 0 0 1px #35c9d9; }
+    .gtile .match { font-size: 13px; color: #eef2f6; line-height: 1.3; }
+    .gtile .abbr { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0.02em; color: #eef2f6; display: flex; align-items: center; gap: 6px; }
+    .gtile .abbr svg { width: 13px; height: 13px; fill: #f5a524; stroke: none; }
+    .gtile .abbr .vs { color: #7c8794; font-weight: 500; font-size: 12px; }
+    .gtile .figs { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #aab4c0; }
+    .gtile .figs b { color: #eef2f6; font-weight: 500; }
+    .gtile .kick { font-size: 11px; color: #7c8794; }
+    .gtile .live { font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #eef2f6; }
+    .gtile .live .q { font-size: 11px; color: #7c8794; margin-left: 6px; font-family: 'IBM Plex Sans', sans-serif; }
+    .detail { background: #131820; border: 1px solid #35c9d9; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .detail .close { margin-left: auto; width: 32px; height: 32px; border-radius: 6px; border: 1px solid #1f2733; color: #aab4c0; display: flex; align-items: center; justify-content: center; }
+    .detail .close svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; }
+    .scoreline { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; }
+    .scoreline .tm { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 40px; letter-spacing: -0.01em; line-height: 1; }
+    .scoreline .sc { font-family: 'IBM Plex Mono', monospace; font-weight: 500; font-size: 40px; line-height: 1; }
+    .scoreline .sep { font-family: 'IBM Plex Mono', monospace; font-size: 40px; color: #7c8794; line-height: 1; }
+    .scoreline .clk { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #aab4c0; }
+    .scoreline .clk .age { color: #7c8794; }
+    .scoreline .name { font-size: 12px; color: #7c8794; margin-top: 4px; }
+    .section h4 { margin: 0 0 8px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #7c8794; font-weight: 600; }
+    .pos { font-size: 14.5px; line-height: 1.5; color: #eef2f6; }
+    .pos .num { color: #eef2f6; }
+    .pos .soft { color: #aab4c0; }
+    .story { display: flex; flex-direction: column; }
+    .srow { display: grid; grid-template-columns: 76px 110px 1fr 24px; gap: 12px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid #171d26; }
+    .srow .t { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #aab4c0; }
+    .srow .k { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+    .srow .k.eval { color: #35c9d9; } .srow .k.pass { color: #7c8794; } .srow .k.rest { color: #fab219; } .srow .k.fill { color: #2bc257; } .srow .k.cancel { color: #e05252; } .srow .k.bench { color: #aab4c0; } .srow .k.settle { color: #2bc257; } .srow .k.gap { color: #e05252; } .srow .k.failed { color: #e05252; } .srow .k.noteval { color: #7c8794; }
+    .srow .d { font-size: 13px; color: #eef2f6; }
+    .srow .d .n { display: block; margin-top: 2px; }
+    .srow .chev { color: #7c8794; font-size: 11px; text-align: right; }
+    .srow.gaprow { background: repeating-linear-gradient(135deg, transparent 0 10px, rgba(224,82,82,0.06) 10px 11px); }
+    .srow.open { background: #0f131a; border-radius: 6px; padding: 8px 8px; }
+    .facts { grid-column: 2 / 5; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #aab4c0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 14px; padding-top: 4px; }
+    .facts span b { color: #7c8794; font-weight: 400; display: block; font-size: 10px; }
+    .onticket { font-size: 12px; color: #f5a524; border-top: 1px solid #1f2733; padding-top: 10px; }
+    .fav-strip { display: flex; gap: 10px; align-items: center; font-size: 12px; color: #aab4c0; flex-wrap: wrap; }
+    .fav-strip .tm { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; color: #eef2f6; display: inline-flex; align-items: center; gap: 5px; }
+    .fav-strip .tm svg { width: 12px; height: 12px; fill: #f5a524; }
+    .fav-strip .k { font-family: 'IBM Plex Mono', monospace; color: #7c8794; }
+    /* Direction A, chosen 2026-09-13: slate slip, coral fun accent. --slip-paper #1a212b, --slip-ink #eef2f6, --slip-muted #8a95a3, --fun #ff7f5c */
+    .slip { background: #1a212b; color: #eef2f6; border: 1px solid #2b3441; box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
+    .slip .kind, .slip .sub, .slip .would, .leg .line, .leg .says, .leg .sel, .leg .ctx, .leg .stat .src, .slip .pay small, .foot, .foot .week, .rel { color: #8a95a3; }
+    .slip .pay, .leg .what, .leg .odds, .leg .stat, .foot b, .slip .would b { color: #eef2f6; }
+    .slip .anchor, .leg .prov, .pending, .onticket, .headline { color: #ff7f5c; }
+    .slip .draftbadge { color: #0b0e13; background: #8a95a3; }
+    .leg { border-top: 1px dashed #2b3441; }
+    .leg .lamp { background: #2b3441; box-shadow: inset 0 0 0 2px #8a95a3; }
+    .leg .lamp.alive { background: #ff7f5c; box-shadow: 0 0 0 4px rgba(255,127,92,0.3), 0 0 14px rgba(255,127,92,0.6); }
+    .leg .ring { border-color: #8a95a3; }
+    .leg .bar { background: #2b3441; } .leg .bar div { background: #eef2f6; }
+    .leg .corr { color: #0b0e13; background: #8a95a3; }
+    .leg .odds small { color: #8a95a3; }
+    .rel { border-left-color: #8a95a3; }
+    .foot { border-top: 2px solid #eef2f6; }
+    .btn { border-color: #eef2f6; color: #eef2f6; }
+    .btn.primary { background: #eef2f6; color: #0b0e13; }
+    .btn.quiet { border-color: #8a95a3; color: #8a95a3; }
+    .funbadge { border-color: #ff7f5c; color: #ff7f5c; }
+    .tab.fun { color: #ff7f5c; }
+    .tabbar div.on.fun { color: #ff7f5c; box-shadow: inset 0 2px 0 #ff7f5c; }
+    .sheet { background: #1a212b; color: #eef2f6; border-top: 1px solid #2b3441; }
+    .sheet .grip { background: #3b4653; } .sheet .sub { color: #8a95a3; }
+    .fld label { color: #8a95a3; } .fld label .req { color: #ff7f5c; }
+    .inp { border-color: #3b4653; background: #0f131a; color: #eef2f6; }
+    .inp .was { color: #8a95a3; } .inp.empty { color: #5b6672; }
+    .inp.moved { border-color: #ff7f5c; box-shadow: 0 0 0 3px rgba(255,127,92,0.22); }
+    .legrow .s { color: #8a95a3; }
+    .notice { border-color: #ff7f5c; background: rgba(255,127,92,0.1); } .notice b { color: #ff7f5c; }
+    .mini { background: #1a212b; color: #eef2f6; border: 1px solid #2b3441; } .mini .k { color: #8a95a3; }
+    .mini.grey { background: #131820; }
+    .gtile .abbr svg, .fav-strip .tm svg { fill: #aab4c0; }
+
+
+  </style>
+</helmet>
+<div style="width: 390px; height: 1180px; background: #0b0e13; position: relative; overflow: hidden;">
+<div class="sample">DESIGN · EVERY VALUE IS FICTIONAL</div>
+<div class="hdr" style="padding: 0 16px; gap: 10px;"><div class="brand">HARNESS</div><div class="status"><span class="dot"></span>FINE</div><div class="spacer"></div><span class="funbadge">FUN MONEY · $50/WK</span><span class="pill muted">SAMPLE</span></div>
+<div style="padding: 16px 14px 90px; display: flex; flex-direction: column; gap: 14px;"><div class="card"><h3>This week's ideas <span class="tech">parlay_cards · proposed</span></h3>
+  <p class="lead">Three ideas for week 38, none placed.</p>
+  <div class="fav-strip"><span class="tm"><svg viewBox="0 0 24 24"><path d="M12 2.5l2.9 6.2 6.8.8-5 4.6 1.3 6.7L12 17.5l-6 3.3 1.3-6.7-5-4.6 6.8-.8z"/></svg>LSU</span><span>Florida at LSU · Sat 6:30 pm CT</span><span class="k">·</span><span class="tm"><svg viewBox="0 0 24 24"><path d="M12 2.5l2.9 6.2 6.8.8-5 4.6 1.3 6.7L12 17.5l-6 3.3 1.3-6.7-5-4.6 6.8-.8z"/></svg>NO</span><span>Saints at Lions · Sun 12:00 pm CT</span></div>
+  <div style="margin-top:12px"><div class="col" style="gap:14px"><div class="slip draft">
+  <div class="row spread" style="align-items:flex-start">
+    <div><div class="kind">SMART CARD · $25<span class="draftbadge">PROPOSED · NOT PLACED</span></div><div class="would">would pay <b>$137.50</b> at +450</div></div>
+    <div style="text-align:right"><div class="kind">LEGS</div><div class="display" style="font-size:22px; font-weight:700">4</div></div>
+  </div>
+  <div class="anchor">carries LSU −3.5</div>
+  <div class="sub">Four games, four different scripts. The Tigers cover at home, two road favourites hold, and one big total lands.</div>
+  <div style="margin-top:10px">
+  <div class="leg "><span class="ring"></span><div><div class="what">LSU by 4 or more</div><div class="line">Saturday 6:30 pm · Florida at LSU</div><div class="sel">LSU −3.5 · spread · game · DK −110 · 4 min ago</div><div class="says">sharps say <span class="bar"><div style="width:57%"></div></span><span class="num">57 %</span></div></div><div class="odds">−110</div></div>
+  <div class="leg "><span class="ring"></span><div><div class="what">Michigan to win</div><div class="line">Saturday 2:30 pm · Michigan at Nebraska</div><div class="sel">MICH · moneyline · game · DK −165 · 4 min ago</div><div class="says">sharps say <span class="bar"><div style="width:66%"></div></span><span class="num">66 %</span></div></div><div class="odds">−165</div></div>
+  <div class="leg "><span class="ring"></span><div><div class="what">Over 51.5 points, Texas at Oklahoma</div><div class="line">Saturday 11:00 am</div><div class="sel">TEX/OKLA · total · over 51.5 · DK −108 · 6 min ago</div><div class="says">sharps say <span class="bar"><div style="width:53%"></div></span><span class="num">53 %</span></div></div><div class="odds">−108</div></div>
+  <div class="leg "><span class="ring"></span><div><div class="what">Marchand 250+ passing yards</div><div class="line">Saturday 6:30 pm · Florida at LSU</div><div class="sel">J. Marchand · pass yds · game · 250+ · DK +120 · 4 min ago</div><div class="ctx">avg 268 · last 241 · ESPN season</div><div class="says">no sharp read</div></div><div class="odds">+120</div></div>
+  </div>
+  <div class="foot"><span><b>+450</b> calculated from the legs · assumes independence</span><span>sharps 21 % all four hit · DraftKings pays as if 18 % · <b>hold 3 pts</b></span><span class="week">$0 recorded · $50 left of $50</span></div>
+  <div class="acts"><span class="btn"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 13v7H4V6h7"/></svg>Open event</span><span class="btn primary"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>I placed this</span><span class="btn quiet">Not this one</span></div>
+</div></div></div>
+</div></div>
+<div class="scrim"></div>
+<div class="sheet">
+  <div class="grip"></div>
+  <h2>I placed this</h2>
+  <div class="sub">Smart card · $25 · four legs · week 38. Record what DraftKings actually accepted.</div>
+  
+  <div class="grid2" style="gap:10px">
+    <div class="fld"><label>Stake</label><div class="inp">$25.00</div></div>
+    <div class="fld"><label>Accepted odds <span class="req">required</span></label><div class="inp empty">e.g. +450</div></div>
+  </div>
+  <div class="fld"><label>Legs · line you got</label><div class="legs-in"><div class="legrow"><div><div class="t">LSU by 4 or more</div><div class="s">LSU −3.5 · spread</div></div><div class="inp">−3.5</div></div><div class="legrow"><div><div class="t">Michigan to win</div><div class="s">MICH · moneyline</div></div><div class="inp">ML</div></div><div class="legrow"><div><div class="t">Over 51.5, Texas at Oklahoma</div><div class="s">TEX/OKLA · total</div></div><div class="inp">51.5</div></div><div class="legrow"><div><div class="t">Marchand 250+ passing yards</div><div class="s">J. Marchand · pass yds</div></div><div class="inp">250</div></div></div></div>
+  <div class="fld"><label>Note · optional</label><div class="inp empty" style="font-family:'IBM Plex Sans',sans-serif; font-size:13px">placed on the phone at the bar</div></div>
+  <div class="acts" style="margin-top:4px"><span class="btn primary" style="flex:1"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Record</span><span class="btn quiet">Cancel</span></div>
+  <div class="n" style="color:#8a95a3">Opening DraftKings recorded nothing. Only Record writes the stake, and a repeat tap records nothing twice.</div>
+</div>
+<div class="tabbar"><div class=""><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Pulse</div><div class=""><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></svg>Floor</div><div class=""><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Study</div><div class=""><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>Gate</div><div class="on fun"><svg viewBox="0 0 24 24"><path d="M4 7h16v4a2 2 0 0 0 0 4v4H4v-4a2 2 0 0 0 0-4z"/><path d="M9 7v13" stroke-dasharray="2 2"/></svg>Ticket</div></div>
+</div>
+</x-dc>
+</body>
+</html>

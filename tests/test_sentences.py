@@ -147,6 +147,44 @@ def test_a_reading_is_one_sentence_per_row():
     assert "too few games to say anything" in reading
 
 
+# --- fix 54: a criterion reading is formatted in its own unit -----------------------------------
+
+def test_gate_criterion_reading_formats_a_seconds_criterion_in_seconds():
+    """`staleness_median` is a median age in seconds, not a fraction -- `fmt_prob` used to print
+    it as a percentage (59 s read as "5900.0 %")."""
+    reading = s.gate_criterion_reading({"name": "staleness_median", "status": "passed",
+                                        "value": 59, "threshold": 90, "n": 12})
+    assert "59 s" in reading
+    assert "90 s" in reading
+    assert "%" not in reading
+
+
+def test_gate_criterion_reading_formats_a_count_criterion_as_a_bare_number():
+    """`fill_events` is a count of fill events, not a fraction -- `fmt_prob` used to print 0
+    fill events as "0.0 %"."""
+    reading = s.gate_criterion_reading({"name": "fill_events", "status": "failed",
+                                        "value": 0, "threshold": 150, "n": 3})
+    assert "0" in reading
+    assert "150" in reading
+    assert "%" not in reading
+
+
+def test_gate_criterion_reading_still_formats_a_probability_criterion_as_before():
+    """A criterion measured as a probability difference (`clv_pinnacle_lb`) keeps reading as a
+    percentage at one decimal, exactly as before this fix."""
+    reading = s.gate_criterion_reading({"name": "clv_pinnacle_lb", "status": "passed",
+                                        "value": 0.012, "threshold": 0.0, "n": 80})
+    assert "1.2 %" in reading
+
+
+def test_gate_criterion_reading_insufficient_branch_unchanged_by_the_unit_table():
+    """The `insufficient` branch never reads a value or a threshold at all, in any unit -- the
+    unit table only applies once a criterion actually has a measured value."""
+    reading = s.gate_criterion_reading({"name": "staleness_median", "status": "insufficient",
+                                        "value": None, "threshold": 90, "n": 6})
+    assert reading == "staleness_median: not enough evidence to judge -- too few games to say anything."
+
+
 def test_every_template_answers_an_empty_section_without_raising():
     """A surface with nothing to show still gets a sentence; no template may raise on an empty
     or partial section, because a builder section that failed hands it `{}`."""

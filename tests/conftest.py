@@ -1,10 +1,14 @@
 import itertools
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
+import psycopg
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 
 
@@ -43,6 +47,21 @@ def _schema():
     from harness.db.schema import create_schema, drop_schema, ensure_partitions
 
     engine = make_engine(url)
+
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "checkin")
+    def _reset_session_settings(dbapi_connection, _record):
+        # SQLAlchemy's pool rolls back on checkin but keeps a bare `SET` (statement_timeout,
+        # lock_timeout, ...) on the physical connection, so one test's session setting would
+        # reach whichever test checks that connection out next; the order files run in must
+        # not change a result (the full suite runs as several file groups in parallel).
+        if dbapi_connection is None:
+            return
+        with dbapi_connection.cursor() as cursor:
+            cursor.execute("reset all")
+        dbapi_connection.commit()
+
     drop_schema(engine)
     create_schema(engine)
     # ensure_partitions covers all three partitioned tables (raw_responses, orderbook_events,
@@ -58,9 +77,32 @@ def _schema():
     engine.dispose()
 
 
+def truncate_all(engine, *, statement_timeout_ms: int = 120_000, attempts: int = 2,
+                  wait_s: float = 2.0) -> int:
+    """Truncates every model table, restarting identities, under its own statement timeout.
+
+    The engine's connections carry the 30 s production `statement_timeout`; a truncate of ~60 tables
+    under host load has exceeded it three times (carried fix 56). `set local` scopes the longer
+    timeout to this transaction only. A `QueryCanceled` cancel is retried `attempts - 1` times after
+    `wait_s`; anything else, and the last cancel, propagate. Returns the number of attempts made."""
+    from harness.db.models import Base
+
+    tables = ", ".join(sorted(Base.metadata.tables))
+    for attempt in range(1, attempts + 1):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"set local statement_timeout = {statement_timeout_ms}"))
+                conn.execute(text(f"truncate {tables} restart identity cascade"))
+            return attempt
+        except OperationalError as exc:
+            if isinstance(exc.orig, psycopg.errors.QueryCanceled) and attempt < attempts:
+                time.sleep(wait_s)
+                continue
+            raise
+
+
 @pytest.fixture
 def db_session(_schema):
-    from sqlalchemy import text
     from sqlalchemy.orm import sessionmaker
     from harness.db.schema import ensure_partitions, _partition_name
 
@@ -76,14 +118,10 @@ def db_session(_schema):
                 ensure_partitions(session, week_start)
         session.commit()
 
-    from harness.db.models import Base
-
     with sessionmaker(bind=_schema)() as session:
         yield session
         session.rollback()
-    tables = ", ".join(sorted(Base.metadata.tables))
-    with _schema.begin() as conn:
-        conn.execute(text(f"truncate {tables} restart identity cascade"))
+    truncate_all(_schema)
 
 
 # --- Task T10: the parlay builder's fixtures --------------------------------------------------

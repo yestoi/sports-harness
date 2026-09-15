@@ -237,3 +237,20 @@ export function glossaryTerm(term, shown) {
   button.addEventListener("mouseleave", close);
   return wrap;
 }
+
+// Fix 53 round 2 (walk item 19): an operator event's "technical" evidence -- the sanitized
+// stored text `sanitize_reason` produced (`pulse.py`/`study.py`'s `humanize_event_summary`) --
+// used to render inline, visible beside the plain phrase whether or not anyone wanted to read
+// it. A native `<details>`/`<summary>` disclosure keeps it out of sight until opened, needs no
+// script, and is keyboard-operable (Tab to it, Enter or Space to open) the same way a mouse
+// click is. Shared by Pulse's operator events table and Study's "Operator events this week"
+// table, so both surfaces render the same accessible markup rather than each keeping its own
+// copy. `.event-technical` is its own class in `app.css`, not `.technical`/`.tech` -- those are
+// this module's own `label()` classes, already used unstyled by other surfaces (fix 53 round 2,
+// Critical 1) -- and a blanket rule on it would have restyled them too.
+export function eventWhat(event) {
+  if (!event.technical) return event.summary;
+  return el("details", { class: "event" },
+            el("summary", { text: event.summary }),
+            el("span", { class: "event-technical" }, event.technical));
+}

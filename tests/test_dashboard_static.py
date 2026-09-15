@@ -303,3 +303,156 @@ def test_the_theme_toggle_can_go_back_to_following_the_system():
     body = (STATIC / "js" / "app.mjs").read_text()
     assert "removeItem(THEME_KEY)" in body
     assert "THEME_CYCLE" in body and '"system"' in body
+
+
+def test_long_unbroken_tokens_can_wrap_so_a_populated_card_never_forces_the_page_wide():
+    """Fix 53: a populated Gate stored a 64-char criteria hash and full ISO timestamps in
+    `.n` spans and `.sentences` lines with no space to break on -- CSS line breaking treats a
+    run with no space (and no break after a hyphen between digits, as in an ISO date) as one
+    unbreakable word, so the card's min-content grew past a 390 px viewport. `overflow-wrap:
+    anywhere` on both lets the browser break the run instead of stretching the card."""
+    css = (STATIC / "app.css").read_text()
+    n_rule = re.search(r"\.n\s*\{([^}]*)\}", css)
+    assert n_rule and "overflow-wrap: anywhere" in n_rule.group(1), \
+        ".n has no overflow-wrap: anywhere for long hashes/timestamps"
+    sentences_rule = re.search(r"\.sentences\s*\{([^}]*)\}", css)
+    assert sentences_rule and "overflow-wrap: anywhere" in sentences_rule.group(1), \
+        ".sentences has no overflow-wrap: anywhere for long unbroken values"
+
+
+def test_every_surface_grid_item_has_min_width_zero():
+    """Fix 53 round 1: a grid item's `min-width` defaults to `auto`, which resolves to its
+    content's automatic minimum size. `variantsSection`'s unclassed wrapper `div` around the
+    Gate criteria table has no class and no `min-width` rule of its own, so it took the grid
+    track to the table's min-content width (748 px at a 390 px viewport, confirmed by a real
+    capture) and every other card in the same track -- `.card`'s own `min-width: 0` included --
+    stretched to match. The general rule protects every direct child of `#surface`, classed or
+    not, so a future bare wrapper cannot reopen this."""
+    css = (STATIC / "app.css").read_text()
+    rule = re.search(r"#surface\s*>\s*\*\s*\{([^}]*)\}", css)
+    assert rule and "min-width: 0" in rule.group(1), \
+        "#surface > * has no min-width: 0 -- a bare grid-item wrapper can stretch the track wide"
+
+
+def test_the_pulse_event_technical_span_has_its_own_class_not_a_blanket_dot_technical_rule():
+    """Fix 53 round 2, Critical 1: a blanket `.technical { ... }` rule restyled every other
+    surface's unrelated, previously-unstyled use of `components.mjs`'s `label()` `.technical`
+    span -- Floor's edge-now cell, Study's week bar, Ticket's slip legs (where `--ink-muted` is
+    the wrong, main-page token on the slip's warm paper). The Pulse events technical text has
+    its own class, `.event-technical`, styled on its own and never applied by `label()`."""
+    css = (STATIC / "app.css").read_text()
+    assert not re.search(r"^\.technical\s*\{", css, re.M), \
+        "a blanket `.technical { ... }` rule would restyle every surface's label() technical span"
+    rule = re.search(r"\.event-technical\s*\{([^}]*)\}", css)
+    assert rule and "overflow-wrap: anywhere" in rule.group(1)
+    body = (STATIC / "js" / "components.mjs").read_text()
+    assert '"event-technical"' in body
+
+
+def test_event_what_lives_in_components_and_is_shared_by_pulse_and_study():
+    """Fix 53 round 2 (brief fix-53r2-54-55): walk item 19 -- the technical text beside a
+    humanized operator-event summary was visible beside the phrase, not behind a disclosure.
+    `eventWhat` now lives in `components.mjs`, exported once, and renders a native
+    `<details class="event"><summary>...</summary><span class="event-technical">...</span>
+    </details>` so the technical text is keyboard-accessible (Tab, Enter/Space) and invisible
+    until opened, with no script. Both Pulse's operator events table and Study's "Operator
+    events this week" table use it; neither defines its own copy."""
+    components = (STATIC / "js" / "components.mjs").read_text()
+    assert "export function eventWhat" in components
+    assert 'el("details", { class: "event" }' in components
+    assert 'el("summary"' in components
+    assert 'el("span", { class: "event-technical" }' in components
+
+    pulse = (STATIC / "js" / "pulse.mjs").read_text()
+    assert "function eventWhat" not in pulse, "pulse.mjs must import eventWhat, not define it"
+    assert re.search(r"import \{[^}]*\beventWhat\b[^}]*\} from \"\./components\.mjs\"", pulse)
+
+    study = (STATIC / "js" / "study.mjs").read_text()
+    assert "function eventWhat" not in study, "study.mjs must import eventWhat, not define it"
+    assert re.search(r"import \{[^}]*\beventWhat\b[^}]*\} from \"\./components\.mjs\"", study)
+
+
+def test_details_event_summary_has_a_pointer_cursor_rule():
+    """The disclosure's `<summary>` is the tap/click target; without its own rule it would keep
+    the browser default, which is not obviously interactive next to every other tappable label
+    on the page."""
+    css = (STATIC / "app.css").read_text()
+    rule = re.search(r"details\.event\s*>\s*summary\s*\{([^}]*)\}", css)
+    assert rule and "cursor: pointer" in rule.group(1)
+
+
+def _luminance(hex_colour: str) -> float:
+    """WCAG 2.1 relative luminance. Written out rather than imported: the point of the check is
+    that it is independent of whatever the stylesheet says about itself."""
+    channels = [int(hex_colour.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _luminance(a), _luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def test_the_four_slip_tokens_carry_the_design_values_in_every_theme_block():
+    css = (STATIC / "app.css").read_text()
+    assert css.count("--slip-paper: #1a212b") == 1               # dark
+    assert css.count("--slip-paper: #ebe9e3") == 2               # both light blocks
+    assert css.count("--fun: #ff7f5c") == 1
+    assert css.count("--fun: #d9542e") == 2
+    assert css.count("--slip-ink: #eef2f6") == 1 and css.count("--slip-ink: #17191d") == 2
+    assert css.count("--slip-muted: #8a95a3") == 1 and css.count("--slip-muted: #5f6670") == 2
+
+
+def test_the_light_fun_accent_is_measured_and_used_only_for_marks():
+    """D16: 3.29:1 against the light raised ground is under WCAG AA's 4.5:1 for text, so the
+    accent moves to marks and coral *text* takes --ink. The measurement is redone here from the
+    file so a later token edit cannot quietly reintroduce coral text."""
+    css = (STATIC / "app.css").read_text()
+    assert _contrast("#d9542e", "#ebe9e3") < 4.5
+    assert _contrast("#ff7f5c", "#1a212b") >= 4.5
+    marks = re.findall(r"\.(?:perforation|stamp|mark|fill\.warm)[^{]*\{[^}]*\}", css)
+    assert marks, "the accent must be used by at least one mark class"
+    perforation = re.search(r"\.perforation\s*\{[^}]*\}", css)
+    mark = re.search(r"\.mark\s*\{[^}]*\}", css)
+    assert perforation and "dashed var(--fun)" in perforation.group(0), \
+        "the perforation is drawn in the accent (D16)"
+    assert mark and "color: var(--fun)" in mark.group(0), "a mark carries the accent (D16)"
+    for rule in re.findall(r"\.slip[^{]*\{[^}]*\}", css):
+        selector = rule.split("{", 1)[0]
+        if ".lamp" in selector or ".mark" in selector:
+            continue  # lamps and marks are the marks the accent is for (D16)
+        assert "color: var(--fun)" not in rule
+
+
+def test_the_two_light_blocks_stay_byte_identical_in_token_names():
+    """The repo's existing rule, re-asserted after a token edit: the media-query block and the
+    explicit `[data-theme=light]` block must declare the same names."""
+    blocks = re.findall(r"--ground:.*?--fun: #[0-9a-f]{6};", (STATIC / "app.css").read_text(),
+                        re.S)
+    names = [sorted(re.findall(r"(--[a-z0-9-]+):", block)) for block in blocks]
+    assert names[1] == names[2] and names[0] == names[1]
+
+
+def test_the_slip_carries_a_one_pixel_track_border():
+    assert "border: 1px solid var(--track)" in (STATIC / "app.css").read_text()
+
+
+def test_no_new_rule_sets_type_below_twelve_pixels_or_a_touch_target_under_44():
+    css = (STATIC / "app.css").read_text()
+    # scoped to the task's own rules: the file's older badge sizes are not this phase's
+    task_rules = re.findall(
+        r"(?:\.slip|\.perforation|\.mark|dialog\.sheet|\.sheet|\.detail|\.board-card)"
+        r"[^{]*\{[^}]*\}", css)
+    sizes = [float(v) for rule in task_rules
+             for v in re.findall(r"font-size:\s*([0-9.]+)px", rule)]
+    assert min(sizes) >= 12
+    for rule in re.findall(r"\.(?:action|tab|board-card|sheet-button)[^{]*\{[^}]*\}", css):
+        if "min-height" in rule:
+            assert float(re.search(r"min-height:\s*([0-9.]+)px", rule).group(1)) >= 44
+
+
+def test_reduced_motion_is_honoured_by_every_new_animation():
+    css = (STATIC / "app.css").read_text()
+    if "animation:" in css or "transition:" in css:
+        assert "@media (prefers-reduced-motion: reduce)" in css

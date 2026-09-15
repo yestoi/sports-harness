@@ -19,6 +19,6 @@ cadence flip). A hotfix that changes a label's semantics or an executor setting 
 
 Implementer `sonnet` (`opus` when the batch touches the executor, pricing, settlement, the venue adapter or the recorder's
 WebSocket path and the plan-next entry or the finding marks it judgment-heavy); reviewer `opus` for those paths, `sonnet`
-otherwise; fix rounds and re-review as in Unit: phase step 3; `make test`; `--ff-only` merge; the deploy unit
+otherwise; fix rounds and re-review as in Unit: phase step 3; `make test` after the review verdict (phase step 5); `--ff-only` merge; the deploy unit
 (preconditions apply); re-verify only the failed items or the verify.md rows the findings name. Three fix rounds without a
 passing verification, or the same failed item twice running, is a gate. Remove each item when its rows pass.

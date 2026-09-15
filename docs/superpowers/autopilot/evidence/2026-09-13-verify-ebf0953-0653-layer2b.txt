@@ -1,0 +1,113 @@
+# Layer 2b invariants ebf0953 2026-09-13T11:53:21Z
+SET
+fair_values_negative_staleness
+0
+taker_side_missing
+0
+orders_without_place
+0
+intents_without_order_or_skip
+39625
+fill_gt_order
+0
+filled_gt_contracts
+0
+queue_fill_without_print
+0
+settlement_disagreements
+0
+feed_lag_negative
+0
+benchmarks_source_after_target
+0
+fills_outside_placement_window
+154
+markouts_at_after_horizon
+154
+gate_eligibility_key
+0
+duplicate_trades_w37
+0
+clv_p_used
+0
+settle_errors_24h
+0
+derived_without_venue_48h
+0
+build_sha_drift
+1142
+orders_open_past_expiry
+0
+gate_rows_one_gate_variant
+0
+metric_negative
+0
+operator_events_empty
+0
+watch_negative_queue
+0
+mtm_coverage_band
+0
+score_went_down
+13
+check_status_domain
+0
+report_runs_future
+0
+orphan_report_cells
+0
+venue_requests_non_get_prod
+0
+venue_status_future
+0
+backup_finished_before_start
+0
+drawdown_band
+0
+gate_variant_missing
+0
+-- check_results latest sweep
+duplicate_trades | skip | timeout
+intents_without_order_or_skip | skip | timeout
+fills_outside_placement_window | fail | 
+markouts_at_after_horizon | fail | 
+game_score_went_down_24h | fail | 
+-- 6A: criteria hash / eligibility
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-13 02:17:06.106713+00 | t
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-13 02:17:06.106713+00 | f
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-13 02:17:06.106713+00 | f
+-- 6C wave 1 rows (ii)-(iv), (vii)
+study:2026-37
+[{"name": "recorder_stale", "unit": "s", "level": "fine", "value": 30.161831, "threshold": 1200.0}, {"name": "heartbeat_watch", "unit": "s", "level": "fine", "value": 15.503019, "threshold": 60.0}, {"name": "heartbeat_broken", "unit": "s", "level": "fine", "value": 15.503019, "threshold": 120.0}, {"name": "ws_event_watch", "unit": "s", "level": "fine", "value": 17.505217, "threshold": 60.0}, {"name": "ws_event_broken", "unit": "s", "level": "fine", "value": 17.505217, "threshold": 120.0}, {"name": "tape_gap", "unit": "count", "level": "broken", "value": 7.0, "threshold": 0}, {"name": "kill_switch", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 0}, {"name": "disk_free", "unit": "fraction", "level": "fine", "value": 0.8851593291967941, "threshold": 0.25}, {"name": "db_ceiling", "unit": "fraction", "level": "fine", "value": 0.16577366666666668, "threshold": 0.6}, {"name": "credits_low", "unit": "fraction", "level": "fine", "value": 0.9807394, "threshold": 0.4}, {"name": "check_fail", "unit": "count", "level": "broken", "value": 3, "threshold": 0}, {"name": "check_skipped", "unit": "count", "level": "watch", "value": 2, "threshold": 0}, {"name": "settle_error_24h", "unit": "count", "level": "fine", "value": 0, "threshold": 0}, {"name": "budget_exhausted", "unit": "count", "level": "fine", "value": 0, "threshold": 2}, {"name": "book_dirty_in_game", "unit": "count", "level": "fine", "value": 38, "threshold": 0}, {"name": "drawdown_stop", "unit": "fraction", "level": "fine", "value": 0.0, "threshold": -0.2}, {"name": "snapshot_stale", "unit": "count", "level": "fine", "value": 0.99999995, "threshold": 2.0}, {"name": "snapshot_budget", "unit": "count", "level": "fine", "value": 105.0, "threshold": 250.0}, {"name": "snapshot_disabled", "unit": "count", "level": "fine", "value": 0.0, "threshold": 0}, {"name": "research_budget", "unit": "count", "level": "watch", "value": 24.4224, "threshold": 25.0}, {"name": "veto_rate", "unit": "fraction", "level": "fine", "value": 0.0, "threshold": 0.25}]
+2026 | 37
+0
+11 | 2026 | 37 | t | 2026-09-13 08:02:29.762675+00
+10 | 2026 | 37 | t | 2026-09-13 01:10:38.052955+00
+-- 6C wave 2: floor funnel keys, exposure coverage
+gaps
+fills
+ticks
+units
+orders
+intents
+skipped
+window_h
+cancelled
+fill_rows
+by_variant
+candidates
+placements
+rejected_total
+intent_verdicts
+candidate_signals
+orders_filled_actual
+orders_filled_counterfactual
+candidate signal rows, not distinct opportunities
+{"note": "positions opened more than 14 days ago are not counted", "complete": false, "window_days": 14}
+16
+-- fix 45: index present
+ix_raw_source_endpoint_id
+ix_raw_source_endpoint_id_y2026w37
+ix_raw_source_endpoint_id_y2026w38
+-- open orders (floor fair-match bound)
+0

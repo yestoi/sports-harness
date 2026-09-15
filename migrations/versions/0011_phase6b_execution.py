@@ -1,7 +1,7 @@
 """phase 6B: the reconciliation ledger, dirty and observation intervals, and order_rescores
 
-Revision ID: 0008_phase6b_execution
-Revises: 0007_raw_events_lookup
+Revision ID: 0011_phase6b_execution
+Revises: 0010_phase46_fun_tickets
 Create Date: 2026-09-11
 
 Additive only, and additive in three instalments: §1.3's ledger columns land here first,
@@ -15,6 +15,12 @@ Nothing here is a bulk table, so no statement is CONCURRENTLY and none needs
 `migrations.env.concurrent_index`: `orders` sees one writer per executor step, not a continuous
 insert stream, and the three new tables are empty when this runs.
 
+The number is D9 applied at merge time, not the plan's. This was written as
+`0008_phase6b_execution` on top of `0007_raw_events_lookup` on the phase branch; fix 56 took
+0008 and fix 64 took 0009 on main, phase 4.6's revision was renumbered `0010_phase46_fun_tickets`
+on top of fix 64's, and this one was renumbered `0011_phase6b_execution` on top of 4.6's when the
+phase branch merged `main`. Only the identifiers moved: every statement below is unchanged.
+
 `downgrade()` is `pass` (roadmap invariant 5, as every revision since 0002): a rollback is a
 controller-managed code rollback through the reviewed Omarchy release procedure, never a schema
 one. The additive columns and tables stay, a rolled-back build ignores them, and the correction
@@ -25,8 +31,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0008_phase6b_execution"
-down_revision: str | None = "0007_raw_events_lookup"
+revision: str = "0011_phase6b_execution"
+down_revision: str | None = "0010_phase46_fun_tickets"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

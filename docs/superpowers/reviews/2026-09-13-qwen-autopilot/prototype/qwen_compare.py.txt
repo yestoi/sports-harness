@@ -1,0 +1,96 @@
+"""Separate Qwen arm; original harness, packets and GPT results stay unchanged."""
+import argparse
+import fcntl
+import hashlib
+import json
+import shutil
+import time
+import urllib.request
+from decimal import Decimal
+import pilot
+from screen import TASKS, validate
+
+ROOT=pilot.ROOT
+QWEN='qwen-3.8-27b'
+
+class QwenBudget(pilot.Budget):
+    def __init__(self):
+        super().__init__()
+        meta=json.loads((ROOT/'qwen-metadata.json').read_text())
+        assert meta['id']==QWEN
+        self.pin=Decimal(meta['pricing']['prompt'])
+        self.pout=Decimal(meta['pricing']['completion'])
+        assert self.pin==Decimal('0.00000099') and self.pout==Decimal('0.00000149')
+        assert meta['limits']['max_context_length']==65536
+        assert meta['limits']['max_completion_tokens']>=16384
+
+    def reserve(self,job,limit):
+        # Parent deliberately over-reserves 131072 input tokens even though
+        # Qwen's full context is only 65536. Both arms share the same $5 ledger.
+        row=super().reserve(job,limit)
+        with self.lock:
+            row.update(model=QWEN,prompt_usd_per_token=str(self.pin),
+                       completion_usd_per_token=str(self.pout))
+            pilot.save(self.path,self.state)
+        return row
+
+def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def run_task(task,attempt):
+    name=f'qwen-{task}-{attempt:02}'
+    work=ROOT/'work'/name;work.mkdir(exist_ok=False)
+    for filename in ('packet.md','starter.py','smoke.py'):
+        shutil.copyfile(ROOT/'eval'/task/filename,work/filename)
+    job=pilot.Job(name,work,QwenBudget())
+    job.run('cerebras','Read /work/packet.md using the pilot shell tool, implement the task in /work/solution.py, '
+            'run the provided checks, and report the result. '+pilot.SYSTEM)
+    started=time.monotonic()
+    result=validate(task,name)
+    result.update(model=QWEN,validation_s=round(time.monotonic()-started,6))
+    pilot.save(ROOT/'runs'/name/'acceptance.json',result)
+    print(json.dumps({k:result.get(k) for k in ('job','pass','elapsed_s','tool_calls','checks','truncated_generation')}),flush=True)
+    return result
+
+def main():
+    for entry in json.loads((ROOT/'eval'/'freeze_manifest.json').read_text())['files']:
+        assert digest(ROOT/'eval'/entry['path'])==entry['sha256'],entry['path']
+    request=urllib.request.Request('https://api.cerebras.ai/public/v1/models/'+QWEN,
+                                   headers={'User-Agent':'sports-cerebras-feasibility/1'})
+    with urllib.request.build_opener(pilot.NoRedirect()).open(request,timeout=20) as response:
+        meta=json.load(response)
+    pilot.save(ROOT/'qwen-metadata.json',meta)
+    budget=QwenBudget()
+    assert not budget.state['halted']
+    pilot.MODEL=QWEN
+    assert pilot.OUTPUT_LIMIT==16384
+    pilot.save(ROOT/'qwen-freeze.json',{'at':pilot.stamp(),'model':QWEN,'reasoning':'medium',
+        'output_cap':16384,'context':65536,'task_order':TASKS,'max_fresh_retries_per_failed_coding_task':1,
+        'trap_retries':0,'eval_freeze_sha256':digest(ROOT/'eval'/'freeze_manifest.json'),
+        'pilot_sha256':digest(ROOT/'pilot.py'),'wrapper_sha256':digest(ROOT/'qwen_compare.py'),
+        'budget_before':budget.state,'scope':'same frozen offline packets; no production/repository changes',
+        'review_policy':'per-task blind Opus review of available Qwen, GPT and Claude candidates; no model identity or timing'})
+    name='qwen-smoke-01';work=ROOT/'work'/name;work.mkdir(exist_ok=False)
+    (work/'packet.md').write_text('Create solution.py containing answer = 42. Use the shell tool to verify it with python3, then report DONE.\n')
+    (work/'solution.py').write_text('answer = None\n')
+    job=pilot.Job(name,work,QwenBudget())
+    smoke=job.run('cerebras','Read /work/packet.md using the pilot shell tool, implement the task in /work/solution.py, '
+                  'run the provided checks, and report the result. '+pilot.SYSTEM)
+    checked=job.shell("python3 -c 'import solution; assert solution.answer == 42; print(\"PASS\")'")
+    pilot.save(ROOT/'qwen-smoke-validation.json',checked)
+    if smoke['exit_code'] or checked.get('isError'):raise SystemExit('Qwen smoke failed; do not dispatch screen')
+    results=[]
+    for task in TASKS:
+        if QwenBudget().state['halted']:raise SystemExit('Provider halted')
+        results.append(run_task(task,1))
+        pilot.save(ROOT/'qwen-results.json',results)
+    for row in list(results):
+        if not row['pass'] and not row['task'].startswith('trap_'):
+            if QwenBudget().state['halted']:raise SystemExit('Provider halted')
+            results.append(run_task(row['task'],2))
+            pilot.save(ROOT/'qwen-results.json',results)
+    print(json.dumps({'qwen_complete':True,'used_usd':QwenBudget().state['used_usd']}),flush=True)
+
+if __name__=='__main__':
+    with (ROOT/'pilot.lock').open('a+') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        main()

@@ -1,0 +1,26 @@
+# Layer 3 verify-summary-omarchy DEPLOY_SHA=ebf0953
+## run 1 06:53 CT (cold, ~9 min after the full restart): FAIL page_time
+PASS build: page ebf0953 vs deploy ebf0953
+PASS sections: no section errors
+FAIL page_time: / 0.3s, /api/summary 19.5s
+PASS run_id: page 13970 vs sql 13970
+PASS ws_last_event: page age 2s vs sql 2s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4903697
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+## run 2 06:58 CT (warm): 9/9 PASS
+PASS build: page ebf0953 vs deploy ebf0953
+PASS sections: no section errors
+PASS page_time: / 0.3s, /api/summary 0.3s
+PASS run_id: page 13974 vs sql 13974
+PASS ws_last_event: page age 2s vs sql 1s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4903697
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+## deterministic rows
+DIRECTION_NOTE: proposed one-sided reading, not in force (PASS)
+manifest: manifest_version 1, measurement_version 4.4, corrections [C0] (PASS)
+rfq listener: 'rfq listener disabled by rfq_listener_enabled' at 11:42:57Z; RFQ_LISTENER_ENABLED=0 preserved (PASS)
+pulse snapshot_stale: level fine value 0.999999 threshold 2.0; snapshot_disabled 0 (PASS); judged-set name not exposed in the payload, row (iii) name check deferred to the Sunday 19:07 CT pass

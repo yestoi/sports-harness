@@ -43,10 +43,24 @@ MODULES = (pulse, floor, study, gate, ticket, scheduler_mod, window_mod)
 #: and every read of them here is already bounded. Phase 5 (addendum §1.4, §1.6) adds
 #: `veto_decisions` (one row per decided signal, indefinitely) and `rfq_quotes` (one row per
 #: computed quote, indefinitely); both are read here bounded on their own timestamp.
+#:
+#: Phase 4.6's Floor detail (addendum §7.2) is the first builder read of three more, and all
+#: three grow with the season exactly as `orders` and `fills` do:
+#:   order_events   -- one row per placement, cancellation, expiry and skip, forever
+#:   gap_outcomes   -- one row per gap snapshot per benchmark, and gap snapshots are per tick
+#:   ledger         -- one row per fill and one per settlement
+#: The detail reads each of them under an id list the board has already bounded, plus a `limit`.
 BOUNDED_TABLES = frozenset({
     "orderbook_events", "venue_trades", "fair_values", "intents", "orders", "fills", "signals",
     "runs", "job_runs", "metric_samples", "equity_snapshots", "order_watch_samples",
     "game_score_events", "operator_events", "venue_requests", "veto_decisions", "rfq_quotes",
+    "order_events", "gap_outcomes", "ledger",
+    # Phase 4.6 (addendum §4.3, Task 12) adds one more, and it grows exactly as
+    # `game_score_events` does:
+    #   player_stat_events -- one row per *change* in a carded player's stat, per poll, forever
+    # The Ticket builder reads it under the prop legs' own `(game_id, player_id)` id lists plus
+    # a `ts` window, and takes two rows per key.
+    "player_stat_events",
 })
 
 #: Bounded by the shape of the system, not by its age:
@@ -68,6 +82,10 @@ TINY_TABLES = frozenset({
     "games", "teams", "venue_markets", "strategy_variants", "gate_reports", "check_results",
     "exec_heartbeat", "kill_switch", "venue_status", "dashboard_snapshots", "report_runs",
     "report_cells", "report_annotations",
+    # source_state -- one row per feed key (a dozen), read by primary key: phase 4.6's prop
+    # rotation records its monthly credit spend there (addendum §3.2) and Pulse's `prop_budget`
+    # rule reads that one row.
+    "source_state",
 })
 
 #: Not a table: SQL keywords that follow `from`/`join` in these statements.
@@ -227,6 +245,75 @@ def test_the_capped_run_notes_read_sends_its_limit_without_the_window_predicate(
 
     assert not _LIMIT.search(_code(uncapped))
     assert _TIME_BOUND.search(_code(uncapped))
+
+
+#: The Floor detail's own statements (addendum §7.2, Task 13), by name. Listed rather than
+#: discovered, so a detail read that is deleted, renamed or quietly built inside a function fails
+#: this file instead of slipping out of its remit.
+FLOOR_DETAIL_STATEMENTS = ("_DETAIL_MARKETS", "_DETAIL_SIGNALS", "_DETAIL_INTENTS",
+                           "_DETAIL_ORDERS", "_DETAIL_FILLS", "_DETAIL_ORDER_EVENTS",
+                           "_DETAIL_WATCH", "_DETAIL_LEDGER", "_DETAIL_GAP_OUTCOMES",
+                           "_DETAIL_TICKET")
+
+
+def test_the_scan_walks_every_floor_detail_statement():
+    """A guard on the guard, the second one in this file. The detail is built per game from ten
+    statements; a payload that grew an eleventh read without this file seeing it would pass every
+    parametrised case above while checking nothing about the read that was added."""
+    walked = {name for module, name, _ in ALL_STATEMENTS if module == "floor"}
+    missing = set(FLOOR_DETAIL_STATEMENTS) - walked
+    assert not missing, f"the scanner did not see {sorted(missing)}"
+
+
+@pytest.mark.parametrize("name", FLOOR_DETAIL_STATEMENTS)
+def test_every_floor_detail_statement_is_bounded_by_a_list_of_ids_and_a_row_cap(name):
+    """The detail's own rule, one notch tighter than this file's general one.
+
+    The general rule is "a bound or a row cap". The detail is built for up to `BOARD_LIMIT`
+    games four times a minute inside a game window, so each of its statements carries *both*: a
+    list of ids the board has already bounded (`= any(:...)`), which is the bound that makes the
+    read an index range rather than a scan, and a `limit`, which is the backstop fix 31 requires
+    of every statement in that file.
+
+    The `limit` is **not** what keeps the sort small: in every `order by ... desc limit`
+    statement the sort precedes the limit, so the ids are doing that work (review round 1, M1).
+    What the limit does here is cap what crosses the wire and land the read inside the 2000 ms
+    timeout if an id list ever arrives larger than the board can produce. Neither that timeout
+    nor the forbidden-table list is loosened for any of these statements.
+    """
+    sql = dict((n, s) for m, n, s in ALL_STATEMENTS if m == "floor")[name]
+    body = _code(sql)
+    assert re.search(r"=\s*any\(:\w+\)", body), f"{name} takes no id list"
+    assert _LIMIT.search(body), f"{name} carries no row cap"
+    for table in ("orderbook_events", "venue_trades", "raw_responses", "odds_snapshots",
+                  "venue_quotes"):
+        assert table not in body.lower(), f"{name} reads {table}"
+
+
+#: The detail reads that gather rows per game, market or order. Each must rank inside its own
+#: partition: a flat `limit` over a batch of twenty games is a race between the games, not a cap
+#: (review round 1, I2), and the game that loses it is told its markets were never priced.
+FLOOR_PARTITIONED_STATEMENTS = ("_DETAIL_MARKETS", "_DETAIL_SIGNALS", "_DETAIL_INTENTS",
+                                "_DETAIL_ORDERS", "_DETAIL_FILLS", "_DETAIL_ORDER_EVENTS",
+                                "_DETAIL_LEDGER")
+
+
+@pytest.mark.parametrize("name", FLOOR_PARTITIONED_STATEMENTS)
+def test_every_batched_floor_detail_read_caps_each_game_market_or_order_separately(name):
+    sql = dict((n, s) for m, n, s in ALL_STATEMENTS if m == "floor")[name]
+    body = _code(sql).lower()
+    assert "row_number() over (partition by" in body, (
+        f"{name} shares one row cap across the whole detail set, so a busy game starves the "
+        "games after it")
+    assert re.search(r"rn <= :\w+", body), f"{name} does not apply its per-partition cap"
+
+
+def test_the_detail_runs_under_the_same_statement_timeout_as_every_other_section():
+    """The 2000 ms timeout is the budget the detail was designed against (its reads are batched
+    across the set for exactly that reason), not a number to raise when a new section is slow."""
+    from harness.dashboard.snapshots import SNAPSHOT_STATEMENT_TIMEOUT_MS
+
+    assert SNAPSHOT_STATEMENT_TIMEOUT_MS == 2000
 
 
 def test_the_positions_view_is_not_read_by_any_builder():

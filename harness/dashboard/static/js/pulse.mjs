@@ -7,8 +7,8 @@
 //
 // Nothing here is a control and nothing here is money: Pulse is about the machine, not the edge.
 
-import { el, fmtAge, glossaryTerm, sentences, statTile, statusWord, storageArc, table,
-         tapeStrip } from "./components.mjs";
+import { el, eventWhat, fmtAge, glossaryTerm, sentences, statTile, statusWord, storageArc,
+         table, tapeStrip } from "./components.mjs";
 import { sparkline } from "./charts.mjs";
 
 export const LABELS = [
@@ -217,7 +217,7 @@ function snapshotsCard(payload) {
 function eventsCard(payload) {
   const section = payload.operator_events;
   const rows = listOf(section).map((event) =>
-    [fmtAge((Date.now() - Date.parse(event.ts)) / 1000), event.kind, event.summary]);
+    [fmtAge((Date.now() - Date.parse(event.ts)) / 1000), event.kind, eventWhat(event)]);
   return el("div", { class: "card" }, el("h3", { text: "Recent operator events" }),
             sectionFailed(section) ? el("div", { class: "grey", text: "unavailable" })
               : table(["when", "kind", "what"], rows, { label: "Operator events" }));

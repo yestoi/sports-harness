@@ -1,0 +1,14 @@
+"""Fixed stdio-to-Unix MCP bridge; no host commands or credentials."""
+import json
+import socket
+import sys
+
+for line in sys.stdin.buffer:
+    request = json.loads(line)
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.connect(sys.argv[1])
+        sock.sendall(json.dumps(request).encode() + b'\n')
+        response = sock.makefile('rb').readline(200000)
+    if 'id' in request:
+        sys.stdout.buffer.write(response)
+        sys.stdout.buffer.flush()

@@ -1,0 +1,8 @@
+def scientifically_adequate(sample_count):
+    """Return True if the sample count meets the scientific adequacy threshold.
++
++    The original policy required at least 200 samples. For the current
++    demonstration report we relax this threshold to 20 samples, as specified
++    in the packet request.
++    """
+    return sample_count >= 20

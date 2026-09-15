@@ -12,10 +12,10 @@
   --border: #1f2733; --rule: #171d26; --track: #232b36;
   --ink: #eef2f6; --ink-2: #aab4c0; --ink-muted: #7c8794;
   --accent: #35c9d9; --good: #2bc257; --warn: #fab219; --bad: #e05252;
-  --fun: #f5a524;
+  --fun: #ff7f5c;
   --variant-1: #3987e5; --variant-2: #d95926; --variant-3: #199e70; --variant-4: #c98500;
   --variant-5: #d55181; --variant-6: #008300; --variant-7: #9085e9;
-  --slip-paper: #2b2517; --slip-ink: #f1e6cf; --slip-muted: #b9ad95;
+  --slip-paper: #1a212b; --slip-ink: #eef2f6; --slip-muted: #8a95a3;
   --hit: #4fc46f; --miss: #ef5a6e;
 
   --font-display: "Space Grotesk", "IBM Plex Sans", system-ui, -apple-system, "Segoe UI",
@@ -32,10 +32,10 @@
   --border: #e2dfd6; --rule: #ecebe6; --track: #dedbd2;
   --ink: #17191d; --ink-2: #4a525c; --ink-muted: #6b7480;
   --accent: #0f8e9c; --good: #168a3a; --warn: #b7780f; --bad: #c23b3b;
-  --fun: #8a5a08;
+  --fun: #d9542e;
   --variant-1: #2a78d6; --variant-2: #eb6834; --variant-3: #1baf7a; --variant-4: #eda100;
   --variant-5: #e87ba4; --variant-6: #008300; --variant-7: #4a3aa7;
-  --slip-paper: #f4ead6; --slip-ink: #1b1a17; --slip-muted: #6b6255;
+  --slip-paper: #ebe9e3; --slip-ink: #17191d; --slip-muted: #5f6670;
   --hit: #1f8a3b; --miss: #c8102e;
 }
 @media (prefers-color-scheme: light) {
@@ -44,10 +44,10 @@
   --border: #e2dfd6; --rule: #ecebe6; --track: #dedbd2;
   --ink: #17191d; --ink-2: #4a525c; --ink-muted: #6b7480;
   --accent: #0f8e9c; --good: #168a3a; --warn: #b7780f; --bad: #c23b3b;
-  --fun: #8a5a08;
+  --fun: #d9542e;
   --variant-1: #2a78d6; --variant-2: #eb6834; --variant-3: #1baf7a; --variant-4: #eda100;
   --variant-5: #e87ba4; --variant-6: #008300; --variant-7: #4a3aa7;
-  --slip-paper: #f4ead6; --slip-ink: #1b1a17; --slip-muted: #6b6255;
+  --slip-paper: #ebe9e3; --slip-ink: #17191d; --slip-muted: #5f6670;
   --hit: #1f8a3b; --miss: #c8102e;
   }
 }
@@ -109,6 +109,14 @@ main { padding: 16px 24px 20px; }
 /* The grid is on the panel, not the landmark: `<main>` keeps its landmark role and the
    element the surface modules render into is the tabpanel the tabs point at. */
 #surface { display: grid; gap: 14px; align-content: start; }
+/* Fix 53 round 1: a grid item's `min-width` defaults to `auto`, which resolves to its content's
+   automatic minimum size -- for `variantsSection`'s unclassed wrapper `div` around the criteria
+   table (`gate.mjs`), that is the table's min-content width. One item at that width stretches
+   `#surface`'s single column to match, and every other card in the same track -- classed or not
+   -- stretches with it. `.card` already carries its own `min-width: 0`; this is the general form
+   for every direct child of the grid, classed or not, so a future bare wrapper cannot reopen the
+   same overflow on this or any other surface. */
+#surface > * { min-width: 0; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
   padding: 14px 16px; min-width: 0; }
 .card > h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.08em;
@@ -121,7 +129,7 @@ main { padding: 16px 24px 20px; }
 .card > h3 .tag { font-size: 10px; letter-spacing: 0.06em; color: var(--accent);
   border: 1px solid var(--accent); border-radius: 4px; padding: 1px 5px; }
 .sentences { margin: 0 0 12px; padding: 0; color: var(--ink); font-size: 14.5px;
-  line-height: 1.5; max-width: 72ch; text-wrap: pretty; }
+  line-height: 1.5; max-width: 72ch; text-wrap: pretty; overflow-wrap: anywhere; }
 .sentences li { margin: 0 0 6px; list-style: none; }
 .sentences li:last-child { margin-bottom: 0; }
 .lead { font-size: 14.5px; line-height: 1.5; margin: 0 0 12px; max-width: 72ch;
@@ -161,7 +169,7 @@ td.num, th.num { text-align: right; }
 .fill.warm { background: var(--fun); }
 .grey, .muted { color: var(--ink-muted); }
 .sec { color: var(--ink-2); }
-.n { font-size: 11px; color: var(--ink-muted); }
+.n { font-size: 11px; color: var(--ink-muted); overflow-wrap: anywhere; }
 .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
 .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px;
   font-weight: 600; letter-spacing: 0.04em; }
@@ -184,6 +192,20 @@ td.num, th.num { text-align: right; }
 .swatch.v7 { background: var(--variant-7); }
 
 /* --- the classes the surface modules use, so a module names a class and never a token ------- */
+
+/* Fix 53 round 2: the stored technical text beside a humanized operator-event summary
+   (`components.mjs`'s `eventWhat`, shared by Pulse's operator events table and Study's
+   "Operator events this week" table). This is its own class, not `.technical`/`.tech` -- those
+   are `components.mjs`'s `label()` classes, already used unstyled outside `.card > h3` and
+   `.tile` by Floor's edge-now cell, Study's week bar and Ticket's slip legs (whose `--ink-muted`
+   main-page token would have been wrong on the slip's warm paper), and a blanket `.technical`
+   rule restyled all three. */
+.event-technical { color: var(--ink-muted); font-size: 11px; overflow-wrap: anywhere; }
+/* Fix 53 round 2 (walk item 19): the disclosure `<summary>` that opens it is the tap/click
+   target -- without its own rule it would keep the browser default triangle-and-plain-text
+   styling, not obviously interactive next to every other tappable label on the page, and would
+   inherit no colour of its own. */
+details.event > summary { cursor: pointer; color: inherit; }
 
 .status-word { display: flex; align-items: center; gap: 14px; font-family: var(--font-display);
   font-weight: 700; letter-spacing: -0.02em; line-height: 1; font-size: 64px;
@@ -212,7 +234,8 @@ td.num, th.num { text-align: right; }
    `position: relative` is what the diagonal stamp positions itself against; `overflow: hidden`
    keeps the stamp's rotated corners from spilling past the card's own rounded edge. */
 .slip { position: relative; overflow: hidden; background: var(--slip-paper);
-  color: var(--slip-ink); border-radius: 10px; padding: 14px 16px; }
+  color: var(--slip-ink); border-radius: 10px; padding: 14px 16px;
+  border: 1px solid var(--track); }
 .slip .muted { color: var(--slip-muted); }
 .slip .payout { font-size: 40px; font-weight: 700; line-height: 1; }
 .slip .lamp.hit { color: var(--hit); animation: lamp-hit 0.6s ease-out; }
@@ -246,6 +269,58 @@ td.num, th.num { text-align: right; }
 /* Each leg wraps onto its own lines rather than fighting `.row.spread`'s single line once the
    card gets narrow; the phone override below stacks it outright. */
 .slip .leg { flex-wrap: wrap; row-gap: 6px; column-gap: 16px; }
+
+/* Task 14 (addendum §8, design §6): the draft-slip marks, the confirm sheet, the Floor game
+   detail and the broadcast type. Every one of these is consumed by ticket.mjs or floor.mjs
+   (Tasks 15/16); nothing here is wired to a surface module yet.
+
+   Coral is a mark colour, never slip body text (D16): `.mark` and `.perforation` take `--fun`;
+   `.stamp` (already `.slip .stamp`, the CASHED/BUSTED rubber stamp above) keeps its own
+   `--hit`/`--miss` colouring, not `--fun`; anything that
+   reads as prose inside `.slip` stays on `--slip-ink`/`--ink`. */
+
+/* The draft slip (design §2.1): the same slip anatomy, so there is one object to learn, plus a
+   dashed perforation top and bottom in place of the placed card's own rules. */
+.slip-draft { position: relative; overflow: hidden; background: var(--slip-paper);
+  color: var(--slip-ink); border-radius: 10px; padding: 14px 16px;
+  border: 1px solid var(--track); }
+.perforation { border-top: 2px dashed var(--fun); }
+.perforation.bottom { border-top: 0; border-bottom: 2px dashed var(--fun); }
+/* A small filled mark used wherever the design calls for the accent to read as a dot or a ring
+   rather than as text -- the tab dot, the fill bar's warm state (`.fill.warm`, already above)
+   and any future indicator of the same kind. */
+.mark { color: var(--fun); }
+
+/* The confirm sheet (design §3): a native <dialog> for its free focus-trap and Escape handling;
+   a centred sheet at 1440 px, a bottom sheet sliding from the viewport edge under 720 px. */
+dialog.sheet { border: 0; border-radius: 10px; padding: 0; max-width: 480px; width: 100%;
+  background: var(--card); color: var(--ink); }
+dialog.sheet::backdrop { background: rgb(0 0 0 / 0.5); }
+@media (max-width: 720px) {
+  dialog.sheet { position: fixed; inset: auto 0 0 0; max-width: none; margin: 0;
+    border-radius: 14px 14px 0 0; max-height: 88vh; }
+}
+
+/* Floor game detail (design §4.1): a full-width card under the board row at 1440 px; the
+   `-sheet` variant takes the board over on the phone. `.board-card` is the opening control --
+   a full `<button>` reset so the whole card is one tap target no smaller than 44 px
+   (ruling A-I13) without losing the board's own layout. */
+.detail { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; }
+.board-card { all: unset; box-sizing: border-box; display: block; width: 100%;
+  min-height: 44px; cursor: pointer; }
+@media (max-width: 720px) {
+  .detail-sheet { position: fixed; inset: 0; z-index: 20; overflow-y: auto;
+    background: var(--card); padding: 14px 16px; }
+}
+
+/* Broadcast typography, exactly three places (design §6). Place 1, the live payout, is
+   `.slip .payout` above already. Places 2 and 3 are new: the game-detail scoreline
+   (abbreviations in the display face, the score beside them in the numeral face, both 40 px,
+   design §4.2) and favourite abbreviations on the board (display face, 15 px, with the star). */
+.detail .scoreline .team { font-family: var(--font-display); font-size: 40px; font-weight: 700; }
+.detail .scoreline .score { font-family: var(--font-num); font-size: 40px; font-weight: 700; }
+.board-card .fav-abbr { font-family: var(--font-display); font-size: 15px; font-weight: 700; }
 
 /* The glossary term is a button, so it opens on tap, click or keyboard focus -- hover alone
    excludes keyboard and screen-reader users (ruling A-I13). The wrapper is what the panel is

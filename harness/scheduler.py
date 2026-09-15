@@ -35,7 +35,9 @@ def build_recorder(settings: Settings) -> Recorder:
     """
     http = HttpClient(settings.http_timeout_s)
     odds = OddsApiClient(http, settings.odds_api_base_url, settings.odds_api_key(), settings.odds_api_bookmakers)
-    espn = EspnClient(http, settings.espn_base_url)
+    # The pinned game-log URL is passed here so the recorder's client can read one; the two
+    # scoreboard/summary/roster paths stay on `espn_base_url` (journal 184 item 3).
+    espn = EspnClient(http, settings.espn_base_url, settings.espn_gamelog_url)
     kalshi = KalshiPublic(http, settings.kalshi_base_url, settings.kalshi_sleep_s)
     factory = make_session_factory(make_engine(settings.database_url))
     return Recorder(settings, factory, odds, espn, kalshi,

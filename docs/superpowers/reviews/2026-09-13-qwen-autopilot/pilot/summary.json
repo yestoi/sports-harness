@@ -1,0 +1,86 @@
+{
+  "groups": {
+    "claude": {
+      "coding_first_pass": 6,
+      "coding_first_functional_checks": 6,
+      "coding_eventual_pass": 6,
+      "boundary_pass": 2,
+      "coding_worker_total_s": 296.013,
+      "first_attempt_median_s": 40.9285,
+      "retry_inclusive_task_median_s": 40.9285,
+      "task_worker_s": {
+        "duration": 54.808,
+        "utf8_tail": 102.747,
+        "atomic_json": 29.443,
+        "receipt": 27.158,
+        "job_order": 42.653,
+        "tsv_summary": 39.204
+      },
+      "final_candidates": {
+        "duration": "claude-duration-01",
+        "utf8_tail": "claude-utf8_tail-01",
+        "atomic_json": "claude-atomic_json-01",
+        "receipt": "claude-receipt-01",
+        "job_order": "claude-job_order-01",
+        "tsv_summary": "claude-tsv_summary-01"
+      }
+    },
+    "cerebras": {
+      "coding_first_pass": 4,
+      "coding_first_functional_checks": 4,
+      "coding_eventual_pass": 5,
+      "boundary_pass": 1,
+      "coding_worker_total_s": 62.446,
+      "first_attempt_median_s": 8.888,
+      "retry_inclusive_task_median_s": 9.684,
+      "task_worker_s": {
+        "duration": 11.949,
+        "utf8_tail": 13.353,
+        "atomic_json": 8.982,
+        "receipt": 10.386,
+        "job_order": 8.805,
+        "tsv_summary": 8.971
+      },
+      "final_candidates": {
+        "duration": "cerebras-duration-02",
+        "utf8_tail": "cerebras-utf8_tail-02",
+        "atomic_json": "cerebras-atomic_json-01",
+        "receipt": "cerebras-receipt-01",
+        "job_order": "cerebras-job_order-01",
+        "tsv_summary": "cerebras-tsv_summary-01"
+      }
+    },
+    "qwen": {
+      "coding_first_pass": 4,
+      "coding_first_functional_checks": 5,
+      "coding_eventual_pass": 6,
+      "boundary_pass": 2,
+      "coding_worker_total_s": 201.575,
+      "first_attempt_median_s": 16.025,
+      "retry_inclusive_task_median_s": 16.025,
+      "task_worker_s": {
+        "duration": 38.824,
+        "utf8_tail": 106.875,
+        "atomic_json": 18.946,
+        "receipt": 11.01,
+        "job_order": 13.104,
+        "tsv_summary": 12.816
+      },
+      "final_candidates": {
+        "duration": "qwen-duration-02",
+        "utf8_tail": "qwen-utf8_tail-02",
+        "atomic_json": "qwen-atomic_json-01",
+        "receipt": "qwen-receipt-01",
+        "job_order": "qwen-job_order-01",
+        "tsv_summary": "qwen-tsv_summary-01"
+      }
+    }
+  },
+  "total_cerebras_usd": "0.86149288",
+  "qwen_usd": "0.76488343",
+  "qwen_calls": 95,
+  "total_calls": 185,
+  "qwen_worker_time_reduction_vs_claude_pct": 31.90332857002902,
+  "integrity": "All frozen evaluation files unchanged; original budget prefix unchanged; charges reconcile at pinned rates",
+  "limitations": "Worker time only, not route-to-acceptance. GPT still lacks UTF-8 candidate. Review results separate."
+}

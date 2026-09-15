@@ -20,6 +20,7 @@ Three rules bind every template:
 """
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 from harness.report.gate import FAILED, INSUFFICIENT, PASSED
@@ -388,34 +389,266 @@ def gate_criterion(section: dict) -> list[str]:
     return lines
 
 
+def _fmt_seconds(value) -> str:
+    """A whole number of seconds, for a criterion measured as an age (`staleness_median`)."""
+    return PLACEHOLDER if value is None else f"{float(value):.0f} s"
+
+
+def _fmt_as_stored(value) -> str:
+    """No conversion at all -- the criterion's own stored value already reads as words or a
+    flag (`legal_decision`, `live_trading_env`), not a number in any unit this module knows."""
+    return PLACEHOLDER if value is None else str(value)
+
+
+#: Fix 54: `gate_criterion_reading` used to format *every* criterion's value with `fmt_prob` (a
+#: fraction shown as a percentage), so `staleness_median` (an age in seconds) read "measured
+#: 5900.0 %" for 59 s and `fill_events` (a plain count) read "measured 0.0 %" for zero fill
+#: events. Each criterion is measured in its own unit, and this table names it -- keyed by
+#: `harness.report.gate.CRITERIA`'s own names, so a rename there is the one place this table
+#: would need to follow. A name not in the table keeps `fmt_prob` (the conservative fallback:
+#: no criterion this brief covers changes sentence, and a brand-new criterion added later reads
+#: as a probability difference, the commonest shape, until this table is updated for it).
+_CRITERION_UNITS = {
+    "fill_events": fmt_int,
+    "mismatched_markets": fmt_int,
+    "staleness_median": _fmt_seconds,
+    "settlement": fmt_pct,
+    "marquee_share": fmt_pct,
+    "clv_pinnacle_lb": fmt_prob,
+    "clv_every_benchmark": fmt_prob,
+    "markout_30m": fmt_prob,
+    "adverse_drift": fmt_prob,
+    "filled_vs_unfilled": fmt_prob,
+    "legal_decision": _fmt_as_stored,
+    "live_trading_env": _fmt_as_stored,
+}
+
+
+def _safe_fmt(fmt, value) -> str:
+    """`fmt` over a value that turns out not to be the unit's own type (a test fixture's
+    illustrative comparison string such as `"> 0"` in place of a real stored number, say)
+    prints as stored rather than raising: a criterion's sentence must never crash the whole
+    Gate card over one badly-typed value, and the tables this module reads are graded
+    evidence, not something this rendering layer can refuse to show."""
+    if value is None:
+        return PLACEHOLDER
+    try:
+        return fmt(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def gate_criterion_reading(row: dict) -> str:
-    """One criterion row as a sentence. `insufficient` is never dressed up as a near miss."""
+    """One criterion row as a sentence. `insufficient` is never dressed up as a near miss.
+    Fix 54: a criterion in `_CRITERION_UNITS` has its value *and* its threshold formatted in
+    that criterion's own unit, so the sentence never mixes a seconds value with an unformatted
+    threshold or the reverse. A criterion not in the table keeps today's exact sentence shape
+    (`fmt_prob` on the value, the threshold printed as stored, unformatted) -- the conservative
+    fallback the table's own comment describes."""
     name = row.get("name", "?")
     if row.get("status") == INSUFFICIENT:
         return (f"{name}: not enough evidence to judge -- "
                 f"{confidence_phrase(row.get('n'))}.")
     verdict = "meets" if row.get("status") == PASSED else "does not meet"
-    return (f"{name}: measured {fmt_prob(row.get('value'))}, which {verdict} the stored "
-            f"threshold {row.get('threshold', PLACEHOLDER)}, over {fmt_int(row.get('n'))} games.")
+    fmt = _CRITERION_UNITS.get(name)
+    if fmt is None:
+        return (f"{name}: measured {fmt_prob(row.get('value'))}, which {verdict} the stored "
+                f"threshold {row.get('threshold', PLACEHOLDER)}, over {fmt_int(row.get('n'))} "
+                f"games.")
+    return (f"{name}: measured {_safe_fmt(fmt, row.get('value'))}, which {verdict} the stored "
+            f"threshold {_safe_fmt(fmt, row.get('threshold'))}, over "
+            f"{fmt_int(row.get('n'))} games.")
 
 
 # --- Ticket ------------------------------------------------------------------------------------------
 
+#: The fixed vocabulary of design §2.2 (addendum §1.2): one sentence per reason a slot has no
+#: draft, plus the ninth the addendum adds. A code outside this table renders as itself
+#: (sanitized) and the builder writes it into `sentences_gaps`, exactly as `REASON_PHRASES`
+#: above -- a fan reading a bare code is a gap in this vocabulary, and the next plan is meant to
+#: see it rather than a blank line.
+IDEA_PHRASES: dict[str, str] = {
+    "no_anchor_priced": "No LSU or Saints price is fresh enough to build on.",
+    "anchor_bye": "LSU and the Saints are both off this week.",
+    "no_props_fresh": "No prop price inside the age limit.",
+    "player_unmatched": "A prop we wanted names a player we cannot match to the stat feed.",
+    "market_unsupported": "The market DraftKings offers is not one we grade.",
+    "week_at_cap": "This week's $50 is fully recorded.",
+    "not_built_yet": "The next card is built Saturday evening.",
+    "builder_failed": "The builder could not finish; the reason is in the log.",
+    "replacement_pending": "A replacement is being built; it lands within the hour.",
+    # Four more the builder stage can actually record (`parlay_build.STAGE_REASON_CODES`),
+    # closed here rather than left to render as bare codes on the fun surface (round 1, I5).
+    # `side_unsupported`: `harness/parlay/build.py` skips a scorer market whose likelier side is
+    # `no`, which release one cannot grade. `stale_price`: a selection was seen and its newest
+    # price was past `leg_max_age_minutes` -- different from `no_props_fresh`, which is no price
+    # at all. `gamelog_budget_spent`: the context-line pass stopped at `GAMELOG_BUDGET_S`.
+    # `unknown`: `read_slot_state` could not read the `parlay_slot_state` row for the slot.
+    "side_unsupported": "The only side DraftKings priced is one we do not grade.",
+    "stale_price": "The prices we found had gone stale before we could build on them.",
+    "gamelog_budget_spent": "We ran out of time reading season form; the next build picks it "
+                            "up.",
+    "unknown": "This slot's recorded state could not be read.",
+}
+
+#: Design §2.2's parenthetical on `not_built_yet`: "The next card is built Saturday
+#: evening. (Friday for college, as today.)" The table above carries the default and this holds
+#: the one sport that differs, rather than a second table of nine sentences. The build weekday
+#: itself is `harness/settlement/parlay_build.py`'s `BUILD_TIMES`, which `next_build_at` is
+#: derived from; this is only the sentence.
+_NOT_BUILT_YET_BY_SPORT = {"ncaaf": "The next card is built Friday."}
+
+
+def idea_reason_phrase(code: str, sport: str | None = None) -> str:
+    """The plain sentence for one empty slot's reason code, or the code itself when the
+    vocabulary has none for it.
+
+    The passthrough is sanitized for `reason_phrase`'s reason: these codes are written by
+    `harness/settlement/parlay_build.py`, which is our own code, but this is a place an
+    unrecognised string is deliberately shown and the guard belongs here rather than two modules
+    away.
+
+    `sport` is optional and changes exactly one sentence: college cards are built on Friday and
+    the NFL's on Saturday evening (design §2.2), so a `not_built_yet` slot must not
+    tell an `ncaaf` reader to come back on the wrong day. Every other code reads the same
+    whatever the sport, and a caller with no sport in hand gets the table's own sentence.
+    """
+    if not code:
+        return "no reason recorded"
+    if code == "not_built_yet" and sport in _NOT_BUILT_YET_BY_SPORT:
+        return _NOT_BUILT_YET_BY_SPORT[sport]
+    return IDEA_PHRASES.get(code) or sanitize_reason(code)
+
+
+def unknown_idea_codes(codes) -> list[str]:
+    """The subset of `codes` outside `IDEA_PHRASES`, sorted, deduplicated and sanitized -- what
+    the Ticket builder writes into `payload["sentences_gaps"]`. `unknown_reason_codes`'s twin,
+    kept separate because the two vocabularies are different tables: a code that is a gap here
+    may be perfectly well spoken there."""
+    return sorted({sanitize_reason(code) for code in codes
+                   if code and code not in IDEA_PHRASES})
+
+
+#: The fan's noun for each release-one stat. The grader speaks `pass_yds`; the slip says
+#: "passing yards". One mapping, in the module that owns every other sentence, so the Ticket
+#: builder never spells a stat name into prose itself.
+_STAT_NOUNS = {"pass_yds": "passing yards", "rush_yds": "rushing yards",
+               "rec_yds": "receiving yards", "receptions": "receptions",
+               "anytime_td": "touchdown"}
+
+#: Release one has exactly one player-stat source (addendum §4.1): ESPN's summary, recorded into
+#: `player_stat_events` with `source = 'espn'`. The stat line and the correction note both name
+#: it, and `stat_line`'s signature carries no source argument, so the display name lives here.
+#: A second source is a signature change and a table in its place, not a string spelled at a
+#: call site.
+STAT_SOURCE = "ESPN"
+
+
+def stat_noun(stat: str) -> str:
+    """The fan's noun for a stat key, or the key itself when the table has none (the builder
+    reports that in `sentences_gaps`, never a blank)."""
+    return _STAT_NOUNS.get(stat) or sanitize_reason(stat or "")
+
+
+def unknown_stat_keys(stats) -> list[str]:
+    """The subset of `stats` outside `_STAT_NOUNS`, sorted, deduplicated and sanitized. A stat
+    the grader writes and this module has no noun for renders its own key on the slip, and the
+    builder reports it here rather than printing a blank where a yardage belongs."""
+    return sorted({sanitize_reason(stat) for stat in stats
+                   if stat and stat not in _STAT_NOUNS})
+
+
+def fmt_stat(value) -> str:
+    """A stat figure as the fan reads it: 208, not 208.00, and 10.5 kept when a line is a half.
+    `Decimal` in, string out, so no float ever rounds a yardage differently from the grader."""
+    if value is None:
+        return PLACEHOLDER
+    number = Decimal(str(value))
+    if number == number.to_integral_value():
+        return str(int(number))
+    return str(number.normalize())
+
+
+def stat_line(stat: str, value, line, needs_phrase: str, age_s: float) -> str:
+    """`208 of 225 passing yards \u00b7 17 to go \u00b7 ESPN 40 s ago` (design §2.3).
+
+    `needs_phrase` is `harness.parlay.needs.needs`'s output, unchanged: the two halves of the
+    line come from the one function that decides what a leg still needs and from the nouns
+    here, so the sentence and the grade can never disagree. An unknown stat renders its own key
+    rather than a blank, and the builder reports it in `sentences_gaps`.
+
+    A leg with no line at all -- `anytime_td`, whose market is "did it happen" -- has no
+    "208 of 225" half to state, so the sentence opens with what the leg still needs.
+    """
+    source = f"{STAT_SOURCE} {fmt_age(age_s)} ago"
+    if line is None:
+        return f"{needs_phrase} \u00b7 {source}"
+    return (f"{fmt_stat(value)} of {fmt_stat(line)} {stat_noun(stat)} \u00b7 "
+            f"{needs_phrase} \u00b7 {source}")
+
+
+def stat_unchanged(stat: str, value, line, age_s: float) -> str:
+    """A player whose newest recorded value has stood for a while (design §2.3).
+
+    Never a zero, and never without the figure either (review round 1, I6): the value and its
+    noun open the line exactly as they do in `stat_line`, and `unchanged` is what is said about
+    them. `player_stat_events` holds one row per *change*, so a quarterback writes no row while
+    the defence is on the field -- a sentence that dropped "208 of 225 passing yards" for the
+    length of a drive would take the slip's whole subject away over a fact about the feed.
+    """
+    if line is None:
+        return f"unchanged \u00b7 last seen {fmt_age(age_s)} ago"
+    return (f"{fmt_stat(value)} of {fmt_stat(line)} {stat_noun(stat)} \u00b7 unchanged \u00b7 "
+            f"last seen {fmt_age(age_s)} ago")
+
+
+def stat_pending_final(age_s: float | None) -> str:
+    """A hung leg (addendum §1.3): the game is final and the stat never arrived.
+
+    The age is the game's, measured from the final whistle we recorded. `None` when no final
+    score row is inside the builder's window any more (review round 1, I3): the leg still says
+    it is hung -- that is the fact the reader needs -- and simply says nothing about how long,
+    rather than printing an age this build cannot read.
+    """
+    if age_s is None:
+        return "no final stat \u00b7 pending"
+    return f"no final stat \u00b7 pending {fmt_age(age_s)}"
+
+
+def stat_correction_note(previous, value) -> str:
+    """`corrected from 12 to 8 \u00b7 ESPN` (design §2.3), when the newest row carries
+    `correction = true`. No animation and no lamp replay: the number simply reads as corrected,
+    with the source that corrected it."""
+    return (f"corrected from {fmt_stat(previous)} to {fmt_stat(value)} \u00b7 "
+            f"{STAT_SOURCE}")
+
+
 def ticket_card(section: dict) -> list[str]:
+    """The card's one to three sentences, plus the settlement sentence when there is one.
+
+    Phase 4.6 adds the last line only: the three existing sentences are unchanged, word for
+    word, because they are what the shipped surface renders today. The settlement sentence is
+    the builder's own `settlement["text"]` (addendum §1.3) -- written once, in the builder, so
+    the stamp, the tile and the sentence can never disagree about whether a return was computed
+    by the harness or confirmed by the owner.
+    """
     legs = section.get("legs") or []
+    settlement = section.get("settlement") or {}
+    tail = [settlement["text"]] if settlement.get("text") else []
     if not legs:
-        return ["This card has no legs recorded."]
+        return ["This card has no legs recorded."] + tail
     alive = [leg for leg in legs if leg.get("status") in ("pending", "alive")]
     missed = [leg for leg in legs if leg.get("status") == "miss"]
     if missed:
         return [f"Ouch. {missed[0].get('plain_text', 'A leg')} did not come in, so this one is "
-                "done.", f"Staked {fmt_money(section.get('stake'))} of real fun money."]
+                "done.", f"Staked {fmt_money(section.get('stake'))} of real fun money."] + tail
     if len(alive) == 1:
         return [f"One leg from glory: {alive[0].get('plain_text', 'the last leg')}.",
-                f"{fmt_money(section.get('payout'))} if it lands."]
+                f"{fmt_money(section.get('payout'))} if it lands."] + tail
     return [f"{fmt_int(len(alive))} legs still to come, for "
             f"{fmt_money(section.get('payout'))} on a {fmt_money(section.get('stake'))} stake.",
-            "Real money, placed by hand at DraftKings. Nothing on this page is the research."]
+            "Real money, placed by hand at DraftKings. Nothing on this page is the research."
+            ] + tail
 
 
 def ticket_between(section: dict) -> list[str]:

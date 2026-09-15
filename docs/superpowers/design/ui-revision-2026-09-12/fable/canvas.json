@@ -1,0 +1,188 @@
+{
+ "artboards": [
+  {
+   "file": "Main.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1740,
+   "title": "Ticket · ideas · desktop"
+  },
+  {
+   "file": "LiveSlipProps.dc.html",
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 1100,
+   "title": "Ticket · live slip with props · desktop"
+  },
+  {
+   "file": "TicketIdeasPhone.dc.html",
+   "x": 0,
+   "y": 1900,
+   "w": 390,
+   "h": 2620,
+   "title": "Ticket · ideas · phone"
+  },
+  {
+   "file": "TicketNoIdea.dc.html",
+   "x": 480,
+   "y": 1900,
+   "w": 390,
+   "h": 1180,
+   "title": "Ticket · no idea · phone"
+  },
+  {
+   "file": "ConfirmSheet.dc.html",
+   "x": 960,
+   "y": 1900,
+   "w": 390,
+   "h": 1180,
+   "title": "I placed this · phone"
+  },
+  {
+   "file": "ConfirmSheetMoved.dc.html",
+   "x": 1440,
+   "y": 1900,
+   "w": 390,
+   "h": 1180,
+   "title": "I placed this · line moved"
+  },
+  {
+   "file": "ConfirmSheetCap.dc.html",
+   "x": 1920,
+   "y": 1900,
+   "w": 390,
+   "h": 1180,
+   "title": "I placed this · over the cap"
+  },
+  {
+   "file": "LiveSlipPropsPhone.dc.html",
+   "x": 2400,
+   "y": 1900,
+   "w": 390,
+   "h": 1320,
+   "title": "Ticket · live slip with props · phone"
+  },
+  {
+   "file": "LiveSlipPending.dc.html",
+   "x": 2880,
+   "y": 1900,
+   "w": 390,
+   "h": 1140,
+   "title": "Ticket · settlement pending · phone"
+  },
+  {
+   "file": "FloorBoard.dc.html",
+   "x": 0,
+   "y": 4700,
+   "w": 1440,
+   "h": 700,
+   "title": "Floor · board with favourites · desktop"
+  },
+  {
+   "file": "GameDetail.dc.html",
+   "x": 1540,
+   "y": 4700,
+   "w": 1440,
+   "h": 1040,
+   "title": "Floor · game detail · desktop"
+  },
+  {
+   "file": "GameDetailGap.dc.html",
+   "x": 0,
+   "y": 5560,
+   "w": 1440,
+   "h": 1100,
+   "title": "Floor · game detail with a gap · desktop"
+  },
+  {
+   "file": "GameDetailPhone.dc.html",
+   "x": 1540,
+   "y": 5860,
+   "w": 390,
+   "h": 1080,
+   "title": "Floor · game detail · phone"
+  },
+  {
+   "file": "GameDetailNoPosition.dc.html",
+   "x": 2020,
+   "y": 5860,
+   "w": 390,
+   "h": 1080,
+   "title": "Floor · no position · phone"
+  },
+  {
+   "file": "DirectionSlate.dc.html",
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 1120,
+   "title": "A · Slate and coral · CHOSEN",
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionThermal.dc.html",
+   "x": 480,
+   "y": 0,
+   "w": 390,
+   "h": 1120,
+   "title": "B · Thermal white and ink blue",
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionPlum.dc.html",
+   "x": 960,
+   "y": 0,
+   "w": 390,
+   "h": 1120,
+   "title": "C · Plum and lilac",
+   "page": "page-2"
+  }
+ ],
+ "annotations": [
+  {
+   "id": "fable-brief",
+   "x": 0,
+   "y": -150,
+   "w": 620,
+   "text": "Fun tickets inside the existing dashboard. Fable design, 2026-09-13.\nSpec: docs/superpowers/design/ui-revision-2026-09-12/fable/DESIGN-SPEC.md\nSame tokens and faces as the phase 4.5 canvas. Every value is fictional."
+  },
+  {
+   "id": "draft-marks",
+   "x": 700,
+   "y": -150,
+   "w": 420,
+   "text": "A draft slip differs from a placed slip by exactly three marks: dashed perforation, PROPOSED badge, hollow rings. The large payout is earned by placement."
+  },
+  {
+   "id": "one-crossing",
+   "x": 1540,
+   "y": 4550,
+   "w": 420,
+   "text": "The only crossing between paper and fun money: one line, no amount, one way (Floor → Ticket). The slip never links back."
+  },
+  {
+   "id": "directions-brief",
+   "x": 0,
+   "y": -140,
+   "w": 900,
+   "page": "page-2",
+   "text": "Three slip materials to replace the amber-and-brown ticket. Same slip anatomy, same lamps and stamps; only the material and the fun accent change. Each accent stays clear of cyan (paper side), green (good), amber (warn) and red (bad). A was chosen on 2026-09-13; the screens on page 1 are drawn in it."
+  }
+ ],
+ "pages": [
+  {
+   "id": "page-1",
+   "name": "Screens"
+  },
+  {
+   "id": "page-2",
+   "name": "Slip directions"
+  }
+ ],
+ "launch": {
+  "view": "canvas",
+  "page": "page-1"
+ }
+}

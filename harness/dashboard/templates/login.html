@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in &middot; sports harness</title>
+<!-- Self-contained on purpose: this page is served before a session exists, so it must not
+     depend on the /ui asset tree (which the session check guards), and it names no external
+     URL and ships no script. Nothing submitted is ever echoed back into it. -->
+<style>
+  :root { color-scheme: dark light; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         background: #0f1216; color: #e8eaed;
+         font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { width: min(24rem, 92vw); padding: 1.5rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+  p { margin: 0 0 1rem; color: #9aa4af; }
+  p.error { color: #ff8f6b; }
+  label { display: block; margin-bottom: 0.35rem; }
+  input { width: 100%; box-sizing: border-box; padding: 0.6rem; font: inherit;
+          color: inherit; background: #171b21; border: 1px solid #2b323b; border-radius: 6px; }
+  input:focus-visible, button:focus-visible { outline: 2px solid #ff8f6b; outline-offset: 2px; }
+  button { margin-top: 1rem; width: 100%; padding: 0.7rem; font: inherit; cursor: pointer;
+           color: #0f1216; background: #ff8f6b; border: 0; border-radius: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sports harness</h1>
+  <p>This listener is the owner's. Sign in to see your tickets.</p>
+  {% if message %}<p class="error" role="alert">{{ message }}</p>{% endif %}
+  <form method="post" action="/login">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password"
+           autocapitalize="none" autocorrect="off" spellcheck="false" required>
+    <button type="submit">Sign in</button>
+  </form>
+</main>
+</body>
+</html>

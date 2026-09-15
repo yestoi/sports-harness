@@ -185,6 +185,35 @@ def test_annotations_come_from_operator_events_in_the_week(db_session, env_setti
     assert notes and "<" not in notes[0]["summary"]
 
 
+def test_annotations_carry_technical_text_for_an_exception_repr_row(db_session, env_settings):
+    """Fix 53 round 2 (brief fix-53r2-54-55): Study's "Operator events this week" table used to
+    show a raw exception repr verbatim in its `summary` cell. `_annotations` now runs the same
+    `humanize_event_summary` Pulse uses, keyed by the row's own `kind`, and carries the sanitized
+    stored text alongside as `technical` (additive key; `STUDY_KEYS` lists payload top-level keys
+    only, so this does not touch it)."""
+    _run(db_session)
+    raw = "WebSocketConnectionClosedException(Connection to remote host was lost.)"
+    db_session.add(OperatorEvent(ts=NOW - timedelta(days=3), kind="ws_disconnect",
+                                 summary=raw, ref={}))
+    db_session.flush()
+    notes = _build(db_session, env_settings, "study:2026-37")["annotations"]
+    row = next(n for n in notes if n["kind"] == "ws_disconnect")
+    assert row["summary"] == "connection to the exchange was lost"
+    assert row["technical"] == raw
+
+
+def test_annotations_carry_no_technical_text_for_a_plain_row(db_session, env_settings):
+    """A plain row (the common case) carries `technical: None`, same as Pulse's own events."""
+    _run(db_session)
+    db_session.add(OperatorEvent(ts=NOW - timedelta(days=3), kind="deploy",
+                                 summary="build_sha b0a3991 - 93dfb95", ref={}))
+    db_session.flush()
+    notes = _build(db_session, env_settings, "study:2026-37")["annotations"]
+    row = next(n for n in notes if n["kind"] == "deploy")
+    assert row["summary"] == "build_sha b0a3991 - 93dfb95"
+    assert row["technical"] is None
+
+
 def test_the_week_list_comes_from_report_runs(db_session, env_settings):
     _run(db_session, week=37)
     _run(db_session, week=38, provisional=True)

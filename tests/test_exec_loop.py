@@ -918,6 +918,121 @@ def test_exception_in_one_order_does_not_abort_the_step(env_settings, db_session
     assert "tape blew up" in heartbeat.last_error
 
 
+def test_a_ticker_whose_book_cannot_load_does_not_abort_the_step(
+        env_settings, db_session, world, monkeypatch, caplog):
+    """Fix 60: one ticker's book failure is one ticker's failure, not the step's.
+
+    The executor spent Sunday and Monday losing every step to the first ticker whose newest
+    snapshot could not be read, so its heartbeat never went green, no order was ever cancelled
+    at kickoff and 3,426 loops were skipped. Here T2's book raises and T3's does not: the step
+    still completes with a null `last_error`, T3's book advances and its order fills, and T2's
+    order holds where it is -- no fill, no cancel -- because a book we could not read says
+    nothing about the queue.
+    """
+    keep_only(db_session, {VM2, VM3})
+    signal3 = db_session.query(Signal).filter_by(venue_market_id=VM3).one()
+    signal3.decision, signal3.rejection_reason = "candidate", None
+    _book2(db_session, NOW - timedelta(seconds=5))
+    _book3(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert len(db_session.query(Order).all()) == 2
+
+    real = executor._book_now
+
+    def explode(session, ticker, now, cached, ws_connect_at=None):
+        # 6B §0.3 gave `_book_now` the reconnect instant; the stub takes it and hands it on.
+        if ticker == T2:
+            raise ValueError("snapshot without yes_dollars_fp")
+        return real(session, ticker, now, cached, ws_connect_at)
+
+    monkeypatch.setattr(executor, "_book_now", explode)
+    _print(db_session, T2, clock.now + timedelta(seconds=5), "0.30", "500", trade_id="p2")
+    _print(db_session, T3, clock.now + timedelta(seconds=5), "0.40", "500", trade_id="p3")
+    # A delta on T3's untouched NO side: it lands only if T3's book was advanced this step.
+    _delta(db_session, T3, clock.now + timedelta(seconds=6), "no", "0.48", "-10.00", seq=2)
+    db_session.commit()
+    clock.advance(15)
+    with caplog.at_level("WARNING", logger="harness.execution.loop"):
+        stats = executor.step()
+    refresh(db_session)
+
+    # The step completed and its heartbeat is green: no other ticker failed.
+    heartbeat = db_session.execute(text("select loops, last_error from exec_heartbeat")).one()
+    assert heartbeat.loops == 2
+    assert heartbeat.last_error is None
+    assert stats.book_errors == 1
+    # The healthy ticker advanced and filled.
+    assert executor.books[T3].no_bids == {Decimal("0.4800"): Decimal("50.00")}
+    assert orders_of(db_session, T3)[0].filled_contracts == SIZE3
+    # The broken ticker held: no fill, no cancel, and the hold is recorded as dirty time.
+    broken = orders_of(db_session, T2)[0]
+    assert broken.status == "open"
+    assert broken.filled_contracts == Decimal("0")
+    assert fills_of(db_session, broken.id) == []
+    assert [e for e in events_of(db_session, "cancel") if e.order_id == broken.id] == []
+    assert broken.dirty_seconds == 15
+    # The log line names the ticker and the exception class.
+    assert any(T2 in r.getMessage() and "ValueError" in r.getMessage()
+               for r in caplog.records)
+
+
+def _book_error_samples(session):
+    """`exec.book_errors` in write order, as plain ints."""
+    return [int(r.value) for r in session.query(MetricSample)
+            .filter_by(source="exec", name="exec.book_errors")
+            .order_by(MetricSample.id).all()]
+
+
+def test_a_ticker_whose_book_cannot_load_reports_the_exec_book_errors_metric(
+        env_settings, db_session, world, monkeypatch):
+    """Fix 66, M1: `stats.book_errors` used to be counted and read by nothing but the test
+    itself (fix 60) -- a ticker whose book had been unreadable for days was invisible to
+    verify.md and the dashboard, and an operator would have had to grep container logs for
+    "book read failed". `exec.book_errors` is now written beside `exec.tape_lag_tickers` in the
+    same metric batch, so the step from
+    `test_a_ticker_whose_book_cannot_load_does_not_abort_the_step` also leaves a gauge behind.
+    """
+    keep_only(db_session, {VM2, VM3})
+    signal3 = db_session.query(Signal).filter_by(venue_market_id=VM3).one()
+    signal3.decision, signal3.rejection_reason = "candidate", None
+    _book2(db_session, NOW - timedelta(seconds=5))
+    _book3(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    assert len(db_session.query(Order).all()) == 2
+    # The first step is a fresh Sampler's first call, always due: a clean batch, zero errors.
+    assert _book_error_samples(db_session) == [0]
+
+    real = executor._book_now
+
+    def explode(session, ticker, now, cached, ws_connect_at=None):
+        # 6B §0.3 gave `_book_now` the reconnect instant; the stub takes it and hands it on.
+        if ticker == T2:
+            raise ValueError("snapshot without yes_dollars_fp")
+        return real(session, ticker, now, cached, ws_connect_at)
+
+    monkeypatch.setattr(executor, "_book_now", explode)
+    _print(db_session, T2, clock.now + timedelta(seconds=5), "0.30", "500", trade_id="p2")
+    _print(db_session, T3, clock.now + timedelta(seconds=5), "0.40", "500", trade_id="p3")
+    db_session.commit()
+    # `metric_sample_s = 60`: advanced a full period so the second batch is due on this step too.
+    clock.advance(60)
+    stats = executor.step()
+    refresh(db_session)
+
+    assert stats.book_errors == 1
+    assert _book_error_samples(db_session) == [0, 1]
+
+
 def test_heartbeat_fields(env_settings, db_session, world):
     clock = Clock(NOW)
     _book2(db_session, NOW - timedelta(seconds=5))
@@ -2182,3 +2297,64 @@ def test_newest_event_ts_at_widens_once_then_reads_no_tape_at_all(db_session):
     # Inside the widened 24 h window, it is found.
     _tape_row(db_session, AT - timedelta(hours=6))
     assert store.newest_event_ts(db_session, AT) == AT - timedelta(hours=6)
+
+
+# ---- fix 57, round 1: the executor's own readers honour the unsynced-run key --------------
+#
+# Ruling 1 (journal 184): the in-game readers that reach the gap snapshots through
+# `signals.run_id` must exclude a run recorded under an unsynchronized clock, or the annotation
+# on run 14485 is documentation rather than an exclusion.
+
+def test_an_unsynced_run_is_excluded_from_candidates_intents_and_decisions(db_session):
+    import uuid as _uuid
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+    from decimal import Decimal as _D
+
+    from harness.db.models import Intent, Run
+    from harness.execution.store import _NEWEST_DECISIONS, candidate_signals, load_intents
+    from harness.ops.clock import UNSYNCED_NOTE
+    from tests.conftest import _make_leg
+
+    now = _dt(2026, 9, 18, 20, 0, tzinfo=_tz.utc)
+    made = _dt(2026, 9, 18, 19, 30, tzinfo=_tz.utc)
+
+    def leg():
+        return _make_leg(db_session, game_id=9001, market_type="moneyline", side_team_id=None,
+                         side=None, threshold=None, fair_p=_D("0.55"), edge=_D("0.05"),
+                         created_at=made)
+
+    bad, annotated_ok, no_run_row = leg(), leg(), leg()
+    # The run of `bad` carries the key; `annotated_ok`'s run row exists with no key at all;
+    # `no_run_row`'s run was never written (a fixture, a backfill) -- both must be kept.
+    db_session.add(Run(id=bad.signal.run_id, started_at=made, status="ok",
+                       notes=dict(UNSYNCED_NOTE)))
+    db_session.add(Run(id=annotated_ok.signal.run_id, started_at=made, status="ok", notes={}))
+    for made_leg in (bad, annotated_ok, no_run_row):
+        db_session.add(Intent(id=_uuid.uuid4(), signal_id=made_leg.signal.id, variant_id="tiny",
+                              venue="kalshi", venue_market_id=made_leg.venue_market.id,
+                              ticker=made_leg.venue_market.ticker, side="yes",
+                              signal_created_at=made, created_at=made))
+    db_session.commit()
+
+    lower = now - _td(hours=6)
+    # `_CANDIDATES` skips a signal that already has an intent, so candidates are read on a
+    # fresh pair with no intents.
+    bad2, good2 = leg(), leg()
+    db_session.add(Run(id=bad2.signal.run_id, started_at=made, status="ok",
+                       notes=dict(UNSYNCED_NOTE)))
+    db_session.commit()
+    got = {row.signal_id for row in candidate_signals(db_session, ["tiny"], lower, False)}
+    assert good2.signal.id in got and bad2.signal.id not in got
+
+    views, _extras = load_intents(db_session, ["tiny"], lower, False)
+    signal_ids = {v.signal_id for v in views}
+    assert annotated_ok.signal.id in signal_ids and no_run_row.signal.id in signal_ids
+    assert bad.signal.id not in signal_ids
+
+    decisions = db_session.execute(
+        _NEWEST_DECISIONS, {"replay": False, "variants": ["tiny"], "lower": lower}).all()
+    market_ids = {row.venue_market_id for row in decisions}
+    assert annotated_ok.venue_market.id in market_ids
+    assert bad.venue_market.id not in market_ids

@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     ws_lookback_hours: int = 8  # F8: post-kickoff prints still feed settlement and markouts
     ws_stale_s: int = 180  # force a ws reconnect after this much silence on the socket
     espn_base_url: str = "https://site.api.espn.com/apis/site/v2/sports/football"
+    #: The one game-log path, pinned (the user's ruling, journal 184 item 3; invariant 8
+    #: carries the amendment). It is the only thing fetched from ESPN's browser-facing
+    #: `site.web.api.espn.com`, it is the v3 NFL path, and `{athlete_id}` is formatted in.
+    #: That host is less stable than the recorder's, so the fetch fails soft: any failure
+    #: reads `no season data yet` (harness/feeds/espn.py::fetch_gamelog).
+    espn_gamelog_url: str = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/gamelog"
     tick_budget_s: int = 100
     http_timeout_s: float = 10.0
     ladder_cap_per_tick: int = 400
@@ -42,6 +48,13 @@ class Settings(BaseSettings):
     build_sha: str = "dev"
     build_time: str | None = None
     odds_monthly_credits: int = 5_000_000  # U1 2026-09-07: Odds API tier upgrade (was 100_000)
+    #: Phase 4.6 3.2 (D2). The prop feed's own monthly allocation, 6 % of the 5M tier against a
+    #: derived need of about 170k. Enforced in code from `x-requests-last`, summed per Chicago
+    #: month in `source_state`; props go dormant for the month at the allocation.
+    odds_prop_monthly_credits: int = 300_000
+    #: The share of the strategy feed's monthly credits that must remain before props may run at
+    #: all. The strategy feed is protected first, well before gate 5's 20 % line is near.
+    credits_watch_fraction: float = 0.40
     # alternates cadence inside 180 min of kickoff (U1 value); Task 3b wires this into
     # alternates_due, replacing the old flat odds_alternates_interval_s setting.
     odds_alt_interval_near_s: int = 120
@@ -171,6 +184,21 @@ class Settings(BaseSettings):
     #: existing conditional loop, so this phase adds **no new secret file**. Mounted read-only
     #: into `app-research` and into no other container (ruling A-M2).
     anthropic_api_key_file: Path = Path("/run/secrets/anthropic_api_key")
+
+    # --- phase 4.6: the LAN listener (addendum §6) -------------------------------------------
+    #: The owner's password hash line, the certificate and its key. All three are **the user's**
+    #: (D7): the loop creates, copies, reads and logs none of them, `harness owner-password-hash`
+    #: prints a line and writes no file, and the feature switches on file metadata alone --
+    #: `harness.dashboard.auth.lan_active` requires all three to be non-empty *regular* files
+    #: (`is_file()` and size, never `exists()`, for the same reason as `has_kalshi_credentials`).
+    #: These are the container paths; the host copies live beside the other secrets.
+    owner_password_hash_file: Path = Path("/run/secrets/owner_password_hash")
+    lan_tls_cert_file: Path = Path("/run/secrets/lan_tls.crt")
+    lan_tls_key_file: Path = Path("/run/secrets/lan_tls.key")
+    #: Where Compose publishes the LAN listener, and the only `Origin` the write routes accept
+    #: (§5.5: from settings, never from the request's `Host`). Never `0.0.0.0` (pre-loaded 4).
+    lan_addr: str = "192.168.12.127"
+    lan_port: int = 8443
 
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()

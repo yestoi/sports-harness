@@ -23,6 +23,29 @@ context = module("context")
 hook = module("recovery_hook")
 
 
+class AppendTests(unittest.TestCase):
+    def test_append_stamps_the_ledger_line_from_the_clock_in_chicago_time(self):
+        from datetime import datetime, timezone
+        with tempfile.TemporaryDirectory() as root:
+            ledger = Path(root) / "progress.md"
+            ledger.write_text("# ledger\n")
+            when = datetime(2026, 9, 13, 15, 4, tzinfo=timezone.utc)
+            context.append_line(ledger, "T5 dispatched (sonnet)", now=when)
+            self.assertEqual(ledger.read_text(), "# ledger\n- 2026-09-13 10:04 CT: T5 dispatched (sonnet)\n")
+
+    def test_append_cli_writes_one_stamped_line_and_never_edits_earlier_text(self):
+        with tempfile.TemporaryDirectory() as root:
+            ledger = Path(root) / "progress.md"
+            ledger.write_text("- old line\n")
+            result = subprocess.run(["python3", str(SKILL / "scripts/context.py"), "--root", root,
+                                     "append", "progress.md", "new fact"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = ledger.read_text().splitlines()
+            self.assertEqual(lines[0], "- old line")
+            self.assertRegex(lines[1], r"^- 2\d{3}-\d{2}-\d{2} \d{2}:\d{2} CT: new fact$")
+            self.assertEqual(len(lines), 2)
+
+
 class ReaderTests(unittest.TestCase):
     def test_last_two_complete_entries_ignore_code_examples_and_variable_length(self):
         old = "## 1. old\nold\n"

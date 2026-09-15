@@ -128,6 +128,51 @@ _COLUMN_DDL = (
     "alter table orders add column if not exists venue_order_id varchar(64)",
     "alter table orders add column if not exists order_group_id varchar(64)",
     "alter table orders add column if not exists exchange_index_at_place integer",
+    # Fix 64 (journal 207): the score-correction marker. `GameScoreEvent.correction` carries the
+    # same not-null default on the model (`server_default=text("false")`) as this ALTER, so
+    # `create_all` on a fresh database and this statement on an existing one leave the identical
+    # column -- what `tests/test_alembic.py`'s catalogue diff compares.
+    # `migrations/versions/0009_score_correction.py` holds the identical statement.
+    "alter table game_score_events add column if not exists correction boolean not null default false",
+    # Phase 4.6 (addendum 9). Additive only; on PostgreSQL 16 every ADD COLUMN with a
+    # non-volatile default is metadata-only, so none of these rewrites a table. Each column is
+    # declared on its model too, and each not-null one carries the same `default` on both sides,
+    # so `create_all` on a fresh database and this ALTER on a populated one leave the identical
+    # column -- which is what `tests/test_alembic.py`'s catalogue diff compares.
+    # `migrations/versions/0010_phase46_fun_tickets.py` holds the identical statements.
+    "alter table parlay_legs add column if not exists player_id integer",
+    "alter table parlay_legs add column if not exists stat varchar(12)",
+    "alter table parlay_legs add column if not exists period varchar(6) not null default 'game'",
+    "alter table parlay_legs add column if not exists operator varchar(8)",
+    "alter table parlay_legs add column if not exists market_def varchar(400)",
+    "alter table parlay_legs add column if not exists odds_prop_snapshot_id bigint",
+    "alter table parlay_legs add column if not exists dk_link varchar(300)",
+    "alter table parlay_legs add column if not exists dk_sid varchar(64)",
+    "alter table parlay_legs add column if not exists offered boolean not null default true",
+    "alter table parlay_legs add column if not exists p_at_build numeric(6,4)",
+    "alter table parlay_legs add column if not exists p_source varchar(10) not null default 'none'",
+    "alter table parlay_legs add column if not exists context_text varchar(80)",
+    # Addendum 14.4: the one widening in this phase. `parlay_legs` holds tens of rows, a varchar
+    # widening needs no rewrite on PostgreSQL 16, and the audit's `alter column .* type` grep
+    # matches this one line and no other. `ddl_target` does not read this shape, so it runs on
+    # every `init-db` -- against a column that is already varchar(12) that is a catalogue
+    # no-op, and the table is small enough that its AccessExclusive lock is momentary.
+    "alter table parlay_legs alter column market_type type varchar(12)",
+    "alter table parlay_cards add column if not exists policy_version varchar(16)",
+    "alter table parlay_cards add column if not exists parent_card_id integer",
+    "alter table parlay_cards add column if not exists declined_reason varchar(16)",
+    "alter table parlay_cards add column if not exists combined_kind varchar(10) not null "
+    "default 'calculated'",
+    "alter table parlay_cards add column if not exists dk_combined_american integer",
+    "alter table parlay_cards add column if not exists dk_combined_at timestamptz",
+    "alter table parlay_cards add column if not exists link_capability varchar(10) not null "
+    "default 'none'",
+    "alter table parlay_cards add column if not exists p_source_min varchar(10) not null "
+    "default 'sharp'",
+    "alter table parlay_placements add column if not exists confirmation_id varchar(36)",
+    "alter table parlay_ledger add column if not exists source varchar(10) not null "
+    "default 'computed'",
+    "alter table source_state add column if not exists credits_used bigint",
     # Phase 6B §1.3: the reconciliation ledger per track, and the bounded jsonb it persists in.
     # Nullable with no default, so no pre-6B row is backfilled and §3 row 1's invariant holds by
     # construction (spec §2).
@@ -158,6 +203,23 @@ _INDEX_DDL = (
     "create unique index if not exists uq_fair_value_row on fair_values "
     "(run_id, game_id, market_type, coalesce(outcome_team_id,-1), coalesce(outcome_side,''), "
     "coalesce(threshold,0), fair_source)",
+    # Phase 4.6 (addendum 9). Four indexes on tables that take no live writes: the three tables
+    # this phase creates (`create_all` builds their indexes with them on a fresh database; these
+    # statements are what a populated database gets on the next `init-db`) and the partial
+    # unique index on `parlay_placements`, which one hand writes twice a week. The prop pool's
+    # own two indexes ride `odds_prop_snapshots`, a table this phase creates, so neither is a
+    # bulk-table index and neither needs CONCURRENTLY (addendum 9 as amended, D23).
+    "create unique index if not exists uq_odds_prop_row on odds_prop_snapshots "
+    "(raw_id, book, market_type, player_name, coalesce(outcome_side, ''), coalesce(point, 0))",
+    "create index if not exists ix_odds_prop_lookup on odds_prop_snapshots "
+    "(game_id, market_type, player_id, fetched_at desc) where player_id is not null",
+    "create index if not exists ix_parlay_corrections_card_ts "
+    "on parlay_placement_corrections (card_id, ts)",
+    "create unique index if not exists uq_players_sport_espn on players (sport, espn_id)",
+    "create index if not exists ix_player_stat_game_player_ts "
+    "on player_stat_events (game_id, player_id, ts desc)",
+    "create unique index if not exists uq_parlay_placement_confirmation "
+    "on parlay_placements (confirmation_id) where confirmation_id is not null",
     # One live order per (venue, ticker, side, variant). Replay orders are exempt so a replay
     # run can re-simulate a market the live executor is working.
     "create unique index if not exists uq_open_order on orders (venue, ticker, side, variant_id) "
@@ -316,6 +378,32 @@ _CONCURRENT_INDEX_DDL = (
     # or the catalogue diff fails.
     "create index concurrently if not exists ix_quotes_run_market "
     "on venue_quotes (run_id, venue_market_id)",
+    # Phase 4.6 (addendum 7.2, D13; plan review CR-4), the story indexes of the Floor game
+    # detail. Each rides a table the executor writes to on its 15 s loop while `init-db` runs on
+    # every deploy, so each is CONCURRENTLY under fix 25's F65 rule, no carve-out; none of the
+    # four tables is partitioned, so the plain concurrent form is right and 0007's partitioned
+    # recipe is not needed. Each is declared on its model as well, so `create_all` gives it to a
+    # fresh database, and `_model_indexes` subtracts the names below so no plain `create index`
+    # races these on a populated one. `migrations/versions/0010_phase46_fun_tickets.py` holds
+    # the identical statements; all three copies must land together or the catalogue diff fails.
+    # The detail's `intents` rows for one game's markets, in time order.
+    "create index concurrently if not exists ix_intents_market_created "
+    "on intents (venue_market_id, created_at)",
+    # The cancelled/expired rows of one order, in time order.
+    "create index concurrently if not exists ix_order_events_order_ts "
+    "on order_events (order_id, ts)",
+    # One order's fills, in time order, for the method/replay labelling. The addendum names the
+    # time column `ts`; `fills` spells it `filled_at`, which is the column the index takes.
+    "create index concurrently if not exists ix_fills_order_ts on fills (order_id, filled_at)",
+    # The settlement row of one order, in paper dollars.
+    "create index concurrently if not exists ix_ledger_order on ledger (order_id)",
+    # The fifth story index of addendum 7.2, `ix_gap_outcomes_order on gap_outcomes (order_id)`,
+    # is not here and is not in the revision: `gap_outcomes` is keyed `(gap_snapshot_id,
+    # benchmark_type)` and carries no `order_id` column on main, on `phase6b-repair-execution`
+    # or anywhere else, so that statement cannot be written. The read it was meant to serve
+    # reaches a gap outcome through `market_gap_snapshots`, whose id is this table's own leading
+    # primary-key column, so the primary key already serves it. Recorded for the controller by
+    # 4.6 Task 4; a ruling belongs with the Floor detail task, not here.
 )
 
 #: Fix 45 (the 23:23/23:26/23:27 CT 2026-09-11 and 00:06 CT 2026-09-12 normalize timeouts):
@@ -571,14 +659,24 @@ def _ensure_partitioned_concurrent_indexes(conn: Connection, only: frozenset[str
     return skipped
 
 
-#: Open contracts and their average price per variant, from the fills of live orders that have
-#: not settled yet, on either fill method that is money: `queue_model` (inferred against the
-#: recorded tape) and `venue` (the venue's own report). snapshot_cross and no_watcher fills are
-#: counterfactuals, not positions. The list matches `store.MONEY_FILL_METHODS` exactly -- the
+#: A fill is open until it has been settled: the order has not been moved to `settled` (the
+#: filled/partially_filled path) *and* no ledger `settlement` row has been posted for the fill
+#: (the path a partially filled order takes when it is later cancelled or expires: its status is
+#: the executor's record and never becomes `settled`, carried fix 56). `f` is the fills alias
+#: and `o` the orders alias in every consumer; the three readers below embed this text so they
+#: cannot diverge.
+OPEN_FILL_SQL = (
+    "o.status <> 'settled' and not exists ("
+    "select 1 from ledger l where l.fill_id = f.id and l.kind = 'settlement')")
+
+#: Open contracts and their average price per variant, from the fills that have not been settled
+#: yet (`OPEN_FILL_SQL`), on either fill method that is money: `queue_model` (inferred against
+#: the recorded tape) and `venue` (the venue's own report). snapshot_cross and no_watcher fills
+#: are counterfactuals, not positions. The list matches `store.MONEY_FILL_METHODS` exactly -- the
 #: view and `store._POSITIONS` answer the same question and must not diverge on which fills are
 #: real (Task 11 fix round 1, Important 2). Widening a `create or replace view` is additive:
 #: the column list is unchanged, so nothing that reads it needs to know.
-_POSITIONS_VIEW = """
+_POSITIONS_VIEW = f"""
 create or replace view positions as
 select o.variant_id,
        o.ticker,
@@ -589,7 +687,7 @@ from fills f
 join orders o on o.id = f.order_id
 where f.fill_method in ('queue_model', 'venue')
   and o.replay = false
-  and o.status <> 'settled'
+  and {OPEN_FILL_SQL}
 group by o.variant_id, o.ticker, o.side
 """
 
@@ -861,13 +959,25 @@ _ADD_COLUMN_RE = re.compile(
 _CREATE_INDEX_RE = re.compile(
     rf"^create\s+(?:unique\s+)?index\s+(?:concurrently\s+)?if\s+not\s+exists\s+({_IDENT})(?=\s|$)")
 
+#: `alter table <t> alter column <c> type varchar(<n>)`, the one shape of ALTER COLUMN this file
+#: carries (phase 4.6 addendum 14.4's `parlay_legs.market_type` widening). A varchar *widening*
+#: has no `if not exists` spelling in Postgres, so without this the statement would ask for an
+#: AccessExclusive lock on every `init-db` forever after the one deploy that needed it -- the
+#: exact cost fix 37 exists to avoid. Narrow on purpose: only `varchar(n)`, so any other type
+#: change stays unrecognized and runs exactly as before.
+_ALTER_COLUMN_TYPE_RE = re.compile(
+    rf"^alter\s+table\s+({_IDENT})\s+alter\s+column\s+({_IDENT})\s+type\s+"
+    rf"varchar\s*\(\s*(\d+)\s*\)$")
 
-def ddl_target(statement: str) -> tuple[str, str, str] | tuple[str, str] | None:
-    """What `statement` adds, for the two shapes `create_schema` can skip once the target
-    already exists (fix 37, journal 110/112): `("column", table, column)` for an
-    `add column if not exists`, `("index", name)` for a `create [unique] index [concurrently]
-    if not exists`. `None` for anything else -- a view, a backfill, an `alter ... alter column`,
-    a `set` -- which always runs exactly as before; only these two shapes ask for a lock a
+
+def ddl_target(statement: str) -> tuple[str, ...] | None:
+    """What `statement` adds, for the three shapes `create_schema` can skip once the target
+    already exists (fix 37, journal 110/112; phase 4.6 added the third):
+    `("column", table, column)` for an `add column if not exists`, `("index", name)` for a
+    `create [unique] index [concurrently] if not exists`, and
+    `("column_type", table, column, length)` for an `alter column <c> type varchar(<n>)`.
+    `None` for anything else -- a view, a backfill, a `set default`, a type change to anything
+    but a varchar -- which always runs exactly as before; only these shapes ask for a lock a
     no-op does not need.
     """
     normalized = " ".join(statement.split()).lower()
@@ -877,6 +987,9 @@ def ddl_target(statement: str) -> tuple[str, str, str] | tuple[str, str] | None:
     m = _CREATE_INDEX_RE.match(normalized)
     if m:
         return ("index", m.group(1).strip('"'))
+    m = _ALTER_COLUMN_TYPE_RE.match(normalized)
+    if m:
+        return ("column_type", m.group(1).strip('"'), m.group(2).strip('"'), m.group(3))
     return None
 
 
@@ -889,6 +1002,16 @@ def _exists(conn: Connection, target: tuple[str, ...]) -> bool:
             "select 1 from information_schema.columns where table_schema = current_schema() "
             "and table_name = :t and column_name = :c"),
             {"t": table, "c": column}).first() is not None
+    if target[0] == "column_type":
+        # "Already there" for a widening is: the column is a varchar of that length. A narrower
+        # one (or no column at all, on a database that predates it) means the statement still has
+        # work to do. A column that is already wider is left alone -- this file never narrows.
+        _, table, column, length = target
+        return conn.execute(text(
+            "select 1 from information_schema.columns where table_schema = current_schema() "
+            "and table_name = :t and column_name = :c and data_type = 'character varying' "
+            "and character_maximum_length >= :n"),
+            {"t": table, "c": column, "n": int(length)}).first() is not None
     _, name = target  # target[0] == "index"
     # relkind 'i' is a plain index; 'I' is the parent index of a partitioned table (e.g. every
     # index create_schema builds on raw_responses, orderbook_events or venue_trades, which are

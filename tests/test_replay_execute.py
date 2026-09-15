@@ -470,6 +470,33 @@ def test_replay_step_failure_fails_the_command(monkeypatch, env_settings, db_ses
                execute=True)
 
 
+def test_replay_step_book_error_fails_the_command(monkeypatch, env_settings, db_session,
+                                                    two_runs):
+    """Fix 66, M2: a book-read failure is one ticker's problem on the live loop (fix 60),
+    but a replay is a different audience -- an order held all day on a ticker whose reads
+    kept timing out must fail the command, or the divergence only shows up later as an
+    unexplained live/replay mismatch. `stats.book_errors` now fails a replay step exactly
+    like `stats.errors`; the live loop's own tolerance for one bad ticker is untouched.
+    """
+    from harness.execution.loop import Executor
+    from harness.replay import ReplayStepError
+
+    game, run_a, run_b, tape = two_runs
+    price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
+    db_session.commit()
+
+    def one_ticker_unreadable(self, session, tickers, market_ids, now, dead_recorder):
+        # 6B §1.5 gave `_advance_books` the market ids and the recorder verdict it records its
+        # intervals from; the three return values are fix 60's, unchanged.
+        return {}, set(), {T2}
+
+    monkeypatch.setattr(Executor, "_advance_books", one_ticker_unreadable)
+    with pytest.raises(ReplayStepError, match="see the executor log"):
+        # 6B moved `settings` to `replay`'s second positional parameter; the call is the same.
+        replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny",
+               execute=True)
+
+
 def test_replay_cli_exits_1_when_a_step_fails(monkeypatch, env_settings, db_session, two_runs):
     """The same failure, through the command an operator actually runs."""
     import os

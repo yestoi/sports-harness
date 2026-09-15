@@ -1,97 +1,60 @@
-# Autopilot restart checkpoint
+# Autopilot checkpoint
 
-Updated 2026-09-12 22:03 CT (2026-09-13 03:03Z). User-directed preparation ends at this committed handoff. No Claude
-controller or new 6B task was launched. Main includes index source `4b2f2cd` plus
-this documentation checkpoint. Controller: `/home/trey/dev/sports` on Omarchy;
-worktrees: `/home/trey/dev/sports-wt`; production: `/srv/sports-harness`.
+Updated 2026-09-14 20:10 CT by controller session sports-5e (session_01K7uXN54fkXzh2teuSzb1bo) in `/home/trey/dev/sports` on Omarchy (lock held by process 718911 under flock in tmux `sports-autopilot`; a peer unlocked Claude session `herdr-autopilot-68` is alive and is not a controller). Last journal entry: 215 (phase 4.6 on main). Main **ca16076** (docs) = code **50cb103** (the 4.6 merge: fix 64 + slices A-E; revision `0010_phase46_fun_tickets`); runtime still ca30ed1 until the 23:22 CT deploy wakeup (R4: NFL kickoff 19:15 CT; full recipe).
 
-Last journal: 156. Plan: `docs/superpowers/plans/2026-09-12-omarchy-loop-restart.md`.
-Ledger: `.superpowers/sdd/omarchy-restart-2026-09-12/progress.md`.
-Launch: `docs/runbooks/claude-omarchy-restart.md`.
+## Rulings landed at resume (journal 199-212)
 
-## Source, tests and deployment
+User-side closed: NAS key (bundle on the NAS), age key (held off-host, nag dropped), Anthropic account limits, Kalshi read scope, runs 14485/14486 stay as recorded, gate criterion 8 stays (no R1 amendment). Scheduled: 6E cold-start Tue 2026-09-15 07:00 CT (below). Open: owner password hash and TLS files after a release carries `harness owner-password-hash` (tell the user that day). Loop-side: rows 62/63 option A (checks bounded at the NO_WATCHER cutoff fix's release, fix in 6B's integration round); row 64 sonnet hotfix (correction marker + check exclusion); weekend props option (a) on `phase46-fun-tickets`; 6B manifest gate scoped to the resting interval (spec 0.16, audit.py, fixture, rerun on order 157); `parlay_slot_state` table in the 4.6 integration round; `site.web.api.espn.com` on the allowlist (path-pinned). Gate 13 authorized only for the three named predicates; gates 5/6 only for the props cadence change.
 
-- Runtime `93dfb95` in app-run/serve/exec/research, deployed Sep12 20:59:31–21:05:30 CT
-  (Sep13 01:59:31–02:05:30Z). WS stays `b0a3991`; PostgreSQL stays schema0006.
-  Healthy receipt: `/srv/sports-harness/releases/20260913T015931Z-93dfb95/receipt.json`.
-- Exact `93dfb95`: pristine full suite 3,209 passed, 6 expected xfails, 1,775.15s;
-  independent source and CSS reviews passed.
-- Index45 source `4b2f2cd`: independent review passed; 3,230 passed, 6 expected xfails, 1862.90s, clean unfiltered full suite on Omarchy. FF merged into
-  main; original `8c24df2` and historical rounds preserved. Full production release
-  NOT done. Before it, run fresh exact-main full acceptance and recheck game windows.
-- Index fault fixtures need database-local `UPDATE(indisvalid)` only. The controller
-  provisions and revokes it per `linux-controller.md`; workers never get admin tools.
-  First restricted-role full run failed eight fixtures, with 3,222 passed/6 xfails.
-  All 85 schema tests passed after the column grant; no source/assertions changed.
-- Controller isolation, authentication and actual two-tool child drills accepted:
-  96 isolated tests, 35 final guard/MCP checks, 31 actual-child tests passed.
-  Claude uses the user's claude.ai login; Superpowers 6.3.0 and launcher flags verified.
+## Active units
 
-## Verification is FAIL
+- **deploy pending** (Orient 2): main code 50cb103 is ahead of the runtime ca30ed1 (fix 64 + the 4.6 release). Wakeup 71baf905 at 23:22 CT: preconditions, `make deploy-omarchy` (full recipe: models, revision `0010`, the `app-serve-lan` compose profile dormant without the user's three LAN files), then verify (fix 64 row, Layer 3b walkthrough at the day's first verify), re-judge fix 49 and row 68. If 6B has merged to main by then it rides the same deploy (with `NO_WATCHER_CUTOFF_FIXED_AT` set to the release instant at the release commit, journal 206); otherwise 6B deploys after Tuesday's reboot.
+- **phase 6B** (ledger `.superpowers/sdd/2026-09-11-phase6b-repair-execution/progress.md`; dispatches 25): phase branch `phase6b-repair-execution` **117d5bd** (T12 merged 19:22 CT). **Integration round complete**: 6bb34d6 + fix round 571be70 (re-review APPROVED 19:59 CT) + the controller's verify.md cutoff rows **fd70692** (T12 authority) on `phase6b-integration`. **Running**: the unsharded suite at fd70692 (integration-full-fd70692.log, started 19:59 CT, ends ~20:45; holds the old runner's exclusive flock) and the opus final whole-branch review `final-6b` (ref a2f40fd0946943c4c, dispatched 20:02 CT, package review-final-a2287da..fd70692.diff + final-review-inputs.md + final-review-brief.md; report results/6b-final-review.md; chase 20:33 CT). Then: fix wave (sonnet) if needed + scoped re-review, `--ff-only` in `../sports-wt/phase6b-repair-execution`, plan-next 3a audit, archive the ledger/final review/fixes to docs/superpowers/reviews/, merge to main per merge-main-brief.md (opus worker in `phase6b-merge-main`: seven conflicting files, 366 auto-merged; 0008_phase6b_execution -> **0011** on 0010_phase46_fun_tickets, D9), sharded suite on the merged tree, roadmap `done` + `phase done` journal, release.
+- **phase 4.6** (ledger `.superpowers/sdd/2026-09-13-phase4.6-fun-tickets/progress.md`; dispatches 56): **on main at 50cb103** (journal 215); `phase46-fun-tickets` = main. Remaining: **T18b** (controller-executed queries in the first watched NFL window after the release; sonnet writes the report), **T19** (verification rows: worker diff, controller applies), walkthrough items; carried: stale-line needs phrase on a no-threshold prop leg untested; 14 as-written 0008/00NN plan mentions; pyflakes absent from the venv. Status stays `planned` until T18b/T19 accept.
+- **phase 6D** (ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`; dispatches 25): phase branch `phase6d-sustained-evaluation` **606fb5a** (T7 merged). **T8** approved: 2f20322 + fix round 1 **57d55e1** (re-review APPROVED 20:05 CT) on `phase6d-t8-episodes`; sharded suite running at 57d55e1 (t8-full-57d55e1.log, ~10 min, Monitor); on green `git fetch . phase6d-t8-episodes:phase6d-sustained-evaluation`, revoke, remove. **T10** (sonnet, ref a8a0820ce7663a2ba) **running** on `phase6d-t10-verify` at 57d55e1 since 20:08 CT (verify.md rows as a controller-applied diff; chase 21:38 CT). Then T10 review, final whole-branch review, policy comparison after 6B.
+- **6C**: planned/partial; the deferral of two funnel units accepted (journal 184); closure must name both as delivered by 6D (T8's episode tables now carry the spec's units after fix round 1). **Qwen**: D1-D6 approved; nothing activates before 6B's integration round closes (it has; activation is a separate unit, not started).
 
-Summary 9/9 PASS does not establish application or research acceptance. Exact
-measurements and visual rescore are in
-`docs/superpowers/reviews/2026-09-12-omarchy-restart/release-and-verification-evidence.md`.
+## Pending results / subprocesses
 
-- **48:** Correct pricing order and all seven variants run, but gaps/candidates are
-  zero. Markets normalization is about 12h behind raw collection; current-run venue
-  quotes are absent. Carry throughput/coverage to 6D and 48 acceptance; no reset,
-  reprocess, freshness relaxation or budget change.
-- **49:** First five new-build RSS samples span 121.8–1,935.4 MiB. Original 20-tick,
-  <5% and 6h/500MiB acceptance remains OPEN. More RAM does not resolve retention.
-- **51:** Fresh job165: 23 pass, 3 fail, 1 skip. Duplicate trades still hit the
-  unchanged 2s timeout; late fills154, markout timings154, score decreases11 remain.
-  Literal legacy intent/build-history query discrepancies and one bulk tape-count
-  timeout stay under audit. Preserve rows and check definitions.
-- **50:** Four new sid2 sequence-gap markers; no release-interval reconnect and
-  unchanged WS container. Marker alone does not prove frame loss. Full 24h judge-after:
-  SunSep13 21:05:30 CT (Sep14 02:05:30Z).
-- **47:** Settle166 produced 105 markouts, all 11 stage timings, no exhaustion.
-  Due-report-first remains pending: old-build164 already refreshed WTD. Next due is
-  no earlier Sun02:10:38 CT (07:10:38Z); inspect the next scheduled settle at/after due.
-- **52:** Game-window cadence120 correctly skips weather. Quiet-hour zero-fetch and
-  next daytime successful-fetch freshness remain due; no cadence value changed.
-- **53:** Populated Gate scroll width764 at viewport 390; Pulse displays historical
-  exception names. BROKEN reflects actual rules. Initial advisory walk 23 PASS /
-  3 FAIL / 3 PENDING is superseded for populated Gate by controller pixels/geometry.
-  Study below16,000px, final markdown/annotation fence and empty skip table are pending.
-  Preserve and coordinate separate user dashboard design work in the Mac checkout.
+- Suites running: 6B unsharded at fd70692 on harness_test_phase6b_integration (Monitor bdetgl6d3; ends ~20:45 CT); 6D sharded at 57d55e1 on harness_test_phase6d_t8_episodes (Monitor bw2eo78yd; ~20:16 CT). Receipts under `~/.cache/sports-harness/test-state/` (main's acceptance receipt: 50cb103 on harness_test_phase46_merge_main, release tree 7abd4c63da3a).
+- Agents running: 6B final reviewer `final-6b` (opus, a2f40fd0946943c4c), 6D T10 implementer (sonnet, a8a0820ce7663a2ba). Finished this stretch: 6B integration re-review (sonnet, ae2a444aae395bbd5), 6D T8 implementer + fix round (opus, a1e4be97acfd9cfa9), 6D T8 re-review (sonnet, a1464cff66b617dfd).
+- Wakeups (CronList, session-only): 71baf905 Mon 23:22 CT (deploy-window end: the release; re-judge fix 49 and row 68), 6ff56c01 Tue 06:35 CT (cold-start prep), chases 3d4ce701 20:33 CT (final-6b), a2560cbf 21:38 CT (T10); durable reminder unit sports-reminder-2026091501 (Tue 06:30 CT).
+- Fixture grant UPDATE(indisvalid) ON: harness_test_main (+_a/_b/_s), phase6b_integration, phase6d_t8_episodes, phase6d_t10_verify, fix_20260914_score_corrections. Revoked this session: phase6d_t5_budget, phase46_t12_ticket, phase46_props_weekend, phase6b_t9_rescore, phase6b_audit_interval, phase46_t15_ticket_ui, phase6d_t6_latency, phase6d_t7_denominator, phase6b_t11_amendment, phase6b_t12_verify, phase46_merge_main.
+- Worktrees: phase6b-repair-execution, phase6b-integration, phase6d-t8-episodes, phase6d-t10-verify, fix-20260914-score-corrections (merged; remove after the deploy verify), plus the preserved recovery ones (fix-45-raw-events-index, fix-48-pricing-stage-order, recovery/*, restart-worker-smoke).
 
-## Phase handoff and counters
+## Evidence receipts
 
-6B `phase6b-repair-execution` contains accepted T10/T1/T2 only. Original `2d0fd71`
-is preserved as `recovery/phase6b-before-omarchy-20260912`. The final base/head and existing-task smoke receipt are recorded in the mirrored phase ledger; resolve that branch and reconcile its receipt before dispatch.
-Ledger: `.superpowers/sdd/2026-09-11-phase6b-repair-execution/progress.md`.
-Prepared `task-3-omarchy-brief.md` is NOT DISPATCHED. It uses revision0008 after0007,
-retains T1's falsy-value warning and T2's probe/reconnect rulings and final-review list.
-Reconcile failed verification/carried fixes and 6C deadlines before selecting T3.
+- Runtime ca30ed1: receipt `releases/20260914T144712Z-ca30ed1` healthy 14:49:49Z; verify 196 PASS on deterministic rows; 198: fix 49 DEFERRED, row 68 present again. Preflight this session `evidence/2026-09-14-preflight-1541.txt` (`paper posture intact`).
+- Main receipt: the 6A verify block's full suite at 8f1ae26 on harness_test_main: 3,344 passed / 6 xfailed / 1 deselected, pristine, release tree = ca30ed1's.
+- Phase 6B: 97d639e 3,325 passed (unsharded). Phase 4.6: 379fabb six shards exit 0, pristine, release tree d0d480e50193. Phase 6D: 10921cc 3,366 / 6 xfailed / 1 deselected, pristine.
+- Free space `/srv/sports-harness` 14 % used (05:42 CT); database 121.9 GB, growth 16.9 GB/day. Bundle `sports-2026-09-14.bundle` on the NAS (44,024,501 bytes, 15:27 CT) and local.
 
-CT day Sep12: historical 19 + 21 Codex preparation calls + 3 actual Claude children
-= **43 dispatches**. **One failed deployment acceptance**, for fix48's affected row;
-this was one verification unit. Historical fix48 redispatch1 and fix45 round2 retained.
-No new model retry/rate-limit event. All preparation agents/commands consumed; no suite
-or worker pending at handoff. Original Mac worktrees, Omarchy's three migration stashes
-and recovered ignored ledgers remain. Bundles and mirrored evidence are preserved.
+## Counters and gates
 
-## Deadlines and remaining acceptance
+- CT day Sep 14: 127 dispatches at 20:10 CT. Unit counters: phase 6B 25; phase 4.6 56; phase 6D 25; hotfix fix-64 2; batches closed today (57/58: 9; 66: 2; aliases: 2). Failed deploys today: 0. Fix rounds open: none (6B integration r1 and 6D T8 r1 closed). Re-dispatches: T6 review 1/3, fix-49 r3 1/3, T2 1/3. Rate-limit pauses: 1 (06:xx CT). Implementers 1/3.
+- Gates: none open.
 
-6C stays partial/planned: all 11 tasks deployed earlier. SunSep13 19:00 CT Chicago
-week37 discriminator; MonSep14 before09:00 CT diagnostic report. Numeric/eligibility,
-funnel and 6B-dependent checks remain. Formal selection awaits the user's 6F amendment.
-6E inventory/restore/cutover are done; observer started Sep12 22:11Z, expected Sep13
-04:11Z, completion not claimed here. Cold-start console LUKS unlock and two representative
-corrected-workload windows remain. The partial capacity projection needs reconciliation
-to the actual 600GB budget. Fix51's 25h all-pass history remains unestablished.
+## Deadlines and open acceptance
 
-Actual user-systemd reminders rechecked Sep12 21:35 CT (Sep13 02:35Z):
+- Tonight: NFL kickoff 19:15 CT (game 16); deploys blocked about 17:35-23:15 CT (R4). The row 64 hotfix deploys after 23:15 CT if merged and green, else after Tuesday's reboot.
+- **Tue 2026-09-15 06:35 CT (journal 203)**: checkpoint state, journal, commit, push; stop the stack cleanly by 06:50 CT; the session dies with the 07:00 CT reboot; the user relaunches per Kickoff; the new session records the cold-start evidence for 6E and runs Tuesday's duties (futures check 09:30 CT, row 68 and fix 49 re-judge).
+- Tell the user the day a release carrying `harness owner-password-hash` lands (4.6 T10 reaches main at the phase merge; roadmap TODO 565 stays open).
+- User decisions pending: none from the 15:38 CT list. Still the user's: the four yardage/receptions prop families (DraftKings' page has no family rule; they stay `market_unsupported`); 6F's dated amendment; the legal decision.
+- User-side order (journal 184 item 9, updated by 199-203): age key done; Anthropic limits done; Kalshi done; LUKS window scheduled Tue 07:00 CT; LAN files after T10 reaches main.
 
-- `sports-reminder-2026091301`: Sun02:49:59 CT, recheck full-release opportunity.
-- `sports-reminder-2026091302`: Sun09:29:59 CT, readiness before recorded10:20 NFL block.
-- `sports-reminder-2026091303`: Sun18:29:59 CT, prepare19:00 week-key discriminator.
-- `sports-reminder-2026091401`: Mon07:29:59 CT, diagnostic before09:00.
+## Risks and lessons
 
-Roughly Sun03:00 CT earliest full release is an estimate; requery games/jobs and R4.
-Timers survive SSH, not reboot; native Claude wakeups still need actual-session setup.
-NAS SSH authentication is unavailable from Omarchy; no key/account changes were made.
-Optional listed secrets do not block launch. Preserve paper/LIVE0/RFQ0, 600GB budget,
-25% free-space gate and all money, provider, retention and scientific criteria.
+- A blanket reader sweep can silently redefine a pinned gate criterion; only the golden-literal test caught it. Any future exclusion pass names the criterion family as out of scope up front.
+- The subscription limit cuts every in-flight worker at once; resumes from transcripts work (SendMessage), but a dead controller turn cannot arm the wakeup: record the pause after the fact and re-derive due items from the clock.
+- Rebase immediately before every ff-merge, in one command; a merge script must check the suite's exit code. Shard layout follows durations (row 67). Review packages: `git -c diff.algorithm=histogram diff`. A phase branch with no worktree merges with `git fetch . <task>:<phase>`; one with a worktree merges there with `--ff-only`. Create a dependent task's worktree only after the ff it depends on.
+- The release tree excludes only `docs/superpowers/autopilot/`: a `docs/reports/` or plan commit on main invalidates every pending branch receipt after rebase. Land such docs after the pending fix branches ff, or accept one rerun.
+- Never `git stash pop` in a worktree: the sandbox masks are not controller-side dirt, and the repo's stash list holds preserved recovery entries.
+- The app-backup sidecar computes its sleep from the clock at start: after a stale-clock boot the nightly slips and the deploy's backup precheck refuses; the runbook's fallback (`dump.sh nightly` by hand) is the fix, and a refused candidate image tag means the release SHA must move (a journal commit).
+- The controller's nohup suites give no notification: a background `until` waiter or a `Monitor` does; a Bash `run_in_background` suite notifies on exit. Five concurrent suites stretch a 10-minute suite to 12-40 min and can cancel a fixture truncate on the statement timeout (a rerun, not a fix round). The 6B branch's unsharded suite budget is 45-60 min.
+- After an unclean reboot this box can boot with a stale clock; fix 57 makes the recorder refuse an undisciplined clock: `timedatectl` before each release. Tuesday's planned reboot: stop the stack first; expect the RTC to be right this time (hardware fixed, journal 178).
+- Controller shell: quoted heredocs only for prose; `scripts/omarchy.sh sql` reads SQL from stdin; column names: `exec_heartbeat.last_loop_at`, `fills.filled_at` (no `created_at`), `check_results.check_name/ts`, `job_runs.notes` jsonb, `game_score_events.raw_id` -> `raw_responses`, `venue_trades` has no `id`. `.superpowers/` is gitignored. Read `date` before stamping a ledger line. `scripts/test-suite.py` splits TEST_ARGS on spaces (no quoted `-k`).
+- The recorder process hosts the settle job (interval 3,600 s from process start). The normalizer backlog remains a separate open defect (6D).
+- Revision numbering: main takes `0009_score_correction` (row 64); the 4.6 and 6D `0009` revisions and 6B's `0008` renumber at their merges.
+- A worker may start a full `make test` on its own; the sandbox's shared test-suite lock then queues every other suite. Briefs say scoped sets only; kill a worker's unrequested full run (`fuser` on `test-state/test-suite.lock` names the holder) and message it. Apply reviewer Minors by exact python replacement with every anchor asserted before any write; never chain a suite launch behind a patch step.
+- The worker sandbox mounts `docs/superpowers/autopilot` read-only: a plan's verify.md task is prepared by the worker as a unified diff and applied by the controller (`patch -p0`). The 6B branch's pre-sharded runner holds one exclusive flock, so a 6B full suite starves every other 6B-branch `make test` (workers included) for its 40-45 min.
+- A phase branch far behind main merges with a merge commit resolved by an opus implementer (unions only) and a scoped review against both parents; a 54-commit rebase conflicts at every models.py hunk.

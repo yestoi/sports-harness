@@ -473,6 +473,8 @@ def test_stages_registered_in_order():
 
     assert STAGE_MODULES == ["harness.settlement.settle", "harness.settlement.parlay_grade",
                              "harness.settlement.rfq_grade",
+                             # Phase 4.6 (addendum §2.4, D11): the scheduled card builder.
+                             "harness.settlement.parlay_build",
                              "harness.settlement.benchmarks", "harness.settlement.order_clv",
                              "harness.settlement.markouts", "harness.ops.housekeeping",
                              "harness.settlement.report_wtd"]
@@ -487,8 +489,8 @@ def test_stages_registered_in_order():
         job_module.STAGES.clear()
         job_module.STAGES.extend(saved_stages)
 
-    expected = {"settle", "venue_result", "parlay_grade", "rfq_grade", "benchmarks",
-               "result_benchmarks", "gap_outcomes_drain", "order_clv", "markouts",
+    expected = {"settle", "venue_result", "parlay_grade", "parlay_build", "rfq_grade",
+               "benchmarks", "result_benchmarks", "gap_outcomes_drain", "order_clv", "markouts",
                "housekeeping", "report_wtd"}
     assert set(names) == expected
     assert len(names) == len(expected)  # each registered exactly once

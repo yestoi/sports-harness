@@ -466,7 +466,11 @@ def _execute(session: Session, settings: Settings, variant_ids: list[str],
             raise ReplayStepError(
                 f"replay step {steps} at {instant.isoformat()} never ran: another replay holds "
                 f"the {store.REPLAY_LOCK_KEY} lock")
-        if stats.errors:
+        # Fix 66, M2: a book-read failure is tolerated live (fix 60) but must fail a
+        # replay -- an order held all day on a ticker whose reads kept timing out
+        # would otherwise finish the step "successfully" and only show up later as an
+        # unexplained live/replay mismatch.
+        if stats.errors or stats.book_errors:
             raise ReplayStepError(
                 f"replay step {steps} at {instant.isoformat()} failed: "
                 f"{stats.last_error or 'see the executor log'}")

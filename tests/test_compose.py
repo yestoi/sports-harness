@@ -5,6 +5,7 @@ image defaults sized for a laptop, not a box ingesting up to 4M orderbook rows a
 undersized `shared_buffers`/`max_wal_size`/`checkpoint_timeout` produce. This test pins the tuned
 `command` and `shm_size` for the `postgres` service so a future edit cannot silently drop them."""
 
+import json
 from pathlib import Path
 
 import yaml
@@ -254,3 +255,59 @@ def test_nas_env_documents_both_phase5_switches():
     env = (Path(__file__).parent.parent / "deploy" / "nas.env").read_text()
     assert "RESEARCH_WORKER_ENABLED=1" in env
     assert "RFQ_LISTENER_ENABLED=1" in env
+
+
+# --- Task 17: the LAN listener service (addendum 6, roadmap U9) --------------------------
+
+
+def _compose() -> dict:
+    return yaml.safe_load(COMPOSE.read_text())
+
+
+def test_the_lan_service_binds_the_lan_address_and_never_all_interfaces():
+    """Roadmap 4.6 item 4: Docker publishes ahead of ufw, so the address binding is the boundary
+    on the WireGuard and Docker interfaces. `0.0.0.0` here would expose the listener on every
+    one of them regardless of the firewall."""
+    service = _compose()["services"]["app-serve-lan"]
+    assert service["ports"] == ["${LAN_ADDR:-192.168.12.127}:${LAN_PORT:-8443}:8443"]
+    assert service["profiles"] == ["lan"]
+
+
+def test_the_lan_service_mounts_exactly_four_read_only_files_and_no_odds_key():
+    service = _compose()["services"]["app-serve-lan"]
+    assert sorted(service["volumes"]) == sorted([
+        "./secrets/dashboard_token:/run/secrets/dashboard_token:ro",
+        "./secrets/owner_password_hash:/run/secrets/owner_password_hash:ro",
+        "./secrets/lan_tls.crt:/run/secrets/lan_tls.crt:ro",
+        "./secrets/lan_tls.key:/run/secrets/lan_tls.key:ro"])
+    assert "odds_api_key" not in json.dumps(service)
+
+
+def test_the_lan_service_carries_the_four_posture_variables_the_validator_requires():
+    env = _compose()["services"]["app-serve-lan"]["environment"]
+    assert str(env["LIVE_TRADING"]) == "0" and env["HARNESS_MODE"] == "paper"
+    assert str(env["DB_BUDGET_GB"]) == "600" and str(env["RFQ_LISTENER_ENABLED"]) == "0"
+
+
+def test_the_lan_command_serves_over_tls_on_8443():
+    command = _compose()["services"]["app-serve-lan"]["command"]
+    assert command == ["serve", "--port", "8443", "--lan",
+                       "--tls-cert", "/run/secrets/lan_tls.crt",
+                       "--tls-key", "/run/secrets/lan_tls.key"]
+
+
+def test_the_loopback_service_is_unchanged():
+    service = _compose()["services"]["app-serve"]
+    assert service["ports"] == ["127.0.0.1:${SERVE_PORT:-8080}:8080"]
+    assert "--lan" not in json.dumps(service["command"])
+
+
+def test_the_lan_healthcheck_is_the_loopback_form_over_an_unverified_tls_context():
+    """Self-signed by design, so the probe cannot verify a chain -- but it still asserts the
+    status the way `app-serve`'s does, so a 503 marks the container unhealthy by exit code
+    rather than by an unhandled traceback on every probe."""
+    probe = _compose()["services"]["app-serve-lan"]["healthcheck"]["test"]
+    assert probe[0] == "CMD-SHELL"
+    assert "ssl._create_unverified_context()" in probe[1]
+    assert "https://127.0.0.1:8443/healthz" in probe[1]
+    assert "status==200" in probe[1]

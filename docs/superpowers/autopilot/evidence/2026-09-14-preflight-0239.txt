@@ -1,0 +1,48 @@
+2026-09-14T07:39:24.524899+00:00
+?? docs/superpowers/autopilot/evidence/2026-09-14-preflight-0239.txt
+3b79d79 docs: autopilot journal - hotfix 174 (fix 56 second row merged); roadmap row annotated; state checkpoint 15:33 CT
+440095d fix 56 (positions) review Minors: runbook view-exception note and row spacing, floor docstring, test spacing
+af6d568 fix 56 (positions): a settled fill leaves every open-position reader; revision 0008 re-issues the view
+/home/trey/dev/sports                                3b79d79 [main]
+/home/trey/dev/sports-wt/fix-20260913-recorder-peak  fdc351d [fix-20260913-recorder-peak]
+/home/trey/dev/sports-wt/fix-45-raw-events-index     003375e [fix-45-raw-events-index]
+/home/trey/dev/sports-wt/fix-48-pricing-stage-order  b447827 [fix-48-pricing-stage-order]
+/home/trey/dev/sports-wt/fix-worker-credentials-mask 0bf5f3c [fix-worker-credentials-mask]
+/home/trey/dev/sports-wt/phase46-t1-policy           87187f0 [phase46-t1-policy]
+/home/trey/dev/sports-wt/phase46-t2-odds-props       17113eb [phase46-t2-odds-props]
+/home/trey/dev/sports-wt/phase6b-repair-execution    86bb8c7 [phase6b-repair-execution]
+/home/trey/dev/sports-wt/phase6b-t6-dirty-time       bae1e66 [phase6b-t6-dirty-time]
+/home/trey/dev/sports-wt/plan6d-sustained-eval       47ef411 [plan6d-sustained-eval]
+/home/trey/dev/sports-wt/recovery-fix45-final        4b2f2cd [recovery/fix45-final]
+/home/trey/dev/sports-wt/recovery-fix45-round3       8c24df2 [recovery/fix45-round3]
+/home/trey/dev/sports-wt/recovery-fix48-review       8631fcd [recovery/fix48-review]
+/home/trey/dev/sports-wt/recovery-fix52              073732f [recovery/fix52]
+/home/trey/dev/sports-wt/restart-worker-smoke        bb90c7a [recovery/worker-smoke]
+               total        used        free      shared  buff/cache   available
+Mem:           31904        6999       11703        1799       16708       24904
+Swap:          63808           0       63808
+Filesystem        Size  Used Avail Use% Mounted on
+/dev/mapper/root  952G  124G  824G  14% /srv/sports-harness
+test-db state=running memory=4294967296 cpus=4000000000
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED        STATUS                  PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     33 hours ago   Up 11 hours             5432/tcp
+sports-harness-app-exec-1       sports-release/app:ebf0953                                                         "harness exec"           app-exec       20 hours ago   Up 11 hours (healthy)   
+sports-harness-app-research-1   sports-release/app:ebf0953                                                         "harness research-wo…"   app-research   20 hours ago   Up 11 hours             
+sports-harness-app-run-1        sports-release/app:ebf0953                                                         "harness run"            app-run        20 hours ago   Up 11 hours             
+sports-harness-app-serve-1      sports-release/app:ebf0953                                                         "harness serve --por…"   app-serve      20 hours ago   Up 11 hours (healthy)   127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:ebf0953                                                         "harness ws-record"      app-ws         20 hours ago   Up 11 hours             
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       33 hours ago   Up 11 hours (healthy)   5432/tcp
+paper posture intact
+{"status": "ok", "last_run_at": "2026-09-14T07:39:23.933028+00:00", "last_status": "skipped", "seconds_since": 0, "credits_remaining": 4899092, "credits_budget": 5000000, "credits_low": false, "venue_limits": {"tier": "basic", "age_s": 900.0, "read_at": "2026-09-14T07:21:53.933031+00:00", "page_pause_s": 0.05, "read_capacity": 600.0, "write_capacity": 100.0, "read_refill_rate": 200.0, "write_refill_rate": 100.0}, "build": "ebf0953"}
+0007_raw_events_lookup
+14542|2026-09-14 07:39:23.933028+00|skipped|ebf0953
+14541|2026-09-14 07:38:53.932974+00|skipped|ebf0953
+14540|2026-09-14 07:38:23.933065+00|skipped|ebf0953
+2026-09-14 07:39:23.831221+00|17|25|ValueError: snapshot without yes_dollars_fp
+170114285|2026-09-14 07:39:23.824+00
+nfl|scheduled|1|2026-09-15 00:15:00+00|2026-09-15 00:15:00+00
+
+Durable reminder: 2026091201.txt 2026-09-13T00:04:07Z Omarchy restart reminder drill completed; no controller was launched
+Durable reminder: 2026091301.txt 2026-09-13T07:50:07Z Inspect game window before fix45 full release; no model auto-start
+Durable reminder: 2026091302.txt 2026-09-13T14:30:07Z Last pre-NFL readiness check: fix47 must be deployed for Sunday6C checks
+Provider auth, native wakeups, browser and worker-isolation smoke must be checked in the controller session.

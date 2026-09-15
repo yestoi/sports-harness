@@ -6,6 +6,7 @@ ledger row per fill, one savepoint per game, a status update that cannot resurre
 order -- is a property of the SQL, not of the Python around it.
 """
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -513,6 +514,10 @@ def test_venue_result_isolates_a_failing_ticker(db_session, monkeypatch):
 def test_stage_registry_runs_stages_in_registration_order_under_one_budget(
         db_session, env_settings, monkeypatch):
     seen: list[tuple[str, float]] = []
+    # Import every real stage module first: a stage registers itself at import time, and a
+    # first import inside this test (when no earlier file in the process imported it) would land
+    # in the emptied registry below. This test's outcome must not depend on file order.
+    load_stages()
     monkeypatch.setattr(job_module, "STAGES", [])
     monkeypatch.setattr(job_module, "STAGE_MODULES", [])
 
@@ -781,12 +786,26 @@ def test_settler_samples_recorder_rss_after_its_final_probe(db_session, env_sett
         return 0
 
     def rss():
-        assert seen == ["stale"]
+        # Fix 49 round 3: every recorder RSS read in the settle job happens *after* the final
+        # `stale_unsettled` probe, so the sample describes the process once all settle work is
+        # done. `telemetry.malloc_trim` reads RSS either side of its trim, so this stub stands
+        # in for those two reads as well as for the sample's own.
+        assert seen and seen[0] == "stale"
         seen.append("rss")
         return 123.46
 
+    def malloc_trim():
+        # Review M5. Stubbed with the real function's shape -- read RSS, trim, read RSS -- so
+        # `seen` records where the trim sits among the RSS reads, and so the ordering is the
+        # same here as on a platform whose libc has no `malloc_trim` symbol at all.
+        rss()
+        seen.append("trim")
+        rss()
+        return 4.25
+
     monkeypatch.setattr(Settler, "_stale", stale)
     monkeypatch.setattr(job_module.telemetry, "rss_mb", rss)
+    monkeypatch.setattr(job_module.telemetry, "malloc_trim", malloc_trim)
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     row = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
     assert row.status == "ok"
@@ -794,3 +813,100 @@ def test_settler_samples_recorder_rss_after_its_final_probe(db_session, env_sett
     assert sample.source == "recorder" and sample.labels == {"phase": "settle"}
     assert float(sample.value) == 123.5
     assert sample.ts == NOW
+    trim_sample = db_session.query(MetricSample).filter_by(name="recorder.malloc_trim_mb").one()
+    assert float(trim_sample.value) == 4.25 and trim_sample.labels == {"phase": "settle"}
+    # Review M5: the order, not just the membership. One stale probe, and it comes first; then
+    # the trim's own two RSS reads either side of the trim; then the sample's read -- *after*
+    # the trim, which is the property `harness/settlement/job.py` claims and the reason the
+    # deployed `recorder.rss_mb` series carries the trimmed figure. Move `telemetry.malloc_trim()`
+    # below the `recorder.rss_mb` record in `Settler.run` and this assertion sees
+    # ["stale", "rss", "rss", "trim", "rss"] and fails.
+    assert seen == ["stale", "rss", "trim", "rss", "rss"], seen
+
+
+# ---- carried fix 57 (the clock guard) and fix 58 (the ghost sweep) ---------------------
+
+
+class HandMono:
+    """A monotonic clock the test moves by hand; every read sees the value last set."""
+
+    def __init__(self, t: float = 0.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _clock_state(monkeypatch, state):
+    monkeypatch.setattr(job_module, "clock_synchronized", lambda: state)
+
+
+def _job_run(session, started_at, status="running", job="settle", notes=None) -> JobRun:
+    row = JobRun(job=job, started_at=started_at, status=status, notes=notes or {})
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_settle_writes_nothing_while_the_clock_is_unsynchronized(
+        db_session, env_settings, monkeypatch, caplog):
+    monkeypatch.setattr(job_module, "STAGES", [])
+    monkeypatch.setattr(job_module, "STAGE_MODULES", [])
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    mono = HandMono()
+    settler = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=mono)
+    _clock_state(monkeypatch, False)
+    with caplog.at_level(logging.WARNING, logger="harness.settlement.job"):
+        for t in (0.0, 20.0, 59.0):
+            mono.t = t
+            assert settler.run() is None
+    assert db_session.query(JobRun).count() == 0
+    assert sum(1 for r in caplog.records if "clock_unsynced" in r.getMessage()) == 1
+    mono.t = 61.0
+    _clock_state(monkeypatch, True)
+    row = settler.run()
+    assert row is not None and db_session.query(JobRun).count() == 1
+
+
+def test_settle_is_unchanged_when_the_clock_probe_is_unavailable(db_session, env_settings, monkeypatch):
+    monkeypatch.setattr(job_module, "STAGES", [])
+    monkeypatch.setattr(job_module, "STAGE_MODULES", [])
+    _clock_state(monkeypatch, None)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    row = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0)).run()
+    assert row is not None and row.status == "ok"
+
+
+def test_settler_start_sweeps_stale_running_job_runs_and_leaves_a_live_one(
+        db_session, env_settings, monkeypatch, caplog):
+    monkeypatch.setattr(job_module, "STAGES", [])
+    monkeypatch.setattr(job_module, "STAGE_MODULES", [])
+    _clock_state(monkeypatch, True)
+    stale_a = _job_run(db_session, NOW - timedelta(hours=2))
+    stale_b = _job_run(db_session, NOW - timedelta(minutes=3), job="futures_snapshot",
+                       notes={"kept": 1})
+    live = _job_run(db_session, NOW + timedelta(seconds=30))
+    done = _job_run(db_session, NOW - timedelta(hours=5), status="ok")
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    settler = Settler(env_settings, factory, None, clock=lambda: NOW, monotonic=Mono(0.0))
+    with caplog.at_level(logging.WARNING, logger="harness.settlement.job"):
+        row = settler.run()
+    for ghost in (stale_a, stale_b):
+        db_session.refresh(ghost)
+        assert ghost.status == "interrupted"
+        assert ghost.finished_at == NOW
+        assert ghost.notes["interrupted"] == "process restart"
+    assert stale_b.notes["kept"] == 1
+    db_session.refresh(live)
+    assert live.status == "running" and live.finished_at is None
+    db_session.refresh(done)
+    assert done.status == "ok"
+    own = db_session.get(JobRun, row.id)
+    db_session.refresh(own)
+    assert own.status == "ok"
+    assert [r.getMessage() for r in caplog.records if "interrupted" in r.getMessage()]
+    # Once per process: a ghost appearing later is not swept by the next run.
+    later = _job_run(db_session, NOW - timedelta(hours=1))
+    settler.run()
+    db_session.refresh(later)
+    assert later.status == "running"

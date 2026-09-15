@@ -7,9 +7,13 @@ off-host archive. Historical NAS commands are evidence, not current recipes.
 
 ## Start and recover
 
-Use `scripts/autopilot-session.sh start` from the development checkout. It uses
-tmux and a kernel lock so SSH disconnects do not terminate the controller or start
-a second one. Enter `/effort` high, then `/autopilot`. The helper never launches
+Use `scripts/autopilot-session.sh start-herdr` from the development checkout, in a
+fresh herdr tab or pane at its shell prompt (herdr's server keeps the pane alive
+across detach); `start` is the tmux form for a host without herdr. Both run the same
+command under one kernel lock so SSH disconnects do not terminate the controller and a
+second launch cannot start a second one. Enter `/effort` high, then `/autopilot`. After
+a herdr *server* restart, exit the pane herdr auto-resumes (a plain `claude --resume`
+without the lock or the strict MCP config) and launch again. The helper never launches
 itself from a timer. A deliberate launch still requires the user's request.
 
 Run `make preflight`, bootstrap and ledger reconciliation before dispatch. Provider
@@ -64,8 +68,10 @@ proxy. The host user service owns `/run/user/1000/sports-test-db`; the sandbox s
 `/run/sports-test-db` and a non-superuser test account. No general network route or
 server-file/program privilege is provided. Only the shared lock inode is mounted at
 `SPORTS_TEST_LOCK_FILE`; worker receipts stay in private `/tmp/sports-test-state`,
-with controller release receipts inaccessible. The supported runner serializes
-suites; this is cooperative scheduling, not SQL access control.
+with controller release receipts inaccessible. The supported runner locks per
+test database on the shared lock inode (open-file-description byte ranges): branches
+test concurrently and one database's runs serialize; this is cooperative scheduling,
+not SQL access control.
 
 Use `make test` for full evidence or `make test TEST_ARGS='tests/test_x.py'` for scoped
 evidence. Full acceptance requires no filters, clean source and the exact candidate.
@@ -110,11 +116,13 @@ Hook envelope assumptions follow the official [Claude hooks reference](https://c
 subagent tool hooks include `agent_id`, and project hooks run inside subagents.
 The actual bounded Claude drill must confirm this installation before loop dispatch.
 
-Worker Git status can show the deliberately masked `.env.example`, `.env.nas.example`
-and `secrets/.gitkeep` as changed/missing. These are namespace views, not host edits.
-Return only the assigned source diff; never copy these masks into a patch. The controller
-checks actual host Git status and runs the exact clean full-suite acceptance outside
-the worker namespace after code review. Worker receipts are scoped evidence only.
+The launcher masks real `.env*` files, the contents of `secrets/` and Git config, not the
+committed templates `.env.example` and `.env.nas.example` or the committed empty
+`secrets/.gitkeep`, so a worker's Git status shows only the worker's own edits. If a mask
+path ever appears in a worker diff, it is a namespace view, not a host edit: never copy it
+into a patch. The controller checks actual host Git status and runs the exact clean
+full-suite acceptance outside the worker namespace after code review. Worker receipts are
+scoped evidence only.
 
 Cancellation of an MCP request does not currently stop its subprocess: its declared
 deadline still applies (maximum1800s). Reconcile the test lock/process before another
@@ -137,7 +145,9 @@ docker exec harness-pg-test psql -X -v ON_ERROR_STOP=1 -U sports_test_admin \
   -c 'GRANT UPDATE (indisvalid) ON pg_catalog.pg_index TO harness'
 ```
 
-This permits only the fault-fixture column in that isolated database. Do not grant
+A sharded full suite keeps the schema and Alembic tests on the branch database (the
+other shards use `<database>_p2..`, which need no grant), so this provisioning is
+unchanged. This permits only the fault-fixture column in that isolated database. Do not grant
 whole-table UPDATE, SUPERUSER, role memberships, server-file/program privileges or
 catalog ownership. The worker continues using only `make test` and its restricted
 account. Record the database and grant in the ledger; after its final suite/worker

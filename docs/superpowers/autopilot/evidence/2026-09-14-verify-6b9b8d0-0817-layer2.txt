@@ -1,0 +1,624 @@
+# Layer 1/2/2b verify 6b9b8d0 2026-09-14T13:17:34Z (08:17 CT)
+## healthz
+{"status":"ok","last_run_at":"2026-09-14T13:15:52.694865+00:00","last_status":"running","seconds_since":101,"credits_remaining":4899065,"credits_budget":5000000,"credits_low":false,"venue_limits":null,"build":"6b9b8d0"}
+## status
+sports-harness-app-backup-1 f1c3376c26f2 Up 17 hours 5432/tcp
+sports-harness-app-exec-1 sports-release/app:6b9b8d0 Up 5 minutes (healthy) 
+sports-harness-app-research-1 sports-release/app:6b9b8d0 Up 5 minutes 
+sports-harness-app-run-1 sports-release/app:6b9b8d0 Up 5 minutes 
+sports-harness-app-serve-1 sports-release/app:6b9b8d0 Up 5 minutes (healthy) 127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1 sports-release/app:97d1c3b Up 5 hours 
+sports-harness-postgres-1 f1c3376c26f2 Up 17 hours (healthy) 5432/tcp
+## disk/mem
+/dev/mapper/root  952G  128G  820G  14% /srv/sports-harness
+               total        used        free      shared  buff/cache   available
+Mem:           31904        9031        1451        1930       25279       22873
+Swap:          63808           0       63808
+## dashboard section (10m)
+0
+## ERROR messages (10m)
+== app-run
+      4 tick skipped n=0 credits=0 errors=0 warnings=0
+      1 tick ok n=1 credits=2 errors=0 warnings=0
+      1 tick ok n=10 credits=2 errors=0 warnings=0
+== app-serve
+      1 Waiting for application startup.
+      1 Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+      1 Started server process [1]
+      1 Application startup complete.
+== app-ws
+
+== app-exec
+
+== app-research
+
+## layer 2 sql blocks (verify.md heredocs, in order)
+### block 1
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+### block 2
+-- containers are checked with make status-omarchy; this block is data
+  id   |          started_at           | status  | credits_used | odds_remaining | errors 
+-------+-------------------------------+---------+--------------+----------------+--------
+ 15206 | 2026-09-14 13:15:52.694865+00 | running |            0 |                | 
+ 15205 | 2026-09-14 13:15:22.694908+00 | ok      |            2 |        4899065 | []
+ 15200 | 2026-09-14 13:12:52.69518+00  | ok      |            2 |        4899067 | []
+ 15196 | 2026-09-14 13:10:24.835609+00 | ok      |            2 |        4899069 | []
+ 15192 | 2026-09-14 13:08:24.835599+00 | ok      |            2 |        4899071 | []
+(5 rows)
+
+ status  | count 
+---------+-------
+ ok      |    21
+ running |     1
+ skipped |   328
+(3 rows)
+
+  id   |          started_at           | status  
+-------+-------------------------------+---------
+ 15206 | 2026-09-14 13:15:52.694865+00 | running
+(1 row)
+
+ decision | count 
+----------+-------
+ rejected | 29336
+(1 row)
+
+ kind  | count 
+-------+-------
+ delta | 30778
+(1 row)
+
+ ws_last_event_age 
+-------------------
+ 00:00:00.854977
+(1 row)
+
+     relname      | n_live_tup | n_dead_tup |        last_autovacuum        |       last_autoanalyze        
+------------------+------------+------------+-------------------------------+-------------------------------
+ orders           |       9700 |       2163 | 2026-09-14 13:14:11.146327+00 | 2026-09-14 13:16:08.636333+00
+ runs             |      15094 |       1496 |                               | 2026-09-14 11:31:03.401832+00
+ trade_watermarks |       7447 |       1157 |                               | 2026-09-14 13:16:08.333491+00
+ rfq_quotes       |          0 |        262 |                               | 
+ job_state        |          3 |         46 | 2026-09-14 07:34:50.430192+00 | 2026-09-14 07:34:50.430311+00
+(5 rows)
+
+ count | pg_size_pretty 
+-------+----------------
+   244 | 3904 MB
+(1 row)
+
+ pg_size_pretty 
+----------------
+ 122 GB
+(1 row)
+### fenced sql block 1 (first line: select last_loop_at, loops, open_orders, last_error, last_loop_ms, p95_loop_ms, loops_skip)
+         last_loop_at          | loops | open_orders | last_error | last_loop_ms | p95_loop_ms | loops_skipped | book_dirty_markets |      ws_last_event_at      |       age       
+-------------------------------+-------+-------------+------------+--------------+-------------+---------------+--------------------+----------------------------+-----------------
+ 2026-09-14 13:17:22.673117+00 | 28500 |           0 |            |          800 |         847 |          3426 |                  5 | 2026-09-14 13:17:22.133+00 | 00:00:11.855964
+(1 row)
+
+  status   | count 
+-----------+-------
+ cancelled |  9640
+ expired   |    60
+(2 rows)
+
+ count 
+-------
+     0
+(1 row)
+
+ count  
+--------
+ 108712
+(1 row)
+
+ count 
+-------
+  1682
+(1 row)
+
+ count 
+-------
+   199
+(1 row)
+
+ count 
+-------
+  9664
+(1 row)
+
+ count 
+-------
+ 17007
+(1 row)
+
+ count 
+-------
+ 77592
+(1 row)
+
+ count 
+-------
+ 51994
+(1 row)
+
+   reason   | count 
+------------+-------
+ book_dirty |  1737
+ fair_stale |   602
+ kickoff    |   101
+ no_book    |     4
+(4 rows)
+
+  job   | status | budget_exhausted |          finished_at          
+--------+--------+------------------+-------------------------------
+ settle | ok     | f                | 2026-09-14 12:37:44.337351+00
+ settle | ok     | f                | 2026-09-14 11:37:45.324746+00
+ settle | ok     | f                | 2026-09-14 10:38:06.498035+00
+(3 rows)
+
+ count 
+-------
+ 77504
+(1 row)
+
+ count | sum 
+-------+-----
+     3 |   1
+(1 row)
+
+            name            |              max              
+----------------------------+-------------------------------
+ db.brin_ranges_summarized  | 2026-09-14 10:36:24.861016+00
+ db.growth_gb_per_day       | 2026-09-14 10:36:24.861016+00
+ db.rfqs_pruned             | 2026-09-14 10:36:24.861016+00
+ db.size_gb                 | 2026-09-14 10:36:24.861016+00
+ db.table_gb                | 2026-09-14 10:36:24.861016+00
+ exec.cancelled             | 2026-09-14 09:37:54.986353+00
+ exec.dirty_markets         | 2026-09-14 13:17:22.673117+00
+ exec.filled_contracts      | 2026-09-14 13:17:22.673117+00
+ exec.intents_considered    | 2026-09-14 13:17:22.673117+00
+ exec.loop_ms               | 2026-09-14 13:17:22.673117+00
+ exec.loops_skipped         | 2026-09-14 13:17:22.673117+00
+ exec.open_orders           | 2026-09-14 13:17:22.673117+00
+ exec.p95_loop_ms           | 2026-09-14 13:17:22.673117+00
+ exec.placed                | 2026-09-14 13:17:22.673117+00
+ exec.skipped               | 2026-09-13 20:31:27.543046+00
+ exec.tape_batch_min        | 2026-09-14 13:17:22.673117+00
+ exec.tape_lag_tickers      | 2026-09-14 13:17:22.673117+00
+ exec.ws_event_age_s        | 2026-09-14 13:17:22.673117+00
+ exec.ws_event_ahead_s      | 2026-09-14 13:17:22.673117+00
+ host.disk_free_gb          | 2026-09-14 10:36:24.861016+00
+ host.disk_total_gb         | 2026-09-14 10:36:24.861016+00
+ host.mem_available_mb      | 2026-09-14 10:36:24.861016+00
+ match.rate                 | 2026-09-14 10:36:24.861016+00
+ match.unmatched            | 2026-09-14 10:36:24.861016+00
+ pricing.candidates         | 2026-09-14 13:00:24.83577+00
+ pricing.fair_values        | 2026-09-13 20:31:27.884396+00
+ pricing.rejected           | 2026-09-14 13:00:24.83577+00
+ pricing.staleness_median_s | 2026-09-13 20:31:27.884396+00
+ recorder.credits_remaining | 2026-09-14 13:15:22.694908+00
+ recorder.errors            | 2026-09-14 13:15:22.694908+00
+ recorder.fetched           | 2026-09-14 13:15:22.694908+00
+ recorder.rss_mb            | 2026-09-14 13:15:22.694908+00
+ recorder.tick_ms           | 2026-09-14 13:15:22.694908+00
+ recorder.trade_gaps        | 2026-09-14 13:15:22.694908+00
+ serve.snapshot_ms          | 2026-09-14 13:17:22.837104+00
+ ws.events_per_min          | 2026-09-14 13:17:00.018483+00
+ ws.gaps                    | 2026-09-14 13:17:00.018483+00
+ ws.reconnects              | 2026-09-14 13:17:00.018483+00
+ ws.sink_lag_s              | 2026-09-14 13:17:00.018483+00
+ ws.subscribed_tickers      | 2026-09-14 13:17:00.018483+00
+ ws.trades_per_min          | 2026-09-14 13:17:00.018483+00
+(41 rows)
+
+ count 
+-------
+     0
+(1 row)
+
+  variant_id  |              max              
+--------------+-------------------------------
+ ff363c8ac08d | 2026-09-14 13:12:37.684475+00
+ 5632da729fa7 | 2026-09-14 13:12:37.684475+00
+ f259ca109084 | 2026-09-14 13:12:37.684475+00
+ e82fcd0a1e99 | 2026-09-08 12:31:58.93176+00
+(4 rows)
+
+ count 
+-------
+   185
+(1 row)
+
+              check_name               | status 
+---------------------------------------+--------
+ duplicate_trades                      | pass
+ clv_p_used_matches_order_prob         | pass
+ settle_errors_24h                     | pass
+ derived_without_venue_row_48h         | pass
+ build_sha_drift                       | pass
+ orders_open_past_expiry               | pass
+ fills_without_print                   | pass
+ gate_rows_one_gate_variant            | pass
+ fair_values_negative_staleness        | pass
+ runs_taker_side_missing_24h           | pass
+ orders_without_place_event            | pass
+ intents_without_order_or_skip         | fail
+ fill_contracts_exceed_order_contracts | pass
+ orders_filled_exceeds_contracts       | pass
+ settlement_result_mismatch            | pass
+ fair_values_negative_feed_lag         | pass
+ benchmarks_source_after_target        | pass
+ fills_outside_placement_window        | fail
+ markouts_at_after_horizon             | fail
+ metric_samples_negative_24h           | pass
+ operator_events_empty_summary_24h     | pass
+ order_watch_negative_queue_24h        | pass
+ equity_mtm_coverage_out_of_range_24h  | pass
+ game_score_went_down_24h              | pass
+ check_results_unknown_status_25h      | pass
+ report_runs_generated_in_future       | pass
+ report_cells_orphan                   | pass
+(27 rows)
+
+ year | week | provisional |         generated_at          
+------+------+-------------+-------------------------------
+ 2026 |   38 | t           | 2026-09-14 07:31:23.961591+00
+ 2026 |   37 | t           | 2026-09-13 14:42:57.884561+00
+ 2026 |   37 | t           | 2026-09-13 08:02:29.762675+00
+(3 rows)
+### fenced sql block 2 (first line: -- Phase 4 (after the authenticated adapter, backups and Alembic ship))
+ env  | method | count 
+------+--------+-------
+ prod | GET    |    15
+(1 row)
+
+ count 
+-------
+     3
+(1 row)
+
+   venue    | env  | status | reason |             since             |          updated_at           
+------------+------+--------+--------+-------------------------------+-------------------------------
+ kalshi     | demo | ok     |        | 2026-09-09 15:54:44.71089+00  | 2026-09-09 15:54:44.71089+00
+ kalshi_rfq | prod | ok     |        | 2026-09-12 05:26:38.387488+00 | 2026-09-12 05:26:38.387488+00
+(2 rows)
+
+  kind   | status |   bytes    |          finished_at          |          age          
+---------+--------+------------+-------------------------------+-----------------------
+ forever | ok     |       8251 | 2026-09-14 13:11:00+00        | 00:06:34.668203
+ nightly | ok     | 1433139600 | 2026-09-14 13:10:56+00        | 00:06:38.668203
+ encrypt | ok     | 1386838083 | 2026-09-13 08:42:35.680137+00 | 1 day 04:34:58.988066
+ weekly  | ok     | 1386838083 | 2026-09-13 08:34:48+00        | 1 day 04:42:46.668203
+ encrypt | ok     | 1386881061 | 2026-09-13 08:32:44.398409+00 | 1 day 04:44:50.269794
+ encrypt | ok     |       8251 | 2026-09-13 08:32:29.847257+00 | 1 day 04:45:04.820946
+(6 rows)
+
+ count 
+-------
+     3
+(1 row)
+
+  variant_id  | drawdown_pct | drawdown_stop 
+--------------+--------------+---------------
+ 5632da729fa7 |       0.0000 | f
+ f259ca109084 |      -0.0059 | f
+ ff363c8ac08d |       0.0000 | f
+(3 rows)
+
+ count 
+-------
+     0
+(1 row)
+
+ pricing_order | variant_ms 
+---------------+------------
+               | 
+               | 
+               | 
+(3 rows)
+
+       version_num        
+--------------------------
+ 0008_positions_open_fill
+(1 row)
+### fenced sql block 3 (first line: select count(*) from futures_snapshots where fetched_at > now();          -- no future tim)
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+### fenced sql block 4 (first line: select criteria_hash, evaluated_at, gate_variant from gate_reports order by id desc limit )
+                          criteria_hash                           |         evaluated_at          | gate_variant 
+------------------------------------------------------------------+-------------------------------+--------------
+ 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-13 02:17:06.106713+00 | t
+ 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-13 02:17:06.106713+00 | f
+ 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-13 02:17:06.106713+00 | f
+(3 rows)
+
+ count 
+-------
+     0
+(1 row)
+### fenced sql block 5 (first line: -- existing)
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+ 52269
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+   154
+(1 row)
+
+ count 
+-------
+   154
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+  1049
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ERROR:  syntax error at or near "<"
+LINE 3:     from venue_trades_y<current ISO year>w<current ISO week,...
+                               ^
+### shell block 1 (first line: bash -c 'du -sh /srv/sports-harness/backups; du -sh /srv/sports-harness/backups/*')
+7.8G	/srv/sports-harness/backups
+68K	/srv/sports-harness/backups/forever
+5.2G	/srv/sports-harness/backups/nightly
+0	/srv/sports-harness/backups/partitions
+2.6G	/srv/sports-harness/backups/weekly
+1
+### shell block 2 (first line: ls docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/*/manifest.json 2>/dev/null )
+6
+docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/capacity_bound/manifest.json b0a3991 [] 0
+docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/clean/manifest.json b0a3991 [] 0
+docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/delayed_loop/manifest.json b0a3991 [] 0
+docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/gap_recovery/manifest.json b0a3991 [] 14
+docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/interleaved/manifest.json b0a3991 [] 0
+docs/superpowers/reviews/2026-09-11-phase6-roadmap/capsule/order-157/manifest.json b0a3991 [] 6
+======================= 483 passed in 634.49s (0:10:34) ========================
+{"branch": "main", "database": "harness_test_main", "head": "b8c7fc7f4bf7a9c84bea2713b579dce92f92c5e0", "tree": "2b70b25cb088f204a24b4cb5620a3803b7d57ba3", "release_tree": "5230e127f74aaeef1ba54dd7d13028feba13ac9c872acc015b3c4c348aec8301", "started_at": "2026-09-14T13:17:37.107937+00:00", "pid": 307882, "dirty_before": "", "scope": [], "pytest_addopts": "", "pytest_plugins": "", "exit_code": 0, "finished_at": "2026-09-14T13:28:18.707825+00:00", "head_after": "b8c7fc7f4bf7a9c84bea2713b579dce92f92c5e0", "dirty_after": "?? docs/superpowers/autopilot/evidence/2026-09-14-verify-6b9b8d0-0823-summary.txt\n?? docs/superpowers/autopilot/evidence/2026-09-14-verify-6b9b8d0-0824-layer2-rows.txt\n"}
+===== 3340 passed, 6 xfailed, 1 deselected in 640.50s (6 shards, wall of the slowest) =====
+### compose-run block (text only, not executed by the collector)
+bash -c 'cd /srv/sports-harness && /srv/sports-harness/sports-compose run --rm -T app-run manifest'

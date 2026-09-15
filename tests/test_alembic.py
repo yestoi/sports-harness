@@ -13,6 +13,7 @@ import re
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
@@ -44,11 +45,20 @@ BULK_TABLES = ("raw_responses", "orderbook_events", "venue_trades", "venue_quote
 #: A migration that contains one of these is a gate, not a ruling: the loop never writes one.
 #: `create_or_replace` is the Alembic op spelling; a view lives in `create_schema` instead.
 #: `alter index` is handled separately, below: fix 32 sanctions exactly one shape of it.
+#: `alter column` left this tuple in phase 4.6 (addendum 14.4, plan re-check R1): the widening
+#: below is sanctioned, and both the revision that runs it and the prose explaining it would trip
+#: a grep of the file text. It is checked instead over what a revision *executes*, by
+#: `_ALLOWED_ALTER_COLUMN` in `test_no_migration_drops_or_alters_an_existing_object`, so a second
+#: real one -- in any revision, on any table -- is still a failure.
 FORBIDDEN = ("drop_index", "create_or_replace", "drop view",
-             "drop table", "drop column", "alter column", "rename")
+             "drop table", "drop column", "rename")
 
 #: The one sanctioned `alter index`: a storage-parameter flip, never a rebuild, never a drop.
 _ALLOWED_ALTER_INDEX = re.compile(r"alter index (if exists )?\S+ set \(autosummarize = on\)")
+
+#: The one sanctioned `alter column`: phase 4.6 section 14.4's varchar widening on a small table.
+_ALLOWED_ALTER_COLUMN = re.compile(
+    r"^alter table parlay_legs alter column market_type type varchar\(12\)$")
 
 
 # --- scratch databases --------------------------------------------------------------------
@@ -60,6 +70,31 @@ def _test_url() -> str:
     return url
 
 
+def _with_database(url: str, name: str, *, raw: bool = False) -> str:
+    """`url` with its path database swapped for `name`; scheme, netloc and query untouched.
+
+    The sandbox's `SPORTS_TEST_SOCKET` URL form carries the socket directory as a `?host=`
+    query (fix 61): rebuilding only the path through `urlsplit`/`urlunsplit`, rather than
+    string-splitting on `/`, keeps that query on both the admin DSN and the scratch engine
+    URL. `raw=True` also drops the `+psycopg` driver suffix, for a bare `psycopg.connect` DSN.
+    """
+    parts = urlsplit(url)
+    scheme = parts.scheme.replace("+psycopg", "") if raw else parts.scheme
+    return urlunsplit((scheme, parts.netloc, f"/{name}", parts.query, parts.fragment))
+
+
+def test_the_scratch_url_keeps_the_socket_query():
+    url = "postgresql+psycopg://u:p@/harness_test_x?host=/run/sports-test-db"
+    assert _with_database(url, "postgres", raw=True) == "postgresql://u:p@/postgres?host=/run/sports-test-db"
+    assert (_with_database(url, "harness_test_x_a")
+            == "postgresql+psycopg://u:p@/harness_test_x_a?host=/run/sports-test-db")
+
+    tcp = "postgresql+psycopg://u:p@localhost:5433/harness_test_x"
+    assert _with_database(tcp, "postgres", raw=True) == "postgresql://u:p@localhost:5433/postgres"
+    assert (_with_database(tcp, "harness_test_x_a")
+            == "postgresql+psycopg://u:p@localhost:5433/harness_test_x_a")
+
+
 def _scratch_engine(suffix: str):
     """An engine on `<branch test db>_<suffix>`, created on demand and emptied.
 
@@ -67,13 +102,13 @@ def _scratch_engine(suffix: str):
     database with nothing in it, and the suite's shared schema is built once per session.
     """
     base = _test_url()
-    head, _, name = base.rpartition("/")
+    name = urlsplit(base).path.lstrip("/")
     target = f"{name}_{suffix}"[:63]
-    admin = head.replace("postgresql+psycopg://", "postgresql://") + "/postgres"
+    admin = _with_database(base, "postgres", raw=True)
     with psycopg.connect(admin, autocommit=True) as conn:
         if not conn.execute("select 1 from pg_database where datname = %s", (target,)).fetchone():
             conn.execute(f'create database "{target}"')
-    engine = create_engine(f"{head}/{target}")
+    engine = create_engine(_with_database(base, target))
     _empty(engine)
     return engine
 
@@ -304,6 +339,13 @@ def test_no_migration_drops_or_alters_an_existing_object(path):
     for line in body.splitlines():
         if "alter index" in line and "op.execute(" in line:
             assert _ALLOWED_ALTER_INDEX.search(line), f"{path.name}: unexpected alter index: {line}"
+    # `alter column` is scoped to what the revision runs, never to what it says: a docstring may
+    # explain one (0010 does), and a second real one anywhere still fails here.
+    for statement in _executable_strings(path):
+        for line in statement.lower().splitlines():
+            if "alter column" in line:
+                assert _ALLOWED_ALTER_COLUMN.search(line.strip()), \
+                    f"{path.name}: unexpected alter column: {line}"
 
 
 #: A create-index statement, with its optional CONCURRENTLY and the table it lands on. Applied
@@ -416,22 +458,150 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_eight_revisions():
+def test_the_versions_directory_holds_eleven_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
-        "0007_raw_events_lookup.py", "0008_phase6b_execution.py"]
+        "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
+        "0009_score_correction.py", "0010_phase46_fun_tickets.py",
+        "0011_phase6b_execution.py"]
 
 
-# --- 6B §1.3: revision 0008 -------------------------------------------------------------------
+# --- carried fix 56 (second row): revision 0008 -------------------------------------------------
 
-def test_phase6b_execution_follows_raw_events_lookup_and_is_the_pinned_head():
+def test_positions_open_fill_follows_raw_events_lookup():
+    """The pinned-head assertion moved to `test_the_phase46_revision_is_the_pinned_head` when
+    fix 64's `0009_score_correction` and then phase 4.6's `0010_phase46_fun_tickets` landed on
+    top of this one; the chain assertions stay here, so a revision inserted between this one and
+    `0009_score_correction` still fails."""
+    module = _load_revision("0008_positions_open_fill.py")
+    assert module.revision == "0008_positions_open_fill"
+    assert module.down_revision == "0007_raw_events_lookup"
+
+
+# --- fix 64 (journal 207): revision 0009 ---------------------------------------------------------
+
+def test_score_correction_follows_positions_open_fill():
+    """The pinned-head assertions moved to `test_the_phase46_revision_is_the_pinned_head` when
+    phase 4.6's revision was renumbered `0010_phase46_fun_tickets` on top of this one at merge
+    time (D9) -- the same pattern `0008_positions_open_fill` used when this revision landed on
+    top of *it*. The chain assertions stay here, so a revision inserted between the two still
+    fails."""
+    module = _load_revision("0009_score_correction.py")
+    assert module.revision == "0009_score_correction"
+    assert module.down_revision == "0008_positions_open_fill"
+
+
+def test_the_score_correction_revision_only_adds_the_column_and_undoes_nothing():
+    """`upgrade()` runs exactly the one additive `ADD COLUMN IF NOT EXISTS` statement, byte-
+    identical to `harness/db/schema.py`'s `_COLUMN_DDL` entry, and `downgrade()` is `pass`
+    (roadmap invariant 5): dropping the column would be exactly the data-loss risk that rule
+    guards against (unlike `0007_raw_events_lookup`'s index drop), and it would cross the user's
+    own "No row changes" ruling (journal 207) if a downgrade ever ran against a database holding
+    rows the writer had already marked."""
+    from harness.db.schema import _COLUMN_DDL
+
+    module = _load_revision("0009_score_correction.py")
+    assert module._COLUMNS == (
+        "alter table game_score_events add column if not exists correction boolean not null "
+        "default false",)
+    assert set(module._COLUMNS) <= set(_COLUMN_DDL)
+    assert module.downgrade() is None
+
+
+def test_the_game_score_events_correction_column_is_in_both_catalogues(two_databases, frozen_now):
+    """Belt-and-suspenders on top of the whole-catalogue
+    `test_a_migrated_database_matches_a_create_schema_database`: the column's type, nullability
+    and (most load-bearing) server default agree between the `create_schema` database (built by
+    `create_all` straight from the model, since `game_score_events` predates `0001_baseline`) and
+    the migrated one (built from the baseline's frozen shape, then this revision's `ADD COLUMN`)
+    -- the parity the server default on both the model and this revision exists to guarantee.
+    """
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    cols = {}
+    for label, engine in (("a", a), ("b", b)):
+        with Session(engine) as s:
+            ensure_partitions(s, frozen_now)
+        by_name = {c["name"]: c for c in inspect(engine).get_columns("game_score_events")}
+        assert "correction" in by_name
+        cols[label] = by_name["correction"]
+    assert cols["a"]["nullable"] is cols["b"]["nullable"] is False
+    assert str(cols["a"]["type"]).upper() == str(cols["b"]["type"]).upper() == "BOOLEAN"
+    assert cols["a"]["default"] == cols["b"]["default"]
+    assert cols["a"]["default"] is not None      # the server default this fix depends on
+
+
+def test_the_positions_view_ddl_agrees_between_schema_and_migration():
+    """`create_schema` owns the views; this revision exists so a *migrated* database carries the
+    same text, because `0001_baseline` holds the view's previous one and
+    `test_a_migrated_database_matches_a_create_schema_database` compares view definitions.
+
+    The two copies are compared as the Python string values each module holds, not as raw file
+    text -- the revision wraps the long predicate line with a backslash continuation, which does
+    not change the value. This is `test_the_quotes_run_index_ddl_agrees_between_schema_and_
+    migration`'s shape, applied to a view instead of an index, and it is what makes a later edit
+    to `_POSITIONS_VIEW` that forgets this copy fail here rather than in the catalogue diff.
+    """
+    from harness.db.schema import OPEN_FILL_SQL, _POSITIONS_VIEW
+
+    module = _load_revision("0008_positions_open_fill.py")
+    assert module._VIEW_DDL == _POSITIONS_VIEW
+    assert OPEN_FILL_SQL in module._VIEW_DDL
+
+
+def test_the_positions_open_fill_revision_only_issues_the_view_and_undoes_nothing():
+    """`upgrade()` runs exactly one statement and it is the view; `downgrade()` is `pass`
+    (roadmap invariant 5): re-issuing a view has nothing additive to undo, and the previous text
+    is in `0001_baseline`, which a code rollback's `init-db` puts back through `create_schema`.
+
+    Read through the parsed source rather than the lowercased file body, for
+    `test_the_raw_events_lookup_downgrade_drops_the_parent_index`'s reason: the module docstring
+    quotes SQL it does not run.
+    """
+    path = ROOT / "migrations" / "versions" / "0008_positions_open_fill.py"
+    # `_executable_strings` also returns the revision identifiers, which are not statements; the
+    # SQL is whatever starts with a DDL or DML verb.
+    verbs = ("create", "drop", "alter", "insert", "update", "delete", "truncate")
+    statements = [" ".join(s.split()).lower() for s in _executable_strings(path)]
+    sql = [s for s in statements if s.startswith(verbs)]
+    assert len(sql) == 1, sql
+    assert sql[0].startswith("create or replace view positions as")
+    tree = ast.parse(path.read_text())
+    upgrade = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "upgrade")
+    assert len(upgrade.body) == 1
+    downgrade = next(n for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef) and n.name == "downgrade")
+    assert all(isinstance(node, ast.Pass) for node in downgrade.body)
+
+
+# --- 6B §1.3: revision 0011 (written as `0008_phase6b_execution` on the phase branch) --------
+
+def test_phase6b_execution_follows_phase46_fun_tickets_and_is_the_pinned_head():
+    """D9 applied at merge time, the third time on this chain.
+
+    The plan's `0008_phase6b_execution` on top of `0007_raw_events_lookup` went stale when fix
+    56's `0008_positions_open_fill` took that number on main on 2026-09-13, fix 64's
+    `0009_score_correction` took the next one on 2026-09-14, and phase 4.6's revision was
+    renumbered `0010_phase46_fun_tickets` on top of *that* -- so this phase's revision is
+    `0011_phase6b_execution` on top of 4.6's, renumbered in the merge of `main` into the phase
+    branch. These two pinned-head assertions carry over from
+    `test_the_phase46_revision_is_the_pinned_head`, which kept its chain assertions under its
+    new name, the same pattern 0008, 0009 and 0010 used before it. 6D's
+    `0009_phase6d_sustained_evaluation` is still unmerged and is renumbered the same way at its
+    own merge time.
+    """
     from harness.db.migrate import HEAD_REVISION
 
-    module = _load_revision("0008_phase6b_execution.py")
-    assert module.revision == "0008_phase6b_execution"
-    assert module.down_revision == "0007_raw_events_lookup"
-    assert HEAD_REVISION == "0008_phase6b_execution"
+    module = _load_revision("0011_phase6b_execution.py")
+    assert module.revision == "0011_phase6b_execution"
+    assert module.down_revision == "0010_phase46_fun_tickets"
+    assert HEAD_REVISION == "0011_phase6b_execution"
+    assert VERSIONS[-1].name == "0011_phase6b_execution.py"
 
 
 def test_the_phase6b_ledger_ddl_agrees_between_schema_and_migration():
@@ -443,7 +613,7 @@ def test_the_phase6b_ledger_ddl_agrees_between_schema_and_migration():
     """
     from harness.db.schema import _COLUMN_DDL
 
-    module = _load_revision("0008_phase6b_execution.py")
+    module = _load_revision("0011_phase6b_execution.py")
     # §1.3's ten ledger statements plus §1.5's three (`nw_dirty_seconds`,
     # `nw_next_attempt_at`, `nw_attempts`). The count is here so a task appending to one
     # copy and not the other is named by this test rather than by a catalogue diff.
@@ -940,8 +1110,12 @@ def test_the_quotes_run_index_is_never_built_without_concurrently():
 # --- fix 45: revision 0007 --------------------------------------------------------------------
 
 def test_raw_events_lookup_follows_quotes_run_index():
-    """Fix 45's revision keeps its place in the chain; 6B's `0008` is the head that follows it
-    (`test_phase6b_execution_follows_raw_events_lookup_and_is_the_pinned_head`)."""
+    """It stopped being the pinned head at carried fix 56 (second row), which added
+    `0008_positions_open_fill` on top of it; its place in the chain is what this still pins.
+
+    6B's revision was written as `0008_phase6b_execution` on top of *this* one on the phase
+    branch and was renumbered `0011_phase6b_execution` on top of `0010_phase46_fun_tickets` at
+    merge time (D9), so nothing in this phase follows 0007 any more."""
     module = _load_revision("0007_raw_events_lookup.py")
     assert module.revision == "0007_raw_events_lookup"
     assert module.down_revision == "0006_quotes_run_index"
@@ -1019,3 +1193,145 @@ def test_the_raw_events_lookup_index_is_in_both_catalogues(two_databases, frozen
                 "select indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid "
                 "where c.relname = 'ix_raw_source_endpoint_id'")).scalar()
         assert valid is True
+
+
+# --- phase 4.6: the additive revision (addendum 9, 14.4; D9) --------------------------------
+
+def _phase46_module():
+    """The revision module, imported by path: its name starts with a digit, so no dotted import
+    reaches it. `_load_revision` (defined further down this file) does the same thing; this is
+    the plan's own name for it and it keeps this section readable on its own."""
+    return _load_revision("0010_phase46_fun_tickets.py")
+
+
+def test_the_phase46_revision_is_additive_only():
+    """Expected: no DROP, RENAME, TRUNCATE, DELETE or backfill anywhere in the revision's
+    statements, every ADD COLUMN and CREATE TABLE `if not exists`, exactly one
+    `alter column ... type` -- the documented `parlay_legs.market_type` widening (addendum
+    14.4) -- and `downgrade()` a pass.
+
+    Computed independently of the code: invariant 5 is a grep over what the revision *runs*, so
+    this walks the module's own statement tuples rather than the file text. The prose in the
+    docstring names `alter column ... type` too (Step 5 requires it), and a count over the file
+    would therefore see two occurrences and fail on its own documentation (plan review IM-1).
+
+    The DML words are matched as a statement's leading verb rather than anywhere in it: this
+    revision creates `odds_prop_snapshots`, whose `book_last_update` column carries the literal
+    "update " inside a `create table` statement.
+    """
+    module = _phase46_module()
+    statements = [" ".join(s.split()).lower() for s in
+                  module._COLUMNS + module._TABLES + module._INDEXES + module._CONCURRENT]
+    for forbidden in ("drop table", "drop column", "rename", "truncate", "drop index"):
+        assert not any(forbidden in s for s in statements), forbidden
+    for verb in ("insert into", "update ", "delete from", "truncate "):
+        assert not any(s.startswith(verb) for s in statements), verb
+    assert all("if not exists" in s for s in statements if s.startswith("alter table")
+               and "add column" in s)
+    assert all("create table if not exists" in s for s in statements
+               if s.startswith("create table"))
+    widenings = [s for s in statements if "alter column" in s]
+    assert widenings == ["alter table parlay_legs alter column market_type type varchar(12)"]
+    assert module.downgrade() is None
+    assert module.revision == "0010_phase46_fun_tickets"
+    assert module.down_revision == "0009_score_correction"
+
+
+def test_the_phase46_revision_follows_score_correction():
+    """D9 applied at merge time. The plan's `0008_phase46_fun_tickets` on top of
+    `0007_raw_events_lookup` went stale when fix 56's `0008_positions_open_fill` took that number
+    on main on 2026-09-13, and the phase branch's own `0009` went stale when fix 64's
+    `0009_score_correction` took *that* number on main on 2026-09-14 -- so this phase's revision
+    is `0010_phase46_fun_tickets` on top of fix 64's, renumbered in the merge of `main` into the
+    phase branch.
+
+    The two pinned-head assertions this test used to carry moved on to
+    `test_phase6b_execution_follows_phase46_fun_tickets_and_is_the_pinned_head` when 6B's own
+    revision was renumbered `0011_phase6b_execution` on top of this one at *its* merge time --
+    the same pattern 0008 and 0009 used before it. The chain assertions stay here, so a revision
+    inserted between `0009_score_correction` and this one still fails. 6D's
+    `0009_phase6d_sustained_evaluation` is still unmerged and is renumbered the same way at its
+    own merge time."""
+    module = _phase46_module()
+
+    assert module.revision == "0010_phase46_fun_tickets"
+    assert module.down_revision == "0009_score_correction"
+
+
+def test_the_one_widening_is_the_only_alter_column_any_revision_carries():
+    """The `FORBIDDEN` grep still holds for everything else.
+
+    Computed independently of the code: `_ALLOWED_ALTER_COLUMN` matches one exact statement, so
+    a second widening -- or the same one on another table -- is still a failure. The audit's own
+    grep (`alter column .* type`) finds the one line and Conformance 4 explains it; this asserts
+    the suite agrees with the audit rather than being blind to it.
+    """
+    # `_ALLOWED_ALTER_COLUMN` is this module's own name (defined beside `_ALLOWED_ALTER_INDEX`).
+    assert _ALLOWED_ALTER_COLUMN.pattern.count("alter column") == 1
+    assert _ALLOWED_ALTER_COLUMN.search(
+        "alter table parlay_legs alter column market_type type varchar(12)")
+    assert not _ALLOWED_ALTER_COLUMN.search(
+        "alter table parlay_cards alter column status type varchar(12)")
+    assert not _ALLOWED_ALTER_COLUMN.search(
+        "alter table parlay_legs alter column market_type type varchar(24)")
+    # And the one revision that carries it is the only one that does.
+    carriers = [p.name for p in VERSIONS
+                if any("alter column" in s.lower() for s in _executable_strings(p))]
+    assert carriers == ["0010_phase46_fun_tickets.py"]
+
+
+def test_every_index_on_a_table_taking_live_writes_is_concurrent():
+    """CR-4 / D13: `intents`, `order_events`, `fills` and `ledger` all take the executor's
+    writes while `init-db` runs on every deploy, and fix 25's F65 rule is every index on a table
+    under a live writer CONCURRENTLY, no carve-out.
+
+    Four, not the five the addendum's section 7.2 lists: `ix_gap_outcomes_order on gap_outcomes
+    (order_id)` cannot be written, because `gap_outcomes` is keyed `(gap_snapshot_id,
+    benchmark_type)` and carries no `order_id` column (`harness/db/models.py`, and the same on
+    `phase6b-repair-execution`). Its read reaches a gap outcome through `market_gap_snapshots`,
+    whose id is that table's leading primary-key column, so the primary key already serves it.
+    Asserted here so the gap is visible rather than silent: the day `gap_outcomes` gains an
+    order key, this test is where the fifth index is added.
+    """
+    module = _phase46_module()
+    assert all("create index concurrently" in s or "create unique index concurrently" in s
+               for s in (" ".join(x.split()).lower() for x in module._CONCURRENT))
+    names = " ".join(module._CONCURRENT)
+    for index in ("ix_intents_market_created", "ix_order_events_order_ts", "ix_fills_order_ts",
+                  "ix_ledger_order"):
+        assert index in names, index
+    # And nothing else is in there: the plain tuple's indexes all ride tables this revision
+    # creates, or `parlay_placements`, which one hand writes twice a week.
+    assert len(module._CONCURRENT) == 4
+    from harness.db.models import GapOutcome
+
+    assert "order_id" not in GapOutcome.__table__.columns
+
+
+def test_the_phase46_revision_leaves_odds_snapshots_untouched():
+    """D23 (addendum 9 as amended): a prop outcome is keyed by the player and
+    `uq_odds_snapshot_row` carries no `where` clause, so the only fix inside `odds_snapshots`
+    would be rebuilding a unique index on a bulk table -- not additive. The props go to their own
+    table instead, and neither a column nor an index is added to `odds_snapshots` here."""
+    module = _phase46_module()
+    statements = [s.lower() for s in
+                  module._COLUMNS + module._TABLES + module._INDEXES + module._CONCURRENT]
+    assert not any("odds_snapshots" in s for s in statements)
+    names = " ".join(module._INDEXES)
+    for index in ("uq_odds_prop_row", "ix_odds_prop_lookup", "uq_players_sport_espn",
+                  "ix_player_stat_game_player_ts", "ix_parlay_corrections_card_ts",
+                  "uq_parlay_placement_confirmation"):
+        assert index in names, index
+
+
+def test_the_phase46_statements_match_create_schema_exactly():
+    """The revision and `create_schema` are two copies of one list; the catalogue diff is the
+    judge of the result, and this is the judge of the text, so a later edit to one copy fails
+    here rather than in a 40-line catalogue diff (the shape of
+    `test_the_quotes_run_index_ddl_agrees_between_schema_and_migration`)."""
+    from harness.db import schema as schema_module
+
+    module = _phase46_module()
+    assert set(module._COLUMNS) <= set(schema_module._COLUMN_DDL)
+    assert set(module._INDEXES) <= set(schema_module._INDEX_DDL)
+    assert set(module._CONCURRENT) <= set(schema_module._CONCURRENT_INDEX_DDL)

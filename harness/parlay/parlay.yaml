@@ -33,3 +33,36 @@ pool_min_edge: 0.02
 # B-C4: a proposed card nobody placed becomes `void` after this many days, with
 # `declined_reason = expired`.
 expiry_days: 7
+
+# Addendum §2.1. Every card records this; a policy change is a config commit, never a UI action.
+policy_version: "2026.09-1"
+
+# The prop families of release one (D3). Game period only: period props and first-scorer
+# markets are out of scope (§12). `market_defs` holds DraftKings' own settlement rule for each
+# family, recorded verbatim with its source and date by the evidence task (D19). A family with
+# no rule here is `market_unsupported` and is never built.
+props:
+  families: [pass_yds, rush_yds, rec_yds, receptions, anytime_td]
+  books: [draftkings]
+  max_prop_legs_smart: 2
+  same_game:
+    min_legs: 3
+    max_legs: 6
+    distinct_player_or_market: true
+  disqualifiers: [player_unmatched, market_unsupported, stale_price]
+  # §3.2's arithmetic: at most 16 watched events per sport, at most 16 calls a tick across both,
+  # 24 h of kickoff window. 16 calls x <= 9 credits = 144 a tick, 576 an hour, ~170k a month.
+  prop_events_max: 16
+  prop_calls_per_tick: 16
+  prop_window_hours: 24
+  # anytime_td: the operative sentences of DraftKings' "Touchdown Scorer Markets" rule, verbatim
+  # (the full paragraph, the page's other Player Props paragraphs and the date/provenance are in
+  # docs/superpowers/reports/2026-09-13-prop-market-definitions.md). pass_yds, rush_yds, rec_yds
+  # and receptions have no family-specific settlement rule on that page; they stay unsupported.
+  market_defs:
+    anytime_td: >-
+      A touchdown scorer shall mean the player in possession of the football in the opposing
+      team’s end zone. A touchdown scorer is not the player who throws the touchdown (i.e.,
+      passing touchdowns do not count towards for settlement purposes for Touchdown Scorer
+      Markets). Source: https://sportsbook.draftkings.com/help/sport-rules/football, read
+      2026-09-14.

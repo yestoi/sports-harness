@@ -1,0 +1,6 @@
+2026-09-14 14:13 CT wakeup checks (build ca30ed1; deployed 14:47Z, so the series below spans the previous build until then)
+recorder.rss_mb since 13:12Z: 673 samples, first 128.4 MiB, last 301.9, min 123.8, max 303.1
+hourly avg/max MiB: 13Z 172.4/208.5; 14Z 169.6/232.5; 15Z 202.2/262.6; 16Z 227.3/281.9; 17Z 276.3/294.2; 18Z 287.2/303.1; 19Z 292.1/301.9
+docker stats sports-harness-app-run-1: 283.5 MiB / 31.16 GiB
+raw_responses source=odds_api since 13:00Z: 209 bodies, 141 with the text "pinnacle" (13:00:25Z .. 19:11:45Z); candidates on the latest pricing tick not checked (usage stop)
+backup_runs: 35 forever ok 13:10Z; 36/37 encrypt ok 13:22Z; the sidecar's stale-clock nightly (~14:20 CT) had not fired at 14:13 CT; no container named app-backup (compose name differs)

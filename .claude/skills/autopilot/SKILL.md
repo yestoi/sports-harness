@@ -59,10 +59,15 @@ that need adjudication. Preserve the model allocations, independent reviewers an
 ## Kickoff (a fresh session, the way the user starts it)
 
 ```
-cd /home/trey/dev/sports && scripts/autopilot-session.sh start   # tmux + one controller lock; compact at 500k
+cd /home/trey/dev/sports && scripts/autopilot-session.sh start-herdr   # inside a fresh herdr tab: one controller lock; compact at 500k
 /effort            # high (xhigh and max spend three to four times the tokens for no measured gain on this loop)
 /autopilot
 ```
+
+`start` is the tmux equivalent (same locked command inside a `sports-autopilot` tmux session) for a host without
+herdr. Either way one kernel lock on `~/.cache/sports-harness/controller.lock` prevents a second controller. In herdr,
+never accept the pane herdr auto-resumes after a *server* restart (a plain `claude --resume`: no lock, no strict MCP
+config): exit it and launch again. Detach and reattach are fine.
 
 Then read the state files, run preflight, orient, go. On Omarchy the dashboard is local at `http://127.0.0.1:8180`; no self-SSH tunnel is needed. Listed secrets arrive when the user gets to them; never wait. Announce the plan of the day in one
 short message, then do not wait for a reply.
@@ -81,10 +86,11 @@ Pick the first that applies. Derive each test from files and live state (`git st
 2. **deploy**: `main` is ahead of Omarchy in code. Read the stamp, never a remembered notification:
    ```
    DEPLOYED=$(scripts/omarchy.sh health | python3 -c 'import json,sys;print(json.load(sys.stdin)["build"])')
-   git diff --stat "$DEPLOYED"..main -- . ':!docs' ':!*.md' ':!.claude'
+   git diff --stat "$DEPLOYED"..main -- . ':!docs' ':!*.md' ':!.claude' ':!scripts/autopilot-session.sh'
    ```
    Non-empty output, or a stamp ending in `-dirty`, with the deploy preconditions holding: deploy. Docs-only commits never
-   trigger one. Local `.claude/` tooling is also excluded from the deploy trigger; its presence in a source archive does not require a runtime restart.
+   trigger one. Local `.claude/` tooling and the controller's own session helper (`scripts/autopilot-session.sh`, never copied
+   into the image) are also excluded from the deploy trigger; their presence in a source archive does not require a runtime restart.
    If only the game window blocks it, arm a wakeup for the window's end and go on down this list.
 3. **verify**: no `verify` entry since the last `deploy` entry, a wakeup is due, or a deferred item's judge-after time has
    passed (folded into the next pass unless nothing else is pending); after a restart, assume no wakeup and decide from the clock.
@@ -114,7 +120,7 @@ Keep 6C `planned` until its full acceptance is satisfied; completing only the de
 - Every implementer runs in its own worktree: `make worktree BR=<branch> [BASE=main|phaseN-<slug>]` prints the path
   (`../sports-wt/<branch>`, `.venv` linked in). The brief names that path as the working directory and
   `make test` as the suite: the Makefile creates `harness_test_<branch>` on `localhost:5433` and runs pytest with
-  `PYTHONPATH=.` so the worktree's own code is imported. Two implementers never share a branch, a worktree or a database. `make test [TEST_ARGS="..."]` holds the host-wide suite lock; do not bypass it with direct pytest. Full acceptance uses no TEST_ARGS or PYTEST_ADDOPTS.
+  `PYTHONPATH=.` so the worktree's own code is imported. Two implementers never share a branch, a worktree or a database. `make test [TEST_ARGS="..."]` locks only its own test database (runs on different branch databases proceed at once; two runs on one database serialize); do not bypass it with direct pytest. A full suite runs as `TEST_SHARDS` (default 6) pytest processes on `<database>` and `<database>_p2..`; the schema and Alembic tests stay on `<database>`, so the fixture grant is unchanged; files are balanced by the per-file durations the last sharded run recorded (`test-durations.json` beside the receipts; the committed `tests/test-durations.json` seeds a host with none), and a file heavier than one shard's share is split into its slowest tests by node id with the rest of the file deselecting them. A scoped run writes `test-<database>-scoped.json`, never the full-suite receipt. Full acceptance uses no TEST_ARGS or PYTEST_ADDOPTS; its receipt records the tree and release-tree hashes (`scripts/release_tree.py`).
 - Briefs, ledgers and diffs stay in the main checkout under `.superpowers/sdd/` at absolute paths; reviewers read the
   diff file, never the worktree.
 - Two tasks run at once only when their plan `Files:` lines are disjoint (a shared file means serial, in plan order).
@@ -132,7 +138,8 @@ Keep 6C `planned` until its full acceptance is satisfied; completing only the de
   plus `SendMessage`), chase silent children, apply the per-dispatch timeouts.
 - Wall-clock: `ScheduleWakeup` with the exact delay to the event (first weekday pricing run: 08:10 CT), `reason` naming it;
   fallback `CronList` then `CronCreate`, never a duplicate. Never poll. Never claim a wakeup exists after a restart.
-- Background commands (long waits): `run_in_background`, then act on the notification. Deploys run in the foreground.
+- Background commands (long waits): `run_in_background`, then act on the notification. A background `make test` notifies
+  on completion; do not add sleep loops that watch its log. Deploys run in the foreground.
 - Rate limits: the subscription's windows are shared by every agent. On a rate-limit, usage-limit, 429 or 529 failure from an
   Agent, SendMessage or model call: no retry for 15 minutes, local work only. Two in a row: journal `paused: rate limit` with
   the reset time if stated, arm a one-shot wakeup for then (else +60 min), end the pass. Never route around it: no model
@@ -142,8 +149,8 @@ Keep 6C `planned` until its full acceptance is satisfied; completing only the de
 
 | Ceiling | Value |
 |---|---|
-| Dispatches | per unit: phase 80, plan-next 6, hotfix batch 12, verify 3, operate 8; per calendar day (CT): 200 |
-| Concurrent implementers | 3 (one per worktree; full suites share one host-wide slot on Omarchy) |
+| Dispatches | per unit: phase 80, plan-next 12, hotfix batch 12, verify 3, operate 8; per calendar day (CT): 200. A `SendMessage` resume of a live agent (a fix round, a plan revision) is not a dispatch |
+| Concurrent implementers | 3 (one per worktree and test database; suites on different databases run concurrently, one per database) |
 | Wall-clock per unit | phase 20 h, plan-next 4 h, hotfix batch 3 h, deploy 30 min, verify 90 min, operate duty 2 h |
 | Failures per calendar day | 2 failed deploys (stamp mismatch, unhealthy container, or a verify FAIL on a row the deploy's diff touched), or the same verify item failing twice running |
 | Per-dispatch timeout (no report) | implementer 90 min, reviewer 30 min, walker 20 min; then `SendMessage` "report now"; 10 more minutes: mark it failed, journal, re-dispatch once fresh one tier up; a second timeout on the same task is a gate |

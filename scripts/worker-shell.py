@@ -93,7 +93,9 @@ def select_context(cwd: str, command: str) -> tuple[Path, Path | None]:
 
 
 def sensitive(name: str, parent: Path) -> bool:
-    return (name in SECRET_NAMES or name.startswith('.env')
+    # `.env.example`-style files are committed templates, readable from Git history anyway;
+    # masking them only shows every worker a dirty tree it did not touch.
+    return (name in SECRET_NAMES or (name.startswith('.env') and not name.endswith('.example'))
             or (name in {'config', 'config.worktree'} and '.git' in parent.parts))
 
 
@@ -106,6 +108,12 @@ def overlays(root: Path, *, writable: bool) -> list[tuple[Path, bool]]:
     masks: list[tuple[Path, bool]] = []
     for parent, dirs, files in os.walk(root, followlinks=False):
         base = Path(parent)
+        if base.name == 'site-packages':
+            # Installed distributions are code, never host credentials: the anthropic SDK ships
+            # `anthropic/lib/credentials/`, and a tmpfs over it broke `import anthropic` in every
+            # worker. Nothing below site-packages is masked or walked; the mount stays read-only.
+            dirs[:] = []
+            continue
         for name in list(dirs) + files:
             path = base / name
             mode = path.lstat().st_mode
@@ -218,7 +226,13 @@ def sandbox_argv(cwd: Path, task: Path | None, command: str) -> list[str]:
         masks += overlays(task, writable=True)
     for path, directory in sorted(set(masks), key=lambda entry: str(entry[0])):
         if directory:
-            args += ['--tmpfs', str(path), '--remount-ro', str(path)]
+            args += ['--tmpfs', str(path)]
+            # A committed `.gitkeep` is an empty file; re-bind the empty mask at the same path
+            # (before the tmpfs turns read-only) so Git sees the tracked content, not a deletion.
+            keep = path / '.gitkeep'
+            if keep.is_file() and not keep.is_symlink():
+                args += ['--ro-bind', str(EMPTY_FILE), str(keep)]
+            args += ['--remount-ro', str(path)]
         else:
             # A device bind is nodev in this namespace; use a regular empty file.
             args += ['--ro-bind', str(EMPTY_FILE), str(path)]

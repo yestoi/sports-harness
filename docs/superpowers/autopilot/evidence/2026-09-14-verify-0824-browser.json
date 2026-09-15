@@ -1,0 +1,197 @@
+{
+  "prefix": "verify-6b9b8d0",
+  "pages": [
+    {
+      "name": "legacy",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/",
+      "surface": null,
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 7306,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0 \u00b7 deployed 2026"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-1440-legacy.png"
+    },
+    {
+      "name": "pulse",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "pulse",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 2608,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-1440-pulse.png"
+    },
+    {
+      "name": "floor",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "floor",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 2684,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-1440-floor.png"
+    },
+    {
+      "name": "study",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "study",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 38000,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-1440-study.png"
+    },
+    {
+      "name": "gate",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "gate",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 3273,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-1440-gate.png"
+    },
+    {
+      "name": "ticket",
+      "width": 1440,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "ticket",
+      "measure": {
+        "client": 1440,
+        "scrollW": 1440,
+        "body": 1440,
+        "height": 900,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-1440-ticket.png"
+    },
+    {
+      "name": "legacy",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/",
+      "surface": null,
+      "measure": {
+        "client": 980,
+        "scrollW": 980,
+        "body": 980,
+        "height": 7495,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0 \u00b7 deployed 2026"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-390-legacy.png"
+    },
+    {
+      "name": "pulse",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "pulse",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 5031,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-390-pulse.png"
+    },
+    {
+      "name": "floor",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "floor",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 3970,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-390-floor.png"
+    },
+    {
+      "name": "study",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "study",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 50292,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-390-study.png"
+    },
+    {
+      "name": "gate",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "gate",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 6223,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-390-gate.png"
+    },
+    {
+      "name": "ticket",
+      "width": 390,
+      "url": "http://127.0.0.1:8180/ui/",
+      "surface": "ticket",
+      "measure": {
+        "client": 390,
+        "scrollW": 390,
+        "body": 390,
+        "height": 900,
+        "unavailable": 0,
+        "errors": [],
+        "build": "build 6b9b8d0"
+      },
+      "path": ".superpowers/sdd/screenshots/verify-6b9b8d0-390-ticket.png"
+    }
+  ]
+}

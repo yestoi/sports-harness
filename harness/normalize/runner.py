@@ -88,7 +88,11 @@ def _load_events_cache(session: Session) -> None:
             _remember_event(ev)
 
 
-def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
+def _handle(session: Session, family: str, r, ctx: dict) -> None:
+    """Normalize one raw response. `r` is any row exposing `id`, `run_id`, `endpoint`,
+    `params`, `fetched_at` and `body` -- since finding 49 round 2 that is a projected `Row`, not
+    the mapped `RawResponse`, which avoids building a mapped instance (and its `InstanceState`)
+    per row."""
     sport = _sport_from_endpoint(r.endpoint, r.params)
     body = r.body
     if family == "espn" and sport:
@@ -101,6 +105,10 @@ def _handle(session: Session, family: str, r: RawResponse, ctx: dict) -> None:
         dropped = ctx.setdefault("odds_dropped", {"unknown_game": 0, "unresolved_team": 0})
         dropped["unknown_game"] += odds.dropped_unknown_game
         dropped["unresolved_team"] += odds.dropped_unresolved_team
+        # Phase 4.6 4.2: the prop outcomes this pass could not resolve to exactly one rostered
+        # player. Counted where it is decided; `harness/recorder/tick.py` folds it into the
+        # tick's `ctx["props"]["unmatched"]` and into the recorder's `player_unmatched` counter.
+        ctx["prop_unmatched"] = ctx.get("prop_unmatched", 0) + odds.prop_unmatched
     elif family == "kalshi_events":
         for ev in _events_in(body):
             _remember_event(ev)
@@ -136,25 +144,67 @@ def _watermark(session: Session, family: str) -> NormalizeState:
     return state
 
 
+#: The columns `_handle` reads off a raw response. Finding 49 round 2: the mapped `RawResponse`
+#: was never needed here -- nothing in `_handle` writes to it or navigates a relationship -- so
+#: the projection also avoids building a mapped instance (and its `InstanceState`) per row.
+_ROW_COLUMNS = (RawResponse.id, RawResponse.run_id, RawResponse.endpoint, RawResponse.params,
+                RawResponse.fetched_at, RawResponse.body)
+
+
 def _drain_batch(session: Session, family: str, batch: int, ctx: dict,
                  deadline: float | None = None) -> tuple[int, int, bool]:
     """Process one batch of a family. Returns (normalized, fetched, committed).
 
     Stops early (after at least one row) once ``deadline`` (a ``time.monotonic()`` value) passes,
     committing progress through the last processed row so the next call resumes there.
+
+    Finding 49, round 2 -- the recorder's single largest allocation, and the one the first round
+    missed. This used to read the batch with one `select(RawResponse) ... .scalars().all()`:
+    psycopg buffers a whole result set client-side and SQLAlchemy then built every mapped row
+    from it, so *every jsonb body in the batch was decoded into the process before the first row
+    was handled*. Round 1's `rows[i] = None` dropped each row after handling it, which cannot
+    lower a peak that has already happened at materialisation. `batch` is five hundred and a
+    live `/markets` page is 2.3 MB of JSON (~1,000 markets) while a `/markets/trades` page is up
+    to 320 KB (~1,000 prints), and the decoded dicts are several times the JSON's size: measured
+    on 2026-09-13, one batch of 250 trade pages held 229 MiB resident at once, and the recorder
+    does this every tick into an allocator that returns an arena only when it empties. That is
+    the `RssAnon` series in the fix 49 brief (121.8 -> 1,935.4 MiB over five ticks, then ~1.2 GB
+    steps per tick to 4.0 GiB).
+
+    So the batch read now selects the two primary-key columns only -- the batch's *membership*,
+    which is all the watermark needs -- and each row's body is fetched on its own, used, and
+    dropped before the next one is read. Peak resident bodies: one, not `batch`; the local name
+    is the only thing holding each body, and the projection avoids building a mapped instance
+    (and its `InstanceState`) per row on top of it. Nothing about the ordering, the batch size,
+    the per-row savepoint, the watermark or the commit changes.
+
+    The per-row read is keyed on both primary-key columns (`id`, `fetched_at`), not `id` alone:
+    `raw_responses` is range-partitioned on `fetched_at`, so a lookup without it would scan
+    every weekly partition.
     """
     state = _watermark(session, family)
     last_committed = state.last_raw_id
-    rows = session.execute(select(RawResponse).where(_family_filter(family), RawResponse.http_status == 200,
-                                                     RawResponse.id > last_committed)
-                           .order_by(RawResponse.id).limit(batch)).scalars().all()
-    if not rows:
+    keys = session.execute(
+        select(RawResponse.id, RawResponse.fetched_at)
+        .where(_family_filter(family), RawResponse.http_status == 200,
+               RawResponse.id > last_committed)
+        .order_by(RawResponse.id).limit(batch)).all()
+    if not keys:
         return 0, 0, True
     n, last_id, processed = 0, last_committed, 0
-    for i, r in enumerate(rows):
+    for raw_id, fetched_at in keys:
         if deadline is not None and processed > 0 and time.monotonic() >= deadline:
             break
         processed += 1
+        r = session.execute(select(*_ROW_COLUMNS).where(
+            RawResponse.id == raw_id, RawResponse.fetched_at == fetched_at)).first()
+        if r is None:
+            # Gone between the membership read and this one. Nothing in the tree deletes
+            # `raw_responses` rows today, so this is a manual prune or a partition detached out
+            # from under us; either way there is nothing to normalize and the watermark still
+            # has to move past it rather than re-reading the hole every batch.
+            last_id = raw_id
+            continue
         try:
             # One savepoint per row: a database error aborts only this row, leaving the rest
             # of the batch (and the watermark) intact.
@@ -162,16 +212,13 @@ def _drain_batch(session: Session, family: str, batch: int, ctx: dict,
                 _handle(session, family, r, ctx)
             n += 1
         except Exception as e:  # noqa: BLE001
-            log.exception("normalize %s raw_id=%s failed", family, r.id)
-            ctx.setdefault("normalize_errors", []).append({family: {"raw_id": r.id, "error": repr(e)[:300]}})
+            log.exception("normalize %s raw_id=%s failed", family, raw_id)
+            ctx.setdefault("normalize_errors", []).append({family: {"raw_id": raw_id, "error": repr(e)[:300]}})
         # A poison row is skipped, never retried in a loop.
-        last_id = r.id
-        # Fix 49: drop the row, and the jsonb body hanging off it, as soon as it is handled.
-        # A batch is five hundred rows and an odds-alternates body is the whole ladder for one
-        # event, so holding the batch to its end meant carrying every body in it at once --
-        # the largest single allocation the normalize phase makes. The list slot is what holds
-        # the strong reference; the session's identity map is weak.
-        rows[i] = None
+        last_id = raw_id
+        # Drop this row's body before the next one is read, so the phase's resident set is one
+        # body and not the batch (finding 49, round 2 -- see the docstring).
+        r = None
     _watermark(session, family).last_raw_id = last_id
     try:
         session.commit()

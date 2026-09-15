@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -6,6 +7,9 @@ from harness.feeds.espn import Kickoff
 from harness.venues.kalshi.public import MarketSummary
 
 SPORTS = {"nfl": "americanfootball_nfl", "ncaaf": "americanfootball_ncaaf"}
+#: The sort key of an event no prop call has ever been made for: older than any real stamp, so
+#: a never-fetched event always leads the rotation.
+_NEVER = datetime.min.replace(tzinfo=timezone.utc)
 BAND_LO, BAND_HI = Decimal("0.20"), Decimal("0.80")
 
 
@@ -58,6 +62,90 @@ def alternates_due(now: datetime, events: list[tuple[str, datetime]], last_alt: 
         if is_due(last_alt.get(event_id), now, interval):
             out.append(event_id)
     return out
+
+
+@dataclass(frozen=True)
+class PropEvent:
+    """One candidate prop event as the recorder reads it out of `games` (3.2).
+
+    `event_id` is `games.odds_api_event_id` -- the key the per-event prop endpoint takes, not the
+    internal game id. `signal` is whether the game carried a candidate signal with a direct fair
+    inside `pool_window_hours`; the anchor test is made here, from the two abbreviations, so the
+    anchor list stays one config value read in one place.
+    """
+    event_id: str
+    sport: str
+    kickoff_utc: datetime
+    home_abbr: str | None
+    away_abbr: str | None
+    signal: bool
+
+
+@dataclass(frozen=True)
+class WatchedPropEvent:
+    """A watched event, with the reason it is watched resolved."""
+    event_id: str
+    sport: str
+    kickoff_utc: datetime
+    anchor: bool
+
+
+def prop_events_watched(now: datetime, events: list[PropEvent], *, window_h: int, per_sport: int,
+                        anchors: frozenset[str]) -> list[WatchedPropEvent]:
+    """The watched prop events of this tick, anchor first then kickoff, at most `per_sport` each
+    (3.2).
+
+    Pure: the caller reads `games` once per sport and this decides nothing by clock or database.
+    An event already kicked off is not watched -- props are a pre-game surface -- and neither is
+    one beyond `window_h`.
+    """
+    watched: list[WatchedPropEvent] = []
+    for sport in SPORTS:
+        mine = []
+        for event in events:
+            if event.sport != sport or not event.event_id:
+                continue
+            until = event.kickoff_utc - now
+            if until < timedelta(0) or until > timedelta(hours=window_h):
+                continue
+            anchor = (event.home_abbr in anchors) or (event.away_abbr in anchors)
+            if not anchor and not event.signal:
+                continue
+            mine.append(WatchedPropEvent(event.event_id, sport, event.kickoff_utc, anchor))
+        # Anchor first, then kickoff: the cap bites on a full college Saturday, and LSU's game
+        # is the one event the product is built around (R:216).
+        mine.sort(key=lambda w: (not w.anchor, w.kickoff_utc, w.event_id))
+        watched.extend(mine[:per_sport])
+    return watched
+
+
+def prop_events_due(now: datetime, events: list[PropEvent], last_fetched: dict[str, datetime], *,
+                    window_h: int, per_sport: int, calls: int, interval_s: int,
+                    anchors: frozenset[str]) -> list[str]:
+    """The prop events to fetch on this tick (3.2).
+
+    Watched: events kicking off inside `window_h` that carry an anchor team or a priced signal,
+    ordered anchor first then by kickoff, at most `per_sport` a sport. Due: of those, the ones
+    whose last *attempt* is at least `interval_s` old, `calls` oldest-first across both sports --
+    a rotation, so 32 events refresh inside two 900 s ticks, which is 30 minutes and therefore
+    inside `leg_max_age_minutes`.
+
+    An event never attempted sorts oldest of all; ties keep the watched order, so a first tick
+    takes the first sport's cap and the next tick takes the other's.
+
+    `interval_s` is the review's C1 (fix round 1). The recorder ticks every `heartbeat_s` (30 s
+    in production) and the caller's cadence guard only says *which* 900 s period is in force, not
+    that 900 s have passed; without this filter a second heartbeat inside the same period sorts
+    the same stamps oldest-first and pays for all sixteen events again. `last_fetched` carries
+    the last **attempt**, success or failure (I4), so a failing event also waits its turn.
+    """
+    watched = prop_events_watched(now, events, window_h=window_h, per_sport=per_sport,
+                                  anchors=anchors)
+    order = {w.event_id: index for index, w in enumerate(watched)}
+    fresh = [w for w in watched if is_due(last_fetched.get(w.event_id), now, interval_s)]
+    due = sorted(fresh, key=lambda w: (last_fetched.get(w.event_id) or _NEVER,
+                                       order[w.event_id]))
+    return [w.event_id for w in due[:calls]]
 
 
 def _in_band(p: Decimal | None) -> bool:

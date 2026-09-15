@@ -337,7 +337,7 @@ class WorkerGuardTests(unittest.TestCase):
                                      'SPORTS_TEST_LOCK_FILE': str(self.lockfile)}, clear=True), \
                 patch.object(suite.sys, 'argv', ['test-suite', '--', 'tests/test_example.py']), \
                 patch.object(suite.subprocess, 'check_output', side_effect=[
-                    'main', 'postgresql://test-only', 'abc123', '', 'abc123', '']), \
+                    'main', 'abc123', 'tree123', '100644 blob 1 x\tharness/x.py\n', '', 'postgresql://test-only', 'abc123', '']), \
                 patch.object(suite.subprocess, 'Popen', side_effect=start_child), \
                 patch.object(suite.signal, 'signal'), \
                 patch.object(suite.sys, 'stdout', io.StringIO()):
@@ -346,7 +346,7 @@ class WorkerGuardTests(unittest.TestCase):
         self.assertTrue(recorded['session'])
         self.assertEqual(recorded['environment']['DATABASE_URL_TEST'], 'postgresql://test-only')
         self.assertEqual(controller_receipt.read_text(), 'controller receipt')
-        self.assertTrue((private / 'test-harness_test_main.json').is_file())
+        self.assertTrue((private / 'test-harness_test_main-scoped.json').is_file())
         self.assertFalse((private / 'test-suite.lock').exists())
 
     def test_sensitive_files_are_hidden_in_main_and_task(self):
@@ -363,6 +363,48 @@ class WorkerGuardTests(unittest.TestCase):
         idx = args.index(str(self.task / 'secrets'))
         self.assertEqual(args[idx-1], '--tmpfs')
         self.assertEqual(args[idx+1:idx+3], ['--remount-ro', str(self.task / 'secrets')])
+
+    def test_tracked_env_templates_and_secrets_gitkeep_are_not_masked(self):
+        # `.env.example` / `.env.nas.example` are committed templates and `secrets/.gitkeep` is a
+        # committed empty file: hiding them shows every worker a dirty tree it did not touch and
+        # empties the receipt's dirty_before/dirty_after signal. Real `.env*` files stay masked.
+        (self.task / '.env').write_text('do not disclose')
+        (self.task / '.env.example').write_text('DATABASE_URL=postgresql://u:p@h/db\n')
+        (self.task / '.env.nas.example').write_text('NAS_IP=\n')
+        (self.task / 'secrets').mkdir()
+        (self.task / 'secrets/.gitkeep').touch()
+        (self.task / 'secrets/key').write_text('secret')
+        args = shell.sandbox_argv(self.task, self.task, 'true')
+        for name in ('.env.example', '.env.nas.example'):
+            self.assertNotIn(str(self.task / name), args)
+        idx = args.index(str(self.task / '.env'))
+        self.assertEqual(args[idx-2:idx], ['--ro-bind', str(shell.EMPTY_FILE)])
+        secrets = str(self.task / 'secrets')
+        idx = args.index(secrets)
+        self.assertEqual(args[idx-1], '--tmpfs')
+        self.assertEqual(args[idx+1:idx+6], ['--ro-bind', str(shell.EMPTY_FILE), secrets + '/.gitkeep',
+                                              '--remount-ro', secrets])
+        self.assertNotIn(secrets + '/key', args)
+
+    def test_installed_packages_are_never_credential_masks(self):
+        # anthropic ships `anthropic/lib/credentials/`; masking it with a tmpfs made
+        # `import anthropic` fail inside every worker. Installed distributions under
+        # `site-packages` are code, not host credentials; the repository's own `credentials`
+        # directory and the venv's other entries stay masked.
+        package = self.main / '.venv/lib/python3.12/site-packages/anthropic/lib/credentials'
+        package.mkdir(parents=True)
+        (package / '__init__.py').write_text('class TokenCache: ...\n')
+        (self.main / '.venv/lib/python3.12/site-packages/secrets').mkdir()
+        (self.main / '.venv/.env').write_text('do not disclose')
+        (self.main / 'credentials').mkdir()
+        (self.main / 'credentials/token').write_text('secret')
+        args = shell.sandbox_argv(self.task, self.task, 'true')
+        self.assertNotIn(str(package), args)
+        self.assertNotIn(str(self.main / '.venv/lib/python3.12/site-packages/secrets'), args)
+        idx = args.index(str(self.main / 'credentials'))
+        self.assertEqual(args[idx-1], '--tmpfs')
+        idx = args.index(str(self.main / '.venv/.env'))
+        self.assertEqual(args[idx-2:idx], ['--ro-bind', str(shell.EMPTY_FILE)])
 
     def test_hardlinks_special_files_and_secret_symlinks_fail_closed(self):
         origin = self.main / 'source'

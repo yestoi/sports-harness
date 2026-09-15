@@ -81,3 +81,28 @@ export async function loadHow() {
   }
   return howText;
 }
+
+//: The only writer, in the only module allowed to reach the network (addendum §8). It sends the
+//: CSRF header and the JSON content type both write routes require, and reports a 401 as the
+//: session-required state so the shell can show the login prompt rather than a silent failure.
+//:
+//: `credentials: "same-origin"` sends the session cookie; the request never names an origin
+//: header itself. The routes compare the browser's own against the LAN address and port from
+//: settings (addendum §5.5), so a page that wrote one would either be refused or be claiming to
+//: be somewhere it is not. A transport failure answers `status: 0` -- not a refusal, not a
+//: success, and never confused with either: nothing was recorded and the caller says so.
+export async function postJson(path, body) {
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Requested-With": "sports-ui" },
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+    const payload = response.headers.get("Content-Type")?.includes("json")
+      ? await response.json() : null;
+    return { status: response.status, body: payload };
+  } catch (error) {
+    return { status: 0, body: null };
+  }
+}

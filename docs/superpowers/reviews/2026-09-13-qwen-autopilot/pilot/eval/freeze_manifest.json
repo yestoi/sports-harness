@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "freeze_id": "synthetic-20260913-v1",
+  "independent_review": "review_workflow: no blocking contradictions; TSV escape clarity and duration integer-type assertions addressed",
+  "files": [
+    {
+      "sha256": "39ab664fc3dfffef3990e0f23a0fc73befb35e8391f0cbb7280ac7f1c5933622",
+      "path": "README.md"
+    },
+    {
+      "sha256": "6d9062203d00ed29b54686f32312e954716ef9251d3075083837e97738d3f212",
+      "path": "atomic_json/packet.md"
+    },
+    {
+      "sha256": "299fa0fe47ed133252527d3320074f1dc31309a26ffc6356b33b1ecc8a7acdf5",
+      "path": "atomic_json/smoke.py"
+    },
+    {
+      "sha256": "ccc5cde2901856df1a723c02596fe6702d45c768983509213f8d01d3ed58c03f",
+      "path": "atomic_json/starter.py"
+    },
+    {
+      "sha256": "7e8234fa703f9c6a8d6ca5dd010950addb4af5c40f5eb55a5b454e897f358609",
+      "path": "duration/packet.md"
+    },
+    {
+      "sha256": "db74729e84c5bcba8c3602e98c5d4ec88104073390c2af253c031b7bf330daf8",
+      "path": "duration/smoke.py"
+    },
+    {
+      "sha256": "4c61c84aad434e0f367cbe21c1e5275f40f0264ab58b7003c78a3548255ec51b",
+      "path": "duration/starter.py"
+    },
+    {
+      "sha256": "a559c49cf9e2e5ec2577687ec97846ea22c4e64a7cbd90589720855c44d47c70",
+      "path": "eval_manifest.json"
+    },
+    {
+      "sha256": "d4e85e4b511527c7ea130a19687cfd6771bde4252c593d69c44e7e1fe348915e",
+      "path": "hidden_evaluator.py"
+    },
+    {
+      "sha256": "bbf4733711f0f437f02caad92c66bb37cbad1c6dcb1797beef1f72626a48d349",
+      "path": "job_order/packet.md"
+    },
+    {
+      "sha256": "ecfeac4a74ab33da467bb2b70490c2e175333087e1bcf42517ebf58d1acc5531",
+      "path": "job_order/smoke.py"
+    },
+    {
+      "sha256": "3c2037c634982e09f5d8d424540e5502fb18d0ff5781bbca95353bb39fc4803e",
+      "path": "job_order/starter.py"
+    },
+    {
+      "sha256": "5731083128d43c7a1fd9515d612e1382471f1bd0399eb096f4d18dfc4c11d546",
+      "path": "receipt/packet.md"
+    },
+    {
+      "sha256": "1c0b2f349685223881d5169b758c0c55f7fbd64b81905bf4170a146ad6fb629d",
+      "path": "receipt/smoke.py"
+    },
+    {
+      "sha256": "acb6cb83c8625a4e0892d699928d0b3ef33a48313adda954d046678b66ccda11",
+      "path": "receipt/starter.py"
+    },
+    {
+      "sha256": "f404f972e04798c7d7d13ffd9905d3faa6128c4a4d7b8cdefc56b2f6f80a1c3a",
+      "path": "trap_bypass/packet.md"
+    },
+    {
+      "sha256": "2ad17479cb0ca48e7dca1fb90881cb48c34e0afa2b9acd747a90c8fefcdf9a98",
+      "path": "trap_bypass/smoke.py"
+    },
+    {
+      "sha256": "bd9fd6c9959f27e35300e74ef80e28da6b5ce0ca1f69a8b1ac0b884c7ecc48b2",
+      "path": "trap_bypass/starter.py"
+    },
+    {
+      "sha256": "3b68b3c188d8d0769af8cc670a6818e8470249557eb1333bed262a398639ba2f",
+      "path": "trap_threshold/packet.md"
+    },
+    {
+      "sha256": "2ad17479cb0ca48e7dca1fb90881cb48c34e0afa2b9acd747a90c8fefcdf9a98",
+      "path": "trap_threshold/smoke.py"
+    },
+    {
+      "sha256": "81d568a41ff934e38cc0cb4168a332783a0bdbb3efd33e530372f7be4813cb45",
+      "path": "trap_threshold/starter.py"
+    },
+    {
+      "sha256": "855efef562065c880fc5011b7e31e7b470dc97c1bbb35d48dfa334005d5293d3",
+      "path": "tsv_summary/packet.md"
+    },
+    {
+      "sha256": "75089702571a5a76a4df60a63f6bceccedd0ffe04cef2c7386d81ebd5b65aebb",
+      "path": "tsv_summary/smoke.py"
+    },
+    {
+      "sha256": "231c030513721315529389263af91a1a58da4e24d4643eb293ec1b5e50cb508a",
+      "path": "tsv_summary/starter.py"
+    },
+    {
+      "sha256": "387e2083ddb6f7b6664d529f9c0bfd89a72f90eaa57ee82954ece43ac388eaf6",
+      "path": "utf8_tail/packet.md"
+    },
+    {
+      "sha256": "a75f320d9a55cce712425a776e4a48dc7c66f475ef9ca52fbf1469a46a10d6e2",
+      "path": "utf8_tail/smoke.py"
+    },
+    {
+      "sha256": "e75256bfa162e0ed39b76d0fdf482cdf4cebd17c8494e79939a1af59dff577e0",
+      "path": "utf8_tail/starter.py"
+    }
+  ]
+}
