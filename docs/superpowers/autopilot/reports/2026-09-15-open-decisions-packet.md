@@ -45,3 +45,5 @@ the files named as "your edit".
     Options: (a) a per-loop time budget for counterfactual advances (opus hotfix on the user's yes; loop's lean); (b) accept until Thursday's
     window drains the backlog and settle the cadence in 6D's policy (the loop gates at the next FAIL reading); (c) other. Item 1 note: the
     trailing 22.5 GB/day rate reported by the user's other session is recorded, unverified, in journal 239.
+
+**Item 16 ruled 2026-09-15 13:55 CT (journal 242): option (c), a set-based counterfactual write path as an executor hotfix (`fix-2026-09-15-executor-batch`, opus/opus); no budget (§0.13c stays the user's); rows 79/80 added as follow-ups. Open: item 1.**
