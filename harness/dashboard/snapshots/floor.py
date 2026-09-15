@@ -627,7 +627,8 @@ _DETAIL_MARKETS = text("""
 #: funnel may not have: the funnel has no market list, so that index cannot serve it and a bare
 #: `created_at` predicate there is the 86-92 s sequential scan of the module docstring. With the
 #: ids in hand it is a bounded range per market, which is why this file reads that table exactly
-#: once, here, and `test_the_funnel_reads_runs_notes_and_never_scans_...` counts the occurrences.
+#: once, here, and `test_the_funnel_reads_runs_notes_and_the_only_signals_read_is_the_`
+#: `details_bounded_one` counts the occurrences.
 #:
 #: `(array_agg(... order by created_at desc))[1]` is the newest value of each column in the
 #: group, so the counts and the "last" figures come out of one pass rather than a second query.

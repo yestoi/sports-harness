@@ -727,7 +727,7 @@ def test_phase6d_follows_phase6b_execution_and_is_the_pinned_head():
     `0008_positions_open_fill`; fix 64 took 0009 on main, 4.6's revision was renumbered
     `0010_phase46_fun_tickets` and 6B's `0011_phase6b_execution`, so this phase's revision is
     `0012_phase6d_sustained_eval` on top of 6B's, renumbered in the merge of `main` into the
-    phase branch. The three pinned-head assertions carry over from
+    phase branch. The two pinned-head assertions carry over from
     `test_phase6b_execution_follows_phase46_fun_tickets`, which kept its chain assertions under
     its new name -- the same pattern 0008, 0009, 0010 and 0011 used before it."""
     from harness.db.migrate import HEAD_REVISION
