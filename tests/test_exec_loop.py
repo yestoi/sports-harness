@@ -2673,7 +2673,10 @@ LATE_PRINT = "fix78-late-print"
 #: ruling protects from this fix entirely -- two open orders and a deferred ticker.
 FAR, INSIDE, FRACTION, SUBSECOND, NO_EXPIRY, PAST = range(6)
 QUIET_FAR, QUIET_NONE, NO_BOOK, EXPIRES_BETWEEN, STALE_VERSION, TAPE_MOVES = range(6, 12)
-QUIET_LEDGER, OPEN_HELD, OPEN_EXPIRES, DEFERRED = range(12, 16)
+QUIET_LEDGER, LEDGER_CLOSES, OPEN_HELD, OPEN_EXPIRES, DEFERRED = range(12, 17)
+#: Fix 78b's own population: a clean-ticker row whose columns move but whose step inserts
+#: nothing, so its whole write is one row of the batched `UPDATE ... FROM (VALUES ...)`.
+BATCHED_MOVES = (EXPIRES_BETWEEN, STALE_VERSION, LEDGER_CLOSES)
 
 
 def _pending_book(session, ticker, ts, sid):
@@ -2754,6 +2757,20 @@ def _quiet_shapes(t0):
     ]
 
 
+def _moving_shapes(t0):
+    """Clean-ticker rows whose write moves a column on the measured loop and inserts nothing.
+
+    Fix 78b's own population. The expiry of each falls between the two loops, so the second --
+    the measured one -- closes the track (`nw_done`) and rewrites the counterfactual's state
+    columns with it, exactly as the per-row path would; nothing on T3's tape moved, so no fill
+    and no crossing is inserted for any of them and the whole population is one statement.
+    """
+    return [
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(seconds=5)},
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(seconds=7)},
+    ]
+
+
 def _mixed_shapes(t0):
     """Both populations, every row that must still take the per-row path, and the three the
     ruling keeps off this fix altogether.
@@ -2763,6 +2780,13 @@ def _mixed_shapes(t0):
     an older build (the version moves) and one whose ticker gets a print between the steps (the
     tape moves). Quiet but not trivial: one carrying a written ledger, which has to survive the
     loop unchanged.
+
+    Fix 78b: the three rows whose columns move without an insert -- the expiry that falls
+    between the steps, the stale stamp, and a fourth added here, a row carrying a **written**
+    ledger whose expiry also falls between the steps -- are the batched cursor-advance
+    population, and the last of them is what puts a non-empty JSONB document, a `numeric` and a
+    NULL through the `VALUES` list in one row. The row that fills and the one that has never had
+    a book still insert or re-anchor, so they keep their savepoint.
 
     Kept off the fix entirely (round 1, M4): two **open** orders on the dirty market -- one
     that holds there and goes on accruing watched dirty seconds, one whose expiry falls between
@@ -2777,6 +2801,8 @@ def _mixed_shapes(t0):
          "version": Decimal("4.4")},
         {"ticker": T4, "vm": VM4, "expiry": t0 + timedelta(hours=1)},
         {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1),
+         "recon_state": _written_ledger(t0)},
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(seconds=5),
          "recon_state": _written_ledger(t0)},
         {"ticker": T2, "vm": VM2, "expiry": t0 + timedelta(hours=1), "status": "open"},
         {"ticker": T2, "vm": VM2, "expiry": t0 + timedelta(seconds=5), "status": "open",
@@ -2854,11 +2880,12 @@ def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
     steps, identically for both runs, so that the *measured* loop still contains rows the fix
     must refuse to skip.
 
-    Returns the columns, the rows the loop wrote to `fills`, `ledger` and `order_events`, and
-    two costs of that second loop: how many statements it sent -- the identity only means
-    something between two paths that are actually different, and with the fix off this
-    population costs a savepoint, an UPDATE and a release per row -- and how many times it
-    walked a tape, which round 1's M2 requires the fix not to increase.
+    Returns the columns, the rows the loop wrote to `fills`, `ledger` and `order_events`, two
+    costs of that second loop -- how many statements it sent (the identity only means something
+    between two paths that are actually different, and with the fix off this population costs a
+    savepoint, an UPDATE and a release per row) and how many times it walked a tape, which
+    round 1's M2 requires the fix not to increase -- and the statements themselves, so a case
+    can ask *which* statement wrote a given row (fix 78b).
     """
     clock = Clock(t0)
     executor = make_executor(env_settings, session, clock)
@@ -2877,7 +2904,7 @@ def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
             executor.step()
     refresh(session)
     return (pending_columns(session, ids), loop_writes(session), len(seen),
-            walks.call_count)
+            walks.call_count, list(seen))
 
 
 def test_the_set_based_pending_writes_match_the_per_row_path_column_for_column(
@@ -2917,11 +2944,11 @@ def test_the_set_based_pending_writes_match_the_per_row_path_column_for_column(
     n = len(shapes)
 
     ids = seed_pending(db_session, t0, n, shapes)
-    per_row, per_row_writes, per_row_statements, per_row_walks = run_pending_steps(
+    per_row, per_row_writes, per_row_statements, per_row_walks, _ = run_pending_steps(
         env_settings, db_session, t0, ids, shapes, batched=False)
     reset_pending(db_session)
     ids = seed_pending(db_session, t0, n, shapes)
-    set_based, set_based_writes, set_based_statements, set_based_walks = run_pending_steps(
+    set_based, set_based_writes, set_based_statements, set_based_walks, _ = run_pending_steps(
         env_settings, db_session, t0, ids, shapes, batched=True)
 
     assert len(set_based) == n
@@ -2972,6 +2999,30 @@ def test_the_set_based_pending_writes_match_the_per_row_path_column_for_column(
     assert row[QUIET_LEDGER]["nw_print_unmatched"] == Decimal("1.50")
     assert row[QUIET_LEDGER]["nw_pending_unmatched"] == Decimal("3.00")
     assert row[QUIET_LEDGER]["nw_pending_surplus"] == Decimal("2.00")
+    # Fix 78b: the three rows whose columns moved without an insert were written by the batched
+    # `UPDATE ... FROM (VALUES ...)`, and `select *` above has already compared every column of
+    # them against the per-row path. Named here so the case fails on the row it is about: the
+    # ledger row carries a non-empty JSONB document through the VALUES list and comes out with
+    # the document it went in with (nothing on T3 moved, so nothing aged), its three derived
+    # sums beside it, and its track closed at the expiry that fell between the two loops.
+    assert row[LEDGER_CLOSES]["nw_done"] is True
+    assert row[LEDGER_CLOSES]["nw_recon_state"] == _written_ledger(t0)
+    assert row[LEDGER_CLOSES]["nw_print_unmatched"] == Decimal("1.50")
+    assert row[LEDGER_CLOSES]["nw_pending_unmatched"] == Decimal("3.00")
+    assert row[LEDGER_CLOSES]["nw_pending_surplus"] == Decimal("2.00")
+    assert row[LEDGER_CLOSES]["nw_executor_version"] == Decimal(EXECUTOR_VERSION)
+    # A NULL in the dict writes NULL through the VALUES list rather than a zero or a text cast
+    # failure. `nw_traded_at_price` is NULL for every one of them (a post-boundary order never
+    # had a C0 quantity, ruling CR-3) and the print watermark is NULL for the two with no
+    # ledger, because no print has ever reached T3; the ledger row's watermark is its own
+    # document's floor, written back beside the document in the same batched row.
+    for i in BATCHED_MOVES:
+        assert row[i]["nw_traded_at_price"] is None
+        assert row[i]["nw_last_print_ids"] == []
+    assert row[EXPIRES_BETWEEN]["nw_last_print_ts"] is None
+    assert row[STALE_VERSION]["nw_last_print_ts"] is None
+    assert (row[LEDGER_CLOSES]["nw_last_print_ts"].isoformat()
+            == _written_ledger(t0)["print_floor"])
     # The three populations the ruling keeps off this fix (round 1, M4). Both open orders took
     # the per-row path and accrued on the *watched* column -- 15 s a loop for the one that held
     # on the dirty market, 5 s for the one whose expiry was 5 s away and which the second loop
@@ -3028,9 +3079,14 @@ def test_the_pending_population_costs_a_flat_number_of_statements(env_settings, 
              for n in (5, 50)]
     quiet = [_pending_statements(env_settings, db_session, t0, n, _quiet_shapes(t0))
              for n in (5, 50)]
+    # Fix 78b: and the population whose columns *do* move, which cost one savepoint and one
+    # UPDATE each until this part batched them.
+    moving = [_pending_statements(env_settings, db_session, t0, n, _moving_shapes(t0))
+              for n in (5, 50)]
 
     assert dirty[0] == dirty[1], f"dirty population: {dirty}"
     assert quiet[0] == quiet[1], f"clean no-change population: {quiet}"
+    assert moving[0] == moving[1], f"clean cursor-advance population: {moving}"
 
 
 def test_the_batched_clamp_equals_the_per_row_clamp_for_every_row_shape(db_session):
@@ -3078,3 +3134,302 @@ def test_the_batched_clamp_equals_the_per_row_clamp_for_every_row_shape(db_sessi
     # everything from the period's own boundary outwards to 15, and everything at or before
     # `now` to nothing at all.
     assert sorted(set(expected.values()), key=lambda v: (v is None, v)) == [1, 7, 14, 15, None]
+
+
+# --- fix 78b: the cursor-advance writes, batched, and the loop's phase tape ---------------
+#
+# The residual after fix 78's first part (journal 244): median loop 7.6 s, p95 13,850 ms at
+# 6,387 pending tracks. The user's ruling of 16:57 CT (packet item 17, option d) batches the
+# clean-market cursor-advance writes as well and publishes where the rest of a loop's time
+# goes. The cases below are that acceptance: the same columns as `store.update_order` writes
+# for the same dict, a statement count flat in the population (above), and the phase metrics.
+
+
+def _nw_write(*, filled=Decimal("0.00"), done=False, queue=None, traded=None, cursor=None,
+              crossed=False, print_unmatched=None, pending_unmatched=None,
+              pending_surplus=None, cancels=None, recon=None, print_ts=None, print_ids=None,
+              worst_case=None) -> dict:
+    """One counterfactual step's write, spelled out rather than taken from `_nw_columns`.
+
+    The keys are `orders`' own counterfactual columns, so this case compares the two writers
+    rather than one writer with itself: a change to `_nw_columns` cannot make both sides of the
+    comparison move together. `worst_case_fill` is in the dict only for a track that has
+    crossed, which is what makes the batched writer meet a second column set.
+    """
+    values = {"nw_filled_contracts": filled, "nw_done": done,
+              "nw_queue_remaining": queue, "nw_traded_at_price": traded,
+              "nw_tape_cursor_event_id": cursor, "nw_crossed": crossed,
+              "nw_print_unmatched": print_unmatched,
+              "nw_pending_unmatched": pending_unmatched,
+              "nw_pending_surplus": pending_surplus, "nw_cancels_ahead": cancels,
+              "nw_recon_state": recon, "nw_last_print_ts": print_ts,
+              "nw_last_print_ids": [] if print_ids is None else print_ids}
+    if worst_case is not None:
+        values["worst_case_fill"] = worst_case
+    return values
+
+
+def test_the_values_list_update_writes_exactly_what_update_order_writes(db_session):
+    """Fix 78b acceptance: the batched writer is `store.update_order`, row for row.
+
+    Every shape the batch can meet is written twice -- once through the per-row statement this
+    replaces, once through the `UPDATE ... FROM (VALUES ...)` -- on two rows seeded identically,
+    and the two rows are then compared column for column (`select *`, so nothing is compared by
+    enumeration). The shapes are chosen for the way a `VALUES` list is typed:
+
+    * every nullable column NULL, which is the case a bare parameter cannot survive -- a column
+      whose every row is NULL resolves to `text` in a `VALUES` list and fails against a
+      `numeric`, `jsonb` or `timestamptz` column, so this row is the cast's own test;
+    * a non-empty JSONB document beside real `numeric` sums, a `bigint` cursor, a
+      `timestamptz` with microseconds and both booleans set;
+    * a third row that also writes `worst_case_fill`, which is a *different column set* and so
+      a second statement -- the grouping's own case.
+
+    `nw_executor_version` is written by neither dict: both writers add it themselves through
+    `stamp_nw_writer`, and the comparison would fail if only one of them did.
+    """
+    now = NOW + timedelta(seconds=10)
+    ledger = _written_ledger(now)
+    shapes = [
+        _nw_write(),
+        _nw_write(filled=Decimal("3.50"), done=True, queue=Decimal("12.25"),
+                  traded=Decimal("4.75"), cursor=987_654_321, crossed=True,
+                  print_unmatched=Decimal("1.50"), pending_unmatched=Decimal("3.00"),
+                  pending_surplus=Decimal("2.00"), cancels=Decimal("0.00"), recon=ledger,
+                  print_ts=now - timedelta(seconds=7, microseconds=123_456),
+                  print_ids=["a", "b"]),
+        _nw_write(done=True, recon=ledger, worst_case=True),
+    ]
+    pairs = []
+    for i, values in enumerate(shapes):
+        per_row = _pending_order(db_session, 2 * i, now=now, ticker=T2, vm=VM2,
+                                 expiry=now + timedelta(hours=1))
+        batched = _pending_order(db_session, 2 * i + 1, now=now, ticker=T2, vm=VM2,
+                                 expiry=now + timedelta(hours=1))
+        pairs.append((per_row.id, batched.id, values))
+    db_session.commit()
+
+    for per_row_id, _, values in pairs:
+        store.update_order(db_session, per_row_id, values)
+    statements = store.update_orders_batch(
+        db_session, [(batched_id, values) for _, batched_id, values in pairs])
+    db_session.commit()
+
+    # Two column sets among three rows, so two statements however many rows there are.
+    assert statements == 2
+    rows = {row["id"]: row for row in
+            pending_columns(db_session, [i for pair in pairs for i in pair[:2]])}
+    skip = ("id", "client_order_id", "intent_id")
+    for per_row_id, batched_id, _ in pairs:
+        left = {k: v for k, v in rows[per_row_id].items() if k not in skip}
+        right = {k: v for k, v in rows[batched_id].items() if k not in skip}
+        assert left == right
+    # Not a vacuous comparison: the values really landed, NULLs included.
+    written = rows[pairs[1][1]]
+    assert written["nw_recon_state"] == ledger
+    assert written["nw_pending_unmatched"] == Decimal("3.00")
+    assert written["nw_tape_cursor_event_id"] == 987_654_321
+    assert written["nw_last_print_ts"] == now - timedelta(seconds=7, microseconds=123_456)
+    assert written["nw_executor_version"] == Decimal(EXECUTOR_VERSION)
+    empty = rows[pairs[0][1]]
+    assert empty["nw_queue_remaining"] is None and empty["nw_recon_state"] is None
+    assert empty["nw_last_print_ts"] is None and empty["nw_traded_at_price"] is None
+    assert rows[pairs[2][1]]["worst_case_fill"] is True
+    assert rows[pairs[0][1]]["worst_case_fill"] is False
+
+
+def _param_ids(parameters) -> set:
+    """Every integer bound into one captured statement, id arrays flattened.
+
+    An order id can reach a statement as a scalar (`where orders.id = %(id)s`), inside an array
+    (the dirty batch's `= any(:ids)`) or as one cell of a `VALUES` row, so all three shapes are
+    walked. Booleans are not ids and `Decimal` columns are not integers, so neither can be
+    mistaken for one.
+    """
+    found: set = set()
+
+    def walk(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                walk(item)
+        elif isinstance(value, int) and not isinstance(value, bool):
+            found.add(value)
+
+    walk(parameters)
+    return found
+
+
+def _orders_writes(seen):
+    """The statements of one loop that wrote `orders`, split by which writer sent them."""
+    per_row, id_lists, values_lists = [], [], []
+    for statement, parameters in seen:
+        flat = " ".join(statement.split()).lower()
+        if not flat.startswith("update orders"):
+            continue
+        if "from (values" in flat:
+            values_lists.append((flat, parameters))
+        elif "= any(" in flat:
+            id_lists.append((flat, parameters))
+        else:
+            per_row.append((flat, parameters))
+    return per_row, id_lists, values_lists
+
+
+def test_a_batched_pending_row_is_not_also_written_per_row(env_settings, db_session, world):
+    """Fix 78b acceptance: one write per row per loop, and it is the batch's.
+
+    The same mixed population as the identity case, run with the fix on, with every statement
+    of the measured loop captured. The three rows whose columns move without an insert are
+    bound into the one `UPDATE ... FROM (VALUES ...)` that loop sends, and their ids appear in
+    no other `orders` write at all -- not in a per-row `update_order`, not in the dirty-market
+    batch's id array. The row that fills and the row that has never had a book are in the
+    per-row writes, where the ruling leaves them, and neither is in the VALUES list.
+    """
+    keep_only(db_session, set())
+    t0 = NOW + timedelta(seconds=10)
+    snapshot = _pending_book(db_session, T2, NOW - timedelta(seconds=5), sid=2)
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    _pending_book(db_session, T4, NOW - timedelta(seconds=5), sid=4)
+    _gap(db_session, NOW - timedelta(seconds=1), sid=snapshot.sid)
+    db_session.commit()
+    shapes = _mixed_shapes(t0)
+    ids = seed_pending(db_session, t0, len(shapes), shapes)
+
+    *_, seen = run_pending_steps(env_settings, db_session, t0, ids, shapes, batched=True)
+
+    per_row, id_lists, values_lists = _orders_writes(seen)
+    # One VALUES list for the whole moving population: those three rows write the same columns
+    # (none of them crossed), so they are one column set and one statement.
+    assert len(values_lists) == 1
+    bound = _param_ids(values_lists[0][1])
+    elsewhere = {value for _, parameters in per_row + id_lists
+                 for value in _param_ids(parameters)}
+    for shape in BATCHED_MOVES:
+        assert ids[shape] in bound, shape
+        assert ids[shape] not in elsewhere, shape
+    # ... and the rows the ruling keeps per-row are written per-row and are not in the batch:
+    # the one whose late print filled it, which inserts a fill, and the two open orders, which
+    # are still resting and accrue on the watched column.
+    for shape in (TAPE_MOVES, OPEN_HELD, OPEN_EXPIRES):
+        assert ids[shape] not in bound, shape
+        assert ids[shape] in elsewhere, shape
+    # The rows this loop owes nothing are in no write at all, not even a no-op one: the three
+    # quiet ones, the deferred ticker that sat the loop out (ruling CR-4), and the row that had
+    # never had a book, which anchored on the first loop and has moved nothing since.
+    for shape in (QUIET_FAR, QUIET_NONE, QUIET_LEDGER, NO_BOOK, DEFERRED):
+        assert ids[shape] not in bound and ids[shape] not in elsewhere, shape
+
+
+def _ticking(step=0.001):
+    """A monotonic clock that advances by `step` on every reading, so a phase whose start and
+    end are read either side of real work measures `step` rather than zero."""
+    ticks = {"t": 0.0}
+
+    def mono():
+        ticks["t"] += step
+        return ticks["t"]
+
+    return mono
+
+
+def test_the_loop_publishes_the_phase_its_time_went_to(env_settings, db_session, world):
+    """Fix 78b's second half: `exec.phase_*` and `exec.per_row_n`, once per written batch.
+
+    Each is a gauge of the loop that wrote the batch, exactly as `exec.loop_ms` is -- the
+    sampler writes one batch every `metric_sample_s`, and the first call of a new executor is
+    always due, so this single step both measures and publishes. Each name appears once, with a
+    value that is a real measurement rather than a sum over the sampling window.
+
+    The population is two clean-ticker rows the loop writes set-based and one that has never
+    had a book, which anchors and therefore keeps its own savepoint -- so `exec.per_row_n` is
+    exactly 1 and is a measurement of the path taken, not a row count. The executor's monotonic
+    clock is a ticking one, so each phase's two readings differ and the published milliseconds
+    are positive; with the suite's usual frozen clock they would all be a legitimate zero, which
+    would not prove the timers are wired to anything.
+    """
+    keep_only(db_session, set())
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    db_session.commit()
+    t0 = NOW + timedelta(seconds=10)
+    reset_pending(db_session)
+    shapes = _quiet_shapes(t0) + [
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1), "queue": None}]
+    seed_pending(db_session, t0, len(shapes), shapes)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    executor = Executor(env_settings, factory, clock=lambda: t0, monotonic=_ticking(),
+                        variants=["tiny"])
+
+    stats = executor.step()
+    refresh(db_session)
+
+    names = [row.name for row in db_session.query(MetricSample).filter_by(source="exec").all()]
+    samples = {row.name: row.value
+               for row in db_session.query(MetricSample).filter_by(source="exec").all()}
+    phases = ("exec.phase_tape_ms", "exec.phase_walk_ms", "exec.phase_batch_ms",
+              "exec.phase_per_row_ms", "exec.per_row_n")
+    for name in phases:
+        assert names.count(name) == 1, name
+        assert samples[name] is not None and samples[name] >= 0, name
+    # The published value is the step's own reading, not a running total of the sampling window.
+    assert samples["exec.per_row_n"] == stats.per_row_n == 1
+    assert float(samples["exec.phase_tape_ms"]) == pytest.approx(stats.phase_tape_ms, abs=1e-3)
+    for name in phases[:4]:
+        assert samples[name] > 0, name
+    # Every phase of the loop is inside the loop it was measured in.
+    assert sum(float(samples[name]) for name in phases[:4]) <= stats.loop_ms + 1
+
+
+def _moving_run(env_settings, session, t0, shapes, *, break_batch):
+    """Two loops over the moving population, the second with the cursor batch refusing or not.
+
+    The second loop is the measured one: by then every row has been written once, and its own
+    expiry has fallen, so the whole population is fix 78b's batched write.
+    """
+    reset_pending(session)
+    ids = seed_pending(session, t0, len(shapes), shapes)
+    clock = Clock(t0)
+    executor = make_executor(env_settings, session, clock)
+    executor.step()
+    refresh(session)
+    clock.advance(15)
+    if break_batch:
+        with patch("harness.execution.store.update_orders_batch",
+                   side_effect=RuntimeError("batch refused")):
+            stats = executor.step()
+    else:
+        stats = executor.step()
+    refresh(session)
+    return pending_columns(session, ids), stats
+
+
+def test_a_failed_cursor_batch_counts_one_error_and_falls_back_to_the_per_row_path(
+        env_settings, db_session, world):
+    """Fix 78b: a batch that raises costs its savepoint and then today's per-row path.
+
+    The same population is run twice, once with `store.update_orders_batch` raising on the
+    measured loop. The rows come out column for column as they do when the batch works -- they
+    fell back to their own savepoints and their own `update_order`, with the walk the pre-check
+    had already made -- and the step counts exactly one error for the batch, not one per row,
+    and names it on the heartbeat. A step that hit a database failure therefore never publishes
+    `exec.errors = 0` because the fallback happened to succeed (the first part's M1, applied to
+    the second batch).
+    """
+    keep_only(db_session, set())
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    db_session.commit()
+    t0 = NOW + timedelta(seconds=10)
+    shapes = _moving_shapes(t0)
+
+    healthy, healthy_stats = _moving_run(env_settings, db_session, t0, shapes,
+                                         break_batch=False)
+    fallback, fallback_stats = _moving_run(env_settings, db_session, t0, shapes,
+                                           break_batch=True)
+
+    assert len(healthy) == len(shapes) and healthy == fallback
+    assert [row["nw_done"] for row in fallback] == [True] * len(shapes)
+    assert healthy_stats.errors == 0
+    assert fallback_stats.errors == 1
+    assert "nw cursor batch: RuntimeError: batch refused" == fallback_stats.last_error

@@ -913,6 +913,101 @@ def close_nw_expired_batch(session: Session, order_ids: Sequence[int], now: date
                     {"ids": list(order_ids), "now": now, "v": executor_version_numeric()})
 
 
+#: Fix 78b: the most rows one `UPDATE ... FROM (VALUES ...)` carries. A bound on the *driver*,
+#: not on the population: psycopg sends at most 65,535 parameters in one statement, and one
+#: counterfactual write is 13 or 14 columns plus the id, so a backlog past ~4,300 rows would
+#: fail a whole batch on a limit that has nothing to do with what is being written. 500 rows is
+#: about 7,500 parameters, far under it, and keeps the statement's own parse time small: the
+#: 6,387 pending tracks of 16:01 CT on 2026-09-15 cost 13 statements at worst rather than 6,387.
+VALUES_BATCH_ROWS = 500
+
+#: One compiled SQL type per `orders` column, per dialect. `Numeric(14, 2)` compiles to
+#: `NUMERIC(14, 2)`, `JSONB` to `JSONB`, `DateTime(timezone=True)` to `TIMESTAMP WITH TIME ZONE`
+#: -- the model's own type, which is the whole point of casting to it below.
+_VALUES_CAST: dict[tuple[str, str], str] = {}
+
+
+def _values_cast(col, dialect) -> str:
+    key = (dialect.name, col.name)
+    sql = _VALUES_CAST.get(key)
+    if sql is None:
+        sql = _VALUES_CAST[key] = col.type.compile(dialect)
+    return sql
+
+
+def _update_orders_values(session: Session, columns: Sequence[str],
+                          rows: Sequence[tuple[int, dict]]) -> None:
+    """One `UPDATE orders ... FROM (VALUES ...)` for rows that write the same columns.
+
+    **Types.** Every cell is a bind parameter of the model column's own type -- the same
+    `Order.__table__.c[name].type` `update_order` binds through, so JSONB goes out through the
+    dialect's JSONB bind processor and a contract count as a `numeric` rather than as whatever
+    psycopg would infer -- inside an explicit `cast(... as <that column's SQL type>)`. The cast
+    is not decoration: a bare parameter inside a `VALUES` list in a `FROM` clause is typed by
+    PostgreSQL's own resolution of the list, and a column whose every row is NULL would resolve
+    to `text` and then fail against a `numeric`, `jsonb` or `timestamptz` column. With the cast,
+    a NULL in the dict is that column's typed NULL and writes NULL, exactly as the per-row
+    statement does.
+
+    **Identifiers.** Every name is looked up in `Order.__table__.c` first, so anything that is
+    not a real column of `orders` raises here rather than reaching the database, and the SQL is
+    built from the model's own column names, never from caller text.
+    """
+    table = Order.__table__
+    cols = [table.c[name] for name in columns]
+    dialect = session.get_bind().dialect
+    id_cast = _values_cast(table.c.id, dialect)
+    tuples, binds = [], []
+    for i, (order_id, values) in enumerate(rows):
+        cells = [f"cast(:id_{i} as {id_cast})"]
+        binds.append(bindparam(f"id_{i}", order_id, type_=table.c.id.type))
+        for j, col in enumerate(cols):
+            cells.append(f"cast(:c{j}_{i} as {_values_cast(col, dialect)})")
+            binds.append(bindparam(f"c{j}_{i}", values[col.name], type_=col.type))
+        tuples.append(f"({', '.join(cells)})")
+    assignments = ", ".join(f'"{col.name}" = v."{col.name}"' for col in cols)
+    names = ", ".join(['"id"'] + [f'"{col.name}"' for col in cols])
+    sql = (f"update orders o set {assignments} "  # noqa: S608 - model column names only
+           f"from (values {', '.join(tuples)}) as v ({names}) where o.id = v.\"id\"")
+    session.execute(text(sql).bindparams(*binds))
+
+
+def update_orders_batch(session: Session, updates: Sequence[tuple[int, dict]], *,
+                        chunk: int = VALUES_BATCH_ROWS) -> int:
+    """Write many orders' columns in one statement per column set (fix 78b). Returns how many.
+
+    `updates` is `(order_id, values)` pairs, each `values` exactly the dict that row's own
+    `update_order(session, order_id, values)` would have been given. Same columns and same
+    values as that call, row for row: the stamp goes on through `stamp_nw_writer`, the one rule
+    that owns it (amendment 0.17), so a counterfactual write carries `nw_executor_version` here
+    exactly as it does there, and a row whose dict writes no `nw_` column is left unstamped.
+
+    Rows are grouped by the *set of columns* they write, and each group is one statement (per
+    `chunk` rows, which is psycopg's parameter limit, not a policy -- see `VALUES_BATCH_ROWS`).
+    Grouping rather than unioning the column sets is deliberate: a `VALUES` list has one shape,
+    and filling a column a row did not ask to write with the value it already holds would make
+    this statement touch columns the per-row path does not name. There are two groups in
+    practice -- `worst_case_fill` is in the dict only for a track that has crossed -- so the
+    cost stays flat in the population.
+
+    Nothing here decides *which* rows are written: the caller has already established that each
+    of these rows would take this write on the per-row path, and that no row in the list is also
+    written per-row in the same loop.
+    """
+    groups: dict[tuple[str, ...], list[tuple[int, dict]]] = {}
+    for order_id, values in updates:
+        if not values:
+            continue
+        stamped = stamp_nw_writer(values)
+        groups.setdefault(tuple(sorted(stamped)), []).append((order_id, stamped))
+    statements = 0
+    for columns, rows in groups.items():
+        for start in range(0, len(rows), chunk):
+            _update_orders_values(session, columns, rows[start:start + chunk])
+            statements += 1
+    return statements
+
+
 def set_nw_backoff(session: Session, order_id: int, attempts: int,
                    next_attempt_at: datetime | None) -> None:
     """Record one counterfactual's retry position. `next_attempt_at` None resets it.

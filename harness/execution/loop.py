@@ -148,6 +148,19 @@ class ExecStats:
     #: record of which ticker failed and why.
     book_errors: int = 0
     loop_ms: int = 0
+    #: Fix 78b (the user's ruling of 2026-09-15 16:57 CT, decisions packet item 17 option d):
+    #: where a loop's time actually went, in milliseconds, so the residual after fix 78 is
+    #: measured rather than guessed at. `phase_tape_ms` is the per-ticker tape read (`_tape`),
+    #: `phase_walk_ms` the pre-check that partitions the pending population and walks its
+    #: counterfactuals, `phase_batch_ms` the set-based statements, and `phase_per_row_ms` the
+    #: rows that still took a savepoint and an UPDATE of their own -- `per_row_n` of them.
+    #: Floats because a phase can be a fraction of a millisecond and four truncations of one
+    #: loop would not add up to it; published as `exec.phase_*`/`exec.per_row_n`.
+    phase_tape_ms: float = 0.0
+    phase_walk_ms: float = 0.0
+    phase_batch_ms: float = 0.0
+    phase_per_row_ms: float = 0.0
+    per_row_n: int = 0
     locked: bool = True
     #: The first failure of the step, the same string the heartbeat's `last_error` carries.
     #: A live loop reads it off the heartbeat; a replay writes no heartbeat and needs the
@@ -240,6 +253,15 @@ class Executor:
     #: object gets. `tests/test_exec_loop.py` turns it off on an executor of its own to run the
     #: per-row path it compares column for column against this one; nothing else ever does.
     _batch_pending_writes = True
+
+    #: Fix 78b: the phase timers read this, and `tests/test_execution_pure.py` /
+    #: `tests/test_execution_regressions.py` drive `_simulate` on an executor built through
+    #: `__new__`, which has no instance attributes at all. A class attribute is what such an
+    #: object gets, and it is the production clock; `__init__` below shadows it with the
+    #: injected one, so a test that drives the loop with a fake clock still measures that
+    #: clock's milliseconds. `staticmethod`, because a plain function here would be bound as a
+    #: method and handed `self` as its first argument.
+    _monotonic = staticmethod(time.monotonic)
 
     def __init__(self, settings, session_factory,
                  clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
@@ -418,6 +440,17 @@ class Executor:
             # ways of being behind: lag with the batch at the cap is a backlog being walked
             # off, lag with the batch on the floor is a ticker whose reads keep timing out.
             ("exec.tape_batch_min", self._tape_batch_min(), {}),
+            # Fix 78b: the loop's own phase tape, from `ExecStats` above -- gauges of the loop
+            # that wrote this batch, exactly as `exec.loop_ms` is, not sums over the sampling
+            # window. Additive names only: no heartbeat column, no schema change, and nothing
+            # here is an error, so `last_error` is untouched. They exist to answer "which phase
+            # is the residual p95 in" -- the tape read, the walk, the batched writes or the
+            # rows that still take a savepoint each -- with a measurement.
+            ("exec.phase_tape_ms", round(stats.phase_tape_ms, 3), {}),
+            ("exec.phase_walk_ms", round(stats.phase_walk_ms, 3), {}),
+            ("exec.phase_batch_ms", round(stats.phase_batch_ms, 3), {}),
+            ("exec.phase_per_row_ms", round(stats.phase_per_row_ms, 3), {}),
+            ("exec.per_row_n", stats.per_row_n, {}),
             # §3 row 11: the counterfactual retry backlog, published so it is visible beside
             # criterion 4's `n_obs` and cannot silently become an exclusion. Nothing is closed,
             # so this is a queue depth, not an error.
@@ -747,16 +780,21 @@ class Executor:
         """
         if not uses_the_simulator(self.gateway):
             return self._venue_fills(session, working, now, stats, heartbeat)
+        tape_started = self._monotonic()
         tape, unread, lagging, deferred = self._tape(session, working, now, heartbeat)
+        stats.phase_tape_ms += (self._monotonic() - tape_started) * 1000
         stats.errors += len(unread)
         outcomes: dict[int, tuple[str, Decimal]] = {}
         # Fix 78: the cancelled pending population -- 5,055 rows at 13:50 CT, 4,822 of them on
         # dirty markets -- costs one statement per row per loop and a savepoint around each,
         # which is what took the loop's p95 past its bound. What those rows are owed is settled
         # set-based here, and `settled` is every row that needs no savepoint of its own: one
-        # whose whole write this batch has just made, and one whose per-row write would have
-        # moved nothing at all. Both keep the outcome recorded above, which is the same pair
-        # `_simulate_order` returns on either path.
+        # whose whole write this batch has just made -- the dirty-market accrual and close of
+        # the first part, and since fix 78b the cursor-advance write of a clean-ticker row whose
+        # step inserts nothing -- and one whose per-row write would have moved nothing at all.
+        # All of them keep the outcome recorded above, which is the same pair `_simulate_order`
+        # returns on either path: a cancelled order's status and filled total are the watched
+        # track's, and the watched track of such a row is over.
         settled, nw_results = self._batch_pending(session, working, markets, bases,
                                                   recovering, tape, lagging,
                                                   unread | deferred, now, stats, heartbeat)
@@ -774,6 +812,12 @@ class Executor:
                 # whole ticker sits this loop out with its cursors where they are, and every
                 # other ticker in this loop keeps its progress.
                 continue
+            # Fix 78b: what is left here is the population no batch can take -- every open
+            # order, every row on a held ticker, and the cancelled rows that insert a fill or a
+            # crossing, re-anchor, or could not be pre-checked. `per_row_n` and the time they
+            # cost are published so the residual loop time can be attributed to a phase.
+            row_started = self._monotonic()
+            stats.per_row_n += 1
             try:
                 with session.begin_nested():
                     outcomes[row.id] = self._simulate_order(
@@ -783,44 +827,61 @@ class Executor:
                 log.exception("fill simulation failed for order %s", row.id)
                 stats.errors += 1
                 _note_error(heartbeat, f"order {row.id}: {type(exc).__name__}: {exc}")
+            finally:
+                stats.phase_per_row_ms += (self._monotonic() - row_started) * 1000
         return outcomes
 
     def _batch_pending(self, session: Session, working, markets, bases, recovering, tape,
                        lagging, held: set[str], now: datetime, stats: ExecStats,
                        heartbeat: dict) -> tuple[set[int], dict[int, FillResult]]:
-        """Settle this loop's cancelled pending counterfactuals set-based (fix 78).
+        """Settle this loop's cancelled pending counterfactuals set-based (fix 78, 78b).
 
         Every row here is one the fill step has nothing to simulate for and one column-group to
         write: the order itself left the market, so only the `no_watcher` track is still
-        running. There were 5,055 of them at 13:50 CT on 2026-09-15, 4,822 on dirty markets,
-        growing ~600 a day against expiries that stand until Monday. One savepoint and one
-        UPDATE each is what took the loop's p95 to 8,423 ms against its 7,500 ms bound; the
-        same population measured 4 ms as one statement.
+        running. There were 5,055 of them at 13:50 CT on 2026-09-15, 4,822 on dirty markets and
+        6,387 by 16:01 CT, growing ~600 a day against expiries that stand until Monday. One
+        savepoint and one UPDATE each is what took the loop's p95 to 8,423 ms against its
+        7,500 ms bound; the first part took the median loop from 10.2 s to 7.6 s and left a p95
+        of 13.9 s, which is what this second part is for.
 
-        Two populations, and neither changes a stored value:
+        Three populations, and none of them changes a stored value:
 
         * **A dirty market.** The whole branch for such a row is `add_dirty_seconds(...,
           watched=False)` and `_close_nw_if_expired` (there is no watched accrual: a cancelled
-          order is not resting against anything). Both are now one statement for the whole
+          order is not resting against anything). Both are one statement for the whole
           population, with the same clamp, the same rows and the same version stamp.
         * **A clean ticker with nothing past its cursors.** `_writes_nothing` runs the same
-          pure simulation the per-row path would and keeps the row only if every column that
-          path would write already holds the value it would write. Nothing is guessed: a row
-          whose cursor, watermark, ledger, flag, `nw_done` or version stamp would move is not
-          in this set and takes its ordinary savepoint below.
+          pure simulation the per-row path would and skips the write when every column that
+          path would write already holds the value it would write.
+        * **A clean ticker whose columns do move but whose step inserts nothing** (fix 78b, the
+          user's ruling of 16:57 CT, packet item 17 option d). The cursor, the print floor, the
+          ledger document, `nw_done` -- whatever moves, the row's whole write is the dict
+          `_nw_columns` builds, which the pre-check has already built to decide the question
+          above. Those dicts go to `store.update_orders_batch` as one `UPDATE ... FROM
+          (VALUES ...)` per column set: same columns, same values, same stamp rule as the
+          per-row `store.update_order` this replaces for them.
 
-        An **open** order is never here. Its watched track is still resting, it accrues on the
-        watched columns, and every write of it stays exactly where it was (the user's ruling).
-        So is a row on a ticker this loop could not read (`held`): that whole ticker sits the
-        loop out with its cursors where they are, which is ruling CR-4 and is decided by the
-        caller for the batched and the per-row rows alike.
+        A row that inserts a **fill** or a **crossing** is never in that third population: an
+        insert is not a column of `orders`, so `_persist_track` has to run for it, and it keeps
+        its savepoint and its per-row path with the walk the pre-check already made. So do the
+        two re-anchoring branches (`queue_ahead_at_place is None`, a `recovering` ticker with a
+        book), a cursor `_sim_book` would have to query for, and any row whose `nw_` state will
+        not even load.
 
-        A failure of the batch is one batch's failure: the savepoint rolls it back, the rows it
-        would have settled are not in the returned set, and each of them takes the per-row path
-        it would have taken before this fix -- where a genuine per-row failure is counted and
-        stepped over as it always was. It counts one error of its own, as the per-row handler
-        does, so a step that hit a database failure never publishes `exec.errors = 0` because
-        the fallback happened to succeed (round 1, M1).
+        An **open** order is never here at all. Its watched track is still resting, it accrues
+        on the watched columns, and every write of it stays exactly where it was (the user's
+        ruling). So is a row on a ticker this loop could not read (`held`): that whole ticker
+        sits the loop out with its cursors where they are, which is ruling CR-4 and is decided
+        by the caller for the batched and the per-row rows alike.
+
+        A failure of a batch is one batch's failure: its own savepoint rolls it back, the rows
+        it would have settled are not in the returned set, and each of them takes the per-row
+        path it would have taken before this fix -- where a genuine per-row failure is counted
+        and stepped over as it always was. Each failed batch counts one error of its own, as
+        the per-row handler does, so a step that hit a database failure never publishes
+        `exec.errors = 0` because the fallback happened to succeed (round 1, M1). The two
+        batches take separate savepoints because they serve different rows: a lock wait on the
+        accrual is not a reason to send the other population back to one statement each.
 
         The second return is the pre-check's own `FillResult` for each clean-ticker row it did
         *not* skip, keyed by order id. That row's counterfactual is simulated here to decide
@@ -828,15 +889,20 @@ class Executor:
         rather than walking the same prints and deltas a second time (round 1, M2). It is the
         same walk by construction -- same order, state, book, tape and deadline -- and
         `simulate_fills` copies both the state and the book, so neither run can perturb the
-        other.
+        other. A row the cursor-advance batch settled keeps its entry too, and needs it only on
+        the path where that batch failed and the row falls back to its own savepoint.
         """
         if not self._batch_pending_writes:
             return set(), {}
+        walk_started = self._monotonic()
         s = self.exec_settings
         #: Rows whose dirty-market branch this batch owes the two statements to.
         dirty: list[int] = []
         #: Rows this loop owes nothing at all, batch or no batch.
         quiet: set[int] = set()
+        #: `(order_id, columns)` for a clean-ticker row whose whole step is one `update_order`
+        #: of those columns -- fix 78b's batched population.
+        moves: list[tuple[int, dict]] = []
         #: The pre-check's simulation for a clean-ticker row that is *not* skipped, so the
         #: per-row step below can take it rather than repeat it (round 1, M2).
         nw_results: dict[int, FillResult] = {}
@@ -855,7 +921,8 @@ class Executor:
             if row.nw_done:
                 continue
             try:
-                skip, result = self._writes_nothing(row, bases, recovering, tape, lagging, now)
+                skip, result, columns = self._writes_nothing(row, bases, recovering, tape,
+                                                             lagging, now)
             except Exception:  # noqa: BLE001 - one row, and it keeps its own savepoint below
                 # Nothing here has executed a statement or written anything, so a row whose
                 # state will not load (a `recon_state` the simulator does not know, say) simply
@@ -863,28 +930,47 @@ class Executor:
                 # failure is counted against the step and stepped over as it always was.
                 log.debug("pre-checking order %s failed; it keeps the per-row path", row.id,
                           exc_info=True)
-                skip, result = False, None
+                skip, result, columns = False, None, None
             if skip:
                 quiet.add(row.id)
-            elif result is not None:
+                continue
+            if columns is not None:
+                moves.append((row.id, columns))
+            if result is not None:
                 nw_results[row.id] = result
-        if not dirty:
-            return quiet, nw_results
-        try:
-            with session.begin_nested():
-                store.add_nw_dirty_seconds_batch(session, dirty, self.settings.exec_period_s,
-                                                 now)
-                store.close_nw_expired_batch(session, dirty, now)
-        except Exception as exc:  # noqa: BLE001 - one batch, not the step
-            log.exception("batched counterfactual writes failed for %d order(s)", len(dirty))
-            stats.errors += 1
-            _note_error(heartbeat, f"nw batch: {type(exc).__name__}: {exc}")
-            return quiet, nw_results
-        return quiet | set(dirty), nw_results
+        stats.phase_walk_ms += (self._monotonic() - walk_started) * 1000
+
+        batch_started = self._monotonic()
+        settled = set(quiet)
+        if dirty:
+            try:
+                with session.begin_nested():
+                    store.add_nw_dirty_seconds_batch(session, dirty, self.settings.exec_period_s,
+                                                     now)
+                    store.close_nw_expired_batch(session, dirty, now)
+            except Exception as exc:  # noqa: BLE001 - one batch, not the step
+                log.exception("batched counterfactual writes failed for %d order(s)", len(dirty))
+                stats.errors += 1
+                _note_error(heartbeat, f"nw batch: {type(exc).__name__}: {exc}")
+            else:
+                settled |= set(dirty)
+        if moves:
+            try:
+                with session.begin_nested():
+                    store.update_orders_batch(session, moves)
+            except Exception as exc:  # noqa: BLE001 - one batch, not the step
+                log.exception("batched counterfactual cursor writes failed for %d order(s)",
+                              len(moves))
+                stats.errors += 1
+                _note_error(heartbeat, f"nw cursor batch: {type(exc).__name__}: {exc}")
+            else:
+                settled |= {order_id for order_id, _ in moves}
+        stats.phase_batch_ms += (self._monotonic() - batch_started) * 1000
+        return settled, nw_results
 
     def _writes_nothing(self, row, bases, recovering, tape, lagging,
-                        now: datetime) -> tuple[bool, FillResult | None]:
-        """Would this cancelled pending row's own step leave every column as it is (fix 78)?
+                        now: datetime) -> tuple[bool, FillResult | None, dict | None]:
+        """What this cancelled pending row's own step would do: nothing, one write, or more.
 
         The question is answered from the row and the tape, never from a guess. Three branches
         of `_simulate_order` are refused outright because each of them writes by construction:
@@ -895,36 +981,40 @@ class Executor:
         own cursor sits exactly at the book this step already holds.
 
         From there the simulation is pure and is run exactly as the per-row path runs it. A fill
-        or a crossing means `_persist_track` would insert a row, so the answer is no. Otherwise
-        the columns that path would write are assembled by the same helper it uses and compared
-        with what the row already holds, `nw_executor_version` included. A write of the same
-        values is not free -- it is a row version, a WAL record and a share of the 1,042 MB the
-        table has grown to -- but nothing reads it, so not making it changes no measured value.
+        or a crossing means `_persist_track` would insert a row, which is not a column of
+        `orders` and cannot be batched with one, so the row goes back to its own savepoint.
+        Otherwise the whole of that row's step is `store.update_order(session, row.id, columns)`
+        with the columns assembled by the same helper the writer uses -- and since
+        `_persist_track` would have inserted nothing, the running total it would have returned
+        is the one the row already carries, which is what makes the dict complete.
 
-        Returns the answer and, when one was computed, the simulation it was computed from: a
-        row that is not skipped is simulated once for the two of us, not once each (round 1,
-        M2). `None` beside a `False` is a row refused before any simulation ran, which has to
-        go the whole way through `_simulate_order` including the book read this refused to make.
+        Returns three things: whether the write would leave every column as it is
+        (`_unchanged`, `nw_executor_version` included -- a write of the same values is a row
+        version, a WAL record and a share of the 1,042 MB the table has grown to, but nothing
+        reads it, so not making it changes no measured value); the simulation, when one was
+        made, so a row that is not skipped is simulated once for the two of us rather than once
+        each (round 1, M2); and the columns, when the row's whole step is that one write, so
+        `_batch_pending` can send the population in one statement (fix 78b). `None` columns
+        beside a `False` answer is a row that has to go the whole way through `_simulate_order`.
         """
         if row.queue_ahead_at_place is None:
-            return False, None
+            return False, None, None
         if row.ticker in recovering and self.books.get(row.ticker) is not None:
-            return False, None
+            return False, None, None
         state = _state_of(row, "nw_")
         base = bases.get(row.ticker)
         if state.cursor_event_id is not None and (
                 base is None or state.cursor_event_id != base.last_event_id):
-            return False, None
+            return False, None, None
         prints, deltas = tape.get(row.ticker, ([], []))
         result = simulate_fills(_paper_order(row, row.queue_ahead_at_place, now), state,
                                 None if base is None else base.copy(), prints, deltas,
                                 _nw_deadline(row, now), NO_WATCHER)
         if result.fills or result.cross is not None:
-            return False, result
-        # `_persist_track` inserted nothing, so the running total it would have returned is the
-        # one the row already carries.
-        return _unchanged(row, _nw_columns(row, result.state, row.nw_filled_contracts,
-                                           result.crossed, lagging, now)), result
+            return False, result, None
+        columns = _nw_columns(row, result.state, row.nw_filled_contracts, result.crossed,
+                              lagging, now)
+        return _unchanged(row, columns), result, columns
 
     def _venue_fills(self, session: Session, working, now: datetime, stats: ExecStats,
                      heartbeat: dict) -> dict[int, tuple[str, Decimal]]:
