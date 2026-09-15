@@ -1,0 +1,8 @@
+verify rows 12:35 CT on f7a1ccb
+unnamed backend: pid 32 logical replication launcher (a PostgreSQL background process, not an app backend); app backends all named: app-exec 1, app-research 1, app-run 1, app-serve 3, app-ws 1, psql 1 (controller)
+receipt unnamed_backends [] drained_backends []
+row72_version post 4.5 3146 | post null 5 | pre 4.5 1174 | pre null 9694; row72_pending_pre 1174
+ws metrics since 17:31:27Z: ws.seq_advances_accounted 0 (3 samples), ws.acks_out_of_sequence 0, ws.gaps 0, ws.subscribed_tickers 197; gap rows since restart 0
+p95_loop_ms 12964 at 17:34:10Z (post-restart; re-read at 13:40 CT)
+alembic 0013_nw_executor_version (verify.md line 486 expects 0012: FAIL by the letter; packet item 2)
+settle: 210 ok 15:40:24-16:52:04Z budget_exhausted t; next settle about 18:31Z (one hour after app-run start 17:31:27Z)

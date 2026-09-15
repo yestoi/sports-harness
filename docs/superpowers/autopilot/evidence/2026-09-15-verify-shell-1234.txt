@@ -1,0 +1,20 @@
+verify_at 2026-09-15T17:34:19Z (12:34 CT) deploy f7a1ccb
+== make status-omarchy
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED         STATUS                   PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     2 days ago      Up 5 hours               5432/tcp
+sports-harness-app-exec-1       sports-release/app:f7a1ccb                                                         "harness exec"           app-exec       2 minutes ago   Up 2 minutes (healthy)   
+sports-harness-app-research-1   sports-release/app:f7a1ccb                                                         "harness research-wo…"   app-research   2 minutes ago   Up 2 minutes             
+sports-harness-app-run-1        sports-release/app:f7a1ccb                                                         "harness run"            app-run        2 minutes ago   Up 2 minutes             
+sports-harness-app-serve-1      sports-release/app:f7a1ccb                                                         "harness serve --por…"   app-serve      2 minutes ago   Up 2 minutes (healthy)   127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:f7a1ccb                                                         "harness ws-record"      app-ws         2 minutes ago   Up 2 minutes             
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       2 days ago      Up 5 hours (healthy)     5432/tcp
+{"status":"ok","last_run_at":"2026-09-15T17:33:55.946222+00:00","last_status":"skipped","seconds_since":23,"credits_remaining":4897356,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":2520.0,"read_at":"2026-09-15T16:40:54.069186+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"f7a1ccb"} [200]
+{"status":"ok","last_run_at":"2026-09-15T17:33:55.946222+00:00","last_status":"skipped","seconds_since":23,"credits_remaining":4897356,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":2520.0,"read_at":"2026-09-15T16:40:54.069186+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"f7a
+/dev/mapper/root  952G  152G  795G  17% /srv/sports-harness
+               total        used        free      shared  buff/cache   available
+Mem:           31904        9018        1435        2139       25515       22886
+== ERROR app-run
+== ERROR app-serve
+== ERROR app-ws
+== ERROR app-exec
+== ERROR app-research

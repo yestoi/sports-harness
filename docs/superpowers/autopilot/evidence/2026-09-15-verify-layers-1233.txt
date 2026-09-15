@@ -1,0 +1,660 @@
+=== lines 23-27 (12:33:32 CT)
+select count(*) from games where status = 'in_progress';
+=> 0
+
+select count(*) from games where kickoff_utc between now() - interval '4 hours' and now() + interval '15 minutes';
+=> 0
+
+select count(*) from games where sport = 'nfl' and kickoff_utc between now() + interval '60 minutes' and now() + interval '100 minutes';
+=> 0
+
+=== lines 48-60 (12:33:32 CT)
+select id, started_at, status, credits_used, odds_remaining, notes->'errors' as errors
+  from runs where status <> 'skipped' order by id desc limit 5;
+=> 18338 | 2026-09-15 17:22:54.069281+00 | ok | 0 |  | []
+=> 18335 | 2026-09-15 17:20:24.069233+00 | ok | 6 | 4897356 | []
+=> 18309 | 2026-09-15 17:07:24.069237+00 | ok | 0 |  | []
+=> 18306 | 2026-09-15 17:04:54.069261+00 | ok | 6 | 4897362 | []
+=> 18280 | 2026-09-15 16:51:54.069232+00 | ok | 0 |  | []
+
+select status, count(*) from runs where started_at > now() - interval '3 hours' group by 1;
+=> ok | 27
+=> skipped | 307
+
+select id, started_at, status from runs order by id desc limit 1;
+=> 18358 | 2026-09-15 17:33:25.946267+00 | skipped
+
+select decision, count(*) from signals where replay=false and created_at > now() - interval '3 hours' group by 1;
+=> candidate | 9981
+=> rejected | 48647
+
+select kind, count(*) from orderbook_events where ts > now() - interval '2 hours' group by 1;
+=> delta | 74750
+=> gap | 16
+=> snapshot | 1977
+
+select now() - ts as ws_last_event_age from orderbook_events order by id desc limit 1;  -- by id: max(ts) scanned 19M rows (120 s on 2026-09-07)
+select relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze from pg_stat_user_tables order by n_dead_tup desc limit 5;
+=> 00:00:02.57648
+=> gap_outcomes | 79452 | 5540 |  | 2026-09-14 08:58:54.916318+00
+=> veto_queue | 67119 | 5215 | 2026-09-15 11:10:13.941616+00 | 2026-09-15 15:20:38.514354+00
+=> orders | 13796 | 5159 | 2026-09-15 17:32:45.519765+00 | 2026-09-15 17:32:45.743656+00
+=> runs | 18244 | 2159 |  | 2026-09-15 17:30:45.494847+00
+=> trade_watermarks | 8530 | 1536 | 2026-09-15 04:13:53.526755+00 | 2026-09-15 16:35:43.135325+00
+
+select count(*), pg_size_pretty(sum(size)) from pg_ls_waldir();
+=> 64 | 1024 MB
+
+select pg_size_pretty(pg_database_size('harness'));
+=> 131 GB
+
+=== lines 93-111 (12:33:33 CT)
+select last_loop_at, loops, open_orders, last_error, last_loop_ms, p95_loop_ms, loops_skipped,
+       book_dirty_markets, ws_last_event_at, now() - last_loop_at as age from exec_heartbeat;
+=> 2026-09-15 17:33:10.831414+00 | 35084 | 0 |  | 8430 | 12964 | 3432 | 22 | 2026-09-15 17:33:10.015+00 | 00:00:22.767711
+
+select status, count(*) from orders where replay=false group by 1;
+=> cancelled | 13958
+=> expired | 61
+
+select count(*) from orders o where o.status='open' and o.replay=false
+  and not exists (select 1 from orderbook_events e where e.ticker=o.ticker and e.ts > now() - interval '15 minutes');
+=> 0
+
+select count(*) from intents; select count(*) from fills where replay=false;
+=> 155226
+=> 1952
+
+select count(*) from settlements; select count(*) from venue_settlements; select count(*) from benchmarks;
+=> 200
+=> 9764
+=> 17233
+
+select count(*) from gap_outcomes; select count(*) from markouts;
+=> 79452
+=> 59205
+
+select reason, count(*) from order_events where kind='skipped' and ts > now() - interval '24 hours' group by 1 order by 2 desc;
+=> book_dirty | 22761
+=> fair_stale | 15027
+=> exec_capacity | 4742
+=> no_book | 56
+=> kickoff | 11
+
+select job, status, budget_exhausted, finished_at from job_runs order by id desc limit 3;
+=> settle | ok | t | 2026-09-15 16:52:04.246754+00
+=> settle | interrupted | f | 2026-09-15 15:40:24.094115+00
+=> futures | ok | f | 2026-09-15 14:00:00.006023+00
+
+select count(*) from order_clv;
+=> 79323
+
+select count(*), sum(case when gate_variant then 1 else 0 end) from gate_reports where passed = false;
+=> 9 | 3
+
+-- Task 12b telemetry (U6)
+select name, max(ts) from metric_samples group by 1 order by 1;
+=> db.brin_ranges_summarized | 2026-09-15 09:06:16.646967+00
+=> db.growth_gb_per_day | 2026-09-15 09:06:16.646967+00
+=> db.rfqs_pruned | 2026-09-15 09:06:16.646967+00
+=> db.size_gb | 2026-09-15 09:06:16.646967+00
+=> db.table_gb | 2026-09-15 09:06:16.646967+00
+=> exec.book_errors | 2026-09-15 17:32:55.831381+00
+=> exec.cancelled | 2026-09-15 17:26:38.846548+00
+=> exec.dirty_markets | 2026-09-15 17:32:55.831381+00
+=> exec.fair_age_s | 2026-09-15 17:32:55.831381+00
+=> exec.filled_contracts | 2026-09-15 17:32:55.831381+00
+=> exec.intents_considered | 2026-09-15 17:32:55.831381+00
+=> exec.loop_ms | 2026-09-15 17:32:55.831381+00
+=> exec.loops_skipped | 2026-09-15 17:32:55.831381+00
+=> exec.nw_pending | 2026-09-15 17:32:55.831381+00
+=> exec.open_orders | 2026-09-15 17:32:55.831381+00
+=> exec.p95_loop_ms | 2026-09-15 17:32:55.831381+00
+=> exec.placed | 2026-09-15 17:32:55.831381+00
+=> exec.signal_to_order_ms | 2026-09-15 17:22:08.846329+00
+=> exec.skipped | 2026-09-15 17:26:38.846548+00
+=> exec.tape_batch_min | 2026-09-15 17:32:55.831381+00
+=> exec.tape_lag_tickers | 2026-09-15 17:32:55.831381+00
+=> exec.ws_event_age_s | 2026-09-15 17:32:55.831381+00
+=> exec.ws_event_ahead_s | 2026-09-15 17:32:55.831381+00
+=> host.disk_free_gb | 2026-09-15 09:06:16.646967+00
+=> host.disk_total_gb | 2026-09-15 09:06:16.646967+00
+=> host.mem_available_mb | 2026-09-15 09:06:16.646967+00
+=> match.rate | 2026-09-15 09:06:16.646967+00
+=> match.unmatched | 2026-09-15 09:06:16.646967+00
+=> normalize.backlog_age_s | 2026-09-15 16:49:54.06918+00
+=> normalize.backlog_ids | 2026-09-15 17:22:54.069281+00
+=> pricing.candidates | 2026-09-15 17:20:24.069233+00
+=> pricing.fair_values | 2026-09-15 17:20:24.069233+00
+=> pricing.feed_lag_s | 2026-09-15 17:20:24.069233+00
+=> pricing.no_fair | 2026-09-15 17:20:24.069233+00
+=> pricing.rejected | 2026-09-15 17:20:24.069233+00
+=> pricing.rescore_suppressed | 2026-09-15 17:20:24.069233+00
+=> pricing.staleness_median_s | 2026-09-15 17:20:24.069233+00
+=> recorder.credits_remaining | 2026-09-15 17:20:24.069233+00
+=> recorder.errors | 2026-09-15 17:33:25.946267+00
+=> recorder.fetched | 2026-09-15 17:22:54.069281+00
+=> recorder.malloc_trim_mb | 2026-09-15 17:20:24.069233+00
+=> recorder.phase_ms | 2026-09-15 17:33:25.946267+00
+=> recorder.rss_mb | 2026-09-15 17:33:25.946267+00
+=> recorder.tick_ms | 2026-09-15 17:33:25.946267+00
+=> recorder.trade_gaps | 2026-09-15 17:33:25.946267+00
+=> serve.snapshot_ms | 2026-09-15 17:33:26.150876+00
+=> ws.acks_out_of_sequence | 2026-09-15 17:33:28.457715+00
+=> ws.events_per_min | 2026-09-15 17:33:28.457715+00
+=> ws.gaps | 2026-09-15 17:33:28.457715+00
+=> ws.reconnects | 2026-09-15 17:33:28.457715+00
+=> ws.seq_advances_accounted | 2026-09-15 17:33:28.457715+00
+=> ws.sink_lag_s | 2026-09-15 17:33:28.457715+00
+=> ws.subscribed_tickers | 2026-09-15 17:33:28.457715+00
+=> ws.tape_covered_frac | 2026-09-15 17:00:24.0692+00
+=> ws.trades_per_min | 2026-09-15 17:33:28.457715+00
+
+select count(*) from order_watch_samples where ts > now() - interval '1 hour';
+=> 3308
+
+select variant_id, max(ts) from equity_snapshots group by 1;
+=> ff363c8ac08d | 2026-09-15 17:31:40.842053+00
+=> 5632da729fa7 | 2026-09-15 17:31:40.842053+00
+=> f259ca109084 | 2026-09-15 17:31:40.842053+00
+=> e82fcd0a1e99 | 2026-09-08 12:31:58.93176+00
+
+select count(*) from game_score_events where ts > now() - interval '24 hours';
+=> 13
+
+select check_name, status from check_results where ts > now() - interval '25 hours';
+=> duplicate_trades | pass
+=> clv_p_used_matches_order_prob | pass
+=> settle_errors_24h | pass
+=> derived_without_venue_row_48h | pass
+=> build_sha_drift | pass
+=> orders_open_past_expiry | pass
+=> fills_without_print | pass
+=> gate_rows_one_gate_variant | pass
+=> fair_values_negative_staleness | pass
+=> runs_taker_side_missing_24h | pass
+=> orders_without_place_event | pass
+=> intents_without_order_or_skip | fail
+=> fill_contracts_exceed_order_contracts | pass
+=> orders_filled_exceeds_contracts | pass
+=> settlement_result_mismatch | pass
+=> fair_values_negative_feed_lag | pass
+=> benchmarks_source_after_target | pass
+=> fills_outside_placement_window | pass
+=> markouts_at_after_horizon | pass
+=> metric_samples_negative_24h | pass
+=> operator_events_empty_summary_24h | pass
+=> order_watch_negative_queue_24h | pass
+=> equity_mtm_coverage_out_of_range_24h | pass
+=> game_score_went_down_24h | pass
+=> check_results_unknown_status_25h | pass
+=> report_runs_generated_in_future | pass
+=> report_cells_orphan | pass
+
+select year, week, provisional, generated_at from report_runs order by id desc limit 3;
+=> 2026 | 38 | t | 2026-09-15 15:40:24.094115+00
+=> 2026 | 38 | t | 2026-09-15 08:06:16.681732+00
+=> 2026 | 38 | t | 2026-09-14 20:48:45.085167+00
+
+=== lines 141-153 (12:33:34 CT)
+-- Phase 4 (after the authenticated adapter, backups and Alembic ship)
+select env, method, count(*) from venue_requests where ts > now() - interval '24 hours' group by 1, 2 order by 1, 2;
+=> prod | GET | 28
+
+select count(*) from venue_requests where env = 'prod' and method = 'GET' and ts > now() - interval '2 hours';
+=> 3
+
+select venue, env, status, reason, since, updated_at from venue_status order by venue, env;
+=> kalshi | demo | ok |  | 2026-09-09 15:54:44.71089+00 | 2026-09-09 15:54:44.71089+00
+=> kalshi_rfq | prod | ok |  | 2026-09-12 05:26:38.387488+00 | 2026-09-12 05:26:38.387488+00
+
+select kind, status, bytes, finished_at, now() - finished_at as age from backup_runs order by id desc limit 6;
+=> encrypt | ok | 1527203378 | 2026-09-15 08:36:23.208925+00 | 08:57:11.913197
+=> encrypt | ok | 9223 | 2026-09-15 08:36:16.665668+00 | 08:57:18.456454
+=> forever | ok | 9223 | 2026-09-15 08:32:17+00 | 09:01:18.122122
+=> nightly | ok | 1527203378 | 2026-09-15 08:32:13+00 | 09:01:22.122122
+=> encrypt | ok | 133660292 | 2026-09-14 19:30:15.109234+00 | 22:03:20.012888
+=> encrypt | ok | 4398604194 | 2026-09-14 19:30:07.022624+00 | 22:03:28.099498
+
+select count(*) from backup_runs where kind = 'drill' and rows_match = true;
+=> 3
+
+select variant_id, drawdown_pct, drawdown_stop from equity_snapshots
+  where ts = (select max(ts) from equity_snapshots) order by variant_id;
+=> 5632da729fa7 | -0.0063 | f
+=> f259ca109084 | -0.0064 | f
+=> ff363c8ac08d | 0.0000 | f
+
+select count(*) from runs where started_at > now() - interval '24 hours'
+  and (notes->'pricing'->>'gate_variant_missing')::boolean = true;
+=> 0
+
+select notes->'pricing'->'order' as pricing_order, notes->'pricing'->'variant_ms' as variant_ms
+  from runs where status <> 'skipped' order by id desc limit 3;
+=>  | 
+=> ["sharp_two_sided", "sharp_direct", "constrained", "nfl_only", "no_velocity", "sharp_plus_derived", "wide_band"] | {"nfl_only": 87, "wide_band": 102, "constrained": 151, "no_velocity": 86, "sharp_direct": 113, "sharp_two_sided": 193, "sharp_plus_derived": 2849}
+=>  | 
+
+select version_num from alembic_version;
+=> 0013_nw_executor_version
+
+=== lines 248-287 (12:33:35 CT)
+select count(*) from futures_snapshots where fetched_at > now();          -- no future timestamps
+select count(*) from futures_snapshots f
+  where f.series_ticker in ('KXNFLGAME','KXNFLSPREAD','KXNFLTOTAL',
+                            'KXNCAAFGAME','KXNCAAFSPREAD','KXNCAAFTOTAL');
+=> 0
+=> 0
+
+-- the per-game series are excluded by exact match (ruling A-I9)
+select count(*) from weather_points p
+  where p.forecast_hourly_url not like 'https://api.weather.gov/%';
+=> 0
+
+-- roadmap invariant 8: a stored URL is a stored instruction to connect somewhere
+select count(*) from weather_snapshots where roof = 'dome';
+=> 0
+
+-- The addendum's invariant is "no `weather_points` row for a dome". `weather_points` has
+-- no roof column -- the roof lives in the committed YAML and is copied onto the snapshot
+-- -- so the checkable form of the same rule is that no snapshot was ever taken for one.
+-- A dome that reached `weather_points` would have produced a snapshot, so this catches it.
+select count(*) from weather_snapshots where fetched_at > now() or period_start < fetched_at
+  - interval '2 hours';                       -- no future reads, no period from before the fetch
+select count(*) from veto_queue where enqueued_at > now();
+=> 0
+=> 0
+
+select count(*) from research_notes where cost_usd < 0 or created_at > now();
+=> 0
+
+select count(*) from research_notes n where n.kind = 'veto'
+  and not exists (select 1 from research_notes m where m.call_id = n.call_id
+                  and m.model <> n.model);    -- every veto call is a pair (R:225-229)
+select count(*) from veto_decisions where call_id is null
+  and decision not in ('veto_skipped_budget', 'veto_error');
+=> 0
+=> 0
+
+-- only the two call-less labels may have no call
+select count(*) from veto_decisions where decided_at < signal_created_at;
+=> 0
+
+select count(*) from veto_h9 h join research_notes n on n.call_id = h.call_id
+  where n.replay = true;                      -- no replay row inside the H9 view
+select count(*) from research_spend where usd < 0 or usd_reserved < 0;
+=> 0
+=> 0
+
+select count(*) from (select day from research_spend group by day having sum(usd) > 25) x;
+=> 0
+
+-- usd <= the daily cap, per day (U4, roadmap invariant 7). Wrapped in a count so this
+-- row obeys the block's own "every query returns 0" rule.
+select count(*) from parlay_legs l
+  where not exists (select 1 from parlay_cards c where c.id = l.card_id);
+=> 0
+
+-- no orphan legs (addendum §3). Also asserted in the phase 4.5 block; repeated here
+-- because phase 5 is the first phase that writes these rows.
+select count(*) from report_annotations where cost_usd < 0 or created_at > now();
+=> 0
+
+select count(*) from report_annotations a
+  where not exists (select 1 from report_runs r where r.id = a.report_run_id);
+=> 0
+
+select count(*) from rfqs where received_at > now();
+=> 0
+
+select count(*) from rfq_quotes q
+  where not exists (select 1 from rfqs r where r.id = q.rfq_id);   -- no quote without an rfq
+=> 0
+
+=== lines 317-318 (12:33:36 CT)
+select criteria_hash, evaluated_at, gate_variant from gate_reports order by id desc limit 3;
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | t
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+=> 0
+
+=== lines 367-427 (12:33:36 CT)
+-- 1. originals intact
+select count(*), sum(contracts), max(id) from fills where replay = false and id <= 1878;
+=> 1878 | 70557.76 | 1878
+
+select sum(filled_contracts), sum(dirty_seconds), sum(traded_at_price), sum(nw_traded_at_price),
+       sum(queue_remaining) from orders where replay = false and id <= 10886;
+=> 38.92 | 1557550170 | 1529.92 | 11006049.45 | 154403731.18
+
+select count(*), sum(contracts), max(id) from ledger where replay = false and id <= 4;
+=> 4 | 77.84 | 4
+
+-- 2. no post-expiry fill (unfiltered by fill_method: it is a test of the entry-cross clamp)
+select count(*) from fills f join orders o on o.id = f.order_id
+where f.replay = false and f.id > 1878 and o.expiry is not null
+  and f.filled_at > o.expiry;
+=> 0
+
+-- 3. no placement from a rejected target, and the skip itself is being written
+select count(*) from order_events e where e.kind = 'place' and e.id > 2562407
+  and (select s.kind || ':' || coalesce(s.reason, '') from order_events s
+       where s.intent_id = e.intent_id and s.id < e.id order by s.id desc limit 1)
+      = 'skipped:signal_rejected';
+=> 0
+
+select count(*) from order_events where kind = 'skipped' and reason = 'signal_rejected'
+  and id > 2562407;
+=> 0
+
+-- 4. liquidity conservation: the invariant, then the ten-order check beside it
+select count(*) from fills where replay = false and id > 1878
+  and fill_method = 'queue_model' and has_print = false;
+=> 0
+
+select o.id, o.filled_contracts, sum(t.count) as hitting_volume
+from orders o
+join fills f on f.order_id = o.id and f.replay = false and f.fill_method = 'queue_model'
+join venue_trades t on t.ticker = o.ticker
+ and t.ts >= o.placed_at and t.ts <= coalesce(o.cancelled_at, o.expiry)
+ and t.taker_side = case when o.side = 'yes' then 'no' else 'yes' end
+ and case when o.side = 'yes' then t.yes_price else 1 - t.yes_price end <= o.prob
+where o.replay = false and o.id > 10886
+group by o.id, o.filled_contracts
+having o.filled_contracts > sum(t.count)
+limit 10;
+=> (no rows)
+
+-- expected: no rows. We cannot fill more than the volume that printed at or through our
+-- price while we rested. Read `(ticker, ts)` on venue_trades; bounded by each order's own
+-- resting interval.
+-- 5. dirty scope and the backoff cadence
+select count(*) from orders where replay = false and id > 10886
+  and status in ('cancelled','expired')
+  and dirty_seconds > extract(epoch from (coalesce(cancelled_at, expiry) - placed_at));
+=> 0
+
+select count(*) from orders where replay = false and nw_done = false
+  and nw_next_attempt_at < now() - interval '3600 seconds';
+=> 0
+
+select 'dirty' as table, count(*) from market_dirty_intervals
+where ended_at is null and started_at < now() - interval '2 hours'
+union all
+select 'observation', count(*) from market_observation_intervals
+where ended_at is null and started_at < now() - interval '2 hours';
+=> dirty | 15
+=> observation | 120
+
+-- expected: 0 and 0 at 01:00-08:00 CT. Inside a game window open rows are expected and are
+-- journaled beside exec.dirty_markets instead.
+-- 8. gate untouched
+select criteria_hash, evaluated_at, gate_variant from gate_reports order by id desc limit 3;
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | t
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+=> 0
+
+-- 11. the counterfactual backlog, beside criterion 4's n_obs
+select count(*) from orders where replay = false and nw_done = false and expiry < now();
+=> 0
+
+select name, value, ts from metric_samples where name = 'exec.nw_pending'
+  order by ts desc limit 3;
+=> exec.nw_pending | 4320.000000 | 2026-09-15 17:32:55.831381+00
+=> exec.nw_pending | 4320.000000 | 2026-09-15 17:31:40.842053+00
+=> exec.nw_pending | 4320.000000 | 2026-09-15 17:30:08.846711+00
+
+=== lines 494-664 (12:33:43 CT)
+-- existing
+select count(*) from fair_values
+  where created_at > now() - interval '24 hours' and staleness_s < 0;
+=> 0
+
+-- fair_values_negative_staleness (carried fix 16), bounded by ix_fair_created_brin
+select count(*) from runs where started_at > now() - interval '24 hours'
+  and coalesce((notes->>'taker_side_missing')::int, 0) > 0;   -- after carried fix 1
+select count(*) from orders o where replay=false and not exists (select 1 from order_events e where e.order_id=o.id and e.kind='place');
+=> 0
+=> 0
+
+select count(*) from intents i where replay=false and created_at < now()-interval '2 minutes'
+  and not exists (select 1 from orders o where o.intent_id=i.id)
+  and not exists (select 1 from order_events e where e.intent_id=i.id and e.kind='skipped');
+=> 69682
+
+select count(*) from fills f join orders o on o.id=f.order_id where f.replay=false and f.contracts > o.contracts;
+=> 0
+
+select count(*) from orders where replay=false and filled_contracts > contracts;
+=> 0
+
+select count(*) from fills f where f.replay=false and f.fill_method='queue_model' and f.has_print=false and f.filled_at < now()-interval '2 minutes';
+=> 0
+
+select count(*) from venue_settlements d join venue_settlements v on v.venue=d.venue and v.ticker=d.ticker
+  where d.source='derived' and v.source='venue' and d.result <> v.result;
+=> 0
+
+select count(*) from fair_values where feed_lag_s < 0;
+=> 0
+
+select count(*) from benchmarks where source_ts > target_ts;
+=> 0
+
+select count(*) from fills f join orders o on o.id=f.order_id join games g on g.id=o.game_id
+  where f.replay=false and f.filled_at >= '2026-09-15T05:23:44Z'
+    and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes');
+=> 0
+
+-- '2026-09-15T05:23:44Z' = NO_WATCHER_CUTOFF_FIXED_AT (harness/ops/checks.py) = 2026-09-15T05:23:44Z, the c1066b5
+-- stop instant read from evidence/2026-09-15-release-boundary-6b.txt (user ruling 2026-09-15, journal
+-- 224 item 2, under journal 206's gate 13 authorization for these two predicates): the 154 pre-cutoff
+-- no-watcher fills stay as recorded. The 04:45Z, 05:15Z, 05:45Z and 06:15Z values the constant held
+-- before were pre-release estimates, never the release. By hand, substitute the timestamp.
+select count(*) from markouts m
+  where m.at_ts > m.horizon_ts
+    and (exists (select 1 from fills f where f.order_id = m.order_id and f.filled_at >= '2026-09-15T05:23:44Z')
+         or (m.at_ts >= '2026-09-15T05:23:44Z'
+             and not exists (select 1 from fills f where f.order_id = m.order_id)));
+=> 0
+
+-- Same '2026-09-15T05:23:44Z'. A markout counts when its order carries a fill at or after the cutoff, or when the
+-- markout itself is at or after the cutoff and the order has no fill at all (the amnesty is a
+-- date, not a population; integration round review C-1).
+-- after phase 6a
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+=> 0
+
+-- gate_eligible_from_order_id / gate_eligible_from_run_id are None by design (addendum §0.4).
+-- A row carrying the key means the measurement boundary was switched on; only a dated user
+-- decision may do that (R1), so a non-zero count is an integrity anomaly, not a fix-forward.
+-- after phase 6b (narrowed by the user 2026-09-15, journal 224 item 5; spec amendment 0.17)
+select count(*) from orders where replay = false and id <= 10886
+  and (print_unmatched is not null or pending_unmatched is not null
+       or pending_surplus is not null or cancels_ahead is not null);
+=> 0
+
+-- The four non-nw_ ledger columns: no pre-6B row is backfilled, unconditionally. A non-zero
+-- count means a write reached the preserved record, which invariant 5 forbids.
+select count(*) from orders where replay = false and id <= 10886
+  and id <> all(array[9602,9603,9604,9605,9652,9653,9654,9655,9693,9694,9695,9700,9719,9720,9721,9722,9723,9724,9725,9726,9727,9728,9729,9730,9731,9732,9733,9734,9735,9736,9737,9738,9739,9740,9741,9742,9743,9744,9745,9746,9747,9748,9749,9750,9751,9752,9753,9754,9755,9756,9757,9758,9759,9760,9761,9762,9763,9764,9765,9766,9767,9768,9769,9770,9771,9772,9773,9774,9775,9776,9777,9778,9779,9780,9781,9782,9783,9784,9785,9786,9787,9788,9789,9790,9791,9792,9793,9794,9795,9796,9797,9798,9799,9800,9801,9802,9803,9804,9805,9806,9807,9808,9810,9811,9813,9814,9815,9816,9817,9818,9819,9820,9821,9822,9823,9824,9825,9826,9827,9828,9829,9830,9831,9832,9833,9834,9835,9836,9837,9838,9839,9840,9841,9842,9843,9844,9845,9846,9847,9848,9849,9850,9851,9852,9853,9854,9855,9856,9857,9858,9859,9860,9861,9862,9863,9864,9865,9866,9867,9868,9869,9870,9871,9872,9873,9874,9875,9876,9877,9878,9879,9880,9881,9882,9883,9884,9885,9886,9887,9888,9889,9890,9891,9892,9893,9894,9895,9896,9897,9898,9899,9900,9901,9902,9903,9904,9905,9906,9907,9908,9909,9910,9911,9912,9913,9914,9915,9916,9917,9918,9919,9920,9921,9922,9923,9924,9925,9926,9927,9928,9929,9930,9931,9932,9933,9934,9935,9936,9937,9938,9939,9940,9941,9942,9943,9944,9945,9946,9947,9948,9949,9950,9951,9952,9953,9954,9955,9956,9957,9958,9959,9960,9961,9962,9963,9964,9965,9966,9967,9968,9969,9970,9971,9972,9973,9974,9975,9976,9977,9978,9979,9980,9981,9982,9983,9984,9985,9986,9987,9988,9989,9990,9991,9992,9993,9994,9995,9996,9997,9998,9999,10000,10001,10002,10003,10004,10005,10006,10007,10008,10009,10010,10011,10012,10013,10014,10015,10016,10017,10018,10019,10020,10021,10022,10023,10024,10025,10026,10027,10028,10029,10030,10031,10032,10033,10034,10035,10036,10037,10038,10039,10040,10041,10042,10043,10044,10045,10046,10047,10048,10049,10050,10051,10052,10053,10054,10055,10056,10057,10058,10059,10060,10061,10062,10063,10064,10065,10066,10067,10068,10069,10070,10071,10072,10073,10074,10075,10076,10077,10078,10079,10080,10081,10082,10083,10084,10085,10086,10087,10088,10089,10090,10091,10092,10093,10094,10095,10096,10097,10098,10099,10100,10101,10102,10103,10104,10105,10106,10107,10108,10109,10110,10111,10112,10113,10114,10115,10116,10117,10118,10119,10120,10121,10122,10123,10124,10125,10126,10127,10128,10129,10130,10131,10132,10133,10134,10135,10136,10137,10138,10139,10140,10141,10142,10143,10144,10145,10146,10147,10148,10149,10150,10151,10153,10154,10155,10156,10157,10158,10159,10160,10161,10162,10163,10164,10165,10166,10167,10168,10169,10170,10171,10172,10173,10174,10175,10176,10177,10178,10179,10180,10181,10182,10183,10184,10185,10186,10187,10188,10189,10190,10191,10192,10193,10194,10195,10196,10197,10198,10199,10200,10201,10202,10203,10204,10205,10206,10207,10208,10209,10210,10211,10212,10213,10214,10215,10216,10217,10218,10219,10220,10221,10222,10223,10224,10225,10226,10227,10228,10229,10230,10231,10232,10233,10234,10235,10236,10237,10238,10239,10240,10241,10242,10243,10244,10245,10246,10247,10248,10249,10250,10251,10252,10253,10254,10255,10256,10257,10258,10259,10260,10261,10262,10263,10264,10265,10266,10267,10268,10269,10270,10271,10272,10273,10274,10275,10276,10277,10278,10279,10280,10281,10282,10283,10284,10285,10286,10287,10288,10289,10290,10291,10292,10293,10294,10295,10296,10297,10298,10299,10300,10301,10302,10303,10304,10305,10306,10307,10308,10309,10310,10311,10312,10313,10314,10315,10316,10317,10318,10319,10320,10321,10322,10323,10324,10325,10326,10327,10328,10329,10330,10331,10332,10333,10334,10335,10336,10337,10338,10339,10340,10341,10342,10343,10344,10345,10346,10347,10348,10349,10350,10351,10352,10353,10354,10355,10356,10357,10358,10359,10360,10361,10362,10363,10364,10365,10366,10367,10368,10369,10370,10371,10372,10373,10374,10375,10376,10377,10378,10379,10380,10381,10382,10383,10384,10385,10386,10387,10388,10389,10390,10391,10392,10393,10394,10395,10396,10397,10398,10399,10400,10401,10402,10403,10404,10405,10406,10407,10408,10409,10410,10411,10412,10413,10414,10415,10416,10417,10418,10419,10420,10421,10422,10423,10424,10425,10426,10427,10428,10429,10430,10431,10432,10433,10434,10435,10436,10437,10438,10439,10440,10441,10442,10443,10444,10445,10446,10447,10448,10449,10450,10451,10452,10453,10454,10455,10456,10457,10458,10459,10460,10461,10462,10463,10464,10465,10466,10467,10468,10469,10470,10471,10472,10473,10474,10475,10476,10477,10478,10479,10480,10481,10482,10483,10484,10485,10486,10487,10488,10489,10490,10491,10492,10493,10494,10495,10496,10497,10498,10499,10500,10501,10502,10503,10504,10505,10506,10507,10508,10509,10510,10511,10512,10513,10514,10515,10516,10517,10518,10519,10520,10521,10522,10523,10524,10525,10526,10527,10528,10529,10530,10531,10532,10533,10534,10535,10536,10537,10538,10539,10540,10541,10542,10543,10544,10545,10546,10547,10548,10549,10550,10551,10552,10553,10554,10555,10556,10557,10558,10559,10560,10561,10562,10563,10564,10565,10566,10567,10568,10569,10570,10571,10572,10573,10574,10575,10576,10577,10578,10579,10580,10581,10582,10583,10584,10585,10586,10587,10588,10589,10590,10591,10592,10593,10594,10595,10596,10597,10598,10599,10600,10601,10602,10604,10605,10606,10607,10608,10609,10610,10611,10612,10613,10614,10615,10616,10617,10618,10619,10620,10621,10622,10623,10624,10625,10626,10627,10628,10629,10630,10631,10632,10633,10634,10635,10636,10637,10638,10639,10640,10641,10642,10643,10644,10645,10646,10647,10648,10649,10650,10651,10652,10653,10654,10655,10656,10657,10658,10659,10660,10661,10662,10663,10664,10665,10666,10667,10668,10669,10670,10671,10672,10673,10674,10675,10676,10677,10678,10679,10680,10681,10682,10683,10684,10685,10686,10687,10688,10689,10690,10691,10692,10693,10694,10695,10696,10697,10698,10699,10700,10701,10702,10703,10704,10705,10706,10707,10708,10709,10710,10711,10712,10713,10714,10715,10716,10717,10718,10719,10720,10721,10722,10723,10724,10725,10726,10727,10728,10729,10730,10731,10732,10733,10734,10735,10736,10737,10738,10739,10740,10741,10742,10743,10744,10745,10746,10747,10748,10749,10750,10751,10752,10753,10754,10755,10756,10757,10758,10759,10760,10761,10762,10763,10764,10765,10766,10767,10768,10769,10770,10771,10772,10773,10774,10775,10776,10777,10778,10779,10780,10781,10782,10783,10784,10785,10786,10787,10788,10789,10790,10791,10792,10793,10794,10795,10796,10797,10798,10799,10800,10801,10802,10803,10804,10805,10806,10807,10808,10809,10810,10811,10812,10813,10814,10815,10816,10817,10818,10819,10820,10821,10822,10823,10824,10825,10826,10827,10828,10829,10830,10831,10832,10833,10834,10835,10836,10837,10838,10839,10840,10841,10842,10843,10844,10845,10846,10847,10848,10849,10850,10851,10852,10853,10854,10855,10856,10857,10858,10859,10860,10861,10862,10863,10864,10865,10866,10867,10868,10869,10870,10871,10872,10873,10874,10875,10876,10877,10878,10879,10880,10881,10882,10883,10884,10885,10886])
+  and (nw_print_unmatched is not null or nw_pending_unmatched is not null
+       or nw_pending_surplus is not null or nw_cancels_ahead is not null
+       or nw_dirty_seconds is not null);
+=> 0
+
+-- The nw_ twins, over the pre-boundary rows that were nw_done = true at the c1066b5 stop
+-- instant: array[9602,9603,9604,9605,9652,9653,9654,9655,9693,9694,9695,9700,9719,9720,9721,9722,9723,9724,9725,9726,9727,9728,9729,9730,9731,9732,9733,9734,9735,9736,9737,9738,9739,9740,9741,9742,9743,9744,9745,9746,9747,9748,9749,9750,9751,9752,9753,9754,9755,9756,9757,9758,9759,9760,9761,9762,9763,9764,9765,9766,9767,9768,9769,9770,9771,9772,9773,9774,9775,9776,9777,9778,9779,9780,9781,9782,9783,9784,9785,9786,9787,9788,9789,9790,9791,9792,9793,9794,9795,9796,9797,9798,9799,9800,9801,9802,9803,9804,9805,9806,9807,9808,9810,9811,9813,9814,9815,9816,9817,9818,9819,9820,9821,9822,9823,9824,9825,9826,9827,9828,9829,9830,9831,9832,9833,9834,9835,9836,9837,9838,9839,9840,9841,9842,9843,9844,9845,9846,9847,9848,9849,9850,9851,9852,9853,9854,9855,9856,9857,9858,9859,9860,9861,9862,9863,9864,9865,9866,9867,9868,9869,9870,9871,9872,9873,9874,9875,9876,9877,9878,9879,9880,9881,9882,9883,9884,9885,9886,9887,9888,9889,9890,9891,9892,9893,9894,9895,9896,9897,9898,9899,9900,9901,9902,9903,9904,9905,9906,9907,9908,9909,9910,9911,9912,9913,9914,9915,9916,9917,9918,9919,9920,9921,9922,9923,9924,9925,9926,9927,9928,9929,9930,9931,9932,9933,9934,9935,9936,9937,9938,9939,9940,9941,9942,9943,9944,9945,9946,9947,9948,9949,9950,9951,9952,9953,9954,9955,9956,9957,9958,9959,9960,9961,9962,9963,9964,9965,9966,9967,9968,9969,9970,9971,9972,9973,9974,9975,9976,9977,9978,9979,9980,9981,9982,9983,9984,9985,9986,9987,9988,9989,9990,9991,9992,9993,9994,9995,9996,9997,9998,9999,10000,10001,10002,10003,10004,10005,10006,10007,10008,10009,10010,10011,10012,10013,10014,10015,10016,10017,10018,10019,10020,10021,10022,10023,10024,10025,10026,10027,10028,10029,10030,10031,10032,10033,10034,10035,10036,10037,10038,10039,10040,10041,10042,10043,10044,10045,10046,10047,10048,10049,10050,10051,10052,10053,10054,10055,10056,10057,10058,10059,10060,10061,10062,10063,10064,10065,10066,10067,10068,10069,10070,10071,10072,10073,10074,10075,10076,10077,10078,10079,10080,10081,10082,10083,10084,10085,10086,10087,10088,10089,10090,10091,10092,10093,10094,10095,10096,10097,10098,10099,10100,10101,10102,10103,10104,10105,10106,10107,10108,10109,10110,10111,10112,10113,10114,10115,10116,10117,10118,10119,10120,10121,10122,10123,10124,10125,10126,10127,10128,10129,10130,10131,10132,10133,10134,10135,10136,10137,10138,10139,10140,10141,10142,10143,10144,10145,10146,10147,10148,10149,10150,10151,10153,10154,10155,10156,10157,10158,10159,10160,10161,10162,10163,10164,10165,10166,10167,10168,10169,10170,10171,10172,10173,10174,10175,10176,10177,10178,10179,10180,10181,10182,10183,10184,10185,10186,10187,10188,10189,10190,10191,10192,10193,10194,10195,10196,10197,10198,10199,10200,10201,10202,10203,10204,10205,10206,10207,10208,10209,10210,10211,10212,10213,10214,10215,10216,10217,10218,10219,10220,10221,10222,10223,10224,10225,10226,10227,10228,10229,10230,10231,10232,10233,10234,10235,10236,10237,10238,10239,10240,10241,10242,10243,10244,10245,10246,10247,10248,10249,10250,10251,10252,10253,10254,10255,10256,10257,10258,10259,10260,10261,10262,10263,10264,10265,10266,10267,10268,10269,10270,10271,10272,10273,10274,10275,10276,10277,10278,10279,10280,10281,10282,10283,10284,10285,10286,10287,10288,10289,10290,10291,10292,10293,10294,10295,10296,10297,10298,10299,10300,10301,10302,10303,10304,10305,10306,10307,10308,10309,10310,10311,10312,10313,10314,10315,10316,10317,10318,10319,10320,10321,10322,10323,10324,10325,10326,10327,10328,10329,10330,10331,10332,10333,10334,10335,10336,10337,10338,10339,10340,10341,10342,10343,10344,10345,10346,10347,10348,10349,10350,10351,10352,10353,10354,10355,10356,10357,10358,10359,10360,10361,10362,10363,10364,10365,10366,10367,10368,10369,10370,10371,10372,10373,10374,10375,10376,10377,10378,10379,10380,10381,10382,10383,10384,10385,10386,10387,10388,10389,10390,10391,10392,10393,10394,10395,10396,10397,10398,10399,10400,10401,10402,10403,10404,10405,10406,10407,10408,10409,10410,10411,10412,10413,10414,10415,10416,10417,10418,10419,10420,10421,10422,10423,10424,10425,10426,10427,10428,10429,10430,10431,10432,10433,10434,10435,10436,10437,10438,10439,10440,10441,10442,10443,10444,10445,10446,10447,10448,10449,10450,10451,10452,10453,10454,10455,10456,10457,10458,10459,10460,10461,10462,10463,10464,10465,10466,10467,10468,10469,10470,10471,10472,10473,10474,10475,10476,10477,10478,10479,10480,10481,10482,10483,10484,10485,10486,10487,10488,10489,10490,10491,10492,10493,10494,10495,10496,10497,10498,10499,10500,10501,10502,10503,10504,10505,10506,10507,10508,10509,10510,10511,10512,10513,10514,10515,10516,10517,10518,10519,10520,10521,10522,10523,10524,10525,10526,10527,10528,10529,10530,10531,10532,10533,10534,10535,10536,10537,10538,10539,10540,10541,10542,10543,10544,10545,10546,10547,10548,10549,10550,10551,10552,10553,10554,10555,10556,10557,10558,10559,10560,10561,10562,10563,10564,10565,10566,10567,10568,10569,10570,10571,10572,10573,10574,10575,10576,10577,10578,10579,10580,10581,10582,10583,10584,10585,10586,10587,10588,10589,10590,10591,10592,10593,10594,10595,10596,10597,10598,10599,10600,10601,10602,10604,10605,10606,10607,10608,10609,10610,10611,10612,10613,10614,10615,10616,10617,10618,10619,10620,10621,10622,10623,10624,10625,10626,10627,10628,10629,10630,10631,10632,10633,10634,10635,10636,10637,10638,10639,10640,10641,10642,10643,10644,10645,10646,10647,10648,10649,10650,10651,10652,10653,10654,10655,10656,10657,10658,10659,10660,10661,10662,10663,10664,10665,10666,10667,10668,10669,10670,10671,10672,10673,10674,10675,10676,10677,10678,10679,10680,10681,10682,10683,10684,10685,10686,10687,10688,10689,10690,10691,10692,10693,10694,10695,10696,10697,10698,10699,10700,10701,10702,10703,10704,10705,10706,10707,10708,10709,10710,10711,10712,10713,10714,10715,10716,10717,10718,10719,10720,10721,10722,10723,10724,10725,10726,10727,10728,10729,10730,10731,10732,10733,10734,10735,10736,10737,10738,10739,10740,10741,10742,10743,10744,10745,10746,10747,10748,10749,10750,10751,10752,10753,10754,10755,10756,10757,10758,10759,10760,10761,10762,10763,10764,10765,10766,10767,10768,10769,10770,10771,10772,10773,10774,10775,10776,10777,10778,10779,10780,10781,10782,10783,10784,10785,10786,10787,10788,10789,10790,10791,10792,10793,10794,10795,10796,10797,10798,10799,10800,10801,10802,10803,10804,10805,10806,10807,10808,10809,10810,10811,10812,10813,10814,10815,10816,10817,10818,10819,10820,10821,10822,10823,10824,10825,10826,10827,10828,10829,10830,10831,10832,10833,10834,10835,10836,10837,10838,10839,10840,10841,10842,10843,10844,10845,10846,10847,10848,10849,10850,10851,10852,10853,10854,10855,10856,10857,10858,10859,10860,10861,10862,10863,10864,10865,10866,10867,10868,10869,10870,10871,10872,10873,10874,10875,10876,10877,10878,10879,10880,10881,10882,10883,10884,10885,10886] is the 1,176-id list in evidence/2026-09-15-row72-ids.txt (the tracks
+-- the design keeps advancing, spec §0.14 and §1.5). Once orders.nw_executor_version exists,
+-- the second query reads instead: pre-boundary rows with a non-null twin and a null version.
+select count(*) from orders where recon_state is not null
+  and (pending_unmatched + pending_surplus)
+      <> (select coalesce(sum((b->>2)::numeric), 0)
+          from jsonb_array_elements(recon_state->'buckets') b);
+=> 0
+
+-- The two scalar columns are the surviving buckets' sums, by construction. A disagreement
+-- means the jsonb and the scalars were written from different states.
+select count(*) from orders where replay = false and id > 10886
+  and (traded_at_price is not null or nw_traded_at_price is not null);
+=> 0
+
+-- C0's charge-against quantity is never written again, so the boundary is visible by
+-- nullness rather than by a date (ruling CR-3).
+select count(*) from orders where nw_dirty_seconds < 0;
+=> 0
+
+select count(*) from orders where nw_done = true and nw_next_attempt_at is not null;
+=> 0
+
+-- A finished counterfactual carries no pending retry.
+select count(*) from market_dirty_intervals where ended_at < started_at;
+=> 0
+
+select count(*) from (select venue_market_id from market_dirty_intervals
+                      where ended_at is null and replay = false
+                      group by 1 having count(*) > 1) x;
+=> 0
+
+-- At most one open dirty interval per market.
+select count(*) from market_observation_intervals i
+where i.ended_at is null
+  and not exists (select 1 from orders o where o.venue_market_id = i.venue_market_id
+                  and (o.status in ('open','partially_filled') or o.nw_done = false));
+=> 0
+
+-- No open observation row whose market has no working order (review I-6).
+select count(*) from order_rescores r left join orders o on o.id = r.order_id
+where o.id is null or r.verdict not in ('validated','corrected','unverifiable');
+=> 0
+
+-- Every estimate points at a real order and carries one of the three verdicts.
+-- the remaining CHECKS (harness/ops/checks.py), same SQL: verify.md and CHECKS agree (the two
+-- cutoff-bounded predicates above carry `'2026-09-15T05:23:44Z'` as a bound parameter in CHECKS)
+select count(*) from (
+    select venue, trade_id
+    from venue_trades_y2026w38
+    group by venue, trade_id
+    having count(*) > 1
+) d;  -- duplicate_trades (carried fix 16): the current weekly partition by name, so the
+select count(*) from order_clv c join orders o on o.id = c.order_id
+  where c.p_used_kind = 'order' and c.p_used <> o.prob;  -- clv_p_used_matches_order_prob
+select count(*) from job_runs
+  where job = 'settle' and started_at >= now() - interval '24 hours' and status = 'error';  -- settle_errors_24h
+select count(*) from venue_settlements d
+  where d.source = 'derived' and d.settled_at < now() - interval '48 hours'
+    and not exists (select 1 from venue_settlements v
+                    where v.venue = d.venue and v.ticker = d.ticker and v.source = 'venue');
+=> 0
+=> 0
+=> 0
+=> 0
+
+-- derived_without_venue_row_48h: a settled market older than two days must have a venue row (R11)
+select count(*) from runs
+  where started_at >= now() - interval '24 hours' and build_sha is not null
+    and build_sha <> (select build_sha from runs where build_sha is not null order by id desc limit 1);
+=> 2672
+
+-- build_sha_drift: every recorder run in the last 24h carries the newest run's build_sha
+select count(*) from orders
+  where status in ('open', 'partially_filled') and replay = false
+    and expiry is not null and expiry < now() - interval '5 minutes';  -- orders_open_past_expiry
+select count(*) from (
+    select evaluated_at from gate_reports group by evaluated_at
+    having count(*) filter (where gate_variant) <> 1
+) g;  -- gate_rows_one_gate_variant: exactly one gate_variant=true row per evaluation
+select count(*) from metric_samples where ts > now() - interval '24 hours' and value < 0;
+=> 0
+=> 0
+=> 0
+
+-- every metric name, including phase 4's exec.ws_event_ahead_s, which is clamped at 0
+-- by construction: a negative sample means the clamp went away, not that the WS is ahead
+select count(*) from operator_events where ts > now() - interval '24 hours' and trim(summary) = '';
+=> 0
+
+select count(*) from order_watch_samples
+  where ts > now() - interval '24 hours' and (queue_remaining < 0 or nw_queue_remaining < 0);
+=> 0
+
+select count(*) from equity_snapshots
+  where ts > now() - interval '24 hours' and mtm_coverage is not null
+    and (mtm_coverage < 0 or mtm_coverage > 1);
+=> 0
+
+select count(*) from game_score_events e
+  where e.ts > now() - interval '24 hours'
+    and exists (select 1 from game_score_events p
+                where p.game_id = e.game_id and p.ts < e.ts
+                  and (p.home_score > e.home_score or p.away_score > e.away_score));
+=> 0
+
+-- a game's score must never go down
+select count(*) from check_results
+  where ts > now() - interval '25 hours' and status not in ('pass', 'fail', 'skip');
+=> 0
+
+select count(*) from report_runs where generated_at > now();  -- small table, unbounded is fine
+select count(*) from report_cells rc
+  where not exists (select 1 from report_runs rr where rr.id = rc.report_run_id);  -- small table
+select count(*) from venue_requests
+  where env = 'prod' and method not in ('GET', 'HEAD');           -- the paper-posture tripwire
+select count(*) from venue_status where updated_at > now();
+=> 0
+=> 0
+=> 0
+=> 0
+
+select count(*) from backup_runs where finished_at is not null and finished_at < started_at;
+=> 0
+
+select count(*) from equity_snapshots
+  where ts > now() - interval '24 hours' and drawdown_pct is not null
+    and (drawdown_pct < -1 or drawdown_pct > 0);
+=> 0
+
+-- drawdown_pct is a fraction, not percentage points: (cash - peak_7d) / peak_7d. peak_equity_7d
+-- folds today's cash into the peak, so a new high reads exactly 0 and the band is [-1, 0];
+-- cash cannot go below zero, which is what pins the lower bound. That assumption holds at
+-- today's sizes; if a row ever prints below -1, cash itself has gone negative in paper --
+-- read it as a solvency event, journal it as an integrity anomaly, and do not wave it off as
+-- a query bug.
+select count(*) from runs where started_at > now() - interval '24 hours'
+  and (notes->'pricing'->>'gate_variant_missing')::boolean = true;
+=> 0
+
+-- Phase 6D: one bounded invariant per new table and column family (returns 0 when healthy)
+select count(*) from coverage_samples
+  where n < 0 or (outcome not in ('completed','scheduled') and overdue_ms is null)
+     or (outcome in ('completed','scheduled') and overdue_ms is not null);
+=> 0
+
+select count(*) from opportunity_episodes where ended_at < started_at or n_signals < 1;
+=> 0
+
+select count(*) from intent_episodes e
+  where e.ended_at < e.started_at
+     or not exists (select 1 from intents i
+                    where i.variant_id = e.variant_id and i.venue_market_id = e.venue_market_id
+                      and i.side = e.side and i.created_at between e.started_at and e.ended_at);
+=> 0
+
+select count(*) from pg_index i join pg_class c on c.oid = i.indexrelid
+  where c.relname = 'ix_intents_created' and not i.indisvalid;
+=> 0
+
+select count(*) from (select started_at, notes from runs order by id desc limit 2000) r
+  where r.started_at > '2026-09-15T17:31:27Z' and r.notes ? 'pricing'
+    and not (r.notes->'pricing'->'stages'->0 ? 'units');
+=> 0
+
+-- cap-then-filter on the primary key, recent_runs' shape: runs has no index on started_at
+-- (ruling I5), and 2,000 rows is ~36 h at 1,315 runs a day. '2026-09-15T17:31:27Z' is the 6D deploy
+-- instant the journal records.
+=== done 12:33:47 CT
