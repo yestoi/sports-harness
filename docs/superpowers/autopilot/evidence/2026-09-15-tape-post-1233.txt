@@ -1,0 +1,13 @@
+post_deploy_at 2026-09-15 17:32:52.331382+00
+largest_gap_s 17.8 ending 2026-09-15 17:31:27.476+00
+first_recovered_snapshot 2026-09-15 17:31:27.52135+00
+events_in_window 4576
+gap_rows_window 0
+ws_events ws_connect 2026-09-15 17:31:27.434716+00
+last_old_run 18354 2026-09-15 17:30:54.13548+00
+first_new_run 18355 2026-09-15 17:31:55.946377+00
+new_runs 18355 skipped 2026-09-15 17:31:55.946377+00
+new_runs 18356 skipped 2026-09-15 17:32:25.946279+00
+fix74_event 2026-09-15 14:40:24.5078+00 research_spend_released released USD 1.8702 of stale research reservations at worker start (2 rows) {"rows": [["2026-09-15", "veto", "claude-opus-5", "1.2972"], ["2026-09-15", "veto", "claude-sonnet-5", "0.5730"]]}
+research_reserved_post 0.0000 usd 24.4092
+deploy_events 2026-09-15 17:31:55.946377+00 build_sha 7c3d750 - f7a1ccb
