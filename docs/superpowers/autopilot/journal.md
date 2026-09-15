@@ -2481,3 +2481,17 @@ The user, verbatim (the `/autopilot` resume message, received 15:33 CT, recorded
 - Rulings: 6D I3 `fair_age_s` bounded to a 10,000-entry deque (in-task memory bound, no plan behaviour renamed); 6D I4 no code change - T10 exempts `exec.signal_to_order_ms` in verify row 12 the way `coverage.truncated` is; a worker's unrequested full `make test` (T11) was stopped and the worker redirected to its scoped set.
 - Deploy: none (R4 window from about 17:35 CT; fix 64 deploys at the 23:22 CT wakeup)
 - Next: T11 review, slot-state re-review, T7; then 6B T12 and the 6B/4.6 integration rounds (briefs prepared)
+
+## 215. phase - 4.6 slices A-E on main (merge 50cb103); the release rides the 23:22 CT deploy; T18b/T19 remain - 2026-09-14 19:18 CT
+
+- Orient: rule 5 - phase 4.6's wave map puts T18b (the first live NFL window measurement) after "Task 8 deployed", so the phase branch reaches main before its last two tasks.
+- Branch / commits: phase46-fun-tickets 185e2e1 (T1-T17, T18a, slot-state, the integration round, the plan annotations) merged with main 530cbe0 as merge commit **50cb103** (seven both-sides-added conflicts resolved as unions by an opus implementer; D9 renumber: the phase's revision is `0010_phase46_fun_tickets` on `0009_score_correction`; review APPROVED 0/0/1 with the union verified line by line against both parents); main ff -> 50cb103; phase46-fun-tickets = main.
+- Result: on main; **not complete** - T18b (controller-executed measurement in the first watched NFL window after the release) and T19 (verification rows, last) remain; roadmap status stays `planned`.
+- Dispatches: CT day 121 at 19:18 CT (6B 22, 4.6 56, 6D 22, hotfix 2)
+- Tests: 3,850 passed / 6 xfailed / 1 deselected at 50cb103, pristine, release tree 7abd4c63da3a (merge-main-full-50cb103.log)
+- Review: clean (rev-46-merge-main APPROVED; one Minor, a long annotation line in the plan)
+- Deploy: none yet - main is 77 files / 15,418 insertions ahead of the runtime ca30ed1 (fix 64 + the 4.6 release: models, the `0010` revision, the `app-serve-lan` compose profile, dormant until the user's three LAN files exist); the R4 window blocks until 23:15 CT; wakeup 71baf905 at 23:22 CT runs the full recipe (`make deploy-omarchy`) if the window is clear, else after Tuesday's 07:00 CT reboot.
+- Verification: the next verify judges the fix 64 row and the pre-existing rows; the 4.6 rows arrive with T19 after T18b. The walkthrough items (Layer 3b) run at the day's first verify after the release.
+- Rulings: a merge commit rather than a 54-commit rebase (the trial rebase conflicted at the first models.py commit); the two load-bearing plan/spec revision statements annotated, fourteen as-written step mentions left; `docs/superpowers/autopilot` is read-only in the worker sandbox, so a plan's verify.md task is prepared by the worker as a diff and applied by the controller (6B T12 today).
+- Carried forward: T15/T12 walkthrough items; the stale-line needs phrase on a no-threshold prop leg (untested); `pyflakes` absent from the venv; the 4.6 plan's fourteen as-written `0008`/`00NN` mentions.
+- Next: 6B integration round and T12 review; 6D T8; the 23:22 CT deploy and verify; T18b at the first watched NFL window after the release
