@@ -1,0 +1,27 @@
+reread_at 2026-09-15T23:40:22Z (18:40:22 CT) build f8053c6
+settle|212|2026-09-15 19:31:25.946583+00|2026-09-15 19:32:49.84435+00|ok|f|gap_outcomes_drain:61.606::false report_wtd:0.0:true:false markouts:13.277::false
+settle|213|2026-09-15 20:31:25.947006+00|2026-09-15 20:32:57.487419+00|ok|f|gap_outcomes_drain:66.052::false report_wtd:0.0:true:false markouts:16.408::false
+settle|214|2026-09-15 21:38:25.649961+00|2026-09-15 21:40:00.57373+00|ok|f|gap_outcomes_drain:64.203::false report_wtd:0.0:true:false markouts:21.372::false
+settle|215|2026-09-15 22:38:25.605655+00|2026-09-15 22:41:09.606241+00|ok|f|gap_outcomes_drain:69.44::false report_wtd:64.528:true:false markouts:20.536::false
+settle|216|2026-09-15 23:38:25.605599+00|2026-09-15 23:40:03.660276+00|ok|f|gap_outcomes_drain:64.724::false report_wtd:0.001:true:false markouts:24.124::false
+report_wtd_stage|212|0.0|{"skipped": true}
+report_wtd_stage|213|0.0|{"skipped": true}
+report_wtd_stage|214|0.0|{"skipped": true}
+report_wtd_stage|215|64.528|{"reason": "ran first", "skipped": true}
+report_wtd_stage|216|0.001|{"skipped": true}
+report_runs_w38|19|t|2026-09-15 22:38:25.605655+00
+report_runs_w38|18|t|2026-09-15 15:40:24.094115+00
+report_runs_w38|17|t|2026-09-15 08:06:16.681732+00
+settle_error_events|0
+p95|23693.000000|2026-09-15 23:39:25.203547+00
+loop_ms_last30|25|17184|14376|34471.599999999984|44841.000000
+nw_pending|7833.000000|2026-09-15 23:39:25.203547+00
+tape_covered_hourly|1.000000|2026-09-15 19:00:25.946154+00
+tape_covered_hourly|1.000000|2026-09-15 20:00:25.9462+00
+tape_covered_hourly|1.000000|2026-09-15 21:00:25.605238+00
+tape_covered_hourly|1.000000|2026-09-15 22:00:25.605229+00
+tape_covered_hourly|1.000000|2026-09-15 23:00:25.605145+00
+gap_rows_since_1231|0
+ws_advances|ws.acks_out_of_sequence|0.000000
+ws_advances|ws.gaps|0.000000
+ws_advances|ws.seq_advances_accounted|14.000000
