@@ -49,3 +49,11 @@ research_reserved_read 2026-09-15 14:50:48.031756+00 reserved=0.6234 usd=23.6441
 veto_calls_last_10min 38
 settle_209 running
 report_wtd_period_s_last_success 2026-09-15 08:06:16.681732+00
+index gap_outcomes gap_outcomes_pkey CREATE UNIQUE INDEX gap_outcomes_pkey ON public.gap_outcomes USING btree (gap_snapshot_id, benchmark_type)
+index market_gap_snapshots ix_gap_market_created CREATE INDEX ix_gap_market_created ON public.market_gap_snapshots USING btree (venue_market_id, created_at)
+index market_gap_snapshots market_gap_snapshots_pkey CREATE UNIQUE INDEX market_gap_snapshots_pkey ON public.market_gap_snapshots USING btree (id)
+index market_gap_snapshots uq_gap_run_market CREATE UNIQUE INDEX uq_gap_run_market ON public.market_gap_snapshots USING btree (run_id, venue_market_id)
+index runs runs_pkey CREATE UNIQUE INDEX runs_pkey ON public.runs USING btree (id)
+mgs_rows_week 466564 priced 331424
+mgs_total 3228229
+settle_next_due_estimate 2026-09-15 15:40:54.069493+00
