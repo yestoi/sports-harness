@@ -1,0 +1,34 @@
+release_boundary (the stop instant of the c1066b5 full release, 2026-09-15T05:23:44Z = 00:23:44 CT; supersedes the 23:22 CT capture in 2026-09-14-predeploy-boundary-6b.txt because the rolled-back 23:34 CT attempt restored ca30ed1, which ran until this stop)
+boundary_order_id|10886
+boundary_fill_id|1878
+boundary_event_id|2562407
+boundary_ledger_id|4
+boundary_run_id|17015 (skipped heartbeats 17016 in the gap; first c1066b5 run 17017)
+first_6b_order_id|10887
+first_6b_event_id|2569835
+captured_at_utc=2026-09-15T05:37:30Z
+
+== 6B rows re-run on the release boundary
+verify_at_utc=2026-09-15T05:37:30Z  (00:37 CT)
+originals_fills|1878|70557.76|1878
+originals_orders|38.92|1557550170|1529.92|11006049.45|154403731.18
+originals_ledger|4|77.84|4
+post_boundary_fills|0
+post_expiry_fills|0
+place_after_rejected_skip|0
+signal_rejected_skips|0
+queue_model_no_print|0
+dirty_over_resting|0
+nw_backoff_stale|0
+open_intervals_dirty|0
+open_intervals_observation|0
+gate_reports_newest|5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5|2026-09-14 14:00:35.006961+00|t
+gate_eligibility_key|0
+nw_pending_past_expiry|0
+exec_nw_pending|exec.nw_pending|1428.000000|2026-09-15 05:37:00.581329+00
+alembic_version|0011_phase6b_execution
+exec_loop_ms_p95_post|3869.4
+exec_open_orders_latest|0.000000|2026-09-15 05:37:00.581329+00
+== 2b after-6b with the release boundary
+pre_boundary_backfill|1176
+post_boundary_c0_written|0

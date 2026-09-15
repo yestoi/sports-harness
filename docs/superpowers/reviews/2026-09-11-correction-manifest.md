@@ -62,15 +62,17 @@ recorder cannot see (`id > :cursor and ts >= :lower` with `lower = as_of - DELTA
 instead of the per-object `int(seq) != self.seq + 1` test that read ordinary multiplexed
 interleaving as a lost frame. `book_at` is unchanged.
 
-- **Code version:** `7c3d555` through `<sha>`; deployed at `<sha>` (Amendment 6, one deploy for
+- **Code version:** `7c3d555` through `c1066b5`; deployed at `c1066b5` on 2026-09-15 00:23 CT (05:23Z) (Amendment 6, one deploy for
   C1-C6).
 - **Measurement version:** `EXECUTOR_VERSION` 4.4 before, 4.5 after (`harness/execution/__init__.py`).
 - **Strategies in force:** unchanged, `harness.corrections.VARIANT_IDS_C0`.
 - **Executor configurations in force:** `harness.corrections.CONFIG_HASHES_C1`, filled by the
-  controller at merge.
-- **Affected ranges:** `<filled at merge>` (numeric order-id and run-id boundary; the boundary is
-  `boundary_order_id`, with `boundary_fill_id`, `boundary_event_id` and `boundary_ledger_id`
-  recorded in Amendment 6).
+  controller at the release (2026-09-15, three hashes, one tuple for C1-C6).
+- **Affected ranges:** orders `> 10886`, runs `> 17016` (filled 2026-09-15 00:50 CT, D11). The
+  boundary is the release's stop instant, 2026-09-15T05:23:44Z: `boundary_order_id` 10886,
+  `boundary_fill_id` 1878, `boundary_event_id` 2562407, `boundary_ledger_id` 4, `boundary_run_id`
+  17016 (17015 real, 17016 a skipped heartbeat); the first c1066b5 order is 10887 and run 17017.
+  Recorded in Amendment 6 and in `docs/superpowers/autopilot/evidence/2026-09-15-release-boundary-6b.txt`.
 - **Eligible measurements:** post-boundary `book_source`/`dirty_minutes` classifications, read
   from the subscription's own gap rows.
 - **Excluded measurements:** pre-boundary `book_source`/`dirty_minutes` classifications, which
@@ -84,13 +86,13 @@ on both re-anchor branches (the recovery branch and the no-book branch), instead
 `last_print_ts` behind while the queue and cursor advance, which let a trade from inside a gap
 apply twice against a newly anchored queue.
 
-- **Code version:** `7c3d555` through `<sha>`; deployed at `<sha>` (Amendment 6, one deploy for
+- **Code version:** `7c3d555` through `c1066b5`; deployed at `c1066b5` on 2026-09-15 00:23 CT (05:23Z) (Amendment 6, one deploy for
   C1-C6).
 - **Measurement version:** `EXECUTOR_VERSION` 4.4 before, 4.5 after.
 - **Strategies in force:** unchanged, `harness.corrections.VARIANT_IDS_C0`.
 - **Executor configurations in force:** `harness.corrections.CONFIG_HASHES_C2`, filled by the
-  controller at merge.
-- **Affected ranges:** `<filled at merge>`.
+  controller at the release (2026-09-15, three hashes, one tuple for C1-C6).
+- **Affected ranges:** orders `> 10886`, runs `> 17016` (filled 2026-09-15 00:50 CT, D11; boundary as under C1).
 - **Eligible measurements:** post-boundary `filled_contracts`, anchored with the queue on both
   re-anchor branches.
 - **Excluded measurements:** pre-boundary `filled_contracts` on any order that recovered from a
@@ -104,13 +106,13 @@ ledger bucketed by timestamp within `store.PRINT_LOOKBACK`: a decrement is claim
 print inside that horizon, so a print and the delta that reports the same trade move the queue
 once, not twice.
 
-- **Code version:** `7c3d555` through `<sha>`; deployed at `<sha>` (Amendment 6, one deploy for
+- **Code version:** `7c3d555` through `c1066b5`; deployed at `c1066b5` on 2026-09-15 00:23 CT (05:23Z) (Amendment 6, one deploy for
   C1-C6).
 - **Measurement version:** `EXECUTOR_VERSION` 4.4 before, 4.5 after.
 - **Strategies in force:** unchanged, `harness.corrections.VARIANT_IDS_C0`.
 - **Executor configurations in force:** `harness.corrections.CONFIG_HASHES_C3`, filled by the
-  controller at merge.
-- **Affected ranges:** `<filled at merge>`.
+  controller at the release (2026-09-15, three hashes, one tuple for C1-C6).
+- **Affected ranges:** orders `> 10886`, runs `> 17016` (filled 2026-09-15 00:50 CT, D11; boundary as under C1).
 - **Eligible measurements:** post-boundary `queue_remaining`, reconciled against a trade inside
   its own horizon.
 - **Excluded measurements:** pre-boundary `queue_remaining` and `traded_at_price`; the two are
@@ -130,13 +132,13 @@ consumes capacity. This is the pre/post-boundary difference in `crossed`/`worst_
 own expiry; post-boundary the expiry clamp forbids it and a rejected latest signal re-attributes
 the skip reason.
 
-- **Code version:** `7c3d555` through `<sha>`; deployed at `<sha>` (Amendment 6, one deploy for
+- **Code version:** `7c3d555` through `c1066b5`; deployed at `c1066b5` on 2026-09-15 00:23 CT (05:23Z) (Amendment 6, one deploy for
   C1-C6).
 - **Measurement version:** `EXECUTOR_VERSION` 4.4 before, 4.5 after.
 - **Strategies in force:** unchanged, `harness.corrections.VARIANT_IDS_C0`.
 - **Executor configurations in force:** `harness.corrections.CONFIG_HASHES_C4`, filled by the
-  controller at merge.
-- **Affected ranges:** `<filled at merge>`.
+  controller at the release (2026-09-15, three hashes, one tuple for C1-C6).
+- **Affected ranges:** orders `> 10886`, runs `> 17016` (filled 2026-09-15 00:50 CT, D11; boundary as under C1).
 - **Eligible measurements:** post-boundary fills clamped to the order's own expiry, and
   skip-reason counts re-attributed ahead of capacity.
 - **Excluded measurements:** pre-boundary fills stamped after their order's expiry, and
@@ -151,13 +153,13 @@ the remaining watched interval, records dirtiness and observation coverage per m
 retries an unreadable counterfactual on an elapsed-time backoff (`exec_period_s` doubling to
 `NW_RETRY_MAX_S = 3600`, reset on a successful read) without ever closing the track.
 
-- **Code version:** `7c3d555` through `<sha>`; deployed at `<sha>` (Amendment 6, one deploy for
+- **Code version:** `7c3d555` through `c1066b5`; deployed at `c1066b5` on 2026-09-15 00:23 CT (05:23Z) (Amendment 6, one deploy for
   C1-C6).
 - **Measurement version:** `EXECUTOR_VERSION` 4.4 before, 4.5 after.
 - **Strategies in force:** unchanged, `harness.corrections.VARIANT_IDS_C0`.
 - **Executor configurations in force:** `harness.corrections.CONFIG_HASHES_C5`, filled by the
-  controller at merge.
-- **Affected ranges:** `<filled at merge>`.
+  controller at the release (2026-09-15, three hashes, one tuple for C1-C6).
+- **Affected ranges:** orders `> 10886`, runs `> 17016` (filled 2026-09-15 00:50 CT, D11; boundary as under C1).
 - **Eligible measurements:** post-boundary `dirty_seconds`/`dirty_minutes` scoped to the watched
   resting interval, with the counterfactual's own `nw_dirty_seconds` column and a bounded backoff
   on unreadable tickers.
@@ -178,14 +180,14 @@ its absence understates contention. **A per-run exact comparison is out of scope
 refuse a range where one variant merely placed nothing in a single run, which is safe and
 frequent, so it is not attempted here.
 
-- **Code version:** `7c3d555` through `<sha>`; deployed at `<sha>` (Amendment 6, one deploy for
+- **Code version:** `7c3d555` through `c1066b5`; deployed at `c1066b5` on 2026-09-15 00:23 CT (05:23Z) (Amendment 6, one deploy for
   C1-C6).
 - **Measurement version:** `EXECUTOR_VERSION` 4.4 before, 4.5 after.
 - **Strategies in force:** unchanged, `harness.corrections.VARIANT_IDS_C0`.
 - **Executor configurations in force:** `harness.corrections.CONFIG_HASHES_C6`, filled by the
-  controller at merge.
-- **Affected ranges:** `<filled at merge>` (run-id range; range-scoped, so `affected_run_id_range`
-  is the binding one).
+  controller at the release (2026-09-15, three hashes, one tuple for C1-C6).
+- **Affected ranges:** runs `> 17016` (orders `> 10886`); range-scoped, so `affected_run_id_range`
+  is the binding one (filled 2026-09-15 00:50 CT, D11; boundary as under C1).
 - **Eligible measurements:** a range replay under the executor configuration in force over that
   range, sharing one capacity counter.
 - **Excluded measurements:** pre-boundary single-variant replay counts as a baseline for a
