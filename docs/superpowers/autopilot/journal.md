@@ -2496,7 +2496,7 @@ The user, verbatim (the `/autopilot` resume message, received 15:33 CT, recorded
 - Carried forward: T15/T12 walkthrough items; the stale-line needs phrase on a no-threshold prop leg (untested); `pyflakes` absent from the venv; the 4.6 plan's fourteen as-written `0008`/`00NN` mentions.
 - Next: 6B integration round and T12 review; 6D T8; the 23:22 CT deploy and verify; T18b at the first watched NFL window after the release
 
-## 216. phase done - 6B repair execution merged to main at 61013dd - 21:40 CT
+## 216. phase done - 6B repair execution merged to main at 61013dd - 21:22 CT
 
 - Orient: phase (rule 5). Phase 6B: the six bullets of ROADMAP.md §6B in twelve tasks plus the audit-interval slice and the integration round, on `phase6b-repair-execution` from base a2287da (34 branch commits, 48 files, +8,024/-430 before the merge).
 - Branch/commits: task merges T10, T1-T9, audit-interval, T11, T12, integration round (6bb34d6, 571be70, verify rows fd70692), final-review Minors 6628d1a, archive 66a46e7; merge of main (48933de: fixes 45-66, 4.6, fix 64) as 61013dd with seven hand-resolved files (migrate.py, schema.py, execution/loop.py, execution/store.py, tests/conftest.py, tests/test_alembic.py, tests/test_checks.py) and the D9 renumber `0008_phase6b_execution` -> `0011_phase6b_execution` on `0010_phase46_fun_tickets`.

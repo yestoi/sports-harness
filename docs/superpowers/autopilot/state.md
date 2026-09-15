@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-14 21:45 CT by controller session sports-5e (session_01K7uXN54fkXzh2teuSzb1bo) in `/home/trey/dev/sports` on Omarchy (lock held by process 718911 under flock in tmux `sports-autopilot`; a peer unlocked Claude session `herdr-autopilot-68` is alive and is not a controller). Last journal entry: 216 (phase 6B done). Main **90f64be** = the 6B merge 61013dd (fix 64 + 4.6 + 6B; revisions `0010_phase46_fun_tickets`, `0011_phase6b_execution`) plus docs; runtime still ca30ed1 until the 23:22 CT deploy wakeup (R4: NFL kickoff 19:15 CT; full recipe).
+Updated 2026-09-14 21:24 CT by controller session sports-5e (session_01K7uXN54fkXzh2teuSzb1bo) in `/home/trey/dev/sports` on Omarchy (lock held by process 718911 under flock in tmux `sports-autopilot`; a peer unlocked Claude session `herdr-autopilot-68` is alive and is not a controller). Last journal entry: 216 (phase 6B done). Main **90f64be** = the 6B merge 61013dd (fix 64 + 4.6 + 6B; revisions `0010_phase46_fun_tickets`, `0011_phase6b_execution`) plus docs; runtime still ca30ed1 until the 23:22 CT deploy wakeup (R4: NFL kickoff 19:15 CT; full recipe).
 
 ## Rulings landed at resume (journal 199-212)
 
@@ -31,7 +31,7 @@ User-side closed: NAS key (bundle on the NAS), age key (held off-host, nag dropp
 
 ## Counters and gates
 
-- CT day Sep 14: 132 dispatches at 21:45 CT. Unit counters: phase 6B 27 (closed); phase 4.6 56; phase 6D 28; hotfix fix-64 2; batches closed today (57/58: 9; 66: 2; aliases: 2). Failed deploys today: 0. Fix rounds open: none. Re-dispatches: T6 review 1/3, fix-49 r3 1/3, T2 1/3. Rate-limit pauses: 1 (06:xx CT). Implementers 0/3.
+- CT day Sep 14: 132 dispatches at 21:24 CT. Unit counters: phase 6B 27 (closed); phase 4.6 56; phase 6D 28; hotfix fix-64 2; batches closed today (57/58: 9; 66: 2; aliases: 2). Failed deploys today: 0. Fix rounds open: none. Re-dispatches: T6 review 1/3, fix-49 r3 1/3, T2 1/3. Rate-limit pauses: 1 (06:xx CT). Implementers 0/3.
 - Gates: none open.
 
 ## Deadlines and open acceptance
