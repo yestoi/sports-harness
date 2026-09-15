@@ -1,0 +1,119 @@
+explain_at 2026-09-15 14:57:02.152175+00
+cursor_tuple_fraction 0.1
+== plain EXPLAIN (the whole result)
+Gather  (cost=5627.04..76728.79 rows=137449 width=63)
+  Workers Planned: 1
+  ->  Hash Left Join  (cost=4627.04..61983.89 rows=80852 width=63)
+        Hash Cond: (s.id = o.gap_snapshot_id)
+        ->  Parallel Hash Anti Join  (cost=2578.88..59723.49 rows=80852 width=59)
+              Hash Cond: (s.run_id = _cr.id)
+              ->  Nested Loop  (cost=21.47..56143.79 rows=81261 width=67)
+                    ->  Hash Join  (cost=21.04..1999.96 rows=5421 width=18)
+                          Hash Cond: (m.game_id = g.id)
+                          ->  Parallel Seq Scan on venue_markets m  (cost=0.00..1962.64 rows=6164 width=14)
+                          ->  Hash  (cost=14.35..14.35 rows=535 width=8)
+                                ->  Seq Scan on games g  (cost=0.00..14.35 rows=535 width=8)
+                    ->  Index Scan using ix_gap_market_created on market_gap_snapshots s  (cost=0.43..9.79 rows=20 width=57)
+                          Index Cond: ((venue_market_id = m.id) AND (created_at >= '2026-09-14 05:00:00+00'::timestamp with time zone) AND (created_at < now()))
+                          Filter: (fair_p IS NOT NULL)
+              ->  Parallel Hash  (cost=2556.73..2556.73 rows=54 width=8)
+                    ->  Parallel Seq Scan on runs _cr  (cost=0.00..2556.73 rows=54 width=8)
+                          Filter: ((notes ->> 'clock'::text) = 'unsynced'::text)
+        ->  Hash  (cost=1991.91..1991.91 rows=4500 width=12)
+              ->  Seq Scan on gap_outcomes o  (cost=0.00..1991.91 rows=4500 width=12)
+                    Filter: ((benchmark_type)::text = 'pinnacle_t5'::text)
+== EXPLAIN as a cursor (what _stream declares)
+BEGIN
+Hash Left Join  (cost=4718.56..101189.39 rows=137449 width=63)
+  Hash Cond: (s.id = o.gap_snapshot_id)
+  ->  Hash Anti Join  (cost=2670.40..98780.42 rows=137449 width=59)
+        Hash Cond: (s.run_id = _cr.id)
+        ->  Nested Loop  (cost=0.72..94372.84 rows=138143 width=67)
+              ->  Nested Loop  (cost=0.29..2325.35 rows=9216 width=18)
+                    ->  Seq Scan on venue_markets m  (cost=0.00..2005.78 rows=10478 width=14)
+                    ->  Memoize  (cost=0.29..0.30 rows=1 width=8)
+                          Cache Key: m.game_id
+                          Cache Mode: logical
+                          ->  Index Scan using games_pkey on games g  (cost=0.28..0.29 rows=1 width=8)
+                                Index Cond: (id = m.game_id)
+              ->  Index Scan using ix_gap_market_created on market_gap_snapshots s  (cost=0.43..9.79 rows=20 width=57)
+                    Index Cond: ((venue_market_id = m.id) AND (created_at >= '2026-09-14 05:00:00+00'::timestamp with time zone) AND (created_at < now()))
+                    Filter: (fair_p IS NOT NULL)
+        ->  Hash  (cost=2668.55..2668.55 rows=91 width=8)
+              ->  Seq Scan on runs _cr  (cost=0.00..2668.55 rows=91 width=8)
+                    Filter: ((notes ->> 'clock'::text) = 'unsynced'::text)
+  ->  Hash  (cost=1991.91..1991.91 rows=4500 width=12)
+        ->  Seq Scan on gap_outcomes o  (cost=0.00..1991.91 rows=4500 width=12)
+              Filter: ((benchmark_type)::text = 'pinnacle_t5'::text)
+JIT:
+  Functions: 36
+  Options: Inlining false, Optimization false, Expressions true, Deforming true
+ROLLBACK
+== T5_FAIRS plain EXPLAIN
+Sort  (cost=365013.87..365013.87 rows=1 width=83)
+  Sort Key: f.game_id, f.market_type, f.outcome_team_id, f.outcome_side, f.threshold, f.created_at
+  ->  Nested Loop Anti Join  (cost=3332.36..365013.86 rows=1 width=83)
+        ->  Gather  (cost=3332.07..365011.88 rows=1 width=91)
+              Workers Planned: 2
+              ->  Parallel Hash Join  (cost=2332.07..364011.78 rows=1 width=91)
+                    Hash Cond: ((f.game_id = g.id) AND ((f.market_type)::text = (m.market_type)::text) AND (COALESCE(f.outcome_team_id, '-1'::integer) = COALESCE(m.side_team_id, '-1'::integer)) AND ((COALESCE(f.outcome_side, ''::character varying))::text = (COALESCE(m.side, ''::character varying))::text) AND (COALESCE(f.threshold, '0'::numeric) = COALESCE(m.threshold, '0'::numeric)))
+                    ->  Parallel Bitmap Heap Scan on fair_values f  (cost=210.13..338982.73 rows=305428 width=55)
+                          Recheck Cond: ((created_at >= '2026-09-14 05:00:00+00'::timestamp with time zone) AND (created_at < now()))
+                          Filter: ((fair_p IS NOT NULL) AND ((feed_kind)::text = 'featured'::text))
+                          ->  Bitmap Index Scan on ix_fair_created_brin  (cost=0.00..26.87 rows=792611 width=0)
+                                Index Cond: ((created_at >= '2026-09-14 05:00:00+00'::timestamp with time zone) AND (created_at < now()))
+                    ->  Parallel Hash  (cost=1999.96..1999.96 rows=5421 width=66)
+                          ->  Hash Join  (cost=21.04..1999.96 rows=5421 width=66)
+                                Hash Cond: (m.game_id = g.id)
+                                ->  Parallel Seq Scan on venue_markets m  (cost=0.00..1962.64 rows=6164 width=58)
+                                ->  Hash  (cost=14.35..14.35 rows=535 width=8)
+                                      ->  Seq Scan on games g  (cost=0.00..14.35 rows=535 width=8)
+        ->  Index Scan using runs_pkey on runs _cr  (cost=0.29..1.13 rows=1 width=8)
+              Index Cond: (id = f.run_id)
+              Filter: ((notes ->> 'clock'::text) = 'unsynced'::text)
+JIT:
+  Functions: 40
+  Options: Inlining false, Optimization false, Expressions true, Deforming true
+== T5_FAIRS as a cursor
+BEGIN
+Incremental Sort  (cost=320269.31..637876.87 rows=2 width=83)
+  Sort Key: f.game_id, f.market_type, f.outcome_team_id, f.outcome_side, f.threshold, f.created_at
+  Presorted Key: f.game_id, f.market_type
+  ->  Nested Loop Anti Join  (cost=2661.82..637876.78 rows=1 width=83)
+        Join Filter: (_cr.id = f.run_id)
+        ->  Merge Join  (cost=2661.82..635207.10 rows=1 width=91)
+              Merge Cond: ((f.game_id = g.id) AND ((f.market_type)::text = (m.market_type)::text))
+              Join Filter: ((COALESCE(m.side_team_id, '-1'::integer) = COALESCE(f.outcome_team_id, '-1'::integer)) AND ((COALESCE(m.side, ''::character varying))::text = (COALESCE(f.outcome_side, ''::character varying))::text) AND (COALESCE(m.threshold, '0'::numeric) = COALESCE(f.threshold, '0'::numeric)))
+              ->  Index Scan using ix_fair_game_type_created on fair_values f  (cost=0.43..482369.95 rows=733026 width=55)
+                    Index Cond: ((created_at >= '2026-09-14 05:00:00+00'::timestamp with time zone) AND (created_at < now()))
+                    Filter: ((fair_p IS NOT NULL) AND ((feed_kind)::text = 'featured'::text))
+              ->  Sort  (cost=2661.38..2684.42 rows=9216 width=66)
+                    Sort Key: g.id, m.market_type
+                    ->  Hash Join  (cost=21.04..2054.51 rows=9216 width=66)
+                          Hash Cond: (m.game_id = g.id)
+                          ->  Seq Scan on venue_markets m  (cost=0.00..2005.78 rows=10478 width=58)
+                          ->  Hash  (cost=14.35..14.35 rows=535 width=8)
+                                ->  Seq Scan on games g  (cost=0.00..14.35 rows=535 width=8)
+        ->  Seq Scan on runs _cr  (cost=0.00..2668.55 rows=91 width=8)
+              Filter: ((notes ->> 'clock'::text) = 'unsynced'::text)
+JIT:
+  Functions: 33
+  Options: Inlining true, Optimization true, Expressions true, Deforming true
+ROLLBACK
+== T4B_FAIRS as a cursor
+BEGIN
+Hash Anti Join  (cost=2877.94..385358.73 rows=721875 width=46)
+  Hash Cond: (f.run_id = _cr.id)
+  ->  Bitmap Heap Scan on fair_values f  (cost=208.26..373561.70 rows=725522 width=46)
+        Recheck Cond: ((created_at >= '2026-09-14 05:00:00+00'::timestamp with time zone) AND (created_at < now()))
+        Filter: ((fair_p IS NOT NULL) AND ((fair_source)::text = ANY ('{direct,derived}'::text[])))
+        ->  Bitmap Index Scan on ix_fair_created_brin  (cost=0.00..26.87 rows=792611 width=0)
+              Index Cond: ((created_at >= '2026-09-14 05:00:00+00'::timestamp with time zone) AND (created_at < now()))
+  ->  Hash  (cost=2668.55..2668.55 rows=91 width=8)
+        ->  Seq Scan on runs _cr  (cost=0.00..2668.55 rows=91 width=8)
+              Filter: ((notes ->> 'clock'::text) = 'unsynced'::text)
+JIT:
+  Functions: 16
+  Options: Inlining false, Optimization false, Expressions true, Deforming true
+ROLLBACK
+fair_values_week 879683 featured 877436
