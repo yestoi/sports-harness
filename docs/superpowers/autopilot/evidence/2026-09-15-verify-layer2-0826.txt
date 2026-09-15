@@ -1,0 +1,78 @@
+verify_at_utc=2026-09-15T13:26:01Z (0826 CT) deploy 762bde4 (fix 73, app-only, deployed 13:19:07-13:21:14Z)
+/srv/sports-harness/sports-compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U harness -d harness -At -F " | " <<'SQL'
+select id, started_at, status, credits_used, odds_remaining, notes->'errors' as errors
+  from runs where status <> 'skipped' order by id desc limit 5;
+=> (no rows)
+=> ERROR ERROR:  syntax error at or near "/" LINE 1: /srv/sports-harness/sports-compose exec -T postgres psql -X ...         ^
+
+select status, count(*) from runs where started_at > now() - interval '3 hours' group by 1;
+=> ok | 14
+=> skipped | 272
+
+select id, started_at, status from runs order by id desc limit 1;
+=> 17894 | 2026-09-15 13:25:40.468367+00 | skipped
+
+select decision, count(*) from signals where replay=false and created_at > now() - interval '3 hours' group by 1;
+=> candidate | 1802
+=> rejected | 8876
+
+select kind, count(*) from orderbook_events where ts > now() - interval '2 hours' group by 1;
+=> delta | 60905
+=> gap | 2
+=> snapshot | 488
+
+select now() - ts as ws_last_event_age from orderbook_events order by id desc limit 1;  -- by id: max(ts) scanned 19M rows (120 s on 2026-09-07)
+select relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze from pg_stat_user_tables order by n_dead_tup desc limit 5;
+=> 00:00:01.734347
+=> fair_values | 4499650 | 6349 |  | 2026-09-15 03:32:52.355047+00
+=> gap_outcomes | 79452 | 5540 |  | 2026-09-14 08:58:54.916318+00
+=> orders | 11136 | 3740 | 2026-09-15 13:25:33.086894+00 | 2026-09-15 13:25:33.416953+00
+=> runs | 17781 | 2035 |  | 2026-09-15 11:36:15.325499+00
+=> market_gap_snapshots | 3205925 | 884 |  | 2026-09-14 23:57:41.899983+00
+
+select count(*), pg_size_pretty(sum(size)) from pg_ls_waldir();
+=> 64 | 1024 MB
+
+select pg_size_pretty(pg_database_size('harness'));
+=> 130 GB
+
+SQL
+=> (no rows)
+=> ERROR ERROR:  syntax error at or near "SQL" LINE 1: SQL         ^
+
+## make status-omarchy
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED         STATUS                    PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     2 days ago      Up 41 minutes             5432/tcp
+sports-harness-app-exec-1       sports-release/app:762bde4                                                         "harness exec"           app-exec       5 minutes ago   Up 5 minutes (healthy)    
+sports-harness-app-research-1   sports-release/app:762bde4                                                         "harness research-wo…"   app-research   5 minutes ago   Up 5 minutes              
+sports-harness-app-run-1        sports-release/app:762bde4                                                         "harness run"            app-run        5 minutes ago   Up 5 minutes              
+sports-harness-app-serve-1      sports-release/app:762bde4                                                         "harness serve --por…"   app-serve      5 minutes ago   Up 5 minutes (healthy)    127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:0d04804                                                         "harness ws-record"      app-ws         6 hours ago     Up 41 minutes             
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       2 days ago      Up 41 minutes (healthy)   5432/tcp
+{"status":"ok","last_run_at":"2026-09-15T13:25:40.468367+00:00","last_status":"skipped","seconds_since":22,"credits_remaining":4897452,"credits_budget":5000000,"credits_low":false,"venue_limits":{"tier":"basic","age_s":1980.0,"read_at":"2026-09-15T12:45:12.290102+00:00","page_pause_s":0.05,"read_capacity":600.0,"write_capacity":100.0,"read_refill_rate":200.0,"write_refill_rate":100.0},"build":"762bde4"} [200]
+## df / free
+/dev/mapper/root  952G  150G  798G  16% /srv/sports-harness
+               total        used        free      shared  buff/cache   available
+Mem:           31904        8975        1036        1790       25608       22929
+Swap:          63808           0       63808
+## dashboard section count (10m)
+0
+## ERROR messages (10m)
+== app-run
+== app-serve
+== app-ws
+== app-exec
+== app-research
+## build_sha since deploy
+762bde4
+## backups du + plaintext-without-ciphertext count
+24G	/srv/sports-harness/backups
+136K	/srv/sports-harness/backups/forever
+13G	/srv/sports-harness/backups/nightly
+8.5G	/srv/sports-harness/backups/partitions
+2.6G	/srv/sports-harness/backups/weekly
+0
+-rw-r--r-- 1 trey trey 1527203378 Sep 15 03:32 harness-nightly-20260915T083000Z.dump
+-rw-r--r-- 2 trey trey 1527576426 Sep 15 03:36 harness-nightly-20260915T083000Z.dump.age
+-rw-r--r-- 2 trey trey       1890 Sep 15 03:32 harness-nightly-20260915T083000Z.meta.json
+-rw-r--r-- 2 trey trey          0 Sep 15 03:36 harness-nightly-20260915T083000Z.ok

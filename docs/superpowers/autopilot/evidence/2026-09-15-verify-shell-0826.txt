@@ -1,0 +1,33 @@
+verify_at_utc=2026-09-15T13:26:20Z (0826 CT) deploy 762bde4
+## harness manifest (6A/6B row)
+manifest_version 7 measurement_version 4.5
+C0 deploy_sha 7c3d555 hashes 6 orders all orders through the 6B deploy runs all runs through the 6B deploy
+C1 deploy_sha c1066b5 hashes 3 orders > 10886 runs > 17016
+C2 deploy_sha c1066b5 hashes 3 orders > 10886 runs > 17016
+C3 deploy_sha c1066b5 hashes 3 orders > 10886 runs > 17016
+C4 deploy_sha c1066b5 hashes 3 orders > 10886 runs > 17016
+C5 deploy_sha c1066b5 hashes 3 orders > 10886 runs > 17016
+C6 deploy_sha c1066b5 hashes 3 orders > 10886 runs > 17016
+order_157 {}
+## capsules
+6
+## criteria_hash (checkout main 762bde4)
+5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5
+## suite receipt summary (fix73-full-762bde4.log)
+======================= 904 passed in 484.40s (0:08:04) ========================
+===== 4111 passed, 1 deselected in 549.00s (6 shards, wall of the slowest) =====
+## DIRECTION_NOTE (6C wave 2)
+proposed one-sided reading, not in force
+## RFQ read-back
+False
+app-ws-1  | {"asctime": "2026-09-15 07:06:16,824", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener disabled by rfq_listener_enabled"}
+app-ws-1  | {"asctime": "2026-09-15 12:44:42,171", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener disabled by rfq_listener_enabled"}
+## app-research
+sports-harness-app-research-1   sports-release/app:762bde4   "harness research-wo…"   app-research   6 minutes ago   Up 6 minutes   
+{"asctime": "2026-09-15 13:25:44,353", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 6}, anno
+{"asctime": "2026-09-15 13:26:15,161", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 3}, anno
+## study.mjs / pulse.mjs stand-in
+2
+2
+## /api/snap
+[{"name": "floor", "generated_at": "2026-09-15T13:24:40.945049+00:00", "age_s": 111.213657, "cadence_s": 120, "elapsed_ms": 77, "error": null}, {"name": "gate", "generated_at": "2026-09-15T13:26:10.945111+00:00", "age_s": 21.213595, "cadence_s": 300, "elapsed_ms": 2, "error": null}, {"name": "pulse", "generated_at": "2026-09-15T13:26:10.945420+00:00", "age_s": 21.213286, "cadence_s": 60, "elapsed_ms": 114, "error": null}, {"name": "study:2026-37", "generated_at": "2026-09-14T14:04:22.837503+00:00", "age_s": 84129.321203, "cadence_s": 600, "elapsed_ms": 177, "error": null}, {"name": "study:2026-38", "generated_at": "2026-09-15T13:22:10.945446+00:00", "age_s": 261.21326, "cadence_s": 600, "elapsed_ms": 164, "error": null}, {"name": "ticket", "generated_at": "2026-09-15T13:25:40.945022+00:00", "age_s": 51.213684, "cadence_s": 120, "elapsed_ms": 7, "error": null}]

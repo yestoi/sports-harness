@@ -1,0 +1,114 @@
+verify_at_utc=2026-09-15T13:29:30Z (0829 CT) deploy 762bde4: table rows of the 4.5, 5, 6C, 6D blocks and the Layer 2 first statement
+## layer 2 real ticks (last 5)
+17880 | 2026-09-15 13:18:12.289833+00 | ok | 0 |  | [] | 0d04804
+17877 | 2026-09-15 13:15:42.289882+00 | ok | 6 | 4897452 | [] | 0d04804
+17851 | 2026-09-15 13:02:42.289888+00 | ok | 0 |  | [] | 0d04804
+17850 | 2026-09-15 13:00:12.289822+00 | ok | 6 | 4897458 | [] | 0d04804
+17820 | 2026-09-15 12:45:12.290102+00 | ok | 0 |  | [] | 0d04804
+## tape gap rows in the last 2 h (ts, sid, ticker)
+2026-09-15 13:04:46.227541+00 | 2 | 
+2026-09-15 13:04:46.376816+00 | 2 | 
+## 4.5 snap rows (name, age_s, cadence_s, error)
+ERROR:  column "cadence_s" does not exist
+LINE 1: ...act(epoch from (now() - generated_at))) as age_s, cadence_s,...
+                                                             ^
+## 4.5 snapshot_disabled events 25h
+0
+## 4.5 pulse status word, rules, not_evaluated
+BROKEN | [{"name": "tape_gap", "unit": "count", "level": "broken", "value": 2.0, "threshold": 0}, {"name": "check_fail", "unit": "count", "level": "broken", "value": 1, "threshold": 0}, {"name": "research_budget", "unit": "count", "level": "watch", "value": 22.5628, "threshold": 25.0}] | [{"name": "kill_switch", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 0}, {"name": "prop_budget", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 300000.0}]
+## 4.5 invariants (future snapshots, parlay ledger orphans, leg probs range, legs orphans)
+0
+0
+0
+0
+## 4.5 t12 row keys with #
+592 | 0
+## 6C (i) provisional week key; (ii) study snapshot name; (iv) ticket week; (vii) week-key invariant since the wave-1 deploy
+2026 | 38
+study:2026-38
+2026 | 38 | 
+0
+## 6C (iii) pulse snapshot_stale judged set
+
+## 6C wave 2: floor funnel keys, units, exposure coverage
+gaps,fills,ticks,units,orders,intents,skipped,window_h,cancelled,fill_rows,by_variant,candidates,placements,rejected_total,intent_episodes,intent_verdicts,candidate_signals,episode_gap_rule_s,opportunity_episodes,orders_filled_actual,orders_filled_counterfactual | candidate signal rows, not distinct opportunities | {"note": "positions opened more than 14 days ago are not counted", "complete": false, "window_days": 14}
+## 6C wave 2: open orders for the fair-match row
+2
+## 6D zero unexplained omissions (rows) and integrity outcome count
+scheduled | 59373
+completed | 41352
+no_fair | 17850
+not_due | 15664
+cadence_none | 5792
+skipped_trades | 171
+## 6D missingness (evaluation, not completed/scheduled)
+no_fair | 17850
+## 6D coverage ratio last 24h per variant (game-day row, informational today)
+49af716f8708 | 5720 | 8270
+5632da729fa7 | 5720 | 8270
+64ba3ef09642 | 5720 | 8270
+c2bc45377328 | 5720 | 8270
+e549e693e117 | 5720 | 8270
+f259ca109084 | 5720 | 8270
+ff363c8ac08d | 5720 | 8270
+## 6D funnel episodes 24h vs 6C counterparts (signals candidate, intents)
+902 | 630 | 116517 | 41450
+2700 | 902 | 630
+## 6D table growth: coverage_samples MB, episode tables dead ratio
+3
+opportunity_episodes | 902 | 0 | 0
+intent_episodes | 630 | 0 | 0
+## 6D strategy_variants ids
+49af716f8708,5632da729fa7,64ba3ef09642,c2bc45377328,e549e693e117,e82fcd0a1e99,f259ca109084,ff363c8ac08d
+## 6D ix_intents_created valid
+1
+## 6D latency names newest sample
+exec.fair_age_s | 2026-09-15 13:28:39.734407+00
+exec.signal_to_order_ms | 2026-09-15 13:17:27.232401+00
+normalize.backlog_ids | 2026-09-15 13:18:12.289833+00
+pricing.feed_lag_s | 2026-09-15 13:15:42.289882+00
+recorder.phase_ms | 2026-09-15 13:29:10.468497+00
+ws.tape_covered_frac | 2026-09-15 13:00:12.289822+00
+## phase 5 rows: research_spend today/yesterday, reserved; veto vs intents 24h; decision lag; rfqs 24h; kalshi_rfq status; weather freshness count
+2026-09-14 | 24.4219 | 0.0000
+2026-09-15 | 22.5628 | 1.8702
+41450 | 41103 | 0.010
+12131.378484 | 20530.031299
+0 |  | 
+ok |  | 2026-09-12 05:26:38.387488+00 | 2026-09-12 05:26:38.387488+00
+0
+0
+0
+## 6B by-cause rows (open; last 24h)
+event_age | 51 | 2026-09-15 06:47:04.489131+00
+gap | 13 | 2026-09-15 05:25:45.591492+00
+event_age | 1374
+gap | 42
+## 6B executor health beside the deploy: exec.loop_ms p95 over 07:45-08:19 CT (0d04804 post-boot) vs since 08:21 CT (762bde4), open orders, skipped 24h
+pre | 3923.000000 | 29
+post | 3309.000000 | 7
+item12 02:30-06:30 CT 0d04804 | 1767.000000 | 211
+ca30ed1 23:38-00:23 CT | 1954.000000 | 39
+Monday 02:30-06:30 CT | 426.000000 | 211
+## journal 224 item 16: gap rows around 23:34-23:37 CT Sep 14, and ws events per minute in that window
+2026-09-15 04:30:00+00 | 369
+2026-09-15 04:31:00+00 | 465
+2026-09-15 04:32:00+00 | 388
+2026-09-15 04:33:00+00 | 426
+2026-09-15 04:34:00+00 | 504
+2026-09-15 04:36:00+00 | 412
+2026-09-15 04:37:00+00 | 1074
+2026-09-15 04:38:00+00 | 1345
+2026-09-15 04:39:00+00 | 1372
+2026-09-15 04:40:00+00 | 1054
+2026-09-15 04:41:00+00 | 1383
+1499 | ws_connect | 2026-09-15 04:36:52.719655+00 | connected
+## rows 49 and 68 durable re-read: recorder.rss_mb 24h (min/max/last), pinnacle odds_snapshots rows last 6h and books in the last hour
+123.800000 | 308.000000 | 127.800000
+ERROR:  column "bookmaker" does not exist
+LINE 1: select count(*) filter (where bookmaker='pinnacle'), count(d...
+                                      ^
+5720
+## journal 219 deferred: c1066b5-era orphan intents (intents since 05:23:44Z without order or skipped event)
+0
+## manifest raw 157 keys

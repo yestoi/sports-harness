@@ -1,0 +1,10 @@
+verify_at_utc=2026-09-15T13:23:36Z (0823 CT) deploy 762bde4 (fix 73, app-only)
+PASS build: page 762bde4 vs deploy 762bde4
+PASS sections: no section errors
+PASS page_time: / 0.2s, /api/summary 0.2s
+PASS run_id: page 17889 vs sql 17889
+PASS ws_last_event: page age 1s vs sql 1s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4897452
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)

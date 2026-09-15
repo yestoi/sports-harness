@@ -1,0 +1,67 @@
+verify_at_utc=2026-09-15T13:30:52Z (0830 CT) deploy 762bde4: follow-ups
+## operator events 12:55-13:10Z (around the 13:04:46Z gap rows)
+## ws.gaps / ws.reconnects samples 12:55-13:10Z
+ws.gaps | 2026-09-15 13:04:46.906499+00 | 2.000000
+## research_spend rows today with reservation
+day,kind,model,calls,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,searches,usd_reserved,usd
+{"day":"2026-09-15","kind":"veto","model":"claude-opus-5","calls":151,"input_tokens":974231,"output_tokens":71690,"cache_read_tokens":2283393,"cache_write_tokens":913293,"searches":145,"usd_reserved":1.2972,"usd":14.9630}
+{"day":"2026-09-15","kind":"veto","model":"claude-sonnet-5","calls":151,"input_tokens":874122,"output_tokens":120372,"cache_read_tokens":4905749,"cache_write_tokens":866756,"searches":150,"usd_reserved":0.5730,"usd":7.5998}
+## veto decision labels 24h
+veto_skipped_budget | 40068 | 0
+proceed | 1048 | 427
+veto_error | 2 | 1
+## normalize.backlog_age_s ever
+normalize.backlog_ids | 2026-09-15 06:29:34.388053+00 | 2026-09-15 13:18:12.289833+00 | 66
+## odds_snapshots columns; pinnacle rows 6h
+id,raw_id,run_id,book,game_id,market_type,outcome_team_id,outcome_side,point,price_decimal,book_last_update,fetched_at
+## real ticks newest
+17880 | 2026-09-15 13:18:12.289833+00 | ok | 0d04804 | 9 | 0
+17877 | 2026-09-15 13:15:42.289882+00 | ok | 0d04804 | 328 | 6
+## odds_snapshots pinnacle (column resolved below)
+col=book
+ERROR:  column "created_at" does not exist
+LINE 1: ...agg(distinct book, ',') from odds_snapshots where created_at...
+                                                             ^
+## strategy_variants in the 01:26 CT 6D evidence
+5:strategy_variants|49af716f8708,5632da729fa7,64ba3ef09642,c2bc45377328,e549e693e117,e82fcd0a1e99,f259ca109084,ff363c8ac08d|8
+## /api/snap full
+floor 12 120 None
+gate 282 300 None
+pulse 42 60 None
+study:2026-37 84390 600 None
+study:2026-38 522 600 None
+ticket 72 120 None
+## pulse rules full
+tape_gap broken 2.0 0
+check_fail broken 1 0
+research_budget watch 22.5628 25.0
+[{"name": "kill_switch", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 0}, {"name": "prop_budget", "unit": "count", "level": "not_evaluated", "value": null, "threshold": 300000.0}]|true|1048
+## manifest top-level keys
+['corrections', 'manifest_version', 'measurement_version']
+{'manifest_version': 7, 'measurement_version': '4.5'}
+## app-research in-flight
+{"asctime": "2026-09-15 13:30:46,727", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.4330 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-15 13:30:46,732", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.4330 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-15 13:30:46,738", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.4330 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-15 13:30:46,744", "levelname": "WARNING", "name": "harness.research.veto", "message": "veto skipped on budget: daily cap: 24.4330 + 0.623360 would exceed 25"}
+{"asctime": "2026-09-15 13:30:46,746", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 0, 'decided': 0, 'skipped_budget': 6}, annotate={'annotated': 0
+## veto_error decisions 24h and the newest veto calls (research_notes)
+ERROR:  column "reason" does not exist
+LINE 1: ...lect decided_at, decision, call_id, left(coalesce(reason,'')...
+                                                             ^
+2026-09-15 06:24:04.775694+00 | 1244
+claude-opus-5 | 151 | 2026-09-15 06:24:04.775694+00
+claude-sonnet-5 | 151 | 2026-09-15 06:24:04.775694+00
+## pinnacle rows 6h (fetched_at)
+708 | 7 | betonlineag,draftkings,fanduel,kalshi,lowvig,novig,pinnacle
+## real ticks newest
+17905 | 2026-09-15 13:31:10.468311+00 | running | 762bde4 | 0 | 0 | 
+17880 | 2026-09-15 13:18:12.289833+00 | ok | 0d04804 | 9 | 0 | []
+## first real tick at 762bde4
+17905 | 2026-09-15 13:31:10.468311+00 | 2026-09-15 13:31:59.788904+00 | ok | 762bde4 | 187 | 6 | 4897446 | [] | ["sharp_two_sided", "sharp_direct", "constrained", "nfl_only", "no_velocity", "sharp_plus_derived", "wide_band"]
+## research spend this ISO week (Chicago days Mon-Sun) and today
+46.9847 | 1.8702
+## veto_decisions columns
+signal_id,call_id,decision,confidence,from_cache,feature_delta,signal_created_at,decided_at,reason_code
+2026-09-15 05:02:54.150912+00 | veto_error | 8870793e-8abe-43f3-9110-2da350ca15ab
+2026-09-15 05:02:54.150912+00 | veto_error | 8870793e-8abe-43f3-9110-2da350ca15ab
