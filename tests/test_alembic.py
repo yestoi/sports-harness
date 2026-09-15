@@ -481,8 +481,9 @@ def test_phase6d_follows_the_positions_hotfix_and_is_the_pinned_head():
 def test_the_episode_tables_and_their_indexes_are_in_both_catalogues(two_databases):
     """6D §1.7(b)/(c): the two episode tables are declared as models (so `create_schema` builds
     them) and mirrored in this revision with one plain index each, in the same task. The
-    catalogue diff would catch a disagreement; this names the tables and the two indexes, so a
-    half-landed pass says which half is missing.
+    catalogue diff would catch a disagreement; this names the tables and all four indexes -- the
+    `started_at` pair the readers ride and the `ended_at` pair the writer's openness test rides
+    (review Important 1) -- so a half-landed pass says which half is missing.
 
     Plain indexes, never CONCURRENTLY: both tables are created empty by this revision and have
     no writer attached while it runs, which is the same reading `coverage_samples` took.
@@ -496,8 +497,8 @@ def test_the_episode_tables_and_their_indexes_are_in_both_catalogues(two_databas
         names = set(inspect(engine).get_table_names())
         assert {"opportunity_episodes", "intent_episodes"} <= names
         indexes = {i["name"] for i in inspect(engine).get_indexes("opportunity_episodes")}
-        assert "ix_opportunity_started" in indexes
-        assert "ix_intent_started" in {
+        assert {"ix_opportunity_started", "ix_opportunity_ended"} <= indexes
+        assert {"ix_intent_started", "ix_intent_ended"} <= {
             i["name"] for i in inspect(engine).get_indexes("intent_episodes")}
         uniques = {u["name"] for u in inspect(engine).get_unique_constraints(
             "opportunity_episodes")}

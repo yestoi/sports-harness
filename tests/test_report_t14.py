@@ -92,8 +92,9 @@ def test_t14_reports_completed_over_scheduled_per_variant(db_session, env_settin
     assert "8 completed of 10 scheduled" in gate_row[2]
     assert str(T14_COVERAGE_MIN) in gate_row[2] and "applied to" in gate_row[2]
     assert rows[f"coverage, primary, {PRIMARY_NAME}"][0] == 0.75
-    assert rows["scheduled units, gate variant"] == (
-        10, "units", rows["scheduled units, gate variant"][2])
+    scheduled_row = rows["scheduled units, gate variant"]
+    assert scheduled_row[0] == 10 and scheduled_row[1] == "units"
+    assert "never a count of what completed" in scheduled_row[2]
     assert rows["unexplained omissions"][0] == 1
     assert rows["unexplained omissions"][1] == "cells"
 
@@ -125,6 +126,29 @@ def test_t14_prints_the_three_denominators_and_names_the_one_shares_are_over(db_
     assert rows["budget-exhausted share"][0] == 1 / 3
     assert "priced_runs" in rows["total runs"][2]
     assert "of 3 priced runs" in rows["budget-exhausted share"][2]
+
+
+def test_t14_says_when_the_run_cap_bound_and_prints_no_share_it_cannot_compute(
+        db_session, env_settings, monkeypatch):
+    """Task 7's carry-forward, as a call-site check: when `total_runs` equals
+    `COVERAGE_RUN_CAP` the three denominators describe the newest capped set and the row says so,
+    and an exhaustion share over zero priced runs is the null cell, never 0.0.
+
+    Computed by hand: with no run at all the share is `None` and renders `--`; with the cap
+    monkeypatched to 2 and two runs seeded, `total runs` reads 2 and the note gains the cap
+    sentence naming that number.
+    """
+    from harness.report import tables as tables_module
+
+    _variants(db_session)
+    assert _t14(db_session, env_settings)["budget-exhausted share"][0] == PLACEHOLDER
+
+    db_session.add(Run(started_at=TS, status="ok", notes={}))
+    db_session.add(Run(started_at=TS, status="ok", notes={}))
+    db_session.flush()
+    monkeypatch.setattr(tables_module, "COVERAGE_RUN_CAP", 2)
+    total = _t14(db_session, env_settings)["total runs"]
+    assert total[0] == 2 and "newest 2 runs" in total[2] and "the cap bound" in total[2]
 
 
 def test_t14_sources_the_no_fair_count_from_coverage_and_not_from_signals(db_session,

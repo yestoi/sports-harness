@@ -815,7 +815,12 @@ class OpportunityEpisode(Base):
     __table_args__ = (
         UniqueConstraint("variant_id", "venue_market_id", "side", "started_at",
                          name="uq_opportunity_episode"),
-        Index("ix_opportunity_started", "started_at"))
+        Index("ix_opportunity_started", "started_at"),
+        #: The writer's own read rides this one: an episode is open when its *last* sighting is
+        #: within the gap rule, so `harness/ops/episodes.py::upsert` bounds on `ended_at`. The
+        #: `started_at` index above serves the readers (t14, Floor), which count episodes that
+        #: began inside a window.
+        Index("ix_opportunity_ended", "ended_at"))
 
 
 class IntentEpisode(Base):
@@ -834,7 +839,9 @@ class IntentEpisode(Base):
     __table_args__ = (
         UniqueConstraint("variant_id", "venue_market_id", "side", "started_at",
                          name="uq_intent_episode"),
-        Index("ix_intent_started", "started_at"))
+        Index("ix_intent_started", "started_at"),
+        #: The writer's read, as above.
+        Index("ix_intent_ended", "ended_at"))
 
 
 class OperatorEvent(Base):

@@ -117,6 +117,12 @@ def upgrade() -> None:
     op.create_index("ix_opportunity_started", "opportunity_episodes", ["started_at"],
                     if_not_exists=True)
     op.create_index("ix_intent_started", "intent_episodes", ["started_at"], if_not_exists=True)
+    # The writer's own bound: an episode is open when its *last* sighting is within the gap
+    # rule, so `harness/ops/episodes.py::upsert` reads `ended_at >= :since` (review Important 1).
+    # Plain for the same reason as every index above it.
+    op.create_index("ix_opportunity_ended", "opportunity_episodes", ["ended_at"],
+                    if_not_exists=True)
+    op.create_index("ix_intent_ended", "intent_episodes", ["ended_at"], if_not_exists=True)
 
     # Fix 51 (6D §1.9, D9): the index `intents_without_order_or_skip`'s 24 h bound needs.
     concurrent_index("ix_intents_created", "intents", ["created_at"])

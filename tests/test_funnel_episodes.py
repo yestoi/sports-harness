@@ -45,6 +45,34 @@ def test_four_sightings_across_a_two_hour_hole_are_two_episodes(db_session):
     assert {row.gap_rule_s for row in rows} == {600}
 
 
+def test_six_hours_of_continuous_sightings_are_one_episode(db_session):
+    """Review Important 1: openness is a property of `ended_at`, not of `started_at`.
+
+    Computed by hand: one market scored candidate every 120 s for six hours -- sightings at
+    0, 2, 4, ..., 358 minutes, which is 180 of them -- under the 600 s rule. No hole anywhere
+    reaches 600 s, so §1.7(b) makes that **one** episode, from the first sighting to the last,
+    carrying `n_signals = 180`.
+
+    The read that finds the open episode must therefore be bounded on `ended_at` (the last
+    sighting) and ride its own index. Bounded on `started_at` instead, this episode fell out of
+    the window two rule widths after it opened and was reopened as a new row every ~1,320 s:
+    17 rows of 11 sightings each, where the unit means 1.
+    """
+    rule = episodes.gap_rule_s(120)
+    sightings = list(range(0, 360, 2))
+    assert len(sightings) == 180
+    for minutes in sightings:
+        episodes.upsert(db_session, OpportunityEpisode, [KEY], NOW + timedelta(minutes=minutes),
+                        rule, kind="opportunity")
+    db_session.commit()
+
+    rows = db_session.query(OpportunityEpisode).all()
+    assert len(rows) == 1
+    assert rows[0].n_signals == 180
+    assert rows[0].started_at == NOW
+    assert rows[0].ended_at == NOW + timedelta(minutes=358)
+
+
 def test_the_gap_rule_is_stored_on_the_row_so_a_recount_needs_no_new_data(db_session):
     """D6: "a different gap rule would group differently; the rule is stored per row so a
     re-count is possible without new data"."""

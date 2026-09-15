@@ -57,17 +57,19 @@ def upsert(session: Session, model, keys, now: datetime, rule_s: int, *, kind: s
     since = now - timedelta(seconds=rule_s)
     try:
         with session.begin_nested():
-            # Bound: `started_at >= :since - :rule` on `ix_opportunity_started` /
-            # `ix_intent_started`. An episode whose last sighting is older than the rule is
-            # closed and must not be extended, so nothing older than two rule widths can
-            # matter.
+            # Bound: `ended_at >= :since` on `ix_opportunity_ended` / `ix_intent_ended`. The
+            # bound *is* the openness test (review Important 1): an episode is open when its
+            # last sighting is within `rule_s`, and `started_at` says nothing about that. A
+            # continuously extended episode keeps its original `started_at`, so bounding the
+            # read on `started_at` lost that row two rule widths after it opened and reopened
+            # the same key as a new row -- 17 segments for six hours of 120 s sightings where
+            # §1.7(b) means one. An episode older than the rule is closed and is never
+            # returned, so one key can never have two open rows here.
             open_rows = session.execute(
-                select(model.variant_id, model.venue_market_id, model.side, model.started_at,
-                       model.ended_at)
-                .where(model.started_at >= since - timedelta(seconds=rule_s))).all()
+                select(model.variant_id, model.venue_market_id, model.side, model.started_at)
+                .where(model.ended_at >= since)).all()
             open_start = {(variant_id, market_id, side): started_at
-                          for variant_id, market_id, side, started_at, ended_at in open_rows
-                          if ended_at >= since}
+                          for variant_id, market_id, side, started_at in open_rows}
             values = []
             for variant_id, market_id, side in keys:
                 started = open_start.get((variant_id, market_id, side), now)
