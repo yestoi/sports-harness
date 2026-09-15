@@ -723,6 +723,12 @@ def test_the_gate_render_discloses_criterion_4s_counterfactual_sub_population():
     stop instant went on filling under the repaired 4.5 executor. Their counterfactual is inside
     criterion 4's population, so the gate's own output says so and gives the `n` it is part of.
 
+    Membership is conditional, and the line says so (review I-2): at the sub-population's own
+    capture every one of the 1,176 rows carried `nw_filled_contracts = 0.00` and no post-boundary
+    fill, so today criterion 4's `n` counts none of them. The line states what is true -- the
+    tracks ran on under 4.5, and any fill they produce enters that `n` -- and never that they are
+    already in it.
+
     The count comes from the rendered results, never a literal: a disclosure that could drift
     from the number beside it would be worse than none."""
     from harness.report.gate import GateResult, criteria_hash, render_gate
@@ -741,7 +747,11 @@ def test_the_gate_render_discloses_criterion_4s_counterfactual_sub_population():
     assert "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt" in disclosure
     assert "executor 4.5" in disclosure
     assert "amendment 0.17" in disclosure
+    assert "any counterfactual fill they produce enters its n" in disclosure
     assert "n=4321" in disclosure
+    # Never a claim that the sub-population is already counted: it is not (review I-2).
+    assert "includes them" not in disclosure
+    assert "counts the counterfactual" not in disclosure
     # Directly after the mixed-population note, which it qualifies.
     mixed = next(i for i, line in enumerate(lines) if "mixed population" in line)
     assert lines[mixed + 1] == disclosure
@@ -758,6 +768,7 @@ def test_the_criterion_4_disclosure_reads_unknown_when_no_result_carries_it():
                       if "markout_30m)" in line)
     assert "n=unknown" in disclosure
     assert "1,176 pre-boundary orders" in disclosure
+    assert "any counterfactual fill they produce enters its n" in disclosure
 
 
 def test_the_row72_disclosure_moves_no_criterion_definition_or_threshold():

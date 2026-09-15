@@ -881,7 +881,10 @@ def render_gate(results: list[GateResult], names: dict[str, str],
     # `criteria_hash` input. Criterion 4 reads the `nw_fill` anchor, and the counterfactual of
     # the 1,176 pre-boundary orders that were still `nw_done = false` at the release's stop
     # instant went on running under the repaired executor, so those orders' `no_watcher` fills
-    # are inside this criterion's population. The `n` is read off the rendered results, never
+    # land inside this criterion's population as and when the tape produces them. Membership is
+    # written as conditional because it is (review I-2): at the sub-population's capture every
+    # one of the 1,176 rows carried `nw_filled_contracts = 0.00` and no post-boundary fill, so
+    # today the criterion counts none of them. The `n` is read off the rendered results, never
     # written as a literal: a disclosure that could drift from the number beside it would be
     # worse than none. The gate variant's row is preferred, because that is the variant the
     # phase gate is judged on; any other result carrying the criterion answers if it does not.
@@ -890,11 +893,11 @@ def render_gate(results: list[GateResult], names: dict[str, str],
          sorted(results, key=lambda r: not r.gate_variant)
          if MARKOUT_CRITERION in r.criteria), None)
     lines.append(
-        f"note: criterion 4 ({MARKOUT_CRITERION}) counts the counterfactual of 1,176 "
+        f"note: criterion 4 ({MARKOUT_CRITERION}) is anchored on the no_watcher fill, and 1,176 "
         "pre-boundary orders (nw_done = false at the 2026-09-15T05:23:44Z stop instant; "
-        "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt) whose no_watcher track "
-        "continued under executor 4.5 (amendment 0.17); its "
-        f"n={'unknown' if markout is None else markout.n_obs} includes them.")
+        "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt) had their no_watcher "
+        "track continue under executor 4.5 (amendment 0.17); any counterfactual fill they "
+        f"produce enters its n (currently n={'unknown' if markout is None else markout.n_obs}).")
     if eligibility is not None and eligibility.active:
         lines.append(f"eligibility=from_order_id:{eligibility.from_order_id} "
                      f"from_run_id:{eligibility.from_run_id}")

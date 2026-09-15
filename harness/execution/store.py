@@ -34,7 +34,7 @@ them, so the loop never passes a raw `Row` into a pure function.
 
 import logging
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Iterable, NamedTuple, Sequence
 
 from sqlalchemy import bindparam, select, text, update
@@ -698,10 +698,24 @@ def executor_version_numeric() -> Decimal:
     `execution.plan.config_hash` reads it: a test that moves the version sees the move, and a
     build that bumps it stamps the new value without a reload. `Decimal` rather than the string,
     because the column is `numeric` and psycopg would otherwise send a text parameter for it.
+
+    The column being `numeric` (spec amendment 0.17) makes the version's *shape* load-bearing: a
+    bump to `4.5.1` or `4.6-rc1` would raise `decimal.InvalidOperation` from inside every order
+    insert and every counterfactual step, which reads as a loop crash rather than as a decision
+    someone has to make (review M-1). So the failure is re-raised here with the constant, the
+    value and the column named, and the constraint is stated beside `EXECUTOR_VERSION` itself.
     """
     from harness import execution
 
-    return Decimal(execution.EXECUTOR_VERSION)
+    version = execution.EXECUTOR_VERSION
+    try:
+        return Decimal(version)
+    except InvalidOperation as exc:
+        raise ValueError(
+            f"EXECUTOR_VERSION {version!r} is not a plain decimal numeral, and "
+            "orders.nw_executor_version is a numeric column (spec amendment 0.17): keep the "
+            "version a decimal numeral, or move the column to text in its own additive "
+            "revision and amendment first") from exc
 
 
 def stamp_nw_writer(values: dict) -> dict:

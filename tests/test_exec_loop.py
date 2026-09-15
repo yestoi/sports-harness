@@ -501,7 +501,13 @@ def test_a_counterfactual_step_stamps_the_executor_version_and_backfills_nothing
     `store.update_order`, so that is where the stamp has to be -- not at a call site, which the
     next `nw_` writer would forget. The bystander is a finished pre-boundary-shaped row with
     non-null twins: it must still read NULL afterwards, because that combination is what the
-    narrowed §2 invariant calls an anomaly."""
+    narrowed §2 invariant calls an anomaly.
+
+    The column is nulled between the two steps (review I-1). Placement stamps the row itself,
+    and `update_order` never writes a NULL, so without that the second assertion would read the
+    value the *insert* wrote and the test would stay green with the stamp taken out of
+    `update_order` -- the one writer `_state_columns("nw_", ...)`, `nw_filled_contracts` and
+    `nw_done` all flow through."""
     clock = Clock(NOW)
     _book2(db_session, NOW - timedelta(seconds=5))
     bystander = _bystander(db_session)
@@ -510,10 +516,14 @@ def test_a_counterfactual_step_stamps_the_executor_version_and_backfills_nothing
     executor = make_executor(env_settings, db_session, clock)
     executor.step()                      # placement writes the counterfactual's opening state
     refresh(db_session)
-    assert orders_of(db_session)[0].nw_executor_version == Decimal(EXECUTOR_VERSION)
+    placed = orders_of(db_session)[0]
+    assert placed.nw_executor_version == Decimal(EXECUTOR_VERSION)
+
+    db_session.query(Order).filter_by(id=placed.id).update({"nw_executor_version": None})
+    db_session.commit()
 
     clock.advance(15)
-    executor.step()                      # the first step of both tracks
+    executor.step()                      # the first step of both tracks, through `update_order`
     refresh(db_session)
 
     order = orders_of(db_session)[0]
@@ -522,8 +532,7 @@ def test_a_counterfactual_step_stamps_the_executor_version_and_backfills_nothing
     assert db_session.get(Order, bystander.id).nw_executor_version is None
 
 
-def test_the_counterfactual_dirty_and_backoff_writers_stamp_the_version_too(
-        env_settings, db_session, world):
+def test_the_counterfactual_dirty_and_backoff_writers_stamp_the_version_too(db_session):
     """The two `nw_` writers that do not go through `_state_columns`: §1.5's own nominal accrual
     (`orders.nw_dirty_seconds`, a raw UPDATE) and §0.14's retry bookkeeping. Both write an
     `nw_` column on the counterfactual's behalf, so both carry the version; the watched
@@ -548,6 +557,32 @@ def test_the_counterfactual_dirty_and_backoff_writers_stamp_the_version_too(
     db_session.flush()
     db_session.expire_all()
     assert db_session.get(Order, order.id).nw_executor_version == Decimal(EXECUTOR_VERSION)
+
+
+def test_the_executor_version_stays_a_decimal_numeral_while_the_column_is_numeric():
+    """Review M-1: `orders.nw_executor_version` is `numeric` (spec amendment 0.17), so the stamp
+    parses `EXECUTOR_VERSION` as a `Decimal`. A bump to `4.5.1` or `4.6-rc1` would raise
+    `decimal.InvalidOperation` inside every order insert and every counterfactual step, so the
+    constraint is pinned here -- next to the writers that depend on it -- and stated beside the
+    constant itself. `executor_version_numeric` raises a named error rather than the driver's."""
+    from harness.execution import store as store_mod
+
+    assert store_mod.executor_version_numeric() == Decimal(EXECUTOR_VERSION)
+    assert str(EXECUTOR_VERSION) == EXECUTOR_VERSION
+
+
+def test_a_non_numeric_executor_version_fails_loudly_and_says_why(monkeypatch):
+    """Not `decimal.InvalidOperation` from inside a write: the message names the constant, the
+    column and the amendment, so the next person to bump the version reads what to do."""
+    import harness.execution as execution_pkg
+    from harness.execution import store as store_mod
+
+    monkeypatch.setattr(execution_pkg, "EXECUTOR_VERSION", "4.6-rc1")
+    with pytest.raises(ValueError) as caught:
+        store_mod.executor_version_numeric()
+    message = str(caught.value)
+    assert "EXECUTOR_VERSION" in message and "4.6-rc1" in message
+    assert "nw_executor_version" in message
 
 
 def test_no_watcher_fills_stop_ten_minutes_before_kickoff(env_settings, db_session, world):

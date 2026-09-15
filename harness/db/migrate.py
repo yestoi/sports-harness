@@ -35,8 +35,8 @@ log = logging.getLogger(__name__)
 #: "0010_phase46_fun_tickets"; phase 6B's additive revision bumps it to
 #: "0011_phase6b_execution"; phase 6D's additive revision bumps it to
 #: "0012_phase6d_sustained_eval"; and roadmap row 72's additive `orders.nw_executor_version`
-#: (spec amendment 0.17) bumps it to "0013_nw_executor_version". Those three middle numbers are
-#: D9 applied at merge time: the
+#: (spec amendment 0.17) bumps it to "0013_nw_executor_version". Three of those -- 0010, 0011 and
+#: 0012 -- are D9 applied at merge time: the
 #: plan's "0008" was written before fix 56 took that number on main, the phase branch then
 #: carried "0009", and fix 64 took *that* number on main on 2026-09-14, so 4.6's revision was
 #: renumbered to "0010" on top of it in the merge commit; 6B's own revision, written as "0008"
