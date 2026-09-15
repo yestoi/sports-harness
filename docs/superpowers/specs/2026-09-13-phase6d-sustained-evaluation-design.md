@@ -466,6 +466,10 @@ daily growth against this estimate and lowers the caps if it is exceeded.
 7. **Funnel episodes.** `select count(*) from opportunity_episodes where started_at > now() - interval '24 hours'` and the matching
    `intent_episodes` count are both present on Floor's payload with their `gap_rule_s`, and each is **<=** its 6C counterpart
    (`candidate_signals`, `intent_verdicts`) - an episode count above its event count is an integrity anomaly. *Every verify.*
+   **[annotated 2026-09-14, 6D final review `final-6d`, carried from Task 10 review I1: "their `gap_rule_s`" is one *shared* key.
+   Floor emits a single `episode_gap_rule_s` for both tables (`harness/dashboard/snapshots/floor.py:657`), not one per table, and
+   Floor's own funnel counts run over its 6 h `FUNNEL_WINDOW` (`floor.py:88`), so this row's 24 h query is a standalone integrity
+   read and not the number printed on the page. `verify.md`'s Phase 6D "Funnel episodes" row carries the same clarification.]**
 8. **Checks (fix 51).** `check_results` over the last 25 h: `duplicate_trades`, `fair_values_negative_staleness`, `fair_values_negative_feed_lag` and
    `intents_without_order_or_skip` each report **`pass` or `fail`, never `skip`** (ruling I1) - fix 51's "Change" column says "report `pass`/`fail`,
    never `skip:timeout`", so the deliverable is a bounded statement that answers, not a passing answer. `intents_without_order_or_skip` last returned a
@@ -485,6 +489,12 @@ daily growth against this estimate and lowers the caps if it is exceeded.
     `strategy_variants` holds the same seven ids as before the deploy. *Every verify.*
 12. **Latency series alive.** Every new `metric_samples` name has a sample younger than one cadence in force during a game window, and
     `select count(*) from metric_samples where ts > now() - interval '24 hours' and value < 0` is still 0. *Every verify.*
+    **[annotated 2026-09-14, 6D final review `final-6d`, carried from Task 10 review I2: three exemptions to the freshness clause,
+    each ruled during implementation. `exec.signal_to_order_ms` is written only when a placement happened in the window (Task 6
+    review I4, controller ruling 2026-09-14), so it reads as present-since-the-last-placement, with labels `{"variant", "q": "p50"}`;
+    `ws.tape_covered_frac`'s `ts` is the hour *after* the hour it measures and a NULL `ws.gaps` minute counts as clean (Task 6
+    M4/M5); `coverage.truncated` is expected to be **absent** -- a cap that never binds writes no sample; and `rfq.*` is deferred
+    while the listener is off. `verify.md`'s Phase 6D "Latency series alive" row carries the same clarification.]**
 **The deploy is judged on** rows 2, 4, 5, 8, 11 and 12 plus the executor's own health: `exec.loop_ms` p95 no worse than the pre-deploy hour it is
 compared against, `recorder.tick_ms` and `recorder.rss_mb` journaled before and after (fix 49's 6 h / 500 MiB row is not disturbed), and the
 `normalize` backlog numbers recorded as the baseline §1.3d judges against.
@@ -608,6 +618,12 @@ visual redesign; the kill switch, the dashboard token, spend caps and outbound h
 | D10 | The migration is named `00NN_phase6d_sustained_evaluation` with `NN` assigned by the controller at merge | pre-loaded (4.6 addendum D9; journal 136 ruling 4) | 6B's and 4.6's `0008` are both unmerged, so the number cannot be chosen in a worktree | a rename at merge if two milestones land together | file | renumber |
 | D11 | No `EXECUTOR_VERSION`/`PRICING_VERSION` bump | model | nothing a version boundary exists to separate changes: no fill, price, size, order or gate input moves (§7 item 3) | if D4 did change a candidate somewhere unforeseen, the boundary would be missing; §1.5's equality test and §3 row 5 are the guards | file | bump before the deploy |
 | D12 | Fix 48's frozen-baseline parity contract is amended: parity is asserted on `decision = 'candidate'` rows and every candidate's `edge`, `stake`, `contracts` and labels, and the rejected-row difference is asserted separately to equal exactly the suppressed set (`rescore_suppressed`) | model (review C1, ruling C1) | D4 removes provably inert work, and `test_the_stage_order_produces_exactly_what_the_single_pass_produced`'s field-for-field equality over *every* stored signal cannot survive it on a fixture whose derived phase adds rows; the amendment is stated rather than discovered in a red test | "identical to the single pass" narrows from the whole stored population to the candidate population; a rejected-row regression is then caught by the separate suppressed-set assertion instead of by parity | file (tests), report denominators | restore the full stage-6 loop (D4's reversal) and with it the original whole-population parity assertion |
+
+**[D10 annotated 2026-09-14, 6D final review `final-6d`:** the revision as built is `0009_phase6d_sustained_eval` (27 characters),
+not `0009_phase6d_sustained_evaluation` (33). `alembic_version.version_num` is `String(32)` and cannot be widened additively, so the long
+form aborts every upgrade with `StringDataRightTruncation` (measured on the T1 test database); the short id is recorded in the
+revision's own docstring (`migrations/versions/0009_phase6d_sustained_eval.py`), and any merge-time renumbering keeps the
+`_eval` stem. The `00NN_phase6d_sustained_evaluation` file names in sections 1.1, 1.9 and 4.1 read the same way.]**
 
 ## 9. Task decomposition for the plan writer
 
