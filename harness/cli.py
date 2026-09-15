@@ -126,6 +126,10 @@ def tick_once(force: bool = typer.Option(False, "--force", help="Fetch every sou
         # One-shot path: close the limits reader's httpx clients rather than leaking them until
         # the process exits (Task 6b fix round 1, Minor). A no-op when no reader was built.
         recorder.close()
+    if run is None:
+        # Fix 57: the kernel's clock was unsynchronized, so the tick wrote nothing at all.
+        log.warning("tick skipped: the kernel clock is unsynchronized")
+        return
     log.info("run %s status=%s n=%s credits=%s", run.id, run.status, run.n_requests, run.credits_used)
 
 
@@ -414,6 +418,10 @@ def settle_cmd() -> None:
     from harness.scheduler import build_settler
 
     row = build_settler(get_settings()).run()
+    if row is None:
+        # Fix 57: the kernel's clock was unsynchronized, so the job wrote nothing at all.
+        log.warning("settle skipped: the kernel clock is unsynchronized")
+        return
     stages = " ".join(f"{s['name']}={s['counts'] or s['error']}" for s in row.notes["stages"])
     print(f"job_run={row.id} status={row.status} budget_exhausted={row.budget_exhausted} "
           f"stale_unsettled={row.notes['stale_unsettled']} {stages}")

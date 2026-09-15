@@ -884,6 +884,17 @@ class GameScoreEvent(Base):
     home_score: Mapped[int | None] = mapped_column(SmallInteger)
     away_score: Mapped[int | None] = mapped_column(SmallInteger)
     raw_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: Fix 64 (journal 207): ESPN's linescore is corrected, not monotone -- a later poll can
+    #: legitimately report a lower home or away score than an earlier row for the same game
+    #: (the source republished its own body; the harness's own rows are appended, never
+    #: updated). `_maybe_score_event` sets this true on the row that carries the lower score, so
+    #: `game_score_went_down_24h` can tell a correction from the normalizer bug it exists to
+    #: catch. Carries a server default (as `ParlayCard`/`ParlayLeg`'s phase 4.6 not-null columns
+    #: do) so `create_all` on a fresh database and the migration's `ADD COLUMN` on an existing
+    #: one leave the identical column -- the same reason `tests/test_alembic.py`'s catalogue
+    #: diff compares defaults, not just types and nullability.
+    correction: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"),
+                                             nullable=False)
 
 
 class CheckResult(Base):

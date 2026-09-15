@@ -68,6 +68,7 @@ from harness.dashboard.snapshots import base_payload, register_builder, section
 from harness.db.models import StrategyVariant
 from harness.db.schema import OPEN_FILL_SQL
 from harness.execution.book import side_p
+from harness.ops.clock import exclude_unsynced_runs
 from harness.execution.store import MONEY_FILL_METHODS, OPEN_STATUSES
 from harness.parlay.config import load_config
 from harness.pricing.fair import MATCHED_STATUSES
@@ -401,7 +402,7 @@ _WATCH = text("""
 #: written `coalesce(...) = coalesce(...)` for exactly that reason); it costs nothing here only
 #: because no index covers these columns for an unfiltered `fair_source`. Give this lateral such
 #: an index and the predicates must be rewritten to match its expressions.
-_FAIR_FOR_ORDERS = text("""
+_FAIR_FOR_ORDERS = text(f"""
     select m.id as venue_market_id, m.fee_type, m.fee_multiplier,
            f.fair_p, f.staleness_s, f.created_at
     from venue_markets m
@@ -409,6 +410,7 @@ _FAIR_FOR_ORDERS = text("""
         select fair_p, staleness_s, created_at from fair_values f
         where f.game_id = m.game_id and f.market_type = m.market_type
           and f.created_at >= :since
+          and {exclude_unsynced_runs('f.run_id')}
           and f.outcome_team_id is not distinct from (m.side_team_id)
           and f.outcome_side is not distinct from (m.side)
           and f.threshold is not distinct from (m.threshold)

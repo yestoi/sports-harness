@@ -17,6 +17,7 @@ from harness.feeds.espn import EspnClient, Kickoff, parse_kickoffs
 from harness.feeds.nws import NwsClient
 from harness.feeds.odds_api import OddsApiClient, parse_credit_headers, parse_event_ids_and_times
 from harness.normalize.runner import normalize_new
+from harness.ops.clock import CLOCK_WARN_PERIOD_S, clock_synchronized
 from harness.recorder import store
 from harness.recorder.cadence import (SPORTS, PropEvent, alternates_due, interval_for, is_due,
                                       prop_events_due, prop_events_watched, select_ladders,
@@ -282,12 +283,25 @@ def _recorder_samples(session: Session, run_id: int, tick_ms: int,
     # `phase` label is there because the hourly settle job shares this process (controller
     # addendum, 01:20 CT): a sample taken at the end of a tick says "tick", so a future sample
     # at the end of a settle run can say "settle" without the two series colliding.
+    # Fix 49 round 3: `malloc_trim` has already run for this tick (`maybe_tick`), so this RSS
+    # is the post-trim one -- the number the 500 MiB criterion is judged on -- and the MiB it
+    # returned rides beside it, so the trim's effect is readable from `metric_samples` rather
+    # than inferred and the pre-trim reading is recoverable as the sum of the two samples.
+    # Not a Pulse tile: `pulse.py::_VITALS` is a closed allowlist and does not carry this name.
+    trimmed = ctx.get("malloc_trim_mb")
+    if trimmed is not None:
+        samples.append(("recorder.malloc_trim_mb", trimmed, {"phase": "tick"}))
     rss = telemetry.rss_mb()
     if rss is not None:
         samples.append(("recorder.rss_mb", round(rss, 1), {"phase": "tick"}))
     for source, count in session.execute(_FETCHED_BY_SOURCE, {"run_id": run_id}).all():
         samples.append(("recorder.fetched", count, {"source": source}))
     samples.append(("recorder.errors", len(ctx["errors"]), {}))
+    # Fix 57: the length of the spell this tick's clock came back from, written once, on the
+    # first tick after the kernel synchronized -- so a boot that ran unsynchronized for 32 s
+    # leaves a number on the series rather than only a line in the log.
+    if ctx.get("clock_unsynced_s") is not None:
+        samples.append(("recorder.clock_unsynced_s", ctx["clock_unsynced_s"], {}))
     if ctx.get("remaining") is not None:
         samples.append(("recorder.credits_remaining", ctx["remaining"], {}))
     samples.append(("recorder.trade_gaps", len(ctx["trade_gaps"]), {}))
@@ -472,6 +486,15 @@ class Recorder:
         # players a fetched box score did not list (4.3). Each tick also reports its own numbers
         # in `ctx`; these are the running totals a Pulse rule and the weekly report read.
         self.counters = {"prop_skipped_budget": 0, "player_unmatched": 0, "stat_missing": 0}
+        # Fix 57. Both are monotonic readings, never wall clock: the wall clock is exactly what
+        # is untrustworthy during an unsynchronized spell, and measuring the spell against it
+        # would report the size of NTP's correction (11 hours, on 2026-09-14) rather than how
+        # long the harness actually sat out (32 s).
+        self._clock_unsynced_since: float | None = None   # start of the current spell
+        self._clock_warned: float | None = None           # last `clock_unsynced` warning
+        self._clock_unsynced_s: float | None = None       # a finished spell, not yet recorded
+        # Fix 58: the ghost sweep runs once per process, at the first tick that proceeds.
+        self._swept = False
 
     # ---- helpers -------------------------------------------------------------------
     def _latest_body_from_db(self, session: Session, source: str, endpoint: str) -> dict | list | None:
@@ -1549,15 +1572,82 @@ class Recorder:
             return False
         return True if self._force else is_due(last, now, interval)
 
-    def maybe_tick(self, force: bool = False) -> Run:
+    def _clock_ready(self) -> bool:
+        """Fix 57: may this tick write at all?
+
+        False while the kernel reports its clock unsynchronized -- the tick then writes nothing
+        and fetches nothing, because a `runs` row, a `raw_responses` row or a quote stamped
+        from a clock the kernel disowns is indistinguishable afterwards from real data at that
+        time (runs 14485/14486, journal 175). A warning goes out at most once a minute so a
+        host that boots unsynchronized does not fill the log at the heartbeat.
+
+        True once it is synchronized again, or when the probe cannot answer at all
+        (`clock_synchronized()` is None): an unavailable probe must leave the recorder exactly
+        as it was. The length of the spell just ended is remembered for the tick to record.
+        """
+        state = clock_synchronized()
+        mono = self.monotonic()
+        if state is False:
+            if self._clock_unsynced_since is None:
+                self._clock_unsynced_since = mono
+            if self._clock_warned is None or mono - self._clock_warned >= CLOCK_WARN_PERIOD_S:
+                self._clock_warned = mono
+                log.warning("clock_unsynced: the kernel reports an unsynchronized clock; "
+                            "this tick writes nothing")
+            return False
+        if self._clock_unsynced_since is not None:
+            self._clock_unsynced_s = round(mono - self._clock_unsynced_since, 3)
+            self._clock_unsynced_since = None
+            self._clock_warned = None
+        return True
+
+    def _sweep_ghost_runs(self, session: Session, process_start: datetime) -> None:
+        """Fix 58, once per process: every `runs` row left `running` by a killed process.
+
+        The hook is the first tick that proceeds, guarded by `self._swept`, rather than
+        `build_recorder` or a scheduler `start()`. Two reasons, in this order: the sweep writes
+        `finished_at`, so it must sit *behind* fix 57's clock guard -- a sweep at composition
+        time would stamp exactly the wrong clock into the table this fix exists to protect --
+        and `build_recorder` opens no session today, so the alternative is a database round
+        trip inside a composition root that every caller (and several tests) expects to be
+        pure. The cost is that the sweep happens one heartbeat after the process starts rather
+        than at the instant it starts, and the boundary is this tick's clock reading: only a
+        *second* recorder process that started a run inside that one heartbeat could be caught,
+        which a single-process deployment does not have.
+
+        Housekeeping, never the tape: a failure here is logged and the tick goes on. The flag
+        is set before the attempt, so a sweep that fails is not retried at every heartbeat.
+        """
+        if self._swept:
+            return
+        self._swept = True
+        try:
+            swept = store.sweep_interrupted(session, Run, process_start)
+            session.commit()
+            if swept:
+                log.warning("swept %d stale running runs to interrupted at process start", swept)
+        except Exception:  # noqa: BLE001 - startup housekeeping never costs the tape
+            log.exception("ghost run sweep failed")
+            session.rollback()
+
+    def maybe_tick(self, force: bool = False) -> Run | None:
+        """One tick, or None when fix 57's clock guard held this one back (the scheduler
+        ignores the return value; `harness tick` reports the skip)."""
         self._force = force
+        if not self._clock_ready():
+            return None
         now = self.clock()
         started_mono = self.monotonic()
         budget = _Budget(self.s.tick_budget_s, self.monotonic)
         ctx: dict = {"n": 0, "credits": 0, "remaining": None, "errors": [], "warnings": [], "fetched": False,
                      "skipped_trades": 0, "skipped_ladders": 0, "skipped_alternates": 0, "trade_gaps": []}
+        if self._clock_unsynced_s is not None:
+            ctx["clock_unsynced_s"] = self._clock_unsynced_s
+            self._clock_unsynced_s = None
         with self.session_factory() as session:
             ensure_partitions(session, now)
+            # Fix 58, before this tick's own row exists so the sweep can never see it.
+            self._sweep_ghost_runs(session, now)
             # Task 12b: read the newest run's build_sha before this run's own row exists, so
             # the comparison below is against the *previous* deploy, not this one.
             prior_sha = (session.execute(_NEWEST_RUN_BUILD_SHA).scalar()
@@ -1669,6 +1759,15 @@ class Recorder:
                     log.exception("pricing failed")
                     session.rollback()
                     ctx["warnings"].append({"pricing": repr(e)})
+                # Fix 49 round 3: the pricing pass is the tick's largest allocation, and glibc
+                # keeps the arenas it freed mapped until something asks for them back. One
+                # `malloc_trim(0)` per priced tick is that ask; the MiB it recovers is recorded
+                # beside `recorder.rss_mb` (which is sampled *after* it, so the series reads
+                # the process's real footprint). A platform without the symbol is a no-op.
+                try:
+                    ctx["malloc_trim_mb"] = telemetry.malloc_trim()
+                except Exception:  # noqa: BLE001 - ruling 1: never fail a tick for housekeeping
+                    log.exception("malloc_trim failed")
             exhausted = (ctx["skipped_trades"] > 0 or ctx["skipped_ladders"] > 0
                          or ctx["skipped_alternates"] > 0)
             if ctx["errors"]:

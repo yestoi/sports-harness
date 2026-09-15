@@ -31,6 +31,7 @@ from decimal import Decimal
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from harness.ops.clock import exclude_unsynced_runs
 from harness.db.models import ParlayCard, ParlayLeg
 from harness.normalize.players import candidates_for_game, match_player, parse_gamelog
 from harness.parlay.config import load_config
@@ -168,7 +169,9 @@ def _devig(over: Decimal, under: Decimal) -> Decimal:
     return (implied_first / (implied_first + implied_second)).quantize(Decimal("0.0001"))
 
 
-_POOL = text("""
+#: Fix 57, ruling 1: the pool reaches `market_gap_snapshots` and `fair_values` through
+#: `signals.run_id`, so a run recorded under an unsynchronized kernel clock leaves the pool.
+_POOL = text(f"""
     select distinct on (g.id, vm.market_type, vm.side_team_id, vm.side)
            g.id as game_id, g.sport, vm.market_type, vm.side_team_id, vm.side, vm.threshold,
            f.fair_p, s.edge, s.created_at, t.abbreviation,
@@ -195,6 +198,7 @@ _POOL = text("""
       and f.fair_source = 'direct'
       and g.sport = :sport and g.kickoff_utc > :now
       and vm.market_type in ('moneyline', 'spread', 'total')
+      and {exclude_unsynced_runs('s.run_id')}
     order by g.id, vm.market_type, vm.side_team_id, vm.side, s.created_at desc
 """)
 

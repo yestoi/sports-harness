@@ -1,0 +1,34 @@
+{
+  "order_id": 157,
+  "verdict": "unverifiable",
+  "hypothesis": null,
+  "repaired_filled": null,
+  "repaired_queue": null,
+  "recorded_filled": "38.92",
+  "recorded_queue": "0.0",
+  "evidence": {
+    "i": {
+      "predicts": "a decrement near -6376 at 0.45 on the yes side, stamped at an instant a print that could have lifted us also carries",
+      "observed_decrement": "-63.92",
+      "observed_hitting_volume_at_that_stamp": "63.92",
+      "observed_hitting_volume": "63.92",
+      "met": false
+    },
+    "ii": {
+      "predicts": "a gap row on the anchor's sid inside the resting interval, and a snapshot inside it",
+      "observed_gaps_in_interval": 0,
+      "observed_gaps_on_anchor_sid": 0,
+      "observed_gap_sids": [],
+      "observed_snapshots": 0,
+      "sid_rule": "no in-interval snapshot carries a sid: any gap inside the interval counts",
+      "met": false
+    },
+    "iii": {
+      "predicts": "prints of 6401 or more that could have lifted us at or through 0.45, before the fills",
+      "observed_hitting_volume_before_fills": "0",
+      "observed_hitting_volume": "63.92",
+      "observed_volume_at_price_any_taker": "63.92",
+      "met": false
+    }
+  }
+}

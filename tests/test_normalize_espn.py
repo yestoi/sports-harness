@@ -105,6 +105,54 @@ def test_score_event_failure_does_not_poison_the_linker(db_session, monkeypatch)
     assert db_session.query(GameScoreEvent).filter_by(game_id=game.id).count() == 0
 
 
+def test_score_correction_marks_the_lower_row_and_restarts_nothing_else(db_session):
+    """Fix 64 (journal 207): a body reporting a lower home score than the game's newest row is
+    ESPN correcting its own linescore, not a comeback -- `_maybe_score_event` marks that row
+    `correction = True` rather than treating it as a normalizer bug. A rise, and an
+    unchanged-score row written only for a clock change, both write `correction = False`."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(2, "12:00", 19, 0))
+    game = db_session.query(Game).filter_by(espn_event_id="401").one()
+    rows = db_session.query(GameScoreEvent).filter_by(game_id=game.id).order_by(GameScoreEvent.id).all()
+    assert len(rows) == 1 and rows[0].home_score == 19 and rows[0].correction is False
+
+    # The clock changes with no score change: still not a correction.
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(2, "11:45", 19, 0))
+    rows = db_session.query(GameScoreEvent).filter_by(game_id=game.id).order_by(GameScoreEvent.id).all()
+    assert len(rows) == 2 and rows[-1].correction is False
+
+    # ESPN corrects its own linescore downward: 19 -> 13. Marked.
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(2, "11:45", 13, 0))
+    rows = db_session.query(GameScoreEvent).filter_by(game_id=game.id).order_by(GameScoreEvent.id).all()
+    assert len(rows) == 3
+    assert (rows[-1].home_score, rows[-1].correction) == (13, True)
+
+    # A later rise off the corrected score: not a correction.
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(3, "05:00", 17, 0))
+    rows = db_session.query(GameScoreEvent).filter_by(game_id=game.id).order_by(GameScoreEvent.id).all()
+    assert len(rows) == 4
+    assert (rows[-1].home_score, rows[-1].correction) == (17, False)
+
+
+def test_score_going_null_does_not_mark_a_correction(db_session):
+    """A null score is never a decrease (`_maybe_score_event`'s `hs is not None` guard): there is
+    nothing to compare a null against, so a body that drops a score to unknown is not marked."""
+    seed_teams_from_espn(db_session, "nfl", NFL)
+    link_espn_scoreboard(db_session, "nfl", _in_progress_body(2, "12:00", 19, 7))
+    game = db_session.query(Game).filter_by(espn_event_id="401").one()
+
+    null_score_body = {"events": [{"id": "401", "date": "2026-09-21T00:20Z",
+                        "status": {"type": {"name": "STATUS_IN_PROGRESS"}, "period": 2, "displayClock": "11:50"},
+                        "competitions": [{"competitors": [
+                            {"homeAway": "home", "team": {"id": "14", "displayName": "Los Angeles Rams"}},
+                            {"homeAway": "away", "score": "7", "team": {"id": "19", "displayName": "New York Giants"}}]}]}]}
+    link_espn_scoreboard(db_session, "nfl", null_score_body)
+    rows = db_session.query(GameScoreEvent).filter_by(game_id=game.id).order_by(GameScoreEvent.id).all()
+    assert len(rows) == 2
+    assert (rows[-1].home_score, rows[-1].correction) == (None, False)
+
+
 def test_link_updates_from_a_previous_dates_body(db_session):
     """Fix 14: `link_espn_scoreboard` doesn't care which date's scoreboard a body came from --
     a game stuck `in_progress` because it rolled off ESPN's undated (today-only) fetch at

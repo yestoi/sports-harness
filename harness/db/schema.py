@@ -128,12 +128,18 @@ _COLUMN_DDL = (
     "alter table orders add column if not exists venue_order_id varchar(64)",
     "alter table orders add column if not exists order_group_id varchar(64)",
     "alter table orders add column if not exists exchange_index_at_place integer",
+    # Fix 64 (journal 207): the score-correction marker. `GameScoreEvent.correction` carries the
+    # same not-null default on the model (`server_default=text("false")`) as this ALTER, so
+    # `create_all` on a fresh database and this statement on an existing one leave the identical
+    # column -- what `tests/test_alembic.py`'s catalogue diff compares.
+    # `migrations/versions/0009_score_correction.py` holds the identical statement.
+    "alter table game_score_events add column if not exists correction boolean not null default false",
     # Phase 4.6 (addendum 9). Additive only; on PostgreSQL 16 every ADD COLUMN with a
     # non-volatile default is metadata-only, so none of these rewrites a table. Each column is
     # declared on its model too, and each not-null one carries the same `default` on both sides,
     # so `create_all` on a fresh database and this ALTER on a populated one leave the identical
     # column -- which is what `tests/test_alembic.py`'s catalogue diff compares.
-    # `migrations/versions/0009_phase46_fun_tickets.py` holds the identical statements.
+    # `migrations/versions/0010_phase46_fun_tickets.py` holds the identical statements.
     "alter table parlay_legs add column if not exists player_id integer",
     "alter table parlay_legs add column if not exists stat varchar(12)",
     "alter table parlay_legs add column if not exists period varchar(6) not null default 'game'",
@@ -361,7 +367,7 @@ _CONCURRENT_INDEX_DDL = (
     # four tables is partitioned, so the plain concurrent form is right and 0007's partitioned
     # recipe is not needed. Each is declared on its model as well, so `create_all` gives it to a
     # fresh database, and `_model_indexes` subtracts the names below so no plain `create index`
-    # races these on a populated one. `migrations/versions/0009_phase46_fun_tickets.py` holds
+    # races these on a populated one. `migrations/versions/0010_phase46_fun_tickets.py` holds
     # the identical statements; all three copies must land together or the catalogue diff fails.
     # The detail's `intents` rows for one game's markets, in time order.
     "create index concurrently if not exists ix_intents_market_created "

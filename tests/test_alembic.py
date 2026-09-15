@@ -340,7 +340,7 @@ def test_no_migration_drops_or_alters_an_existing_object(path):
         if "alter index" in line and "op.execute(" in line:
             assert _ALLOWED_ALTER_INDEX.search(line), f"{path.name}: unexpected alter index: {line}"
     # `alter column` is scoped to what the revision runs, never to what it says: a docstring may
-    # explain one (0009 does), and a second real one anywhere still fails here.
+    # explain one (0010 does), and a second real one anywhere still fails here.
     for statement in _executable_strings(path):
         for line in statement.lower().splitlines():
             if "alter column" in line:
@@ -458,23 +458,80 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_nine_revisions():
+def test_the_versions_directory_holds_ten_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
         "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
-        "0009_phase46_fun_tickets.py"]
+        "0009_score_correction.py", "0010_phase46_fun_tickets.py"]
 
 
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
 
 def test_positions_open_fill_follows_raw_events_lookup():
-    """The pinned-head assertion moved to `test_the_phase46_revision_is_additive_only` when
-    phase 4.6's `0009_phase46_fun_tickets` landed on top of this one; the chain assertions stay
-    here, so a revision inserted between the two still fails."""
+    """The pinned-head assertion moved to `test_the_phase46_revision_is_the_pinned_head` when
+    fix 64's `0009_score_correction` and then phase 4.6's `0010_phase46_fun_tickets` landed on
+    top of this one; the chain assertions stay here, so a revision inserted between this one and
+    `0009_score_correction` still fails."""
     module = _load_revision("0008_positions_open_fill.py")
     assert module.revision == "0008_positions_open_fill"
     assert module.down_revision == "0007_raw_events_lookup"
+
+
+# --- fix 64 (journal 207): revision 0009 ---------------------------------------------------------
+
+def test_score_correction_follows_positions_open_fill():
+    """The pinned-head assertions moved to `test_the_phase46_revision_is_the_pinned_head` when
+    phase 4.6's revision was renumbered `0010_phase46_fun_tickets` on top of this one at merge
+    time (D9) -- the same pattern `0008_positions_open_fill` used when this revision landed on
+    top of *it*. The chain assertions stay here, so a revision inserted between the two still
+    fails."""
+    module = _load_revision("0009_score_correction.py")
+    assert module.revision == "0009_score_correction"
+    assert module.down_revision == "0008_positions_open_fill"
+
+
+def test_the_score_correction_revision_only_adds_the_column_and_undoes_nothing():
+    """`upgrade()` runs exactly the one additive `ADD COLUMN IF NOT EXISTS` statement, byte-
+    identical to `harness/db/schema.py`'s `_COLUMN_DDL` entry, and `downgrade()` is `pass`
+    (roadmap invariant 5): dropping the column would be exactly the data-loss risk that rule
+    guards against (unlike `0007_raw_events_lookup`'s index drop), and it would cross the user's
+    own "No row changes" ruling (journal 207) if a downgrade ever ran against a database holding
+    rows the writer had already marked."""
+    from harness.db.schema import _COLUMN_DDL
+
+    module = _load_revision("0009_score_correction.py")
+    assert module._COLUMNS == (
+        "alter table game_score_events add column if not exists correction boolean not null "
+        "default false",)
+    assert set(module._COLUMNS) <= set(_COLUMN_DDL)
+    assert module.downgrade() is None
+
+
+def test_the_game_score_events_correction_column_is_in_both_catalogues(two_databases, frozen_now):
+    """Belt-and-suspenders on top of the whole-catalogue
+    `test_a_migrated_database_matches_a_create_schema_database`: the column's type, nullability
+    and (most load-bearing) server default agree between the `create_schema` database (built by
+    `create_all` straight from the model, since `game_score_events` predates `0001_baseline`) and
+    the migrated one (built from the baseline's frozen shape, then this revision's `ADD COLUMN`)
+    -- the parity the server default on both the model and this revision exists to guarantee.
+    """
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    cols = {}
+    for label, engine in (("a", a), ("b", b)):
+        with Session(engine) as s:
+            ensure_partitions(s, frozen_now)
+        by_name = {c["name"]: c for c in inspect(engine).get_columns("game_score_events")}
+        assert "correction" in by_name
+        cols[label] = by_name["correction"]
+    assert cols["a"]["nullable"] is cols["b"]["nullable"] is False
+    assert str(cols["a"]["type"]).upper() == str(cols["b"]["type"]).upper() == "BOOLEAN"
+    assert cols["a"]["default"] == cols["b"]["default"]
+    assert cols["a"]["default"] is not None      # the server default this fix depends on
 
 
 def test_the_positions_view_ddl_agrees_between_schema_and_migration():
@@ -1052,7 +1109,7 @@ def _phase46_module():
     """The revision module, imported by path: its name starts with a digit, so no dotted import
     reaches it. `_load_revision` (defined further down this file) does the same thing; this is
     the plan's own name for it and it keeps this section readable on its own."""
-    return _load_revision("0009_phase46_fun_tickets.py")
+    return _load_revision("0010_phase46_fun_tickets.py")
 
 
 def test_the_phase46_revision_is_additive_only():
@@ -1084,20 +1141,25 @@ def test_the_phase46_revision_is_additive_only():
     widenings = [s for s in statements if "alter column" in s]
     assert widenings == ["alter table parlay_legs alter column market_type type varchar(12)"]
     assert module.downgrade() is None
-    assert module.revision == "0009_phase46_fun_tickets"
-    assert module.down_revision == "0008_positions_open_fill"
+    assert module.revision == "0010_phase46_fun_tickets"
+    assert module.down_revision == "0009_score_correction"
 
 
 def test_the_phase46_revision_is_the_pinned_head():
-    """Controller ruling of 2026-09-14: the plan's `0008_phase46_fun_tickets` on top of
-    `0007_raw_events_lookup` is stale -- fix 56's `0008_positions_open_fill` took that number on
-    main on 2026-09-13 -- so this phase's revision is `0009` on top of it. 6B's
-    `0008_phase6b_execution` and 6D's `0009_phase6d_sustained_evaluation` are unmerged; whichever
-    branch merges second is renumbered by the controller at merge time (D9)."""
+    """D9 applied at merge time. The plan's `0008_phase46_fun_tickets` on top of
+    `0007_raw_events_lookup` went stale when fix 56's `0008_positions_open_fill` took that number
+    on main on 2026-09-13, and the phase branch's own `0009` went stale when fix 64's
+    `0009_score_correction` took *that* number on main on 2026-09-14 -- so this phase's revision
+    is `0010_phase46_fun_tickets` on top of fix 64's, renumbered in the merge of `main` into the
+    phase branch. These two pinned-head assertions carry over from
+    `test_score_correction_follows_positions_open_fill`, which keeps its chain assertions, the
+    same pattern 0008 and 0009 used before it. 6B's `0008_phase6b_execution` and 6D's
+    `0009_phase6d_sustained_evaluation` are still unmerged and are renumbered the same way at
+    their own merge time."""
     from harness.db.migrate import HEAD_REVISION
 
-    assert HEAD_REVISION == "0009_phase46_fun_tickets"
-    assert VERSIONS[-1].name == "0009_phase46_fun_tickets.py"
+    assert HEAD_REVISION == "0010_phase46_fun_tickets"
+    assert VERSIONS[-1].name == "0010_phase46_fun_tickets.py"
 
 
 def test_the_one_widening_is_the_only_alter_column_any_revision_carries():
@@ -1119,7 +1181,7 @@ def test_the_one_widening_is_the_only_alter_column_any_revision_carries():
     # And the one revision that carries it is the only one that does.
     carriers = [p.name for p in VERSIONS
                 if any("alter column" in s.lower() for s in _executable_strings(p))]
-    assert carriers == ["0009_phase46_fun_tickets.py"]
+    assert carriers == ["0010_phase46_fun_tickets.py"]
 
 
 def test_every_index_on_a_table_taking_live_writes_is_concurrent():

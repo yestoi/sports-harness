@@ -121,6 +121,25 @@ def test_shipped_manual_aliases_cover_2026_09_07_match_report(db_session):
         assert resolve_team(db_session, "ncaaf", raw_name) == (team_id, "manual:odds_api"), raw_name
 
 
+def test_shipped_manual_alias_nicholls_state_colonels_odds_api(db_session):
+    # Monday alias pass (2026-09-14): Odds API's 7-day unresolved-name list carries
+    # "Nicholls State Colonels", which ESPN calls "Nicholls Colonels" (id 2447, already
+    # confirmed by the shipped kalshi_name "Nicholls St." alias from the 2026-09-07 pass).
+    shipped = Path(__file__).parent.parent / "harness" / "matching" / "aliases_manual.yaml"
+    load_manual_aliases(db_session, shipped)
+    assert resolve_team(db_session, "ncaaf", "Nicholls State Colonels") == (2447, "manual:odds_api")
+
+
+def test_shipped_manual_alias_southeastern_louisiana_lions_odds_api(db_session):
+    # Monday alias pass (2026-09-14): Odds API's 7-day unresolved-name list carries
+    # "Southeastern Louisiana Lions", which ESPN calls "SE Louisiana Lions" (id 2545,
+    # already confirmed by the shipped kalshi_name "Southeastern Louisiana" alias from
+    # the 2026-09-07 pass).
+    shipped = Path(__file__).parent.parent / "harness" / "matching" / "aliases_manual.yaml"
+    load_manual_aliases(db_session, shipped)
+    assert resolve_team(db_session, "ncaaf", "Southeastern Louisiana Lions") == (2545, "manual:odds_api")
+
+
 def test_shipped_kalshi_code_aliases_resolve_espn_abbreviation_exceptions(db_session):
     # I9: Kalshi's NFL event-ticker codes mostly equal ESPN abbreviations, except
     # Jacksonville (Kalshi JAC, ESPN JAX) and Washington (Kalshi WAS, ESPN WSH).

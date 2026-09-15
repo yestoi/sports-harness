@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from harness.db.models import CheckResult
+from harness.ops.clock import exclude_unsynced_runs
 
 log = logging.getLogger(__name__)
 
@@ -175,8 +176,12 @@ CHECKS: list[Check] = [
         # Carried fix 16: unbounded, this scanned 475 MB and timed out. The 24 h bound rides
         # the additive `ix_fair_created_brin` (harness/db/schema.py); `ix_fair_game_type_created`
         # leads on game_id and cannot serve a bare created_at predicate.
+        # Fix 57: a run recorded under an unsynchronized clock produces exactly this kind of
+        # arithmetic (a staleness computed against a clock that then jumped), so its rows are
+        # excluded here rather than failing an invariant about the pricing path.
         "select count(*) from fair_values "
-        "where created_at > now() - interval '24 hours' and staleness_s < 0",
+        "where created_at > now() - interval '24 hours' and staleness_s < 0 "
+        f"and {exclude_unsynced_runs('fair_values.run_id')}",
         "== 0", _zero),
     Check(
         "runs_taker_side_missing_24h",
@@ -255,8 +260,10 @@ CHECKS: list[Check] = [
         # the registry and had been recording `skip` on timeout every day, so the invariant wall
         # was grey over a check that never ran. The 24 h bound rides `ix_fair_created_brin`,
         # exactly as fix 16 did for `fair_values_negative_staleness`.
+        # Fix 57, as for `fair_values_negative_staleness` above.
         "select count(*) from fair_values "
-        "where created_at > now() - interval '24 hours' and feed_lag_s < 0",
+        "where created_at > now() - interval '24 hours' and feed_lag_s < 0 "
+        f"and {exclude_unsynced_runs('fair_values.run_id')}",
         "== 0", _zero),
     Check(
         "benchmarks_source_after_target",
@@ -311,15 +318,26 @@ CHECKS: list[Check] = [
         "== 0", _zero),
     Check(
         "game_score_went_down_24h",
-        # A game's score can never go down: a later event carrying a lower home or away score
-        # than one of its own game's earlier events is a normalizer bug, not a comeback. The
-        # inner scan is bounded by `p.game_id = e.game_id` on the same 24 h slice.
+        # Fix 64 (journal 207): ESPN's own scoreboard body is sometimes corrected downward
+        # (a linescore fix, not a comeback), and `link_espn_scoreboard` appends every body it
+        # sees rather than updating one row -- so "a game's score never goes down" is false for
+        # this feed exactly on a correction. `_maybe_score_event` marks the row that carries the
+        # lower score `correction = true`; this predicate excludes a marked row as the later
+        # (`e`) row, and restarts the "never goes down" baseline at that correction: a decrease
+        # is only real when no correction row exists between the earlier (`p`) and later (`e`)
+        # row for the same game, so a score recorded after a correction is compared against the
+        # correction, not against the pre-correction high. Every subquery stays bounded by
+        # `game_id` on the same 24 h slice, as before.
         """
         select count(*) from game_score_events e
         where e.ts > now() - interval '24 hours'
+          and not e.correction
           and exists (select 1 from game_score_events p
                       where p.game_id = e.game_id and p.ts < e.ts
-                        and (p.home_score > e.home_score or p.away_score > e.away_score))
+                        and (p.home_score > e.home_score or p.away_score > e.away_score)
+                        and not exists (select 1 from game_score_events c
+                                        where c.game_id = e.game_id and c.correction
+                                          and c.ts >= p.ts and c.ts <= e.ts))
         """,
         "== 0", _zero),
     Check(

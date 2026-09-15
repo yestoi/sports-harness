@@ -128,6 +128,11 @@ class ExecStats:
     nw_fills: int = 0
     skipped: int = 0
     errors: int = 0
+    #: Tickers whose book could not be read this step (fix 60). Counted apart from `errors`
+    #: and kept out of the heartbeat: the step itself succeeded, and `verify.md`'s heartbeat
+    #: row expects `last_error` null when every other ticker is fine. The log line is the
+    #: record of which ticker failed and why.
+    book_errors: int = 0
     loop_ms: int = 0
     locked: bool = True
     #: The first failure of the step, the same string the heartbeat's `last_error` carries.
@@ -354,6 +359,12 @@ class Executor:
             # It is not an error and never touches `last_error`, whose null the verify row
             # depends on.
             ("exec.tape_lag_tickers", len(heartbeat["tape_lag"]), {}),
+            # Fix 66, M1: a ticker whose book has been unreadable for a while used to be
+            # invisible to verify.md and the dashboard -- only `tests/test_exec_loop.py`
+            # read `stats.book_errors`. Beside `tape_lag_tickers` for the same reason: not
+            # an error, never touches `last_error`, but a steady non-zero reading is a
+            # ticker an operator needs to go looking at.
+            ("exec.book_errors", stats.book_errors, {}),
             # Fix 26: the smallest delta batch any ticker is reading with, `DELTA_BATCH_LIMIT`
             # when none has been shrunk. Read beside `tape_lag_tickers` it separates the two
             # ways of being behind: lag with the batch at the cap is a backlog being walked
@@ -424,8 +435,11 @@ class Executor:
         # ladder that still looks tradeable is the failure this check exists to prevent.
         dead_recorder = (ws_last is None
                          or (now - ws_last).total_seconds() > s.book_max_age_s)
-        bases, recovering = self._advance_books(session, {r.ticker for r in rows.values()}, now)
-        markets = {vm_id: self._market_now(row, dead_recorder) for vm_id, row in rows.items()}
+        bases, recovering, unreadable = self._advance_books(
+            session, {r.ticker for r in rows.values()}, now)
+        stats.book_errors += len(unreadable)
+        markets = {vm_id: self._market_now(row, dead_recorder or row.ticker in unreadable)
+                   for vm_id, row in rows.items()}
         heartbeat["book_dirty_markets"] = sum(1 for m in markets.values() if m.dirty(now, s))
 
         # 4. Fills.
@@ -471,34 +485,51 @@ class Executor:
     # --- books ------------------------------------------------------------------------
 
     def _advance_books(self, session: Session, tickers: set[str],
-                       now: datetime) -> tuple[dict[str, BookState | None], set[str]]:
+                       now: datetime) -> tuple[dict[str, BookState | None], set[str], set[str]]:
         """Advance the cache to now and hand back the book each cursor still points at.
 
         `base` is the previous step's book, copied before the cache moves; the fill step gives
         it to the simulator, which walks its own copy. The cache itself is never handed out and
         never mutated by a simulation.
+
+        The third return is the tickers whose book could not be read at all this step. One
+        ticker, not the step (fix 60): an unreadable book used to raise out of `_body` and cost
+        every other ticker its whole loop -- which is what a snapshot body the reader rejected
+        did to 3,426 consecutive loops from 2026-09-13 13:04 CT. Such a ticker keeps the cache
+        entry it had (or none), gets no base, and joins `dirty`, and its caller marks its market
+        dirty for this step: a book we could not read says nothing about the queue, so its
+        orders hold rather than fill and no intent on it is placed.
         """
         bases: dict[str, BookState | None] = {}
         re_anchored: set[str] = set()
+        unreadable: set[str] = set()
         for ticker in sorted(tickers):
             cached = self.books.get(ticker)
-            if cached is None:
-                book = self._book_now(session, ticker, now, None)
-                self.books[ticker] = book
-                bases[ticker] = book
-            else:
-                base = cached.copy()
-                bases[ticker] = base
-                advanced = self._book_now(session, ticker, now, cached)
-                self.books[ticker] = advanced
-                if (advanced.anchor_id, advanced.source) != (base.anchor_id, base.source):
-                    # `advance_book` re-anchors inside a single call when a gap is followed by a
-                    # clean snapshot, so a gap and its resubscribe can both land between two 15 s
-                    # steps and leave the book clean at either boundary. Comparing anchors is what
-                    # catches that; comparing dirtiness across steps would not.
-                    re_anchored.add(ticker)
-        dirty = {t for t in tickers
-                 if self.books.get(t) is not None and self.books[t].dirty}
+            try:
+                if cached is None:
+                    book = self._book_now(session, ticker, now, None)
+                    self.books[ticker] = book
+                    bases[ticker] = book
+                else:
+                    base = cached.copy()
+                    bases[ticker] = base
+                    advanced = self._book_now(session, ticker, now, cached)
+                    self.books[ticker] = advanced
+                    if (advanced.anchor_id, advanced.source) != (base.anchor_id, base.source):
+                        # `advance_book` re-anchors inside a single call when a gap is followed by
+                        # a clean snapshot, so a gap and its resubscribe can both land between two
+                        # 15 s steps and leave the book clean at either boundary. Comparing anchors
+                        # is what catches that; comparing dirtiness across steps would not.
+                        re_anchored.add(ticker)
+            except Exception as exc:  # noqa: BLE001 - one ticker, not the step
+                # The first failure of a loop carries its traceback; the rest of a loop's
+                # failures are almost always the same one repeated (the `_tape` reader's rule).
+                log.warning("book read failed for %s: %s: %s", ticker, type(exc).__name__, exc,
+                            exc_info=not unreadable)
+                unreadable.add(ticker)
+                bases[ticker] = None
+        dirty = ({t for t in tickers
+                  if self.books.get(t) is not None and self.books[t].dirty} | unreadable)
         # A ticker that was dirty last step and is clean now, or one whose anchor moved inside
         # this step, is re-anchored by the fill step: the queue we believed in was built from a
         # tape with a hole in it.
@@ -507,7 +538,7 @@ class Executor:
         # One BookState per ticker ever traded would accumulate all season, and a dormant entry
         # would later be advanced from a very old `as_of`.
         self.books = {t: book for t, book in self.books.items() if t in tickers}
-        return bases, recovering
+        return bases, recovering, unreadable
 
     def _book_now(self, session: Session, ticker: str, now: datetime,
                   cached: BookState | None) -> BookState | None:
@@ -527,13 +558,15 @@ class Executor:
         return (load_book(session, ticker, now) if cached is None
                 else advance_book(session, cached, now))
 
-    def _market_now(self, row, dead_recorder: bool) -> MarketNow:
+    def _market_now(self, row, book_dirty: bool) -> MarketNow:
+        """`book_dirty` is the loop's own verdict on this ticker's book: the recorder is dead
+        (every book) or the book could not be read at all this step (fix 60, this ticker)."""
         return MarketNow(
             venue_market_id=row.venue_market_id, ticker=row.ticker, fair_p=row.fair_p,
             fair_ts=row.fair_ts, fair_row_id=row.fair_value_id, staleness_s=row.staleness_s,
             stale_allowance_s=row.stale_allowance_s, feed_kind=row.feed_kind,
             best_bid_yes=row.best_bid, best_ask_yes=row.best_ask, mid_yes=row.venue_mid,
-            book=self.books.get(row.ticker), book_dirty=dead_recorder,
+            book=self.books.get(row.ticker), book_dirty=book_dirty,
             matched=confidently_matched(row.match_status), match_key=row.match_key)
 
     # --- fills ------------------------------------------------------------------------

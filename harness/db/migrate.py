@@ -27,16 +27,18 @@ log = logging.getLogger(__name__)
 #: Phase 4.5 bumped it from "0001_baseline"; fix 32 bumped it to "0003_brin_autosummarize";
 #: phase 5 bumped it to "0004_phase5"; fix 35 bumped it to "0005_rfq_lookup"; fix 42 bumped it
 #: to "0006_quotes_run_index"; fix 45 bumped it to "0007_raw_events_lookup"; carried fix 56
-#: (second row) bumped it to "0008_positions_open_fill"; phase 4.6's additive revision bumps it
-#: to "0009_phase46_fun_tickets" (the number is the controller's ruling of 2026-09-14: the
-#: plan's "0008" was written before fix 56 took that number on main, and D9 assigns the final
-#: number at merge time against 6B's and 6D's unmerged revisions). Two consequences
+#: (second row) bumped it to "0008_positions_open_fill"; fix 64 (journal 207) bumped it to
+#: "0009_score_correction"; phase 4.6's additive revision bumps it to
+#: "0010_phase46_fun_tickets". That last number is D9 applied at merge time: the plan's "0008"
+#: was written before fix 56 took that number on main, the phase branch then carried "0009",
+#: and fix 64 took *that* number on main on 2026-09-14, so 4.6's revision was renumbered to
+#: "0010" on top of it in the merge commit. Two consequences
 #: the runbook states and a test pins: only the full `make deploy-nas` runs `migrate ensure`, so
 #: a mid-phase app-only deploy leaves the stamp at the prior revision while `create_schema` still
 #: creates the new tables and the view; and a database stamped ahead of a checkout that lacks the
 #: matching revision file aborts at `ensure`, because its `current` branch calls `upgrade_head`
 #: unconditionally.
-HEAD_REVISION = "0009_phase46_fun_tickets"
+HEAD_REVISION = "0010_phase46_fun_tickets"
 
 #: Where the migrations live inside the image. The Dockerfile's `COPY migrations ./migrations`
 #: puts them here; the checkout path below is what the test suite and a developer use.

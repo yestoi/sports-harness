@@ -10,7 +10,9 @@ from unittest import mock
 import pytest
 from sqlalchemy import event as sa_event, text
 
-from harness.db.models import FairValue, Intent, JobRun, Order, OrderEvent, Run, VenueTrade
+from harness.db.models import (
+    FairValue, GameScoreEvent, Intent, JobRun, Order, OrderEvent, Run, VenueTrade,
+)
 from harness.ops import checks as checks_mod
 from harness.ops.checks import CHECKS, Check, current_trades_partition, assert_no_tape_reads, run_checks
 
@@ -432,6 +434,64 @@ def test_a_negative_feed_lag_inside_the_window_still_fails(db_session):
     db_session.flush()
 
     assert _run_one(db_session, "fair_values_negative_feed_lag", now).status == "fail"
+
+
+def _score_event(session, game_id, ts, home_score, correction=False):
+    session.add(GameScoreEvent(game_id=game_id, ts=ts, status="in_progress", period=2,
+                               clock="10:00", home_score=home_score, away_score=0,
+                               correction=correction))
+
+
+def test_game_score_went_down_passes_when_the_decrease_is_a_marked_correction(db_session):
+    """Fix 64 (journal 207): 7, 19, then 13 marked `correction` (ESPN's own linescore fix), then
+    17. The 13 is excluded as the later row because it is marked, and the 17 is not a decrease
+    against the 19 either: the baseline restarts at the marked correction, so the check finds no
+    unmarked row with an unmarked-and-unshielded higher predecessor."""
+    now = datetime.now(timezone.utc)
+    game_id = 9001
+    _score_event(db_session, game_id, now - timedelta(minutes=30), 7)
+    _score_event(db_session, game_id, now - timedelta(minutes=20), 19)
+    _score_event(db_session, game_id, now - timedelta(minutes=10), 13, correction=True)
+    _score_event(db_session, game_id, now - timedelta(minutes=5), 17)
+    db_session.flush()
+
+    result = _run_one(db_session, "game_score_went_down_24h", now)
+    assert (result.status, result.value) == ("pass", 0)
+
+
+def test_game_score_went_down_still_catches_the_classic_bug_and_does_not_restart_unmarked(db_session):
+    """The same 7, 19, 13, 17 sequence with the 13 left **unmarked**: the check must still catch
+    it (the bug it exists for) -- 1 for the 13 against the 19 -- and, because nothing restarts
+    the baseline when the decrease is not marked, the 17 is *also* a decrease against the same
+    19 -- 1 more. The exact count is 2, not 1: the predicate only restarts its baseline at a
+    `correction` row, and this sequence has none."""
+    now = datetime.now(timezone.utc)
+    game_id = 9002
+    _score_event(db_session, game_id, now - timedelta(minutes=30), 7)
+    _score_event(db_session, game_id, now - timedelta(minutes=20), 19)
+    _score_event(db_session, game_id, now - timedelta(minutes=10), 13)
+    _score_event(db_session, game_id, now - timedelta(minutes=5), 17)
+    db_session.flush()
+
+    result = _run_one(db_session, "game_score_went_down_24h", now)
+    assert (result.status, result.value) == ("fail", 2)
+
+
+def test_game_score_went_down_a_correction_outside_the_window_still_shields(db_session):
+    """The inner `c` (correction) and `p` (earlier, higher) subqueries are bounded only by the
+    same game and by `p.ts`/`c.ts` falling before the later row `e` -- not by the 24 h window `e`
+    itself is bounded to. A correction more than 24 h old still shields a later, in-window row
+    from being counted as a decrease against the pre-correction score: the marker's own age is
+    ignored either way, only its position between the earlier and later row matters."""
+    now = datetime.now(timezone.utc)
+    game_id = 9003
+    _score_event(db_session, game_id, now - timedelta(hours=30), 19)
+    _score_event(db_session, game_id, now - timedelta(hours=26), 13, correction=True)
+    _score_event(db_session, game_id, now - timedelta(hours=2), 17)
+    db_session.flush()
+
+    result = _run_one(db_session, "game_score_went_down_24h", now)
+    assert (result.status, result.value) == ("pass", 0)
 
 
 def test_the_intents_check_rides_the_orders_key_index(db_session):

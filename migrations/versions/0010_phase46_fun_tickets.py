@@ -1,7 +1,7 @@
 """phase 4.6: the fun-ticket columns, the five new tables and the story indexes
 
-Revision ID: 0009_phase46_fun_tickets
-Revises: 0008_positions_open_fill
+Revision ID: 0010_phase46_fun_tickets
+Revises: 0009_score_correction
 Create Date: 2026-09-14
 
 An additive mirror of `harness/db/models.py` and `harness/db/schema.py`. The models and
@@ -62,27 +62,30 @@ other, over what each revision *executes*, so a second widening anywhere still f
 runs, and the phase audit greps every migration for non-additive statements. Rolling back is
 `git checkout <sha> && make deploy-omarchy-app`, which never runs `migrate ensure`, and old code
 survives because it ignores the new columns and the new tables. A later *full* deploy on a
-rolled-back sha aborts at `ensure` and needs a hand `alembic stamp 0008_positions_open_fill`
+rolled-back sha aborts at `ensure` and needs a hand `alembic stamp 0009_score_correction`
 first; that is the user's action, never the loop's.
 
-The revision number (D9, and the controller's ruling of 2026-09-14). D9 says the number is
-assigned at merge time, verbatim: "Phase 6B's plan names its revision `0008_phase6b_execution`
-on the branch `phase6b-repair-execution`, which is not on `main`; the controller renumbers
-whichever of the two merges second to `0009` and updates its `down_revision` in a scoped,
-re-reviewed rebase." Both numbers in that sentence moved by one before this file was written:
-fix 56 merged `0008_positions_open_fill` to main on 2026-09-13, so this phase's revision is
-`0009` on top of it, 6B's unmerged `0008_phase6b_execution` and 6D's unmerged
-`0009_phase6d_sustained_evaluation` are the other two claims on those numbers, and whichever
-branch merges second is renumbered by the controller at merge time, in that same scoped,
-re-reviewed commit. No task in this plan waits for 6B or 6D, and neither plan is changed by
-this one.
+The revision number (D9, applied at merge time). D9 says the number is assigned at merge time,
+verbatim: "Phase 6B's plan names its revision `0008_phase6b_execution` on the branch
+`phase6b-repair-execution`, which is not on `main`; the controller renumbers whichever of the
+two merges second to `0009` and updates its `down_revision` in a scoped, re-reviewed rebase."
+Every number in that sentence has moved since it was written, and this file is the renumbered
+one. Fix 56 merged `0008_positions_open_fill` to main on 2026-09-13, so the phase branch first
+carried this revision as `0009` on top of it; fix 64 (journal 207) then merged
+`0009_score_correction` to main on 2026-09-14, while 4.6 was still on its branch. D9's rule
+therefore lands on this branch, the second to merge: the revision is `0010_phase46_fun_tickets`
+with `down_revision = "0009_score_correction"`, renumbered in the scoped, re-reviewed merge of
+`main` into the phase branch. 6B's unmerged `0008_phase6b_execution` and 6D's unmerged
+`0009_phase6d_sustained_evaluation` are the remaining claims on the earlier numbers, and each is
+renumbered the same way at its own merge time. No task in this plan waits for 6B or 6D, and
+neither plan is changed by this one.
 """
 from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0009_phase46_fun_tickets"
-down_revision: str | None = "0008_positions_open_fill"
+revision: str = "0010_phase46_fun_tickets"
+down_revision: str | None = "0009_score_correction"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

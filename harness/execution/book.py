@@ -23,6 +23,7 @@ ask on one side is a bid on the other, which is what `best_ask` computes.
 """
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -239,18 +240,21 @@ class BookState:
                    anchor_id=int(anchor_id), last_event_id=int(anchor_id))
 
     @classmethod
-    def from_ws_raw(cls, ticker: str, raw: dict, sid: int, seq: int, as_of: datetime,
+    def from_ws_raw(cls, ticker: str, raw: object, sid: int, seq: int, as_of: datetime,
                     event_id: int) -> "BookState":
         """Build from a stored `orderbook_snapshot` message body.
 
         The venue sends `*_dollars_fp` today and sent `*_dollars` before the fractional
         rollout; both shapes are on the tape. One empty side is normal (a one-sided book),
-        so only a body with neither key is a broken row.
+        and since 2026-09-13 18:04Z the venue omits *both* side keys for a market whose book
+        is empty -- the body is then only its ids and the recorder offset. That is an empty
+        book, not a broken row (fix 60): no bids, no asks, no mid, so nothing simulates a
+        fill against it. Only a body that is not a mapping at all is broken.
         """
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"snapshot body is not a mapping: {type(raw).__name__}")
         yes = raw.get("yes_dollars_fp") or raw.get("yes_dollars")
         no = raw.get("no_dollars_fp") or raw.get("no_dollars")
-        if yes is None and no is None:
-            raise ValueError("snapshot without yes_dollars_fp")
         return cls.from_levels(ticker, yes or [], no or [], sid, seq, as_of, "ws", event_id)
 
     def _book(self, side: str) -> dict[Decimal, Decimal]:
