@@ -19,3 +19,27 @@ settle 209 2026-09-15 14:20:10.49383+00 -> running running budget_exhausted=fals
 backend 6320 state=active since=31s xact_age=977s q=FETCH FORWARD 2000 FROM "c_7f3051de6510_3"
 gap_outcomes total 79452
 watermark 50028
+closing_read_at 2026-09-15 16:45:13.516927+00
+settle 210 2026-09-15 15:40:24.094115+00 -> running running budget_exhausted=false errors=-
+settle 209 2026-09-15 14:20:10.49383+00 -> 2026-09-15 15:40:24.094115+00 interrupted budget_exhausted=false errors=-
+settle_error events since 08:00 CT: 0
+gap_outcomes total 79452
+watermark 50028
+backend 13043 since=29s xact=3891s q=FETCH FORWARD 2000 FROM "c_7f0604d17bf0_3"
+closing_read_at 2026-09-15 16:52:35.439379+00
+settle 210 2026-09-15 15:40:24.094115+00 -> 2026-09-15 16:52:04.246754+00 ok budget_exhausted=true errors=[]
+stage benchmarks error=null counts={"benchmarks": 0} elapsed_s=0.035
+stage result_benchmarks error=null counts={"result_benchmarks": 0} elapsed_s=0.027
+stage gap_outcomes_drain error=null counts={"gap_outcomes_drain": 0} elapsed_s=0.185
+stage order_clv error=null counts={"no_game": 0, "order_clv": 0} elapsed_s=0.301
+stage report_wtd error=null counts={"reason": "ran first", "skipped": true} elapsed_s=4299.052
+stage settle error=null counts={"games": 0, "orders": 0, "markets": 0, "ledger_rows": 0} elapsed_s=0.001
+stage venue_result error=null counts={"mismatches": 0, "venue_rows": 0} elapsed_s=0.003
+stage parlay_grade error=null counts={"legs": 0, "void": 0, "cards": 0, "busted": 0, "cashed": 0, "errors": 0, "stat_missing": 0} elapsed_s=0.001
+stage rfq_grade error=null counts={"stale": 0, "errors": 0, "graded": 0, "voided": 0, "waiting": 0} elapsed_s=0.017
+stage parlay_build error=null counts={"built": 0, "errors": 0, "expired": 0, "refused": 0, "skipped": 6, "replaced": 0} elapsed_s=0.009
+stage markouts error=null counts={"markouts": 0} elapsed_s=0.206
+stage housekeeping error=null counts={"skipped": true} elapsed_s=0.001
+settle_error events since 08:00 CT: 0
+gap_outcomes total 79452 null_roi 0
+watermark 50028
