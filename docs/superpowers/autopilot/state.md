@@ -1,11 +1,11 @@
 # Autopilot checkpoint
 
-Updated 2026-09-15 09:53 CT (14:53Z) by the post-reboot controller session (tmux `sports-autopilot`, flock held; PID 6734) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 234. Paper-only. Runtime build: **7c3d750** (full release 09:37:47-09:41:28 CT: hotfix batch A, hotfix batch B, fix 74; journal 233; verify 234 PASS with standing items and two deferred re-reads). Main: 7c3d750 + docs. origin/main = 35f7180 (U7 pushes after phases and on Mondays).
+Updated 2026-09-15 10:19 CT by the post-reboot controller session (tmux `sports-autopilot`, flock held; PID 6734) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 235. Paper-only. Runtime build: **7c3d750** (journal 233/234; the 10:15 CT re-reads PASS, row 74 closed, journal 235). Main: 7c3d750 + docs. origin/main = 35f7180 (U7 pushes after phases and on Mondays).
 
 ## Right now: released and verified; three deferred reads pending; next hotfix batch (rows 75, 76) then the row 72 batch
 
 - **Released 7c3d750** (journal 233): batch A (items 2, 3, 4, 8, 13, 14 + review I-1 bound + the rescore test rewrite), batch B (item 9), fix 74. All four branch worktrees removed, branches deleted, fixture grants revoked. Ledger `.superpowers/sdd/hotfix-2026-09-15/progress.md`.
-- **Deferred reads** (journal 234): 10:15 CT executor `p95_loop_ms` (7,500 ms row; 8,039-10,824 ms right after the restart, 4,026-4,213 ms pre-release; `exec_capacity` skips 1,148 / 2 h rising, `nw_pending` 2,728) and fix 74's between-calls `usd_reserved = 0` read (row 74 closes on it), plus the sid-2 gap episodes (four in 08:04-09:05 CT at 15-minute spacing); **11:45 CT** fix 73's closing read on the first post-release settle (due about 10:40 CT; `report_wtd` runs first for about an hour).
+- **Deferred reads**: the 10:15 CT reads are done (journal 235: p95 4,641 ms PASS, row 74 closed, the sid-2 gaps are fix 77). Remaining: **11:45 CT** fix 73's closing read. Superseded text follows: 10:15 CT executor `p95_loop_ms` (7,500 ms row; 8,039-10,824 ms right after the restart, 4,026-4,213 ms pre-release; `exec_capacity` skips 1,148 / 2 h rising, `nw_pending` 2,728) and fix 74's between-calls `usd_reserved = 0` read (row 74 closes on it), plus the sid-2 gap episodes (four in 08:04-09:05 CT at 15-minute spacing); **11:45 CT** fix 73's closing read on the first post-release settle (due about 10:40 CT; `report_wtd` runs first for about an hour).
 - **New carried fixes**: row 75 (`report_wtd` streams past the settle budget: 3,518 s on run 203; runs 202 and 209 interrupted; opus impl/review, own batch after the 11:45 CT read) and row 76 (app-serve's `make_snapshot_engine` sends no `application_name`; sonnet; rides row 75's batch).
 - **Row 72 batch** (revision 0013 `orders.nw_executor_version`, the Amendment 6 sub-population sentence; opus impl/review; a full release of its own) after the row 75/76 batch. Narrowed invariant reads 0 / 0 on 762bde4 and 7c3d750.
 - **User-side decisions recorded today**: extend amendment 0.18 to `order_rescores`? (roadmap TODO, journal 232); the futures budget sentence in verify.md (200 vs the spec's 500); the storage retention proposal (by 2026-09-22, journal 230).
@@ -28,11 +28,11 @@ Updated 2026-09-15 09:53 CT (14:53Z) by the post-reboot controller session (tmux
 
 ## Pending results / subprocesses
 
-- Agents: none running. Suites: none. Wakeups: CronCreate one-shots 10:15 CT (p95, fix 74 between calls, gap episodes) and 11:45 CT (fix 73 closing read) with durable reminders 2026091505 and 2026091506; both armed at 09:53 CT.
+- Agents: row72 (opus, 09:56 CT, chase 10:56, timeout 11:26 CT), batch-c (opus, 09:58 CT, chase 10:58, timeout 11:28 CT), fix-77 (opus, 10:19 CT, chase 11:19, timeout 11:49 CT). Suites: none. Wakeups: CronCreate one-shot 11:45 CT (fix 73 closing read; reminder 2026091506). The 10:15 CT wakeup consumed (journal 235).
 - Latest receipts (~/.cache/sports-harness/test-state/): fix-20260915-dirty-intervals 0d04804 (exit 0, pristine, release tree = deployed tree); phase6d-merge-main ffbecd5; main e17d0f5. The main release tree since 0d04804 is docs-only, so a rebased branch receipt is the release receipt (deploy.md step 2).
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, none (the four hotfix databases' grants were revoked 09:49 CT; the databases remain until the next `make testdb-prune` or the user's cleanup).
-- Worktrees: none for hotfixes (the four merged worktrees removed 09:49 CT); the older worktrees unchanged.
-- Day counters (CT) Sep 15: dispatches 14 (4 carried + batch A 4 + fix 73 2 + batch B 2 + fix 74 2), failed deploys 1 (row 72 verify FAIL at 00:36 CT; release stands), implementers running 0 of 3.
+- Worktrees: fix-20260915-row72, fix-20260915-batch-c, fix-20260915-ws-seq-ack (active, one implementer each); the older worktrees unchanged. Test databases with the fixture grant ON: harness_test_fix_20260915_{row72,batch_c,ws_seq_ack} (revoke after their last suite).
+- Day counters (CT) Sep 15: dispatches 17 (4 carried + batch A 4 + fix 73 2 + batch B 2 + fix 74 2 + row72 1 + batch C 1 + fix 77 1), failed deploys 1, implementers running 3 of 3.
 
 ## Rulings landed (journal 199-212, 224, 226, 229)
 

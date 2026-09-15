@@ -1,0 +1,71 @@
+reread_at 2026-09-15 15:15:20.47294+00
+exec_heartbeat age_s=12 loops=34544 open=0 last_error=null last_loop_ms=3743 p95=4641 skipped=3432 dirty=72
+p95_samples 2026-09-15 15:14:23.84662+00 p95=4641.000000
+p95_samples 2026-09-15 15:13:08.846677+00 p95=4641.000000
+p95_samples 2026-09-15 15:11:53.846472+00 p95=4743.000000
+p95_samples 2026-09-15 15:10:53.846756+00 p95=4743.000000
+p95_samples 2026-09-15 15:09:38.846657+00 p95=4743.000000
+p95_samples 2026-09-15 15:08:38.846621+00 p95=4743.000000
+p95_samples 2026-09-15 15:07:38.846746+00 p95=4743.000000
+p95_samples 2026-09-15 15:06:23.846398+00 p95=5033.000000
+loop_ms_samples 2026-09-15 15:14:23.84662+00 loop_ms=3618.000000
+loop_ms_samples 2026-09-15 15:13:08.846677+00 loop_ms=3804.000000
+loop_ms_samples 2026-09-15 15:11:53.846472+00 loop_ms=4238.000000
+loop_ms_samples 2026-09-15 15:10:53.846756+00 loop_ms=3646.000000
+loop_ms_samples 2026-09-15 15:09:38.846657+00 loop_ms=3863.000000
+loop_ms_samples 2026-09-15 15:08:38.846621+00 loop_ms=3840.000000
+loop_ms_samples 2026-09-15 15:07:38.846746+00 loop_ms=3668.000000
+loop_ms_samples 2026-09-15 15:06:23.846398+00 loop_ms=4641.000000
+exec_capacity_skips last_30m=332 prev_30m=220
+nw_pending 2026-09-15 15:14:23.84662+00 3028.000000
+nw_pending_1h_ago 2026-09-15 14:15:09.734155+00 2431.000000
+research_spend 2026-09-15 15:15:20.477458+00 reserved=0.0000 usd=24.4092 calls=388
+veto_calls_last_5min 0
+veto_notes_newest 2026-09-15 14:53:42.613819+00
+gap_rows_since_0905CT 4 newest 2026-09-15 15:05:31.407077+00
+ws_gaps_metric_since 2026-09-15 14:50:28.614297+00 2.000000
+ws_gaps_metric_since 2026-09-15 15:05:36.074916+00 2.000000
+tape_covered_frac 2026-09-15 15:00:24.069216+00 0.966100
+tape_covered_frac 2026-09-15 14:00:10.468299+00 0.949200
+settle_last 209 running 2026-09-15 14:20:10.49383+00
+== app-ws log 15:05:20-15:05:50Z (gap episode)
+{"asctime": "2026-09-15 15:05:31,279", "levelname": "WARNING", "name": "harness.recorder.ws_sink", "message": "seq gap sid=2 expected=14336 got=14337 exposed_by=KXNFLTOTAL-26SEP20MINCHI-50"}
+{"asctime": "2026-09-15 15:05:31,283", "levelname": "WARNING", "name": "harness.venues.kalshi.ws", "message": "gap on sid 2: resubscribed 196 tickers for fresh snapshots"}
+{"asctime": "2026-09-15 15:05:31,407", "levelname": "WARNING", "name": "harness.recorder.ws_sink", "message": "seq gap sid=2 expected=14339 got=14341 exposed_by=KXNFLGAME-26SEP17DETBUF-BUF"}
+{"asctime": "2026-09-15 15:05:31,407", "levelname": "INFO", "name": "harness.venues.kalshi.ws", "message": "gap on sid 2 inside the 60 s recovery window; ignored"}
+== app-ws log 14:50:20-14:50:40Z
+{"asctime": "2026-09-15 14:50:26,641", "levelname": "WARNING", "name": "harness.recorder.ws_sink", "message": "seq gap sid=2 expected=6956 got=6957 exposed_by=KXNCAAFSPREAD-26SEP19UNCCLEM-CLEM4"}
+{"asctime": "2026-09-15 14:50:26,645", "levelname": "WARNING", "name": "harness.venues.kalshi.ws", "message": "gap on sid 2: resubscribed 197 tickers for fresh snapshots"}
+{"asctime": "2026-09-15 14:50:26,776", "levelname": "WARNING", "name": "harness.recorder.ws_sink", "message": "seq gap sid=2 expected=6962 got=6964 exposed_by=KXNFLGAME-26SEP17DETBUF-BUF"}
+{"asctime": "2026-09-15 14:50:26,776", "levelname": "INFO", "name": "harness.venues.kalshi.ws", "message": "gap on sid 2 inside the 60 s recovery window; ignored"}
+gap_rows_detail 178462495 2026-09-15 14:50:26.607+00 sid=2 seq=6957 ticker= raw={"got": 6957, "sid": 2, "expected": 6956, "exposed_by": "KXNCAAFSPREAD-26SEP19UNCCLEM-CLEM4"}
+gap_rows_detail 178462501 2026-09-15 14:50:26.776586+00 sid=2 seq=6964 ticker= raw={"got": 6964, "sid": 2, "expected": 6962, "exposed_by": "KXNFLGAME-26SEP17DETBUF-BUF"}
+gap_rows_detail 178469874 2026-09-15 15:05:31.254+00 sid=2 seq=14337 ticker= raw={"got": 14337, "sid": 2, "expected": 14336, "exposed_by": "KXNFLTOTAL-26SEP20MINCHI-50"}
+gap_rows_detail 178469877 2026-09-15 15:05:31.407077+00 sid=2 seq=14341 ticker= raw={"got": 14341, "sid": 2, "expected": 14339, "exposed_by": "KXNFLGAME-26SEP17DETBUF-BUF"}
+sink_lag_around_1505 2026-09-15 15:04:35.758547+00 0.037547
+sink_lag_around_1505 2026-09-15 15:05:36.074916+00 0.032916
+sink_lag_around_1505 2026-09-15 15:06:36.075347+00 0.030347
+events_per_min_around_1505 2026-09-15 15:04:35.758547+00 737.000000
+events_per_min_around_1505 2026-09-15 15:05:36.074916+00 533.000000
+events_per_min_around_1505 2026-09-15 15:06:36.075347+00 415.000000
+runs_around_1505 18081 2026-09-15 15:04:54.069223+00 skipped credits=0 n_req=0
+runs_around_1505 18082 2026-09-15 15:05:24.069175+00 ok credits=0 n_req=9
+runs_around_1505 18083 2026-09-15 15:05:54.069907+00 skipped credits=0 n_req=0
+sid2_tickers_subscribed 196.000000 at 2026-09-15 15:15:38.85556+00
+== app-ws 15:05:00-15:05:31Z all levels
+== app-ws 14:49:50-14:50:27Z
+{"asctime": "2026-09-15 14:50:26,641", "levelname": "WARNING", "name": "harness.recorder.ws_sink", "message": "seq gap sid=2 expected=6956 got=6957 exposed_by=KXNCAAFSPREAD-26SEP19UNCCLEM-CLEM4"}
+{"asctime": "2026-09-15 14:50:26,645", "levelname": "WARNING", "name": "harness.venues.kalshi.ws", "message": "gap on sid 2: resubscribed 197 tickers for fresh snapshots"}
+{"asctime": "2026-09-15 14:50:26,776", "levelname": "WARNING", "name": "harness.recorder.ws_sink", "message": "seq gap sid=2 expected=6962 got=6964 exposed_by=KXNFLGAME-26SEP17DETBUF-BUF"}
+{"asctime": "2026-09-15 14:50:26,776", "levelname": "INFO", "name": "harness.venues.kalshi.ws", "message": "gap on sid 2 inside the 60 s recovery window; ignored"}
+== subscribed_tickers samples 14:00-15:15Z
+subscribed_tickers_changes 2026-09-15 12:55:46.106305+00 98.000000
+subscribed_tickers_changes 2026-09-15 13:04:46.906499+00 195.000000
+subscribed_tickers_changes 2026-09-15 13:35:00.553229+00 196.000000
+subscribed_tickers_changes 2026-09-15 13:50:01.951876+00 197.000000
+subscribed_tickers_changes 2026-09-15 14:05:09.694314+00 198.000000
+subscribed_tickers_changes 2026-09-15 14:50:28.614297+00 197.000000
+subscribed_tickers_changes 2026-09-15 15:05:36.074916+00 196.000000
+run_18082_notes {"props": {"skipped": "interval"}, "errors": [], "pricing": {}, "reprice": {"skipped": "interval"}, "weather": {"due": 0, "errors": [], "fetched": 0, "skipped": {}, "written": 0, "reresolved": 0, "budget_exhausted": false}, "warnings": [], "leg_probs": 0, "normalized": {"espn": 2, "kalshi_events": 7, "kalshi_series": 0, "kalshi_trades": 0, "odds_featured": 0, "kalshi_markets": 0, "odds_alternates": 0, "kalshi_orderbook": 0}, "trade_gaps": [], "odds_dropped": {}, "player_stats": {"skipped": "cade
+ticks_with_requests_13-15Z 17850@13:00:12/732/6 17851@13:02:42/9/0 17877@13:15:42/328/6 17880@13:18:12/9/0 17905@13:31:10/187/6 17909@13:33:40/9/0 17933@13:45:40/10/0 17934@13:46:10/175/6 17939@13:49:10/9/0 17963@14:01:10/164/6 17969@14:04:40/9/0 17993@14:16:40/175/6 17998@14:19:40/9/0 18022@14:31:40/197/6 18027@14:34:40/9/0 18045@14:45:54/10/0 18047@14:46:54/168/6 18052@14:49:54/9/0 18077@15:02:24/203/6 18082@15:05:24/9/0
+gap_episodes_all_today 05:22:01 05:35:32 05:35:32 06:49:08 08:16:38 13:04:46 13:04:46 13:35:00 13:35:00 13:50:01 13:50:01 14:05:04 14:50:26 14:50:26 15:05:31 15:05:31
