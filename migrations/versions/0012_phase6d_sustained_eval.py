@@ -1,7 +1,7 @@
 """phase 6D: sustained evaluation -- the coverage tables and fix 51's intents index
 
-Revision ID: 0009_phase6d_sustained_eval
-Revises: 0008_positions_open_fill
+Revision ID: 0012_phase6d_sustained_eval
+Revises: 0011_phase6b_execution
 Create Date: 2026-09-13
 
 Additive only (roadmap invariant 5): this revision creates new tables and new indexes and
@@ -10,22 +10,24 @@ alters nothing that exists. It is built in three passes by the 6D plan -- Task 1
 `intent_episodes` -- and `harness/db/schema.py` plus the models carry the identical statements,
 which is what `tests/test_alembic.py`'s catalogue diff compares.
 
-**The number and the parent are the controller's at merge time** (4.6 addendum ruling D9). Two
-unmerged revisions sit beside this one -- 6B's `0008_phase6b_execution` on branch
-`phase6b-repair-execution` and 4.6's `00NN_phase46_fun_tickets` -- and the 2026-09-13 hotfix for
-the stranded position takes `0008_positions_open_fill`, which is why this file is written as
-0009 on top of it. If the branch this merges onto carries a different newest revision, the
-controller re-numbers this file and rewrites `down_revision` and `harness/db/migrate.py`'s
-`HEAD_REVISION` to match; nothing else about the revision changes.
+**The number and the parent were the controller's at merge time** (4.6 addendum ruling D9), and
+this file is the renumbered one. It was written as `0009_phase6d_sustained_eval` on top of the
+2026-09-13 hotfix `0008_positions_open_fill`; while 6D ran, fix 64 took 0009 on main
+(`0009_score_correction`), phase 4.6's revision was renumbered `0010_phase46_fun_tickets` on top
+of it, and phase 6B's `0011_phase6b_execution` on top of that. So this revision is
+`0012_phase6d_sustained_eval` with `down_revision = "0011_phase6b_execution"`, renumbered in the
+scoped merge of `main` into the phase branch: the id, `down_revision` and
+`harness/db/migrate.py`'s `HEAD_REVISION` moved together and nothing else about the revision
+changed.
 
 **Why the id is `..._eval` and not `..._evaluation`** (T1 deviation, for the controller's merge
 note): Alembic stores the stamp in `alembic_version.version_num`, which it creates as
 `Column("version_num", String(32))` (`alembic/ddl/impl.py`) with no option to widen, and the
 deployed database already carries that column, so widening it would be a non-additive ALTER.
-`0009_phase6d_sustained_evaluation` is 33 characters and every upgrade to it aborts with
+`0012_phase6d_sustained_evaluation` is 33 characters and every upgrade to it aborts with
 `StringDataRightTruncation` (measured on the T1 test database: 17 of `tests/test_alembic.py`'s
-scratch-database cases failed on it). `0009_phase6d_sustained_eval` is 27, and the file name
-matches the revision id exactly as all eight revisions before it do. Tasks 4 and 8 add their
+scratch-database cases failed on it). `0012_phase6d_sustained_eval` is 27, and the file name
+matches the revision id exactly as all eleven revisions before it do. Tasks 4 and 8 add their
 table passes to *this* file and must use this id.
 
 `ix_intents_created` is built CONCURRENTLY (F65, fix 25: every index on a table with a live
@@ -46,8 +48,8 @@ from alembic import op
 
 from migrations.env import concurrent_index
 
-revision: str = "0009_phase6d_sustained_eval"
-down_revision: str | None = "0008_positions_open_fill"
+revision: str = "0012_phase6d_sustained_eval"
+down_revision: str | None = "0011_phase6b_execution"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

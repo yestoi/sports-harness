@@ -196,6 +196,10 @@ def _handle(session: Session, family: str, r, ctx: dict) -> None:
         dropped = ctx.setdefault("odds_dropped", {"unknown_game": 0, "unresolved_team": 0})
         dropped["unknown_game"] += odds.dropped_unknown_game
         dropped["unresolved_team"] += odds.dropped_unresolved_team
+        # Phase 4.6 4.2: the prop outcomes this pass could not resolve to exactly one rostered
+        # player. Counted where it is decided; `harness/recorder/tick.py` folds it into the
+        # tick's `ctx["props"]["unmatched"]` and into the recorder's `player_unmatched` counter.
+        ctx["prop_unmatched"] = ctx.get("prop_unmatched", 0) + odds.prop_unmatched
     elif family == "kalshi_events":
         for ev in _events_in(body):
             _remember_event(ev)

@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, Index, Integer, Numeric, SmallInteger, String, Text,
-    UniqueConstraint, Uuid,
+    UniqueConstraint, Uuid, desc, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -73,6 +73,9 @@ class SourceState(Base):
     __tablename__ = "source_state"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)  # e.g. odds_featured:americanfootball_nfl
     last_fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Phase 4.6 (addendum 3.2): the Odds API credits this key has spent, so the prop cadence
+    #: can be capped inside the existing tier. Null on every row that predates the column.
+    credits_used: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class Team(Base):
@@ -127,6 +130,45 @@ class OddsSnapshot(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     __table_args__ = (Index("ix_odds_game_type_fetched", "game_id", "market_type", "fetched_at"),
                       Index("ix_odds_fetched_book", "fetched_at", "book", "book_last_update"))
+
+
+class OddsPropSnapshot(Base):
+    """One DraftKings player-prop outcome (addendum §3.3 and §9 as amended; D23).
+
+    Its own table rather than four columns on `odds_snapshots`: a prop outcome is keyed by the
+    **player**, and `uq_odds_snapshot_row` keys on `coalesce(outcome_team_id, -1)` with no
+    `where` clause, so two scorers in one `prop:anytime_td` market are one key to it. Making
+    them fit would mean rebuilding a unique index on a bulk table, which is not additive; a new
+    table is. Column spellings are copied from `OddsSnapshot`.
+    """
+    __tablename__ = "odds_prop_snapshots"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    raw_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    book: Mapped[str] = mapped_column(String(32), nullable=False)
+    game_id: Mapped[int | None] = mapped_column(Integer)
+    market_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    player_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: Null until Task 3's resolver fills it; `ix_odds_prop_lookup` is partial on it.
+    player_id: Mapped[int | None] = mapped_column(Integer)
+    outcome_side: Mapped[str | None] = mapped_column(String(8))
+    point: Mapped[Decimal | None] = mapped_column(Numeric(6, 1))
+    #: The only price column, as on `OddsSnapshot`: the venue is asked for decimal odds and
+    #: `pricing.american()` derives the American price for a prop exactly as for a game line.
+    price_decimal: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    book_last_update: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    link: Mapped[str | None] = mapped_column(String(300))
+    sid: Mapped[str | None] = mapped_column(String(64))
+    __table_args__ = (
+        # The prop upsert's conflict target: one row per (fetch, book, market, player, side,
+        # line). `player_name` is the column `uq_odds_snapshot_row` could not carry.
+        Index("uq_odds_prop_row", "raw_id", "book", "market_type", "player_name",
+              text("coalesce(outcome_side, '')"), text("coalesce(point, 0)"), unique=True),
+        # The builder's pool and the reprice read: the three leading columns seek, the fourth
+        # orders. Partial, so a row whose player never resolved costs nothing.
+        Index("ix_odds_prop_lookup", "game_id", "market_type", "player_id", desc("fetched_at"),
+              postgresql_where=text("player_id is not null")),
+    )
 
 
 class VenueMarket(Base):
@@ -415,12 +457,21 @@ class Intent(Base):
     signal_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Two declared indexes, one from each parent of this merge, in one tuple.
+    #:
+    #: Phase 4.6 (addendum 7.2, D13): the Floor detail's skip rows for one game's markets, in
+    #: time order. Built CONCURRENTLY by `_CONCURRENT_INDEX_DDL`, which is why this declaration
+    #: is subtracted from `_model_indexes` on a populated database.
+    #:
     #: Fix 51 (D9). `intents_without_order_or_skip` bounds itself to the last 24 h on
     #: `created_at`, and this table carried no index on any time column, so that bound was a
     #: sequential scan and the check recorded `skip: timeout` on 2026-09-13. Built
     #: CONCURRENTLY by `create_schema` (`_CONCURRENT_INDEX_DDL`) and by the 6D revision;
     #: declared here so `create_all` gives it to a fresh database, the test database included.
-    __table_args__ = (Index("ix_intents_created", "created_at"),)
+    __table_args__ = (
+        Index("ix_intents_market_created", "venue_market_id", "created_at"),
+        Index("ix_intents_created", "created_at"),
+    )
 
 
 class Order(Base):
@@ -488,6 +539,26 @@ class Order(Base):
     nw_traded_at_price: Mapped[Decimal | None] = mapped_column(CONTRACTS)
     nw_tape_cursor_event_id: Mapped[int | None] = mapped_column(BigInteger)
     nw_done: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 6B §1.3's reconciliation ledger, per track. `print_unmatched` is print volume whose
+    #: decrement has not arrived; `pending_unmatched` and `pending_surplus` are the surviving
+    #: decrement buckets' sums by kind; `cancels_ahead` is decrement volume that aged out of the
+    #: horizon unclaimed -- a real cancellation ahead of us, retired and unclaimable.
+    #: C0's charge-against quantity is not a ledger term and the two must never be read as one
+    #: (ruling CR-3): `traded_at_price` above stays NULL on every post-boundary order, which is
+    #: what makes the boundary visible by nullness, while a pre-boundary order still being
+    #: simulated keeps the value it already had -- the repaired writer carries it back unchanged
+    #: and never computes it (round 2, Important A).
+    print_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    pending_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    pending_surplus: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_print_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_pending_unmatched: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_pending_surplus: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    nw_cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    #: The buckets, the trade-id set and the print floor, bounded and pruned on every write.
+    recon_state: Mapped[dict | None] = mapped_column(JSONB)
+    nw_recon_state: Mapped[dict | None] = mapped_column(JSONB)
     #: The rest of `execution.fills.SimState`, per track (Task 4 review ruling). `crossed` makes
     #: the worst-case fill happen once even though the book keeps crossing on every later loop;
     #: the print watermark makes a print idempotent even though the executor keeps no print
@@ -498,6 +569,15 @@ class Order(Base):
     nw_crossed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     nw_last_print_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     nw_last_print_ids: Mapped[list | None] = mapped_column(JSONB)
+    #: 6B §1.5: the counterfactual's own nominal dirty accrual, moved off `dirty_seconds` so a
+    #: cancelled order stops accruing on the watched column (§0.9). Nullable with no default: no
+    #: pre-6B row is backfilled.
+    nw_dirty_seconds: Mapped[int | None] = mapped_column(Integer)
+    #: §0.14's backoff. A counterfactual whose ticker's tape read failed is retried on an
+    #: exponential delay in *elapsed wall seconds* -- never a loop count (ruling CR-5) -- and is
+    #: never closed: closing one would remove its order from gate criterion 4's population.
+    nw_next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    nw_attempts: Mapped[int | None] = mapped_column(Integer)
     #: Minutes this order's book spent dirty after a WS gap (D6), so an optimistic queue is visible.
     dirty_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: The same quantity in seconds, which is what the loop can actually accumulate: one dirty
@@ -528,6 +608,8 @@ class OrderEvent(Base):
     fair_p_at_event: Mapped[Decimal | None] = mapped_column(PROB)
     reason: Mapped[str | None] = mapped_column(String(48))
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 7.2, D13): one order's cancelled/expired rows, in time order.
+    __table_args__ = (Index("ix_order_events_order_ts", "order_id", "ts"),)
 
 
 class Fill(Base):
@@ -552,6 +634,11 @@ class Fill(Base):
     tape_source: Mapped[str | None] = mapped_column(String(4))  # ws|rest
     has_print: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 7.2, D13): one order's fills, in time order, for the method/replay
+    #: labelling. The addendum spells the second column `ts`; this table's time column is
+    #: `filled_at` (there is no `ts` here), so the index keeps the addendum's *name* and takes
+    #: the column the table actually has.
+    __table_args__ = (Index("ix_fills_order_ts", "order_id", "filled_at"),)
 
 
 class Markout(Base):
@@ -673,6 +760,8 @@ class Ledger(Base):
     payout: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     cash_delta: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 7.2, D13): the settlement row of one order, in paper dollars.
+    __table_args__ = (Index("ix_ledger_order", "order_id"),)
 
 
 class ExecHeartbeat(Base):
@@ -721,6 +810,19 @@ class JobState(Base):
     __tablename__ = "job_state"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[int | None] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ParlaySlotState(Base):
+    """One row per `(year-week, sport, shape)` parlay builder slot (user decision journal 211,
+    ruling 13; `harness/settlement/parlay_build.py`'s `slot_key`), written by the builder stage
+    and read by the Ticket builder (`harness/dashboard/snapshots/ticket.py`). `state` is
+    `{"built": <card_id>}` for a slot with a live card or `{"reason": <code>}` for an empty one
+    -- a dedicated additive table, not a `job_state` (above) row: this phase's migration adds
+    it, and `JobState` is untouched by it."""
+    __tablename__ = "parlay_slot_state"
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -871,6 +973,84 @@ class OrderWatchSample(Base):
     terminal: Mapped[str | None] = mapped_column(String(12))
 
 
+class MarketDirtyInterval(Base):
+    """One contiguous stretch a market's book could not be trusted, with its cause.
+
+    An interval is a measurement where an accrual is a running total (D6): 136 markets went
+    dirty against 7,998 orders, so recording it once per market and intersecting at read time
+    costs far less than a column per order and answers questions a running total cannot --
+    when, for how long, and why. `cause` is one of `harness.execution.book.DIRTY_CAUSES` plus
+    `recorder_dead`, which is the loop's verdict about the recorder rather than the book's about
+    itself. There is no `recovery` cause (ruling IM-11): recovery is what happens when a market
+    has *stopped* being dirty.
+
+    `ended_at` NULL means still dirty as of the last observation. A row is closed at the first
+    step that finds the market clean again, and every open row for a market absent from a
+    step's market set is closed at that step too, stamped with the last observation that saw
+    it, so a market whose last order closes while dirty cannot leave one open forever.
+    """
+    __tablename__ = "market_dirty_intervals"
+    __table_args__ = (Index("ix_mdi_market_started", "venue_market_id", "started_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cause: Mapped[str] = mapped_column(String(20), nullable=False)
+    replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class MarketObservationInterval(Base):
+    """One contiguous stretch the executor actually stepped a market.
+
+    The companion to `MarketDirtyInterval` and the reason `order_dirty_time` can report
+    unobserved seconds instead of folding them into clean time (ruling IM-15): absence of a
+    dirty row means "not observed", not "observed clean".
+    """
+    __tablename__ = "market_observation_intervals"
+    __table_args__ = (Index("ix_moi_market_started", "venue_market_id", "started_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    venue_market_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replay: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class OrderRescore(Base):
+    """One order's retrospective estimate under one correction set and one cancel policy.
+
+    A corrected result is a new row, never an edit (§6.7, D8): the original `orders`, `fills`
+    and `ledger` rows are the record of what the measurement was, and 6A preserved them for
+    exactly this. `harness rescore` is the recognised instrument for an order-scoped correction,
+    beside `harness replay`'s `replay = true` rows for a range-scoped one (§0.12).
+
+    Nothing here reaches a gate criterion: an estimate inside a criterion would be a
+    measurement laundering itself into a verdict, which §3 row 9 asserts against.
+
+    Every measured column is nullable, because an `unverifiable` order gets its two policy rows
+    with nothing measured on them: the partition has to sum to the denominator over either
+    policy's rows alone, which it cannot do if an order without evidence is simply absent.
+    """
+    __tablename__ = "order_rescores"
+    order_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    #: The corrections in force, comma-separated and sorted: "C1,C2,C3,C4,C5".
+    correction_ids: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: `ahead` (the point estimate) or `behind` (the other end of the band), §0.7.
+    cancel_policy: Mapped[str] = mapped_column(String(8), primary_key=True)
+    watched_filled: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    counterfactual_filled: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    queue_remaining: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    cancels_ahead: Mapped[Decimal | None] = mapped_column(CONTRACTS)
+    watched_dirty_s: Mapped[int | None] = mapped_column(Integer)
+    counterfactual_dirty_s: Mapped[int | None] = mapped_column(Integer)
+    unobserved_s: Mapped[int | None] = mapped_column(Integer)
+    #: validated | corrected | unverifiable
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    build_sha: Mapped[str | None] = mapped_column(String(24))
+
+
 class EquitySnapshot(Base):
     """One exec variant's cash and mark-to-market, sampled every `equity_sample_s` by the
     executor and once more by the settler after its `settle` stage (`mtm_open` is NULL there:
@@ -914,6 +1094,17 @@ class GameScoreEvent(Base):
     home_score: Mapped[int | None] = mapped_column(SmallInteger)
     away_score: Mapped[int | None] = mapped_column(SmallInteger)
     raw_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: Fix 64 (journal 207): ESPN's linescore is corrected, not monotone -- a later poll can
+    #: legitimately report a lower home or away score than an earlier row for the same game
+    #: (the source republished its own body; the harness's own rows are appended, never
+    #: updated). `_maybe_score_event` sets this true on the row that carries the lower score, so
+    #: `game_score_went_down_24h` can tell a correction from the normalizer bug it exists to
+    #: catch. Carries a server default (as `ParlayCard`/`ParlayLeg`'s phase 4.6 not-null columns
+    #: do) so `create_all` on a fresh database and the migration's `ADD COLUMN` on an existing
+    #: one leave the identical column -- the same reason `tests/test_alembic.py`'s catalogue
+    #: diff compares defaults, not just types and nullability.
+    correction: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"),
+                                             nullable=False)
 
 
 class CheckResult(Base):
@@ -1058,6 +1249,24 @@ class ParlayCard(Base):
     #: proposed|placed|alive|cashed|busted|void
     status: Mapped[str] = mapped_column(String(8), nullable=False)
     correlated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Phase 4.6 (addendum 9). `parent_card_id` links a replacement card to the one it replaces
+    #: (5.2); `declined_reason` records `Not this one` (D5); `combined_kind` says whether the
+    #: card's price is DraftKings' own combined number or ours; `link_capability` how far the
+    #: deep link reaches; `p_source_min` the weakest probability source any leg was built from.
+    #: The four not-null columns carry a server default so a row written before this phase, and
+    #: a row inserted by old code, both read the same value as a fresh one -- and so the
+    #: catalogue built by `create_all` matches the one built by the revision's ADD COLUMN.
+    policy_version: Mapped[str | None] = mapped_column(String(16))
+    parent_card_id: Mapped[int | None] = mapped_column(Integer)
+    declined_reason: Mapped[str | None] = mapped_column(String(16))
+    combined_kind: Mapped[str] = mapped_column(
+        String(10), default="calculated", server_default="calculated", nullable=False)
+    dk_combined_american: Mapped[int | None] = mapped_column(Integer)
+    dk_combined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    link_capability: Mapped[str] = mapped_column(
+        String(10), default="none", server_default="none", nullable=False)
+    p_source_min: Mapped[str] = mapped_column(
+        String(10), default="sharp", server_default="sharp", nullable=False)
     __table_args__ = (Index("ix_parlay_cards_week", "year", "week"),)
 
 
@@ -1070,7 +1279,9 @@ class ParlayLeg(Base):
     card_id: Mapped[int] = mapped_column(Integer, nullable=False)
     seq: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     game_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    market_type: Mapped[str] = mapped_column(String(6), nullable=False)   # ml|spread|total
+    #: ml|spread|total and, from phase 4.6, the prop keys of addendum 3.3 (`prop:anytime_td`);
+    #: widened String(6) -> String(12) by the one `alter column ... type` of addendum 14.4.
+    market_type: Mapped[str] = mapped_column(String(12), nullable=False)
     side_team_id: Mapped[int | None] = mapped_column(Integer)
     side: Mapped[str | None] = mapped_column(String(5))                   # over|under
     threshold: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
@@ -1078,9 +1289,40 @@ class ParlayLeg(Base):
     dk_decimal: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     plain_text: Mapped[str] = mapped_column(String(80), nullable=False)
     odds_snapshot_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: Phase 4.6 (D23, fix round 1, Important 2): the `odds_prop_snapshots` row a **prop** leg
+    #: was priced from. Its own column because both tables are `bigserial` from 1, so the id
+    #: spaces overlap: a reader that forgot to branch on `market_type` and resolved a prop leg
+    #: against `odds_snapshots` would get a real but unrelated game line. A prop leg fills this
+    #: and leaves `odds_snapshot_id` null; a game line does the reverse.
+    odds_prop_snapshot_id: Mapped[int | None] = mapped_column(BigInteger)
     #: pending|alive|hit|miss|void
     status: Mapped[str] = mapped_column(String(8), nullable=False)
     graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Phase 4.6 (addendum 9): the prop leg's player, stat, period and operator; the market
+    #: definition and the deep link the placement needs; the probability the leg was built at
+    #: and where that probability came from; and the one-line context the ticket surface shows.
+    #: `period`, `offered` and `p_source` carry server defaults for the reason given on
+    #: `ParlayCard`.
+    player_id: Mapped[int | None] = mapped_column(Integer)
+    stat: Mapped[str | None] = mapped_column(String(12))
+    period: Mapped[str] = mapped_column(
+        String(6), default="game", server_default="game", nullable=False)
+    operator: Mapped[str | None] = mapped_column(String(8))
+    #: The recorded DraftKings settlement rule, **whole** (D19): `parlay.yaml`'s verbatim
+    #: `market_defs` entry with its source and date is 353 characters for `anytime_td`, and a
+    #: prefix of it stops before the clause that excludes passing touchdowns -- a leg would
+    #: state a rule that means the opposite of the one it is graded by. 400 is that text plus
+    #: room; the column is widened here rather than by an ALTER because this phase's revision
+    #: has never run outside a test database (fix round 1, Important 1).
+    market_def: Mapped[str | None] = mapped_column(String(400))
+    dk_link: Mapped[str | None] = mapped_column(String(300))
+    dk_sid: Mapped[str | None] = mapped_column(String(64))
+    offered: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False)
+    p_at_build: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    p_source: Mapped[str] = mapped_column(
+        String(10), default="none", server_default="none", nullable=False)
+    context_text: Mapped[str | None] = mapped_column(String(80))
     __table_args__ = (Index("ix_parlay_legs_card_seq", "card_id", "seq"),)
 
 
@@ -1094,6 +1336,14 @@ class ParlayPlacement(Base):
     dk_payout_actual: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     dk_odds_actual: Mapped[int | None] = mapped_column(Integer)
     note: Mapped[str | None] = mapped_column(String(200))
+    #: Phase 4.6 (addendum 5.1, 5.3): the confirm sheet's `crypto.randomUUID()`, so a retried
+    #: or double-tapped placement is recorded once. Null on every row that predates the column,
+    #: which is why the unique index below is partial.
+    confirmation_id: Mapped[str | None] = mapped_column(String(36))
+    __table_args__ = (
+        Index("uq_parlay_placement_confirmation", "confirmation_id", unique=True,
+              postgresql_where=text("confirmation_id is not null")),
+    )
 
 
 class ParlayLedger(Base):
@@ -1107,6 +1357,11 @@ class ParlayLedger(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     week: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    #: Phase 4.6 (addendum 9): `confirmed` when the owner typed the figure (the stake row and
+    #: every correction delta), `computed` when the grader derived it. Existing rows read
+    #: `computed`, which is what the server default gives them.
+    source: Mapped[str] = mapped_column(
+        String(10), default="computed", server_default="computed", nullable=False)
 
 
 class ParlayLegProb(Base):
@@ -1118,6 +1373,61 @@ class ParlayLegProb(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     sharp_p: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     book_p: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+
+
+class ParlayPlacementCorrection(Base):
+    """One owner correction to a placed card (addendum §5.2). Append-only: the same field
+    corrected twice writes two rows, and the surface shows the newest values with one
+    `corrected` mark. `field` holds the §5.2 names as written -- `leg_status:<seq>` is 13
+    characters at two digits -- and a value over 32 characters is refused with 400, never
+    truncated."""
+    __tablename__ = "parlay_placement_corrections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    card_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    field: Mapped[str] = mapped_column(String(16), nullable=False)
+    old_value: Mapped[str | None] = mapped_column(String(32))
+    new_value: Mapped[str | None] = mapped_column(String(32))
+    note: Mapped[str | None] = mapped_column(String(200))
+    __table_args__ = (Index("ix_parlay_corrections_card_ts", "card_id", "ts"),)
+
+
+class Player(Base):
+    """One rostered player (addendum §4.2). Filled from ESPN's roster endpoint, once per team
+    per week, for the teams of the watched prop events. The box score's own athlete ids are the
+    live key; this table is what turns a prop outcome's `description` into one of them."""
+    __tablename__ = "players"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sport: Mapped[str] = mapped_column(String(8), nullable=False)
+    espn_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    team_id: Mapped[int | None] = mapped_column(Integer)
+    position: Mapped[str | None] = mapped_column(String(6))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (Index("uq_players_sport_espn", "sport", "espn_id", unique=True),)
+
+
+class PlayerStatEvent(Base):
+    """One *change* in a carded player's stat (addendum §4.3), the `game_score_events` rule.
+
+    ESPN's summary carries no per-stat timestamp and sequential polls of one endpoint return the
+    source's current state, so a later poll reporting a lower value is a correction, not an
+    out-of-order arrival: `correction = true` and `source_ts` stays null. The surface shows the
+    fetch age, never a zero.
+    """
+    __tablename__ = "player_stat_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stat: Mapped[str] = mapped_column(String(12), nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    source: Mapped[str] = mapped_column(String(12), nullable=False)
+    raw_id: Mapped[int | None] = mapped_column(BigInteger)
+    correction: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    __table_args__ = (Index("ix_player_stat_game_player_ts", "game_id", "player_id",
+                            desc("ts")),)
 
 
 # ---------------------------------------------------------------------------

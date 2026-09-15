@@ -125,7 +125,7 @@ def load_day(session, directory: Path, settings) -> DayResult:
                              settings, budget_s=30)
         session.commit()
 
-        replay(session, runs[0].id, runs[-1].id, VARIANT, execute=True, settings=settings)
+        replay(session, settings, runs[0].id, runs[-1].id, variant_name=VARIANT, execute=True)
         session.commit()
 
         game_id = pick_game(session)

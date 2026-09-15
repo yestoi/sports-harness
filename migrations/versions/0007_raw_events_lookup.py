@@ -46,7 +46,10 @@ cannot run inside one.
 
 Phase 6B's own plan names its revision `0007_phase6b_execution`; the controller's ruling
 (hotfix 2026-09-12) is that 6B's revision becomes `0008_phase6b_execution` on top of this one, so
-this file keeps `0007`.
+this file keeps `0007`. That number moved again at the merge of `main` into the phase branch
+(D9): fix 56 took `0008`, fix 64 took `0009` and phase 4.6 took `0010`, so 6B's revision is
+`0011_phase6b_execution` on top of `0010_phase46_fun_tickets` and nothing follows this one but
+`0008_positions_open_fill`.
 
 `downgrade()` drops the parent index, which drops every attached partition child with it
 (intrinsic to a partitioned index in Postgres -- no CASCADE needed) -- unlike every revision

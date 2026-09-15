@@ -25,6 +25,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -39,13 +40,14 @@ from harness.dashboard.snapshots import gate as _gate
 from harness.dashboard.snapshots import study as _study
 from harness.dashboard.snapshots import ticket as _ticket
 from harness.execution.risk import DRAWDOWN_STOP_PCT, DRAWDOWN_WINDOW, stopped_variants
+from harness.parlay.needs import FINAL_STATUSES
 from harness.health import (CREDITS_LOW_FRACTION, CREDITS_WATCH_FRACTION, DB_BROKEN_FRACTION,
                             DB_WATCH_FRACTION, DISK_FREE_MIN_FRACTION, HEARTBEAT_BROKEN_S,
                             HEARTBEAT_WATCH_S, STALE_AFTER_S, VETO_RATE_WATCH,
                             WS_EVENT_BROKEN_S, WS_EVENT_WATCH_S)
 from harness.research.spend import spend_state
 from harness.telemetry import sanitize_reason
-from harness.weeks import chicago_iso_week
+from harness.weeks import CHICAGO, chicago_iso_week
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +67,25 @@ GAP_WINDOW = timedelta(hours=2)
 #: imports from too: it backs the in-window floor cadence off on the same number, and a surface
 #: that disagreed with the scheduler about it would be worse than either.
 FLOOR_P95_WINDOW = timedelta(minutes=10)
+#: How long a card may sit `alive` after its last game went final before `parlay_pending_final`
+#: reads WATCH (addendum §1.3). A prop leg whose stat never arrived leaves the card ungraded --
+#: `parlay_grade` counts it `stat_missing` and refuses to call absence a miss -- and this is the
+#: rule that says so on the wall rather than leaving a slip to sit there for a week.
+PENDING_FINAL_S = 6 * 3600
+#: How far back `_PENDING_FINAL` looks for the final whistle it measures from. A week is far
+#: past every threshold this rule has; a card whose game is `final` in `games` with no recorded
+#: final row inside the window is older than that and is read as exactly the window, which fires
+#: the rule rather than dropping the worst case out of it.
+PENDING_FINAL_WINDOW = timedelta(days=7)
+#: The `source_state` key the prop rotation spends its credits under (addendum §3.2). The
+#: writer is the recorder's prop source, which keys one row per **America/Chicago** month
+#: (`chicago_day(now)`), so this reader takes the month in the same zone (review round 1, I1).
+#: On the UTC instant, the five hours after 19:00 CT on the last day of a month look up next
+#: month's key, which does not exist yet: the rule would read `not evaluated` -- "nobody took
+#: this measurement" -- during exactly the window in which an exhausted allowance is still
+#: stopping the prop rotation and the ideas section is reading `no_props_fresh`.
+PROP_CREDIT_KEY = "odds_props:{month}"
+
 #: How many operator events the surface shows (spec §2.1 item 6).
 EVENTS_LIMIT = 10
 #: `_VITALS`' row cap (fix 31). `TAPE_WINDOW` at `metric_sample_s` = 60 is about 1,440 rows per
@@ -168,6 +189,26 @@ _NEWEST_CREDITS = text("""
     select value from metric_samples
     where name = 'recorder.credits_remaining' and value is not null and ts > :since
     order by ts desc limit 1
+""")
+#: Bound: one primary-key match. Index: the `source_state` primary key. `source_state` holds one
+#: row per feed key -- a dozen -- and this reads the one row for this month's prop rotation.
+_PROP_CREDITS = text("select credits_used from source_state where key = :key")
+#: Bound: the `alive` cards (`parlay_*` is one card a week and everything hanging off it) and
+#: `e.ts >= :since` on the score events. Index: `ix_game_score_events_game_ts (game_id, ts desc)`
+#: for the left join, the `parlay_legs` card index for the legs. The left join is deliberate: a
+#: card whose game has *no* recorded final row inside the window still has to be judged, and it
+#: is judged by its game's own status, which `games` carries and which needs no bound (one row
+#: per game of a season).
+_PENDING_FINAL = text("""
+    select c.id as card_id, g.status as game_status, max(e.ts) as final_at
+    from parlay_cards c
+    join parlay_legs l on l.card_id = c.id
+    join games g on g.id = l.game_id
+    left join game_score_events e
+        on e.game_id = g.id and e.ts >= :since and e.status in ('final', 'final_ot')
+    where c.status = 'alive'
+    group by c.id, g.status
+    limit 200
 """)
 _HEARTBEAT = text("""
     select last_loop_at, ws_last_event_at, loops_skipped, p95_loop_ms, book_dirty_markets,
@@ -379,6 +420,12 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
     research_spend = _group(session, "research_spend",
                             lambda: spend_state(session, now, settings), default=None)
     veto_rate = _group(session, "veto_rate", lambda: _veto_rate(session, now), default=None)
+    # Phase 4.6 (addendum §3.2, 1.3): the prop rotation's spend this month, and how long the
+    # longest-hung card has been `alive` since its last game went final.
+    prop_credits_used = _group(session, "prop_credits_used", lambda: session.execute(
+        _PROP_CREDITS, {"key": prop_credit_key(now)}).scalar())
+    parlay_pending_final_s = _group(session, "parlay_pending_final_s",
+                                    lambda: _pending_final_s(session, now), default=None)
     return {
         "now": now,
         "settings": settings,
@@ -411,7 +458,51 @@ def gather(session: Session, now: datetime, settings: Settings) -> dict:
         "disabled": disabled,
         "research_spend": research_spend,
         "veto_rate": veto_rate,
+        "prop_credits_used": prop_credits_used,
+        "parlay_pending_final_s": parlay_pending_final_s,
     }
+
+
+def prop_credit_key(now: datetime) -> str:
+    """This month's prop-credit `source_state` key, in the zone the writer uses (addendum §3.2).
+
+    `chicago_iso_week`'s own zone, imported rather than restated, for the reason given on
+    `PROP_CREDIT_KEY`: the recorder keys the row on the Chicago month and a reader on the UTC
+    month disagrees with it for five hours at every month boundary.
+    """
+    return PROP_CREDIT_KEY.format(month=now.astimezone(ZoneInfo(CHICAGO)).strftime("%Y-%m"))
+
+
+def _pending_final_s(session: Session, now: datetime) -> float | None:
+    """How long the longest-hung `alive` card has been waiting since its last game went final,
+    or `0.0` when no card is alive at all (addendum §1.3).
+
+    Zero rather than `None` (review round 1, M5): no live card is the normal state for most of
+    the week and it is a real reading -- nothing is hung -- while `None` would put the rule in
+    the `not evaluated` list, which on this wall means "nobody took this measurement".
+
+    A card is only counted once *every* one of its games is over: one game still running is a
+    card doing exactly what it should. The age is measured from the newest final whistle among
+    its games, which is the moment the last of its legs became gradable; a game recorded final
+    outside `PENDING_FINAL_WINDOW` is read as the window itself, so an old hung card fires this
+    rule rather than falling out of its bound.
+    """
+    window_s = PENDING_FINAL_WINDOW.total_seconds()
+    by_card: dict[int, list] = {}
+    for row in session.execute(_PENDING_FINAL, {"since": now - PENDING_FINAL_WINDOW}):
+        by_card.setdefault(row.card_id, []).append(row)
+    if not by_card:
+        return 0.0
+    ages = []
+    for rows in by_card.values():
+        if any(row.game_status not in FINAL_STATUSES for row in rows):
+            continue
+        finals = [max(0.0, (now - row.final_at).total_seconds()) if row.final_at is not None
+                  else window_s for row in rows]
+        # The *last* game to finish is the one the card has been waiting on, so the smallest of
+        # the ages, not the largest.
+        ages.append(min(finals))
+    return max(ages) if ages else 0.0
 
 
 # --- the rules, one named function each (spec §2.1) ------------------------------------------
@@ -613,12 +704,47 @@ def rule_veto_rate(v) -> RuleResult:
     return _ladder("veto_rate", v["veto_rate"], VETO_RATE_WATCH, None, "fraction")
 
 
+def rule_prop_budget(v) -> RuleResult:
+    """WATCH once this month's prop rotation has spent its whole allocation (addendum §3.2).
+
+    Never BROKEN: the allocation doing its job is not a broken machine, and nothing else on the
+    harness stops. What it costs is the ideas section, which starts reading `no_props_fresh`
+    with no prop price fresh enough to build on, and this rule is the one place that says why.
+
+    `Settings.odds_prop_monthly_credits` and the `source_state` row the count comes from are
+    both written by the prop recorder source (addendum §3.2). It is read through `getattr` so a
+    build where that field is not defined yet reports `not evaluated` -- this module's own word
+    for a measurement nobody took -- rather than raising inside `evaluate` and costing the
+    status word every other rule.
+    """
+    used = v["prop_credits_used"]
+    budget = getattr(v["settings"], "odds_prop_monthly_credits", None)
+    if used is None or not budget:
+        return _absent("prop_budget", float(budget) if budget else None, "count")
+    return _flag("prop_budget", float(used) >= float(budget), "watch", float(used),
+                 float(budget), "count")
+
+
+def rule_parlay_pending_final(v) -> RuleResult:
+    """WATCH while a card has been `alive` more than six hours after its last game went final
+    (addendum §1.3).
+
+    That is the shape of a hung leg: the game is over, the harness refuses to call a missing
+    stat a miss (`parlay_grade` counts it `stat_missing`), and the slip reads `no final stat`.
+    Six hours is past the post-final collection window, so a card still waiting is waiting on a
+    feed that is not going to answer, not on a box score still being written.
+    """
+    return _ladder("parlay_pending_final", v["parlay_pending_final_s"], PENDING_FINAL_S, None,
+                   "s")
+
+
 RULES: tuple[Callable[[dict], RuleResult], ...] = (
     rule_recorder_stale, rule_heartbeat_watch, rule_heartbeat_broken, rule_ws_event_watch,
     rule_ws_event_broken, rule_tape_gap, rule_kill_switch, rule_disk_free, rule_db_ceiling,
     rule_credits_low, rule_check_fail, rule_check_skipped, rule_settle_error_24h,
     rule_budget_exhausted, rule_book_dirty_in_game, rule_drawdown_stop, rule_snapshot_stale,
     rule_snapshot_budget, rule_snapshot_disabled, rule_research_budget, rule_veto_rate,
+    rule_prop_budget, rule_parlay_pending_final,
 )
 
 

@@ -51,9 +51,11 @@ non-bound predicates, so the answer is the view's answer for every position take
 activity, not quality, so that a good afternoon of fills is never mistaken for edge.
 """
 
+import json
 import logging
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -66,8 +68,10 @@ from harness.dashboard.snapshots import base_payload, register_builder, section
 from harness.db.models import StrategyVariant
 from harness.db.schema import OPEN_FILL_SQL
 from harness.execution.book import side_p
+from harness.ops.clock import exclude_unsynced_runs
 from harness.execution.store import MONEY_FILL_METHODS, OPEN_STATUSES
 from harness.ops.exclusions import CLASS_OF
+from harness.parlay.config import load_config
 from harness.pricing.fair import MATCHED_STATUSES
 from harness.pricing.fees import fee_model_for, fee_per_contract
 from harness.telemetry import sanitize_reason
@@ -179,16 +183,80 @@ REASON_LIMIT = 20
 #: T18's label copy.
 QUEUE_HISTORY_LIMIT = 30
 
+#: Addendum 7.2 / D21. A board game gets a detail payload when it is in progress, when its
+#: kickoff is inside this window either way, or when it carries an order or a position. The set
+#: is bounded by `BOARD_LIMIT` (60) because the board is, and measures about twenty on a college
+#: Saturday. Widening it is a payload-cap question and not a free one: every game in the set
+#: costs its share of the eight batched reads below and of `readings["detail_bytes"]`.
+DETAIL_WINDOW = timedelta(hours=6)
+#: The per-game cap on a detail payload, in kibibytes (addendum 7.2). A detail is served down a
+#: tunnel to a phone beside the rest of the Floor payload, so the cap is enforced here rather
+#: than hoped for: `_cap_detail` drops the **oldest** story rows first and says so in a row of
+#: its own, so what survives is the part of the story that is still happening.
+DETAIL_KIB = 16
+#: How far back the decision story reads. Anchored on `min(now, kickoff)`, so a game that has
+#: already kicked off shows the twelve hours before its kickoff rather than twelve hours of
+#: nothing after it. Twelve hours covers a morning's pricing of an evening kickoff, and it is
+#: what turns every story read into an index range rather than a scan: `ix_signal_market_created`
+#: and `ix_intents_market_created` lead on the market, and this predicate prunes inside each.
+STORY_WINDOW = timedelta(hours=12)
+#: A span longer than this between two story rows before kickoff is its own `gap` row (design
+#: 4.2: gaps are rows, never smoothed over).
+STORY_GAP = timedelta(minutes=30)
+#: Row caps for the batched detail reads. **Per partition, not per set** (review round 1, I2).
+#: A single `limit` over a batch of twenty games is not a cap, it is a race: `order by ... desc
+#: limit 400` across the set hands the first games every row and the last games none, so the
+#: 22nd game's story reads "no price was evaluated on this game's markets" about a game that was
+#: evaluated all morning, and a settlement row that fell off the end turns a closed position into
+#: contracts the detail claims we are still holding. Each read below therefore ranks its rows
+#: inside its own game, market or order (`row_number() over (partition by ...)`) and the
+#: statement's `limit` is `len(ids) * <the cap>` -- a bound derived from a list the board has
+#: already bounded, which can never truncate one game to feed another.
+#:
+#: Where a cap does bind, the game says so: `_details` marks that detail's story with a `partial`
+#: row and `readings["detail_partial_games"]` counts it, because a row of this story that is
+#: silently missing is worse than one that is visibly missing.
+#: At most every market of one game (46 on a real NFL game; 60 is headroom, not a trim).
+DETAIL_MARKETS_PER_GAME_READ = 60
+#: One aggregate row per market and side; `signals.side` is `yes`/`no`, so four is headroom.
+STORY_SIDES_PER_MARKET = 4
+#: Intents on one market inside `STORY_WINDOW`, newest first. `STORY_ROWS_PER_GAME` caps what a
+#: story shows in any case, so this only has to be larger than a story can display.
+STORY_ROWS_PER_MARKET = 40
+#: Orders on one game, and the rows hanging off one order.
+STORY_ORDERS_PER_GAME = 20
+STORY_ROWS_PER_ORDER = 12
+#: Settlement rows of one order. Deliberately larger than `STORY_ROWS_PER_ORDER`: these rows are
+#: not only a story line, they are the `not exists` half of `OPEN_FILL_SQL`, and a settlement
+#: this read misses is a position `_position` would report as still open.
+SETTLEMENTS_PER_ORDER = 30
+#: Benchmarks of one gap snapshot: one row per `benchmark_type`.
+BENCHMARKS_PER_GAP = 8
+#: How many of a game's markets the detail prices and shows. The board card's own count is the
+#: figure a reader sees (`46 markets`); this is the table under it, and twelve rows is a phone
+#: screen of one. It is a cost as well as a layout: the read behind it is one `join lateral` per
+#: market (`_FAIR_FOR_ORDERS`), so markets carrying an order come first, then markets that were
+#: evaluated, then the rest by id.
+DETAIL_MARKETS_PER_GAME = 12
+#: Story rows kept per game before the payload cap is applied, newest first. A game with a
+#: thousand rows is a game whose story nobody can read; this drops the oldest, as the cap does.
+STORY_ROWS_PER_GAME = 120
+#: The card statuses F02's one crossing points at: a card the owner has placed, or one that is
+#: live. A proposed draft is not on the owner's ticket yet and a finished one is not any more.
+DETAIL_TICKET_STATUSES = ("placed", "alive")
+
 FLOOR_KEYS = frozenset({"build_sha", "now", "cadence_s", "sentences", "readings",
                         "board", "funnel", "orders", "fills", "exposure", "vitals", "venue",
-                        "sentences_gaps"})
+                        "details", "sentences_gaps"})
 
 #: `matched`, `fuzzy` and `manual`, imported rather than restated: the pricing path owns this
 #: vocabulary (`harness.pricing.fair`), and the board must count a market as matched on exactly
 #: the statuses that make it priceable.
 _BOARD = text("""
     select g.id, g.sport, g.status, g.kickoff_utc,
+           g.home_team_id, g.away_team_id,
            h.display_name as home_name, a.display_name as away_name,
+           h.abbreviation as home_abbr, a.abbreviation as away_abbr,
            (select count(*) from venue_markets m
             where m.game_id = g.id and m.match_status = any(:matched)) as matched_markets,
            -- Bound: `o.placed_at >= :orders_since` (`BOARD_ORDERS_WINDOW`, 48 h). Index:
@@ -197,7 +265,16 @@ _BOARD = text("""
            (select count(*) from orders o
             where o.game_id = g.id and o.replay = false
               and o.placed_at >= :orders_since
-              and o.status = any(:open_statuses)) as open_orders
+              and o.status = any(:open_statuses)) as open_orders,
+           -- D21: does this game carry an order or a position at all? Same bound and same index
+           -- as the count above (`ix_orders_game` seeking the game, `placed_at` stopping the
+           -- walk), and `exists` stops at the first row. On a paper harness a position is a
+           -- fill and a fill belongs to an order, so one predicate answers both halves of
+           -- "carries an order or a position"; the status list is deliberately absent, because
+           -- a filled order is a position and is not an open one.
+           exists (select 1 from orders o2
+                   where o2.game_id = g.id and o2.replay = false
+                     and o2.placed_at >= :orders_since) as has_order
     from games g
     left join teams h on h.sport = g.sport and h.id = g.home_team_id
     left join teams a on a.sport = g.sport and a.id = g.away_team_id
@@ -359,7 +436,7 @@ _WATCH = text("""
 #: written `coalesce(...) = coalesce(...)` for exactly that reason); it costs nothing here only
 #: because no index covers these columns for an unfiltered `fair_source`. Give this lateral such
 #: an index and the predicates must be rewritten to match its expressions.
-_FAIR_FOR_ORDERS = text("""
+_FAIR_FOR_ORDERS = text(f"""
     select m.id as venue_market_id, m.fee_type, m.fee_multiplier,
            f.fair_p, f.staleness_s, f.created_at
     from venue_markets m
@@ -367,6 +444,7 @@ _FAIR_FOR_ORDERS = text("""
         select fair_p, staleness_s, created_at from fair_values f
         where f.game_id = m.game_id and f.market_type = m.market_type
           and f.created_at >= :since
+          and {exclude_unsynced_runs('f.run_id')}
           and f.outcome_team_id is not distinct from (m.side_team_id)
           and f.outcome_side is not distinct from (m.side)
           and f.threshold is not distinct from (m.threshold)
@@ -509,6 +587,214 @@ _LAST_SMOKE = text("""
     where ts >= :since and summary like 'demo smoke%' order by ts desc limit 1
 """)
 
+# --- the game detail (addendum 7.2, design 4.2; D21) -------------------------------------------
+#
+# Every statement below is batched across the whole detail set rather than issued once per game.
+# A detail needs ten of them plus `_FAIR_FOR_ORDERS`, and the set is about twenty games on a
+# college Saturday, so the per-game shape would be 220 statements inside a 250 ms budget
+# (`FLOOR_P95_BUDGET_MS`) on a machine whose page cache the executor is already sharing. Batched
+# it is eleven, each an index range over a list of ids the board has already bounded, and the
+# per-game split is done in Python on rows that are already in memory.
+
+#: The detail set's markets. Bound: `game_id = any(:game_ids)` -- at most `BOARD_LIMIT` (60) ids
+#: and about twenty in practice -- ranked inside each game to `:per_game`, with `limit :limit` set
+#: by the caller to `len(game_ids) * :per_game`. Index: `ix_venue_markets_game_id`.
+#: `venue_markets` is one row per tradable market (`TINY_TABLES`), so the caps are a backstop
+#: against a matcher that has written thousands of markets on one game, not the real bound -- but
+#: the *partition* is load-bearing: a flat `limit` here starves the last games of the set of
+#: every market, and a game with no markets has no evaluations and lies about having been priced.
+_DETAIL_MARKETS = text("""
+    select id, game_id, market_type, side, side_team_id, threshold, ticker, match_status,
+           fee_type, fee_multiplier
+    from (
+        select m.*, row_number() over (partition by m.game_id order by m.id) as rn
+        from venue_markets m
+        where m.game_id = any(:game_ids)
+    ) ranked
+    where rn <= :per_game
+    order by game_id, id
+    limit :limit
+""")
+
+#: D12: the story's `signals` rows, aggregated **in SQL** to one row per `(venue_market_id,
+#: side)`. One opportunity scored on 300 ticks is 300 rows in this table and one row on the
+#: surface; sending 300 rows to Python to count them there would be this same read with the
+#: transfer added, four times a minute, for every market of every game in the set.
+#:
+#: Bound: `created_at >= :since` (`STORY_WINDOW`) under a market-id list, plus `limit :limit`.
+#: Index: `ix_signal_market_created (venue_market_id, created_at)` -- the ids seek and the
+#: `created_at` predicate prunes inside each market's range. This is precisely the read the
+#: funnel may not have: the funnel has no market list, so that index cannot serve it and a bare
+#: `created_at` predicate there is the 86-92 s sequential scan of the module docstring. With the
+#: ids in hand it is a bounded range per market, which is why this file reads that table exactly
+#: once, here, and `test_the_funnel_reads_runs_notes_and_never_scans_...` counts the occurrences.
+#:
+#: `(array_agg(... order by created_at desc))[1]` is the newest value of each column in the
+#: group, so the counts and the "last" figures come out of one pass rather than a second query.
+#: The `row_number()` is over the *aggregated* rows (a window function runs after `group by`),
+#: so it ranks sides inside a market and never touches the rows the aggregate read.
+_DETAIL_SIGNALS = text("""
+    select venue_market_id, side, n, first_ts, last_ts, last_fair, last_bid, last_ask,
+           last_decision, last_reason, last_variant
+    from (
+        select venue_market_id, side, count(*) as n,
+               min(created_at) as first_ts, max(created_at) as last_ts,
+               (array_agg(fair_p order by created_at desc))[1] as last_fair,
+               (array_agg(venue_best_bid order by created_at desc))[1] as last_bid,
+               (array_agg(venue_best_ask order by created_at desc))[1] as last_ask,
+               (array_agg(decision order by created_at desc))[1] as last_decision,
+               (array_agg(rejection_reason order by created_at desc))[1] as last_reason,
+               (array_agg(variant_id order by created_at desc))[1] as last_variant,
+               row_number() over (partition by venue_market_id
+                                  order by max(created_at) desc) as rn
+        from signals
+        where venue_market_id = any(:market_ids) and created_at >= :since and replay = false
+        group by venue_market_id, side
+    ) ranked
+    where rn <= :per_market
+    order by last_ts desc
+    limit :limit
+""")
+
+#: The intents the executor sized on these markets. Bound: `created_at >= :since`
+#: (`STORY_WINDOW`) under a market-id list, plus `limit :limit`. Index:
+#: `ix_intents_market_created (venue_market_id, created_at)` -- Task 4's, built CONCURRENTLY.
+#: Before it `intents` carried only `ix_intents_key` (leading `variant_id`), and this read would
+#: have been the same sequential scan fix 31 took out of the funnel.
+_DETAIL_INTENTS = text("""
+    select id, venue_market_id, variant_id, side, target_prob, target_contracts, edge, created_at
+    from (
+        select i.*, row_number() over (partition by i.venue_market_id
+                                       order by i.created_at desc) as rn
+        from intents i
+        where i.venue_market_id = any(:market_ids) and i.created_at >= :since
+          and i.replay = false
+    ) ranked
+    where rn <= :per_market
+    order by created_at desc
+    limit :limit
+""")
+
+#: The orders placed on these games. Bound: `o.placed_at >= :since` (`STORY_WINDOW`) under a
+#: game-id list, plus `limit :limit`. Index: `ix_orders_game (game_id)` seeks the game and the
+#: `placed_at` predicate stops a game whose orders go back weeks -- the pair `_BOARD` already
+#: uses for its own two subqueries.
+_DETAIL_ORDERS = text("""
+    select id, game_id, venue_market_id, variant_id, ticker, side, prob,
+           contracts, filled_contracts, status, placed_at, cancelled_at,
+           cancel_reason, queue_ahead_at_place, queue_remaining, edge_at_place,
+           intent_id, gap_snapshot_id, replay
+    from (
+        select o.*, row_number() over (partition by o.game_id
+                                       order by o.placed_at desc) as rn
+        from orders o
+        where o.game_id = any(:game_ids) and o.placed_at >= :since
+    ) ranked
+    where rn <= :per_game
+    order by placed_at desc
+    limit :limit
+""")
+
+#: Those orders' fills, for the story's method-and-replay labelling and for the position. Bound:
+#: `filled_at >= :since` (`STORY_WINDOW`) under an order-id list, plus `limit :limit`. Index:
+#: `ix_fills_order_ts (order_id, filled_at)` -- Task 4's (the addendum spells the second column
+#: `ts`; this table's time column is `filled_at`, and the index keeps the addendum's name).
+_DETAIL_FILLS = text("""
+    select id, order_id, prob, contracts, fee, fill_method, filled_at, replay, has_print, through
+    from (
+        select f.*, row_number() over (partition by f.order_id
+                                       order by f.filled_at desc) as rn
+        from fills f
+        where f.order_id = any(:order_ids) and f.filled_at >= :since
+    ) ranked
+    where rn <= :per_order
+    order by filled_at desc
+    limit :limit
+""")
+
+#: The cancelled and expired rows of those orders, with their reason codes. Bound: `ts >= :since`
+#: (`STORY_WINDOW`) under an order-id list, plus `limit :limit`. Index:
+#: `ix_order_events_order_ts (order_id, ts)` -- Task 4's.
+#:
+#: A skip carries no `order_id` at all (`uq_skip_once` keys it on the intent), so skips are not
+#: reachable through this index and are not read here. The story's "passed" evidence is the
+#: signals summary's own rejection reason and the intents above -- which is what the addendum
+#: asks for, and the reason it names those two sources for skips rather than this table.
+_DETAIL_ORDER_EVENTS = text("""
+    select id, order_id, ts, kind, reason, prob, contracts
+    from (
+        select e.*, row_number() over (partition by e.order_id order by e.ts desc) as rn
+        from order_events e
+        where e.order_id = any(:order_ids) and e.ts >= :since
+          and e.kind in ('cancel', 'expire')
+    ) ranked
+    where rn <= :per_order
+    order by ts desc
+    limit :limit
+""")
+
+#: The newest watch sample per order: the queue behind the story's `resting` row and the book
+#: behind the detail's market table. Bound: `ts >= :since` (`WATCH_WINDOW`, 2 h) under an
+#: order-id list, plus `limit :limit`. Index: the table's own primary key `(order_id, ts)`.
+_DETAIL_WATCH = text("""
+    select distinct on (order_id) order_id, ts, queue_remaining, best_bid, best_ask
+    from order_watch_samples
+    where order_id = any(:order_ids) and ts >= :since
+    order by order_id, ts desc
+    limit :limit
+""")
+
+#: The settlement of those orders, in paper dollars. Bound: an order-id list plus `limit :limit`;
+#: there is no window because the ids are the bound and a settlement row is written once per
+#: order. Index: `ix_ledger_order (order_id)` -- Task 4's.
+#:
+#: These rows are also what decides whether a fill is still a position. `OPEN_FILL_SQL`'s second
+#: half is `not exists (select 1 from ledger l where l.fill_id = f.id and l.kind = 'settlement')`,
+#: which is exactly this set of rows, so `_position` applies that predicate to rows already in
+#: memory instead of issuing a ninth statement to ask it again.
+_DETAIL_LEDGER = text("""
+    select id, order_id, fill_id, ts, kind, contracts, price, fee, payout, cash_delta, variant_id
+    from (
+        select l.*, row_number() over (partition by l.order_id order by l.ts desc) as rn
+        from ledger l
+        where l.order_id = any(:order_ids) and l.kind = 'settlement'
+    ) ranked
+    where rn <= :per_order
+    order by ts desc
+    limit :limit
+""")
+
+#: The closing benchmark of the gap snapshot each order was born from. Bound: a
+#: `gap_snapshot_id` list (at most one per order) plus `limit :limit`. Index: the table's own
+#: primary key `(gap_snapshot_id, benchmark_type)`.
+#:
+#: The addendum names `ix_gap_outcomes_order` here. That index does not exist and could not:
+#: `gap_outcomes` has no `order_id` column (Task 4's own note). The join goes the way the schema
+#: allows -- `orders.gap_snapshot_id` to `gap_outcomes.gap_snapshot_id` -- which is a
+#: primary-key seek and needs no new index.
+_DETAIL_GAP_OUTCOMES = text("""
+    select gap_snapshot_id, benchmark_type, p_bench, clv_target_p_net, p_used_kind
+    from gap_outcomes
+    where gap_snapshot_id = any(:gap_ids)
+    order by gap_snapshot_id
+    limit :limit
+""")
+
+#: F02's one crossing: the live card that has a leg on this game, by id and nothing else. Bound:
+#: a game-id list, `c.status = any(:statuses)` and `limit :limit`. Index: none serves `game_id`
+#: here and none is needed -- `parlay_legs` is the legs of about one card a week
+#: (`TINY_TABLES`' `parlay_` family), a table whose size is set by the shape of the system rather
+#: than by the length of the season. `min(c.id)` picks one card deterministically when two live
+#: cards touch the same game, because the line links to one card.
+_DETAIL_TICKET = text("""
+    select l.game_id, min(c.id) as card_id
+    from parlay_legs l
+    join parlay_cards c on c.id = l.card_id
+    where l.game_id = any(:game_ids) and c.status = any(:statuses)
+    group by l.game_id
+    limit :limit
+""")
+
 FOUR_PLACES = Decimal("0.0001")
 
 
@@ -519,6 +805,13 @@ def _dec(value):
 
 
 def _board(session: Session, now: datetime) -> dict:
+    """The game board: one card per game, favourites first.
+
+    Addendum 7.1 adds four things to the card and takes nothing away: one `figures` sentence
+    instead of two labelled numbers, a `favourite` star out of `parlay.yaml`'s anchors, the two
+    abbreviations the display face shows at 15 px, and whether this game has a detail payload in
+    `floor.details`. The counts behind the sentence are the ones `_BOARD` already returned.
+    """
     rows = list(session.execute(_BOARD, {"from_ts": now - BOARD_LOOKBACK,
                                          "to_ts": now + BOARD_WINDOW,
                                          "matched": list(MATCHED_STATUSES),
@@ -529,11 +822,20 @@ def _board(session: Session, now: datetime) -> dict:
     scores = {row.game_id: row for row in
               session.execute(_SCORES, {"game_ids": ids,
                                         "since": now - SCORES_WINDOW})} if ids else {}
+    anchors = _anchors()
+    detail_ids = _detail_set(rows, now)
     games = []
     for row in rows:
         score = scores.get(row.id)
+        matched = int(row.matched_markets or 0)
+        resting = int(row.open_orders or 0)
+        home_abbr = sanitize_reason(row.home_abbr or "")
+        away_abbr = sanitize_reason(row.away_abbr or "")
         games.append({
             "game_id": row.id, "sport": row.sport,
+            # The two ids, so the detail can turn a market's `side_team_id` into an
+            # abbreviation without a second read of `teams`.
+            "home_team_id": row.home_team_id, "away_team_id": row.away_team_id,
             # ESPN's own strings, sanitized: `teams.display_name`, the scoreboard's clock, and
             # `games.status` -- which `link_espn_scoreboard` keeps raw and lowercased for an
             # unrecognised ESPN status, which is why the column is String(24) (ruling A-I6 /
@@ -548,10 +850,796 @@ def _board(session: Session, now: datetime) -> dict:
             "period": score.period if score else None,
             "clock": sanitize_reason(score.clock or "") if score else None,
             "score_age_s": (now - score.ts).total_seconds() if score else None,
-            "matched_markets": int(row.matched_markets or 0),
-            "open_orders": int(row.open_orders or 0),
+            "matched_markets": matched,
+            "open_orders": resting,
+            # Addendum 7.1 / design 4.4: one figures row in place of two labelled numbers, in
+            # the shape the design writes it. No pluralisation branch: the string is the
+            # design's, and "1 markets" is a smaller problem than two surfaces disagreeing
+            # about what the row says.
+            "figures": f"{matched} markets \u00b7 {resting} resting",
+            # Design 5.5: `parlay.yaml`'s `anchors` list is the favourite list, compared against
+            # the *unsanitized* abbreviation because this is a match against our own config and
+            # not a string on its way to a browser.
+            "favourite": bool({row.home_abbr, row.away_abbr} & anchors),
+            "abbreviations": {"home": home_abbr, "away": away_abbr},
+            "detail_available": row.id in detail_ids,
         })
+    # Favourites first, then the order `_BOARD` returned (in progress first, then by kickoff).
+    # `list.sort` is stable, so "then the existing order" is a property of the sort rather than a
+    # second key here that could drift from the SQL's.
+    games.sort(key=lambda game: not game["favourite"])
     return {"games": games}
+
+
+#: Whether `_anchors` has already reported an unreadable policy file (review round 1, M6).
+_anchors_warned = False
+
+
+def _anchors() -> frozenset[str]:
+    """The favourite teams, as abbreviations, out of `parlay.yaml` (design 5.5: no new table).
+
+    A policy file this builder cannot read must not empty the board. `load_config` deliberately
+    raises rather than inventing a budget, which is right for the card builder and wrong here:
+    the board is the top panel of the surface and is not the place to discover a YAML typo. A
+    failure costs the stars and nothing else, and says so in the log.
+    """
+    try:
+        return frozenset(load_config().anchors)
+    except Exception:  # noqa: BLE001 - a policy file must not cost the board
+        # Once per process, not four times a minute for as long as the file stays broken: a log
+        # line that repeats at a builder's cadence buries the next real one (review round 1, M6).
+        global _anchors_warned  # noqa: PLW0603 - one latch, like `_disabled_builders`
+        if not _anchors_warned:
+            _anchors_warned = True
+            log.warning("parlay policy unreadable; the board shows no favourites")
+        return frozenset()
+
+
+def _detail_set(board_rows, now: datetime) -> set[int]:
+    """The game ids a detail payload is built for (D21).
+
+    In progress, inside `DETAIL_WINDOW` of kickoff either way, or carrying an order or a
+    position. Bounded by `BOARD_LIMIT` because `_BOARD` is -- this only ever narrows the board --
+    and about twenty on a college Saturday.
+
+    `has_order` is `_BOARD`'s own bounded `exists` over `orders`: on a paper harness a position
+    is a fill and a fill belongs to an order, so one predicate answers both halves of the rule.
+    The kickoff test is symmetric because a game that kicked off two hours ago and is not marked
+    `in_progress` -- a feed that has stopped updating, which is exactly when someone opens the
+    detail -- still has a story worth reading.
+    """
+    window_s = DETAIL_WINDOW.total_seconds()
+    return {row.id for row in board_rows
+            if row.status == "in_progress" or bool(row.has_order)
+            or abs((row.kickoff_utc - now).total_seconds()) <= window_s}
+
+
+def _clock(ts: datetime | None, tz) -> str:
+    """A story row's time in the reader's own zone, as a phone shows it ("5:42 PM")."""
+    if ts is None:
+        return ""
+    local = ts.astimezone(tz)
+    return f"{local.hour % 12 or 12}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
+
+
+def _cents(value) -> str | None:
+    """A probability as the price a reader sees on the venue: 0.6200 is `62c`, rendered with the
+    cent sign. `None` stays `None` so a caller can leave the clause out rather than print a
+    placeholder price."""
+    return None if value is None else f"{round(float(value) * 100)}\u00a2"
+
+
+def _qty(value) -> str:
+    """A contract count without the trailing zeros of its `Numeric(12,2)` column."""
+    return f"{float(value):g}"
+
+
+def _pricing_failure(run_notes: list) -> str | None:
+    """Why the story's first row is `evaluation failed`, or `None` (B-C7 / D12).
+
+    The run's own pricing evidence and nothing else: a `warnings` entry whose key is `pricing`,
+    or `pricing.budget_exhausted`, inside the window. Never `runs.status = 'degraded'` -- a run
+    degraded by a Kalshi timeout evaluated this market perfectly well, and reading the status
+    would put "evaluation failed" under every unevaluated game on the board every time one feed
+    hiccuped.
+
+    Two narrowings, stated rather than discovered. **Sport:** the addendum asks for this evidence
+    "for the market's sport", and `runs.notes` carries no sport dimension for it --
+    `price_and_signal` returns one `budget_exhausted` flag and one warnings list per tick,
+    covering every sport that tick priced. So the evidence is applied to every sport in the
+    window, which is what the writer's shape supports; a per-sport reading needs a per-sport
+    writer first. **Window:** the funnel's 6 h rather than the story's 12 h -- a pricing
+    failure older than six hours is not why this game has no evaluation now.
+
+    `run_notes` is the funnel's own capped list, read once per build by `build_floor` and handed
+    to both sections, so this function costs no read at all (review round 1, I4). It is still
+    consulted at most once per build, and not at all when every game in the set has an evaluation.
+    """
+    for notes in run_notes:
+        if not isinstance(notes, dict):
+            continue
+        for warning in notes.get("warnings") or []:
+            # `{"pricing": repr(exc)}` is what `harness/recorder/tick.py` writes when
+            # `price_and_signal` raises. The `split` accepts a future `pricing:<sport>` key
+            # without accepting `pricing_something_else`.
+            if isinstance(warning, dict) and any(
+                    str(key).split(":")[0] == "pricing" for key in warning):
+                return "the pricing step failed in the last 6 hours"
+        pricing = notes.get("pricing") or {}
+        if isinstance(pricing, dict) and pricing.get("budget_exhausted"):
+            return "the pricing budget ran out before this market was reached"
+    return None
+
+
+def _fill_label(fill) -> str:
+    """A fill's own label: its recorded method and its replay flag, nothing inferred.
+
+    Design 4.2: real market trades, simulated fills and replayed fills are labelled with those
+    words. The method is the column's own value with its underscore opened up, so a method this
+    file has never heard of arrives on the surface under its own name rather than as a
+    counterfactual mislabelled as a fill. Carries 6B's labelling until 6B's acceptance
+    (pre-loaded 1).
+    """
+    if fill.replay:
+        return "replayed"
+    return f"filled \u00b7 {sanitize_reason(fill.fill_method or '').replace('_', ' ')}"
+
+
+def _needs(market, side: str, abbr_by_team: dict) -> str:
+    """What this position needs, in the slip's phrasing (design 4.2 item 2).
+
+    The market's own identity decides the sentence: a moneyline keyed to a team, a spread with a
+    threshold, a total's over or under. `side` is the order's side in the venue's space, so a NO
+    order on a team's moneyline needs that team to lose. A market shape this table does not know
+    gets a sentence built from its own columns rather than a guess at what it settles on.
+    """
+    team = abbr_by_team.get(market.side_team_id) if market is not None else None
+    market_type = (market.market_type if market is not None else "") or ""
+    threshold = market.threshold if market is not None else None
+    yes = side == "yes"
+    if market_type == "moneyline" and team:
+        return f"needs {team} to win" if yes else f"needs {team} not to win"
+    if market_type == "spread" and team and threshold is not None:
+        return (f"needs {team} to cover {threshold:g}" if yes
+                else f"needs {team} not to cover {threshold:g}")
+    if market_type == "total" and threshold is not None:
+        over = ((market.side or "over") == "over") == yes
+        return f"needs the total {'over' if over else 'under'} {threshold:g}"
+    parts = [part for part in (team, market_type, market.side if market is not None else None,
+                               None if threshold is None else f"{threshold:g}") if part]
+    return f"needs {' '.join(parts)} ({side}) to land" if parts else f"needs the {side} side"
+
+
+def _label(market, ticker: str, side: str, abbr_by_team: dict) -> str:
+    """The market as a reader names it: the team (or the market type) and the side."""
+    team = abbr_by_team.get(market.side_team_id) if market is not None else None
+    market_type = (market.market_type if market is not None else "") or ""
+    # An unresolved market with an empty ticker would otherwise leave a label beginning with a
+    # space (review round 1, M4); "market" is what it is, said plainly.
+    parts = [part for part in (team, market_type) if part] or [
+        sanitize_reason(ticker or "") or "market"]
+    return " ".join(parts + [side])
+
+
+def _story(kickoff: datetime, now: datetime, tz, *, evaluations, intents, orders, fills, events,
+           benchmarks, settlements, watch, markets_by_id, abbr_by_team, pricing_failure,
+           partial: bool = False) -> list[dict]:
+    """The decision story for one game: chronological rows from records that already exist.
+
+    Each row is `{ts, kind, text, facts}` -- the sentence a reader sees and, under `facts`, the
+    ids, the variant and the raw figures the `<details>` disclosure opens to (design 4.2). Three
+    different first rows: the newest evaluation summary when one exists, `not_evaluated` when no
+    signal touched this game's markets in the window, and `evaluation_failed` when and only when
+    the run's own pricing notes say so (`_pricing_failure`).
+
+    Gaps are rows, never smoothed over: any span over `STORY_GAP` between two rows before
+    kickoff, and the span from the last pre-kickoff row to kickoff itself.
+
+    Nothing here judges the strategy. The evaluation rows carry the fair and the book that were
+    recorded, the fill rows carry their own recorded labels, and the benchmark row is the closing
+    price beside our entry -- the same figures the tables hold, in the order they happened.
+    """
+    rows: list[dict] = []
+
+    for agg in evaluations:
+        market = markets_by_id.get(agg.venue_market_id)
+        # D12: one row per market and side, and the count and the span are what make that
+        # honest -- a reader is told 75 evaluations happened, not shown one of them.
+        parts = [f"{int(agg.n)} evaluations from {_clock(agg.first_ts, tz)} "
+                 f"to {_clock(agg.last_ts, tz)}"]
+        book = agg.last_ask if agg.side == "yes" else agg.last_bid
+        last = []
+        if agg.last_fair is not None:
+            last.append(f"fair {_cents(agg.last_fair)}")
+        if book is not None:
+            last.append(f"against {_cents(book)} on the book")
+        if last:
+            parts.append("last: " + " ".join(last))
+        parts.append("a candidate for the executor" if agg.last_decision == "candidate"
+                     else sentences.reason_phrase(agg.last_reason))
+        rows.append({"ts": agg.last_ts, "kind": "evaluated", "text": " \u00b7 ".join(parts),
+                     "facts": {"venue_market_id": agg.venue_market_id, "side": agg.side,
+                               "market": _label(market,
+                                                market.ticker if market is not None else "",
+                                                agg.side, abbr_by_team),
+                               "evaluations": int(agg.n),
+                               "first": agg.first_ts.isoformat(),
+                               "last": agg.last_ts.isoformat(),
+                               "variant": agg.last_variant,
+                               "fair_p": _dec(agg.last_fair),
+                               "best_bid": _dec(agg.last_bid),
+                               "best_ask": _dec(agg.last_ask),
+                               "decision": agg.last_decision,
+                               "reason": sanitize_reason(agg.last_reason or "")}})
+
+    placed_intents = {order.intent_id for order in orders}
+    for intent in intents:
+        parts = ["intent"]
+        if intent.target_contracts is not None and intent.target_prob is not None:
+            parts.append(f"{_qty(intent.target_contracts)} at {_cents(intent.target_prob)}")
+        if intent.id not in placed_intents:
+            # Why this is not a reason phrase: a skip's reason lives on an `order_events` row
+            # keyed by the intent, and that table's only index for this story leads on
+            # `order_id`, which a skip does not have. The story says what it can see.
+            parts.append("no order was placed")
+        rows.append({"ts": intent.created_at, "kind": "intent", "text": " \u00b7 ".join(parts),
+                     "facts": {"intent_id": str(intent.id), "variant": intent.variant_id,
+                               "side": intent.side, "edge": _dec(intent.edge),
+                               "venue_market_id": intent.venue_market_id,
+                               "target_prob": _dec(intent.target_prob),
+                               "target_contracts": _dec(intent.target_contracts)}})
+
+    for order in orders:
+        sample = watch.get(order.id)
+        parts = ["resting", f"{_qty(order.contracts)} at {_cents(order.prob)}"]
+        if order.queue_ahead_at_place is not None:
+            parts.append(f"{_qty(order.queue_ahead_at_place)} ahead of us")
+        rows.append({"ts": order.placed_at, "kind": "resting", "text": " \u00b7 ".join(parts),
+                     "facts": {"order_id": order.id, "variant": order.variant_id,
+                               "ticker": sanitize_reason(order.ticker or ""),
+                               "side": order.side, "prob": _dec(order.prob),
+                               "contracts": _dec(order.contracts),
+                               "status": order.status,
+                               "edge_at_place": _dec(order.edge_at_place),
+                               "queue_ahead_at_place": _dec(order.queue_ahead_at_place),
+                               "queue_remaining": _dec(
+                                   sample.queue_remaining if sample is not None
+                                   else order.queue_remaining)}})
+
+    for fill in fills:
+        rows.append({"ts": fill.filled_at, "kind": "fill", "text": _fill_label(fill),
+                     "facts": {"fill_id": fill.id, "order_id": fill.order_id,
+                               "prob": _dec(fill.prob), "contracts": _dec(fill.contracts),
+                               "fee": _dec(fill.fee), "fill_method": fill.fill_method,
+                               "replay": bool(fill.replay), "has_print": bool(fill.has_print),
+                               "through": bool(fill.through)}})
+
+    for event in events:
+        word = "cancelled" if event.kind == "cancel" else "expired"
+        rows.append({"ts": event.ts, "kind": word,
+                     "text": f"{word} \u00b7 {sentences.reason_phrase(event.reason)}",
+                     "facts": {"order_id": event.order_id, "kind": event.kind,
+                               "reason": sanitize_reason(event.reason or ""),
+                               "prob": _dec(event.prob),
+                               "contracts": _dec(event.contracts)}})
+
+    for order in orders:
+        for bench in benchmarks.get(order.gap_snapshot_id, ()):
+            if bench.p_bench is None:
+                continue
+            rows.append({"ts": kickoff, "kind": "benchmark",
+                         "text": f"closing {_cents(bench.p_bench)} \u00b7 "
+                                 f"we entered at {_cents(order.prob)}",
+                         "facts": {"order_id": order.id,
+                                   "gap_snapshot_id": order.gap_snapshot_id,
+                                   "benchmark_type": bench.benchmark_type,
+                                   "p_bench": _dec(bench.p_bench),
+                                   "clv_target_p_net": _dec(bench.clv_target_p_net),
+                                   "p_used_kind": bench.p_used_kind}})
+
+    for row in settlements:
+        cash = float(row.cash_delta or 0)
+        rows.append({"ts": row.ts, "kind": "settled",
+                     "text": f"settled \u00b7 {'+' if cash > 0 else ''}"
+                             f"{sentences.fmt_money(cash)} paper",
+                     "facts": {"order_id": row.order_id, "fill_id": row.fill_id,
+                               "variant": row.variant_id, "contracts": _dec(row.contracts),
+                               "price": _dec(row.price), "fee": _dec(row.fee),
+                               # `paper_payout`, not `payout`: this surface's dollars are the
+                               # harness's paper dollars, and F02 keeps the ticket surface's fun
+                               # money off Floor entirely -- including the *word*, so a reader
+                               # (or a test) never has to work out which money a key means.
+                               "paper_payout": _dec(row.payout), "cash_delta": cash}})
+
+    rows.sort(key=lambda row: row["ts"])
+    # Newest `STORY_ROWS_PER_GAME`, in the same direction the payload cap drops rows: a story
+    # nobody can read is not a story, and the part that is still happening is the part that is
+    # worth the bytes.
+    rows = rows[-STORY_ROWS_PER_GAME:]
+    rows = _with_gaps(rows, kickoff, now, tz)
+
+    if not evaluations:
+        phrase = pricing_failure()
+        first = ({"ts": None, "kind": "evaluation_failed",
+                  "text": f"evaluation failed \u00b7 {phrase}", "facts": {"source": "runs.notes"}}
+                 if phrase else
+                 {"ts": None, "kind": "not_evaluated",
+                  "text": "not evaluated \u00b7 no price was evaluated on this game's markets in "
+                          f"the last {int(STORY_WINDOW.total_seconds() // 3600)} hours",
+                  "facts": {}})
+        rows.insert(0, first)
+
+    if partial:
+        # A per-partition read cap bound on this game, so some of its rows were never read. The
+        # story says so rather than presenting what it has as the whole of it (review round 1,
+        # I2): a row that is silently missing is worse than one that is visibly missing. It goes
+        # after the verdict row, which is the one line a truncated story still has to carry.
+        rows.insert(1 if not evaluations else 0,
+                    {"ts": None, "kind": "partial",
+                     "text": "some older rows on this game were not read \u00b7 "
+                             "the per-game read caps bound",
+                     "facts": {"cap": "per-partition"}})
+
+    return [{"ts": row["ts"].isoformat() if row["ts"] is not None else None,
+             "kind": row["kind"], "text": row["text"], "facts": row["facts"]} for row in rows]
+
+
+def _partial_games(cards, markets_by_game, orders_by_game, intents_by_market, fills_by_order,
+                   events_by_order, settlements_by_order) -> set[int]:
+    """The games whose detail could not be read in full, because a per-partition cap bound.
+
+    Every cap is per game, per market or per order, so one that binds costs *this* game rows and
+    no other -- which is the point of the partitions (review round 1, I2). A partition that came
+    back exactly at its cap is the only evidence available that there was more of it, and it can
+    be a false positive (a game with exactly 60 markets); saying "some rows were not read" when
+    they all were is the safe direction of that error.
+    """
+    partial = set()
+    for card in cards:
+        game_id = card["game_id"]
+        game_markets = markets_by_game.get(game_id, [])
+        game_orders = orders_by_game.get(game_id, [])
+        if (len(game_markets) >= DETAIL_MARKETS_PER_GAME_READ
+                or len(game_orders) >= STORY_ORDERS_PER_GAME
+                or any(len(intents_by_market.get(market.id, ())) >= STORY_ROWS_PER_MARKET
+                       for market in game_markets)
+                or any(len(fills_by_order.get(order.id, ())) >= STORY_ROWS_PER_ORDER
+                       or len(events_by_order.get(order.id, ())) >= STORY_ROWS_PER_ORDER
+                       or len(settlements_by_order.get(order.id, ())) >= SETTLEMENTS_PER_ORDER
+                       for order in game_orders)):
+            partial.add(game_id)
+    return partial
+
+
+def _with_gaps(rows: list[dict], kickoff: datetime, now: datetime, tz) -> list[dict]:
+    """`rows` with a `gap` row for every span over `STORY_GAP` before kickoff.
+
+    Design 4.2: gaps are rows, never smoothed over -- a story that runs 5:42, 5:51, kickoff reads
+    as continuous attention, and it was not. The last span runs from the final pre-kickoff row to
+    kickoff itself once kickoff has passed, and to `now` before it, which is the design's own
+    "no records between 5:51 PM and kickoff".
+
+    A gap row is timed at the *start* of the gap and sorts after the row it follows, so it reads
+    as the silence after that row rather than as a second event at the same instant.
+    """
+    before = [row for row in rows if row["ts"] < kickoff]
+    gaps = []
+    previous = None
+    for row in before:
+        if previous is not None and row["ts"] - previous["ts"] > STORY_GAP:
+            gaps.append(_gap_row(previous["ts"], row["ts"], tz, False))
+        previous = row
+    edge = min(now, kickoff)
+    if previous is not None and edge - previous["ts"] > STORY_GAP:
+        gaps.append(_gap_row(previous["ts"], edge, tz, edge == kickoff))
+    if not gaps:
+        return rows
+    return sorted(rows + gaps, key=lambda row: (row["ts"], row["kind"] == "gap"))
+
+
+def _gap_row(start: datetime, end: datetime, tz, until_kickoff: bool) -> dict:
+    until = "kickoff" if until_kickoff else _clock(end, tz)
+    return {"ts": start, "kind": "gap",
+            "text": f"no records between {_clock(start, tz)} and {until}",
+            "facts": {"from": start.isoformat(), "to": end.isoformat(),
+                      "minutes": int((end - start).total_seconds() // 60)}}
+
+
+def _position(card: dict, markets_by_id: dict, orders, fills_by_order: dict,
+              settled_fills: set, settlements, abbr_by_team: dict, story: list[dict]) -> dict:
+    """Contracts held, entry price, paper stake and what the position needs (addendum 7.2 item 2).
+
+    The `_EXPOSURE` shape, applied to rows already in memory: money fills only
+    (`MONEY_FILL_METHODS`, imported so this and the exposure lanes cannot come to disagree about
+    which fills are real), the order not settled, and no settlement ledger row against the fill.
+    Those last two are `OPEN_FILL_SQL`'s own halves, read off `_DETAIL_LEDGER`'s rows rather than
+    asked again in a ninth statement.
+
+    `paper_stake` is paper dollars -- this harness's own money, the one Floor has always shown.
+    It is not the fun money of the ticket surface, which never appears on this surface at all
+    (F02): the only crossing is `on_your_ticket`, and it carries a card id and a link.
+
+    Never a word that implies in-play trading. `posture` says when the position was taken and
+    that we are now following the outcome; before kickoff it says what is being watched and
+    until when.
+    """
+    rows = []
+    stake = Decimal(0)
+    for order in orders:
+        contracts = Decimal(0)
+        notional = Decimal(0)
+        fees = Decimal(0)
+        for fill in fills_by_order.get(order.id, ()):
+            if (fill.fill_method not in MONEY_FILL_METHODS or order.replay
+                    or order.status == "settled" or fill.id in settled_fills):
+                continue
+            contracts += Decimal(fill.contracts or 0)
+            notional += Decimal(fill.contracts or 0) * Decimal(fill.prob or 0)
+            fees += Decimal(fill.fee or 0)
+        if contracts <= 0:
+            continue
+        # `entry_p` is what the fills actually printed at, not the price the order came to rest
+        # at: a partially filled order that was repriced has two of the second and one of the
+        # first, and the position is the fills. `paper_stake` is that notional plus the fees the
+        # fills charged, which is what the position cost in paper dollars.
+        cost = notional + fees
+        market = markets_by_id.get(order.venue_market_id)
+        rows.append({"order_id": order.id, "variant": order.variant_id,
+                     "ticker": sanitize_reason(order.ticker or ""), "side": order.side,
+                     "venue_market_id": order.venue_market_id,
+                     "market_type": market.market_type if market is not None else None,
+                     "label": _label(market, order.ticker, order.side, abbr_by_team),
+                     "contracts": _dec(contracts),
+                     "entry_p": _dec(notional / contracts),
+                     "paper_stake": _dec(cost),
+                     "needs": _needs(market, order.side, abbr_by_team)})
+        stake += cost
+    settled_cash = sum(float(row.cash_delta or 0) for row in settlements)
+    in_progress = card["status"] == "in_progress"
+    if not rows:
+        # "No position: `no position on this game` with the reason from the story" -- the
+        # story's own first row, which is the verdict row when there is one.
+        reason = story[0]["text"] if story else None
+        return {"has_position": False, "text": "no position on this game", "reason": reason,
+                "posture": ("following this game" if in_progress
+                            else "watching this game's markets until kickoff"),
+                "rows": [], "paper_stake": 0.0,
+                "settled_cash": settled_cash if settlements else None}
+    first = rows[0]
+    # `summary`, not `text`: `text` is SQLAlchemy's, imported at the top of this module, and a
+    # local of that name in a file of statements is a trap for the next reader.
+    summary = (f"{first['label']} \u00b7 {_qty(first['contracts'])} contracts at "
+               f"{_cents(first['entry_p'])} \u00b7 {first['needs']}")
+    if len(rows) > 1:
+        summary += f" \u00b7 and {len(rows) - 1} more on this game"
+    return {"has_position": True, "text": summary, "reason": None,
+            "posture": ("placed before kickoff \u00b7 following the outcome" if in_progress
+                        else "placed \u00b7 waiting for kickoff"),
+            "rows": rows, "paper_stake": _dec(stake),
+            "settled_cash": settled_cash if settlements else None}
+
+
+def _markets(game_markets, fair: dict, watch_by_market: dict, now: datetime) -> list[dict]:
+    """The game's priced markets: market, fair, book, edge now, age (addendum 7.2 item 4).
+
+    The fair is `fair_values`' newest row for this exact contract through
+    `ix_fair_game_type_created` -- `_FAIR_FOR_ORDERS`, the statement the resting-orders section
+    already uses, and its docstring is where the exact-contract join is explained. The book and
+    the live edge are the figures Floor already computes for an open order, so a market with no
+    open order carries a fair and an age and says nothing about a book it has not seen.
+    """
+    rows = []
+    for market in game_markets:
+        current = fair.get(market.id)
+        if current is None:
+            continue
+        order, sample = watch_by_market.get(market.id, (None, None))
+        rows.append({
+            "venue_market_id": market.id,
+            "market_type": market.market_type,
+            "side": market.side,
+            "threshold": _dec(market.threshold),
+            "ticker": sanitize_reason(market.ticker or ""),
+            "fair_p": _dec(current.fair_p),
+            "fair_staleness_s": current.staleness_s,
+            "fair_age_s": (now - current.created_at).total_seconds(),
+            "best_bid": _dec(sample.best_bid) if sample is not None else None,
+            "best_ask": _dec(sample.best_ask) if sample is not None else None,
+            "book_age_s": (now - sample.ts).total_seconds() if sample is not None else None,
+            "our_side": order.side if order is not None else None,
+            "our_prob": _dec(order.prob) if order is not None else None,
+            "edge_live": (_live_edge(current.fair_p, order.side, order.prob, current.fee_type,
+                                     current.fee_multiplier) if order is not None else None),
+        })
+    return rows
+
+
+def _truncated_row(dropped: int) -> dict:
+    return {"ts": None, "kind": "truncated",
+            "text": f"{dropped} older rows dropped to fit the {DETAIL_KIB} KiB cap",
+            "facts": {"dropped": dropped}}
+
+
+def _sizeof(value) -> int:
+    """The bytes `value` costs inside the payload: its own JSON plus the comma that separates it
+    from its neighbour. `json.dumps` with its defaults, which is the call the payload meets on
+    its way into `dashboard_snapshots`, so "16 KiB" means one thing everywhere."""
+    return len(json.dumps(value).encode()) + 1
+
+
+def _cap_detail(detail: dict) -> int:
+    """Truncate one detail payload to `DETAIL_KIB`, dropping the **oldest** story rows first.
+
+    A cap that dropped the newest rows would hide what is happening now; a cap that dropped the
+    whole story would hide why. So the oldest go, and the row that replaces them says how many
+    went and that they were the oldest -- a truncation a reader can see is a different thing from
+    a story that quietly starts late. A game whose market table alone is over the cap loses
+    market rows from the end once the story is gone.
+
+    **Linear, not quadratic (review round 1, I1).** The first version re-serialized the whole
+    payload once per dropped row: measured in this worktree, 11.2 ms for one game at
+    `STORY_ROWS_PER_GAME` and 25.2 ms at 180 rows, which is 224 ms for a twenty-game college
+    Saturday -- the whole of `FLOOR_P95_BUDGET_MS` spent on `json.dumps` before a single
+    statement runs, and then the scheduler backs Floor off during the games it was built for.
+    Each row is sized once instead, the drop count is taken off a running total, and one full
+    dump at the end verifies the arithmetic (JSON is deterministic, so the only drift is the
+    marker's own digits). Total bytes serialized are about two payloads rather than n/2 of them.
+
+    The untimed rows at the head -- the verdict row, and the `partial` row when a read cap bound
+    -- are never dropped: they are the two lines a truncated story still has to carry.
+
+    Returns the number of story rows dropped.
+    """
+    limit = DETAIL_KIB * 1024
+    total = len(json.dumps(detail).encode())
+    if total <= limit:
+        return 0
+
+    head = [row for row in detail["story"] if row["ts"] is None]
+    timed = [row for row in detail["story"] if row["ts"] is not None]
+    sizes = [_sizeof(row) for row in timed]
+    dropped = 0
+    if timed:
+        total += _sizeof(_truncated_row(1))     # the marker is about to join the story
+        while total > limit and dropped < len(timed):
+            total -= sizes[dropped]
+            dropped += 1
+    detail["story"] = head + ([_truncated_row(dropped)] if dropped else []) + timed[dropped:]
+
+    # Markets, from the end, for the game whose table alone is over the cap. Sized the same way.
+    if total > limit and detail["markets"]:
+        market_sizes = [_sizeof(row) for row in detail["markets"]]
+        while total > limit and detail["markets"]:
+            total -= market_sizes.pop()
+            detail["markets"].pop()
+
+    # One verification dump, and a bounded exact loop for the drift the marker's digits can cost
+    # (a three-digit `dropped` is two bytes wider than the one-digit row that was measured).
+    while len(json.dumps(detail).encode()) > limit:
+        timed_rows = [row for row in detail["story"] if row["ts"] is not None]
+        if timed_rows:
+            detail["story"].remove(timed_rows[0])
+            dropped += 1
+            for row in detail["story"]:
+                if row["kind"] == "truncated":
+                    row.update(_truncated_row(dropped))
+                    break
+        elif detail["markets"]:
+            detail["markets"].pop()
+        else:
+            break
+    return dropped
+
+
+def _scoreline(card: dict, tz) -> dict:
+    """The scoreline: the two abbreviations and the score, the period and clock with their source
+    age, and before kickoff the kickoff in the reader's own zone with the countdown (design 4.2
+    item 1). The clock is the source's state and is never advanced here."""
+    kickoff = datetime.fromisoformat(card["kickoff"]).astimezone(tz)
+    kickoff_local = f"{kickoff:%a} {_clock(kickoff, tz)}"
+    if card["status"] == "in_progress" and card["period"] is not None:
+        line = " \u00b7 ".join([part for part in (
+            f"Q{card['period']}" if card["sport"] in ("nfl", "ncaaf") else str(card["period"]),
+            card["clock"] or None,
+            f"{sentences.fmt_age(card['score_age_s'])} ago"
+            if card["score_age_s"] is not None else None) if part])
+    elif card["kickoff_in_s"] > 0:
+        line = (f"kickoff {kickoff_local} \u00b7 "
+                f"in {sentences.fmt_age(card['kickoff_in_s'])}")
+    else:
+        line = f"kicked off {kickoff_local}"
+    return {"home": card["home"], "away": card["away"],
+            "abbreviations": card["abbreviations"],
+            "home_score": card["home_score"], "away_score": card["away_score"],
+            "period": card["period"], "clock": card["clock"],
+            "source_age_s": card["score_age_s"], "status": card["status"],
+            "kickoff": card["kickoff"], "kickoff_in_s": card["kickoff_in_s"],
+            "kickoff_local": kickoff_local, "text": line}
+
+
+def _details(session: Session, now: datetime, settings: Settings, cards: list[dict],
+             run_notes) -> dict:
+    """One payload per game in the detail set, keyed by game id as a string (addendum 7.2).
+
+    Eleven reads for the whole set, not eleven per game: every statement takes a list of ids
+    the board has already bounded, and the per-game split happens in Python. The scoreline costs
+    nothing at all -- it is the board card the caller already built, which is where `_SCORES`
+    already put the newest score row. A twelfth read, `_pricing_failure`, is issued only when a
+    game in the set has no evaluation to show.
+
+    Each payload is capped at `DETAIL_KIB` by `_cap_detail`, and the set's total bytes are
+    reported in `readings["detail_bytes"]` for the Floor budget row, so a detail set that has
+    grown is visible beside `serve.snapshot_ms` rather than only in what a phone waits for.
+    """
+    cards = [card for card in cards if card.get("detail_available")]
+    if not cards:
+        return {}
+    tz = ZoneInfo(settings.tz_local)
+    game_ids = [card["game_id"] for card in cards]
+    kickoffs = {card["game_id"]: now + timedelta(seconds=card["kickoff_in_s"])
+                for card in cards}
+    # One window for the batch, anchored on the earliest kickoff so a game that has already
+    # started shows the twelve hours before *its* kickoff. The board only holds games from
+    # `BOARD_LOOKBACK` back, so this is at worst `now - 16 h`.
+    since = min([now, *kickoffs.values()]) - STORY_WINDOW
+
+    markets = list(session.execute(_DETAIL_MARKETS, {
+        "game_ids": game_ids, "per_game": DETAIL_MARKETS_PER_GAME_READ,
+        "limit": len(game_ids) * DETAIL_MARKETS_PER_GAME_READ}))
+    markets_by_game: dict[int, list] = {}
+    for market in markets:
+        markets_by_game.setdefault(market.game_id, []).append(market)
+    markets_by_id = {market.id: market for market in markets}
+    market_ids = [market.id for market in markets]
+
+    # Every `limit` below is `len(ids) * <the per-partition cap>`: the statement still carries a
+    # row cap (fix 31's rule, and `tests/test_snap_bounds.py` enforces it), and the number is
+    # derived from a list the board has already bounded rather than being a set-wide budget the
+    # games compete for.
+    evaluations = list(session.execute(_DETAIL_SIGNALS, {
+        "market_ids": market_ids, "since": since, "per_market": STORY_SIDES_PER_MARKET,
+        "limit": len(market_ids) * STORY_SIDES_PER_MARKET})) if market_ids else []
+    intents = list(session.execute(_DETAIL_INTENTS, {
+        "market_ids": market_ids, "since": since, "per_market": STORY_ROWS_PER_MARKET,
+        "limit": len(market_ids) * STORY_ROWS_PER_MARKET})) if market_ids else []
+    orders = list(session.execute(_DETAIL_ORDERS, {
+        "game_ids": game_ids, "since": since, "per_game": STORY_ORDERS_PER_GAME,
+        "limit": len(game_ids) * STORY_ORDERS_PER_GAME}))
+    order_ids = [order.id for order in orders]
+    order_window = {"order_ids": order_ids, "since": since, "per_order": STORY_ROWS_PER_ORDER,
+                    "limit": len(order_ids) * STORY_ROWS_PER_ORDER}
+    fills = list(session.execute(_DETAIL_FILLS, order_window)) if order_ids else []
+    events = list(session.execute(_DETAIL_ORDER_EVENTS, order_window)) if order_ids else []
+    watch = {row.order_id: row for row in session.execute(
+        _DETAIL_WATCH, {"order_ids": order_ids, "since": now - WATCH_WINDOW,
+                        "limit": len(order_ids)})} if order_ids else {}
+    settlements = list(session.execute(_DETAIL_LEDGER, {
+        "order_ids": order_ids, "per_order": SETTLEMENTS_PER_ORDER,
+        "limit": len(order_ids) * SETTLEMENTS_PER_ORDER})) if order_ids else []
+    gap_ids = sorted({order.gap_snapshot_id for order in orders
+                      if order.gap_snapshot_id is not None})
+    benchmarks: dict[int, list] = {}
+    if gap_ids:
+        for row in session.execute(_DETAIL_GAP_OUTCOMES, {
+                "gap_ids": gap_ids, "limit": len(gap_ids) * BENCHMARKS_PER_GAP}):
+            benchmarks.setdefault(row.gap_snapshot_id, []).append(row)
+    tickets = {row.game_id: row.card_id for row in session.execute(
+        _DETAIL_TICKET, {"game_ids": game_ids, "statuses": list(DETAIL_TICKET_STATUSES),
+                         "limit": len(game_ids)})}
+
+    # Group the batch by game before the fairs are asked for, because which markets are worth a
+    # `join lateral` depends on which ones this game's story touched.
+    orders_by_game: dict[int, list] = {}
+    for order in orders:
+        orders_by_game.setdefault(order.game_id, []).append(order)
+    fills_by_order: dict[int, list] = {}
+    for fill in fills:
+        fills_by_order.setdefault(fill.order_id, []).append(fill)
+    events_by_order: dict[int, list] = {}
+    for event in events:
+        events_by_order.setdefault(event.order_id, []).append(event)
+    settlements_by_order: dict[int, list] = {}
+    for row in settlements:
+        settlements_by_order.setdefault(row.order_id, []).append(row)
+    settled_fills = {row.fill_id for row in settlements if row.fill_id is not None}
+    evaluations_by_market: dict[int, list] = {}
+    for agg in evaluations:
+        evaluations_by_market.setdefault(agg.venue_market_id, []).append(agg)
+    intents_by_market: dict[int, list] = {}
+    for intent in intents:
+        intents_by_market.setdefault(intent.venue_market_id, []).append(intent)
+
+    priced: list[int] = []
+    per_game_markets: dict[int, list] = {}
+    for card in cards:
+        game_id = card["game_id"]
+        ordered_markets = sorted(
+            markets_by_game.get(game_id, []),
+            key=lambda market: (
+                0 if any(order.venue_market_id == market.id
+                         for order in orders_by_game.get(market.game_id, ())) else
+                1 if market.id in evaluations_by_market else 2,
+                market.id))[:DETAIL_MARKETS_PER_GAME]
+        per_game_markets[game_id] = ordered_markets
+        priced.extend(market.id for market in ordered_markets)
+    fair = {row.venue_market_id: row for row in session.execute(
+        _FAIR_FOR_ORDERS, {"market_ids": priced, "since": now - FAIR_WINDOW})} if priced else {}
+
+    # `run_notes` is the funnel's own capped `runs.notes` list, read once per build and handed to
+    # both sections (review round 1, I4): a Saturday-morning board is games that have not been
+    # priced yet, which is exactly when the evidence is consulted, so the lazy call was a second
+    # 2,000-row JSONB read on the common case. The phrase is still computed at most once, and not
+    # at all when every game in the set has an evaluation.
+    cache: dict[str, str | None] = {}
+
+    def pricing_failure() -> str | None:
+        if "phrase" not in cache:
+            cache["phrase"] = _pricing_failure(run_notes())
+        return cache["phrase"]
+
+    partial = _partial_games(cards, markets_by_game, orders_by_game, intents_by_market,
+                             fills_by_order, events_by_order, settlements_by_order)
+
+    details: dict[str, dict] = {}
+    for card in cards:
+        game_id = card["game_id"]
+        game_markets = per_game_markets[game_id]
+        game_market_ids = {market.id for market in markets_by_game.get(game_id, [])}
+        game_orders = orders_by_game.get(game_id, [])
+        abbr_by_team = {card["home_team_id"]: card["abbreviations"]["home"],
+                        card["away_team_id"]: card["abbreviations"]["away"]}
+        watch_by_market = {order.venue_market_id: (order, watch.get(order.id))
+                           for order in game_orders if order.status in OPEN_STATUSES}
+        game_fills = [fill for order in game_orders
+                      for fill in fills_by_order.get(order.id, ())]
+        game_settlements = [row for order in game_orders
+                            for row in settlements_by_order.get(order.id, ())]
+        story = _story(
+            kickoffs[game_id], now, tz,
+            evaluations=[agg for market_id in game_market_ids
+                         for agg in evaluations_by_market.get(market_id, ())],
+            intents=[intent for market_id in game_market_ids
+                     for intent in intents_by_market.get(market_id, ())],
+            orders=game_orders, fills=game_fills,
+            events=[event for order in game_orders
+                    for event in events_by_order.get(order.id, ())],
+            benchmarks=benchmarks, settlements=game_settlements, watch=watch,
+            markets_by_id=markets_by_id, abbr_by_team=abbr_by_team,
+            pricing_failure=pricing_failure, partial=game_id in partial)
+        card_id = tickets.get(game_id)
+        detail = {
+            "scoreline": _scoreline(card, tz),
+            "position": _position(card, markets_by_id, game_orders, fills_by_order,
+                                  settled_fills, game_settlements, abbr_by_team, story),
+            "story": story,
+            "markets": _markets(game_markets, fair, watch_by_market, now),
+            # F02, ruling A-I15: a card id and the link to it. No stake, no odds, no leg, no
+            # amount under any name -- the crossing between the two moneys goes one way and
+            # carries nothing.
+            "on_your_ticket": (None if card_id is None
+                               else {"card_id": card_id, "href": f"#ticket/card/{card_id}"}),
+            "detail_available": True,
+        }
+        _cap_detail(detail)
+        details[str(game_id)] = detail
+    return details
+
+
+def _board_games(payload: dict) -> list[dict]:
+    """The board's cards, or none when the board section failed. A detail set is a subset of the
+    board, so a board that errored has nothing to build details from -- and the error already
+    marks the board, which is the section that failed."""
+    board = payload.get("board")
+    if not isinstance(board, dict) or "error" in board:
+        return []
+    return board.get("games") or []
+
+
+def _detail_bytes(details) -> int:
+    """What the detail set costs the payload, for the Floor budget row (addendum 7.2)."""
+    if not isinstance(details, dict) or "error" in details:
+        return 0
+    return sum(len(json.dumps(detail).encode()) for detail in details.values())
 
 
 def _reason_rows(counts: dict[str, float]) -> list[dict]:
@@ -576,7 +1664,25 @@ def _reason_rows(counts: dict[str, float]) -> list[dict]:
             for reason, count in top]
 
 
-def _funnel(session: Session, now: datetime) -> dict:
+def _run_notes(session: Session, now: datetime):
+    """A callable returning the funnel's capped `runs.notes` list, read at most once per build.
+
+    The one read both `_funnel` and `_pricing_failure` use (review round 1, I4). Lazy, so a
+    build whose sections both fail before asking issues nothing; cached on the first call, so
+    the second caller pays nothing.
+    """
+    cache: list[list] = []
+
+    def notes() -> list:
+        if not cache:
+            cache.append(recent_run_notes(session, now - FUNNEL_WINDOW,
+                                          limit=FUNNEL_NOTES_LIMIT))
+        return cache[0]
+
+    return notes
+
+
+def _funnel(session: Session, now: datetime, run_notes) -> dict:
     """Ticks, gaps, candidates and rejections out of `runs.notes`; placed, skipped and cancelled
     out of the executor's own per-minute `metric_samples`; fills out of `fills` itself.
 
@@ -594,7 +1700,7 @@ def _funnel(session: Session, now: datetime) -> dict:
     `units` with what it counts and, where it matters, what it is *not* -- see `FUNNEL_UNITS`.
     """
     since = now - FUNNEL_WINDOW
-    notes = recent_run_notes(session, since, limit=FUNNEL_NOTES_LIMIT)
+    notes = run_notes()
     by_variant = signals_by_variant_from_notes(session, notes)
     ticks = gaps = 0
     for note in notes:
@@ -862,8 +1968,20 @@ def _venue(session: Session, now: datetime) -> dict:
 
 def build_floor(session: Session, now: datetime, settings: Settings) -> dict:
     payload = base_payload("floor", now, settings, CADENCE_IN_WINDOW_S)
+    # `runs.notes` is read once per build and shared (review round 1, I4). `recent_run_notes`
+    # with a limit reads exactly `FUNNEL_NOTES_LIMIT` rows of JSONB by design, and both the
+    # funnel and the detail's `evaluation failed` evidence want the same 6 h window and the same
+    # cap -- on a Saturday-morning board, where every game is inside 6 h of kickoff and none has
+    # been priced yet, that was two of those reads four times a minute. It stays lazy so a build
+    # that needs neither pays nothing, and it is a closure rather than a value so a failure of
+    # the read marks whichever section asked for it, not the whole payload.
+    run_notes = _run_notes(session, now)
     section(session, payload, "board", lambda: _board(session, now))
-    section(session, payload, "funnel", lambda: _funnel(session, now))
+    # After the board and from its cards: the detail set is a subset of the board, the scoreline
+    # is the board card, and a board that failed has no games to build details for.
+    section(session, payload, "details",
+            lambda: _details(session, now, settings, _board_games(payload), run_notes))
+    section(session, payload, "funnel", lambda: _funnel(session, now, run_notes))
     section(session, payload, "orders", lambda: _orders(session, now))
     section(session, payload, "fills", lambda: _fills(session, now, settings))
     section(session, payload, "exposure", lambda: _exposure(session, now, settings))
@@ -877,7 +1995,20 @@ def build_floor(session: Session, now: datetime, settings: Settings) -> dict:
     payload["sentences"] = {"board": sentences.floor_board(_dict("board")),
                             "funnel": sentences.floor_funnel(_dict("funnel")),
                             "orders": sentences.floor_orders(_dict("orders"))}
-    payload["readings"] = {}
+    payload["readings"] = {
+        # Addendum 7.2: the detail set's total bytes against its own per-game cap, so a set that
+        # has grown shows up on the Floor budget row beside `serve.snapshot_ms` rather than only
+        # in what a phone waits for.
+        "detail_bytes": _detail_bytes(payload.get("details")),
+        "detail_games": len(_dict("details")),
+        "detail_cap_bytes": DETAIL_KIB * 1024,
+        # How many details could not be read in full because a per-partition cap bound. Zero in
+        # normal operation; a number here is the dial (`STORY_ROWS_PER_MARKET` and its siblings)
+        # asking to be looked at (review round 1, I2).
+        "detail_partial_games": sum(
+            1 for detail in _dict("details").values()
+            if any(row["kind"] == "partial" for row in detail["story"])),
+    }
     # Ruling A-I2: the skip and cancel reason codes the funnel just rendered, so a code outside
     # `REASON_PHRASES` is not silently lost -- the next plan sees it.
     funnel = _dict("funnel")

@@ -140,6 +140,47 @@ def _row_counts(session) -> dict:
     }
 
 
+class _Tape:
+    """The recorder's own arrival order: a taped row exists only once its instant has passed.
+
+    `load_book` and `advance_book` scan `orderbook_events` by event id with a `ts` floor and no
+    ceiling. That is right in production -- a row is in the table because the recorder has
+    already written it, and there are no rows from the future to read -- and wrong for a fixture
+    that seeds a whole day before the live pass takes its first step. Seeded that way, the live
+    loop places against a queue a delta five seconds in its own future has already thinned,
+    while the replay, which bounds every read at its grid instant, places against the queue the
+    day actually had; R14's strict equality then fails on a difference the recorded day never
+    contained (6B T7, C6, resolving the marker Task 6 left here).
+
+    Rows are delivered in timestamp order, so the event ids the live scan follows ascend with
+    the timestamps the replay's scan follows -- which is the other half of making the two passes
+    read one tape.
+    """
+
+    def __init__(self, session) -> None:
+        self._session = session
+        self._pending: list[tuple[datetime, object]] = []
+
+    def at(self, ts: datetime, write) -> None:
+        """Register `write(session)`, to be run when the clock reaches `ts`."""
+        self._pending.append((ts, write))
+
+    def deliver_through(self, instant: datetime) -> None:
+        due = sorted((row for row in self._pending if row[0] <= instant), key=lambda r: r[0])
+        for _, write in due:
+            write(self._session)
+        self._pending = [row for row in self._pending if row[0] > instant]
+        self._session.commit()
+
+    def deliver_all(self) -> None:
+        """The whole tape at once: what a test that does not walk the live grid wants.
+
+        Every such test reads the record *after* the day, which is exactly when every row of it
+        exists, so there is nothing to withhold from it.
+        """
+        self.deliver_through(max((ts for ts, _ in self._pending), default=NOW))
+
+
 @pytest.fixture
 def two_runs(env_settings, db_session):
     """Two priced runs 45 s apart over a tape shaped to catch every way the two books can differ.
@@ -158,47 +199,69 @@ def two_runs(env_settings, db_session):
     * **T3, REST-anchored, with no WebSocket snapshot at all.** A replay that only anchors on
       WebSocket snapshots gives this ticker no book, places under `no_book` and never fills it.
     * **One print per ticker, each filling through the deltas above.**
+
+    Everything stamped after the first grid instant is handed to a `_Tape` instead of being
+    inserted up front, so the live pass reads each row at the instant the recorder would have
+    written it and the replay reads the finished record. A test that never walks the live grid
+    calls `tape.deliver_all()` and sees exactly the rows this fixture always seeded.
     """
     game, run_a, markets = _seed(db_session)
     _finish(db_session, run_a, NOW)
     register_variants(db_session, load_variants(VARIANTS_DIR), NOW, prune=True)
+    tape = _Tape(db_session)
 
     # T2: the WS anchor, then three deltas -- one stamped before it, two inside the grid.
     _book2(db_session, NOW - timedelta(seconds=5))
     _delta(db_session, T2, NOW - timedelta(seconds=7), "yes", "0.35", "10.00", seq=2)
-    _delta(db_session, T2, NOW + timedelta(seconds=5), "yes", "0.35", "-5.00", seq=3)
-    _delta(db_session, T2, NOW + timedelta(seconds=25), "no", "0.48", "3.00", seq=4)
-    # 100 contracts lifted at our 0.35: the 45 left resting ahead of us go first and we take
-    # the next 55 of our 97, which is a different number from the one a replay reading the
+    tape.at(NOW + timedelta(seconds=5),
+            lambda s: _delta(s, T2, NOW + timedelta(seconds=5), "yes", "0.35", "-5.00", seq=3))
+    tape.at(NOW + timedelta(seconds=25),
+            lambda s: _delta(s, T2, NOW + timedelta(seconds=25), "no", "0.48", "3.00", seq=4))
+    # 100 contracts lifted at our 0.35: the 50 left resting ahead of us go first and we take
+    # the next 50 of our 97, which is a different number from the one a replay reading the
     # wrong delta set would produce.
-    _print(db_session, T2, NOW + timedelta(seconds=30), "0.35", "100", taker_side="no",
-           trade_id="fill-t2")
+    tape.at(NOW + timedelta(seconds=30),
+            lambda s: _print(s, T2, NOW + timedelta(seconds=30), "0.35", "100", taker_side="no",
+                             trade_id="fill-t2"))
 
     # T3: a REST ladder and no WS snapshot, quoting the same 0.51 mid as its gap snapshot.
     _rest_book3(db_session, NOW - timedelta(seconds=5))
-    _delta(db_session, T3, NOW + timedelta(seconds=10), "no", "0.48", "5.00", seq=2, sid=0)
-    _print(db_session, T3, NOW + timedelta(seconds=35), "0.45", "100", taker_side="no",
-           trade_id="fill-t3")
+    tape.at(NOW + timedelta(seconds=10),
+            lambda s: _delta(s, T3, NOW + timedelta(seconds=10), "no", "0.48", "5.00", seq=2,
+                             sid=0))
+    tape.at(NOW + timedelta(seconds=35),
+            lambda s: _print(s, T3, NOW + timedelta(seconds=35), "0.45", "100", taker_side="no",
+                             trade_id="fill-t3"))
     db_session.commit()
     run_b = _second_run(db_session, NOW + timedelta(seconds=GRID_S))
     db_session.commit()
-    return game, run_a, run_b
+    return game, run_a, run_b, tape
 
 
-def _run_live(env_settings, db_session, run_a, run_b):
-    """Price and step the live executor across the grid, the way the day itself ran."""
+def _run_live(env_settings, db_session, run_a, run_b, tape):
+    """Price and step the live executor across the grid, the way the day itself ran.
+
+    The tape arrives as the grid advances: each step sees the rows stamped at or before its own
+    instant and none of the ones after it, which is all the recorder could have written by then.
+    The whole tape is delivered at the end, because the replay that follows reads the finished
+    record rather than the day as it was unfolding.
+    """
+    tape.deliver_through(NOW)
     price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
     db_session.commit()
     clock = Clock(NOW)
     executor = make_executor(env_settings, db_session, clock)
     for offset in range(0, GRID_S + 1, env_settings.exec_period_s):
+        instant = NOW + timedelta(seconds=offset)
+        tape.deliver_through(instant)
         if offset == GRID_S:
             price_and_signal(db_session, run_b.id, NOW + timedelta(seconds=GRID_S),
                              env_settings, budget_s=20)
             db_session.commit()
-        clock.now = NOW + timedelta(seconds=offset)
+        clock.now = instant
         clock.mono = float(offset)
         executor.step()
+    tape.deliver_all()
     db_session.commit()
     db_session.expire_all()
 
@@ -206,17 +269,28 @@ def _run_live(env_settings, db_session, run_a, run_b):
 # --- R14 ------------------------------------------------------------------------------
 
 
-def test_replay_execute_reproduces_live_orders_and_fills_exactly(env_settings, db_session, two_runs):
-    """R14: the same grid, the same tape, the same orders and the same fills -- exactly."""
-    game, run_a, run_b = two_runs
-    _run_live(env_settings, db_session, run_a, run_b)
+def test_replay_execute_reproduces_live_orders_and_fills_exactly(env_settings, db_session,
+                                                                 two_runs):
+    """R14: the same grid, the same tape, the same orders and the same fills -- exactly.
+
+    Task 6 left this strict xfail for Task 7: the live pass joined a 45-deep queue and filled 55
+    where the replay joined a 50-deep one and filled 50. The cause was the fixture, not the
+    simulator. The whole tape was inserted before the live pass took its first step, and the
+    live book scan has a `ts` floor but no ceiling, so the live loop placed against a queue that
+    a delta stamped five seconds into its own future had already thinned -- something no
+    recorded day can do to it, since a row is in the table only once the recorder has written
+    it. With the tape arriving on the clock (`_Tape`), both passes read one tape at one set of
+    instants and R14's strict equality is a claim about the simulator again."""
+    game, run_a, run_b, tape = two_runs
+    _run_live(env_settings, db_session, run_a, run_b, tape)
 
     live_orders = {_order_key(o) for o in db_session.query(Order).filter_by(replay=False).all()}
     live_fills = _fill_keys(db_session, False)
     assert live_orders, "the live pass placed nothing; the R14 comparison would be vacuous"
     assert live_fills, "the live pass filled nothing; the R14 comparison would be vacuous"
 
-    counts = replay(db_session, run_a.id, run_b.id, "tiny", execute=True, settings=env_settings)
+    counts = replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny",
+                    execute=True)
     db_session.commit()
     db_session.expire_all()
 
@@ -240,11 +314,13 @@ def test_replay_execute_writes_no_live_row_and_no_heartbeat(env_settings, db_ses
     whole harness, and `exec-health` restarts the container on its age, so a replay stamping it
     with an instant three days back would take the live executor down with it.
     """
-    game, run_a, run_b = two_runs
+    game, run_a, run_b, tape = two_runs
+    tape.deliver_all()
     price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
     db_session.commit()
 
-    replay(db_session, run_a.id, run_b.id, "tiny", execute=True, settings=env_settings)
+    replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny",
+           execute=True)
     db_session.commit()
     db_session.expire_all()
 
@@ -279,7 +355,7 @@ def test_replay_signals_carry_the_run_pricing_clock(env_settings, db_session):
     # A wall-clock `now` is passed deliberately: it must reach the variant registration and
     # nothing else.
     far = datetime(2027, 1, 1, tzinfo=timezone.utc)
-    replay(db_session, run_a.id, run_b.id, "tiny", now=far)
+    replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny", now=far)
     db_session.commit()
     db_session.expire_all()
 
@@ -300,16 +376,19 @@ def test_replay_signals_carry_the_run_pricing_clock(env_settings, db_session):
 
 def test_rerun_inserts_zero(env_settings, db_session, two_runs):
     """A second `replay --execute` over the same range re-derives everything and writes nothing."""
-    game, run_a, run_b = two_runs
+    game, run_a, run_b, tape = two_runs
+    tape.deliver_all()
     price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
     db_session.commit()
 
-    first = replay(db_session, run_a.id, run_b.id, "tiny", execute=True, settings=env_settings)
+    first = replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny",
+                   execute=True)
     db_session.commit()
     before = _row_counts(db_session)
     assert first.inserted > 0 and before["orders"] > 0
 
-    second = replay(db_session, run_a.id, run_b.id, "tiny", execute=True, settings=env_settings)
+    second = replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny",
+                    execute=True)
     db_session.commit()
     db_session.expire_all()
 
@@ -334,7 +413,8 @@ def test_replay_advances_its_book_instead_of_rebuilding_it(monkeypatch, env_sett
     """
     from harness.execution import loop as loop_mod
 
-    game, run_a, run_b = two_runs
+    game, run_a, run_b, tape = two_runs
+    tape.deliver_all()
     price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
     price_and_signal(db_session, run_b.id, NOW + timedelta(seconds=GRID_S), env_settings,
                      budget_s=20)
@@ -344,18 +424,19 @@ def test_replay_advances_its_book_instead_of_rebuilding_it(monkeypatch, env_sett
     advanced: list[str] = []
     real_build, real_advance = loop_mod.load_book_at, loop_mod.advance_book_at
 
-    def counting_build(session, ticker, now):
+    def counting_build(session, ticker, now, ws_connect_at=None):
         built.append(ticker)
-        return real_build(session, ticker, now)
+        return real_build(session, ticker, now, ws_connect_at)
 
-    def counting_advance(session, book, now):
+    def counting_advance(session, book, now, ws_connect_at=None):
         advanced.append(book.ticker)
-        return real_advance(session, book, now)
+        return real_advance(session, book, now, ws_connect_at)
 
     monkeypatch.setattr(loop_mod, "load_book_at", counting_build)
     monkeypatch.setattr(loop_mod, "advance_book_at", counting_advance)
 
-    replay(db_session, run_a.id, run_b.id, "tiny", execute=True, settings=env_settings)
+    replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny",
+           execute=True)
 
     # Four grid instants. Each ticker that has a book is anchored once, at the step that first
     # sees it, and advanced at every step after -- never rebuilt from its anchor.
@@ -375,7 +456,8 @@ def test_replay_step_failure_fails_the_command(monkeypatch, env_settings, db_ses
     from harness.execution.loop import Executor
     from harness.replay import ReplayStepError
 
-    game, run_a, run_b = two_runs
+    game, run_a, run_b, tape = two_runs
+    tape.deliver_all()
     price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
     db_session.commit()
 
@@ -384,7 +466,35 @@ def test_replay_step_failure_fails_the_command(monkeypatch, env_settings, db_ses
 
     monkeypatch.setattr(Executor, "_body", boom)
     with pytest.raises(ReplayStepError, match="statement timeout"):
-        replay(db_session, run_a.id, run_b.id, "tiny", execute=True, settings=env_settings)
+        replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny",
+               execute=True)
+
+
+def test_replay_step_book_error_fails_the_command(monkeypatch, env_settings, db_session,
+                                                    two_runs):
+    """Fix 66, M2: a book-read failure is one ticker's problem on the live loop (fix 60),
+    but a replay is a different audience -- an order held all day on a ticker whose reads
+    kept timing out must fail the command, or the divergence only shows up later as an
+    unexplained live/replay mismatch. `stats.book_errors` now fails a replay step exactly
+    like `stats.errors`; the live loop's own tolerance for one bad ticker is untouched.
+    """
+    from harness.execution.loop import Executor
+    from harness.replay import ReplayStepError
+
+    game, run_a, run_b, tape = two_runs
+    price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
+    db_session.commit()
+
+    def one_ticker_unreadable(self, session, tickers, market_ids, now, dead_recorder):
+        # 6B §1.5 gave `_advance_books` the market ids and the recorder verdict it records its
+        # intervals from; the three return values are fix 60's, unchanged.
+        return {}, set(), {T2}
+
+    monkeypatch.setattr(Executor, "_advance_books", one_ticker_unreadable)
+    with pytest.raises(ReplayStepError, match="see the executor log"):
+        # 6B moved `settings` to `replay`'s second positional parameter; the call is the same.
+        replay(db_session, env_settings, run_a.id, run_b.id, variant_name="tiny",
+               execute=True)
 
 
 def test_replay_cli_exits_1_when_a_step_fails(monkeypatch, env_settings, db_session, two_runs):
@@ -395,7 +505,8 @@ def test_replay_cli_exits_1_when_a_step_fails(monkeypatch, env_settings, db_sess
     from harness.config.settings import get_settings
     from harness.execution.loop import Executor
 
-    game, run_a, run_b = two_runs
+    game, run_a, run_b, tape = two_runs
+    tape.deliver_all()
     price_and_signal(db_session, run_a.id, NOW, env_settings, budget_s=20)
     db_session.commit()
     url = os.environ.get("DATABASE_URL_TEST")
@@ -422,13 +533,15 @@ def test_replay_row_counts_leave_the_callers_transaction_alone(env_settings, db_
     """Counting the replay's rows must not commit whatever the caller was in the middle of."""
     from harness.replay import _replay_row_counts
 
-    game, run_a, run_b = two_runs
+    game, run_a, run_b, tape = two_runs
+    tape.deliver_all()
     marker = NOW + timedelta(hours=3)
     db_session.add(Run(started_at=marker, status="running"))
     db_session.flush()
 
-    orders, fills = _replay_row_counts(db_session, "deadbeef1234", NOW, marker)
-    assert (orders, fills) == (0, 0)
+    orders, fills, capacity_skips = _replay_row_counts(db_session, ["deadbeef1234"], NOW,
+                                                       marker)
+    assert (orders, fills, capacity_skips) == (0, 0, 0)
 
     db_session.rollback()
     assert db_session.query(Run).filter(Run.started_at == marker).count() == 0
@@ -504,7 +617,8 @@ def test_export_fixture_out_dash(monkeypatch, env_settings, db_session, two_runs
     from harness.cli import app
     from harness.config.settings import get_settings
 
-    game, run_a, run_b = two_runs
+    game, run_a, run_b, tape = two_runs
+    tape.deliver_all()
     url = os.environ.get("DATABASE_URL_TEST")
     if not url:
         pytest.skip("DATABASE_URL_TEST not set")
@@ -544,7 +658,8 @@ def test_export_fixture_rejects_an_empty_or_backwards_range(monkeypatch, env_set
     from harness.cli import app
     from harness.config.settings import get_settings
 
-    game, run_a, run_b = two_runs
+    game, run_a, run_b, tape = two_runs
+    tape.deliver_all()
     url = os.environ.get("DATABASE_URL_TEST")
     if not url:
         pytest.skip("DATABASE_URL_TEST not set")

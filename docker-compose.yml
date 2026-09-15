@@ -118,6 +118,72 @@ services:
     restart: unless-stopped
     stop_grace_period: 120s
 
+  # Phase 4.6 (addendum §6, roadmap U9): the one home-network listener, behind the owner
+  # login. Same image and same user as `app-serve`; everything that differs is written out
+  # here rather than hidden behind a YAML anchor, so every mount, variable and port of a
+  # host-exposed service is visible in one place (A-I10).
+  #
+  # `profiles: ["lan"]` is the switch. Compose starts this service only when the runtime
+  # `.env` carries `COMPOSE_PROFILES=lan`, and `scripts/release-omarchy.py::lan_active()`
+  # writes that line only when the user's three files are non-empty regular files on the
+  # host. A host without them runs exactly today's stack, and the loopback `app-serve` and
+  # the recorder `app-ws` are untouched either way.
+  #
+  # The published address is `${LAN_ADDR}` and never `0.0.0.0`: Docker publishes ahead of
+  # ufw, so this binding -- not the firewall -- is what keeps the listener off the WireGuard
+  # and Docker interfaces (roadmap 4.6 item 4). Inside the container the process still binds
+  # 0.0.0.0, exactly as `app-serve` does; the boundary is the host side of the mapping.
+  app-serve-lan:
+    build: .
+    user: "${APP_UID:-65534}:${APP_GID:-65534}"
+    # TLS is not optional here: `serve --lan` exits 2 unless both files are non-empty regular
+    # files, so a missing bind source can never downgrade this listener to plaintext.
+    command: ["serve", "--port", "8443", "--lan",
+              "--tls-cert", "/run/secrets/lan_tls.crt",
+              "--tls-key", "/run/secrets/lan_tls.key"]
+    env_file: .env
+    environment:
+      DASHBOARD_TOKEN_FILE: /run/secrets/dashboard_token
+      # Where Compose publishes this listener, and the only Origin the write routes accept
+      # (design §5.5: from settings, never from the request's Host). The defaults match
+      # deploy/omarchy/host.env, so a runtime .env without them behaves identically.
+      LAN_ADDR: "${LAN_ADDR:-192.168.12.127}"
+      LAN_PORT: "${LAN_PORT:-8443}"
+      # The four posture variables the release validator requires, pinned on the service
+      # itself: this is the one container reachable from another machine, so its paper
+      # posture is stated here and does not depend on what the runtime env file says.
+      LIVE_TRADING: "0"
+      HARNESS_MODE: paper
+      DB_BUDGET_GB: "600"
+      RFQ_LISTENER_ENABLED: "0"
+    # Four read-only files and no Odds key: this container serves the dashboard and places no
+    # market read of its own. The three LAN files are the user's (D7) -- nothing in the loop
+    # creates, copies or reads them; Compose only binds them.
+    volumes:
+      - ./secrets/dashboard_token:/run/secrets/dashboard_token:ro
+      - ./secrets/owner_password_hash:/run/secrets/owner_password_hash:ro
+      - ./secrets/lan_tls.crt:/run/secrets/lan_tls.crt:ro
+      - ./secrets/lan_tls.key:/run/secrets/lan_tls.key:ro
+    ports:
+      - "${LAN_ADDR:-192.168.12.127}:${LAN_PORT:-8443}:8443"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # The certificate is self-signed by design, so the probe uses an unverified context:
+      # this asks whether the listener is alive, not whether a CA vouches for it. /healthz is
+      # the one route the owner login exempts, so no session is involved. The explicit
+      # `status==200` is app-serve's form: a 503 (stale recorder) then marks the container
+      # unhealthy through an exit code instead of an unhandled HTTPError traceback in the
+      # health log on every probe.
+      test: ["CMD-SHELL", "python -c \"import ssl,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('https://127.0.0.1:8443/healthz', context=ssl._create_unverified_context(), timeout=5).status==200 else 1)\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    stop_grace_period: 120s
+    profiles: ["lan"]
+
   app-ws:
     build: .
     user: "${APP_UID:-65534}:${APP_GID:-65534}"

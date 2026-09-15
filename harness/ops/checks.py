@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from harness.db.models import CheckResult
+from harness.ops.clock import exclude_unsynced_runs
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,24 @@ log = logging.getLogger(__name__)
 STATEMENT_TIMEOUT_MS = 2000
 
 _FORBIDDEN_TABLES = ("orderbook_events", "raw_responses")
+
+#: When the no-watcher cutoff fix ships. The user's ruling of 2026-09-14 15:38 CT (journal 206),
+#: option A on roadmap rows 62 and 63, verbatim:
+#:
+#:   "Bound both checks, `fills_outside_placement_window` at harness/ops/checks.py:273 and
+#:   `markouts_at_after_horizon` at harness/ops/checks.py:283, to fills written after the
+#:   no-watcher cutoff fix ships. The code fix stays in 6B's integration round: bound the
+#:   NO_WATCHER deadline at harness/execution/loop.py:900 (main) by kickoff minus 10 minutes.
+#:   The 154 fills and 154 markouts stay as recorded. Gate 13 is authorized for these two
+#:   predicates only."
+#:
+#: The value below is the release instant of that fix (2026-09-15T04:45Z, set at the phase's release
+#: commit by the controller, the only edit this constant takes). Nothing pins
+#: the value -- the tests seed relative to whatever it holds -- so replacing it is a one-line
+#: change with no test to follow it. The two predicates below bind it as a parameter rather
+#: than writing it into their SQL, so the statement text stays the static text `verify.md` and
+#: `assert_no_tape_reads` read.
+NO_WATCHER_CUTOFF_FIXED_AT: datetime = datetime(2026, 9, 15, 4, 45, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -38,6 +57,11 @@ class Check:
     #: the representative static text (assert_no_tape_reads and verify.md read it); `run_checks`
     #: executes `sql_for(now)` when it is set.
     sql_for: Callable[[datetime], str] | None = None
+    #: Bound values for the named parameters a statement carries (6B's integration round: the
+    #: two predicates bounded to `NO_WATCHER_CUTOFF_FIXED_AT`). The smallest binding that keeps
+    #: the statement text static and the instant a value: the registry stays data, the SQL stays
+    #: the text the record quotes, and a check with nothing to bind carries nothing.
+    params: dict | None = None
 
 
 def _zero(value: object) -> bool:
@@ -226,8 +250,12 @@ CHECKS: list[Check] = [
         # Carried fix 16: unbounded, this scanned 475 MB and timed out. The 24 h bound rides
         # the additive `ix_fair_created_brin` (harness/db/schema.py); `ix_fair_game_type_created`
         # leads on game_id and cannot serve a bare created_at predicate.
+        # Fix 57: a run recorded under an unsynchronized clock produces exactly this kind of
+        # arithmetic (a staleness computed against a clock that then jumped), so its rows are
+        # excluded here rather than failing an invariant about the pricing path.
         "select count(*) from fair_values "
-        "where created_at > now() - interval '24 hours' and staleness_s < 0",
+        "where created_at > now() - interval '24 hours' and staleness_s < 0 "
+        f"and {exclude_unsynced_runs('fair_values.run_id')}",
         "== 0", _zero),
     Check(
         "runs_taker_side_missing_24h",
@@ -306,8 +334,10 @@ CHECKS: list[Check] = [
         # the registry and had been recording `skip` on timeout every day, so the invariant wall
         # was grey over a check that never ran. The 24 h bound rides `ix_fair_created_brin`,
         # exactly as fix 16 did for `fair_values_negative_staleness`.
+        # Fix 57, as for `fair_values_negative_staleness` above.
         "select count(*) from fair_values "
-        "where created_at > now() - interval '24 hours' and feed_lag_s < 0",
+        "where created_at > now() - interval '24 hours' and feed_lag_s < 0 "
+        f"and {exclude_unsynced_runs('fair_values.run_id')}",
         "== 0", _zero),
     Check(
         "benchmarks_source_after_target",
@@ -315,18 +345,41 @@ CHECKS: list[Check] = [
         "== 0", _zero),
     Check(
         "fills_outside_placement_window",
+        # Bounded to fills written after the no-watcher cutoff fix ships
+        # (`NO_WATCHER_CUTOFF_FIXED_AT`, the user's ruling of 2026-09-14 15:38 CT). The 154 fills
+        # the defective loop wrote past the window stay as recorded and are not a daily failure;
+        # the same defect written after the fix still is. The bound is an equality-preserving
+        # extra predicate on `fills` and rides the same join as before.
         """
         select count(*) from fills f
         join orders o on o.id = f.order_id
         join games g on g.id = o.game_id
         where f.replay = false
+          and f.filled_at >= :cutoff
           and (f.filled_at < o.placed_at or f.filled_at > g.kickoff_utc - interval '10 minutes')
         """,
-        "== 0", _zero),
+        "== 0", _zero, params={"cutoff": NO_WATCHER_CUTOFF_FIXED_AT}),
     Check(
         "markouts_at_after_horizon",
-        "select count(*) from markouts where at_ts > horizon_ts",
-        "== 0", _zero),
+        # The same bound, reached through the order: a markout has no timestamp of its own that
+        # says when the fill it prices was written, so the cutoff is applied to the order's
+        # fills (`markouts.order_id` / `fills.order_id`, the model's only link). A row counts
+        # only when its order carries a fill at or after the cutoff, so the 154 markouts hanging
+        # off the pre-cutoff fills stay as recorded. The subquery is bounded by the order id and
+        # by the cutoff, as every subquery in this file must be.
+        # An order with no fill at all was never one of the 154 and keeps its coverage above the
+        # cutoff: `place`/`close` rows on an unfilled order whose kickoff moved are the same
+        # defect, and the ruling's amnesty is a date, not a population. Below the cutoff it is
+        # silent either way, so nothing already recorded can fail.
+        """
+        select count(*) from markouts m
+        where m.at_ts > m.horizon_ts
+          and (exists (select 1 from fills f
+                       where f.order_id = m.order_id and f.filled_at >= :cutoff)
+               or (m.at_ts >= :cutoff
+                   and not exists (select 1 from fills f where f.order_id = m.order_id)))
+        """,
+        "== 0", _zero, params={"cutoff": NO_WATCHER_CUTOFF_FIXED_AT}),
     # --- Final fix wave, I1: the eight Task 12b telemetry statements (verify.md:191-208).
     # Task 12b built this registry against verify.md:145-190; Task 14 then extended the file
     # with one invariant per new telemetry table, and until these landed "every check passed"
@@ -362,15 +415,26 @@ CHECKS: list[Check] = [
         "== 0", _zero),
     Check(
         "game_score_went_down_24h",
-        # A game's score can never go down: a later event carrying a lower home or away score
-        # than one of its own game's earlier events is a normalizer bug, not a comeback. The
-        # inner scan is bounded by `p.game_id = e.game_id` on the same 24 h slice.
+        # Fix 64 (journal 207): ESPN's own scoreboard body is sometimes corrected downward
+        # (a linescore fix, not a comeback), and `link_espn_scoreboard` appends every body it
+        # sees rather than updating one row -- so "a game's score never goes down" is false for
+        # this feed exactly on a correction. `_maybe_score_event` marks the row that carries the
+        # lower score `correction = true`; this predicate excludes a marked row as the later
+        # (`e`) row, and restarts the "never goes down" baseline at that correction: a decrease
+        # is only real when no correction row exists between the earlier (`p`) and later (`e`)
+        # row for the same game, so a score recorded after a correction is compared against the
+        # correction, not against the pre-correction high. Every subquery stays bounded by
+        # `game_id` on the same 24 h slice, as before.
         """
         select count(*) from game_score_events e
         where e.ts > now() - interval '24 hours'
+          and not e.correction
           and exists (select 1 from game_score_events p
                       where p.game_id = e.game_id and p.ts < e.ts
-                        and (p.home_score > e.home_score or p.away_score > e.away_score))
+                        and (p.home_score > e.home_score or p.away_score > e.away_score)
+                        and not exists (select 1 from game_score_events c
+                                        where c.game_id = e.game_id and c.correction
+                                          and c.ts >= p.ts and c.ts <= e.ts))
         """,
         "== 0", _zero),
     Check(
@@ -420,12 +484,17 @@ def assert_no_tape_reads(checks: list[Check]) -> None:
 assert_no_tape_reads(CHECKS)
 
 
-def _execute_bounded(session: Session, sql: str) -> object:
+def _execute_bounded(session: Session, sql: str, params: dict | None = None) -> object:
     """Run one check statement inside its own savepoint under the check timeout. Raises on
-    error or timeout; the caller decides how to record (or retry) that."""
+    error or timeout; the caller decides how to record (or retry) that.
+
+    `params` is the check's own bound values (`Check.params`), passed as parameters so the text
+    stays static: a statement that interpolated an instant would be a different statement every
+    time it ran and could not be compared with the one `verify.md` records.
+    """
     with session.begin_nested():
         session.execute(text(f"set local statement_timeout = {STATEMENT_TIMEOUT_MS}"))
-        return session.execute(text(sql)).scalar()
+        return session.execute(text(sql), params or {}).scalar()
 
 
 def _classify_failure(check_name: str, exc: Exception) -> tuple[str, str]:
@@ -454,7 +523,7 @@ def run_checks(session: Session, now: datetime, job_run_id: int,
         detail: str | None = None
         sql = check.sql_for(now) if check.sql_for is not None else check.sql
         try:
-            value = _execute_bounded(session, sql)
+            value = _execute_bounded(session, sql, check.params)
             status = "pass" if check.ok(value) else "fail"
         except Exception as exc:  # noqa: BLE001 - one check must not cost the stage
             sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
@@ -467,7 +536,7 @@ def run_checks(session: Session, now: datetime, job_run_id: int,
             # time range is legitimately zero matching rows, not an error.
             if sqlstate == "42P01" and check.sql_for is not None:
                 try:
-                    value = _execute_bounded(session, check.sql)
+                    value = _execute_bounded(session, check.sql, check.params)
                     status = "pass" if check.ok(value) else "fail"
                 except Exception as exc2:  # noqa: BLE001 - same rule: never cost the stage
                     status, detail = _classify_failure(check.name, exc2)

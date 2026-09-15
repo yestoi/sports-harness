@@ -61,8 +61,9 @@ contains T10/T1/T2 only; Task3 has not been dispatched. Its final base/head and 
 task smoke result are in the mirrored phase ledger. Confirm those before dispatching T3.
 The fresh prepared brief is
 `.superpowers/sdd/2026-09-11-phase6b-repair-execution/task-3-omarchy-brief.md`.
-It uses `0008_phase6b_execution` after `0007_raw_events_lookup`; the original brief
-is retained alongside it. Keep the original scientific acceptance and T1/T2 review
+It uses `0008_phase6b_execution` after `0007_raw_events_lookup` (renumbered
+`0011_phase6b_execution` on `0010_phase46_fun_tickets` at the merge of `main` into the
+phase branch, D9); the original brief is retained alongside it. Keep the original scientific acceptance and T1/T2 review
 rulings. A source integration prerequisite does not waive production's game window.
 
 Release only clean tested main using `make deploy-omarchy-app` or

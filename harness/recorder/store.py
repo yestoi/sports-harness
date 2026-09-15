@@ -1,11 +1,48 @@
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import RawResponse, Run, SourceState, TradeWatermark
 from harness.feeds.http import FetchResult
+
+log = logging.getLogger(__name__)
+
+#: Carried fix 58: what a swept row's `notes` records, and the status it lands in.
+INTERRUPTED_STATUS = "interrupted"
+INTERRUPTED_NOTE = "process restart"
+
+
+def sweep_interrupted(session: Session, model, process_start: datetime) -> int:
+    """Mark every `running` row of `model` that no live process can own as `interrupted`.
+
+    Carried fix 58: a process killed mid-run leaves its `runs` / `job_runs` row `running`
+    forever, and every reader that counts `running` or takes `max(started_at)` per status then
+    sees a ghost. At its own start a process owns none of the rows that were already running,
+    so each one is marked `interrupted` with `finished_at` at the process start and the reason
+    in `notes`. `started_at < process_start` is the whole guard: a row started at or after this
+    instant belongs to a live run (this process's own, or a second process's) and is never
+    touched, no other status is touched, and nothing is ever deleted.
+
+    `model` is the caller's *own* table -- `Run` for the recorder, `JobRun` for the settler --
+    which is why this takes one rather than sweeping both: neither process may write the
+    other's rows. It lives here, beside `start_run`/`finish_run`, because this is the module
+    that owns the lifecycle of a run row; `harness/ops/housekeeping.py` already reads this
+    module from the settlement side, so the import direction is an established one.
+
+    Returns the number of rows swept. `notes` is merged, not replaced (`||`), so a row that
+    carried notes before it was killed keeps them.
+    """
+    stmt = (update(model)
+            .where(model.status == "running", model.started_at < process_start)
+            .values(status=INTERRUPTED_STATUS, finished_at=process_start,
+                    notes=model.notes.op("||")(
+                        func.jsonb_build_object("interrupted", INTERRUPTED_NOTE)))
+            .execution_options(synchronize_session=False))
+    return session.execute(stmt).rowcount
 
 
 def start_run(session: Session, now: datetime) -> Run:
@@ -58,6 +95,61 @@ def get_source_state(session: Session, key: str) -> datetime | None:
 def set_source_state(session: Session, key: str, ts: datetime) -> None:
     stmt = insert(SourceState).values(key=key, last_fetched_at=ts)
     stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"last_fetched_at": ts})
+    session.execute(stmt)
+
+
+def get_source_credits(session: Session, key: str) -> int | None:
+    """The Odds API credits this source-state key has spent, or `None` when it never spent any.
+
+    Phase 4.6 3.2. `None` and `0` are deliberately different: a month key that has never been
+    written reads `None`, a month whose calls all returned `x-requests-last: 0` reads `0`, and
+    the prop source treats both as "nothing spent yet" while a reader can still tell them apart.
+    Separate from `get_source_state` rather than widening it: every existing caller wants the
+    timestamp alone and none of them should start paying for a second column.
+    """
+    row = session.get(SourceState, key)
+    return row.credits_used if row else None
+
+
+def add_source_credits(session: Session, key: str, ts: datetime, credits: int) -> None:
+    """Add `credits` to this key's running total and stamp it, in one statement.
+
+    Bound: one row by primary key (`source_state.key`). The addition is done in SQL rather than
+    read-modify-written in Python so two processes writing the same month key cannot lose a
+    tick's spend between them.
+    """
+    stmt = insert(SourceState).values(key=key, last_fetched_at=ts, credits_used=credits)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["key"],
+        set_={"last_fetched_at": ts,
+              "credits_used": func.coalesce(SourceState.credits_used, 0) + credits})
+    session.execute(stmt)
+
+
+def get_source_rows(session: Session, keys: list[str]) -> dict[str, tuple[datetime, int | None]]:
+    """`{key: (last_fetched_at, credits_used)}` for the keys that exist, in one statement.
+
+    Bound: an explicit list of keys against `source_state`'s primary key (`source_state_pkey`);
+    the caller passes at most a few dozen. The prop source reads three keys per watched event
+    every pass, and one batched read is one round trip where `session.get` per key is a hundred.
+    """
+    if not keys:
+        return {}
+    rows = session.execute(
+        select(SourceState.key, SourceState.last_fetched_at, SourceState.credits_used)
+        .where(SourceState.key.in_(keys)))
+    return {row.key: (row.last_fetched_at, row.credits_used) for row in rows}
+
+
+def reset_source_credits(session: Session, key: str, ts: datetime) -> None:
+    """Set this key's counter back to zero and stamp it (one primary-key row).
+
+    The prop source's per-event failure counter is *consecutive* failures, so a success has to
+    clear it; `add_source_credits` can only add.
+    """
+    stmt = insert(SourceState).values(key=key, last_fetched_at=ts, credits_used=0)
+    stmt = stmt.on_conflict_do_update(index_elements=["key"],
+                                      set_={"last_fetched_at": ts, "credits_used": 0})
     session.execute(stmt)
 
 

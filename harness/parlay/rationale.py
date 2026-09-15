@@ -21,6 +21,7 @@ hold the week's lock for the whole request. A short-lived session bound to the s
 made), then releases and writes the note in its own transaction after the call returns --
 `build_card`'s own session and its uncommitted card/legs are never touched.
 """
+import inspect
 import logging
 import uuid
 from datetime import datetime
@@ -42,7 +43,10 @@ _SYSTEM = [{"type": "text", "text":
             "You write one short, upbeat paragraph about a football parlay slip, in the voice of "
             "a fan who follows LSU and the Saints. Three sentences at most. Name the legs. Do not "
             "give betting advice, do not predict a result as certain, and do not invent a number "
-            "that is not in the card. Answer only with the JSON object the schema describes.",
+            "that is not in the card. Answer only with the JSON object the schema describes. "
+            "On a prop leg you may restate only the recorded selection, its line, how old the "
+            "price is and the context line printed on the card. Never mention usage, injury, "
+            "form, news or any number that is not on the card.",
             "cache_control": {"type": "ephemeral"}}]
 #: Fix 39 (journal 110): `maxLength` is not in the structured-output subset the API accepts; the
 #: 600-character ceiling moves into the description and is enforced, as it already was, by
@@ -55,6 +59,27 @@ _SCHEMA = {"type": "object",
 PROMPT_HASH = prompt_hash(_SYSTEM)
 
 
+def _bounded(client) -> bool:
+    """Whether this client's `call` accepts the caller's `timeout_s`.
+
+    `ResearchClient.call` does not take one today -- its request timeout is the module-level
+    `REQUEST_TIMEOUT_S` -- so passing the keyword blindly would turn a bounded call into a
+    `TypeError` inside a function whose whole contract is that it never raises. A client that
+    cannot be bounded is called unbounded, with one WARNING naming it, rather than not at all.
+    """
+    try:
+        parameters = inspect.signature(client.call).parameters
+    except (TypeError, ValueError):
+        return False
+    if "timeout_s" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()):
+        return True
+    log.warning("parlay rationale: %s.call takes no timeout_s; the call is unbounded",
+                type(client).__name__)
+    return False
+
+
 def _template(card, legs) -> str:
     names = ", ".join(leg.plain_text for leg in legs)
     kind = "smart card" if card.kind == "smart" else "lottery ticket"
@@ -65,8 +90,15 @@ def _template(card, legs) -> str:
         f"{correlated}", TEMPLATE_MAX)
 
 
-def write_rationale(session, settings, card, legs, now: datetime, client=None) -> str:
-    """The card's prose. Never raises: the template is the floor."""
+def write_rationale(session, settings, card, legs, now: datetime, client=None, *,
+                    timeout_s: float | None = None) -> str:
+    """The card's prose. Never raises: the template is the floor.
+
+    `timeout_s` bounds the model call for a caller that runs under a budget (the `parlay_build`
+    stage passes its `RATIONALE_TIMEOUT_S`). `None` is today's behaviour, so the CLI path and
+    every existing test are unchanged. A timeout is not an error here: it falls back to the
+    template exactly as `BudgetRefused` already does.
+    """
     fallback = _template(card, legs)
     if client is None:
         if not settings.has_anthropic_key():
@@ -98,13 +130,24 @@ def write_rationale(session, settings, card, legs, now: datetime, client=None) -
             + f"\nstake ${card.stake}, estimated payout ${card.dk_payout_est}, "
               f"correlated {'yes' if card.correlated else 'no'}")
         result = None
+        timed_out = False
+        bounds = {"timeout_s": timeout_s} if timeout_s is not None and _bounded(client) else {}
         try:
             result = client.call(model=PRIMARY_MODEL, system=_SYSTEM, user=user, schema=_SCHEMA,
-                                 effort=EFFORT, max_output_tokens=MAX_OUTPUT_TOKENS, tools=())
+                                 effort=EFFORT, max_output_tokens=MAX_OUTPUT_TOKENS, tools=(),
+                                 **bounds)
+        except TimeoutError as expired:
+            # The caller's bound, not a fault: the stage runs inside its own 60 s budget and a
+            # slip with the template on it is a slip. Nothing is written to `research_notes`,
+            # because no result arrived to record.
+            timed_out = True
+            log.info("parlay rationale timed out after %ss: %s", timeout_s, expired)
         finally:
             release_spend(spend_session, reservation,
                           {PRIMARY_MODEL: result.usage} if result is not None else {})
             spend_session.commit()
+        if timed_out:
+            return fallback
 
         write_notes(spend_session, call_id=uuid.uuid4(), kind="parlay", subject_id=str(card.id),
                     effort=EFFORT, prompt_hash=PROMPT_HASH, features={"card_id": card.id},

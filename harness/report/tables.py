@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from harness.dashboard.queries import recent_runs_pricing
 from harness.execution.book import BookState, side_p
+from harness.ops.clock import exclude_unsynced_runs
 from harness.ops.coverage import COVERAGE_RUN_CAP, eligible_runs, exhaustion_share
 from harness.ops.exclusions import COVERAGE_CLASS_OF
 from harness.pricing.fees import KALSHI_FOOTBALL
@@ -146,6 +147,34 @@ class Table:
         plain string. Every table's first column is already the thing a reader keys the row
         on by eye (a variant, a ticker, a stratum), so this needs no per-table mapping."""
         return "" if not row else str(row[0])
+
+
+#: Rows a streamed whole-week read holds in Python at once (fix 49 round 3).
+#:
+#: Four reads here load a whole ISO week into memory before the first row is looked at, and on
+#: the measured week-shaped fixture (`tests/report_week_fixture.py`) they are the render's
+#: high-water mark. Traced peak per table, materialised -> streamed, same week, one process:
+#: table 4's snapshot read 25.6 -> 8.3 MiB, table 5's fair-value scan 25.3 -> 5.2 MiB, table
+#: 4b's 20.3 -> 13.3 MiB, and the whole render 25.7 -> 13.4 MiB, which took the RSS the render
+#: leaves behind from +59.5 MiB to +28.0 MiB. The rows are consumed in one pass and binned into
+#: counters, so nothing needs the whole week resident; fetching through a server-side cursor
+#: bounds the peak at the chunk instead. 2,000 keeps the round trips down (a week is tens of
+#: thousands of rows) while holding well under a megabyte of rows at a time.
+STREAM_ROWS = 2000
+
+
+def _stream(session: Session, statement, params: dict):
+    """`session.execute(statement, params)`, fetched `STREAM_ROWS` rows at a time.
+
+    Identical rows in identical order -- this changes nothing the report computes, only how
+    much of the result set psycopg has decoded into the process at once. The report's numbers
+    are a measurement, so `tests/test_report_memory.py` pins the rendered tables byte-identical
+    across this change.
+    """
+    return session.execute(
+        statement, params,
+        execution_options={"stream_results": True, "max_row_buffer": STREAM_ROWS},
+    ).yield_per(STREAM_ROWS)
 
 
 # --- cells ----------------------------------------------------------------------------------
@@ -308,7 +337,10 @@ def _placeholder_table(title: str, header: str, columns: list[str], note: str) -
 
 # --- table 1: funnel ---------------------------------------------------------------------------
 
-_T1_SIGNALS = text("""
+#: Fix 57's exclusion (`exclude_unsynced_runs`) rides every pricing read in this module that
+#: carries a `run_id`: a run recorded under an unsynchronized kernel clock is stamped at a time
+#: its rows did not happen at, so its children must not land in any window's numbers.
+_T1_SIGNALS = text(f"""
     select s.variant_id, g.sport,
            count(*) as signals,
            count(*) filter (where s.decision = 'candidate') as candidates
@@ -316,6 +348,7 @@ _T1_SIGNALS = text("""
     join venue_markets m on m.id = s.venue_market_id
     join games g on g.id = m.game_id
     where s.replay = false and s.created_at >= :start and s.created_at < :end
+      and {exclude_unsynced_runs('s.run_id')}
     group by s.variant_id, g.sport
 """)
 
@@ -334,29 +367,32 @@ _T1_ORDERS = text("""
     group by o.variant_id, coalesce(o.sport, 'unknown')
 """)
 
-_T1_SCANNED = text("""
+_T1_SCANNED = text(f"""
     select g.sport, count(distinct s.venue_market_id) as markets
     from market_gap_snapshots s
     join venue_markets m on m.id = s.venue_market_id
     join games g on g.id = m.game_id
     where s.created_at >= :start and s.created_at < :end
+      and {exclude_unsynced_runs('s.run_id')}
     group by g.sport
 """)
 
 #: Amendment 4 (2026-09-08): the pricing ticks a variant was scored on at all, over the pricing
 #: ticks in the week. The order the variant loop scores in is deliberately asymmetric after the
 #: amendment, so the asymmetry travels beside every cross-variant comparison.
-_T1_COVERAGE = text("""
+_T1_COVERAGE = text(f"""
     select s.variant_id, count(distinct s.run_id) as scored_ticks
     from signals s
     where s.replay = false and s.created_at >= :start and s.created_at < :end
+      and {exclude_unsynced_runs('s.run_id')}
     group by s.variant_id
 """)
 
-_T1_PRICING_TICKS = text("""
+_T1_PRICING_TICKS = text(f"""
     select count(distinct run_id) as ticks
     from market_gap_snapshots
     where created_at >= :start and created_at < :end
+      and {exclude_unsynced_runs('market_gap_snapshots.run_id')}
 """)
 
 #: Task 11: the risk gate's share of the week, per variant. A *note*, never a column -- the
@@ -457,7 +493,7 @@ _T2_GATE = text("""
     order by variant_id, evaluated_at desc
 """)
 
-_T2_GAP_CLV = text("""
+_T2_GAP_CLV = text(f"""
     select s.variant_id, s.gap_snapshot_id, s.side, s.price_target,
            m.game_id, o.benchmark_type, o.p_bench
     from signals s
@@ -466,6 +502,7 @@ _T2_GAP_CLV = text("""
     where s.replay = false and s.created_at >= :start and s.created_at < :end
       and s.decision = 'candidate' and s.price_target is not null
       and o.p_bench is not null and m.game_id is not null
+      and {exclude_unsynced_runs('s.run_id')}
 """)
 
 
@@ -700,7 +737,7 @@ def _table3(session: Session, window: dict, variants: list[dict]) -> Table:
 
 # --- table 4: the mispricing map ----------------------------------------------------------------
 
-_T4_SNAPSHOTS = text("""
+_T4_SNAPSHOTS = text(f"""
     select s.id, s.fair_source, s.venue_mid, s.ttk_minutes, s.gap_mid, s.gap_maker_net,
            s.staleness_s, s.feed_kind, g.sport, m.market_type, g.id as game_id,
            o.clv_mid_p
@@ -711,6 +748,7 @@ _T4_SNAPSHOTS = text("""
            on o.gap_snapshot_id = s.id and o.benchmark_type = :benchmark
     where s.created_at >= :start and s.created_at < :end
       and s.fair_p is not null
+      and {exclude_unsynced_runs('s.run_id')}
 """)
 
 _T4_COLUMNS = ["fair_source", "price_bucket", "ttk", "sport", "market_type",
@@ -739,11 +777,12 @@ def _table4(session: Session, window: dict) -> Table:
         "not in either family. The §9.6 criterion is judged on `posterior`, and a stratum "
         "with no heterogeneity contributes no significant cell.")
     params = dict(window, benchmark=CONTRAST_BENCHMARK)
-    snapshots = [r for r in session.execute(_T4_SNAPSHOTS, params)]
 
     # (fair_source, price, ttk, sport, market_type) -> panel/stratum -> [(value, game_id)]
     buckets: dict[tuple, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for row in snapshots:
+    # Streamed, not materialised (fix 49 round 3): this read is the whole week's gap snapshots
+    # and every row is binned and dropped here, so holding the week was pure peak.
+    for row in _stream(session, _T4_SNAPSHOTS, params):
         price = _bucket_price(_f(row.venue_mid))
         ttk = _bucket_ttk(row.ttk_minutes)
         if (price is None or ttk is None or row.sport not in SPORTS
@@ -832,12 +871,13 @@ def _table4(session: Session, window: dict) -> Table:
 
 # --- table 4b: derived minus direct by key-number distance --------------------------------------
 
-_T4B_FAIRS = text("""
+_T4B_FAIRS = text(f"""
     select f.run_id, f.game_id, f.market_type, f.outcome_team_id, f.outcome_side, f.threshold,
            f.fair_source, f.fair_p
     from fair_values f
     where f.created_at >= :start and f.created_at < :end
       and f.fair_source in ('direct', 'derived') and f.fair_p is not null
+      and {exclude_unsynced_runs('f.run_id')}
 """)
 
 _T4B_COLUMNS = ["market_type", "key_distance", "derived_minus_direct"]
@@ -866,7 +906,7 @@ def _table4b(session: Session, window: dict) -> Table:
               "model's own error. Clustered by game.")
     both: dict[tuple, dict[str, float]] = defaultdict(dict)
     shapes: dict[tuple, tuple] = {}
-    for row in session.execute(_T4B_FAIRS, window):
+    for row in _stream(session, _T4B_FAIRS, window):
         key = (row.run_id, row.game_id, row.market_type, row.outcome_team_id,
                row.outcome_side, row.threshold)
         both[key][row.fair_source] = float(row.fair_p)
@@ -888,7 +928,7 @@ def _table4b(session: Session, window: dict) -> Table:
 
 # --- table 5: convergence lag -------------------------------------------------------------------
 
-_T5_FAIRS = text("""
+_T5_FAIRS = text(f"""
     select f.game_id, f.market_type, f.outcome_team_id, f.outcome_side, f.threshold,
            f.fair_p, f.newest_book_ts, f.created_at, g.sport, m.ticker
     from fair_values f
@@ -900,6 +940,7 @@ _T5_FAIRS = text("""
      and coalesce(m.threshold, 0) = coalesce(f.threshold, 0)
     where f.created_at >= :start and f.created_at < :end
       and f.feed_kind = 'featured' and f.fair_p is not null
+      and {exclude_unsynced_runs('f.run_id')}
     order by f.game_id, f.market_type, f.outcome_team_id, f.outcome_side, f.threshold,
              f.created_at
 """)
@@ -925,10 +966,11 @@ def _table5(session: Session, window: dict) -> Table:
         f"observation is censored at {int(MAX_LAG.total_seconds() // 60)} min. The venue mid is "
         "sampled from the WebSocket order-book snapshots on the tape, so the sampling floor is "
         "the interval between snapshots.")
-    fairs = [r for r in session.execute(_T5_FAIRS, window)]
     moves = []
     previous_key, previous = None, None
-    for row in fairs:
+    # Streamed (fix 49 round 3): the scan is one ordered pass that keeps only the previous row
+    # and the moves it found, so the week never needed to be resident.
+    for row in _stream(session, _T5_FAIRS, window):
         key = (row.game_id, row.market_type, row.outcome_team_id, row.outcome_side, row.threshold)
         if key == previous_key and previous is not None:
             delta = float(row.fair_p) - float(previous.fair_p)
@@ -947,8 +989,8 @@ def _table5(session: Session, window: dict) -> Table:
     from_ts = min(m[3] for m in moves)
     to_ts = max(m[3] for m in moves) + MAX_LAG
     samples: dict[str, list[tuple[datetime, float]]] = defaultdict(list)
-    for row in session.execute(_T5_SNAPSHOTS,
-                               {"tickers": tickers, "from_ts": from_ts, "to_ts": to_ts}):
+    for row in _stream(session, _T5_SNAPSHOTS,
+                       {"tickers": tickers, "from_ts": from_ts, "to_ts": to_ts}):
         try:
             mid = BookState.from_ws_raw(row.ticker, row.raw, 0, 0, row.ts, 0).mid()
         except (ValueError, AttributeError, TypeError):
@@ -1164,18 +1206,22 @@ def _table6(session: Session, window: dict, variants: list[dict]) -> Table:
 _T8_COLUMNS = ["metric", "value", "n"]
 
 _T8_QUERIES = {
-    "fair_values feed_lag_s p50": ("""
+    "fair_values feed_lag_s p50": (f"""
         select percentile_disc(0.5) within group (order by feed_lag_s), count(feed_lag_s)
-        from fair_values where created_at >= :start and created_at < :end""", None),
-    "fair_values feed_lag_s p95": ("""
+        from fair_values where created_at >= :start and created_at < :end
+          and {exclude_unsynced_runs('fair_values.run_id')}""", None),
+    "fair_values feed_lag_s p95": (f"""
         select percentile_disc(0.95) within group (order by feed_lag_s), count(feed_lag_s)
-        from fair_values where created_at >= :start and created_at < :end""", None),
-    "fair_values staleness_s p50": ("""
+        from fair_values where created_at >= :start and created_at < :end
+          and {exclude_unsynced_runs('fair_values.run_id')}""", None),
+    "fair_values staleness_s p50": (f"""
         select percentile_disc(0.5) within group (order by staleness_s), count(staleness_s)
-        from fair_values where created_at >= :start and created_at < :end""", None),
-    "fair_values staleness_s p95": ("""
+        from fair_values where created_at >= :start and created_at < :end
+          and {exclude_unsynced_runs('fair_values.run_id')}""", None),
+    "fair_values staleness_s p95": (f"""
         select percentile_disc(0.95) within group (order by staleness_s), count(staleness_s)
-        from fair_values where created_at >= :start and created_at < :end""", None),
+        from fair_values where created_at >= :start and created_at < :end
+          and {exclude_unsynced_runs('fair_values.run_id')}""", None),
     "orderbook gap events": ("""
         select count(*), count(*) from orderbook_events
         where kind = 'gap' and ts >= :start and ts < :end""", None),
@@ -1306,7 +1352,7 @@ _T12_COLUMNS = ["variant/reason", "kind", "count", "share",
 #: of them; `_kalshi` is the second.
 _T12_BENCHMARKS = ("pinnacle_t5", "kalshi_last_trade_pre_kick")
 
-_T12_REJECTED = text("""
+_T12_REJECTED = text(f"""
     select s.variant_id, s.rejection_reason as reason, s.side, s.price_target,
            m.game_id, o.benchmark_type, o.p_bench
     from signals s
@@ -1315,17 +1361,19 @@ _T12_REJECTED = text("""
     where s.replay = false and s.created_at >= :start and s.created_at < :end
       and s.decision = 'rejected' and s.rejection_reason is not null
       and s.price_target is not null and o.p_bench is not null and m.game_id is not null
+      and {exclude_unsynced_runs('s.run_id')}
 """)
 
-_T12_REJECTED_COUNTS = text("""
+_T12_REJECTED_COUNTS = text(f"""
     select variant_id, rejection_reason as reason, count(*) as n
     from signals
     where replay = false and created_at >= :start and created_at < :end
       and decision = 'rejected' and rejection_reason is not null
+      and {exclude_unsynced_runs('signals.run_id')}
     group by variant_id, rejection_reason
 """)
 
-_T12_SKIPPED = text("""
+_T12_SKIPPED = text(f"""
     select i.variant_id, e.reason as reason, i.side, i.target_prob,
            m.game_id, o.benchmark_type, o.p_bench
     from intents i
@@ -1335,6 +1383,7 @@ _T12_SKIPPED = text("""
     join venue_markets m on m.id = i.venue_market_id
     where i.replay = false and i.created_at >= :start and i.created_at < :end
       and e.reason is not null and i.target_prob is not null
+      and {exclude_unsynced_runs('s.run_id')}
       and o.p_bench is not null and m.game_id is not null
 """)
 
@@ -1703,7 +1752,8 @@ def _t13_coverage(session: Session, window: dict, gate_name: str | None) -> dict
     """
     counts = {"notes_read": 0, "after_window": 0, "pricing_runs": 0, "gate_scored": 0,
               "no_counts": 0, "budget_exhausted": 0}
-    for started_at, note in recent_runs_pricing(session, window["start"], limit=T13_NOTES_LIMIT):
+    for started_at, note in recent_runs_pricing(session, window["start"],
+                                               limit=T13_NOTES_LIMIT, stream=True):
         if started_at >= window["end"]:
             counts["after_window"] += 1
             continue

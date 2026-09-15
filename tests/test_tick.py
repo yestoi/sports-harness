@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -1113,3 +1114,110 @@ def test_weather_respects_real_quiet_hours_even_on_forced_ticks(
         assert ctx["weather"] == {"skipped": "cadence None"}
         # Preserve the registered pricing allowance; it is not a source cadence.
         assert cadence_in_force(now, [], env_settings.tz_local) == DEFAULT_CADENCE_S
+
+
+# ---- carried fix 57 (the clock guard) and fix 58 (the ghost sweep) ---------------------
+
+
+class _HandMono:
+    """A monotonic clock the test moves by hand; every read sees the value last set."""
+
+    def __init__(self, t: float = 0.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _clock_state(monkeypatch, state):
+    from harness.recorder import tick as tick_mod
+
+    monkeypatch.setattr(tick_mod, "clock_synchronized", lambda: state)
+
+
+def _unsynced_count(caplog) -> int:
+    return sum(1 for r in caplog.records if "clock_unsynced" in r.getMessage())
+
+
+@respx.mock
+def test_unsynchronized_clock_writes_no_run_and_warns_once_a_minute(
+        env_settings, db_session, monkeypatch, caplog):
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": []}))
+    mono = _HandMono()
+    rec, _ = _recorder(env_settings, db_session, monotonic=mono)
+    _clock_state(monkeypatch, False)
+    with caplog.at_level(logging.WARNING, logger="harness.recorder.tick"):
+        for t in (0.0, 10.0, 59.0):
+            mono.t = t
+            assert rec.maybe_tick() is None
+    assert db_session.query(Run).count() == 0
+    assert db_session.query(RawResponse).count() == 0
+    assert _unsynced_count(caplog) == 1
+
+
+@respx.mock
+def test_first_synchronized_tick_records_the_unsynced_spell_once(env_settings, db_session, monkeypatch):
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": []}))
+    mono = _HandMono()
+    rec, _ = _recorder(env_settings, db_session, monotonic=mono)
+    _clock_state(monkeypatch, False)
+    assert rec.maybe_tick() is None
+    mono.t = 45.0
+    _clock_state(monkeypatch, True)
+    assert rec.maybe_tick() is not None
+    samples = db_session.query(MetricSample).filter_by(name="recorder.clock_unsynced_s").all()
+    assert len(samples) == 1 and float(samples[0].value) == pytest.approx(45.0)
+    mono.t = 120.0
+    rec.maybe_tick()
+    assert db_session.query(MetricSample).filter_by(name="recorder.clock_unsynced_s").count() == 1
+
+
+@respx.mock
+def test_an_unavailable_clock_probe_leaves_the_tick_unchanged(env_settings, db_session, monkeypatch):
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": []}))
+    _clock_state(monkeypatch, None)
+    rec, _ = _recorder(env_settings, db_session)
+    run = rec.maybe_tick()
+    assert run is not None and db_session.query(Run).count() == 1
+    assert db_session.query(MetricSample).filter_by(name="recorder.clock_unsynced_s").count() == 0
+
+
+@respx.mock
+def test_recorder_start_sweeps_stale_running_rows_and_leaves_a_live_one(
+        env_settings, db_session, monkeypatch, caplog):
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": []}))
+    stale = [store.start_run(db_session, NOW - timedelta(hours=3)),
+             store.start_run(db_session, NOW - timedelta(minutes=1))]
+    live = store.start_run(db_session, NOW + timedelta(seconds=5))
+    done = store.start_run(db_session, NOW - timedelta(hours=4))
+    store.finish_run(db_session, done, "ok", finished_at=NOW - timedelta(hours=4))
+    _clock_state(monkeypatch, True)
+    rec, _ = _recorder(env_settings, db_session)
+    with caplog.at_level(logging.WARNING, logger="harness.recorder.tick"):
+        run = rec.maybe_tick()
+    for row in stale:
+        db_session.refresh(row)
+        assert row.status == "interrupted"
+        assert row.finished_at == NOW
+        assert row.notes["interrupted"] == "process restart"
+    db_session.refresh(live)
+    assert live.status == "running" and live.finished_at is None
+    db_session.refresh(done)
+    assert done.status == "ok"
+    own = db_session.get(Run, run.id)
+    db_session.refresh(own)
+    assert own.status != "interrupted" and own.finished_at is not None
+    assert [r.getMessage() for r in caplog.records if "interrupted" in r.getMessage()]
+
+
+@respx.mock
+def test_the_ghost_sweep_runs_once_per_process(env_settings, db_session, monkeypatch):
+    respx.get(url__regex=r".*").mock(return_value=httpx.Response(200, json={"events": [], "markets": []}))
+    _clock_state(monkeypatch, True)
+    rec, clock = _recorder(env_settings, db_session)
+    rec.maybe_tick()
+    ghost = store.start_run(db_session, NOW - timedelta(hours=3))
+    clock["now"] = NOW + timedelta(minutes=10)
+    rec.maybe_tick()
+    db_session.refresh(ghost)
+    assert ghost.status == "running"

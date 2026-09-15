@@ -60,9 +60,16 @@ def _maybe_score_event(session: Session, game: Game, status_obj: dict, status: s
     prev = session.execute(_NEWEST_SCORE_EVENT, {"game_id": game.id}).first()
     if prev is not None and tuple(prev) == current:
         return
+    # Fix 64 (journal 207): ESPN's own scoreboard body can carry a lower home or away score than
+    # the game's newest recorded row -- the source corrected its linescore, not a comeback and
+    # not a normalizer bug. A null score is never a decrease (nothing to compare), and the marker
+    # only looks at the score that actually changed lower, never at status/period/clock alone.
+    correction = prev is not None and (
+        (hs is not None and prev.home_score is not None and hs < prev.home_score)
+        or (as_ is not None and prev.away_score is not None and as_ < prev.away_score))
     session.add(GameScoreEvent(game_id=game.id, ts=datetime.now(timezone.utc), status=status,
                                period=period, clock=clock, home_score=hs, away_score=as_,
-                               raw_id=raw_id))
+                               raw_id=raw_id, correction=correction))
 
 
 def link_espn_scoreboard(session: Session, sport: str, body: dict,

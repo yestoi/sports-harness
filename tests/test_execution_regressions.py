@@ -1,17 +1,24 @@
 """Phase 6A: the execution-reconciliation probes as runnable regressions (design addendum §0.5).
 
-Each defect is one `xfail(strict=True, raises=AssertionError)` case whose docstring states the
-expected value and how it was computed, independently of the code under test. `raises` is not
-decoration: without it a changed signature or a failed import would be swallowed as an expected
-failure and the defect would look documented when nothing ran (review I-d). 6B removes a marker
-when it repairs the defect; a strict XPASS is a hard failure, which is how the suite notices.
+Each defect arrived as one `xfail(strict=True, raises=AssertionError)` case whose docstring
+states the expected value and how it was computed, independently of the code under test.
+`raises` was not decoration: without it a changed signature or a failed import would have been
+swallowed as an expected failure and the defect would have looked documented when nothing ran
+(review I-d). 6B removes a marker when it repairs the defect; a strict XPASS is a hard failure,
+which is how the suite notices. **Every marker in this file is now gone** -- Task 6 took the
+last one, case 4 -- so §3 row 7's "0 xfailed, 0 XPASS from this file" holds for the rest of the
+season and each case below is a plain assertion about repaired behaviour.
 
 Beside them sit passing guards -- behaviours a repair must not break. Case 1b exercises
 `WsSink._check_seq`, not `BookState.apply_delta` where case 1a's defect lives; it guards the
 subscription-level input a sid-level replacement for the per-book check would depend on, and it
 does not itself flip when 1a does. The naive repair -- deleting the per-object dirty flag with
-nothing at the subscription level to replace it -- is instead caught by `tests/test_book.py:84`
-(`test_seq_gap_marks_dirty`) turning red, not by 1b.
+nothing at the subscription level to replace it -- is instead caught by `tests/test_book.py`'s
+subscription-level cases turning red, not by 1b:
+`test_rest_anchor_dirties_on_a_sid_zero_gap_after_its_tape_position` and
+`test_a_book_rebuilt_at_a_cursor_carries_its_subscriptions_gap_verdict`. C1 retired the
+per-ticker `test_seq_gap_marks_dirty` this paragraph used to name, exactly as case 1a's docstring
+below required.
 
 No database. Every case is either a pure object, the real `_simulate_order` with persistence
 mocked (as the probe runs it), the real `plan_actions`, or the real `fill_events` over a fake
@@ -21,8 +28,6 @@ session. One fixed, tz-aware clock throughout: `tests.test_fills.T0`.
 from decimal import Decimal as D
 from types import SimpleNamespace as NS
 from unittest.mock import patch
-
-import pytest
 
 from harness.execution.book import BookState
 from harness.execution.fills import TapeDelta, TapePrint
@@ -37,9 +42,6 @@ from tests.test_fills import DEADLINE, T0, at, order, run, tdelta, tprint
 SID = 7
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: per-market streams legitimately skip subscription sequence "
-                          "numbers; the per-ticker seq check reads that as a lost frame")
 def test_multiplexed_subscription_sequence_does_not_dirty_the_book():
     """Probe `multiplexed_sequence`. Expected `dirty` is False.
 
@@ -49,12 +51,14 @@ def test_multiplexed_subscription_sequence_does_not_dirty_the_book():
     only when a message that would have changed it was lost, and none was. The captured probe
     output is `actual_dirty true`.
 
-    `tests/test_book.py:84` (`test_seq_gap_marks_dirty`) pins the opposite outcome on the same
-    method and the same call shape: `apply_delta` with a real per-ticker seq gap, asserting
-    `dirty is True`. 6B cannot unmark this case by deleting the per-object check at
-    `harness/execution/book.py:273-274` alone -- that turns `test_book.py:84` red. The repair
-    has to move gap detection to the subscription level (where `_check_seq` already lives) and
-    retire or rewrite that test to match, not just remove the per-book flag.
+    `tests/test_book.py`'s `test_seq_gap_marks_dirty` pinned the opposite outcome on the same
+    method and the same call shape -- `apply_delta` with a real per-ticker seq gap, asserting
+    `dirty is True` -- so 6B could not unmark this case by deleting the per-object check in
+    `harness/execution/book.py` alone. C1 did what this paragraph required instead: gap
+    detection moved to the subscription level (where `_check_seq` already lives), the per-object
+    check left `book.py`, and that test was retired with it. The subscription-level guards that
+    now hold the line are `test_rest_anchor_dirties_on_a_sid_zero_gap_after_its_tape_position`
+    and `test_a_book_rebuilt_at_a_cursor_carries_its_subscriptions_gap_verdict`.
     """
     a = BookState.from_levels("A", [[".30", "5"]], [[".60", "5"]], sid=SID, seq=1,
                               as_of=at(0), source="ws", anchor_id=1)
@@ -111,9 +115,6 @@ def test_a_real_missing_subscription_frame_still_writes_a_gap_row():
     assert rows[0].raw["expected"] == 2 and rows[0].raw["got"] == 3
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: a print and the delta that records it are one event; counting "
-                          "both drains the queue twice")
 def test_a_print_and_its_own_delta_are_one_event():
     """Probe `same_event`. Expected queue 2 and fill 0.
 
@@ -157,13 +158,17 @@ def _executor(books: dict) -> tuple[Executor, list]:
 def _order_row(**over):
     """One `orders` row as `_simulate_order` reads it: attribute access only, no ORM."""
     row = NS(id=1, venue_market_id=1, ticker="A", side="yes", prob=D(".30"),
-             contracts=D(10), placed_at=T0, expiry=DEADLINE,
+             contracts=D(10), placed_at=T0, expiry=DEADLINE, cancelled_at=None,
              queue_ahead_at_place=D(5), queue_remaining=D(5), traded_at_price=D(0),
              filled_contracts=D(0), tape_cursor_event_id=1, crossed=False,
-             last_print_ts=T0, last_print_ids=(), nw_queue_remaining=D(5),
+             last_print_ts=T0, last_print_ids=(),
+             cancels_ahead=D(0), recon_state=None,
+             nw_queue_remaining=D(5),
              nw_traded_at_price=D(0), nw_filled_contracts=D(0),
              nw_tape_cursor_event_id=1, nw_crossed=False, nw_last_print_ts=T0,
-             nw_last_print_ids=(), nw_done=True, status="open")
+             nw_last_print_ids=(),
+             nw_cancels_ahead=D(0), nw_recon_state=None,
+             nw_done=True, status="open")
     for key, value in over.items():
         setattr(row, key, value)
     return row
@@ -175,10 +180,6 @@ CLEAN_MARKET = {1: NS(dirty=lambda *unused: False)}
 DIRTY_MARKET = {1: NS(dirty=lambda *unused: True)}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: after a recovery the print watermark is stale while the delta "
-                          "cursor has advanced, so a trade from inside the gap fills against "
-                          "the post-gap queue")
 def test_recovery_takes_no_fill_from_a_trade_inside_the_gap():
     """Probe `actual_recovery_branch`. Expected fill 0.
 
@@ -204,31 +205,33 @@ def test_recovery_takes_no_fill_from_a_trade_inside_the_gap():
     assert captured[0].state.filled_contracts == D(0)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: the dirty-seconds write happens before any status test, so a "
-                          "cancelled order keeps accruing dirty time for its counterfactual")
 def test_a_cancelled_order_accrues_no_dirty_seconds():
-    """Probe `cancelled_counterfactual_dirty_accrual`. Expected calls 0, seconds added 0.
+    """Probe `cancelled_counterfactual_dirty_accrual`. Expected watched calls 0, watched
+    seconds added 0.
 
     Computed independently: `dirty_minutes` is a property of the watched order -- how long the
     order we placed sat against a book we could not read. A cancelled order is not sitting
     against anything: it left the market when it was cancelled. The 15 s belongs to the
-    no-watcher counterfactual, which is still running, and `store.add_dirty_seconds` writes to
-    the order's own `dirty_seconds`/`dirty_minutes` columns (`harness/execution/store.py:684`),
-    not to a counterfactual column. So no write is due. The probe captured one call adding 15 s
-    to order 157's own counter, which is how a cancelled order reached `dirty_minutes 3020`.
+    no-watcher counterfactual, which is still running, and before 6B §1.5
+    `store.add_dirty_seconds` had nowhere to put it but the order's own
+    `dirty_seconds`/`dirty_minutes` columns. So no write to the watched counter is due. The
+    probe captured one call adding 15 s to order 157's own counter, which is how a cancelled
+    order reached `dirty_minutes 3020`.
+
+    The assertion is on the *watched* calls rather than on every call because §1.5 gave the
+    counterfactual a column of its own (`orders.nw_dirty_seconds`) behind the same function
+    name, so the repaired loop makes exactly one call here, `watched=False`. `is not False`
+    rather than `is True` is deliberate: the defect's own call passed no `watched` keyword at
+    all, so this still reddens if the status guard is removed.
     """
     row = _order_row(status="cancelled", nw_done=False)
     executor, _ = _executor({})
     with patch("harness.execution.store.add_dirty_seconds") as add_dirty:
         executor._simulate_order(None, row, DIRTY_MARKET, {}, set(), {}, set(),
                                  at(30), ExecStats())
-    assert add_dirty.call_args_list == []
+    assert [c for c in add_dirty.call_args_list if c.kwargs.get("watched") is not False] == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: the watched track is simulated to `now` (loop.py:852) while the "
-                          "no-watcher track is clamped to the expiry (loop.py:867)")
 def test_the_watched_track_takes_no_fill_after_expiry():
     """Review I-c2 / addendum §0.5 case 5. Expected fill 0.
 
@@ -251,9 +254,6 @@ def test_the_watched_track_takes_no_fill_after_expiry():
     assert captured[0].state.filled_contracts == D(0)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="6B: the rejected verdict is tested only on the cancel path "
-                          "(plan.py:511), never before a Place is emitted")
 def test_a_rejected_latest_verdict_yields_no_place():
     """Addendum §0.5 case 6. Expected `Place` count 0.
 
@@ -264,7 +264,7 @@ def test_a_rejected_latest_verdict_yields_no_place():
     reason `signal_rejected` (`harness/execution/plan.py:511`) -- so placing one in the same
     loop would cancel it in the next. The placement path never makes that test
     (`_intent_actions`, defined at `plan.py:519` and called from `plan_actions` at
-    `plan.py:607`), so a rejected intent still produces a Place.
+    `plan.py:616`), so a rejected intent still produces a Place.
     """
     rejected = intent(decision="rejected")
     actions = plan_actions([rejected], [], {1: market()}, {}, {"v1": cfg()},

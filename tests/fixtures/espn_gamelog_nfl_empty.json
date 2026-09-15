@@ -1,0 +1,6 @@
+{
+  "filters": [
+    {"displayName": "League", "name": "league", "value": "nfl"},
+    {"displayName": "Season", "name": "season", "value": "2026"}
+  ]
+}

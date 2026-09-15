@@ -419,7 +419,25 @@ def test_importing_pipeline_registers_no_settlement_stage(monkeypatch):
     import importlib
     import sys
 
+    import harness.settlement
     import harness.settlement.job as job_module
+    import harness.settlement.markouts
+    import harness.strategy
+    import harness.strategy.as_measured
+
+    # `monkeypatch.delitem` below only restores `sys.modules` at teardown. The fresh
+    # `importlib.import_module` call rebinds the package attribute (e.g.
+    # `harness.strategy.pipeline`) to the new module object, and nothing else puts the
+    # old module object back there afterward, so `sys.modules[...]` and the package
+    # attribute would end up disagreeing once this test runs. Record the current
+    # attribute so `monkeypatch` restores it too. (The imports above only make sure the
+    # attribute exists to record; they run before `STAGES` is reset, so they cannot leave
+    # a stray registration behind.)
+    monkeypatch.setattr(harness.strategy, "pipeline", harness.strategy.pipeline, raising=False)
+    monkeypatch.setattr(harness.settlement, "markouts", harness.settlement.markouts,
+                        raising=False)
+    monkeypatch.setattr(harness.strategy, "as_measured", harness.strategy.as_measured,
+                        raising=False)
 
     monkeypatch.setattr(job_module, "STAGES", [])
     for name in ("harness.settlement.markouts", "harness.strategy.as_measured",
@@ -429,6 +447,33 @@ def test_importing_pipeline_registers_no_settlement_stage(monkeypatch):
     importlib.import_module("harness.strategy.pipeline")
 
     assert job_module.STAGES == []
+
+
+def test_the_eviction_test_leaves_one_pipeline_module_object():
+    """The eviction test above deletes and re-imports `harness.strategy.pipeline`,
+    `harness.settlement.markouts` and `harness.strategy.as_measured` via
+    `monkeypatch.delitem(sys.modules, ...)`. `monkeypatch`'s teardown restores the *old*
+    module object into `sys.modules`, but the fresh import during the test rebinds the
+    package attribute (`harness.strategy.pipeline`, etc.) to the *new* module object -- and
+    nothing puts the old module object back on the package attribute. If the eviction test
+    does not also restore the package attributes, the two lookups end up disagreeing after
+    it runs: `sys.modules["harness.strategy.pipeline"]` is the old module, while the
+    `harness.strategy.pipeline` attribute (what `from harness.strategy.pipeline import X`
+    resolves through once the module is already cached) is the new one. This test must run
+    after the eviction test in file order to observe that; it is not meaningful standalone.
+    See fix-67 brief.
+    """
+    import sys
+
+    import harness.settlement
+    import harness.settlement.markouts
+    import harness.strategy
+    import harness.strategy.as_measured
+    import harness.strategy.pipeline
+
+    assert sys.modules["harness.strategy.pipeline"] is harness.strategy.pipeline
+    assert sys.modules["harness.settlement.markouts"] is harness.settlement.markouts
+    assert sys.modules["harness.strategy.as_measured"] is harness.strategy.as_measured
 
 
 # --- Amendment 4: the gate variant and the primary are scored on every tick --------------------

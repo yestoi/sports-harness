@@ -37,12 +37,16 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Iterable, NamedTuple, Sequence
 
-from sqlalchemy import text, update
+from sqlalchemy import bindparam, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from harness.db.models import EquitySnapshot, Fill, Intent, Ledger, Order, OrderEvent, OrderWatchSample
+from harness.db.models import (
+    EquitySnapshot, Fill, Intent, Ledger, MarketDirtyInterval, MarketObservationInterval,
+    Order, OrderEvent, OrderWatchSample,
+)
 from harness.db.schema import OPEN_FILL_SQL
+from harness.ops.clock import exclude_unsynced_runs
 from harness.execution.fills import TapeDelta, TapePrint
 from harness.execution.plan import FillView, IntentView, PositionView
 from harness.strategy.variants import with_defaults
@@ -125,7 +129,12 @@ def _live_and_at(sql: str, bound: str) -> tuple:
     return text(sql.format(at="")), text(sql.format(at=bound))
 
 
-_CANDIDATES, _CANDIDATES_AT = _live_and_at("""
+#: Fix 57, ruling 1 (journal 184): these three statements are the in-game readers that reach a
+#: run's gap snapshots through `signals.run_id`, so each excludes a run recorded under an
+#: unsynchronized kernel clock (the key is named once in `harness/ops/clock.py`). An absent run
+#: row, a NULL `notes` and a run without the key all keep their rows, so no live number moves.
+#: `{{at}}` in these f-strings stays the literal `{at}` `_live_and_at`'s own `.format` fills.
+_CANDIDATES, _CANDIDATES_AT = _live_and_at(f"""
 select s.id as signal_id, s.variant_id, s.venue_market_id, s.side, s.price_target, s.contracts,
        s.edge, s.edge_min, s.fair_p, s.stake, s.created_at, s.as_estimate, s.gap_snapshot_id,
        m.ticker, m.venue, m.game_id, g.kickoff_utc, gs.fair_value_id
@@ -135,7 +144,8 @@ left join games g on g.id = m.game_id
 left join market_gap_snapshots gs on gs.id = s.gap_snapshot_id
 left join intents i on i.signal_id = s.id
 where s.decision = 'candidate' and s.replay = :replay and s.variant_id = any(:variants)
-  and s.created_at >= :lower{at} and i.signal_id is null
+  and s.created_at >= :lower{{at}} and i.signal_id is null
+  and {exclude_unsynced_runs('s.run_id')}
 order by s.id
 """, " and s.created_at <= :at")
 
@@ -263,7 +273,7 @@ def insert_intents(session: Session, rows: Sequence, now: datetime, replay: bool
     return written
 
 
-_NEWEST_INTENTS, _NEWEST_INTENTS_AT = _live_and_at("""
+_NEWEST_INTENTS, _NEWEST_INTENTS_AT = _live_and_at(f"""
 select distinct on (i.variant_id, i.venue_market_id, i.side)
        i.id, i.signal_id, i.variant_id, i.venue_market_id, i.ticker, i.side, i.target_prob,
        i.target_contracts, i.edge, i.edge_min, i.fair_p, i.fair_row_id, i.game_id,
@@ -272,16 +282,18 @@ select distinct on (i.variant_id, i.venue_market_id, i.side)
 from intents i
 left join signals s on s.id = i.signal_id
 where i.replay = :replay and i.variant_id = any(:variants)
-  and i.signal_created_at >= :lower{at}
+  and i.signal_created_at >= :lower{{at}}
+  and {exclude_unsynced_runs('s.run_id')}
 order by i.variant_id, i.venue_market_id, i.side, i.signal_created_at desc, i.created_at desc,
          i.signal_id desc, i.id desc
 """, " and i.signal_created_at <= :at")
 
-_NEWEST_DECISIONS, _NEWEST_DECISIONS_AT = _live_and_at("""
+_NEWEST_DECISIONS, _NEWEST_DECISIONS_AT = _live_and_at(f"""
 select distinct on (s.variant_id, s.venue_market_id, s.side)
        s.variant_id, s.venue_market_id, s.side, s.decision
 from signals s
-where s.replay = :replay and s.variant_id = any(:variants) and s.created_at >= :lower{at}
+where s.replay = :replay and s.variant_id = any(:variants) and s.created_at >= :lower{{at}}
+  and {exclude_unsynced_runs('s.run_id')}
 order by s.variant_id, s.venue_market_id, s.side, s.created_at desc, s.id desc
 """, " and s.created_at <= :at")
 
@@ -339,7 +351,20 @@ select o.id, o.intent_id, o.variant_id, o.ticker, o.venue_market_id, o.side, o.p
        o.tape_cursor_event_id, o.crossed, o.last_print_ts, o.last_print_ids,
        o.nw_filled_contracts, o.nw_queue_remaining, o.nw_traded_at_price,
        o.nw_tape_cursor_event_id, o.nw_crossed, o.nw_last_print_ts, o.nw_last_print_ids,
-       o.nw_done, o.book_source, o.dirty_seconds, o.worst_case_fill
+       -- 6B §1.3's ledger, per track. `state._state_of` reads `cancels_ahead` and `recon_state`
+       -- off this row for each track, so leaving them out of the projection is an AttributeError
+       -- on the first order of every step; `print_unmatched` is a derived sum the reader does not
+       -- need (round 1, I5) and is projected beside them because it is the row's own ledger and a
+       -- caller comparing it with the document should not need a second read.
+       o.print_unmatched, o.cancels_ahead, o.recon_state,
+       o.nw_print_unmatched, o.nw_cancels_ahead, o.nw_recon_state,
+       o.nw_done, o.book_source, o.dirty_seconds, o.worst_case_fill,
+       -- 6B §1.5. `cancelled_at` bounds the watched resting interval the dirty accrual is
+       -- clamped to (`loop._clamped`); the two retry columns are read by `_tape`, which decides
+       -- before any read whether this row's counterfactual is inside its backoff. All three are
+       -- read off the row, so leaving them out of the projection is an AttributeError on the
+       -- first dirty observation of every step.
+       o.cancelled_at, o.nw_next_attempt_at, o.nw_attempts
 from orders o
 left join intents i on i.id = o.intent_id
 where o.replay = :replay and (o.status in ('open', 'partially_filled') or o.nw_done = false)
@@ -542,7 +567,14 @@ order by ts, id
 """)
 
 
-def _tape_deltas(rows) -> list[TapeDelta]:
+def tape_deltas(rows) -> list[TapeDelta]:
+    """Delta rows as tape, dropping any row whose side, price or delta is NULL.
+
+    Public because it is not only this module's (T9 review Minor 5): `harness/rescore.py` builds
+    the same tape from its own bounded read, and a second copy of this filter -- or a reach into
+    a private name across modules -- is how the replay and the loop would come to disagree about
+    which rows are tape at all.
+    """
     return [TapeDelta(event_id=r.id, ts=r.ts, side=r.side, price=r.price, delta=r.delta,
                       sid=r.sid, seq=r.seq)
             for r in rows if r.side is not None and r.price is not None and r.delta is not None]
@@ -568,7 +600,7 @@ def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
     if at is not None:
         rows = session.execute(
             _DELTAS_AT, {"t": ticker, "cursor": cursor, "lower": lower, "at": at}).all()
-        return DeltaBatch(_tape_deltas(rows), False)
+        return DeltaBatch(tape_deltas(rows), False)
     if cursor > 0:
         rows = session.execute(
             _DELTAS, {"t": ticker, "cursor": cursor, "limit": limit}).all()
@@ -578,7 +610,7 @@ def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
             {"t": ticker, "cursor": cursor, "lower": lower, "limit": limit}).all()
     # Truncation is measured against the limit this read actually ran with, never against the
     # cap: a shrunk batch that came back full is exactly the ticker still behind the tape.
-    return DeltaBatch(_tape_deltas(rows), len(rows) >= limit)
+    return DeltaBatch(tape_deltas(rows), len(rows) >= limit)
 
 
 # --- exposure -------------------------------------------------------------------------
@@ -694,16 +726,112 @@ def update_order(session: Session, order_id: int, values: dict) -> None:
     session.execute(update(Order).where(Order.id == order_id).values(**values))
 
 
-def add_dirty_seconds(session: Session, order_id: int, seconds: int) -> None:
+#: The ceiling on the counterfactual retry delay, in *elapsed wall seconds* (§0.14, ruling
+#: CR-5). Never a loop count: the executor ran 27 loops in the 19:00 CT hour against a daytime
+#: cadence of one every 7-10 s, so a loop-counted bound would stretch by an order of magnitude
+#: in exactly the conditions it exists for.
+NW_RETRY_MAX_S = 3600
+
+
+def add_dirty_seconds(session: Session, order_id: int, seconds: int, *,
+                      watched: bool = True) -> None:
     """A dirty book buys the order nothing this loop but the record that it happened (D6).
 
-    `dirty_minutes` is an integer column and one 15 s loop is a quarter of a minute, so the
-    seconds are what accumulate and the minutes are derived from them here.
+    Accrual stays **nominal** -- `exec_period_s` per observation -- because `dirty_minutes` is
+    integer division of these seconds (the classification boundary is 60 accrued seconds, not
+    one) and the gate reads it. Changing the units would move that classification in both
+    directions, which is "which resting interval counts" under R1 and goes to the user as
+    §0.13c. Elapsed truth is recorded in `market_dirty_intervals` and derived by
+    `harness.execution.dirty_time.order_dirty_time`; the two are different quantities by design
+    and both are reported (ruling I-4).
+
+    `watched` picks the track. The watched columns accrue only while the order is in
+    `OPEN_STATUSES`, which the caller enforces, and the counterfactual's accrual has its own
+    column: a cancelled order whose counterfactual still runs must not go on accruing against
+    the record of what the order we placed did (§0.9).
     """
+    if seconds <= 0:
+        return
+    if watched:
+        session.execute(text(
+            "update orders set dirty_seconds = dirty_seconds + :s, "
+            "dirty_minutes = (dirty_seconds + :s) / 60 where id = :i"),
+            {"s": int(seconds), "i": order_id})
+        return
     session.execute(text(
-        "update orders set dirty_seconds = dirty_seconds + :s, "
-        "dirty_minutes = (dirty_seconds + :s) / 60 where id = :i"),
-        {"s": int(seconds), "i": order_id})
+        "update orders set nw_dirty_seconds = coalesce(nw_dirty_seconds, 0) + :s "
+        "where id = :i"), {"s": int(seconds), "i": order_id})
+
+
+def set_nw_backoff(session: Session, order_id: int, attempts: int,
+                   next_attempt_at: datetime | None) -> None:
+    """Record one counterfactual's retry position. `next_attempt_at` None resets it.
+
+    Nothing here closes a track: `nw_done` alone distinguishes a completed counterfactual from a
+    pending one (ruling I-16), and every consumer of the `nw_*` columns filters or labels on it.
+    """
+    session.execute(update(Order).where(Order.id == order_id)
+                    .values(nw_attempts=attempts, nw_next_attempt_at=next_attempt_at))
+
+
+#: One statement per table, built once at import and indexed by the table literal, so a caller
+#: passing anything else raises a `KeyError` here rather than composing SQL and the table name is
+#: never a runtime format argument (review MI-4). Built from the models rather than as `text()`
+#: for one reason the plan's draft could not have known: `Session.execute` autoflushes an
+#: ORM-enabled statement and **not** a plain `text()` one, and both of these have to see the rows
+#: this same step has already `session.add`ed -- otherwise a step opens a second row for a market
+#: that already has one open, and a close misses the row it was called for. The statements are
+#: still built once, so the compiled cache is exactly what a module-level `text()` would get.
+_DIRTY, _OBSERVED = "market_dirty_intervals", "market_observation_intervals"
+_MODELS = {_DIRTY: MarketDirtyInterval, _OBSERVED: MarketObservationInterval}
+# Rides `ix_mdi_market_started` / `ix_moi_market_started` (venue_market_id, started_at).
+_OPEN_INTERVAL = {
+    name: (select(model.id)
+           .where(model.venue_market_id == bindparam("vm"), model.ended_at.is_(None),
+                  model.replay == bindparam("replay"))
+           .order_by(model.started_at.desc()).limit(1))
+    for name, model in _MODELS.items()}
+# `p_`-prefixed names: a bind parameter sharing a column's name is reserved for the SET clause
+# of an UPDATE and raises `CompileError` if it also appears in the WHERE.
+_CLOSE_INTERVAL = {
+    name: (update(model)
+           .where(model.venue_market_id.in_(bindparam("p_vms", expanding=True)),
+                  model.ended_at.is_(None), model.replay == bindparam("p_replay"))
+           .values(ended_at=bindparam("p_ts")))
+    for name, model in _MODELS.items()}
+
+
+def open_interval(session: Session, table: str, venue_market_id: int, ticker: str,
+                  ts: datetime, replay: bool, cause: str | None = None) -> None:
+    """Open an interval for this market, unless one is already open.
+
+    Both tables carry at most one open row per market per replay flag, which is the invariant
+    §2 checks. The read rides `ix_mdi_market_started` / `ix_moi_market_started` with `limit 1`.
+    """
+    if session.execute(_OPEN_INTERVAL[table],
+                       {"vm": venue_market_id, "replay": replay}).first() is not None:
+        return
+    values = {"venue_market_id": venue_market_id, "ticker": ticker, "started_at": ts,
+              "ended_at": None, "replay": replay}
+    if cause is not None:
+        values["cause"] = cause
+    session.add(_MODELS[table](**values))
+
+
+def close_intervals(session: Session, table: str, venue_market_ids: list[int], ts: datetime,
+                    replay: bool) -> None:
+    """Close every open interval for these markets, stamped at `ts`.
+
+    Called with the markets that left the step's set and with the markets the step found clean,
+    stamped at the last observation that saw them (review I-6), so a market whose last order
+    closes while dirty cannot leave a row open forever. One statement for the whole list, never
+    one per ticker (controller note): about 110 statements a step on a 55-ticker loop is what the
+    per-ticker shape would cost against a p95 loop of 227 s. It is a no-op on an empty list.
+    """
+    if not venue_market_ids:
+        return
+    session.execute(_CLOSE_INTERVAL[table],
+                    {"p_vms": list(venue_market_ids), "p_ts": ts, "p_replay": replay})
 
 
 def cancel_order(session: Session, order_id: int, reason: str, now: datetime) -> bool:
