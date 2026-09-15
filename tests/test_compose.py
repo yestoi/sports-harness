@@ -100,6 +100,9 @@ def test_compose_app_run_keeps_its_other_bind_and_env():
     # entries app-ws already carries (the limits read) and four mounts; this is that exact set.
     service = _service("app-run")
     assert service["environment"] == {
+        # Fix 71 narrowing (journal 224 item 9a): the service's own name, sent as
+        # `application_name`. A label, not a capability, and the one key added here.
+        "HARNESS_SERVICE": "app-run",
         "ODDS_API_KEY_FILE": "/run/secrets/odds_api_key",
         "KALSHI_KEY_ID_FILE": "/run/secrets/kalshi_key_id",
         "KALSHI_PRIVATE_KEY_FILE": "/run/secrets/kalshi_private_key.pem",
@@ -189,10 +192,11 @@ def test_no_service_mounts_the_demo_secrets():
 
 
 def test_compose_app_exec_block_unchanged():
-    # Conformance item 5: the executor has no volumes, no credentials, no backups mount.
+    # Conformance item 5: the executor has no volumes, no credentials, no backups mount. Its
+    # whole environment is the fix 71 narrowing's service label and nothing else.
     s = _service("app-exec")
     assert "volumes" not in s
-    assert "environment" not in s
+    assert s["environment"] == {"HARNESS_SERVICE": "app-exec"}
     assert s["command"] == ["exec"]
 
 
@@ -210,7 +214,9 @@ def test_the_app_serve_compose_block_is_unchanged():
     block = yaml.safe_load(COMPOSE.read_text())["services"]["app-serve"]
     assert block["command"] == ["serve", "--port", "8080"]
     assert block["ports"] == ["127.0.0.1:${SERVE_PORT:-8080}:8080"]
-    assert sorted(block["environment"]) == ["DASHBOARD_TOKEN_FILE", "ODDS_API_KEY_FILE"]
+    assert sorted(block["environment"]) == ["DASHBOARD_TOKEN_FILE", "HARNESS_SERVICE",
+                                            "ODDS_API_KEY_FILE"]
+    assert block["environment"]["HARNESS_SERVICE"] == "app-serve"
     assert sorted(block["volumes"]) == [
         "./secrets/dashboard_token:/run/secrets/dashboard_token:ro",
         "./secrets/odds_api_key:/run/secrets/odds_api_key:ro"]
@@ -237,6 +243,7 @@ def test_app_research_block_is_pinned_whole():
     assert service["restart"] == "unless-stopped"
     assert service["stop_grace_period"] == "60s"
     assert service["depends_on"] == {"postgres": {"condition": "service_healthy"}}
+    assert service["environment"] == {"HARNESS_SERVICE": "app-research"}
     assert "ports" not in service
 
 
@@ -311,3 +318,29 @@ def test_the_lan_healthcheck_is_the_loopback_form_over_an_unverified_tls_context
     assert "ssl._create_unverified_context()" in probe[1]
     assert "https://127.0.0.1:8443/healthz" in probe[1]
     assert "status==200" in probe[1]
+
+
+# --- fix 71 narrowing (journal 224 item 9a): every harness service names itself -----------
+
+#: The compose services that run the harness image and therefore open harness connections.
+HARNESS_SERVICES = ("app-run", "app-serve", "app-serve-lan", "app-ws", "app-exec", "app-research")
+
+
+def test_every_harness_service_names_itself_to_postgres():
+    """`HARNESS_SERVICE` becomes the connection's `application_name`
+    (`harness/db/engine.py`), which is what the release drain lists and terminates by. The
+    value is the compose service name itself, so the recipe can build the name set from the
+    services it just stopped and from nothing else."""
+    services = _compose()["services"]
+    assert sorted(HARNESS_SERVICES) == sorted(
+        name for name, service in services.items() if "build" in service)
+    for name in HARNESS_SERVICES:
+        assert services[name]["environment"]["HARNESS_SERVICE"] == name
+
+
+def test_postgres_and_the_backup_sidecar_declare_no_harness_service():
+    """Neither runs the harness: `postgres` is the server and `app-backup` runs `pg_dump` and
+    `psql` from the postgres image. A name here would put them inside the drain's name set."""
+    services = _compose()["services"]
+    for name in ("postgres", "app-backup"):
+        assert "HARNESS_SERVICE" not in (services[name].get("environment") or {})

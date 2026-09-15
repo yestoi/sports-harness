@@ -66,6 +66,10 @@ services:
     command: ["run"]
     env_file: .env
     environment:
+      # Fix 71 narrowing (journal 224 item 9a): libpq sends this as the connection's
+      # `application_name`, so a release drains the sessions of exactly the services it
+      # stopped. The value is this service's compose name.
+      HARNESS_SERVICE: app-run
       ODDS_API_KEY_FILE: /run/secrets/odds_api_key
       # C2: the scheduled limits read needs the production key files here exactly as app-ws
       # already has them. Without these, has_kalshi_credentials() is False in the recorder
@@ -98,6 +102,10 @@ services:
     command: ["serve", "--port", "8080"]
     env_file: .env
     environment:
+      # Fix 71 narrowing (journal 224 item 9a): libpq sends this as the connection's
+      # `application_name`, so a release drains the sessions of exactly the services it
+      # stopped. The value is this service's compose name.
+      HARNESS_SERVICE: app-serve
       ODDS_API_KEY_FILE: /run/secrets/odds_api_key
       DASHBOARD_TOKEN_FILE: /run/secrets/dashboard_token
     volumes:
@@ -143,6 +151,10 @@ services:
               "--tls-key", "/run/secrets/lan_tls.key"]
     env_file: .env
     environment:
+      # Fix 71 narrowing (journal 224 item 9a): libpq sends this as the connection's
+      # `application_name`, so a release drains the sessions of exactly the services it
+      # stopped. The value is this service's compose name.
+      HARNESS_SERVICE: app-serve-lan
       DASHBOARD_TOKEN_FILE: /run/secrets/dashboard_token
       # Where Compose publishes this listener, and the only Origin the write routes accept
       # (design §5.5: from settings, never from the request's Host). The defaults match
@@ -190,6 +202,10 @@ services:
     command: ["ws-record"]
     env_file: .env
     environment:
+      # Fix 71 narrowing (journal 224 item 9a): libpq sends this as the connection's
+      # `application_name`, so a release drains the sessions of exactly the services it
+      # stopped. The value is this service's compose name.
+      HARNESS_SERVICE: app-ws
       ODDS_API_KEY_FILE: /run/secrets/odds_api_key
       KALSHI_KEY_ID_FILE: /run/secrets/kalshi_key_id
       KALSHI_PRIVATE_KEY_FILE: /run/secrets/kalshi_private_key.pem
@@ -209,7 +225,13 @@ services:
     command: ["exec"]
     env_file: .env
     # No volumes and no credential environment, deliberately: the paper executor has no venue
-    # client, so there is nothing here that could send an order even if the code changed.
+    # client, so there is nothing here that could send an order even if the code changed. The
+    # one variable below is a label, not a capability: it names this service to Postgres.
+    environment:
+      # Fix 71 narrowing (journal 224 item 9a): libpq sends this as the connection's
+      # `application_name`, so a release drains the sessions of exactly the services it
+      # stopped. The value is this service's compose name.
+      HARNESS_SERVICE: app-exec
     depends_on:
       postgres:
         condition: service_healthy
@@ -233,6 +255,11 @@ services:
     #
     # No ports: it serves nothing. `restart: unless-stopped` because a dormant worker (no key)
     # is a normal state, not a failure, and it must come back up with the stack.
+    environment:
+      # Fix 71 narrowing (journal 224 item 9a): libpq sends this as the connection's
+      # `application_name`, so a release drains the sessions of exactly the services it
+      # stopped. The value is this service's compose name.
+      HARNESS_SERVICE: app-research
     volumes:
       - ./secrets/anthropic_api_key:/run/secrets/anthropic_api_key:ro
     depends_on:

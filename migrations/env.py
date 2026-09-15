@@ -38,7 +38,14 @@ _PARTITION_SUFFIX = re.compile(r"_y\d{4}w\d{2}$")
 target_metadata = Base.metadata
 
 
-def _is_partition_relation(name: str) -> bool:
+def is_partition_relation(name: str) -> bool:
+    """Whether a relation name is a partitioned parent or one of its weekly children.
+
+    Public because `harness.db.migrate.heal_invalid_indexes` asks it too (fix 71 narrowing,
+    journal 224 item 9c): `pg_index` reports the child a partitioned index actually lives on,
+    and a child of the tape is as expensive to rebuild as its parent while `BULK_TABLES` names
+    only the parents. One regex, in one place, for both callers.
+    """
     return name in PARTITIONED_TABLES or bool(_PARTITION_SUFFIX.search(name))
 
 
@@ -64,10 +71,10 @@ def include_object(obj, name, type_, reflected, compare_to) -> bool:
     """Autogenerate's filter. Never used to build the baseline, which is hand-written."""
     name = name or ""
     if type_ == "table":
-        return not _is_partition_relation(name)
+        return not is_partition_relation(name)
     if type_ == "index":
         table = getattr(getattr(obj, "table", None), "name", "") or ""
-        if _is_partition_relation(table) or _is_partition_relation(name):
+        if is_partition_relation(table) or is_partition_relation(name):
             return False
         if _index_using(obj) == "brin" or _is_functional_or_partial(obj):
             return False

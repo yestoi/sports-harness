@@ -5,11 +5,13 @@ replaced; only temporary files are written. Failing assertions describe required
 contracts and must not be converted into xfails merely to accept a draft.
 """
 import copy
+import fcntl
 import fnmatch
 from datetime import datetime, timezone
 import importlib.util
 import io
 import json
+import re
 import signal
 from pathlib import Path
 import subprocess
@@ -25,6 +27,32 @@ TREE = "t" * 40
 SHA = "aaaaaaa"
 OLD = "b0a3991"
 PG_IMAGE = "postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94"
+
+#: The fake psql below applies the release's own predicates rather than assuming what they
+#: are, so a test that says "this backend is never listed" is answered by the SQL the script
+#: actually sends (fix 71 narrowing, journal 224 item 9b).
+_NAME_SET = re.compile(r"application_name(?:, '')?\)? (not )?in \(([^)]*)\)")
+_PID_SET = re.compile(r"pid in \(([^)]*)\)")
+
+
+def _literals(group):
+    return [item.strip().strip("'") for item in group.split(",")]
+
+
+def _matching_backends(rows, query):
+    """The rows a server would return for `query`, honouring its name set and pid list."""
+    names = _NAME_SET.search(query)
+    assert names, f"every backend query must name the services it acts on: {query}"
+    pids = _PID_SET.search(query)
+    selected = []
+    for row in rows:
+        pid, _client_addr, application_name, _state, _age = row.split("|", 4)
+        if (application_name in _literals(names.group(2))) == bool(names.group(1)):
+            continue
+        if pids and pid not in _literals(pids.group(1)):
+            continue
+        selected.append(row)
+    return selected
 
 
 def load_script(name):
@@ -67,7 +95,10 @@ def release(monkeypatch, tmp_path):
                             # Fix 71: what the postgres container's psql reports for the harness
                             # client backends left behind by the apps this release just stopped,
                             # and whether terminating them actually closes them.
-                            backends=[], backends_drain=True, psql_calls=[])
+                            backends=[], backends_drain=True, psql_calls=[],
+                            # Fix 71 narrowing item 9e: what the read-only `sql()` probe finds
+                            # when it asks whether a backup dump is running.
+                            pg_dump_backends=0, sql_queries=[])
     monkeypatch.setattr(module, "RUNTIME", runtime)
     monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("SPORTS_TEST_STATE_DIR", str(cache))
@@ -112,12 +143,17 @@ def release(monkeypatch, tmp_path):
             return "sha256:old-image" if OLD in args[3] else "sha256:new-image"
         if "psql" in args:
             state.psql_calls.append(args)
+            if kwargs.get("input") is not None:      # the read-only `sql()` helper
+                query = kwargs["input"]
+                state.sql_queries.append(query)
+                assert "pg_dump" in query, f"Unexpected release query: {query}"
+                return f"{state.pg_dump_backends}\n"
             if "pg_terminate_backend" in args[-1]:
-                terminated = list(state.backends)
+                terminated = _matching_backends(state.backends, args[-1])
                 if state.backends_drain:
-                    state.backends = []
+                    state.backends = [row for row in state.backends if row not in terminated]
                 return "".join("t\n" for _ in terminated)
-            return "".join(row + "\n" for row in state.backends)
+            return "".join(row + "\n" for row in _matching_backends(state.backends, args[-1]))
         stage = ("stop" if "stop" in args else "migrate" if "migrate" in args else
                  "init-db" if "init-db" in args else "variants" if "variants" in args else
                  "seed-teams" if "seed-teams" in args else "up" if "up" in args else None)
@@ -1051,28 +1087,131 @@ def test_an_app_only_release_never_touches_a_backend(release):
 
 
 def test_the_drain_never_touches_the_backup_or_the_controller(release):
-    """`pg_dump` is the backup and `psql` is the operator: the predicate that lists the
-    backends and the predicate that terminates them are the same text, and both exclude them."""
+    """Journal 224 item 9b: the recipe acts on the services it just stopped, by name. A
+    `pg_dump` (the backup), a `psql` (the operator or the controller), a `pg_restore` and a
+    backend with no name at all are outside that set, so none of them is listed, and a
+    connection is never terminated on terms other than the ones it was listed on."""
     release.backends = list(BACKENDS)
     release.module.deploy("full")
     listing = _psql_sql(release, "pg_stat_activity")
     assert len(listing) >= 2
+    names = "'app-run', 'app-serve', 'app-exec', 'app-research', 'app-ws'"
     for sql in listing:
-        assert release.module.ORPHAN_PREDICATE in sql
-        assert "not in ('pg_dump', 'psql', 'pg_restore')" in sql
         assert "backend_type = 'client backend'" in sql
         assert "pid <> pg_backend_pid()" in sql
         assert "datname = 'harness'" in sql
         assert "drop" not in sql.lower()
-    assert len(_psql_sql(release, "pg_terminate_backend")) == 1
+    assert [sql for sql in listing if f"application_name in ({names})" in sql]
+    terminate = _psql_sql(release, "pg_terminate_backend")
+    assert len(terminate) == 1
+    assert f"application_name in ({names})" in terminate[0]
 
 
 def test_a_full_release_with_nothing_orphaned_runs_straight_into_the_migration(release):
     release.module.deploy("full")
-    assert len(_psql_sql(release, "pg_stat_activity")) == 1
+    # Two read-only listings and no termination: the services' own sessions, and the report of
+    # everything else that is connected (journal 224 item 9b).
+    assert len(_psql_sql(release, "pg_stat_activity")) == 2
     assert _psql_sql(release, "pg_terminate_backend") == []
     receipt = release_receipt(release)
     assert receipt["status"] == "healthy"
     # review m1: the drain's absence is evidence too -- record it, not just skip it silently.
     assert receipt["drained_backends"] == []
+    assert receipt["unnamed_backends"] == []
     assert isinstance(receipt["drain_seconds"], float)
+
+
+# --- fix 71 narrowing (journal 224 item 9b/9e): by name, and never while a dump runs -------
+
+#: A backup, an operator's shell, a recovery and a client that never named itself. None of the
+#: four is a service this recipe stopped, so none of them may be terminated by it.
+STRANGERS = ["31001|172.18.0.9|pg_dump|active|00:04:11.0",
+             "31002|172.18.0.2|psql|idle|00:00:01.0",
+             "31003|172.18.0.3|pg_restore|active|00:10:00.0",
+             "31004|192.168.12.4||idle in transaction|02:13:07.7"]
+
+
+def test_only_the_services_this_release_stopped_are_listed_and_terminated(release):
+    """The deny list fix 71 shipped caught every client backend that was not a known tool,
+    including one with no name. This lists by the names of the services the recipe just
+    stopped, so anything else on the server is outside the drain by construction."""
+    release.backends = list(BACKENDS) + list(STRANGERS)
+    release.module.deploy("full")
+    receipt = release_receipt(release)
+    assert [row["pid"] for row in receipt["drained_backends"]] == [26902, 26903]
+    terminate = _psql_sql(release, "pg_terminate_backend")[0]
+    assert "pid in (26902, 26903)" in terminate
+    assert "application_name in ('app-run', 'app-serve', 'app-exec', 'app-research', 'app-ws')" in terminate
+    # The strangers were never listed, so their pids are in no statement the release sent.
+    for row in STRANGERS:
+        pid = row.split("|", 1)[0]
+        assert not any(pid in sql for sql in _psql_sql(release, "pg_stat_activity"))
+        assert pid not in terminate
+    assert receipt["status"] == "healthy"
+
+
+def test_a_backend_this_release_did_not_stop_is_reported_rather_than_killed(release):
+    """It does not block the release and it is not hidden either: the receipt says who else was
+    connected while the apps were down, which is what a later reader needs to explain a
+    migration that had to wait. The three tool names are known and expected, so the report is
+    about the ones nobody can account for."""
+    release.backends = list(BACKENDS) + list(STRANGERS)
+    release.module.deploy("full")
+    assert release_receipt(release)["unnamed_backends"] == [
+        {"pid": 31004, "application_name": "", "state": "idle in transaction",
+         "xact_age": "02:13:07.7"}]
+
+
+def test_the_old_deny_list_predicate_is_gone(release):
+    """One predicate, built from the stopped services; no constant survives that would let a
+    later edit reach for the deny list again."""
+    for name in ("ORPHAN_PREDICATE", "ORPHAN_LIST_SQL", "ORPHAN_TERMINATE_SQL"):
+        assert not hasattr(release.module, name)
+
+
+def test_a_pg_dump_backend_refuses_the_full_release_before_it_stops_anything(release):
+    """Journal 224 item 9e: a dump running through a full release is a backup of a database
+    being migrated underneath it, and `pg_dump`'s snapshot is exactly the long-lived
+    transaction the drain is forbidden to close. The refusal is inside the validated section,
+    so nothing is stopped and nothing has to be restored."""
+    release.pg_dump_backends = 1
+    with pytest.raises(RuntimeError, match="full release refused: a backup dump is in progress"):
+        release.module.deploy("full")
+    assert not any("stop" in call for call in release.calls)
+    assert not any("migrate" in call for call in release.calls)
+    receipt = release_receipt(release)
+    assert receipt["backup_in_progress_check"] == {"pg_dump_backends": 1, "lock_held": False}
+    assert receipt["status"] != "healthy"
+
+
+def test_a_held_dump_lock_refuses_the_full_release_before_it_stops_anything(release):
+    """`deploy/backup/dump.sh` holds this lock for the whole of one dump and writes its
+    `backup_runs` row only at the end, so the lock is the only in-progress signal there is."""
+    lock = release.runtime / "backups" / ".dump.lock"
+    lock.parent.mkdir()
+    lock.touch()
+    with lock.open("a+") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="full release refused"):
+            release.module.deploy("full")
+    assert not any("stop" in call for call in release.calls)
+    assert release_receipt(release)["backup_in_progress_check"]["lock_held"] is True
+
+
+def test_a_free_dump_lock_and_no_dump_backend_let_the_release_through(release):
+    lock = release.runtime / "backups" / ".dump.lock"
+    lock.parent.mkdir()
+    lock.touch()
+    release.module.deploy("full")
+    receipt = release_receipt(release)
+    assert receipt["backup_in_progress_check"] == {"pg_dump_backends": 0, "lock_held": False}
+    assert receipt["status"] == "healthy"
+
+
+def test_an_app_only_release_does_not_probe_the_backup(release):
+    """An app-only release stops no writer's schema work and runs no migration, so a dump in
+    flight is none of its business -- and it asks nothing."""
+    release.pg_dump_backends = 1
+    release.module.deploy("app")
+    assert release.sql_queries == []
+    assert "backup_in_progress_check" not in release_receipt(release)

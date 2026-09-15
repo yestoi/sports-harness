@@ -102,6 +102,21 @@ def _bulk_tables() -> tuple[str, ...]:
     return tuple(BULK_TABLES)
 
 
+def _is_partition_relation():
+    """`migrations.env.is_partition_relation`, the one `<table>_y####w##` predicate.
+
+    Imported exactly the way `_bulk_tables` imports `BULK_TABLES`, and for the same reason:
+    the regex that decides what a partition child is lives in one place (fix 71 narrowing,
+    journal 224 item 9c).
+    """
+    directory = migrations_dir()
+    if str(directory.parent) not in sys.path:
+        sys.path.insert(0, str(directory.parent))
+    from migrations.env import is_partition_relation
+
+    return is_partition_relation
+
+
 def heal_invalid_indexes(url: str) -> list[str]:
     """Rebuild the indexes a cancelled concurrent build left invalid. Returns their names.
 
@@ -118,21 +133,34 @@ def heal_invalid_indexes(url: str) -> list[str]:
     has stopped every writer by the time `migrate ensure` runs and these are small tables;
     `statement_timeout` is the 300 s `migrations/env.py` gives a migration.
 
-    An invalid index on one of `migrations.env.BULK_TABLES` raises instead, before anything is
-    rebuilt: a blocking rebuild of a multi-gigabyte append-only table is the controller's
-    decision, made with the tape's size in front of it, never a step a release takes on its own.
+    An invalid index on one of `migrations.env.BULK_TABLES` -- or on a weekly partition child
+    of one, which `migrations.env.is_partition_relation` recognises by name -- raises instead,
+    before anything is rebuilt: a blocking rebuild of a multi-gigabyte append-only table is the
+    controller's decision, made with the tape's size in front of it, never a step a release
+    takes on its own. `pg_index` reports the child an index actually lives on
+    (`venue_trades_y2026w38`), and `BULK_TABLES` names only the parents, so the name test is
+    what makes the deny list cover the tape it was written for (fix 71 narrowing, journal 224
+    item 9c).
+
+    `lock_timeout = '5s'` beside the statement timeout (item 9d): a REINDEX takes an ACCESS
+    EXCLUSIVE lock, so one that cannot have it within five seconds is queued behind a session
+    this recipe failed to close -- and while it queues, every reader of that table queues
+    behind it. Failing there raises, and the release takes its existing rollback path.
     """
     bulk_tables = _bulk_tables()
+    is_partition_relation = _is_partition_relation()
     engine = create_engine(url)
     try:
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(text("set statement_timeout = '300s'"))
+            conn.execute(text("set lock_timeout = '5s'"))
             invalid = [(row[0], row[1]) for row in conn.execute(text(_INVALID_INDEX_SQL))]
-            blocked = [f"{name} on {table}" for name, table in invalid if table in bulk_tables]
+            blocked = [f"{name} on {table}" for name, table in invalid
+                       if table in bulk_tables or is_partition_relation(table)]
             if blocked:
                 raise RuntimeError(
-                    "invalid index on a bulk table: rebuild it deliberately, never inside a "
-                    f"release ({', '.join(blocked)})")
+                    "invalid index on a bulk table or a partition of one: rebuild it "
+                    f"deliberately, never inside a release ({', '.join(blocked)})")
             healed = []
             for name, table in invalid:
                 quoted = '"' + name.replace('"', '""') + '"'

@@ -15,7 +15,8 @@ No DROP anywhere: `REINDEX INDEX` rebuilds an index that is already in the catal
 from contextlib import contextmanager
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.engine import Engine
 
 from harness.db.migrate import heal_invalid_indexes
 from migrations.env import BULK_TABLES
@@ -86,3 +87,80 @@ def test_a_bulk_table_index_stops_the_healer_before_it_rebuilds_a_small_one(_sch
         with pytest.raises(RuntimeError):
             heal_invalid_indexes(_url(_schema))
         assert _valid(_schema, SMALL_INDEX) is False
+
+
+# --- fix 71 narrowing (journal 224 item 9c/9d) ------------------------------------------
+
+#: The shape `harness.db.schema._partition_name` builds, in a week no fixture partition uses:
+#: a partition child of an append-only tape is exactly as expensive to rebuild as its parent,
+#: and its name is the only thing that says so -- `BULK_TABLES` lists the parents alone.
+PARTITION_TABLE = "venue_trades_y2099w01"
+PARTITION_INDEX = "ix_venue_trades_y2099w01_scratch"
+
+
+@contextmanager
+def scratch_partition_table(engine):
+    """A small table named like a weekly partition child, with one index.
+
+    Created and dropped by this test and nothing else is touched: the drop at the end names
+    only the table this block created (the healer itself still drops nothing, ever).
+    """
+    with engine.begin() as conn:
+        conn.execute(text(f"create table {PARTITION_TABLE} (id bigint)"))
+        conn.execute(text(f"create index {PARTITION_INDEX} on {PARTITION_TABLE} (id)"))
+    try:
+        yield
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text(f"drop table if exists {PARTITION_TABLE}"))
+
+
+def test_an_invalid_index_on_a_partition_child_raises_before_any_rebuild(_schema):
+    """Journal 224 item 9c: `BULK_TABLES` names the parents, and `pg_index` reports the child
+    the index actually lives on (`venue_trades_y2026w38`), so the deny list alone would let a
+    release start a blocking rebuild on a tape partition. Any table matching
+    `migrations.env`'s partition suffix is bulk."""
+    with scratch_partition_table(_schema):
+        with invalid(_schema, PARTITION_INDEX):
+            with pytest.raises(RuntimeError) as error:
+                heal_invalid_indexes(_url(_schema))
+            assert PARTITION_INDEX in str(error.value) and PARTITION_TABLE in str(error.value)
+            assert _valid(_schema, PARTITION_INDEX) is False
+
+
+def test_a_partition_child_index_stops_the_healer_before_it_rebuilds_a_small_one(_schema):
+    with scratch_partition_table(_schema):
+        with invalid(_schema, PARTITION_INDEX), invalid(_schema, SMALL_INDEX):
+            with pytest.raises(RuntimeError):
+                heal_invalid_indexes(_url(_schema))
+            assert _valid(_schema, SMALL_INDEX) is False
+
+
+def test_the_partition_predicate_is_the_migration_environment_s():
+    """Reused, never copied: one regex decides what a partition child is."""
+    from migrations.env import PARTITIONED_TABLES, is_partition_relation
+
+    assert is_partition_relation(PARTITION_TABLE)
+    assert is_partition_relation("venue_trades") and "venue_trades" in PARTITIONED_TABLES
+    assert not is_partition_relation(SMALL_TABLE)
+
+
+def test_the_healer_sets_a_lock_timeout_beside_its_statement_timeout(_schema):
+    """Journal 224 item 9d: a REINDEX that cannot take its lock in five seconds raises and the
+    release rolls back, rather than queueing behind an orphan and blocking every reader of the
+    table behind it for the length of the statement timeout."""
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", record)
+    try:
+        with invalid(_schema, SMALL_INDEX):
+            assert heal_invalid_indexes(_url(_schema)) == [SMALL_INDEX]
+    finally:
+        event.remove(Engine, "before_cursor_execute", record)
+    assert "set statement_timeout = '300s'" in statements
+    assert "set lock_timeout = '5s'" in statements
+    rebuild = next(i for i, sql in enumerate(statements) if sql.startswith("reindex index"))
+    assert statements.index("set lock_timeout = '5s'") < rebuild

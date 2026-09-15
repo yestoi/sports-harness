@@ -153,70 +153,115 @@ def remove_lan_service(compose_command, receipt, key):
 #: dying on `FETCH FORWARD 2000 FROM "c_7f9fcc770d70_8" / connection to client lost` thirteen
 #: seconds later) and left the index `indisvalid = false`.
 #:
+#: Narrowing (journal 224 item 9b, the user's ruling after the 2026-09-15 review): fix 71
+#: listed every client backend that was not one of three known tool names, so a connection
+#: nobody had named -- an operator's own program, a future sidecar, anything at all -- was
+#: terminated by a release that had never started it. The recipe now acts on the services it
+#: just stopped, by name: each app container sets `HARNESS_SERVICE=<compose service>`, which
+#: `harness/db/engine.py` sends as the connection's `application_name`. Everything else on the
+#: server is outside the drain by construction, and is reported instead (`unnamed_backends`).
+#:
 #: `pg_dump` is the backup, `psql` is an operator's or the controller's own shell and
-#: `pg_restore` is a recovery: none of the three is an app this recipe stopped, so none is ever
-#: listed or terminated. The one predicate is shared by the listing and the termination, so a
-#: connection can never be terminated on terms other than the ones it was listed on.
-ORPHAN_PREDICATE = ("datname = 'harness' and backend_type = 'client backend' "
-                    "and pid <> pg_backend_pid() "
-                    "and coalesce(application_name, '') not in ('pg_dump', 'psql', 'pg_restore')")
-ORPHAN_LIST_SQL = ("select pid, coalesce(client_addr::text, ''), coalesce(application_name, ''), "
-                   "state, coalesce(now() - xact_start, interval '0')::text "
-                   f"from pg_stat_activity where {ORPHAN_PREDICATE} order by pid")
-ORPHAN_TERMINATE_SQL = f"select pg_terminate_backend(pid) from pg_stat_activity where {ORPHAN_PREDICATE}"
+#: `pg_restore` is a recovery. They are outside the name set like any other stranger; they are
+#: named here only so the report is about the backends nobody can account for.
+KNOWN_TOOLS = ('pg_dump', 'psql', 'pg_restore')
+#: Every harness client backend but this psql's own.
+HARNESS_CLIENT = ("datname = 'harness' and backend_type = 'client backend' "
+                  "and pid <> pg_backend_pid()")
 #: One poll a second. A backend the server has already been told to terminate disappears in
 #: milliseconds; thirty seconds is the budget before the release gives up and rolls back.
 DRAIN_POLLS = 30
 
 
-def drain_orphaned_backends(existing, receipt):
+def sql_literals(values):
+    """`values` as SQL string literals, quotes doubled.
+
+    The only callers pass `APPS`/`LAN_APP`/`'app-ws'`/`KNOWN_TOOLS`, i.e. this script's own
+    constants: no name here comes from user input, from a container or from the database. The
+    doubling is belt and braces on top of that.
+    """
+    return ', '.join("'" + str(value).replace("'", "''") + "'" for value in values)
+
+
+def backend_listing_sql(predicate):
+    """pid, client address, name, state and transaction age for the matching backends."""
+    return ("select pid, coalesce(client_addr::text, ''), coalesce(application_name, ''), "
+            "state, coalesce(now() - xact_start, interval '0')::text "
+            f"from pg_stat_activity where {HARNESS_CLIENT} and {predicate} order by pid")
+
+
+def drain_orphaned_backends(existing, receipt, services):
     """End the harness sessions left behind by the app containers this release just stopped.
 
     Session management, never data and never schema: `pg_terminate_backend` closes a connection
     whose client the recipe itself has already killed, and an aborted transaction on a stopped
     app rolls back exactly as it would have when its container died. Nothing is dropped, altered
     or written (roadmap invariant 5). It runs after the recipe's own `stop`, only in a full
-    release, and only against the four (or five) app sessions: `pg_dump`, `psql` and
-    `pg_restore` are excluded by `ORPHAN_PREDICATE`, so the backup and the operator's own shell
-    are never in the list and never terminated.
+    release, and only against the sessions of `services` -- the exact list that was passed to
+    `stop` -- matched by `application_name`.
+
+    The termination names both the pids that were listed and the same name set, so a connection
+    is never terminated on terms other than the ones it was listed on, and a pid the server has
+    already reused for a connection of another name is left alone.
 
     A backend still open after `DRAIN_POLLS` seconds raises, which puts the release on its
     existing rollback path -- the old apps come back and no migration runs. A migration run
     under a snapshot this recipe could not close is exactly the failure this step exists for.
 
-    `receipt['drained_backends']` and `receipt['drain_seconds']` are written on every full
-    release, an empty list included when nothing was orphaned: evidence the step ran, not
-    only evidence it found something (review m1).
+    `receipt['drained_backends']`, `receipt['unnamed_backends']` and `receipt['drain_seconds']`
+    are written on every full release, empty lists included: evidence the step ran, not only
+    evidence it found something (review m1). A backend outside the name set never blocks the
+    release -- it is somebody else's session, and this recipe has no business ending it.
     """
-    def listing():
+    names = sql_literals(services)
+    listed_sql = backend_listing_sql(f'application_name in ({names})')
+    strangers_sql = backend_listing_sql(
+        f"coalesce(application_name, '') not in ({names}, {sql_literals(KNOWN_TOOLS)})")
+
+    def rows(query):
         output = run([*existing, 'exec', '-T', 'postgres', 'psql', '-X',
                       '-v', 'ON_ERROR_STOP=1', '-U', 'harness', '-d', 'harness',
-                      '-At', '-c', ORPHAN_LIST_SQL], capture=True)
-        rows = []
+                      '-At', '-c', query], capture=True)
+        result = []
         for line in (output or '').splitlines():
             if not line.strip():
                 continue
             pid, client_addr, application_name, state, xact_age = line.split('|', 4)
-            rows.append({'pid': int(pid), 'client_addr': client_addr,
-                         'application_name': application_name, 'state': state,
-                         'xact_age': xact_age})
-        return rows
+            result.append({'pid': int(pid), 'client_addr': client_addr,
+                           'application_name': application_name, 'state': state,
+                           'xact_age': xact_age})
+        return result
 
     started = time.monotonic()
-    orphans = listing()
+    strangers = rows(strangers_sql)
+    receipt['unnamed_backends'] = [{key: row[key] for key in
+                                    ('pid', 'application_name', 'state', 'xact_age')}
+                                   for row in strangers]
+    if strangers:
+        print(f'[release] {len(strangers)} harness backends this release did not start are '
+              'open and are left alone: '
+              + '; '.join(f"{row['pid']} {row['application_name'] or '(unnamed)'} "
+                          f"{row['state']} {row['xact_age']}" for row in strangers), flush=True)
+    orphans = rows(listed_sql)
     remaining = []
     if orphans:
         print(f'[release] draining {len(orphans)} orphaned backends: '
               + '; '.join(f"{row['pid']} {row['application_name']} {row['state']} {row['xact_age']}"
                           for row in orphans), flush=True)
+        pids = ', '.join(str(row['pid']) for row in orphans)
         run([*existing, 'exec', '-T', 'postgres', 'psql', '-X', '-v', 'ON_ERROR_STOP=1',
-             '-U', 'harness', '-d', 'harness', '-At', '-c', ORPHAN_TERMINATE_SQL], capture=True)
-        remaining = listing()
+             '-U', 'harness', '-d', 'harness', '-At', '-c',
+             'select pg_terminate_backend(pid) from pg_stat_activity where '
+             f'{HARNESS_CLIENT} and pid in ({pids}) and application_name in ({names})'],
+            capture=True)
+        listed_again_sql = backend_listing_sql(
+            f'pid in ({pids}) and application_name in ({names})')
+        remaining = rows(listed_again_sql)
         for _ in range(DRAIN_POLLS):
             if not remaining:
                 break
             time.sleep(1)
-            remaining = listing()
+            remaining = rows(listed_again_sql)
     receipt['drained_backends'] = orphans
     receipt['drain_seconds'] = round(time.monotonic() - started, 3)
     if remaining:
@@ -224,6 +269,41 @@ def drain_orphaned_backends(existing, receipt):
                            + ', '.join(f"{row['pid']} ({row['application_name']}, {row['state']})"
                                        for row in remaining))
     return orphans
+
+
+#: `deploy/backup/dump.sh` holds `flock` on `$BACKUPS_DIR/.dump.lock` for the whole of one dump;
+#: on the host that file is `RUNTIME/backups/.dump.lock`. It is the in-progress signal this
+#: recipe has: `record_run` writes its `backup_runs` row when a dump finishes (`ok`, `error` or
+#: `skipped`), so a dump that is still running has written nothing to that table yet.
+DUMP_LOCK = ('backups', '.dump.lock')
+
+
+def dump_lock_held(path):
+    """Whether the backup sidecar is holding its dump lock right now.
+
+    A non-blocking probe that takes the lock and releases it in the same breath: this never
+    waits on a dump and never makes a dump wait on it. A file that does not exist has never
+    been locked, and none is created here -- the probe only reads what the sidecar left. The
+    descriptor is read-only (`flock` locks whatever descriptor it is given, unlike `fcntl`
+    locks), so the release user needs no write access to the sidecar's lock file.
+    """
+    if not path.exists():
+        return False
+    with path.open('rb') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    return False
+
+
+def backup_in_progress():
+    """The two signals that say a dump is running: its backend and its lock file."""
+    backends = sql("select count(*) from pg_stat_activity where datname = 'harness' "
+                   "and application_name = 'pg_dump';")
+    return {'pg_dump_backends': int((backends or '0').strip() or 0),
+            'lock_held': dump_lock_held(RUNTIME.joinpath(*DUMP_LOCK))}
 
 
 def run(args, *, capture=False, cwd=None, input=None):
@@ -540,6 +620,19 @@ def deploy(mode, plan=False):
             raise RuntimeError('App-only release would change app-ws configuration')
         # Require an existing good backup before any stop/schema write; a skipped dump cannot pass.
         run([*existing, 'run', '--rm', '--no-deps', '-T', 'app-run', 'backup-precheck'])
+        if mode == 'full':
+            # ... and require that none is running (journal 224 item 9e). A full release stops
+            # the apps and migrates; a dump taken across that is a backup of a database being
+            # changed underneath it, and `pg_dump`'s snapshot is precisely the long-lived
+            # transaction the drain below is forbidden to close. Refused here, inside the
+            # validated section: nothing has been stopped, so nothing has to be restored.
+            receipt['backup_in_progress_check'] = check = backup_in_progress()
+            if check['pg_dump_backends'] or check['lock_held']:
+                checkpoint('refused-backup-in-progress')
+                raise RuntimeError(
+                    'full release refused: a backup dump is in progress (pg_dump backends '
+                    f"{check['pg_dump_backends']}, dump lock held {check['lock_held']}); "
+                    'wait for it to finish and release again')
         game_window(mode)  # building may have crossed a boundary
         if git('rev-parse', 'HEAD') != head or git('status', '--porcelain'):
             raise RuntimeError('Source changed while building')
@@ -559,7 +652,7 @@ def deploy(mode, plan=False):
         if mode == 'full':
             # Fix 71: the stop returns before the server has noticed the connections it killed.
             checkpoint('draining')
-            drain_orphaned_backends(existing, receipt)
+            drain_orphaned_backends(existing, receipt, restored)
         if mode == 'full':
             checkpoint('migrating')
             run([*command, 'run', '--rm', '--no-deps', '-T', 'app-run', 'migrate', 'ensure'])
