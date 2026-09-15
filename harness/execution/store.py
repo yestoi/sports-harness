@@ -840,13 +840,19 @@ def add_dirty_seconds(session: Session, order_id: int, seconds: int, *,
 #: accrues the seconds between `now` and it, floored at zero and capped at the period.
 #:
 #: The arithmetic is equal to Python's term for term. `expiry` and `:now` are both
-#: `timestamptz`, so their difference is an interval between two instants exactly as
-#: `(end - now)` is between two aware datetimes -- neither side reads a wall-clock field, so no
-#: zone can enter. `trunc` is Python's `int()` on the resulting seconds: both truncate toward
-#: zero, and where they could disagree (below zero, on a fraction) `greatest(0, ...)` sends both
-#: to the same 0. The `::int` cast rounds rather than truncates, which is why it is applied
-#: *after* `least(:p, ...)`: the value it sees is a whole number no larger than the period, so
-#: the rounding is exact and a far-future expiry cannot overflow the cast.
+#: `timestamptz`, whose difference is an interval between two instants: the SQL side is
+#: zone-free, and `timestamptz - timestamptz` yields no month field, so `extract(epoch ...)` is
+#: exact rather than 30-day-approximated. The Python side agrees with it because the executor's
+#: clock is `datetime.now(timezone.utc)` and psycopg returns UTC-offset instants, so its
+#: subtraction is offset-aware too. That agreement is the clock's, not the arithmetic's:
+#: `datetime.__sub__` ignores a *common* `tzinfo` and subtracts wall clocks, so a clock and an
+#: expiry sharing one DST `ZoneInfo` across a fold would make `_clamped` -- the per-row path --
+#: the wrong one of the two, and this statement the right one (round 1 review, M3). `trunc` is
+#: Python's `int()` on the resulting seconds: both truncate toward zero, and where they could
+#: disagree (below zero, on a fraction) `greatest(0, ...)` sends both to the same 0. The `::int`
+#: cast rounds rather than truncates, which is why it is applied *after* `least(:p, ...)`: the
+#: value it sees is a whole number no larger than the period, so the rounding is exact and a
+#: far-future expiry cannot overflow the cast.
 #:
 #: `least()` ignoring NULL is never reached: a null expiry is answered by the `case` above it.
 #: `seconds > 0` is `add_dirty_seconds`'s own early return, so a row whose clamp is zero is not

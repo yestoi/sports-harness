@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -21,6 +22,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker
 from typer.testing import CliRunner
 
+import harness.execution.loop
 from harness.config.settings import get_settings
 from harness.db.models import (
     EquitySnapshot,
@@ -2658,16 +2660,20 @@ def test_an_unsynced_run_is_excluded_from_candidates_intents_and_decisions(db_se
 #: collide with one the executor inserts.
 PENDING_BASE_ID = 900_000
 #: A fourth market of `_seed`, on its own subscription, so a print can move one order's tape
-#: without touching the quiet population's trade-id set on T3.
+#: without touching the quiet population's trade-id set on T3. The fifth has no book and no
+#: other order, so one row inside its counterfactual backoff defers the whole ticker.
 T4, VM4 = "KXNFL-P-4", 4
+T5, VM5 = "KXNFL-P-5", 5
 #: The print that reaches the T4 row in the measured step. Its id is fixed so the reset can
 #: take it out again between the two runs.
 LATE_PRINT = "fix78-late-print"
 #: Where each shape sits in `_mixed_shapes`, so an assertion can name the row it is about. The
-#: first six are the dirty market's clamp; the last six are the clean ticker's, two of which a
-#: loop owes nothing and four of which it still owes a write.
+#: first six are the dirty market's clamp; then the clean ticker's, three of which a loop owes
+#: nothing and four of which it still owes a write; then the three populations the user's
+#: ruling protects from this fix entirely -- two open orders and a deferred ticker.
 FAR, INSIDE, FRACTION, SUBSECOND, NO_EXPIRY, PAST = range(6)
 QUIET_FAR, QUIET_NONE, NO_BOOK, EXPIRES_BETWEEN, STALE_VERSION, TAPE_MOVES = range(6, 12)
+QUIET_LEDGER, OPEN_HELD, OPEN_EXPIRES, DEFERRED = range(12, 16)
 
 
 def _pending_book(session, ticker, ts, sid):
@@ -2677,24 +2683,53 @@ def _pending_book(session, ticker, ts, sid):
 
 
 def _pending_order(session, index, *, now, ticker, vm, expiry, queue=Decimal("5.00"),
-                   version=None, prob=Decimal("0.3500")):
-    """One cancelled order whose counterfactual is still running, as the backlog's rows are.
+                   version=None, prob=Decimal("0.3500"), status="cancelled", side="yes",
+                   next_attempt_at=None, attempts=None, recon_state=None, variant_id="tiny"):
+    """One order whose counterfactual is still running, as the backlog's 5,055 rows are.
 
-    The watched track is over -- the order left the market when it was cancelled, which is why
-    it accrues no watched dirty seconds (§0.9) -- and `nw_done` is false, so `working_orders`
-    keeps returning it every loop until its own expiry.
+    Cancelled by default: the watched track is over -- the order left the market when it was
+    cancelled, which is why it accrues no watched dirty seconds (§0.9) -- and `nw_done` is
+    false, so `working_orders` keeps returning it every loop until its own expiry. `status`
+    makes an **open** one instead, which this fix must leave entirely on the per-row path; an
+    open order has no `cancelled_at`, and a stale one would clamp its watched accrual to zero
+    and hide exactly the accrual the case is checking.
+
+    `side` is only ever moved for a second *open* order on one ticker: `uq_open_order`
+    (`harness/db/schema.py:229`) is one live order per `(venue, ticker, side, variant_id)`, and
+    it is partial on the open statuses -- which is why the cancelled backlog can pile up on one
+    ticker and two resting orders cannot.
     """
+    resting = status in ("open", "partially_filled")
     row = Order(id=PENDING_BASE_ID + index, intent_id=uuid.UUID(int=PENDING_BASE_ID + index),
-                variant_id="tiny",
+                variant_id=variant_id,
                 venue="kalshi", mode="paper", client_order_id=f"fix78-{index}", ticker=ticker,
-                venue_market_id=vm, side="yes", prob=prob, contracts=Decimal("10.00"),
-                status="cancelled", placed_at=now - timedelta(minutes=5),
-                cancelled_at=now - timedelta(minutes=4), expiry=expiry,
+                venue_market_id=vm, side=side, prob=prob, contracts=Decimal("10.00"),
+                status=status, placed_at=now - timedelta(minutes=5),
+                cancelled_at=None if resting else now - timedelta(minutes=4), expiry=expiry,
                 queue_ahead_at_place=queue, queue_remaining=queue, nw_queue_remaining=queue,
                 nw_filled_contracts=Decimal("0.00"), nw_done=False,
-                nw_executor_version=version, replay=False)
+                nw_recon_state=recon_state, nw_next_attempt_at=next_attempt_at,
+                nw_attempts=attempts, nw_executor_version=version, replay=False)
     session.add(row)
     return row
+
+
+def _written_ledger(t0):
+    """A counterfactual ledger as §1.3 writes one: two live decrement buckets, one unmatched
+    print claim and two seen trade ids, all inside the row's own window.
+
+    A quiet row carrying this has to come out of the measured loop with the document byte for
+    byte as it went in -- nothing on its ticker moved, so nothing ages, is claimed or is
+    retired -- which is what exercises `_unchanged`'s JSONB equality on a non-empty document
+    rather than on an empty one (round 1, M4).
+    """
+    def at(seconds):
+        return (t0 - timedelta(seconds=seconds)).isoformat()
+
+    return {"buckets": [[at(30), "pending", "3.00"], [at(20), "surplus", "2.00"]],
+            "prints": [[at(25), "1.50"]],
+            "trade_ids": [[at(25), "seeded-print-1"], [at(24), "seeded-print-2"]],
+            "print_floor": at(60)}
 
 
 def _dirty_shapes(t0):
@@ -2720,22 +2755,48 @@ def _quiet_shapes(t0):
 
 
 def _mixed_shapes(t0):
-    """Both populations plus every row that must still take the per-row path: one that has
-    never had a book (it anchors on the first one), one whose expiry falls between the two
-    steps (`nw_done` moves), one stamped by an older build (the version moves) and one whose
-    ticker gets a print between the steps (the tape moves)."""
+    """Both populations, every row that must still take the per-row path, and the three the
+    ruling keeps off this fix altogether.
+
+    Still per-row because a column moves: one that has never had a book (it anchors on the
+    first one), one whose expiry falls between the two steps (`nw_done` moves), one stamped by
+    an older build (the version moves) and one whose ticker gets a print between the steps (the
+    tape moves). Quiet but not trivial: one carrying a written ledger, which has to survive the
+    loop unchanged.
+
+    Kept off the fix entirely (round 1, M4): two **open** orders on the dirty market -- one
+    that holds there and goes on accruing watched dirty seconds, one whose expiry falls between
+    the steps so the second loop expires it -- and one row on a ticker of its own inside its
+    counterfactual backoff, which ruling CR-4 says must sit the loop out with its cursors where
+    they are rather than be closed.
+    """
     return _dirty_shapes(t0) + _quiet_shapes(t0) + [
         {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1), "queue": None},
         {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(seconds=5)},
         {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1),
          "version": Decimal("4.4")},
         {"ticker": T4, "vm": VM4, "expiry": t0 + timedelta(hours=1)},
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1),
+         "recon_state": _written_ledger(t0)},
+        {"ticker": T2, "vm": VM2, "expiry": t0 + timedelta(hours=1), "status": "open"},
+        {"ticker": T2, "vm": VM2, "expiry": t0 + timedelta(seconds=5), "status": "open",
+         "side": "no"},
+        {"ticker": T5, "vm": VM5, "expiry": t0 + timedelta(hours=1),
+         "next_attempt_at": t0 + timedelta(hours=1), "attempts": 2},
     ]
 
 
 def seed_pending(session, t0, n, shapes):
-    """`n` rows cycling `shapes`, so the same mix is present at every population size."""
-    ids = [_pending_order(session, i, now=t0, **shapes[i % len(shapes)]).id
+    """`n` rows cycling `shapes`, so the same mix is present at every population size.
+
+    The variant is resolved through the loop's own resolver rather than spelled `tiny`: signals
+    and orders carry the 12-hex `variant_id`, and a row carrying the *name* is dropped from the
+    decision chain by `_with_config` -- which would quietly take the open orders below out of
+    `plan_actions` and with them the expiry this case is watching for.
+    """
+    variant_id = store.resolve_variants(session, ["tiny"])[0]
+    ids = [_pending_order(session, i, now=t0, variant_id=variant_id,
+                          **shapes[i % len(shapes)]).id
            for i in range(n)]
     session.commit()
     return ids
@@ -2764,6 +2825,26 @@ def pending_columns(session, ids):
     return [dict(row) for row in rows]
 
 
+def written_rows(session, table, order_by, skip=("id",)):
+    """Every row one of the loop's other writers left, without the surrogate keys.
+
+    `orders` alone would catch a diverging fill only through `nw_filled_contracts` (round 1,
+    M5), so `fills`, `ledger` and `order_events` are compared too. The sequence is not reset
+    between the two runs, so `id` -- and `ledger.fill_id`, which points at one -- is dropped:
+    it is the one column that must differ for a reason the fix has nothing to do with.
+    """
+    rows = session.execute(text(f"select * from {table} order by {order_by}")).mappings().all()
+    return [{k: v for k, v in row.items() if k not in skip} for row in rows]
+
+
+def loop_writes(session):
+    """The three tables beside `orders` that one loop over this population can write."""
+    return {"fills": written_rows(session, "fills", "order_id, filled_at, id"),
+            "ledger": written_rows(session, "ledger", "order_id, ts, id",
+                                   skip=("id", "fill_id")),
+            "order_events": written_rows(session, "order_events", "order_id, ts, id")}
+
+
 def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
     """Two loops over the seeded population, with the fix on or off, and the columns after.
 
@@ -2773,9 +2854,11 @@ def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
     steps, identically for both runs, so that the *measured* loop still contains rows the fix
     must refuse to skip.
 
-    Returns the columns and how many statements that second loop sent, because the identity
-    only means something between two paths that are actually different: with the fix off, this
-    population costs a savepoint, an UPDATE and a release per row.
+    Returns the columns, the rows the loop wrote to `fills`, `ledger` and `order_events`, and
+    two costs of that second loop: how many statements it sent -- the identity only means
+    something between two paths that are actually different, and with the fix off this
+    population costs a savepoint, an UPDATE and a release per row -- and how many times it
+    walked a tape, which round 1's M2 requires the fix not to increase.
     """
     clock = Clock(t0)
     executor = make_executor(env_settings, session, clock)
@@ -2788,10 +2871,13 @@ def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
         {"ids": [oid for i, oid in enumerate(ids) if i % len(shapes) == STALE_VERSION]})
     session.commit()
     clock.advance(15)
-    with capture_sql(session) as seen:
-        executor.step()
+    with patch("harness.execution.loop.simulate_fills",
+               wraps=harness.execution.loop.simulate_fills) as walks:
+        with capture_sql(session) as seen:
+            executor.step()
     refresh(session)
-    return pending_columns(session, ids), len(seen)
+    return (pending_columns(session, ids), loop_writes(session), len(seen),
+            walks.call_count)
 
 
 def test_the_set_based_pending_writes_match_the_per_row_path_column_for_column(
@@ -2818,24 +2904,45 @@ def test_the_set_based_pending_writes_match_the_per_row_path_column_for_column(
     snapshot = _pending_book(db_session, T2, NOW - timedelta(seconds=5), sid=2)
     _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
     _pending_book(db_session, T4, NOW - timedelta(seconds=5), sid=4)
+    # T5 deliberately has no book at all: its one population is a deferred row, which is never
+    # read and never simulated, so a book for it would be a book nothing looks at.
     # The gap is what makes T2's book -- and only T2's -- unreadable for the rest of the test.
     _gap(db_session, NOW - timedelta(seconds=1), sid=snapshot.sid)
     db_session.commit()
     shapes = _mixed_shapes(t0)
-    n = 2 * len(shapes)
+    # One row per shape: the two open ones cannot be duplicated on their ticker (`uq_open_order`
+    # is one resting order per venue/ticker/side/variant), and a shape's second copy would
+    # prove nothing its first does not -- the statement-count case below is where the population
+    # size varies.
+    n = len(shapes)
 
     ids = seed_pending(db_session, t0, n, shapes)
-    per_row, per_row_statements = run_pending_steps(env_settings, db_session, t0, ids, shapes,
-                                                    batched=False)
+    per_row, per_row_writes, per_row_statements, per_row_walks = run_pending_steps(
+        env_settings, db_session, t0, ids, shapes, batched=False)
     reset_pending(db_session)
     ids = seed_pending(db_session, t0, n, shapes)
-    set_based, set_based_statements = run_pending_steps(env_settings, db_session, t0, ids,
-                                                        shapes, batched=True)
+    set_based, set_based_writes, set_based_statements, set_based_walks = run_pending_steps(
+        env_settings, db_session, t0, ids, shapes, batched=True)
 
     assert len(set_based) == n
     assert set_based == per_row
+    # Round 1, M5: and the same rows in the three tables beside `orders`, so a fill one path
+    # inserted and the other did not could not hide behind `nw_filled_contracts` alone.
+    assert set_based_writes == per_row_writes
+    # Not a vacuous comparison: the measured loop really did write to two of the three. The
+    # ledger is the third and is empty by construction -- `_persist_track` passes
+    # `ledger=False` for the counterfactual, and no watched track filled on a dirty market --
+    # which is itself the invariant this pins.
+    assert len(set_based_writes["fills"]) == 1
+    assert {row["fill_method"] for row in set_based_writes["fills"]} == {"no_watcher"}
+    assert [row["kind"] for row in set_based_writes["order_events"]] == ["expire"]
+    assert set_based_writes["ledger"] == []
     # The identity is between two different paths, not between one path and itself.
     assert set_based_statements < per_row_statements
+    # Round 1, M2: the pre-check decides the skip from a real simulation, and the row it does
+    # not skip is handed that same simulation rather than made to repeat it -- so the fix walks
+    # the tape exactly as often as the path it replaces, not once more per clean pending row.
+    assert set_based_walks == per_row_walks
 
     row = dict(enumerate(set_based))
     assert row[FAR]["nw_dirty_seconds"] == 30         # an hour out: the whole period, twice
@@ -2854,11 +2961,32 @@ def test_the_set_based_pending_writes_match_the_per_row_path_column_for_column(
     assert row[STALE_VERSION]["nw_executor_version"] == Decimal(EXECUTOR_VERSION)
     assert row[TAPE_MOVES]["nw_filled_contracts"] == Decimal("10.00")
     assert row[NO_BOOK]["queue_ahead_at_place"] == Decimal("40.00")
-    # ... and the two beside them that it does skip, which moved nothing.
+    # ... and the three beside them that it does skip, which moved nothing. The third carries
+    # a written ledger, so the document it comes out with is the one it went in with, and the
+    # three derived sums beside it are that document's own (round 1, M4).
     assert row[QUIET_FAR]["nw_filled_contracts"] == Decimal("0.00")
     assert row[QUIET_FAR]["nw_done"] is False
     assert row[QUIET_NONE]["nw_done"] is False
     assert row[FAR]["nw_executor_version"] == Decimal(EXECUTOR_VERSION)
+    assert row[QUIET_LEDGER]["nw_recon_state"] == _written_ledger(t0)
+    assert row[QUIET_LEDGER]["nw_print_unmatched"] == Decimal("1.50")
+    assert row[QUIET_LEDGER]["nw_pending_unmatched"] == Decimal("3.00")
+    assert row[QUIET_LEDGER]["nw_pending_surplus"] == Decimal("2.00")
+    # The three populations the ruling keeps off this fix (round 1, M4). Both open orders took
+    # the per-row path and accrued on the *watched* column -- 15 s a loop for the one that held
+    # on the dirty market, 5 s for the one whose expiry was 5 s away and which the second loop
+    # expired -- and the deferred row sat both loops out exactly as it went in, its
+    # counterfactual neither accrued, closed nor stamped (ruling CR-4).
+    assert row[OPEN_HELD]["status"] == "open"
+    assert row[OPEN_HELD]["dirty_seconds"] == 30
+    assert row[OPEN_HELD]["nw_dirty_seconds"] == 30
+    assert row[OPEN_EXPIRES]["status"] == "expired"
+    assert row[OPEN_EXPIRES]["dirty_seconds"] == 5
+    assert row[OPEN_EXPIRES]["nw_done"] is True
+    assert row[DEFERRED]["nw_done"] is False
+    assert row[DEFERRED]["nw_dirty_seconds"] is None
+    assert row[DEFERRED]["nw_executor_version"] is None
+    assert row[DEFERRED]["nw_attempts"] == 2
 
 
 def _pending_statements(env_settings, session, t0, n, shapes) -> int:

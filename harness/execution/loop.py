@@ -69,6 +69,7 @@ from harness.execution.book import (
 )
 from harness.execution.fills import (
     CROSS,
+    FillResult,
     PaperOrder,
     SimState,
     fill_fee_fields,
@@ -756,8 +757,9 @@ class Executor:
         # whose whole write this batch has just made, and one whose per-row write would have
         # moved nothing at all. Both keep the outcome recorded above, which is the same pair
         # `_simulate_order` returns on either path.
-        settled = self._batch_pending(session, working, markets, bases, recovering, tape,
-                                      lagging, unread | deferred, now, heartbeat)
+        settled, nw_results = self._batch_pending(session, working, markets, bases,
+                                                  recovering, tape, lagging,
+                                                  unread | deferred, now, stats, heartbeat)
         for row in working:
             outcomes[row.id] = (row.status, row.filled_contracts)
             if row.id in settled:
@@ -774,9 +776,9 @@ class Executor:
                 continue
             try:
                 with session.begin_nested():
-                    outcomes[row.id] = self._simulate_order(session, row, markets, bases,
-                                                            recovering, tape, lagging, now,
-                                                            stats)
+                    outcomes[row.id] = self._simulate_order(
+                        session, row, markets, bases, recovering, tape, lagging, now, stats,
+                        nw_result=nw_results.get(row.id))
             except Exception as exc:  # noqa: BLE001 - one order, not the step
                 log.exception("fill simulation failed for order %s", row.id)
                 stats.errors += 1
@@ -784,7 +786,8 @@ class Executor:
         return outcomes
 
     def _batch_pending(self, session: Session, working, markets, bases, recovering, tape,
-                       lagging, held: set[str], now: datetime, heartbeat: dict) -> set[int]:
+                       lagging, held: set[str], now: datetime, stats: ExecStats,
+                       heartbeat: dict) -> tuple[set[int], dict[int, FillResult]]:
         """Settle this loop's cancelled pending counterfactuals set-based (fix 78).
 
         Every row here is one the fill step has nothing to simulate for and one column-group to
@@ -815,15 +818,28 @@ class Executor:
         A failure of the batch is one batch's failure: the savepoint rolls it back, the rows it
         would have settled are not in the returned set, and each of them takes the per-row path
         it would have taken before this fix -- where a genuine per-row failure is counted and
-        stepped over as it always was.
+        stepped over as it always was. It counts one error of its own, as the per-row handler
+        does, so a step that hit a database failure never publishes `exec.errors = 0` because
+        the fallback happened to succeed (round 1, M1).
+
+        The second return is the pre-check's own `FillResult` for each clean-ticker row it did
+        *not* skip, keyed by order id. That row's counterfactual is simulated here to decide
+        whether its write would move anything, and `_simulate_order` is handed the same result
+        rather than walking the same prints and deltas a second time (round 1, M2). It is the
+        same walk by construction -- same order, state, book, tape and deadline -- and
+        `simulate_fills` copies both the state and the book, so neither run can perturb the
+        other.
         """
         if not self._batch_pending_writes:
-            return set()
+            return set(), {}
         s = self.exec_settings
         #: Rows whose dirty-market branch this batch owes the two statements to.
         dirty: list[int] = []
         #: Rows this loop owes nothing at all, batch or no batch.
         quiet: set[int] = set()
+        #: The pre-check's simulation for a clean-ticker row that is *not* skipped, so the
+        #: per-row step below can take it rather than repeat it (round 1, M2).
+        nw_results: dict[int, FillResult] = {}
         for row in working:
             if row.ticker in held or row.status in store.OPEN_STATUSES:
                 continue
@@ -839,7 +855,7 @@ class Executor:
             if row.nw_done:
                 continue
             try:
-                skip = self._writes_nothing(row, bases, recovering, tape, lagging, now)
+                skip, result = self._writes_nothing(row, bases, recovering, tape, lagging, now)
             except Exception:  # noqa: BLE001 - one row, and it keeps its own savepoint below
                 # Nothing here has executed a statement or written anything, so a row whose
                 # state will not load (a `recon_state` the simulator does not know, say) simply
@@ -847,11 +863,13 @@ class Executor:
                 # failure is counted against the step and stepped over as it always was.
                 log.debug("pre-checking order %s failed; it keeps the per-row path", row.id,
                           exc_info=True)
-                skip = False
+                skip, result = False, None
             if skip:
                 quiet.add(row.id)
+            elif result is not None:
+                nw_results[row.id] = result
         if not dirty:
-            return quiet
+            return quiet, nw_results
         try:
             with session.begin_nested():
                 store.add_nw_dirty_seconds_batch(session, dirty, self.settings.exec_period_s,
@@ -859,11 +877,13 @@ class Executor:
                 store.close_nw_expired_batch(session, dirty, now)
         except Exception as exc:  # noqa: BLE001 - one batch, not the step
             log.exception("batched counterfactual writes failed for %d order(s)", len(dirty))
+            stats.errors += 1
             _note_error(heartbeat, f"nw batch: {type(exc).__name__}: {exc}")
-            return quiet
-        return quiet | set(dirty)
+            return quiet, nw_results
+        return quiet | set(dirty), nw_results
 
-    def _writes_nothing(self, row, bases, recovering, tape, lagging, now: datetime) -> bool:
+    def _writes_nothing(self, row, bases, recovering, tape, lagging,
+                        now: datetime) -> tuple[bool, FillResult | None]:
         """Would this cancelled pending row's own step leave every column as it is (fix 78)?
 
         The question is answered from the row and the tape, never from a guess. Three branches
@@ -880,26 +900,31 @@ class Executor:
         with what the row already holds, `nw_executor_version` included. A write of the same
         values is not free -- it is a row version, a WAL record and a share of the 1,042 MB the
         table has grown to -- but nothing reads it, so not making it changes no measured value.
+
+        Returns the answer and, when one was computed, the simulation it was computed from: a
+        row that is not skipped is simulated once for the two of us, not once each (round 1,
+        M2). `None` beside a `False` is a row refused before any simulation ran, which has to
+        go the whole way through `_simulate_order` including the book read this refused to make.
         """
         if row.queue_ahead_at_place is None:
-            return False
+            return False, None
         if row.ticker in recovering and self.books.get(row.ticker) is not None:
-            return False
+            return False, None
         state = _state_of(row, "nw_")
         base = bases.get(row.ticker)
         if state.cursor_event_id is not None and (
                 base is None or state.cursor_event_id != base.last_event_id):
-            return False
+            return False, None
         prints, deltas = tape.get(row.ticker, ([], []))
         result = simulate_fills(_paper_order(row, row.queue_ahead_at_place, now), state,
                                 None if base is None else base.copy(), prints, deltas,
                                 _nw_deadline(row, now), NO_WATCHER)
         if result.fills or result.cross is not None:
-            return False
+            return False, result
         # `_persist_track` inserted nothing, so the running total it would have returned is the
         # one the row already carries.
         return _unchanged(row, _nw_columns(row, result.state, row.nw_filled_contracts,
-                                           result.crossed, lagging, now))
+                                           result.crossed, lagging, now)), result
 
     def _venue_fills(self, session: Session, working, now: datetime, stats: ExecStats,
                      heartbeat: dict) -> dict[int, tuple[str, Decimal]]:
@@ -1190,7 +1215,10 @@ class Executor:
                          anchor_as_of=book.anchor_as_of)
 
     def _simulate_order(self, session: Session, row, markets, bases, recovering, tape, lagging,
-                        now: datetime, stats: ExecStats) -> tuple[str, Decimal]:
+                        now: datetime, stats: ExecStats, *,
+                        nw_result: FillResult | None = None) -> tuple[str, Decimal]:
+        """One order's two tracks. `nw_result` is `_batch_pending`'s own simulation of this
+        row's counterfactual, when it has already made it (round 1, M2); None means simulate."""
         s = self.exec_settings
         market = markets.get(row.venue_market_id)
         book = self.books.get(row.ticker)
@@ -1303,9 +1331,16 @@ class Executor:
             filled, status = row.filled_contracts, row.status
 
         if not row.nw_done:
-            result = simulate_fills(order, no_watcher,
-                                    self._sim_book(session, row, no_watcher, bases, anchor),
-                                    prints, deltas, nw_deadline, NO_WATCHER)
+            # The pre-check's walk, when there is one: same order, same state, same book, same
+            # prints and deltas, same deadline, and `simulate_fills` mutates none of them. The
+            # `anchor is None` guard is belt and braces -- a row that re-anchored this loop is
+            # refused by the pre-check and so never carries a result -- so that a future branch
+            # that anchors cannot silently inherit a walk taken from a different book.
+            result = (nw_result if nw_result is not None and anchor is None
+                      else simulate_fills(
+                          order, no_watcher,
+                          self._sim_book(session, row, no_watcher, bases, anchor),
+                          prints, deltas, nw_deadline, NO_WATCHER))
             track = self._persist_track(session, row, order, result, prints, ledger=False,
                                         crossed_already=crossed_already)
             stats.nw_fills += track.inserted
