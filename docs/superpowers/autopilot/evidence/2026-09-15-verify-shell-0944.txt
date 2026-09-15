@@ -1,0 +1,19 @@
+verify_at_utc=2026-09-15T14:44:12Z (0944 CT) deploy 7c3d750 full 14:37:47-14:41:28Z
+== ERROR app-run since 14:41Z
+== ERROR app-serve since 14:41Z
+== ERROR app-ws since 14:41Z
+== ERROR app-exec since 14:41Z
+== ERROR app-research since 14:41Z
+== app-research start lines
+{"asctime": "2026-09-15 14:40:24,495", "levelname": "INFO", "name": "harness.research.worker", "message": "research worker started, poll=30s passes=veto, annotate"}
+{"asctime": "2026-09-15 14:40:24,507", "levelname": "INFO", "name": "harness.research.spend", "message": "research reservation released at start: 2026-09-15 veto claude-opus-5 1.2972"}
+{"asctime": "2026-09-15 14:40:24,507", "levelname": "INFO", "name": "harness.research.spend", "message": "research reservation released at start: 2026-09-15 veto claude-sonnet-5 0.5730"}
+{"asctime": "2026-09-15 14:40:24,507", "levelname": "WARNING", "name": "harness.research.spend", "message": "research reservations released at start: 1.8702 total across 2 row(s)"}
+{"asctime": "2026-09-15 14:42:34,448", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 8, 'decided': 12, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_o
+{"asctime": "2026-09-15 14:43:17,000", "levelname": "INFO", "name": "harness.research.worker", "message": "research sweep ok: veto={'status': 'ok', 'calls': 1, 'decided': 6, 'skipped_budget': 0}, annotate={'annotated': 0, 'bullets': 0, 'dropped': 0, 'backed_of
+== app-run settle/sweep lines
+== df/free
+/dev/mapper/root  952G  151G  796G  16% /srv/sports-harness
+Mem:           31904        7977        2500        2006       25357       23927
+== healthz
+200

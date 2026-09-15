@@ -3,3 +3,55 @@ tape_pre id 178454750 ts 2026-09-15 14:37:13.322+00
 run_pre 18032 2026-09-15 14:37:10.536129+00 skipped 762bde4
 research_reserved_pre 1.8702 usd 22.5628
 settle_209_at_deploy running since 14:20:10Z, FETCH FORWARD 2000 cursor, xact 977 s at 14:36:27Z; fix 58 sweeps it to interrupted at the new process start
+post_deploy_at 2026-09-15 14:42:05.861366+00
+largest_gap_s 130.3 ending 2026-09-15 14:40:24.511309+00
+first_recovered_snapshot 2026-09-15 14:40:24.511309+00
+events_in_window 3044
+gap_rows_window 0
+ws_events ws_connect 2026-09-15 14:40:24.425607+00
+last_old_run 18034 2026-09-15 14:38:10.541953+00
+first_new_run 18035 2026-09-15 14:40:54.069493+00
+new_runs 18035 skipped 2026-09-15 14:40:54.069493+00
+new_runs 18036 skipped 2026-09-15 14:41:24.069234+00
+new_runs 18037 skipped 2026-09-15 14:41:54.069172+00
+fix74_event 2026-09-15 14:40:24.5078+00 research_spend_released released USD 1.8702 of stale research reservations at worker start (2 rows) {"rows": [["2026-09-15", "veto", "claude-opus-5", "1.2972"], ["2026-09-15", "veto", "claude-sonnet-5", "0.5730"]]}
+research_reserved_post 0.6234 usd 22.8571
+deploy_events 2026-09-15 14:40:54.069493+00 build_sha 762bde4 - 7c3d750
+backend_6320 gone
+settle_209 running finished=- notes_errors=-
+stale_running_job_runs 1
+research_reserved_now 0.6234
+application_names app-exec x1
+application_names app-research x1
+application_names app-run x1
+application_names app-serve x1
+application_names app-ws x1
+application_names psql x1
+application_names (unnamed) x2
+open_interval_inversions 0 / 0
+unnamed_backend 7664 user=harness client=172.18.0.7/32 state=idle backend_start=2026-09-15 14:41:24.218004+00 q=ROLLBACK
+unnamed_backend 7525 user=harness client=172.18.0.7/32 state=idle backend_start=2026-09-15 14:40:24.219828+00 q=COMMIT
+report_wtd_history run 207 2026-09-15 12:06:16.646989+00 degraded elapsed_s=0.0 error=null
+report_wtd_history run 206 2026-09-15 11:06:16.647163+00 degraded elapsed_s=0.001 error=null
+report_wtd_history run 205 2026-09-15 10:06:16.647097+00 ok elapsed_s=0.001 error=null
+report_wtd_history run 204 2026-09-15 09:06:16.646967+00 ok elapsed_s=0.0 error=null
+report_wtd_history run 203 2026-09-15 08:06:16.681732+00 ok elapsed_s=3517.757 error=null
+report_wtd_history run 201 2026-09-15 02:48:45.084998+00 ok elapsed_s=0.001 error=null
+report_wtd_history run 200 2026-09-15 01:48:45.084853+00 ok elapsed_s=0.0 error=null
+report_wtd_history run 199 2026-09-15 00:48:45.084964+00 ok elapsed_s=0.0 error=null
+
+settle_durations 207 2026-09-15 12:06:16.646989+00 degraded 12s
+settle_durations 206 2026-09-15 11:06:16.647163+00 degraded 12s
+settle_durations 205 2026-09-15 10:06:16.647097+00 ok 83s
+settle_durations 204 2026-09-15 09:06:16.646967+00 ok 94s
+settle_durations 203 2026-09-15 08:06:16.681732+00 ok 3518s
+settle_durations 202 2026-09-15 03:48:45.08515+00 interrupted 15452s
+settle_durations 201 2026-09-15 02:48:45.084998+00 ok 114s
+dirty_causes_24h event_age x2220
+dirty_causes_24h gap x42
+ip app-research 172.18.0.8
+ip app-exec 172.18.0.4
+ip app-run 172.18.0.6
+ip app-serve 172.18.0.7
+ip app-ws 172.18.0.5
+ip app-backup 172.18.0.3

@@ -1,0 +1,51 @@
+rows_at 2026-09-15 14:48:52.857066+00
+gap_row 178371168 2026-09-15 13:04:46.227541+00 sid=2 
+gap_row 178371266 2026-09-15 13:04:46.376816+00 sid=2 
+gap_row 178401224 2026-09-15 13:35:00.717148+00 sid=2 
+gap_row 178401227 2026-09-15 13:35:00.853657+00 sid=2 
+gap_row 178416956 2026-09-15 13:50:01.773179+00 sid=2 
+gap_row 178416960 2026-09-15 13:50:01.885657+00 sid=2 
+gap_row 178427828 2026-09-15 14:05:04.309964+00 sid=2 
+ws_event 2026-09-15 14:40:24.425607+00 ws_connect connected
+ws_gaps_metric 2026-09-15 13:04:46.906499+00 2.000000
+ws_gaps_metric 2026-09-15 13:36:00.556643+00 2.000000
+ws_gaps_metric 2026-09-15 13:50:01.951876+00 2.000000
+ws_gaps_metric 2026-09-15 14:05:09.694314+00 1.000000
+p95_since_restart 2026-09-15 14:40:38.858405+00 p95=10824.000000
+p95_since_restart 2026-09-15 14:41:53.846787+00 p95=10824.000000
+p95_since_restart 2026-09-15 14:43:08.846661+00 p95=10824.000000
+p95_since_restart 2026-09-15 14:44:23.846701+00 p95=10824.000000
+p95_since_restart 2026-09-15 14:45:23.846675+00 p95=8039.000000
+p95_since_restart 2026-09-15 14:46:23.846646+00 p95=8039.000000
+p95_since_restart 2026-09-15 14:47:38.846891+00 p95=9627.000000
+p95_pre_release 2026-09-15 14:37:54.734597+00 p95=4213.000000
+p95_pre_release 2026-09-15 14:36:39.734559+00 p95=4194.000000
+p95_pre_release 2026-09-15 14:35:39.734694+00 p95=4026.000000
+p95_pre_release 2026-09-15 14:34:24.734449+00 p95=4026.000000
+loop_ms_since_restart 2026-09-15 14:40:38.858405+00 loop_ms=10824.000000
+loop_ms_since_restart 2026-09-15 14:41:53.846787+00 loop_ms=5029.000000
+loop_ms_since_restart 2026-09-15 14:43:08.846661+00 loop_ms=3916.000000
+loop_ms_since_restart 2026-09-15 14:44:23.846701+00 loop_ms=3387.000000
+loop_ms_since_restart 2026-09-15 14:45:23.846675+00 loop_ms=3521.000000
+loop_ms_since_restart 2026-09-15 14:46:23.846646+00 loop_ms=4055.000000
+loop_ms_since_restart 2026-09-15 14:47:38.846891+00 loop_ms=9627.000000
+pricing_order_last_priced_run 18047 2026-09-15 14:46:54.069304+00 credits=6 order=["sharp_two_sided", "sharp_direct", "no_velocity", "sharp_plus_derived", "wide_band", "constrained", "nfl_only"] variant_ms_keys=7
+tape_covered_frac 2026-09-15 14:00:10.468299+00 0.949200
+tape_covered_frac 2026-09-15 13:00:12.289822+00 1.000000
+tape_covered_frac 2026-09-15 12:00:16.646404+00 1.000000
+tape_covered_frac 2026-09-15 11:00:16.646389+00 1.000000
+unnamed_backend 7525 client=172.18.0.7/32 start=2026-09-15 14:40:24.219828+00 state=idle q=COMMIT
+unnamed_backend 7664 client=172.18.0.7/32 start=2026-09-15 14:41:24.218004+00 state=idle q=ROLLBACK
+exec_capacity_skips_2h 1148
+exec_capacity_skips_prev_24h 2203
+named_backends_by_service app-exec client=172.18.0.4/32 n=1 oldest_start=2026-09-15 14:40:38.848195+00
+named_backends_by_service app-research client=172.18.0.8/32 n=1 oldest_start=2026-09-15 14:40:24.49755+00
+named_backends_by_service app-run client=172.18.0.6/32 n=2 oldest_start=2026-09-15 14:40:54.071698+00
+named_backends_by_service app-serve client=172.18.0.7/32 n=1 oldest_start=2026-09-15 14:40:28.469258+00
+named_backends_by_service app-ws client=172.18.0.5/32 n=2 oldest_start=2026-09-15 14:40:23.874504+00
+named_backends_by_service psql client=local n=1 oldest_start=2026-09-15 14:50:48.029436+00
+named_backends_by_service (unnamed) client=172.18.0.7/32 n=2 oldest_start=2026-09-15 14:40:24.219828+00
+research_reserved_read 2026-09-15 14:50:48.031756+00 reserved=0.6234 usd=23.6441 calls=356
+veto_calls_last_10min 38
+settle_209 running
+report_wtd_period_s_last_success 2026-09-15 08:06:16.681732+00

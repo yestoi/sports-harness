@@ -1,0 +1,359 @@
+verify_at_utc=2026-09-15T14:47:01Z (0947 CT) deploy 7c3d750 full 14:37:47-14:41:28Z (batch A + batch B + fix 74); subs: :cutoff='2026-09-15T05:23:44Z' :boundary_order_id=10886 :boundary_fill_id=1878 :boundary_ledger_id=4 :boundary_event_id=2562407 :deploy_ts='2026-09-15T14:37:47Z'; :row72_ids = the 1176 ids of evidence/2026-09-15-row72-ids.txt; phase blocks 93-111 (3), 141-153 (4), 248-287 (5), 317-318 (6A), 367-427 (6B)
+### block 93 111
+select last_loop_at, loops, open_orders, last_error, last_loop_ms, p95_loop_ms, loops_skipped,
+       book_dirty_markets, ws_last_event_at, now() - last_loop_at as age from exec_heartbeat;
+=> 2026-09-15 14:46:53.846712+00 | 34431 | 0 |  | 4053 | 8039 | 3432 | 17 | 2026-09-15 14:46:51.48+00 | 00:00:08.405275
+
+select status, count(*) from orders where replay=false group by 1;
+=> cancelled | 12359
+=> expired | 61
+
+select count(*) from orders o where o.status='open' and o.replay=false
+  and not exists (select 1 from orderbook_events e where e.ticker=o.ticker and e.ts > now() - interval '15 minutes');
+=> 0
+
+select count(*) from intents; select count(*) from fills where replay=false;
+=> 151758
+=> 1878
+
+select count(*) from settlements; select count(*) from venue_settlements; select count(*) from benchmarks;
+=> 200
+=> 9764
+=> 17233
+
+select count(*) from gap_outcomes; select count(*) from markouts;
+=> 79452
+=> 59205
+
+select reason, count(*) from order_events where kind='skipped' and ts > now() - interval '24 hours' group by 1 order by 2 desc;
+=> book_dirty | 22919
+=> fair_stale | 13449
+=> exec_capacity | 3238
+=> no_book | 191
+=> kickoff | 11
+
+select job, status, budget_exhausted, finished_at from job_runs order by id desc limit 3;
+=> settle | running | f | 
+=> futures | ok | f | 2026-09-15 14:00:00.006023+00
+=> settle | degraded | f | 2026-09-15 12:06:28.357724+00
+
+select count(*) from order_clv;
+=> 79323
+
+select count(*), sum(case when gate_variant then 1 else 0 end) from gate_reports where passed = false;
+=> 9 | 3
+
+-- Task 12b telemetry (U6)
+select name, max(ts) from metric_samples group by 1 order by 1;
+=> db.brin_ranges_summarized | 2026-09-15 09:06:16.646967+00
+=> db.growth_gb_per_day | 2026-09-15 09:06:16.646967+00
+=> db.rfqs_pruned | 2026-09-15 09:06:16.646967+00
+=> db.size_gb | 2026-09-15 09:06:16.646967+00
+=> db.table_gb | 2026-09-15 09:06:16.646967+00
+=> exec.book_errors | 2026-09-15 14:46:23.846646+00
+=> exec.cancelled | 2026-09-15 14:37:54.734597+00
+=> exec.dirty_markets | 2026-09-15 14:46:23.846646+00
+=> exec.fair_age_s | 2026-09-15 14:46:23.846646+00
+=> exec.filled_contracts | 2026-09-15 14:46:23.846646+00
+=> exec.intents_considered | 2026-09-15 14:46:23.846646+00
+=> exec.loop_ms | 2026-09-15 14:46:23.846646+00
+=> exec.loops_skipped | 2026-09-15 14:46:23.846646+00
+=> exec.nw_pending | 2026-09-15 14:46:23.846646+00
+=> exec.open_orders | 2026-09-15 14:46:23.846646+00
+=> exec.p95_loop_ms | 2026-09-15 14:46:23.846646+00
+=> exec.placed | 2026-09-15 14:46:23.846646+00
+=> exec.signal_to_order_ms | 2026-09-15 14:33:24.734543+00
+=> exec.skipped | 2026-09-15 14:40:38.858405+00
+=> exec.tape_batch_min | 2026-09-15 14:46:23.846646+00
+=> exec.tape_lag_tickers | 2026-09-15 14:46:23.846646+00
+=> exec.ws_event_age_s | 2026-09-15 14:46:23.846646+00
+=> exec.ws_event_ahead_s | 2026-09-15 14:46:23.846646+00
+=> host.disk_free_gb | 2026-09-15 09:06:16.646967+00
+=> host.disk_total_gb | 2026-09-15 09:06:16.646967+00
+=> host.mem_available_mb | 2026-09-15 09:06:16.646967+00
+=> match.rate | 2026-09-15 09:06:16.646967+00
+=> match.unmatched | 2026-09-15 09:06:16.646967+00
+=> normalize.backlog_ids | 2026-09-15 14:45:54.069278+00
+=> pricing.candidates | 2026-09-15 14:31:40.46836+00
+=> pricing.fair_values | 2026-09-15 14:31:40.46836+00
+=> pricing.feed_lag_s | 2026-09-15 14:31:40.46836+00
+=> pricing.no_fair | 2026-09-15 14:31:40.46836+00
+=> pricing.rejected | 2026-09-15 14:31:40.46836+00
+=> pricing.rescore_suppressed | 2026-09-15 14:31:40.46836+00
+=> pricing.staleness_median_s | 2026-09-15 14:31:40.46836+00
+=> recorder.credits_remaining | 2026-09-15 14:31:40.46836+00
+=> recorder.errors | 2026-09-15 14:46:24.06918+00
+=> recorder.fetched | 2026-09-15 14:45:54.069278+00
+=> recorder.malloc_trim_mb | 2026-09-15 14:31:40.46836+00
+=> recorder.phase_ms | 2026-09-15 14:46:24.06918+00
+=> recorder.rss_mb | 2026-09-15 14:46:24.06918+00
+=> recorder.tick_ms | 2026-09-15 14:46:24.06918+00
+=> recorder.trade_gaps | 2026-09-15 14:46:24.06918+00
+=> serve.snapshot_ms | 2026-09-15 14:46:54.21642+00
+=> ws.events_per_min | 2026-09-15 14:46:25.55802+00
+=> ws.gaps | 2026-09-15 14:46:25.55802+00
+=> ws.reconnects | 2026-09-15 14:46:25.55802+00
+=> ws.sink_lag_s | 2026-09-15 14:46:25.55802+00
+=> ws.subscribed_tickers | 2026-09-15 14:46:25.55802+00
+=> ws.tape_covered_frac | 2026-09-15 14:00:10.468299+00
+=> ws.trades_per_min | 2026-09-15 14:46:25.55802+00
+
+select count(*) from order_watch_samples where ts > now() - interval '1 hour';
+=> 2827
+
+select variant_id, max(ts) from equity_snapshots group by 1;
+=> ff363c8ac08d | 2026-09-15 14:45:53.847034+00
+=> 5632da729fa7 | 2026-09-15 14:45:53.847034+00
+=> f259ca109084 | 2026-09-15 14:45:53.847034+00
+=> e82fcd0a1e99 | 2026-09-08 12:31:58.93176+00
+
+select count(*) from game_score_events where ts > now() - interval '24 hours';
+=> 13
+
+select check_name, status from check_results where ts > now() - interval '25 hours';
+=> duplicate_trades | pass
+=> clv_p_used_matches_order_prob | pass
+=> settle_errors_24h | pass
+=> derived_without_venue_row_48h | pass
+=> build_sha_drift | pass
+=> orders_open_past_expiry | pass
+=> fills_without_print | pass
+=> gate_rows_one_gate_variant | pass
+=> fair_values_negative_staleness | pass
+=> runs_taker_side_missing_24h | pass
+=> orders_without_place_event | pass
+=> intents_without_order_or_skip | fail
+=> fill_contracts_exceed_order_contracts | pass
+=> orders_filled_exceeds_contracts | pass
+=> settlement_result_mismatch | pass
+=> fair_values_negative_feed_lag | pass
+=> benchmarks_source_after_target | pass
+=> fills_outside_placement_window | pass
+=> markouts_at_after_horizon | pass
+=> metric_samples_negative_24h | pass
+=> operator_events_empty_summary_24h | pass
+=> order_watch_negative_queue_24h | pass
+=> equity_mtm_coverage_out_of_range_24h | pass
+=> game_score_went_down_24h | pass
+=> check_results_unknown_status_25h | pass
+=> report_runs_generated_in_future | pass
+=> report_cells_orphan | pass
+
+select year, week, provisional, generated_at from report_runs order by id desc limit 3;
+=> 2026 | 38 | t | 2026-09-15 08:06:16.681732+00
+=> 2026 | 38 | t | 2026-09-14 20:48:45.085167+00
+=> 2026 | 38 | t | 2026-09-14 14:12:22.730816+00
+
+### block 141 153
+-- Phase 4 (after the authenticated adapter, backups and Alembic ship)
+select env, method, count(*) from venue_requests where ts > now() - interval '24 hours' group by 1, 2 order by 1, 2;
+=> prod | GET | 28
+
+select count(*) from venue_requests where env = 'prod' and method = 'GET' and ts > now() - interval '2 hours';
+=> 3
+
+select venue, env, status, reason, since, updated_at from venue_status order by venue, env;
+=> kalshi | demo | ok |  | 2026-09-09 15:54:44.71089+00 | 2026-09-09 15:54:44.71089+00
+=> kalshi_rfq | prod | ok |  | 2026-09-12 05:26:38.387488+00 | 2026-09-12 05:26:38.387488+00
+
+select kind, status, bytes, finished_at, now() - finished_at as age from backup_runs order by id desc limit 6;
+=> encrypt | ok | 1527203378 | 2026-09-15 08:36:23.208925+00 | 06:10:40.539699
+=> encrypt | ok | 9223 | 2026-09-15 08:36:16.665668+00 | 06:10:47.082956
+=> forever | ok | 9223 | 2026-09-15 08:32:17+00 | 06:14:46.748624
+=> nightly | ok | 1527203378 | 2026-09-15 08:32:13+00 | 06:14:50.748624
+=> encrypt | ok | 133660292 | 2026-09-14 19:30:15.109234+00 | 19:16:48.63939
+=> encrypt | ok | 4398604194 | 2026-09-14 19:30:07.022624+00 | 19:16:56.726
+
+select count(*) from backup_runs where kind = 'drill' and rows_match = true;
+=> 3
+
+select variant_id, drawdown_pct, drawdown_stop from equity_snapshots
+  where ts = (select max(ts) from equity_snapshots) order by variant_id;
+=> 5632da729fa7 | 0.0000 | f
+=> f259ca109084 | -0.0059 | f
+=> ff363c8ac08d | 0.0000 | f
+
+select count(*) from runs where started_at > now() - interval '24 hours'
+  and (notes->'pricing'->>'gate_variant_missing')::boolean = true;
+=> 0
+
+select notes->'pricing'->'order' as pricing_order, notes->'pricing'->'variant_ms' as variant_ms
+  from runs where status <> 'skipped' order by id desc limit 3;
+=>  | 
+=>  | 
+=>  | 
+
+select version_num from alembic_version;
+=> 0012_phase6d_sustained_eval
+
+### block 248 287
+select count(*) from futures_snapshots where fetched_at > now();          -- no future timestamps
+select count(*) from futures_snapshots f
+  where f.series_ticker in ('KXNFLGAME','KXNFLSPREAD','KXNFLTOTAL',
+                            'KXNCAAFGAME','KXNCAAFSPREAD','KXNCAAFTOTAL');
+=> 0
+=> 0
+
+-- the per-game series are excluded by exact match (ruling A-I9)
+select count(*) from weather_points p
+  where p.forecast_hourly_url not like 'https://api.weather.gov/%';
+=> 0
+
+-- roadmap invariant 8: a stored URL is a stored instruction to connect somewhere
+select count(*) from weather_snapshots where roof = 'dome';
+=> 0
+
+-- The addendum's invariant is "no `weather_points` row for a dome". `weather_points` has
+-- no roof column -- the roof lives in the committed YAML and is copied onto the snapshot
+-- -- so the checkable form of the same rule is that no snapshot was ever taken for one.
+-- A dome that reached `weather_points` would have produced a snapshot, so this catches it.
+select count(*) from weather_snapshots where fetched_at > now() or period_start < fetched_at
+  - interval '2 hours';                       -- no future reads, no period from before the fetch
+select count(*) from veto_queue where enqueued_at > now();
+=> 0
+=> 0
+
+select count(*) from research_notes where cost_usd < 0 or created_at > now();
+=> 0
+
+select count(*) from research_notes n where n.kind = 'veto'
+  and not exists (select 1 from research_notes m where m.call_id = n.call_id
+                  and m.model <> n.model);    -- every veto call is a pair (R:225-229)
+select count(*) from veto_decisions where call_id is null
+  and decision not in ('veto_skipped_budget', 'veto_error');
+=> 0
+=> 0
+
+-- only the two call-less labels may have no call
+select count(*) from veto_decisions where decided_at < signal_created_at;
+=> 0
+
+select count(*) from veto_h9 h join research_notes n on n.call_id = h.call_id
+  where n.replay = true;                      -- no replay row inside the H9 view
+select count(*) from research_spend where usd < 0 or usd_reserved < 0;
+=> 0
+=> 0
+
+select count(*) from (select day from research_spend group by day having sum(usd) > 25) x;
+=> 0
+
+-- usd <= the daily cap, per day (U4, roadmap invariant 7). Wrapped in a count so this
+-- row obeys the block's own "every query returns 0" rule.
+select count(*) from parlay_legs l
+  where not exists (select 1 from parlay_cards c where c.id = l.card_id);
+=> 0
+
+-- no orphan legs (addendum §3). Also asserted in the phase 4.5 block; repeated here
+-- because phase 5 is the first phase that writes these rows.
+select count(*) from report_annotations where cost_usd < 0 or created_at > now();
+=> 0
+
+select count(*) from report_annotations a
+  where not exists (select 1 from report_runs r where r.id = a.report_run_id);
+=> 0
+
+select count(*) from rfqs where received_at > now();
+=> 0
+
+select count(*) from rfq_quotes q
+  where not exists (select 1 from rfqs r where r.id = q.rfq_id);   -- no quote without an rfq
+=> 0
+
+### block 317 318
+select criteria_hash, evaluated_at, gate_variant from gate_reports order by id desc limit 3;
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | t
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+=> 0
+
+### block 367 427
+-- 1. originals intact
+select count(*), sum(contracts), max(id) from fills where replay = false and id <= 1878;
+=> 1878 | 70557.76 | 1878
+
+select sum(filled_contracts), sum(dirty_seconds), sum(traded_at_price), sum(nw_traded_at_price),
+       sum(queue_remaining) from orders where replay = false and id <= 10886;
+=> 38.92 | 1557550170 | 1529.92 | 11006049.45 | 154403731.18
+
+select count(*), sum(contracts), max(id) from ledger where replay = false and id <= 4;
+=> 4 | 77.84 | 4
+
+-- 2. no post-expiry fill (unfiltered by fill_method: it is a test of the entry-cross clamp)
+select count(*) from fills f join orders o on o.id = f.order_id
+where f.replay = false and f.id > 1878 and o.expiry is not null
+  and f.filled_at > o.expiry;
+=> 0
+
+-- 3. no placement from a rejected target, and the skip itself is being written
+select count(*) from order_events e where e.kind = 'place' and e.id > 2562407
+  and (select s.kind || ':' || coalesce(s.reason, '') from order_events s
+       where s.intent_id = e.intent_id and s.id < e.id order by s.id desc limit 1)
+      = 'skipped:signal_rejected';
+=> 0
+
+select count(*) from order_events where kind = 'skipped' and reason = 'signal_rejected'
+  and id > 2562407;
+=> 0
+
+-- 4. liquidity conservation: the invariant, then the ten-order check beside it
+select count(*) from fills where replay = false and id > 1878
+  and fill_method = 'queue_model' and has_print = false;
+=> 0
+
+select o.id, o.filled_contracts, sum(t.count) as hitting_volume
+from orders o
+join fills f on f.order_id = o.id and f.replay = false and f.fill_method = 'queue_model'
+join venue_trades t on t.ticker = o.ticker
+ and t.ts >= o.placed_at and t.ts <= coalesce(o.cancelled_at, o.expiry)
+ and t.taker_side = case when o.side = 'yes' then 'no' else 'yes' end
+ and case when o.side = 'yes' then t.yes_price else 1 - t.yes_price end <= o.prob
+where o.replay = false and o.id > 10886
+group by o.id, o.filled_contracts
+having o.filled_contracts > sum(t.count)
+limit 10;
+=> (no rows)
+
+-- expected: no rows. We cannot fill more than the volume that printed at or through our
+-- price while we rested. Read `(ticker, ts)` on venue_trades; bounded by each order's own
+-- resting interval.
+-- 5. dirty scope and the backoff cadence
+select count(*) from orders where replay = false and id > 10886
+  and status in ('cancelled','expired')
+  and dirty_seconds > extract(epoch from (coalesce(cancelled_at, expiry) - placed_at));
+=> 0
+
+select count(*) from orders where replay = false and nw_done = false
+  and nw_next_attempt_at < now() - interval '3600 seconds';
+=> 0
+
+select 'dirty' as table, count(*) from market_dirty_intervals
+where ended_at is null and started_at < now() - interval '2 hours'
+union all
+select 'observation', count(*) from market_observation_intervals
+where ended_at is null and started_at < now() - interval '2 hours';
+=> dirty | 14
+=> observation | 113
+
+-- expected: 0 and 0 at 01:00-08:00 CT. Inside a game window open rows are expected and are
+-- journaled beside exec.dirty_markets instead.
+-- 8. gate untouched
+select criteria_hash, evaluated_at, gate_variant from gate_reports order by id desc limit 3;
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | t
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+=> 5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5 | 2026-09-15 05:41:09.998648+00 | f
+
+select count(*) from gate_reports where criteria_json ? 'eligibility';
+=> 0
+
+-- 11. the counterfactual backlog, beside criterion 4's n_obs
+select count(*) from orders where replay = false and nw_done = false and expiry < now();
+=> 0
+
+select name, value, ts from metric_samples where name = 'exec.nw_pending'
+  order by ts desc limit 3;
+=> exec.nw_pending | 2728.000000 | 2026-09-15 14:46:23.846646+00
+=> exec.nw_pending | 2728.000000 | 2026-09-15 14:45:23.846675+00
+=> exec.nw_pending | 2728.000000 | 2026-09-15 14:44:23.846701+00
+

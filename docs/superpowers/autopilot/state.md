@@ -1,18 +1,18 @@
 # Autopilot checkpoint
 
-Updated 2026-09-15 08:36 CT (13:36Z) by the post-reboot controller session (tmux `sports-autopilot`, flock held; PID 6734) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 231. Paper-only. Runtime build: **762bde4** (fix 73, app-only 08:19-08:21 CT, journal 231 verify PASS with standing items). Main: **172be9e** = 762bde4 + hotfix batch B (docker-compose.yml on FULL_PATHS: the next release is full). origin/main = 35f7180 (U7 pushes after phases and on Mondays).
+Updated 2026-09-15 09:53 CT (14:53Z) by the post-reboot controller session (tmux `sports-autopilot`, flock held; PID 6734) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 234. Paper-only. Runtime build: **7c3d750** (full release 09:37:47-09:41:28 CT: hotfix batch A, hotfix batch B, fix 74; journal 233; verify 234 PASS with standing items and two deferred re-reads). Main: 7c3d750 + docs. origin/main = 35f7180 (U7 pushes after phases and on Mondays).
 
-## Right now: batch A in opus review, batch B merged (awaits the shared full release), fix 74 implementing
+## Right now: released and verified; three deferred reads pending; next hotfix batch (rows 75, 76) then the row 72 batch
 
-- **hotfix batch A**: implemented (sonnet, 07:52-08:24 CT), committed bb858f8 on 762bde4 (rebased); opus reviewer dispatched 08:25 CT on `review-batch-a-762bde4..bb858f8.diff`; report `results/batch-a-review.md`; chase 08:55 CT, timeout 09:05 CT. After APPROVED (+ Minors): rebase onto main 172be9e (disjoint files), full suite on `harness_test_fix_20260915_batch_a`, `--ff-only`, then one **full** release (`make deploy-omarchy`) carrying batch A + batch B; read `receipt.unnamed_backends` (the old containers carry no application_name: batch B's drain reports them and does not terminate them; no new revision, so `migrate ensure` upgrades nothing).
-- **hotfix batch B**: merged to main 172be9e at 08:35 CT (opus impl, sonnet review APPROVED 0/0/0, suite 4,127 passed pristine on 172be9e: the release receipt for the tree without batch A). Released with batch A, or alone if batch A is still open at about 09:45 CT.
-- **hotfix fix 73**: released 762bde4, verify 231 PASS; **closing read deferred to the 09:06 CT settle run** (`job_runs` settle `ok` with `gap_outcomes_drain` counted); revoke the fixture grant on `harness_test_fix_20260915_gap_outcomes_divzero` and remove its worktree after that read.
-- **hotfix fix 74** (new, journal 231: a leaked research reservation): sonnet implementer dispatched 08:36 CT on `fix-74-brief.md`; worktree `../sports-wt/fix-20260915-research-reservation` (base 762bde4), db `harness_test_fix_20260915_research_reservation` (grant ON); report `results/fix-74-report.md`; chase 09:36 CT. Then sonnet review; rides the next release.
-- Ledger for all: `.superpowers/sdd/hotfix-2026-09-15/progress.md`.
+- **Released 7c3d750** (journal 233): batch A (items 2, 3, 4, 8, 13, 14 + review I-1 bound + the rescore test rewrite), batch B (item 9), fix 74. All four branch worktrees removed, branches deleted, fixture grants revoked. Ledger `.superpowers/sdd/hotfix-2026-09-15/progress.md`.
+- **Deferred reads** (journal 234): 10:15 CT executor `p95_loop_ms` (7,500 ms row; 8,039-10,824 ms right after the restart, 4,026-4,213 ms pre-release; `exec_capacity` skips 1,148 / 2 h rising, `nw_pending` 2,728) and fix 74's between-calls `usd_reserved = 0` read (row 74 closes on it), plus the sid-2 gap episodes (four in 08:04-09:05 CT at 15-minute spacing); **11:45 CT** fix 73's closing read on the first post-release settle (due about 10:40 CT; `report_wtd` runs first for about an hour).
+- **New carried fixes**: row 75 (`report_wtd` streams past the settle budget: 3,518 s on run 203; runs 202 and 209 interrupted; opus impl/review, own batch after the 11:45 CT read) and row 76 (app-serve's `make_snapshot_engine` sends no `application_name`; sonnet; rides row 75's batch).
+- **Row 72 batch** (revision 0013 `orders.nw_executor_version`, the Amendment 6 sub-population sentence; opus impl/review; a full release of its own) after the row 75/76 batch. Narrowed invariant reads 0 / 0 on 762bde4 and 7c3d750.
+- **User-side decisions recorded today**: extend amendment 0.18 to `order_rescores`? (roadmap TODO, journal 232); the futures budget sentence in verify.md (200 vs the spec's 500); the storage retention proposal (by 2026-09-22, journal 230).
 
 ## Order of work (journal 224 item 17; batch A in flight)
 
-1. Batch A + batch B (+ fix 74 if reviewed in time) full release, then verify (fix 73 released separately as 762bde4).
+1. Done: 7c3d750 (batch A + batch B + fix 74) released and verified (journal 233/234).
 2. Hotfix batch B (item 9's fix 71 narrowing: application_name per service, drain by listed pid and stopped-service names, partition children as bulk, healer lock_timeout, dump-in-progress refusal); opus impl, sonnet review; own release.
 3. Row 72 batch (own release, full recipe: revision 0013 `orders.nw_executor_version`, Amendment 6 sub-population sentence, verify.md Layer 2b narrowed queries read 0/0 against evidence/2026-09-15-row72-ids.txt); opus impl, opus review.
 4. Verify after each release: journal 219's deferred rows (fix 64's check row, the two cutoff-bounded checks now at 05:23:44Z, `intents_without_order_or_skip`, the 01:00-08:00 open-interval rule, c1066b5-era orphan intents), item 12's exec-health windows on 0d04804 (02:30-06:30 CT vs ca30ed1's 23:38-00:23 CT and Monday's quiet hours), item 16's tape-gap read for 23:34-23:37 CT Sep 14 (journal 229 offers the reading: a clean stop writes no gap row), durable re-reads of rows 49 and 68, the 6B by-cause row, fix 73's closing read (next settle run `ok`).
@@ -28,11 +28,11 @@ Updated 2026-09-15 08:36 CT (13:36Z) by the post-reboot controller session (tmux
 
 ## Pending results / subprocesses
 
-- Agents: rev-batch-a (opus, 08:25 CT), fix-74 (sonnet, 08:36 CT). Suites: none running. Wakeups: CronCreate 6034e5c2 one-shot 08:52 CT (durable reminder 2026091503 + timer); the 09:00 CT daily line, 09:06 CT settle read and 09:30 CT futures check are due at the next boundaries after those times.
+- Agents: none running. Suites: none. Wakeups: CronCreate one-shots 10:15 CT (p95, fix 74 between calls, gap episodes) and 11:45 CT (fix 73 closing read) with durable reminders 2026091505 and 2026091506; both armed at 09:53 CT.
 - Latest receipts (~/.cache/sports-harness/test-state/): fix-20260915-dirty-intervals 0d04804 (exit 0, pristine, release tree = deployed tree); phase6d-merge-main ffbecd5; main e17d0f5. The main release tree since 0d04804 is docs-only, so a rebased branch receipt is the release receipt (deploy.md step 2).
-- Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, **fix_20260915_batch_a, fix_20260915_batch_b, fix_20260915_gap_outcomes_divzero, fix_20260915_research_reservation** (revoke after their last suite).
-- Worktrees: fix-20260915-batch-a, fix-20260915-batch-b (merged; remove after the release), fix-20260915-gap-outcomes-divzero (merged and released; remove after the 09:06 CT read), fix-20260915-research-reservation (active); phase6d-merge-main (ffbecd5); the older recovery/fix45/fix48/fix52/worker-smoke set (preserve until the recovery handoff is accepted).
-- Day counters (CT) Sep 15: dispatches 11 (4 carried + batch A 2 + fix 73 2 + batch B 2 + fix 74 1), failed deploys 1 (row 72 verify FAIL at 00:36 CT; release stands), implementers running 1 of 3.
+- Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, none (the four hotfix databases' grants were revoked 09:49 CT; the databases remain until the next `make testdb-prune` or the user's cleanup).
+- Worktrees: none for hotfixes (the four merged worktrees removed 09:49 CT); the older worktrees unchanged.
+- Day counters (CT) Sep 15: dispatches 14 (4 carried + batch A 4 + fix 73 2 + batch B 2 + fix 74 2), failed deploys 1 (row 72 verify FAIL at 00:36 CT; release stands), implementers running 0 of 3.
 
 ## Rulings landed (journal 199-212, 224, 226, 229)
 
@@ -40,8 +40,8 @@ User-side closed: NAS key, age key off-host, Anthropic account limits, Kalshi re
 
 ## Evidence receipts
 
-- Preflight: evidence/2026-09-15-preflight-0746.txt (PASS, paper posture intact, 0d04804). Cold start: evidence/2026-09-15-coldstart-0746.txt. Fix 73: evidence/2026-09-15-gap-outcomes-divzero-0755.txt. Verify 762bde4 (journal 231): evidence/2026-09-15-verify-{summary-0823,layer2-0826,layer2-phases-0826,shell-0826,layer2b-0827,rows-0829,rows2-0830}.txt. Storage: evidence/2026-09-15-storage-by-table-0803.txt.
-- Releases: /srv/sports-harness/releases/20260915T131907Z-762bde4 (app, healthy); 20260915T070539Z-0d04804 (full, healthy); 20260915T062147Z-b69b880; 20260915T060556Z-e17d0f5 (app); 20260915T052344Z-c1066b5 (full); 20260915T043416Z-f28cf4d (failed-old-apps-restored). Boundary: evidence/2026-09-15-release-boundary-6b.txt.
+- Preflight: evidence/2026-09-15-preflight-0746.txt (PASS, paper posture intact, 0d04804). Cold start: evidence/2026-09-15-coldstart-0746.txt. Fix 73: evidence/2026-09-15-gap-outcomes-divzero-0755.txt. Verify 762bde4 (journal 231): evidence/2026-09-15-verify-{summary-0823,layer2-0826,layer2-phases-0826,shell-0826,layer2b-0827,rows-0829,rows2-0830}.txt. Storage: evidence/2026-09-15-storage-by-table-0803.txt. Daily: evidence/2026-09-15-daily-0907.txt. Deploy 7c3d750: evidence/2026-09-15-deploy-full-0937.txt. Verify 7c3d750 (journal 234): evidence/2026-09-15-verify-{summary-0942,shell-0944,layer2-0947,layer2-phases-0947,layer2b-0947,rows-0950}.txt. Fix 73 closing attempts: evidence/2026-09-15-fix73-closing-0907.txt.
+- Releases: /srv/sports-harness/releases/20260915T143747Z-7c3d750 (full, healthy); 20260915T131907Z-762bde4 (app, healthy); 20260915T070539Z-0d04804 (full, healthy); 20260915T062147Z-b69b880; 20260915T060556Z-e17d0f5 (app); 20260915T052344Z-c1066b5 (full); 20260915T043416Z-f28cf4d (failed-old-apps-restored). Boundary: evidence/2026-09-15-release-boundary-6b.txt.
 - Verify (journal 219): evidence/2026-09-15-verify-*.txt and the walkthrough captures; fix 69/70: evidence/2026-09-15-verify-fix6970-0208.txt; row 72: evidence/2026-09-15-row72-ids.txt; 6D: evidence/2026-09-15-predeploy-baseline-6d.txt, -verify-6d-*.txt. Review of record: https://claude.ai/artifact/3VT5WfN4fWPXXkSNCGXAE2 (journal 223).
 
 ## Standing constraints (unchanged)

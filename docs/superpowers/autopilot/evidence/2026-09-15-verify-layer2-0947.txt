@@ -1,0 +1,52 @@
+verify_at_utc=2026-09-15T14:47:01Z (0947 CT) deploy 7c3d750 full 14:37:47-14:41:28Z (batch A + batch B + fix 74); subs: :cutoff='2026-09-15T05:23:44Z' :boundary_order_id=10886 :boundary_fill_id=1878 :boundary_ledger_id=4 :boundary_event_id=2562407 :deploy_ts='2026-09-15T14:37:47Z'; :row72_ids = the 1176 ids of evidence/2026-09-15-row72-ids.txt; blocks 23-27, 48-60
+### block 23 27
+select count(*) from games where status = 'in_progress';
+=> 0
+
+select count(*) from games where kickoff_utc between now() - interval '4 hours' and now() + interval '15 minutes';
+=> 0
+
+select count(*) from games where sport = 'nfl' and kickoff_utc between now() + interval '60 minutes' and now() + interval '100 minutes';
+=> 0
+
+### block 48 60
+select id, started_at, status, credits_used, odds_remaining, notes->'errors' as errors
+  from runs where status <> 'skipped' order by id desc limit 5;
+=> 18047 | 2026-09-15 14:46:54.069304+00 | running | 0 |  | 
+=> 18045 | 2026-09-15 14:45:54.069278+00 | ok | 0 |  | []
+=> 18027 | 2026-09-15 14:34:40.468343+00 | ok | 0 |  | []
+=> 18022 | 2026-09-15 14:31:40.46836+00 | ok | 6 | 4897422 | []
+=> 17998 | 2026-09-15 14:19:40.468334+00 | ok | 0 |  | []
+
+select status, count(*) from runs where started_at > now() - interval '3 hours' group by 1;
+=> ok | 20
+=> running | 1
+=> skipped | 256
+
+select id, started_at, status from runs order by id desc limit 1;
+=> 18047 | 2026-09-15 14:46:54.069304+00 | running
+
+select decision, count(*) from signals where replay=false and created_at > now() - interval '3 hours' group by 1;
+=> candidate | 6355
+=> rejected | 31011
+
+select kind, count(*) from orderbook_events where ts > now() - interval '2 hours' group by 1;
+=> delta | 98892
+=> gap | 7
+=> snapshot | 1084
+
+select now() - ts as ws_last_event_age from orderbook_events order by id desc limit 1;  -- by id: max(ts) scanned 19M rows (120 s on 2026-09-07)
+select relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze from pg_stat_user_tables order by n_dead_tup desc limit 5;
+=> 00:00:00.419487
+=> fair_values | 4513969 | 6349 |  | 2026-09-15 03:32:52.355047+00
+=> gap_outcomes | 79452 | 5540 |  | 2026-09-14 08:58:54.916318+00
+=> orders | 12420 | 4358 | 2026-09-15 14:46:36.963027+00 | 2026-09-15 14:46:37.357872+00
+=> veto_queue | 62817 | 2155 | 2026-09-15 11:10:13.941616+00 | 2026-09-15 10:53:13.117459+00
+=> runs | 17934 | 2079 |  | 2026-09-15 11:36:15.325499+00
+
+select count(*), pg_size_pretty(sum(size)) from pg_ls_waldir();
+=> 64 | 1024 MB
+
+select pg_size_pretty(pg_database_size('harness'));
+=> 130 GB
+
