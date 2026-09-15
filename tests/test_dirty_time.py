@@ -355,6 +355,44 @@ def test_a_market_whose_first_read_raises_still_closes_its_observation_row_on_de
     assert _open_count(db_session) == 0
 
 
+def test_a_step_earlier_than_an_open_rows_started_at_leaves_it_open(db_session):
+    """Review batch A, I-1: `open_interval_market_ids` used to return every open row for this
+    replay flag with no time bound, so a step whose own `now` is earlier than an already-open
+    row's `started_at` -- a second replay over the same window (`harness/replay.py`'s
+    documented case), or a backwards host clock jump (the 2026-09-13 Omarchy RTC reset was
+    exactly this shape) -- named that row `gone` and closed it at an instant before it opened,
+    `ended_at < started_at`, which `docs/superpowers/autopilot/verify.md:565` counts as a FAIL.
+    `open_interval_market_ids` is now bounded on `started_at <= now`, the step's own instant, so
+    a row that had not started yet as of this step's `now` is never a candidate for `gone` and
+    stays open, in both tables, until a step at or after its `started_at` sees it depart.
+
+    `db_session.expire_all()` between the two steps matters here: the bulk `UPDATE` behind
+    `close_intervals` does not always refresh an ORM instance already loaded into this same
+    session's identity map (its `synchronize_session` strategy can silently skip the in-memory
+    object), so a naive read-after-write here can see the stale, still-open Python object even
+    though the row underneath was wrongly closed -- expiring forces the second read to come from
+    the database, the same thing that matters in production.
+    """
+    executor = _executor_with_books({"A": _dirty_book("gap")})
+    executor._advance_books(db_session, {"A"}, {"A": 1}, at(30), dead_recorder=False)
+
+    dirty = _intervals(db_session, MarketDirtyInterval)
+    observed = _intervals(db_session, MarketObservationInterval)
+    assert [(r.started_at, r.ended_at) for r in dirty] == [(at(30), None)]
+    assert [(r.started_at, r.ended_at) for r in observed] == [(at(30), None)]
+    db_session.expire_all()
+
+    # A step at an instant earlier than A's started_at, naming nothing: without the bound this
+    # would close both rows at at(0), stamping ended_at < started_at.
+    executor._advance_books(db_session, set(), {}, at(0), dead_recorder=False)
+    db_session.expire_all()
+
+    dirty = _intervals(db_session, MarketDirtyInterval)
+    observed = _intervals(db_session, MarketObservationInterval)
+    assert [(r.started_at, r.ended_at) for r in dirty] == [(at(30), None)]
+    assert [(r.started_at, r.ended_at) for r in observed] == [(at(30), None)]
+
+
 def test_dirty_causes_is_the_single_vocabulary(db_session):
     """Journal 224 item 8 (amendment 0.19): every cause the loop writes -- the book's own four
     plus its two loop-only verdicts, `recorder_dead` and `book_unreadable` -- is a member of

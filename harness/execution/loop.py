@@ -636,7 +636,7 @@ class Executor:
         # drift from what is actually still open no matter what the loop's memory holds.
         # `self.books` stays a cache of what was last read, nothing here reads it for `gone`.
         currently_open = store.open_interval_market_ids(
-            session, "market_observation_intervals", self.replay)
+            session, "market_observation_intervals", self.replay, now)
         gone = list(currently_open - set(market_ids.values()))
         self.books = {t: book for t, book in self.books.items() if t in tickers}
 

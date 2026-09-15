@@ -844,7 +844,8 @@ def close_intervals(session: Session, table: str, venue_market_ids: list[int], t
                     {"p_vms": list(venue_market_ids), "p_ts": ts, "p_replay": replay})
 
 
-def open_interval_market_ids(session: Session, table: str, replay: bool) -> set[int]:
+def open_interval_market_ids(session: Session, table: str, replay: bool,
+                             now: datetime) -> set[int]:
     """Every `venue_market_id` with a currently-open row in `table`, for this replay flag.
 
     Fix 70 leak (journal 224 item 4): `_advance_books` used to derive `gone` from
@@ -859,10 +860,16 @@ def open_interval_market_ids(session: Session, table: str, replay: bool) -> set[
     the way `open_interval`'s own read does: it is one sequential scan of a table whose live
     (open) set is a few dozen rows, and a partial index on the open rows is the answer if the
     table itself ever grows enough for the scan to matter.
+
+    Bounded on `started_at <= now` (review batch A, I-1): without this bound a row that started
+    after this step's own instant -- a second replay over the same window, or a backwards host
+    clock jump -- could still be named `gone` and closed at `now`, stamping `ended_at <
+    started_at`. A step never closes a row that had not started at its own instant.
     """
     model = _MODELS[table]
     stmt = select(model.venue_market_id).where(model.ended_at.is_(None),
-                                               model.replay == replay)
+                                               model.replay == replay,
+                                               model.started_at <= now)
     return {row[0] for row in session.execute(stmt).all()}
 
 
