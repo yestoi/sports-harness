@@ -15,6 +15,12 @@ with a `limit`, riding `orders_pkey` for the driving scan and `ix_mdi_market_sta
 
 Unobserved time is reported, never folded into clean time: absence of a dirty row means "not
 observed", not "observed clean" (ruling IM-15).
+
+One recorded limit (T6 review F6): the driving read is bounded by `o.expiry is not null`, so an
+order with no expiry has no elapsed measure here at all, while the nominal accrual
+(`loop._clamped`) grants it the whole period. `harness rescore` therefore writes NULL elapsed
+columns for such an order rather than a zero, and a reader must not read that NULL as "no dirty
+time".
 """
 
 from dataclasses import dataclass

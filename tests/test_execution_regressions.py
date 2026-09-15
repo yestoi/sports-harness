@@ -13,8 +13,12 @@ Beside them sit passing guards -- behaviours a repair must not break. Case 1b ex
 `WsSink._check_seq`, not `BookState.apply_delta` where case 1a's defect lives; it guards the
 subscription-level input a sid-level replacement for the per-book check would depend on, and it
 does not itself flip when 1a does. The naive repair -- deleting the per-object dirty flag with
-nothing at the subscription level to replace it -- is instead caught by `tests/test_book.py:84`
-(`test_seq_gap_marks_dirty`) turning red, not by 1b.
+nothing at the subscription level to replace it -- is instead caught by `tests/test_book.py`'s
+subscription-level cases turning red, not by 1b:
+`test_rest_anchor_dirties_on_a_sid_zero_gap_after_its_tape_position` and
+`test_a_book_rebuilt_at_a_cursor_carries_its_subscriptions_gap_verdict`. C1 retired the
+per-ticker `test_seq_gap_marks_dirty` this paragraph used to name, exactly as case 1a's docstring
+below required.
 
 No database. Every case is either a pure object, the real `_simulate_order` with persistence
 mocked (as the probe runs it), the real `plan_actions`, or the real `fill_events` over a fake
@@ -47,12 +51,14 @@ def test_multiplexed_subscription_sequence_does_not_dirty_the_book():
     only when a message that would have changed it was lost, and none was. The captured probe
     output is `actual_dirty true`.
 
-    `tests/test_book.py:84` (`test_seq_gap_marks_dirty`) pins the opposite outcome on the same
-    method and the same call shape: `apply_delta` with a real per-ticker seq gap, asserting
-    `dirty is True`. 6B cannot unmark this case by deleting the per-object check at
-    `harness/execution/book.py:273-274` alone -- that turns `test_book.py:84` red. The repair
-    has to move gap detection to the subscription level (where `_check_seq` already lives) and
-    retire or rewrite that test to match, not just remove the per-book flag.
+    `tests/test_book.py`'s `test_seq_gap_marks_dirty` pinned the opposite outcome on the same
+    method and the same call shape -- `apply_delta` with a real per-ticker seq gap, asserting
+    `dirty is True` -- so 6B could not unmark this case by deleting the per-object check in
+    `harness/execution/book.py` alone. C1 did what this paragraph required instead: gap
+    detection moved to the subscription level (where `_check_seq` already lives), the per-object
+    check left `book.py`, and that test was retired with it. The subscription-level guards that
+    now hold the line are `test_rest_anchor_dirties_on_a_sid_zero_gap_after_its_tape_position`
+    and `test_a_book_rebuilt_at_a_cursor_carries_its_subscriptions_gap_verdict`.
     """
     a = BookState.from_levels("A", [[".30", "5"]], [[".60", "5"]], sid=SID, seq=1,
                               as_of=at(0), source="ws", anchor_id=1)
@@ -258,7 +264,7 @@ def test_a_rejected_latest_verdict_yields_no_place():
     reason `signal_rejected` (`harness/execution/plan.py:511`) -- so placing one in the same
     loop would cancel it in the next. The placement path never makes that test
     (`_intent_actions`, defined at `plan.py:519` and called from `plan_actions` at
-    `plan.py:607`), so a rejected intent still produces a Place.
+    `plan.py:616`), so a rejected intent still produces a Place.
     """
     rejected = intent(decision="rejected")
     actions = plan_actions([rejected], [], {1: market()}, {}, {"v1": cfg()},
