@@ -30,6 +30,7 @@ from harness.db.models import (
     KillSwitch,
     Ledger,
     MarketDirtyInterval,
+    MarketObservationInterval,
     MetricSample,
     Order,
     OrderEvent,
@@ -1036,6 +1037,75 @@ def test_a_ticker_unreadable_with_a_fresh_cached_book_opens_a_book_unreadable_di
 
     rows = dirty_intervals_of(db_session, VM2)
     assert [(r.cause, r.ended_at) for r in rows] == [("book_unreadable", clock.now)]
+
+
+def test_a_step_that_raises_after_advance_books_does_not_orphan_a_departed_markets_rows(
+        env_settings, db_session, world, monkeypatch):
+    """Fix 70 leak (journal 224 item 4): `gone` is now read from the database, not from
+    `self._market_ids`, an in-memory map a raised step or a process restart can leave stale.
+
+    Step 1 places an order on T2 and opens its observation row. A gap makes the book dirty at
+    step 2, opening its dirty row too -- both steps commit normally. Step 3 raises inside
+    `_simulate`, after `_advance_books` has already returned and updated whatever in-memory
+    state is about to be thrown away; `_locked_step` rolls that step's own writes back, which
+    costs T2's rows nothing since they were already open before the step ran. A fresh `Executor`
+    then models a process restart: its `self.books` and `self._dirty_tickers` both start over
+    at empty, and there is no `self._market_ids` left to carry anything across steps at all.
+    T2's order is then closed out and its intent aged past the TTL, so it is absent from every
+    set the next step builds; that step must still close both of T2's rows, because the
+    database -- not memory -- is what says they are open.
+    """
+    snapshot = _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+
+    clock = Clock(NOW)
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.status == "open"
+    assert dirty_intervals_of(db_session, VM2) == []
+
+    _gap(db_session, NOW + timedelta(seconds=1), sid=snapshot.sid)
+    db_session.commit()
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+    assert [(r.cause, r.ended_at) for r in dirty_intervals_of(db_session, VM2)] == [
+        ("gap", None)]
+
+    def explode(*a, **kw):
+        raise ValueError("simulate blew up")
+
+    monkeypatch.setattr(executor, "_simulate", explode)
+    clock.advance(15)
+    stats = executor.step()
+    refresh(db_session)
+    assert stats.errors == 1
+    # The raise rolled that step's own writes back; T2's rows are exactly where step 2 left
+    # them, open and undisturbed.
+    assert [(r.cause, r.ended_at) for r in dirty_intervals_of(db_session, VM2)] == [
+        ("gap", None)]
+
+    # Close the order out from under the loop and let its intent age past the TTL, so the next
+    # step's `rows` names nothing on T2 at all.
+    order.status, order.nw_done = "expired", True
+    db_session.commit()
+
+    # A fresh `Executor`: no cached book, no dirty ticker, and (since the attribute is gone)
+    # nothing at all standing in for "what was open last step".
+    restarted = make_executor(env_settings, db_session, clock)
+    clock.advance(1970)  # well past `exec_intent_ttl_s` (900 s), so the old intent ages out too
+    stats = restarted.step()
+    refresh(db_session)
+    assert stats.errors == 0
+
+    assert [r.ended_at for r in dirty_intervals_of(db_session, VM2)] == [clock.now]
+    observed = (db_session.query(MarketObservationInterval)
+                .filter_by(venue_market_id=VM2)
+                .order_by(MarketObservationInterval.id).all())
+    assert [r.ended_at for r in observed] == [clock.now]
 
 
 def _book_error_samples(session):

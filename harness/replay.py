@@ -180,12 +180,22 @@ def resolve_population(session: Session, first_run: int, last_run: int,
     return sorted(next(iter(sets)))
 
 
-def _parse_run_range(text_range: str) -> tuple[int, int] | None:
-    """`"1234-5678"` as a pair, or None for anything else.
+def _parse_run_range(text_range: str) -> tuple[int, int | None] | None:
+    """`"1234-5678"` as a closed pair, `"> 1234"` as an open-ended one, or None for anything else.
 
-    Anything else is the controller's prose placeholder ("all runs through the 6B deploy"),
-    which `_corrections_for` treats as covering the range rather than as covering nothing.
+    `"> N"` (spaces around the number are tolerated, `">N"` too) parses to `(N + 1, None)`,
+    where `None` is the unbounded-upper marker `_corrections_for` treats as "covers every run
+    from the lower bound on". Anything that is neither form is the controller's prose
+    placeholder ("all runs through the 6B deploy"), which `_corrections_for` treats as covering
+    the range rather than as covering nothing.
     """
+    text_range = text_range.strip()
+    if text_range.startswith(">"):
+        try:
+            n = int(text_range[1:].strip())
+        except ValueError:
+            return None
+        return n + 1, None
     parts = text_range.split("-")
     if len(parts) != 2:
         return None
@@ -201,13 +211,23 @@ def _corrections_for(first_run: int, last_run: int) -> tuple[str, ...]:
     An **unfilled** range counts as covering it. C0's is still prose -- "all runs through the
     6B deploy" -- and reporting "no corrections in force" from a field nobody has filled in
     would turn a missing value into a measurement claim, which is the one reading the manifest
-    exists to prevent. A numeric `A-B` is parsed and tested, so the day the controller fills
-    the ranges in this narrows without another change here.
+    exists to prevent. A closed numeric `A-B` is parsed and tested against both ends; an
+    open-ended `"> N"` (C1-C6's shape today) is parsed to `(N + 1, None)` and tested against its
+    lower bound only, since it has no upper end to overlap against. The day the controller fills
+    a closed range in, this narrows without another change here.
     """
     ids = []
     for correction in CORRECTIONS:
         bounds = _parse_run_range(correction.affected_run_id_range)
-        if bounds is None or (bounds[0] <= last_run and bounds[1] >= first_run):
+        if bounds is None:
+            ids.append(correction.id)
+            continue
+        low, high = bounds
+        if high is None:
+            covers = low <= last_run
+        else:
+            covers = low <= last_run and high >= first_run
+        if covers:
             ids.append(correction.id)
     return tuple(ids)
 

@@ -47,6 +47,7 @@ from harness.db.models import (
 )
 from harness.db.schema import OPEN_FILL_SQL
 from harness.ops.clock import exclude_unsynced_runs
+from harness.execution.book import DIRTY_CAUSES
 from harness.execution.fills import TapeDelta, TapePrint
 from harness.execution.plan import FillView, IntentView, PositionView
 from harness.strategy.variants import with_defaults
@@ -807,7 +808,16 @@ def open_interval(session: Session, table: str, venue_market_id: int, ticker: st
 
     Both tables carry at most one open row per market per replay flag, which is the invariant
     §2 checks. The read rides `ix_mdi_market_started` / `ix_moi_market_started` with `limit 1`.
+
+    `cause`, when given, must be a member of `harness.execution.book.DIRTY_CAUSES` (amendment
+    0.19, journal 224 item 8): that tuple is the single dirty-cause vocabulary, and rows land
+    here whether they came from `BookState.mark_dirty`'s own check or from one of the loop's two
+    causes (`recorder_dead`, `book_unreadable`), which never pass through `mark_dirty` at all --
+    so this is where the vocabulary is enforced for those two, and a second, cheap check for the
+    book's own four.
     """
+    if cause is not None and cause not in DIRTY_CAUSES:
+        raise ValueError(f"unknown dirty cause {cause!r}")
     if session.execute(_OPEN_INTERVAL[table],
                        {"vm": venue_market_id, "replay": replay}).first() is not None:
         return
@@ -832,6 +842,26 @@ def close_intervals(session: Session, table: str, venue_market_ids: list[int], t
         return
     session.execute(_CLOSE_INTERVAL[table],
                     {"p_vms": list(venue_market_ids), "p_ts": ts, "p_replay": replay})
+
+
+def open_interval_market_ids(session: Session, table: str, replay: bool) -> set[int]:
+    """Every `venue_market_id` with a currently-open row in `table`, for this replay flag.
+
+    Fix 70 leak (journal 224 item 4): `_advance_books` used to derive `gone` from
+    `self._market_ids`, an in-memory map of the *previous* step's tickers. A step that raises
+    after `_advance_books` returns rolls that step's own inserts back with the rest of its
+    transaction, and a process restart starts every in-memory map back at empty -- either way,
+    a market whose row is still open in the database can become invisible to every later step's
+    `gone`, and the row never closes. This is the database's own answer to "what is still open",
+    which nothing in memory can get out of sync with: `_advance_books` reads it once per step
+    and treats `self._market_ids` as a cache only. Rides `ix_mdi_market_started` /
+    `ix_moi_market_started`, the same index `open_interval`'s own read does, or a seq scan of a
+    small live set either way.
+    """
+    model = _MODELS[table]
+    stmt = select(model.venue_market_id).where(model.ended_at.is_(None),
+                                                model.replay == replay)
+    return {row[0] for row in session.execute(stmt).all()}
 
 
 def cancel_order(session: Session, order_id: int, reason: str, now: datetime) -> bool:

@@ -19,7 +19,8 @@ from types import SimpleNamespace as NS
 import pytest
 
 from harness.db.models import MarketDirtyInterval, MarketObservationInterval, Order
-from harness.execution.book import BookState
+from harness.execution import store
+from harness.execution.book import DIRTY_CAUSES, BookState
 from harness.execution.dirty_time import order_dirty_time
 from harness.execution.loop import Executor
 
@@ -136,7 +137,6 @@ def _executor_with_books(books: dict) -> Executor:
     executor.settings = NS(exec_period_s=15)
     executor.exec_settings = NS(book_max_age_s=120)
     executor._dirty_tickers = set()
-    executor._market_ids = {}
     executor._book_now = lambda session, ticker, now, cached, ws_connect_at=None: cached
     return executor
 
@@ -169,27 +169,28 @@ def test_a_step_opens_an_observation_row_and_a_dirty_row_with_the_books_cause(db
     assert [r.ended_at for r in observed] == [None]
 
 
-def test_a_market_that_leaves_the_step_closes_both_of_its_rows(db_session):
-    """Expected: both rows closed at the last observation that saw the market, and none left
-    open (§2's `market_observation_intervals` invariant, review I-6).
+def test_a_market_named_in_market_ids_but_absent_from_tickers_is_not_treated_as_gone(db_session):
+    """Expected: neither row closes, because the market is still named in this step's
+    `market_ids` (journal 224 item 4: `gone` is now database-derived, judged against
+    `market_ids` rather than against a map carried across steps).
 
-    Derived independently: a market's last order closes and the market leaves the working set.
-    Nothing will ever look at it again, so an open row would say "still dirty" for the rest of
-    the season and `order_dirty_time` would clamp it to every later order's deadline. The close
-    is stamped at `now` of the step that noticed, which is the last instant anyone observed it.
-
-    This case hands the departed ticker's id into `market_ids` at the departing step, a shape
-    production never produces (both sets are built from the same `rows`), so it is a guard on
-    the close itself and not on row 70's real one:
-    `test_a_market_absent_from_both_sets_at_the_departing_step_still_closes` below is that.
+    This hands the departed ticker's id into `market_ids` at the departing step, a shape
+    production never produces (`tickers` and `market_ids` are always built from the same
+    `rows`, so a ticker absent from one is absent from both). Before the fix 70 leak was closed,
+    this shape existed to guard the close itself, independent of the row 70 fix
+    (`test_a_market_absent_from_both_sets_at_the_departing_step_still_closes` below is that);
+    now that `gone` reads the database directly and excludes whatever this step's own
+    `market_ids` still names, the same shape demonstrates the new rule instead: membership is
+    judged by `market_ids`, not by `tickers`, and production's invariant is exactly why that
+    never matters there.
     """
     executor = _executor_with_books({"A": _dirty_book("gap")})
     executor._advance_books(db_session, {"A"}, {"A": 1}, at(0), dead_recorder=False)
     executor._advance_books(db_session, set(), {"A": 1}, at(30), dead_recorder=False)
 
-    assert [r.ended_at for r in _intervals(db_session, MarketDirtyInterval)] == [at(30)]
-    assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [at(30)]
-    assert _open_count(db_session) == 0
+    assert [r.ended_at for r in _intervals(db_session, MarketDirtyInterval)] == [None]
+    assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [None]
+    assert _open_count(db_session) == 2
 
 
 def test_a_market_that_stops_being_dirty_closes_its_dirty_row_and_keeps_observing(db_session):
@@ -217,8 +218,10 @@ def test_a_dead_recorder_is_its_own_cause_on_a_book_that_names_none(db_session):
 
     Derived independently: `recorder_dead` is the loop's verdict about the recorder rather than
     the book's about itself -- every ladder is stale because nothing is writing them, which the
-    book cannot know. It is not in `DIRTY_CAUSES` for that reason, and a book that already
-    named a cause of its own keeps it: the first cause wins, here as in `mark_dirty`.
+    book cannot know. It is in `DIRTY_CAUSES` (amendment 0.19, journal 224 item 8: that tuple is
+    the single vocabulary) but never passed to `mark_dirty` for the same reason it never was
+    before, and a book that already named a cause of its own keeps it: the first cause wins,
+    here as in `mark_dirty`.
     """
     clean = BookState.from_levels("A", [[".30", "5"]], [[".60", "5"]], sid=1, seq=1,
                                   as_of=T0, source="ws", anchor_id=1)
@@ -305,10 +308,10 @@ def test_a_market_absent_from_both_sets_at_the_departing_step_still_closes(db_se
     shape. `gone` used to be read off the *current* step's `market_ids`, which can never
     contain a ticker not in `tickers`, so it was always empty and neither `close_intervals`
     call ever fired: two production rows (markets 865/866, journal 219) were left open forever
-    this way. `gone` is now read off the *previous* step's ticker map, so a market that
-    disappears from both sets at once still closes its dirty and observation intervals,
-    stamped at `now` of the step that noticed it was gone -- the same instant a clean
-    market's close carries.
+    this way. `gone` is now read from the database (the open `market_observation_intervals`
+    rows for this replay flag, minus this step's own `market_ids`), so a market that disappears
+    from both sets at once still closes its dirty and observation intervals, stamped at `now`
+    of the step that noticed it was gone -- the same instant a clean market's close carries.
     """
     executor = _executor_with_books({"A": _dirty_book("gap")})
     executor._advance_books(db_session, {"A"}, {"A": 1}, at(0), dead_recorder=False)
@@ -327,8 +330,10 @@ def test_a_market_whose_first_read_raises_still_closes_its_observation_row_on_de
     observation row still opened unconditionally at the call below `market_ids` had its id.
     Deriving `gone` from `set(self.books) - tickers` therefore misses exactly this market when
     it later departs, and the row stays open forever (reviewer probe on the previous fix:
-    `open_rows=1` after departure). `gone` is now read off `self._market_ids`, the map the
-    *previous* step opened rows from, whether or not that step's own read succeeded.
+    `open_rows=1` after departure). `gone` is now read from the database itself (journal 224
+    item 4, the fix 70 leak): the open `market_observation_intervals` rows for this replay flag,
+    minus this step's own `market_ids`, so it does not matter whether the failed read -- or any
+    later step -- ever touched an in-memory map at all.
     """
     executor = _executor_with_books({})
 
@@ -348,3 +353,23 @@ def test_a_market_whose_first_read_raises_still_closes_its_observation_row_on_de
 
     assert [r.ended_at for r in _intervals(db_session, MarketObservationInterval)] == [at(30)]
     assert _open_count(db_session) == 0
+
+
+def test_dirty_causes_is_the_single_vocabulary(db_session):
+    """Journal 224 item 8 (amendment 0.19): every cause the loop writes -- the book's own four
+    plus its two loop-only verdicts, `recorder_dead` and `book_unreadable` -- is a member of
+    `DIRTY_CAUSES`, and `open_interval` refuses to write anything else.
+
+    The book's own causes are asserted against `mark_dirty`'s callers indirectly, by asserting
+    the full set the loop is documented to write is exactly what `DIRTY_CAUSES` holds; the
+    refusal is asserted directly, against the site the ruling names: rows are written through
+    `store.open_interval`, not only through `BookState.mark_dirty`, so the vocabulary has to be
+    enforced there too.
+    """
+    loop_written = {"gap", "session_boundary", "event_age", "malformed_row",
+                    "recorder_dead", "book_unreadable"}
+    assert loop_written == set(DIRTY_CAUSES)
+
+    with pytest.raises(ValueError, match="bogus"):
+        store.open_interval(db_session, "market_dirty_intervals", 1, "A", T0, False,
+                            cause="bogus")

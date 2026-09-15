@@ -91,7 +91,7 @@ def test_the_equal_timestamp_counterexample_is_corrected(tmp_path):
     produces: the queue is drained twice, goes past zero, and the overflow crosses into our own
     order. Hypothesis (i) predicts exactly that decrement at that timestamp beside prints
     summing to 63.92, and the capsule carries both, so the verdict is `corrected` rather than
-    `unverifiable`.
+    `unverifiable_differs`.
     """
     prints = [{"trade_id": f"p{i}", "ts": at(1828.332), "yes_price": "0.45", "count": c,
                "taker_side": "no", "source": "ws"}
@@ -106,8 +106,8 @@ def test_the_equal_timestamp_counterexample_is_corrected(tmp_path):
     assert result.repaired_filled == Decimal("0.00")
 
 
-def test_a_capsule_with_no_anchoring_snapshot_is_unverifiable(tmp_path):
-    """Expected verdict `unverifiable`, no hypothesis.
+def test_a_capsule_with_no_anchoring_snapshot_is_unverifiable_uncovered(tmp_path):
+    """Expected verdict `unverifiable_uncovered`, no hypothesis.
 
     Derived independently: the 6A manifest records a slice it cannot verify, and a slice with no
     anchoring snapshot has no book to start from -- there is no queue to simulate against, so
@@ -118,12 +118,12 @@ def test_a_capsule_with_no_anchoring_snapshot_is_unverifiable(tmp_path):
                          recorded_filled="38.92", recorded_queue="0.00",
                          unverifiable=[{"reason": "no_snapshot", "ticker": "K1"}])
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_uncovered"
     assert result.hypothesis is None
     # Gated, not merely different: this capsule has no prints, so the replay path would also
-    # read `unverifiable` and the verdict alone cannot tell the two apart. The absent simulated
-    # quantities are what say the manifest decided it (0.16's fail-closed branch; with that
-    # branch removed this case still passed before these two lines).
+    # read `unverifiable_differs` and the verdict alone cannot tell the two apart. The absent
+    # simulated quantities are what say the manifest decided it (0.16's fail-closed branch; with
+    # that branch removed this case still passed before these two lines).
     assert result.repaired_filled is None
     assert result.repaired_queue is None
 
@@ -146,8 +146,8 @@ def test_prints_that_genuinely_exhaust_the_queue_validate_the_record(tmp_path):
     assert result.verdict == "validated"
 
 
-def test_a_difference_no_hypothesis_explains_is_unverifiable(tmp_path):
-    """Expected verdict `unverifiable`, no hypothesis (ruling IM-3).
+def test_a_difference_no_hypothesis_explains_is_unverifiable_differs(tmp_path):
+    """Expected verdict `unverifiable_differs`, no hypothesis (ruling IM-3).
 
     Derived independently: the repaired simulation differs from the record, and none of the
     three hypotheses' expected counts is met -- no same-timestamp decrement near -6,376, no gap
@@ -160,7 +160,7 @@ def test_a_difference_no_hypothesis_explains_is_unverifiable(tmp_path):
     directory = _capsule(tmp_path, prints=prints, deltas=[], snapshots=[],
                          recorded_filled="38.92", recorded_queue="0.00")
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_differs"
     assert result.hypothesis is None
     assert set(result.evidence) == {"i", "ii", "iii",
                                     "manifest_slices_total", "manifest_slices_in_interval"}
@@ -200,7 +200,7 @@ def _count(evidence_value) -> Decimal:
 
 
 def test_prints_our_order_could_not_have_filled_are_not_a_queue_collapse(tmp_path):
-    """Expected verdict `unverifiable`, no hypothesis.
+    """Expected verdict `unverifiable_differs`, no hypothesis.
 
     Derived from the rows: 6,401 contracts trade at 0.45 while we rest at yes 0.45, but every
     one of those prints has `taker_side = "yes"` -- the taker lifted a resting *ask*, so these
@@ -217,7 +217,7 @@ def test_prints_our_order_could_not_have_filled_are_not_a_queue_collapse(tmp_pat
     directory = _capsule(tmp_path, prints=prints, deltas=[], snapshots=[],
                          recorded_filled="38.92", recorded_queue="0.00")
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_differs"
     assert result.hypothesis is None
     assert result.repaired_filled == Decimal("0.00")
     assert result.evidence["iii"]["met"] is False
@@ -236,8 +236,8 @@ def test_a_sweep_through_our_price_is_a_queue_collapse_although_the_price_differ
     queue genuinely collapsed -- hypothesis (iii).
 
     A query demanding `yes_price == 0.45` exactly would report `observed volume 0` here and rule
-    `unverifiable`, missing the one hypothesis the tape does support. The at-price-only count is
-    reported beside it and is 0, which is the point.
+    `unverifiable_differs`, missing the one hypothesis the tape does support. The at-price-only
+    count is reported beside it and is 0, which is the point.
     """
     prints = [{"trade_id": "sweep", "ts": at(1800), "yes_price": "0.44", "count": "6401.00",
                "taker_side": "no", "source": "ws"}]
@@ -253,7 +253,7 @@ def test_a_sweep_through_our_price_is_a_queue_collapse_although_the_price_differ
 
 
 def test_a_decrement_on_the_other_side_of_the_book_is_not_the_double_count(tmp_path):
-    """Expected verdict `unverifiable`, no hypothesis.
+    """Expected verdict `unverifiable_differs`, no hypothesis.
 
     Derived from the rows: the counterexample's -6,376 is stamped on the **no** side. A no-side
     level at 0.45 is yes 0.55 -- a different level of a different queue -- and the repaired
@@ -269,7 +269,7 @@ def test_a_decrement_on_the_other_side_of_the_book_is_not_the_double_count(tmp_p
     directory = _capsule(tmp_path, prints=DOUBLE_COUNT_PRINTS, deltas=deltas, snapshots=[],
                          recorded_filled="38.92", recorded_queue="0.00")
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_differs"
     assert result.hypothesis is None
     assert result.evidence["i"]["met"] is False
     assert _count(result.evidence["i"]["observed_decrement"]) == 0
@@ -303,7 +303,7 @@ def test_a_gap_in_its_own_file_on_the_anchors_sid_is_a_recovery_error(tmp_path):
 
 
 def test_a_stale_gap_or_one_on_another_subscription_is_not_this_orders_recovery(tmp_path):
-    """Expected verdict `unverifiable`, no hypothesis.
+    """Expected verdict `unverifiable_differs`, no hypothesis.
 
     Derived from the rows: one gap is stamped 27 hours before this order was placed -- a period
     capsule's gap slice spans the whole capsule window, not our resting interval -- and the other
@@ -318,7 +318,7 @@ def test_a_stale_gap_or_one_on_another_subscription_is_not_this_orders_recovery(
     directory = _capsule(tmp_path, prints=[], deltas=[], snapshots=snapshots, gaps=gaps,
                          recorded_filled="38.92", recorded_queue="0.00")
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_differs"
     assert result.hypothesis is None
     assert result.evidence["ii"]["observed_gaps_in_interval"] == 1
     assert result.evidence["ii"]["observed_gaps_on_anchor_sid"] == 0
@@ -326,7 +326,7 @@ def test_a_stale_gap_or_one_on_another_subscription_is_not_this_orders_recovery(
 
 
 def test_only_a_snapshot_inside_the_resting_interval_anchors_the_recovery_hypothesis(tmp_path):
-    """Expected verdict `unverifiable`, no hypothesis.
+    """Expected verdict `unverifiable_differs`, no hypothesis.
 
     Derived from the rows: the only snapshot is the one every capsule carries at its own
     window's start, half an hour before we were placed. Nothing re-anchored while we rested, so
@@ -341,7 +341,7 @@ def test_only_a_snapshot_inside_the_resting_interval_anchors_the_recovery_hypoth
     directory = _capsule(tmp_path, prints=[], deltas=[], snapshots=snapshots, gaps=gaps,
                          recorded_filled="38.92", recorded_queue="0.00")
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_differs"
     assert result.hypothesis is None
     assert result.evidence["ii"]["observed_snapshots"] == 0
     assert result.evidence["ii"]["met"] is False
@@ -376,7 +376,7 @@ def test_another_tickers_tape_and_a_post_cancel_print_are_not_this_orders_eviden
 
 
 def test_prints_after_the_recorded_fills_do_not_show_a_queue_collapse(tmp_path):
-    """Expected verdict `unverifiable`, no hypothesis.
+    """Expected verdict `unverifiable_differs`, no hypothesis.
 
     Derived from the rows: the record books its fills at 14:53:27Z and the 6,401 contracts trade
     ten minutes *later*. Trading that happened after we were reported filled cannot be the
@@ -390,7 +390,7 @@ def test_prints_after_the_recorded_fills_do_not_show_a_queue_collapse(tmp_path):
     directory = _capsule(tmp_path, prints=prints, deltas=[], snapshots=[], fills=fills,
                          recorded_filled="38.92", recorded_queue="0.00")
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_differs"
     assert result.hypothesis is None
     assert _count(result.evidence["iii"]["observed_hitting_volume_before_fills"]) == 0
     assert _count(result.evidence["iii"]["observed_hitting_volume"]) == Decimal("6401")
@@ -439,8 +439,8 @@ def test_a_manifest_slice_outside_the_resting_interval_does_not_pre_empt_the_rep
     Nothing was lost while this order rested, the tape does cover its interval, and the prints
     inside it exhaust the recorded 6,401 and leave 38.92, so the record is reproduced.
 
-    Reading the manifest capsule-wide would rule this `unverifiable` on a hole in another day's
-    tape, which is the reading the user's 0.16 amendment replaced.
+    Reading the manifest capsule-wide would rule this `unverifiable_uncovered` on a hole in
+    another day's tape, which is the reading the user's 0.16 amendment replaced.
     """
     directory = _gate_capsule(tmp_path, [{"exposed_by": "sink_exception", "reason": "gap",
                                           "sid": 1, "ts": at(90_000)}])
@@ -452,7 +452,7 @@ def test_a_manifest_slice_outside_the_resting_interval_does_not_pre_empt_the_rep
 
 
 def test_a_manifest_slice_inside_the_resting_interval_pre_empts_the_replay(tmp_path):
-    """Expected verdict `unverifiable`, no replay.
+    """Expected verdict `unverifiable_uncovered`, no replay.
 
     The same capsule with the same single entry moved to 14:46:47Z, ten minutes into the order's
     35-minute rest: the tape genuinely does not cover the interval the queue arithmetic would
@@ -463,7 +463,7 @@ def test_a_manifest_slice_inside_the_resting_interval_pre_empts_the_replay(tmp_p
     directory = _gate_capsule(tmp_path, [{"exposed_by": "sink_exception", "reason": "gap",
                                           "sid": 1, "ts": at(600)}])
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_uncovered"
     assert result.hypothesis is None
     assert result.repaired_filled is None
     assert result.repaired_queue is None
@@ -489,7 +489,7 @@ def test_the_resting_interval_the_gate_reads_is_closed_at_both_ends(tmp_path, se
     result = audit_order(read_capsule(directory), 157)
     assert result.evidence["manifest_slices_total"] == 1
     assert result.evidence["manifest_slices_in_interval"] == (1 if pre_empts else 0)
-    assert result.verdict == ("unverifiable" if pre_empts else "validated")
+    assert result.verdict == ("unverifiable_uncovered" if pre_empts else "validated")
     assert (result.repaired_filled is None) is pre_empts
 
 
@@ -510,20 +510,20 @@ def test_a_manifest_slice_that_carries_a_range_gates_when_the_range_intersects(t
     directory = _gate_capsule(tmp_path, [entry])
     result = audit_order(read_capsule(directory), 157)
     assert result.evidence["manifest_slices_in_interval"] == (1 if pre_empts else 0)
-    assert result.verdict == ("unverifiable" if pre_empts else "validated")
+    assert result.verdict == ("unverifiable_uncovered" if pre_empts else "validated")
 
 
 def test_a_manifest_slice_with_neither_an_instant_nor_a_range_gates(tmp_path):
     """Fail closed: an entry the gate cannot place in time is treated as overlapping.
 
-    `test_a_capsule_with_no_anchoring_snapshot_is_unverifiable` above is exactly this shape --
-    the 6A `no_snapshot` entry carries a ticker and no timestamp at all -- so the rule is pinned
-    here rather than left as an incident of that case. An unreadable slice cannot be ruled out
-    of the interval, and replaying it would be the one direction that invents evidence.
+    `test_a_capsule_with_no_anchoring_snapshot_is_unverifiable_uncovered` above is exactly this
+    shape -- the 6A `no_snapshot` entry carries a ticker and no timestamp at all -- so the rule
+    is pinned here rather than left as an incident of that case. An unreadable slice cannot be
+    ruled out of the interval, and replaying it would be the one direction that invents evidence.
     """
     directory = _gate_capsule(tmp_path, [{"reason": "no_snapshot", "ticker": "K1"}])
     result = audit_order(read_capsule(directory), 157)
-    assert result.verdict == "unverifiable"
+    assert result.verdict == "unverifiable_uncovered"
     assert result.repaired_filled is None
     assert result.evidence["manifest_slices_in_interval"] == 1
 
@@ -549,7 +549,7 @@ def test_an_explicitly_null_range_bound_falls_through_to_the_other_spelling(tmp_
     directory = _gate_capsule(tmp_path, [entry])
     result = audit_order(read_capsule(directory), 157)
     assert result.evidence["manifest_slices_in_interval"] == (1 if pre_empts else 0)
-    assert result.verdict == ("unverifiable" if pre_empts else "validated")
+    assert result.verdict == ("unverifiable_uncovered" if pre_empts else "validated")
 
 
 def test_a_difference_of_exactly_one_contract_is_corrected_not_validated(tmp_path):

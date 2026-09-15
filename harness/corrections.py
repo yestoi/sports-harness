@@ -150,14 +150,16 @@ CONFIG_HASHES_C6: tuple[str, ...] = CONFIG_HASHES_6B
 # --- FILLED BY THE CONTROLLER AFTER THE AUDIT RUN ---------------------------------------------
 # `harness audit-order --capsule <dir> --order 157` on the real 6A capsule, in the quiet window.
 # Agents have no NAS access and never run it, so this ships as the unrun state and its test
-# asserts only that it is one of the three verdicts plus that state (`tests/test_corrections.py`,
+# asserts only that it is one of the four verdicts plus that state (`tests/test_corrections.py`,
 # under §1.11). 6C's t13 reads this constant inside the container, where `docs/` is absent (D9);
 # the undated record is `docs/superpowers/reviews/order-157-audit.md`.
-ORDER_157_VERDICT = "unverifiable"  # run 2026-09-14 17:38 CT on the committed order-157 capsule
-# with the manifest gate scoped to the resting interval (amendment 0.16, journal 210): the six gap
-# slices all lie outside the interval, the replay ran and differs (63.92 filled / 0.00 queue
-# against the recorded 38.92 / 0.0), and none of the three hypotheses was met -- the
-# "differs and no hypothesis" definition, not the gated one. See the audit document's Result.
+ORDER_157_VERDICT = "unverifiable_differs"  # run 2026-09-14 17:38 CT on the committed
+# order-157 capsule, with the manifest gate scoped to the resting interval (amendment 0.16,
+# journal 210): the six gap slices all lie outside the interval, the replay ran and differs
+# (63.92 filled / 0.00 queue against the recorded 38.92 / 0.0), and none of the three hypotheses
+# was met -- the "differs and no hypothesis" definition, not the gated one. Spec amendment 0.18
+# (journal 224 item 14) splits the old single `unverifiable` string into `unverifiable_uncovered`
+# and `unverifiable_differs`; this run is the latter. See the audit document's Result.
 
 
 CORRECTIONS: tuple[Correction, ...] = (

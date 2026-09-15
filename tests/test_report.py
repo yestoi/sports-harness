@@ -155,8 +155,9 @@ def _signal(session, gap, market, variant_id, price_target="0.5000", decision="c
 
 def _order(session, market, variant_id, gap=None, placed_at=None, prob="0.5000",
            status="open", cancel_reason=None, cancelled_at=None, feed_kind="featured",
-           staleness_at_place=60, replay=False, book_source="ws", sport="nfl") -> Order:
-    o = Order(intent_id=uuid.uuid4(), variant_id=variant_id, venue="kalshi", mode="paper",
+           staleness_at_place=60, replay=False, book_source="ws", sport="nfl",
+           id=None) -> Order:
+    o = Order(id=id, intent_id=uuid.uuid4(), variant_id=variant_id, venue="kalshi", mode="paper",
               client_order_id=f"co-{uuid.uuid4()}", ticker=market.ticker,
               venue_market_id=market.id, side="yes", prob=Decimal(prob),
               contracts=Decimal("10.00"), status=status,
@@ -1042,20 +1043,42 @@ def test_t12_is_not_a_gate_input():
 # --- table 13: the operational diagnostic (addendum 0.3, 0.4, 1.3) ---------------------------
 
 
-def test_the_audit_register_opens_with_order_157_pending():
+def test_the_audit_register_opens_with_order_157_unverifiable_differs():
     """Addendum 0.4 / D4: the register is a code constant because `docs/` is not in the image
-    and the report has to read it from inside the container. 6B updates it."""
+    and the report has to read it from inside the container. Journal 224 item 14 (spec
+    amendment 0.18) replaces the 6B placeholder with order 157's real verdict: the tape covered
+    its resting interval, the repaired replay differed from the recorded fills, and no
+    hypothesis explained why.
+    """
     from harness.report.audits import AUDIT_STATUSES, ORDER_AUDITS
 
     assert set(ORDER_AUDITS) == {157}
     entry = ORDER_AUDITS[157]
-    assert entry.status == "pending" and entry.status in AUDIT_STATUSES
-    assert entry.since == "2026-09-11"
-    assert "6B" in entry.note
+    assert entry.status == "unverifiable_differs" and entry.status in AUDIT_STATUSES
+    assert entry.since == "2026-09-14"
+    assert "63.92" in entry.note and "38.92" in entry.note
     for audit in ORDER_AUDITS.values():
         assert audit.status in AUDIT_STATUSES
         # Minor 5: an ISO-8601 date, pinned rather than left to the writer's taste.
         date.fromisoformat(audit.since)
+
+
+def test_t13_renders_order_157s_status_from_the_real_register(db_session, env_settings):
+    """The t13 row for order 157 renders the shipped register's own status string, not a
+    monkeypatched stand-in like `test_t13_reports_the_audit_register_and_the_orders_under_audit`
+    beside it uses -- so a future edit to `ORDER_AUDITS[157]` cannot drift from what t13 shows
+    without a test noticing.
+    """
+    _variant(db_session, PRIMARY, "sharp_direct", "primary")
+    game = _game(db_session)
+    market = _market(db_session, game.id, "T13MKT157")
+    order = _order(db_session, market, PRIMARY, id=157)
+    _fill(db_session, order, fill_method="queue_model")
+    db_session.flush()
+
+    rows = _t13(db_session, env_settings)
+    assert rows["order audit 157"][0] == "unverifiable_differs"
+    assert rows["orders under audit"] == (1, "orders", rows["orders under audit"][2])
 
 
 def _t13(db_session, env_settings, year=YEAR, week=WEEK, now=None):

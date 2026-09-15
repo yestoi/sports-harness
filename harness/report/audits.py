@@ -13,9 +13,12 @@ from dataclasses import dataclass
 
 #: `pending` -- under audit, no verdict yet. `validated` -- the stored row matches the tape.
 #: `corrected` -- the row was wrong and has been corrected, with the correction recorded in the
-#: journal. `unverifiable` -- the tape cannot settle it either way, which is a finding, not a
-#: pass.
-AUDIT_STATUSES = ("pending", "validated", "corrected", "unverifiable")
+#: journal. Spec amendment 0.18 (journal 224 item 14) splits what used to be one `unverifiable`
+#: status into two, neither a pass: `unverifiable_uncovered` -- no tape over the order's resting
+#: interval, so nothing can be replayed -- and `unverifiable_differs` -- the tape covers it, the
+#: replay differs from the recorded fills, and no hypothesis explains why.
+AUDIT_STATUSES = ("pending", "validated", "corrected", "unverifiable_uncovered",
+                  "unverifiable_differs")
 
 
 @dataclass(frozen=True)
@@ -30,7 +33,9 @@ class Audit:
 
 #: U8's "order 157". Seeded with the one order the roadmap names; 6B replaces the status.
 ORDER_AUDITS: dict[int, Audit] = {
-    157: Audit("pending",
-               "fill history not uniquely identified; tape audit is milestone 6B",
-               "2026-09-11"),
+    157: Audit("unverifiable_differs",
+               "the 2026-09-14 17:38 CT capsule audit replayed 63.92 filled against the "
+               "recorded 38.92 with no hypothesis met; "
+               "docs/superpowers/reviews/order-157-audit.md",
+               "2026-09-14"),
 }

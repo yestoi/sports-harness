@@ -58,11 +58,15 @@ BOOK_MAX_AGE = timedelta(seconds=120)
 #: `ts` floor dropped or a REST-anchored book saw arrive behind itself (`event_age`), and a tape
 #: row the recorder stored without a side, price or delta (`malformed_row`). There is
 #: deliberately no `recovery` cause (ruling IM-11): the recovery branch is the one taken when a
-#: market has *stopped* being dirty. §1.5's interval rows carry one of these, and
-#: `recorder_dead` and `book_unreadable` (row 69) beside them, which are the loop's own
-#: verdicts -- about the recorder, and about one ticker's failed read this step -- rather
-#: than this book's about itself. Neither is ever passed to `mark_dirty`.
-DIRTY_CAUSES = ("gap", "session_boundary", "event_age", "malformed_row")
+#: market has *stopped* being dirty. Amendment 0.19 (journal 224 item 8) makes this tuple the
+#: single dirty-cause vocabulary: `recorder_dead` and `book_unreadable` (row 69, 6B merge
+#: review) join it, though they are the loop's own verdicts -- about the recorder, and about one
+#: ticker's failed read this step -- rather than this book's about itself, so neither is ever
+#: passed to `mark_dirty`; `store.open_interval` is where the vocabulary is enforced on the two
+#: loop-only causes, since they never reach the check below. §1.5's interval rows carry one of
+#: the six.
+DIRTY_CAUSES = ("gap", "session_boundary", "event_age", "malformed_row",
+                "recorder_dead", "book_unreadable")
 
 # The consumer-side probe of §0.2, on `ix_obe_ticker_id`: is there a delta this ticker taped
 # after our cursor that the scan's own `ts` floor excluded? Such a row is applied nowhere and

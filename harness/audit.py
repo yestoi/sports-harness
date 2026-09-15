@@ -6,10 +6,14 @@ database, no NAS -- and the comparison is against the **recorded** quantities ra
 against a C0 code path, because C1-C5 remove that path from the tree (ruling IM-2). The 6A
 capsule plus C0's recorded values are the reference.
 
-Three verdicts and three hypotheses, each hypothesis a query over the capsule with a stated
-expected count, so the verdict is evidence rather than a preference. A difference no hypothesis
-explains is `unverifiable`, not `corrected`: that is the reconciliation's "requires tape audit",
-and naming a cause the evidence does not support would be the worse answer.
+Four verdicts and three hypotheses, each hypothesis a query over the capsule with a stated
+expected count, so the verdict is evidence rather than a preference. Spec amendment 0.18
+(journal 224 item 14) splits what used to be one `unverifiable` string into two: a resting
+interval with no tape to replay at all -- a manifest slice inside `[placed_at, min(cancelled_at,
+expiry)]`, §0.16 -- is `unverifiable_uncovered`, and a replayed difference no hypothesis explains
+is `unverifiable_differs`, not `corrected`: that is the reconciliation's "requires tape audit",
+and naming a cause the evidence does not support would be the worse answer. The single string
+collapsed two readings 6C's reader could not distinguish without the audit document.
 
 Every hypothesis query is written with the **simulator's own matching rules**, not with a looser
 reading of the prose that states it (review round 1, C1 and I1). A print is evidence about this
@@ -61,7 +65,7 @@ from harness.execution.fills import (
     simulate_fills,
 )
 
-VERDICTS = ("validated", "corrected", "unverifiable")
+VERDICTS = ("validated", "corrected", "unverifiable_uncovered", "unverifiable_differs")
 #: The three hypothesis keys of the evidence dict, in the order §1.7 states them, which is the
 #: order a `corrected` verdict names them in. The dict also carries the plain-integer manifest
 #: counts of §0.16, so the ruling is read off these keys rather than off everything in it.
@@ -236,8 +240,8 @@ def _hypotheses(capsule: dict, order: dict) -> dict:
     """Each hypothesis's observed count beside the count it predicts.
 
     Recorded as numbers, not booleans, so the audit record can say what was seen where a
-    hypothesis was not met -- which is what turns an `unverifiable` verdict into something a
-    reader can act on rather than a shrug.
+    hypothesis was not met -- which is what turns an `unverifiable_differs` verdict into
+    something a reader can act on rather than a shrug.
 
     Three bounds apply to every count, and each is the simulator's own (review round 1, C1, I1,
     I2):
@@ -381,7 +385,7 @@ def audit_order(capsule: dict, order_id: int) -> AuditResult:
     evidence["manifest_slices_total"] = len(slices)
     evidence["manifest_slices_in_interval"] = len(in_interval)
     if in_interval:
-        return AuditResult(order_id, "unverifiable", None, None, None,
+        return AuditResult(order_id, "unverifiable_uncovered", None, None, None,
                            recorded_filled, recorded_queue, evidence)
     result = _replay(capsule, order)
     repaired_filled = result.state.filled_contracts
@@ -393,6 +397,6 @@ def audit_order(capsule: dict, order_id: int) -> AuditResult:
                            result.state.queue_remaining, recorded_filled, recorded_queue,
                            evidence)
     met = [name for name in HYPOTHESES if evidence[name]["met"]]
-    verdict = "corrected" if met else "unverifiable"
+    verdict = "corrected" if met else "unverifiable_differs"
     return AuditResult(order_id, verdict, met[0] if met else None, repaired_filled,
                        result.state.queue_remaining, recorded_filled, recorded_queue, evidence)

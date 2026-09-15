@@ -655,7 +655,11 @@ def test_an_unfilled_correction_range_is_in_force_and_a_numeric_one_is_tested(mo
     assert _parse_run_range("all runs through the 6B deploy") is None
     assert _parse_run_range("100-200") == (100, 200)
     assert _parse_run_range("100-two hundred") is None
-    assert _corrections_for(1, 2) == tuple(c.id for c in CORRECTIONS)
+
+    unfilled = _dc_replace(CORRECTIONS[0], id="CY",
+                            affected_run_id_range="all runs through the 6B deploy")
+    monkeypatch.setattr(replay_mod, "CORRECTIONS", [unfilled])
+    assert _corrections_for(1, 2) == ("CY",)
 
     numeric = _dc_replace(CORRECTIONS[0], id="CX", affected_run_id_range="100-200")
     monkeypatch.setattr(replay_mod, "CORRECTIONS", [numeric])
@@ -663,4 +667,27 @@ def test_an_unfilled_correction_range_is_in_force_and_a_numeric_one_is_tested(mo
     assert _corrections_for(50, 99) == ()
     assert _corrections_for(150, 400) == ("CX",)
     assert _corrections_for(200, 400) == ("CX",)
+
+
+def test_the_open_ended_range_form_covers_only_post_boundary_runs():
+    """Expected: `"> N"` parses to `(N + 1, None)`; a pre-boundary replay sees C0 alone, and
+    a post-boundary or spanning one sees C0 plus all six numbered corrections.
+
+    D11 ruling (journal 224 item 3): C1-C6's `affected_run_id_range` is `"> 17016"`, which the
+    old `_parse_run_range` returned `None` for -- indistinguishable from C0's still-unfilled
+    prose -- so a pre-boundary replay (runs 1-17016) reported C1-C6 in force when it should not.
+    `None` is the unbounded-upper marker `_parse_run_range` returns for the open-ended form; the
+    span check itself (a range straddling the boundary) lives in `_check_population`, not here.
+    """
+    from harness.corrections import CORRECTIONS
+    from harness.replay import _corrections_for, _parse_run_range
+
+    assert _parse_run_range("> 17016") == (17017, None)
+    assert _parse_run_range(">17016") == (17017, None)
+    assert _parse_run_range("> x") is None
+
+    all_ids = tuple(c.id for c in CORRECTIONS)
+    assert _corrections_for(1, 17016) == ("C0",)
+    assert _corrections_for(17017, 17100) == all_ids
+    assert _corrections_for(17000, 17020) == all_ids
 

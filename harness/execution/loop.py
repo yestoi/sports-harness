@@ -247,11 +247,6 @@ class Executor:
         #: cannot anchor yet -- R10's `no_book` case, retried every loop.
         self.books: dict[str, BookState | None] = {}
         self._dirty_tickers: set[str] = set()
-        #: The previous step's ticker -> venue_market_id map (row 70, 6B merge review): a
-        #: departed market is absent from *this* step's own `market_ids` by construction (both
-        #: it and `tickers` are built from the same `rows`), so `gone` cannot be read off the
-        #: current step's map and has to be read off the map the market was last seen in.
-        self._market_ids: dict[str, int] = {}
         #: Fix 26: the delta batch size in force per ticker, absent meaning `DELTA_BATCH_LIMIT`.
         #: It shrinks on a statement timeout and doubles back on a full read, so a cold ticker
         #: asks for what it can actually finish and a warm one returns to the cap in a few
@@ -627,16 +622,23 @@ class Executor:
         # cache assignment lives inside the `try`, only reached on success), while its
         # observation row was still opened unconditionally below because `market_ids` had its
         # id -- so deriving `gone` from `set(self.books) - tickers` misses exactly that market
-        # when it later departs, and its row never closes. `self._market_ids` is precisely the
-        # set of markets whose rows the *previous* step opened, whether or not their read
-        # succeeded, so it is what a departure has to be read against. Row 70 (6B merge review):
-        # `tickers` and `market_ids` are always built from the same `rows` at the call site, so
-        # a departed ticker is never a key of *this* step's `market_ids` either -- the earlier
-        # `set(self.books) - tickers` shape made `gone` always empty and left the two production
-        # rows (markets 865/866, journal 219) open forever.
-        gone = [vm_id for t, vm_id in self._market_ids.items() if t not in tickers]
+        # when it later departs, and its row never closes.
+        #
+        # Fix 70 leak (journal 224 item 4): `gone` used to be read off `self._market_ids`, the
+        # *previous* step's ticker -> venue_market_id map, carried in memory across steps. A
+        # step that raises after this point rolls its own writes back with the rest of that
+        # step's transaction, and a process restart starts every in-memory map back at empty --
+        # either way, a market whose observation row is still open in the database can become
+        # invisible to every later step's `gone`, and the row never closes (production rows
+        # 865/866, journal 219, were exactly this). `gone` is now read from the database itself
+        # -- the open `market_observation_intervals` rows for this replay flag, computed before
+        # this step opens any of its own -- minus this step's own `market_ids`, so it cannot
+        # drift from what is actually still open no matter what the loop's memory holds.
+        # `self.books` stays a cache of what was last read, nothing here reads it for `gone`.
+        currently_open = store.open_interval_market_ids(
+            session, "market_observation_intervals", self.replay)
+        gone = list(currently_open - set(market_ids.values()))
         self.books = {t: book for t, book in self.books.items() if t in tickers}
-        self._market_ids = dict(market_ids)
 
         # §1.5: dirtiness and observation are properties of the market, recorded as intervals
         # with a cause, and per-order time is derived from them at read time. A market the step

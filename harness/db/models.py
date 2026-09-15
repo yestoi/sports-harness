@@ -979,11 +979,12 @@ class MarketDirtyInterval(Base):
     An interval is a measurement where an accrual is a running total (D6): 136 markets went
     dirty against 7,998 orders, so recording it once per market and intersecting at read time
     costs far less than a column per order and answers questions a running total cannot --
-    when, for how long, and why. `cause` is one of `harness.execution.book.DIRTY_CAUSES` plus
-    `recorder_dead` and `book_unreadable` (row 69, 6B merge review), both the loop's own verdict
-    -- about the recorder, or about one ticker's failed read this step -- rather than the book's
-    about itself. There is no `recovery` cause (ruling IM-11): recovery is what happens when a
-    market has *stopped* being dirty.
+    when, for how long, and why. `cause` is one of `harness.execution.book.DIRTY_CAUSES`
+    (amendment 0.19, journal 224 item 8, makes that tuple the single vocabulary): `recorder_dead`
+    and `book_unreadable` (row 69, 6B merge review) are in it alongside the book's own four, both
+    the loop's own verdict -- about the recorder, or about one ticker's failed read this step --
+    rather than the book's about itself. There is no `recovery` cause (ruling IM-11): recovery is
+    what happens when a market has *stopped* being dirty.
 
     `ended_at` NULL means still dirty as of the last observation. A row is closed at the first
     step that finds the market clean again, and every open row for a market absent from a
