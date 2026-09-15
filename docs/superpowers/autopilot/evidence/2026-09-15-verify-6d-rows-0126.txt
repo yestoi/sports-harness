@@ -1,0 +1,14 @@
+verify_at_utc=2026-09-15T06:25:37Z (01:25 CT) deploy b69b880 (6D)
+alembic_version|0012_phase6d_sustained_eval
+criteria_hash_newest|5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5
+eligibility_key|0
+strategy_variants|49af716f8708,5632da729fa7,64ba3ef09642,c2bc45377328,e549e693e117,e82fcd0a1e99,f259ca109084,ff363c8ac08d|8
+fix48_clause|0
+ws_last_event_age|00:00:01.389579
+exec_heartbeat|2026-09-15 06:25:19.489472+00|00:00:18.219781|0|32570
+runs_since_deploy|skipped|b69b880|1
+coverage_samples_rows|84|2026-09-15 06:24:35.277248+00
+episode_tables|0|0
+new_metric_names|recorder.phase_ms
+metric_negative_24h|0
+stop_instant_last_prev_run|17125|2026-09-15 06:22:31.469136+00

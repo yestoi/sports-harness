@@ -1,0 +1,7 @@
+read_at_utc=2026-09-15T06:25:35Z (01:25 CT) deploy b69b880
+== RFQ_LISTENER_ENABLED effective value (Task 2 command 1)
+False
+== app-ws startup lines (Task 2 command 2)
+app-ws-1  | {"asctime": "2026-09-15 06:24:03,903", "levelname": "INFO", "name": "harness.venues.kalshi.rfq_socket", "message": "rfq listener disabled by rfq_listener_enabled"}
+== host .env key
+RFQ_LISTENER_ENABLED=0
