@@ -52,6 +52,10 @@ AMENDMENTS: tuple[Amendment, ...] = (
         "the America/Chicago ISO week as the measurement key. The pre-fix range is empty: the "
         "only Sunday 19:00-23:59 CT provisional window before the deploy precedes the first "
         "paper order"),
+    # The id list named below is `docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt`.
+    # The rendered sentence names the file without its directory on purpose: that directory is
+    # left out of the release tree (`scripts/release_tree.py`), so no string this package
+    # renders may spell it -- a receipt has to stay valid across a journal commit.
     Amendment(
         6, "2026-09-14", "c1066b5", (1, 17016), ("t1", "t2", "t3", "t4"),
         "the 6B execution repairs C1-C6 and EXECUTOR_VERSION 4.5, released as c1066b5 on "
@@ -61,7 +65,8 @@ AMENDMENTS: tuple[Amendment, ...] = (
         "the last ca30ed1 run is 17015 and the first c1066b5 run is 17017. The pre-boundary "
         "orders whose counterfactual (`no_watcher`) track was still pending at the stop instant "
         "2026-09-15T05:23:44Z (1,176 orders, ids at or below 10886 carrying `nw_done = false` "
-        "then; docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt) are a disclosed "
+        "then; the row 72 id list, evidence 2026-09-15-row72-ids.txt, journal 224 item 5) are "
+        "a disclosed "
         "sub-population whose counterfactual continued under the repaired executor 4.5: their "
         "`nw_*` columns mix the pre-repair simulator up to 05:23:44Z and the repaired one after "
         "it, and from this build each counterfactual write stamps `orders.nw_executor_version` "

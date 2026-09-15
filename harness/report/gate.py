@@ -888,6 +888,9 @@ def render_gate(results: list[GateResult], names: dict[str, str],
     # written as a literal: a disclosure that could drift from the number beside it would be
     # worse than none. The gate variant's row is preferred, because that is the variant the
     # phase gate is judged on; any other result carrying the criterion answers if it does not.
+    # The list is `docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt`; the rendered
+    # line names the file without its directory because that directory is outside the release
+    # tree (`scripts/release_tree.py`) and no string the suite runs may spell it.
     markout = next(
         (r.criteria[MARKOUT_CRITERION] for r in
          sorted(results, key=lambda r: not r.gate_variant)
@@ -895,7 +898,8 @@ def render_gate(results: list[GateResult], names: dict[str, str],
     lines.append(
         f"note: criterion 4 ({MARKOUT_CRITERION}) is anchored on the no_watcher fill, and 1,176 "
         "pre-boundary orders (nw_done = false at the 2026-09-15T05:23:44Z stop instant; "
-        "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt) had their no_watcher "
+        "the row 72 id list, evidence 2026-09-15-row72-ids.txt, journal 224 item 5) had their "
+        "no_watcher "
         "track continue under executor 4.5 (amendment 0.17); any counterfactual fill they "
         f"produce enters its n (currently n={'unknown' if markout is None else markout.n_obs}).")
     if eligibility is not None and eligibility.active:

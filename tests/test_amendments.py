@@ -81,7 +81,10 @@ def test_amendment_6_names_the_disclosed_counterfactual_sub_population():
     assert "1,176 orders" in six.what
     assert "2026-09-15T05:23:44Z" in six.what
     assert "`nw_done = false`" in six.what
-    assert "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt" in six.what
+    # Named without its directory: that directory is outside the release tree, so no string
+    # this package renders may spell it (`tests/test_release_tree.py`'s guard).
+    assert "evidence 2026-09-15-row72-ids.txt" in six.what
+    assert "docs/" not in six.what
     assert "disclosed sub-population" in six.what
     assert "continued under the repaired executor 4.5" in six.what
     assert "amendment 0.17" in six.what

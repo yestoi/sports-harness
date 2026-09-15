@@ -744,7 +744,10 @@ def test_the_gate_render_discloses_criterion_4s_counterfactual_sub_population():
     assert "1,176 pre-boundary orders" in disclosure
     assert "nw_done = false" in disclosure
     assert "2026-09-15T05:23:44Z" in disclosure
-    assert "docs/superpowers/autopilot/evidence/2026-09-15-row72-ids.txt" in disclosure
+    # Named without its directory, for `tests/test_release_tree.py`'s reason: the loop's own
+    # bookkeeping directory is outside the release tree and no rendered string may spell it.
+    assert "evidence 2026-09-15-row72-ids.txt" in disclosure
+    assert "docs/" not in disclosure
     assert "executor 4.5" in disclosure
     assert "amendment 0.17" in disclosure
     assert "any counterfactual fill they produce enters its n" in disclosure
