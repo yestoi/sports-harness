@@ -55,3 +55,5 @@ the files named as "your edit".
     Residual is the read side: row 79's per-ticker print rescan from the earliest placement (34,014 rows a loop at 13:50 CT) and one simulation walk per pending row.
     Options: (a) bound the rescan as a second hotfix (loop's lean; read-side, no measured value moves); (b) a per-observation budget or round-robin (the user's §0.13c amendment);
     (c) accept until the weekend drains the backlog; (d) other. The FAIL stands and does not gate (journal 242).
+
+**Item 17 ruled 2026-09-15 16:57 CT (journal 245): option (d), batch the clean-market cursor-advance writes plus phase timings, as a second fix-78-shaped hotfix (`fix-2026-09-15-executor-batch-2`); (a) deferred by the controller; (b) not needed; §0.13c untouched. Open: item 1.**
