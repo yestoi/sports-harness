@@ -1,0 +1,10 @@
+captured_at_utc=2026-09-15T06:13:00Z (01:13 CT) runtime e17d0f5 (app) / c1066b5 (ws)
+recorder_tick_ms_last_hour|62.5|11476.799999999954|110
+recorder_rss_mb_latest|142.000000|2026-09-15 06:12:31.469097+00
+exec_loop_ms_p95_last_hour|3620|51
+exec_loop_ms_p95_since_e17d0f5|2352.4|4
+pricing_block_latest|17105||0
+strategy_variants|49af716f8708,5632da729fa7,64ba3ef09642,c2bc45377328,e549e693e117,e82fcd0a1e99,f259ca109084,ff363c8ac08d
+rfqs_24h|0||
+                                                             ^
+runs_last|17105|2026-09-15 06:12:31.469097+00
