@@ -526,3 +526,46 @@ def test_a_manifest_slice_with_neither_an_instant_nor_a_range_gates(tmp_path):
     assert result.verdict == "unverifiable"
     assert result.repaired_filled is None
     assert result.evidence["manifest_slices_in_interval"] == 1
+
+
+# --- 6B integration round: audit review Minor 4 and T9's `<=` alignment --------------------
+
+
+@pytest.mark.parametrize("entry, pre_empts", [
+    # Wholly after the cancel, with the range's first spelling present and explicitly null.
+    ({"reason": "gap", "start": None, "end": None, "from": at(3000), "to": at(4000)}, False),
+    # The same shape straddling the cancel: it still gates, so the fall-through does not turn
+    # the gate off, it only stops an explicit null from being read as a stated bound.
+    ({"reason": "gap", "start": None, "end": None, "from": at(2100), "to": at(9000)}, True),
+])
+def test_an_explicitly_null_range_bound_falls_through_to_the_other_spelling(tmp_path, entry,
+                                                                           pre_empts):
+    """Review Minor 4: `entry.get("start", entry.get("from"))` returns the null when the key is
+    present and null -- a default only applies to a *missing* key -- so an entry that states its
+    range as `from`/`to` while carrying explicit `start: null`/`end: null` was read as having no
+    range at all and failed closed on every such slice, gating a replay the manifest does not
+    forbid. Read each bound as "the first spelling that is not null".
+    """
+    directory = _gate_capsule(tmp_path, [entry])
+    result = audit_order(read_capsule(directory), 157)
+    assert result.evidence["manifest_slices_in_interval"] == (1 if pre_empts else 0)
+    assert result.verdict == ("unverifiable" if pre_empts else "validated")
+
+
+def test_a_difference_of_exactly_one_contract_is_corrected_not_validated(tmp_path):
+    """T9's ruling, carried here: `validated` means the repaired simulator reproduces the record
+    **strictly** within one contract, the rule `harness/rescore.py:201` already applies.
+
+    Derived independently: 6,401 contracts ahead of us trade at at(1800) and 38.92 more go off
+    at our price ten seconds later, so the repaired fill is 38.92 against a recorded 37.92 -- a
+    difference of exactly 1.00. A tolerance that included its own boundary would call that
+    agreement, and on a ten-contract order a one-contract difference is the whole correction.
+    Hypothesis (iii) is met (the prints exhaust the queue ahead before any recorded fill), so
+    the verdict is `corrected`; order 157's own verdict is untouched, its difference being 25.
+    """
+    directory = _capsule(tmp_path, prints=EXHAUSTING_PRINTS, deltas=[], snapshots=[],
+                         recorded_filled="37.92", recorded_queue="0.00")
+    result = audit_order(read_capsule(directory), 157)
+    assert result.repaired_filled - result.recorded_filled == Decimal("1.00")
+    assert result.verdict == "corrected"
+    assert result.hypothesis == "iii"

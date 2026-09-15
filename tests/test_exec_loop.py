@@ -465,6 +465,86 @@ def test_no_watcher_track_keeps_filling_after_a_cancel(env_settings, db_session,
     assert stats.nw_fills == 1
 
 
+def test_no_watcher_fills_stop_ten_minutes_before_kickoff(env_settings, db_session, world):
+    """The user's ruling of 2026-09-14 15:38 CT (journal 206): the counterfactual's deadline is
+    bounded by `kickoff - 10 minutes`, the same instant `fills_outside_placement_window` calls
+    the end of the placement window. The watched track is not bounded by it.
+
+    Derived independently of the loop. The order rests with 40 contracts ahead of it at 0.35.
+    A print of 60 lands three seconds after placement -- inside the bound -- so 40 of it is the
+    queue and 20 reaches the order on both tracks. A print of 500 lands eight seconds after
+    placement, three seconds past `kickoff - 10 min`, and is tape the counterfactual never sees:
+    it fills the watched track to its whole 97 contracts and leaves the counterfactual at 20.
+
+    The order's kickoff and expiry are moved after placement, because an order placed normally
+    expires at `kickoff - exec_kickoff_cutoff_min` already (`plan.py:564`) -- the case the bound
+    exists for is the one where they differ: a kickoff moved after placement, or an order whose
+    expiry outlives the window.
+    """
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    assert order.queue_ahead_at_place == Decimal("40.00")
+    # `kickoff - 10 min` is NOW + 5 s; the expiry is deliberately far past it.
+    db_session.query(Order).filter_by(id=order.id).update(
+        {"kickoff_utc": NOW + timedelta(minutes=10, seconds=5),
+         "expiry": NOW + timedelta(minutes=20)})
+    db_session.commit()
+
+    inside = NOW + timedelta(seconds=3)
+    outside = NOW + timedelta(seconds=8)
+    _print(db_session, T2, inside, "0.35", "60", trade_id="inside-the-window")
+    _print(db_session, T2, outside, "0.35", "500", trade_id="past-the-window")
+    db_session.commit()
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    watched = fills_of(db_session, order.id, "queue_model")
+    nw = fills_of(db_session, order.id, "no_watcher")
+    assert [f.filled_at for f in nw] == [inside]
+    assert order.nw_filled_contracts == Decimal("20.00")
+    assert [f.filled_at for f in watched] == [inside, outside]
+    assert order.filled_contracts == SIZE2
+    assert order.status == "filled"
+
+
+def test_a_counterfactual_with_no_kickoff_keeps_the_expiry_deadline(env_settings, db_session,
+                                                                   world):
+    """The bound is `min(deadline, kickoff - 10 min)` only when the order carries a kickoff.
+    With no kickoff there is no window to bound to, so the counterfactual stops at the expiry
+    exactly as it did before -- the same tape as the test above, scored the other way.
+    """
+    clock = Clock(NOW)
+    _book2(db_session, NOW - timedelta(seconds=5))
+    db_session.commit()
+    executor = make_executor(env_settings, db_session, clock)
+    executor.step()
+    refresh(db_session)
+    order = orders_of(db_session)[0]
+    db_session.query(Order).filter_by(id=order.id).update(
+        {"kickoff_utc": None, "expiry": NOW + timedelta(minutes=20)})
+    db_session.commit()
+
+    _print(db_session, T2, NOW + timedelta(seconds=3), "0.35", "60", trade_id="inside-nk")
+    _print(db_session, T2, NOW + timedelta(seconds=8), "0.35", "500", trade_id="later-nk")
+    db_session.commit()
+
+    clock.advance(15)
+    executor.step()
+    refresh(db_session)
+
+    order = orders_of(db_session)[0]
+    assert order.nw_filled_contracts == SIZE2
+    assert order.filled_contracts == SIZE2
+
+
 def test_nw_fill_writes_no_ledger_or_position_row(env_settings, db_session, world):
     clock = Clock(NOW)
     _book2(db_session, NOW - timedelta(seconds=5))

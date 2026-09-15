@@ -167,3 +167,24 @@ def test_correction_has_exactly_the_designed_fields():
         "measurement_version_before", "measurement_version_after", "deploy_sha",
         "variant_ids", "config_hashes", "affected_order_id_range", "affected_run_id_range",
         "eligible_measurements", "excluded_measurements", "rescore_command"]
+
+
+#: A recorded sha is either the plan's unfilled placeholder or an abbreviated-to-full git object
+#: name: 7 to 40 hexadecimal characters (T11 review M-4).
+SHA_PLACEHOLDER = "<sha>"
+SHA_WIDTH = re.compile(r"\A[0-9a-f]{7,40}\Z")
+
+
+def test_every_recorded_sha_is_the_placeholder_or_a_git_object_name():
+    """T11 review M-4: `code_version_before`, `code_version_after` and `deploy_sha` are read as
+    shas by every consumer of the manifest (the record, `harness manifest`, 6C's report), so a
+    value that is neither a sha nor the plan's own unfilled placeholder is a manifest that
+    cannot be checked out. The width is asserted, not the value: the controller fills the
+    placeholders at the deploy commit and no test may pin what it fills them with.
+    """
+    for correction in CORRECTIONS:
+        for field in ("code_version_before", "code_version_after", "deploy_sha"):
+            value = getattr(correction, field)
+            assert isinstance(value, str), (correction.id, field)
+            assert value == SHA_PLACEHOLDER or SHA_WIDTH.match(value), (correction.id, field,
+                                                                        value)

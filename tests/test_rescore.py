@@ -585,3 +585,111 @@ def test_a_rerun_reports_the_rows_it_did_not_write_and_names_a_stale_verdict(db_
                         corrections=CORRECTIONS_IN_FORCE, build_sha="newbuild")
     assert (again.written, again.existing) == (0, 8)
     assert len([r for r in caplog.records if "already scored" in r.message]) == 1
+
+
+# --- T9 review Minors 2 and 5 (the 6B integration round) ----------------------------------
+
+
+def test_the_elapsed_seconds_are_read_once_per_page_not_twice_per_order(db_session,
+                                                                       seeded_world,
+                                                                       monkeypatch):
+    """Review Minor 2: `order_dirty_time` is a *bounded page* read, so asking it for one order
+    at a time costs two statements per order over a 10,000-order range for an answer the same
+    two statements give for the whole page.
+
+    Derived independently of the implementation: the driving read returns the page, so the page
+    is what the timing read is bounded to. The four orders of the seeded world are one page, so
+    one call -- and the per-order values must still be the per-order values, which is what the
+    second assertion is for (C and D are the two orders whose timing is written on an
+    unverifiable path).
+    """
+    calls = []
+    real = rescore_module.order_dirty_time
+
+    def counted(session, now, boundary_order_id, limit=1000):
+        calls.append((boundary_order_id, limit))
+        return real(session, now, boundary_order_id, limit)
+
+    monkeypatch.setattr(rescore_module, "order_dirty_time", counted)
+
+    counts = rescore(db_session, from_order=seeded_world.first, to_order=seeded_world.last,
+                     corrections=CORRECTIONS_IN_FORCE)
+
+    assert counts.denominator == 4
+    assert len(calls) == 1, calls
+    timing = {r.order_id: (r.watched_dirty_s, r.counterfactual_dirty_s, r.unobserved_s)
+              for r in _rows(db_session, policy="ahead")}
+    assert timing == {A: (0, 0, 1800), B: (0, 0, 1800), C: (0, 0, 1800), D: (0, 0, 1800)}
+
+
+def test_the_replay_reads_the_stores_public_tape_builder(db_session):
+    """Review Minor 5: the re-score built its deltas through `store._tape_deltas`, a private
+    name in another module. The builder is public (`store.tape_deltas`) and is the one this
+    command calls -- it is what drops a row whose side, price or delta is NULL, and a second
+    copy of that rule here is exactly the drift the shared helper exists to prevent."""
+    from harness.execution import store
+
+    rows = [SimpleNamespace(id=1, ts=T0, side="yes", price=Decimal("0.30"),
+                            delta=Decimal("-1.00"), sid=1, seq=1),
+            SimpleNamespace(id=2, ts=T0, side=None, price=None, delta=None, sid=1, seq=2)]
+
+    assert hasattr(store, "tape_deltas")
+    assert not hasattr(store, "_tape_deltas")
+    built = rescore_module._as_deltas(rows)
+    assert [d.event_id for d in built] == [1]
+    assert built == store.tape_deltas(rows)
+
+
+def test_the_rescore_command_echoes_through_typer_and_disposes_its_engine(db_session,
+                                                                         seeded_world,
+                                                                         monkeypatch):
+    """Review Minor 5: the command is a Typer command, so its output goes through `typer.echo`
+    like every other command's, and the engine it builds for itself is disposed rather than
+    left to the interpreter -- the controller runs this command repeatedly over ssh in the
+    quiet window beside a live loop, and each run holding a pool open is a connection the
+    executor cannot have."""
+    import inspect
+    import os
+
+    from sqlalchemy.engine import Engine
+    from typer.testing import CliRunner
+
+    import harness.cli as cli_module
+    from harness.cli import app
+    from harness.config.settings import get_settings
+
+    source = inspect.getsource(cli_module.rescore_cmd)
+    assert "typer.echo(" in source
+    assert "\n    print(" not in source
+
+    url = os.environ.get("DATABASE_URL_TEST")
+    if not url:
+        pytest.skip("DATABASE_URL_TEST not set")
+
+    built, disposed = [], []
+    real_make_engine = cli_module.make_engine
+    real_dispose = Engine.dispose
+
+    def spy(url, *args, **kwargs):
+        engine = real_make_engine(url, *args, **kwargs)
+        built.append(engine)
+        return engine
+
+    def dispose(self, *args, **kwargs):
+        disposed.append(self)
+        return real_dispose(self, *args, **kwargs)
+
+    monkeypatch.setattr(cli_module, "make_engine", spy)
+    monkeypatch.setattr(Engine, "dispose", dispose)
+    monkeypatch.setenv("DATABASE_URL", url)
+    get_settings.cache_clear()
+    try:
+        result = CliRunner().invoke(app, ["rescore", "--from-order", str(seeded_world.first),
+                                          "--to-order", str(seeded_world.last),
+                                          "--correction", "C1,C2,C3,C4,C5"])
+    finally:
+        get_settings.cache_clear()
+
+    assert result.exit_code == 0, result.output
+    assert "denominator=4" in result.output
+    assert built and all(engine in disposed for engine in built)

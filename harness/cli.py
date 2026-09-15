@@ -988,39 +988,46 @@ def rescore_cmd(
     s = get_settings()
     # The engine's default timeout, not the executor's: each order's tape read sets its own
     # `statement_timeout` anyway (§1.8), and this command has no loop deadline of its own.
-    factory = make_session_factory(make_engine(s.database_url))
+    # Disposed in the `finally` below (review Minor 5): the controller runs this command over
+    # and over in the quiet window beside a live executor, and a pool left open at exit is a
+    # connection the loop cannot have.
+    engine = make_engine(s.database_url)
+    factory = make_session_factory(engine)
     ids = [c.strip() for c in correction.split(",") if c.strip()]
-    with factory() as session:
-        try:
-            counts = rescore(session, from_order=from_order, to_order=to_order,
-                             corrections=ids, limit=limit, resume=resume,
-                             build_sha=s.build_sha)
-        except ValueError as exc:
-            log.error("%s", exc)
-            raise typer.Exit(1) from exc
-    print(f"corrections={','.join(sorted(ids))} denominator={counts.denominator} "
-          f"completed={counts.completed} "
-          f"unverifiable_no_tape={counts.unverifiable_no_tape} "
-          f"unverifiable_read_cancelled={counts.unverifiable_read_cancelled}")
+    try:
+        with factory() as session:
+            try:
+                counts = rescore(session, from_order=from_order, to_order=to_order,
+                                 corrections=ids, limit=limit, resume=resume,
+                                 build_sha=s.build_sha)
+            except ValueError as exc:
+                log.error("%s", exc)
+                raise typer.Exit(1) from exc
+    finally:
+        engine.dispose()
+    typer.echo(f"corrections={','.join(sorted(ids))} denominator={counts.denominator} "
+               f"completed={counts.completed} "
+               f"unverifiable_no_tape={counts.unverifiable_no_tape} "
+               f"unverifiable_read_cancelled={counts.unverifiable_read_cancelled}")
     # Beside the partition, and never folded into it: `written`/`existing` are about the table,
     # not about the orders. A repeated run recomputes every order and keeps the rows it already
     # had (`on conflict do nothing`, because a correction is new rows and never an edit), so
     # without this line a stale table and a fresh-looking summary could not be told apart
     # (review IMP-2). Rows that disagree with what is stored are named in the log, one line per
     # order.
-    print(f"rows: written={counts.written} existing={counts.existing}")
+    typer.echo(f"rows: written={counts.written} existing={counts.existing}")
     if not counts.exhausted:
         # The read returned exactly its limit, so the partition above describes a prefix of the
         # range (review IMP-1). Said here as well as in the log, because the operator reads this
         # line and decides whether to continue.
-        print(f"range not exhausted: stopped at the read limit, last order "
-              f"{counts.last_order_id}; continue with --from-order {counts.last_order_id} "
-              f"--to-order {to_order} --resume")
+        typer.echo(f"range not exhausted: stopped at the read limit, last order "
+                   f"{counts.last_order_id}; continue with --from-order "
+                   f"{counts.last_order_id} --to-order {to_order} --resume")
     # Printed with the counts, every time: the denominator is the orders whose counterfactual
     # had finished when this ran, so the partition describes what could be scored and is not a
     # rate over the range. Nothing here divides one cell by another.
-    print("caveat: retrospective estimates, right-censored -- orders whose counterfactual had "
-          "not finished are not in the denominator; the cells are counts, not a rate.")
+    typer.echo("caveat: retrospective estimates, right-censored -- orders whose counterfactual "
+               "had not finished are not in the denominator; the cells are counts, not a rate.")
 
 
 @app.command("manifest")

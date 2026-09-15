@@ -184,19 +184,20 @@ def _as_prints(rows) -> list[TapePrint]:
 def _as_deltas(rows) -> list:
     """The delta rows as tape, through `store`'s own builder rather than a second copy of it
     (it is what drops a row whose side, price or delta is NULL)."""
-    return store._tape_deltas(rows)
+    return store.tape_deltas(rows)
 
 
 def _verdict(recorded: Decimal, repaired: Decimal) -> str:
     """`validated` within one contract, `corrected` otherwise. `unverifiable` is the caller's:
     it is a statement about the evidence, not about the arithmetic.
 
-    Strictly within: a difference of exactly one contract is a difference. `harness/audit.py`
-    compares the same tolerance with `<=`, and on order 157's quantities (38.92 against 6,401)
-    the two rules cannot differ; here they can, because C3's equal-timestamp double count is a
-    one-contract-scale error on a ten-contract order -- the seeded world's order B is exactly
-    that case, a recorded fill of 1 the repair removes entirely -- and a rule that called a
-    removed fill `validated` would hide the correction on precisely the orders it corrects.
+    Strictly within: a difference of exactly one contract is a difference. C3's equal-timestamp
+    double count is a one-contract-scale error on a ten-contract order -- the seeded world's
+    order B is exactly that case, a recorded fill of 1 the repair removes entirely -- and a rule
+    that called a removed fill `validated` would hide the correction on precisely the orders it
+    corrects. `harness/audit.py` compared the same tolerance with `<=` until 6B's integration
+    round aligned it on this one (T9's ruling); the two now read the same boundary the same way,
+    and order 157's own verdict never depended on it (its difference is 25).
     """
     return "validated" if abs(repaired - recorded) < FILL_TOLERANCE else "corrected"
 
@@ -232,8 +233,10 @@ def rescore(session: Session, from_order: int, to_order: int, corrections: list[
     ceiling = limit or DEFAULT_ORDER_LIMIT
     rows = session.execute(_ORDERS, {"from_order": from_order, "to_order": to_order,
                                      "after": after, "limit": ceiling}).all()
+    timings = _page_timing(session, rows, instant)
     for row in rows:
-        counts = _rescore_one(session, row, ids, instant, build_sha, counts)
+        counts = _rescore_one(session, row, ids, instant, build_sha, counts,
+                              timings.get(row.id))
         # Per order, so an abandoned run keeps everything it had already scored and `--resume`
         # starts at the first order it had not reached (§4.4).
         session.commit()
@@ -250,7 +253,7 @@ def rescore(session: Session, from_order: int, to_order: int, corrections: list[
 
 
 def _rescore_one(session: Session, row, ids: str, instant: datetime, build_sha: str | None,
-                 counts: RescoreCounts) -> RescoreCounts:
+                 counts: RescoreCounts, timing) -> RescoreCounts:
     """One order, both policies, one `order_rescores` row each.
 
     Never raises a cancelled read out of the run: an `OperationalError`/`DBAPIError` from the
@@ -273,8 +276,7 @@ def _rescore_one(session: Session, row, ids: str, instant: datetime, build_sha: 
         # are one partition member by §1.8's definition and cannot be three columns without a
         # schema change.
         log.warning("rescore: order %s unverifiable (%s)", row.id, missing)
-        wrote = _write(session, row, ids, "unverifiable", None, _timing(session, row, instant),
-                       instant, build_sha)
+        wrote = _write(session, row, ids, "unverifiable", None, timing, instant, build_sha)
         return _tally(session, row, ids, "unverifiable", counts, wrote, denominator, no_tape=1)
     try:
         prints, deltas = _order_tape(session, row, store.DELTA_BATCH_LIMIT)
@@ -284,14 +286,13 @@ def _rescore_one(session: Session, row, ids: str, instant: datetime, build_sha: 
         # two would make a starved host look like a gap-ridden tape (ruling IM-4).
         log.warning("rescore read cancelled for order %s: %s", row.id, exc)
         # The cancelled statement left its transaction aborted; nothing already scored is lost,
-        # because every order before this one is committed. The timing read comes after the
-        # rollback, in the fresh transaction.
+        # because every order before this one is committed. The timing is already in hand -- it
+        # was read once for the whole page before any order was scored (review Minor 2) -- so
+        # this path writes it after the rollback without a read of its own.
         session.rollback()
-        wrote = _write(session, row, ids, "unverifiable", None, _timing(session, row, instant),
-                       instant, build_sha)
+        wrote = _write(session, row, ids, "unverifiable", None, timing, instant, build_sha)
         return _tally(session, row, ids, "unverifiable", counts, wrote, denominator,
                       cancelled=1)
-    timing = _timing(session, row, instant)
     if len(prints) >= store.DELTA_BATCH_LIMIT or len(deltas) >= store.DELTA_BATCH_LIMIT:
         # The bound stopped the read before the window ended, so what came back is a prefix of
         # this order's tape and scoring it would report a fill computed from part of the
@@ -388,21 +389,42 @@ def _missing_anchor(row) -> str | None:
     return None
 
 
-def _timing(session: Session, row, instant: datetime):
-    """This order's elapsed dirty and unobserved seconds, or None if the query does not carry it.
+def _page_timing(session: Session, rows, instant: datetime) -> dict:
+    """The page's elapsed dirty and unobserved seconds, keyed by order id.
 
-    `order_dirty_time` is bounded to `id > :boundary_order_id` with a `limit`, so asking for one
-    order is `boundary_order_id = id - 1, limit = 1`. It excludes NULL-expiry orders, and its
-    first row is the next order in the range rather than this one when this one is excluded --
-    hence the identity check rather than a bare `[0]` (T6 carry-forward F6).
+    `order_dirty_time` is itself a bounded *page* read -- `id > :boundary_order_id` plus a
+    `limit`, two statements -- so asking it for one order at a time cost two statements per
+    order for an answer the same two give for the whole page (review Minor 2). The driving read
+    already decided what the page is, so that is what this is bounded to.
 
-    Called on every path, scored or not (review Minor 4). The one order it cannot answer for is
-    the NULL-expiry one, which `order_dirty_time` excludes by construction and which therefore
-    keeps NULL timing columns; that order has no resting interval for the seconds to be measured
-    over, so there is nothing the column could truthfully hold.
+    The ids of a page are not contiguous (the driving read selects `nw_done` orders inside a
+    range), and `order_dirty_time` excludes NULL-expiry orders, so one call of `len(rows)` rows
+    can stop short of the page's last id. It is continued from the last id it returned until the
+    page's last id is covered -- still `id >` plus a ceiling every time, never an unbounded scan,
+    and one call in the ordinary case. Each pass advances the boundary by at least one order, so
+    it terminates.
+
+    An order the reads do not carry keeps no entry and therefore NULL timing columns: that is
+    the NULL-expiry order, which `order_dirty_time` excludes by construction (T6 carry-forward
+    F6) and which has no resting interval for the seconds to be measured over.
+
+    Called for every page, scored or not (review Minor 4): how long an order's market was dirty
+    does not depend on whether its tape could be scored.
     """
-    elapsed = order_dirty_time(session, instant, boundary_order_id=row.id - 1, limit=1)
-    return elapsed[0] if elapsed and elapsed[0].order_id == row.id else None
+    if not rows:
+        return {}
+    wanted = {row.id for row in rows}
+    out: dict = {}
+    boundary, last = rows[0].id - 1, rows[-1].id
+    while boundary < last:
+        page = order_dirty_time(session, instant, boundary_order_id=boundary, limit=len(rows))
+        if not page:
+            break
+        for elapsed in page:
+            if elapsed.order_id in wanted:
+                out[elapsed.order_id] = elapsed
+        boundary = page[-1].order_id
+    return out
 
 
 def _write(session: Session, row, ids: str, verdict: str, measured, timing, instant: datetime,
@@ -417,7 +439,7 @@ def _write(session: Session, row, ids: str, verdict: str, measured, timing, inst
 
     An unverifiable order gets one row per policy with the measured columns null, so the
     partition sums to the denominator over either policy's rows alone. The timing columns are
-    filled on every path; they are NULL only when `_timing` itself could not answer.
+    filled on every path; they are NULL only when the page's timing read could not answer.
     """
     if verdict not in VERDICTS:
         # The vocabulary is `harness/audit.py`'s, and §2's invariant query is written against

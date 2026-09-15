@@ -10,7 +10,18 @@ from unittest import mock
 import pytest
 from sqlalchemy import event as sa_event, text
 
-from harness.db.models import FairValue, Intent, JobRun, Order, OrderEvent, Run, VenueTrade
+from harness.db.models import (
+    FairValue,
+    Fill,
+    Game,
+    Intent,
+    JobRun,
+    Markout,
+    Order,
+    OrderEvent,
+    Run,
+    VenueTrade,
+)
 from harness.ops import checks as checks_mod
 from harness.ops.checks import CHECKS, Check, current_trades_partition, assert_no_tape_reads, run_checks
 
@@ -317,11 +328,13 @@ def _intent(session, *, created_at, variant_id="v1", venue_market_id=7, side="ye
     return row
 
 
-def _order(session, *, placed_at, status, variant_id="v1", venue_market_id=7, side="yes"):
+def _order(session, *, placed_at, status, variant_id="v1", venue_market_id=7, side="yes",
+           game_id=None):
     row = Order(intent_id=uuid.uuid4(), variant_id=variant_id, venue="kalshi",
                 client_order_id=str(uuid.uuid4()), ticker="KXNFL-T",
                 venue_market_id=venue_market_id, side=side, prob=Decimal("0.5000"),
-                contracts=Decimal("10.00"), status=status, placed_at=placed_at)
+                contracts=Decimal("10.00"), status=status, placed_at=placed_at,
+                game_id=game_id)
     session.add(row)
     session.flush()
     return row
@@ -440,3 +453,108 @@ def test_the_intents_check_rides_the_orders_key_index(db_session):
     present = db_session.execute(text(
         "select 1 from pg_indexes where indexname = 'ix_orders_key_placed'")).first()
     assert present is not None, "T5's ix_orders_key_placed is missing; this check will time out"
+
+
+# --- 6B integration round: the two predicates bounded to the no-watcher cutoff ------------
+# The user's ruling of 2026-09-14 15:38 CT (journal 206), option A on roadmap rows 62 and 63:
+# both checks are bounded to fills written after the no-watcher cutoff fix ships, and the 154
+# fills and 154 markouts already on the record stay as recorded. No test here pins the value of
+# `NO_WATCHER_CUTOFF_FIXED_AT`: every case is seeded relative to whatever the constant holds, so
+# the controller can set it to the release instant without touching a test.
+
+
+def _cutoff():
+    return checks_mod.NO_WATCHER_CUTOFF_FIXED_AT
+
+
+def _game(session, kickoff):
+    row = Game(sport="nfl", home_team_id=1, away_team_id=2, kickoff_utc=kickoff,
+               status="scheduled")
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _fill(session, order_id, filled_at, method="queue_model"):
+    row = Fill(order_id=order_id, prob=Decimal("0.5000"), contracts=Decimal("1.00"),
+               fee=Decimal("0.0100"), filled_at=filled_at, fill_method=method, replay=False)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _order_with_a_fill_past_the_window(session, kickoff):
+    """One order on `kickoff`'s game whose single fill is five minutes before kickoff -- inside
+    the ten minutes the placement window excludes, so it is a row the unbounded check counts."""
+    game = _game(session, kickoff)
+    order = _order(session, placed_at=kickoff - timedelta(hours=1), status="filled",
+                   game_id=game.id)
+    _fill(session, order.id, kickoff - timedelta(minutes=5))
+    return order
+
+
+def test_a_fill_past_the_placement_window_before_the_cutoff_is_not_counted(db_session):
+    """The 154 recorded fills: written by the defective loop, kept as recorded, not a failure."""
+    _order_with_a_fill_past_the_window(db_session, _cutoff() - timedelta(days=2))
+
+    assert _run_one(db_session, "fills_outside_placement_window", _cutoff()).status == "pass"
+
+
+def test_a_fill_past_the_placement_window_after_the_cutoff_still_fails(db_session):
+    """The bound is a date, not an amnesty: the same defect written after the fix ships fails."""
+    _order_with_a_fill_past_the_window(db_session, _cutoff() + timedelta(days=2))
+
+    result = _run_one(db_session, "fills_outside_placement_window",
+                      _cutoff() + timedelta(days=3))
+    assert result.status == "fail"
+    assert float(result.value) == 1.0
+
+
+def test_a_fill_before_its_own_placement_after_the_cutoff_still_fails(db_session):
+    """The other half of the same predicate -- a fill stamped before the order was placed -- is
+    bounded by the same cutoff and is unchanged above it."""
+    kickoff = _cutoff() + timedelta(days=2)
+    game = _game(db_session, kickoff)
+    order = _order(db_session, placed_at=kickoff - timedelta(hours=1), status="filled",
+                   game_id=game.id)
+    _fill(db_session, order.id, kickoff - timedelta(hours=2))
+
+    assert _run_one(db_session, "fills_outside_placement_window",
+                    _cutoff() + timedelta(days=3)).status == "fail"
+
+
+def _markout_past_its_horizon(session, filled_at):
+    """A markout stamped after its own horizon, on an order whose only fill is `filled_at`."""
+    order = _order(session, placed_at=filled_at - timedelta(hours=1), status="filled")
+    _fill(session, order.id, filled_at)
+    session.add(Markout(order_id=order.id, anchor="fill", horizon="5m",
+                        at_ts=filled_at + timedelta(minutes=10),
+                        horizon_ts=filled_at + timedelta(minutes=5)))
+    session.flush()
+    return order
+
+
+def test_a_markout_past_its_horizon_on_a_pre_cutoff_fill_is_not_counted(db_session):
+    """The 154 recorded markouts: they hang off the same pre-cutoff fills."""
+    _markout_past_its_horizon(db_session, _cutoff() - timedelta(hours=1))
+
+    assert _run_one(db_session, "markouts_at_after_horizon", _cutoff()).status == "pass"
+
+
+def test_a_markout_past_its_horizon_on_a_post_cutoff_fill_still_fails(db_session):
+    _markout_past_its_horizon(db_session, _cutoff() + timedelta(hours=1))
+
+    result = _run_one(db_session, "markouts_at_after_horizon", _cutoff() + timedelta(days=1))
+    assert result.status == "fail"
+    assert float(result.value) == 1.0
+
+
+def test_the_two_bounded_predicates_pass_the_cutoff_as_a_parameter(db_session):
+    """The statement text stays static -- `verify.md`, `assert_no_tape_reads` and the record all
+    read it -- and the instant is bound, so the controller replaces one constant at the release
+    commit rather than rewriting SQL."""
+    for name in ("fills_outside_placement_window", "markouts_at_after_horizon"):
+        check = _check(name)
+        assert ":cutoff" in check.sql
+        assert check.params == {"cutoff": checks_mod.NO_WATCHER_CUTOFF_FIXED_AT}
+    assert checks_mod.NO_WATCHER_CUTOFF_FIXED_AT.tzinfo is not None

@@ -107,6 +107,14 @@ CENT = Decimal("0.01")
 DURATION_WINDOW = 100
 QUEUE_MODEL = "queue_model"
 NO_WATCHER = "no_watcher"
+#: How far before kickoff the no-watcher counterfactual stops, per the user's ruling of
+#: 2026-09-14 15:38 CT (journal 206): "bound the NO_WATCHER deadline at
+#: harness/execution/loop.py:900 (main) by kickoff minus 10 minutes". A literal ten minutes, not
+#: `exec_kickoff_cutoff_min`: the invariant that measures it
+#: (`harness/ops/checks.fills_outside_placement_window`) writes `interval '10 minutes'`, and a
+#: settings change that moved one of the two without the other would make the check fail on
+#: fills the loop had just been told to write.
+NO_WATCHER_KICKOFF_MARGIN = timedelta(minutes=10)
 #: The `order_events.kind` of a venue fill that arrived after its order left the book.
 LATE_FILL = "late_fill"
 #: The `fills.fill_method` of a fill the venue reported, as against one the queue model
@@ -1013,6 +1021,24 @@ class Executor:
         # once did, which is how a print in the seconds between expiry and the loop instant
         # filled an order that was no longer on the market (§0.8).
         deadline = min(now, row.expiry) if row.expiry is not None else now
+        # The user's ruling of 2026-09-14 15:38 CT (journal 206): the counterfactual is bounded
+        # by `kickoff - 10 minutes` as well as by the expiry. An order placed normally already
+        # expires there (`plan._intent_actions` places with `expiry = kickoff - s.cutoff`), so
+        # this only bites where the two came apart -- a kickoff moved after placement, a
+        # NULL-expiry order, a row whose expiry outlived the window -- which is how fills landed
+        # past the window `ops/checks.fills_outside_placement_window` measures. The watched track
+        # keeps `deadline` unchanged: what it did is a fact about an order we were holding, and
+        # R8's expiry is still the only guarantee it stopped resting.
+        # `getattr`, as this frame already reads `sport`: the two pure-unit modules
+        # (`tests/test_execution_pure.py`, `tests/test_execution_regressions.py`) build the row
+        # by hand from what `_simulate_order` reads, and a hand-built row without a kickoff is
+        # the same case as a row whose kickoff is NULL. The real projection carries the column
+        # (`store._WORKING_ORDERS`, `o.kickoff_utc`), and the loop test above proves the bound
+        # bites on it, so dropping it from the projection would fail that test rather than
+        # silently unbound the counterfactual.
+        kickoff = getattr(row, "kickoff_utc", None)
+        nw_deadline = (deadline if kickoff is None
+                       else min(deadline, kickoff - NO_WATCHER_KICKOFF_MARGIN))
 
         if row.status in store.OPEN_STATUSES:
             result = simulate_fills(order, watched, self._sim_book(session, row, watched, bases,
@@ -1034,7 +1060,7 @@ class Executor:
         if not row.nw_done:
             result = simulate_fills(order, no_watcher,
                                     self._sim_book(session, row, no_watcher, bases, anchor),
-                                    prints, deltas, deadline, NO_WATCHER)
+                                    prints, deltas, nw_deadline, NO_WATCHER)
             track = self._persist_track(session, row, order, result, prints, ledger=False,
                                         crossed_already=crossed_already)
             stats.nw_fills += track.inserted

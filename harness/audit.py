@@ -75,7 +75,9 @@ H1_DECREMENT = Decimal("-6376")
 H1_TOLERANCE = Decimal("0.01")
 #: Hypothesis (iii)'s predicted print volume: the whole queue ahead of us at placement.
 H3_QUEUE = Decimal("6401")
-#: `validated` means the repaired simulation reproduces the recorded fills within one contract.
+#: `validated` means the repaired simulation reproduces the recorded fills **strictly** within
+#: one contract, the same rule and the same tolerance as `harness/rescore.py`'s `_verdict`
+#: (T9's ruling, aligned in 6B's integration round).
 FILL_TOLERANCE = Decimal("1")
 ZERO = Decimal("0")
 
@@ -168,8 +170,14 @@ def _slice_overlaps(entry: dict, placed_at: datetime, deadline: datetime) -> boo
     """
     if not isinstance(entry, dict):
         return True
-    start = entry.get("start", entry.get("from"))
-    end = entry.get("end", entry.get("to"))
+    # The first spelling that is not null, rather than `entry.get("start", entry.get("from"))`:
+    # a `dict.get` default applies only to a *missing* key, so an entry that states its range as
+    # `from`/`to` while carrying an explicit `start: null` was read as having no range at all and
+    # failed closed -- gating a replay the manifest does not forbid (review Minor 4).
+    start = entry.get("start")
+    start = entry.get("from") if start is None else start
+    end = entry.get("end")
+    end = entry.get("to") if end is None else end
     try:
         if start is not None or end is not None:
             lower = None if start is None else _ts(start)
@@ -377,7 +385,10 @@ def audit_order(capsule: dict, order_id: int) -> AuditResult:
                            recorded_filled, recorded_queue, evidence)
     result = _replay(capsule, order)
     repaired_filled = result.state.filled_contracts
-    if abs(repaired_filled - recorded_filled) <= FILL_TOLERANCE:
+    # Strictly within the tolerance, the rule `harness/rescore.py:201` applies (T9's ruling): a
+    # difference of exactly one contract is a difference, and on a ten-contract order it is the
+    # whole correction. Order 157's own verdict is unaffected -- its difference is 25.
+    if abs(repaired_filled - recorded_filled) < FILL_TOLERANCE:
         return AuditResult(order_id, "validated", None, repaired_filled,
                            result.state.queue_remaining, recorded_filled, recorded_queue,
                            evidence)

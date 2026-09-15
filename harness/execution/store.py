@@ -549,7 +549,14 @@ order by ts, id
 """)
 
 
-def _tape_deltas(rows) -> list[TapeDelta]:
+def tape_deltas(rows) -> list[TapeDelta]:
+    """Delta rows as tape, dropping any row whose side, price or delta is NULL.
+
+    Public because it is not only this module's (T9 review Minor 5): `harness/rescore.py` builds
+    the same tape from its own bounded read, and a second copy of this filter -- or a reach into
+    a private name across modules -- is how the replay and the loop would come to disagree about
+    which rows are tape at all.
+    """
     return [TapeDelta(event_id=r.id, ts=r.ts, side=r.side, price=r.price, delta=r.delta,
                       sid=r.sid, seq=r.seq)
             for r in rows if r.side is not None and r.price is not None and r.delta is not None]
@@ -575,7 +582,7 @@ def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
     if at is not None:
         rows = session.execute(
             _DELTAS_AT, {"t": ticker, "cursor": cursor, "lower": lower, "at": at}).all()
-        return DeltaBatch(_tape_deltas(rows), False)
+        return DeltaBatch(tape_deltas(rows), False)
     if cursor > 0:
         rows = session.execute(
             _DELTAS, {"t": ticker, "cursor": cursor, "limit": limit}).all()
@@ -585,7 +592,7 @@ def load_deltas(session: Session, ticker: str, cursor: int, lower: datetime,
             {"t": ticker, "cursor": cursor, "lower": lower, "limit": limit}).all()
     # Truncation is measured against the limit this read actually ran with, never against the
     # cap: a shrunk batch that came back full is exactly the ticker still behind the tape.
-    return DeltaBatch(_tape_deltas(rows), len(rows) >= limit)
+    return DeltaBatch(tape_deltas(rows), len(rows) >= limit)
 
 
 # --- exposure -------------------------------------------------------------------------
