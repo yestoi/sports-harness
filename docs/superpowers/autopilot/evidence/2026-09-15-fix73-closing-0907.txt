@@ -9,3 +9,13 @@ closing_read_at 2026-09-15 14:27:09.74315+00
 settle 209 2026-09-15 14:20:10.49383+00 -> running running budget_exhausted=false errors=?
 settle209 running 2026-09-15 14:20:10.49383+00 -> running
 gap_outcomes total 79452
+closing_read_at 2026-09-15 14:31:18.358667+00
+settle 209 2026-09-15 14:20:10.49383+00 -> running running budget_exhausted=false errors=?
+settle_error events since 08:00 CT: 0
+gap_outcomes total 79452 null_roi_net 0
+watermark 50028
+closing_read_at 2026-09-15 14:36:27.899147+00
+settle 209 2026-09-15 14:20:10.49383+00 -> running running budget_exhausted=false errors=?
+backend 6320 state=active since=31s xact_age=977s q=FETCH FORWARD 2000 FROM "c_7f3051de6510_3"
+gap_outcomes total 79452
+watermark 50028

@@ -1,0 +1,5 @@
+pre_deploy_at 2026-09-15 14:37:13.470708+00
+tape_pre id 178454750 ts 2026-09-15 14:37:13.322+00
+run_pre 18032 2026-09-15 14:37:10.536129+00 skipped 762bde4
+research_reserved_pre 1.8702 usd 22.5628
+settle_209_at_deploy running since 14:20:10Z, FETCH FORWARD 2000 cursor, xact 977 s at 14:36:27Z; fix 58 sweeps it to interrupted at the new process start
