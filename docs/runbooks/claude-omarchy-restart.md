@@ -15,7 +15,8 @@ scripts/autopilot-session.sh start-herdr
 ```
 
 On a host without herdr, `scripts/autopilot-session.sh start` runs the same command
-inside a `sports-autopilot` tmux session. In Claude, select `/effort` **high**, then
+inside a `sports-autopilot` tmux session. In Claude, select `/effort` **high** explicitly (the saved
+default may be xhigh, which costs three to four times the tokens for no measured gain), then
 enter `/autopilot`. Both forms take the controller lock (a second launch fails), load
 only the committed worker MCP server and use the installed Claude binary. Detaching
 from herdr is fine; after a herdr *server* restart, exit the pane herdr auto-resumes
@@ -31,7 +32,7 @@ The controller, development and tests run on Omarchy. Production is
 ## Recover the exact checkpoint
 
 Read `.claude/skills/autopilot/SKILL.md` and its routed recovery/Linux references, then
-run its bootstrap reader. The committed `docs/superpowers/autopilot/state.md`,
+run its bootstrap reader (all three parts: `bootstrap`, `bootstrap authority`, `bootstrap operator`). The committed `docs/superpowers/autopilot/state.md`,
 roadmap, journal and active ledgers retain the actual task heads, receipts, counters,
 review findings, deployment stamp and next legal action. Inspect live processes and
 timers rather than adopting old Mac worker IDs or remembered wakeups.

@@ -9,8 +9,9 @@ does not grant additional authority. Review/setup requests do not start the loop
 When resuming authorized `/autopilot` work after compaction or a session restart:
 
 1. Read `.claude/skills/autopilot/SKILL.md` and `references/recovery.md` beside it.
-2. Run `python3 .claude/skills/autopilot/scripts/context.py bootstrap` from the
-   controller checkout; load the selected procedure and phase decisions as routed.
+2. Run `python3 .claude/skills/autopilot/scripts/context.py bootstrap` (then `bootstrap
+   authority` and `bootstrap operator`) from the controller checkout; load the selected
+   procedure and phase decisions as routed.
 3. Reconcile active ledgers, Git/worktrees, pending worker results, subprocesses,
    counters and wakeups before dispatching or mutating anything. Compaction does
    not mean workers died. Check the live deployment stamp before any redeploy.

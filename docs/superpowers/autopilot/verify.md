@@ -883,7 +883,7 @@ Study), so no new route is opened for them.
     the fence or if a bullet carries a citation the tables do not have.
 
 Evidence. The controller copies each returned path into
-`docs/superpowers/autopilot/evidence/` with `cp -n` (never overwrite a re-run) as
+`docs/superpowers/autopilot/evidence/` with `evidence_image.py` (a capped JPEG; never overwrite a re-run) as
 `<date>-<unit>-<HHMM>-<nn>-<slug>.jpg`. The controller reads the screenshot of every FAIL item and one PASS item
 with the Read tool and re-scores those; each read is one journal line, for example `item 6: PASS, 42 primary rows, newest 07:14`.
 

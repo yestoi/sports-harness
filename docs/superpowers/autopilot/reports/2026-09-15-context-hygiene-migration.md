@@ -173,6 +173,14 @@ amend as editing, renumbers the example to 999, drops "Result values are unchang
 text after the stamp; references/verify.md journals an `over cap` or refused image as an anomaly; phase.md says
 "partial-delivery checkpoint"; state.md was trimmed for headroom and carries the 35 min ruling.
 
+### Ruling on user-owned text
+
+2026-09-15 21:04 CT, the user, on the Task 9 diff (roadmap edit rights naming `fixes.md` and the launcher with the row-move bound
+mirrored from SKILL.md, the Secrets row, five calendar rows removed and three rewritten to Omarchy, twelve checked TODOs
+deleted, the runbook and `CLAUDE.md` naming the three bootstrap parts, `verify.md` line 886 naming the archive tool):
+
+> Approved.
+
 ## 3. State fact inventory
 
 Every sentence (bullets count as sentences) of `state.md@c962036` and where it goes in the rewrite. "Words kept"
