@@ -2864,3 +2864,16 @@ The user, verbatim, in this session at 16:57 CT (after asking whether the item 1
 - Carried forward: fixes.md Open 1, Watch 13, Closed 49 (63 rows, 56 twice, baseline line); ambiguous rows in Watch pending the user: none (all 28 ruled 19:50 CT); receipts found nowhere else: 1 (report section 4: evidence/2026-09-15-predeploy-baseline-6d.txt, on disk)
 - Files: fixes.md created; roadmap Carried fixes is a row-free pointer; state.md in the fixed schema; skill text (SKILL.md, recording, preflight, recovery, hotfix, verify, phase, deploy); roadmap edit rights, Secrets row, five calendar rows, twelve checked TODOs; runbook and CLAUDE.md; launcher --autocompact 300k; new commands: context.py bootstrap {checkpoint,authority,operator}, context.py check [--entry N], evidence_image.py, usage.py
 - Next: the user relaunches the controller; its first preflight runs check and the skill tests; after the first full day at 300k the user runs usage.py against spec section 3.5
+
+## 248. preflight - relaunch after the context hygiene migration; fix 78 part 2 review dispatched - 2026-09-15 21:19 CT
+- Orient: rule 1 - fixes.md Open holds row 78 (part 2 in flight, review pending per state.md); deploy trigger diff empty against the live stamp f8053c6; no wakeup, agent or suite existed at launch (clock 21:19 CT).
+- Branch / commits: main e1a19ea (clean); fix-2026-09-15-executor-batch-2 fa2f4fd..e0c9888 (worktree clean, no `.redbak/`)
+- Result: done
+- Dispatches: 1 (review: rev-fix-78b, opus, sports-worker, 21:28 CT)
+- Tests: 72 passed (skill tests, `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests`); `context.py check` ok; make test n/a (no code changed by this unit)
+- Review: n/a
+- Deploy: none
+- Verification: not run (`make preflight` rc 0, `paper posture intact`, build f8053c6, six app services healthy or up, disk 17 % used, evidence: evidence/2026-09-15-preflight-2120.txt; game window closed: 0/0/0, next kickoffs Thu 2026-09-17 18:30 CT NCAAF and 19:15 CT NFL)
+- Rulings: the batch wall-clock for fix 78 part 2 resumes at 21:19 CT with 35 min consumed (user ruling 20:12 CT, journal 247), so the 3 h ceiling falls at 23:44 CT; the desktop notification test is not repeated (journal 229 covered the day's first preflight); worker sandbox smoke passed in the fix-78b worktree (no /srv, no ssh keys, no loopback network, test socket present) and the review package is byte-identical to `git diff fa2f4fd..e0c9888`; the reviewer brief asks for a ruling on the implementer's deviation (one statement per column set and per 500 rows rather than literally one per loop). Anomalies: two other interactive claude sessions on the host (one busy, one idle) hold no controller lock and are not controllers; durable reminder files through 2026091510 are consumed history.
+- Carried forward: none
+- Next: hotfix (fix 78 part 2: review verdict, fix rounds, rebased full suite, `--ff-only`, app-only release tonight while the window is closed, p95 re-judge 20 min after the restart), chase wakeup 21:59 CT (cron); daily 09:00 CT line Wed
