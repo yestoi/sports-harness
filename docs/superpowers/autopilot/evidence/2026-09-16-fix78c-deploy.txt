@@ -1,0 +1,127 @@
+== pre-deploy baseline 2026-09-16 09:31 CT, main eac4414, live 49cf5f4
+ERROR:  column "ts" does not exist
+LINE 1: ...ct 'heartbeat age_s ' || extract(epoch from now()-ts)::int |...
+                                                             ^
+== deploy start 2026-09-16 09:31:43 CT
+Traceback (most recent call last):
+  File "/home/trey/dev/sports/scripts/release-omarchy.py", line 733, in <module>
+    main()
+  File "/home/trey/dev/sports/scripts/release-omarchy.py", line 726, in main
+    deploy(args.mode, args.plan)
+  File "/home/trey/dev/sports/scripts/release-omarchy.py", line 516, in deploy
+    raise RuntimeError('Release requires clean main (including untracked files)')
+RuntimeError: Release requires clean main (including untracked files)
+make: *** [Makefile:181: deploy-omarchy-app] Error 1
+== deploy end 2026-09-16 09:31:43 CT
+== retry after moving the evidence file out of the tree 2026-09-16 09:31:51 CT
+ok backup_run=50 finished_at=2026-09-16 08:32:20+00:00
+[release] validated
+[release] stopping
+ Container sports-harness-app-serve-1 Stopping 
+ Container sports-harness-app-exec-1 Stopping 
+ Container sports-harness-app-run-1 Stopping 
+ Container sports-harness-app-research-1 Stopping 
+ Container sports-harness-app-research-1 Stopped 
+ Container sports-harness-app-serve-1 Stopped 
+ Container sports-harness-app-run-1 Stopped 
+ Container sports-harness-app-exec-1 Stopped 
+[release] promoting
+ Container sports-harness-app-exec-1 Recreate 
+ Container sports-harness-app-run-1 Recreate 
+ Container sports-harness-app-serve-1 Recreate 
+ Container sports-harness-app-research-1 Recreate 
+ Container sports-harness-app-exec-1 Recreated 
+ Container sports-harness-app-research-1 Recreated 
+ Container sports-harness-app-serve-1 Recreated 
+ Container sports-harness-app-run-1 Recreated 
+ Container sports-harness-app-research-1 Starting 
+ Container sports-harness-app-run-1 Starting 
+ Container sports-harness-app-exec-1 Starting 
+ Container sports-harness-app-serve-1 Starting 
+ Container sports-harness-app-research-1 Started 
+ Container sports-harness-app-run-1 Started 
+ Container sports-harness-app-exec-1 Started 
+ Container sports-harness-app-serve-1 Started 
+[release] checking
+[release] healthy
+== deploy end 2026-09-16 09:36:10 CT
+== post-deploy 2026-09-16 09:36:21 CT
+build eac4414 status ok
+/srv/sports-harness/releases/20260916T143151Z-eac4414
+{'sha': 'eac4414', 'previous': '49cf5f4', 'mode': 'app', 'services': ['app-run', 'app-serve', 'app-exec', 'app-research'], 'started_at': '2026-09-16T14:31:51.877714+00:00', 'finished_at': '2026-09-16T14:36:10.303926+00:00', 'status': 'healthy'}
+== verify-summary
+PASS build: page eac4414 vs deploy eac4414
+PASS sections: no section errors
+PASS page_time: / 0.4s, /api/summary 0.5s
+PASS run_id: page 20765 vs sql 20765
+PASS ws_last_event: page age 3s vs sql 1s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4896852
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+== first heartbeats on eac4414 09:36:28 CT
+ERROR:  column "ts" does not exist
+LINE 1: select 'hb ' || to_char(ts at time zone 'America/Chicago','H...
+                                ^
+hb_columns id,last_loop_at,loops,open_orders,last_error,last_loop_ms,p95_loop_ms,loops_skipped,book_dirty_markets,ws_last_event_at,executor_version
+metric exec.loop_ms 6126.0 @09:36:36
+metric exec.loops_skipped 0.0 @09:36:36
+metric exec.nw_pending 12533.0 @09:36:36
+metric exec.per_row_book_query 72.0 @09:36:36
+metric exec.per_row_cross 0.0 @09:36:36
+metric exec.per_row_fill 0.0 @09:36:36
+metric exec.per_row_held 0.0 @09:36:36
+metric exec.per_row_load_fail 0.0 @09:36:36
+metric exec.per_row_n 222.0 @09:36:36
+metric exec.per_row_open 150.0 @09:36:36
+metric exec.per_row_other 0.0 @09:36:36
+metric exec.per_row_reanchor 0.0 @09:36:36
+metric exec.phase_batch_ms 495.3 @09:36:36
+metric exec.phase_per_row_ms 830.8 @09:36:36
+metric exec.phase_tape_ms 1626.2 @09:36:36
+metric exec.phase_walk_ms 1424.4 @09:36:36
+metric exec.walk_budget_ms 2000.0 @09:36:36
+metric exec.walk_deferred_n 4079.0 @09:36:36
+metric exec.walk_tickers_n 58.0 @09:36:36
+metric exec.loop_ms 7594.0 @09:35:21
+metric exec.loops_skipped 0.0 @09:35:21
+metric exec.nw_pending 12533.0 @09:35:21
+metric exec.per_row_book_query 39.0 @09:35:21
+metric exec.per_row_cross 0.0 @09:35:21
+metric exec.per_row_fill 0.0 @09:35:21
+metric exec.per_row_held 0.0 @09:35:21
+metric exec.per_row_load_fail 0.0 @09:35:21
+metric exec.per_row_n 189.0 @09:35:21
+metric exec.per_row_open 150.0 @09:35:21
+metric exec.per_row_other 0.0 @09:35:21
+metric exec.per_row_reanchor 0.0 @09:35:21
+metric exec.phase_batch_ms 52.4 @09:35:21
+metric exec.phase_per_row_ms 1792.5 @09:35:21
+metric exec.phase_tape_ms 1766.5 @09:35:21
+metric exec.phase_walk_ms 1438.5 @09:35:21
+metric exec.walk_budget_ms 2000.0 @09:35:21
+metric exec.walk_deferred_n 4340.0 @09:35:21
+metric exec.walk_tickers_n 66.0 @09:35:21
+metric exec.loop_ms 34838.0 @09:33:54
+metric exec.loops_skipped 1.0 @09:33:54
+metric exec.nw_pending 12385.0 @09:33:54
+metric exec.per_row_n 148.0 @09:33:54
+metric exec.phase_batch_ms 4932.0 @09:33:54
+metric exec.phase_per_row_ms 651.5 @09:33:54
+metric exec.phase_tape_ms 1616.1 @09:33:54
+metric exec.phase_walk_ms 6114.5 @09:33:54
+metric exec.loop_ms 11372.0 @09:32:54
+metric exec.loops_skipped 1.0 @09:32:54
+metric exec.nw_pending 12385.0 @09:32:54
+metric exec.per_row_n 314.0 @09:32:54
+metric exec.phase_batch_ms 1133.8 @09:32:54
+metric exec.phase_per_row_ms 1495.7 @09:32:54
+metric exec.phase_tape_ms 1761.5 @09:32:54
+metric exec.phase_walk_ms 5830.7 @09:32:54
+metric exec.loop_ms 18524.0 @09:31:39
+metric exec.loops_skipped 1.0 @09:31:39
+metric exec.nw_pending 12385.0 @09:31:39
+metric exec.per_row_n 253.0 @09:31:39
+metric exec.phase_batch_ms 792.8 @09:31:39
+metric exec.phase_per_row_ms 10242.9 @09:31:39
+runs 20766:eac4414:ok 20765:eac4414:skipped 20764:eac4414:ok
