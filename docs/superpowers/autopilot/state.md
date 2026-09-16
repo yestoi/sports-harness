@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-16 10:34 CT (15:34 UTC) by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 258. Paper-only. Runtime build: **747791c** (journal 257, full 10:04 CT Sep 16, fix 81; eac4414 app-only 09:36 CT, fix 78 part 3, journal 255). Main = the runtime; deploy trigger empty. origin/main = 35f7180 (U7 pushes after phases and on Mondays).
+Updated 2026-09-16 10:34 CT (15:34 UTC) by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 259. Paper-only. Runtime build: **747791c** (journal 257, full 10:04 CT Sep 16, fix 81; eac4414 app-only 09:36 CT, fix 78 part 3, journal 255). Main = the runtime; deploy trigger empty. origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
 
 ## Right now
 

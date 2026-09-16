@@ -3004,3 +3004,13 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0.
 - Result: PASS.
 - Next: idle, wakeup Thu 08:57 CT.
+
+## 259. operate - push to origin at the user's request; main upstream repointed - 2026-09-16 11:03 CT
+
+- Orient: the user's chat request (U7 authorizes pushes of main to origin; the user asked for one today).
+- User, verbatim (11:03 CT): "Let push up our changes today. Why do I get this error when I try myself: sports main ❯ git push / error: failed to push some refs to '/home/trey/sports-migration.coYoQequ/sports-migration-history-20260912.bundle'".
+- Cause: `branch.main.remote` was `migration-bundle` (the Sep 12 migration clone's upstream, a bundle file, which cannot receive pushes); `origin` is the private GitHub repository (U7). A bare `git push` therefore targeted the bundle.
+- Applied: `git branch --set-upstream-to=origin/main main` (a local tracking setting; no remote created or changed, gate 8 untouched); then `git push origin main` per U7 at the user's request (origin/main was 35f7180, 105 commits behind). No phase branch exists to push; task worktree branches are never pushed. The bundle remote stays for the record.
+- Dispatches: 0.
+- Result: push issued at this commit; a failure is journaled in the next entry, never retried in a loop.
+- Next: idle, wakeup Thu 08:57 CT.
