@@ -62,7 +62,7 @@ that need adjudication. Preserve the model allocations, independent reviewers an
 ## Kickoff (a fresh session, the way the user starts it)
 
 ```
-cd /home/trey/dev/sports && scripts/autopilot-session.sh start-herdr   # inside a fresh herdr tab: one controller lock; compact at 300k (spec 2026-09-15-context-hygiene-design)
+cd /home/trey/dev/sports && scripts/autopilot-session.sh start-herdr   # inside a fresh herdr tab: one controller lock; autocompact 300k (spec 2026-09-15-context-hygiene-design)
 /effort            # high, chosen explicitly: the saved default may be xhigh, which spends three to four times the tokens for no measured gain on this loop
 /autopilot
 ```
