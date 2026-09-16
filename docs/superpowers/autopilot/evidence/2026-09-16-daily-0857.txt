@@ -1,0 +1,66 @@
+daily_line_at=2026-09-16T13:57:09Z (08:57 CT)
+== df
+/dev/mapper/root  952G  157G  790G  17% /srv/sports-harness
+== free -m
+Mem:           31904       13309        1303        2098       21312       18595
+Swap:          63808         999       62808
+== db size / growth / credits / spend / heartbeat
+db_size_gb 133 GB (142.3 GB decimal)
+db.size_gb sample 2026-09-12 09:57:37.956701+00 62.397200
+db.size_gb sample 2026-09-13 09:02:29.762524+00 99.464200
+db.size_gb sample 2026-09-14 10:36:24.861016+00 121.878400
+db.size_gb sample 2026-09-15 09:06:16.646967+00 129.921900
+db.size_gb sample 2026-09-16 09:56:09.037257+00 132.366700
+credits_now 4896938.000000 at 2026-09-16 13:55:09.036561+00
+credits_24h_ago 4897440.000000 at 2026-09-15 13:46:10.468348+00
+check_failed_24h 2026-09-16 09:56:09.037257+00 metric_samples_negative_24h
+exec_heartbeat age_s 16 loop_ms 13303 p95 22812 skipped 4088 loops 38988 open 1 err null ver 4.5 at 2026-09-16 13:56:54.120416+00
+exec_nw_pending 12086.000000 at 2026-09-16 13:56:09.120235+00
+exec_loop_ms_last_hour n=51 median 9745 p95 26520 max 30564
+exec_loop_ms_overnight(02-07CT) n=260 median 4342 p95 7653
+exec_phase_last_hour tape 1615 walk 3784 batch 1128 per_row 5687 per_row_n 193
+last_run 20694 2026-09-16 13:57:09.037235+00 running build 49cf5f4
+settle_last 230 2026-09-16 13:56:09.03712+00 running running budget_exhausted false
+settle_last 229 2026-09-16 12:56:09.037095+00 2026-09-16 12:57:29.495343+00 ok budget_exhausted false
+operator_events_24h research_spend_released x1, ws_connect x4, budget_exhausted x7, ws_disconnect x2, check_failed x1, deploy x4
+live_games 0
+next_kickoffs Thu 18:30 ncaaf, Thu 19:15 nfl, Fri 18:30 ncaaf, Fri 19:00 ncaaf, Fri 21:30 ncaaf
+== spend (research_spend)
+spend_today_ct 2026-09-16 usd 24.4714 reserved 0.0000 calls 558
+spend_by_kind_model_today veto/claude-opus-5 usd 13.5739 reserved 0.0000 calls 279
+spend_by_kind_model_today veto/claude-sonnet-5 usd 10.8975 reserved 0.0000 calls 279
+spend_yesterday usd 24.4092
+spend_iso_week usd 73.3025 from 2026-09-14 to 2026-09-16
+== ERROR lines last hour per service (messages)
+-- app-run
+-- app-serve
+-- app-ws
+-- app-exec
+-- app-research
+== kill switch / summary
+PASS build: page 49cf5f4 vs deploy 49cf5f4
+PASS sections: no section errors
+PASS page_time: / 0.3s, /api/summary 0.4s
+PASS run_id: page 20694 vs sql 20694
+PASS ws_last_event: page age 1s vs sql 0s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4896938
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+== age key (ls -l only)
+ls: cannot access '/srv/sports-harness/secrets/backup_age_key': No such file or directory
+== overnight executor trend on 49cf5f4 (per hour CT, since the 21:57 CT restart)
+hour 09-15 21 loops 1 median_ms 13800 p95_ms 13800 max_ms 13800 skipped_delta 0 nw_pending_end 9732 per_row_n_avg 0
+hour 09-15 22 loops 43 median_ms 31365 p95_ms 52055 max_ms 65464 skipped_delta 6 nw_pending_end 10312 per_row_n_avg 338
+hour 09-15 23 loops 43 median_ms 37301 p95_ms 66714 max_ms 78403 skipped_delta 7 nw_pending_end 10893 per_row_n_avg 533
+hour 09-16 00 loops 43 median_ms 34005 p95_ms 77021 max_ms 82221 skipped_delta 6 nw_pending_end 11487 per_row_n_avg 443
+hour 09-16 01 loops 49 median_ms 7928 p95_ms 53063 max_ms 145722 skipped_delta 9 nw_pending_end 11487 per_row_n_avg 204
+hour 09-16 02 loops 52 median_ms 4290 p95_ms 6762 max_ms 7571 skipped_delta 0 nw_pending_end 11487 per_row_n_avg 25
+hour 09-16 03 loops 51 median_ms 4112 p95_ms 6680 max_ms 7658 skipped_delta 0 nw_pending_end 11487 per_row_n_avg 13
+hour 09-16 04 loops 52 median_ms 4152 p95_ms 7035 max_ms 10758 skipped_delta 0 nw_pending_end 11487 per_row_n_avg 26
+hour 09-16 05 loops 53 median_ms 4447 p95_ms 7477 max_ms 8744 skipped_delta 0 nw_pending_end 11487 per_row_n_avg 18
+hour 09-16 06 loops 52 median_ms 4846 p95_ms 8932 max_ms 10845 skipped_delta 1 nw_pending_end 11487 per_row_n_avg 28
+hour 09-16 07 loops 52 median_ms 5545 p95_ms 9643 max_ms 13087 skipped_delta 1 nw_pending_end 11487 per_row_n_avg 20
+hour 09-16 08 loops 50 median_ms 9954 p95_ms 26695 max_ms 30564 skipped_delta 2 nw_pending_end 12086 per_row_n_avg 207
+exec_metric_names exec.book_errors,exec.cancelled,exec.dirty_markets,exec.fair_age_s,exec.filled_contracts,exec.intents_considered,exec.loop_ms,exec.loops_skipped,exec.nw_pending,exec.open_orders,exec.p95_loop_ms,exec.per_row_n,exec.phase_batch_ms,exec.phase_per_row_ms,exec.phase_tape_ms,exec.phase_walk_ms,exec.placed,exec.signal_to_order_ms,exec.skipped,exec.tape_batch_min,exec.tape_lag_tickers,exec.ws_event_age_s,exec.ws_event_ahead_s
+expiry_by_day Thu:879 Fri:481 Sat:6141 Sun:4312 Mon:273
