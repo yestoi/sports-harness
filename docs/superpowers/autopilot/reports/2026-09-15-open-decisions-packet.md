@@ -57,3 +57,30 @@ the files named as "your edit".
     (c) accept until the weekend drains the backlog; (d) other. The FAIL stands and does not gate (journal 242).
 
 **Item 17 ruled 2026-09-15 16:57 CT (journal 245): option (d), batch the clean-market cursor-advance writes plus phase timings, as a second fix-78-shaped hotfix (`fix-2026-09-15-executor-batch-2`); (a) deferred by the controller; (b) not needed; §0.13c untouched. Open: item 1.**
+
+## Added 22:23 CT
+
+### 18. Fix 78 after both parts: the executor loop is still over its bound, and the phase timings now say why (gate, journal 252)
+
+**Status.** Part 2 (batched clean-market cursor advances, phase timings) was reviewed (opus, APPROVED WITH MINORS 0/0/2), passed the full suite (4,185) and was released app-only as 49cf5f4 at 21:57 CT. It did what it claimed: loops with no per-row rows run 12.0-13.8 s against a 29.3 s median before. But `p95_loop_ms` over the first 15 loops is 45,592 ms against the 7,500 ms bound, `loops_skipped` keeps rising (35 in the first 20 minutes), and the loop is gated on the daily "same item twice running" ceiling. Errors 0, tape fresh, Layer 3 6/6.
+
+**The numbers** (evidence/2026-09-15-fix78b-judgement-2218.txt), per loop at 9,863 pending rows on 140 tickers, 58 games, 150 open orders:
+
+| phase | per loop |
+|---|---|
+| `exec.phase_tape_ms` (per-ticker prints and deltas read) | 1.3-2.0 s |
+| `exec.phase_walk_ms` (the pure simulation of every clean-ticker pending row, to decide whether its write moves) | 5.1-7.7 s |
+| `exec.phase_batch_ms` (the dirty accrual, close and VALUES statements) | 1.6-5.3 s |
+| `exec.phase_per_row_ms` / `exec.per_row_n` (rows still taking a savepoint) | 0-47 s / 0-842 rows (about 40-110 ms a row) |
+| loop with `per_row_n` = 0 | 12.0-13.8 s |
+| loop with `per_row_n` 116-842 | 31-65 s |
+
+The tape read is not the lever (row 79's rescan would save about a second), so option (a) of item 17 is not dispatched. The walk alone is near the bound at this backlog. The per-row rows are the ones whose walk inserts a fill or a crossing, the two re-anchor branches, cursors `_sim_book` must query for, and the open orders (per-row by your ruling); they are not yet counted by cause. Expiries: Thu 692, Fri 380, Sat 5,113, Sun 3,458, Mon 220, so Thursday's window runs at about 9,200 pending.
+
+**Options.**
+- (a) §0.13c: a per-loop time budget or round-robin over pending tracks. Bounds the loop regardless of N. Changes `nw_dirty_minutes` accrual (ruling I-4): yours.
+- (b) A third hotfix, no semantics change: a per-ticker pre-filter so the walk simulates only rows on tickers with new prints or deltas since their last walk (today every clean-ticker row is simulated to learn that it is quiet), and per-cause counters for the per-row population (fill, crossing, re-anchor, `_sim_book`, open order, load failure). Expected: the walk falls to well under a second when most tickers are quiet between loops; the per-row remainder is then measured for its own lever. Reversible by revert; identity test as in parts 1 and 2. Cost if wrong: one more review/suite/release cycle (about 90 minutes) and the bound still missed on burst loops.
+- (c) Live with the FAIL until the weekend drain and re-judge Monday. Thursday's window runs with skipped loops.
+- (d) Lengthen `exec_period_s`. An executor setting: a pre-registration amendment, yours.
+
+**Recommendation.** (b) now, then re-judge twenty minutes after its restart; hold (a) for you if (b)'s numbers still miss, because nothing that batches writes reaches the bound at this backlog and (a) is the only lever that bounds the loop for any N. The loop implements nothing until you answer (journal 242). Answer in chat as "item 18: (b)" or your own wording; the loop records it verbatim as a decision entry.

@@ -17,7 +17,7 @@ Baseline numbers (2026-09-15): 16, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 3
 
 | # | Finding | Files | Change | Covering test | Deploy |
 |---|---|---|---|---|---|
-| 78 | loop-metrics row FAIL: `exec_heartbeat.p95_loop_ms` over the 7,500 ms bound (23,693 at 18:40 CT, 7,833 pending tracks) (journal 241-246; roadmap.md@c962036:666) | `harness/execution/loop.py`, `harness/execution/store.py`, tests | part 1 shipped f8053c6 (journal 243); part 2 (journal 245): batch clean-market cursor advances, phase timings | identical results, statement count flat in N; p95 re-judged 20 min after restart | part 2 in flight: `fix-2026-09-15-executor-batch-2` at e0c9888, review pending (state.md); the FAIL does not gate (journal 242) |
+| 78 | loop-metrics row FAIL: `exec_heartbeat.p95_loop_ms` over the 7,500 ms bound (23,693 at 18:40 CT, 7,833 pending tracks) (journal 241-246; roadmap.md@c962036:666) | `harness/execution/loop.py`, `harness/execution/store.py`, tests | part 1 shipped f8053c6 (journal 243); part 2 (journal 245): batch clean-market cursor advances, phase timings | identical results, statement count flat in N; p95 re-judged 20 min after restart | parts 1-2 f8053c6, 49cf5f4 (journal 250); FAIL 22:18 CT: p95 45,592 at 9,863 pending, walk 5-8 s, per-row 0-47 s (journal 251); gated, packet item 18 (journal 252) |
 
 ## Watch
 

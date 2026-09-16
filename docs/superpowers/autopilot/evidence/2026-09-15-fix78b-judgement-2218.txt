@@ -1,0 +1,119 @@
+now|2026-09-16 03:18:20.743627+00
+heartbeat|1|36902|2026-09-16 03:17:54.120583+00|18844|46856|3764|19||4.5|2026-09-16 03:17:56.23+00
+loop_ms since restart|14|12021|31590|45592|46856
+loop_ms last 15 min|10|32972|45981|46856
+loop samples|2026-09-16 02:59:39.120488+00|13800
+loop samples|2026-09-16 03:00:54.120696+00|12021
+loop samples|2026-09-16 03:02:09.120645+00|12426
+loop samples|2026-09-16 03:03:09.120733+00|31864
+loop samples|2026-09-16 03:04:24.120465+00|39031
+loop samples|2026-09-16 03:05:54.120383+00|31365
+loop samples|2026-09-16 03:07:09.120533+00|46856
+loop samples|2026-09-16 03:08:54.120584+00|14994
+loop samples|2026-09-16 03:10:09.120566+00|12292
+loop samples|2026-09-16 03:11:24.120698+00|34555
+loop samples|2026-09-16 03:13:09.120586+00|19024
+loop samples|2026-09-16 03:14:09.120415+00|31814
+loop samples|2026-09-16 03:15:24.120728+00|34129
+loop samples|2026-09-16 03:16:39.12057+00|44911
+phase|exec.per_row_n|14|0.0|173.0|842.0
+phase|exec.phase_batch_ms|14|1567.2|2824.3|3803.0
+phase|exec.phase_per_row_ms|14|0.0|10565.3|34286.5
+phase|exec.phase_tape_ms|14|1278.4|1310.2|1862.6
+phase|exec.phase_walk_ms|14|5096.9|6032.6|7726.0
+nw_pending series|2026-09-16 02:59:39.120488+00|9732
+nw_pending series|2026-09-16 03:00:54.120696+00|9732
+nw_pending series|2026-09-16 03:02:09.120645+00|9732
+nw_pending series|2026-09-16 03:03:09.120733+00|9732
+nw_pending series|2026-09-16 03:04:24.120465+00|9732
+nw_pending series|2026-09-16 03:05:54.120383+00|9882
+nw_pending series|2026-09-16 03:07:09.120533+00|9882
+nw_pending series|2026-09-16 03:08:54.120584+00|9882
+nw_pending series|2026-09-16 03:10:09.120566+00|9882
+nw_pending series|2026-09-16 03:11:24.120698+00|9882
+nw_pending series|2026-09-16 03:13:09.120586+00|9882
+nw_pending series|2026-09-16 03:14:09.120415+00|9882
+nw_pending series|2026-09-16 03:15:24.120728+00|9882
+nw_pending series|2026-09-16 03:16:39.12057+00|9882
+loops_skipped since restart|35.000000
+errors since restart|0
+settle_error events since restart|0
+tape|179127822|2026-09-16 03:18:18.559+00|00:00:02.18758
+ERROR:  column "created_at" does not exist
+LINE 1: ... 'fills since restart', count(*) from fills where created_at...
+                                                             ^
+--- per-loop phases|2026-09-16 03:19:38.963135+00
+2026-09-16 02:59:39.120488+00|13800|1304|6520|3555|0|0|0
+2026-09-16 03:00:54.120696+00|12021|1297|5880|2240|0|0|0
+2026-09-16 03:02:09.120645+00|12426|1334|5687|2727|0|0|0
+2026-09-16 03:03:09.120733+00|31864|1330|5226|2372|20027|183|0
+2026-09-16 03:04:24.120465+00|39031|1313|7260|2618|3969|116|150
+2026-09-16 03:05:54.120383+00|31365|1774|6421|3359|17161|543|150
+2026-09-16 03:07:09.120533+00|46856|1404|5241|2922|34287|842|150
+2026-09-16 03:08:54.120584+00|14994|1278|7162|3803|74|72|64
+2026-09-16 03:10:09.120566+00|12292|1863|6185|1567|34|53|52
+2026-09-16 03:11:24.120698+00|34555|1280|5779|3622|20871|328|39
+2026-09-16 03:13:09.120586+00|19024|1335|7726|3309|3468|163|33
+2026-09-16 03:14:09.120415+00|31814|1308|5301|1920|20693|405|30
+2026-09-16 03:15:24.120728+00|34129|1307|6351|3528|20185|267|30
+2026-09-16 03:16:39.12057+00|44911|1281|5097|2152|33205|531|29
+2026-09-16 03:18:24.120355+00|64533|1981|6139|5308|47132|599|19
+metric names exec.*|exec.book_errors|15
+metric names exec.*|exec.cancelled|8
+metric names exec.*|exec.dirty_markets|15
+metric names exec.*|exec.fair_age_s|30
+metric names exec.*|exec.filled_contracts|15
+metric names exec.*|exec.intents_considered|15
+metric names exec.*|exec.loop_ms|15
+metric names exec.*|exec.loops_skipped|15
+metric names exec.*|exec.nw_pending|15
+metric names exec.*|exec.open_orders|15
+metric names exec.*|exec.p95_loop_ms|15
+metric names exec.*|exec.per_row_n|15
+metric names exec.*|exec.phase_batch_ms|15
+metric names exec.*|exec.phase_per_row_ms|15
+metric names exec.*|exec.phase_tape_ms|15
+metric names exec.*|exec.phase_walk_ms|15
+metric names exec.*|exec.placed|15
+metric names exec.*|exec.signal_to_order_ms|3
+metric names exec.*|exec.skipped|14
+metric names exec.*|exec.tape_batch_min|15
+metric names exec.*|exec.tape_lag_tickers|15
+metric names exec.*|exec.ws_event_age_s|15
+metric names exec.*|exec.ws_event_ahead_s|15
+--- packet numbers|2026-09-16 03:20:40.89356+00
+dirty_markets series|2026-09-16 02:59:39.120488+00|78
+dirty_markets series|2026-09-16 03:00:54.120696+00|79
+dirty_markets series|2026-09-16 03:02:09.120645+00|85
+dirty_markets series|2026-09-16 03:03:09.120733+00|88
+dirty_markets series|2026-09-16 03:04:24.120465+00|55
+dirty_markets series|2026-09-16 03:05:54.120383+00|51
+dirty_markets series|2026-09-16 03:07:09.120533+00|71
+dirty_markets series|2026-09-16 03:08:54.120584+00|81
+dirty_markets series|2026-09-16 03:10:09.120566+00|62
+dirty_markets series|2026-09-16 03:11:24.120698+00|61
+dirty_markets series|2026-09-16 03:13:09.120586+00|73
+dirty_markets series|2026-09-16 03:14:09.120415+00|80
+dirty_markets series|2026-09-16 03:15:24.120728+00|81
+dirty_markets series|2026-09-16 03:16:39.12057+00|88
+dirty_markets series|2026-09-16 03:18:24.120355+00|84
+tape_lag_tickers|2026-09-16 03:18:24.120355+00|0
+tape_lag_tickers|2026-09-16 03:16:39.12057+00|0
+tape_lag_tickers|2026-09-16 03:15:24.120728+00|0
+p95 samples|2026-09-16 03:18:24.120355+00|64533
+p95 samples|2026-09-16 03:16:39.12057+00|46856
+p95 samples|2026-09-16 03:15:24.120728+00|46856
+ERROR:  column "orders.expiry" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 1: select 'pending by expiry day', to_char(expiry at time zone ...
+                                                ^
+pending by expiry day|Thu 09-17|692
+pending by expiry day|Fri 09-18|380
+pending by expiry day|Sat 09-19|5113
+pending by expiry day|Sun 09-20|3458
+pending by expiry day|Mon 09-21|220
+pending tickers/games/rows|140|58|9863
+open orders now|150
+ERROR:  function pg_catalog.timezone(unknown, interval) does not exist
+LINE 1: ...xtract(minute from ts)::int/10)*interval '10 min' at time zo...
+                                                             ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
