@@ -7,12 +7,13 @@ cache="$HOME/.cache/sports-harness"
 mkdir -p "$cache/reminders"
 
 # The controller command: one kernel lock so a second launch (tmux or herdr) cannot
-# create a duplicate controller; only the committed worker MCP server; compact at 500k.
+# create a duplicate controller; only the committed worker MCP server; compact at 300k
+# (spec docs/superpowers/specs/2026-09-15-context-hygiene-design.md section 3.5).
 controller_cmd() {
   local claude_bin
   claude_bin=$(mise which claude)
   test -x "$claude_bin"
-  printf '%s' "flock -n '$cache/controller.lock' '$claude_bin' --dangerously-skip-permissions --autocompact 500k --mcp-config '$root/.mcp.json' --strict-mcp-config"
+  printf '%s' "flock -n '$cache/controller.lock' '$claude_bin' --dangerously-skip-permissions --autocompact 300k --mcp-config '$root/.mcp.json' --strict-mcp-config"
 }
 
 case "${1:-status}" in
