@@ -1092,8 +1092,10 @@ def close_intervals(session: Session, table: str, venue_market_ids: list[int], t
 
 
 #: Fix 78c (review rev-fix-78c, I2/I3): the first gap on a subscription after the tape position
-#: an anchor accounts for. `book._GAP_AFTER` is the same predicate -- it is the test the live
-#: loop itself used to call the book dirty -- and this takes the instant of the earliest such
+#: an anchor accounts for. `book._GAP_AFTER_AT` is the same predicate -- it is the bounded test
+#: the live loop uses to call a *historical* book dirty (the unbounded `book._GAP_AFTER` is the
+#: live-book test and has no `ts` bound to share) -- and this takes the instant of the earliest
+#: such (review rev-fix-78c-r1, M1)
 #: row rather than asking whether one exists. `min`, never `max`: the walk that reads it stops
 #: at the *first* stretch of dirtiness after its own position, so a track deferred across two
 #: dirty cycles cannot walk through the earlier one as though the market had been clean.

@@ -987,7 +987,11 @@ class Executor:
                 # One such row a loop is therefore always run, which is the same "a row that has
                 # begun is finished" overrun the walk allows, moved to the phase that costs
                 # 40-110 ms a row instead of 0.5-0.8 ms. The loop's budgeted time is the budget
-                # plus one per-row row, and the population drains in rotation order.
+                # plus one per-row row. The population does not drain in rotation order: `working`
+                # is `order by o.id` (`store._WORKING_ORDERS`), so the one row this loop's slot
+                # goes to is whichever candidate has the lowest surviving `orders.id` among the
+                # tickers the rotation has already walked -- oldest order first, independent of
+                # ticker position (review rev-fix-78c-r1, M2).
                 deferred_rows.add(row.id)
                 stats.walk_deferred_n += 1
                 continue
@@ -1404,8 +1408,9 @@ class Executor:
         (review rev-fix-78c, I2). It is the *first* such gap, not the newest dirty interval, so
         a row deferred across two dirty cycles stops at the first one and cannot walk through
         the earlier dirty stretch as though the market had been clean (I3). `gap_check_id` is
-        the position the anchor accounts for on either anchor kind, and `book._GAP_AFTER` -- the
-        live loop's own dirty test -- is the same predicate.
+        the position the anchor accounts for on either anchor kind, and `book._GAP_AFTER_AT` --
+        the live loop's own *bounded* dirty test, used for a historical book rather than the
+        live one -- is the same predicate (review rev-fix-78c-r1, M1).
 
         No book that early, or no gap after it, leaves the row to re-anchor exactly as it did
         before this fix.
