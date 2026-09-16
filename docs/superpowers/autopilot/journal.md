@@ -2977,3 +2977,17 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0.
 - Result: PASS.
 - Next: deploy (fix 81 full release: main 33ceeb1 is ahead of eac4414 by ws_sink.py and its test), wakeup none.
+
+## 257. deploy - fix 81 full release 747791c 10:04 CT (app-ws recreated); tape gap 19 s - 2026-09-16 09:59-10:07 CT
+
+- Orient: rule 2 after the verify entry 256: main 33ceeb1 (747791c with the docs commit) ahead of eac4414 by `harness/recorder/ws_sink.py` and its test.
+- Preconditions: full-suite receipt 4,196 passed at 33ceeb1 (release tree 3c9be15f; the docs commits since do not disturb it); `plan-release-omarchy MODE=full`: window not blocked, `full_paths` ws_sink.py; the game window is closed until Thu 18:30 CT, so a full release is within R4.
+- Deploy: `make deploy-omarchy` 09:59:41-10:04:10 CT, `releases/20260916T145941Z-747791c`, app-run/serve/exec/research/app-ws recreated, schema created, variants added 0 unchanged 7, teams seeded 32 + 762, aliases 30, healthy; stamp 747791c; verify-summary PASS 9/9 (runs 20815/20816 on 747791c). Evidence `evidence/2026-09-16-fix81-deploy.txt`.
+- Verification: Layer 1 verify-summary PASS 9/9 on 747791c; row 81's own acceptance holds in production (first `ws.sink_lag_s` samples 0.050 and 0.458 s, non-negative); the check row `metric_samples_negative_24h` is a deferred judge (about 02:10 CT Thu); the loop-metrics row is a deferred judge at 10:27 CT.
+- Tape continuity: largest orderbook-delta gap 19 s, ending at the ws_connect 10:02:14 CT; largest trade gap 12 s (quiet-weekday spacing); no gap operator event; first recovered gap snapshots 10:03:55 CT (4,169 `market_gap_snapshots` rows after the restart). First `ws.sink_lag_s` samples 0.050 and 0.458 s, non-negative.
+- Executor after the restart: loops 5,632 / 5,523 / 5,890 ms; the rolling heartbeat p95 read 27,344 ms at 10:04 CT from the restart's first loop, so the loop-metrics row is a deferred judge-after at 10:27 CT (cron d807e776, reminder 2026091603).
+- Row 81 stays Open as a deferred judge (not actionable): its Deploy cell names the release and the judge-after (`metric_samples_negative_24h` clears once the 66 pre-fix negatives age out, about 02:10 CT Thu).
+- Housekeeping: worktree `fix-2026-09-16-recorder-sink-lag` removed, branch deleted, its grant revoked. Both hotfix batches of the day are closed: fix 78 part 3 (3 dispatches, 07:24-09:36 CT), fix 81 (2 dispatches, 09:03-10:04 CT).
+- Dispatches: 0.
+- Result: deployed and healthy.
+- Next: verify (judge-after 10:27 CT), then Orient from files (expected idle until the daily line Thu 09:00 CT and the game-window acceptance Thu 18:30/19:15 CT).

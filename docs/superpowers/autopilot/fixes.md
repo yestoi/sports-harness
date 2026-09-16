@@ -17,7 +17,7 @@ Baseline numbers (2026-09-15): 16, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 3
 
 | # | Finding | Files | Change | Covering test | Deploy |
 |---|---|---|---|---|---|
-| 81 | `ws.sink_lag_s` negative (66 samples since 15:36 CT Sep 15, min -0.142 s): a trade's `_last_event_ts` is the venue `ts_ms` (ws_sink.py:220), so a venue clock ahead of the host makes `now - last_event_ts` negative; `metric_samples_negative_24h` FAIL 04:56 CT Sep 16 | `harness/recorder/ws_sink.py`, tests | measure the lag from `received_at` (host clock) or floor at 0; no check change | a trade with `ts_ms` ahead of `now` yields a non-negative sample | reviewed 7a98c24 (journal 255); merge after the part 3 re-judge |
+| 81 | `ws.sink_lag_s` negative (66 samples since 15:36 CT Sep 15, min -0.142 s): a trade's `_last_event_ts` is the venue `ts_ms` (ws_sink.py:220), so a venue clock ahead of the host makes `now - last_event_ts` negative; `metric_samples_negative_24h` FAIL 04:56 CT Sep 16 | `harness/recorder/ws_sink.py`, tests | measure the lag from `received_at` (host clock) or floor at 0; no check change | a trade with `ts_ms` ahead of `now` yields a non-negative sample | released 747791c full 10:04 CT Sep 16 (journal 257); judge-after: `metric_samples_negative_24h` clears about 02:10 CT Thu |
 
 ## Watch
 

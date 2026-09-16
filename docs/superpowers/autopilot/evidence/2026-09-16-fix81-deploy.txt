@@ -1,0 +1,75 @@
+== fix 81 full release: pre-deploy tape marker 2026-09-16 09:59:40 CT (main 747791c, live eac4414)
+ERROR:  relation "trades" does not exist
+LINE 1: ...lta ' || (select max(ts) from orderbook_events) from trades;
+                                                                ^
+== deploy start 2026-09-16 09:59:40 CT
+{"asctime": "2026-09-16 15:02:02,168", "levelname": "INFO", "name": "harness", "message": "schema created"}
+ Container sports-harness-app-run-run-2bf7fa97d389 Creating 
+ Container sports-harness-app-run-run-2bf7fa97d389 Created 
+added=0 unchanged=7 deactivated=0
+name                    tier        variant_id    active
+constrained             secondary   ff363c8ac08d  True
+nfl_only                secondary   e549e693e117  True
+no_velocity             secondary   64ba3ef09642  True
+sharp_direct            primary     f259ca109084  True
+sharp_plus_derived      secondary   49af716f8708  True
+sharp_two_sided         secondary   5632da729fa7  True
+wide_band               secondary   c2bc45377328  True
+ Container sports-harness-app-run-run-48816013b788 Creating 
+ Container sports-harness-app-run-run-48816013b788 Created 
+{"asctime": "2026-09-16 15:02:05,861", "levelname": "INFO", "name": "harness", "message": "seeded 32 teams from https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams?limit=100"}
+{"asctime": "2026-09-16 15:02:10,665", "levelname": "INFO", "name": "harness", "message": "seeded 762 teams from https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=1000&groups=80"}
+{"asctime": "2026-09-16 15:02:10,691", "levelname": "INFO", "name": "harness", "message": "manual aliases loaded: 30"}
+[release] promoting
+ Container sports-harness-app-exec-1 Recreate 
+ Container sports-harness-app-serve-1 Recreate 
+ Container sports-harness-app-run-1 Recreate 
+ Container sports-harness-app-research-1 Recreate 
+ Container sports-harness-app-ws-1 Recreate 
+ Container sports-harness-app-exec-1 Recreated 
+ Container sports-harness-app-research-1 Recreated 
+ Container sports-harness-app-ws-1 Recreated 
+ Container sports-harness-app-serve-1 Recreated 
+ Container sports-harness-app-run-1 Recreated 
+ Container sports-harness-app-serve-1 Starting 
+ Container sports-harness-app-ws-1 Starting 
+ Container sports-harness-app-research-1 Starting 
+ Container sports-harness-app-run-1 Starting 
+ Container sports-harness-app-exec-1 Starting 
+ Container sports-harness-app-serve-1 Started 
+ Container sports-harness-app-ws-1 Started 
+ Container sports-harness-app-research-1 Started 
+ Container sports-harness-app-run-1 Started 
+ Container sports-harness-app-exec-1 Started 
+[release] checking
+[release] healthy
+== deploy end 2026-09-16 10:04:10 CT rc 0
+== post-deploy 2026-09-16 10:04:29 CT
+build 747791c status ok
+receipt /srv/sports-harness/releases/20260916T145941Z-747791c/receipt.json
+{'sha': '747791c', 'previous': 'eac4414', 'mode': 'full', 'services': ['app-run', 'app-serve', 'app-exec', 'app-research', 'app-ws'], 'started_at': '2026-09-16T14:59:41.186772+00:00', 'finished_at': '2026-09-16T15:04:10.222636+00:00', 'status': 'healthy'}
+['backup_in_progress_check', 'drain_seconds', 'drained_backends', 'expected_services', 'finished_at', 'head', 'health', 'mode', 'previous', 'previous_services', 'services', 'sha', 'started_at', 'status', 'suite_receipt', 'unnamed_backends']
+== verify-summary
+PASS build: page 747791c vs deploy 747791c
+PASS sections: no section errors
+PASS page_time: / 0.4s, /api/summary 0.4s
+PASS run_id: page 20816 vs sql 20816
+PASS ws_last_event: page age 2s vs sql 1s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4896792
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+== tape gap and first recovered snapshot 10:05:02 CT
+ERROR:  aggregate function calls cannot contain window function calls
+LINE 1: ...) x where g = (select max(extract(epoch from ts - lag(ts) ov...
+                                                             ^
+largest_delta_gap 19 s ending 10:02:14
+largest_trade_gap 12 s
+ERROR:  column "ts" does not exist
+LINE 1: select 'first_snapshot_after ' || to_char(min(ts) at time zo...
+                                                      ^
+snapshot_columns id,raw_id,venue_market_id,fetched_at,yes_bids,no_bids
+loops_after_restart 5632,5523,5890
+ws_gap_rows 0
+market_gap_snapshots_after 4169 first 10:03:55
+first_orderbook_snapshot_after none last_before none
