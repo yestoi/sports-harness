@@ -4,8 +4,8 @@ Updated 2026-09-16 09:02 CT (14:02 UTC) by controller session sports-26 in `/hom
 
 ## Right now
 
-- **Preflight 21:19 CT done** (journal 248): rc 0, paper posture intact, check ok, skill tests 72 passed, worker smoke passed, no wakeups/agents/suites at launch; game window closed until Thu 2026-09-17 18:30 CT.
-- **Gate answered 07:20 CT Sep 16 (journal 253)**: the loop-metrics row failed twice running after fix 78 parts 1 and 2 (49cf5f4 judged 22:18 CT Sep 15, journal 251: p95 45,592 ms at 9,863 pending; tape 1.3-2 s, walk 5-8 s, batch 2-5 s, per-row 0-47 s; gate journal 252, packet item 18). The user ruled (a) restricted with (b)'s batching and counters in one hotfix: fix 78 part 3 dispatched 07:24 CT (opus implementer) on `fix-2026-09-16-executor-budget`. The row's FAIL stands until part 3 is released and re-judged 20 min after its restart.
+- **Preflight 21:19 CT done** (journal 248): rc 0, paper posture intact, checks and worker smoke passed; game window closed until Thu 2026-09-17 18:30 CT.
+- **Gate answered 07:20 CT Sep 16 (journal 253)**: the loop-metrics row failed twice running after fix 78 parts 1-2 (journal 251: p95 45,592 ms at 9,863 pending; gate 252). The user ruled (a) restricted with (b)'s batching and counters in one hotfix: fix 78 part 3 on `fix-2026-09-16-executor-budget`. The FAIL stands until part 3 is released and re-judged 20 min after its restart.
 - **Released**: f7a1ccb (journal 237, full), f8053c6 (243, app-only), 49cf5f4 (250, app-only); verify PASS with the standing items; loop-metrics row FAIL stands until the part 3 re-judge.
 - **User decisions**: packet items 2-10 and 17 ruled and applied (journal 239/240/245). Open: item 1 (retention by 2026-09-22), items 11-15 upcoming. Packet: https://claude.ai/artifact/4wRJo92rcU5UUU9dhMt6Z1, `reports/2026-09-15-open-decisions-packet.md`.
 - **Fix rows** (`fixes.md`): Open 2 (78 part 3; 81 sink-lag floor), Watch 13, Closed 49; 79 and 80 are follow-ups by the user's ruling (journal 242), not hotfixes.
@@ -43,6 +43,6 @@ Journal 224 item 17, as it stands:
 
 ## Constraints
 
-Paper-only; no live posture; no non-GET venue code; invariant 5 (no DROP/RENAME/TRUNCATE/DELETE/compaction/retention by code or hand; the loop proposes, the user executes); no new outbound hosts; git pushes only as U7 directs (main and the current phase branch after every phase and every Monday; never pull, rebase onto the remote, open PRs or push task worktree branches; creating a remote stays gate 8); secrets never printed; workers sandboxed without production access; ceilings and model rules per the skill.
+Paper-only; no live posture; no non-GET venue code; invariant 5 (the loop proposes, the user executes); no new outbound hosts; git pushes only per U7 (main and the phase branch after every phase and every Monday; never pull, rebase onto the remote, PRs or worktree-branch pushes); secrets never printed; workers sandboxed; ceilings and model rules per the skill.
 
 Applicable rulings: the loop-metrics FAIL gated at journal 252, answered by 253 (the row reads FAIL until the part 3 re-judge); walkthrough items 14 and 18 are standing data items (journal 224 item 10); RFQ0 stays (224 item 6); rows 62/63 bounded at 05:23:44Z (224 item 2); runs 14485/14486 stay (journal 205); the batch clock ruling (journal 247).
