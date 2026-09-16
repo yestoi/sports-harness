@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-15 20:12 CT by the user-directed context-hygiene session (branch `context-hygiene-2026-09-15`; no controller running) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 246. Paper-only. Runtime build: **f8053c6** (journal 243, app-only, fix 78 part 1; f7a1ccb full at 12:32 CT under it, journal 237/238). Main after the merge: f8053c6 + docs, skill scripts and the launcher (no deployable code ahead of the runtime; the release tree differs from the deployed tree by non-deployable files, so the next deploy needs a post-merge full-suite receipt). origin/main = 35f7180 (U7 pushes after phases and on Mondays).
+Updated 2026-09-15 20:12 CT by the user-directed context-hygiene session (branch `context-hygiene-2026-09-15`; no controller running) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 247. Paper-only. Runtime build: **f8053c6** (journal 243, app-only, fix 78 part 1; f7a1ccb full at 12:32 CT under it, journal 237/238). Main after the merge: f8053c6 + docs, skill scripts and the launcher (no deployable code ahead of the runtime; the release tree differs from the deployed tree by non-deployable files, so the next deploy needs a post-merge full-suite receipt). origin/main = 35f7180 (U7 pushes after phases and on Mondays).
 
 ## Resume first
 
