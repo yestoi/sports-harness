@@ -2962,5 +2962,5 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Fix 81: implemented (`fix-81-report.md`, 5910b10, +29/-2); opus review APPROVED WITH MINORS 0/0/2 (`fix-81-review.md`), M-1/M-2 applied 7a98c24. Merge deferred until after the part 3 re-judge (a second restart would confound it); its release is full (ws_sink.py is app-ws), allowed while the window is closed. `metric_samples_negative_24h` clears only when the 66 pre-fix negatives age out.
 - Anomalies: `.claude/settings.local.json` in the main checkout (Sep 15 07:44 CT, disables sports_worker; gitignored, not the loop's file, untouched, for the user). Memory: a bare `.venv/bin/python` in a worktree imports main's `harness`.
 - Dispatches: 3 (rev-fix-78c-r1, fix-81, rev-fix-81); day 5; batch fix 78 part 3 closed at 3 of 12 (07:24-09:36 CT); batch fix 81: 2 of 12.
-- Result: merged and deployed eac4414; re-judge pending.
+- Result: deployed eac4414; re-judge pending.
 - Next: verify (re-judge 09:57 CT: cron 901fc0e7, reminder 2026091602), then fix 81 rebase, suite, merge, full release.
