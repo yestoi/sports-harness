@@ -25,8 +25,7 @@ Journal 224 item 17, as it stands:
 - **hotfix fix 81** (row 81, `ws.sink_lag_s` floor): ledger `.superpowers/sdd/hotfix-2026-09-16-sink-lag/progress.md`, brief `fix-81-brief.md`; branch `fix-2026-09-16-recorder-sink-lag` from main 6b44a5e, worktree `/home/trey/dev/sports-wt/fix-2026-09-16-recorder-sink-lag`; implementer `fix-81` (sonnet) dispatched 09:0x CT, timeout 90 min, report `.superpowers/sdd/results/fix-81-report.md`; then opus review (recorder WebSocket path), merge, shares a deploy with part 3 if the reviews finish close together (ws_sink.py is app-ws: that deploy becomes full; allowed while the window is closed until Thu 18:30 CT). Grant the branch database when it appears.
 - **phase 6D**: on main, released b69b880 (journal 221); ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`, dispatches 30. Remaining: 6D acceptance rows at the first game window, §4 read-backs at real ticks, exec-health baseline on 0d04804 (item 12), ledger re-archive and final review, then roadmap `done`; worktree phase6d-merge-main removable after acceptance.
 - **phase 4.6**: on main, released c1066b5. Remaining: T18b (watched NFL-window queries), T19 (verification rows), walkthrough items; the user's LAN files.
-- **6E**: cold start done (journal 229); corrected-workload benchmark and operational acceptance remain. **6C**: planned/partial; closure names both funnel units as delivered by 6D; counterfactual fills separate by `fills.id > 1878`.
-- **6B**: done (journal 216); verify §3 rows judged at the first game window.
+- **6E**: cold start done (journal 229); corrected-workload benchmark and operational acceptance remain. **6C**: planned/partial, closure via 6D (`fills.id > 1878`). **6B**: done (journal 216), §3 rows at the first game window.
 
 ## Pending results
 
