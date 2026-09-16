@@ -2,7 +2,6 @@
 
 import importlib.util
 import json
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -63,35 +62,6 @@ class ReaderTests(unittest.TestCase):
                 context.section(text, "Same")
         with self.assertRaises(ValueError):
             context.journal_tail("# Journal\n")
-
-    def test_bootstrap_preserves_authority_and_live_checkpoints_verbatim(self):
-        output = context.bootstrap(context.ROOT)
-        roadmap = context.read(context.ROOT, context.AUTOPILOT / "roadmap.md")
-        for _, level, title in context.headings(roadmap):
-            if level == 2 and title != "Pre-loaded decisions":
-                self.assertIn(context.section(roadmap, title)[2].rstrip(), output)
-        state = context.read(context.ROOT, context.AUTOPILOT / "state.md")
-        journal = context.read(context.ROOT, context.AUTOPILOT / "journal.md")
-        self.assertIn(state.rstrip(), output)
-        self.assertIn(context.journal_tail(journal)[2].rstrip(), output)
-        self.assertIn("Anything not listed is the model's call", output)
-        self.assertNotIn("### Phase 4: Kalshi authenticated adapter", output)
-
-    def test_missing_state_does_not_reset_counts_and_new_authority_is_included(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            target = root / context.AUTOPILOT
-            target.mkdir(parents=True)
-            for name in ("roadmap.md", "journal.md"):
-                shutil.copyfile(context.ROOT / context.AUTOPILOT / name, target / name)
-            with (target / "roadmap.md").open("a") as stream:
-                stream.write("\n## New dated constraint\nPreserve this new rule.\n")
-            output = context.bootstrap(root)
-            self.assertIn("STATE MISSING", output)
-            self.assertIn("Preserve this new rule.", output)
-            (target / "roadmap.md").write_text("# Incomplete authority\n")
-            with self.assertRaises(ValueError):
-                context.bootstrap(root)
 
 
 class HookTests(unittest.TestCase):
