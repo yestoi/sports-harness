@@ -1599,15 +1599,23 @@ def names(text):
         elif match.group(4) and last_date:
             found.add(f"{last_date}-{match.group(4)}.txt")
     return found | set(re.findall(r'\b\d{8}T\d{6}Z-[0-9a-f]{7}\b', text))
+def cited(item, text, found):
+    """Full name, brace-expanded name, or the journal's shorthand ("evidence/2026-09-15-verify-summary-0823.txt,
+    -layer2-0826.txt"): a hyphen-led suffix of at least two segments on a line that carries the same date."""
+    if item in found or item in text:
+        return True
+    if not item.endswith('.txt') or len(item) < 12:
+        return False
+    date, parts = item[:10], item[11:-4].split('-')
+    candidates = ['-' + '-'.join(parts[i:]) + '.txt' for i in range(1, len(parts) - 1)]
+    return any(date in line and any(c in line for c in candidates) for line in text.splitlines())
 receipts = names(state)
 journal_names = names(journal)   # the journal cites the same files in brace form; compare expanded names
 ledger_names = names(ledgers)
 print('| receipt | in journal | in a ledger |')
 print('|---|---|---|')
 for item in sorted(receipts):
-    in_journal = item in journal_names or item in journal
-    in_ledger = item in ledger_names or item in ledgers
-    print(f'| {item} | {"yes" if in_journal else "NO"} | {"yes" if in_ledger else "NO"} |')
+    print(f'| {item} | {"yes" if cited(item, journal, journal_names) else "NO"} | {"yes" if cited(item, ledgers, ledger_names) else "NO"} |')
 PY
 grep -c '| NO | NO |' /tmp/context-hygiene-receipts.md
 ```
