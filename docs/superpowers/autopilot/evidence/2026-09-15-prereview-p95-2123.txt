@@ -1,0 +1,5 @@
+now|2026-09-15 21:23:17.377591
+loops last 30 min|21|30806|81446|109763
+nw_pending latest|9432.000000|2026-09-15 21:22:55.203791
+loops_skipped last 6h|232.000000
+exec errors last 6h|0

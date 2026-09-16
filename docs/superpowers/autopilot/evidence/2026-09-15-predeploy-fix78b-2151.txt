@@ -1,0 +1,9 @@
+pre_deploy_at|2026-09-16 02:51:49.678625+00
+tape_pre|179092593|2026-09-16 02:51:47.554+00
+heartbeat_pre|1|36858|30461|48502|3716|150||4.5
+nw_pending_pre|9732.000000|2026-09-16 02:50:40.203545+00
+loop_ms_last30|20|29263|47426|91285
+loops_skipped_last30|44.000000
+errors_last6h|0
+fills_max|2165
+orders_pending|0
