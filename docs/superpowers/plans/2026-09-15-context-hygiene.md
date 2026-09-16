@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 standard library only (no new dependencies), `unittest` run under the repo's pytest, ImageMagick `magick` on the host, git.
 
-**Spec:** `docs/superpowers/specs/2026-09-15-context-hygiene-design.md` (revision 3, commit 184f48f). The plan argues from the spec; read both.
+**Spec:** `docs/superpowers/specs/2026-09-15-context-hygiene-design.md` (revision 3, commit 184f48f). The plan argues from the spec; read both. Revision 2 of this plan folds in two adversarial reviews (one executed the code, one dry-ran the migration).
 
 ## Global Constraints
 
@@ -17,7 +17,8 @@
 - Never touch: `../sports-wt/fix-2026-09-15-executor-batch-2` (branch at e0c9888, review pending), `.superpowers/sdd/`, `~/.cache/sports-harness/`, `.claude/settings.json`, the hook scripts (`recovery_hook.py`, `worker_guard.py`), the v2 spec, the roadmap's Decisions table, Standing authorizations, Invariants, Phases table and Pre-loaded decisions.
 - `verify.md` changes on exactly one line (886), authorised by the user 2026-09-15.
 - Budgets, verbatim from the spec: bootstrap part 27,000 characters; `state.md` minus `Resume first` 8,000 and `Resume first` 4,000; Open and Watch rows 600; ledger line 400; journal heading text 120; journal body 6,000 for verify, deploy, repair and 3,000 otherwise (quoted `>` lines exempt in decision and gate entries); evidence JPEG 400 KB target, 800 KB hard limit; `--autocompact 300k`.
-- Journal entries are append-only once committed; the migration adds exactly one `repair` entry and edits nothing above it.
+- Journal entries are append-only once committed; the migration adds exactly one `repair` entry, written last (Task 12) so it never needs editing, and edits nothing above it.
+- Numbers that move (the last journal entry, the pre-migration sha, the stopping-point time) are computed at execution time, never copied from this plan: the controller wrote entry 246 at 18:41 CT after the plan was drafted. `<pre-migration sha>` is `/tmp/context-hygiene-pre.sha`, or, after a reboot, the sha recorded in the migration report's header, or `git merge-base main context-hygiene-2026-09-15`.
 - Fix rows are never deleted and never renumbered; the duplicate 56 stays as `56 (dup)`.
 - Tests run as `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests` from the checkout root. `make test` is not needed (no file under `harness/` or `tests/` changes).
 - Commit messages start `docs:` for document-only commits and `chore(autopilot):` for script and test commits; every commit ends with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
@@ -36,7 +37,7 @@
 | `.claude/skills/autopilot/tests/test_context_check.py` (create) | bootstrap parts, degrade rules, `check`, `append` cap |
 | `.claude/skills/autopilot/tests/test_usage.py` (create) | usage table from a synthetic transcript |
 | `.claude/skills/autopilot/tests/test_evidence_image.py` (create) | conversion, cap, keep-existing |
-| `.claude/skills/autopilot/tests/test_live_repo.py` (create, Task 10) | `check` and the checkpoint budget against the real files |
+| `.claude/skills/autopilot/tests/test_live_repo.py` (create, Task 12) | `check` and the checkpoint budget against the real files |
 | `.claude/skills/autopilot/tests/test_context_recovery.py` (modify) | drop the two single-output bootstrap tests |
 | `docs/superpowers/autopilot/fixes.md` (create) | Open / Watch / Closed fix rows with the baseline line |
 | `docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md` (create) | classification table, fact inventory, receipts grep, reviewer findings |
@@ -44,7 +45,7 @@
 | `docs/superpowers/autopilot/state.md` (rewrite) | fixed schema |
 | `docs/superpowers/autopilot/journal.md` (append) | one `repair` entry |
 | `docs/superpowers/autopilot/verify.md` (modify line 886) | archive tool named |
-| `.claude/skills/autopilot/SKILL.md` and `references/{recording,preflight,recovery,hotfix,verify,phase}.md` (modify) | three parts, fixes.md, check rule, schema, dead text |
+| `.claude/skills/autopilot/SKILL.md` and `references/{recording,preflight,recovery,hotfix,verify,phase,deploy}.md` (modify) | three parts, fixes.md, check rule, schema, dead text, launcher excluded from the deploy trigger |
 | `docs/runbooks/claude-omarchy-restart.md`, `CLAUDE.md` (modify) | three parts; effort note |
 | `scripts/autopilot-session.sh` (modify) | `--autocompact 300k` |
 
@@ -60,7 +61,7 @@ Run:
 ```bash
 cd /home/trey/dev/sports && scripts/autopilot-session.sh status && git status --short && git branch --show-current && git log --oneline -3
 ```
-Expected: `controller lock: free`, no `sports-autopilot` session in the tmux list, `git status --short` prints at most `?? .claude/settings.local.json`, branch `main`. If the lock is held or a session is listed, stop and tell the user; do not continue.
+Expected: `controller lock: free`, no `sports-autopilot` session in the tmux list, `git status --short` prints at most `?? .claude/settings.local.json`, branch `main`. If the lock is held or a session is listed, stop and tell the user (the user closes the controller; the plan never does); do not continue. Record the header line of `state.md` (`sed -n '3p' docs/superpowers/autopilot/state.md`): its `Updated ... CT` time is the last controller checkpoint, used in Task 7.
 
 - [ ] **Step 2: Record the pre-migration sha and create the branch**
 
@@ -73,7 +74,7 @@ Expected: the branch is created; the sha printed is main's head. Every later tas
 - [ ] **Step 3: Baseline the skill tests**
 
 Run: `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests`
-Expected: all pass (12 tests today). If not, stop and report.
+Expected: all pass (49 tests today: 12 in test_context_recovery, 26 in test_worker_guard, 11 in test_worker_tools). If not, stop and report.
 
 ---
 
@@ -202,7 +203,9 @@ JOURNAL = """# Journal
 
 FIXES = """# Fix rows
 
-Rules paragraph. Baseline numbers (2026-09-15): 16, 20, 20
+Rules paragraph.
+
+Baseline numbers (2026-09-15): 16, 20, 20
 
 ## Open
 
@@ -495,7 +498,8 @@ def journal_tail(text, count=2):
 
 
 def cells(row):
-    """Table cells of one Markdown row; a literal pipe inside a cell is written as backslash-pipe."""
+    """Table cells of one Markdown row. A literal pipe inside a cell is written as backslash-pipe;
+    the cells are returned as written (the backslash is kept, nothing is unescaped)."""
     inner = row.strip()
     if inner.startswith("|"):
         inner = inner[1:]
@@ -693,7 +697,7 @@ In `.claude/skills/autopilot/tests/test_context_recovery.py` delete the methods 
 - [ ] **Step 6: Run the tests**
 
 Run: `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests`
-Expected: all pass (10 old + 8 new).
+Expected: all pass (47 old + 8 new = 55).
 
 - [ ] **Step 7: Commit**
 
@@ -873,7 +877,7 @@ def check_state(text):
     titles = [title for _, level, title in headings(text) if level == 2]
     for title in titles:
         if title not in STATE_SECTIONS:
-            findings.append(("BLOCK", f"state.md: heading not in schema: {title!r} vs {list(STATE_SECTIONS)}"))
+            findings.append(("BLOCK", f"state.md: heading not in schema: {title!r} vs the seven schema headings"))
     for title in STATE_REQUIRED:
         if titles.count(title) != 1:
             findings.append(("BLOCK", f"state.md: required heading: {title!r} count {titles.count(title)} vs 1"))
@@ -1022,7 +1026,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run the tests**
 
 Run: `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests`
-Expected: all pass.
+Expected: all pass (64).
 
 - [ ] **Step 5: Commit**
 
@@ -1195,13 +1199,24 @@ def session(path):
 
 
 def journal_entries_by_day(root):
+    """Entries per CT day from the journal headings. A heading without a parseable date is
+    attributed to the previous dated heading's day; the count of such headings is returned
+    under the key "unparsed" so the denominator is honest."""
     counts = collections.Counter()
     path = Path(root) / "docs/superpowers/autopilot/journal.md"
-    if path.exists():
-        for line in path.read_text().splitlines():
-            match = re.match(r"^## \d+\. .*?(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}", line)
-            if match:
-                counts[match.group(1)] += 1
+    if not path.exists():
+        return counts
+    current = None
+    for line in path.read_text().splitlines():
+        if not re.match(r"^## \d+\. ", line):
+            continue
+        match = re.search(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d", line)
+        if match:
+            current = match.group(1)
+        else:
+            counts["unparsed"] += 1
+        if current:
+            counts[current] += 1
     return counts
 
 
@@ -1224,6 +1239,8 @@ def table(sessions, entries_by_day):
         day["cache_read"] += totals["cache_read_input_tokens"]
         day["output"] += totals["output_tokens"]
     lines.append("")
+    if entries_by_day.get("unparsed"):
+        lines.append(f"unparsed journal headings (attributed to the previous dated entry's day): {entries_by_day['unparsed']}")
     for date in sorted(days):
         day = days[date]
         entries = entries_by_day.get(date, 0)
@@ -1245,6 +1262,8 @@ def main():
     if args.since:
         sessions = [info for info in sessions if info["start"].strftime("%Y-%m-%d") >= args.since]
     sessions.sort(key=lambda info: info["start"])
+    if not sessions:
+        parser.exit(1, f"no sessions with at least {MIN_TURNS} assistant turns under {args.project}\n")
     print(table(sessions, journal_entries_by_day(args.root)))
 
 
@@ -1255,7 +1274,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run the tests**
 
 Run: `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests/test_usage.py`
-Expected: pass. Also run against the real transcripts to see the baseline: `python3 .claude/skills/autopilot/scripts/usage.py --since 2026-09-14` and confirm the three sessions in spec section 1 appear with 5, 3 and 2 compactions.
+Expected: pass (66 in the whole suite). Then run against the real transcripts: `python3 .claude/skills/autopilot/scripts/usage.py --since 2026-09-14`. The three sessions in spec section 1 (ids aebc28da, 180a0657, 72d7f42b) must appear with 5, 3 and 2 compactions and turn counts 1,939, 1,406 and at least 910 (the third session was still running when the spec was written). Any mismatch, or an exit 1 "no sessions", means the transcript field names differ from the script's assumptions: stop and report before continuing, because the day-after measurement depends on this script.
 
 - [ ] **Step 5: Commit**
 
@@ -1450,7 +1469,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run the tests**
 
 Run: `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests`
-Expected: all pass (the image tests skip only if `magick` is absent; it is present on Omarchy).
+Expected: all pass (70; the image tests skip only if `magick` is absent; it is present on Omarchy).
 
 - [ ] **Step 5: Commit**
 
@@ -1488,8 +1507,18 @@ start, end, table = context.section(roadmap, 'Carried fixes')
 lines = table.splitlines()
 rows = [(start + index + 1, line) for index, line in enumerate(lines) if context.ROW_RE.match(line)]
 CLOSED = re.compile(r'\b(closed|done|superseded|transient)\b', re.I)
-PASS_AFTER_DEPLOY = re.compile(r'\b[0-9a-f]{7}\b.*\bPASS\b', re.I | re.S)
+# a deploy sha followed by a *verify* PASS; "review PASS" does not close a row
+PASS_AFTER_DEPLOY = re.compile(r'\b[0-9a-f]{7}\b[^|]*\bverif\w*[^|]*\bPASS\b', re.I | re.S)
 OPEN = re.compile(r'\b(actionable|in flight)\b', re.I)
+# state.md is consulted only in its "Carried fixes open and actionable" bullet and its "Right now" section
+def state_scope(text):
+    scope = [line for line in text.splitlines() if 'Carried fixes open and actionable' in line]
+    try:
+        scope.append(context.section(text, 'Right now')[2])
+    except ValueError:
+        scope += [line for line in text.splitlines() if line.startswith('## Right now')]
+    return "\n".join(scope)
+state = state_scope(state)
 def cited(text):
     return [int(n) for n in re.findall(r'journal(?: entry)?s? (\d+)', text)]
 def last_entry_text(row):
@@ -1530,11 +1559,11 @@ PY
 wc -l /tmp/context-hygiene-classify.md && grep -c '| Closed |' /tmp/context-hygiene-classify.md; grep -c '| Open |' /tmp/context-hygiene-classify.md; grep -c '| Watch |' /tmp/context-hygiene-classify.md
 ```
 
-Expected: 63 table rows; a first draft roughly Closed 11 to 20, Open 1 to 3, Watch the rest; rows 71, 78, 79, 80 show a cell count other than 6.
+Expected: 63 table rows and no exception; rows 71, 78, 79, 80 show a cell count other than 6. Record the printed split in the report; it is a draft, not a result (the dry run before these regex fixes drafted 29 Closed, with rows 30, 44, 53 and 64 wrongly closed on "review PASS", a "superseded" inside prose and a "done" about a different fact, and row 51 wrongly Open although state.md lists 50-58 as phase-assigned).
 
 - [ ] **Step 2: Correct the draft by reading each row**
 
-For every row whose draft is `Watch` or whose reason says ambiguous, read the row's Deploy cell and the most recent journal entry it cites (find the entry's line range with `grep -n '^## N\.' docs/superpowers/autopilot/journal.md` and print it with `sed -n 'START,ENDp'`) and set the section by the spec's rule (3.2 step 2): Closed when the cell, `state.md`, or that entry says closed, done, superseded, transient, or records a deploy followed by a verify PASS on the covering row; Open when `state.md`'s "Carried fixes open and actionable" list or the cell says actionable or in flight; otherwise Watch. Keep the rows that remain ambiguous marked `(ambiguous)` in the reason column; they go to Watch and to the report's `Needs you` list. Rewrite the reason column in your own words for every row you changed.
+For every row, whatever its draft, read the row's Deploy cell and the most recent journal entry it cites (find the entry's line range with `grep -n '^## N\.' docs/superpowers/autopilot/journal.md` and print it with `sed -n 'START,ENDp'`) and set the section by the spec's rule (3.2 step 2): Closed when the cell, `state.md`, or that entry says closed, done, superseded, transient, or records a deploy followed by a verify PASS on the covering row; Open when `state.md`'s "Carried fixes open and actionable" list or the cell says actionable or in flight; otherwise Watch. Keep the rows that remain ambiguous marked `(ambiguous)` in the reason column; they go to Watch and to the report's `Needs you` list. Rewrite the reason column in your own words for every row you changed.
 
 - [ ] **Step 3: Normalise the four malformed rows on paper**
 
@@ -1554,7 +1583,20 @@ import context
 state = context.read(context.ROOT, context.STATE)
 journal = context.read(context.ROOT, context.JOURNAL)
 ledgers = "".join(open(p).read() for p in glob.glob('.superpowers/sdd/*/progress.md'))
-receipts = set(re.findall(r'evidence/[\w.-]+', state)) | set(re.findall(r'\b\d{8}T\d{6}Z-[0-9a-f]{7}\b', state))
+receipts = set()
+last_date = None
+# full paths, brace groups (evidence/<prefix>{a,b}.txt) and shorthands (", -deploy-full-1228.txt") in reading order
+for match in re.finditer(r'evidence/([\w-]+)\{([^}]+)\}\.txt|evidence/([\w-]+)\.txt|(?<=[ ,(])-([\w-]+)\.txt', state):
+    if match.group(1):
+        for part in match.group(2).split(','):
+            receipts.add(f"{match.group(1)}{part.strip()}.txt")
+        last_date = match.group(1)[:10]
+    elif match.group(3):
+        receipts.add(f"{match.group(3)}.txt")
+        last_date = match.group(3)[:10]
+    elif match.group(4) and last_date:
+        receipts.add(f"{last_date}-{match.group(4)}.txt")
+receipts |= set(re.findall(r'\b\d{8}T\d{6}Z-[0-9a-f]{7}\b', state))
 print('| receipt | in journal | in a ledger |')
 print('|---|---|---|')
 for item in sorted(receipts):
@@ -1563,7 +1605,7 @@ PY
 grep -c '| NO | NO |' /tmp/context-hygiene-receipts.md
 ```
 
-Expected: a table; the count of receipts found nowhere else is the number the repair entry reports. Receipts whose evidence file exists on disk but that no entry names are not lost (the file is the record); list them anyway.
+Expected: a table with no trailing periods in names and every brace-group member expanded (the dry run before these fixes reported six misses of which four were regex artefacts; genuine misses seen: `2026-09-15-t4-explain-1000.txt`, `2026-09-15-predeploy-baseline-6d.txt`). The count of receipts found nowhere else is the number the repair entry reports. Receipts whose evidence file exists on disk but that no entry names are not lost (the file is the record); list them anyway.
 
 - [ ] **Step 6: Write the report**
 
@@ -1573,7 +1615,9 @@ Create `docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.
 # Context hygiene migration (spec 2026-09-15-context-hygiene-design, revision 3)
 
 Written <date> <HH:MM> CT by the user-directed implementation session on branch `context-hygiene-2026-09-15`,
-pre-migration sha <sha from /tmp/context-hygiene-pre.sha>. The tables here back the `repair` journal entry.
+pre-migration sha <sha from /tmp/context-hygiene-pre.sha> (later tasks fall back to this line if /tmp is gone).
+The last controller checkpoint was <state.md header Updated time> CT, last journal entry <N>. The tables here back
+the `repair` journal entry.
 
 ## 1. Row normalisation
 
@@ -1643,7 +1687,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: the ruled classification in the report's section 2; `/tmp/context-hygiene-pre.sha`.
-- Produces: `fixes.md` with the baseline line and three sections; `roadmap.md` with a row-free `Carried fixes` pointer section. `context.py check` still reports `BLOCK state.md ...` until Task 7 and a journal BLOCK until Task 10; that is expected here.
+- Produces: `fixes.md` with the baseline line and three sections; `roadmap.md` with a row-free `Carried fixes` pointer section. `context.py check` still reports `BLOCK state.md ...` until Task 7 and a journal BLOCK on the controller's last entry until Task 12; that is expected here.
 
 - [ ] **Step 1: Generate `fixes.md` from the ruled table**
 
@@ -1672,8 +1716,11 @@ def clip(text, limit):
     text = text.strip()
     return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
 
+PREFIX = re.compile(r'^[^:|]{0,140}\d{4}-\d{2}-\d{2}[^:|]{0,140}:\s*')   # "verify 2026-09-08 04:58 CT (journal 48): "
+
 def condense(parts, label, line_no, line):
-    finding = re.split(r'(?<=[.;:])\s', parts[1], 1)[0]
+    finding = PREFIX.sub("", parts[1], count=1)
+    finding = re.split(r'(?<=[.;:])\s', finding, 1)[0]
     pointer = f" ({journal_pointer(line)}roadmap.md@{sha}:{line_no})"
     row = None
     for width in (220, 160, 120, 80):
@@ -1735,7 +1782,7 @@ print("rows", {key: len(value) for key, value in sections.items()}, "baseline", 
 PY
 ```
 
-Expected: `rows {'Open': n, 'Watch': n, 'Closed': n}` summing to 63 and `baseline 63`. If the script stops on a malformed row, first paste that row's six-cell form from report section 1 into `roadmap.md` in place of the original line (this is the one edit to the original rows; it changes no words) and rerun.
+Expected: `rows {'Open': n, 'Watch': n, 'Closed': n}` summing to 63 and `baseline 63`. The script stops on row 71 first (seven cells): paste each malformed row's six-cell form from report section 1 into `roadmap.md` in place of the original line (this is the one edit to the original rows; it changes no words) and rerun. In the dry run with every row in Watch, `condense()` never failed its assertion (longest row 442 characters).
 
 - [ ] **Step 2: Replace the roadmap's Carried fixes section with the pointer**
 
@@ -1767,16 +1814,16 @@ python3 .claude/skills/autopilot/scripts/context.py check 2>&1 | grep -E 'Carrie
 
 Expected: `replaced lines 597 to 668`; the check prints no `Carried fixes` and no `fixes.md` BLOCK lines except `Open row ... length` lines for the Open rows not yet condensed.
 
-- [ ] **Step 3: Condense the Open rows by hand**
+- [ ] **Step 3: Condense the Open rows by hand, then read every Watch Finding cell**
 
-For each `BLOCK fixes.md: Open row N: length` line, edit that row in `fixes.md`: the Finding cell becomes one clause naming the symptom plus `(journal N; roadmap.md@<sha>:<line>)`, Files stays, Change keeps the instruction an implementer needs, Covering test stays, Deploy keeps its disposition. Re-run `python3 .claude/skills/autopilot/scripts/context.py check | grep 'fixes.md'` until it prints nothing.
+For each `BLOCK fixes.md: Open row N: length` line, edit that row in `fixes.md`: the Finding cell becomes one clause naming the symptom plus `(journal N; roadmap.md@<sha>:<line>)`, Files stays, Change keeps the instruction an implementer needs, Covering test stays, Deploy keeps its disposition. Re-run `python3 .claude/skills/autopilot/scripts/context.py check | grep 'fixes.md'` until it prints nothing. Then read every `Watch` row's Finding cell: it must name the symptom in one clause before its pointers (the prefix strip handles rows that open with `verify <date> ... (journal N):`; a row whose first clause is still only a date or a sha gets its symptom written by hand within 600 characters). The Task 10 reviewer checks this.
 
 - [ ] **Step 4: Verify the counts and the pointer**
 
 ```bash
-grep -cE '^\|\s*[0-9]+' docs/superpowers/autopilot/fixes.md; grep -c '^| ' docs/superpowers/autopilot/roadmap.md | head -1; python3 .claude/skills/autopilot/scripts/context.py bootstrap authority | grep -A3 '^## Carried fixes'; python3 .claude/skills/autopilot/scripts/context.py bootstrap | grep -c '^| '
+grep -cE '^\|\s*[0-9]+' docs/superpowers/autopilot/fixes.md; python3 .claude/skills/autopilot/scripts/context.py check | grep 'Carried fixes' || echo 'roadmap rows gone'; python3 .claude/skills/autopilot/scripts/context.py bootstrap authority | grep -A3 '^## Carried fixes'; python3 .claude/skills/autopilot/scripts/context.py bootstrap | grep -c '^| '
 ```
-Expected: 63 rows in `fixes.md`; the authority part shows the pointer text; the checkpoint part shows the Open table.
+Expected: 63 rows in `fixes.md`; `roadmap rows gone`; the authority part shows the pointer text and measures about 23,500 characters; the checkpoint part shows the Open table.
 
 - [ ] **Step 5: Commit (rows leave the roadmap and enter fixes.md in one commit)**
 
@@ -1795,22 +1842,27 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Rewrite: `docs/superpowers/autopilot/state.md`
 
 **Interfaces:**
-- Consumes: report section 3 (fact inventory), the user's two rulings of 2026-09-15 (verify.md line 886 edit; the stop suspends the batch clock).
+- Consumes: report section 3 (fact inventory), the user's rulings of 2026-09-15 18:17 CT (verify.md line 886 edit; the stop suspends the batch clock) and the answer to step 1's question.
 - Produces: `state.md` passing `check_state`.
 
-- [ ] **Step 1: Write the new file from the inventory**
+- [ ] **Step 1: Ask the user the batch-clock number**
+
+The hotfix batch wall-clock (3 h) started 16:59 CT on 2026-09-15 when fix 78 part 2 was dispatched. The user ruled at 18:17 CT that their stop suspends the clock, but the controller kept running until its last checkpoint (the `Updated` time in `state.md`'s header, 18:41 CT when this plan was reviewed). Compute `consumed = last checkpoint time - 16:59 CT` and ask the user, in one message: "The batch clock ran from 16:59 CT to the controller's last checkpoint at <time> CT, <consumed>. Resume with that much consumed, or a different figure?" Record the answer verbatim with the CT time in the migration report (section 2, `### Rulings`) and use it in `Resume first`.
+
+- [ ] **Step 2: Write the new file from the inventory**
 
 Rewrite `docs/superpowers/autopilot/state.md` to this shape, filling every section from the inventory (every sentence whose destination is a schema section appears there, as a pointer where the inventory says so):
 
 ```markdown
 # Autopilot checkpoint
 
-Updated <date> <HH:MM> CT by the user-directed context-hygiene session (branch `context-hygiene-2026-09-15`; no controller running) in `/home/trey/dev/sports` on Omarchy. Last journal entry: 245. Paper-only. Runtime build: **f8053c6** (journal 243, app-only, fix 78 part 1). Main after the merge: f8053c6 + docs, skill scripts and the launcher (no deployable code ahead of the runtime; the release tree differs from the deployed tree by non-deployable files, so the next deploy needs a post-merge full-suite receipt). origin/main = 35f7180 (U7 pushes after phases and on Mondays).
+Updated <date> <HH:MM> CT by the user-directed context-hygiene session (branch `context-hygiene-2026-09-15`; no controller running) in `/home/trey/dev/sports` on Omarchy. Last journal entry: <the controller's last entry number; Task 12 raises it by one>. Paper-only. Runtime build: **f8053c6** (journal 243, app-only, fix 78 part 1). Main after the merge: f8053c6 + docs, skill scripts and the launcher (no deployable code ahead of the runtime; the release tree differs from the deployed tree by non-deployable files, so the next deploy needs a post-merge full-suite receipt). origin/main = 35f7180 (U7 pushes after phases and on Mondays).
 
 ## Resume first
 
-- <every fact of the 17:34 CT stopping point (state.md@9fcff02 "Stopping point" section), as bullets>
-- User ruling 2026-09-15 (this migration): the stop at 17:34 CT suspends the hotfix batch wall-clock (3 h, started 16:59 CT); it resumes at relaunch with 35 minutes consumed. Do not journal `ceiling` for fix 78 part 2 on that basis.
+- <every fact of the controller's "Stopping point" section at `state.md@<pre-migration sha>`, as bullets: the fix 78 part 2 branch head and review state, the consumed wakeups, rows 75/77, the p95 reading, the reminders>
+- User ruling 2026-09-15 18:17 CT (the context-hygiene review session): the user's stop suspends the hotfix batch wall-clock (3 h, started 16:59 CT); per the user's answer in step 1 it resumes at relaunch with <consumed> consumed. Do not journal `ceiling` for fix 78 part 2 on that basis.
+- The first wake's Orient rule 2 reads the deploy trigger with the launcher excluded (deploy.md step 1, updated); main is not ahead in code, and the next deploy needs a post-merge full-suite receipt (fix 78 part 2's rebased suite supplies it).
 - The bootstrap is three parts (`bootstrap`, `bootstrap authority`, `bootstrap operator`); fix rows are in `fixes.md`; run `context.py check` and the skill tests at preflight (preflight.md).
 
 ## Right now
@@ -1841,20 +1893,22 @@ Updated <date> <HH:MM> CT by the user-directed context-hygiene session (branch `
 
 Rules: no `Evidence receipts` or `Rulings landed` heading; the receipts that the inventory maps to `journal N` are not repeated; the batch-clock ruling and the three-part bootstrap note are the only new sentences. Keep the fixed sections under 8,000 characters and `Resume first` under 4,000 by using pointers, never by dropping a fact (spec 3.4).
 
-- [ ] **Step 2: Check**
+Feasibility, measured on the file at review time (13,151 characters; header 418, Stopping point 2,428, Right now 2,215, Order of work 1,629, Active units 1,316, Pending results 1,501, Rulings landed 989, Evidence receipts 2,078, Constraints 552): dropping the two history sections leaves 7,656 for the fixed sections, so the release-tree bullet and any new fact must be paid for by turning Right now and Order of work prose into pointers. Facts already in the journal (pointer-able): settle 211 / 69,875, p95 13,850, p95 27.9, wakeup 95df8676, watermark 50028, reminder 2026091509. Facts not in the journal (keep the words): median loop 10.2, dispatches 23, implementers running 0 of 3, ab353cc, the fix-78b database name, the "one statement per column set" deviation, the implementer id; the stopping-point bullets fit `Resume first` (about 2,900 of 4,000).
+
+- [ ] **Step 3: Check**
 
 Run: `python3 .claude/skills/autopilot/scripts/context.py check | grep -E 'state.md|checkpoint' || echo "state ok"`
-Expected: `state ok` (no state or checkpoint BLOCK; journal BLOCKs remain until Task 10).
+Expected: `state ok` (no state or checkpoint BLOCK; the journal BLOCK on the controller's last entry remains until Task 12).
 
-- [ ] **Step 3: Diff against the inventory**
+- [ ] **Step 4: Diff against the inventory**
 
 Run: `git diff --stat docs/superpowers/autopilot/state.md` and read `git diff docs/superpowers/autopilot/state.md` once, checking that every removed line has a destination in report section 3. Fix any miss.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add docs/superpowers/autopilot/state.md
-git commit -m "docs: state.md in the fixed schema (Resume first carries the 17:34 CT stopping point and the batch-clock ruling)
+git commit -m "docs: state.md in the fixed schema (Resume first carries the controller's stopping point and the batch-clock ruling)
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1864,7 +1918,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 8: Skill text (SKILL.md and references)
 
 **Files:**
-- Modify: `.claude/skills/autopilot/SKILL.md`, `references/recording.md`, `references/preflight.md`, `references/recovery.md`, `references/hotfix.md`, `references/verify.md`, `references/phase.md`
+- Modify: `.claude/skills/autopilot/SKILL.md`, `references/recording.md`, `references/preflight.md`, `references/recovery.md`, `references/hotfix.md`, `references/verify.md`, `references/phase.md`, `references/deploy.md`
 
 All edits are exact-string replacements run through one script so a drifted line fails loudly instead of silently. Read each file's current text first; if an `old` string is not found once, stop and reconcile by hand.
 
@@ -2069,6 +2123,13 @@ edits[S / 'references/phase.md'] = [
  "   delete its branch/ledger."),
 ]
 
+edits[S / 'references/deploy.md'] = [
+("""1. Compare deployed source with main, excluding docs/Markdown/.claude controller
+   tooling.""",
+ """1. Compare deployed source with main, excluding docs/Markdown/.claude controller
+   tooling and `scripts/autopilot-session.sh` (Orient rule 2's pathspec)."""),
+]
+
 for path, pairs in edits.items():
     text = path.read_text()
     for old, new in pairs:
@@ -2083,18 +2144,22 @@ grep -rn 'Carried fixes' .claude/skills/autopilot/SKILL.md .claude/skills/autopi
 grep -n '500k' .claude/skills/autopilot/SKILL.md || echo "no 500k"
 ```
 
-Expected: seven `edited` lines; `no Carried fixes mentions`; `no 500k`.
+Expected: eight `edited` lines; `no Carried fixes mentions`; `no 500k`. (Every `old` string was counted exactly once in the files at review time.)
 
 - [ ] **Step 2: Run the skill tests (they do not read these files, but the hook tests must still pass)**
 
 Run: `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests`
 Expected: pass.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Show the user the skill diff and wait for approval (spec 6.3; gate 10 covers the skill)**
+
+Run: `git diff .claude/skills/autopilot/SKILL.md .claude/skills/autopilot/references` and ask for approval. Record the answer verbatim with the CT time in the migration report, section 2, `### Rulings`.
+
+- [ ] **Step 4: Commit**
 
 ```bash
-git add .claude/skills/autopilot/SKILL.md .claude/skills/autopilot/references/recording.md .claude/skills/autopilot/references/preflight.md .claude/skills/autopilot/references/recovery.md .claude/skills/autopilot/references/hotfix.md .claude/skills/autopilot/references/verify.md .claude/skills/autopilot/references/phase.md
-git commit -m "docs(autopilot): skill text for the three-part bootstrap, fixes.md, check, the state schema and dead U8 text
+git add .claude/skills/autopilot/SKILL.md .claude/skills/autopilot/references/recording.md .claude/skills/autopilot/references/preflight.md .claude/skills/autopilot/references/recovery.md .claude/skills/autopilot/references/hotfix.md .claude/skills/autopilot/references/verify.md .claude/skills/autopilot/references/phase.md .claude/skills/autopilot/references/deploy.md docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md
+git commit -m "docs(autopilot): skill text for the three-part bootstrap, fixes.md, check, the state schema, the launcher in the deploy exclusion and dead U8 text
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -2175,13 +2240,15 @@ for line in lines:
     kept.append(line)
 if removed != 12:
     raise SystemExit(f"expected to remove 12 checked TODOs, removed {removed}")
-path.write_text("".join(kept))
+# collapse the blank runs the removals leave inside the TODO list (three blank lines before "## Carried fixes")
+text = re.sub(r"\n{3,}", "\n\n", "".join(kept))
+path.write_text(text)
 print("roadmap edited; calendar rows removed", 5, "; TODOs removed", removed)
 PY
 python3 .claude/skills/autopilot/scripts/context.py bootstrap operator | head -1 && python3 .claude/skills/autopilot/scripts/context.py bootstrap operator | wc -c
 ```
 
-Expected: `roadmap edited; calendar rows removed 5 ; TODOs removed 12`; the operator part starts with `Source:` (no `BUDGET EXCEEDED`) and is about 17,000 characters.
+Expected: `roadmap edited; calendar rows removed 5 ; TODOs removed 12`; the operator part starts with `Source:` (no `BUDGET EXCEEDED`) and measures about 16,400 characters (25,968 before). The unchecked paragraph "The spec §2 legal-facts correction is being applied by the controller, not by the user." stays (it is the user's note); the continuation lines under the two checked bullets (the old lines 575 and 578) go with their bullets, the continuation under the unchecked Odds API bullet (old line 573) stays.
 
 - [ ] **Step 2: Runbook, CLAUDE.md and verify.md line 886**
 
@@ -2236,7 +2303,84 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-### Task 10: The `repair` journal entry and the live tests
+### Task 10: Independent read-only review of the condensed rows and the state rewrite
+
+**Files:**
+- Modify: `docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md` (section 5)
+- Possibly modify: `docs/superpowers/autopilot/fixes.md`, `docs/superpowers/autopilot/state.md`
+
+- [ ] **Step 1: Dispatch the reviewer**
+
+Use the Agent tool with `subagent_type: general-purpose` (the project hook sandboxes subagents to Bash inside the checkout, read-only) and this prompt, filling `<sha>` from `/tmp/context-hygiene-pre.sha` (or the report header):
+
+```
+Read-only review. Only the Bash tool works (cat, sed -n, grep -n, python3 heredocs); do not write or commit.
+Compare docs/superpowers/autopilot/fixes.md against the pre-migration table: `git show <sha>:docs/superpowers/autopilot/roadmap.md | sed -n '597,668p'`.
+1. For every Open and Watch row, list any fact (a file, a query, a threshold, a ruling, a deploy sha, a judge-after time) present in the original row and absent from the condensed row that its pointers (journal N, roadmap.md@<sha>:<line>, evidence path) do not reach; and any Finding cell that does not name a symptom before its pointers. Cite row number and the missing words.
+2. For every Closed row, confirm the text is unchanged except the Deploy cell.
+3. Compare docs/superpowers/autopilot/state.md against `git show <sha>:docs/superpowers/autopilot/state.md` using the inventory in docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md section 3: list any sentence of the old file with no destination, and any inventory pointer (journal N) whose entry does not state the fact (grep it).
+4. Confirm the Resume first section carries every bullet of the old Stopping point section, the batch-clock ruling with its consumed figure, and the deploy-trigger note.
+Report as: ## Rows (findings or "none"), ## Closed rows (ok or diffs), ## State (findings or "none"), ## Resume first (ok or missing items). Under 800 words.
+```
+
+- [ ] **Step 2: Apply the findings**
+
+For each finding: restore the missing fact to the row (within 600 characters, via a pointer if needed) or to the state section, or record why it is not a fact (a duplicate of the journal) in section 5. Re-run `python3 .claude/skills/autopilot/scripts/context.py check | grep -E 'fixes.md|state.md' || echo clean` after edits.
+
+- [ ] **Step 3: Record and commit**
+
+Paste the reviewer's report into section 5 of the migration report with the disposition of each finding, then:
+
+```bash
+git add docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md docs/superpowers/autopilot/fixes.md docs/superpowers/autopilot/state.md
+git commit -m "docs: migration review findings applied (report section 5)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 11: Launcher at 300k
+
+**Files:**
+- Modify: `scripts/autopilot-session.sh:10,15`
+
+- [ ] **Step 1: Change the compaction threshold**
+
+```bash
+python3 - <<'PYEDIT'
+from pathlib import Path
+path = Path('scripts/autopilot-session.sh')
+text = path.read_text()
+pairs = [
+ ("# create a duplicate controller; only the committed worker MCP server; compact at 500k.",
+  "# create a duplicate controller; only the committed worker MCP server; compact at 300k\n# (spec docs/superpowers/specs/2026-09-15-context-hygiene-design.md section 3.5)."),
+ ("--autocompact 500k", "--autocompact 300k"),
+]
+for old, new in pairs:
+    if text.count(old) != 1:
+        raise SystemExit(f"expected one match: {old!r}")
+    text = text.replace(old, new)
+path.write_text(text)
+print("launcher edited")
+PYEDIT
+bash -n scripts/autopilot-session.sh && grep -n 'autocompact 300k' scripts/autopilot-session.sh .claude/skills/autopilot/SKILL.md && (grep -rn '500k' scripts/autopilot-session.sh .claude/skills/autopilot/SKILL.md || echo "no 500k")
+```
+
+Expected: `launcher edited`, syntax ok, one match in each file, `no 500k`.
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add scripts/autopilot-session.sh
+git commit -m "chore(autopilot): launcher compacts at 300k (measured for one day per the context hygiene spec)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 12: The `repair` journal entry, the live tests, acceptance and merge
 
 **Files:**
 - Append: `docs/superpowers/autopilot/journal.md`
@@ -2244,8 +2388,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `.claude/skills/autopilot/tests/test_live_repo.py`
 
 **Interfaces:**
-- Consumes: `context.check`, `context.checkpoint_raw`, `context.BUDGET`.
-- Produces: journal entry N = last + 1 passing `check`; the live tests.
+- Consumes: `context.check`, `context.checkpoint_raw`, `context.BUDGET`; the migration report; the rulings recorded in it (times in CT).
+- Produces: journal entry N = last + 1 passing `check`; the live tests; a fast-forwarded main.
 
 - [ ] **Step 1: Write the live tests**
 
@@ -2273,9 +2417,10 @@ context = module("context")
 
 class LiveRepositoryTests(unittest.TestCase):
     def setUp(self):
-        for name in ("roadmap.md", "state.md", "journal.md", "fixes.md"):
+        for name in ("roadmap.md", "journal.md"):
             if not (context.ROOT / context.AUTOPILOT / name).exists():
                 self.skipTest(f"{name} absent; not a controller checkout")
+        # A missing state.md or fixes.md is a BLOCK the first test must expose, never a skip.
 
     def test_check_reports_no_block(self):
         blocks = [message for cls, message in context.check(context.ROOT) if cls == "BLOCK"]
@@ -2289,35 +2434,35 @@ class LiveRepositoryTests(unittest.TestCase):
 - [ ] **Step 2: Run them to see the expected failure**
 
 Run: `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests/test_live_repo.py`
-Expected: `test_check_reports_no_block` FAILS with a journal BLOCK on entry 245 (heading grammar and missing lines); the budget test passes.
+Expected: `test_check_reports_no_block` FAILS with BLOCK lines on the controller's last entry (at review time entry 246: unit `verify re-read` fails the one-token grammar, heading 392 characters, no `- Result:` or `- Next:`); the budget test passes (the checkpoint measured 18,820 at review time).
 
 - [ ] **Step 3: Append the repair entry**
 
-Compute the number and time, then append (fill every `<...>`; keep the heading text after `## ` under 120 characters and the body under 6,000):
+Compute the number and time:
 
 ```bash
-N=$(( $(grep -oE '^## [0-9]+\.' docs/superpowers/autopilot/journal.md | tail -1 | tr -dc '0-9') + 1 )); NOW=$(TZ=America/Chicago date '+%F %H:%M'); PRE=$(cut -c1-7 /tmp/context-hygiene-pre.sha); echo "$N $NOW $PRE"
+N=$(( $(grep -oE '^## [0-9]+\.' docs/superpowers/autopilot/journal.md | tail -1 | tr -dc '0-9') + 1 )); NOW=$(TZ=America/Chicago date '+%F %H:%M'); PRE=$(cut -c1-7 /tmp/context-hygiene-pre.sha 2>/dev/null || git merge-base main context-hygiene-2026-09-15 | cut -c1-7); HEAD7=$(git rev-parse --short HEAD); echo "$N $NOW $PRE $HEAD7"
 ```
 
-Then append to `docs/superpowers/autopilot/journal.md` (one blank line, then):
+Then append to `docs/superpowers/autopilot/journal.md` (one blank line, then the entry; fill every `<...>` from the report; keep the heading text after `## ` under 120 characters and the body under 6,000; quote the rulings' words as recorded, not paraphrased):
 
 ```markdown
 ## <N>. repair - context hygiene migration (spec 2026-09-15-context-hygiene-design) - <NOW> CT
-- Orient: none (user-directed session; the controller was stopped at 17:34 CT, state.md@9fcff02)
-- Branch / commits: context-hygiene-2026-09-15 <PRE>..<head7>
+- Orient: none (user-directed session; the controller was stopped by the user after its <last checkpoint time> CT checkpoint, state.md@<PRE>)
+- Branch / commits: context-hygiene-2026-09-15 <PRE>..<HEAD7>
 - Result: done
 - Dispatches: 1 (independent read-only reviewer of the condensed rows and the state rewrite)
 - Tests: <n> passed (.venv/bin/python -m pytest -q .claude/skills/autopilot/tests); make test not run, no file under harness/ or tests/ changed
 - Review: <clean | n findings fixed> (reports/2026-09-15-context-hygiene-migration.md section 5)
-- Deploy: none; main's release tree now differs from f8053c6 by .claude/, scripts/autopilot-session.sh, CLAUDE.md, the runbook and the spec (non-deployable); the deploy trigger reads empty; the next deploy needs a post-merge full-suite receipt (fix 78 part 2's rebased suite)
+- Deploy: none; main's release tree now differs from f8053c6 by .claude/, scripts/autopilot-session.sh, CLAUDE.md, the runbook, the spec and the plan (non-deployable); the deploy trigger excludes them all; the next deploy needs a post-merge full-suite receipt (fix 78 part 2's rebased suite)
 - Verification: not run
-- Rulings: verify.md line 886 one-line edit authorised by the user 2026-09-15; the user's stop at 17:34 CT suspends the hotfix batch wall-clock (resumes with 35 min consumed); classification ruled by the user <time> CT (report section 2); user-owned text approved <time> CT
+- Rulings: 2026-09-15 17:37 CT the user chose "Own file, open/closed split" for fix rows; 18:17 CT "Authorise the one-word edit" (verify.md line 886) and "Stop suspends the clock" (hotfix batch wall-clock); <time> CT batch clock resumes with "<the user's words>" consumed; <time> CT classification ruled: "<the user's words>"; <time> CT skill diff approved: "<the user's words>"; <time> CT user-owned roadmap text approved: "<the user's words>"
 - Carried forward: fixes.md Open <n>, Watch <n>, Closed <n> (63 rows, 56 twice, baseline line); ambiguous rows in Watch pending the user: <numbers or none>; receipts found nowhere else: <n> (report section 4)
-- Files: fixes.md created; roadmap Carried fixes is a row-free pointer; state.md in the fixed schema; skill text (SKILL.md, recording, preflight, recovery, hotfix, verify, phase); roadmap edit rights, Secrets row, five calendar rows, twelve checked TODOs; runbook and CLAUDE.md; launcher --autocompact 300k (Task 12); new commands: context.py bootstrap {checkpoint,authority,operator}, context.py check [--entry N], evidence_image.py, usage.py
+- Files: fixes.md created; roadmap Carried fixes is a row-free pointer; state.md in the fixed schema; skill text (SKILL.md, recording, preflight, recovery, hotfix, verify, phase, deploy); roadmap edit rights, Secrets row, five calendar rows, twelve checked TODOs; runbook and CLAUDE.md; launcher --autocompact 300k; new commands: context.py bootstrap {checkpoint,authority,operator}, context.py check [--entry N], evidence_image.py, usage.py
 - Next: the user relaunches the controller; its first preflight runs check and the skill tests; after the first full day at 300k the user runs usage.py against spec section 3.5
 ```
 
-Then set the header of `state.md`: `Last journal entry: <N>`.
+Then set `state.md`'s header to `Last journal entry: <N>`.
 
 - [ ] **Step 4: Check and test**
 
@@ -2325,7 +2470,7 @@ Run:
 ```bash
 python3 .claude/skills/autopilot/scripts/context.py check; echo "exit $?"; .venv/bin/python -m pytest -q .claude/skills/autopilot/tests
 ```
-Expected: `check: ok` (or only `NEEDS USER` lines, which must be zero at merge time: fix any by shortening user-owned text with the user, or stop and report), exit 0; all tests pass including the live ones.
+Expected: `check: ok`, exit 0, and all tests pass (72). A `NEEDS USER` line here means an authority or operator part is over 27,000 (expected sizes: authority about 23,700, operator about 16,400): stop and ask the user which of their sections to shorten; acceptance requires neither class at merge time.
 
 - [ ] **Step 5: Commit**
 
@@ -2336,96 +2481,18 @@ git commit -m "docs: autopilot journal - repair context hygiene migration; live 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
----
-
-### Task 11: Independent read-only review of the condensed rows and the state rewrite
-
-**Files:**
-- Modify: `docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md` (section 5)
-- Possibly modify: `docs/superpowers/autopilot/fixes.md`, `docs/superpowers/autopilot/state.md`
-
-- [ ] **Step 1: Dispatch the reviewer**
-
-Use the Agent tool with `subagent_type: general-purpose` (the project hook sandboxes subagents to Bash inside the checkout, read-only) and this prompt, filling `<sha>`:
-
-```
-Read-only review. Only the Bash tool works (cat, sed -n, grep -n, python3 heredocs); do not write or commit.
-Compare docs/superpowers/autopilot/fixes.md against the pre-migration table `git show <sha>:docs/superpowers/autopilot/roadmap.md | sed -n '597,668p'`.
-1. For every Open and Watch row, list any fact (a file, a query, a threshold, a ruling, a deploy sha, a judge-after time) present in the original row and absent from the condensed row that its pointers (journal N, roadmap.md@<sha>:<line>, evidence path) do not reach. Cite row number and the missing words.
-2. For every Closed row, confirm the text is unchanged except the Deploy cell.
-3. Compare docs/superpowers/autopilot/state.md against `git show <sha>:docs/superpowers/autopilot/state.md` using the inventory in docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md section 3: list any sentence of the old file with no destination, and any inventory pointer (journal N) whose entry does not state the fact (grep it).
-4. Confirm the Resume first section carries every bullet of the old Stopping point section and the batch-clock ruling.
-Report as: ## Rows (findings or "none"), ## Closed rows (ok or diffs), ## State (findings or "none"), ## Resume first (ok or missing items). Under 800 words.
-```
-
-- [ ] **Step 2: Apply the findings**
-
-For each finding: restore the missing fact to the row (within 600 characters, via a pointer if needed) or to the state section, or record why it is not a fact (a duplicate of the journal) in section 5. Re-run `python3 .claude/skills/autopilot/scripts/context.py check` after edits.
-
-- [ ] **Step 3: Record and commit**
-
-Paste the reviewer's report into section 5 of the migration report with the disposition of each finding, update the `Review:` line of the repair entry (it is not yet committed on main; editing before the merge is allowed by recording.md's new sentence only until the commit that lands it, so amend the entry in a new commit here and note "review line updated" in the commit message), then:
+- [ ] **Step 6: Acceptance checks on the branch (spec section 7)**
 
 ```bash
-python3 .claude/skills/autopilot/scripts/context.py check && .venv/bin/python -m pytest -q .claude/skills/autopilot/tests
-git add docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md docs/superpowers/autopilot/fixes.md docs/superpowers/autopilot/state.md docs/superpowers/autopilot/journal.md
-git commit -m "docs: migration review findings applied (report section 5; repair entry review line updated)
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
-```
-
----
-
-### Task 12: Launcher, acceptance checks, merge
-
-**Files:**
-- Modify: `scripts/autopilot-session.sh:10,15`
-
-- [ ] **Step 1: Change the compaction threshold**
-
-```bash
-python3 - <<'PY'
-from pathlib import Path
-path = Path('scripts/autopilot-session.sh')
-text = path.read_text()
-pairs = [
- ("# create a duplicate controller; only the committed worker MCP server; compact at 500k.",
-  "# create a duplicate controller; only the committed worker MCP server; compact at 300k\n# (spec docs/superpowers/specs/2026-09-15-context-hygiene-design.md section 3.5)."),
- ("--autocompact 500k", "--autocompact 300k"),
-]
-for old, new in pairs:
-    if text.count(old) != 1:
-        raise SystemExit(f"expected one match: {old!r}")
-    text = text.replace(old, new)
-path.write_text(text)
-print("launcher edited")
-PY
-bash -n scripts/autopilot-session.sh && grep -n 'autocompact 300k' scripts/autopilot-session.sh .claude/skills/autopilot/SKILL.md && (grep -rn '500k' scripts/autopilot-session.sh .claude/skills/autopilot/SKILL.md || echo "no 500k")
-```
-
-Expected: `launcher edited`, syntax ok, one match in each file, `no 500k`.
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add scripts/autopilot-session.sh
-git commit -m "chore(autopilot): launcher compacts at 300k (measured for one day per the context hygiene spec)
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
-```
-
-- [ ] **Step 3: Acceptance checks on the branch (spec section 7)**
-
-```bash
-cd /home/trey/dev/sports && PRE=$(cat /tmp/context-hygiene-pre.sha)
-.venv/bin/python -m pytest -q .claude/skills/autopilot/tests                                  # 1
+cd /home/trey/dev/sports && PRE=$(cat /tmp/context-hygiene-pre.sha 2>/dev/null || git merge-base main context-hygiene-2026-09-15)
+.venv/bin/python -m pytest -q .claude/skills/autopilot/tests                                  # 1: 72 passed
 python3 .claude/skills/autopilot/scripts/context.py check; echo "check exit $?"              # 2, 3: must print check: ok
 for p in checkpoint authority operator; do printf '%s ' $p; python3 .claude/skills/autopilot/scripts/context.py bootstrap $p | wc -c; done   # 3: each under 27000
-python3 - <<'PY'                                                                              # 4
+python3 - <<'PYCHECK'                                                                         # 4
 import sys; sys.path.insert(0,'.claude/skills/autopilot/scripts'); import context
 t=open('docs/superpowers/autopilot/state.md').read(); r=context.section(t,'Resume first')[2]
 print('state minus Resume first', len(t)-len(r), 'Resume first', len(r))
-PY
+PYCHECK
 grep -cE '^\|\s*[0-9]+' docs/superpowers/autopilot/fixes.md                                   # 5: 63
 grep -rn 'Carried fixes' .claude/skills/autopilot/SKILL.md .claude/skills/autopilot/references || echo "5 ok"
 grep -n 'autocompact 300k' scripts/autopilot-session.sh .claude/skills/autopilot/SKILL.md     # 6
@@ -2439,13 +2506,13 @@ ls docs/superpowers/autopilot/reports/2026-09-15-context-hygiene-migration.md   
 
 Expected: every line as commented. If `scripts/omarchy.sh health` cannot reach the host, record "trigger diff not run: host unreachable" and use `git diff --stat f8053c6..HEAD -- . ':!docs' ':!*.md' ':!.claude' ':!scripts/autopilot-session.sh'` (f8053c6 is the runtime build per state.md).
 
-- [ ] **Step 4: Merge**
+- [ ] **Step 7: Merge**
 
 ```bash
 git checkout main && git merge --ff-only context-hygiene-2026-09-15 && git log --oneline -12 && git status --short
 ```
 Expected: fast-forward; `git status --short` prints at most `?? .claude/settings.local.json`. Do not delete the branch (the user may want it); do not push.
 
-- [ ] **Step 5: Hand off**
+- [ ] **Step 8: Hand off**
 
 Tell the user, in one message: main's head; that the controller may be relaunched with `scripts/autopilot-session.sh start-herdr` (or `start`) and `/effort` high; that the first preflight will run `check` and the skill tests; and that after the first full day they run `python3 .claude/skills/autopilot/scripts/usage.py --since <that date>` and judge it against spec section 3.5. Update the memory pointer file `/home/trey/.claude/projects/-home-trey-dev-sports/memory/MEMORY.md` with one line: fix rows live in fixes.md, the bootstrap is three parts, `check` runs before docs commits, autocompact 300k pending the day-after measurement.
