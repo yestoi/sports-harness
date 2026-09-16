@@ -121,3 +121,135 @@ class BootstrapPartsTests(unittest.TestCase):
             result = run(self.root, *args)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(marker, result.stdout)
+
+
+class CheckTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = make_repo(self.temp.name)
+
+    def blocks(self):
+        return [message for cls, message in context.check(self.root) if cls == "BLOCK"]
+
+    def assertBlock(self, fragment):
+        blocks = self.blocks()
+        self.assertTrue(any(fragment in message for message in blocks), f"{fragment!r} not in {blocks}")
+
+    def test_fixture_passes_and_cli_says_ok(self):
+        self.assertEqual(context.check(self.root), [])
+        result = run(self.root, "check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("check: ok", result.stdout)
+
+    def test_state_schema_order_and_sizes(self):
+        path = self.root / context.STATE
+        path.write_text(STATE.replace("## Constraints", "## Evidence receipts\n\nx\n\n## Constraints"))
+        self.assertBlock("state.md: heading not in schema: 'Evidence receipts'")
+        path.write_text(STATE.replace("## Active units\n\n- none\n\n", ""))
+        self.assertBlock("state.md: required heading: 'Active units' count 0 vs 1")
+        path.write_text(STATE.replace("## Right now\n\nReleased.\n\n", "") + "\n## Right now\n\nReleased.\n")
+        self.assertBlock("state.md: heading order")
+        path.write_text(STATE + "p" * 8_000)
+        self.assertBlock("state.md: size without Resume first: ")
+        path.write_text(STATE.replace("## Right now", "## Resume first\n\n" + "r" * 4_100 + "\n\n## Right now"))
+        self.assertBlock("state.md: Resume first size: ")
+        path.write_text(STATE.replace("## Right now", "## Resume first\n\nhandoff\n\n## Right now"))
+        self.assertEqual(self.blocks(), [])
+        path.unlink()
+        self.assertBlock("state.md: missing")
+
+    def test_fixes_sections_cells_cap_numbers_and_baseline(self):
+        path = self.root / context.FIXES
+        row = "| 16 | symptom (journal 1) | a.py | change | test_a | actionable |"
+        path.write_text(FIXES.replace(row, row + " extra |"))
+        self.assertBlock("fixes.md: Open row 16: cells: 7 vs 6")
+        path.write_text(FIXES.replace("symptom (journal 1)", "s" * 700))
+        self.assertBlock("fixes.md: Open row 16: length: ")
+        path.write_text(FIXES.replace("| 20 (dup) | second twenty | c.py | none | none | user |\n", ""))
+        self.assertBlock("fixes.md: baseline numbers missing: [20]")
+        path.write_text(FIXES.replace("| 20 (dup) |", "| 20b |"))
+        self.assertBlock("fixes.md: Watch row: number cell: '20b'")
+        path.write_text(FIXES.replace("## Watch\n", "## Parked\n"))
+        self.assertBlock("fixes.md: section: 'Watch' count 0 vs 1")
+        path.write_text(FIXES.replace("Baseline numbers (2026-09-15): 16, 20, 20", "no baseline"))
+        self.assertBlock("fixes.md: baseline line: 0 vs 1")
+        path.write_text(FIXES + "| 30 | " + "c" * 2_000 + " | a | b | c | closed: journal 2 |\n")
+        self.assertEqual(self.blocks(), [])
+        path.unlink()
+        self.assertBlock("fixes.md: missing")
+
+    def test_roadmap_carried_fixes_must_hold_no_rows(self):
+        path = self.root / context.ROADMAP
+        path.write_text(path.read_text() + "\n| 99 | a | b | c | d | e |\n")
+        self.assertBlock("roadmap.md: Carried fixes rows: 1 vs 0")
+
+    def test_journal_heading_grammar_required_lines_and_body_caps(self):
+        path = self.root / context.JOURNAL
+
+        def blocks_for(heading, body):
+            path.write_text(JOURNAL + f"\n## 3. {heading}\n{body}\n")
+            return self.blocks()
+
+        base = "- Orient: rule 1\n- Result: done\n- Next: idle\n"
+        self.assertEqual(blocks_for("hotfix - fix 9 - 2026-09-16 10:00-10:20 CT", base), [])
+        self.assertTrue(any("heading grammar" in m for m in blocks_for("hotfix — fix 9 — 2026-09-16 10:00 CT", base)))
+        self.assertTrue(any("heading grammar" in m for m in blocks_for("phase start - t1 - 2026-09-16 10:00 CT", base)))
+        self.assertTrue(any("heading grammar" in m for m in blocks_for("hotfix - fix 9 - 2026-09-16 10:00 CT (written later)", base)))
+        self.assertTrue(any("heading length" in m for m in blocks_for("hotfix - " + "s" * 120 + " - 2026-09-16 10:00 CT", base)))
+        self.assertTrue(any("missing line: - Orient:" in m for m in blocks_for("hotfix - fix 9 - 2026-09-16 10:00 CT", "- Result: done\n- Next: idle\n")))
+        self.assertTrue(any("missing line: - Verification:" in m for m in blocks_for("verify - abc - 2026-09-16 10:00 CT", base)))
+        self.assertTrue(any("missing line: - Result:" in m for m in blocks_for("decision - ruling - 2026-09-16 10:00 CT", "> words\n- Next: idle\n")))
+        self.assertEqual(blocks_for("setup - unknown unit - 2026-09-16 10:00 CT", "- Result: done\n- Next: idle\n"), [])
+        self.assertTrue(any("body length: 3" in m for m in blocks_for("hotfix - fix 9 - 2026-09-16 10:00 CT", base + "b" * 3_100)))
+        verify = base + "- Verification: PASS\n"
+        self.assertEqual(blocks_for("verify - abc - 2026-09-16 10:00 CT", verify + "b" * 5_000), [])
+        self.assertTrue(any("body length: 6" in m for m in blocks_for("verify - abc - 2026-09-16 10:00 CT", verify + "b" * 6_100)))
+        self.assertEqual(blocks_for("decision - ruling - 2026-09-16 10:00 CT", "> " + "q" * 5_000 + "\n- Result: recorded\n- Next: idle\n"), [])
+        self.assertTrue(any("body length: 3" in m for m in blocks_for("decision - ruling - 2026-09-16 10:00 CT", "> q\n" + "a" * 3_100 + "\n- Result: recorded\n- Next: idle\n")))
+
+    def test_entry_option_checks_a_named_entry(self):
+        self.assertEqual(run(self.root, "check", "--entry", "1").returncode, 0)
+        result = run(self.root, "check", "--entry", "9")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Context reader failed", result.stderr)
+
+    def test_classes_and_exit_codes(self):
+        path = self.root / context.ROADMAP
+        path.write_text(path.read_text().replace("Secrets table.", "Secrets table. " + "s" * 30_000))
+        result = run(self.root, "check")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("NEEDS USER bootstrap operator: budget: ", result.stdout)
+        self.assertNotIn("BLOCK", result.stdout)
+        (self.root / context.STATE).write_text(STATE + "p" * 8_000)
+        result = run(self.root, "check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("BLOCK state.md: size without Resume first", result.stdout)
+        path.write_text("# gone\n")
+        result = run(self.root, "check")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Context reader failed", result.stderr)
+
+    def test_checkpoint_overage_class_depends_on_the_last_unit(self):
+        (self.root / context.STATE).write_text(STATE + "p" * 30_000)
+        findings = context.check(self.root)
+        self.assertIn(("BLOCK", f"bootstrap checkpoint: budget: {len(context.checkpoint_raw(self.root)[0])} vs 27000"), findings)
+        path = self.root / context.JOURNAL
+        path.write_text(JOURNAL + "\n## 3. decision - ruling - 2026-09-16 10:00 CT\n> q\n- Result: recorded\n- Next: idle\n")
+        findings = context.check(self.root)
+        self.assertTrue(any(cls == "NEEDS USER" and message.startswith("bootstrap checkpoint: budget: ")
+                            for cls, message in findings), findings)
+
+
+class AppendCapTests(unittest.TestCase):
+    def test_append_refuses_long_lines_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            ledger = Path(root) / "progress.md"
+            ledger.write_text("- old\n")
+            result = run(root, "append", "progress.md", "x" * 401)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("ledger line 401 chars > 400: write the detail to the report or brief and reference its path", result.stderr)
+            self.assertEqual(ledger.read_text(), "- old\n")
+            result = run(root, "append", "progress.md", "x" * 400)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(ledger.read_text().splitlines()), 2)

@@ -253,6 +253,127 @@ def bootstrap(root, part="checkpoint"):
     return output
 
 
+def unit_of(item):
+    match = HEADING_RE.match(item[3])
+    return match.group(2) if match else ""
+
+
+def check_state(text):
+    findings = []
+    titles = [title for _, level, title in headings(text) if level == 2]
+    for title in titles:
+        if title not in STATE_SECTIONS:
+            findings.append(("BLOCK", f"state.md: heading not in schema: {title!r} vs the seven schema headings"))
+    for title in STATE_REQUIRED:
+        if titles.count(title) != 1:
+            findings.append(("BLOCK", f"state.md: required heading: {title!r} count {titles.count(title)} vs 1"))
+    order = [STATE_SECTIONS.index(title) for title in titles if title in STATE_SECTIONS]
+    if order != sorted(order):
+        findings.append(("BLOCK", "state.md: heading order: " + " > ".join(titles) + " vs schema order"))
+    resume = ""
+    if titles.count("Resume first") == 1:
+        resume = section(text, "Resume first")[2]
+    rest = len(text) - len(resume)
+    if rest > STATE_LIMIT:
+        findings.append(("BLOCK", f"state.md: size without Resume first: {rest} vs {STATE_LIMIT}"))
+    if len(resume) > RESUME_LIMIT:
+        findings.append(("BLOCK", f"state.md: Resume first size: {len(resume)} vs {RESUME_LIMIT}"))
+    return findings
+
+
+def check_fixes(text):
+    findings = []
+    titles = [title for _, level, title in headings(text) if level == 2]
+    for title in FIX_SECTIONS:
+        if titles.count(title) != 1:
+            findings.append(("BLOCK", f"fixes.md: section: {title!r} count {titles.count(title)} vs 1"))
+    if findings:
+        return findings
+    numbers = Counter()
+    for title in FIX_SECTIONS:
+        for line in section(text, title)[2].splitlines():
+            if not ROW_RE.match(line):
+                continue
+            parts = cells(line)
+            match = NUMBER_RE.match(parts[0])
+            if not match:
+                findings.append(("BLOCK", f"fixes.md: {title} row: number cell: {parts[0]!r} vs '<n>' or '<n> (dup)'"))
+            else:
+                numbers[int(match.group(1))] += 1
+            if len(parts) != 6:
+                findings.append(("BLOCK", f"fixes.md: {title} row {parts[0]}: cells: {len(parts)} vs 6"))
+            if title != "Closed" and len(line.rstrip()) > ROW_LIMIT:
+                findings.append(("BLOCK", f"fixes.md: {title} row {parts[0]}: length: {len(line.rstrip())} vs {ROW_LIMIT}"))
+    baseline = BASELINE_RE.search(text)
+    if not baseline:
+        findings.append(("BLOCK", "fixes.md: baseline line: 0 vs 1"))
+    else:
+        wanted = Counter(int(number) for number in re.findall(r"\d+", baseline.group(1)))
+        missing = wanted - numbers
+        if missing:
+            findings.append(("BLOCK", f"fixes.md: baseline numbers missing: {sorted(missing.elements())} vs none"))
+    return findings
+
+
+def check_entry(item):
+    number, _, _, title, body = item
+    findings = []
+    match = HEADING_RE.match(title)
+    if not match:
+        findings.append(("BLOCK", f"journal.md entry {number}: heading grammar: {title[:60]!r} vs "
+                         "'N. <unit> - <slug> - <YYYY-MM-DD> <HH:MM>[-<HH:MM>] CT'"))
+    if len(title) > HEADING_LIMIT:
+        findings.append(("BLOCK", f"journal.md entry {number}: heading length: {len(title)} vs {HEADING_LIMIT}"))
+    unit = match.group(2) if match else ""
+    required = ["- Result:", "- Next:"]
+    if unit in ORIENT_UNITS:
+        required.append("- Orient:")
+    if unit in VERIFICATION_UNITS:
+        required.append("- Verification:")
+    for field in required:
+        if not re.search("^" + re.escape(field), body, re.M):
+            findings.append(("BLOCK", f"journal.md entry {number}: missing line: {field} vs present"))
+    counted = body
+    if unit in QUOTE_UNITS:
+        counted = "\n".join(line for line in body.splitlines() if not line.startswith(">"))
+    limit = BODY_LIMITS.get(unit, BODY_LIMIT)
+    if len(counted) > limit:
+        findings.append(("BLOCK", f"journal.md entry {number}: body length: {len(counted)} vs {limit}"))
+    return findings
+
+
+def check(root, entry_number=None):
+    """Every recording rule; (cls, message) pairs. Raises OSError/ValueError only for roadmap or journal."""
+    findings = []
+    roadmap = read(root, ROADMAP)
+    journal = read(root, JOURNAL)
+    items = entries(journal)
+    if not items:
+        raise ValueError("no numbered journal entries found")
+    raw, _ = checkpoint_raw(root)
+    if len(raw) > BUDGET:
+        cls = "NEEDS USER" if unit_of(items[-1]) in QUOTE_UNITS else "BLOCK"
+        findings.append((cls, f"bootstrap checkpoint: budget: {len(raw)} vs {BUDGET}"))
+    for part, builder in (("authority", authority_chunks), ("operator", operator_chunks)):
+        size = len(assemble(builder(root)))
+        if size > BUDGET:
+            findings.append(("NEEDS USER", f"bootstrap {part}: budget: {size} vs {BUDGET}"))
+    rows = [line for line in section(roadmap, "Carried fixes")[2].splitlines() if ROW_RE.match(line)]
+    if rows:
+        findings.append(("BLOCK", f"roadmap.md: Carried fixes rows: {len(rows)} vs 0"))
+    try:
+        findings += check_state(read(root, STATE))
+    except OSError:
+        findings.append(("BLOCK", "state.md: missing: 0 vs 1"))
+    try:
+        findings += check_fixes(read(root, FIXES))
+    except OSError:
+        findings.append(("BLOCK", "fixes.md: missing: 0 vs 1"))
+    target = entry(journal, entry_number) if entry_number is not None else items[-1]
+    findings += check_entry(target)
+    return findings
+
+
 def append_line(path, text, now=None):
     """Append one ledger line stamped from the clock (America/Chicago), never from memory."""
     from datetime import datetime
@@ -271,6 +392,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     boot = sub.add_parser("bootstrap")
     boot.add_argument("part", nargs="?", default="checkpoint", choices=("checkpoint", "authority", "operator"))
+    checker = sub.add_parser("check")
+    checker.add_argument("--entry", type=int, default=None)
     for command in ("headings", "section", "journal", "append"):
         child = sub.add_parser(command)
         child.add_argument("path", type=Path)
@@ -284,6 +407,13 @@ def main():
     try:
         if args.command == "bootstrap":
             output = bootstrap(args.root, args.part)
+        elif args.command == "check":
+            findings = check(args.root, args.entry)
+            for cls, message in findings:
+                print(f"{cls} {message}")
+            if not findings:
+                print("check: ok")
+            return 1 if any(cls == "BLOCK" for cls, _ in findings) else 0
         elif args.command == "append":
             try:
                 append_line(args.root / args.path, args.text)
@@ -303,8 +433,10 @@ def main():
                 output = render(args.path, journal_tail(text, args.count))
         print(output)
     except (OSError, ValueError) as error:
-        parser.exit(1, f"Context reader failed: {error}. Read the canonical file directly.\n")
+        code = 2 if args.command == "check" else 1
+        parser.exit(code, f"Context reader failed: {error}. Read the canonical file directly.\n")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
