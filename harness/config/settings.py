@@ -65,6 +65,20 @@ class Settings(BaseSettings):
 
     # --- phase 3: paper executor -------------------------------------------------------
     exec_period_s: int = 15
+    #: Fix 78c, the user's ruling of 2026-09-16 07:20 CT (journal 253, decisions packet item
+    #: 18): the wall-clock a single step may spend walking the counterfactual tape of cancelled
+    #: pending rows on *clean* tickers -- the pre-check's walk and the cancelled rows that still
+    #: take the per-row path. Rows the budget does not reach are deferred whole: nothing of
+    #: theirs is written and the next loop's rotation resumes where this one stopped, so the
+    #: budget moves only *when* a row walks, never what it writes.
+    #: Never budgeted, by the same ruling: the dirty-market accrual and close batch, open
+    #: orders, the tape read, the books and the interval ledgers -- so `nw_dirty_seconds`
+    #: accrues exactly as it did before the budget existed.
+    #: 2000 ms is the measured headroom, not a guess: at 9,863 pending rows on 140 tickers
+    #: (journal 251) the unbudgeted phases cost 1.3-2.0 s of tape read, 1.6-5.3 s of set-based
+    #: statements and the rest of a 12.0-13.8 s loop, against a 7,500 ms p95 bound at a 15 s
+    #: period, and the walk plus per-row residual is what has to fit in what is left.
+    exec_nw_budget_ms: int = 2000
     #: Variants the executor places paper orders for (D10). "sharp_two_sided" only starts
     #: producing intents once pre-registration amendment 3 registers it (U2).
     exec_variants: list[str] = Field(

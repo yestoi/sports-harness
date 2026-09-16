@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, NamedTuple, Sequence
 
-from sqlalchemy import bindparam, select, text, update
+from sqlalchemy import bindparam, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -1089,6 +1089,31 @@ def close_intervals(session: Session, table: str, venue_market_ids: list[int], t
         return
     session.execute(_CLOSE_INTERVAL[table],
                     {"p_vms": list(venue_market_ids), "p_ts": ts, "p_replay": replay})
+
+
+def newest_dirty_onset(session: Session, venue_market_id: int, replay: bool,
+                       now: datetime) -> datetime | None:
+    """When this market most recently became dirty, or None if it never has (fix 78c).
+
+    §0.10 makes `market_dirty_intervals` the record of dirtiness, so its newest `started_at`
+    is the instant a recovering market went dirty -- the instant the user's condition says a
+    deferred row's walk must stop at before its tracks are re-anchored. The row is read whether
+    it is still open or already closed, because `_advance_books` closes it in the very step
+    that recovers the market, so the recovery branch that needs the onset always looks at a row
+    that has just been given an `ended_at`. The book itself keeps no such instant: `BookState`
+    carries the gap verdict, not the moment the gap opened.
+
+    Bounded on `started_at <= now` for the same reason `open_interval_market_ids` is (review
+    batch A, I-1): an interval that had not started at this step's own instant is not this
+    step's onset. An ORM `select` rather than one of this module's `text()` statements so that
+    the interval row this same step has just added is flushed and visible to it.
+    """
+    model = _MODELS[_DIRTY]
+    return session.execute(
+        select(func.max(model.started_at))
+        .where(model.venue_market_id == venue_market_id,
+               model.replay == replay,
+               model.started_at <= now)).scalar()
 
 
 def open_interval_market_ids(session: Session, table: str, replay: bool,

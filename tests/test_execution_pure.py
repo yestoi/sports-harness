@@ -37,7 +37,10 @@ def _executor(books: dict) -> tuple[Executor, list]:
     captured: list = []
     executor = Executor.__new__(Executor)
     executor.exec_settings = NS()
-    executor.settings = NS(exec_period_s=15)
+    # `exec_nw_budget_ms` beside `exec_period_s` because `_simulate` reads it once per
+    # step for fix 78c's walk budget; a frame driven by hand never spends it (the walk
+    # and the per-row step are what charge it), so any value leaves these cases alone.
+    executor.settings = NS(exec_period_s=15, exec_nw_budget_ms=2000)
     executor.books = books
     # `uses_the_simulator` (`harness/execution/gateway.py:851-858`) reads
     # `getattr(gateway, "simulates_fills", None)` and raises `TypeError` unless it is a `bool`:
