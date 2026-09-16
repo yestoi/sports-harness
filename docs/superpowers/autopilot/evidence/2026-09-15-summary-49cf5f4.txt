@@ -1,0 +1,9 @@
+PASS build: page 49cf5f4 vs deploy 49cf5f4
+PASS sections: no section errors
+PASS page_time: / 0.3s, /api/summary 0.4s
+PASS run_id: page 19406 vs sql 19406
+PASS ws_last_event: page age 5s vs sql 4s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4897134
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)

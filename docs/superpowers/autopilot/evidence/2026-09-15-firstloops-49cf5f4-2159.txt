@@ -1,0 +1,13 @@
+now|2026-09-16 02:57:41.94668+00
+heartbeat|1|36864|2026-09-16 02:55:40.203811+00|24738|51411|3727|8||4.5
+loop_ms since restart|0|||
+nw_pending|9732.000000|2026-09-16 02:54:55.203827+00
+errors since restart|0
+tape after|179101877|2026-09-16 02:57:39.557+00
+ERROR:  relation "pipeline_runs" does not exist
+LINE 1: ...ct 'recorder', id, started_at, status, build from pipeline_r...
+                                                             ^
+--- read 2|2026-09-16 02:59:33.420618+00
+heartbeat|1|36867|2026-09-16 02:59:09.120478+00|18351|130527|3734|0||4.5
+nw_pending|9732.000000|2026-09-16 02:56:24.13088+00
+errors since restart|0
