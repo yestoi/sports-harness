@@ -483,7 +483,9 @@ def test_ws_real_sink_writes_metrics_and_connect_event(db_session):
     gaps_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.gaps").one()
     assert gaps_row.value == 1
     lag_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.sink_lag_s").one()
-    assert lag_row.value is not None
+    # Fix 81: the newest row on this tape is the delta stamped 1789234001000 ms, 1601 s *ahead*
+    # of NOW, so the end-to-end sample is the floor -- not the -1601.0 this wrote before.
+    assert lag_row.value is not None and lag_row.value >= 0
     # Fix 77 round 1 (M-4): through the real sink too -- this tape had a genuine gap and no
     # subscription update, so both of the fix's counters read zero.
     advances_row = db_session.query(MetricSample).filter_by(source="ws", name="ws.seq_advances_accounted").one()
@@ -503,6 +505,9 @@ def test_sink_lag_floors_at_zero_when_the_venue_clock_runs_ahead(db_session):
     0.0, and a normal trade behind `now` must still report its real, positive lag."""
     factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
     sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+    # The unchanged branch of the same expression: nothing written yet, so there is no lag to
+    # report at all and `_write_ws_metrics` leaves the sample out of the batch.
+    assert sink.sink_lag_s(NOW) is None
 
     ahead_ms = int(NOW.timestamp() * 1000) + 142  # matches production's -0.142s minimum
     trade_ahead = {"type": "trade", "sid": 1, "seq": 1, "msg": {
