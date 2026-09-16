@@ -1,6 +1,6 @@
 # Context Hygiene Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task, inline in the implementing session. In this repository a project hook confines every subagent to a read-only Bash sandbox of the checkout, so subagents cannot implement tasks here; they serve only as the read-only reviewer of Task 10. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the autopilot loop's per-wake context fit the harness, make its recording rules executable, move fix rows and history out of the current-state files, lower the compaction threshold with a measurement, compress evidence images, and prune dead instruction text, all while the loop is stopped.
 
@@ -1583,24 +1583,31 @@ import context
 state = context.read(context.ROOT, context.STATE)
 journal = context.read(context.ROOT, context.JOURNAL)
 ledgers = "".join(open(p).read() for p in glob.glob('.superpowers/sdd/*/progress.md'))
-receipts = set()
-last_date = None
-# full paths, brace groups (evidence/<prefix>{a,b}.txt) and shorthands (", -deploy-full-1228.txt") in reading order
-for match in re.finditer(r'evidence/([\w-]+)\{([^}]+)\}\.txt|evidence/([\w-]+)\.txt|(?<=[ ,(])-([\w-]+)\.txt', state):
-    if match.group(1):
-        for part in match.group(2).split(','):
-            receipts.add(f"{match.group(1)}{part.strip()}.txt")
-        last_date = match.group(1)[:10]
-    elif match.group(3):
-        receipts.add(f"{match.group(3)}.txt")
-        last_date = match.group(3)[:10]
-    elif match.group(4) and last_date:
-        receipts.add(f"{last_date}-{match.group(4)}.txt")
-receipts |= set(re.findall(r'\b\d{8}T\d{6}Z-[0-9a-f]{7}\b', state))
+def names(text):
+    """Evidence file names in text: full paths, brace groups (evidence/<prefix>{a,b}.txt) and
+    shorthands (", -deploy-full-1228.txt") in reading order, plus release stamps."""
+    found = set()
+    last_date = None
+    for match in re.finditer(r'evidence/([\w-]+)\{([^}]+)\}\.txt|evidence/([\w-]+)\.txt|(?<=[ ,(])-([\w-]+)\.txt', text):
+        if match.group(1):
+            for part in match.group(2).split(','):
+                found.add(f"{match.group(1)}{part.strip()}.txt")
+            last_date = match.group(1)[:10]
+        elif match.group(3):
+            found.add(f"{match.group(3)}.txt")
+            last_date = match.group(3)[:10]
+        elif match.group(4) and last_date:
+            found.add(f"{last_date}-{match.group(4)}.txt")
+    return found | set(re.findall(r'\b\d{8}T\d{6}Z-[0-9a-f]{7}\b', text))
+receipts = names(state)
+journal_names = names(journal)   # the journal cites the same files in brace form; compare expanded names
+ledger_names = names(ledgers)
 print('| receipt | in journal | in a ledger |')
 print('|---|---|---|')
 for item in sorted(receipts):
-    print(f'| {item} | {"yes" if item in journal else "NO"} | {"yes" if item in ledgers else "NO"} |')
+    in_journal = item in journal_names or item in journal
+    in_ledger = item in ledger_names or item in ledgers
+    print(f'| {item} | {"yes" if in_journal else "NO"} | {"yes" if in_ledger else "NO"} |')
 PY
 grep -c '| NO | NO |' /tmp/context-hygiene-receipts.md
 ```
