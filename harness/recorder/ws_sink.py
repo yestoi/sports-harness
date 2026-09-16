@@ -359,8 +359,9 @@ class WsSink:
 
     def sink_lag_s(self, now: datetime) -> float | None:
         """Seconds between `now` and the newest tape row this sink has actually written, or
-        None before it has written one."""
-        return None if self._last_event_ts is None else (now - self._last_event_ts).total_seconds()
+        None before it has written one. Floored at zero: the venue clock can run a fraction of
+        a second ahead of the host clock, and a negative lag is not a real one."""
+        return None if self._last_event_ts is None else max(0.0, (now - self._last_event_ts).total_seconds())
 
     def write_metrics(self, ts: datetime, samples) -> None:
         """`ws.*` metric_samples through this sink's own session -- the brief's "through the

@@ -496,6 +496,32 @@ def test_ws_real_sink_writes_metrics_and_connect_event(db_session):
     assert event.summary == "connected"
 
 
+def test_sink_lag_floors_at_zero_when_the_venue_clock_runs_ahead(db_session):
+    """Fix 81 (fixes.md row 81): production saw ws.sink_lag_s negative 66 times overnight
+    because a venue `ts_ms` a fraction of a second ahead of the host clock made
+    `(now - _last_event_ts)` negative. A trade whose `ts_ms` is ahead of `now` must floor at
+    0.0, and a normal trade behind `now` must still report its real, positive lag."""
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    sink = WsSink(factory, commit_every=100, commit_interval_s=3600.0)
+
+    ahead_ms = int(NOW.timestamp() * 1000) + 142  # matches production's -0.142s minimum
+    trade_ahead = {"type": "trade", "sid": 1, "seq": 1, "msg": {
+        "trade_id": "ahead-1", "market_ticker": "K1", "yes_price_dollars": "0.4000",
+        "count_fp": "5.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": ahead_ms}}
+    sink.handle(trade_ahead, NOW)
+    sink.flush()
+    assert sink.sink_lag_s(NOW) == 0.0
+
+    behind_ms = int(NOW.timestamp() * 1000) - 5000  # a normal venue clock, 5s behind `now`
+    trade_behind = {"type": "trade", "sid": 1, "seq": 2, "msg": {
+        "trade_id": "behind-1", "market_ticker": "K1", "yes_price_dollars": "0.4000",
+        "count_fp": "5.00", "taker_side": "yes", "is_block_trade": False, "ts_ms": behind_ms}}
+    sink.handle(trade_behind, NOW)
+    sink.flush()
+    assert sink.sink_lag_s(NOW) == 5.0
+    sink.close()
+
+
 def test_refresh_offset_keeps_previous_value_on_fetch_error():
     class _RaisingHttp:
         def get(self, *_a, **_kw):
