@@ -1,0 +1,17 @@
+== 747791c judge-after 2026-09-16 10:27:20 CT (restart 10:02-10:04 CT)
+hb 10:27:12 loops 39308 last_ms 6737 p95 6737 skipped 4110 open 18 dirty 64 err null ws_last_event_age_s 8
+loop_ms since restart n 21 min 5667 median 6153 p95 7491 max 26867
+p95_samples 27344,27344,27344,6396,6396,6396,6396,6396,6356,6356,6396,6405,6396,6396,6405,6586,7321,6655,6655,6655,6655
+loops 5890,5993,6028,6290,5667,6134,6267,5786,5848,5972,6193,5900,6175,6063,26867,6655,7491,6153,6341,6498,6457
+skips_per_loop 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+untimed_loops 1 of 21
+sink_lag n 25 min 0.047 max 0.901 negatives 0
+deferred 8254,8652,8232,8387,8048,8094,7644,7801,7673,8163,7502,8189,8354,9079,7291,7961,7962,7944,6483,6551,7300
+nw_pending_last 12983 book_errors 0
+runs 20860:747791c:skipped 20859:747791c:ok 20858:747791c:skipped
+ws_events_since_restart connect 1 disconnect 0 gap 0 check_failed 0
+== slow loops and placements
+loop 09:48:51 loop_ms 30093 placed 150 intents 682 cancelled 0
+loop 10:04:42 loop_ms 5890 placed 150 intents 1029 cancelled 0
+loop 10:19:27 loop_ms 26867 placed 150 intents 343 cancelled 0
+orders_placed_by_minute 09:48:150 10:03:150 10:19:150

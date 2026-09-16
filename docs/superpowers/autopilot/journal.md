@@ -2991,3 +2991,16 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0.
 - Result: deployed and healthy.
 - Next: verify (judge-after 10:27 CT), then Orient from files (expected idle until the daily line Thu 09:00 CT and the game-window acceptance Thu 18:30/19:15 CT).
+
+## 258. verify - 747791c judge-after PASS; the slow loops are placement waves; idle until Thu - 2026-09-16 10:27-10:34 CT
+
+- Orient: rule 3 (verify: the 10:27 CT cron d807e776 fired; reminder 2026091603 consumed), twenty minutes after the 10:02-10:04 CT full restart.
+- Evidence: `evidence/2026-09-16-fix81-judgement-1027.txt`.
+- Verification: loop-metrics row PASS: heartbeat `p95_loop_ms` 6,737 ms at 10:27:12 CT against 7,500; the rolling p95 read 27,344 ms for the three samples after the restart's first loop, then 6,356-7,321. `loops_skipped` 4,109 → 4,110 (the restart's first loop). Row 81's acceptance holds: 25 `ws.sink_lag_s` samples since the ws_connect, min 0.047 s, max 0.901 s, none negative; `ws_last_event` age 8 s; one ws_connect, no disconnect, no gap, no `check_failed` since the restart. `metric_samples_negative_24h` remains a deferred judge (about 02:10 CT Thu, read at the Thu daily line).
+- Distribution since the restart: 21 loops, min 5,667, median 6,153, p95 7,491, max 26,867 ms; `book_errors` 0; `last_error` null; `nw_pending` 12,983; `walk_deferred_n` 6,483-9,079 a loop (the rows each loop leaves to the rotation; `walk_tickers_n` 65-111, so every ticker is walked about every second loop).
+- Anomaly explained: the two slow loops on the new builds, 30,093 ms at 09:48:51 CT and 26,867 ms at 10:19:27 CT, each placed 150 paper orders (`exec.placed` 150, intents 682 and 343) with only 4.1-4.5 s in the four phase timers: order placement is outside the timers, and a 150-order wave costs 20-25 s and about two skipped ticks. The 10:04:42 CT wave of 150 ran 5,890 ms, so the cost is not constant. Not a defect of fix 78 and not a verify failure (the row's p95 holds); fixes.md row 82 added and moved to Watch as phase work (`exec.phase_place_ms`, an open-orders timer), for the packet.
+- Orient after the pass: hotfix none (row 81 deferred, row 82 Watch); deploy trigger empty (main 747791c = the runtime); verify nothing pending; operate nothing due until the Thu 09:00 CT line; phases 6D/4.6/6E/6C wait for the game window (Thu 18:30 CT NCAAF, 19:15 CT NFL): idle.
+- Wakeups armed: cron Thu 08:57 CT (daily line, row 81 judge, R3 first-of-day notification test) and Thu 18:25 CT (game-window acceptance prep: 6D acceptance rows, 4.6 T18b/T19 at the first NFL window); durable reminders 2026091701 and 2026091702. The R4 deploy window closes about 14:30 CT Thu.
+- Dispatches: 0.
+- Result: PASS.
+- Next: idle, wakeup Thu 08:57 CT.
