@@ -25,9 +25,9 @@ Updated 2026-09-15 20:12 CT by the user-directed context-hygiene session (branch
 
 Journal 224 item 17, as it stands at the stop:
 
-1. Done: 7c3d750 (journal 233/234) and f7a1ccb (journal 237/238) released and verified.
+1. Done: 7c3d750 (batch A, batch B per journal 224 item 9, fix 74; journal 233/234) and f7a1ccb (journal 237/238) released and verified.
 2. Fix 78 part 2 (Resume first): review, suite, rebase, `--ff-only`, app-only release, p95 re-judge.
-3. Verify after each release: journal 219's deferred rows (listed there), item 12's exec-health windows on 0d04804 (02:30-06:30 CT vs ca30ed1's 23:38-00:23 CT and Monday's quiet hours), item 16's tape-gap read for 23:34-23:37 CT Sep 14 (journal 229: a clean stop writes no gap row), durable re-reads of rows 49 and 68, the 6B by-cause row, the `fixes.md` Watch reads (56 dup: `positions` and order 157; 70: the first live departure).
+3. Verify after each release: journal 219's deferred rows (listed there, including the c1066b5-era orphan-intents read), item 12's exec-health windows on 0d04804 (02:30-06:30 CT vs ca30ed1's 23:38-00:23 CT and Monday's quiet hours), item 16's tape-gap read for 23:34-23:37 CT Sep 14 (journal 229: a clean stop writes no gap row), durable re-reads of rows 49 and 68, the 6B by-cause row, the `fixes.md` Watch reads (56 dup: `positions` and order 157; 70: the first live departure).
 4. Operate: daily 09:00 CT line; the Tue 09:30 CT futures snapshot check (the job runs 09:00 CT; confirm it ran after the reboot); the storage retention proposal is written (item 11; `reports/2026-09-15-storage-retention-proposal.md`, journal 230; the user decides by 2026-09-22; nothing executed). 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT). The user does the LAN files (roadmap User-side TODOs).
 
 ## Active units

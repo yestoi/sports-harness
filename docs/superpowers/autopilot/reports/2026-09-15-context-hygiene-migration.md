@@ -290,4 +290,34 @@ record is not lost; the repair entry cites it). Not named by any journal entry: 
 
 ## 5. Reviewer findings
 
-(filled by the independent read-only reviewer in Task 10)
+Independent read-only reviewer (a general-purpose subagent in the hook sandbox), dispatched 2026-09-15 20:5x CT against
+`fixes.md`, `state.md` and this report's sections 2 and 3. Verdicts: Rows: no unreachable fact; every Open and Watch row
+carries `roadmap.md@c962036:<line>` matching its original line and names a symptom before its pointers; all at or under
+600 characters (max 600, row 51). Closed rows: 48 of 49 byte-identical to the original line, row 71 equal with cells 6
+and 7 joined by one space, the first 56 in Closed and `56 (dup)` in Watch as ruled. Resume first: carries every old
+Stopping point bullet, the 35 min batch-clock ruling and the deploy-trigger note.
+
+Findings and dispositions:
+
+- Row 56 (dup) Deploy said "rode c1066b5 (journal 218)"; journal 218 does not name fix 56 or revision 0008. Reworded:
+  "deployed by the first full release after it (c1066b5, journal 218)"; the merge fact stays on journal 174 and the
+  original row. Applied.
+- Row 65 Deploy cited "state.md 2026-09-15", whose sentence now lives in this report's section 2. Reworded to cite the
+  migration classification. Applied.
+- Row 70 Deploy: journal 233 names the `gone` re-derivation only as a review item; the ruling is journal 224 item 4, cited
+  in the Change cell. Two hops, adequate; not changed.
+- Rows 50, 51, 46, 78: the judge-after time, the audit counts, the `deploy/nas.env` note, the part-1 figures and the
+  ceiling clause rest on the `roadmap.md@c962036:<line>` pointer and journals 242-246. Reachable by design; not changed.
+- state.md: the fix 78 part 2 dispatch parameters ("chase +60, timeout +90") appear in neither the new state nor journal
+  245; they are in the hotfix ledger the Active units bullet names (`.superpowers/sdd/hotfix-2026-09-15/progress.md`, chase
+  17:59 CT, timeout 18:29 CT), and the implementer finished at 17:32 CT. Recorded here; not restored to state.
+- state.md: "c1066b5-era orphan intents" was not nameable through "journal 219's deferred rows"; the phrase is restored
+  in Order of work item 3. Applied.
+- state.md: batch B's item list (application_name per service, drain by listed pid and stopped-service names, partition
+  children as bulk, healer lock_timeout, dump-in-progress refusal) is journal 224 item 9, not 233; Order of work item 1
+  now points at journal 224 item 9. Applied.
+- state.md: "12:46 CT wakeup consumed (journal 241)" (241 does not name 12:46: words kept, nothing lost); the landing
+  times of the verify.md:514 comment, the audit annotation, the runbook note and amendment 0.19 ("08:00 CT") are not in
+  journal 224. Those are resolved facts; this inventory row (section 3, Rulings landed) is now their record. Not restored.
+- Section 4's `-verify-6d-*.txt` glob covers `2026-09-15-verify-6d-readbacks-0126.txt` and `-rows-0126.txt`, both named
+  in journal 221. Noted.
