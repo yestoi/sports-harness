@@ -931,16 +931,23 @@ class Executor:
                                       unread | deferred, now, stats, heartbeat, budget)
         deferred_rows: set[int] = set(pending.deferred)
         walked_here: set[int] = set()
+        #: Cancelled rows this loop has actually run the per-row path for. The first one is
+        #: always run, whatever the budget says (see the deferral below).
+        residual_n = 0
         for row in working:
             outcomes[row.id] = (row.status, row.filled_contracts)
             if row.id in pending.settled:
                 continue
             if row.id in pending.deferred:
-                # The rotation did not reach this row this loop. Nothing of its is written --
-                # not its cursor, its print floor, its ledger, `nw_done` or the version stamp
-                # -- and the next loop's rotation resumes where this one stopped. It is the
-                # same "sit the loop out" CR-4 already gives a ticker whose tape went unread,
-                # applied to a row whose walk this loop could not afford.
+                # The rotation did not reach this row this loop. Nothing this loop's walk or
+                # its batches would have written is written -- not its cursor, its print
+                # floor, its ledger, `nw_done` or the version stamp -- and the next loop's
+                # rotation resumes where this one stopped. (`_tape`'s own `_note_backoff`
+                # still clears a stale retry position on a ticker it read, deferred row or
+                # not; that write happens with the budget and without it, so it moves no
+                # value either way -- review rev-fix-78c, M2.) It is the same "sit the loop
+                # out" CR-4 already gives a ticker whose tape went unread, applied to a row
+                # this loop could not afford.
                 continue
             if row.ticker in unread or row.ticker in deferred:
                 # Unread: this ticker's tape read failed (fix 22: a statement timeout is the one
@@ -957,18 +964,30 @@ class Executor:
             # crossing, re-anchor, or could not be pre-checked. `per_row_n` and the time they
             # cost are published so the residual loop time can be attributed to a phase.
             market = markets.get(row.venue_market_id)
-            if (budget.exhausted() and row.id not in pending.walked
+            if (budget.exhausted() and residual_n
                     and row.status not in store.OPEN_STATUSES and not row.nw_done
                     and not _expiring(row, now)
                     and not (market is not None and market.dirty(now, s))):
-                # Fix 78c: a cancelled clean-ticker row the pre-check declined to walk (a
-                # cursor `_sim_book` would have to query a historical book for, a state that
-                # would not load) costs the same per-row time as any other and is budgeted the
-                # same way. A row the pre-check *did* walk is never deferred here, whatever the
-                # budget says: its walk has already happened, and a fill it found has to be
-                # persisted on the loop that found it. Neither is an open order, a dirty-market
-                # row or a row at its expiry -- the three populations the ruling keeps out of
-                # the budget entirely.
+                # The user's ruling budgets "the clean-ticker walk **and the cancelled per-row
+                # residual**", so a cancelled clean-ticker row the budget can no longer afford
+                # is deferred here exactly as the rotation defers one it never reached --
+                # whether or not the pre-check already walked it (controller ruling, fix round
+                # 1, review I4(a)). Deferring a walked row is safe and costs only the walk: the
+                # row's savepoint never opened, nothing of it has been written, and the next
+                # loop walks the same tape from the same cursor and finds the same fill.
+                # Never here: an open order, a dirty-market row or a row at its expiry -- the
+                # three populations the ruling keeps out of the budget entirely -- and never a
+                # row this loop's batches have already written (`pending.settled`, above).
+                #
+                # `residual_n` is the progress guarantee, and it is why the deferral is not
+                # simply `budget.exhausted()`: at any real backlog the rotation spends the whole
+                # budget before the per-row loop begins, so a bare test would defer every
+                # cancelled per-row row on every loop and a row whose walk finds a fill would
+                # never be written at all -- the fill delayed indefinitely rather than moved.
+                # One such row a loop is therefore always run, which is the same "a row that has
+                # begun is finished" overrun the walk allows, moved to the phase that costs
+                # 40-110 ms a row instead of 0.5-0.8 ms. The loop's budgeted time is the budget
+                # plus one per-row row, and the population drains in rotation order.
                 deferred_rows.add(row.id)
                 stats.walk_deferred_n += 1
                 continue
@@ -979,6 +998,8 @@ class Executor:
                 PER_ROW_OPEN if row.status in store.OPEN_STATUSES else PER_ROW_OTHER)
             stats.per_row_causes[cause] = stats.per_row_causes.get(cause, 0) + 1
             walked_here.add(row.id)
+            if row.status not in store.OPEN_STATUSES:
+                residual_n += 1
             try:
                 with session.begin_nested():
                     outcomes[row.id] = self._simulate_order(
@@ -995,13 +1016,17 @@ class Executor:
                     # Open orders are unbudgeted by the ruling, so their time is measured but
                     # never charged; every other per-row row is part of what the budget rations.
                     budget.spend(elapsed)
-        # The rows still waiting for a walk, carried to the next loop: what this loop deferred,
-        # less anything that has since been walked, and pruned to the rows this loop actually
-        # holds so a finished or vanished order cannot sit in the set for the life of the
-        # process. The recovery branch reads it, and nothing else does.
+        # The rows still waiting for a walk, carried to the next loop: what this loop
+        # deferred, less the rows whose walk this loop actually persisted, and pruned to the
+        # rows this loop holds so a finished or vanished order cannot sit in the set for the
+        # life of the process. A row the pre-check walked and the per-row stage then deferred
+        # stays in the set -- its walk was thrown away -- and so does a row on a dirty market,
+        # whose accrual moves no cursor. The recovery branch reads this set, and nothing else
+        # does.
         live = {row.id for row in working if not row.nw_done}
+        persisted = (pending.walked - deferred_rows) | walked_here
         self._nw_deferred = frozenset(
-            ((set(self._nw_deferred) | deferred_rows) - pending.walked - walked_here) & live)
+            ((set(self._nw_deferred) | deferred_rows) - persisted) & live)
         heartbeat["nw_deferred"] = len(self._nw_deferred)
         return outcomes
 
@@ -1085,8 +1110,9 @@ class Executor:
         #: the rotation and are never deferred.
         by_ticker: dict[str, list] = {}
         expiring: list = []
-        #: The dirty onset per market, read at most once a loop by the recovery branch.
-        onsets: dict[int, datetime | None] = {}
+        #: The dirty onset per (subscription, anchor position), read at most once a loop by
+        #: the recovery branch (`_pre_onset_walk`).
+        onsets: dict[tuple, datetime | None] = {}
         for row in working:
             if row.ticker in held or row.status in store.OPEN_STATUSES:
                 continue
@@ -1106,11 +1132,18 @@ class Executor:
             else:
                 by_ticker.setdefault(row.ticker, []).append(row)
         # The user's condition: expiry, version and lagging checks run on every row every loop.
-        # These rows are walked first and unbudgeted, so `nw_done` lands on the same loop it
-        # landed on before the budget existed however little of the budget is left.
+        # These rows are walked first and are never deferred, so `nw_done` lands on the same
+        # loop it landed on before the budget existed however little of the budget is left.
+        # Their time is charged to the budget all the same (review rev-fix-78c, I4): fix 22's
+        # lagging rule keeps a past-expiry row on a lagging ticker open, so this cohort can
+        # grow without bound, and an uncharged cohort would put the whole pre-fix walk cost
+        # back outside the budget. Charged, it shortens the rotation instead of lengthening
+        # the loop.
         for row in expiring:
+            row_started = self._monotonic()
             self._walk_pending(session, row, bases, recovering, tape, lagging, now, onsets,
                                pending, quiet, moves)
+            budget.spend(self._monotonic() - row_started)
         # ... and then the rotation, ticker by ticker from where the last loop stopped, with
         # the budget checked between rows. A ticker may be left half walked; the rotation
         # resumes at the row it stopped on, not at the top of that ticker, so the rows behind
@@ -1198,6 +1231,12 @@ class Executor:
         the row it stopped on: the rows before it were walked last loop and the ones from it
         were not. The cursor names one ticker, so when the rotation later comes round to that
         ticker again -- on a loop that stopped somewhere else -- it walks it from the top.
+
+        The scan leans on `store.working_orders`' own `order by o.id`: with the rows in id
+        order the first row whose id is not below the cursor is the row the budget stopped on.
+        Out of that order it can only resume *early* -- never past a row -- so the rotation
+        would waste a walk rather than starve one, which is why it is a scan and not a bisect
+        (review rev-fix-78c, M4).
         """
         if self._nw_rotation is None or self._nw_rotation[0] != ticker:
             return 0
@@ -1349,34 +1388,28 @@ class Executor:
                         onsets: dict) -> FillResult | None:
         """The clean stretch a deferred row still owes, walked up to the dirty onset (fix 78c).
 
-        The onset is the newest `market_dirty_intervals.started_at` for this market
-        (`store.newest_dirty_onset`). That row is §0.10's own record of when the market went
-        dirty and is written by `_advance_books` from the same verdict the recovery branch is
-        now unwinding, so it is the instant by construction -- where the book's gap event is
-        only the event that *caused* the verdict and carries the recorder's clock rather than
-        the loop's. A market with no interval row at all (a replay of a window whose ledger was
-        never written) gets no pre-onset walk: without an onset there is no stretch to bound.
+        Two reads, each inside a savepoint of its own so a failure costs this row its walk and
+        not the step its transaction:
 
-        The book is the one this track's own cursor sat at -- `load_book_at`, today's historical
-        branch of `_sim_book`, not the current base, which is a book from after the gap. A
-        track that has consumed no delta at all has no cursor, and its position is its
-        placement. Either read failing, or there being no book that early, leaves the row to
-        re-anchor exactly as it did before this fix: each read takes a savepoint of its own so
-        a failure costs this row its walk and not the step its transaction.
+        * the book this track's own cursor sat at -- `load_book_at`, today's historical branch
+          of `_sim_book`, not the current base, which is a book from after the gap. A track that
+          has consumed no delta has no cursor, and its position is its placement.
+        * the first gap on that book's own subscription after the position it accounts for
+          (`store.first_gap_ts(book.sid, book.gap_check_id)`), whose `ts` is the onset.
+
+        The onset is the gap's instant rather than `market_dirty_intervals.started_at`, which is
+        the instant a loop *noticed* the gap and is at or after it: the stretch between them is
+        the post-gap tape the dirty verdict exists to distrust, and applying it here -- to a
+        deferred row and to no other row -- is exactly the difference the budget may not make
+        (review rev-fix-78c, I2). It is the *first* such gap, not the newest dirty interval, so
+        a row deferred across two dirty cycles stops at the first one and cannot walk through
+        the earlier dirty stretch as though the market had been clean (I3). `gap_check_id` is
+        the position the anchor accounts for on either anchor kind, and `book._GAP_AFTER` -- the
+        live loop's own dirty test -- is the same predicate.
+
+        No book that early, or no gap after it, leaves the row to re-anchor exactly as it did
+        before this fix.
         """
-        market_id = row.venue_market_id
-        if market_id not in onsets:
-            try:
-                with session.begin_nested():
-                    onsets[market_id] = store.newest_dirty_onset(session, market_id,
-                                                                 self.replay, now)
-            except Exception:  # noqa: BLE001 - one row's walk, not the step
-                log.debug("reading the dirty onset for market %s failed", market_id,
-                          exc_info=True)
-                onsets[market_id] = None
-        onset = onsets[market_id]
-        if onset is None:
-            return None
         try:
             with session.begin_nested():
                 at = (row.placed_at if state.cursor_event_id is None
@@ -1387,6 +1420,20 @@ class Executor:
             log.debug("loading the pre-onset book for order %s failed", row.id, exc_info=True)
             return None
         if book is None:
+            return None
+        # One read per (subscription, anchor position) per loop: every deferred row on one
+        # ticker shares an anchor, so a whole recovering ticker costs one gap probe.
+        key = (book.sid, book.gap_check_id or 0)
+        if key not in onsets:
+            try:
+                with session.begin_nested():
+                    onsets[key] = store.first_gap_ts(session, key[0], key[1], now)
+            except Exception:  # noqa: BLE001 - one row's walk, not the step
+                log.debug("reading the gap after %s for order %s failed", key, row.id,
+                          exc_info=True)
+                onsets[key] = None
+        onset = onsets[key]
+        if onset is None:
             return None
         return simulate_fills(_paper_order(row, row.queue_ahead_at_place, now), state, book,
                               prints, deltas, min(nw_deadline, onset), NO_WATCHER)
@@ -1544,18 +1591,18 @@ class Executor:
             if not row.nw_done:
                 live.append(row.nw_tape_cursor_event_id)
             for value in live:
-                # A null cursor is not a position: it is a track that has consumed no delta at
-                # all, and what it still has to read starts at `lower`, not at wherever its
-                # ticker-mates have got to. Folding it in as "no constraint" was harmless while
-                # every track on a ticker walked on every loop -- they moved together, so the
-                # minimum was the null track's position too. Since fix 78c a budget can leave
-                # one track a loop or more behind its ticker-mates, and a window that started
-                # at their cursor would skip the deltas the lagging one has never seen: the
-                # budget would then change what a row writes rather than only when it writes
-                # it. Handing a track deltas it has already consumed is free -- `_merge_events`
-                # filters the list by each track's own `cursor_event_id`.
-                cursor = 0 if value is None else (
-                    value if cursor is None else min(cursor, value))
+                # A null cursor is left out of the minimum on purpose (review rev-fix-78c, I1).
+                # It belongs to a track that has consumed no delta at all, and by construction
+                # that is a track with no queue either -- `_place` writes the queue and the
+                # cursor in one dict, `_anchor_tracks` sets them together, and `simulate_fills`
+                # returns before it reads an event when `queue_remaining is None` -- so the
+                # window it is handed cannot move a stored value of its own. Folding it in as
+                # position 0 would put the whole ticker back on fix 22's `ts`-bounded plan
+                # (`store._DELTAS_FIRST`, a bitmap of the `ts` index against 20,000 rows) every
+                # loop, inside the unbudgeted tape phase, and a read that came back full would
+                # mark the ticker lagging and block `nw_done` for every track on it.
+                if value is not None:
+                    cursor = value if cursor is None else min(cursor, value)
             windows[row.ticker] = (lower, cursor)
         out: dict[str, tuple[list, list]] = {}
         unread: set[str] = set()
@@ -1809,12 +1856,15 @@ class Executor:
             # The pre-check's walk, when there is one: same order, same state, same book, same
             # prints and deltas, same deadline, and `simulate_fills` mutates none of them.
             # Since fix 78c the pre-check reproduces the two anchoring branches too, so the
-            # guard is no longer "it did not anchor" but "it anchored on the book this frame is
-            # anchoring on" -- the same `self.books` object, compared by identity. A walk taken
-            # from any other book is refused and the tape is walked again here, which is what
-            # stops a future branch from silently inheriting one. A row that anchored in the
-            # pre-check therefore carries its anchored result rather than being anchored and
-            # walked twice, and with it the clean stretch a deferred row walked before its
+            # guard has two arms: a frame that anchors takes the walk only when the walk
+            # anchored on the very same `self.books` object, compared by identity, and a frame
+            # that does not anchor takes it as it always did. The second arm means an anchored
+            # walk is *not* refused on a frame that did not anchor -- a case the two branches'
+            # identical conditions (same row, same `recovering` set, same book) make
+            # unreachable, and a future branch that anchors here and not there would have to
+            # tighten this to `walk.anchor is anchor` (review rev-fix-78c, M3). A row that
+            # anchored in the pre-check carries its anchored result rather than being anchored
+            # and walked twice, and with it the clean stretch a deferred row walked before its
             # re-anchor.
             result = (walk.result
                       if walk is not None and (anchor is None or anchor is walk.anchor)

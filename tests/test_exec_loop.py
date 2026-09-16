@@ -2687,7 +2687,8 @@ def _pending_book(session, ticker, ts, sid):
 
 def _pending_order(session, index, *, now, ticker, vm, expiry, queue=Decimal("5.00"),
                    version=None, prob=Decimal("0.3500"), status="cancelled", side="yes",
-                   next_attempt_at=None, attempts=None, recon_state=None, variant_id="tiny"):
+                   next_attempt_at=None, attempts=None, recon_state=None, variant_id="tiny",
+                   cursor=None):
     """One order whose counterfactual is still running, as the backlog's 5,055 rows are.
 
     Cancelled by default: the watched track is over -- the order left the market when it was
@@ -2701,6 +2702,13 @@ def _pending_order(session, index, *, now, ticker, vm, expiry, queue=Decimal("5.
     (`harness/db/schema.py:229`) is one live order per `(venue, ticker, side, variant_id)`, and
     it is partial on the open statuses -- which is why the cancelled backlog can pile up on one
     ticker and two resting orders cannot.
+
+    `cursor` is the tape position both tracks sit at, and `seed_pending` passes the head of the
+    ticker's own tape for every row that has a queue. The loop writes the queue and the cursor
+    together and never one without the other (`_place`, `_anchor_tracks`, `SimState.anchor`), so
+    a seeded row with a queue and a null cursor is a shape production does not have -- and the
+    one the delta window's `min()` has to reach past (review rev-fix-78c, I1). A row with no
+    queue keeps the null cursor, because that is exactly the shape it has until its first book.
     """
     resting = status in ("open", "partially_filled")
     row = Order(id=PENDING_BASE_ID + index, intent_id=uuid.UUID(int=PENDING_BASE_ID + index),
@@ -2710,6 +2718,7 @@ def _pending_order(session, index, *, now, ticker, vm, expiry, queue=Decimal("5.
                 status=status, placed_at=now - timedelta(minutes=5),
                 cancelled_at=None if resting else now - timedelta(minutes=4), expiry=expiry,
                 queue_ahead_at_place=queue, queue_remaining=queue, nw_queue_remaining=queue,
+                tape_cursor_event_id=cursor, nw_tape_cursor_event_id=cursor,
                 nw_filled_contracts=Decimal("0.00"), nw_done=False,
                 nw_recon_state=recon_state, nw_next_attempt_at=next_attempt_at,
                 nw_attempts=attempts, nw_executor_version=version, replay=False)
@@ -2812,6 +2821,18 @@ def _mixed_shapes(t0):
     ]
 
 
+def _tape_head(session, ticker):
+    """The event a live book for this ticker would be anchored at: the head of its tape.
+
+    The live book is read from the head with no upper bound at all, so this is the
+    `last_event_id` the first loop's `base` will carry -- and therefore the cursor a row that
+    has been walked once already holds (review rev-fix-78c, I1). None when the ticker has no
+    tape yet, which is the no-book shape.
+    """
+    return session.execute(text("select max(id) from orderbook_events where ticker = :t"),
+                           {"t": ticker}).scalar()
+
+
 def seed_pending(session, t0, n, shapes):
     """`n` rows cycling `shapes`, so the same mix is present at every population size.
 
@@ -2819,11 +2840,22 @@ def seed_pending(session, t0, n, shapes):
     and orders carry the 12-hex `variant_id`, and a row carrying the *name* is dropped from the
     decision chain by `_with_config` -- which would quietly take the open orders below out of
     `plan_actions` and with them the expiry this case is watching for.
+
+    Every row with a queue is seeded at the head of its ticker's tape, because that is the pair
+    the loop itself writes: a queue without a cursor is a shape no code path here produces
+    (review rev-fix-78c, I1).
     """
     variant_id = store.resolve_variants(session, ["tiny"])[0]
-    ids = [_pending_order(session, i, now=t0, variant_id=variant_id,
-                          **shapes[i % len(shapes)]).id
-           for i in range(n)]
+    heads: dict[str, object] = {}
+    ids = []
+    for i in range(n):
+        shape = shapes[i % len(shapes)]
+        ticker = shape["ticker"]
+        if ticker not in heads:
+            heads[ticker] = _tape_head(session, ticker)
+        cursor = None if shape.get("queue", Decimal("5.00")) is None else heads[ticker]
+        ids.append(_pending_order(session, i, now=t0, variant_id=variant_id, cursor=cursor,
+                                  **shape).id)
     session.commit()
     return ids
 
@@ -3709,17 +3741,24 @@ def _onset_tape(session, loop, t0):
 
     Stamped loop by loop, so each loop's book is the book the live loop would have had. The
     trade of three and the decrement that reports it land inside the stretch the market was
-    still clean for; the gap lands before the third loop, which is the loop that declares the
-    market dirty and therefore the instant `market_dirty_intervals` records as the onset; and
-    the snapshot before the fourth is what that loop recovers on. It shows 8 resting at our
-    price, so a row that walked its clean stretch first clamps to 2 and one that threw that
-    stretch away clamps to 5.
+    still clean for; the gap lands before the third loop, which is the loop that *notices* it
+    and declares the market dirty; and the snapshot before the fourth is what that loop recovers
+    on. It shows 8 resting at our price, so a row that walked its clean stretch first clamps to
+    2 and one that threw that stretch away clamps to 5.
+
+    The second decrement is the review's (rev-fix-78c, I2): it lands between the gap and the
+    loop that notices it -- the post-gap stretch the dirty verdict exists to distrust. No row
+    that walks every loop ever applies it (the loop that could have was the loop that found the
+    market dirty, and a dirty market is not walked at all), so a deferred row that applied it
+    would be the budget changing what a row writes. It is 2 of the 3 remaining, so applying it
+    would take the clamp from 2 to 0 rather than merely changing a cursor.
     """
     if loop == 0:
         _print(session, T4, t0 + timedelta(seconds=5), "0.35", "3", trade_id="onset-print")
         _delta(session, T4, t0 + timedelta(seconds=5), "yes", "0.35", "-3", 2, sid=4)
     elif loop == 1:
         _gap(session, t0 + timedelta(seconds=20), sid=4)
+        _delta(session, T4, t0 + timedelta(seconds=22), "yes", "0.35", "-2", 3, sid=4)
     elif loop == 2:
         _ws_snapshot(session, T4, t0 + timedelta(seconds=35),
                      [("0.50", "20.00"), ("0.35", "8.00")], [("0.48", "50.00")], sid=14)
@@ -3831,10 +3870,15 @@ def test_the_batched_anchor_rows_match_the_per_row_path_column_for_column(env_se
     db_session.commit()
     shapes = _anchor_shapes(t0)
 
+    # Cleared before the seeding, not only inside the run: `seed_pending` reads the head of
+    # each ticker's tape for the cursor it seeds, and the previous run's leftovers would put
+    # that head past the events this run is about to re-create.
+    _clear_future_tape(db_session, t0)
     reset_pending(db_session)
     ids = seed_pending(db_session, t0, len(shapes), shapes)
     per_row, per_row_writes, per_row_statements, per_row_walks, _ = run_anchor_steps(
         env_settings, db_session, t0, ids, batched=False)
+    _clear_future_tape(db_session, t0)
     reset_pending(db_session)
     ids = seed_pending(db_session, t0, len(shapes), shapes)
     batched, batched_writes, batched_statements, batched_walks, seen = run_anchor_steps(
@@ -3859,6 +3903,7 @@ def test_the_batched_anchor_rows_match_the_per_row_path_column_for_column(env_se
 
 def _anchor_statements(env_settings, session, t0, n) -> int:
     """Statements the measured (anchoring) loop over `n` seeded rows actually sends."""
+    _clear_future_tape(session, t0)
     reset_pending(session)
     shapes = _anchor_shapes(t0)
     ids = seed_pending(session, t0, n, shapes)
@@ -3935,3 +3980,194 @@ def test_the_per_cause_counters_sum_to_per_row_n_and_the_budget_is_published(env
     for name in ("exec.walk_budget_ms", "exec.walk_deferred_n", "exec.walk_tickers_n",
                  "exec.per_row_open", "exec.per_row_fill", "exec.per_row_reanchor"):
         assert names.count(name) == 1, name
+
+
+def test_a_never_anchored_row_leaves_its_ticker_s_delta_read_bounded_by_the_cursor(
+        env_settings, db_session, world):
+    """Review rev-fix-78c I1: a track with no queue must not widen its ticker's delta scan.
+
+    Two rows on one ticker: one walked already, sitting at the head of the tape, and one that
+    has never had a book -- no queue, no cursor. The second consumes no delta whatever it is
+    handed (`simulate_fills` returns before it reads an event when the queue is None), so
+    counting its null cursor as position zero would buy nothing and would put the whole ticker
+    back on fix 22's `ts`-bounded plan: `id > 0 and ts >= min(placed_at) - 60 s` against a
+    20,000-row limit, every loop, inside the tape phase the ruling leaves unbudgeted -- and a
+    read that came back full would mark the ticker lagging and block `nw_done` for every track
+    on it. The loop's one delta read is bounded by the live cursor and by nothing else.
+    """
+    keep_only(db_session, set())
+    t0 = NOW + timedelta(seconds=10)
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    db_session.commit()
+    far = t0 + timedelta(hours=1)
+    shapes = [{"ticker": T3, "vm": VM3, "expiry": far},
+              {"ticker": T3, "vm": VM3, "expiry": far, "queue": None}]
+    reset_pending(db_session)
+    ids = seed_pending(db_session, t0, len(shapes), shapes)
+    seeded = pending_columns(db_session, ids)
+    assert seeded[0]["nw_tape_cursor_event_id"] is not None
+    assert seeded[1]["nw_tape_cursor_event_id"] is None
+    assert seeded[1]["nw_queue_remaining"] is None
+    clock = Clock(t0)
+    executor = _budget_executor(env_settings, db_session, clock, UNBUDGETED_MS)
+
+    with capture_sql(db_session) as seen:
+        executor.step()
+
+    # The step reads deltas twice -- once to advance the book, once as the tape -- and it is
+    # the tape read (`store._DELTAS`, the only one carrying `sid`) this is about.
+    reads = [(query.lower(), parameters) for query, parameters in seen
+             if "kind = 'delta'" in query and "sid, seq" in query]
+    assert len(reads) == 1, [query for query, _ in reads]
+    where = reads[0][0].split("where", 1)[1].split("order by", 1)[0]
+    assert "ts" not in where, where
+    assert "id >" in where, where
+    assert reads[0][1]["cursor"] == seeded[0]["nw_tape_cursor_event_id"]
+
+
+def _two_cycle_tape(session, loop, t0):
+    """T4 through two dirty stretches and two recoveries, one loop at a time.
+
+    Loop 0's tape is the clean stretch both runs consume: a trade of three against the five
+    resting ahead of us. The first gap lands before loop 2, which finds the market dirty; the
+    decrement inside that dirty stretch is the one **no** run may ever apply, and the snapshot
+    before loop 3 is the first recovery. The second gap lands before loop 4 and the second
+    recovery before loop 5, which is the loop that is measured: it shows 6 resting, so a row
+    that walked its clean stretch and stopped at the *first* gap clamps to 2, and one that
+    walked through the first dirty stretch as well clamps to 0.
+    """
+    if loop == 0:
+        _print(session, T4, t0 + timedelta(seconds=5), "0.35", "3", trade_id="cycle-print")
+        _delta(session, T4, t0 + timedelta(seconds=5), "yes", "0.35", "-3", 2, sid=4)
+    elif loop == 1:
+        _gap(session, t0 + timedelta(seconds=20), sid=4)
+    elif loop == 2:
+        _delta(session, T4, t0 + timedelta(seconds=35), "yes", "0.35", "-2", 3, sid=4)
+        _ws_snapshot(session, T4, t0 + timedelta(seconds=40),
+                     [("0.50", "20.00"), ("0.35", "8.00")], [("0.48", "50.00")], sid=14)
+    elif loop == 3:
+        _gap(session, t0 + timedelta(seconds=50), sid=14)
+    elif loop == 4:
+        _ws_snapshot(session, T4, t0 + timedelta(seconds=65),
+                     [("0.50", "20.00"), ("0.35", "6.00")], [("0.48", "50.00")], sid=24)
+    session.commit()
+
+
+def test_a_row_deferred_across_two_dirty_cycles_stops_at_the_first_gap(env_settings,
+                                                                       db_session, world):
+    """Review rev-fix-78c I3: the onset is the first gap after the cursor, never the newest.
+
+    Deferral is not limited to one loop, and a row on a dirty market is not walked at all, so a
+    row can keep a cursor from before the *first* of two dirty stretches. Walking it to the
+    newest onset would apply every print and delta of the first dirty stretch as though the
+    market had been clean there -- tape a row that was never deferred never sees, because it
+    re-anchored at the first recovery. The two runs differ in nothing but the budget of the
+    middle four loops and come out of the last one identical.
+    """
+    keep_only(db_session, set())
+    t0 = NOW + timedelta(seconds=10)
+    _onset_world(db_session, t0)
+    shapes = [{"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1)},
+              {"ticker": T4, "vm": VM4, "expiry": t0 + timedelta(hours=1)}]
+
+    tape = lambda session, loop: _two_cycle_tape(session, loop, t0)  # noqa: E731 - one expr
+    unbudgeted, unbudgeted_writes, *_ = _budget_run(
+        env_settings, db_session, t0, shapes, [UNBUDGETED_MS] * 6, tape)
+    # Zero rather than a millisecond for the middle loops: the rotation would otherwise reach
+    # T4 on the loop after the one it stopped on, and this case needs the row left behind for
+    # both cycles.
+    budgeted, budgeted_writes, _, _, stats = _budget_run(
+        env_settings, db_session, t0, shapes, [UNBUDGETED_MS, 0, 0, 0, 0, UNBUDGETED_MS], tape)
+
+    assert sum(step.walk_deferred_n for step in stats[1:5]) > 0
+    assert budgeted[1] == unbudgeted[1]
+    assert budgeted_writes == unbudgeted_writes
+    # Five rested ahead of us, a trade of three took three of them inside the first clean
+    # stretch, and the book the second recovery anchors on shows six: the clamp is 2, and the
+    # two the first dirty stretch's decrement would have taken are not taken.
+    assert budgeted[1]["nw_queue_remaining"] == Decimal("2.00")
+
+
+class _WorkClock:
+    """A monotonic that moves only when the work under test says it did.
+
+    `_ticking()` charges every *reading*, which is what makes it right for the phase timers and
+    wrong for a case about a budget: a phase there measures twice what it charges, because the
+    two readings around a row cost a tick each. Here the readings are free and the walk and the
+    per-row step each charge what the case says they cost, so the budget arithmetic in the
+    assertions is the loop's own.
+    """
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def read(self) -> float:
+        return self.t
+
+    def charge(self, ms) -> None:
+        self.t += ms / 1000.0
+
+
+def test_the_cancelled_per_row_residual_is_charged_to_the_budget_and_deferred(env_settings,
+                                                                              db_session, world):
+    """Review rev-fix-78c I4(a): the per-row residual is budgeted in time, not only in population.
+
+    The user's ruling budgets "the clean-ticker walk **and the cancelled per-row residual**". A
+    cancelled row whose walk finds a fill has to take a savepoint and an UPDATE of its own, and
+    that is the 40-110 ms a row the measured loops spent 0-47 s on; so it is charged to the same
+    budget, and the rows the budget can no longer afford are deferred exactly as the rotation
+    defers the ones it never reached -- walked or not. Deferring a walked row costs the walk and
+    nothing else: nothing of it has been written, and the next loop walks the same tape from the
+    same cursor and finds the same fill.
+
+    Five rows on one clean ticker, all of which the late print fills. The walk is cheap (1 ms a
+    row) and the per-row step is expensive (50 ms), so a 10 ms budget pays for every row's walk
+    and for exactly one row's per-row step, and the loop's whole budgeted time is the budget plus
+    that one row -- rather than five of them, which is what an unbudgeted residual would cost.
+    """
+    keep_only(db_session, set())
+    t0 = NOW + timedelta(seconds=10)
+    _pending_book(db_session, T4, NOW - timedelta(seconds=5), sid=4)
+    db_session.commit()
+    far = t0 + timedelta(hours=1)
+    shapes = [{"ticker": T4, "vm": VM4, "expiry": far}]
+    reset_pending(db_session)
+    ids = seed_pending(db_session, t0, 5, shapes)
+    work = _WorkClock()
+    clock = Clock(t0)
+    executor = _budget_executor(env_settings, db_session, clock, 10, monotonic=work.read)
+    executor.step()
+    refresh(db_session)
+    _print(db_session, T4, t0 + timedelta(seconds=14), "0.35", "500", trade_id=LATE_PRINT)
+    db_session.commit()
+    before = pending_columns(db_session, ids)
+    clock.advance(15)
+
+    per_row = executor._simulate_order
+
+    def charged(*args, **kwargs):
+        work.charge(50)
+        return per_row(*args, **kwargs)
+
+    executor._simulate_order = charged
+    real = harness.execution.loop.simulate_fills
+
+    def walked(*args, **kwargs):
+        work.charge(1)
+        return real(*args, **kwargs)
+
+    with patch("harness.execution.loop.simulate_fills", side_effect=walked):
+        stats = executor.step()
+    refresh(db_session)
+    after = pending_columns(db_session, ids)
+
+    assert stats.walk_budget_ms == 10
+    assert stats.per_row_n == 1
+    assert stats.walk_deferred_n == 4
+    assert stats.phase_walk_ms + stats.phase_per_row_ms <= stats.walk_budget_ms + 50
+    # The one row the budget could afford wrote its fill; the four it could not are untouched,
+    # column for column, and their fill lands on a later loop rather than not at all.
+    assert len(loop_writes(db_session)["fills"]) == 1
+    assert before[1:] == after[1:]
+    assert after[0]["nw_filled_contracts"] == Decimal("10.00")
+

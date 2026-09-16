@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, NamedTuple, Sequence
 
-from sqlalchemy import bindparam, func, select, text, update
+from sqlalchemy import bindparam, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -1091,29 +1091,35 @@ def close_intervals(session: Session, table: str, venue_market_ids: list[int], t
                     {"p_vms": list(venue_market_ids), "p_ts": ts, "p_replay": replay})
 
 
-def newest_dirty_onset(session: Session, venue_market_id: int, replay: bool,
-                       now: datetime) -> datetime | None:
-    """When this market most recently became dirty, or None if it never has (fix 78c).
+#: Fix 78c (review rev-fix-78c, I2/I3): the first gap on a subscription after the tape position
+#: an anchor accounts for. `book._GAP_AFTER` is the same predicate -- it is the test the live
+#: loop itself used to call the book dirty -- and this takes the instant of the earliest such
+#: row rather than asking whether one exists. `min`, never `max`: the walk that reads it stops
+#: at the *first* stretch of dirtiness after its own position, so a track deferred across two
+#: dirty cycles cannot walk through the earlier one as though the market had been clean.
+_FIRST_GAP_AFTER = text("""
+select min(ts) from orderbook_events
+where kind = 'gap' and sid = :sid and id > :anchor_id and ts <= :at
+""")
 
-    §0.10 makes `market_dirty_intervals` the record of dirtiness, so its newest `started_at`
-    is the instant a recovering market went dirty -- the instant the user's condition says a
-    deferred row's walk must stop at before its tracks are re-anchored. The row is read whether
-    it is still open or already closed, because `_advance_books` closes it in the very step
-    that recovers the market, so the recovery branch that needs the onset always looks at a row
-    that has just been given an `ended_at`. The book itself keeps no such instant: `BookState`
-    carries the gap verdict, not the moment the gap opened.
 
-    Bounded on `started_at <= now` for the same reason `open_interval_market_ids` is (review
-    batch A, I-1): an interval that had not started at this step's own instant is not this
-    step's onset. An ORM `select` rather than one of this module's `text()` statements so that
-    the interval row this same step has just added is flushed and visible to it.
+def first_gap_ts(session: Session, sid: int, anchor_id: int,
+                 at: datetime) -> datetime | None:
+    """When the tape this book was anchored on next broke, or None if it never did.
+
+    The instant is the gap row's own `ts` -- when the tape actually broke -- not the instant a
+    loop noticed it. `market_dirty_intervals.started_at` is the latter: `_advance_books` opens
+    the interval with its own `now`, which is the first 15 s loop whose book read came back
+    dirty, so it is at or after the gap by construction and the stretch between them is tape
+    the dirty verdict exists to distrust (review rev-fix-78c, I2).
+
+    Bounded at `at` for the reason every read of this module is: an event the step's own
+    instant had not reached is not something the step knows. A gap is per subscription and
+    dirties every ticker on it (§0.12), which is why this asks about `sid` and not about a
+    ticker -- the hotfix gap rows carry `ticker = ''`.
     """
-    model = _MODELS[_DIRTY]
-    return session.execute(
-        select(func.max(model.started_at))
-        .where(model.venue_market_id == venue_market_id,
-               model.replay == replay,
-               model.started_at <= now)).scalar()
+    return session.execute(_FIRST_GAP_AFTER,
+                           {"sid": sid, "anchor_id": anchor_id, "at": at}).scalar()
 
 
 def open_interval_market_ids(session: Session, table: str, replay: bool,
