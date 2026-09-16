@@ -1,0 +1,49 @@
+== fix 78 part 3 re-judge 2026-09-16 09:57:20 CT, eac4414 restarted 09:36:10 CT
+hb 09:57:06 loops 39191 last_ms 6047 p95 6974 skipped 4109 open 9 dirty 75 err null ver 4.5
+loop_ms since restart n 18 min 5697 median 6362 p95 10718 max 30093
+p95_loop_ms samples since restart 7594,7594,7594,6679,6679,6679,6723,6974,6974,6974,6974,6974,6974,6974,6974,6974,7116,6974
+loops_skipped first/last 0/2
+counter exec.dirty_markets n 18 min 32 avg 71 max 85
+counter exec.nw_pending n 18 min 12533 avg 12583 max 12683
+counter exec.per_row_book_query n 18 min 1 avg 28 max 72
+counter exec.per_row_cross n 18 min 0 avg 0 max 0
+counter exec.per_row_fill n 18 min 0 avg 0 max 0
+counter exec.per_row_held n 18 min 0 avg 0 max 0
+counter exec.per_row_load_fail n 18 min 0 avg 0 max 0
+counter exec.per_row_n n 18 min 13 avg 71 max 222
+counter exec.per_row_open n 18 min 0 avg 42 max 150
+counter exec.per_row_other n 18 min 0 avg 0 max 0
+counter exec.per_row_reanchor n 18 min 0 avg 0 max 0
+counter exec.phase_batch_ms n 18 min 163 avg 458 max 1404
+counter exec.phase_per_row_ms n 18 min 13 avg 351 max 856
+counter exec.phase_tape_ms n 18 min 1572 avg 1888 max 2724
+counter exec.phase_walk_ms n 18 min 1206 avg 1811 max 2347
+counter exec.walk_budget_ms n 18 min 2000 avg 2000 max 2000
+counter exec.walk_deferred_n n 18 min 3796 avg 4657 max 5654
+counter exec.walk_tickers_n n 18 min 58 avg 71 max 111
+per_row_sum_check 0 mismatches of 18
+nw_dirty_seconds_sum 394264890 pending 12683 with_dirty 12482
+dirty_intervals_since_restart 297 open 47
+errors_since_restart 0
+prior_hour_before_restart loop_ms n 47 median 13122 p95 28763
+== per-loop series since restart
+09:36:36 loop 6126 tape 1626 walk 1424 batch 495 per_row 831 per_row_n 222 open 150 bookq 72 deferred 4079 tickers 58 dirty 85 skipped 0
+09:37:51 loop 5985 tape 1572 walk 1732 batch 609 per_row 373 per_row_n 87 open 52 bookq 35 deferred 3796 tickers 62 dirty 81 skipped 0
+09:39:06 loop 5978 tape 1943 walk 1714 batch 228 per_row 383 per_row_n 102 open 38 bookq 64 deferred 4024 tickers 60 dirty 83 skipped 0
+09:40:06 loop 6679 tape 2001 walk 2072 batch 725 per_row 32 per_row_n 30 open 29 bookq 1 deferred 4340 tickers 75 dirty 67 skipped 0
+09:41:21 loop 6386 tape 1862 walk 2200 batch 459 per_row 48 per_row_n 23 open 22 bookq 1 deferred 4528 tickers 73 dirty 69 skipped 0
+09:42:36 loop 5955 tape 1622 walk 1662 batch 341 per_row 418 per_row_n 75 open 22 bookq 53 deferred 4403 tickers 61 dirty 82 skipped 0
+09:43:36 loop 6338 tape 2047 walk 2074 batch 431 per_row 13 per_row_n 13 open 12 bookq 1 deferred 5124 tickers 60 dirty 70 skipped 0
+09:44:36 loop 6468 tape 1625 walk 2033 batch 1025 per_row 87 per_row_n 15 open 5 bookq 10 deferred 5307 tickers 108 dirty 35 skipped 0
+09:45:51 loop 6489 tape 2451 walk 2031 batch 171 per_row 85 per_row_n 14 open 2 bookq 12 deferred 5654 tickers 111 dirty 32 skipped 0
+09:47:06 loop 5955 tape 1796 walk 1607 batch 254 per_row 505 per_row_n 55 open 0 bookq 55 deferred 4892 tickers 67 dirty 76 skipped 0
+09:48:06 loop 5962 tape 1849 walk 1728 batch 213 per_row 359 per_row_n 42 open 0 bookq 42 deferred 4697 tickers 68 dirty 75 skipped 0
+09:48:51 loop 30093 tape 2300 walk 1206 batch 163 per_row 856 per_row_n 48 open 0 bookq 48 deferred 4286 tickers 65 dirty 78 skipped 0
+09:50:21 loop 6486 tape 1898 walk 1648 batch 335 per_row 731 per_row_n 183 open 150 bookq 33 deferred 5121 tickers 65 dirty 78 skipped 2
+09:51:36 loop 7299 tape 2724 walk 1698 batch 212 per_row 695 per_row_n 162 open 150 bookq 12 deferred 4756 tickers 61 dirty 82 skipped 0
+09:52:51 loop 6930 tape 1694 walk 1769 batch 559 per_row 351 per_row_n 83 open 53 bookq 30 deferred 4177 tickers 59 dirty 84 skipped 0
+09:54:06 loop 6062 tape 1661 walk 1746 batch 309 per_row 368 per_row_n 52 open 31 bookq 21 deferred 5068 tickers 75 dirty 68 skipped 0
+09:55:06 loop 7116 tape 1629 walk 1911 batch 1404 per_row 173 per_row_n 47 open 26 bookq 21 deferred 4901 tickers 80 dirty 63 skipped 0
+09:56:21 loop 5697 tape 1687 walk 2347 batch 319 per_row 15 per_row_n 16 open 15 bookq 1 deferred 4664 tickers 70 dirty 69 skipped 0
+09:57:36 loop 7065 tape 1669 walk 1593 batch 1300 per_row 501 per_row_n 40 open 7 bookq 33 deferred 4718 tickers 72 dirty 71 skipped 0
+exec_period_s n/a

@@ -2964,3 +2964,16 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 3 (rev-fix-78c-r1, fix-81, rev-fix-81); day 5; batch fix 78 part 3 closed at 3 of 12 (07:24-09:36 CT); batch fix 81: 2 of 12.
 - Result: deployed eac4414; re-judge pending.
 - Next: verify (re-judge 09:57 CT: cron 901fc0e7, reminder 2026091602), then fix 81 rebase, suite, merge, full release.
+
+## 256. verify - fix 78 part 3 re-judge on eac4414: loop-metrics row PASS, row 78 closed - 2026-09-16 09:57-10:02 CT
+
+- Orient: rule 3 (verify: the 09:57 CT cron 901fc0e7 fired; reminder 2026091602 consumed), twenty minutes after the 09:36:10 CT restart.
+- Evidence: `evidence/2026-09-16-fix78c-judgement-0957.txt`.
+- Verification: loop-metrics row PASS: heartbeat `p95_loop_ms` 6,974 ms at 09:57:06 CT against the 7,500 ms bound (`exec_period_s` 15 × 1000 ÷ 2); Layer 1 verify-summary PASS 9/9 on eac4414 at 09:36 CT (journal 255); no other rows are named by the fix. Rolling p95 samples since the restart: 7,594 (the first loop included), then 6,679-7,116. `loops_skipped` 4,107 → 4,109; both skips follow the one 30,093 ms loop at 09:48:51 CT, otherwise 0: not the quarter-rate heartbeat the row catches.
+- Distribution: 18 loops, min 5,697, median 6,362, max 30,093 ms (raw p95 10,718 because of that one loop); the hour before the restart ran median 13,122, p95 28,763 (n 47). Phases: tape 1.6-2.7 s, walk 1.2-2.3 s (budget 2,000 ms; the expiring cohort is charged), batch 0.2-1.4 s, per-row 0.01-0.86 s with `per_row_n` 13-222 (open 0-150, `book_query` 1-72; fill, cross, reanchor, load_fail, held, other all 0); the counters sum to `per_row_n` on all 18 loops. `walk_deferred_n` 3,796-5,654 (oscillating, no trend), `walk_tickers_n` 58-111, `nw_pending` 12,533-12,683, dirty markets 32-85, `book_errors` 0, `last_error` null. Dirty time still accrues (297 dirty intervals since the restart, 47 open): the semantics are unchanged by design.
+- Anomalies: the 09:48:51 CT loop of 30,093 ms carries only 4,525 ms in the four timed phases; about 25.5 s lies outside them (no open orders that loop). One occurrence: an observation for the next verify pass and the daily line (loops over 15 s whose timed phases sum under 5 s), no row.
+- Row 78 moved to Closed with `PASS (journal 256)`; the FAIL run of journal 241-251 ends. The journal 253 measurement note's window is 13:40 CT Sep 15 to 09:36 CT Sep 16.
+- Housekeeping: worktree `fix-2026-09-16-executor-budget` removed, branch deleted, its fixture grant revoked.
+- Dispatches: 0.
+- Result: PASS.
+- Next: deploy (fix 81 full release: main 33ceeb1 is ahead of eac4414 by ws_sink.py and its test), wakeup none.
