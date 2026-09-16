@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-16 07:27 CT (12:27 UTC) by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 253. Paper-only. Runtime build: **49cf5f4** (journal 250, app-only 21:57 CT, fix 78 part 2; f7a1ccb full at 12:32 CT under it for app-ws, journal 237/238). Main 49cf5f4 = the runtime; deploy trigger empty. origin/main = 35f7180 (U7 pushes after phases and on Mondays).
+Updated 2026-09-16 08:22 CT (13:22 UTC) by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 253. Paper-only. Runtime build: **49cf5f4** (journal 250, app-only 21:57 CT, fix 78 part 2; f7a1ccb full at 12:32 CT under it for app-ws, journal 237/238). Main 49cf5f4 = the runtime; deploy trigger empty. origin/main = 35f7180 (U7 pushes after phases and on Mondays).
 
 ## Right now
 
@@ -21,7 +21,7 @@ Journal 224 item 17, as it stands:
 
 ## Active units
 
-- **hotfix fix 78 part 3**: ledger `.superpowers/sdd/hotfix-2026-09-16/progress.md`, brief `fix-78c-brief.md`; branch `fix-2026-09-16-executor-budget` from main e16a2af, worktree `/home/trey/dev/sports-wt/fix-2026-09-16-executor-budget`; implementer `fix-78c` (opus, sports-worker) dispatched 07:24 CT, timeout 90 min (08:54 CT), report expected at `.superpowers/sdd/results/fix-78c-report.md`; fixture grant on `harness_test_fix_2026_09_16_executor_budget` pending its creation; next legal action: consume the report, commit the diff, opus review. Parts 1-2 ledger `.superpowers/sdd/hotfix-2026-09-15/progress.md`.
+- **hotfix fix 78 part 3**: ledger `.superpowers/sdd/hotfix-2026-09-16/progress.md`, brief `fix-78c-brief.md`; branch `fix-2026-09-16-executor-budget` from main e16a2af, worktree `/home/trey/dev/sports-wt/fix-2026-09-16-executor-budget`; implementer `fix-78c` done 08:19 CT (report `.superpowers/sdd/results/fix-78c-report.md`), committed a89d9bd; reviewer `rev-fix-78c` (opus) dispatched 08:2x CT, timeout 30 min, report expected at `.superpowers/sdd/results/fix-78c-review.md`; grant applied on `harness_test_fix_2026_09_16_executor_budget`; next legal action: consume the verdict, apply minors, fix rounds if any, rebase, full suite, merge. Parts 1-2 ledger `.superpowers/sdd/hotfix-2026-09-15/progress.md`.
 - **phase 6D**: on main (ffbecd5), released b69b880 (journal 221); ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`, dispatches 30. Remaining: verify.md 6D acceptance rows at the first game window, §4 read-backs at real ticks, exec-health baseline retaken on 0d04804 (item 12), ledger re-archive and final review (docs/superpowers/reviews/2026-09-13-phase6d-* stale by 9 ledger lines), then roadmap `done`; policy comparison is the user's adoption decision; worktree phase6d-merge-main removable after acceptance.
 - **phase 4.6**: on main, released c1066b5. Remaining: T18b (watched NFL-window queries), T19 (verification rows), walkthrough items; the user's three LAN files.
 - **6E**: cold start done (journal 229); still needs the corrected-workload benchmark and the original operational acceptance.
@@ -30,14 +30,14 @@ Journal 224 item 17, as it stands:
 
 ## Pending results
 
-- Agents: fix-78c implementer (opus) since 07:24 CT. Suites: none. Wakeups: cron one-shot Wed 08:57 CT (daily 09:00 CT line); durable reminder 2026091601.
+- Agents: rev-fix-78c reviewer (opus) since 08:2x CT. Suites: none. Wakeups: cron one-shot Wed 08:57 CT (daily 09:00 CT line); durable reminder 2026091601.
 - Receipts by stage: code 8c1351e (fix 78 part 2 + minors); test: full suite 4,185 passed at 8c1351e on the branch db (receipt test-harness_test_fix_2026_09_15_executor_batch_2.json, release tree 3ac461c1); review: fix-78b-review.md APPROVED WITH MINORS 0/0/2; merge: main 8c1351e 21:50 CT; deploy: /srv/sports-harness/releases/20260916T025332Z-49cf5f4 (app, healthy, 21:57 CT; journal 250); verify: journal 251 FAIL on the loop-metrics row only (evidence/2026-09-15-fix78b-judgement-2218.txt), Layer 1 and Layer 3 PASS; preflight: evidence/2026-09-15-preflight-2120.txt.
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, harness_test_fix_2026_09_15_executor_batch_2. harness_test_fix_20260915_{row72,batch_c,ws_seq_ack} remain until `make testdb-prune`; read their grant before relying on it.
 - Worktrees: fix-2026-09-15-executor-batch-2 (Active units); phase6d-merge-main; the Mac-era fix-45/fix-48/recovery worktrees unchanged (preserved).
 
 ## Counters and deadlines
 
-- CT day Sep 16: dispatches 1 (fix-78c), hotfix batch fix 78 part 3: 1 of 12, batch clock from 07:24 CT (3 h), failed deploys 0, implementers running 1 of 3. Sep 15 closed at 24 dispatches, 1 failed deploy.
+- CT day Sep 16: dispatches 2 (fix-78c, rev-fix-78c), hotfix batch fix 78 part 3: 2 of 12, batch clock from 07:24 CT (3 h), failed deploys 0, implementers running 0 of 3. Sep 15 closed at 24 dispatches, 1 failed deploy.
 - Next duties: fix 78 part 3 review/suite/release; daily 09:00 CT line Wed 2026-09-16 (first-of-day notification test with it, R3); 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT); the R4 window closes Thu about 14:30 CT; storage retention decision is the user's by 2026-09-22.
 - Wakeups: cron one-shot Wed 08:57 CT (this session only); durable reminder 2026091601 (Wed 08:55 CT). Reminders under `~/.cache/sports-harness/reminders/` through 2026091510 are consumed.
 
