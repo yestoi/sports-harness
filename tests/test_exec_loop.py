@@ -3236,6 +3236,14 @@ def test_the_values_list_update_writes_exactly_what_update_order_writes(db_sessi
     assert empty["nw_last_print_ts"] is None and empty["nw_traded_at_price"] is None
     assert rows[pairs[2][1]]["worst_case_fill"] is True
     assert rows[pairs[0][1]]["worst_case_fill"] is False
+    # The count is one statement per column set per `chunk` rows, which is what makes the
+    # population's cost flat in N below `VALUES_BATCH_ROWS` and `ceil(N / 500)` above it. The
+    # loop case above only ever meets N under the chunk, so the arithmetic is pinned here: the
+    # same three rows (two column sets, two of them sharing one) sent a row at a time are three
+    # statements, not one and not three per column set. Rewriting the same values to the same
+    # rows changes nothing that was compared above.
+    assert store.update_orders_batch(
+        db_session, [(batched_id, values) for _, batched_id, values in pairs], chunk=1) == 3
 
 
 def _param_ids(parameters) -> set:

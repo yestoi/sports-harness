@@ -915,9 +915,11 @@ def close_nw_expired_batch(session: Session, order_ids: Sequence[int], now: date
 
 #: Fix 78b: the most rows one `UPDATE ... FROM (VALUES ...)` carries. A bound on the *driver*,
 #: not on the population: psycopg sends at most 65,535 parameters in one statement, and one
-#: counterfactual write is 13 or 14 columns plus the id, so a backlog past ~4,300 rows would
-#: fail a whole batch on a limit that has nothing to do with what is being written. 500 rows is
-#: about 7,500 parameters, far under it, and keeps the statement's own parse time small: the
+#: counterfactual write is 14 or 15 columns -- the 13 or 14 of `_nw_columns` plus the
+#: `nw_executor_version` stamp `update_orders_batch` adds itself -- plus the id, so a backlog
+#: past ~4,100 rows would fail a whole batch on a limit that has nothing to do with what is
+#: being written. 500 rows is 8,000 parameters, far under it, and keeps the statement's own
+#: parse time small: the
 #: 6,387 pending tracks of 16:01 CT on 2026-09-15 cost 13 statements at worst rather than 6,387.
 VALUES_BATCH_ROWS = 500
 
