@@ -84,3 +84,13 @@ The tape read is not the lever (row 79's rescan would save about a second), so o
 - (d) Lengthen `exec_period_s`. An executor setting: a pre-registration amendment, yours.
 
 **Recommendation.** (b) now, then re-judge twenty minutes after its restart; hold (a) for you if (b)'s numbers still miss, because nothing that batches writes reaches the bound at this backlog and (a) is the only lever that bounds the loop for any N. The loop implements nothing until you answer (journal 242). Answer in chat as "item 18: (b)" or your own wording; the loop records it verbatim as a decision entry.
+
+## Added Wed 2026-09-16 10:12 CT
+
+### 18. Outcome
+
+Ruled 07:20 CT Wed (journal 253): (a) restricted with (b)'s batching and counters, one hotfix. Shipped as fix 78 part 3, released app-only eac4414 at 09:36 CT (journal 255), judged PASS at 09:57 CT with the heartbeat p95 at 6,974 ms against 7,500 (journal 256); row 78 closed. Loops run 5.7-7.3 s at about 12,600 pending rows. The measurement note's window is 13:40 CT Tue to 09:36 CT Wed. Watched: one 30 s loop at 09:48 CT with about 25 s outside the timed phases.
+
+### 19. Veto spend caps: the ISO-week cap binds early on NFL Sunday at the current rate
+
+The $25 daily cap (`veto_daily_usd_cap`) has bound every day since Sun 13 Sep ($24.41-24.60 a day, 268-947 calls). The weekly cap (`veto_weekly_usd_cap`, $150) sums the ISO week, Monday to Sunday; Mon-Wed spent $73.30, so at $24.4 a day the week reaches about $147 by Saturday night and Sunday has about $3.50 before every call is refused. The veto is then dormant for the NFL slate. Options: (a) keep both caps and accept a dormant Sunday; (b) raise the weekly cap to $175 (7 × $25) so only the daily cap binds, at most $25 more a week; (c) lower the weekday daily cap (for example $15 Mon-Thu) to bank about $40 for Sunday; (d) something else. Loop's lean: (b). Gate 6: the caps and their code are the user's; the loop changes nothing until ruled. Due before Sat 19 Sep.
