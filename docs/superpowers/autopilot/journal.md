@@ -3014,3 +3014,14 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0.
 - Result: push issued at this commit; a failure is journaled in the next entry, never retried in a loop.
 - Next: idle, wakeup Thu 08:57 CT.
+
+## 260. operate - sports.tunderwood.com behind Authelia at the user's request; U9 amended - 2026-09-16 11:25 CT
+
+- Orient: the user's chat request, outside the loop. User, verbatim: "I have an example of how easy it is to hook up a omarchy hosted web service to my hetzner vps in @../herdr-autopilot/ . I am creating a DNS entry for sports.tunderwood.com and would like to get that working." Asked against U9's "never public or remote", the user chose "Yes, behind Authelia" and the socat forwarder.
+- Applied: user unit `sports-gateway-forward` (socat `10.1.0.3:8180` to `127.0.0.1:8180`, enabled); gateway Caddy block and Authelia rule 3 plus a host cookie, each validated before the in-place install, backups `*.before-sports`. User-side: the A record and the wg-gev ufw rule for 8180. Compose, release script and runtime untouched; no release. Unit and diffs live in `docs/runbooks/sports-gateway.md`, not `deploy/`, so the deploy trigger stays empty.
+- Verification: PASS. Unauthenticated probes 302/303 to `/auth/`, kill switch still inactive; certificate verifies; authenticated `/`, `/ui/`, `/healthz`, `/api/summary` 200; gateway to backend 200; LAN 8180 unreachable; globe/build unchanged.
+- Roadmap: U9 and 4.6 item 4 amended; the LAN listener stays home-network only; remote placement writes are unsupported on this route.
+- Hand back: the two gateway diffs in the runbook go to the owner's `~/dev/nas-media-stack`.
+- Dispatches: 0.
+- Result: PASS.
+- Next: idle, wakeup Thu 08:57 CT.
