@@ -155,6 +155,24 @@ Applied: rows 21, 22, 23, 24, 26, 27, 30, 36, 37, 38, 40, 42, 44, 48, 53, 54, 55
 to `Closed`; rows 35, 41, 51, 56 (dup) and 70 stay in `Watch`; the batch clock resumes at relaunch with 1 h 42 min
 consumed (the session's computed figure, adopted under the same answer).
 
+### Ruling on the skill diff and the review findings
+
+2026-09-15 20:12 CT, the user, after a four-reviewer read-only review of the uncommitted skill diff (spec conformance, script
+consistency, loop operations, authority and gates; every verdict "approve with fixes", no Critical), asked about the
+batch-clock figure (the spec's 35 min versus the plan's computed 1 h 42 min), the U8 wording (general form versus the two
+named milestones) and the five recommended fixes:
+
+> Go the longer safe route I guess? General form would be best going forward right?
+
+Applied: the batch clock resumes with 35 min consumed (the spec 3.4 figure; the session read "the longer safe route" as
+the longer remaining runway) and the 19:50 CT figure of 1 h 42 min is withdrawn; the U8 paragraph keeps the general form;
+the five fixes landed as further exact-string edits: preflight.md's gate-10 exit for a `BLOCK` or test failure no
+loop-owned file can cure; SKILL.md's Files paragraph bounds row moves to the preamble's rules and names the preamble and
+baseline line as the user's text; recording.md defines "the commit that lands it" as the first commit on `main` and treats
+amend as editing, renumbers the example to 999, drops "Result values are unchanged", and measures the ledger cap on the
+text after the stamp; references/verify.md journals an `over cap` or refused image as an anomaly; phase.md says
+"partial-delivery checkpoint"; state.md was trimmed for headroom and carries the 35 min ruling.
+
 ## 3. State fact inventory
 
 Every sentence (bullets count as sentences) of `state.md@c962036` and where it goes in the rewrite. "Words kept"

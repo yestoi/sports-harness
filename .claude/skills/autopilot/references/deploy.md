@@ -6,7 +6,7 @@ A completed deployment awaiting verification goes to verify; never retry merely
 because a notification was lost. Preserve the daily failure ceilings and pending gates.
 
 1. Compare deployed source with main, excluding docs/Markdown/.claude controller
-   tooling. Batch all reviewed, ready independent fixes into one release. Keep the
+   tooling and `scripts/autopilot-session.sh` (Orient rule 2's pathspec). Batch all reviewed, ready independent fixes into one release. Keep the
    declared prerequisites and service ownership in the ledger.
 2. The release needs a clean full-suite receipt for main's exact commit, exact tree
    (`git rev-parse HEAD^{tree}`) or release tree (the tree with `docs/superpowers/autopilot/`

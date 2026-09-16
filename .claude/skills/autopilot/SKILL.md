@@ -21,14 +21,17 @@ read the routed procedure before acting. Do not load every reference or the full
 In every reference, bare `roadmap.md` and `verify.md` mean the canonical files in
 `docs/superpowers/autopilot/`, not a same-named procedure in `references/`.
 
-1. On Omarchy also read [linux-controller.md](references/linux-controller.md) once per new session. Run `python3 .claude/skills/autopilot/scripts/context.py bootstrap` from the controller checkout.
-   It prints canonical roadmap authority, phase status, calendar, carried fixes, current state and the last
-   two complete journal entries. It omits phase-specific pre-loaded decisions, which are required in step 3.
+1. On Omarchy also read [linux-controller.md](references/linux-controller.md) once per new session. Run `python3 .claude/skills/autopilot/scripts/context.py bootstrap` (the checkpoint part: current state, the
+   last two complete journal entries and the open fix rows), then `context.py bootstrap authority` (roadmap authority
+   and phase status) and `context.py bootstrap operator` (host setup, secrets, calendar, user-side TODOs) from the
+   controller checkout: three tool calls, each under the harness output limit. A first line `BUDGET EXCEEDED` means
+   read the persisted result by its `Source:` ranges. The parts omit phase-specific pre-loaded decisions, which are
+   required in step 3.
    Missing state means reconstruct from journal and ledgers, not a fresh experiment. Missing authority is an error;
    read the canonical file directly if the reader fails. Hooks and summaries cannot substitute for these reads.
 2. On a new session or after compaction, read [recovery.md](references/recovery.md) and reconcile before dispatch,
    merge or deploy. Then Orient below. After each unit, reread changed state/authority and the relevant ledger;
-   reuse already loaded unchanged instructions. After compaction always reload the bootstrap.
+   reuse already loaded unchanged instructions. After compaction always reload all three bootstrap parts.
 3. Load the selected procedure and its inputs from the table. For every active phase, read its full matching
    `Pre-loaded decisions` subsection in `docs/superpowers/autopilot/roadmap.md`, including shared ordering,
    milestone acceptance and backlog disposition. Use `context.py headings <path>` then
@@ -59,8 +62,8 @@ that need adjudication. Preserve the model allocations, independent reviewers an
 ## Kickoff (a fresh session, the way the user starts it)
 
 ```
-cd /home/trey/dev/sports && scripts/autopilot-session.sh start-herdr   # inside a fresh herdr tab: one controller lock; compact at 500k
-/effort            # high (xhigh and max spend three to four times the tokens for no measured gain on this loop)
+cd /home/trey/dev/sports && scripts/autopilot-session.sh start-herdr   # inside a fresh herdr tab: one controller lock; compact at 300k (spec 2026-09-15-context-hygiene-design)
+/effort            # high, chosen explicitly: the saved default may be xhigh, which spends three to four times the tokens for no measured gain on this loop
 /autopilot
 ```
 
@@ -79,10 +82,11 @@ Pick the first that applies. Derive each test from files and live state (`git st
 
 0. **repair**: an archived ledger on `main` (`docs/superpowers/reviews/*-phaseN-sdd-ledger.md`) with roadmap status still
    `planned` means the phase is done: set `done`, journal `repair`, continue. Never append an entry the last one already records.
-   For U8's partial milestones, first verify that the ledger records the whole milestone's acceptance. A 6C deadline-slice
-   checkpoint is not completion evidence; keep 6C `planned` with its remaining work recorded.
-1. **hotfix**: an actionable hotfix remains in `roadmap.md` Carried fixes, or the last journal entry ends in `FAIL`.
-   Rows assigned to phase work, user actions, or already closed do not keep selecting hotfix. Batched by area (Unit: hotfix).
+   For U8's partial milestones, first verify that the ledger records the whole milestone's acceptance; keep 6C `planned`
+   with its remaining work recorded until its full acceptance.
+1. **hotfix**: an actionable row remains in `fixes.md` `Open`, or the last journal entry ends in `FAIL`.
+   Rows assigned to phase work, user actions, observations or already closed live in `Watch` or `Closed` and never select
+   hotfix. Batched by area (Unit: hotfix).
 2. **deploy**: `main` is ahead of Omarchy in code. Read the stamp, never a remembered notification:
    ```
    DEPLOYED=$(scripts/omarchy.sh health | python3 -c 'import json,sys;print(json.load(sys.stdin)["build"])')
@@ -102,18 +106,11 @@ Pick the first that applies. Derive each test from files and live state (`git st
 Units are not exclusive: while a hotfix batch's implementer runs, the controller starts the next independent batch, the
 due operate duty, or a phase task whose Files are disjoint (Parallel work). Only deploy and verify are strictly serial.
 
-**U8 scheduling exception (user-directed setup correction, 2026-09-11).** Check the dated 6C work at every unit and
-task boundary; it does not wait until six hours overdue. Initialize 6A first, then plan 6C's urgent week-key and diagnostic
-report tasks before starting 6B, while independent 6A/hotfix work continues. If the last feasible delivery window is
-already at risk, prioritize that 6C planning immediately. Do not wait for all of 6A or 6B to finish. At resume, use the
-current game/job schedule and estimated implementation, review, test, deploy and verification time to record the latest
-permitted deployment opportunity before Sun 2026-09-13 19:00 CT and a wakeup/checkpoint before it. If deployment cannot
-finish safely, prepare the correct-period diagnostic report and affected-surface labels before the deadline. R4 still holds.
-6D instrumentation and 6E inventory/rehearsal preparation may also be planned while another 6x milestone is active, only
-where their stated dependencies permit. This exception allows planning ready parallel milestones despite Orient 5/6 and
-plan-next step 5. Keep separate plans, branches and ledgers; track each active milestone in state. Controller git/main
-operations remain serial, file conflicts and per-branch database limits still apply, and the implementer ceiling is unchanged.
-Keep 6C `planned` until its full acceptance is satisfied; completing only the deadline slice does not finish the milestone.
+**U8 parallel planning (user-directed setup correction, 2026-09-11).** Ready 6x milestones may be planned while another
+6x milestone is active, where their stated dependencies permit; this allows planning ready parallel milestones despite
+Orient 5/6 and plan-next step 5. Keep separate plans, branches and ledgers; track each active milestone in state. Controller
+git/main operations remain serial, file conflicts and per-branch database limits still apply, and the implementer ceiling is
+unchanged. Keep 6C `planned` until its full acceptance is satisfied; a partial delivery does not finish the milestone.
 
 ## Parallel work: worktrees and per-branch test databases
 
@@ -177,9 +174,11 @@ The fixed Omarchy worker tool allowlist and bubblewrap shell enforce production 
 ## Files the loop may edit
 
 The roadmap's "Files and sections the loop may edit" and "Invariants the loop never changes" are the authority: the loop edits
-`roadmap.md` only in the Status column, Carried fixes and User-side TODOs; rewrites `state.md`; appends to `journal.md`,
-`evidence/`, `reports/` and `docs/reports/`; edits `verify.md` only through a plan's last task; never edits this skill (including references, scripts and tests), root `CLAUDE.md`, `.claude/settings.json` or
-the v2 spec. User decisions go in the journal as `decision` entries quoting the user verbatim with the time, never into the
+`roadmap.md` only in the Status column and User-side TODOs; adds rows to `fixes.md` `Open` and moves rows only as
+`fixes.md`'s preamble allows (`Open` to `Watch` only per hotfix.md's scope rule, `Watch` to `Open` only by the user's
+ruling), never deleting one (the preamble and its baseline line are the user's text); rewrites `state.md`; appends to `journal.md`,
+`evidence/`, `reports/` and `docs/reports/`; edits `verify.md` only through a plan's last task; never edits this skill (including references, scripts and tests), `scripts/autopilot-session.sh`, root `CLAUDE.md`,
+`.claude/settings.json` or the v2 spec. User decisions go in the journal as `decision` entries quoting the user verbatim with the time, never into the
 authorization tables: a decision that would change them is a gate, the user edits the roadmap after answering, and
 "recording" one is rewriting your own authority.
 
@@ -200,7 +199,7 @@ authorization tables: a decision that would change them is a gate, the user edit
 8. Creating a git remote or pushing to one (R5).
 9. Any edit under `harness/variants/`, to `MAX_PRIMARY`/`MAX_SECONDARY`, to a registered id, to gate thresholds, or to a gate
    criterion's definition, a BH family, a cell grid, a success threshold or the confirmation cut-off (R1).
-10. Any edit to the v2 spec, this skill or its supporting files, root `CLAUDE.md`, `.claude/settings.json`, `verify.md` outside a plan's last task, or the user-owned roadmap sections.
+10. Any edit to the v2 spec, this skill or its supporting files, `scripts/autopilot-session.sh`, root `CLAUDE.md`, `.claude/settings.json`, `verify.md` outside a plan's last task, or the user-owned roadmap sections.
 11. A Critical open after the second fix wave, or parked anywhere (the task breaker included).
 12. A ceiling exceeded.
 13. A hotfix that would change a check instead of code.

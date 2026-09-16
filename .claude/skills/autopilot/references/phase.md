@@ -50,7 +50,7 @@ tool allowlist replaces native/plugin worker tools. Preserve the model allocatio
 7. When the final review is clean (or residuals handled per 7a): load [plan-next.md](plan-next.md) and run its 3a audit on the branch; archive the ledger, final
    review and fix report as `docs/superpowers/reviews/<date>-phaseN-{sdd-ledger,final-review,final-fixes}.md`; commit
    `docs: archive phase N ...` on the branch. The archived ledger on `main` is the durable proof of completion (Orient rule 0).
-   A U8 deadline-slice checkpoint retains the active milestone ledger and lists outstanding tasks/acceptance instead;
+   A U8 partial-delivery checkpoint retains the active milestone ledger and lists outstanding tasks/acceptance instead;
    archive phase completion only after the entire milestone is accepted. Keep those remaining tasks in the phase plan.
 7a. Final-review residuals: a Critical that survives the first fix wave is never parked: one more wave (fresh `opus`
     implementer, the Criticals only, one scoped re-review), then a still-open Critical is a gate. An Important may be parked
@@ -60,5 +60,5 @@ tool allowlist replaces native/plugin worker tools. Preserve the model allocatio
    commit on `main`: roadmap status `done` and the `phase done` journal entry (commit range, test count, the exhaustive
    rulings roll-up). Only then `git branch -d` (a missing branch is not an error), remove the worktrees, and `rm -rf` the SDD workspace.
    U8's partial milestone delivery uses step 6's mid-phase merge/deploy path; it does not mark the milestone done or
-   delete its branch/ledger. In particular, the 6C deadline slice cannot trigger this completion step by itself.
+   delete its branch/ledger.
 9. Continue to the deploy unit (Orient rule 2 selects it too), then verify, the phase report, and the repo bundle (Unit: operate).

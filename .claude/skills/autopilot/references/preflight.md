@@ -22,6 +22,13 @@ procedures before dispatch. Run the fixed sports-worker MCP inventory and sandbo
 Only the test Unix socket is available inside workers. Test-suite ownership and a
 kernel lock, not process-count guesses, control full-suite concurrency.
 
-Recompute the next duty and latest feasible 6C delivery opportunity from current
-games/jobs. Use native wakeups for the active loop and durable reminder files for
+Recompute the next duty from current games/jobs. Use native wakeups for the active loop and durable reminder files for
 session recovery. Never claim a wakeup exists until its actual scheduler lists it.
+
+Run `python3 .claude/skills/autopilot/scripts/context.py check` and
+`.venv/bin/python -m pytest -q .claude/skills/autopilot/tests` once per session before any
+dispatch. A `BLOCK` line or a failing test is fixed inside the preflight's own commit
+(loop-owned files only: state, fixes.md, the entry being written); a `NEEDS USER` line goes
+into the preflight entry's `Anomalies:` line and the next report's Needs you. A `BLOCK` or a
+test failure that no loop-owned file can cure is gate 10: report it under Needs you; never
+edit skill, test or roadmap text.

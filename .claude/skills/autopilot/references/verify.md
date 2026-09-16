@@ -15,14 +15,16 @@ Follow `verify.md` exactly. In brief:
    those exact paths and the walker checklist; the screenshot MCP tool returns
    these controller-owned PNG/JPEG images; code access uses the sandboxed shell tool. Do not assign Chrome
    tools to a sandboxed worker. The reviewer returns per-item PASS/FAIL/PENDING;
-   interactions not demonstrated by the captures stay pending. The controller copies
-   screenshots with `cp -n` into canonical evidence, re-scores every FAIL plus one PASS,
-   and fills cross-checks. Browser tools absent or a missing image means pending visual
+   interactions not demonstrated by the captures stay pending. The controller archives
+   screenshots into canonical evidence with `python3 .claude/skills/autopilot/scripts/evidence_image.py <capture>
+   <evidence path>.jpg` (a JPEG under 400 KB where the image allows; an existing destination is kept, as `cp -n`
+   did; an `over cap` result or a refusal is journaled as an anomaly citing the original), re-scores every FAIL plus
+   one PASS from the originals in `.superpowers/sdd/screenshots/` citing the `evidence/` path, and fills cross-checks. Browser tools absent or a missing image means pending visual
    evidence, never an invented pass. This Linux procedure supersedes the historical
    Chrome-only tool list; the underlying checklist and required evidence are unchanged.
 4. Transients: an ERROR line on the contract's upstream-failure list with the next real tick `ok` is journaled as an anomaly,
    not carried, unless it recurs within 24 h. A non-zero invariant or an out-of-band quantity is an integrity anomaly:
    carried fix, and every number derived from that table is marked "under audit" in reports until it clears.
 5. Journal a `verify` entry: `PASS n/m` with evidence paths, anomalies, and any item deferred by the time-of-day rules with
-   its judge-after time. A FAIL adds a line to Carried fixes and the next unit is hotfix. Never silently pass a failed item.
+   its judge-after time. A FAIL adds a row to `fixes.md` `Open` and the next unit is hotfix. Never silently pass a failed item.
 6. When the roadmap's optional secrets exist (`test -e`), run the checks that depend on them (the demo smoke, the veto dry run).

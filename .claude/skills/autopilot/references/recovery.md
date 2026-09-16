@@ -32,8 +32,8 @@ than assuming either condition. A setup/review session does not become a control
 6. Read the clock and reconcile scheduled tasks with the tool's actual list.
    Retain existing wakeups after compaction when present; reconstruct missing
    ones from deadlines/judge-after times without duplicates. On a fresh session,
-   recorded cron IDs are hints until verified. Recheck U8's 6C deadline at every
-   task boundary. A partial delivery leaves all remaining acceptance work active.
+   recorded cron IDs are hints until verified. A partial delivery leaves all remaining
+   acceptance work active.
 7. If deploy status is uncertain, load the deploy procedure and inspect the live
    stamp, containers and receipt before any retry. A successful stamp with an
    incomplete verification goes to verify, not another deploy. Run preflight once
@@ -42,25 +42,34 @@ than assuming either condition. A setup/review session does not become a control
 
 ## Checkpoint at meaningful boundaries
 
-Keep the current `state.md` usable by older sessions until this branch is adopted.
-On the next authorized controller checkpoint, use concise fields with paths in
-place of pasted logs and historical lessons. Do not remove an unresolved fact to
-meet a token target. Record:
+Use concise fields with paths in place of pasted logs and historical lessons. Do not
+remove an unresolved fact to meet a token target. `state.md` has fixed level-2 headings
+in this order, exact titles: `Resume first` (optional handoff, at most 4,000 characters;
+removed at the first checkpoint after the resumed session consumes it, every fact moving
+to its section or the resume entry in the same commit), `Right now`, `Order of work`,
+`Active units`, `Pending results`, `Counters and deadlines`, `Constraints`; the file minus
+`Resume first` is at most 8,000 characters, and `context.py check` enforces both. Record:
 
-- Updated time (CT with UTC), controller session and checkout, last journal entry.
+- Updated time (CT with UTC), controller session and checkout, last journal entry
+  (the header line above the headings).
 - Each active unit/phase/task: plan and ledger paths, branch/base/head, status,
-  owner/worker ID, dispatched time, outstanding review IDs/rounds, next legal action.
+  owner/worker ID, dispatched time, outstanding review IDs/rounds, next legal action
+  (`Active units`).
 - Pending results/subprocesses: task ID or handle, log/report path, branch/database,
-  observed status and time; completed results still awaiting controller consumption.
+  observed status and time; completed results still awaiting controller consumption
+  (`Pending results`).
 - Evidence receipts: code SHA, test command/result/database, reviewer and report,
-  merge SHA, deploy target/start/end/stamp, verify verdict/deferred rows. Use ledger
-  pointers for detail; retain distinctions between these stages.
+  merge SHA, deploy target/start/end/stamp, verify verdict/deferred rows, one pointer
+  line per stage; retain distinctions between these stages (`Pending results`).
 - Counters and gates: CT day, dispatch totals per active unit/day, failures,
-  retries/rate-limit state, blocking questions and their affected scope.
+  retries/rate-limit state, blocking questions and their affected scope
+  (`Counters and deadlines`).
 - Deadlines: next duty/judge-after, actual wakeup IDs, latest permitted deployment
-  opportunity and fallback, remaining acceptance for every partial milestone.
-- Applicable unresolved lessons/risks and their evidence pointers. Archive resolved
-  observations in the append-only journal; load them when the task touches that area.
+  opportunity and fallback, remaining acceptance for every partial milestone
+  (`Counters and deadlines`).
+- Applicable unresolved lessons/risks and their evidence pointers (`Constraints`).
+  Resolved observations live in the append-only journal; load them when the task
+  touches that area.
 
 Write ledger transitions before dispatch and immediately after consuming results,
 merge and deploy transitions. Write state at task/unit boundaries; commit it with
