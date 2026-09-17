@@ -4613,7 +4613,8 @@ def test_fix79_one_statement_per_cached_ticker_per_loop(db_session):
 
 
 def test_fix79_a_second_connections_commits_cannot_shorten_the_list(db_session):
-    """The race a two-statement design loses (review of the draft brief, defect 1).
+    """Commits from a second connection across the cache's own statement (review of the draft
+    brief, defect 1).
 
     Under READ COMMITTED a guard statement and a separate incremental read have two snapshots,
     so a row committed below the cached maximum before the guard plus a row committed at the
@@ -4621,6 +4622,13 @@ def test_fix79_a_second_connections_commits_cannot_shorten_the_list(db_session):
     of those commits land -- from a second connection, in two separate transactions -- while
     the cache's single statement is being sent. The answer must still be the full read's
     answer: a short list is the failure this case exists to catch.
+
+    What this case proves is that those two commits cannot shorten the list; it is not by
+    itself what forbids a two-statement design, because both of them land before the first
+    statement either way. The one-statement shape is pinned by
+    `test_fix79_one_statement_per_cached_ticker_per_loop` and by
+    `test_fix79_one_statement_per_ticker_per_loop_inside_the_step`, which count the
+    `venue_trades` statements a loop sends (reviewer, fix 79, item 8).
     """
     cache = store.PrintCache()
     counts = store.PrintReadCounts()
@@ -4711,6 +4719,61 @@ def test_fix79_a_deleted_row_takes_the_full_read_and_never_a_stale_serve(db_sess
     got = _cache_loop(db_session, cache, counts)
     assert [p.trade_id for p in got] == ["a", "swap", "g"]
     assert counts.full_reads == before + 1
+
+
+def test_fix79_a_rewritten_row_at_the_windows_maximum_instant_is_re_read(db_session):
+    """The unchanged serve re-reads the tail rows and compares them with the cached ones
+    rather than trusting the four aggregates, and this is the case that needs it.
+
+    A row deleted and re-inserted under the same primary key `(venue, trade_id, ts)` with
+    different projected values leaves the count, both end instants *and* the token sum
+    identical -- the token is the primary key, not the values. The tail comparison sees it for
+    the rows at the window's maximum instant; below that instant the cached rows are not
+    re-read at all, which is why `store.PrintCache` records the immutability of a live row's
+    projection as the invariant it depends on. No writer in the tree can produce this schedule
+    today: nothing UPDATEs `venue_trades`, and its one deleter re-derives what it re-inserts
+    from the same `raw_responses` rows (reviewer, fix 79, item 2).
+    """
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+    for ms, trade_id in ((0, "a"), (10, "b"), (20, "c")):
+        _print79(db_session, ms, trade_id)
+    db_session.commit()
+    _cache_loop(db_session, cache, counts)
+    _cache_loop(db_session, cache, counts)
+    assert (counts.full_reads, counts.cached_tickers) == (1, 1)
+
+    db_session.execute(text("delete from venue_trades where ticker = :t and trade_id = 'c'"),
+                       {"t": FIX79_TICKER})
+    _print79(db_session, 20, "c", source="rest", yes_price="0.99")
+    db_session.commit()
+    got = _cache_loop(db_session, cache, counts)
+    assert [(p.trade_id, str(p.yes_price), p.source) for p in got] == [
+        ("a", "0.3500", "ws"), ("b", "0.3500", "ws"), ("c", "0.9900", "rest")]
+    # Caught by the re-read, not by a re-seed: the aggregates could not see it.
+    assert counts.full_reads == 1
+
+
+def test_fix79_a_print_at_exactly_the_windows_lower_bound_survives_the_trim(db_session):
+    """`_PRINTS`' predicate is `ts >= lower`, so a print stamped at exactly `lower` is inside
+    the window. When `lower` moves later onto such a print, the trim has to keep it: a trim
+    that dropped it would leave the entry describing a smaller window than the statement's
+    aggregates describe, and the ticker would re-seed on every loop for the rest of its life
+    (reviewer, fix 79, item 2).
+    """
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+    for ms, trade_id in ((0, "a"), (10, "b"), (20, "c")):
+        _print79(db_session, ms, trade_id)
+    db_session.commit()
+    _cache_loop(db_session, cache, counts)
+    assert counts.full_reads == 1
+
+    exact = FIX79_T0 + timedelta(milliseconds=10)        # `b`'s own instant, to the millisecond
+    got = _cache_loop(db_session, cache, counts, lower=exact)
+    assert [p.trade_id for p in got] == ["b", "c"]
+    _cache_loop(db_session, cache, counts, lower=exact)
+    assert counts.full_reads == 1
 
 
 def test_fix79_the_caller_never_gets_the_cache_object(db_session):

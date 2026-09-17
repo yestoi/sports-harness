@@ -563,6 +563,15 @@ def _dedupe_prints(rows: Sequence[TapePrint]) -> list[TapePrint]:
 #   per-row `_PRINT_TOKEN`, closes that: the sum changes whenever the multiset of primary keys
 #   in the window changes. Python never recomputes a token, it only adds up tokens the server
 #   itself produced and the cache stored beside the rows.
+# * **The one invariant this rests on.** The token is the row's primary key, not its values,
+#   and the rows below the window's maximum instant are never re-read at all, so the cache is
+#   only right while a live row's projected columns cannot change under an unchanged
+#   `(venue, trade_id, ts)`. Nothing in the tree UPDATEs `venue_trades`, and its one deleter
+#   (`harness/normalize/runner.py:355`, the CLI reprocess path) re-derives what it re-inserts
+#   from the same `raw_responses` rows, so no writer can produce that schedule today. The rows
+#   at the maximum instant are the one part the unchanged serve re-reads and compares anyway;
+#   a writer that could rewrite a row in place would need this cache to re-seed on a cadence,
+#   which is not something the guard could detect for itself (reviewer, fix 79, item 2).
 # * **Anything unexpected is today's full read.** A tail that comes back empty, a `lower` that
 #   moved earlier, a window whose aggregates or whose merged rows disagree by so much as one
 #   token: all of them re-seed from `_PRINTS_SEED`, which is `_PRINTS`' own projection, order
@@ -591,8 +600,8 @@ from venue_trades where ticker = :t and ts >= :lower order by ts, trade_id
 """)
 
 #: The cached ticker's whole loop, in one statement. The four scalar subqueries describe the
-#: window the window `ts >= lower` -- how many rows, its two end instants and its token sum -- and the rows
-#: are the tail from the cache's own maximum instant onward, in `_PRINTS`' projection and
+#: window `ts >= lower` -- how many rows, its two end instants and its token sum -- and the
+#: rows are the tail from the cache's own maximum instant onward, in `_PRINTS`' projection and
 #: order. The subqueries are uncorrelated, so the planner evaluates each once as an InitPlan,
 #: and all of them see this statement's single snapshot along with the rows. Deliberately not
 #: a CTE over the window: nothing here may materialise the rows the cache already holds.
@@ -635,7 +644,8 @@ class PrintReadCounts:
     #: today's full read -- for whatever reason, including a first sight of the ticker.
     cached_tickers: int = 0
     full_reads: int = 0
-    #: Rows the cache statements' tails brought back, summed over the tickers they served.
+    #: Rows the cache statements' tails brought back, over every ticker the statement ran
+    #: for -- including one that went on to take the full read, whose tail was still fetched.
     incremental_rows: int = 0
     #: Admissions refused and entries evicted by `PRINT_CACHE_MAX_ROWS` this loop.
     cap_fallbacks: int = 0
@@ -645,10 +655,10 @@ class PrintReadCounts:
 class _CachedPrints:
     """One ticker's cached window, and the four facts it was read under.
 
-    `rows` is every row of the window `ts >= lower` in `_PRINTS`' order, *before* the dedupe; `deduped` is
-    `_dedupe_prints(rows)` and is what a caller is handed a copy of. `tokens[i]` is the
-    server's `_PRINT_TOKEN` for `rows[i]`. `count`, `min_ts`, `max_ts` and `token_sum` describe
-    the same window and are what the next loop's statement is compared against.
+    `rows` is every row of the window `ts >= lower` in `_PRINTS`' order, *before* the dedupe;
+    `deduped` is `_dedupe_prints(rows)` and is what a caller is handed a copy of. `tokens[i]`
+    is the server's `_PRINT_TOKEN` for `rows[i]`. `count`, `min_ts`, `max_ts` and `token_sum`
+    describe the same window and are what the next loop's statement is compared against.
     """
 
     lower: datetime
