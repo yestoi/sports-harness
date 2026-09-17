@@ -3050,3 +3050,14 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0.
 - Result: recorded.
 - Next: hotfix unit, timers batch dispatch.
+
+## 263. decision - item 20 follow-ups: FAIL may stand; acceptance rows tonight, re-read Friday - 2026-09-17 10:06 CT
+
+- Orient: the user in chat, answering journal 262's two open questions.
+- User, verbatim (10:06 CT): "1. Yes it may FAIL without tripping. 2. No move. Read the 6B §3 and 6D acceptance rows tonight as planned, and journal the loop state beside them (p95, loops over the period, the nominal dirty-time under-count) as a measurement note. Re-read liquidity conservation, no-post-expiry-fill and the fills-per-hour series at Friday's NCAAF window after the fix 79 release, and journal the pair as the before/after comparison for the print cache. Any step down in fills at the release hour is an alarm to bring to me, not a row to defer."
+- Applied, 1: the loop-metrics row may read FAIL through the timers release and the fix 79 release without tripping "the same verify item failing twice running" (the question as journal 262 put it). The row still reads FAIL until it passes on a deployed build; `verify.md` is not edited; the waiver covers this row and these two releases only, and a FAIL on any other row gates as the skill says.
+- Applied, 2: tonight (wakeup 18:25 CT) the 6B §3 and 6D acceptance rows, §4 read-backs and 4.6 T18b/T19 are read as planned, with a measurement note beside them: heartbeat p95, the count and share of loops over the 15 s period in the window, and the nominal dirty-time under-count (15 s accrued per observed loop against elapsed time from `market_dirty_intervals`). Friday's NCAAF window (18:30 CT), after the fix 79 release: re-read liquidity conservation, no-post-expiry-fill and the fills-per-hour series; journal tonight's and Friday's reads as the before/after pair for the print cache. A step down in fills at the release hour is reported to the user at once as an alarm (notification and Needs you), never deferred as a row.
+- Reminders 2026091702 (tonight) and 2026091801 (Friday release) amended with these duties; reminder 2026091802 (Fri 18:25 CT, the after read) written; its cron is armed at Friday's release.
+- Dispatches: 0.
+- Result: recorded.
+- Next: hotfix unit, timers batch (impl fix-82 running).
