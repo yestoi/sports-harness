@@ -1,0 +1,43 @@
+judge_at=2026-09-17T16:27:22Z (11:27:22 CT)
+stamp=1a12781
+PASS build: page 1a12781 vs deploy 1a12781
+PASS sections: no section errors
+PASS page_time: / 0.5s, /api/summary 0.5s
+PASS run_id: page 23684 vs sql 23684
+PASS ws_last_event: page age 2s vs sql 1s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4893467
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+Output format is unaligned.
+SET
+hb 11:26:59 loop_ms 15470 p95 15470 skipped 4575 loops 44449 err null
+batches 20 with_all_12 20 min_value 0.000000 residual_ms median 353 p95 402 max 427 errors_max n/a commit_prev_max 14.295000
+loop 11:04:14 loop_ms 14461 placed 0 place_ms 262 load 2336 books 1597 tape 7630
+loop 11:05:29 loop_ms 12847 placed 0 place_ms 0 load 2368 books 137 tape 7700
+loop 11:06:44 loop_ms 15880 placed 150 place_ms 244 load 2422 books 159 tape 9987
+loop 11:07:59 loop_ms 14138 placed 0 place_ms 230 load 2795 books 153 tape 7327
+loop 11:09:14 loop_ms 13919 placed 0 place_ms 225 load 2505 books 151 tape 7350
+loop 11:10:29 loop_ms 13297 placed 0 place_ms 245 load 2510 books 144 tape 7517
+loop 11:11:29 loop_ms 13578 placed 0 place_ms 255 load 2873 books 158 tape 7455
+loop 11:12:44 loop_ms 13710 placed 0 place_ms 257 load 2906 books 153 tape 7582
+loop 11:13:59 loop_ms 13757 placed 0 place_ms 260 load 2817 books 146 tape 7825
+loop 11:15:14 loop_ms 13682 placed 0 place_ms 259 load 2492 books 162 tape 7833
+loop 11:16:29 loop_ms 14053 placed 0 place_ms 248 load 2942 books 154 tape 7917
+loop 11:17:44 loop_ms 13279 placed 0 place_ms 262 load 3149 books 155 tape 6944
+loop 11:18:44 loop_ms 15300 placed 0 place_ms 274 load 2685 books 159 tape 9327
+loop 11:19:59 loop_ms 13921 placed 0 place_ms 265 load 2750 books 141 tape 7975
+loop 11:21:14 loop_ms 14100 placed 0 place_ms 0 load 2977 books 147 tape 8190
+loop 11:22:29 loop_ms 14710 placed 150 place_ms 188 load 2915 books 158 tape 8056
+loop 11:23:29 loop_ms 15330 placed 0 place_ms 216 load 2891 books 150 tape 8188
+loop 11:24:44 loop_ms 14284 placed 0 place_ms 275 load 2404 books 146 tape 7148
+loop 11:25:44 loop_ms 14514 placed 0 place_ms 270 load 3008 books 139 tape 8256
+loop 11:26:44 loop_ms 14753 placed 0 place_ms 259 load 3082 books 163 tape 8347
+names_exec_errors exec.book_errors,exec.walk_deferred_n
+orders_placed_since_release 300
+check_failed_since_release 0
+== ERROR lines since release
+-- app-run
+-- app-serve
+-- app-exec
+-- app-research

@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-17 11:15 CT (16:15 UTC) by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 264 (260 was a separate user-directed session: sports.tunderwood.com behind Authelia, U9 amended, no release). Paper-only. Runtime build: **1a12781** (journal 264, app-only 11:06 CT Sep 17, fix 82 timers; 747791c full 10:04 CT Sep 16, journal 257). Main = the runtime; deploy trigger empty. origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
+Updated 2026-09-17 11:15 CT (16:15 UTC) by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 265 (260 was a separate user-directed session: sports.tunderwood.com behind Authelia, U9 amended, no release). Paper-only. Runtime build: **1a12781** (journal 264, app-only 11:06 CT Sep 17, fix 82 timers; 747791c full 10:04 CT Sep 16, journal 257). Main = the runtime; deploy trigger empty. origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
 
 ## Right now
 
@@ -21,7 +21,7 @@ Journal 224 item 17, as it stands:
 ## Active units
 
 - **hotfix fix 78 part 3**: closed (journal 255/256); ledger `.superpowers/sdd/hotfix-2026-09-16/progress.md`.
-- **hotfix timers (row 82)**: released 1a12781 app-only 11:06 CT (journal 264); judge-after 11:27 CT (cron 2fd4d5e5), then close row 82; worktree and branch removed, grant revoked.
+- **hotfix timers (row 82)**: released 1a12781 app-only 11:06 CT (journal 264); judged PASS 11:27 CT (journal 265); row 82 is a deferred judge (first sampled loop over 25 s accounted within 1 s; read at 18:25 CT and the Fri daily line).
 - **hotfix fix 79**: worktree `/home/trey/dev/sports-wt/fix-2026-09-17-executor-prints` on 1a12781; impl fix-79 (opus) dispatched 11:10 CT, timeout 90 min, brief `fix-79-brief-final.md`; grant watcher running; then opus review, suite, merge and **Friday morning release**. First timers read: tape hands over 393k deltas and 121k prints a loop, load 2.4 s.
 - **phase 6D**: on main, released b69b880 (journal 221); ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`, dispatches 30. Remaining: 6D acceptance rows at the first game window, §4 read-backs at real ticks, exec-health baseline on 0d04804 (item 12), ledger re-archive and final review, then roadmap `done`; worktree phase6d-merge-main removable after acceptance.
 - **phase 4.6**: on main, released c1066b5. Remaining: T18b (watched NFL-window queries), T19 (verification rows), walkthrough items; the user's LAN files.
@@ -29,7 +29,7 @@ Journal 224 item 17, as it stands:
 
 ## Pending results
 
-- Agents: none. Suites: none. Wakeups: cron one-shots Thu 11:27 CT (2fd4d5e5, timers judge-after), Thu 18:25 CT (6ff52321, window acceptance), Fri 07:27 CT (8d9728d0, fix 79 release); durable reminder 2026091702.
+- Agents: none. Suites: none. Wakeups: cron one-shots Thu 18:25 CT (6ff52321, window acceptance), Fri 07:27 CT (8d9728d0, fix 79 release); durable reminder 2026091702.
 - Receipts by stage: code 33ceeb1 (fix 81); test: full suite 4,196 passed at 33ceeb1 on its branch db (receipt test-harness_test_fix_2026_09_16_recorder_sink_lag.json, release tree 3c9be15f); review: fix-81-review.md APPROVED WITH MINORS 0/0/2; merge: main 33ceeb1 09:54 CT; deploy: /srv/sports-harness/releases/20260916T145941Z-747791c (full, healthy 10:04 CT; journal 257); verify: journal 258 PASS (evidence/2026-09-16-fix81-judgement-1027.txt); fix 78 part 3: eac4414 judged PASS (journal 256, evidence/2026-09-16-fix78c-judgement-0957.txt); preflight: evidence/2026-09-15-preflight-2120.txt.
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, harness_test_fix_2026_09_15_executor_batch_2 (the Sep 16 branch databases revoked 10:00 and 10:05 CT). Older fix_20260915 databases remain until `make testdb-prune`.
 - Worktrees: fix-2026-09-15-executor-batch-2 (merged, removable); phase6d-merge-main; the Mac-era fix-45/fix-48/recovery worktrees unchanged (preserved).

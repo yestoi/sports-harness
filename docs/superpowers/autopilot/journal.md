@@ -3075,3 +3075,15 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 3 today (fix-82, rev-fix-82, fix-79). Failed deploys 0.
 - Result: deployed and healthy; judge-after pending.
 - Next: verify at 11:27 CT.
+
+## 265. verify - 1a12781 judge-after: timers PASS; loop-metrics FAIL stands by ruling - 2026-09-17 11:27-11:30 CT
+
+- Orient: rule 3 (cron 2fd4d5e5, the judge-after of journal 264). Scoped to the rows fix 82 names; the full contract runs the morning after tonight's games.
+- Verification: PASS on the release's four checks (`evidence/2026-09-17-fix82-judgement-1127.txt`). (1) Every new name arrives: 20 of 20 metric batches since 11:04 CT carry all twelve, minimum value 0. (2) The ten phases sum to `exec.loop_ms` with `phase_commit_prev_ms` left out: residual median 353 ms, p95 402, max 427 (the reviewer's untimed `_simulate` dispatch plus the `expiring_n` scan). (3) Errors: heartbeat `last_error` null, no ERROR line in any app service since the release, no `check_failed` event. (4) No stored value moved: the reviewer's statement-and-row identity against bf51d01 at the committed head, 300 orders placed since the release, verify-summary 9 of 9 PASS, stamp 1a12781, deploy trigger empty.
+- Loop-metrics row: FAIL, heartbeat p95 15,470 ms against 7,500, loops skipped 4,575 of 44,449. By the user's ruling (journal 263) this reading does not trip the twice-running ceiling; `verify.md` untouched.
+- What the timers say over the first 20 samples: tape 6.9-10.0 s, load 2.3-3.1 s, walk about 1-1.5 s, per-row about 1 s, books 0.14-0.16 s after the first loop, placement 0.19-0.27 s, `phase_commit_prev_ms` at most 14 ms, intake, decide and samples under 50 ms. Two samples carried `exec.placed` 150 and ran 14.7 and 15.9 s with 0.19-0.24 s in `phase_place_ms`: placement itself is cheap; no 27-38 s loop has been sampled since the release, so row 82's original symptom is not yet attributed.
+- Row 82: stays Open as a deferred judge, not actionable: it closes at the first sampled loop over 25 s that the timers account for within 1 s (read at the 18:25 CT wakeup and the Friday daily line), and that read names the phase that holds the time.
+- Noted for tonight's before read: zero `fills` rows in the last 8 hours (quiet hours, no live game).
+- Dispatches: 0.
+- Result: PASS for the timers release; one deferred judge (row 82); the loop-metrics FAIL stands by ruling.
+- Next: hotfix unit, fix 79 (implementer running since 11:10 CT).
