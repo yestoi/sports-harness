@@ -22,7 +22,7 @@ Journal 224 item 17, as it stands:
 ## Active units
 
 - **hotfix fix 78 part 3**: closed (journal 255/256); ledger `.superpowers/sdd/hotfix-2026-09-16/progress.md`.
-- **hotfix timers (row 82)**: worktree `/home/trey/dev/sports-wt/fix-2026-09-17-executor-timers` on bf51d01; brief `fix-82-brief.md`; impl fix-82 (sonnet) dispatched 10:03 CT, timeout 90 min; reviewer brief drafted; see the ledger.
+- **hotfix timers (row 82)**: worktree `/home/trey/dev/sports-wt/fix-2026-09-17-executor-timers` on bf51d01; brief `fix-82-brief.md`; impl fix-82 done plus fix round 1 (identity test pinned to bf51d01, gated by FIX82_IDENTITY=1), committed 5b1610a; rev-fix-82 (opus) dispatched about 10:50 CT, timeout 30 min; then full suite, merge, app-only release if clean by 13:30 CT; see the ledger.
 - **hotfix fix 79**: not started; waits for the timers merge.
 - **phase 6D**: on main, released b69b880 (journal 221); ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`, dispatches 30. Remaining: 6D acceptance rows at the first game window, §4 read-backs at real ticks, exec-health baseline on 0d04804 (item 12), ledger re-archive and final review, then roadmap `done`; worktree phase6d-merge-main removable after acceptance.
 - **phase 4.6**: on main, released c1066b5. Remaining: T18b (watched NFL-window queries), T19 (verification rows), walkthrough items; the user's LAN files.
@@ -37,7 +37,7 @@ Journal 224 item 17, as it stands:
 
 ## Counters and deadlines
 
-- CT day Sep 17: dispatches 1 (fix-82; timers batch 1 of 12, clock from 10:03 CT); failed deploys 0; implementers running 1 of 3. Sep 16 closed at 5 dispatches, 0 failed deploys.
+- CT day Sep 17: dispatches 2 (fix-82, rev-fix-82; timers batch 2 of 12, clock from 10:03 CT); failed deploys 0; implementers running 1 of 3. Sep 16 closed at 5 dispatches, 0 failed deploys.
 - Next duties: **Fri 2026-09-18 07:30 CT release of fix 79 app-only, judge, tell the user (reminder 2026091801)**; daily 09:00 CT line Fri 2026-09-18 and the alias pass the morning after the Thursday games; 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT); the R4 window closes Thu about 14:30 CT; storage retention decision is the user's by 2026-09-22.
 - Wakeups: cron one-shot Thu 18:25 CT (this session only); cron one-shot Fri 07:27 CT (8d9728d0, fix 79 release); durable reminders 2026091702, 2026091801 and 2026091802 (Fri 18:25 CT after read; cron armed at Friday's release). Reminders through 2026091701 are consumed.
 
