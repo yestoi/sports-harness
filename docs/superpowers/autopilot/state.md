@@ -15,7 +15,7 @@ Updated 2026-09-17 09:20 CT (14:20 UTC) by controller session sports-26 in `/hom
 Journal 224 item 17, as it stands:
 
 1. Done: 7c3d750 (journal 233/234) and f7a1ccb (journal 237/238) released and verified; f8053c6 (fix 78 part 1) released and judged (journal 243/244).
-2. Fix 78 closed (journal 256); fix 81 closed (journal 261). If the user rules item 20 (a): hotfix batch `fix-2026-09-17-executor-prints` (opus/opus, design in packet item 20), app-only release outside the window.
+2. Fix 78 closed (journal 256); fix 81 closed (journal 261). If the user rules item 20 (a): hotfix batch `fix-2026-09-17-executor-prints` (opus/opus; draft brief and ledger under `.superpowers/sdd/hotfix-2026-09-17-executor-prints/`, nothing dispatched), app-only release outside the window.
 3. Verify after each release: journal 219's deferred rows, item 12's exec-health windows on 0d04804, item 16's tape-gap read (journal 229), durable re-reads of rows 49 and 68, the 6B by-cause row, the `fixes.md` Watch reads (56, 70).
 4. Operate: daily 09:00 CT line Thu 2026-09-17 done (journal 261; today's veto budget was spent by 09:00 CT); the storage retention proposal is written (`reports/2026-09-15-storage-retention-proposal.md`, journal 230; the user decides by 2026-09-22; nothing executed). 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT). The user does the LAN files (roadmap User-side TODOs). After the first full day at 300k the user runs usage.py (journal 247).
 
