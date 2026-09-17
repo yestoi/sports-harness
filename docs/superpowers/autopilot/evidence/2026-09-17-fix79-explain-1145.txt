@@ -1,0 +1,191 @@
+# fix 79 cache statement cost on production, read-only EXPLAIN (ANALYZE, BUFFERS), 2026-09-17 11:41 CT, runtime 1a12781
+# SQL: scratchpad ex79.sql (the emitted _PRINTS_TAIL of beb4f98 on the busiest working ticker; then the aggregate half, with and without the token sum, over every working ticker)
+\timing on
+set statement_timeout='120s';
+create temp table _w as
+select o.ticker, min(o.placed_at) - interval '60 seconds' as lower, count(*) as n_rows
+from orders o where o.replay=false and (o.status in ('open','partially_filled') or o.nw_done=false) group by 1;
+create temp table _top as
+select w.ticker, w.lower, w.n_rows,
+  (select count(*) from venue_trades v where v.ticker=w.ticker and v.ts>=w.lower) as prints,
+  (select max(ts) from venue_trades v where v.ticker=w.ticker and v.ts>=w.lower) as max_ts
+from _w w;
+select count(*) tickers, sum(prints) prints, max(prints) max_prints from _top;
+select ticker, lower, n_rows, prints, max_ts from _top order by prints desc limit 1 \gset
+\echo busiest :ticker :prints
+explain (analyze, buffers, timing off)
+select (select count(*) from venue_trades where ticker = :'ticker' and ts >= :'lower') as win_n,
+       (select min(ts) from venue_trades where ticker = :'ticker' and ts >= :'lower') as win_min_ts,
+       (select max(ts) from venue_trades where ticker = :'ticker' and ts >= :'lower') as win_max_ts,
+       (select sum(hashtextextended(venue || '/' || trade_id, (extract(epoch from ts) * 1000000)::bigint)) from venue_trades where ticker = :'ticker' and ts >= :'lower') as win_tok,
+       trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side, source,
+       hashtextextended(venue || '/' || trade_id, (extract(epoch from ts) * 1000000)::bigint) as tok
+from venue_trades where ticker = :'ticker' and ts >= :'max_ts' order by ts, trade_id;
+-- whole-set cost: the aggregate half for every working ticker
+explain (analyze, buffers, timing off)
+select t.ticker, a.* from _top t, lateral (
+  select count(*), min(ts), max(ts), sum(hashtextextended(venue || '/' || trade_id, (extract(epoch from ts) * 1000000)::bigint))
+  from venue_trades v where v.ticker=t.ticker and v.ts>=t.lower) a;
+explain (analyze, buffers, timing off)
+select t.ticker, a.* from _top t, lateral (
+  select count(*), min(ts), max(ts)
+  from venue_trades v where v.ticker=t.ticker and v.ts>=t.lower) a;
+
+Timing is on.
+SET
+Time: 0.163 ms
+SELECT 150
+Time: 44.969 ms
+SELECT 150
+Time: 57.086 ms
+ tickers | prints | max_prints 
+---------+--------+------------
+     150 | 124536 |      23878
+(1 row)
+
+Time: 0.247 ms
+Time: 0.188 ms
+busiest KXNFLGAME-26SEP17DETBUF-BUF 23878
+                                                                                                QUERY PLAN                                                                                                
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort  (cost=13534.08..13534.09 rows=3 width=191) (actual rows=1 loops=1)
+   Sort Key: venue_trades.ts, venue_trades.trade_id
+   Sort Method: quicksort  Memory: 25kB
+   Buffers: shared hit=10807 read=1222
+   InitPlan 1 (returns $0)
+     ->  Aggregate  (cost=2522.19..2522.20 rows=1 width=8) (actual rows=1 loops=1)
+           Buffers: shared hit=7907
+           ->  Append  (cost=0.42..2480.53 rows=16667 width=0) (actual rows=23878 loops=1)
+                 Buffers: shared hit=7907
+                 ->  Index Only Scan using venue_trades_y2026w38_ticker_ts_idx on venue_trades_y2026w38 venue_trades_4  (cost=0.42..2394.83 rows=16666 width=0) (actual rows=23878 loops=1)
+                       Index Cond: ((ticker = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                       Heap Fetches: 15542
+                       Buffers: shared hit=7905
+                 ->  Index Only Scan using venue_trades_y2026w39_ticker_ts_idx on venue_trades_y2026w39 venue_trades_5  (cost=0.14..2.36 rows=1 width=0) (actual rows=0 loops=1)
+                       Index Cond: ((ticker = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                       Heap Fetches: 0
+                       Buffers: shared hit=2
+   InitPlan 3 (returns $2)
+     ->  Result  (cost=0.72..0.73 rows=1 width=8) (actual rows=1 loops=1)
+           Buffers: shared hit=4
+           InitPlan 2 (returns $1)
+             ->  Limit  (cost=0.57..0.72 rows=1 width=8) (actual rows=1 loops=1)
+                   Buffers: shared hit=4
+                   ->  Append  (cost=0.57..2522.19 rows=16667 width=8) (actual rows=1 loops=1)
+                         Buffers: shared hit=4
+                         ->  Index Only Scan using venue_trades_y2026w38_ticker_ts_idx on venue_trades_y2026w38 venue_trades_7  (cost=0.42..2436.49 rows=16666 width=8) (actual rows=1 loops=1)
+                               Index Cond: ((ticker = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts IS NOT NULL) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                               Heap Fetches: 0
+                               Buffers: shared hit=4
+                         ->  Index Only Scan using venue_trades_y2026w39_ticker_ts_idx on venue_trades_y2026w39 venue_trades_8  (cost=0.14..2.37 rows=1 width=8) (never executed)
+                               Index Cond: ((ticker = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts IS NOT NULL) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                               Heap Fetches: 0
+   InitPlan 5 (returns $4)
+     ->  Result  (cost=0.72..0.73 rows=1 width=8) (actual rows=1 loops=1)
+           Buffers: shared hit=7
+           InitPlan 4 (returns $3)
+             ->  Limit  (cost=0.57..0.72 rows=1 width=8) (actual rows=1 loops=1)
+                   Buffers: shared hit=7
+                   ->  Append  (cost=0.57..2522.19 rows=16667 width=8) (actual rows=1 loops=1)
+                         Buffers: shared hit=7
+                         ->  Index Only Scan Backward using venue_trades_y2026w39_ticker_ts_idx on venue_trades_y2026w39 venue_trades_11  (cost=0.14..2.37 rows=1 width=8) (actual rows=0 loops=1)
+                               Index Cond: ((ticker = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts IS NOT NULL) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                               Heap Fetches: 0
+                               Buffers: shared hit=2
+                         ->  Index Only Scan Backward using venue_trades_y2026w38_ticker_ts_idx on venue_trades_y2026w38 venue_trades_10  (cost=0.42..2436.49 rows=16666 width=8) (actual rows=1 loops=1)
+                               Index Cond: ((ticker = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts IS NOT NULL) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                               Heap Fetches: 1
+                               Buffers: shared hit=5
+   InitPlan 6 (returns $5)
+     ->  Aggregate  (cost=11004.22..11004.23 rows=1 width=32) (actual rows=1 loops=1)
+           Buffers: shared hit=2877 read=1222
+           ->  Append  (cost=369.25..10712.55 rows=16667 width=52) (actual rows=23878 loops=1)
+                 Buffers: shared hit=2877 read=1222
+                 ->  Bitmap Heap Scan on venue_trades_y2026w38 venue_trades_13  (cost=369.25..10626.85 rows=16666 width=52) (actual rows=23878 loops=1)
+                       Recheck Cond: (((ticker)::text = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                       Heap Blocks: exact=3791
+                       Buffers: shared hit=2875 read=1222
+                       ->  Bitmap Index Scan on venue_trades_y2026w38_ticker_ts_idx  (cost=0.00..365.09 rows=16666 width=0) (actual rows=23878 loops=1)
+                             Index Cond: (((ticker)::text = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                             Buffers: shared hit=306
+                 ->  Index Scan using venue_trades_y2026w39_ticker_ts_idx on venue_trades_y2026w39 venue_trades_14  (cost=0.14..2.36 rows=1 width=204) (actual rows=0 loops=1)
+                       Index Cond: (((ticker)::text = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts >= '2026-09-14 15:33:00.393364+00'::timestamp with time zone))
+                       Buffers: shared hit=2
+   ->  Append  (cost=0.42..6.16 rows=3 width=191) (actual rows=1 loops=1)
+         Buffers: shared hit=10801 read=1222
+         ->  Index Scan using venue_trades_y2026w38_ticker_ts_idx on venue_trades_y2026w38 venue_trades_1  (cost=0.42..3.76 rows=2 width=191) (actual rows=1 loops=1)
+               Index Cond: (((ticker)::text = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts >= '2026-09-17 16:40:55.32+00'::timestamp with time zone))
+               Buffers: shared hit=10799 read=1222
+         ->  Index Scan using venue_trades_y2026w39_ticker_ts_idx on venue_trades_y2026w39 venue_trades_2  (cost=0.14..2.38 rows=1 width=191) (actual rows=0 loops=1)
+               Index Cond: (((ticker)::text = 'KXNFLGAME-26SEP17DETBUF-BUF'::text) AND (ts >= '2026-09-17 16:40:55.32+00'::timestamp with time zone))
+               Buffers: shared hit=2
+ Planning:
+   Buffers: shared hit=66 read=6 dirtied=1
+ Planning Time: 0.505 ms
+ Execution Time: 21.996 ms
+(75 rows)
+
+Time: 23.090 ms
+                                                                               QUERY PLAN                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=1276.97..498038.33 rows=390 width=202) (actual rows=150 loops=1)
+   Buffers: shared hit=74739 read=3194, local hit=2
+   ->  Seq Scan on _top t  (cost=0.00..13.90 rows=390 width=154) (actual rows=150 loops=1)
+         Buffers: local hit=2
+   ->  Aggregate  (cost=1276.97..1276.98 rows=1 width=56) (actual rows=1 loops=150)
+         Buffers: shared hit=74739 read=3194
+         ->  Append  (cost=0.42..1249.04 rows=1117 width=52) (actual rows=830 loops=150)
+               Buffers: shared hit=74739 read=3194
+               ->  Index Scan using ix_trades_ticker_ts_legacy on venue_trades_legacy v_1  (cost=0.42..483.57 rows=441 width=52) (never executed)
+                     Index Cond: (((ticker)::text = (t.ticker)::text) AND (ts >= t.lower))
+               ->  Index Scan using venue_trades_y2026w37_ticker_ts_idx on venue_trades_y2026w37 v_2  (cost=0.56..579.52 rows=513 width=52) (actual rows=4 loops=1)
+                     Index Cond: (((ticker)::text = (t.ticker)::text) AND (ts >= t.lower))
+                     Buffers: shared hit=5
+               ->  Index Scan using venue_trades_y2026w38_ticker_ts_idx on venue_trades_y2026w38 v_3  (cost=0.42..178.00 rows=162 width=52) (actual rows=830 loops=150)
+                     Index Cond: (((ticker)::text = (t.ticker)::text) AND (ts >= t.lower))
+                     Buffers: shared hit=74434 read=3194
+               ->  Index Scan using venue_trades_y2026w39_ticker_ts_idx on venue_trades_y2026w39 v_4  (cost=0.14..2.36 rows=1 width=204) (actual rows=0 loops=150)
+                     Index Cond: (((ticker)::text = (t.ticker)::text) AND (ts >= t.lower))
+                     Buffers: shared hit=300
+ Planning:
+   Buffers: shared hit=18 read=1
+ Planning Time: 0.225 ms
+ JIT:
+   Functions: 29
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+ Execution Time: 98.224 ms
+(26 rows)
+
+Time: 98.776 ms
+                                                                                QUERY PLAN                                                                                 
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=254.19..99154.28 rows=390 width=170) (actual rows=150 loops=1)
+   Buffers: shared hit=48164, local hit=2
+   ->  Seq Scan on _top t  (cost=0.00..13.90 rows=390 width=154) (actual rows=150 loops=1)
+         Buffers: local hit=2
+   ->  Aggregate  (cost=254.19..254.20 rows=1 width=24) (actual rows=1 loops=150)
+         Buffers: shared hit=48164
+         ->  Append  (cost=0.42..245.81 rows=1117 width=8) (actual rows=830 loops=150)
+               Buffers: shared hit=48164
+               ->  Index Only Scan using ix_trades_ticker_ts_legacy on venue_trades_legacy v_1  (cost=0.42..88.96 rows=441 width=8) (never executed)
+                     Index Cond: ((ticker = (t.ticker)::text) AND (ts >= t.lower))
+                     Heap Fetches: 0
+               ->  Index Only Scan using venue_trades_y2026w37_ticker_ts_idx on venue_trades_y2026w37 v_2  (cost=0.56..112.02 rows=513 width=8) (actual rows=4 loops=1)
+                     Index Cond: ((ticker = (t.ticker)::text) AND (ts >= t.lower))
+                     Heap Fetches: 4
+                     Buffers: shared hit=6
+               ->  Index Only Scan using venue_trades_y2026w38_ticker_ts_idx on venue_trades_y2026w38 v_3  (cost=0.42..36.89 rows=162 width=8) (actual rows=830 loops=150)
+                     Index Cond: ((ticker = (t.ticker)::text) AND (ts >= t.lower))
+                     Heap Fetches: 77012
+                     Buffers: shared hit=47858
+               ->  Index Only Scan using venue_trades_y2026w39_ticker_ts_idx on venue_trades_y2026w39 v_4  (cost=0.14..2.36 rows=1 width=8) (actual rows=0 loops=150)
+                     Index Cond: ((ticker = (t.ticker)::text) AND (ts >= t.lower))
+                     Heap Fetches: 0
+                     Buffers: shared hit=300
+ Planning:
+   Buffers: shared hit=7
+ Planning Time: 0.133 ms
+ Execution Time: 30.499 ms
+(27 rows)
+
+Time: 30.850 ms
