@@ -94,3 +94,35 @@ Ruled 07:20 CT Wed (journal 253): (a) restricted with (b)'s batching and counter
 ### 19. Veto spend caps: the ISO-week cap binds early on NFL Sunday at the current rate
 
 The $25 daily cap (`veto_daily_usd_cap`) has bound every day since Sun 13 Sep ($24.41-24.60 a day, 268-947 calls). The weekly cap (`veto_weekly_usd_cap`, $150) sums the ISO week, Monday to Sunday; Mon-Wed spent $73.30, so at $24.4 a day the week reaches about $147 by Saturday night and Sunday has about $3.50 before every call is refused. The veto is then dormant for the NFL slate. Options: (a) keep both caps and accept a dormant Sunday; (b) raise the weekly cap to $175 (7 × $25) so only the daily cap binds, at most $25 more a week; (c) lower the weekday daily cap (for example $15 Mon-Thu) to bank about $40 for Sunday; (d) something else. Loop's lean: (b). Gate 6: the caps and their code are the user's; the loop changes nothing until ruled. Due before Sat 19 Sep.
+
+## Added Thu 2026-09-17 09:10 CT
+
+### 19. Update
+
+Thursday's $24.40 was spent by 09:00 CT (578 calls), so the veto is dormant for tonight's two games. The ISO week stands at $97.70 through Thursday; the Sunday projection in item 19 is unchanged.
+
+### 20. Executor loop over the bound again: the print rescan (row 79) is now the largest phase
+
+**What happened.** The loop-metrics row passed twice on 747791c on Wednesday morning (p95 6,974 and 6,737 ms, journal 256/258). At the Thursday daily line it reads FAIL: heartbeat p95 17,809 ms against 7,500, loops skipped 4,494 of 44,002 since the restart, median loop 10.4 s and 203 of 1,179 sampled loops over 15 s since the release. Evidence: `evidence/2026-09-17-daily-0857.txt`.
+
+**Cause, measured.** Part 3's budget holds (`exec.phase_walk_ms` 1.2-1.7 s every hour). The phase that grew is the tape read, which your item 18 ruling left unbudgeted:
+
+| Hour (CT) | pending rows | tape ms | walk ms | batch ms | per-row ms | loop ms |
+|---|---|---|---|---|---|---|
+| Wed 10 | 13,001 | 1,885 | 1,635 | 307 | 505 | 7,210 |
+| Wed 16 | 16,478 | 3,909 | 1,416 | 256 | 791 | 10,472 |
+| Wed 22 | 19,929 | 6,471 | 1,181 | 219 | 1,170 | 12,617 |
+| Thu 08 | 21,563 | 6,537 | 1,710 | 228 | 827 | 14,209 |
+
+`_tape` re-reads every print since the earliest `placed_at` on each ticker, every loop (row 79, your follow-up of journal 242). That is now 112,234 `venue_trades` rows a loop over 149 tickers (34,014 when you measured it Tuesday; item 18's note that it was worth about a second no longer holds). The oldest pending row was placed Sun 13 Sep, and rows do not leave until their game's expiry. Monday's game window printed 33,000 to 105,000 trades an hour, so tonight's window adds to the rescan every loop and loops of 25 s or more are likely during the 6D/6B acceptance read. The remainder outside the timers (about 4-5 s, and the 150-order placement loops at 27-38 s) is row 82.
+
+**Why it is yours.** Row 79 sits in Watch as your ruled follow-up ("do not fix them here"), and a Watch row returns to Open only on your ruling. Journal 242 also says to bring a still-failing p95 back as a packet item. Nothing is dispatched.
+
+**Options.**
+- (a) Hotfix row 79 now, value-identical: keep each ticker's prints in executor memory and refresh them incrementally. Both writers of `venue_trades` are insert-only (`on_conflict_do_nothing`; no UPDATE exists under `harness/`), so a per-ticker `count(*)` over the same window proves the cache complete each loop; a mismatch that the rows at or after the cached maximum `ts` do not explain (a late REST backfill) falls back to today's full read for that ticker. Same window, same rows, same order, same dedupe; replay keeps today's read. Opus implementer and opus reviewer, an identity test against today's `load_prints` including a late backfill, app-only release. Ships today only if the review and the full suite are clean by about 14:00 CT; otherwise Friday morning.
+- (b) Leave it through tonight and measure the window as it is; take (a) Friday morning. The acceptance read then runs with skipped ticks, and dirty time accrues at 15 s nominal per observed loop as in journal 253's measurement note.
+- (c) Narrow the SQL window to each ticker's lowest print floor. Cheaper still, but a late REST backfill above a floor would no longer be applied: that changes stored values. Not recommended.
+- (d) Your own wording.
+
+**Recommendation.** (a). Answer in chat as "item 20: (a)" or your own wording; the loop records it verbatim. Measurement note either way: from about Wed 19:00 CT loops ran 15-17 s against the 15 s period (longer on placement loops), so dirty time accrued at 15 s nominal per observed loop from then until a fix ships.
+

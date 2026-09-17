@@ -3025,3 +3025,17 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0.
 - Result: PASS.
 - Next: idle, wakeup Thu 08:57 CT.
+
+## 261. operate - daily line Thu: row 81 PASS; loop-metrics FAIL again (row 79, packet item 20) - 2026-09-17 08:57-09:20 CT
+
+- Orient: rule 4 (cron f3b36ade, reminder 2026091701 consumed). Bootstrap reloaded after compaction; no agents, no suites, checkout clean. Entry 260 was written Wed 11:25 CT by a separate user-directed session (gateway runbook, no release); state.md still said 259 and is corrected here.
+- Daily line (`evidence/2026-09-17-daily-0857.txt`): free space 785 of 952 GB (82 % free); memory 13,840 MB available, swap 1.9 GB; database 144.8 GB of 600 (db.size_gb 134.6, +2.2 a day); Odds credits 4,894,255 (2,679 in 24 h); Anthropic $24.40 today, spent by 09:00 CT (578 calls; the veto is dormant for tonight's games), $24.47 Wed, ISO week $97.70 through Thu (packet item 19 updated); no ERROR lines in the last hour in any service; verify-summary 9 of 9 PASS on 747791c; kill switch inactive (observed); live games 0; next kickoffs Thu 18:30 CT NCAAF and 19:15 CT NFL.
+- R3: desktop notification sent (rc 0); PushNotification returned "Not sent - this terminal is active".
+- Row 81: PASS. Zero negative `metric_samples` values in 24 h; `ws.sink_lag_s` 1,338 samples since the fix, minimum 0; the last `check_failed` for `metric_samples_negative_24h` is Wed 04:56 CT, before the fix. Row moved to Closed.
+- Anomaly, loop metrics: heartbeat p95 17,809 ms against 7,500 (last loop 17,646 ms), loops skipped 4,494 of 44,002, median 10.4 s and p95 17.5 s over 1,179 samples since the release, 203 over 15 s. Part 3's budget holds (walk 1.2-1.7 s every hour). The tape read grew from 1.9 s at 13,001 pending rows (Wed 10 CT) to 6.5 s at 21,563 (Thu 08 CT): `_tape` re-reads every print since the earliest `placed_at` per ticker each loop, now 112,234 `venue_trades` rows over 149 tickers (row 79; the user measured 34,014 on Tue). Monday's window printed 33,000-105,000 trades an hour, so tonight's window will lengthen it further.
+- Row 82 count: 32 loops over 15 s coincided with a placement wave (`exec.placed` 121-150, 15.5-38.7 s); the other 171 had `exec.placed` 0 and ran 15.0-20.3 s on the tape growth alone.
+- Not dispatched: row 79 is the user's ruled follow-up (journal 242: "do not fix them here"); Watch to Open needs the user's ruling, and 242 says a still-failing p95 returns as a packet item. Written as packet item 20 with a value-identical design (in-memory print cache, insert-only writers verified at normalize/kalshi.py:260 and recorder/ws_sink.py:213, count guard, full-read fallback), options (a)-(d), lean (a). Row 79's Deploy cell points to it. Not the twice-running ceiling (256 and 258 were PASS).
+- Measurement note: from about Wed 19:00 CT loops ran 15-17 s against the 15 s period, so dirty time accrues at 15 s nominal per observed loop from then until a fix ships.
+- Dispatches: 0.
+- Result: daily line done; row 81 closed; one anomaly returned to the user (packet item 20). Needs you: items 20 (before tonight if it is to ship today, else Friday), 19, 1.
+- Next: Orient; idle until the user rules or the Thu 18:25 CT wakeup (cron 6ff52321, reminder 2026091702).

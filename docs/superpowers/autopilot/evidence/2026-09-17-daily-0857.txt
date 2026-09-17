@@ -1,0 +1,305 @@
+daily_line_at=2026-09-17T13:59:30Z (08:59 CT)
+== df
+/dev/mapper/root  952G  162G  785G  18% /srv/sports-harness
+== free -m
+Mem:           31904       18064        1340        1868       16106       13840
+Swap:          63808        1915       61893
+== db size / growth / credits / spend / heartbeat
+Output format is unaligned.
+SET
+db_size_gb 135 GB (144.8 GB decimal)
+db.size_gb sample 2026-09-13 09:02:29.762524+00 99.464200
+db.size_gb sample 2026-09-14 10:36:24.861016+00 121.878400
+db.size_gb sample 2026-09-15 09:06:16.646967+00 129.921900
+db.size_gb sample 2026-09-16 09:56:09.037257+00 132.366700
+db.size_gb sample 2026-09-17 09:02:12.224926+00 134.562800
+credits_now 4894255.000000 at 2026-09-17 13:57:42.224392+00
+credits_24h_ago 4896934.000000 at 2026-09-16 13:57:09.037235+00
+exec_heartbeat age_s 34 loop_ms 17646 p95 17809 skipped 4494 loops 44002 open 1 err null ver 4.5 at 2026-09-17 13:58:57.249652+00
+exec_nw_pending 21818.000000 at 2026-09-17 13:58:27.24951+00
+exec_loop_ms_last_hour n=51 median 11576 p95 19133 max 38749
+exec_loop_ms_overnight(02-07CT) n=257 median 10525 p95 17363
+exec_phase_last_hour tape 3944 walk 2191 batch 594 per_row 2362 per_row_n 71
+last_run 23424 2026-09-17 13:59:12.224235+00 skipped build 747791c
+settle_last 252 2026-09-17 13:02:12.225923+00 2026-09-17 13:04:42.920518+00 ok budget_exhausted false
+settle_last 251 2026-09-17 12:02:12.225161+00 2026-09-17 12:03:33.089266+00 ok budget_exhausted false
+operator_events_24h ws_connect x5, ws_disconnect x4, deploy x2
+live_games 0
+next_kickoffs Thu 18:30 ncaaf, Thu 19:15 nfl, Fri 18:30 ncaaf, Fri 19:00 ncaaf, Fri 21:30 ncaaf
+== spend (research_spend)
+Output format is unaligned.
+spend_today_ct 2026-09-17 usd 24.3994 reserved 0.0000 calls 578
+spend_by_kind_model_today veto/claude-opus-5 usd 13.1182 reserved 0.0000 calls 289
+spend_by_kind_model_today veto/claude-sonnet-5 usd 11.2812 reserved 0.0000 calls 289
+spend_yesterday usd 24.4714
+spend_iso_week usd 97.7019 from 2026-09-14 to 2026-09-17
+== ERROR lines last hour per service (messages)
+-- app-run
+-- app-serve
+-- app-ws
+-- app-exec
+-- app-research
+== kill switch / summary
+PASS build: page 747791c vs deploy 747791c
+PASS sections: no section errors
+PASS page_time: / 0.4s, /api/summary 0.6s
+PASS run_id: page 23424 vs sql 23424
+PASS ws_last_event: page age 1s vs sql 4s
+PASS candidates_24h: every active variant within 5 % (or 20 rows) of SQL
+PASS kill_switch: active=False
+PASS credits_numeric: credits=4894255
+PASS data_quality_shape: section rendered (empty is allowed in quiet hours)
+== age key (ls -l only)
+ls: cannot access '/srv/sports-harness/secrets/backup_age_key': No such file or directory
+== row 81 / row 82 / item 19 reads
+Output format is unaligned.
+SET
+neg_24h_total 0
+sink_lag_since_fix n=1338 min 0.000000 max 98.443
+check_failed_last 2026-09-16 09:56:09.037257+00 metric_samples_negative_24h
+check_failed_last 2026-09-15 09:06:16.646967+00 intents_without_order_or_skip
+check_failed_last 2026-09-14 10:36:24.861016+00 intents_without_order_or_skip
+check_failed_last 2026-09-14 10:36:24.861016+00 fills_outside_placement_window
+loop_ms_since_release n=1179 median 10406 p95 17529 max 38749 over15s 203 over7500 978
+slow_loop Wed 10:19:27 ms 26867 placed 150
+slow_loop Wed 10:49:42 ms 27904 placed 150
+slow_loop Wed 11:04:57 ms 28015 placed 144
+slow_loop Wed 11:35:27 ms 26618 placed 150
+slow_loop Wed 12:36:27 ms 31032 placed 150
+slow_loop Wed 13:06:57 ms 26595 placed 150
+slow_loop Wed 13:37:57 ms 27299 placed 150
+slow_loop Wed 13:52:57 ms 27846 placed 150
+slow_loop Wed 15:24:27 ms 28220 placed 150
+slow_loop Wed 15:39:57 ms 33948 placed 150
+slow_loop Wed 15:55:12 ms 28557 placed 149
+slow_loop Wed 16:26:12 ms 26400 placed 138
+slow_loop Wed 16:27:27 ms 15205 placed 0
+slow_loop Wed 16:41:42 ms 27587 placed 145
+slow_loop Wed 16:56:57 ms 27835 placed 147
+slow_loop Wed 17:42:12 ms 27556 placed 143
+slow_loop Wed 17:57:12 ms 27336 placed 138
+slow_loop Wed 18:03:12 ms 15145 placed 0
+slow_loop Wed 18:16:42 ms 15009 placed 0
+slow_loop Wed 18:28:27 ms 29543 placed 150
+slow_loop Wed 18:58:27 ms 29457 placed 150
+slow_loop Wed 18:59:42 ms 15138 placed 0
+slow_loop Wed 19:04:27 ms 15261 placed 0
+slow_loop Wed 19:10:27 ms 15146 placed 0
+slow_loop Wed 19:16:57 ms 15914 placed 0
+slow_loop Wed 19:20:12 ms 15234 placed 0
+slow_loop Wed 19:26:12 ms 15422 placed 0
+slow_loop Wed 19:30:42 ms 15518 placed 141
+slow_loop Wed 19:33:57 ms 15242 placed 0
+slow_loop Wed 19:37:12 ms 15296 placed 0
+slow_loop Wed 19:43:12 ms 15466 placed 0
+slow_loop Wed 19:45:27 ms 30591 placed 150
+slow_loop Wed 19:46:57 ms 15559 placed 0
+slow_loop Wed 19:50:12 ms 15131 placed 0
+slow_loop Wed 19:54:42 ms 15169 placed 0
+slow_loop Wed 20:00:42 ms 37124 placed 150
+slow_loop Wed 20:05:42 ms 15271 placed 0
+slow_loop Wed 20:13:27 ms 15818 placed 0
+slow_loop Wed 20:15:42 ms 15756 placed 148
+slow_loop Wed 20:21:42 ms 15951 placed 0
+slow_loop Wed 20:26:27 ms 15462 placed 0
+slow_loop Wed 20:33:12 ms 16207 placed 0
+slow_loop Wed 20:39:12 ms 16010 placed 0
+slow_loop Wed 20:42:27 ms 15300 placed 0
+slow_loop Wed 20:45:57 ms 31202 placed 150
+slow_loop Wed 20:48:57 ms 16141 placed 0
+slow_loop Wed 20:53:27 ms 15505 placed 0
+slow_loop Wed 20:54:42 ms 15997 placed 0
+slow_loop Wed 20:57:57 ms 15766 placed 0
+slow_loop Wed 21:01:27 ms 31173 placed 150
+slow_loop Wed 21:02:42 ms 16373 placed 0
+slow_loop Wed 21:03:57 ms 16817 placed 0
+slow_loop Wed 21:08:27 ms 15609 placed 0
+slow_loop Wed 21:14:12 ms 15777 placed 0
+slow_loop Wed 21:15:27 ms 15667 placed 0
+slow_loop Wed 21:20:12 ms 16731 placed 0
+slow_loop Wed 21:26:12 ms 16527 placed 0
+slow_loop Wed 21:34:12 ms 16363 placed 0
+slow_loop Wed 21:39:57 ms 16324 placed 0
+slow_loop Wed 21:45:57 ms 16264 placed 0
+slow_loop Wed 21:50:42 ms 16548 placed 0
+slow_loop Wed 21:57:57 ms 16656 placed 0
+slow_loop Wed 22:07:12 ms 16138 placed 0
+slow_loop Wed 22:12:57 ms 16332 placed 0
+slow_loop Wed 22:17:42 ms 17177 placed 150
+slow_loop Wed 22:24:57 ms 16490 placed 0
+slow_loop Wed 22:30:27 ms 16403 placed 0
+slow_loop Wed 22:32:27 ms 31401 placed 147
+slow_loop Wed 22:33:57 ms 17933 placed 0
+slow_loop Wed 22:35:12 ms 19068 placed 0
+slow_loop Wed 22:40:57 ms 16300 placed 0
+slow_loop Wed 22:42:12 ms 17022 placed 0
+slow_loop Wed 22:47:57 ms 37712 placed 147
+slow_loop Wed 22:49:27 ms 17852 placed 0
+slow_loop Wed 22:55:12 ms 16503 placed 0
+slow_loop Wed 22:56:27 ms 16809 placed 0
+slow_loop Wed 23:02:12 ms 16867 placed 0
+slow_loop Wed 23:02:57 ms 32725 placed 150
+slow_loop Wed 23:05:27 ms 16911 placed 0
+slow_loop Wed 23:06:42 ms 15829 placed 0
+slow_loop Wed 23:12:27 ms 16722 placed 0
+slow_loop Wed 23:13:42 ms 16101 placed 0
+slow_loop Wed 23:18:27 ms 32220 placed 150
+slow_loop Wed 23:19:57 ms 16855 placed 0
+slow_loop Wed 23:21:12 ms 17521 placed 0
+slow_loop Wed 23:25:27 ms 16420 placed 0
+slow_loop Wed 23:26:42 ms 16837 placed 0
+slow_loop Wed 23:38:12 ms 16878 placed 0
+slow_loop Wed 23:39:27 ms 17518 placed 0
+slow_loop Wed 23:47:42 ms 17237 placed 0
+slow_loop Wed 23:50:57 ms 18367 placed 0
+slow_loop Wed 23:52:12 ms 17096 placed 0
+slow_loop Wed 23:59:12 ms 16561 placed 0
+slow_loop Thu 00:00:27 ms 17048 placed 0
+slow_loop Thu 00:01:42 ms 17394 placed 0
+slow_loop Thu 00:03:57 ms 33968 placed 137
+slow_loop Thu 00:06:27 ms 17070 placed 0
+slow_loop Thu 00:07:42 ms 17342 placed 0
+slow_loop Thu 00:08:57 ms 17653 placed 0
+slow_loop Thu 00:15:57 ms 16953 placed 0
+slow_loop Thu 00:17:12 ms 17449 placed 0
+slow_loop Thu 00:18:27 ms 17346 placed 0
+slow_loop Thu 00:24:27 ms 17357 placed 0
+slow_loop Thu 00:25:42 ms 17717 placed 0
+slow_loop Thu 00:29:57 ms 17160 placed 0
+slow_loop Thu 00:31:12 ms 16963 placed 0
+slow_loop Thu 00:32:27 ms 17610 placed 0
+slow_loop Thu 00:35:57 ms 16215 placed 0
+slow_loop Thu 00:36:57 ms 17808 placed 0
+slow_loop Thu 00:45:12 ms 17104 placed 0
+slow_loop Thu 00:46:27 ms 17291 placed 0
+slow_loop Thu 00:47:42 ms 17404 placed 0
+slow_loop Thu 00:48:57 ms 17621 placed 0
+slow_loop Thu 00:52:42 ms 20331 placed 0
+slow_loop Thu 00:55:12 ms 17190 placed 0
+slow_loop Thu 00:56:27 ms 17245 placed 0
+slow_loop Thu 00:57:42 ms 17895 placed 0
+slow_loop Thu 01:03:12 ms 29017 placed 0
+slow_loop Thu 01:04:27 ms 17719 placed 0
+slow_loop Thu 01:09:57 ms 16798 placed 0
+slow_loop Thu 01:11:12 ms 17222 placed 0
+slow_loop Thu 01:12:27 ms 17241 placed 0
+slow_loop Thu 01:21:57 ms 17038 placed 0
+slow_loop Thu 01:23:12 ms 17024 placed 0
+slow_loop Thu 01:24:27 ms 17224 placed 0
+slow_loop Thu 01:29:57 ms 17044 placed 0
+slow_loop Thu 01:31:12 ms 16853 placed 0
+slow_loop Thu 01:32:27 ms 17099 placed 0
+slow_loop Thu 01:33:42 ms 16975 placed 0
+slow_loop Thu 01:37:57 ms 16976 placed 0
+slow_loop Thu 01:39:12 ms 16991 placed 0
+slow_loop Thu 01:40:27 ms 18678 placed 0
+slow_loop Thu 01:41:42 ms 17354 placed 0
+slow_loop Thu 01:47:12 ms 17031 placed 0
+slow_loop Thu 01:48:27 ms 17084 placed 0
+slow_loop Thu 01:49:42 ms 17734 placed 0
+slow_loop Thu 01:50:57 ms 17431 placed 0
+slow_loop Thu 01:57:42 ms 17315 placed 0
+slow_loop Thu 01:58:57 ms 17326 placed 0
+slow_loop Thu 02:00:12 ms 17897 placed 0
+slow_loop Thu 02:06:57 ms 17335 placed 0
+slow_loop Thu 02:08:12 ms 17057 placed 0
+slow_loop Thu 02:09:27 ms 17301 placed 0
+slow_loop Thu 02:10:42 ms 17033 placed 0
+slow_loop Thu 02:11:57 ms 17123 placed 0
+slow_loop Thu 02:12:57 ms 19992 placed 0
+slow_loop Thu 02:14:12 ms 16916 placed 0
+slow_loop Thu 02:15:27 ms 17057 placed 0
+slow_loop Thu 02:16:42 ms 17571 placed 0
+slow_loop Thu 02:17:57 ms 17717 placed 0
+slow_loop Thu 02:19:12 ms 17523 placed 0
+slow_loop Thu 02:20:27 ms 17528 placed 0
+slow_loop Thu 02:21:42 ms 19165 placed 0
+slow_loop Thu 02:22:57 ms 17361 placed 0
+slow_loop Thu 02:24:12 ms 17172 placed 0
+slow_loop Thu 02:25:12 ms 17331 placed 0
+slow_loop Thu 02:26:27 ms 17388 placed 0
+slow_loop Thu 02:27:42 ms 17561 placed 0
+slow_loop Thu 02:28:57 ms 17226 placed 0
+slow_loop Thu 02:30:12 ms 16904 placed 0
+slow_loop Thu 02:31:27 ms 17153 placed 0
+slow_loop Thu 02:32:42 ms 16833 placed 0
+slow_loop Thu 02:33:57 ms 16754 placed 0
+slow_loop Thu 02:34:57 ms 17261 placed 0
+slow_loop Thu 02:36:12 ms 17361 placed 0
+slow_loop Thu 02:37:27 ms 15190 placed 0
+slow_loop Thu 02:38:42 ms 15427 placed 0
+slow_loop Thu 02:39:57 ms 15200 placed 0
+slow_loop Thu 02:42:27 ms 15256 placed 0
+slow_loop Thu 02:43:42 ms 15142 placed 0
+slow_loop Thu 02:45:57 ms 17389 placed 0
+slow_loop Thu 02:49:27 ms 17038 placed 0
+slow_loop Thu 02:50:42 ms 17120 placed 0
+slow_loop Thu 02:51:57 ms 17265 placed 0
+slow_loop Thu 02:54:27 ms 15150 placed 0
+slow_loop Thu 02:57:42 ms 15153 placed 0
+slow_loop Thu 03:58:57 ms 16749 placed 0
+slow_loop Thu 04:00:12 ms 17485 placed 0
+slow_loop Thu 06:11:42 ms 17370 placed 0
+slow_loop Thu 06:12:57 ms 17258 placed 0
+slow_loop Thu 06:14:12 ms 18645 placed 0
+slow_loop Thu 07:26:12 ms 17185 placed 0
+slow_loop Thu 07:27:27 ms 16936 placed 0
+slow_loop Thu 07:28:27 ms 17362 placed 0
+slow_loop Thu 07:29:42 ms 17383 placed 0
+slow_loop Thu 08:02:57 ms 19592 placed 121
+slow_loop Thu 08:04:12 ms 18674 placed 10
+slow_loop Thu 08:05:27 ms 17539 placed 19
+slow_loop Thu 08:06:27 ms 17679 placed 0
+slow_loop Thu 08:07:42 ms 17574 placed 0
+slow_loop Thu 08:08:57 ms 17439 placed 0
+slow_loop Thu 08:09:57 ms 17559 placed 0
+slow_loop Thu 08:11:12 ms 17432 placed 0
+slow_loop Thu 08:12:27 ms 16868 placed 0
+slow_loop Thu 08:13:27 ms 17545 placed 0
+slow_loop Thu 08:14:42 ms 17079 placed 0
+slow_loop Thu 08:15:42 ms 17230 placed 0
+slow_loop Thu 08:16:57 ms 38749 placed 150
+slow_loop Thu 08:32:42 ms 31851 placed 144
+slow_loop Thu 08:43:42 ms 16933 placed 0
+slow_loop Thu 08:44:57 ms 17243 placed 0
+slow_loop Thu 08:46:12 ms 17159 placed 0
+slow_loop Thu 08:47:12 ms 17567 placed 0
+spend_day 2026-09-14 usd 24.42 calls 947
+spend_day 2026-09-15 usd 24.41 calls 388
+spend_day 2026-09-16 usd 24.47 calls 558
+spend_day 2026-09-17 usd 24.40 calls 578
+skipped_budget_today 0
+== hourly executor phases since the 747791c release, and the print rescan volume (09:01-09:03 CT reads)
+Wed 09 n=18 loop 7731 tape 1881 walk 1809 batch 479 per_row 343 per_row_n 56 pending 12608 deferred 5015 tickers 77 budget_ms 2000 dirty -
+Wed 10 n=54 loop 7210 tape 1885 walk 1635 batch 307 per_row 505 per_row_n 118 pending 13001 deferred 7738 tickers 81 budget_ms 2000 dirty -
+Wed 11 n=53 loop 8091 tape 2109 walk 1663 batch 320 per_row 511 per_row_n 96 pending 13588 deferred 8190 tickers 83 budget_ms 2000 dirty -
+Wed 12 n=52 loop 8515 tape 2597 walk 1598 batch 402 per_row 551 per_row_n 84 pending 14181 deferred 9734 tickers 94 budget_ms 2000 dirty -
+Wed 13 n=51 loop 9254 tape 2844 walk 1510 batch 388 per_row 721 per_row_n 87 pending 14772 deferred 10106 tickers 87 budget_ms 2000 dirty -
+Wed 14 n=52 loop 8534 tape 3228 walk 1483 batch 306 per_row 705 per_row_n 75 pending 15336 deferred 9301 tickers 74 budget_ms 2000 dirty -
+Wed 15 n=51 loop 10099 tape 3414 walk 1557 batch 277 per_row 755 per_row_n 74 pending 15915 deferred 10358 tickers 80 budget_ms 2000 dirty -
+Wed 16 n=53 loop 10472 tape 3909 walk 1416 batch 256 per_row 791 per_row_n 73 pending 16478 deferred 10307 tickers 75 budget_ms 2000 dirty -
+Wed 17 n=53 loop 10191 tape 4056 walk 1412 batch 266 per_row 797 per_row_n 67 pending 17048 deferred 11087 tickers 80 budget_ms 2000 dirty -
+Wed 18 n=52 loop 11171 tape 4660 walk 1402 batch 248 per_row 815 per_row_n 65 pending 17621 deferred 12086 tickers 86 budget_ms 2000 dirty -
+Wed 19 n=52 loop 11134 tape 5038 walk 1288 batch 226 per_row 989 per_row_n 68 pending 18189 deferred 12295 tickers 82 budget_ms 2000 dirty -
+Wed 20 n=51 loop 11939 tape 5233 walk 1308 batch 202 per_row 1112 per_row_n 63 pending 18751 deferred 13557 tickers 89 budget_ms 2000 dirty -
+Wed 21 n=51 loop 11764 tape 5893 walk 1241 batch 232 per_row 1200 per_row_n 58 pending 19338 deferred 12730 tickers 80 budget_ms 2000 dirty -
+Wed 22 n=52 loop 12617 tape 6471 walk 1181 batch 219 per_row 1170 per_row_n 51 pending 19929 deferred 13227 tickers 82 budget_ms 2000 dirty -
+Wed 23 n=51 loop 13297 tape 6259 walk 1432 batch 208 per_row 1080 per_row_n 60 pending 20519 deferred 13914 tickers 82 budget_ms 2000 dirty -
+Thu 00 n=50 loop 14519 tape 7444 walk 1390 batch 261 per_row 1369 per_row_n 57 pending 21089 deferred 12300 tickers 66 budget_ms 2000 dirty -
+Thu 01 n=52 loop 13739 tape 7564 walk 1213 batch 266 per_row 1060 per_row_n 20 pending 21350 deferred 11663 tickers 64 budget_ms 2000 dirty -
+Thu 02 n=51 loop 15034 tape 8851 walk 848 batch 306 per_row 1559 per_row_n 30 pending 21289 deferred 2604 tickers 17 budget_ms 2000 dirty -
+Thu 03 n=50 loop 10105 tape 5947 walk 528 batch 373 per_row 793 per_row_n 40 pending 21227 deferred 851 tickers 9 budget_ms 2000 dirty -
+Thu 04 n=52 loop 10763 tape 5856 walk 1594 batch 514 per_row 495 per_row_n 70 pending 21217 deferred 6455 tickers 49 budget_ms 2000 dirty -
+Thu 05 n=53 loop 10654 tape 5861 walk 1506 batch 518 per_row 586 per_row_n 41 pending 21217 deferred 5071 tickers 35 budget_ms 2000 dirty -
+Thu 06 n=51 loop 11096 tape 6003 walk 1342 batch 564 per_row 751 per_row_n 47 pending 21217 deferred 5666 tickers 39 budget_ms 2000 dirty -
+Thu 07 n=52 loop 11409 tape 6129 walk 1262 batch 474 per_row 835 per_row_n 43 pending 21217 deferred 5748 tickers 40 budget_ms 2000 dirty -
+Thu 08 n=50 loop 14209 tape 6537 walk 1710 batch 228 per_row 827 per_row_n 72 pending 21563 deferred 14290 tickers 78 budget_ms 2000 dirty -
+prints_per_hour Mon 18 32713
+prints_per_hour Mon 19 86587
+prints_per_hour Mon 20 67886
+prints_per_hour Mon 21 104566
+prints_per_hour Mon 22 39466
+prints_last_24h 71814
+hb 09:02:42 loop_ms 11245 p95 17809 skipped 4496 loops 44013
+print_rescan: tickers 149 rows 21818 oldest placed_at 2026-09-13 20:02:27Z; prints_rescanned_per_loop total 112234 max 20577 tickers_over_5k 3 (venue_trades rows with ts >= min(placed_at)-60s per ticker over orders where not nw_done)
+writers: harness/normalize/kalshi.py:260 and harness/recorder/ws_sink.py:213 insert with on_conflict_do_nothing; no UPDATE of venue_trades under harness/
