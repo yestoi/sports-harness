@@ -126,3 +126,13 @@ Thursday's $24.40 was spent by 09:00 CT (578 calls), so the veto is dormant for 
 
 **Recommendation.** (a). Answer in chat as "item 20: (a)" or your own wording; the loop records it verbatim. Measurement note either way: from about Wed 19:00 CT loops ran 15-17 s against the 15 s period (longer on placement loops), so dirty time accrued at 15 s nominal per observed loop from then until a fix ships.
 
+## Added Thu 2026-09-17 10:00 CT
+
+### 20. Outcome and correction
+
+Ruled 09:50 CT Thu (journal 262): (a) amended by your review session. The print cache is built and reviewed today from `fix-79-brief-amended.md` and released Friday 2026-09-18 morning, app-only; a timers-only batch (row 82) goes first and ships today only if clean by early afternoon. Rows 79 and 82 are Open.
+
+**Correction.** Item 20's sentence that tonight's window "adds to the rescan every loop" with loops of 25 s or more likely is withdrawn: every pending row on tonight's games expires by 19:05 CT, so in-game prints never enter a pending window. The cache alone will not pass the loop-metrics row (p95 is about 11 s with the tape phase removed). Option (a)'s "insert-only" premise was wrong as drafted (`harness/normalize/runner.py:355` deletes `source='rest'` rows on reprocess); the amended brief guards on count, minimum and maximum `ts` in one statement.
+
+**Still open from the ruling file's OPTIONAL lines:** (1) may the loop-metrics row read FAIL through these two releases without tripping "the same verify item failing twice running"; (2) do the executor-coupled 6B section 3 and 6D acceptance rows move to Friday's or Saturday's NCAAF window.
+

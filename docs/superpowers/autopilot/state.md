@@ -1,28 +1,29 @@
 # Autopilot checkpoint
 
-Updated 2026-09-17 09:20 CT (14:20 UTC) by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 261 (260 was a separate user-directed session: sports.tunderwood.com behind Authelia, U9 amended, no release). Paper-only. Runtime build: **747791c** (journal 257, full 10:04 CT Sep 16, fix 81; eac4414 app-only 09:36 CT, fix 78 part 3, journal 255). Main = the runtime; deploy trigger empty. origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
+Updated 2026-09-17 10:02 CT (15:02 UTC) by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 262 (260 was a separate user-directed session: sports.tunderwood.com behind Authelia, U9 amended, no release). Paper-only. Runtime build: **747791c** (journal 257, full 10:04 CT Sep 16, fix 81; eac4414 app-only 09:36 CT, fix 78 part 3, journal 255). Main = the runtime; deploy trigger empty. origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
 
 ## Right now
 
-- **Loop metrics FAIL again at the Thu daily line (journal 261)**: heartbeat p95 17,809 ms against 7,500; the tape read grew to 6.5 s a loop (row 79's print rescan, 112,234 rows a loop at 21.6k pending); part 3's budget holds. Row 79 is the user's follow-up, so nothing is dispatched: **packet item 20** awaits the user (lean (a), a value-identical print cache; ships today only if review and suite are clean by about 14:00 CT, else Friday morning).
+- **Item 20 ruled 09:50 CT (journal 262)**: (a) amended. Timers batch `fix-2026-09-17-executor-timers` (row 82, measurement only) first: release today app-only only if review and suite are clean by 13:30 CT, else with Friday's. Then fix 79 (`fix-2026-09-17-executor-prints`, opus/opus, `fix-79-brief-amended.md`, based on main after the timers merge): build and review today, **release Fri 2026-09-18 morning app-only, judge, tell the user**. No value-path executor release before tonight's window. Loop metrics read FAIL at the daily line (p95 17,809 ms, journal 261); the cache alone will not pass the row. Unanswered OPTIONAL lines: the twice-running waiver and moving the executor-coupled 6B/6D rows to Fri/Sat; until answered a formal FAIL gates and tonight's reads run as planned.
 - **Preflight Sep 15 21:19 CT** (journal 248): paper posture intact; game window Thu 2026-09-17 18:30 CT.
 - **Fix 78 part 3 released eac4414 09:36 CT and judged PASS (journal 255/256); fix 81 released 747791c full 10:04 CT and judged PASS at 10:27 CT (journal 257/258)**: heartbeat p95 6,737 ms. The 27-30 s loops are 150-order placement waves outside the phase timers (row 82, Watch).
-- **User decisions**: packet items 2-10 and 17 ruled and applied (journal 239/240/245). Open: item 20 (executor print rescan, before tonight or Friday), item 19 (weekly veto cap, before Sat), item 1 (retention by 2026-09-22), items 11-15 upcoming. Packet: https://claude.ai/artifact/4wRJo92rcU5UUU9dhMt6Z1, `reports/2026-09-15-open-decisions-packet.md`.
-- **Fix rows** (`fixes.md`): Open 0, Watch 14 (79 re-measured, 82), Closed 51 (81 PASS, journal 261); 79 and 80 are follow-ups by the user's ruling (journal 242), not hotfixes.
+- **User decisions**: packet items 2-10 and 17 ruled and applied (journal 239/240/245). Open: item 19 (weekly veto cap, before Sat), item 1 (retention by 2026-09-22), items 11-15 upcoming. Packet: https://claude.ai/artifact/4wRJo92rcU5UUU9dhMt6Z1, `reports/2026-09-15-open-decisions-packet.md`.
+- **Fix rows** (`fixes.md`): Open 2 (82 timers, 79 print cache; journal 262), Watch 13 (83 swap growth added), Closed 51 (81 PASS, journal 261); 79 and 80 are follow-ups by the user's ruling (journal 242), not hotfixes.
 
 ## Order of work
 
 Journal 224 item 17, as it stands:
 
 1. Done: 7c3d750 (journal 233/234) and f7a1ccb (journal 237/238) released and verified; f8053c6 (fix 78 part 1) released and judged (journal 243/244).
-2. Fix 78 closed (journal 256); fix 81 closed (journal 261). If the user rules item 20 (a): hotfix batch `fix-2026-09-17-executor-prints` (opus/opus; draft brief and ledger under `.superpowers/sdd/hotfix-2026-09-17-executor-prints/`, nothing dispatched), app-only release outside the window.
+2. Hotfix batches by journal 262: timers (row 82) then fix 79; ledgers `.superpowers/sdd/hotfix-2026-09-17-executor-timers/` and `-executor-prints/`.
 3. Verify after each release: journal 219's deferred rows, item 12's exec-health windows on 0d04804, item 16's tape-gap read (journal 229), durable re-reads of rows 49 and 68, the 6B by-cause row, the `fixes.md` Watch reads (56, 70).
 4. Operate: daily 09:00 CT line Thu 2026-09-17 done (journal 261; today's veto budget was spent by 09:00 CT); the storage retention proposal is written (`reports/2026-09-15-storage-retention-proposal.md`, journal 230; the user decides by 2026-09-22; nothing executed). 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT). The user does the LAN files (roadmap User-side TODOs). After the first full day at 300k the user runs usage.py (journal 247).
 
 ## Active units
 
 - **hotfix fix 78 part 3**: closed (journal 255/256); ledger `.superpowers/sdd/hotfix-2026-09-16/progress.md`.
-- **hotfix fix 81** (row 81): closed PASS (journal 261); ledger `.superpowers/sdd/hotfix-2026-09-16-sink-lag/progress.md`.
+- **hotfix timers (row 82)**: worktree `/home/trey/dev/sports-wt/fix-2026-09-17-executor-timers` on bf51d01; brief `fix-82-brief.md`; see the ledger for dispatch state.
+- **hotfix fix 79**: not started; waits for the timers merge.
 - **phase 6D**: on main, released b69b880 (journal 221); ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`, dispatches 30. Remaining: 6D acceptance rows at the first game window, §4 read-backs at real ticks, exec-health baseline on 0d04804 (item 12), ledger re-archive and final review, then roadmap `done`; worktree phase6d-merge-main removable after acceptance.
 - **phase 4.6**: on main, released c1066b5. Remaining: T18b (watched NFL-window queries), T19 (verification rows), walkthrough items; the user's LAN files.
 - **6E**: cold start done (journal 229); corrected-workload benchmark and operational acceptance remain. **6C**: planned/partial, closure via 6D (`fills.id > 1878`). **6B**: done (journal 216), §3 rows at the first game window.
@@ -37,8 +38,8 @@ Journal 224 item 17, as it stands:
 ## Counters and deadlines
 
 - CT day Sep 17: dispatches 0; failed deploys 0; implementers running 0 of 3. Sep 16 closed at 5 dispatches, 0 failed deploys.
-- Next duties: daily 09:00 CT line Fri 2026-09-18 and the alias pass the morning after the Thursday games; 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT); the R4 window closes Thu about 14:30 CT; storage retention decision is the user's by 2026-09-22.
-- Wakeups: cron one-shot Thu 18:25 CT (this session only); durable reminder 2026091702. Reminders through 2026091701 are consumed.
+- Next duties: **Fri 2026-09-18 07:30 CT release of fix 79 app-only, judge, tell the user (reminder 2026091801)**; daily 09:00 CT line Fri 2026-09-18 and the alias pass the morning after the Thursday games; 6D acceptance rows and 4.6 T18b/T19 at the first NFL window (Thu 2026-09-17 19:15 CT; NCAAF 18:30 CT); the R4 window closes Thu about 14:30 CT; storage retention decision is the user's by 2026-09-22.
+- Wakeups: cron one-shot Thu 18:25 CT (this session only); durable reminders 2026091702 and 2026091801 (the Friday cron is armed after tonight's window; the file is the fallback). Reminders through 2026091701 are consumed.
 
 ## Constraints
 
