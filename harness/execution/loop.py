@@ -184,7 +184,14 @@ class ExecStats:
     #: block. `phase_commit_prev_ms` is different in kind: a loop cannot measure its own
     #: count_open_orders + metric batch + write_heartbeat + `session.commit()`, because that
     #: block is what publishes this measurement, so it is measured on loop N and published on
-    #: loop N+1 (held on the executor as `_last_commit_ms`), reading 0 on the first loop. All
+    #: loop N+1 (held on the executor as `_last_commit_ms`), reading 0 on the first loop --
+    #: and, after a loop that never ran, the last reading that did: a loop skipped on the
+    #: advisory lock returns before `_locked_step` and leaves the value where it was. Two
+    #: things it is not, for whoever reads it (review rev-fix-82, M2): it is outside
+    #: `loop_ms`, which is taken before that block, so it does not belong in the sum of phases
+    #: checked against `loop_ms`; and at `metric_sample_s` = 60 against a 15 s period the
+    #: publishing loop's predecessor is never itself a batch loop, so the metric batch's own
+    #: INSERT is the one part of the commit block this reading never contains. All
     #: measurement only: no statement here is added, removed, reordered or changed, and none
     #: of these is written by a replay executor, exactly as the fix 78b four are not.
     phase_intake_ms: float = 0.0
@@ -198,8 +205,11 @@ class ExecStats:
     #: is `len(working)`; `tape_tickers_n`/`tape_print_rows`/`tape_delta_rows` are the tickers
     #: `_tape` actually read this loop and the prints/deltas each read back, summed, counted
     #: right after the read and before any hold-back so a truncated batch's held-back prints
-    #: still count; `expiring_n` is the population `_expiring(row, now)` is true for this loop
-    #: -- the cohort the walk budget cannot defer.
+    #: still count; `expiring_n` is every row of `working` past its own expiry this loop.
+    #: That is a superset of the cohort `_batch_pending`'s walk puts ahead of the rotation and
+    #: never defers, which is only the unfinished, clean-ticker, non-dirty, not-open part of
+    #: it (review rev-fix-82, M1): read it as the expiry pressure on the whole working
+    #: population, not as the size of the never-deferred walk cohort.
     working_rows: int = 0
     tape_tickers_n: int = 0
     tape_print_rows: int = 0

@@ -3512,11 +3512,15 @@ def test_fix82_phases_sum_within_tolerance_of_loop_ms(env_settings, db_session, 
 
     The monotonic clock auto-ticks on every read (`_ticking()`, shared across both loops, so it
     never resets) and the wall clock is held fixed for the duration of each step and then moved
-    forward by the exec period, exactly as `_moving_run` does. What is left over -- `loop_ms`
-    minus the ten timed phases -- is the handful of `_monotonic()`-free statements between the
-    named boundaries (`resolve_variants`, the startup check, `gateway.observe_tape`,
-    `dead_recorder`, the `fair_age_s` extend): a few ticks at 1 ms a call, never tens of
-    milliseconds, so a genuinely unwired phase would fail this by an order of magnitude.
+    forward by the exec period, exactly as `_moving_run` does.
+
+    What that does and does not prove (review rev-fix-82, M3): under a clock that advances
+    only when it is read, `loop_ms` is this step's `_monotonic()` call count and each phase is
+    its own share of that count, so an unwired, overlapping or double-counted timer fails this
+    by an order of magnitude. A block that does real work without reading the clock, though,
+    costs nothing here -- so this is coverage of the loop's *boundaries*, not evidence that no
+    untimed block can hold real time. `_simulate`'s own per-row dispatch over every working
+    row is exactly such a block, and it is read by a reviewer rather than caught by this case.
     """
     keep_only(db_session, set())
     _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
