@@ -3087,3 +3087,17 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0.
 - Result: PASS for the timers release; one deferred judge (row 82); the loop-metrics FAIL stands by ruling.
 - Next: hotfix unit, fix 79 (implementer running since 11:10 CT).
+
+## 266. hotfix - fix 79 print cache reviewed and merged 2cb2219; release held to Friday - 2026-09-17 11:10-12:25 CT
+
+- Orient: rule 1 (row 79, Open by the user's ruling, journal 262). Batch `fix-2026-09-17-executor-prints`, ledger `.superpowers/sdd/hotfix-2026-09-17-executor-prints/progress.md`.
+- Implementer (opus, brief `fix-79-brief-final.md`): DONE_WITH_CONCERNS, `results/fix-79-report.md`. A per-ticker cache of built prints in `store.PrintCache`; one statement per cached ticker per loop; full read and re-seed on any mismatch; cap `PRINT_CACHE_MAX_ROWS` 250,000 (515 B a print measured, about 129 MB); never used for replay or `at`. Fourteen `fix79` cases, red first (13 failed, 1 vacuous pass at HEAD); fuzz 200 loops under five seeds. Fix 82's gated identity test retired as briefed.
+- Deviation, accepted by the reviewer: a fourth guard scalar, a server-side token sum over `(venue, trade_id, ts)`, because count, minimum and maximum alone cannot see a delete plus an insert at one instant (the brief's own fuzz found it).
+- Reviewer (opus, `results/fix-79-review.md`): APPROVED WITH MINORS, Critical 0, Important 0, Minor 6. One statement confirmed from the emitted SQL; the token is exact integer arithmetic, an added conjunct only. Residual, reproduced and ruled unreachable: a row deleted and re-inserted under the same key with different values below the window's maximum instant is served stale; nothing UPDATEs `venue_trades`, and the one deleter (`runner.reprocess(truncate=True)`, CLI only) re-derives identical rows. Invariant written at the guard; two new cases kill two surviving mutations. Four own seeds; 13 mutations run.
+- Controller: production cost of the emitted statement, read-only EXPLAIN: 22 ms on the busiest ticker, 98 ms for the aggregate half over 150 tickers (30 ms without the token) (`evidence/2026-09-17-fix79-explain-1145.txt`). Minors applied: `store.py` AST equal modulo docstrings. Commits beb4f98 and 82d11c8 on the branch; rebased onto docs-only main as 90d48a8 and 2cb2219, fast-forward merged.
+- Verification: full suite on 82d11c8, 4,216 passed, 6 shards, exit 0, dirty empty before and after; receipt `release_tree` eab88ba5... equals main's at 2cb2219. Fixture grant revoked. `make plan-release-omarchy MODE=app`: app services only, window not blocked. No deploy: runtime stays 1a12781.
+- Hold: the user's ruling (journal 262), "No value-path executor release before tonight's window", so Orient rule 2 reads main ahead until Friday morning and does not select deploy before then. Worktree, branch and test database kept until that release. Rollback is an app-only redeploy of 1a12781; the cache has no off switch.
+- Slip: docs commit 1994cd5 went in with `state.md` 24 chars over its limit because the guard's output was piped through `tail`; corrected in 19d453d. The guard is run unpiped.
+- Dispatches: 2 (fix-79, rev-fix-79), batch 2 of 12, 0 fix rounds.
+- Result: merged, not released. Row 79 stays Open until Friday's release and judge.
+- Next: Thu 18:25 CT window read (reminder 2026091702); Fri 07:27 CT release (reminder 2026091801).
