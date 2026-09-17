@@ -215,6 +215,19 @@ class ExecStats:
     tape_print_rows: int = 0
     tape_delta_rows: int = 0
     expiring_n: int = 0
+    #: Fix 79: what the loop's print reads did, gauges of the loop that wrote them like the
+    #: fix 82 counts above. `prints_cached_tickers` + `prints_full_reads` is the tickers
+    #: `_tape` read; `prints_incremental_rows` is the rows the cache statements' tails brought
+    #: back (a small fraction of `tape_print_rows`, which keeps meaning every print handed to
+    #: the simulator however it was read); `prints_cached_rows` is the whole cache's size in
+    #: prints at the end of the loop, and `prints_cap_fallbacks` the admissions refused or
+    #: entries evicted by `store.PRINT_CACHE_MAX_ROWS`. All zero on a replay executor, which
+    #: has no cache at all.
+    prints_cached_tickers: int = 0
+    prints_full_reads: int = 0
+    prints_incremental_rows: int = 0
+    prints_cached_rows: int = 0
+    prints_cap_fallbacks: int = 0
     locked: bool = True
     #: The first failure of the step, the same string the heartbeat's `last_error` carries.
     #: A live loop reads it off the heartbeat; a replay writes no heartbeat and needs the
@@ -439,6 +452,13 @@ class Executor:
         #: asks for what it can actually finish and a warm one returns to the cap in a few
         #: loops. Only tickers with a working order are kept; the rest are dropped each loop.
         self._delta_batch: dict[str, int] = {}
+        #: Fix 79: the per-ticker print cache, `None` for a replay executor -- a replay reads
+        #: every window bounded at its own past instant, which is a different window from the
+        #: one a cache entry describes, and it is not the loop whose 6.5 s this fix is about.
+        #: `_tape` also refuses the cache on any step where `at` is not None, so the two
+        #: conditions are checked independently of each other. Tests switch the cache off by
+        #: setting this to None, never by reaching into the cache itself.
+        self._print_cache: store.PrintCache | None = None if replay else store.PrintCache()
         #: Fix 78c's rotation cursor and deferred set; see the class attributes above.
         self._nw_rotation: tuple[str, int | None] | None = None
         self._nw_deferred: frozenset = frozenset()
@@ -652,6 +672,18 @@ class Executor:
             ("exec.tape_print_rows", stats.tape_print_rows, {}),
             ("exec.tape_delta_rows", stats.tape_delta_rows, {}),
             ("exec.expiring_n", stats.expiring_n, {}),
+            # Fix 79 (the user's ruling of 2026-09-17, journal 262, item 20 (a) amended): what
+            # the print reads did. Additive names, gauges of the loop that wrote the batch, no
+            # schema change, none of them an error. Read them against `exec.tape_print_rows`,
+            # which still counts every print handed to the simulator: `prints_incremental_rows`
+            # is how many of those were actually fetched this loop, `prints_full_reads` how
+            # many tickers could not be served from the cache, and `prints_cap_fallbacks`
+            # whether `store.PRINT_CACHE_MAX_ROWS` is the reason.
+            ("exec.prints_cached_tickers", stats.prints_cached_tickers, {}),
+            ("exec.prints_full_reads", stats.prints_full_reads, {}),
+            ("exec.prints_incremental_rows", stats.prints_incremental_rows, {}),
+            ("exec.prints_cached_rows", stats.prints_cached_rows, {}),
+            ("exec.prints_cap_fallbacks", stats.prints_cap_fallbacks, {}),
             # §3 row 11: the counterfactual retry backlog, published so it is visible beside
             # criterion 4's `n_obs` and cannot silently become an exclusion. Nothing is closed,
             # so this is a queue depth, not an error.
@@ -1719,12 +1751,25 @@ class Executor:
         unread: set[str] = set()
         lagging: set[str] = set()
         at = self._at(now)
+        # Fix 79: the cache is live-only and window-only. `at` is not None exactly when this
+        # is a replay executor today, but the two are tested separately on purpose: the cache
+        # describes the window `[lower, the head of the tape]`, and a read bounded at a past
+        # instant is not that window, whoever asked for it.
+        cache = self._print_cache if at is None else None
+        counts = store.PrintReadCounts()
         for ticker, (placed_at, cursor) in windows.items():
             lower = placed_at - store.PRINT_LOOKBACK
             limit = self._delta_batch.get(ticker, store.DELTA_BATCH_LIMIT)
             try:
                 with session.begin_nested():
-                    prints = store.load_prints(session, ticker, lower, at)
+                    # Fix 79: the cached read returns exactly what the full read below would
+                    # have returned at the same snapshot, and a list of its own, never the
+                    # cache's -- the hold-back filters it and `has_print` scans it per fill.
+                    # Any doubt of any kind inside `read` is today's full `load_prints`.
+                    if cache is None:
+                        prints = store.load_prints(session, ticker, lower, at)
+                    else:
+                        prints = cache.read(session, ticker, lower, counts)
                     batch = store.load_deltas(session, ticker, cursor or 0, lower, at,
                                               limit=limit)
                     # Fix 82: measurement only, counted here -- after the read, before any
@@ -1741,7 +1786,12 @@ class Executor:
                 unread.add(ticker)
                 self._note_backoff(session, working, ticker, now, failed=True)
                 _note_error(heartbeat, f"tape {ticker}: {type(exc).__name__}: {exc}")
-                if _is_statement_timeout(exc):
+                if _is_statement_timeout(exc) and not getattr(
+                        exc, store.PRINT_CACHE_STATEMENT_ATTR, False):
+                    # Fix 79: everything about the shrink below is fix 26's and unchanged --
+                    # except that a timeout on the *print cache's* statement is not evidence
+                    # about the delta batch's size and must not shrink it. A timeout on the
+                    # full `load_prints` read still does, exactly as it does today.
                     # Fix 26: the batch, not the plan, is what this ticker cannot afford. A
                     # cursor a million ids behind reads cold pages, and 20 000 rows of them do
                     # not fit in 10 s, so the read dies, the cursor never moves and the watch
@@ -1797,6 +1847,16 @@ class Executor:
             # A ticker with no working order left is not going to be read again, and its size
             # would otherwise sit in this dict for the life of the process (fix 26).
             del self._delta_batch[stale]
+        if cache is not None:
+            # Fix 79, the same rule for the same reason: a ticker with no working row is
+            # dropped, and a ticker whose read *failed* keeps its entry -- the entry describes
+            # a snapshot that really happened and the next loop re-validates it anyway.
+            cache.evict(set(windows))
+        stats.prints_cached_tickers += counts.cached_tickers
+        stats.prints_full_reads += counts.full_reads
+        stats.prints_incremental_rows += counts.incremental_rows
+        stats.prints_cap_fallbacks += counts.cap_fallbacks
+        stats.prints_cached_rows = 0 if self._print_cache is None else self._print_cache.rows
         if lagging:
             # INFO, not ERROR: the executor is behind the tape and catching up by design. The
             # count is `exec.tape_lag_tickers`; the names live here (fix 22 round 1, I1).

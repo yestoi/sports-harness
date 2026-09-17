@@ -6,10 +6,9 @@ under it. The loop is driven with an explicit clock, so `now` is a value in the 
 than wall time, and one step is one commit.
 """
 
-import importlib.util
+import itertools
 import os
-import subprocess
-import sys
+import random
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -23,7 +22,7 @@ from psycopg.errors import QueryCanceled, UndefinedColumn
 from psycopg.types.json import Jsonb
 from sqlalchemy import event, func, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from typer.testing import CliRunner
 
 import harness.execution.loop
@@ -2907,7 +2906,8 @@ def loop_writes(session):
             "order_events": written_rows(session, "order_events", "order_id, ts, id")}
 
 
-def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
+def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched,
+                      print_cache=True):
     """Two loops over the seeded population, with the fix on or off, and the columns after.
 
     The second loop is the one that matters: by then every row has been written once, so a
@@ -2915,6 +2915,9 @@ def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
     is the case the fix skips. The print and the stale version stamp are introduced between the
     steps, identically for both runs, so that the *measured* loop still contains rows the fix
     must refuse to skip.
+
+    `print_cache` is fix 79's switch: False builds the executor without a print cache, which
+    is the read path this branch's own identity case compares the cached path against.
 
     Returns the columns, the rows the loop wrote to `fills`, `ledger` and `order_events`, two
     costs of that second loop -- how many statements it sent (the identity only means something
@@ -2926,6 +2929,11 @@ def run_pending_steps(env_settings, session, t0, ids, shapes, *, batched):
     clock = Clock(t0)
     executor = make_executor(env_settings, session, clock)
     executor._batch_pending_writes = batched
+    if not print_cache:
+        # Fix 79's own switch: the executor under test reads prints exactly as it did before
+        # the cache existed. Never `git show` of an older loop.py -- the two paths compared
+        # here are two paths of *this* code.
+        executor._print_cache = None
     executor.step()
     refresh(session)
     _print(session, T4, t0 + timedelta(seconds=14), "0.35", "500", trade_id=LATE_PRINT)
@@ -3436,22 +3444,18 @@ def test_the_loop_publishes_the_phase_its_time_went_to(env_settings, db_session,
 # are that acceptance: every name arrives once on a live loop and never on a replay, the six
 # new phases plus the fix 78b four come within a tight tolerance of `exec.loop_ms`,
 # `exec.phase_commit_prev_ms` is genuinely the *previous* loop's own commit block, the counts
-# are the fixture's known values rather than a guess read off the code, and the diff changes no
-# statement and no stored value at all.
+# are the fixture's known values rather than a guess read off the code.
+#
+# The one-time identity case that compared every statement of a loop with commit bf51d01's
+# was retired by fix 79, whose print cache legitimately changes `_tape`'s statements: its
+# evidence is recorded in `results/fix-82-report.md` and `fix-82-review.md`, and fix 79's
+# own identity cases run the cache against the full read rather than against a past commit.
 
 FIX82_PHASES = ("exec.phase_intake_ms", "exec.phase_load_ms", "exec.phase_books_ms",
                 "exec.phase_decide_ms", "exec.phase_place_ms", "exec.phase_samples_ms")
 FIX82_COMMIT_PREV = "exec.phase_commit_prev_ms"
 FIX82_COUNTS = ("exec.working_rows", "exec.tape_tickers_n", "exec.tape_print_rows",
                 "exec.tape_delta_rows", "exec.expiring_n")
-#: Fix round 1 (controller finding, before commit): the identity case below must compare fix
-#: 82 against the commit its diff was written on top of, never against `HEAD` -- the
-#: controller commits this diff right after review, and from that moment `HEAD` *is* the fix,
-#: so a base pinned to `HEAD` would compare the fix with itself and pass vacuously. Pinned by
-#: hash rather than re-derived, so a rebase or a later commit on this branch cannot move it.
-FIX82_BASE = "bf51d01"
-#: Set to run the one-time identity case; see its own docstring and skip reason.
-FIX82_IDENTITY_ENV = "FIX82_IDENTITY"
 
 
 def _fix82_fixture(session, t0):
@@ -3631,145 +3635,6 @@ def test_fix82_counts_match_the_seeded_tape(env_settings, db_session, world):
     assert samples["exec.tape_print_rows"] == 2
     assert samples["exec.tape_delta_rows"] == 3
     assert samples["exec.expiring_n"] == 1
-
-
-def _pre_fix82_executor_cls():
-    """The `Executor` class exactly as commit `FIX82_BASE` (bf51d01, the commit fix 82's own
-    diff was written on top of) defines it -- i.e. without fix 82 -- loaded straight from that
-    commit's blob, never from `HEAD`: `HEAD` is only bf51d01 until the controller commits this
-    diff, after which it *is* the fix, and comparing the fix with `HEAD` would then compare it
-    with itself (fix round 1, controller finding, before commit).
-
-    Raises `RuntimeError` if git is not on `PATH` or `FIX82_BASE` is not a commit this
-    checkout can read (a shallow clone, a mirror without this branch's history, or simply no
-    git at all); the caller turns that into a skip rather than an error, since none of those
-    are this test's own business to diagnose.
-    """
-    root = Path(__file__).resolve().parent.parent
-    try:
-        result = subprocess.run(
-            ["git", "show", f"{FIX82_BASE}:harness/execution/loop.py"], cwd=root,
-            capture_output=True, text=True)
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"git is not available: {exc}") from exc
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"git show {FIX82_BASE}:harness/execution/loop.py failed (commit unreachable in "
-            f"this checkout?): {result.stderr.strip() or result.returncode}")
-    spec = importlib.util.spec_from_loader("tests._loop_pre_fix82", loader=None)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        exec(compile(result.stdout, f"<{FIX82_BASE}:harness/execution/loop.py>", "exec"),
-             module.__dict__)
-    finally:
-        sys.modules.pop(spec.name, None)
-    return module.Executor
-
-
-def _normalize_params(value):
-    """Bound parameters, with any `psycopg.types.json.Jsonb` wrapper unwrapped to its plain
-    object: `Jsonb` defines no `__eq__` (`Jsonb({"x": 1}) != Jsonb({"x": 1})`, by identity), so
-    a raw `==` of two captured parameter dicts would fail on a JSONB column even when the
-    document is byte for byte the same one -- the failure fix 78b's own `_param_ids` sidesteps
-    by comparing only the ids it needs rather than a whole parameter dict.
-    """
-    if isinstance(value, Jsonb):
-        return value.obj
-    if isinstance(value, dict):
-        return {k: _normalize_params(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_normalize_params(v) for v in value]
-    return value
-
-
-def _non_metric_statements(seen):
-    return [(" ".join(q.split()), _normalize_params(p))
-            for q, p in seen if "metric_samples" not in q.lower()]
-
-
-@pytest.mark.skipif(
-    os.environ.get(FIX82_IDENTITY_ENV) != "1",
-    reason=(f"one-time fix 82 identity check against {FIX82_BASE}, not a regression test "
-            f"(fix round 1): run explicitly with {FIX82_IDENTITY_ENV}=1 make test "
-            f"TEST_ARGS='tests/test_exec_loop.py::"
-            f"test_fix82_changes_no_statement_and_no_stored_value'"))
-def test_fix82_changes_no_statement_and_no_stored_value(env_settings, db_session, world,
-                                                         monkeypatch):
-    """One-time before/after identity evidence for fix 82 against `FIX82_BASE` (bf51d01) --
-    not part of the regular suite.
-
-    Fix 78b's own mixed population, run twice through `run_pending_steps` -- once through this
-    worktree's `Executor` (fix 82's timers on) and once through the `Executor` commit
-    `FIX82_BASE` defines (fix 82 absent, loaded from that commit's own blob, never from `HEAD`:
-    see `_pre_fix82_executor_cls`) -- and compared exactly as `run_pending_steps`'s own two
-    paths are: `orders` column for column, `fills`/`ledger`/`order_events` row for row, and the
-    measured loop's full captured statement list with every `metric_samples` statement set
-    aside. Everything else -- text and bound parameters both, in order -- must be identical,
-    and the only statements fix 82 is allowed to add are its own extra `metric_samples` rows.
-
-    Skipped unless `FIX82_IDENTITY=1` is set (see the marker above) and skipped with its own
-    reason if git or `FIX82_BASE` is unavailable in this checkout (`_pre_fix82_executor_cls`).
-    Meant to be run once by the implementer and once by the reviewer, with the variable set, as
-    the before/after evidence for this diff -- not on every suite run, and not indefinitely: it
-    is expected to be retired, or to go legitimately stale and need a new base, the next time
-    `loop.py`'s own statements change (fix 79's print-cache rescan touches `_tape` directly).
-    """
-    try:
-        old_cls = _pre_fix82_executor_cls()
-    except RuntimeError as exc:
-        pytest.skip(str(exc))
-
-    keep_only(db_session, set())
-    # The metric batch is due every loop rather than once every `metric_sample_s` (default
-    # 60 s, longer than the 15 s the measured loop's own clock advances by), so the one
-    # statement fix 82 is allowed to add actually appears on the measured step in both runs.
-    env_settings.metric_sample_s = 1
-    t0 = NOW + timedelta(seconds=10)
-    snapshot = _pending_book(db_session, T2, NOW - timedelta(seconds=5), sid=2)
-    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
-    _pending_book(db_session, T4, NOW - timedelta(seconds=5), sid=4)
-    _gap(db_session, NOW - timedelta(seconds=1), sid=snapshot.sid)
-    db_session.commit()
-    shapes = _mixed_shapes(t0)
-    n = len(shapes)
-
-    ids = seed_pending(db_session, t0, n, shapes)
-    after_cols, after_writes, _, _, after_seen = run_pending_steps(
-        env_settings, db_session, t0, ids, shapes, batched=True)
-
-    monkeypatch.setattr(sys.modules[__name__], "Executor", old_cls)
-    reset_pending(db_session)
-    ids = seed_pending(db_session, t0, n, shapes)
-    before_cols, before_writes, _, _, before_seen = run_pending_steps(
-        env_settings, db_session, t0, ids, shapes, batched=True)
-    monkeypatch.undo()
-
-    # No stored value moved: `orders` column for column, the other three writers row for row.
-    assert after_cols == before_cols
-    assert after_writes == before_writes
-
-    before_rest = _non_metric_statements(before_seen)
-    after_rest = _non_metric_statements(after_seen)
-    assert [q for q, _ in after_rest] == [q for q, _ in before_rest]
-    assert [p for _, p in after_rest] == [p for _, p in before_rest]
-    # The metric batch is one `INSERT ... VALUES` statement regardless of row count
-    # (`telemetry.record_many`), so fix 82's extra rows show up as more bound parameters on
-    # that one statement, never as an extra statement in the list.
-    before_metric = [(q, p) for q, p in before_seen if "metric_samples" in q.lower()]
-    after_metric = [(q, p) for q, p in after_seen if "metric_samples" in q.lower()]
-    assert len(before_metric) == len(after_metric) == 1
-    assert before_metric[0][0].strip().lower().startswith("insert")
-    assert after_metric[0][0].strip().lower().startswith("insert")
-
-    def _names(params):
-        return {v for k, v in params.items() if k.startswith("name_")}
-
-    before_names = _names(before_metric[0][1])
-    after_names = _names(after_metric[0][1])
-    assert before_names <= after_names
-    assert after_names - before_names == set(
-        FIX82_PHASES + (FIX82_COMMIT_PREV,) + FIX82_COUNTS)
 
 
 def _moving_run(env_settings, session, t0, shapes, *, break_batch):
@@ -4519,3 +4384,621 @@ def test_the_cancelled_per_row_residual_is_charged_to_the_budget_and_deferred(en
     assert before[1:] == after[1:]
     assert after[0]["nw_filled_contracts"] == Decimal("10.00")
 
+
+# --- fix 79: the live executor's print cache ---------------------------------------------
+#
+# The user's ruling of 2026-09-17 (journal 262, decisions packet item 20 (a), amended by that
+# morning's review session): `_tape`'s print rescan keeps an in-memory per-ticker cache,
+# refreshed by one guarded statement per ticker per loop, and what it hands back must be
+# *identical* to today's `store.load_prints` at the same snapshot. A cache that is merely
+# nearly right drops fills silently -- nothing live catches an under-fill and a correction can
+# only be a new row (§0.12) -- so every case below is an identity case: the cached list is
+# compared with the full read of the same window, row for row and field for field, after every
+# single loop.
+
+FIX79_TICKER = "KXNFL-P-79"
+FIX79_OTHER = "KXNFL-P-79B"
+#: Every fix 79 print is placed at a millisecond offset from this instant, and the window
+#: starts a minute before it (`store.PRINT_LOOKBACK`, the real window's shape). Milliseconds
+#: because both writers truncate `ts` to the millisecond and `ts` is part of the primary key.
+FIX79_T0 = NOW + timedelta(seconds=30)
+FIX79_LOWER = FIX79_T0 - timedelta(seconds=60)
+#: The five additive gauges this fix publishes.
+FIX79_NAMES = ("exec.prints_cached_tickers", "exec.prints_full_reads",
+               "exec.prints_incremental_rows", "exec.prints_cached_rows",
+               "exec.prints_cap_fallbacks")
+
+
+def _print79(session, ms, trade_id, *, source="ws", yes_price="0.35", count="10",
+             taker_side="no", ticker=FIX79_TICKER):
+    """One print at `FIX79_T0 + ms` milliseconds, flushed but not committed."""
+    return _print(session, ticker, FIX79_T0 + timedelta(milliseconds=ms), yes_price, count,
+                  taker_side=taker_side, trade_id=trade_id, source=source)
+
+
+def _cache_loop(session, cache, counts, lower=FIX79_LOWER, ticker=FIX79_TICKER, note=""):
+    """One loop's cached read of one ticker, asserted against today's full read of the same
+    window. `TapePrint` is a frozen dataclass, so `==` on the two lists is row for row, field
+    for field, in order, dedupe winner included."""
+    got = cache.read(session, ticker, lower, counts)
+    expected = store.load_prints(session, ticker, lower)
+    assert got == expected, note or f"{ticker} at {lower}"
+    return got
+
+
+def _delete79(session, where, params=None):
+    session.execute(text(f"delete from venue_trades where ticker = :t and {where}"),  # noqa: S608 - fixed literals
+                    {"t": FIX79_TICKER} | (params or {}))
+    session.commit()
+
+
+def test_fix79_the_cached_read_equals_the_full_read_through_a_shaped_tape(db_session):
+    """Identity through every shape the brief names, one loop at a time.
+
+    A WS/REST duplicate pair, two prints at the same instant, a head insert, a late REST
+    backfill with an older `ts`, a late REST copy *earlier* than its cached WS twin (which
+    moves the dedupe winner), `lower` moving earlier, `lower` moving later, and `lower` moving
+    later and then earlier again on the same ticker. After every one of them the cached list is
+    the full read's list.
+    """
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+
+    _print79(db_session, 0, "a", source="ws")
+    _print79(db_session, 5, "a", source="rest")   # the same trade from the other feed
+    _print79(db_session, 10, "b")
+    _print79(db_session, 10, "c")                 # equal `ts`: ordered by `trade_id`
+    db_session.commit()
+
+    first = _cache_loop(db_session, cache, counts)
+    assert [p.trade_id for p in first] == ["a", "b", "c"]
+    assert (counts.full_reads, counts.cached_tickers) == (1, 0)
+
+    # A quiet loop serves the cache and re-reads only the rows at the window's last instant.
+    _cache_loop(db_session, cache, counts)
+    assert (counts.full_reads, counts.cached_tickers) == (1, 1)
+    assert counts.incremental_rows == 2
+
+    # A print at the head is the incremental case the fix exists for: still no full read.
+    _print79(db_session, 20, "d")
+    db_session.commit()
+    assert [p.trade_id for p in _cache_loop(db_session, cache, counts)] == ["a", "b", "c", "d"]
+    assert (counts.full_reads, counts.cached_tickers) == (1, 2)
+
+    # A late REST backfill lands *below* the cached maximum: the window's count moves, so the
+    # ticker takes today's full read rather than a merge the tail could not have seen.
+    _print79(db_session, 7, "e", source="rest")
+    db_session.commit()
+    got = _cache_loop(db_session, cache, counts)
+    assert [p.trade_id for p in got] == ["a", "e", "b", "c", "d"]
+    assert counts.full_reads == 2
+
+    # A late REST copy of `b` that is earlier than its cached WS twin: the *winner* changes,
+    # which is exactly the case a cache that merged only the head would get wrong.
+    _print79(db_session, 8, "b", source="rest")
+    db_session.commit()
+    got = _cache_loop(db_session, cache, counts)
+    assert [(p.trade_id, p.source) for p in got] == [
+        ("a", "ws"), ("e", "rest"), ("b", "rest"), ("c", "ws"), ("d", "ws")]
+    assert counts.full_reads == 3
+
+    # A new pending row moves `lower` earlier: the cache has never seen all of that window.
+    _print79(db_session, -90_000, "old")
+    db_session.commit()
+    wider = FIX79_LOWER - timedelta(seconds=60)
+    assert _cache_loop(db_session, cache, counts, lower=wider)[0].trade_id == "old"
+    assert counts.full_reads == 4
+
+    # Rows finishing move `lower` later: the window is trimmed physically and still served
+    # from the cache -- and the dedupe winner for `b` moves back to the WS row, because the
+    # REST copy is now below the window.
+    later = FIX79_T0 + timedelta(milliseconds=9)
+    got = _cache_loop(db_session, cache, counts, lower=later)
+    assert [(p.trade_id, p.source) for p in got] == [("b", "ws"), ("c", "ws"), ("d", "ws")]
+    assert counts.full_reads == 4
+
+    # ... and then earlier again on the same ticker: a full read, never the trimmed window.
+    got = _cache_loop(db_session, cache, counts, lower=FIX79_LOWER)
+    assert [p.trade_id for p in got] == ["a", "e", "b", "c", "d"]
+    assert counts.full_reads == 5
+
+    # The re-seed reads `_PRINTS`' own projection and order, with the token beside it.
+    seeded = db_session.execute(store._PRINTS_SEED,
+                                {"t": FIX79_TICKER, "lower": FIX79_LOWER}).all()
+    plain = db_session.execute(store._PRINTS, {"t": FIX79_TICKER, "lower": FIX79_LOWER}).all()
+    assert [tuple(row)[:6] for row in seeded] == [tuple(row) for row in plain]
+
+
+def test_fix79_two_hundred_randomized_loops_equal_the_full_read(db_session):
+    """The randomized identity fuzz the review session asked for: 200 loops of a seeded
+    schedule of head inserts, older-`ts` inserts, equal-`ts` inserts, duplicate `trade_id`
+    twins, deletes (one row, and the reprocess path's whole `source = 'rest'` sweep) and
+    `lower` moves, with `cached == load_prints` asserted after every single loop.
+
+    The seed is printed by the assertion, and can be overridden with `FIX79_FUZZ_SEED` to
+    replay a failure. Several mutations land between two loops on purpose, including a delete
+    and an insert that cancel out in count and in both end instants -- the case only the token
+    sum catches.
+    """
+    seed = int(os.environ.get("FIX79_FUZZ_SEED", "20260917"))
+    rng = random.Random(seed)
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+    alive: list[tuple[int, str, str]] = []   # (ms offset, trade_id, source)
+    next_id = itertools.count(1)
+    lower_s = 60           # `lower` is FIX79_T0 - lower_s seconds
+    kinds = ("head", "old", "equal", "twin", "delete_one", "delete_rest", "lower")
+
+    def insert(ms, trade_id, source):
+        if (ms, trade_id, source) in alive or any(
+                t == trade_id and m == ms for m, t, _ in alive):
+            return
+        _print79(db_session, ms, trade_id, source=source)
+        alive.append((ms, trade_id, source))
+
+    for loop in range(200):
+        for _ in range(rng.randint(1, 3)):
+            kind = rng.choice(kinds) if alive else "head"
+            top = max((m for m, _, _ in alive), default=0)
+            if kind == "head":
+                insert(top + rng.randint(1, 400), f"f{next(next_id)}", "ws")
+            elif kind == "old":
+                base = rng.choice(alive)[0]
+                insert(base - rng.randint(1, 900), f"f{next(next_id)}",
+                       rng.choice(("ws", "rest")))
+            elif kind == "equal":
+                insert(rng.choice(alive)[0], f"f{next(next_id)}", rng.choice(("ws", "rest")))
+            elif kind == "twin":
+                ms, trade_id, _ = rng.choice(alive)
+                insert(ms + rng.choice((-3, -2, -1, 1, 2, 3)), trade_id, "rest")
+            elif kind == "delete_one":
+                ms, trade_id, source = rng.choice(alive)
+                db_session.execute(
+                    text("delete from venue_trades where ticker = :t and trade_id = :i "
+                         "and ts = :ts"),
+                    {"t": FIX79_TICKER, "i": trade_id,
+                     "ts": FIX79_T0 + timedelta(milliseconds=ms)})
+                alive.remove((ms, trade_id, source))
+            elif kind == "delete_rest":
+                # `harness/normalize/runner.py`'s reprocess path, restricted to this ticker.
+                db_session.execute(
+                    text("delete from venue_trades where ticker = :t and source = 'rest'"),
+                    {"t": FIX79_TICKER})
+                alive[:] = [row for row in alive if row[2] != "rest"]
+            else:
+                lower_s = max(0, min(120, lower_s + rng.randint(-20, 20)))
+        db_session.commit()
+        _cache_loop(db_session, cache, counts,
+                    lower=FIX79_T0 - timedelta(seconds=lower_s),
+                    note=f"fix 79 fuzz: seed {seed}, loop {loop}, lower -{lower_s}s, "
+                         f"{len(alive)} rows")
+
+    # The schedule really did exercise both paths and both deleters.
+    assert counts.cached_tickers > 20, counts
+    assert counts.full_reads > 20, counts
+
+
+def test_fix79_one_statement_per_cached_ticker_per_loop(db_session):
+    """The statement shape: one statement per cached ticker per loop, never two, quiet loop or
+    not -- and the guard is in it, as scalar subqueries over the same window as the rows."""
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+    for ms, trade_id in ((0, "a"), (10, "b"), (20, "c")):
+        _print79(db_session, ms, trade_id)
+    db_session.commit()
+    _cache_loop(db_session, cache, counts)          # the seeding full read
+    assert counts.full_reads == 1
+
+    with capture_sql(db_session) as quiet:
+        _cache_loop(db_session, cache, counts)
+    _print79(db_session, 30, "d")
+    db_session.commit()
+    with capture_sql(db_session) as moving:
+        _cache_loop(db_session, cache, counts)
+
+    # `_cache_loop` runs the comparison read as well, so only the cache's own statement is
+    # counted: the one carrying the guard's aliases.
+    for seen in (quiet, moving):
+        reads = [" ".join(q.split()).lower() for q, _ in seen if "venue_trades" in q]
+        assert len(reads) == 2, reads          # the cache statement plus `_PRINTS`
+        guarded = [q for q in reads if "win_tok" in q]
+        assert len(guarded) == 1, reads
+        body = guarded[0]
+        assert body.count("select") == 5       # the rows plus four scalar subqueries
+        assert "count(*)" in body and "min(ts)" in body and "max(ts)" in body
+        assert "sum(hashtextextended" in body
+        assert "with " not in body             # not a CTE over the window
+        assert body.endswith("order by ts, trade_id")
+    assert counts.full_reads == 1              # and no full read on either loop
+
+
+def test_fix79_a_second_connections_commits_cannot_shorten_the_list(db_session):
+    """The race a two-statement design loses (review of the draft brief, defect 1).
+
+    Under READ COMMITTED a guard statement and a separate incremental read have two snapshots,
+    so a row committed below the cached maximum before the guard plus a row committed at the
+    head between the two statements reconciles the guard's count and drops a print. Here both
+    of those commits land -- from a second connection, in two separate transactions -- while
+    the cache's single statement is being sent. The answer must still be the full read's
+    answer: a short list is the failure this case exists to catch.
+    """
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+    for ms, trade_id in ((0, "a"), (10, "b"), (20, "c")):
+        _print79(db_session, ms, trade_id)
+    db_session.commit()
+    _cache_loop(db_session, cache, counts)
+    _cache_loop(db_session, cache, counts)
+    assert (counts.full_reads, counts.cached_tickers) == (1, 1)
+
+    engine = db_session.get_bind()
+    committed: list[str] = []
+    insert = text(
+        "insert into venue_trades (venue, trade_id, ticker, ts, yes_price, \"count\", "
+        "taker_side, taker_outcome_side, is_block, source) values "
+        "('kalshi', :i, :t, :ts, 0.35, 10, 'no', 'no', false, 'rest')")
+
+    def hook(conn, cursor, statement, parameters, context, executemany):
+        if "win_tok" not in statement or committed:
+            return
+        committed.append(statement)
+        # Below the cached maximum first -- what a guard statement would already have counted.
+        for trade_id, ms in (("late-below", 15), ("late-head", 40)):
+            with engine.connect() as other:
+                other.execute(insert, {"i": trade_id, "t": FIX79_TICKER,
+                                       "ts": FIX79_T0 + timedelta(milliseconds=ms)})
+                other.commit()
+
+    event.listen(engine, "before_cursor_execute", hook)
+    try:
+        got = cache.read(db_session, FIX79_TICKER, FIX79_LOWER, counts)
+    finally:
+        event.remove(engine, "before_cursor_execute", hook)
+
+    assert committed, "the cache statement never ran"
+    assert got == store.load_prints(db_session, FIX79_TICKER, FIX79_LOWER)
+    assert [p.trade_id for p in got] == ["a", "b", "late-below", "c", "late-head"]
+    # Both commits were on the statement's own snapshot, and the window no longer matches the
+    # cache, so the ticker took the full read rather than a merge.
+    assert counts.full_reads == 2
+
+
+def test_fix79_a_deleted_row_takes_the_full_read_and_never_a_stale_serve(db_session):
+    """Deletion and partition-shaped loss. `venue_trades` is not insert-only: the reprocess
+    path deletes every `source = 'rest'` row (`harness/normalize/runner.py:355`) and a
+    retention policy would drop whole partitions. An interior row, the cached maximum row, the
+    whole REST sweep, and -- the case count/min/max alone cannot see -- a delete and an insert
+    at the very same instant that leave the count and both ends of the window unchanged.
+    """
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+    for ms, trade_id, source in ((0, "a", "ws"), (10, "b", "rest"), (20, "c", "ws"),
+                                 (30, "d", "ws")):
+        _print79(db_session, ms, trade_id, source=source)
+    db_session.commit()
+    _cache_loop(db_session, cache, counts)
+    _cache_loop(db_session, cache, counts)
+    assert counts.full_reads == 1
+
+    _delete79(db_session, "trade_id = 'b'")
+    assert [p.trade_id for p in _cache_loop(db_session, cache, counts)] == ["a", "c", "d"]
+    assert counts.full_reads == 2
+
+    # The cached maximum row itself: the tail cannot come back empty while it exists.
+    _delete79(db_session, "trade_id = 'd'")
+    assert [p.trade_id for p in _cache_loop(db_session, cache, counts)] == ["a", "c"]
+    assert counts.full_reads == 3
+
+    # The reprocess sweep.
+    _print79(db_session, 40, "e", source="rest")
+    _print79(db_session, 50, "f", source="rest")
+    db_session.commit()
+    _cache_loop(db_session, cache, counts)
+    _delete79(db_session, "source = 'rest'")
+    assert [p.trade_id for p in _cache_loop(db_session, cache, counts)] == ["a", "c"]
+    assert counts.full_reads == 4
+
+    # A delete and an insert that cancel out exactly: same count, same `min(ts)`, same
+    # `max(ts)`, even the same instant. Only the window's token sum moves.
+    _print79(db_session, 60, "g")
+    db_session.commit()
+    _cache_loop(db_session, cache, counts)
+    before = counts.full_reads
+    db_session.execute(text("delete from venue_trades where ticker = :t and trade_id = 'c'"),
+                       {"t": FIX79_TICKER})
+    _print79(db_session, 20, "swap")
+    db_session.commit()
+    got = _cache_loop(db_session, cache, counts)
+    assert [p.trade_id for p in got] == ["a", "swap", "g"]
+    assert counts.full_reads == before + 1
+
+
+def test_fix79_the_caller_never_gets_the_cache_object(db_session):
+    """`has_print` scans the list per fill and `_tape`'s hold-back filters it, so a caller that
+    mutated what it was handed would corrupt every later loop. Every serve is a list of its
+    own -- the unchanged serve, the merged serve and the full read alike."""
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+    for ms, trade_id in ((0, "a"), (10, "b")):
+        _print79(db_session, ms, trade_id)
+    db_session.commit()
+
+    seeded = _cache_loop(db_session, cache, counts)          # the full read
+    seeded.clear()
+    served = _cache_loop(db_session, cache, counts)          # the unchanged serve
+    assert [p.trade_id for p in served] == ["a", "b"]
+    served.pop()
+    _print79(db_session, 20, "c")
+    db_session.commit()
+    merged = _cache_loop(db_session, cache, counts)          # the merged serve
+    assert [p.trade_id for p in merged] == ["a", "b", "c"]
+    merged.append(merged[0])
+    del merged[0]
+    assert [p.trade_id for p in _cache_loop(db_session, cache, counts)] == ["a", "b", "c"]
+    assert counts.full_reads == 1
+
+
+def test_fix79_the_row_cap_holds_and_counts_every_fallback(db_session):
+    """The cap is a bound on this process's memory, so it is absolute: above it the *largest*
+    tickers fall back to full reads, and nothing is dropped without `prints_cap_fallbacks`
+    saying so. Identity holds on both sides of it."""
+    assert store.PRINT_CACHE_MAX_ROWS == 250_000
+    for ms in range(5):
+        _print79(db_session, ms * 10, f"big{ms}", ticker=FIX79_OTHER)
+    for ms in range(2):
+        _print79(db_session, ms * 10, f"small{ms}")
+    db_session.commit()
+
+    # The small ticker is cached; the larger one does not fit beside it and is refused, loop
+    # after loop, rather than evicting what does fit.
+    cache = store.PrintCache(max_rows=6)
+    counts = store.PrintReadCounts()
+    _cache_loop(db_session, cache, counts)
+    assert (cache.rows, cache.tickers()) == (2, {FIX79_TICKER})
+    for _ in range(2):
+        _cache_loop(db_session, cache, counts, ticker=FIX79_OTHER)
+    assert (cache.rows, cache.tickers()) == (2, {FIX79_TICKER})
+    assert counts.cap_fallbacks == 2
+    assert counts.full_reads == 3
+
+    # The other order of arrival: the large ticker is cached first and is the one evicted.
+    cache = store.PrintCache(max_rows=6)
+    counts = store.PrintReadCounts()
+    _cache_loop(db_session, cache, counts, ticker=FIX79_OTHER)
+    assert (cache.rows, cache.tickers()) == (5, {FIX79_OTHER})
+    _cache_loop(db_session, cache, counts)
+    assert (cache.rows, cache.tickers()) == (2, {FIX79_TICKER})
+    assert counts.cap_fallbacks == 1
+
+    # A single ticker larger than the whole cap is simply never cached.
+    cache = store.PrintCache(max_rows=3)
+    counts = store.PrintReadCounts()
+    for _ in range(2):
+        _cache_loop(db_session, cache, counts, ticker=FIX79_OTHER)
+    assert (cache.rows, cache.tickers()) == (0, set())
+    assert (counts.cap_fallbacks, counts.full_reads) == (2, 2)
+
+
+def test_fix79_an_empty_window_caches_nothing_and_still_matches(db_session):
+    """A window with no rows has no maximum row to anchor a tail on: nothing is cached, and
+    the ticker keeps taking the full read until it prints."""
+    cache = store.PrintCache()
+    counts = store.PrintReadCounts()
+    assert _cache_loop(db_session, cache, counts) == []
+    assert (cache.rows, cache.tickers()) == (0, set())
+    _print79(db_session, 0, "a")
+    db_session.commit()
+    assert [p.trade_id for p in _cache_loop(db_session, cache, counts)] == ["a"]
+    assert counts.full_reads == 2
+
+
+# --- fix 79 at the loop's own seam --------------------------------------------------------
+
+
+def test_fix79_the_cached_executor_writes_exactly_what_the_uncached_one_writes(
+        env_settings, db_session, world):
+    """Fix 79 acceptance: the same population, the same tape and the same clock run twice --
+    once with the print cache and once without it -- and every `orders` column and every
+    `fills` / `ledger` / `order_events` row is identical. `select *`, as fix 78b's own identity
+    case does it, so a column nobody thought of is in the comparison by construction.
+    """
+    keep_only(db_session, set())
+    t0 = NOW + timedelta(seconds=10)
+    snapshot = _pending_book(db_session, T2, NOW - timedelta(seconds=5), sid=2)
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    _pending_book(db_session, T4, NOW - timedelta(seconds=5), sid=4)
+    _gap(db_session, NOW - timedelta(seconds=1), sid=snapshot.sid)
+    db_session.commit()
+    shapes = _mixed_shapes(t0)
+    n = len(shapes)
+
+    ids = seed_pending(db_session, t0, n, shapes)
+    cached_cols, cached_writes, _, _, _ = run_pending_steps(
+        env_settings, db_session, t0, ids, shapes, batched=True, print_cache=True)
+    reset_pending(db_session)
+    ids = seed_pending(db_session, t0, n, shapes)
+    plain_cols, plain_writes, _, _, _ = run_pending_steps(
+        env_settings, db_session, t0, ids, shapes, batched=True, print_cache=False)
+
+    assert len(cached_cols) == n
+    assert cached_cols == plain_cols
+    assert cached_writes == plain_writes
+    # Not a vacuous comparison: the measured loop really did write a fill off the tape.
+    assert len(cached_writes["fills"]) == 1
+
+
+def test_fix79_a_replay_executor_has_no_cache_and_a_bounded_read_never_uses_one(
+        env_settings, db_session, world):
+    """Two independent conditions, tested independently (the brief's wording): a replay
+    executor is built without a cache at all, and `_tape` refuses to use one on any step whose
+    `at` is not None -- a past-instant window is not the window a cache entry describes."""
+    clock = Clock(NOW)
+    replay = make_executor(env_settings, db_session, clock, replay=True)
+    assert replay._print_cache is None
+
+    executor = _two_working_tickers(env_settings, db_session, clock)
+    assert isinstance(executor._print_cache, store.PrintCache)
+    # A live executor whose `at` is not None: the cache is left completely alone and the read
+    # is the instant-bounded statement.
+    executor._at = lambda now: clock.now
+    with capture_sql(db_session) as seen:
+        _read_tape(executor, db_session, clock)
+    assert executor._print_cache.tickers() == set()
+    assert executor._print_cache.rows == 0
+    prints = [" ".join(q.split()) for q, _ in seen if "venue_trades" in q]
+    assert prints and all("ts <=" in q and "win_tok" not in q for q in prints)
+
+    # And the replay executor's own read: no cache, and the same bounded statement.
+    replay._print_cache = store.PrintCache()
+    with capture_sql(db_session) as seen:
+        replay._tape(db_session, store.working_orders(db_session, False), clock.now,
+                     {"last_error": None, "tape_lag": []})
+    assert replay._print_cache.tickers() == set()
+    assert all("win_tok" not in q for q, _ in seen)
+
+
+def test_fix79_one_statement_per_ticker_per_loop_inside_the_step(
+        env_settings, db_session, world):
+    """The same statement-shape guarantee measured where it matters: one `venue_trades`
+    statement per working ticker per `_tape`, and after the first loop none of them is a full
+    read."""
+    clock = Clock(NOW)
+    executor = _two_working_tickers(env_settings, db_session, clock)
+    # Both tickers print: a window with no rows at all has no maximum row to anchor a tail on,
+    # so it is never cached and takes the (empty, index-only) full read every loop.
+    for ticker in (T2, T3):
+        _print(db_session, ticker, clock.now, "0.35", "5", trade_id=f"fix79-seed-{ticker}")
+    db_session.commit()
+    stats = ExecStats()
+    executor._tape(db_session, store.working_orders(db_session, False), clock.now,
+                   {"last_error": None, "tape_lag": []}, stats)
+    assert (stats.prints_full_reads, stats.prints_cached_tickers) == (2, 0)
+    assert executor._print_cache.tickers() == {T2, T3}
+
+    clock.advance(15)
+    _print(db_session, T2, clock.now, "0.35", "5", trade_id="fix79-head")
+    db_session.commit()
+    after = ExecStats()
+    with capture_sql(db_session) as seen:
+        executor._tape(db_session, store.working_orders(db_session, False), clock.now,
+                       {"last_error": None, "tape_lag": []}, after)
+
+    reads = [q for q, _ in seen if "venue_trades" in q]
+    assert len(reads) == 2
+    assert all("win_tok" in q for q in reads)
+    assert (after.prints_full_reads, after.prints_cached_tickers) == (0, 2)
+    assert after.prints_cached_rows == executor._print_cache.rows > 0
+
+
+def test_fix79_a_ticker_with_no_working_row_leaves_the_cache_and_a_failed_read_keeps_it(
+        env_settings, db_session, world, monkeypatch):
+    """Eviction, exactly as `_delta_batch`'s is: a ticker with no working order is dropped, and
+    a ticker whose read *failed* keeps its entry -- the entry describes a snapshot that really
+    happened, and the next loop's guard re-validates it before anything is served from it."""
+    clock = Clock(NOW)
+    executor = _two_working_tickers(env_settings, db_session, clock)
+    for ticker in (T2, T3):
+        _print(db_session, ticker, clock.now, "0.35", "5", trade_id=f"fix79-{ticker}")
+    db_session.commit()
+    _read_tape(executor, db_session, clock)
+    cache = executor._print_cache
+    assert cache.tickers() == {T2, T3}
+    rows_before = cache.rows
+
+    # A ticker nothing works on any more: gone, like its delta batch entry.
+    db_session.execute(text("update orders set status = 'cancelled', nw_done = true "
+                            "where ticker = :t"), {"t": T3})
+    db_session.commit()
+    _read_tape(executor, db_session, clock)
+    assert cache.tickers() == {T2}
+
+    # A ticker whose delta read fails keeps its print cache entry.
+    real = store.load_deltas
+
+    def explode(session, ticker, *args, **kwargs):
+        if ticker == T2:
+            raise RuntimeError("canceling statement due to statement timeout")
+        return real(session, ticker, *args, **kwargs)
+
+    monkeypatch.setattr(store, "load_deltas", explode)
+    _, unread, _, _ = _read_tape(executor, db_session, clock)
+    assert unread == {T2}
+    assert cache.tickers() == {T2}
+    assert cache.rows <= rows_before
+
+
+def test_fix79_a_cache_statement_timeout_does_not_shrink_the_delta_batch(
+        env_settings, db_session, world, monkeypatch):
+    """Review of the draft brief, defect 6. Fix 26 shrinks a ticker's *delta* batch on any
+    statement timeout inside the tape block, because the batch size is what a delta read that
+    cannot finish is really about. A timeout on the print cache's own statement says nothing
+    about the delta batch and must not shrink it -- while a timeout on the full print read
+    still does, exactly as it does today."""
+    clock = Clock(NOW)
+    executor = _two_working_tickers(env_settings, db_session, clock)
+    for ticker in (T2, T3):
+        _print(db_session, ticker, clock.now, "0.35", "5", trade_id=f"fix79-seed-{ticker}")
+    db_session.commit()
+    _read_tape(executor, db_session, clock)
+    assert executor._print_cache.tickers() == {T2, T3}
+    assert executor._delta_batch == {}
+
+    real_execute = Session.execute
+
+    def failing(statement):
+        def execute(self, stmt, *args, **kwargs):
+            if stmt is statement:
+                raise _statement_timeout()
+            return real_execute(self, stmt, *args, **kwargs)
+        return execute
+
+    monkeypatch.setattr(Session, "execute", failing(store._PRINTS_TAIL))
+    _, unread, _, _ = _read_tape(executor, db_session, clock)
+    monkeypatch.undo()
+    assert unread == {T2, T3}
+    assert executor._delta_batch == {}
+    # The entries survive the failure: a failed read is not evidence against the cache.
+    assert executor._print_cache.tickers() == {T2, T3}
+
+    # The full read is the contrast: today's behaviour, unchanged.
+    monkeypatch.setattr(Session, "execute", failing(store._PRINTS_SEED))
+    executor._print_cache.evict(set())
+    _, unread, _, _ = _read_tape(executor, db_session, clock)
+    monkeypatch.undo()
+    assert unread == {T2, T3}
+    assert executor._delta_batch == {T2: 5_000, T3: 5_000}
+
+
+def test_fix79_publishes_its_counters_once_live_never_replay(env_settings, db_session, world):
+    """The five additive gauges arrive once on a live loop, with the values the fixture's own
+    tape says they should have, and never on a replay -- which has no cache at all."""
+    keep_only(db_session, set())
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    db_session.commit()
+    t0 = NOW + timedelta(seconds=10)
+    _fix82_fixture(db_session, t0)
+    _print(db_session, T3, t0 - timedelta(seconds=1), "0.45", "5", trade_id="fix79-metric")
+    db_session.commit()
+    clock = Clock(t0)
+    executor = make_executor(env_settings, db_session, clock)
+
+    stats = executor.step()
+    refresh(db_session)
+
+    samples = {row.name: row.value for row in
+               db_session.query(MetricSample).filter_by(source="exec").all()}
+    names = [row.name for row in db_session.query(MetricSample).filter_by(source="exec").all()]
+    for name in FIX79_NAMES:
+        assert names.count(name) == 1, name
+        assert samples[name] is not None and samples[name] >= 0, name
+    # The first loop of a fresh executor reads every ticker in full and caches what it read.
+    assert samples["exec.prints_full_reads"] == stats.prints_full_reads == 1
+    assert samples["exec.prints_cached_tickers"] == 0
+    assert samples["exec.prints_cached_rows"] == 1
+    assert samples["exec.prints_cap_fallbacks"] == 0
+    before = len(names)
+
+    replay = make_executor(env_settings, db_session, Clock(NOW), replay=True)
+    replay.step()
+    refresh(db_session)
+    assert db_session.query(MetricSample).filter_by(source="exec").count() == before

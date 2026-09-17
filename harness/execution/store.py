@@ -33,6 +33,8 @@ them, so the loop never passes a raw `Row` into a pure function.
 """
 
 import logging
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, NamedTuple, Sequence
@@ -500,20 +502,328 @@ def load_prints(session: Session, ticker: str, lower: datetime,
     `at` bounds the scan at a replay executor's own instant. `simulate_fills` already drops a
     print past its deadline, but `has_print` does not: it scans the whole list, so an unbounded
     replay would explain a fill with a trade printed after the instant that produced it.
+
+    Fix 79 moved the winner rule itself into `_dedupe_prints`, which `PrintCache` derives its
+    own output through, so the two paths cannot disagree about which row wins by drifting
+    apart. The statement, its parameters and the list this returns are unchanged; the one
+    difference is that a losing duplicate is now built before it is dropped, which cannot fail
+    (`yes_price`, `count`, `taker_side` and `source` are all NOT NULL).
     """
-    seen: set[str] = set()
-    out: list[TapePrint] = []
     params = {"t": ticker, "lower": lower}
     stmt = _PRINTS
     if at is not None:
         stmt, params = _PRINTS_AT, params | {"at": at}
-    for row in session.execute(stmt, params).all():
-        if row.trade_id in seen:
+    return _dedupe_prints([_print_of(row) for row in session.execute(stmt, params).all()])
+
+
+def _print_of(row) -> TapePrint:
+    """One `_PRINTS`-projection row as the simulator's print. The only place the projection is
+    turned into a `TapePrint`, so every path below produces the same object for the same row."""
+    return TapePrint(trade_id=row.trade_id, ts=row.ts, yes_price=row.yes_price,
+                     count=row.count, taker_side=row.taker_side, source=row.source)
+
+
+def _dedupe_prints(rows: Sequence[TapePrint]) -> list[TapePrint]:
+    """The first row per `trade_id` in the statement's order wins (`load_prints`' rule, §1).
+
+    One implementation, shared by the full read and by `PrintCache`: "the same dedupe winner"
+    is then identity by construction rather than two implementations that happen to agree.
+    """
+    seen: set[str] = set()
+    out: list[TapePrint] = []
+    for print_ in rows:
+        if print_.trade_id in seen:
             continue
-        seen.add(row.trade_id)
-        out.append(TapePrint(trade_id=row.trade_id, ts=row.ts, yes_price=row.yes_price,
-                             count=row.count, taker_side=row.taker_side, source=row.source))
+        seen.add(print_.trade_id)
+        out.append(print_)
     return out
+
+
+# --- fix 79: the live executor's print cache -------------------------------------------
+#
+# `_tape` re-reads every ticker's whole print window every loop because prints carry no
+# cursor (§1). On production that is ~112,000 `venue_trades` rows a loop and 6.5 s of
+# `exec.phase_tape_ms`, almost all of it client-side: the rows themselves, two `Decimal`
+# quantizes per row and a `TapePrint` per row, rebuilt from scratch every 15 s.
+#
+# The cache below keeps the built `TapePrint`s per ticker and re-reads only the tail of the
+# window, but it may never hand back a list that differs in any way from what `load_prints`
+# would have returned at the same snapshot: a print the simulator does not see is a fill that
+# is silently never inferred, no live check catches an under-fill, and a correction can only
+# ever be a new row (§0.12). So every serve is guarded, and the guard is exact:
+#
+# * **One statement, never two.** Under READ COMMITTED each statement gets its own snapshot,
+#   so a guard statement followed by an incremental read can be split by two commits that
+#   reconcile the guard's count and still drop a print. The guard's aggregates are therefore
+#   scalar subqueries in the *same* statement as the tail rows, evaluated on the one snapshot.
+# * **Exact, not approximate.** `count(*)`, `min(ts)` and `max(ts)` over the window miss a
+#   deletion and an insertion that cancel out between two loops -- and `venue_trades` does
+#   have deleters (`harness/normalize/runner.py` drops `source = 'rest'` on the reprocess
+#   path, and a retention policy would drop partitions). A fourth aggregate, the sum of the
+#   per-row `_PRINT_TOKEN`, closes that: the sum changes whenever the multiset of primary keys
+#   in the window changes. Python never recomputes a token, it only adds up tokens the server
+#   itself produced and the cache stored beside the rows.
+# * **Anything unexpected is today's full read.** A tail that comes back empty, a `lower` that
+#   moved earlier, a window whose aggregates or whose merged rows disagree by so much as one
+#   token: all of them re-seed from `_PRINTS_SEED`, which is `_PRINTS`' own projection, order
+#   and predicate with the token beside it.
+#
+# It is live-only: a replay executor never gets one (`Executor.__init__`), and `_tape` refuses
+# to use it whenever `at` is not None, because a past-instant read is a different window.
+
+#: One print's primary key `(venue, trade_id, ts)` as a single 64-bit number, computed by the
+#: server. `hashtextextended`'s second argument is the hash seed, so folding the epoch in there
+#: makes the token depend on `ts` as well as on the venue and the trade id, with no dependence
+#: on how Postgres would have rendered a timestamp as text (`DateStyle` is a session setting;
+#: this is arithmetic). Microseconds, which is `timestamptz`'s own resolution, so no two
+#: distinct stored instants share a seed: `extract(epoch from ts)` is `numeric` on PG 14 and
+#: later and 1.8e9 seconds of epoch scaled by a million is nowhere near a `bigint`'s range.
+#: Two different rows collide only by a 64-bit accident, and nothing here is adversarial input.
+_PRINT_TOKEN = ("hashtextextended(venue || '/' || trade_id, "
+                "(extract(epoch from ts) * 1000000)::bigint)")
+
+#: The re-seed: `_PRINTS` exactly -- same predicate, same projection, same order -- plus the
+#: token, so a seeded cache carries the server's own token for every row it holds.
+_PRINTS_SEED = text(f"""
+select trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,
+       source, {_PRINT_TOKEN} as tok
+from venue_trades where ticker = :t and ts >= :lower order by ts, trade_id
+""")
+
+#: The cached ticker's whole loop, in one statement. The four scalar subqueries describe the
+#: window the window `ts >= lower` -- how many rows, its two end instants and its token sum -- and the rows
+#: are the tail from the cache's own maximum instant onward, in `_PRINTS`' projection and
+#: order. The subqueries are uncorrelated, so the planner evaluates each once as an InitPlan,
+#: and all of them see this statement's single snapshot along with the rows. Deliberately not
+#: a CTE over the window: nothing here may materialise the rows the cache already holds.
+_PRINTS_TAIL = text(f"""
+select (select count(*) from venue_trades where ticker = :t and ts >= :lower) as win_n,
+       (select min(ts) from venue_trades where ticker = :t and ts >= :lower) as win_min_ts,
+       (select max(ts) from venue_trades where ticker = :t and ts >= :lower) as win_max_ts,
+       (select sum({_PRINT_TOKEN}) from venue_trades
+         where ticker = :t and ts >= :lower) as win_tok,
+       trade_id, ts, yes_price, count, coalesce(taker_outcome_side, taker_side) as taker_side,
+       source, {_PRINT_TOKEN} as tok
+from venue_trades where ticker = :t and ts >= :since order by ts, trade_id
+""")
+
+#: Every print the cache may hold at once, across every ticker. A constant, not a setting: it
+#: is a bound on one process's memory, and an operator who could raise it could turn the
+#: executor into the thing that gets OOM-killed. One cached print measures 515 B, measured
+#: rather than guessed at (`tracemalloc`, a 36-character trade id: the frozen dataclass, two
+#: `Decimal`s, the trade id, the timestamp, the token and the three list slots), so this cap is
+#: about 129 MB. Production reads ~121,000 prints a loop today, which is ~62 MB, so the cap is
+#: roughly twice the current working set: room for the season to grow without the cap quietly
+#: becoming the normal state, and far short of the swap this host has already been seen to
+#: touch. Past it the *largest* tickers fall back to full reads -- they are the ones whose
+#: windows a cache helps least per byte -- and every fallback is counted in
+#: `exec.prints_cap_fallbacks`, so nothing is dropped silently.
+PRINT_CACHE_MAX_ROWS = 250_000
+
+#: The marker `_tape` reads to tell a failure of the cache's own statement from a failure of
+#: `load_deltas` or of a full `load_prints`. Fix 26 shrinks a ticker's *delta* batch on any
+#: statement timeout inside the tape block; a timeout on this statement says nothing about the
+#: delta read's size, so it must not shrink it (review of the draft brief, defect 6).
+PRINT_CACHE_STATEMENT_ATTR = "_harness_print_cache_statement"
+
+
+@dataclass
+class PrintReadCounts:
+    """What one loop's print reads did, published as the `exec.prints_*` gauges."""
+
+    #: Tickers served from the cache this loop (unchanged or merged), and tickers that took
+    #: today's full read -- for whatever reason, including a first sight of the ticker.
+    cached_tickers: int = 0
+    full_reads: int = 0
+    #: Rows the cache statements' tails brought back, summed over the tickers they served.
+    incremental_rows: int = 0
+    #: Admissions refused and entries evicted by `PRINT_CACHE_MAX_ROWS` this loop.
+    cap_fallbacks: int = 0
+
+
+@dataclass
+class _CachedPrints:
+    """One ticker's cached window, and the four facts it was read under.
+
+    `rows` is every row of the window `ts >= lower` in `_PRINTS`' order, *before* the dedupe; `deduped` is
+    `_dedupe_prints(rows)` and is what a caller is handed a copy of. `tokens[i]` is the
+    server's `_PRINT_TOKEN` for `rows[i]`. `count`, `min_ts`, `max_ts` and `token_sum` describe
+    the same window and are what the next loop's statement is compared against.
+    """
+
+    lower: datetime
+    rows: list[TapePrint]
+    tokens: list[int]
+    deduped: list[TapePrint]
+    count: int
+    min_ts: datetime
+    max_ts: datetime
+    token_sum: int
+
+
+def _entry_of(lower: datetime, rows: list[TapePrint], tokens: list[int]) -> _CachedPrints:
+    """A cache entry whose four facts are derived from the rows themselves -- used where the
+    rows *are* the whole window (a re-seed, or a window trimmed up to a later `lower`)."""
+    return _CachedPrints(lower=lower, rows=rows, tokens=tokens, deduped=_dedupe_prints(rows),
+                         count=len(rows), min_ts=rows[0].ts, max_ts=rows[-1].ts,
+                         token_sum=sum(tokens))
+
+
+class PrintCache:
+    """Per-ticker print windows held in this process, refreshed by one statement per ticker
+    per loop, value-identical to `load_prints` at the same snapshot (fix 79).
+
+    The only entry point is `read`, which returns exactly what
+    `load_prints(session, ticker, lower, None)` would have returned -- same rows, same order,
+    same dedupe winners, equal `TapePrint` values -- and never the cache's own list: callers
+    filter the list they are given (`_tape`'s hold-back) and scan it per fill (`has_print`),
+    so a caller that mutated it would corrupt the next loop's answer.
+
+    `evict` drops the tickers that no longer have a working row, exactly as `_delta_batch` is
+    dropped for them. A ticker whose read *failed* keeps its entry: the entry describes a
+    snapshot that really happened, and the next loop's guard re-validates it anyway.
+    """
+
+    def __init__(self, max_rows: int = PRINT_CACHE_MAX_ROWS) -> None:
+        self._entries: dict[str, _CachedPrints] = {}
+        self._rows = 0
+        self.max_rows = max_rows
+
+    @property
+    def rows(self) -> int:
+        """Prints held right now, across every ticker: `exec.prints_cached_rows`."""
+        return self._rows
+
+    def tickers(self) -> set[str]:
+        return set(self._entries)
+
+    def evict(self, keep) -> None:
+        keep = set(keep)
+        for ticker in list(self._entries):
+            if ticker not in keep:
+                self._drop(ticker)
+
+    def read(self, session: Session, ticker: str, lower: datetime,
+             counts: PrintReadCounts) -> list[TapePrint]:
+        entry = self._entries.get(ticker)
+        if entry is not None and lower != entry.lower:
+            # A window that moved earlier is a window this cache has never seen all of; one
+            # that moved later is the same window with a prefix that will never be read again,
+            # and trimming it physically is what keeps a long-lived ticker's entry bounded.
+            entry = self._restrict(ticker, entry, lower)
+        if entry is None:
+            return self._full(session, ticker, lower, counts)
+        rows = self._tail(session, ticker, lower, entry.max_ts)
+        counts.incremental_rows += len(rows)
+        if not rows:
+            # The row the cached maximum instant came from is gone: the tail cannot be empty
+            # while it exists, so this is a deletion (or a dropped partition), never a quiet
+            # loop. Nothing here tries to reason about it -- it is a full read.
+            return self._full(session, ticker, lower, counts)
+        # The four aggregates ride on every row of the tail; they describe the whole window
+        # `ts >= lower`, on this statement's one snapshot, not just the rows fetched.
+        guard = rows[0]
+        window = (int(guard.win_n), guard.win_min_ts, guard.win_max_ts, int(guard.win_tok))
+        tail = [_print_of(row) for row in rows]
+        tail_tokens = [int(row.tok) for row in rows]
+        cut = _cut_at(entry.rows, entry.max_ts)
+        if (window == (entry.count, entry.min_ts, entry.max_ts, entry.token_sum)
+                and tail == entry.rows[cut:]):
+            # Nothing in the window moved, and the rows at its maximum instant are the rows
+            # the cache already holds -- re-read, not assumed, because a row deleted and
+            # another inserted at that same instant would otherwise reconcile every aggregate.
+            counts.cached_tickers += 1
+            return list(entry.deduped)
+        merged = entry.rows[:cut] + tail
+        merged_tokens = entry.tokens[:cut] + tail_tokens
+        if (len(merged) != window[0] or sum(merged_tokens) != window[3]
+                or merged[0].ts != window[1] or merged[-1].ts != window[2]):
+            # The part of the window the cache kept is not the part the server still has.
+            return self._full(session, ticker, lower, counts)
+        counts.cached_tickers += 1
+        return self._store(ticker, _CachedPrints(
+            lower=lower, rows=merged, tokens=merged_tokens, deduped=_dedupe_prints(merged),
+            count=window[0], min_ts=window[1], max_ts=window[2], token_sum=window[3]), counts)
+
+    def _tail(self, session: Session, ticker: str, lower: datetime, since: datetime):
+        try:
+            return session.execute(
+                _PRINTS_TAIL, {"t": ticker, "lower": lower, "since": since}).all()
+        except Exception as exc:
+            with suppress(Exception):  # an exception class that refuses attributes
+                setattr(exc, PRINT_CACHE_STATEMENT_ATTR, True)
+            raise
+
+    def _full(self, session: Session, ticker: str, lower: datetime,
+              counts: PrintReadCounts) -> list[TapePrint]:
+        """Today's read of the whole window, and a re-seed from it. One statement, so the four
+        facts the next loop is guarded against come from the same snapshot as the rows."""
+        counts.full_reads += 1
+        rows: list[TapePrint] = []
+        tokens: list[int] = []
+        for row in session.execute(_PRINTS_SEED, {"t": ticker, "lower": lower}).all():
+            rows.append(_print_of(row))
+            tokens.append(int(row.tok))
+        if not rows:
+            # An empty window has no maximum row to anchor a tail on, so there is nothing to
+            # cache and nothing stale to keep.
+            self._drop(ticker)
+            return _dedupe_prints(rows)
+        return self._store(ticker, _entry_of(lower, rows, tokens), counts)
+
+    def _restrict(self, ticker: str, entry: _CachedPrints,
+                  lower: datetime) -> _CachedPrints | None:
+        if lower < entry.lower:
+            self._drop(ticker)
+            return None
+        keep = 0
+        while keep < len(entry.rows) and entry.rows[keep].ts < lower:
+            keep += 1
+        rows, tokens = entry.rows[keep:], entry.tokens[keep:]
+        if not rows:
+            self._drop(ticker)
+            return None
+        trimmed = _entry_of(lower, rows, tokens)
+        self._rows -= keep
+        self._entries[ticker] = trimmed
+        return trimmed
+
+    def _store(self, ticker: str, entry: _CachedPrints,
+               counts: PrintReadCounts) -> list[TapePrint]:
+        """Admit an entry under `max_rows`, evicting larger tickers before refusing this one.
+
+        The rule is stable rather than round-robin: the set that stays cached is the smaller
+        windows, the largest ones take a full read every loop, and a ticker is never dropped
+        without `counts.cap_fallbacks` saying that it was.
+        """
+        self._drop(ticker)
+        n = len(entry.rows)
+        while self._rows + n > self.max_rows:
+            victim = max(self._entries, default=None,
+                         key=lambda t: (len(self._entries[t].rows), t))
+            if victim is None or len(self._entries[victim].rows) <= n:
+                counts.cap_fallbacks += 1
+                return list(entry.deduped)
+            self._drop(victim)
+            counts.cap_fallbacks += 1
+        self._entries[ticker] = entry
+        self._rows += n
+        return list(entry.deduped)
+
+    def _drop(self, ticker: str) -> None:
+        gone = self._entries.pop(ticker, None)
+        if gone is not None:
+            self._rows -= len(gone.rows)
+
+
+def _cut_at(rows: list[TapePrint], ts: datetime) -> int:
+    """The index of the first row at or after `ts` in a list ordered by `ts`. Scanned from the
+    end because that is the length of the tie group at the window's maximum instant, not the
+    length of the window."""
+    cut = len(rows)
+    while cut and rows[cut - 1].ts >= ts:
+        cut -= 1
+    return cut
 
 
 #: The most rows one live delta read hands back for one ticker in one loop. A ticker with more
