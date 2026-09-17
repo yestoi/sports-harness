@@ -174,6 +174,37 @@ class ExecStats:
     walk_deferred_n: int = 0
     walk_tickers_n: int = 0
     walk_budget_ms: int = 0
+    #: Fix 82 (the user's ruling of 2026-09-17, journal 262): the six phases of `_body` the
+    #: fix 78b tape stops short of, so the loop's whole time is accounted for rather than left
+    #: as an unattributed residual. `phase_intake_ms` is candidate_signals/insert_intents/
+    #: episodes.upsert/load_intents, `phase_load_ms` working_orders/market_rows/
+    #: newest_event_ts, `phase_books_ms` _advance_books and the markets build, `phase_decide_ms`
+    #: everything up to and including plan_actions, `phase_place_ms` `_apply` alone (row 82's
+    #: placement timer) and `phase_samples_ms` the order-watch samples and equity snapshot
+    #: block. `phase_commit_prev_ms` is different in kind: a loop cannot measure its own
+    #: count_open_orders + metric batch + write_heartbeat + `session.commit()`, because that
+    #: block is what publishes this measurement, so it is measured on loop N and published on
+    #: loop N+1 (held on the executor as `_last_commit_ms`), reading 0 on the first loop. All
+    #: measurement only: no statement here is added, removed, reordered or changed, and none
+    #: of these is written by a replay executor, exactly as the fix 78b four are not.
+    phase_intake_ms: float = 0.0
+    phase_load_ms: float = 0.0
+    phase_books_ms: float = 0.0
+    phase_decide_ms: float = 0.0
+    phase_place_ms: float = 0.0
+    phase_samples_ms: float = 0.0
+    phase_commit_prev_ms: float = 0.0
+    #: Fix 82: gauges of the loop that wrote them, like the phases beside them. `working_rows`
+    #: is `len(working)`; `tape_tickers_n`/`tape_print_rows`/`tape_delta_rows` are the tickers
+    #: `_tape` actually read this loop and the prints/deltas each read back, summed, counted
+    #: right after the read and before any hold-back so a truncated batch's held-back prints
+    #: still count; `expiring_n` is the population `_expiring(row, now)` is true for this loop
+    #: -- the cohort the walk budget cannot defer.
+    working_rows: int = 0
+    tape_tickers_n: int = 0
+    tape_print_rows: int = 0
+    tape_delta_rows: int = 0
+    expiring_n: int = 0
     locked: bool = True
     #: The first failure of the step, the same string the heartbeat's `last_error` carries.
     #: A live loop reads it off the heartbeat; a replay writes no heartbeat and needs the
@@ -370,6 +401,13 @@ class Executor:
     #: dirty onset from, and every other row re-anchors exactly as it did before this fix.
     _nw_deferred: frozenset = frozenset()
 
+    #: Fix 82: the previous loop's commit-block duration, held here because a loop cannot
+    #: measure its own commit (see `ExecStats.phase_commit_prev_ms`). A class attribute for the
+    #: same reason `_nw_rotation` is one: an executor built through `__new__` for
+    #: `tests/test_execution_pure.py` / `tests/test_execution_regressions.py` never reaches
+    #: `_locked_step` and so never needs this, but it still exists to read.
+    _last_commit_ms: float = 0.0
+
     def __init__(self, settings, session_factory,
                  clock=lambda: datetime.now(timezone.utc), monotonic=time.monotonic,
                  replay: bool = False, variants: list[str] | None = None,
@@ -394,6 +432,9 @@ class Executor:
         #: Fix 78c's rotation cursor and deferred set; see the class attributes above.
         self._nw_rotation: tuple[str, int | None] | None = None
         self._nw_deferred: frozenset = frozenset()
+        #: Fix 82: see the class attribute above; each executor starts as though the previous
+        #: loop's commit cost nothing, which is what makes the first loop's own reading 0.
+        self._last_commit_ms: float = 0.0
         self._durations: deque[int] = deque(maxlen=DURATION_WINDOW)
         self._last_mono: float | None = None
         # Task 12b telemetry: samplers keyed on this executor's own injected monotonic clock
@@ -468,7 +509,12 @@ class Executor:
             stats.loop_ms = int((self._monotonic() - started) * 1000)
             stats.last_error = error
             self._durations.append(stats.loop_ms)
+            # Fix 82: the previous loop's commit-block duration, read before this loop's own
+            # overwrites it below -- a loop cannot report a number it has not finished
+            # computing yet. 0 on an executor's first loop (`_last_commit_ms`'s default).
+            stats.phase_commit_prev_ms = self._last_commit_ms
             wrote_metrics = False
+            commit_started = self._monotonic()
             try:
                 # Fix round 1, C1: count_open_orders and the heartbeat write share one guarded
                 # region again (as on the base before this task), and the metric batch runs in
@@ -507,6 +553,11 @@ class Executor:
                 log.exception("heartbeat write failed")
                 stats.errors += 1
                 session.rollback()
+            finally:
+                # Fix 82: measured whether this block succeeded or raised, so a failing commit
+                # is still accounted for in the next loop's `exec.phase_commit_prev_ms` rather
+                # than silently freezing it at a stale reading.
+                self._last_commit_ms = (self._monotonic() - commit_started) * 1000
         finally:
             session.close()
         return stats
@@ -573,6 +624,24 @@ class Executor:
             ("exec.walk_deferred_n", stats.walk_deferred_n, {}),
             ("exec.walk_tickers_n", stats.walk_tickers_n, {}),
             ("exec.walk_budget_ms", stats.walk_budget_ms, {}),
+            # Fix 82 (the user's ruling of 2026-09-17, journal 262): the six `_body` phases
+            # fix 78b's four stop short of, plus row 82's placement timer, and the counts
+            # beside them -- gauges of the loop that wrote this batch, additive names, no
+            # schema change, none of them an error. `phase_commit_prev_ms` is loop N-1's own
+            # commit block, held on the executor because a loop cannot measure its own commit;
+            # it reads 0 on an executor's first loop.
+            ("exec.phase_intake_ms", round(stats.phase_intake_ms, 3), {}),
+            ("exec.phase_load_ms", round(stats.phase_load_ms, 3), {}),
+            ("exec.phase_books_ms", round(stats.phase_books_ms, 3), {}),
+            ("exec.phase_decide_ms", round(stats.phase_decide_ms, 3), {}),
+            ("exec.phase_place_ms", round(stats.phase_place_ms, 3), {}),
+            ("exec.phase_samples_ms", round(stats.phase_samples_ms, 3), {}),
+            ("exec.phase_commit_prev_ms", round(stats.phase_commit_prev_ms, 3), {}),
+            ("exec.working_rows", stats.working_rows, {}),
+            ("exec.tape_tickers_n", stats.tape_tickers_n, {}),
+            ("exec.tape_print_rows", stats.tape_print_rows, {}),
+            ("exec.tape_delta_rows", stats.tape_delta_rows, {}),
+            ("exec.expiring_n", stats.expiring_n, {}),
             # §3 row 11: the counterfactual retry backlog, published so it is visible beside
             # criterion 4's `n_obs` and cannot silently become an exclusion. Nothing is closed,
             # so this is a queue depth, not an error.
@@ -630,6 +699,7 @@ class Executor:
         lower = now - timedelta(seconds=s.intent_ttl_s)
 
         # 2. Intake.
+        intake_started = self._monotonic()
         candidates = store.candidate_signals(session, variant_ids, lower, self.replay, at)
         intent_keys: list = []
         stats.intents_new = store.insert_intents(session, candidates, now, self.replay,
@@ -640,9 +710,16 @@ class Executor:
             episodes.upsert(session, IntentEpisode, intent_keys, now,
                             episodes.gap_rule_s(s.period_s), kind="intent")
         intents, extras = store.load_intents(session, variant_ids, lower, self.replay, at)
+        # Fix 82: measurement only -- see `ExecStats.phase_intake_ms`.
+        stats.phase_intake_ms += (self._monotonic() - intake_started) * 1000
 
         # 3. Books and markets.
+        load_started = self._monotonic()
         working = store.working_orders(session, self.replay)
+        # Fix 82: measurement only -- see `ExecStats.working_rows`/`expiring_n`. Neither a
+        # query nor a write: both are read off the `working` population just fetched.
+        stats.working_rows = len(working)
+        stats.expiring_n = sum(1 for row in working if _expiring(row, now))
         # §3 row 11: every counterfactual still running -- the whole pending population, not
         # only the tickers inside a retry backoff. Nothing is ever closed (ruling CR-4), so this
         # is a queue depth rather than an error, and it is published so criterion 4's population
@@ -652,6 +729,8 @@ class Executor:
                                            | {w.venue_market_id for w in working}), at)
         ws_last = store.newest_event_ts(session, at)
         heartbeat["ws_last_event_at"] = ws_last
+        # Fix 82: measurement only -- see `ExecStats.phase_load_ms`.
+        stats.phase_load_ms += (self._monotonic() - load_started) * 1000
         # Section 2.2's "30 s without a ping", which is a live-only reprice rule: the gateway
         # needs the tape position this step already computed, and `PaperGateway` discards it
         # (Task 10 fix round 1, Important 3).
@@ -660,6 +739,7 @@ class Executor:
         # ladder that still looks tradeable is the failure this check exists to prevent.
         dead_recorder = (ws_last is None
                          or (now - ws_last).total_seconds() > s.book_max_age_s)
+        books_started = self._monotonic()
         bases, recovering, unreadable = self._advance_books(
             session, {r.ticker for r in rows.values()},
             {r.ticker: vm_id for vm_id, r in rows.items()}, now, dead_recorder)
@@ -667,6 +747,8 @@ class Executor:
         markets = {vm_id: self._market_now(row, dead_recorder or row.ticker in unreadable)
                    for vm_id, row in rows.items()}
         heartbeat["book_dirty_markets"] = sum(1 for m in markets.values() if m.dirty(now, s))
+        # Fix 82: measurement only -- see `ExecStats.phase_books_ms`.
+        stats.phase_books_ms += (self._monotonic() - books_started) * 1000
         if not self.replay:
             # 6D §1.2: fair-calculation age at the moment the loop used it. In memory, from the
             # `MarketNow` rows this step already built -- no query.
@@ -679,6 +761,7 @@ class Executor:
                                   heartbeat)
 
         # 5. Decisions, applied in order.
+        decide_started = self._monotonic()
         open_orders = [self._order_view(row, outcomes) for row in working
                        if outcomes.get(row.id, (row.status, row.filled_contracts))[0]
                        in store.OPEN_STATUSES]
@@ -696,9 +779,15 @@ class Executor:
         actions = plan_actions(intents, open_orders, markets, state_by_variant, cfg,
                                store.kill_active(session), now, s,
                                lagging=frozenset(heartbeat["tape_lag"]))
+        # Fix 82: measurement only -- see `ExecStats.phase_decide_ms`.
+        stats.phase_decide_ms += (self._monotonic() - decide_started) * 1000
+        place_started = self._monotonic()
         self._apply(session, actions, intents, extras, markets, rows, now, stats, heartbeat)
+        # Fix 82 (row 82's own timer): measurement only -- see `ExecStats.phase_place_ms`.
+        stats.phase_place_ms += (self._monotonic() - place_started) * 1000
 
         if not self.replay:
+            samples_started = self._monotonic()
             # Fix round 1, C1: each writer runs inside its own savepoint, so a database-level
             # failure rolls back only that writer's own work, never this step's orders, fills
             # or events sitting in the same transaction.
@@ -713,6 +802,8 @@ class Executor:
                         self._write_equity_snapshots(session, variant_ids, now)
             except Exception:  # noqa: BLE001 - ruling 1: telemetry never fails a step
                 log.exception("equity snapshots failed")
+            # Fix 82: measurement only -- see `ExecStats.phase_samples_ms`.
+            stats.phase_samples_ms += (self._monotonic() - samples_started) * 1000
 
     # --- books ------------------------------------------------------------------------
 
@@ -904,7 +995,7 @@ class Executor:
             return self._venue_fills(session, working, now, stats, heartbeat)
         s = self.exec_settings
         tape_started = self._monotonic()
-        tape, unread, lagging, deferred = self._tape(session, working, now, heartbeat)
+        tape, unread, lagging, deferred = self._tape(session, working, now, heartbeat, stats)
         stats.phase_tape_ms += (self._monotonic() - tape_started) * 1000
         stats.errors += len(unread)
         outcomes: dict[int, tuple[str, Decimal]] = {}
@@ -1541,8 +1632,8 @@ class Executor:
         return status, filled
 
     def _tape(self, session: Session, working, now: datetime,
-              heartbeat: dict) -> tuple[dict[str, tuple[list, list]], set[str], set[str],
-                                        set[str]]:
+              heartbeat: dict, stats: ExecStats | None = None
+              ) -> tuple[dict[str, tuple[list, list]], set[str], set[str], set[str]]:
         """One print scan and one delta scan per ticker, shared by every order on it.
 
         Prints have no cursor (§1) and are rescanned from `placed_at - 60 s` every loop; the
@@ -1571,6 +1662,11 @@ class Executor:
         the timeout is really about, so the size a ticker can finish is the only knob that
         decides whether it makes any progress at all.
         """
+        # Fix 82: measurement only. `stats` defaults to a throwaway `ExecStats` so every
+        # existing direct caller of `_tape` in the test suite -- which does not pass one --
+        # keeps working unchanged; only `_simulate`'s own call passes the step's real one.
+        if stats is None:
+            stats = ExecStats()
         windows: dict[str, tuple[datetime, int | None]] = {}
         deferred: set[str] = set()
         for row in working:
@@ -1621,6 +1717,12 @@ class Executor:
                     prints = store.load_prints(session, ticker, lower, at)
                     batch = store.load_deltas(session, ticker, cursor or 0, lower, at,
                                               limit=limit)
+                    # Fix 82: measurement only, counted here -- after the read, before any
+                    # hold-back -- so a truncated batch's held-back prints still count. See
+                    # `ExecStats.tape_tickers_n`/`tape_print_rows`/`tape_delta_rows`.
+                    stats.tape_tickers_n += 1
+                    stats.tape_print_rows += len(prints)
+                    stats.tape_delta_rows += len(batch.deltas)
             except Exception as exc:  # noqa: BLE001 - one ticker, not the step
                 # The first failure of a loop carries its traceback; the rest of a loop's
                 # failures are almost always the same one repeated, and 55 tracebacks a loop

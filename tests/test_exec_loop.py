@@ -6,7 +6,10 @@ under it. The loop is driven with an explicit clock, so `now` is a value in the 
 than wall time, and one step is one commit.
 """
 
+import importlib.util
 import os
+import subprocess
+import sys
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -17,6 +20,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 from psycopg.errors import QueryCanceled, UndefinedColumn
+from psycopg.types.json import Jsonb
 from sqlalchemy import event, func, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker
@@ -3422,6 +3426,346 @@ def test_the_loop_publishes_the_phase_its_time_went_to(env_settings, db_session,
         assert samples[name] > 0, name
     # Every phase of the loop is inside the loop it was measured in.
     assert sum(float(samples[name]) for name in phases[:4]) <= stats.loop_ms + 1
+
+
+# --- fix 82: additive phase timers and counts, no behaviour change -----------------------
+#
+# The user's ruling of 2026-09-17 (journal 262): a timers-only release of additive metrics --
+# row 82's placement timer plus load, books, decide, intake, samples, previous-commit timers
+# and tape/working/expiring counts -- measurement only, no behaviour change. The cases below
+# are that acceptance: every name arrives once on a live loop and never on a replay, the six
+# new phases plus the fix 78b four come within a tight tolerance of `exec.loop_ms`,
+# `exec.phase_commit_prev_ms` is genuinely the *previous* loop's own commit block, the counts
+# are the fixture's known values rather than a guess read off the code, and the diff changes no
+# statement and no stored value at all.
+
+FIX82_PHASES = ("exec.phase_intake_ms", "exec.phase_load_ms", "exec.phase_books_ms",
+                "exec.phase_decide_ms", "exec.phase_place_ms", "exec.phase_samples_ms")
+FIX82_COMMIT_PREV = "exec.phase_commit_prev_ms"
+FIX82_COUNTS = ("exec.working_rows", "exec.tape_tickers_n", "exec.tape_print_rows",
+                "exec.tape_delta_rows", "exec.expiring_n")
+#: Fix round 1 (controller finding, before commit): the identity case below must compare fix
+#: 82 against the commit its diff was written on top of, never against `HEAD` -- the
+#: controller commits this diff right after review, and from that moment `HEAD` *is* the fix,
+#: so a base pinned to `HEAD` would compare the fix with itself and pass vacuously. Pinned by
+#: hash rather than re-derived, so a rebase or a later commit on this branch cannot move it.
+FIX82_BASE = "bf51d01"
+#: Set to run the one-time identity case; see its own docstring and skip reason.
+FIX82_IDENTITY_ENV = "FIX82_IDENTITY"
+
+
+def _fix82_fixture(session, t0):
+    """Two clean T3 rows, one that has never had a book and one open order -- the same
+    population `test_the_loop_publishes_the_phase_its_time_went_to` uses, because it already
+    exercises `_tape`, `_advance_books`, `plan_actions` and `_apply` in one step."""
+    reset_pending(session)
+    shapes = _quiet_shapes(t0) + [
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1), "queue": None},
+        {"ticker": T3, "vm": VM3, "expiry": t0 + timedelta(hours=1), "status": "open"}]
+    seed_pending(session, t0, len(shapes), shapes)
+
+
+def test_fix82_phase_and_count_names_are_published_once_live_never_replay(
+        env_settings, db_session, world):
+    """Fix 82 acceptance (a): every new name arrives once on a live loop, with a non-negative
+    value, and none of them on a replay -- which never reaches `_write_metric_batch` at all
+    (`loop.py`'s `_locked_step`), exactly as the fix 78b four do not."""
+    keep_only(db_session, set())
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    db_session.commit()
+    t0 = NOW + timedelta(seconds=10)
+    _fix82_fixture(db_session, t0)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    executor = Executor(env_settings, factory, clock=lambda: t0, monotonic=_ticking(),
+                        variants=["tiny"])
+
+    stats = executor.step()
+    refresh(db_session)
+
+    names = [row.name for row in db_session.query(MetricSample).filter_by(source="exec").all()]
+    samples = {row.name: row.value
+              for row in db_session.query(MetricSample).filter_by(source="exec").all()}
+    every_new_name = FIX82_PHASES + (FIX82_COMMIT_PREV,) + FIX82_COUNTS
+    for name in every_new_name:
+        assert names.count(name) == 1, name
+        assert samples[name] is not None and samples[name] >= 0, name
+    # A fresh executor's first loop has no previous commit block to report.
+    assert samples[FIX82_COMMIT_PREV] == 0
+    assert stats.phase_commit_prev_ms == 0
+    assert executor._last_commit_ms >= 0
+    before_count = len(names)
+
+    replay_factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    replay = Executor(env_settings, replay_factory, clock=lambda: NOW, monotonic=_ticking(),
+                      replay=True, variants=["tiny"])
+    replay.step()
+    refresh(db_session)
+    assert db_session.query(MetricSample).filter_by(source="exec").count() == before_count
+    for name in every_new_name:
+        assert db_session.query(MetricSample).filter_by(
+            source="exec", name=name).count() == 1, name
+
+
+def test_fix82_phases_sum_within_tolerance_of_loop_ms(env_settings, db_session, world):
+    """Fix 82 acceptance (b): the six new phases plus the fix 78b four come within a small,
+    exact tolerance of `exec.loop_ms` on each of two loops.
+
+    The monotonic clock auto-ticks on every read (`_ticking()`, shared across both loops, so it
+    never resets) and the wall clock is held fixed for the duration of each step and then moved
+    forward by the exec period, exactly as `_moving_run` does. What is left over -- `loop_ms`
+    minus the ten timed phases -- is the handful of `_monotonic()`-free statements between the
+    named boundaries (`resolve_variants`, the startup check, `gateway.observe_tape`,
+    `dead_recorder`, the `fair_age_s` extend): a few ticks at 1 ms a call, never tens of
+    milliseconds, so a genuinely unwired phase would fail this by an order of magnitude.
+    """
+    keep_only(db_session, set())
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    db_session.commit()
+    t0 = NOW + timedelta(seconds=10)
+    _fix82_fixture(db_session, t0)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    now_box = {"t": t0}
+    executor = Executor(env_settings, factory, clock=lambda: now_box["t"], monotonic=_ticking(),
+                        variants=["tiny"])
+    all_ms = ("exec.phase_tape_ms", "exec.phase_walk_ms", "exec.phase_batch_ms",
+             "exec.phase_per_row_ms") + FIX82_PHASES
+
+    for _ in range(2):
+        stats = executor.step()
+        refresh(db_session)
+        samples = {row.name: row.value for row in db_session.query(MetricSample)
+                  .filter_by(source="exec", ts=now_box["t"]).all()}
+        total = sum(float(samples[name]) for name in all_ms)
+        # Every phase is inside the loop it was measured in (as the fix 78b test checks)...
+        assert total <= stats.loop_ms + 1
+        # ...and accounts for essentially all of it: the untimed gaps are a few `_monotonic()`
+        # calls' worth, never the whole residual the fix exists to attribute.
+        assert stats.loop_ms - total < 20, (stats.loop_ms, total)
+        now_box["t"] = now_box["t"] + timedelta(seconds=15)
+        executor._metric_sampler.forget("metrics")
+
+
+def test_fix82_phase_commit_prev_ms_is_the_previous_loops_commit_block(
+        env_settings, db_session, world):
+    """Fix 82 acceptance (c): `exec.phase_commit_prev_ms` on loop N is loop N-1's own
+    `count_open_orders` + metric batch + `write_heartbeat` + `session.commit()` duration --
+    held on the executor because a loop cannot measure a block that is what publishes the
+    measurement -- and it is exactly 0 on an executor's first loop.
+    """
+    keep_only(db_session, set())
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    db_session.commit()
+    t0 = NOW + timedelta(seconds=10)
+    _fix82_fixture(db_session, t0)
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    now_box = {"t": t0}
+    executor = Executor(env_settings, factory, clock=lambda: now_box["t"], monotonic=_ticking(),
+                        variants=["tiny"])
+
+    stats1 = executor.step()
+    refresh(db_session)
+    samples1 = {row.name: row.value for row in db_session.query(MetricSample)
+               .filter_by(source="exec", ts=now_box["t"]).all()}
+    assert samples1[FIX82_COMMIT_PREV] == 0
+    assert stats1.phase_commit_prev_ms == 0
+    loop1_commit_ms = executor._last_commit_ms
+    # The ticking clock again: a block that ran a real statement and a real commit takes a
+    # real (fake) tick, so a `_last_commit_ms` of exactly 0 here would mean it was never timed.
+    assert loop1_commit_ms > 0
+
+    now_box["t"] = now_box["t"] + timedelta(seconds=15)
+    executor._metric_sampler.forget("metrics")
+    stats2 = executor.step()
+    refresh(db_session)
+    samples2 = {row.name: row.value for row in db_session.query(MetricSample)
+               .filter_by(source="exec", ts=now_box["t"]).all()}
+    assert float(samples2[FIX82_COMMIT_PREV]) == pytest.approx(loop1_commit_ms, abs=1e-3)
+    assert float(samples2[FIX82_COMMIT_PREV]) == pytest.approx(
+        stats2.phase_commit_prev_ms, abs=1e-3)
+
+
+def test_fix82_counts_match_the_seeded_tape(env_settings, db_session, world):
+    """Fix 82 acceptance (d): `working_rows`, `tape_tickers_n`, `tape_print_rows`,
+    `tape_delta_rows` and `expiring_n` are the fixture's own known values.
+
+    Three pending counterfactuals on one ticker (T3, none open, none deferred, none carrying a
+    queue's cursor), so `_tape` reads exactly one ticker's window from `placed_at - 60 s`: two
+    prints and three deltas inside it, and one row whose expiry has already fallen at `t0`.
+    `world`'s own T2/VM2 candidate places nothing until this same step's `_apply`, so
+    `working_orders` at the point `_body` reads it is exactly the three seeded rows.
+    """
+    keep_only(db_session, {VM2})
+    _book2(db_session, NOW - timedelta(seconds=5))
+    t0 = NOW + timedelta(seconds=10)
+    _pending_book(db_session, T3, t0 - timedelta(seconds=5), sid=3)
+    reset_pending(db_session)
+    _pending_order(db_session, 0, now=t0, ticker=T3, vm=VM3, expiry=t0)
+    _pending_order(db_session, 1, now=t0, ticker=T3, vm=VM3, expiry=t0 + timedelta(hours=1))
+    _pending_order(db_session, 2, now=t0, ticker=T3, vm=VM3, expiry=t0 + timedelta(hours=1))
+    _print(db_session, T3, t0 - timedelta(seconds=30), "0.35", "10")
+    _print(db_session, T3, t0 - timedelta(seconds=20), "0.35", "5")
+    _delta(db_session, T3, t0 - timedelta(seconds=40), "yes", "0.35", "5", seq=2, sid=3)
+    _delta(db_session, T3, t0 - timedelta(seconds=35), "yes", "0.35", "-2", seq=3, sid=3)
+    _delta(db_session, T3, t0 - timedelta(seconds=20), "no", "0.48", "3", seq=4, sid=3)
+    db_session.commit()
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    executor = Executor(env_settings, factory, clock=lambda: t0, monotonic=_ticking(),
+                        variants=["tiny"])
+
+    stats = executor.step()
+    refresh(db_session)
+
+    samples = {row.name: row.value
+              for row in db_session.query(MetricSample).filter_by(source="exec").all()}
+    assert stats.working_rows == 3
+    assert stats.tape_tickers_n == 1
+    assert stats.tape_print_rows == 2
+    assert stats.tape_delta_rows == 3
+    assert stats.expiring_n == 1
+    assert samples["exec.working_rows"] == 3
+    assert samples["exec.tape_tickers_n"] == 1
+    assert samples["exec.tape_print_rows"] == 2
+    assert samples["exec.tape_delta_rows"] == 3
+    assert samples["exec.expiring_n"] == 1
+
+
+def _pre_fix82_executor_cls():
+    """The `Executor` class exactly as commit `FIX82_BASE` (bf51d01, the commit fix 82's own
+    diff was written on top of) defines it -- i.e. without fix 82 -- loaded straight from that
+    commit's blob, never from `HEAD`: `HEAD` is only bf51d01 until the controller commits this
+    diff, after which it *is* the fix, and comparing the fix with `HEAD` would then compare it
+    with itself (fix round 1, controller finding, before commit).
+
+    Raises `RuntimeError` if git is not on `PATH` or `FIX82_BASE` is not a commit this
+    checkout can read (a shallow clone, a mirror without this branch's history, or simply no
+    git at all); the caller turns that into a skip rather than an error, since none of those
+    are this test's own business to diagnose.
+    """
+    root = Path(__file__).resolve().parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{FIX82_BASE}:harness/execution/loop.py"], cwd=root,
+            capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"git is not available: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git show {FIX82_BASE}:harness/execution/loop.py failed (commit unreachable in "
+            f"this checkout?): {result.stderr.strip() or result.returncode}")
+    spec = importlib.util.spec_from_loader("tests._loop_pre_fix82", loader=None)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        exec(compile(result.stdout, f"<{FIX82_BASE}:harness/execution/loop.py>", "exec"),
+             module.__dict__)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module.Executor
+
+
+def _normalize_params(value):
+    """Bound parameters, with any `psycopg.types.json.Jsonb` wrapper unwrapped to its plain
+    object: `Jsonb` defines no `__eq__` (`Jsonb({"x": 1}) != Jsonb({"x": 1})`, by identity), so
+    a raw `==` of two captured parameter dicts would fail on a JSONB column even when the
+    document is byte for byte the same one -- the failure fix 78b's own `_param_ids` sidesteps
+    by comparing only the ids it needs rather than a whole parameter dict.
+    """
+    if isinstance(value, Jsonb):
+        return value.obj
+    if isinstance(value, dict):
+        return {k: _normalize_params(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_params(v) for v in value]
+    return value
+
+
+def _non_metric_statements(seen):
+    return [(" ".join(q.split()), _normalize_params(p))
+            for q, p in seen if "metric_samples" not in q.lower()]
+
+
+@pytest.mark.skipif(
+    os.environ.get(FIX82_IDENTITY_ENV) != "1",
+    reason=(f"one-time fix 82 identity check against {FIX82_BASE}, not a regression test "
+            f"(fix round 1): run explicitly with {FIX82_IDENTITY_ENV}=1 make test "
+            f"TEST_ARGS='tests/test_exec_loop.py::"
+            f"test_fix82_changes_no_statement_and_no_stored_value'"))
+def test_fix82_changes_no_statement_and_no_stored_value(env_settings, db_session, world,
+                                                         monkeypatch):
+    """One-time before/after identity evidence for fix 82 against `FIX82_BASE` (bf51d01) --
+    not part of the regular suite.
+
+    Fix 78b's own mixed population, run twice through `run_pending_steps` -- once through this
+    worktree's `Executor` (fix 82's timers on) and once through the `Executor` commit
+    `FIX82_BASE` defines (fix 82 absent, loaded from that commit's own blob, never from `HEAD`:
+    see `_pre_fix82_executor_cls`) -- and compared exactly as `run_pending_steps`'s own two
+    paths are: `orders` column for column, `fills`/`ledger`/`order_events` row for row, and the
+    measured loop's full captured statement list with every `metric_samples` statement set
+    aside. Everything else -- text and bound parameters both, in order -- must be identical,
+    and the only statements fix 82 is allowed to add are its own extra `metric_samples` rows.
+
+    Skipped unless `FIX82_IDENTITY=1` is set (see the marker above) and skipped with its own
+    reason if git or `FIX82_BASE` is unavailable in this checkout (`_pre_fix82_executor_cls`).
+    Meant to be run once by the implementer and once by the reviewer, with the variable set, as
+    the before/after evidence for this diff -- not on every suite run, and not indefinitely: it
+    is expected to be retired, or to go legitimately stale and need a new base, the next time
+    `loop.py`'s own statements change (fix 79's print-cache rescan touches `_tape` directly).
+    """
+    try:
+        old_cls = _pre_fix82_executor_cls()
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+
+    keep_only(db_session, set())
+    # The metric batch is due every loop rather than once every `metric_sample_s` (default
+    # 60 s, longer than the 15 s the measured loop's own clock advances by), so the one
+    # statement fix 82 is allowed to add actually appears on the measured step in both runs.
+    env_settings.metric_sample_s = 1
+    t0 = NOW + timedelta(seconds=10)
+    snapshot = _pending_book(db_session, T2, NOW - timedelta(seconds=5), sid=2)
+    _pending_book(db_session, T3, NOW - timedelta(seconds=5), sid=3)
+    _pending_book(db_session, T4, NOW - timedelta(seconds=5), sid=4)
+    _gap(db_session, NOW - timedelta(seconds=1), sid=snapshot.sid)
+    db_session.commit()
+    shapes = _mixed_shapes(t0)
+    n = len(shapes)
+
+    ids = seed_pending(db_session, t0, n, shapes)
+    after_cols, after_writes, _, _, after_seen = run_pending_steps(
+        env_settings, db_session, t0, ids, shapes, batched=True)
+
+    monkeypatch.setattr(sys.modules[__name__], "Executor", old_cls)
+    reset_pending(db_session)
+    ids = seed_pending(db_session, t0, n, shapes)
+    before_cols, before_writes, _, _, before_seen = run_pending_steps(
+        env_settings, db_session, t0, ids, shapes, batched=True)
+    monkeypatch.undo()
+
+    # No stored value moved: `orders` column for column, the other three writers row for row.
+    assert after_cols == before_cols
+    assert after_writes == before_writes
+
+    before_rest = _non_metric_statements(before_seen)
+    after_rest = _non_metric_statements(after_seen)
+    assert [q for q, _ in after_rest] == [q for q, _ in before_rest]
+    assert [p for _, p in after_rest] == [p for _, p in before_rest]
+    # The metric batch is one `INSERT ... VALUES` statement regardless of row count
+    # (`telemetry.record_many`), so fix 82's extra rows show up as more bound parameters on
+    # that one statement, never as an extra statement in the list.
+    before_metric = [(q, p) for q, p in before_seen if "metric_samples" in q.lower()]
+    after_metric = [(q, p) for q, p in after_seen if "metric_samples" in q.lower()]
+    assert len(before_metric) == len(after_metric) == 1
+    assert before_metric[0][0].strip().lower().startswith("insert")
+    assert after_metric[0][0].strip().lower().startswith("insert")
+
+    def _names(params):
+        return {v for k, v in params.items() if k.startswith("name_")}
+
+    before_names = _names(before_metric[0][1])
+    after_names = _names(after_metric[0][1])
+    assert before_names <= after_names
+    assert after_names - before_names == set(
+        FIX82_PHASES + (FIX82_COMMIT_PREV,) + FIX82_COUNTS)
 
 
 def _moving_run(env_settings, session, t0, shapes, *, break_batch):
