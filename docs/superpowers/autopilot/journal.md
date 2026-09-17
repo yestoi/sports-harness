@@ -3061,3 +3061,17 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0.
 - Result: recorded.
 - Next: hotfix unit, timers batch (impl fix-82 running).
+
+## 264. deploy - 1a12781 app-only (fix 82: executor phase timers, measurement only) - 2026-09-17 10:59-11:06 CT
+
+- Orient: rule 1 then 2 (row 82 Open by journal 262; main ahead of the runtime in code after the merge). Batch `fix-2026-09-17-executor-timers`, ledger `.superpowers/sdd/hotfix-2026-09-17-executor-timers/progress.md`.
+- Implemented: sonnet implementer 10:03-10:32 CT (`results/fix-82-report.md`), `harness/execution/loop.py` +108/-3 and `tests/test_exec_loop.py`; five new tests red first. Controller finding before commit: the identity test read its base from `git show HEAD`, vacuous once committed; fix round 1 pinned it to bf51d01 and gated it behind `FIX82_IDENTITY=1`.
+- Reviewed: opus, APPROVED WITH MINORS 0/0/4 (`results/fix-82-review.md`): no statement added, removed, reordered or altered and no stored value moved (statement text and bound parameters plus `orders`, `fills`, `ledger`, `order_events` against bf51d01, passing at the committed head); M1-M3 comment and docstring diff applied; M4 informational: the `expiring_n` scan costs about 16 ms a loop at 22k rows. Reviewer notes: the twelve names are not in capsules (allow-list); `phase_commit_prev_ms` stays out of the sum check; the gated identity test retires with fix 79 (in its brief).
+- Tested: full suite 4,200 passed, 1 skipped, exit 0 at f9d693b (receipt `test-harness_test_fix_2026_09_17_executor_timers.json`, release tree 58994484, clean before and after); rebased onto docs-only main, ff-merged as 1a12781.
+- Deployed: `make plan-release-omarchy MODE=app` ok (window open, `full_paths` empty; kickoffs 18:30 and 19:15 CT); `make deploy-omarchy-app` healthy 11:06:06 CT, `/srv/sports-harness/releases/20260917T155933Z-1a12781`, services app-run, app-serve, app-exec, app-research; app-ws untouched, so no tape gap. Inside the 13:30 CT cut-off the ledger set.
+- Verification: verify-summary 9 of 9 PASS on 1a12781 (run 23644 `ok` on the new build); all twelve names arrive from 11:04:14 CT; at 11:05:29 CT the ten phases sum to 12,498 of `exec.loop_ms` 12,847 ms; `last_error` null. Evidence `evidence/2026-09-17-fix82-deploy.txt`. Judge-after 11:27 CT (cron 2fd4d5e5).
+- First reading of the new names: `exec.phase_load_ms` 2.3-2.4 s (the working-orders read), books 0.1-1.6 s, place 0.26 s on a small placement, intake, decide and samples under 50 ms; `exec.tape_print_rows` 121,260 and **`exec.tape_delta_rows` 393,222** a loop over 149 tickers with the tape phase at 7.7 s. The delta read is a large share of the tape phase, so the print cache will remove only part of it; given to fix 79's implementer as context, `load_deltas` stays out of scope.
+- Fix 79: worktree on 1a12781, opus implementer dispatched 11:10 CT with `fix-79-brief-final.md` (the review session's amended brief plus a dispatch addendum); release Friday morning by the user's ruling.
+- Dispatches: 3 today (fix-82, rev-fix-82, fix-79). Failed deploys 0.
+- Result: deployed and healthy; judge-after pending.
+- Next: verify at 11:27 CT.
