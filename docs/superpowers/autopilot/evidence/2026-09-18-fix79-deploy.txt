@@ -37,3 +37,36 @@ RuntimeError: Release requires clean main (including untracked files)
 make: *** [Makefile:181: deploy-omarchy-app] Error 1
 deploy rc 2
 == finished 07:21:28 CT
+
+== deploy log (head and tail; full log 264 lines in the session scratchpad)
+== make deploy-omarchy-app started 07:21:43 CT candidate 4066197 (release tree eab88ba5)
+{"sha": "4066197", "previous": "1a12781", "mode": "app", "services": ["app-run", "app-serve", "app-exec", "app-research"], "window": {"blocked": false, "nfl_blocked": false}, "full_paths": []}
+[release] preparing
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.09kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/python:3.12-slim
+#2 DONE 0.5s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 77B done
+#3 DONE 0.0s
+
+#4 [1/9] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+#4 resolve docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea 0.0s done
+#4 DONE 0.0s
+
+[...]
+1:== make deploy-omarchy-app started 07:21:43 CT candidate 4066197 (release tree eab88ba5)
+3:[release] preparing
+233:ok backup_run=58 finished_at=2026-09-18 08:32:33+00:00
+234:[release] validated
+235:[release] stopping
+244:[release] promoting
+261:[release] checking
+262:[release] healthy
+263:deploy rc 0
+264:== finished 07:23:31 CT

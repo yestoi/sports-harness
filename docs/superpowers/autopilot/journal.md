@@ -3179,3 +3179,17 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Applied: row 84 stays Watch with the waiver noted from 2026-09-18; row 85 (item 22, `orders(intent_id)` index; opus/opus; Monday full release) and row 86 (item 23, expiry cohort: opus design read first, read-only, due Sat 09:00 CT) added to `fixes.md` Open; item 21's steps 1-3 are 6D acceptance work, vehicle to be named when planned today; item 19's study runs today as a finding with the pacing brief; item 1 waits on the user's (a). Fix 79's release proceeds as ruled (journal 262), first.
 - Result: recorded
 - Next: deploy (fix 79 app-only, cron 7674cf9e 07:27 CT), then the rulings' work in this order: row 86 design read dispatch, item 19 finding and brief, row 85 build, item 21 step 1 planning; wakeup none
+
+## 273. deploy - 4066197 app-only (fix 79 print cache), stamp verified, summary PASS - 2026-09-18 07:21-07:24 CT
+
+- Orient: rule 2 - main 346ed87 ahead of runtime 1a12781 by fix 79 (2cb2219); no game in progress, next kickoff Fri 18:30 CT NCAAF (games query in evidence); the user's ruling 262 names this morning; cron 7674cf9e was due 07:27 CT and the release started ahead of it after decision 272.
+- Branch / commits: main 4066197 (code 2cb2219; 346ed87 and 4066197 are docs commits); release tree eab88ba5 equals the fix 79 suite receipt's (`test-harness_test_fix_2026_09_17_executor_prints.json`, head 82d11c8, exit 0, six shards exit 0, no scope, clean), receipt match `release_tree`.
+- Result: done
+- Dispatches: 0
+- Tests: 4,216 passed at 82d11c8 on the branch database (journal 266), pristine; the release receipt records the release-tree match
+- Review: clean (fix-79 APPROVED WITH MINORS, minors applied as 2cb2219, journal 266)
+- Deploy: 4066197 at 07:23 CT via `make deploy-omarchy-app` (started 07:21:43, healthy 07:23:31 CT; receipt `/srv/sports-harness/releases/20260918T122143Z-4066197/receipt.json`; backup_run 58 fresh; services app-run, app-serve, app-exec, app-research on image ba8cbb28; app-ws untouched on 747791c), stamp verified (health build 4066197; run 25547), gap rows n/a (app-only)
+- Verification: PASS 9/9 Layer 3 (`make verify-summary-omarchy DEPLOY_SHA=4066197`: build, sections, page_time, run_id, ws_last_event, candidates_24h, kill_switch, credits_numeric, data_quality_shape); evidence: evidence/2026-09-18-fix79-deploy.txt (pre-release snapshot 07:21 CT: phase_tape_ms p50 10.1 s, tape_print_rows 112k, loop_ms p50 14.8 s, fills per hour last 12 h); deferred: fix 79 judge at 07:43 CT (prints_full_reads low and stable, prints_cached_tickers near the working ticker count, phase_tape_ms down, tape_print_rows unchanged in meaning, errors 0, fills per hour with no step down); the morning contract and the after-window comparison at 18:25 CT (cron f2b3647e, reminder 2026091802)
+- Rulings: the first `make deploy-omarchy-app` at 07:21:28 CT was refused by the script's clean-main check because the pre-release evidence file was untracked; nothing was built or stopped and no release directory was written, so it is not a failed deploy under the daily ceiling; the file was committed (4066197) and the release rerun. Anomalies: the pre-release snapshot's `exec_state` query named a table that does not exist (health JSON carries the heartbeat); harmless.
+- Carried forward: none (row 79 closes on the judge)
+- Next: verify (fix 79 judge), wakeup 07:43 CT; meanwhile row 86 design read dispatch (opus, read-only)
