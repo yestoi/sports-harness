@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-18 14:16 CT (19:16 UTC) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 290. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
+Updated 2026-09-18 14:48 CT (19:48 UTC) by controller session sports-e2 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 290. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
 
 ## Right now
 
@@ -23,7 +23,7 @@ Updated 2026-09-18 14:16 CT (19:16 UTC) by controller session sports-e2 in `/hom
 
 ## Active units
 
-- **6D.1 plan-next**: started 13:20 CT; branch `plan6d1-execution-viability` (worktree `../sports-wt/plan6d1-execution-viability`); ledger `.superpowers/sdd/plan-next-phase6d1/ledger.md`; addendum rev 2 committed e92a6c0 (review 2C/13I/5M ruled in design-rulings.md, self-review + 3a audit clean); plan-writer-6d1 (opus) dispatched 14:15 CT, 90 min, report results/plan-writer-6d1-report.md, chase cron a1f9c60b 15:47 CT; next: commit plan, opus plan review (one round), rulings, roadmap `planned`, journal; ceiling 17:20 CT.
+- **6D.1 plan-next**: started 13:20 CT; branch `plan6d1-execution-viability` (worktree `../sports-wt/plan6d1-execution-viability`); ledger `.superpowers/sdd/plan-next-phase6d1/ledger.md`; addendum rev 2 e92a6c0; plan rev 1 committed 2a9f1e1 (3,120 lines, nine tasks, writer report results/plan-writer-6d1-report.md); plan-review-6d1 (opus) dispatched 14:47 CT, 45 min, report results/plan-review-6d1.md, chase cron 75e1d8c4 15:35 CT; next: plan-rulings.md, resume the writer for rev 2, commit, roadmap `planned`, journal; ceiling 17:20 CT.
 - **hotfix row 87**: done to merge (8681b74); batch closed at 2 of 12, 11:03-12:39 CT; worktree and branch removed; grant revoked.
 - **hotfix fix 85**: done to merge (4d2cdcc); worktree and branch kept until the release verification.
 - **phase 6D**: Task 11 merged (283); acceptance rows at game windows, §4 read-backs, item 12 baseline, re-archive and final review, roadmap `done`. Ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`.
@@ -42,7 +42,7 @@ Updated 2026-09-18 14:16 CT (19:16 UTC) by controller session sports-e2 in `/hom
 
 ## Counters and deadlines
 
-- CT day Sep 18: dispatches 18 (15 in journal 276-287 + 6D.1 author, reviewer, plan writer); units: plan-next 6D.1 3 of 12 (clock 13:20 CT, 4 h ceiling 17:20 CT); failed deploys 0; implementers running 0 of 3. Sep 17 closed at 4.
+- CT day Sep 18: dispatches 19 (15 in journal 276-287 + 6D.1 author, reviewer, plan writer, plan reviewer); units: plan-next 6D.1 4 of 12 (clock 13:20 CT, 4 h ceiling 17:20 CT); failed deploys 0; implementers running 0 of 3. Sep 17 closed at 4.
 - Next duties: design-86 query 4 ~17:55 CT; 18:25 CT after-window read; row 86 decision Sat 09:00 CT (the user); the release per item 24; fix 85 full-release preconditions (ruling 2026-09-18b §1: no open psql transaction on harness, no controller SQL, no dump, executor loops short, no expiry cohort in flight); item 1 decide-by 2026-09-22. Games: NCAAF 18:30 CT tonight (R4: no full deploy inside the window; app-only only with an empty full-trigger diff, which fix 85 defeats), NCAAF Sat 13:00 CT.
 
 ## Constraints
