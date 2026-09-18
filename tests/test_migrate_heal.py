@@ -199,3 +199,67 @@ def test_the_migrate_engines_send_the_service_name(_schema, monkeypatch):
     captured.clear()
     migrate_mod.current_revision(url)
     assert captured == [{}]
+
+
+# --- fix 85 (docket item 22, the user's ruling of 2026-09-18): the migration's own guard -----
+#
+# "An invalid index is a stop for me, not a retry." `create index concurrently if not exists`
+# skips an index that is already in the catalogue, valid or not (that is fix 71's whole story),
+# so revision `0014_orders_intent_index` reads `pg_index.indisvalid` immediately after its build
+# and raises rather than let a release ship an index the planner will never use. The state is
+# reproducible only on this database: the `UPDATE (indisvalid) ON pg_catalog.pg_index` grant is
+# per database and `tests/test_alembic.py`'s scratch databases do not carry it.
+
+ORDERS_INTENT_INDEX = "ix_orders_intent"
+
+
+def _orders_intent_revision():
+    import importlib.util
+    from pathlib import Path
+
+    path = (Path(__file__).resolve().parents[1] / "migrations" / "versions"
+            / "0014_orders_intent_index.py")
+    spec = importlib.util.spec_from_file_location("fix85_revision", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_upgrade(engine, module) -> None:
+    """The revision's `upgrade()` on a real connection, outside Alembic's runner.
+
+    `alembic.op` is a proxy to the current `Operations`, so a test can drive one revision and
+    see what it does. No transaction may be open at entry: `autocommit_block` commits the one
+    it finds and asserts Alembic opened it.
+    """
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    with engine.connect() as conn:
+        assert not conn.in_transaction()
+        context = MigrationContext.configure(connection=conn,
+                                             opts={"transaction_per_migration": True})
+        with Operations.context(context):
+            module.upgrade()
+
+
+def test_the_orders_intent_migration_passes_on_a_valid_index(_schema):
+    """The index `create_schema` has already built on this database is valid, so the revision's
+    check is silent and the build statement is the no-op its `if not exists` promises."""
+    assert _valid(_schema, ORDERS_INTENT_INDEX) is True
+    _run_upgrade(_schema, _orders_intent_revision())          # must not raise
+    assert _valid(_schema, ORDERS_INTENT_INDEX) is True
+
+
+def test_the_orders_intent_migration_raises_when_the_build_left_the_index_invalid(_schema):
+    """The fix 71 state, on fix 85's index: the catalogue carries the name, `if not exists`
+    skips it, and without this guard the release would report success on an index no query can
+    use. The message names the index so the controller's stop is unambiguous."""
+    module = _orders_intent_revision()
+    with invalid(_schema, ORDERS_INTENT_INDEX):
+        with pytest.raises(RuntimeError) as error:
+            _run_upgrade(_schema, module)
+        assert ORDERS_INTENT_INDEX in str(error.value)
+        assert "indisvalid" in str(error.value)
+        # Failing closed, not repairing: the revision touches nothing after the raise.
+        assert _valid(_schema, ORDERS_INTENT_INDEX) is False

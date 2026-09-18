@@ -599,6 +599,15 @@ class Order(Base):
     order_group_id: Mapped[str | None] = mapped_column(String(64))
     exchange_index_at_place: Mapped[int | None] = mapped_column(Integer)
 
+    #: Fix 85 (docket item 22, the user's ruling of 2026-09-18): `store.orders_for_intent`'s
+    #: `select count(*) from orders where intent_id = :i`, once per placement, was a sequential
+    #: scan of a 952 MB heap. Built CONCURRENTLY by `harness/db/schema.py`'s
+    #: `_CONCURRENT_INDEX_DDL` on a populated database and by
+    #: `migrations/versions/0014_orders_intent_index.py` on a migrated one; declared here so
+    #: `create_all` gives it to a fresh database, and subtracted from `_model_indexes` so the
+    #: plain create never races the concurrent build.
+    __table_args__ = (Index("ix_orders_intent", "intent_id"),)
+
 
 class OrderEvent(Base):
     """Placement, cancellation and skip audit trail. A skip has no order, so order_id is NULL

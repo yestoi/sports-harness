@@ -505,14 +505,14 @@ def test_the_bulk_index_check_reads_a_revisions_constants_and_not_its_prose():
     assert not any("ix_quotes_market_fetched" in s for s in strings)     # docstring prose only
 
 
-def test_the_versions_directory_holds_thirteen_revisions():
+def test_the_versions_directory_holds_fourteen_revisions():
     assert [p.name for p in VERSIONS] == [
         "0001_baseline.py", "0002_phase45.py", "0003_brin_autosummarize.py",
         "0004_phase5.py", "0005_rfq_lookup.py", "0006_quotes_run_index.py",
         "0007_raw_events_lookup.py", "0008_positions_open_fill.py",
         "0009_score_correction.py", "0010_phase46_fun_tickets.py",
         "0011_phase6b_execution.py", "0012_phase6d_sustained_eval.py",
-        "0013_nw_executor_version.py"]
+        "0013_nw_executor_version.py", "0014_orders_intent_index.py"]
 
 
 # --- carried fix 56 (second row): revision 0008 -------------------------------------------------
@@ -770,21 +770,20 @@ def test_the_episode_tables_and_their_indexes_are_in_both_catalogues(two_databas
 
 # --- roadmap row 72 / spec amendment 0.17: revision 0013 -------------------------------------
 
-def test_nw_executor_version_follows_phase6d_and_is_the_pinned_head():
+def test_nw_executor_version_follows_phase6d():
     """The additive column amendment 0.17 names, on top of 6D's revision.
 
-    The head moves with the revision or `migrate ensure` upgrades to a revision the checkout
-    does not carry. The id is 24 characters, well inside the `String(32)` Alembic creates
-    `alembic_version.version_num` as (0012's own docstring records the 33-character revision
-    that aborted every upgrade), and the file name equals the id as all twelve before it do."""
-    from harness.db.migrate import HEAD_REVISION
-
+    The two pinned-head assertions moved on to
+    `test_the_orders_intent_index_follows_nw_executor_version_and_is_the_pinned_head`
+    (fix 85's `0014_orders_intent_index`), the same trim 0008 through 0012 each took when the
+    next revision landed on top of them; the chain assertions stay here, so a revision inserted
+    between this one and `0012_phase6d_sustained_eval` still fails. The id is 24 characters,
+    well inside the `String(32)` Alembic creates `alembic_version.version_num` as (0012's own
+    docstring records the 33-character revision that aborted every upgrade)."""
     module = _load_revision("0013_nw_executor_version.py")
     assert module.revision == "0013_nw_executor_version"
     assert module.down_revision == "0012_phase6d_sustained_eval"
     assert len(module.revision) <= 32
-    assert HEAD_REVISION == "0013_nw_executor_version"
-    assert VERSIONS[-1].name == "0013_nw_executor_version.py"
 
 
 def test_the_nw_executor_version_revision_only_adds_the_column_and_undoes_nothing():
@@ -818,6 +817,154 @@ def test_nw_executor_version_is_in_both_catalogues(two_databases):
         assert str(column["type"]) == "NUMERIC"
         assert column["nullable"] is True
         assert column["default"] is None
+
+
+# --- fix 85 (docket item 22, the user's ruling of 2026-09-18): revision 0014 ------------------
+
+def test_the_orders_intent_index_follows_nw_executor_version_and_is_the_pinned_head():
+    """`ix_orders_intent`, on top of roadmap row 72's column revision.
+
+    The head moves with the revision or `migrate ensure` upgrades to a revision the checkout
+    does not carry -- and, the other way round, a revision the pinned head does not name never
+    runs at all on the release the ruling asks for. The id is 24 characters, inside the
+    `String(32)` Alembic creates `alembic_version.version_num` as, and the file name equals the
+    id as all thirteen before it do."""
+    from harness.db.migrate import HEAD_REVISION
+
+    module = _load_revision("0014_orders_intent_index.py")
+    assert module.revision == "0014_orders_intent_index"
+    assert module.down_revision == "0013_nw_executor_version"
+    assert len(module.revision) <= 32
+    assert HEAD_REVISION == "0014_orders_intent_index"
+    assert VERSIONS[-1].name == "0014_orders_intent_index.py"
+
+
+def test_the_orders_intent_index_ddl_agrees_between_schema_and_migration():
+    """The two copies -- `harness/db/schema.py`'s `_CONCURRENT_INDEX_DDL` entry and this
+    revision's `_INDEX_DDL` -- must be the identical statement, compared as the Python string
+    values each module executes rather than as raw file text (the `0006_quotes_run_index`
+    pattern), so a hand-edit to one cannot drift from the other unnoticed. Exactly one entry
+    names the index, and both copies carry `if not exists`, which is what makes a second
+    `create_schema` run and a re-run of this revision no-ops."""
+    from harness.db.schema import _CONCURRENT_INDEX_DDL
+
+    matches = [s for s in _CONCURRENT_INDEX_DDL if "ix_orders_intent" in s]
+    assert len(matches) == 1, matches
+    module = _load_revision("0014_orders_intent_index.py")
+    assert module._INDEX_DDL == matches[0]
+    assert module._INDEX_DDL == (
+        "create index concurrently if not exists ix_orders_intent on orders (intent_id)")
+    assert "concurrently if not exists" in matches[0]
+
+
+def test_the_orders_intent_index_revision_undoes_nothing():
+    """`downgrade()` is `pass` (roadmap invariant 5, every revision since 0002) and the file
+    carries no statement that takes anything away."""
+    module = _load_revision("0014_orders_intent_index.py")
+    assert module.downgrade() is None
+    body = (ROOT / "migrations" / "versions" / "0014_orders_intent_index.py").read_text().lower()
+    for word in ("drop ", "truncate", "delete from"):
+        assert word not in body, f"0014_orders_intent_index contains {word!r}"
+
+
+def test_the_orders_intent_index_is_in_both_catalogues(two_databases):
+    """The model declares it (so `create_all` gives it to a fresh database), `create_schema`'s
+    `_CONCURRENT_INDEX_DDL` builds it on a populated one, and this revision mirrors it, so a
+    migrated database and a `create_schema` database carry the same index on the same column.
+    `test_a_migrated_database_matches_a_create_schema_database` would catch a disagreement; this
+    names the index so a half-landed change says which half is missing."""
+    from harness.db.migrate import upgrade_head
+
+    a, b = two_databases
+    create_schema(a)
+    upgrade_head(_url(b))
+    for engine in (a, b):
+        indexes = {i["name"]: i for i in inspect(engine).get_indexes("orders")}
+        assert "ix_orders_intent" in indexes, engine.url.database
+        assert indexes["ix_orders_intent"]["column_names"] == ["intent_id"]
+        assert not indexes["ix_orders_intent"]["unique"]
+
+
+def _run_revision_upgrade(connection, module) -> None:
+    """Run one revision's `upgrade()` against `connection`, outside Alembic's own runner.
+
+    `alembic.op` is a proxy to whatever `Operations` object is current, so a test can drive a
+    revision directly and watch what it sends. The connection must have no transaction open at
+    entry: `MigrationContext.autocommit_block` commits the transaction it finds and asserts that
+    Alembic itself opened it (`migrations/env.py` commits its own SETs for that reason).
+    """
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    assert not connection.in_transaction(), "autocommit_block asserts on a foreign transaction"
+    context = MigrationContext.configure(connection=connection,
+                                         opts={"transaction_per_migration": True})
+    with Operations.context(context):
+        module.upgrade()
+
+
+def test_the_orders_intent_migration_raises_the_timeout_for_the_build_statement_only(scratch_db):
+    """The user's build condition: `statement_timeout` raised for that statement only.
+
+    `migrations/env.py` sets the migration connection to 300 s, which is not enough for a
+    `CREATE INDEX CONCURRENTLY` that waits out every transaction able to see `orders` (the
+    executor's expiry-cohort steps have run 184-253 s, and the statement waits twice). The
+    revision raises it immediately before the build, restores the connection's own value
+    immediately after -- in a `finally`, so a failed build restores it too -- and both SETs are
+    inside the one autocommit block the build runs in, so the raised value is in force for that
+    statement and nothing else on the session.
+    """
+    from sqlalchemy import event
+
+    module = _load_revision("0014_orders_intent_index.py")
+    create_schema(scratch_db)                # the index is already there: the build is a no-op
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()).lower())
+
+    with scratch_db.connect() as conn:
+        conn.execute(text("set statement_timeout = '300s'"))
+        conn.commit()
+        before = conn.execute(text("show statement_timeout")).scalar()
+        before_ms = conn.execute(text(
+            "select setting from pg_settings where name = 'statement_timeout'")).scalar()
+        conn.commit()
+        event.listen(scratch_db, "before_cursor_execute", record)
+        try:
+            _run_revision_upgrade(conn, module)
+        finally:
+            event.remove(scratch_db, "before_cursor_execute", record)
+        after = conn.execute(text("show statement_timeout")).scalar()
+
+    build = next(i for i, s in enumerate(statements)
+                 if s.startswith("create index concurrently if not exists ix_orders_intent"))
+    assert statements[build - 1] == f"set statement_timeout = '{module.BUILD_STATEMENT_TIMEOUT}'"
+    assert statements[build + 1] == f"set statement_timeout = '{before_ms}'"
+    # Raised for that statement only: the connection is back on the migration's own 300 s.
+    assert after == before
+    # And the ruling's other condition is read on the same connection, right after the build.
+    assert any("indisvalid" in s for s in statements[build:]), statements[build:]
+
+
+def test_the_orders_intent_migration_restores_the_timeout_when_the_build_fails(scratch_db,
+                                                                               monkeypatch):
+    """The restore is in a `finally`: a build that raises must not leave the session on the
+    raised timeout, which would otherwise outlive the statement it was raised for."""
+    module = _load_revision("0014_orders_intent_index.py")
+    create_schema(scratch_db)
+    monkeypatch.setattr(module, "_INDEX_DDL", "create index concurrently if not exists "
+                                              "ix_orders_intent on orders (no_such_column)")
+    with scratch_db.connect() as conn:
+        conn.execute(text("set statement_timeout = '300s'"))
+        conn.commit()
+        before = conn.execute(text("show statement_timeout")).scalar()
+        conn.commit()
+        with pytest.raises(Exception):
+            _run_revision_upgrade(conn, module)
+        if conn.in_transaction():
+            conn.rollback()
+        assert conn.execute(text("show statement_timeout")).scalar() == before
 
 
 def _load_baseline():

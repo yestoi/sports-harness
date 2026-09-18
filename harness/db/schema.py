@@ -410,6 +410,18 @@ _CONCURRENT_INDEX_DDL = (
     "create index concurrently if not exists ix_fills_order_ts on fills (order_id, filled_at)",
     # The settlement row of one order, in paper dollars.
     "create index concurrently if not exists ix_ledger_order on ledger (order_id)",
+    # Fix 85 (docket item 22, the user's ruling of 2026-09-18): `store.orders_for_intent` runs
+    # `select count(*) from orders where intent_id = :i` once per placement, and no index on
+    # `orders` led with `intent_id`. Measured read-only on production at 06:50-07:10 CT on
+    # 2026-09-18 (runtime 1a12781): a Seq Scan, 121,880 buffers, 153.9 ms cold for one intent,
+    # over a 952 MB heap of 36,685 live rows -- the 145 ms per paper order in
+    # `exec.phase_place_ms`, 21-22 s on every 150-order wave. CONCURRENTLY because the executor
+    # writes to `orders` on its 15 s loop and `init-db` runs on every deploy (fix 25's F65 rule,
+    # the same reading `ix_orders_key_placed` above took); the connection is already AUTOCOMMIT,
+    # which is what CONCURRENTLY requires. `Order.__table_args__` declares the same index by
+    # name and `migrations/versions/0014_orders_intent_index.py` mirrors this statement; all
+    # three must land together or `tests/test_alembic.py`'s catalogue diff fails.
+    "create index concurrently if not exists ix_orders_intent on orders (intent_id)",
     # The fifth story index of addendum 7.2, `ix_gap_outcomes_order on gap_outcomes (order_id)`,
     # is not here and is not in the revision: `gap_outcomes` is keyed `(gap_snapshot_id,
     # benchmark_type)` and carries no `order_id` column on main, on `phase6b-repair-execution`

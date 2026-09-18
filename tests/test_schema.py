@@ -1012,6 +1012,9 @@ def test_model_index_loop_never_rebuilds_a_concurrent_index():
     # metadata-only on a partitioned table, and exactly what
     # `_ensure_partitioned_concurrent_indexes` exists to avoid.
     assert "ix_raw_source_endpoint_id" not in names
+    # Fix 85: `orders` takes the executor's placements on its 15 s loop and its heap is 952 MB,
+    # so the plain model-index create must never be the builder of this one either.
+    assert "ix_orders_intent" not in names
     assert not names & schema_module._CONCURRENT_INDEX_NAMES, sorted(
         names & schema_module._CONCURRENT_INDEX_NAMES)
     # The subtraction is narrow: `venue_quotes`' and `odds_snapshots`' other model indexes are
@@ -1035,7 +1038,10 @@ def test_the_concurrent_index_names_are_parsed_from_the_statements():
         "ix_intents_market_created", "ix_order_events_order_ts", "ix_fills_order_ts",
         "ix_ledger_order",
         # Fix 51 (6D §1.9, D9): the index `intents_without_order_or_skip`'s 24 h bound needs.
-        "ix_intents_created"}
+        "ix_intents_created",
+        # Fix 85 (docket item 22, the user's ruling of 2026-09-18): `orders_for_intent`'s
+        # `count(*)` per placement, a sequential scan of a 952 MB heap before this index.
+        "ix_orders_intent"}
     ddl_names = {ddl_target(s)[1] for s in schema_module._CONCURRENT_INDEX_DDL}
     partitioned_names = {name for name, _table, _cols in schema_module._PARTITIONED_CONCURRENT_INDEXES}
     assert ddl_names.isdisjoint(partitioned_names)
@@ -1766,6 +1772,80 @@ def test_create_schema_adds_odds_fetched_book_index_to_a_database_that_predates_
     # idempotent: rerunning again against a database that already has the index is a no-op.
     create_schema(engine)
     assert has_index()
+
+
+# --- fix 85 (docket item 22, the user's ruling of 2026-09-18): ix_orders_intent -------------
+
+def test_orders_intent_index_exists(db_session):
+    """`store.orders_for_intent` runs `select count(*) from orders where intent_id = :i` once
+    per placement; on production that was a sequential scan of a 952 MB heap, 153.9 ms cold."""
+    assert db_session.execute(text(
+        "select 1 from pg_indexes where indexname = 'ix_orders_intent'")).first()
+
+
+def test_create_schema_adds_orders_intent_index_to_a_database_that_predates_it(db_session):
+    """The raw DDL entry in `_CONCURRENT_INDEX_DDL`, not just `Order.__table_args__`, is what
+    puts the index on the populated production database at the next `init-db`; and a rerun
+    against a database that already has it is a no-op (`if not exists`, fix 37's skip)."""
+    engine = db_session.get_bind()
+
+    def has_index() -> bool:
+        return db_session.execute(text(
+            "select 1 from pg_indexes where indexname = 'ix_orders_intent'")).first() is not None
+
+    assert has_index()                       # the db_session fixture already ran create_schema
+
+    db_session.execute(text("drop index ix_orders_intent"))
+    db_session.commit()
+    assert not has_index()
+
+    create_schema(engine)
+    db_session.commit()
+    assert has_index()
+
+    create_schema(engine)                    # idempotent
+    assert has_index()
+
+
+def _seed_orders(db_session, intent_id, n=4000):
+    """`n` orders rows, one of them on `intent_id`, so the planner has a table worth indexing.
+
+    Through the ORM insert so every NOT NULL column with a Python-side default is filled the
+    way the executor fills it, and with a distinct `ticker` per row so `uq_open_order`
+    (venue, ticker, side, variant_id) is never the thing that fails.
+    """
+    from sqlalchemy import insert
+
+    from harness.db.models import Order
+
+    now = datetime.now(timezone.utc)
+    rows = [{"intent_id": uuid.uuid4(), "variant_id": "v1", "venue": "kalshi",
+             "client_order_id": f"fix85-{i}", "ticker": f"FIX85-{i}",
+             "venue_market_id": i % 500, "side": "yes", "prob": Decimal("0.5"),
+             "contracts": Decimal("10"), "status": "filled", "placed_at": now}
+            for i in range(n)]
+    rows[0]["intent_id"] = intent_id
+    db_session.execute(insert(Order), rows)
+    db_session.commit()
+    db_session.execute(text("analyze orders"))
+    db_session.commit()
+
+
+def test_the_orders_for_intent_count_reads_the_index_and_not_the_heap(db_session):
+    """The measured plan is the point of the fix, so it is asserted rather than assumed.
+
+    `enable_seqscan = off` would prove nothing -- the planner has to choose the index with its
+    own cost model -- so the table is seeded until a sequential scan is the expensive plan, and
+    the plan text is read for the index name.
+    """
+    intent_id = uuid.uuid4()
+    _seed_orders(db_session, intent_id)
+
+    plan = "\n".join(db_session.execute(text(
+        "explain select count(*) from orders where intent_id = :i"),
+        {"i": intent_id}).scalars())
+    assert "ix_orders_intent" in plan, plan
+    assert "Seq Scan" not in plan, plan
 
 
 def test_backup_runs_accepts_a_drill_row(db_session):

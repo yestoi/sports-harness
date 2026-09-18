@@ -35,7 +35,10 @@ log = logging.getLogger(__name__)
 #: "0010_phase46_fun_tickets"; phase 6B's additive revision bumps it to
 #: "0011_phase6b_execution"; phase 6D's additive revision bumps it to
 #: "0012_phase6d_sustained_eval"; and roadmap row 72's additive `orders.nw_executor_version`
-#: (spec amendment 0.17) bumps it to "0013_nw_executor_version". Three of those -- 0010, 0011 and
+#: (spec amendment 0.17) bumps it to "0013_nw_executor_version"; and fix 85's additive
+#: `ix_orders_intent` (docket item 22, the user's ruling of 2026-09-18) bumps it to
+#: "0014_orders_intent_index" -- a revision the head does not name never runs at all, which is
+#: why this line moves with the file. Three of those -- 0010, 0011 and
 #: 0012 -- are D9 applied at merge time: the
 #: plan's "0008" was written before fix 56 took that number on main, the phase branch then
 #: carried "0009", and fix 64 took *that* number on main on 2026-09-14, so 4.6's revision was
@@ -48,7 +51,7 @@ log = logging.getLogger(__name__)
 #: creates the new tables and the view; and a database stamped ahead of a checkout that lacks the
 #: matching revision file aborts at `ensure`, because its `current` branch calls `upgrade_head`
 #: unconditionally.
-HEAD_REVISION = "0013_nw_executor_version"
+HEAD_REVISION = "0014_orders_intent_index"
 
 #: Where the migrations live inside the image. The Dockerfile's `COPY migrations ./migrations`
 #: puts them here; the checkout path below is what the test suite and a developer use.
