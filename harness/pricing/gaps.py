@@ -155,7 +155,7 @@ def build_gap_snapshots(
     if market_facts is not None:
         # Docket item 21 step 1. The same capture point and the same bound as `market_order`
         # above: this is the last place the market and its game are both in hand before the
-        # direct phase's no-fair filter (line 182) drops a market from this pass, which is why
+        # direct phase's no-fair filter (line 219) drops a market from this pass, which is why
         # the markets that end the phase with no gap row can still name their own cell. Three
         # small scalars per market, first write wins (one market can carry several quote rows).
         for _quote, market, game in rows:

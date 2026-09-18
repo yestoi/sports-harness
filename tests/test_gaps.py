@@ -178,7 +178,7 @@ def test_build_gap_snapshots(db_session, env_settings):
 
 def test_the_capture_carries_the_game_facts_for_every_enumerated_market(db_session, env_settings):
     """Docket item 21 step 1: the ordering capture is where the market and its game are both in
-    hand, before the direct phase's no-fair filter (`gaps.py:182`) drops a market from this pass.
+    hand, before the direct phase's no-fair filter (`gaps.py:219`) drops a market from this pass.
 
     Computed by hand from `_seed`: nine markets are seeded and one is `unmatched`, so the
     traversal holds eight -- including the `draw` market and the ones whose fair value only the
