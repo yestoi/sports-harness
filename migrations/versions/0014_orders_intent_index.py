@@ -146,9 +146,11 @@ def upgrade() -> None:
         finally:
             # Nested rather than two sequential statements: if restoring `lock_timeout` itself
             # fails (the connection is gone, say), the inner `finally` still attempts
-            # `statement_timeout`, and the first error is the one that propagates. Each value
-            # comes from its own `pg_settings` read above, so neither restore can put back the
-            # other's number.
+            # `statement_timeout`, which two sequential `op.execute` calls would skip. Python
+            # propagates the innermost `finally`'s error and keeps the earlier ones on
+            # `__context__`, so a restore error masks the build's error in the traceback's first
+            # line but loses none of them. Each value comes from its own `pg_settings` read
+            # above, so neither restore can put back the other's number.
             try:
                 op.execute(f"set lock_timeout = '{previous_lock_ms}'")
             finally:
