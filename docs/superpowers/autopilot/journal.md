@@ -3292,3 +3292,35 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Dispatches: 2 (implementer, re-reviewer); day 11. Hotfix batch fix 85: 4 of 12, 07:30-09:22 CT.
 - Result: fix 85 complete on main; row 85 Open until Monday's release verification.
 - Next: Task 11 implementer (chase 10:32 CT); 17:55 CT query 4; 18:25 CT read.
+
+## 283. phase - 6D Task 11 (item 21 step 1): cell facts populated at enumeration, merged - 2026-09-18 09:02-11:03 CT
+
+- Orient: rule 5 - phase 6D in progress; the user's ruling 2026-09-18 item 21 steps 1-3 (journal 272) and 2026-09-18b §2 (journal 278); plan revision 3 (cd1d4aa, journal 280).
+- Branch / commits: phase6d-t11-coverage-cells eb1e592..0fe5890 (implementer d4fad69 as bed9b2c after the rebase; review minor 1 0fe5890).
+- Sonnet implementer (09:02-10:06 CT, 64 min, `results/6d-task-11-impl.md`): `MarketFacts` and `ttk_minutes_at` in `harness/pricing/gaps.py`; `build_gap_snapshots` captures the facts beside `market_order` before the no-fair filter; `evaluation_cells(gap_rows, market_order, market_facts=None)` in `harness/ops/coverage.py` (gap row wins, else the populated cell with `feed=None`, else the empty cell); the pipeline's single `evaluation_cells` call passes the facts; totals unchanged; the 504-cell / 3,024-row structural bound under `COVERAGE_ROW_CAP`. Five files; scoped runs green; the sandbox's two `tests/test_packaging.py` failures were its missing network (re-run on the controller: passed).
+- Opus reviewer (10:06-10:24 CT, `results/6d-task-11-review.md`): APPROVED 0/0/3; ten plan blocks byte-matched; red state reconstructed. Rulings: Minor 1 (line-182 citations) applied by the controller; Minors 2 (a 122-char line) and 3 (`or {}`) no change.
+- Tests: 4,237 passed, pristine, at 0fe5890 (release tree 57b18994, 10:37:49-10:50:44 CT, six shards exit 0; run 3: the first two runs, 10:24 and 10:34 CT, were killed by the controller harness for low host memory with no kernel OOM, ledgered; run 3 ran detached from the harness tracker).
+- Review: clean (three minors, one applied).
+- Deploy: none - see entry 284 (the app-only plan is refused by classification).
+- Rulings: the harness memory kill is the controller's tool, not the host: free 1.5-2.8 GB with 17-18 GB available while six shards start; app-exec RSS 5.7 GiB (row 83 Watch, read again at 18:25 CT).
+- Anomalies: none. Instruction-like data: the reviewer listed the brief's ruling quotations and the implementer's notes; none acted on.
+- Dispatches: 2 (impl sonnet, review opus); day 13.
+- Carried forward: none. Worktrees phase6d-t11-coverage-cells and plan-6d-t11 removed; grant revoked on `harness_test_phase6d_t11_coverage_cells`.
+- Result: done to merge; release gated (284).
+- Next: gate entry 284, then hotfix row 87.
+
+## 284. gate - Task 11 app-only release refused by classification; fix 85 needs a full one - 2026-09-18 10:26-11:05 CT
+
+- Orient: rule 2 - main is ahead of the runtime in code (Task 11 merged at 0fe5890; fix 85 at 4d2cdcc). `make plan-release-omarchy MODE=app` (read-only, 10:26 CT, evidence/2026-09-18-plan-release-app-1026.txt) refused the release:
+
+> RuntimeError: Full release required by: ['harness/db/migrate.py', 'harness/db/models.py', 'harness/db/schema.py', 'migrations/versions/0014_orders_intent_index.py']
+
+- Why it is a gate: the user's ruling 2026-09-18b §2 (journal 278) says Task 11 releases app-only today before the 18:30 CT NCAAF window, else Saturday morning; §1 of the same ruling holds fix 85 for Monday's quiet-window full release with its preconditions. Fix 85's files sit on main between the runtime build 4066197 and HEAD, so every app-only plan from main is refused until fix 85 ships, and deploy.md step 3 forbids bypassing the classification to meet a deadline. A full release today or Saturday would run migration 0014 outside the window and preconditions the user set in §1. Neither instruction can be executed from main as they stand; the choice between them is the user's.
+- Facts for the decision (evidence/2026-09-18-plan-release-full-1039.txt, -kickoffs-1041.txt): a read-only full plan at 10:39 CT passes the R4 window (`blocked: false`, `nfl_blocked: false`); today's first matched kickoff is 18:30 CT (NCAAF), so a full release is admissible until 18:15 CT today; Saturday's quiet window is 01:30-10:15 CT (Friday's last kickoff 21:30 CT, Saturday's first 10:30 CT); Sunday's NFL window blocks every deploy from 10:20 CT; Monday's window is unchanged.
+- Options: (1) fold Task 11 into Monday's quiet-window full release with fix 85; its judge-after SQL (the plan's step 3) runs after that release and the 6D row 2 granularity note waits; the weekend's coverage samples keep the null-cell slice already waived by item 21 (recommended: it changes neither ruling). (2) Move fix 85's full release forward to Saturday morning's quiet window with §1's preconditions checked and journaled first, `indisvalid` by hand after; Task 11 rides it; the 6D acceptance rows read populated cells from Saturday's games. (3) A full release today before 18:15 CT: same as (2) with less quiet margin before the evening cohorts. The loop executes none of these without the user's word.
+- Meanwhile: row 87's hotfix (serial after Task 11, same files) proceeds to merge and rides whichever release the user picks; the 17:55 CT query 4 and the 18:25 CT after-window read run as armed; "row 2 granularity note if Task 11 shipped" is moot tonight.
+- Anomalies: none. Instruction-like data: none.
+- Dispatches: 0.
+- Result: gated: Task 11's release needs the user's choice between rulings §1 and §2.
+- Carried forward: none (row 87 unchanged; no row for a ruling conflict).
+- Next: hotfix row 87 (serial after Task 11), wakeup 17:55 CT (cron 934ed497) and 18:25 CT (cron f2b3647e); the release waits for the user.

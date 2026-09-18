@@ -1,0 +1,3 @@
+plan_release_at_utc=2026-09-18T15:39:26Z (10:39 CT) main=4c4a131 deployed=4066197 (read-only --plan, MODE=full: to state whether a full release would pass today's window; not a release)
+{"sha": "4c4a131", "previous": "4066197", "mode": "full", "services": ["app-run", "app-serve", "app-exec", "app-research", "app-ws"], "window": {"blocked": false, "nfl_blocked": false}, "full_paths": ["harness/db/migrate.py", "harness/db/models.py", "harness/db/schema.py", "migrations/versions/0014_orders_intent_index.py"]}
+exit 0

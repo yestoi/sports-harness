@@ -1,0 +1,8 @@
+plan_release_at_utc=2026-09-18T15:26:13Z (10:26 CT) main=4c4a131 deployed=4066197 (read-only --plan, MODE=app)
+  File "/home/trey/dev/sports/scripts/release-omarchy.py", line 726, in main
+    deploy(args.mode, args.plan)
+  File "/home/trey/dev/sports/scripts/release-omarchy.py", line 528, in deploy
+    raise RuntimeError(f'Full release required by: {touched}')
+RuntimeError: Full release required by: ['harness/db/migrate.py', 'harness/db/models.py', 'harness/db/schema.py', 'migrations/versions/0014_orders_intent_index.py']
+make: *** [Makefile:183: plan-release-omarchy] Error 1
+exit 2

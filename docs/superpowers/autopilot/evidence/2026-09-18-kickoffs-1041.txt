@@ -1,0 +1,14 @@
+kickoffs_read_at_utc=2026-09-18T15:40Z-15:41Z (10:40-10:41 CT) via scripts/omarchy.sh sql, read-only; matched games only (id in venue_markets)
+k|sport|first_kickoff|last_kickoff|games
+kickoffs_today|ncaaf|2026-09-18 23:30:00+00|2026-09-20 03:00:00+00|74   (Fri 05:00Z Sep 18 .. Sun 05:00Z Sep 20, i.e. Friday and Saturday together)
+k|count
+in_progress_now|0
+k|max
+last_kickoff_before_now|2026-09-18 00:15:00+00   (Thu 19:15 CT; 4 h after = Thu 23:15 CT)
+k|max
+fri_last_kickoff|2026-09-19 02:30:00+00   (Fri 21:30 CT; 4 h after = Sat 01:30 CT)
+k|min
+sat_first_kickoff|2026-09-19 15:30:00+00   (Sat 10:30 CT; 15 min before = 10:15 CT)
+k|min|sport
+sun_first_kickoff|2026-09-20 17:00:00+00|nfl   (Sun 12:00 CT; the NFL window blocks every deploy from 10:20 CT)
+Derived R4 full-release admissibility: today until 18:15 CT (first kickoff 18:30 CT); Saturday 01:30-10:15 CT; then blocked through Saturday's games and Sunday's NFL window.
