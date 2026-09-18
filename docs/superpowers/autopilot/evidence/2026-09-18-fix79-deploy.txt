@@ -1,0 +1,39 @@
+# fix 79 release: pre-deploy snapshot 2026-09-18 07:21 CT (12:21 UTC); runtime 1a12781, candidate main 346ed87 (code 2cb2219)
+SET
+== fills per hour, last 12 h
+       hour_ct       | count 
+---------------------+-------
+ 2026-09-17 19:00:00 |     2
+ 2026-09-17 20:00:00 |     2
+ 2026-09-17 23:00:00 |     2
+ 2026-09-18 04:00:00 |     2
+(4 rows)
+
+== executor metrics last hour (name, n, p50, p95, max)
+         name         | n  |    p50    |    p95    |      max      
+----------------------+----+-----------+-----------+---------------
+ exec.expiring_n      | 51 |         0 |         0 |      0.000000
+ exec.loop_ms         | 51 |     14782 |   20199.5 |  22644.000000
+ exec.phase_place_ms  | 51 |     0.001 |     0.001 |      0.001000
+ exec.phase_tape_ms   | 51 | 10120.488 | 15670.607 |  18070.219000
+ exec.placed          | 51 |         0 |         0 |      0.000000
+ exec.tape_print_rows | 51 |    112231 |    113029 | 113122.000000
+(6 rows)
+
+== executor heartbeat / errors
+ERROR:  relation "exec_state" does not exist
+LINE 1: select key, left(value::text, 200) from exec_state where key...
+                                                ^
+
+== make deploy-omarchy-app started 07:21:28 CT
+Traceback (most recent call last):
+  File "/home/trey/dev/sports/scripts/release-omarchy.py", line 733, in <module>
+    main()
+  File "/home/trey/dev/sports/scripts/release-omarchy.py", line 726, in main
+    deploy(args.mode, args.plan)
+  File "/home/trey/dev/sports/scripts/release-omarchy.py", line 516, in deploy
+    raise RuntimeError('Release requires clean main (including untracked files)')
+RuntimeError: Release requires clean main (including untracked files)
+make: *** [Makefile:181: deploy-omarchy-app] Error 1
+deploy rc 2
+== finished 07:21:28 CT
