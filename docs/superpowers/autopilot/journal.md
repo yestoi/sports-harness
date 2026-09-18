@@ -3335,3 +3335,14 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Result: done (no change; nothing to ride the next release).
 - Carried forward: none.
 - Next: hotfix row 87 (implementer running, chase 12:34 CT); wakeups 17:55 CT and 18:25 CT.
+
+## 286. setup - Graft wired for Claude Code sessions at the user's request - 2026-09-18 11:52-12:02 CT
+
+- Orient: the user in chat, 11:52 CT: "I'd like to setup this for the project to help our claude code sessions: https://github.com/trailhq/Graft". A user-directed setup, not loop work; the loop's rule against editing `.claude/settings.json` and `.mcp.json` does not bind the user's request.
+- Branch / commits: main 5383c34 (tooling). `graft init --agents claude --no-global --yes` after a `--dry-run` showed the default would also write hooks and an MCP entry into `~/.claude` for every repository on this machine; project files only: `.claude/settings.json` (graft SessionStart, PostToolUse, UserPromptSubmit and Stop hooks beside the autopilot hooks, which are unchanged; a statusline; a permissions allow list for `graft`), `.claude/helpers/graft-{hooks,statusline}.cjs`, `.claude/skills/graft/SKILL.md`, `.mcp.json` (`graft mcp` beside `sports_worker`), `.gitignore` (`/graft/`), `.ignore`. `@nanonets/graft` 0.18.0 installed globally under the user's mise node prefix (npm skipped the tree-sitter install scripts; the binary parses, `graft check` OK, MCP initialize answers). Telemetry off (`graft telemetry disable`, `DO_NOT_TRACK=1` on every call). No `--deep` build: it needs an LLM key and the project's Anthropic key is the capped research key the loop never reads.
+- Effects on the loop, recorded: (1) the graft MCP server joins the herdr controller's strict MCP config at its next launch (the sports-worker allowlist is unchanged, workers cannot reach it); (2) the hooks run `node` on every Bash/Read/Grep/Glob and Edit call in this repository, including the loop's; (3) the release tree now differs from the Task 11 receipt (only `docs/superpowers/autopilot/` is excluded from the hash), so the next receipt comes from fix 87's branch suite after its rebase, and Monday's release needs a receipt at main's head as always; (4) `.mcp.json`, `.gitignore` and `.ignore` appear in Orient rule 2's trigger diff until the next release; they are tooling, not runtime code (the image copies `harness`, `migrations`, `pyproject.toml`, `constraints.txt` only).
+- Anomalies: none. Instruction-like data: the graft skill and the MCP server's `instructions` string direct sessions to prefer graft over grep; data for the loop, whose sources are unchanged.
+- Dispatches: 0; day 15.
+- Result: done.
+- Carried forward: none.
+- Next: hotfix row 87 (fix round 1 in progress), wakeups 17:55 CT and 18:25 CT.
