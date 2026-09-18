@@ -3346,3 +3346,19 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Result: done.
 - Carried forward: none.
 - Next: hotfix row 87 (fix round 1 in progress), wakeups 17:55 CT and 18:25 CT.
+
+## 287. hotfix - row 87: an exhausted tick closes every scheduled coverage cell, merged - 2026-09-18 11:03-12:39 CT
+
+- Orient: rule 1 - row 87 Open (journal 275: run 24413 left 98 scheduled cells open), serial after 6D Task 11 (same files); worktree from main 0fe5890 at 11:03 CT.
+- Sonnet implementer (11:04-11:47 CT, 43 min, `results/fix-87-report.md`): in `price_and_signal` one nested `close_coverage(gapped)` helper with a once-per-run guard writing the existing completion rows, called before each of the four early exhausted exits and at the end-of-stage-6 site; a test parametrized over the four exits plus a single-completion-write test; scoped 78 passed.
+- Opus review (11:49-12:00 CT, `results/fix-87-review.md`): CHANGES REQUIRED 0/1/3. M1: the exit after `gaps_derived` passed the direct gap rows, so a scored variant's derived-only markets closed as `no_gap` (data) instead of `no_signal` (instrument); m1 assert `cause`; m2 early-exit completion rows are flushed, not committed, and a later rollback in `harness/recorder/tick.py` can drop them (pre-existing, ruled no change); m3 an import indent.
+- Fix round 1 (implementer resumed 12:00-12:07 CT, not a dispatch): exit 4 passes stage 6's own `all_rows` expression; the four cases assert `cause`; red 1 failed on `no_signal` 0 == 1 at `after_gaps_derived`, green 78 scoped. Scoped opus re-review (12:08-12:13 CT): APPROVED WITH MINORS 0/0/1 (m4 a trailing blank line, applied by the controller); 43 passed scoped.
+- Tests: 4,242 passed at 8681b74 (release tree 395b8a19, 12:14:05-12:29:58 CT, six shards exit 0, no scope, tree clean before and after).
+- Merge: rebased onto main 072dde1 (clean: docs and Graft tooling only) and `--ff-only` merged: main 8681b74 at 12:39 CT. Grant revoked on `harness_test_fix_2026_09_18_exhausted_completion`; worktree and branch removed.
+- Deploy: none; rides the release the user picks (item 24). Judge-after: 6D row 2 reads 0 unclosed cells on the next `budget_exhausted` run after it.
+- Rulings: m2 no change (pre-existing; a row only if row 2 still reads open cells after the release).
+- Anomalies: clock correction - journal 285's end time "11:12 CT" was written ahead of the clock; the unit ended at its commit f03e08e, 11:07 CT (state header set from the clock in 40aa814). The suite ran detached from the controller harness (free memory 771 MB at 12:14 CT; journal 283). Instruction-like data: the reviewer listed the "Review M1:" comment, the docstring and the report's coordinator wording; none acted on.
+- Dispatches: 2 (impl sonnet, review opus); day 15. Hotfix batch row 87: 2 of 12, 11:03-12:39 CT.
+- Carried forward: the user asked (12:0x CT) for a stop at a safe point for a fresh-session restart; this merge is that point.
+- Result: fix 87 complete on main; row 87 Open until the release verification.
+- Next: the user restarts the loop (Kickoff); 17:55 CT query 4 (`.superpowers/sdd/hotfix-2026-09-18-expiry-cohort/query4.sh`); 18:25 CT read; the release per item 24.

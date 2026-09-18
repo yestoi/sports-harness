@@ -1,28 +1,29 @@
 # Autopilot checkpoint
 
-Updated 2026-09-18 12:03 CT (17:03 UTC) by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 286. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc) and 6D Task 11 (0fe5890): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
+Updated 2026-09-18 12:40 CT (17:40 UTC) by controller session sports-ed in `/home/trey/dev/sports` on Omarchy. Last journal entry: 287. Paper-only. Runtime build: **4066197** (journal 273, app-only 07:23 CT Sep 18, fix 79 print cache; 747791c full 10:04 CT Sep 16; app-ws on 747791c). Main is ahead of the runtime by fix 85 (migration 0014, 4d2cdcc), 6D Task 11 (0fe5890) and fix 87 (8681b74): **the release is gated (journal 284)**: app-only is refused by classification while fix 85's files sit on main; fix 85 is held for Monday's quiet-window full release by ruling 2026-09-18b §1; the user chooses (packet item 24). Rollback: app-only redeploy of 1a12781.
 
 ## Right now
 
-- **Gate (journal 284, report `reports/2026-09-18-stopped-1105.md`)**: Task 11's release. Options: (1) fold into Monday's full release [recommended], (2) fix 85's full release moved to Saturday's quiet window 01:30-10:15 CT with §1's preconditions, (3) the same today before 18:15 CT. No release until the user answers; every other unit continues.
-- **Task 11 done (journal 283)**: cell facts populated at enumeration; sonnet impl, opus review APPROVED 0/0/3, suite 4,237 passed at 0fe5890, merged 11:03 CT; judge-after SQL (plan step 3) after whichever release ships.
-- **Row 87 (fix-2026-09-18-exhausted-completion)**: worktree created 11:03 CT from main 0fe5890; brief `.superpowers/sdd/hotfix-2026-09-18-exhausted-completion/fix-87-brief.md`; sonnet implementer then opus review; rides the same release as Task 11.
+- **Session stop at the user's request (12:0x CT Sep 18, journal 287)**: the controller session sports-ed ended its pass after fix 87 merged; the user relaunches per Kickoff. The new session must re-arm the 17:55 and 18:25 CT wakeups (the old session's crons died with it; durable reminders 2026091803 and 2026091802 remain).
+- **Gate (journal 284, report `reports/2026-09-18-stopped-1105.md`)**: Task 11's release. Options: (1) fold into Monday's full release [recommended], (2) fix 85's full release moved to Saturday's quiet window 01:30-10:15 CT with §1's preconditions, (3) the same today before 18:15 CT. No release until the user answers; every other unit continues. Fix 87 rides the same release.
+- **Fix 87 done (journal 287)**: an exhausted tick closes every scheduled coverage cell; sonnet impl, opus review CHANGES REQUIRED then APPROVED WITH MINORS; 4,242 passed at 8681b74; merged 12:39 CT. Judge-after: 6D row 2 reads 0 on the next `budget_exhausted` run after the release.
+- **Task 11 done (journal 283)**: cell facts populated at enumeration; merged 0fe5890 11:03 CT; judge-after SQL (plan step 3) after whichever release ships.
 - **Fix 85 (journal 282)**: merged 4d2cdcc, held for Monday (or the user's option 2/3); preconditions in Counters; `indisvalid` by hand after; invalid is a stop.
-- **Row 86**: Saturday brief `reports/2026-09-19-lagging-close-question.md` (journal 281); query 4 appends at 17:55 and 18:25 CT; the user decides Saturday.
-- **Fix 79 judged (journal 275)**: cache works, tape phase unchanged; row 79 Open for the user's ruling; fills AFTER half at 18:25 CT; **a fills step-down at a release hour is an alarm to the user**.
-- **Daily line (journal 279)**: spend $24.56 of $25 (veto dormant tonight); swap no traffic; db 148 GB; deferred rows scored at 18:25 CT; app-exec RSS 5.7 GiB at 10:37 CT (row 83 Watch).
-- **User decisions open**: item 24 (Task 11's release), item 23 (Sat 09:00 CT), row 79, item 1 (by 2026-09-22), items 11-15. Packet `reports/2026-09-15-open-decisions-packet.md` (Friday section 09:05 CT; item 24 at 11:05 CT).
-- **Fix rows**: Open 4 (79 judged; 85 merged/held; 86 brief written; 87 in progress), Watch 14, Closed 52.
+- **Row 86**: Saturday brief `reports/2026-09-19-lagging-close-question.md` (journal 281); query 4 appends at 17:55 and 18:25 CT from `.superpowers/sdd/hotfix-2026-09-18-expiry-cohort/query4.sh` (`bash query4.sh before|after`, read-only); the user decides Saturday.
+- **Fix 79 judged (journal 275)**: cache works, tape phase unchanged; row 79 Open for the user's ruling; **a fills step-down at a release hour is an alarm to the user**.
+- **Daily line (journal 279)**: spend $24.56 of $25 (veto dormant tonight); db 148 GB; app-exec RSS 5.7 GiB at 10:37 CT (row 83 Watch).
+- **User decisions open**: item 24 (Task 11 + fix 87 release), item 23 (Sat 09:00 CT), row 79, item 1 (by 2026-09-22), items 11-15, the Graft concept-layer offer (journal 286). Packet `reports/2026-09-15-open-decisions-packet.md` (item 24 at 11:05 CT).
+- **Fix rows**: Open 4 (79 judged; 85 merged/held; 86 brief written; 87 merged), Watch 14, Closed 52.
 
 ## Order of work
 
-1. Fri 2026-09-18: row 87 hotfix (implement, review, suite, merge; no release); design-86 query 4 ~17:55 CT (+ the frozen-cursor query, journal 281); 18:25 CT after-window read (fills AFTER half with the 07:23 CT release instant, 6B §3, 6D rows, coverage waived, deferred rows scored; no row 2 granularity note: Task 11 not shipped). Release per the user's item 24 answer.
-2. Verify after each release: journal 219's deferred rows, item 12, item 16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); Task 11's judge-after; `exec.phase_place_ms` per `exec.placed` after fix 85.
-3. Operate: storage retention proposal (`reports/2026-09-15-storage-retention-proposal.md`; the user decides by 2026-09-22). Friday alias pass done (journal 285): no alias candidate (UTRGV has no ESPN team row; the rest are schedule gaps); the next pass is Monday 09:30 CT. 6D acceptance rows and 4.6 T18b/T19 wait for game windows. Usage.py measurement is the user's (journal 247).
+1. Fri 2026-09-18: design-86 query 4 ~17:55 CT (before half + the frozen-cursor query, journal 281); 18:25 CT after-window read (fills AFTER half with the 07:23 CT release instant, 6B §3, 6D rows, coverage waived, deferred rows scored; no row 2 granularity note: Task 11 not shipped). Release per the user's item 24 answer. No open hotfix row is actionable (79/86 wait on the user, 85/87 on the release).
+2. Verify after each release: journal 219's deferred rows, item 12, item 16, rows 49/68, the 6B by-cause row, Watch reads (56, 70); Task 11's and fix 87's judge-after; `exec.phase_place_ms` per `exec.placed` after fix 85.
+3. Operate: storage retention proposal (`reports/2026-09-15-storage-retention-proposal.md`; the user decides by 2026-09-22). Friday alias pass done (journal 285); the next pass is Monday 09:30 CT. 6D acceptance rows and 4.6 T18b/T19 wait for game windows. Usage.py measurement is the user's (journal 247).
 
 ## Active units
 
-- **hotfix row 87** (`.superpowers/sdd/hotfix-2026-09-18-exhausted-completion/`): worktree ready, grant ON for `harness_test_fix_2026_09_18_exhausted_completion`; implementer done (ac19150, 11:47 CT); opus reviewer running since 11:49 CT; then suite (detached), merge.
+- **hotfix row 87**: done to merge (8681b74); batch closed at 2 of 12, 11:03-12:39 CT; worktree and branch removed; grant revoked.
 - **hotfix fix 85**: done to merge (4d2cdcc); worktree and branch kept until the release verification.
 - **phase 6D**: Task 11 merged (283); acceptance rows at game windows, §4 read-backs, item 12 baseline, re-archive and final review, roadmap `done`. Ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`.
 - **row 86**: argument done; Saturday.
@@ -30,18 +31,19 @@ Updated 2026-09-18 12:03 CT (17:03 UTC) by controller session sports-ed in `/hom
 
 ## Pending results
 
-- Agents: row 87 opus reviewer (11:49 CT, chase 12:19 CT); implementer reported 11:47 CT, committed ac19150. Suites: none running.
-- Wakeups: cron 934ed497 17:55 CT (reminder 2026091803, systemd timer); cron f2b3647e 18:25 CT (reminder 2026091802); the 10:38 CT fallback cron was deleted at 10:38 CT (session awake).
-- Receipts by stage: Task 11: code 0fe5890, review APPROVED, suite 4,237 passed (release tree 57b18994, `t11-full-0fe5890.log`), merge 0fe5890 11:03 CT, deploy gated. Fix 85: code 4d2cdcc, re-review APPROVED WITH MINORS, suite 4,231 passed at e49a988 (release tree f29d04e7), merge 4d2cdcc 09:21 CT, deploy pending. Fix 79: deployed 4066197 07:23 CT, verify 275 (mechanism PASS, effect FAIL). Preflight: evidence/2026-09-17-preflight-2048.txt (journal 270).
-- Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, fix_2026_09_18_exhausted_completion (phase6d_t11_coverage_cells revoked 11:03 CT). Older fix databases: `make testdb-prune`.
-- Worktrees: fix-2026-09-18-exhausted-completion (row 87), fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery worktrees preserved. phase6d-t11-coverage-cells and plan-6d-t11 removed 11:03 CT.
-- Graft (journal 286, user-directed 12:02 CT): project-only wiring on main 5383c34; the graft MCP server loads at the next controller launch; the release tree moved, so the next matching receipt is fix 87's branch suite after its rebase.
-- Tooling note: the controller harness kills a tracked background suite when free memory dips under ~3 GB (twice today, no kernel OOM); run suites detached (`setsid nohup make test`) with a monitor (memory note harness-memory-kill-2026-09-18).
+- Agents: none. Suites: none running (fix 87's full suite finished 12:29:58 CT; its receipt matches main 8681b74).
+- Wakeups: none survive the session stop. Re-arm in the new session: 17:55 CT (query 4 before half) and 18:25 CT (after-window read); the systemd reminders 2026091803 (17:55) and 2026091802 (18:25) still fire.
+- Receipts by stage: Fix 87: code 8681b74, suite 4,242 passed (release tree 395b8a19, receipt in test-state), merged 12:39 CT, deploy gated. Task 11: 0fe5890, 4,237 passed, merged 11:03 CT, deploy gated. Fix 85: 4d2cdcc, 4,231 passed at e49a988, merged 09:21 CT, deploy pending. Fix 79: deployed 4066197 07:23 CT, verify 275 (mechanism PASS, effect FAIL). Preflight: evidence/2026-09-17-preflight-2048.txt (journal 270).
+- Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review (fix_2026_09_18_exhausted_completion revoked 12:39 CT). Older fix databases: `make testdb-prune`.
+- Worktrees: fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery worktrees preserved.
+- Untracked on main, not the loop's (another session's fill-starvation review, 2026-09-18): `docs/superpowers/.gitignore`, `docs/superpowers/.ignore`, `evidence/2026-09-18-fill-review-*`, `evidence/2026-09-18-fill-starvation-queries.txt`, `reports/2026-09-18-fill-starvation-packet.md`. Left alone; the release planner needs a clean porcelain, so they must be committed or moved before any release.
+- Graft (journal 286): project-only wiring on main 5383c34; the graft MCP server loads at the next controller launch.
+- Tooling: run full suites detached (`setsid nohup make test`) when free memory is under ~3 GB; a monitor's pgrep pattern must not match its own command line (memory note harness-memory-kill-2026-09-18).
 
 ## Counters and deadlines
 
-- CT day Sep 18: dispatches 15 (fix-85 impl, design-86, walker, fix-85 review, T11 plan writer, T11 plan reviewer stopped, T11 plan reviewer, row 86 reader, fix-85 amend impl, fix-85 re-review, T11 impl, T11 review, row 87 impl, row 87 review; all opus except walker/T11 impl/row 87 impl sonnet); verify unit 1 of 3 (closed); hotfix batch fix-85 closed at 4 of 12; hotfix batch row 87 opens at the dispatch (12 / 3 h); plan-next revision 3 closed at 3 of 12; phase 6D Task 11 closed at 2; failed deploys 0; implementers running 1 of 3. Sep 17 closed at 4.
-- Next duties: row 87 dispatch; design-86 query 4 ~17:55 CT; 18:25 CT after-window read; row 86 decision Sat 09:00 CT (the user); the release per item 24; fix 85 full-release preconditions (ruling 2026-09-18b §1: no open psql transaction on harness, no controller SQL, no dump, executor loops short, no expiry cohort in flight); item 1 decide-by 2026-09-22.
+- CT day Sep 18: dispatches 15 (journal 276-287; all opus except the walker, T11 impl and row 87 impl on sonnet); every unit closed (verify 1 of 3; hotfix fix-85 4 of 12, row 87 2 of 12; plan-next 3 of 12; 6D Task 11 2); failed deploys 0; implementers running 0 of 3. Sep 17 closed at 4.
+- Next duties: design-86 query 4 ~17:55 CT; 18:25 CT after-window read; row 86 decision Sat 09:00 CT (the user); the release per item 24; fix 85 full-release preconditions (ruling 2026-09-18b §1: no open psql transaction on harness, no controller SQL, no dump, executor loops short, no expiry cohort in flight); item 1 decide-by 2026-09-22.
 
 ## Constraints
 
