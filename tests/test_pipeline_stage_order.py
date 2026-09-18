@@ -751,4 +751,3 @@ def test_pipeline_refreshes_mixed_gate_labels_after_derived_competition(
     assert any(row["fair_source"] == "direct" and not row["labels"]["cap_per_game"]
                for row in expected.values())
     assert _signal_rows(db_session, new_run.id) == expected
-
