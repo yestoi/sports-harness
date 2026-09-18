@@ -1,6 +1,6 @@
 # Phase 6D: Sustained evaluation — Implementation Plan
 
-**Revision 2**, 2026-09-14, plan review findings applied. Author: autopilot (plan writer, opus). Written against the design addendum
+**Revision 3**, 2026-09-18 (Task 11 added, its plan review findings applied; revision 2 of 2026-09-14 applied the original plan review). Author: autopilot (plan writer, opus). Written against the design addendum
 `docs/superpowers/specs/2026-09-13-phase6d-sustained-evaluation-design.md` (**revision 2**: every section binding,
 §8 D1–D12 and the Rulings section included), the roadmap's Phase 6 section and its pre-loaded decision 4, and the
 code as it stands on this branch — every signature, constant, line number and fixture name below was read with
@@ -16,7 +16,7 @@ and declare the holding/capacity policy baseline with a comparison harness that 
 on the live tape. Nothing here changes a gate criterion, a threshold, an eligibility rule, a cell grid or a
 registered id (R1).
 
-**Architecture:** Ten units — addendum §9's four groups, scheduled here as eight serialized waves because three
+**Architecture:** Eleven units (ten from addendum §9's four groups plus Task 11, wave 9, revision 3) — scheduled here as nine serialized waves because three
 files are shared across groups (see the Wave map). Wave 1 is three independent, hotfix-shaped units: `harness/ops/checks.py`
 bounds `duplicate_trades` to the 25 h it judges across the weekly partitions that window touches and gives
 `intents_without_order_or_skip` the index it lacks (fix 51); `harness/venues/kalshi/rfq_socket.py` gains an
@@ -5583,7 +5583,7 @@ EOF
 - Modify: `harness/strategy/pipeline.py` (one dict beside `market_order` at line 349, passed to the direct gap
   build at line 353 and to `evaluation_cells` at line 478; one import name on line 48)
 - Modify: `tests/test_gaps.py` (one case)
-- Modify: `tests/test_coverage_samples.py` (five cases, one import)
+- Modify: `tests/test_coverage_samples.py` (five cases, two imports and a module-level `_Row` NamedTuple)
 
 **Depends on:** none. Tasks 1-10 are merged, so the three shared files this task touches
 (`harness/strategy/pipeline.py` after T8, `harness/ops/coverage.py` after T7, `harness/pricing/gaps.py`, which
@@ -5598,7 +5598,7 @@ existing `market_order` line must not move — and the red tests catch both.
 
 **Interfaces:**
 - Consumes: `build_gap_snapshots`'s own traversal rows, `(VenueQuote, VenueMarket, Game)` joined and filtered to
-  `MATCHED_STATUSES` and `Game.kickoff_utc > now - 4 h` (`harness/pricing/gaps.py:103-118`);
+  `MATCHED_STATUSES` and `Game.kickoff_utc > now - 4 h` (`harness/pricing/gaps.py:102-111`, filters 107-109);
   `harness.db.models.Game.sport` and `Game.kickoff_utc` (both `nullable=False`, `models.py:105,108`),
   `VenueMarket.market_type` (`nullable=False`, `models.py:182`); `harness.ops.coverage.ttk_bucket`.
 - Produces:
@@ -5630,7 +5630,7 @@ step 3 (the dated §0 amendment with the user's band) are **not** this task. Thi
 populated and proven: **no `verify.md` row, no check in `harness/ops/checks.py`, no threshold, no amendment
 text, no gate file.** Nothing here is gate 13.
 
-**What the row reads today.** `evaluation_cells` (`harness/ops/coverage.py:209-225`) gives a market with a gap
+**What the row reads today.** `evaluation_cells` (`harness/ops/coverage.py:209-224`) gives a market with a gap
 row the cell that row carries and a market without one `Cell()` — every column null. Because the cells are fixed
 at the *direct* enumeration, before the derived fair values exist, that null cell is where most of the scheduled
 set lands: over the 24 h to 2026-09-18 07:43 CT the scheduled units read `NULL|NULL|NULL n=6,295,968` against
@@ -5641,8 +5641,10 @@ to kickoff or market type is the coverage contract reporting a number it cannot 
 
 **The one rule this task adds.** A market that has a gap row keeps that row's cell — unchanged, and it wins every
 tie. A market that has none takes the three columns the gap build already held when it captured the ordering:
-`game.sport`, `market.market_type` and `ttk_minutes_at(game.kickoff_utc, now)`, the same three attributes off the
-same two objects that `_load_gap_rows` reads for a gapped market (`harness/strategy/pipeline.py:75,79,91`). Its
+`game.sport`, `market.market_type` and `ttk_minutes_at(game.kickoff_utc, now)`: the first two are the same two
+attributes off the same two objects that `_load_gap_rows` reads for a gapped market (`harness/strategy/pipeline.py:75,77`),
+and the third is the same *formula* (`harness/pricing/gaps.py:220`, now `ttk_minutes_at`) that wrote the
+`snap.ttk_minutes` line 91 copies off the `MarketGapSnapshot`. Its
 `feed` stays `None`, because `feed` **is** `market_gap_snapshots.feed_kind` and there is no snapshot to read one
 from; inventing one would also break plan choice 2, the cell that is fixed at enumeration and reused at
 completion.
@@ -5659,15 +5661,32 @@ completion.
 3. **The cell grid.** Every `(sport, ttk_bucket, market_type)` triple this task writes is a triple the same
    market already wrote once it had a gap row, and `feed` stays NULL — a state the table already carries on
    11,564 of the 17,955 NULL-`feed` evaluation rows in the measured 24 h (`item21_null_cells_by_feed`: 6,391 of
-   17,955 null-feed rows had a null sport, so 11,564 had a populated one). So no column of the cell gains a
-   value: ruling I6's 336 (2 sports × 4 ttk buckets × **2 feed kinds** × 3 market types × 7 variants) is the
-   non-null-`feed` product and this task does not touch it. What the task removes is the all-null cell.
+   17,955 null-feed rows had a null sport, so 11,564 had a populated one). Two claims, kept apart. No cell
+   **column** gains a value: `VenueMarket.market_type` has one writer, `harness/normalize/kalshi.py:111-112` from
+   `harness/matching/kalshi.py:61-71`, whose `classify_market` emits only `moneyline`, `spread`, `total` or None;
+   `sport` is the two sports, `ttk_bucket` the four buckets, and NULL `feed` already occurs (`draw` exists only in
+   the test fixtures). Cell *combinations* in `coverage_samples` can be new, and that is expected: a market that
+   never gets a direct gap row (a fixture `draw` market, or a market whose only gap row comes from stage 5) now
+   writes its own triple, which the measured 24 h (11 non-null triples of 24 reachable) never carried. Ruling
+   I6's 336 (2 sports × 4 ttk buckets × **2 feed kinds** × 3 market types × 7 variants) is the non-null-`feed`
+   product and this task does not touch it. What the task removes is the all-null cell.
 4. **Volume.** The units do not change; the number of *rows* they aggregate into does. On the measured 24 h the
-   evaluation domain wrote 59,696 rows over ~369 priced runs (~162 a run) of which ~17 a run were null-celled,
-   and the live slate occupied 11 non-null `(sport, ttk_bucket, market_type)` triples, so the worst case is those
-   ~17 rows a run splitting ≤ 11 ways: ≤ ~190 rows a run, against `COVERAGE_ROW_CAP = 3,072` and against §2's
-   own estimate of ~760 evaluation rows a priced tick. The cap stays a backstop and `coverage.truncated` stays
-   absent (verify row "Latency series alive"). No verify row and no cap changes here.
+   evaluation domain wrote 59,696 rows, ~162 a run over the ~369 priced runs §2 models (design line 421; the
+   evidence file carries no run count), of which ~17 a run were null-celled and the live slate occupied 11 of the
+   24 reachable non-null `(sport, ttk_bucket, market_type)` triples. The bound is structural, not observed: the
+   reachable cells per run are 2 sports × 4 `ttk_bucket` × 3 `market_type` × 3 feed states (`featured`,
+   `alternate`, NULL) × 7 variants = **504**, and this task removes the all-null cell, so the count falls from
+   ≤ 511 to ≤ 504. The scheduled write is therefore ≤ 504 rows and the completion write ≤ 504 × 6 outcomes =
+   3,024, both under `COVERAGE_ROW_CAP = 3,072` (`harness/ops/coverage.py:66`) and both *lower* than before the
+   task; measured, the run total goes from ~162 to at most ~550 rows, against §2's own estimate of ~760
+   evaluation rows a priced tick. Daily growth (verify row "Table growth and episode churn", under 110 MB/day)
+   at worst roughly doubles the evaluation rows (about +60k rows/day), far inside that row; the first daily line
+   after the release reads that step as this task, not a regression. The cap stays a backstop and
+   `coverage.truncated` stays absent (verify row "Latency series alive"). No verify row and no cap changes here.
+   `COVERAGE_ROW_CAP`'s own comment (`coverage.py:56-66`) re-derives 336/2,352 from the non-null-feed product and
+   is knowingly left as it is by the ruling on open question 1: the implementer does not "fix" it. The per-run
+   dict of one three-field tuple per quoted market (~2,500 on a live slate, freed with the run) is a per-tick
+   constant, so `tests/test_recorder_memory.py`'s ratio and creep budgets do not move and that file is not added.
 5. **§3 row 2's granularity, stated so the next verify is not read as a regression.** The reconciliation query
    names *cells*, so a run that dies between the scheduled write and the completion write now leaves more rows
    (one per populated cell) where it left one null-celled row before. The same units are unexplained; they are
@@ -5717,7 +5736,7 @@ Add to `tests/test_coverage_samples.py`, with `from harness.pricing import gaps`
 ```python
 class _Row(NamedTuple):
     """The five attributes `evaluation_cells` reads off a `GapRow` (`harness/strategy/run.py:83`)
-    and nothing else: a full twenty-two-field `GapRow` here would say no more and drift sooner."""
+    and nothing else: a full twenty-six-field `GapRow` here would say no more and drift sooner."""
 
     venue_market_id: int
     sport: str | None
@@ -5788,7 +5807,7 @@ def test_populating_the_cells_moves_no_unit_between_scheduled_and_completed():
         {"spread", "total"}
 
 
-def test_the_populated_cells_stay_inside_ruling_i6s_grid():
+def test_the_populated_cells_fill_i6s_grid_and_the_null_feed_slice():
     """Ruling I6, re-derived here over a slate built to occupy every cell it can.
 
     Computed by hand: 2 sports x 4 ttk buckets x 3 market types is 24 triples; each is seeded
@@ -5883,7 +5902,7 @@ timeout 1500 make test TEST_ARGS='tests/test_gaps.py tests/test_coverage_samples
 ```
 
 Expected, and each failure is the specific absence it names: the `tests/test_gaps.py` case raises
-`TypeError: build_gap_snapshots() got an unexpected keyword argument 'market_facts'`; the four unit cases raise
+`TypeError: build_gap_snapshots() got an unexpected keyword argument 'market_facts'`; three of the four unit cases raise
 `AttributeError: module 'harness.pricing.gaps' has no attribute 'MarketFacts'` (and, once that exists,
 `TypeError: evaluation_cells() takes 2 positional arguments but 3 were given`);
 `test_without_captured_facts_the_cell_is_still_all_null` passes from the start, which is the point of it; and
@@ -5892,7 +5911,7 @@ the pipeline case fails on the cell list, today reading five rows of which one i
 
 - [ ] **Step 3: `harness/pricing/gaps.py` — one formula, and the facts beside the ordering**
 
-Add `from typing import NamedTuple` to the imports (line 1-15 block, after `from zoneinfo import ZoneInfo`),
+Add `from typing import NamedTuple` to the imports (line 1-15 block, in the stdlib group's alphabetical order, so before `from zoneinfo import ZoneInfo`, as `harness/ops/coverage.py:30-31` orders them),
 then, immediately after the `GAP_PHASES` block (line 77):
 
 ```python
@@ -5907,9 +5926,10 @@ def ttk_minutes_at(kickoff_utc: datetime, now: datetime) -> int:
 class MarketFacts(NamedTuple):
     """What the gap build already knows about a market when it captures the ordering.
 
-    The three cell columns addendum §1.1 otherwise fills from a gap row, read off the same
-    `Game` and `VenueMarket` objects `_load_gap_rows` reads them off
-    (`harness/strategy/pipeline.py:75,79,91`). `feed_kind` is deliberately **not** here: `feed`
+    The three cell columns addendum §1.1 otherwise fills from a gap row: `sport` and `market_type`
+    are read off the same `Game` and `VenueMarket` objects `_load_gap_rows` reads them off
+    (`harness/strategy/pipeline.py:75,77`), and `ttk_minutes` by the same formula (`ttk_minutes_at`,
+    once `gaps.py:220`) that wrote the `snap.ttk_minutes` line 91 copies. `feed_kind` is deliberately **not** here: `feed`
     is `market_gap_snapshots.feed_kind`, a market with no snapshot has none, and the user's
     ruling of 2026-09-18 leaves it null rather than deriving a second answer at completion.
     """
@@ -6003,7 +6023,7 @@ Line 48 becomes `from harness.pricing.gaps import MarketFacts, build_gap_snapsho
     market_facts: dict[int, MarketFacts] = {}
 ```
 
-and the direct build (line 350-353) gains one argument:
+and the direct build (the call at line 351-353; line 350 is `t0 = stages.start("gaps_direct", ...)`) gains one argument:
 
 ```python
         phase="direct", market_order=market_order, market_facts=market_facts)
@@ -6017,7 +6037,7 @@ and line 478 becomes:
 
 **Still one call.** Do not add a second `evaluation_cells` call anywhere: `coverage_cells` is what both
 `evaluation_scheduled_rows` (line 483) and `evaluation_completion_rows` (line 613-621) read, and §3 row 2's
-`is not distinct from` match is only true because they are the same objects. The derived build (line 545-547)
+`is not distinct from` match is only true because they are the same objects. The derived build (line 528-530)
 takes no `market_facts`: the cell is fixed at enumeration.
 
 - [ ] **Step 6: Run the affected files, then the suite**
@@ -6084,11 +6104,14 @@ select 'before' as side, run_id, variant_id, sum(n) as scheduled_units
 SQL
 ```
 
-Expected: `null_sport` is **0** against a non-zero `rows_read`, and the per-variant `scheduled_units` for a run
-after the release equals the same variant's figure on the run before it (the unit total per variant is
-`len(market_order)`, which this task does not move; only the number of rows it is spread over changes). A
+Expected: `null_sport` is **0** against a non-zero `rows_read`, and inside any one run every variant's
+`scheduled_units` is equal and equals that run's enumerated market count (the unit total per variant is that
+run's `len(market_order)`, which this task does not move; only the number of rows it is spread over changes).
+The cross-run comparison is read as slate drift: `market_order` is the markets *that run* quoted, matched, with
+`kickoff_utc > now - 4 h` (`gaps.py:102-111,123-128`), and that set moves between runs on a live slate. A
 non-zero `null_sport` means a market reached `evaluation_cells` with no captured facts and is the finding to
-journal; a per-variant total that moved is a regression in the scheduled set and is a rollback, not a finding.
+journal; a broken intra-run identity (variants of one run with unequal totals, or a total that is not the run's
+market count) is a regression in the scheduled set and is a rollback, not a finding.
 Step 2 of the ruling (the `no_sharp_line` characterisation on the first game day with populated cells) is a
 separate operate duty and reads these rows; it is not this task.
 
@@ -6098,7 +6121,7 @@ separate operate duty and reads these rows; it is not this task.
   `5643698204d0e1882f9443fdc371e00351afa6697f13e1041a2e74c1deda53f5`. The task changes which coverage cell a
   unit is *counted* in and no measurement any registered id is judged by.
 - **4 (schema additive):** no schema change at all. `coverage_samples` already carries `sport`, `ttk_bucket`,
-  `feed` and `market_type` as nullable columns (addendum §2; `harness/db/models.py:887`), and this task only
+  `feed` and `market_type` as nullable columns (addendum §2; `harness/db/models.py:902-905` on `main` after fix 85), and this task only
   writes values into columns that exist. No migration, no `harness/db/schema.py` edit, no `tests/test_alembic.py`
   edit.
 - **9 (verification):** **no `verify.md` change, deliberately.** The rows that judge this table already exist
@@ -6108,7 +6131,7 @@ separate operate duty and reads these rows; it is not this task.
   rewritten expectation, and it is not this task. The read-back above is the task's own acceptance and is run by
   the controller.
 - **12 (files and dependencies):** the `Files:` line above names every file created or modified (none created)
-  and `Depends on:` is `none`. For the conformance item 12 table, the row to add is:
+  and `Depends on:` is `none`. For the conformance item 12 table, the row (already applied in the table, with both shared-file chains) is:
   `| T11 coverage cells at enumeration | harness/pricing/gaps.py, harness/ops/coverage.py, harness/strategy/pipeline.py, tests/test_gaps.py, tests/test_coverage_samples.py | none (T1-T10 merged) | 9 |`
   and the shared-file order becomes `harness/strategy/pipeline.py` T4 → T5 → T8 → T11,
   `harness/ops/coverage.py` T4 → T7 → T11, `harness/pricing/gaps.py` T11 alone. Both remain chains.
@@ -6207,3 +6230,14 @@ applies each accepted finding; one line each.
 - **Open question 5 (wave)** - confirmed from `main`: Tasks 1-10 are merged (journal 221), so `Depends on: none` stands.
 - **Open question 6 (test placement)** - accepted as written; no new test module.
 
+
+# Rulings on the Task 11 plan review (results/6d-task-11-plan-review.md, opus, one round: CHANGES REQUIRED 0 critical / 5 important / 15 minor) - controller sports-ed, 2026-09-18 09:05 CT
+- **Important 1 (`pipeline.py:75,79,91` wrong; copied into the `MarketFacts` docstring)** - Ruling: applied in both places: `75,77` for `sport`/`market_type`, and `ttk_minutes` named as the same formula (`gaps.py:220`, now `ttk_minutes_at`) that wrote the `snap.ttk_minutes` line 91 copies - a sonnet implementer follows cited lines literally - cost if wrong: a docstring that misdescribes its own fields.
+- **Important 2 (derived build is 528-530, not 545-547)** - Ruling: applied; the review brief's copy of the wrong range is superseded by this plan text - cost if wrong: the implementer edits a comment.
+- **Important 3 ("no column gains a value" overstated)** - Ruling: applied as the reviewer's split: no cell column gains a value (`classify_market` cited), cell combinations in `coverage_samples` can be new and are expected, `draw` is fixture-only - cost if wrong: the first verify reads a new triple as a defect.
+- **Important 4 (worst case "≤ 11 ways" is observed, not a bound)** - Ruling: applied; the structural bound (504 cells, ≤ 504 scheduled and ≤ 3,024 completion rows a run, both lower than before the task) replaces it; this also answers the docket observation carried from open question 1, which is withdrawn - cost if wrong: a truncation the cap would make visible.
+- **Important 5 (cross-run `scheduled_units` equality is not implied)** - Ruling: applied; the invariant is intra-run (every variant equal to the run's market count) and the cross-deploy comparison reads as slate drift; `null_sport = 0` stands - cost if wrong: a rollback on a healthy release, or a missed regression behind an identical slate.
+- **Minors 1-8, 10, 11, 15 (citations, counts, the stale header, the already-applied row, the ~369 label)** - Ruling: applied verbatim; the header now reads revision 3, eleven units, nine waves.
+- **Minor 9 (test name overstates)** - Ruling: renamed `test_the_populated_cells_fill_i6s_grid_and_the_null_feed_slice` throughout - cost if wrong: none beyond a name.
+- **Minor 12 (the cap's stale comment), 13 (`test_recorder_memory.py` budgets), 14 (daily growth)** - Ruling: one sentence each added to the Volume paragraph; no file added, no comment edited - cost if wrong: an implementer "fixes" the comment, or the first daily line after the release reads the growth step as a regression.
+- **Conformance** - items 3, 4, 9, 12 satisfied per the reviewer's citations (item 4's citation corrected, Minor 3); no Critical residual, so no second round; the task proceeds to implementation (sonnet) and opus review under the user's ruling of 2026-09-18b §2.
