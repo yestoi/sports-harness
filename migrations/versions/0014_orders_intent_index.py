@@ -52,6 +52,14 @@ cancelled build left `ix_intents_market_created` invalid and a retry silently ac
 this revision reads `pg_index.indisvalid` for the index it has just built and raises if it is
 not true, which aborts the release instead of reporting success on an index no planner will use.
 
+One failure reaches the release without reaching that check: a build cancelled while it waits
+-- `canceling statement due to lock timeout`, fix 71's own error -- raises out of the build
+statement itself, so `migrate ensure` aborts on the driver's error and the message below is
+never printed. The `finally` still restores `statement_timeout` (verified in review by
+cancelling a real build), and the index the cancelled build left behind is still in the
+catalogue as invalid, so the controller reads `pg_index.indisvalid` for this index by hand
+on any failed release before deciding anything, exactly as it does after the raise below.
+
 What the controller does then, by the user's ruling ("An invalid index is a stop for me, not a
 retry"): the index stays in the catalogue, invalid, and is journaled that way. Nothing in this
 file repairs it. Note what would otherwise happen without the stop --

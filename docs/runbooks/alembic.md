@@ -37,7 +37,9 @@ The stamp moves from `0003_brin_autosummarize` to `0004_phase5`, from `0004_phas
 `0006_quotes_run_index` to `0007_raw_events_lookup`, from `0007_raw_events_lookup` to
 `0008_positions_open_fill`, and from `0008_positions_open_fill` through
 `0009_score_correction`, `0010_phase46_fun_tickets` and `0011_phase6b_execution` to
-`0012_phase6d_sustained_eval`, and from there to `0013_nw_executor_version` (the pinned head), only under the
+`0012_phase6d_sustained_eval`, and from there to `0013_nw_executor_version` and on to
+`0014_orders_intent_index` (the pinned head: fix 85's `ix_orders_intent` on
+`orders (intent_id)`, docket item 22), only under the
 **full** `make deploy-nas` recipe, whose `harness migrate ensure` step is the only place
 `upgrade_head` runs. A `make deploy-nas-app` deploy during a phase legitimately leaves
 `alembic_version` reading the prior revision: that recipe runs `init-db` and never
