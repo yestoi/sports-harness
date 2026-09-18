@@ -176,6 +176,37 @@ def test_build_gap_snapshots(db_session, env_settings):
     assert db_session.query(MarketGapSnapshot).filter_by(run_id=run.id).count() == 8
 
 
+def test_the_capture_carries_the_game_facts_for_every_enumerated_market(db_session, env_settings):
+    """Docket item 21 step 1: the ordering capture is where the market and its game are both in
+    hand, before the direct phase's no-fair filter (`gaps.py:182`) drops a market from this pass.
+
+    Computed by hand from `_seed`: nine markets are seeded and one is `unmatched`, so the
+    traversal holds eight -- including the `draw` market and the ones whose fair value only the
+    derived pass produces. The game kicks off `NOW + 2 days`, so every one of them carries
+    `ttk_minutes == 2 * 24 * 60 == 2880`, and the four seeded market types are all present.
+    """
+    game, run, markets = _seed(db_session)
+    compute_fair_values(db_session, run.id, NOW, env_settings)
+    _add_quotes(db_session, run.id, markets, raw_id_start=1000, fetched_at=NOW)
+
+    order: list[int] = []
+    facts: dict[int, object] = {}
+    build_gap_snapshots(db_session, run.id, NOW, TZ, phase="direct",
+                        market_order=order, market_facts=facts)
+
+    matched = [m for m in markets if m.match_status != "unmatched"]
+    assert set(facts) == set(order) == {m.id for m in matched}
+    assert {f.sport for f in facts.values()} == {"nfl"}
+    assert {f.ttk_minutes for f in facts.values()} == {2880}
+    assert {facts[m.id].market_type for m in matched} == {"moneyline", "spread", "total", "draw"}
+    # One formula, not two: every market this phase did snapshot carries the snapshot's own
+    # `ttk_minutes`, because both come from `ttk_minutes_at(game.kickoff_utc, now)`.
+    snapshots = db_session.query(MarketGapSnapshot).filter_by(run_id=run.id).all()
+    assert snapshots
+    for snap in snapshots:
+        assert facts[snap.venue_market_id].ttk_minutes == snap.ttk_minutes
+
+
 def test_prev_fair_from_earlier_run(db_session, env_settings):
     game, run1, markets = _seed(db_session)
     compute_fair_values(db_session, run1.id, NOW, env_settings)

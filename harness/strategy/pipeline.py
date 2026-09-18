@@ -45,7 +45,7 @@ from harness.db.models import (Game, MarketGapSnapshot, OpportunityEpisode, Sign
 from harness.execution.risk import stopped_variants
 from harness.ops import coverage, episodes
 from harness.pricing.fair import compute_derived_fair_values, compute_direct_fair_values
-from harness.pricing.gaps import build_gap_snapshots
+from harness.pricing.gaps import MarketFacts, build_gap_snapshots
 from harness.strategy.as_measured import as_measured_table
 from harness.strategy.run import GapRow, run_strategy, sides_for
 from harness.strategy.variants import Variant, active_variants
@@ -347,10 +347,13 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
         return finish()
 
     market_order: list[int] = []
+    #: Docket item 21 step 1: what the gap build knew about each enumerated market, for the ones
+    #: it writes no gap row for in this phase. Same lifetime and same bound as `market_order`.
+    market_facts: dict[int, MarketFacts] = {}
     t0 = stages.start("gaps_direct", remaining_ms())
     result["gaps"] = build_gap_snapshots(
         session, run_id, now, tz=settings.tz_local, errored_game_ids=errored_game_ids,
-        phase="direct", market_order=market_order)
+        phase="direct", market_order=market_order, market_facts=market_facts)
     stages.record("gaps_direct", t0, units=result["gaps"])
 
     if not ok():
@@ -475,7 +478,7 @@ def price_and_signal(session: Session, run_id: int, now: datetime, settings: Set
     # the completions. The cell each unit is enumerated under is reused at completion, so §3
     # row 2's reconciliation query -- which matches every cell column with `is not distinct
     # from` -- closes exactly the rows this call opens.
-    coverage_cells = coverage.evaluation_cells(direct_rows, market_order)
+    coverage_cells = coverage.evaluation_cells(direct_rows, market_order, market_facts)
     coverage_variants = [v.variant_id for v in ordered]
     coverage_at = _stage_clock()
     if ordered:

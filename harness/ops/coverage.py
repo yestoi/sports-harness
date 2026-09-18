@@ -206,22 +206,37 @@ def record(session: Session, run_id: int, domain: str, rows) -> int:
     return len(values)
 
 
-def evaluation_cells(gap_rows, market_order) -> dict[int, Cell]:
+def evaluation_cells(gap_rows, market_order, market_facts=None) -> dict[int, Cell]:
     """`venue_market_id -> Cell` for the evaluation domain's scheduled set, fixed here and
     reused at completion.
 
     `gap_rows` is what `_load_gap_rows` returned after stage 2; `market_order` is every quoted
     matched market the direct gap build enumerated, including the ones no fair value exists for
-    yet (`harness/pricing/gaps.py` captures it before the no-fair filter). A market with
-    a gap row takes its attributes from that row; a market without one is enumerated all the
-    same, under an all-null cell, because leaving it out of the scheduled set is exactly the
-    silent omission this table exists to prevent.
+    yet (`harness/pricing/gaps.py` captures it before the no-fair filter); `market_facts` is
+    what that same capture knew about each of them (`gaps.MarketFacts`).
+
+    A market with a gap row takes its attributes from that row -- the row wins, and it agrees
+    with the capture anyway, both being `game.sport`, `market.market_type` and one
+    `ttk_minutes`. A market without one takes the captured facts, with `feed` left None: `feed`
+    is `market_gap_snapshots.feed_kind` and there is no snapshot to read one from (the user's
+    ruling, 2026-09-18, docket item 21). With no facts captured the cell is all-null, as it was
+    before that ruling -- a unit no cell can be named for is still enumerated, because leaving
+    it out of the scheduled set is exactly the silent omission this table exists to prevent.
     """
     by_market = {row.venue_market_id: Cell(sport=row.sport, ttk_bucket=ttk_bucket(row.ttk_minutes),
                                            feed=row.feed_kind, market_type=row.market_type)
                  for row in gap_rows}
-    return {market_id: by_market.get(market_id, Cell()) for market_id in
-            dict.fromkeys(list(market_order) + list(by_market))}
+    facts = market_facts or {}
+    cells: dict[int, Cell] = {}
+    for market_id in dict.fromkeys(list(market_order) + list(by_market)):
+        cell = by_market.get(market_id)
+        if cell is None:
+            fact = facts.get(market_id)
+            cell = Cell() if fact is None else Cell(
+                sport=fact.sport, ttk_bucket=ttk_bucket(fact.ttk_minutes),
+                market_type=fact.market_type)
+        cells[market_id] = cell
+    return cells
 
 
 def evaluation_scheduled_rows(cells: dict[int, Cell], variant_ids: Iterable[str]) -> list[tuple]:

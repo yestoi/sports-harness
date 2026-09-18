@@ -5,6 +5,7 @@ the seeded shape -- never by calling the helper a second time and comparing it w
 """
 
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import httpx
 import pytest
@@ -15,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 from harness.db.models import CoverageSample, Run
 from harness.ops import coverage
 from harness.ops.exclusions import COVERAGE_CLASS_OF
+from harness.pricing import gaps
 from harness.recorder.tick import Recorder
 from harness.strategy import pipeline as pipeline_module
 from harness.strategy.variants import load_variants, register_variants
@@ -154,6 +156,167 @@ def _unclosed(session):
               and c.market_type is not distinct from s.market_type
               and c.variant_id is not distinct from s.variant_id)
     """)).all()
+
+
+class _Row(NamedTuple):
+    """The five attributes `evaluation_cells` reads off a `GapRow` (`harness/strategy/run.py:83`)
+    and nothing else: a full twenty-six-field `GapRow` here would say no more and drift sooner."""
+
+    venue_market_id: int
+    sport: str | None
+    market_type: str | None
+    ttk_minutes: int | None
+    feed_kind: str | None
+
+
+def test_a_market_with_no_gap_row_takes_the_cell_the_enumeration_knew():
+    """Docket item 21 step 1, computed by hand from the three inputs below.
+
+    Market 601 has a gap row, so its cell is that row's -- the gap row wins, and it agrees with
+    the capture anyway, both being `game.sport`, `market.market_type` and the one `ttk_minutes`
+    formula. Markets 602 and 603 have none, so each takes the facts captured at enumeration:
+    `ttk_bucket` from `ttk_bucket(45) == "20m_3h"` and `ttk_bucket(2880) == "gt36h"`, and `feed`
+    stays None, because `feed` is `market_gap_snapshots.feed_kind` and there is no snapshot.
+    """
+    gap_rows = [_Row(601, "nfl", "moneyline", 2880, "featured")]
+    facts = {601: gaps.MarketFacts("nfl", "moneyline", 2880),
+             602: gaps.MarketFacts("ncaaf", "spread", 45),
+             603: gaps.MarketFacts("nfl", "total", 2880)}
+    cells = coverage.evaluation_cells(gap_rows, [601, 602, 603], facts)
+    assert cells[601] == coverage.Cell(sport="nfl", ttk_bucket="gt36h", feed="featured",
+                                       market_type="moneyline")
+    assert cells[602] == coverage.Cell(sport="ncaaf", ttk_bucket="20m_3h", market_type="spread")
+    assert cells[603] == coverage.Cell(sport="nfl", ttk_bucket="gt36h", market_type="total")
+    assert all(cell.sport is not None for cell in cells.values())
+    assert [cell.feed for cell in cells.values()] == ["featured", None, None]
+
+
+def test_without_captured_facts_the_cell_is_still_all_null():
+    """The argument is optional and the old behaviour is what a caller that captures nothing
+    gets: `_load_gap_rows`' other callers and the derived-phase build pass no facts, and a unit
+    with no facts must still be scheduled rather than dropped."""
+    cells = coverage.evaluation_cells([], [701, 702])
+    assert cells == {701: coverage.Cell(), 702: coverage.Cell()}
+
+
+def test_populating_the_cells_moves_no_unit_between_scheduled_and_completed():
+    """The ruling's "the completed/scheduled totals are unchanged", asserted both ways round.
+
+    Computed by hand: three markets and two variants are six scheduled units whichever cells
+    they fall in. One market has a gap row and both variants completed it; the other two never
+    got one, so they close as `no_gap` -- 2 completed + 4 no_gap = 6, before and after.
+    """
+    gap_rows = [_Row(601, "nfl", "moneyline", 2880, "featured")]
+    order = [601, 602, 603]
+    facts = {601: gaps.MarketFacts("nfl", "moneyline", 2880),
+             602: gaps.MarketFacts("nfl", "spread", 2880),
+             603: gaps.MarketFacts("ncaaf", "total", 15)}
+    outcomes = {(variant, 601): "completed" for variant in VARIANTS}
+    totals = {}
+    for populated in (False, True):
+        cells = coverage.evaluation_cells(gap_rows, order, facts if populated else None)
+        scheduled = coverage.evaluation_scheduled_rows(cells, VARIANTS)
+        assert sum(n for _cell, _outcome, n, _ms in scheduled) == len(order) * len(VARIANTS) == 6
+        completion = coverage.evaluation_completion_rows(
+            cells, VARIANTS, outcomes, gapped={601}, scored=set(VARIANTS),
+            budget_exhausted=False, overdue_ms=1_200)
+        by_outcome: dict[str, int] = {}
+        for _cell, outcome, n, _ms in completion:
+            by_outcome[outcome] = by_outcome.get(outcome, 0) + n
+        totals[populated] = by_outcome
+    assert totals[False] == totals[True] == {"completed": 2, "no_gap": 4}
+    # And the populated run says *where* the four missing units were, which is the point.
+    cells = coverage.evaluation_cells(gap_rows, order, facts)
+    assert {cell.market_type for market_id, cell in cells.items() if market_id != 601} == \
+        {"spread", "total"}
+
+
+def test_the_populated_cells_fill_i6s_grid_and_the_null_feed_slice():
+    """Ruling I6, re-derived here over a slate built to occupy every cell it can.
+
+    Computed by hand: 2 sports x 4 ttk buckets x 3 market types is 24 triples; each is seeded
+    three times -- once gapped on each of the two `feed_kind` values and once with no gap row at
+    all -- for 72 markets and 72 distinct cells. The 48 with a feed, over the 7 registered
+    variants, are exactly ruling I6's 2 x 4 x 2 x 3 x 7 = 336. The 24 without one are the
+    NULL-`feed` slice the table already carries: `market_gap_snapshots.feed_kind` is NULL
+    whenever the fair value behind the row had none, which is 11,564 of the 17,955 NULL-feed
+    evaluation rows measured in the 24 h to 2026-09-18 07:43 CT. So this task adds no value to
+    any cell column; it moves units out of the all-null cell into cells the grid already had.
+    """
+    buckets = {"lt20m": 10, "20m_3h": 45, "3h_36h": 600, "gt36h": 2880}
+    order: list[int] = []
+    gap_rows: list[_Row] = []
+    facts: dict[int, object] = {}
+    market_id = 0
+    for sport in ("nfl", "ncaaf"):
+        for minutes in buckets.values():
+            for market_type in ("moneyline", "spread", "total"):
+                for feed in ("featured", "alternate"):
+                    market_id += 1
+                    order.append(market_id)
+                    gap_rows.append(_Row(market_id, sport, market_type, minutes, feed))
+                    facts[market_id] = gaps.MarketFacts(sport, market_type, minutes)
+                market_id += 1
+                order.append(market_id)
+                facts[market_id] = gaps.MarketFacts(sport, market_type, minutes)
+
+    cells = coverage.evaluation_cells(gap_rows, order, facts)
+    assert len(cells) == 72 and len(set(cells.values())) == 72
+    with_feed = {cell for cell in cells.values() if cell.feed is not None}
+    assert len(with_feed) == 48
+    assert len(with_feed) * 7 == 2 * 4 * 2 * 3 * 7 == 336
+    assert len(set(cells.values())) - len(with_feed) == 24
+    assert {coverage.ttk_bucket(m) for m in buckets.values()} == set(buckets)
+
+    variants = [f"v{i:011d}" for i in range(7)]
+    scheduled = coverage.evaluation_scheduled_rows(cells, variants)
+    assert sum(n for _cell, _outcome, n, _ms in scheduled) == 72 * 7 == 504
+
+
+def test_every_scheduled_evaluation_cell_names_its_sport_ttk_and_market_type(
+        env_settings, db_session):
+    """Docket item 21 step 1 through the real pipeline: no scheduled evaluation row carries a
+    null `sport` any more, and the `no_fair` row names the cell it happened in.
+
+    Computed by hand from `_seed` (`tests/test_pipeline.py`) and the one variant in
+    `tests/fixtures/variants`: ten markets are quoted, one `unmatched` and therefore never
+    enumerated, so `market_order` is 9 and the scheduled set is 1 x 9 = 9 units. Six have a
+    direct gap row when the set is enumerated -- the two moneylines, the fuzzy moneyline, the
+    3.5 spread, the 6.5 spread (whose fair comes off the alternates feed) and the 44.5 total --
+    and the 9.5 spread, the 47.5 total and the `draw` market get theirs only in stage 5. The
+    game kicks off `NOW + 2 days`, so every cell is `gt36h`, and the nine units fall in seven
+    cells: moneyline/featured 3, spread/featured 1, spread/alternate 1, total/featured 1, and
+    one each for spread, total and draw with no feed. Before this task the last three collapsed
+    into a single all-null cell of n = 3; the unit total is 9 either way, and the completion set
+    is still the 8 completed and 1 no_fair the D4 case above computes.
+    """
+    _game, run, _markets = _seed(db_session)
+    register_variants(db_session, load_variants(VARIANTS_DIR), PIPELINE_NOW, prune=True)
+    db_session.commit()
+
+    pipeline_module.price_and_signal(db_session, run.id, PIPELINE_NOW, env_settings, budget_s=600)
+    db_session.commit()
+
+    rows = db_session.execute(text(
+        "select sport, ttk_bucket, coalesce(feed, ''), market_type, sum(n)::int from coverage_samples"
+        " where run_id = :run and domain = 'evaluation' and outcome = 'scheduled'"
+        " group by 1, 2, 3, 4 order by 4, 3"), {"run": run.id}).all()
+    assert [tuple(row) for row in rows] == [
+        ("nfl", "gt36h", "", "draw", 1),
+        ("nfl", "gt36h", "featured", "moneyline", 3),
+        ("nfl", "gt36h", "", "spread", 1),
+        ("nfl", "gt36h", "alternate", "spread", 1),
+        ("nfl", "gt36h", "featured", "spread", 1),
+        ("nfl", "gt36h", "", "total", 1),
+        ("nfl", "gt36h", "featured", "total", 1),
+    ]
+    assert sum(row[4] for row in rows) == 9
+    assert db_session.execute(text(
+        "select count(*) from coverage_samples where run_id = :run and domain = 'evaluation'"
+        " and sport is null"), {"run": run.id}).scalar() == 0
+    assert db_session.execute(text(
+        "select sport, ttk_bucket, market_type from coverage_samples where run_id = :run"
+        " and outcome = 'no_fair'"), {"run": run.id}).all() == [("nfl", "gt36h", "draw")]
 
 
 def test_record_refuses_an_outcome_the_class_map_does_not_carry(db_session):

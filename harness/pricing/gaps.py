@@ -2,6 +2,7 @@ import functools
 import importlib.resources
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -77,6 +78,30 @@ _PREV_COLUMNS = (*_KEY_COLUMNS, FairValue.fair_p, FairValue.created_at)
 GAP_PHASES = ("all", "direct", "derived")
 
 
+def ttk_minutes_at(kickoff_utc: datetime, now: datetime) -> int:
+    """Minutes from `now` to kickoff, floored: the one formula `market_gap_snapshots.ttk_minutes`
+    is written with. Extracted from the snapshot build below so the enumeration capture and the
+    stored row cannot drift -- the expression is unchanged, and a market that gains a gap row
+    later in the same run therefore lands in the cell it was enumerated under."""
+    return int((kickoff_utc - now).total_seconds() // 60)
+
+
+class MarketFacts(NamedTuple):
+    """What the gap build already knows about a market when it captures the ordering.
+
+    The three cell columns addendum §1.1 otherwise fills from a gap row: `sport` and `market_type`
+    are read off the same `Game` and `VenueMarket` objects `_load_gap_rows` reads them off
+    (`harness/strategy/pipeline.py:75,77`), and `ttk_minutes` by the same formula (`ttk_minutes_at`,
+    once `gaps.py:220`) that wrote the `snap.ttk_minutes` line 91 copies. `feed_kind` is deliberately **not** here: `feed`
+    is `market_gap_snapshots.feed_kind`, a market with no snapshot has none, and the user's
+    ruling of 2026-09-18 leaves it null rather than deriving a second answer at completion.
+    """
+
+    sport: str
+    market_type: str
+    ttk_minutes: int
+
+
 def build_gap_snapshots(
     session: Session,
     run_id: int,
@@ -86,6 +111,7 @@ def build_gap_snapshots(
     errored_game_ids: frozenset[int] = frozenset(),
     phase: str = "all",
     market_order: list[int] | None = None,
+    market_facts: dict[int, MarketFacts] | None = None,
 ) -> int:
     if phase not in GAP_PHASES:
         raise ValueError(f"phase must be one of {GAP_PHASES}, got {phase!r}")
@@ -126,6 +152,17 @@ def build_gap_snapshots(
         # now reflect phase order; strategy's equal-edge tiebreak must not inherit that order.
         # Only scalar IDs survive this call, bounded by this run's quoted markets.
         market_order.extend(dict.fromkeys(market.id for _, market, _ in rows))
+    if market_facts is not None:
+        # Docket item 21 step 1. The same capture point and the same bound as `market_order`
+        # above: this is the last place the market and its game are both in hand before the
+        # direct phase's no-fair filter (line 182) drops a market from this pass, which is why
+        # the markets that end the phase with no gap row can still name their own cell. Three
+        # small scalars per market, first write wins (one market can carry several quote rows).
+        for _quote, market, game in rows:
+            if market.id not in market_facts:
+                market_facts[market.id] = MarketFacts(
+                    sport=game.sport, market_type=market.market_type,
+                    ttk_minutes=ttk_minutes_at(game.kickoff_utc, now))
     if not rows:
         return 0
 
@@ -217,7 +254,7 @@ def build_gap_snapshots(
                 maker_fee = fee_per_contract(fee_model, "maker", yes_bid, 100)
                 gap_maker_net = (fair_p - yes_bid - maker_fee).quantize(FOUR, rounding=ROUND_HALF_UP)
 
-        ttk_minutes = int((game.kickoff_utc - now).total_seconds() // 60)
+        ttk_minutes = ttk_minutes_at(game.kickoff_utc, now)
 
         now_local = now.astimezone(tzinfo)
         dow = now_local.weekday()
