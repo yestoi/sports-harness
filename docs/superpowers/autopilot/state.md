@@ -23,7 +23,7 @@ Updated 2026-09-18 16:18 CT (21:18 UTC) by controller session sports-e2 in `/hom
 
 ## Active units
 
-- **6D.1 phase** (journal 292): branch `phase6d1-execution-viability` at main 60dd46a; ledger `.superpowers/sdd/2026-09-18-phase6d1-execution-viability/progress.md` (standing rulings, pre-flight scan); phase head 2563788 (T1 merged: review round 1 closed, re-review approved, suite 4,263 passed pristine, Minors M1-M4 deferred in the ledger; rulings D1-D4). T5 `6d1-t5` opus on `../sports-wt/phase6d1-t5-bookhealth` (DB `harness_test_phase6d1_t5_bookhealth`, grant on), dispatched 16:17 CT, chase cron 334ccc82 17:47 CT, report `results/phase6d1-task-5-report.md`, then sonnet review; T6 brief extracted, header drafted (`task-6-header.md`). Next legal action: consume T5's report, commit, package, review.
+- **6D.1 phase** (journal 292): branch `phase6d1-execution-viability` at main 60dd46a; ledger `.superpowers/sdd/2026-09-18-phase6d1-execution-viability/progress.md` (standing rulings, pre-flight scan); phase head 2563788 (T1 merged; review round 1 closed; suite 4,263 pristine; Minors M1-M4 and rulings D1-D4 in the ledger). T5 `6d1-t5` opus on `../sports-wt/phase6d1-t5-bookhealth` (DB `harness_test_phase6d1_t5_bookhealth`, grant on), dispatched 16:17 CT, chase cron 334ccc82 17:47 CT, report `results/phase6d1-task-5-report.md`, then sonnet review; T6 header drafted. Next: consume T5's report, commit, package, review.
 - **hotfix row 87**: done to merge (8681b74); batch closed at 2 of 12, 11:03-12:39 CT; worktree and branch removed; grant revoked.
 - **hotfix fix 85**: done to merge (4d2cdcc); worktree and branch kept until the release verification.
 - **phase 6D**: Task 11 merged (283); acceptance rows at game windows, §4 read-backs, item 12 baseline, re-archive and final review, roadmap `done`. Ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`.
@@ -33,7 +33,7 @@ Updated 2026-09-18 16:18 CT (21:18 UTC) by controller session sports-e2 in `/hom
 ## Pending results
 
 - Agents: 6d1-t5 implementer (opus sports-worker) running since 16:17 CT, report `.superpowers/sdd/results/phase6d1-task-5-report.md`. Suites: none running.
-- Wakeups (sports-e2, CronList): f72a80eb 17:55 CT (query 4 before), f8d80b2f 18:25 CT (after-window read), 334ccc82 17:47 CT (T5 chase); 384758d5 and d7535db6 (T1 chases) fired or moot. Durable reminders 2026091803 (17:55), 2026091804 (18:25; re-armed 13:19 CT, the Thu 2026091802 timer had vanished).
+- Wakeups (sports-e2, CronList): f72a80eb 17:55 CT (query 4 before), f8d80b2f 18:25 CT (after-window read), 334ccc82 17:47 CT (T5 chase). Durable reminders 2026091803 (17:55), 2026091804 (18:25; re-armed 13:19 CT, the Thu 2026091802 timer had vanished).
 - Receipts: fix 87 8681b74 (4,242 passed, tree 395b8a19, merged 12:39 CT, deploy gated); Task 11 0fe5890 (4,237, merged 11:03 CT, gated); fix 85 4d2cdcc (4,231 at e49a988, merged 09:21 CT, pending); fix 79 deployed 4066197 07:23 CT, verify 275 (mechanism PASS, effect FAIL). Preflight evidence/2026-09-18-preflight-1317.txt (290).
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, phase6d1_t5_bookhealth (t1_contract revoked); older fix databases: `make testdb-prune`.
 - Worktrees: phase6d1-t5-bookhealth (T5), fix-2026-09-18-orders-intent-index (merged, kept to the release), phase6d-merge-main; Mac-era fix-45/fix-48/recovery and restart-worker-smoke preserved.
