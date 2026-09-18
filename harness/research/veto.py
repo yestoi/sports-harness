@@ -40,6 +40,7 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import TextClause
 
 from harness.db.models import VetoDecision
 # One home, three readers. `harness/parlay/needs.py` defines the list, `parlay_grade` imports it
@@ -49,6 +50,7 @@ from harness.parlay.needs import FINAL_STATUSES
 from harness.research.client import (PRIMARY_MODEL, SHADOW_MODEL, ResearchClient,
                                      web_search_tool)
 from harness.research.features import build_features, feature_delta, invalidated
+from harness.research import pacing
 from harness.research.notes import write_notes
 from harness.research.prompt import (EFFORT, MAX_OUTPUT_TOKENS, OUTPUT_SCHEMA, PROMPT_HASH,
                                      SYSTEM_BLOCKS, THINKING, render_user)
@@ -77,7 +79,7 @@ VETO_EVIDENCE_IDS_MAX = 8
 STALE_CLAIM = timedelta(minutes=10)
 
 __all__ = ["DECISIONS", "DECIDED", "FINAL_STATUSES", "STALE_CLAIM", "QueuedSignal",
-           "bucket_start", "claim_bucket", "close_client", "veto_pass"]
+           "bucket_start", "claim_bucket", "claim_statement", "close_client", "veto_pass"]
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,10 @@ class QueuedSignal:
     fair_p: object
     edge: object
     id: int
+    #: 6D.1 §1.8(b): the game's kickoff, for the near-kickoff reservation. Additive and inert
+    #: while `veto_pacing_profile` is `None` - `pacing.near_kickoff(None, ...)` is `False` - and
+    #: `None` for a queue row with no game.
+    kickoff_utc: datetime | None = None
 
 
 def bucket_start(created_at: datetime, minutes: int) -> datetime:
@@ -130,6 +136,33 @@ _OLDEST_BUCKET = text(f"""
     limit 1
 """)
 
+#: 6D.1 §1.8(b), dormant. Future kickoffs first, then the addendum's own terms. The literal
+#: `(kickoff_utc - now) asc` would sort a *passed* kickoff first - its difference is the smallest
+#: (negative) one - and let the stale backlog monopolise exactly the near-kickoff windows the
+#: profile exists to protect, so the first term is the future/past split (plan T6's stated
+#: deviation, addendum revision 3). One row; the join is `games`' primary key and the filter is
+#: `veto_queue`'s claimable predicate, so the access path is the one `_OLDEST_BUCKET` already uses
+#: plus a primary-key lookup per candidate row.
+_KICKOFF_FIRST_BUCKET = text(f"""
+    select q.game_id, q.market_type, q.bucket_start
+      from veto_queue q left join games g on g.id = q.game_id
+     where {_CLAIMABLE}
+     order by (g.kickoff_utc is null or g.kickoff_utc <= :now),
+              g.kickoff_utc - :now asc,
+              q.bucket_start, q.game_id nulls last, q.market_type
+     limit 1
+""")
+
+
+def claim_statement(profile) -> TextClause:
+    """Which head-of-queue statement a pass uses: today's unless a pacing profile is active.
+
+    Exposed so a test can read the SQL without a database: the dormant path must stay
+    byte-identical to `_OLDEST_BUCKET`, and asserting on the statement itself is how that is
+    proved rather than assumed.
+    """
+    return _OLDEST_BUCKET if profile is None else _KICKOFF_FIRST_BUCKET
+
 #: One statement, so two workers cannot both take the bucket: the loser's UPDATE re-reads the row
 #: the winner just wrote, finds `claimed_at = :now` rather than null or stale, and matches
 #: nothing. That holds for a reclaim as well as a first claim, because the winner's `claimed_at`
@@ -143,10 +176,14 @@ _CLAIM = text(f"""
     returning q.signal_id
 """)
 
+#: The `games` join is additive (a left join on the primary key, one row per queue row) and
+#: carries `kickoff_utc` so the reservation can tell a near-kickoff signal from a far one. It
+#: changes no row, no order and no existing column.
 _SIGNALS = text("""
     select s.id, s.venue_market_id, s.side, s.fair_p, s.edge, s.created_at,
-           q.game_id, q.market_type, q.bucket_start
+           q.game_id, q.market_type, q.bucket_start, g.kickoff_utc
     from veto_queue q join signals s on s.id = q.signal_id
+    left join games g on g.id = q.game_id
     where q.signal_id = any(:signal_ids)
     order by s.created_at, s.id
 """)
@@ -162,13 +199,20 @@ _GAME_STATUS = text("""
 """)
 
 
-def claim_bucket(session: Session, now: datetime) -> list[QueuedSignal]:
+def claim_bucket(session: Session, now: datetime, *, profile=None) -> list[QueuedSignal]:
     """Claim every claimable row of the oldest bucket, and return its signals in arrival order.
 
     Claimable is unclaimed, or claimed longer than `STALE_CLAIM` ago and still undecided.
+
+    `profile` is 6D.1 §1.8(b)'s pacing profile and defaults to `None`, which is today's
+    behaviour: the oldest bucket, by `bucket_start`. With a profile the head of the queue is the
+    nearest **future** kickoff instead, and `:now` is bound only for that statement.
     """
     stale_before = now - STALE_CLAIM
-    head = session.execute(_OLDEST_BUCKET, {"stale_before": stale_before}).first()
+    head_params = {"stale_before": stale_before}
+    if profile is not None:
+        head_params["now"] = now
+    head = session.execute(claim_statement(profile), head_params).first()
     if head is None:
         return []
     claimed = session.execute(_CLAIM, {"now": now, "stale_before": stale_before,
@@ -181,7 +225,7 @@ def claim_bucket(session: Session, now: datetime) -> list[QueuedSignal]:
     return [QueuedSignal(signal_id=r.id, game_id=r.game_id, market_type=r.market_type,
                          bucket_start=r.bucket_start, created_at=r.created_at,
                          venue_market_id=r.venue_market_id, side=r.side, fair_p=r.fair_p,
-                         edge=r.edge, id=r.id)
+                         edge=r.edge, id=r.id, kickoff_utc=r.kickoff_utc)
             for r in rows]
 
 
@@ -292,14 +336,19 @@ def _sanitized(result):
 
 
 def _call_pair(session: Session, client, settings, queued: QueuedSignal, numeric: dict,
-               untrusted: dict, now: datetime):
+               untrusted: dict, now: datetime, *, profile=None):
     """One paired call, reserved before and released after.
 
     Returns `(call_id, primary, shadow)`, or raises `BudgetRefused` having made no call.
+
+    `profile` is 6D.1 §1.8's pacing profile, `None` by default: `pacing.near_kickoff(None, ...)`
+    is `False` and `reserved_floor(None, ...)` is zero, so the reservation is today's exactly.
     """
     models = [PRIMARY_MODEL, SHADOW_MODEL]
     reservation = reserve_spend(session, now, settings, "veto", models,
-                                searches=settings.veto_max_searches)
+                                searches=settings.veto_max_searches,
+                                near_kickoff=pacing.near_kickoff(profile, now,
+                                                                 queued.kickoff_utc))
     # The advisory lock lives until this transaction ends, so it is ended immediately: holding it
     # across a 10-30 s Anthropic call would block every other reservation on the ISO week.
     session.commit()
@@ -369,7 +418,9 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
             return {"status": "dormant", "calls": 0, "decided": 0, "skipped_budget": 0}
         client = _shared_client(settings)
 
-    queued = claim_bucket(session, now)
+    # 6D.1 §1.8(c): `None` unless the setting names a profile, which is today's claim order.
+    profile = pacing.load_profile(getattr(settings, "veto_pacing_profile", None))
+    queued = claim_bucket(session, now, profile=profile)
     if not queued:
         return counts
 
@@ -398,7 +449,7 @@ def veto_pass(session: Session, now: datetime, settings, client=None) -> dict:
 
         try:
             call_id, primary, _shadow = _call_pair(session, client, settings, item, numeric,
-                                                   untrusted, now)
+                                                   untrusted, now, profile=profile)
         except BudgetRefused as refused:
             # `reserve_spend` raised while holding the ISO-week advisory lock, which lives until
             # this transaction ends. Ending it here releases the lock on the error path instead

@@ -1,7 +1,8 @@
 """`harness exp …` (§1.1). Every subcommand of this milestone lands here with its implementation."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import typer
 from sqlalchemy import text
@@ -9,8 +10,10 @@ from sqlalchemy import text
 from harness.config.settings import get_settings
 from harness.execution.book import newest_ws_connect
 from harness.experiments.execution_viability import EXP_DB_ROLE, EXP_LABEL
-from harness.experiments.execution_viability import bookhealth, source, storage
+from harness.experiments.execution_viability import (bookhealth, source, storage,
+                                                     veto_profile)
 from harness.logging_setup import configure_logging
+from harness.research import pacing
 
 exp_app = typer.Typer(no_args_is_help=True,
                       help="Phase 6D.1's isolated execution-viability experiment (exploratory)")
@@ -171,3 +174,59 @@ def book_health(ticker: str = typer.Option(..., "--ticker"),
             print(f"persisted={written} table=exp_book_health run={run_id}")
         finally:
             writer.close()
+
+
+@exp_app.command("veto-profile")
+def veto_profile_cmd(
+        name: str = typer.Option(..., "--name",
+                                 help=f"one of {', '.join(pacing.PROFILE_NAMES)}"),
+        preflight: bool = typer.Option(False, "--preflight/--no-preflight"),
+        since: datetime = typer.Option(None, "--since", formats=["%Y-%m-%dT%H:%M:%S%z"]),
+        until: datetime = typer.Option(None, "--until", formats=["%Y-%m-%dT%H:%M:%S%z"]),
+        cost_per_pair: float = typer.Option(
+            0.085, "--cost-per-pair",
+            help="dollars per paired call; the review's measured $0.085 by default"),
+) -> None:
+    """Print §1.8's pacing profile, its hash and §0.14c's question; with --preflight, replay the
+    stored arrivals of a window against it.
+
+    **Activates nothing.** No `Settings` value is written, no `veto_decisions` row is written and
+    no model is called: the profile stays dormant until the user's dated decision (§0.14c), which
+    is also §0.8's amendment instant. Without --preflight the command reads no database at all.
+    """
+    configure_logging()
+    # §0.6: every `harness exp` command says whose numbers these are before it prints any.
+    print(EXP_LABEL)
+    try:
+        profile = pacing.load_profile(name)
+    except KeyError as unknown:
+        raise typer.BadParameter(str(unknown)) from None
+    hours = max((w.hours_before_kickoff for w in profile.windows), default=0)
+    reserved = max((w.reserved_fraction for w in profile.windows), default=0)
+    print(f"profile={profile.name} hash={profile.profile_hash()}")
+    print(f"  json            {veto_profile.profile_json(profile)}")
+    print(f"  reserved        {reserved} of each day for signals inside {hours} h of kickoff")
+    for window in profile.windows:
+        print(f"    window        {window.sport:<8} {window.hours_before_kickoff} h "
+              f"{window.reserved_fraction}")
+    for day in sorted(profile.weekday_allocation):
+        print(f"    weekly        {day:<8} {profile.weekday_allocation[day]}")
+    print(f"  release         {profile.release_hour_ct}:00 America/Chicago")
+    print(f"  claim order     {veto_profile.CLAIM_ORDER_AFTER}")
+    print(f"  claim order now {veto_profile.CLAIM_ORDER_BEFORE}")
+    print("  status          dormant; activation is the user's dated decision (§0.14c) and this "
+          "command writes no setting")
+    print(f"question (§0.14c, unanswered): {veto_profile.AMENDMENT_QUESTION}")
+    if not preflight:
+        return
+    if since is None or until is None or until <= since:
+        raise typer.BadParameter("--preflight needs --since and --until, with --until after it")
+    now = datetime.now(timezone.utc)
+    s = get_settings()
+    with source.reader(s) as session:
+        report = veto_profile.preflight(
+            session, profile, since=since, until=until, now=now,
+            cost_per_pair=Decimal(str(cost_per_pair)), daily_cap=s.veto_daily_usd_cap,
+            weekly_cap=s.veto_weekly_usd_cap)
+    print(veto_profile.render_preflight(report))
+    print(veto_profile.amendment_record(profile, prepared_at=now))

@@ -108,6 +108,21 @@ def test_the_worst_case_constants_are_the_addendum_s():
 
 # --- the reservation ------------------------------------------------------------------------
 
+def test_reserve_spend_is_unchanged_while_the_pacing_profile_is_none(db_session, env_settings):
+    """6D.1 §1.8(c)'s dormancy, asserted where the money is. `near_kickoff` is not passed, which
+    is every existing caller: with no profile named the reservation is today's exactly."""
+    assert env_settings.veto_pacing_profile is None
+    res = reserve_spend(db_session, NOW, env_settings, "veto", [SONNET], searches=0)
+    assert res.day == chicago_day(NOW)      # same as before this milestone
+    assert res.per_model == {SONNET: worst_case_usd(SONNET, 0)}
+
+
+def test_the_caps_themselves_are_untouched(env_settings):
+    """Invariant 7 and U4: the pacing profile changes *when* the cap binds, never the cap."""
+    assert env_settings.veto_daily_usd_cap == Decimal("25")
+    assert env_settings.veto_weekly_usd_cap == Decimal("150")
+
+
 def test_a_reservation_writes_usd_reserved_for_every_model(db_session, env_settings):
     reservation = reserve_spend(db_session, NOW, _settings(env_settings), "veto", [OPUS, SONNET])
     rows = {(r.kind, r.model): r for r in db_session.execute(

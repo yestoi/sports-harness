@@ -42,6 +42,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from harness.db.models import ResearchSpend
+from harness.research import pacing
 from harness.weeks import chicago_day, iso_week_bounds  # noqa: F401 - re-exported (D1)
 
 log = logging.getLogger(__name__)
@@ -211,7 +212,8 @@ def _ensure_rows(session: Session, day: date, kind: str, models: Sequence[str]) 
 
 
 def reserve_spend(session: Session, now: datetime, settings, kind: str,
-                  models: Sequence[str], searches: int | None = None) -> Reservation:
+                  models: Sequence[str], searches: int | None = None,
+                  *, near_kickoff: bool = False) -> Reservation:
     """Take the worst case for one call on each of `models` out of today's budget, atomically.
 
     Raises `BudgetRefused` when the day's or the week's total plus the projection would exceed
@@ -223,6 +225,12 @@ def reserve_spend(session: Session, now: datetime, settings, kind: str,
     make. Never `WORST_CASE_SEARCHES` -- that constant is the addendum's opening value, and a
     raised `veto_max_searches` must change every projection, this default included (review round
     1, Important 2).
+
+    `near_kickoff` is 6D.1 §1.8(c) and defaults to today's behaviour. It is read **only** by
+    `pacing.reserved_floor`, which returns zero while `settings.veto_pacing_profile` is `None` -
+    the default - so with no profile named this argument changes no arithmetic at all. The caps
+    are untouched either way (invariant 7, U4): an active profile can only make the day's cap
+    bind **earlier** for a far-from-kickoff call, never later and never above `$25`.
 
     **Commit as soon as this returns.** The advisory lock lives until the caller's transaction
     ends, so holding the transaction open across the Anthropic call blocks every other
@@ -240,6 +248,17 @@ def reserve_spend(session: Session, now: datetime, settings, kind: str,
     session.execute(_LOCK, {"monday": monday.isoformat()})
     _ensure_rows(session, day, kind, models)
     day_total = session.execute(_DAY_TOTAL, {"day": day}).scalar() or Decimal("0")
+    # 6D.1 §1.8(c): a no-op while `veto_pacing_profile is None`, which is the default. The caps
+    # themselves are untouched (invariant 7): this only changes *when* the day's cap binds, by
+    # holding part of it back for near-kickoff work until the release hour. It sits inside the
+    # ISO-week advisory lock taken above, so the floor is compared against the same total the
+    # cap is - two workers cannot both pass it.
+    profile = pacing.load_profile(getattr(settings, "veto_pacing_profile", None))
+    floor = pacing.reserved_floor(profile, now, settings.veto_daily_usd_cap,
+                                  near_kickoff=near_kickoff)
+    if floor and day_total + projection > settings.veto_daily_usd_cap - floor:
+        raise BudgetRefused("daily_reserved", day_total, projection,
+                            settings.veto_daily_usd_cap - floor)
     if day_total + projection > settings.veto_daily_usd_cap:
         raise BudgetRefused("daily", day_total, projection, settings.veto_daily_usd_cap)
     week_total = session.execute(
