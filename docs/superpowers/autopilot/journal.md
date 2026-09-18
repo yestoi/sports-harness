@@ -3138,3 +3138,17 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Dispatches: 0. Verify unit 18:25-19:40 CT (two reads).
 - Result: PASS on every row read tonight except row 84 (journal 267, ruled phase work); BEFORE half recorded; no alarm.
 - Next: idle until Fri 07:27 CT (cron 8d9728d0, reminder 2026091801): release fix 79 app-only, judge, tell the user; then the morning contract with the T18b after-window read.
+
+## 270. preflight - fresh session sports-ed after the Thursday window; idle until Friday - 2026-09-17 20:47-20:49 CT
+
+- Orient: rule 7 (idle) after rules 1-6 - `fixes.md` Open holds only row 79, already merged to main at 2cb2219 and held to Friday morning by ruling 262; the deploy trigger is non-empty (main 2cb2219 vs runtime 1a12781) but NCAAF 460 and NFL 115 are in progress (R4 blocks until 23:17 CT) and the release is ruled for Friday; journal 269 is the verify after deploy 264; no operate duty is due before Friday 07:30 CT; 4.6 T18b/T19 wait for the after-window read (game 115 final) and 6D's remaining acceptance waits on docket item 21; clock 20:47 CT.
+- Branch / commits: main b2dd499 (clean; the only untracked file was this preflight's evidence)
+- Result: done
+- Dispatches: 0
+- Tests: 72 passed (skill tests, `.venv/bin/python -m pytest -q .claude/skills/autopilot/tests`); `context.py check` ok; make test n/a
+- Review: n/a
+- Deploy: none
+- Verification: not run (`make preflight` rc 0, `paper posture intact`, build 1a12781, app-exec and app-serve healthy, app-ws on 747791c, disk 18 % used, host memory available 18.5 GB; evidence: evidence/2026-09-17-preflight-2048.txt; games: NCAAF 460 and NFL 115 in progress, next kickoffs Fri 2026-09-18 18:30 and 19:00 CT NCAAF)
+- Rulings: this is a fresh controller session (sports-ed, launched under the controller lock with autocompact 300k); the previous session's cron 8d9728d0 died with it and is replaced by cron one-shot 7674cf9e (Fri 07:27 CT, fix 79 release); durable reminders 2026091801 and 2026091802 stand; the R3 desktop and push notification test is not repeated (journal 261 covered today's first preflight); provider auth `claude auth status` logged in (claude.ai); no agents, suites or worker results were pending; worktrees unchanged (fix-2026-09-17-executor-prints kept for the release, phase6d-merge-main, the preserved Mac-era ones). Anomalies: one other interactive claude session on the host (herdr-autopilot-16, another project) holds no controller lock and is not a controller; the worker sandbox smoke is deferred to the first dispatch (none tonight).
+- Carried forward: none
+- Next: idle; wakeup Fri 2026-09-18 07:27 CT (cron 7674cf9e, reminder 2026091801): fix 79 app-only release, judge, tell the user, daily 09:00 CT line, T18b after-window read, alias pass

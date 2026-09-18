@@ -1,0 +1,66 @@
+2026-09-18T01:48:03.298167+00:00
+?? docs/superpowers/autopilot/evidence/2026-09-17-preflight-2048.txt
+b2dd499 docs: evidence - post-compaction health read 20:03 CT Sep 17 (games in progress, executor healthy, 2 fills since 19:00 CT)
+21ebde0 docs: autopilot journal - verify 269: Thu window read 2 (BEFORE half, NFL expiry cohort over four loops, T18b unwatched); packet items 21-23
+d6355cf docs: autopilot journal - verify 267 (Thu window read 1: 6B PASS, 6D coverage FAIL row 84, row 82 closed), hotfix 268 (row 84 to Watch as phase work; docket items 21-23)
+/home/trey/dev/sports                                   b2dd499 [main]
+/home/trey/dev/sports-wt/fix-2026-09-17-executor-prints 2cb2219 [fix-2026-09-17-executor-prints]
+/home/trey/dev/sports-wt/fix-45-raw-events-index        003375e [fix-45-raw-events-index]
+/home/trey/dev/sports-wt/fix-48-pricing-stage-order     b447827 [fix-48-pricing-stage-order]
+/home/trey/dev/sports-wt/phase6d-merge-main             ffbecd5 [phase6d-merge-main]
+/home/trey/dev/sports-wt/recovery-fix45-final           4b2f2cd [recovery/fix45-final]
+/home/trey/dev/sports-wt/recovery-fix45-round3          8c24df2 [recovery/fix45-round3]
+/home/trey/dev/sports-wt/recovery-fix48-review          8631fcd [recovery/fix48-review]
+/home/trey/dev/sports-wt/recovery-fix52                 073732f [recovery/fix52]
+/home/trey/dev/sports-wt/restart-worker-smoke           bb90c7a [recovery/worker-smoke]
+               total        used        free      shared  buff/cache   available
+Mem:           31904       13341         966        1541       21044       18563
+Swap:          63808        1956       61851
+Filesystem        Size  Used Avail Use% Mounted on
+/dev/mapper/root  952G  169G  779G  18% /srv/sports-harness
+test-db state=running memory=4294967296 cpus=4000000000
+NAME                            IMAGE                                                                              COMMAND                  SERVICE        CREATED        STATUS                  PORTS
+sports-harness-app-backup-1     postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   app-backup     5 days ago     Up 2 days               5432/tcp
+sports-harness-app-exec-1       sports-release/app:1a12781                                                         "harness exec"           app-exec       10 hours ago   Up 10 hours (healthy)   
+sports-harness-app-research-1   sports-release/app:1a12781                                                         "harness research-wo…"   app-research   10 hours ago   Up 10 hours             
+sports-harness-app-run-1        sports-release/app:1a12781                                                         "harness run"            app-run        10 hours ago   Up 10 hours             
+sports-harness-app-serve-1      sports-release/app:1a12781                                                         "harness serve --por…"   app-serve      10 hours ago   Up 10 hours (healthy)   127.0.0.1:8180->8080/tcp
+sports-harness-app-ws-1         sports-release/app:747791c                                                         "harness ws-record"      app-ws         35 hours ago   Up 35 hours             
+sports-harness-postgres-1       postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94   "docker-entrypoint.s…"   postgres       5 days ago     Up 2 days (healthy)     5432/tcp
+paper posture intact
+{"status": "ok", "last_run_at": "2026-09-18T01:46:28.971173+00:00", "last_status": "running", "seconds_since": 94, "credits_remaining": 4890067, "credits_budget": 5000000, "credits_low": false, "venue_limits": null, "build": "1a12781"}
+0013_nw_executor_version
+24436|2026-09-18 01:46:28.971173+00|running|1a12781
+24435|2026-09-18 01:43:58.971095+00|ok|1a12781
+24434|2026-09-18 01:43:28.971049+00|skipped|1a12781
+2026-09-18 01:47:29.077776+00|19960|20776|
+192608651|2026-09-18 01:47:54.919+00
+ncaaf|in_progress|1|2026-09-17 23:35:00+00|2026-09-17 23:35:00+00
+ncaaf|scheduled|2|2026-09-18 23:30:00+00|2026-09-19 00:00:00+00
+nfl|in_progress|1|2026-09-18 00:17:36+00|2026-09-18 00:17:36+00
+
+Durable reminder: 2026091201.txt 2026-09-13T00:04:07Z Omarchy restart reminder drill completed; no controller was launched
+Durable reminder: 2026091301.txt 2026-09-13T07:50:07Z Inspect game window before fix45 full release; no model auto-start
+Durable reminder: 2026091302.txt 2026-09-13T14:30:07Z Last pre-NFL readiness check: fix47 must be deployed for Sunday6C checks
+Durable reminder: 2026091401.txt 2026-09-14T13:30:47Z Autopilot durable reminder: Monday duties and the 6C 09:00 CT diagnostic report are due; if no controller is running, the wakeup was lost
+Durable reminder: 2026091502.txt 2026-09-15T12:11:22Z armed-at-arm-time: Tue 07:50 CT backstop (journal 226): 6E cold-start stop done ~07:20 CT; if uptime has not reset, bring the stack back up (sports-compose up -d --no-build --pull never), journal the missed slot, continue batch A; if a new session is running per Kickoff, ignore
+Durable reminder: 2026091503.txt 2026-09-15T13:52:11Z Tue 08:52 CT chase wakeup (journal 224 item 18 backstop): batch A implementer dispatched 07:52 CT, batch B 08:02 CT, fix 73 reviewer 08:03 CT; if no controller is running the wakeup was lost
+Durable reminder: 2026091504.txt 2026-09-15T14:07:55Z daily 09:00 CT line + fix 73 closing read on the 09:06 CT settle run; reconcile suites and round-2 review
+Durable reminder: 2026091505.txt 2026-09-15T15:15:55Z p95 re-read, fix 74 between-calls read, sid-2 gap episodes
+Durable reminder: 2026091506.txt 2026-09-15T16:45:11Z fix 73 closing read on the first post-release settle
+Durable reminder: 2026091507.txt 2026-09-15T18:30:52Z fix 73 closing read on settle 211 (full budget); reconcile row72 round 2/fix round 2 and the fix 77 suite
+Durable reminder: 2026091508.txt 2026-09-15T18:37:55Z fix 73 closing read on the first f7a1ccb settle; p95 re-read; row 77 first step
+Durable reminder: 2026091509.txt 2026-09-15T23:39:55Z row 75 report_wtd on the 18:31 CT settle; p95; tape coverage
+Durable reminder: 2026091510.txt 2026-09-15T21:01:55Z fix 78 judgement on f8053c6: p95 after 20 min of loops
+Durable reminder: 2026091601.txt 2026-09-16T13:55:55Z Wed 08:55 CT: daily 09:00 CT line; loop gated on packet item 18 (fix 78 residual, journal 252); if no controller is running the wakeup was lost
+Durable reminder: 2026091602.txt Wed 2026-09-16 09:57 CT: re-judge fix 78 part 3 on eac4414 (restart 09:36 CT), then fix 81 rebase/suite/merge/full release. Created 09:38 CT by sports-26.
+Durable reminder: 2026091603.txt Wed 2026-09-16 10:27 CT: judge-after for the full release 747791c (restart 10:02-10:04 CT): p95_loop_ms, skips, sink_lag non-negative. Created 10:05 CT by sports-26.
+Durable reminder: 2026091701.txt Thu 2026-09-17 08:57 CT: operate, daily 09:00 CT line; judge row 81 (metric_samples_negative_24h) ; R3 first-of-day notification test. Created Wed 10:34 CT by sports-26.
+Durable reminder: 2026091702.txt Thu 2026-09-17 18:25 CT: game-window acceptance prep (NCAAF 18:30 CT, NFL 19:15 CT): 6D acceptance rows, 4.6 T18b/T19, 6B section 3 rows; no deploys after about 14:30 CT Thu (R4). Created Wed 10:34 CT by sports-26.
+Amended Thu by journal 263 (user): read the 6B section 3 and 6D rows tonight as planned AND journal the loop state beside them as a measurement note (heartbeat p95, loops over the 15 s period, nominal dirty-time under-count vs market_dirty_intervals). Also capture liquidity conservation, no-post-expiry-fill and the fills-per-hour series: they are the BEFORE half of the print cache comparison.
+Durable reminder: 2026091801.txt Fri 2026-09-18 07:30 CT: release fix 79 (print cache, batch fix-2026-09-17-executor-prints) app-only in the morning, before the 18:30 CT NCAAF window, by the user's ruling (journal 262); with it the timers batch if it did not ship Thu. Judge twenty minutes after the restart and TELL THE USER it is released and judged. Then the daily 09:00 CT line and the alias pass. Created Thu 09:58 CT by sports-26.
+Amended Thu by journal 263 (user): the loop-metrics row may read FAIL through this release without tripping the twice-running ceiling. Watch fills per hour at the release hour: ANY STEP DOWN IN FILLS IS AN ALARM TO THE USER AT ONCE, not a row to defer. Arm the Fri 18:25 CT cron for reminder 2026091802.
+
+Added Thu 2026-09-17 12:25 CT: fix 79 is ON MAIN as 2cb2219 (90d48a8 + minors), reviewed APPROVED WITH MINORS, full suite 4,216 passed, receipt release_tree eab88ba5... equals main's (docs commits keep it valid; re-check with release_tree() before deploying). Runtime is still 1a12781 by the user's ruling. Friday: make plan-release-omarchy MODE=app, make deploy-omarchy-app (foreground, clean main), verify-summary DEPLOY_SHA=<main short sha>, judge 20 min after: exec.prints_full_reads low and stable, exec.prints_cached_tickers near the working ticker count, exec.phase_tape_ms down, exec.tape_print_rows unchanged in meaning, errors 0, fills per hour no step down (ALARM to the user if it steps down). Rollback: app-only redeploy of 1a12781 (the cache has no off switch). After: make worktree-rm BR=fix-2026-09-17-executor-prints, git branch -d, close row 79.
+Durable reminder: 2026091802.txt Fri 2026-09-18 18:25 CT: NCAAF window after the fix 79 release (journal 263, user): re-read liquidity conservation, no-post-expiry-fill and the fills-per-hour series; journal Thursday's and Friday's reads as the before/after comparison for the print cache, with the loop state. A step down in fills at the release hour is an alarm to the user, not a row. Created Thu by sports-26.
+Provider auth, native wakeups, browser and worker-isolation smoke must be checked in the controller session.
