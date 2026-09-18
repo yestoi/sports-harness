@@ -214,6 +214,33 @@ class Settings(BaseSettings):
     lan_addr: str = "192.168.12.127"
     lan_port: int = 8443
 
+    # --- phase 6D.1: the execution-viability experiment (U10, addendum §1.1b, §4.7) ------------
+    #: C2's privilege boundary. The password of the least-privileged role `harness_exp`, placed by
+    #: **the user** in the runtime's `secrets/` exactly as `anthropic_api_key` is placed today
+    #: (docs/runbooks/experiments.md). `is_file()` and a non-zero size, never `exists()`: Compose
+    #: materialises a missing bind source as an empty *directory*. The loop tests the file and
+    #: reads it only inside `exp_database_url`, which is never logged.
+    exp_db_password_file: Path = Path("/run/secrets/exp_db_password")
+    #: Whether `app-research`'s worker loop runs arm C's observation pass at all (§1.6e). Off, and
+    #: a frozen `exp_run` row is additionally required, so a set flag alone observes nothing.
+    exp_observer_enabled: bool = False
+    #: §1.8's pacing profile, dormant. `None` is today's behaviour byte for byte: no reservation is
+    #: taken and `_OLDEST_BUCKET`'s claim order is unchanged. Activation is the user's dated
+    #: decision (§0.14c) and changes **when** the unchanged $25/$150 caps bind, never the caps.
+    veto_pacing_profile: str | None = None
+    #: §1.6(i): the experiment's own Odds credit cap per run, enforced in code before every call
+    #: and **beside** the recorder's `credits_watch_fraction` guard, never instead of it.
+    exp_observer_credit_cap: int = 60_000
+    exp_observe_interval_s: int = 120
+    #: §4.3's cooperative bounds: the tape walk's batch (the executor's own `tape_batch_min`
+    #: ceiling), the two file-tree ceilings in GiB, and the per-run cap on `exp_mismatch` rows.
+    exp_batch_rows: int = 20_000
+    exp_capture_max_gb: int = 20
+    exp_raw_body_max_gb: int = 5
+    exp_mismatch_max: int = 10_000
+    #: §2's file tree. A setting rather than a literal so a test can point it at `tmp_path`.
+    exp_dir: Path = Path("/srv/sports-harness/exp")
+
     def odds_api_key(self) -> str:
         return self.odds_api_key_file.read_text().strip()
 
@@ -256,6 +283,25 @@ class Settings(BaseSettings):
 
     def anthropic_api_key(self) -> str:
         return self.anthropic_api_key_file.read_text().strip()
+
+    def has_exp_db_password(self) -> bool:
+        """Whether the experiment role's secret is in place (§4.7). `is_file()` plus a non-zero
+        size, the rule `has_anthropic_key` uses; the value itself is not read here."""
+        return (self.exp_db_password_file.is_file()
+                and self.exp_db_password_file.stat().st_size > 0)
+
+    def exp_database_url(self, role: str) -> str:
+        """`database_url` with the experiment role and its password substituted (§1.1b).
+
+        `role` is an argument, not the literal, because `settings.py` is a production module and
+        no production module imports `harness/experiments/` (§0.4); `EXP_DB_ROLE` stays the
+        package's single definition. The returned string carries a password: never log it.
+        """
+        from sqlalchemy.engine import make_url
+
+        url = make_url(self.database_url).set(
+            username=role, password=self.exp_db_password_file.read_text().strip())
+        return url.render_as_string(hide_password=False)
 
 
 @lru_cache

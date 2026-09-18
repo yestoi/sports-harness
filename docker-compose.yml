@@ -262,6 +262,10 @@ services:
       HARNESS_SERVICE: app-research
     volumes:
       - ./secrets/anthropic_api_key:/run/secrets/anthropic_api_key:ro
+      # 6D.1 §4.7: the experiment role's password. The user places it in secrets/ like the key
+      # above; absent, the mount is an empty directory, `is_file()` is false and every experiment
+      # run fails closed. No other service mounts it.
+      - ./secrets/exp_db_password:/run/secrets/exp_db_password:ro
     depends_on:
       postgres:
         condition: service_healthy

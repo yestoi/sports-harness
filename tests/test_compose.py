@@ -225,13 +225,15 @@ def test_the_app_serve_compose_block_is_unchanged():
     assert "build" in block and "image" not in block
 
 
-def test_app_research_mounts_the_anthropic_key_and_nothing_else():
-    """Ruling A-M2: `app-research` mounts `secrets/anthropic_api_key` read-only and nothing
-    else. No Kalshi key, no Odds key, no pgdata: the one container that holds the model key is
-    the one container with no venue credential in it."""
+def test_app_research_mounts_the_anthropic_key_and_the_experiment_password_and_nothing_else():
+    """Ruling A-M2, extended by 6D.1 §4.7: `app-research` mounts the model key and the
+    experiment role's password read-only, and nothing else. Still no Kalshi key, no Odds key,
+    no pgdata: the one container that holds the model key is the one container with no venue
+    credential in it, and the experiment password grants only SELECT plus the `exp_*` writes."""
     service = _service("app-research")
     assert service["volumes"] == [
-        "./secrets/anthropic_api_key:/run/secrets/anthropic_api_key:ro"]
+        "./secrets/anthropic_api_key:/run/secrets/anthropic_api_key:ro",
+        "./secrets/exp_db_password:/run/secrets/exp_db_password:ro"]
 
 
 def test_app_research_block_is_pinned_whole():
@@ -254,6 +256,16 @@ def test_no_service_but_app_research_mounts_the_anthropic_key():
             continue
         for volume in service.get("volumes", []) or []:
             assert "anthropic" not in volume, f"{name} mounts the anthropic key"
+
+
+def test_no_service_but_app_research_mounts_the_experiment_password():
+    """6D.1 §4.7: one bind, on one service."""
+    doc = yaml.safe_load(COMPOSE.read_text())
+    for name, service in doc["services"].items():
+        if name == "app-research":
+            continue
+        for volume in service.get("volumes", []) or []:
+            assert "exp_db_password" not in volume, f"{name} mounts the experiment password"
 
 
 def test_nas_env_documents_both_phase5_switches():

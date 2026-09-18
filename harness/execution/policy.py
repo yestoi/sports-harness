@@ -562,4 +562,6 @@ def render(results: list[PolicyResult]) -> str:
     lines.append("Adoption is the user's dated decision (§0.15a); 6D adopts nothing (D7). The "
                  "selected policy is registered as a new config_history hash or a new variant "
                  "id by dated amendment -- never as an edit to a registered id.")
+    lines.append("This table is the admission diagnostic (one pass, no arm state); stateful "
+                 "fills and conserved liquidity are `harness exp run` (6D.1 §1.1f).")
     return "\n".join(lines)

@@ -19,6 +19,7 @@ from harness.db.engine import (
     make_session_factory,
 )
 from harness.db.schema import create_schema
+from harness.experiments.execution_viability.cli import exp_app
 from harness.logging_setup import configure_logging
 
 app = typer.Typer(no_args_is_help=True)
@@ -26,6 +27,7 @@ variants_app = typer.Typer(no_args_is_help=True)
 app.add_typer(variants_app, name="variants")
 migrate_app = typer.Typer(no_args_is_help=True, help="Alembic: additive schema history")
 app.add_typer(migrate_app, name="migrate")
+app.add_typer(exp_app, name="exp")
 log = logging.getLogger("harness")
 
 #: How stale the executor heartbeat may be before `exec-health` reports the container unhealthy.
@@ -851,6 +853,9 @@ def policy_compare_cmd(
     6B's carve-out -- and is a separate operate duty. Adoption is the user's dated decision
     (§0.15a): the selected policy is registered as a new `config_history` hash or a new variant
     id by amendment, never as an edit to a registered id.
+
+    This is the *admission* diagnostic: one pass over a recorded slice with no arm state. For
+    stateful fills, per-arm capacity and conserved liquidity, see `harness exp run` (6D.1 §1.1f).
     """
     configure_logging()
     from harness.execution.policy import (NOT_EXERCISED, NOT_EXERCISED_NOTE, POLICIES,
