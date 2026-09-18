@@ -383,3 +383,10 @@ select 'tonight_cancelled_at', min(cancelled_at) at time zone 'America/Chicago',
 
 
 ## hitting prints over the full counterfactual interval (to expiry): 4 of 2,220 rows
+
+## Post-compaction health read, 2026-09-17 20:03 CT (01:03:50Z), no unit; sports-26 reconciled after auto-compaction at 20:01 CT
+games 460 (ncaaf, in_progress 17-7) and 115 (nfl, in_progress 14-0); runtime build 1a12781, status ok.
+exec_heartbeat: last_loop 01:03:29Z, last_loop_ms 15,747, p95 18,682, loops 45,606, skipped 5,082, last_error null.
+loops last 20 min: 17 samples, 1 over 25 s, max 35,149 ms. exec.errors last hour 0.
+fills since 19:00 CT (00:00Z): 2 (the BEFORE series is no longer flat at 0 after the 19:40 CT read; Friday's comparison reads the full series).
+Reconcile: agents none; pytest none; cron 8d9728d0 (Fri 07:27 CT) present; reminders 2026091801/2026091802 present; worktrees all clean; main 21ebde0 ahead of 1a12781 by fix 79 only (held by ruling 262).
