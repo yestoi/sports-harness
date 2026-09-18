@@ -3152,3 +3152,15 @@ The user, verbatim, in this session at 07:20 CT (the answer to journal 252's gat
 - Rulings: this is a fresh controller session (sports-ed, launched under the controller lock with autocompact 300k); the previous session's cron 8d9728d0 died with it and is replaced by cron one-shot 7674cf9e (Fri 07:27 CT, fix 79 release); durable reminders 2026091801 and 2026091802 stand; the R3 desktop and push notification test is not repeated (journal 261 covered today's first preflight); provider auth `claude auth status` logged in (claude.ai); no agents, suites or worker results were pending; worktrees unchanged (fix-2026-09-17-executor-prints kept for the release, phase6d-merge-main, the preserved Mac-era ones). Anomalies: one other interactive claude session on the host (herdr-autopilot-16, another project) holds no controller lock and is not a controller; the worker sandbox smoke is deferred to the first dispatch (none tonight).
 - Carried forward: none
 - Next: idle; wakeup Fri 2026-09-18 07:27 CT (cron 7674cf9e, reminder 2026091801): fix 79 app-only release, judge, tell the user, daily 09:00 CT line, T18b after-window read, alias pass
+
+## 271. decision - usage.py day-after measurement at 300k - 2026-09-17 21:07 CT
+
+> Inconclusive: 300k stays; rerun this file after the next full day.
+
+- Measurement: 2026-09-16 day (usage.py --since 2026-09-16): turns 119, compactions 0 (0.0 per 1,000), avg context/turn 80,617, cache-read 9,062,846, output 82,157, journal entries 8; sessions 20e3ae76 69 turns, f61cead9 23, dbd0c5ae 27. The relaunched controller session 49771523 (start 2026-09-15 21:19 CT, last turn 2026-09-17 20:04 CT, 824 turns, avg 166k) is outside that row because usage.py attributes a session to its start day; alone it compacted 5 times (6.1 per 1,000) at 252k, 266k, 266k, 265k, 265k; pooled with every session since the relaunch (1,063 turns) 4.7 per 1,000 and about 150k per turn. Evidence: evidence/2026-09-16-usage-300k.txt.
+- Verdict: inconclusive (fewer than 10 dispatches: Sep 16 had 3 by the journal Dispatches lines and 5 by the state.md counter; Sep 17, not over, 4-5). Verify entries exist both days (256, 258; 265, 267, 269); no gate or paused entry either day.
+- Applied: 300k stays; the launcher and the SKILL.md Kickoff comment are untouched.
+- Rulings: the quoted ruling is the one the brief pre-states for the inconclusive case (plan 2026-09-16-context-hygiene-day-after.md step 6); no live ruling was taken. Compaction fired at 252-266k, under the 270-290k the brief expected. NEEDS USER lines in the Sep 16 and Sep 17 entries: none, nothing to trim.
+- Anomalies: usage.py cannot split a session across CT days, so a controller session that outlives its start day (49771523 spanned Sep 15-17) never appears in the day row the brief judges; a conclusive read needs per-turn day attribution or a per-session judgement. usage.py is the user's script; no change made.
+- Result: recorded
+- Next: the loop continues unchanged; rerun the brief after the next full CT day with at least 10 dispatches (the loop is idle until Friday's fix 79 release, so a conclusive day may not come before phase work resumes)

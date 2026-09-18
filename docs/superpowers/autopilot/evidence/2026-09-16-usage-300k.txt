@@ -1,0 +1,45 @@
+# usage.py day-after measurement at --autocompact 300k (spec 2026-09-15-context-hygiene-design section 3.5)
+# Taken 2026-09-17 21:07 CT by the user-directed review session (plan 2026-09-16-context-hygiene-day-after.md).
+# Launcher: scripts/autopilot-session.sh line 16 reads --autocompact 300k (commit ec01ada, main b60a603).
+# Relaunch at 300k: journal 248 preflight 2026-09-15 21:19 CT. First full CT day: Wed 2026-09-16.
+
+## python3 .claude/skills/autopilot/scripts/usage.py --since 2026-09-16
+
+start CT         session  turns compactions (context at each)       cache-read   cache-new  uncached     output  avg ctx model
+2026-09-16 11:09 20e3ae76    69 0 (-)                                5,841,941     188,468       138     49,164      87k claude-opus-5
+2026-09-16 13:23 f61cead9    23 0 (-)                                1,230,634      55,015        46      8,804      55k claude-opus-5
+2026-09-16 21:04 dbd0c5ae    27 0 (-)                                1,990,271     286,174       744     24,189      84k claude-fable-5-1
+2026-09-17 09:23 dbd4509f    87 0 (-)                                9,274,898     338,442       196    141,502     110k claude-fable-5-1
+2026-09-17 20:47 205c0276    33 0 (-)                                2,622,686     440,718       936     48,156      92k claude-fable-5-1
+
+unparsed journal headings (attributed to the previous dated entry's day): 2
+2026-09-16 day: turns 119, compactions 0 (0.0 per 1,000 turns), avg context/turn 80,617, cache-read 9,062,846, output 82,157, journal entries 8, cache-read per entry 1,132,855
+2026-09-17 day: turns 120, compactions 0 (0.0 per 1,000 turns), avg context/turn 105,648, cache-read 11,897,584, output 189,658, journal entries 10, cache-read per entry 1,189,758
+
+## The relaunched controller session is missing from both day rows above
+
+usage.py attributes a session to the CT day it STARTED (usage.py table(), info["start"]). The controller
+session launched by the relaunch preflight (journal 248) started 2026-09-15 21:19 CT and its last assistant
+turn is 2026-09-17 20:04 CT (replaced by session sports-ed at the 20:47 CT preflight, journal 270), so it
+wrote journal 253-269 across Sep 16 and Sep 17 while counting toward Sep 15. Its row, from
+python3 .claude/skills/autopilot/scripts/usage.py --since 2026-09-15:
+
+start CT         session  turns compactions (context at each)       cache-read   cache-new  uncached     output  avg ctx model
+2026-09-15 21:19 49771523   824 5 (252k, 266k, 266k, 265k, 265k)   132,106,539   4,991,729    15,006  1,147,606     166k claude-fable-5-1
+
+Alone: 824 turns, 5 compactions (6.1 per 1,000 turns), avg context/turn 166,399 (context_sum 137,113,274);
+compaction fired at 252k, 266k, 266k, 265k, 265k.
+Pooled with every session that started after the relaunch and has at least 20 turns (49771523, 20e3ae76,
+f61cead9, dbd0c5ae, dbd4509f, 205c0276): 1,063 turns, 5 compactions (4.7 per 1,000), avg context/turn about
+149,900 (137,113,274 + 9,593,423 + 12,677,760 over 824 + 119 + 120 turns; the day sums are rebuilt from the
+floored day averages, so the last digits are approximate).
+The tool cannot split one session's turns across days, so no exact Sep 16 day figure exists for the controller.
+
+## Criteria (spec 3.5): avg context/turn at most 200,000; at most 6.0 compactions per 1,000 turns.
+## Baseline at 500k (spec section 1): 263k per turn, 2.35 per 1,000 turns.
+## Conclusiveness (spec 3.5): Sep 16 dispatches 3 by the journal Dispatches lines (entries 253-260), 5 by the
+## state.md counter; both under 10 -> INCONCLUSIVE. Sep 17 (not the first full day, not over at 21:07 CT):
+## 5 by the journal lines (261-270), 4 by state.md; also under 10.
+## verify entries: Sep 16 journal 256, 258; Sep 17 journal 265, 267, 269. No gate or paused entry on either
+## day (gate 252 at 22:23 CT Sep 15 was answered by 253 at 07:20 CT Sep 16).
+## NEEDS USER lines in the Sep 16 and Sep 17 entries: none.
