@@ -1,6 +1,10 @@
 # Phase 6D.1 design addendum: execution viability experiment (stateful policy comparison, observation/holding tradeoff, book-health diagnosis, independent veto pacing, feasibility forecast)
 
-**Revision 2, 2026-09-18** - applies every ruling of the controller's design rulings (2026-09-18 13:54 CT), copied verbatim in
+**Revision 3, 2026-09-18** - applies the plan-review rulings of 2026-09-18 15:01 CT that name this file: §1.3(a) and §1.6(b)'s
+as-of kickoff source becomes the `intents.kickoff_utc` / `orders.kickoff_utc` snapshots (I6), §3 row 4 reads `decided_at` and
+the single new reason code `daily_reserved` (I10, I11), §1.8(b)'s claim order is corrected to the future-kickoff-first form the
+plan implements, and `harness/research/pacing.py` joins §1.8's Files line and §9's T6 (the pacing.py ruling). Revision 2
+applied every ruling of the controller's design rulings (2026-09-18 13:54 CT), copied verbatim in
 **§Rulings**: the recorded-clock premise is replaced by the retained action instants (C1, I1), the isolation gains a
 server-enforced privilege boundary (C2), two tables are declared and the raw-body table is removed (I5), three verify rows are
 made runnable (I6-I8), the observer's shared aggregate becomes the provider balance (I9), and the two dropped draft sentences
@@ -274,11 +278,14 @@ manifest together with the exact SQL and its bound parameters. Reads are indexed
 `ix_metric_samples_name_ts (name, ts desc)` for `exec.loop_ms`. The first proof slice is one representative repaired day; the
 full set then adds an off-window span, an overnight boundary, a busy window, a gap/recovery and a capacity-bound interval, with
 coverage inspected before the range is chosen and no silent crossing of a simulator or executed-population boundary
-(`EXECUTOR_VERSION`, `nw_executor_version`, `config_hash`). The `games` stream is captured **as schedule history**, not as the
-schedule as it stands today: the kickoff list handed to `interval_for` (§1.6b) is reconstructed as of the evaluation instant
-from the retained row versions where the capture keeps them, and from the earliest retained value otherwise, because a kickoff
-revised after the fact is exactly the lookahead (b) forbids. A slice whose kickoffs cannot be reconstructed as-of is labelled in
-`exp_limitation` (`kind = 'kickoff_not_asof'`) and excluded from B's regime-sensitive rows (I3).
+(`EXECUTOR_VERSION`, `nw_executor_version`, `config_hash`). The kickoff list handed to `interval_for` (§1.6b) is **not** read from `games`: `games.kickoff_utc` is
+updated in place when a kickoff is revised, so it is the schedule as it stands today, not the one the decision saw, and a
+kickoff revised after the fact is exactly the lookahead (b) forbids. The as-of source is the snapshot the executor already
+froze on its own decision rows - `intents.kickoff_utc` (written at intent creation) and `orders.kickoff_utc` (written at
+placement), neither of which is ever rewritten - taken per game as the latest such row with `created_at`/`placed_at <= :at`,
+bounded by the slice window and riding `ix_intents_created` and `ix_orders_key_placed`. A game inside the window with no such
+row is labelled in `exp_limitation` (`kind = 'kickoff_not_asof'`) and excluded from B's regime-sensitive rows, never filled in
+from `games` (I6).
 (b) **Event time versus availability time.** Every captured row carries both its venue/source timestamp and its local
 receipt/insertion stamp (`orderbook_events.event_id` is the only monotone quantity on the tape and stays the cursor;
 `fair_values.created_at` is the instant the recorder priced, never the snapshot's, per `store.py`'s own note). A decision at
@@ -446,9 +453,10 @@ as §0.1 of the phase 3 addendum defines the quantity. Regime table, with `cfg["
 
 B is therefore **tighter than A in the burst regime** (180 s against 220 s), **identical to A in the sport-wide game window**
 (220 s both) and wider only outside a window (400 s at the weekend, 1,000 s on a weekday): its measurable effect is the
-off-window regimes, which is where live fact (g)'s fill starvation sits (M3). The kickoff list `interval_for` receives is the
-as-of reconstruction of §1.3(a), never today's schedule, and a slice whose kickoffs cannot be reconstructed as-of is excluded
-from these regime-sensitive rows and labelled in `exp_limitation` (I3).
+off-window regimes, which is where live fact (g)'s fill starvation sits (M3). The kickoff list `interval_for` receives is §1.3(a)'s as-of
+reconstruction from the `intents.kickoff_utc` / `orders.kickoff_utc` snapshots, never `games.kickoff_utc` as it stands today,
+and a game with no such snapshot row is excluded from these regime-sensitive rows and labelled `kickoff_not_asof` in
+`exp_limitation` (I6).
 
 (c) **What B is not.** B overrides the executor's calculated-fair age allowance and nothing else. It does not widen the
 strategy's own source-quote-age filter (`harness/strategy/run.py:270`'s `not_stale`, which compares
@@ -568,8 +576,11 @@ timestamps.
 **kickoff window** (a bucket per (sport, kickoff hour band)), a **weekly** allocation keyed to the scheduled NFL/NCAAF slate
 including Sunday and Monday, a **release rule** for unused reservations (default 21:00 CT, releasing that day's unspent
 near-kickoff reserve to the general pool) and a **deterministic claim order** within each stratum
-(`(kickoff_utc - now) asc, bucket_start asc, game_id nulls last, market_type asc` - today's `_OLDEST_BUCKET` orders by
-`bucket_start, game_id nulls last, market_type`, so the change is one prefix term). The profile is serialised, hashed and
+(`order by (g.kickoff_utc is null or g.kickoff_utc <= :now), g.kickoff_utc - :now asc, q.bucket_start,
+q.game_id nulls last, q.market_type` - today's `_OLDEST_BUCKET` orders by
+`bucket_start, game_id nulls last, market_type`, so the change is two prefix terms: the future/past split first, then the
+addendum's own `(kickoff_utc - now) asc`. The split is what keeps a **passed** kickoff, whose difference is the smallest
+(negative) one, from sorting ahead of the near-kickoff windows (a) exists to protect). The profile is serialised, hashed and
 recorded; annotation and parlay demand sit under the same caps and are counted in the preflight.
 (c) **Dormant by default.** The claim query keeps today's ordering unless `Settings.veto_pacing_profile` names a stored profile
 (default `None`), and the reservation check is a no-op while it is `None`. Activation is §0.14c's dated decision and §0.8's
@@ -588,8 +599,9 @@ bypasses the cached context and forces a call within the reservation.
 selection probabilities wherever random sampling is used. Pre/post veto value is never compared without the changed population
 and the amendment boundary printed beside it.
 *Files:* `harness/research/veto.py` (claim order behind the setting), `harness/research/spend.py` (reservation check only, caps
-untouched), `harness/experiments/execution_viability/veto_profile.py` (`Settings.veto_pacing_profile` is declared by T1 with
-the milestone's other fields, §9),
+untouched), `harness/research/pacing.py` (the pure profile arithmetic as a stdlib + `harness.weeks` leaf, so that neither
+production module imports `harness/experiments/`, §0.4), `harness/experiments/execution_viability/veto_profile.py`
+(`Settings.veto_pacing_profile` is declared by T1 with the milestone's other fields, §9),
 `tests/test_veto_pacing.py`, `tests/test_research_spend.py`. *Depends on:* 1.1; independent of 1.3-1.7.
 *Expected result, computed independently:* over the last seven days' stored arrivals (3,149 decided of 178,618, none inside
 5.7 h of kickoff, 14,882 budget-skipped rows inside 6 h), a profile reserving 50 % of each day for signals inside 6 h of kickoff
@@ -760,8 +772,10 @@ bounds them and the observer goes dormant rather than exceeding either bound.
    `select sum(usd + usd_reserved) from research_spend where day >= :monday` at or under **$150** (unchanged caps; the caps are
    checked against the sum of spent and reserved, which is what `ResearchSpend` stores - there is no `usd_spent` column, I7) -
    and
-   `select reason_code, count(*) from veto_decisions where created_at > now() - interval '24 hours' and decision =
-   'veto_skipped_budget' group by 1` names the new `hourly`/`reserved` codes only after the amendment instant; reservations by
+   `select reason_code, count(*) from veto_decisions where decided_at > now() - interval '24 hours' and decision =
+   'veto_skipped_budget' group by 1` (`decided_at` is the column `models.py` declares; that table has no `created_at`, I10)
+   returns only `daily` and `weekly` **before** the amendment instant and the single new code `daily_reserved` **after** it
+   (I11); reservations by
    window: `select window_label, decided, reserved from exp_veto_coverage where day = :day` - a **parameterless**
    `create or replace view` (I8) over
    `veto_decisions d join veto_queue q on q.signal_id = d.signal_id join games g on g.id = q.game_id`, the authoritative join
@@ -1074,7 +1088,7 @@ because it touches `reserve_spend`.
   `tests/test_exp_isolation.py`, `tests/test_exp_manifest.py`,
   `tests/test_exp_cli.py`. *Depends on:* nothing; inspect latest `main` and active worktrees first.
 - **T6. Pace the shadow veto independently** (§1.8, §0.8, §0.14c).
-  *Files:* `harness/research/veto.py`, `harness/research/spend.py`,
+  *Files:* `harness/research/veto.py`, `harness/research/spend.py`, `harness/research/pacing.py`,
   `harness/experiments/execution_viability/veto_profile.py`, `tests/test_veto_pacing.py`, `tests/test_research_spend.py`
   (it **reads** `Settings.veto_pacing_profile`, which T1 declares; it does not edit `settings.py`).
   *Depends on:* T1 for the package only (its profile module may land after T1's `__init__`); independent of T2-T5 and of every
@@ -1163,3 +1177,4 @@ beside each one; the review is `.superpowers/sdd/results/design-6d1-review.md` a
 - Ruling (live facts): the controller appends a correction line to `.superpowers/sdd/plan-next-phase6d1-live-facts.txt` (the `exec_loops_24h` row counts `exec.loop_ms` samples, not loops) and the `plan-next` journal entry quotes the corrected reading - cost if wrong: none.
 - Ruling (round): one design-review round (plan-next step 2); revision 2 is followed by the controller's self-review (step 3) and the 3a audit, not a second reviewer dispatch - cost if wrong: a defect the plan review (step 4, opus reviewer) catches instead.
 - Ruling (self-review, step 3, 2026-09-18 14:13 CT): two inline corrections by the controller - (1) the secret is placed by the user directly in the Omarchy runtime's `secrets/` like `anthropic_api_key` (`docs/runbooks/research.md`; `scripts/release-omarchy.py` copies no secret), so the Makefile's retired NAS scp loop is not edited and `Makefile` leaves T1's `Files:` (§4.7, §7 item 7, §7 item 12, §9 T1, §1.1b); (2) §1.6(a)'s prose now says B replaces the allowance, matching its own code block and the regime table - why: the addendum must describe the host that exists - cost if wrong: none.
+- Ruling (plan review, 2026-09-18 15:01 CT): addendum revision 3 applies plan-review rulings I6, I10, I11, the claim-order ruling and the pacing.py ruling; see the plan's Rulings section - cost if wrong: none.

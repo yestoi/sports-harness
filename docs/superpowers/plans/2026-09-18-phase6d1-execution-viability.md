@@ -1,7 +1,12 @@
 # Phase 6D.1: Execution viability experiment — Implementation Plan
 
-**Revision 1**, 2026-09-18. Author: autopilot (plan writer, opus). Written against the design addendum
-`docs/superpowers/specs/2026-09-18-phase6d1-execution-viability-design.md` (**revision 2**: every section binding,
+**Revision 2**, 2026-09-18. Author: autopilot (plan writer, opus). **Revision 2 applies every ruling in**
+`.superpowers/sdd/plan-next-phase6d1/plan-rulings.md` **on the opus plan review**
+(`.superpowers/sdd/results/plan-review-6d1.md`, 2 Critical / 13 Important / 8 Minor): the observer registers through
+`PASS_MODULES` instead of importing into `worker.py` (C1), T4 gains `outcomes.py` and every `exp_outcome` row (C2),
+every elided test body is written out (I9), and thirteen named-against-the-code corrections land at the lines the
+review cites. The rulings are copied verbatim into the final `## Rulings` section. Written against the design addendum
+`docs/superpowers/specs/2026-09-18-phase6d1-execution-viability-design.md` (**revision 3**: every section binding,
 §8 D1-D18 and the `## Rulings` section included), the roadmap's U10 paragraphs, the 6D.1 and 6F rows of the Phases
 table, and the code as it stands on this branch - every signature, constant, line number and fixture name below was
 read with `grep -n`/`sed -n` in this worktree at `e92a6c0` (whose code files equal `main` `e3c5463`), not recalled.
@@ -19,8 +24,9 @@ decision report - without changing one production decision. Nothing here changes
 eligibility rule, a cell grid, a cap, a cadence or a registered id (R1, invariants 1, 2, 7, 8), adopts a holding
 policy (§0.14a) or activates the pacing profile (§0.14c).
 
-**Architecture:** One new package, `harness/experiments/execution_viability/`, with fourteen small modules (D12,
-M4) and **no production module importing it**. Its two capabilities - a read-only `source` reader and an
+**Architecture:** One new package, `harness/experiments/execution_viability/`, with seventeen small modules -
+D12/M4's fourteen plus `cli.py` (choice 5), `baseline.py` (choice 4) and `outcomes.py` (ruling C2) - and **no
+production module importing it**. Its two capabilities - a read-only `source` reader and an
 `ExperimentWriter` whose metadata contains only `exp_*` tables - both connect as the least-privileged database role
 `harness_exp` and raise `IsolationError` at session open when the connected role can `INSERT` into `orders` or when
 the role's secret is absent (ruling C2), so every run before the user's one-off grant **fails closed**. Eleven
@@ -68,7 +74,7 @@ Every task's requirements implicitly include this section.
   reused and not extended.
 - **Bit-identical live path** (§0.9, §7 item 3, D6, D11): the only production-code edits in this milestone are one
   defaulted `HoldingPolicy` field with a branch that is dead when unset (T4), one dormant reservation check and
-  claim-order prefix behind `Settings.veto_pacing_profile` (T6), one `register_pass` line inert unless
+  claim-order prefix behind `Settings.veto_pacing_profile` (T6), one `PASS_MODULES` string whose module is inert unless
   `Settings.exp_observer_enabled` and a frozen `exp_run` exist (T7), the settings declarations (T1), the CLI
   registration and help text (T1), and `policy.render()`'s caption (T1). `tests/test_exec_plan.py`'s byte-identical
   assertion over the existing corpus is the evidence. **No `EXECUTOR_VERSION` or `PRICING_VERSION` bump**
@@ -98,7 +104,7 @@ Every task's requirements implicitly include this section.
   source session, walks the tape in batches of `Settings.exp_batch_rows` (20,000), and yields between batches when
   `exec_heartbeat.last_loop_ms` exceeds 3 x `exec_period_s` (fix 46's `RFQ_YIELD_LOOP_MULT` shape). No read of
   `orderbook_events` or `raw_responses` from a check or a report path.
-- **No new container, compose service, cron entry or cadence** (§0.7, §4.2, D14). The observer is a `register_pass`
+- **No new container, compose service, cron entry or cadence** (§0.7, §4.2, D14). The observer is a `PASS_MODULES`
   job inside the existing `app-research` container, off unless `Settings.exp_observer_enabled` is set **and** a
   frozen `exp_run` row exists. The recorder's cadence, `ODDS_API_BOOKMAKERS` and alternates window are untouched
   (gate 5). The one new bind is `secrets/exp_db_password` on `app-research` (§4.7): the user places the file in the
@@ -125,7 +131,9 @@ timeout 1500 make test TEST_ARGS='tests/<file> -q'
   fixture's own stamps. The fixture names are `tests/conftest.py`'s own: a database test takes `db_session`, a
   settings-bearing test takes `env_settings`; there is no `session` and no `settings` fixture. The suite stays
   pristine: no warning, no traceback, no unexpected pass. A strict `XPASS` is a hard failure - stop and report it.
-  The 6 `xfailed` cases in `tests/test_execution_regressions.py` are 6B's and are never unmarked here.
+  `tests/test_execution_regressions.py` has **no markers left** (its docstring, line 7: "Every marker in this file
+  is now gone"); the suite's one remaining strict xfail is `tests/test_replay_execute.py:276`, which is 6B's and is
+  never unmarked here (M2).
 - **Commit trailers.** Every commit message in this plan ends with exactly these two lines:
 
 ```
@@ -183,8 +191,12 @@ place.
    `drop_schema` and the next `create_all` in the same test database, which would make `tests/test_alembic.py`'s
    catalogue diff depend on test order. T3.
 8. **Every outbound-calling module takes its client as an argument.** `observer.observe_once(session, now, settings,
-   client, *, run)` receives an `OddsApiClient`, so T7's tests inject a fake `HttpClient` and **no test in this plan
-   makes an outbound call or reads a secret**. T7.
+   client, *, run)` receives an `OddsApiClient`, so T7's tests inject a fake client and **no test in this plan makes
+   an outbound call or reads a secret**. T7.
+9. **`HoldingPolicy.cadence_allowance` is annotated `Callable[..., int] | None`, not `CadenceAllowance | None`**
+   (M7). §7 item 3(i) writes the addendum's own alias, but the alias lives in `arms.py` and `policy.py` is a
+   production module that may not import the experiment package (§0.4). `collections.abc.Callable` needs no
+   experiment import and keeps the field typed rather than `object`. T4.
 
 ## Wave map
 
@@ -206,7 +218,8 @@ Two dependencies this plan **adds** because a shared file forces them, stated ra
 `harness/research/veto.py`, `harness/research/spend.py`, the new leaf module `harness/research/pacing.py` (T6's one
 stated deviation from §1.8's file list, because a production module may not import `harness/experiments/`) and
 `harness/research/worker.py` are `harness/research/*`:
-T6 owns the first three, T7 adds **one** `register_pass(...)` line to the fourth, and the two tasks are in different
+T6 owns the first three, T7 adds **one string** to the fourth's `PASS_MODULES` list (ruling C1: `worker.py` imports
+no symbol of the experiment package), and the two tasks are in different
 waves (§7 item 12), so no file is held by two open tasks at once.
 
 Files touched by more than one task, and the order they are touched in:
@@ -236,17 +249,19 @@ file is serialized; the `Depends on:` lines and the wave map agree.
 | T6 independent veto pacing, dormant | `harness/research/veto.py`, `harness/research/spend.py`, `harness/research/pacing.py` (new leaf module — see T6's stated deviation), `harness/experiments/execution_viability/veto_profile.py` (new), `.../cli.py` (`exp veto-profile`), `tests/test_veto_pacing.py` (new), `tests/test_research_spend.py` | T1; T5 (`cli.py`) | 1 |
 | T2 capture and baseline reconstruction | `harness/experiments/execution_viability/{capture,adapter,baseline}.py` (new), `.../cli.py` (`exp capture`, `exp baseline-check`), `tests/test_exp_capture.py`, `tests/test_exp_adapter.py`, `tests/test_exp_baseline.py` (all new) | T1; T6 (`cli.py`) | 2 |
 | T3 per-arm state, liquidity conservation and every schema edit | `harness/db/models.py`, `harness/db/schema.py`, `harness/db/migrate.py`, `migrations/versions/0015_phase6d1_exec_viability.py` (new), `docs/runbooks/alembic.md`, `harness/experiments/execution_viability/{adapter,storage,liquidity}.py`, `.../cli.py` (`exp run`), `tests/test_exp_state.py` (new), `tests/test_exp_liquidity.py` (new), `tests/fixtures/exp_print_10_contracts.json` (new), `tests/test_alembic.py` | T2 | 2 |
-| T4 the arms and the reporting contract | `harness/execution/policy.py` (one defaulted field), `harness/execution/plan.py` (one branch in `_fair_stale`), `harness/experiments/execution_viability/{arms,episodes,report}.py` (new), `.../adapter.py`, `.../cli.py` (`exp report`), `tests/test_exp_arms.py`, `tests/test_exp_episodes.py`, `tests/test_exp_report.py` (all new), `tests/test_exec_plan.py` | T3 | 3 |
-| T7 the bounded faster-observation cohort | `harness/experiments/execution_viability/observer.py` (new), `harness/research/worker.py` (one `register_pass` line), `.../cli.py` (`exp observe`), `tests/test_exp_observer.py` (new) | T4, T5 | 4 |
+| T4 the arms, the outcome schedule and the reporting contract | `harness/execution/policy.py` (one defaulted field), `harness/execution/plan.py` (one branch in `_fair_stale`), `harness/experiments/execution_viability/{arms,episodes,report,outcomes}.py` (new), `.../adapter.py`, `.../cli.py` (`exp report`), `tests/test_exp_arms.py`, `tests/test_exp_episodes.py`, `tests/test_exp_report.py`, `tests/test_exp_outcomes.py` (all new), `tests/test_exec_plan.py` | T3 | 3 |
+| T7 the bounded faster-observation cohort | `harness/experiments/execution_viability/observer.py` (new), `harness/research/worker.py` (one `PASS_MODULES` string, ruling C1 - **no import of the package**), `.../cli.py` (`exp observe`), `tests/test_exp_observer.py` (new) | T4, T5 | 4 |
 | T8 the forecast and the decision report | `harness/experiments/execution_viability/{forecast,decision}.py` (new), `.../cli.py` (`exp decide`), `tests/test_exp_forecast.py` (new), `tests/test_exp_decision.py` (new) | T4, T5, T6, T7 | 4 |
 | T9 the verification rows | `docs/superpowers/autopilot/verify.md` | T1-T8 | 5 |
 
-The fourteen modules of D12/M4, and the task that creates each: `manifest.py`, `source.py`, `storage.py`, `cli.py`
+The seventeen modules, and the task that creates each: `manifest.py`, `source.py`, `storage.py`, `cli.py`
 (T1); `bookhealth.py` (T5); `veto_profile.py` (T6); `capture.py`, `adapter.py`, `baseline.py` (T2); `liquidity.py`
-(T3); `arms.py`, `episodes.py`, `report.py` (T4); `observer.py` (T7); `forecast.py`, `decision.py` (T8).
-(`__init__.py` is the package's own. `baseline.py` is §1.3(f)'s acceptance check, which the addendum names inside
-§1.3's file list; this plan gives it its own module because T3 later persists its output and because §5's own test
-list already separates `test_exp_capture.py` from `test_exp_baseline.py`.)
+(T3); `arms.py`, `episodes.py`, `report.py`, `outcomes.py` (T4); `observer.py` (T7); `forecast.py`, `decision.py`
+(T8). Fourteen are D12/M4's; three are named here for the reason each was added (M1). (`__init__.py` is the
+package's own. `baseline.py` is §1.3(f)'s acceptance check, which the addendum names inside §1.3's file list; this
+plan gives it its own module because T3 later persists its output and because §5's own test list already separates
+`test_exp_capture.py` from `test_exp_baseline.py`. `cli.py` is choice 5's. `outcomes.py` is ruling C2's: §1.9(a)'s
+common outcome schedule and every `exp_outcome` row, which revision 1 declared in T3's models and no task wrote.)
 
 ---
 ## Task 1: Freeze the experiment contract and isolate its capabilities
@@ -261,7 +276,7 @@ Spec: addendum §1.1, §1.2, §4.7, §7 items 5 and 7, §5's first two test bull
 - Create: `harness/experiments/execution_viability/manifest.py` (`Manifest`, `ManifestMismatch`, `CLOCK_MODES`, `canonical_json`, `check_resume`)
 - Create: `harness/experiments/execution_viability/cli.py` (`exp_app`, `isolation_check`)
 - Create: `docs/runbooks/experiments.md`
-- Create: `tests/test_exp_isolation.py`, `tests/test_exp_manifest.py`, `tests/test_exp_cli.py`
+- Create: `tests/test_exp_isolation.py` (including `test_no_production_module_imports_the_experiment_package`, ruling I12), `tests/test_exp_manifest.py`, `tests/test_exp_cli.py`
 - Modify: `harness/config/settings.py` — one new block of fields after the phase 4.6 block, plus `has_exp_db_password()` and `exp_database_url(role)` beside `has_anthropic_key()`
 - Modify: `harness/cli.py` — two lines beside `migrate_app` (lines 27-28) registering `exp_app`, and one sentence in `policy_compare_cmd`'s docstring (line 847)
 - Modify: `harness/execution/policy.py` — one sentence appended to `render()`'s closing caption (line 562-564); **no** dataclass change here (that is T4's one field)
@@ -323,7 +338,7 @@ def check_resume(stored_hash: str, m: Manifest) -> None      # raises ManifestMi
 
 # cli.py
 exp_app: typer.Typer
-def isolation_check(...) -> None                             # `harness exp isolation-check`
+def isolation_check(session, s) -> None                      # `harness exp isolation-check`
 ```
 
 *Seams later tasks consume:* T3 populates `EXP_METADATA` by declaring the eleven `exp_*` models (choice 1) and adds
@@ -607,6 +622,19 @@ def exp_settings(env_settings, tmp_path):
     return env_settings
 
 
+@pytest.fixture
+def exp_db_settings(exp_settings, db_session):
+    """`exp_settings` whose `database_url` is the test database's own.
+
+    `ExperimentWriter.open` checks the secret, then the privilege, then the destination (I1), and
+    the destination check compares the engine's dbname with `Settings.database_url`'s. Every later
+    task that opens a *working* writer against `db_session` takes this fixture; the refusal cases
+    above take `exp_settings`, whose configured url deliberately does not match.
+    """
+    object.__setattr__(exp_settings, "database_url", str(db_session.get_bind().url))
+    return exp_settings
+
+
 def _role_reason(session) -> str | None:
     """None when this connection may CREATE ROLE, else the reason it may not."""
     row = session.execute(text(
@@ -707,6 +735,24 @@ def test_no_experiment_module_imports_a_gateway_or_transport():
         for needle in banned:
             assert f"import {needle}" not in text_ and f"from {needle}" not in text_, \
                 f"{mod.name}.py names {needle}"
+
+
+def test_no_production_module_imports_the_experiment_package():
+    """§0.4's own guard (ruling I12): nothing under `harness/` outside `harness/experiments/`
+    may import the package. The one allowed mention is the `PASS_MODULES` string ruling C1 has
+    T7 append - a string, not an import, resolved by `load_passes()` at run time."""
+    allowed = '"harness.experiments.execution_viability.observer"'
+    offenders = []
+    for path in Path("harness").rglob("*.py"):
+        if "experiments" in path.parts:
+            continue
+        body = path.read_text()
+        if "harness.experiments" not in body:
+            continue
+        for line in body.splitlines():
+            if "harness.experiments" in line and allowed not in line:
+                offenders.append(f"{path}: {line.strip()}")
+    assert offenders == []
 
 
 def test_storage_does_not_import_the_models_at_module_scope():
@@ -937,13 +983,18 @@ class ExperimentWriter:
 
     @classmethod
     def open(cls, s: Settings, *, run_id: str, engine: Engine | None = None) -> "ExperimentWriter":
+        # Ruling I1: the refusals are ordered **secret -> privilege -> destination**, which is the
+        # order §1.1(b) states them and puts C2's boundary first. The reverse order raised on the
+        # dbname before the role was ever probed, so an injected test engine (whose database is
+        # `harness_test_<branch>`) produced a destination error where the contract promises an
+        # `orders` one.
         _require_secret(s)
         if engine is None:
             from harness.db.engine import make_engine
             engine = make_engine(s.exp_database_url(EXP_DB_ROLE))
-        check_destination(s, url=str(engine.url))
         session = make_session_factory(engine)()
         role = assert_least_privilege(session)     # raises before any write (C2)
+        check_destination(s, url=str(engine.url))  # §1.1(e), after the privilege probe
         log.info("exp writer open role=%s run=%s", role, run_id)
         return cls(session, run_id=run_id, batch_rows=s.exp_batch_rows)
 
@@ -1330,7 +1381,6 @@ CAVEATS = (
     "a snapshot cannot preserve queue priority across a gap: a re-anchored book's queue position "
     "is unknown, not zero",
 )
-...
 ```
 
       then the three rules, in the order §1.7(b) states them — **data loss first**, because a confirmed loss inside the
@@ -1441,11 +1491,11 @@ Spec: addendum §1.8 (a)-(f), §0.8's amendment record, §0.14c, §3 row 4, ruli
 `_OLDEST_BUCKET`'s claim order is byte-identical. Activation is §0.14c's dated decision and is **not** part of this task.
 
 **Files:**
-- Create: `harness/research/pacing.py` (the pure profile arithmetic: `PacingProfile`, `Window`, `load_profile`, `reserved_floor`, `claim_order_sql`)
+- Create: `harness/research/pacing.py` (the pure profile arithmetic: `PacingProfile`, `Window`, `load_profile`, `reserved_floor`, `weekly_floor`, `released`, `near_kickoff`)
 - Create: `harness/experiments/execution_viability/veto_profile.py` (the builder, the hash, the preflight, the §0.8 amendment record)
 - Create: `tests/test_veto_pacing.py`
 - Modify: `harness/research/spend.py` — one reservation check inside `reserve_spend`, after `_DAY_TOTAL` and before the daily cap comparison; caps untouched
-- Modify: `harness/research/veto.py` — one alternative claim statement behind the setting, and the two new reason codes on the existing `veto_skipped_budget` record
+- Modify: `harness/research/veto.py` — one alternative claim statement behind the setting, `kickoff_utc` on `QueuedSignal` (an additive `left join games` in `_SIGNALS`, veto.py:146) and the two call sites that pass the new keywords (`:301`, `:372`). **The `BudgetRefused` handler at `:409` is not touched**: it already writes `reason_code=refused.cap`, and `cap` is the new code's carrier (ruling I2)
 - Modify: `harness/experiments/execution_viability/cli.py` — one command, `exp veto-profile`
 - Modify: `tests/test_research_spend.py` — the dormancy assertion and the reserved-floor refusal
 
@@ -1496,6 +1546,10 @@ class PacingProfile:
 def load_profile(name: str | None) -> PacingProfile | None       # None -> dormant, today's behaviour
 def reserved_floor(profile: PacingProfile | None, now: datetime, daily_cap: Decimal,
                    *, near_kickoff: bool) -> Decimal             # 0 when profile is None
+def weekly_floor(profile: PacingProfile | None, now: datetime,
+                 weekly_cap: Decimal) -> Decimal                 # the remaining days' allocation
+def near_kickoff(profile: PacingProfile | None, now: datetime,
+                 kickoff: datetime | None) -> bool               # False when profile is None
 def released(profile: PacingProfile, now: datetime) -> bool      # after release_hour_ct CT
 
 # harness/experiments/execution_viability/veto_profile.py  (experiment)
@@ -1521,13 +1575,19 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from pathlib import Path
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from harness.research import pacing, veto
-from harness.research.spend import BudgetRefused, reserve_spend
+from harness.research.features import invalidated
+from harness.research.spend import BudgetRefused, reserve_spend, worst_case_usd
+from harness.weeks import chicago_day
+from tests.veto_fixtures import enqueue, seed_game, seed_signal
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)          # a Wednesday
 SATURDAY = datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc)
+MODEL = "claude-sonnet-5"                                        # a real key of spend.PRICES
 
 
 def test_todays_claim_order_is_unchanged_while_the_profile_is_none(env_settings):
@@ -1576,52 +1636,121 @@ def test_a_busy_saturday_cannot_consume_an_explicitly_reserved_sunday_allocation
       then the database cases (`db_session`), each with its own fixed `now`:
 
 ```python
-def test_reserve_spend_refuses_a_far_from_kickoff_call_into_the_reserve(db_session, env_settings,
-                                                                       monkeypatch):
+def _settled(session, day, usd):
+    """One settled `research_spend` row, so the day's total is exactly `usd`."""
+    session.execute(text(
+        "insert into research_spend (day, kind, model, calls, input_tokens, output_tokens,"
+        " cache_read_tokens, cache_write_tokens, searches, usd_reserved, usd)"
+        " values (:day, 'veto', :model, 1, 0, 0, 0, 0, 0, 0, :usd)"),
+        {"day": day, "model": MODEL, "usd": usd})
+    session.commit()
+
+
+def test_reserve_spend_refuses_a_far_from_kickoff_call_into_the_reserve(db_session, env_settings):
     object.__setattr__(env_settings, "veto_pacing_profile", "near_kickoff_50")
-    # Spend $13 of the day first, leaving $12 against a $12.50 reserve: the next far call refuses.
-    ...
+    object.__setattr__(env_settings, "veto_daily_usd_cap", Decimal("25"))
+    projection = worst_case_usd(MODEL, 0)
+    # Spend the day to one cent under the cap. The unreserved half -- $25 - $12.50 -- is long
+    # gone, so a far-from-kickoff call refuses even though the cap itself still has room.
+    _settled(db_session, chicago_day(NOW), Decimal("25") - projection - Decimal("0.01"))
     with pytest.raises(BudgetRefused) as refused:
-        reserve_spend(db_session, NOW, env_settings, "veto", ["claude-3-5-haiku-latest"],
-                      searches=0, near_kickoff=False)
-    assert refused.value.scope == "daily_reserved"
+        reserve_spend(db_session, NOW, env_settings, "veto", [MODEL], searches=0,
+                      near_kickoff=False)
+    assert refused.value.cap == "daily_reserved"       # ruling I2: the attribute is `cap`
+    assert refused.value.limit == Decimal("12.50")     # the daily cap minus the reserved floor
+    db_session.rollback()
+    assert db_session.execute(
+        text("select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == Decimal("0")
 
 
 def test_a_near_kickoff_call_may_spend_into_the_same_reserve(db_session, env_settings):
-    ...   # identical setup, near_kickoff=True, no raise
+    object.__setattr__(env_settings, "veto_pacing_profile", "near_kickoff_50")
+    object.__setattr__(env_settings, "veto_daily_usd_cap", Decimal("25"))
+    projection = worst_case_usd(MODEL, 0)
+    _settled(db_session, chicago_day(NOW), Decimal("25") - projection - Decimal("0.01"))
+    reservation = reserve_spend(db_session, NOW, env_settings, "veto", [MODEL], searches=0,
+                                near_kickoff=True)      # identical setup, no raise
+    db_session.commit()
+    assert reservation.per_model[MODEL] == projection
+    assert db_session.execute(
+        text("select coalesce(sum(usd_reserved), 0) from research_spend")).scalar() == projection
 
 
 def test_two_sessions_racing_the_reservation_cannot_overspend(db_session, env_settings):
-    # The existing lock is what makes this true; the pacing check sits inside it, so the second
-    # session sees the first's reservation. One of the two raises BudgetRefused.
-    ...
+    # The existing advisory lock is what makes this true; the pacing check sits inside it, so the
+    # second session reads the first's reservation and refuses. Room for exactly one call.
+    object.__setattr__(env_settings, "veto_pacing_profile", "near_kickoff_50")
+    object.__setattr__(env_settings, "veto_daily_usd_cap", Decimal("25"))
+    projection = worst_case_usd(MODEL, 0)
+    _settled(db_session, chicago_day(NOW),
+             Decimal("25") - (projection * 2) + Decimal("0.01"))
+    first = reserve_spend(db_session, NOW, env_settings, "veto", [MODEL], searches=0,
+                          near_kickoff=True)
+    db_session.commit()                                # the lock lives to the transaction's end
+    other = Session(bind=db_session.get_bind())
+    try:
+        with pytest.raises(BudgetRefused) as refused:
+            reserve_spend(other, NOW, env_settings, "veto", [MODEL], searches=0,
+                          near_kickoff=True)
+        assert refused.value.cap == "daily"
+    finally:
+        other.rollback()
+        other.close()
+    assert first.per_model[MODEL] == projection
 
 
-def test_the_stale_backlog_cannot_monopolise_a_new_kickoff_window(db_session, env_settings):
-    # Two claimable buckets: an old one whose game kicked off two hours ago, and a fresh one whose
-    # game kicks off in 90 minutes. Under the profile the fresh one is claimed first.
-    ...
+def _two_buckets(session):
+    """An old bucket (kicked off two hours ago) enqueued first, and a fresh one 90 minutes out."""
+    old_game, old_market = seed_game(session, kickoff=NOW - timedelta(hours=2), status="in")
+    fresh_game, fresh_market = seed_game(session, kickoff=NOW + timedelta(minutes=90))
+    old_signal = seed_signal(session, market=old_market, created_at=NOW - timedelta(hours=3))
+    fresh_signal = seed_signal(session, market=fresh_market,
+                               created_at=NOW - timedelta(minutes=20))
+    enqueue(session, signal=old_signal, game=old_game, bucket_start=NOW - timedelta(hours=3),
+            enqueued_at=NOW - timedelta(hours=3))
+    enqueue(session, signal=fresh_signal, game=fresh_game,
+            bucket_start=NOW - timedelta(minutes=20), enqueued_at=NOW - timedelta(minutes=20))
+    session.commit()
+    return old_game.id, fresh_game.id
+
+
+def test_the_stale_backlog_cannot_monopolise_a_new_kickoff_window(db_session):
+    old_game_id, fresh_game_id = _two_buckets(db_session)
+    profile = pacing.load_profile("near_kickoff_50")
     claimed = veto.claim_bucket(db_session, NOW, profile=profile)
     assert [q.game_id for q in claimed] == [fresh_game_id]
+    assert old_game_id not in [q.game_id for q in claimed]
 
 
 def test_the_same_fixture_claims_the_old_bucket_first_while_the_profile_is_none(db_session):
-    claimed = veto.claim_bucket(db_session, NOW)
+    old_game_id, fresh_game_id = _two_buckets(db_session)
+    claimed = veto.claim_bucket(db_session, NOW)        # today's call site, unchanged
     assert [q.game_id for q in claimed] == [old_game_id]
+    assert fresh_game_id not in [q.game_id for q in claimed]
 
 
-def test_new_material_information_forces_a_call_inside_the_reservation(db_session, env_settings):
-    # §1.8(e): a same-key resting order is repeated context, not a reason to suppress news. A
-    # feature delta at or above FAIR_MOVE_INVALIDATOR bypasses the cache even when the bucket's
-    # trigger already ran.
-    ...
+def test_new_material_information_forces_a_call_inside_the_reservation(env_settings):
+    # §1.8(e): a same-key resting order is repeated context, not a reason to suppress news. The
+    # existing invalidator is what decides, and pacing gets no veto over it: a fair move at or
+    # above `FAIR_MOVE_INVALIDATOR` still names a reason under the profile, and the near-kickoff
+    # exemption is what funds the call it forces.
+    object.__setattr__(env_settings, "veto_pacing_profile", "near_kickoff_50")
+    trigger = {"espn_status": "pre", "weather_fetched_at": None, "fair_p": Decimal("0.50")}
+    assert invalidated(trigger, dict(trigger)) is None               # repeated context: no call
+    assert invalidated(trigger, {**trigger, "fair_p": Decimal("0.53")}) == "fair_move"
+    profile = pacing.load_profile(env_settings.veto_pacing_profile)
+    assert pacing.reserved_floor(profile, NOW, Decimal("25"), near_kickoff=True) == Decimal("0")
 
 
-def test_every_skipped_evaluation_keeps_its_label_and_names_the_new_reason_code(db_session,
-                                                                               env_settings):
-    # §3 row 4: `hourly`/`reserved` appear only after the amendment instant; the decision label
-    # itself stays `veto_skipped_budget`, so H9's decided population is unchanged by a code.
-    ...
+def test_every_skipped_evaluation_keeps_its_label_and_names_the_new_reason_code():
+    # §3 row 4: `daily_reserved` appears only after the amendment instant; the decision label
+    # itself stays `veto_skipped_budget`, so H9's decided population is unchanged by the code.
+    refused = BudgetRefused("daily_reserved", Decimal("24.99"), Decimal("0.05"), Decimal("12.50"))
+    assert refused.cap == "daily_reserved"
+    assert veto.DECISIONS == ("proceed", "reduce", "veto", "veto_skipped_budget", "veto_error")
+    source = Path(veto.__file__).read_text()
+    # veto.py:409 already writes `reason_code=refused.cap`; this task changes neither (ruling I2).
+    assert "reason_code=refused.cap" in source
 ```
 
 - [ ] 3. Run: `timeout 1500 make test TEST_ARGS='tests/test_veto_pacing.py -q'`. Expect
@@ -1643,7 +1772,8 @@ def test_every_skipped_evaluation_keeps_its_label_and_names_the_new_reason_code(
 def reserve_spend(session: Session, now: datetime, settings, kind: str,
                   models: Sequence[str], searches: int | None = None,
                   *, near_kickoff: bool = False) -> Reservation:
-    ...
+    # (unchanged: the kind check, chicago_day, iso_week_bounds, the per-model projection, the
+    #  advisory lock and _ensure_rows -- spend.py:213-242)
     day_total = session.execute(_DAY_TOTAL, {"day": day}).scalar() or Decimal("0")
     # 6D.1 §1.8(c): a no-op while `veto_pacing_profile is None`, which is the default. The caps
     # themselves are untouched (invariant 7): this only changes *when* the day's cap binds, by
@@ -1685,10 +1815,37 @@ def claim_statement(profile) -> TextClause:
     return _OLDEST_BUCKET if profile is None else _KICKOFF_FIRST_BUCKET
 ```
 
-      `claim_bucket(session, now, *, profile=None)` selects between them and passes `:now` only to the new one. The
-      `BudgetRefused` handler at `veto.py:402-409` records the same `veto_skipped_budget` decision with
-      `reason_code = refused.scope` (`daily`, `weekly`, `daily_reserved`), so §3 row 4's new codes appear only once a
-      profile is active, and **the decided population is unchanged**.
+      `claim_bucket(session, now, *, profile=None)` selects between them and passes `:now` only to the new one. The new
+      statement joins `games`, so `QueuedSignal` gains the column the near-kickoff decision needs: extend `_SIGNALS`
+      (veto.py:146) with `left join games g on g.id = q.game_id` and select `g.kickoff_utc`, and add
+      `kickoff_utc: datetime | None = None` to the `QueuedSignal` dataclass (veto.py:84). Both are additive and inert while
+      the profile is `None`.
+
+      **The `BudgetRefused` handler at `veto.py:395-409` is not edited at all** (ruling I2). It already writes
+      `reason_code=refused.cap` (veto.py:409), and `cap` is the attribute `BudgetRefused.__init__(self, cap, total,
+      projection, limit)` sets — an earlier draft of this plan said `.scope`, which does not exist. Raising
+      `BudgetRefused("daily_reserved", ...)` inside `reserve_spend` is therefore the whole of the change: §3 row 4's **one**
+      new reason code, `daily_reserved`, appears only once a profile is active, the decision label stays
+      `veto_skipped_budget`, and **the decided population is unchanged**.
+
+- [ ] 6b. Edit the two call sites, and only those two (ruling I3):
+
+```python
+# harness/research/veto.py:301, inside `_call_pair` -- `queued` is the QueuedSignal being decided
+    reservation = reserve_spend(session, now, settings, "veto", models,
+                                searches=settings.veto_max_searches,
+                                near_kickoff=pacing.near_kickoff(profile, now, queued.kickoff_utc))
+
+# harness/research/veto.py:372, inside `run_pass` -- the claim, once per sweep
+    profile = pacing.load_profile(settings.veto_pacing_profile)
+    queued = claim_bucket(session, now, profile=profile)
+```
+
+      `_call_pair` takes `profile` as one more keyword from its single caller. `pacing.near_kickoff(profile, now, kickoff)`
+      is the fifth function of the leaf module: `False` when the profile is `None`, when the kickoff is `None`, or when the
+      kickoff falls outside every window of the profile that matches the game's sport; otherwise `True`. With the profile
+      `None` both lines are today's behaviour exactly — `near_kickoff=False` changes no arithmetic, because
+      `reserved_floor(None, ...)` already returns zero.
 
 - [ ] 7. Write `veto_profile.py`: `build_profile`, the canonical-JSON hash (reusing `manifest.canonical_json`),
       `preflight(...)` and the amendment record. The preflight **replays stored arrivals** and invents nothing (§1.8d):
@@ -1696,7 +1853,7 @@ def claim_statement(profile) -> TextClause:
 ```python
 _ARRIVALS = text("""
     select q.game_id, q.market_type, q.bucket_start, q.signal_id, g.sport, g.kickoff_utc,
-           d.decision, d.created_at as decided_at
+           d.decision, d.decided_at
       from veto_queue q
       left join games g on g.id = q.game_id
       left join veto_decisions d on d.signal_id = q.signal_id
@@ -1735,8 +1892,8 @@ def test_the_caps_themselves_are_untouched(env_settings):
 
 - [ ] 10. Run, in this order:
       `timeout 1500 make test TEST_ARGS='tests/test_veto_pacing.py -q'`,
-      `timeout 1500 make test TEST_ARGS='tests/test_research_spend.py tests/test_research_veto.py -q'`,
-      `timeout 1500 make test TEST_ARGS='tests/test_research_worker.py tests/test_exp_cli.py -q'`.
+      `timeout 1500 make test TEST_ARGS='tests/test_research_spend.py tests/test_veto_queue.py -q'`,
+      `timeout 1500 make test TEST_ARGS='tests/test_veto_worker.py tests/test_veto_features.py -q'`.
       Every existing research case must pass **unchanged**: a changed expectation in an existing veto or spend test means the
       dormant path moved, which is a defect in this task, not a test to update.
 
@@ -1746,7 +1903,7 @@ def test_the_caps_themselves_are_untouched(env_settings):
 git add harness/research/pacing.py harness/research/spend.py harness/research/veto.py \
         harness/experiments/execution_viability/veto_profile.py \
         harness/experiments/execution_viability/cli.py \
-        tests/test_veto_pacing.py tests/test_research_spend.py
+        tests/test_veto_pacing.py tests/test_research_spend.py tests/test_veto_worker.py
 git commit -m "$(cat <<'MSG'
 6D.1 T6: an independent veto pacing profile, implemented and dormant
 
@@ -1768,7 +1925,7 @@ MSG
 - [ ] 12. Ops read-back (controller, after the release; the profile stays dormant):
       `select day, sum(usd + usd_reserved) from research_spend where day >= :monday group by 1` unchanged and at or under
       $25, the ISO-week sum at or under $150, and
-      `select reason_code, count(*) from veto_decisions where created_at > now() - interval '24 hours' and decision = 'veto_skipped_budget' group by 1`
+      `select reason_code, count(*) from veto_decisions where decided_at > now() - interval '24 hours' and decision = 'veto_skipped_budget' group by 1`
       showing **no** `daily_reserved` rows — the evidence the profile is dormant.
 
 ---
@@ -1818,9 +1975,14 @@ class Limitation:
 def resolve_instants(session, *, warmup_start: datetime, observation_end: datetime,
                      variant_ids: Sequence[str]) -> tuple[datetime, ...]
 def live_loop_estimate(sample_count: int, span_s: float, p50_loop_ms: float) -> int
-def kickoffs_asof(session, *, at: datetime, sport: str) -> list[datetime]
+def kickoffs_asof(session, *, at: datetime, sport: str) -> list[Kickoff]   # feeds/espn.py:19
 def capture_slice(s, session, *, run_id, warmup_start, observation_end, tickers, variant_ids
                   ) -> tuple[dict[str, str], list[Limitation]]        # (capture_hashes, limitations)
+
+@dataclass(frozen=True, slots=True)
+class StepResult:                                  # adapter.py
+    instant: datetime; actions: tuple[dict, ...]; fills: tuple[dict, ...]
+    open_orders: tuple[dict, ...]; dirty: bool
 
 class ArmRunner:                                   # adapter.py
     def __init__(self, *, run_id: str, arm_id: str, policy, variant_cfg: dict[str, dict],
@@ -1899,7 +2061,8 @@ def test_instants_outside_the_slice_are_not_in_the_clock(db_session):
 
 def test_the_sample_ts_is_the_decision_instant_not_a_completion_stamp():
     # I1: `_locked_step` takes `now` before the body and `_write_metric_batch` records
-    # `ts=now`, so a 24,165 ms sample at 12:00:00 is a step that *began* at 12:00:00.
+    # `ts=now`, so a 24,165 ms sample (the live p95; the p50 is 16,759 ms) at 12:00:00 is a
+    # step that *began* at 12:00:00.
     from harness.experiments.execution_viability.capture import sample_instant
 
     assert sample_instant(datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc), 24_165) == \
@@ -1910,7 +2073,7 @@ def test_the_sample_ts_is_the_decision_instant_not_a_completion_stamp():
 
 
 def test_the_live_loop_estimate_is_printed_beside_the_resolved_count():
-    # C1's arithmetic: 1,158 samples over 24 h is one per 74.6 s; at a 24.165 s p50 the executor
+    # C1's arithmetic: 1,158 samples over 24 h is one per 74.6 s; at the 24.165 s **p95** the
     # stepped about 3,576 times. The estimate is a *number beside* the clock, never the clock.
     assert live_loop_estimate(1158, 86_400, 24_165) == 3575
 
@@ -1926,20 +2089,27 @@ def test_a_run_records_the_loop_spacing_limitation(db_session):
 
 
 def test_a_kickoff_revised_after_the_decision_never_reaches_the_cadence(db_session):
-    # I3: the games stream is schedule *history*. A kickoff revised at 13:00 must not change what
-    # a 12:00 decision saw, so `kickoffs_asof(at=12:00)` returns the earlier value.
-    _seed_game(db_session, original=datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc),
-               revised=datetime(2026, 9, 20, 20, 15, tzinfo=timezone.utc),
-               revised_at=datetime(2026, 9, 16, 13, 0, tzinfo=timezone.utc))
-    assert kickoffs_asof(db_session, at=NOW, sport="nfl") == \
-        [datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc)]
+    # I6: `games.kickoff_utc` (models.py:108) is **overwritten in place** when a kickoff is
+    # revised, so it is today's schedule, not the schedule a 12:00 decision saw. The as-of value
+    # is the snapshot the executor already froze on the decision's own row --
+    # `intents.kickoff_utc` (models.py:455), written at creation and never updated.
+    game_id = _seed_game(db_session, kickoff=datetime(2026, 9, 20, 20, 15, tzinfo=timezone.utc))
+    _seed_intent(db_session, game_id=game_id, created_at=NOW - timedelta(minutes=5),
+                 kickoff_utc=datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc))
+    [kickoff] = kickoffs_asof(db_session, at=NOW, sport="nfl")
+    assert kickoff.kickoff_utc == datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc)
+    assert kickoff.sport == "nfl"            # a `Kickoff` row, which is what interval_for takes
 
 
 def test_an_unreconstructable_kickoff_is_labelled_not_guessed(db_session):
     from harness.experiments.execution_viability.capture import kickoff_limitation
 
-    lim = kickoff_limitation("run-1", game_id=469, now=NOW)
-    assert lim.kind == "kickoff_not_asof"
+    # A game inside the window that no intent and no order ever referenced has no frozen
+    # snapshot, so there is nothing to reconstruct and nothing is invented.
+    game_id = _seed_game(db_session, kickoff=datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc))
+    assert kickoffs_asof(db_session, at=NOW, sport="nfl") == []
+    lim = kickoff_limitation("run-1", game_id=game_id, now=NOW)
+    assert lim.kind == "kickoff_not_asof" and lim.scope["game_id"] == game_id
 
 
 def test_availability_time_is_what_a_decision_may_read():
@@ -1970,12 +2140,19 @@ def test_every_stream_declares_its_timestamp_semantics():
 _ORDER_INSTANTS = text(
     "select placed_at as ts from orders "
     "where placed_at >= :start and placed_at <= :end and replay = false")      # ix_orders_key_placed
+#: order_events has exactly one index, `ix_order_events_order_ts` on (order_id, ts)
+#: (schema.py:406), so the bound must ride the order ids -- the ids the previous statement just
+#: returned for this window. A bare `ts between` here is a sequential scan of the table.
 _EVENT_INSTANTS = text(
-    "select ts from order_events where ts >= :start and ts <= :end")            # ix_order_events_ts
+    "select ts from order_events "
+    "where order_id = any(:order_ids) and ts >= :start and ts <= :end")   # ix_order_events_order_ts
+#: intents' only time index is `ix_intents_created` on (created_at) (models.py:474); the
+#: `variant_id` filter is a residual predicate on the rows the range already selected, not a
+#: second index term.
 _INTENT_INSTANTS = text(
     "select created_at as ts from intents "
     "where created_at >= :start and created_at <= :end "
-    "  and variant_id = any(:variant_ids)")                                    # ix_intents_variant_created
+    "  and variant_id = any(:variant_ids)")                                     # ix_intents_created
 _FILL_INSTANTS = text(
     "select filled_at as ts from fills where filled_at >= :start and filled_at <= :end")  # ix_fills_filled_at
 _SAMPLE_INSTANTS = text(
@@ -1983,12 +2160,40 @@ _SAMPLE_INSTANTS = text(
     "and ts >= :start and ts <= :end")                    # ix_metric_samples_name_ts (name, ts desc)
 ```
 
-      Confirm each index name against `harness/db/schema.py` and `harness/db/models.py` **before** writing the comment; if
-      one of them does not exist, name the index that does and say which column the bound rides. `resolve_instants` returns
+      The five index names above are the ones `harness/db/schema.py` declares today -- `ix_orders_key_placed` (:335),
+      `ix_order_events_order_ts` (:406), `ix_intents_created` (models.py:474), `ix_fills_filled_at` (:244) and
+      `ix_metric_samples_name_ts` (:263); an `explain` in step 5 confirms each bound rides the index its comment names.
+      `_ORDER_INSTANTS` runs first and its ids are `_EVENT_INSTANTS`'s `:order_ids`. `resolve_instants` returns
       `tuple(sorted(set(...)))`. `sample_instant(ts, value_ms, sensitivity=False)` returns `ts` (I1) and only under
       `sensitivity=True` returns `ts - timedelta(milliseconds=value_ms)`. `live_loop_estimate(samples, span_s, p50_ms)` is
       `int(span_s / (p50_ms / 1000))` — the number printed *beside* the resolved count, never used as a clock.
       `spacing_limitation(...)` and `kickoff_limitation(...)` return `Limitation` records (T3 persists them).
+
+      `kickoffs_asof` reads **neither** `games.kickoff_utc` nor any history table: `games.kickoff_utc` is updated in
+      place by the linker, so it is today's schedule (ruling I6). The as-of source is the pair of snapshots the executor
+      froze on its own rows at decision time, `intents.kickoff_utc` (models.py:455) and `orders.kickoff_utc`
+      (models.py:521), neither of which is ever rewritten:
+
+```python
+_KICKOFF_ASOF = text("""
+    select distinct on (snap.game_id) snap.game_id, snap.kickoff_utc, g.sport, g.status
+      from (
+        select game_id, kickoff_utc, created_at as ts from intents
+         where created_at > :since and created_at <= :at            -- ix_intents_created
+        union all
+        select game_id, kickoff_utc, placed_at as ts from orders
+         where placed_at > :since and placed_at <= :at              -- ix_orders_key_placed
+      ) snap
+      join games g on g.id = snap.game_id                           -- games primary key
+     where snap.game_id is not null and snap.kickoff_utc is not null and g.sport = :sport
+     order by snap.game_id, snap.ts desc
+""")
+```
+
+      and it returns `Kickoff` rows (`harness/feeds/espn.py:19`: `sport, espn_event_id, kickoff_utc, home, away,
+      status`), because `interval_for(sport, now, kickoffs, tz)` (`harness/recorder/cadence.py:20`) takes that type and
+      nothing else (ruling I7). A game inside the window with **no** snapshot row gets a
+      `kickoff_limitation(..., kind="kickoff_not_asof")` and is left out of the list — never filled in from `games`.
       `capture_slice` writes one NDJSON file per stream through `storage.run_dir`, hashes each with sha256, refuses before
       the first write when the projected bytes exceed `Settings.exp_capture_max_gb`, and walks every stream in batches of
       `Settings.exp_batch_rows`, yielding between batches while `exec_heartbeat.last_loop_ms > 3 * exec_period_s`:
@@ -2008,15 +2213,183 @@ def _yield_if_executor_busy(session, s) -> bool:
       the test from the fixture's own stamps (6B's I-13 rule), never taken from `simulate_fills`:
 
 ```python
-def test_the_runner_steps_only_the_instants_it_is_given(db_session, env_settings): ...
-def test_a_cancel_replacement_chain_matches_the_hand_written_transition_table(db_session): ...
-def test_one_partial_fill_leaves_the_remainder_resting_with_its_queue_position(db_session): ...
-def test_an_overnight_transition_keeps_the_order_until_its_own_rule_cancels_it(db_session): ...
-def test_a_delayed_loop_does_not_move_a_deadline(db_session): ...
-def test_a_gap_and_recovery_dirties_only_the_interval_it_covers(db_session): ...
-def test_a_row_whose_availability_stamp_is_after_the_instant_is_invisible(db_session): ...
-def test_the_runner_never_writes_a_production_table(db_session, env_settings): ...
-def test_the_runner_reads_markets_and_intents_at_the_instant_not_at_now(db_session): ...
+"""§1.3: one instant at a time, and only what was visible at it."""
+import uuid
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+from sqlalchemy import text
+
+from harness.db.models import (Intent, MarketDirtyInterval, Order, OrderEvent,
+                               OrderbookSnapshot)
+from harness.execution import store
+from harness.experiments.execution_viability.adapter import ArmRunner
+
+RUN = "0198e2b0-0000-7000-8000-000000000001"
+NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+KICKOFF = datetime(2026, 9, 16, 17, 0, tzinfo=timezone.utc)
+STEP = timedelta(seconds=15)
+VARIANT_CFG = {"v_base": {"edge_min": "0.0100", "max_contracts": "20"}}
+
+
+def _intent(session, *, created_at, vm_id=1, signal_id=1):
+    intent = Intent(signal_id=signal_id, variant_id="v_base", venue="kalshi", venue_market_id=vm_id,
+                    ticker="KXNFLGAME-1", side="yes", target_prob=Decimal("0.4800"),
+                    target_contracts=Decimal("20"), edge=Decimal("0.0300"),
+                    edge_min=Decimal("0.0100"), fair_p=Decimal("0.5100"), game_id=1,
+                    kickoff_utc=KICKOFF, signal_created_at=created_at, created_at=created_at,
+                    replay=False)
+    session.add(intent)
+    session.flush()
+    return intent
+
+
+def _order(session, intent, *, placed_at, contracts="20", status="open", expiry=None, n=1):
+    order = Order(intent_id=intent.id, variant_id="v_base", venue="kalshi",
+                  client_order_id=f"exp-{n}", ticker=intent.ticker, venue_market_id=1,
+                  side="yes", prob=Decimal("0.4800"), contracts=Decimal(contracts),
+                  status=status, placed_at=placed_at, expiry=expiry or placed_at + timedelta(
+                      seconds=220), game_id=1, sport="nfl", kickoff_utc=KICKOFF)
+    session.add(order)
+    session.flush()
+    session.add(OrderEvent(order_id=order.id, ts=placed_at, kind="place", prob=order.prob,
+                           contracts=order.contracts, replay=False))
+    session.flush()
+    return order
+
+
+def _runner(env_settings, *, walkers=None, policy=None):
+    return ArmRunner(run_id=RUN, arm_id="A", policy=policy, variant_cfg=VARIANT_CFG,
+                     exec_settings=env_settings, walkers=walkers or {})
+
+
+def _recording(monkeypatch, name):
+    """Wrap a real `store` function, recording the `at=` it was called with. Not a mock: the
+    wrapped function still runs and still returns its own rows (6B's I-13 rule)."""
+    seen, original = [], getattr(store, name)
+
+    def wrapper(*args, **kwargs):
+        seen.append(kwargs.get("at"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, name, wrapper)
+    return seen
+
+
+def test_the_runner_steps_only_the_instants_it_is_given(db_session, env_settings, monkeypatch):
+    _intent(db_session, created_at=NOW - timedelta(minutes=5))
+    db_session.commit()
+    seen = _recording(monkeypatch, "market_rows")
+    instants = [NOW, NOW + STEP, NOW + 4 * STEP]        # a deliberate gap: no 12:00:30 instant
+    results = _runner(env_settings).run(db_session, instants)
+    assert [r.instant for r in results] == instants
+    assert seen == instants
+
+
+def test_a_cancel_replacement_chain_matches_the_hand_written_transition_table(db_session,
+                                                                              env_settings):
+    intent = _intent(db_session, created_at=NOW - timedelta(minutes=5))
+    order = _order(db_session, intent, placed_at=NOW)
+    db_session.commit()
+    expected = [("open", NOW), ("cancelled", NOW + 2 * STEP), ("open", NOW + 3 * STEP)]
+    runner = _runner(env_settings)
+    runner.adopt(order)                                  # the arm owns this resting order
+    results = runner.run(db_session, [NOW, NOW + STEP, NOW + 2 * STEP, NOW + 3 * STEP])
+    chain = [(a["status"], a["instant"]) for r in results for a in r.actions]
+    assert chain == expected                             # written from the fixture, not simulated
+    assert [a["kind"] for r in results for a in r.actions] == ["place", "cancel", "place"]
+
+
+def test_one_partial_fill_leaves_the_remainder_resting_with_its_queue_position(db_session,
+                                                                              env_settings):
+    intent = _intent(db_session, created_at=NOW - timedelta(minutes=5))
+    order = _order(db_session, intent, placed_at=NOW, contracts="20")
+    db_session.commit()
+    runner = _runner(env_settings)
+    runner.adopt(order, queue_ahead=Decimal("5"))
+    [result] = runner.run(db_session, [NOW + STEP])       # the tape prints 12 at 0.48
+    assert result.fills[0]["contracts"] == Decimal("7")   # 12 printed - 5 ahead
+    resting = result.open_orders[0]
+    assert resting["contracts"] == Decimal("13") and resting["queue_ahead"] == Decimal("0")
+
+
+def test_an_overnight_transition_keeps_the_order_until_its_own_rule_cancels_it(db_session,
+                                                                               env_settings):
+    late = datetime(2026, 9, 16, 4, 0, tzinfo=timezone.utc)      # 23:00 CT the evening before
+    intent = _intent(db_session, created_at=late - timedelta(minutes=5))
+    order = _order(db_session, intent, placed_at=late, expiry=late + timedelta(hours=10))
+    db_session.commit()
+    runner = _runner(env_settings)
+    runner.adopt(order)
+    results = runner.run(db_session, [late + timedelta(hours=h) for h in (1, 6, 11)])
+    assert [bool(r.open_orders) for r in results] == [True, True, False]
+    assert results[-1].actions[-1]["kind"] == "expire"    # its own expiry, not the day boundary
+
+
+def test_a_delayed_loop_does_not_move_a_deadline(db_session, env_settings):
+    intent = _intent(db_session, created_at=NOW - timedelta(minutes=5))
+    order = _order(db_session, intent, placed_at=NOW, expiry=NOW + timedelta(seconds=220))
+    db_session.commit()
+    runner = _runner(env_settings)
+    runner.adopt(order)
+    # The next instant is 90 s late (a real loop stall in the tape); the deadline is unmoved.
+    [result] = runner.run(db_session, [NOW + timedelta(seconds=310)])
+    assert result.actions[-1]["kind"] == "expire"
+    assert result.actions[-1]["deadline"] == NOW + timedelta(seconds=220)
+
+
+def test_a_gap_and_recovery_dirties_only_the_interval_it_covers(db_session, env_settings):
+    db_session.add(MarketDirtyInterval(venue_market_id=1, ticker="KXNFLGAME-1",
+                                       started_at=NOW + STEP, ended_at=NOW + 2 * STEP,
+                                       cause="ws_gap", replay=False))
+    db_session.commit()
+    results = _runner(env_settings).run(
+        db_session, [NOW, NOW + STEP, NOW + 2 * STEP, NOW + 3 * STEP])
+    assert [r.dirty for r in results] == [False, True, True, False]
+
+
+def test_a_row_whose_availability_stamp_is_after_the_instant_is_invisible(db_session,
+                                                                          env_settings):
+    # A book snapshot whose `fetched_at` -- the only availability stamp the tape keeps for it
+    # (models.py:241) -- is 12:00:20 is invisible to a 12:00:00 decision and visible to a
+    # 12:00:30 one, even though the arm is stepping the same market both times.
+    _intent(db_session, created_at=NOW - timedelta(minutes=5))
+    db_session.add(OrderbookSnapshot(raw_id=1, venue_market_id=1,
+                                     fetched_at=NOW + timedelta(seconds=20),
+                                     yes_bids=[[48, 100]], no_bids=[[51, 100]]))
+    db_session.commit()
+    runner = _runner(env_settings)
+    first, second = runner.run(db_session, [NOW, NOW + 2 * STEP])
+    assert first.open_orders == () and first.actions == ()     # no book at 12:00:00, no order
+    assert [a["kind"] for a in second.actions] == ["place"]
+    assert second.actions[0]["book_source"] == "rest"
+
+
+def test_the_runner_never_writes_a_production_table(db_session, env_settings):
+    intent = _intent(db_session, created_at=NOW - timedelta(minutes=5))
+    _order(db_session, intent, placed_at=NOW)
+    db_session.commit()
+    before = {t: db_session.execute(text(f"select count(*) from {t}")).scalar()
+              for t in ("orders", "order_events", "fills", "intents", "positions")}
+    _runner(env_settings).run(db_session, [NOW, NOW + STEP, NOW + 2 * STEP])
+    after = {t: db_session.execute(text(f"select count(*) from {t}")).scalar() for t in before}
+    assert after == before
+
+
+def test_the_runner_reads_markets_and_intents_at_the_instant_not_at_now(db_session, env_settings,
+                                                                        monkeypatch):
+    _intent(db_session, created_at=NOW - timedelta(minutes=5))
+    db_session.commit()
+    markets_at = _recording(monkeypatch, "market_rows")
+    intents_at = _recording(monkeypatch, "load_intents")
+    replay_flags = []
+    original = store.load_intents
+    monkeypatch.setattr(store, "load_intents", lambda *a, **k: (
+        replay_flags.append(k.get("replay")), original(*a, **k))[1])
+    instants = [NOW, NOW + STEP]
+    _runner(env_settings).run(db_session, instants)
+    assert markets_at == instants and intents_at == instants
+    assert replay_flags == [False, False]        # §0.12: the replay flag is not reused
 ```
 
       The last one is the lookahead guard: assert that `market_rows` and `load_intents` were called with `at=instant` (a
@@ -2055,7 +2428,9 @@ def test_the_report_prints_the_resolved_count_beside_the_live_loop_estimate():
 
 
 def test_the_pass_condition_is_zero_unexplained_mismatches_not_zero_mismatches():
-    explained = [Mismatch(..., cause="kickoff_not_asof", explained=True)]
+    explained = [Mismatch(run_id="r", arm_id="A", instant=NOW, venue_market_id=1,
+                          kind="price", expected={"prob": "0.48"}, actual={"prob": "0.47"},
+                          cause="kickoff_not_asof", explained=True)]
     assert "0 unexplained" in render_baseline(explained, instants=842, live_estimate=3575,
                                               limitations=[])
 ```
@@ -2066,7 +2441,7 @@ def test_the_pass_condition_is_zero_unexplained_mismatches_not_zero_mismatches()
 
 - [ ] 11. Run: `timeout 1500 make test TEST_ARGS='tests/test_exp_capture.py tests/test_exp_adapter.py tests/test_exp_baseline.py -q'`,
       then the executor suites that must not have moved:
-      `timeout 1500 make test TEST_ARGS='tests/test_exec_plan.py tests/test_exec_store.py tests/test_exec_book.py -q'`.
+      `timeout 1500 make test TEST_ARGS='tests/test_exec_plan.py tests/test_store.py tests/test_book.py -q'`.
 
 - [ ] 12. Commit:
 
@@ -2155,6 +2530,10 @@ def resume(session, *, run_id: str, arm_id: str, manifest: Manifest) -> dict | N
 @dataclass(frozen=True, slots=True)
 class LedgerKey: run_id: str; arm: str; variant: str
 class PortfolioLedger:
+    def observe(self, ticker: str, taker_side: str, trade_id: str,
+                count: Decimal) -> None                          # one recorded print, once
+    def release(self, key: LedgerKey, ticker: str, taker_side: str,
+                trade_id: str, order_id: int) -> None            # a cancel; never replenishes
     def allocate(self, key: LedgerKey, ticker: str, taker_side: str, trade_id: str,
                  order_id: int, wanted: Decimal) -> Decimal      # min(wanted, available - allocated)
     def as_rows(self) -> list[dict]                              # exp_allocation rows
@@ -2201,23 +2580,48 @@ def test_one_portfolio_never_receives_more_than_the_print():
     assert len([g for g in granted if g > 0]) == 1
 
 
+def _seeded():
+    """A ledger that has seen the fixture's one 10-contract print. Returns (ledger, args)."""
+    ledger = PortfolioLedger()
+    pr = FIXTURE["print"]
+    ledger.observe(pr["ticker"], pr["taker_side"], pr["trade_id"], Decimal(str(pr["count"])))
+    return ledger, (pr["ticker"], pr["taker_side"], pr["trade_id"])
+
+
 def test_a_cancel_and_re_entry_never_replenishes():
-    ...   # the same order id released and re-placed still gets 0 the second time
+    ledger, key = _seeded()
+    assert ledger.allocate(KEY, *key, 1, Decimal("10")) == Decimal("10")
+    ledger.release(KEY, *key, 1)          # the order is cancelled and placed again at a new price
+    assert ledger.allocate(KEY, *key, 1, Decimal("10")) == Decimal("0")
+    assert ledger.allocate(KEY, *key, 2, Decimal("10")) == Decimal("0")
 
 
 def test_a_partial_fill_consumes_only_what_it_took():
-    ...   # wanted 4 of 10 -> the next order gets 6, the one after 0
+    ledger, key = _seeded()
+    assert ledger.allocate(KEY, *key, 1, Decimal("4")) == Decimal("4")
+    assert ledger.allocate(KEY, *key, 2, Decimal("10")) == Decimal("6")
+    assert ledger.allocate(KEY, *key, 3, Decimal("10")) == Decimal("0")
 
 
 def test_resume_restores_the_ledger_and_does_not_double_allocate():
-    ledger = PortfolioLedger(); ...; rows = ledger.as_rows()
-    restored = PortfolioLedger(); restored.restore(rows)
-    assert restored.allocate(KEY, ..., Decimal("10")) == Decimal("0")
+    ledger, key = _seeded()
+    assert ledger.allocate(KEY, *key, 1, Decimal("10")) == Decimal("10")
+    rows = ledger.as_rows()
+    restored = PortfolioLedger()
+    restored.restore(rows)
+    assert restored.allocate(KEY, *key, 2, Decimal("10")) == Decimal("0")
+    assert restored.as_rows() == rows       # a refused allocation writes nothing
 
 
 def test_two_portfolios_are_independent_and_are_never_summed():
     other = LedgerKey(run_id="r1", arm="B", variant="sharp_two_sided")
-    ...   # each receives 10; `as_rows()` yields two rows and no total
+    ledger, key = _seeded()
+    assert ledger.allocate(KEY, *key, 1, Decimal("10")) == Decimal("10")
+    assert ledger.allocate(other, *key, 1, Decimal("10")) == Decimal("10")
+    rows = ledger.as_rows()
+    assert len(rows) == 2                                  # one per portfolio identity
+    assert {r["arm"] for r in rows} == {"A", "B"}
+    assert not hasattr(ledger, "total")                    # §1.6(a): no summed row exists
 
 
 def test_the_ledger_only_caps_what_the_simulator_already_decided():
@@ -2238,32 +2642,150 @@ def test_the_ledger_only_caps_what_the_simulator_already_decided():
 - [ ] 4. Write `tests/test_exp_state.py` — §5's list, one case each, all against `db_session`:
 
 ```python
-def test_two_arms_in_one_process_cannot_see_each_others_orders(db_session): ...
-def test_two_arms_cannot_see_each_others_capacity_counter_or_cursor(db_session): ...
-def test_three_one_hour_chunks_equal_one_three_hour_chunk_row_for_row(db_session): ...
-def test_a_resumed_run_after_a_mid_slice_kill_equals_the_uninterrupted_run(db_session): ...
-def test_capacity_stays_occupied_while_an_order_rests(db_session): ...
-def test_capacity_is_released_on_cancel_on_expiry_and_on_fill(db_session): ...
-def test_the_hundred_and_fifty_first_simultaneous_order_is_blocked_inside_one_arm(db_session): ...
-def test_a_key_is_not_permanently_blocked_after_its_first_placement(db_session): ...
-def test_there_is_no_fill_after_expiry(db_session): ...
-def test_a_repriced_order_is_a_new_row_at_the_back_of_the_queue(db_session): ...
-def test_resume_refuses_a_changed_manifest_and_leaves_the_checkpoint_byte_identical(db_session): ...
-```
+"""§1.4/§1.5: each arm carries its own world, and a resume reproduces it exactly."""
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
-      The last one is §1.2's contract, asserted at the byte level:
+import pytest
+from sqlalchemy import text
 
-```python
-    before = db_session.execute(text(
-        "select md5(state::text), cursor_event_id, manifest_hash from exp_checkpoint "
-        "where run_id = :r and arm_id = :a"), {"r": run_id, "a": "A"}).one()
+from harness.experiments.execution_viability import storage
+from harness.experiments.execution_viability.manifest import ManifestMismatch
+
+NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+STEP = timedelta(seconds=15)
+
+
+def _rows(session, run_id, arm_id, table="exp_order"):
+    return session.execute(text(
+        f"select id, ticker, prob, contracts, status, placed_at from {table} "
+        "where run_id = :r and arm_id = :a order by placed_at, id"),
+        {"r": run_id, "a": arm_id}).all()
+
+
+def test_two_arms_in_one_process_cannot_see_each_others_orders(db_session, env_settings):
+    run_id = run_two_arms(db_session, env_settings, instants=[NOW, NOW + STEP])
+    a, b = _rows(db_session, run_id, "A"), _rows(db_session, run_id, "B")
+    assert a and b
+    assert {r.id for r in a}.isdisjoint({r.id for r in b})
+    assert db_session.execute(text(
+        "select count(*) from exp_order where run_id = :r and arm_id not in ('A','B')"),
+        {"r": run_id}).scalar() == 0
+
+
+def test_two_arms_cannot_see_each_others_capacity_counter_or_cursor(db_session, env_settings):
+    run_id = run_two_arms(db_session, env_settings, instants=[NOW, NOW + STEP])
+    counters = db_session.execute(text(
+        "select arm_id, open_orders, cursor_event_id from exp_checkpoint where run_id = :r "
+        "order by arm_id"), {"r": run_id}).all()
+    assert [c.arm_id for c in counters] == ["A", "B"]
+    assert counters[0].open_orders != counters[1].open_orders or \
+        counters[0].cursor_event_id != counters[1].cursor_event_id
+    assert len({id(c) for c in counters}) == 2          # two rows, never one shared counter
+
+
+def test_three_one_hour_chunks_equal_one_three_hour_chunk_row_for_row(db_session, env_settings):
+    whole = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=3))
+    chunked = None
+    for hour in range(3):
+        chunked = run_arm(db_session, env_settings, arm="A", since=NOW + timedelta(hours=hour),
+                          until=NOW + timedelta(hours=hour + 1), resume_of=chunked)
+    assert _rows(db_session, chunked, "A") == _rows(db_session, whole, "A")
+
+
+def test_a_resumed_run_after_a_mid_slice_kill_equals_the_uninterrupted_run(db_session,
+                                                                          env_settings):
+    whole = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=2))
+    killed = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=2),
+                     kill_after_instants=17)
+    resumed = run_arm(db_session, env_settings, arm="A", since=NOW,
+                      until=NOW + timedelta(hours=2), resume_of=killed)
+    assert _rows(db_session, resumed, "A") == _rows(db_session, whole, "A")
+
+
+def test_capacity_stays_occupied_while_an_order_rests(db_session, env_settings):
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(minutes=2))
+    resting = db_session.execute(text(
+        "select count(*) from exp_order where run_id = :r and status = 'open'"),
+        {"r": run_id}).scalar()
+    occupied = db_session.execute(text(
+        "select open_orders from exp_checkpoint where run_id = :r and arm_id = 'A'"),
+        {"r": run_id}).scalar()
+    assert occupied == resting and resting > 0
+
+
+def test_capacity_is_released_on_cancel_on_expiry_and_on_fill(db_session, env_settings):
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=1))
+    closed = db_session.execute(text(
+        "select status, count(*) from exp_order where run_id = :r and status <> 'open' "
+        "group by 1"), {"r": run_id}).all()
+    assert {row.status for row in closed} == {"cancelled", "expired", "filled"}
+    assert db_session.execute(text(
+        "select open_orders from exp_checkpoint where run_id = :r and arm_id = 'A'"),
+        {"r": run_id}).scalar() == db_session.execute(text(
+            "select count(*) from exp_order where run_id = :r and status = 'open'"),
+            {"r": run_id}).scalar()
+
+
+def test_the_hundred_and_fifty_first_simultaneous_order_is_blocked_inside_one_arm(db_session,
+                                                                                 env_settings):
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + STEP,
+                     wanted_orders=151)
+    assert db_session.execute(text(
+        "select count(*) from exp_order where run_id = :r and status = 'open'"),
+        {"r": run_id}).scalar() == 150
+    assert db_session.execute(text(
+        "select count(*) from exp_limitation where run_id = :r and kind = 'capacity_blocked'"),
+        {"r": run_id}).scalar() == 1
+
+
+def test_a_key_is_not_permanently_blocked_after_its_first_placement(db_session, env_settings):
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=1))
+    per_key = db_session.execute(text(
+        "select ticker, count(*) as n from exp_order where run_id = :r group by 1 "
+        "order by n desc limit 1"), {"r": run_id}).one()
+    assert per_key.n > 1          # the same market is re-entered after its first order closes
+
+
+def test_there_is_no_fill_after_expiry(db_session, env_settings):
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=1))
+    late = db_session.execute(text(
+        "select count(*) from exp_fill f join exp_order o on o.id = f.exp_order_id "
+        "where f.run_id = :r and o.expiry is not null and f.filled_at > o.expiry"),
+        {"r": run_id}).scalar()
+    assert late == 0
+
+
+def test_a_repriced_order_is_a_new_row_at_the_back_of_the_queue(db_session, env_settings):
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + timedelta(hours=1))
+    pair = db_session.execute(text(
+        "select id, prob, queue_ahead, placed_at from exp_order where run_id = :r "
+        "and ticker = :t order by placed_at limit 2"),
+        {"r": run_id, "t": "KXNFLGAME-26SEP20DETBAL-DET"}).all()
+    assert pair[0].id != pair[1].id and pair[0].prob != pair[1].prob
+    assert pair[1].queue_ahead >= pair[0].queue_ahead     # the back of the queue, not its place
+
+
+def test_resume_refuses_a_changed_manifest_and_leaves_the_checkpoint_byte_identical(db_session,
+                                                                                   env_settings):
+    run_id = run_arm(db_session, env_settings, arm="A", since=NOW, until=NOW + STEP)
+    changed_manifest = changed_copy(db_session, run_id)
+    _CHECKPOINT = text("select md5(state::text), cursor_event_id, manifest_hash "
+                       "from exp_checkpoint where run_id = :r and arm_id = :a")
+    before = db_session.execute(_CHECKPOINT, {"r": run_id, "a": "A"}).one()
     with pytest.raises(ManifestMismatch):
         storage.resume(db_session, run_id=run_id, arm_id="A", manifest=changed_manifest)
-    after = db_session.execute(text(...same...), {"r": run_id, "a": "A"}).one()
+    after = db_session.execute(_CHECKPOINT, {"r": run_id, "a": "A"}).one()
     assert after == before
 ```
 
-      Both statements are bounded by `exp_checkpoint`'s primary key `(run_id, arm_id)`.
+      `run_arm`, `run_two_arms` and `changed_copy` are this file's own three helpers, written above the cases: `run_arm`
+      freezes a manifest, opens an `ExperimentWriter`, runs `ArmRunner` over `resolve_instants` for the window and returns
+      the run id; `run_two_arms` does the same for arms A and B inside **one** process and one transaction; `changed_copy`
+      re-freezes the run's manifest with one field altered (`arms[0]["cadence_allowance"]`) so its hash differs.
+
+      The last case is §1.2's contract asserted at the byte level, and both of its statements are bounded by
+      `exp_checkpoint`'s primary key `(run_id, arm_id)`.
 
 - [ ] 5. Run: `timeout 1500 make test TEST_ARGS='tests/test_exp_state.py -q'`. Expect
       `UndefinedTable: relation "exp_checkpoint" does not exist` — that is this task's real starting failure.
@@ -2400,8 +2922,8 @@ MSG
 ---
 ## Task 4: The initial holding comparison and the reporting contract
 
-Spec: addendum §1.6 (a)-(d), §1.9 (a)-(f), §7 item 3 (i) and (ii), rulings I2, I3, I4, M3; §5's arms, report and
-`test_exec_plan.py` bullets.
+Spec: addendum §1.6 (a)-(d), §1.9 (a)-(f) — **including §1.9(a)'s common outcome schedule and every `exp_outcome`
+row** (ruling C2) — §7 item 3 (i) and (ii), rulings I2, I3, I4, M3; §5's arms, report and `test_exec_plan.py` bullets.
 
 **Files:**
 - Modify: `harness/execution/policy.py` — **one** defaulted field on `HoldingPolicy` (line 44-62's dataclass)
@@ -2409,9 +2931,10 @@ Spec: addendum §1.6 (a)-(d), §1.9 (a)-(f), §7 item 3 (i) and (ii), rulings I2
 - Create: `harness/experiments/execution_viability/arms.py` (`ArmSpec`, `ARMS`, `CadenceAllowance`, `cadence_allowance_for`)
 - Create: `harness/experiments/execution_viability/episodes.py` (`gap_rule_s`, `episodes_for`, `Episode`)
 - Create: `harness/experiments/execution_viability/report.py` (`arm_table`, `render`, `PortfolioSumRefused`)
+- Create: `harness/experiments/execution_viability/outcomes.py` (`record_outcomes`, `HORIZONS`, `MISSING_REASONS` — §1.9(a)'s common schedule, ruling C2)
 - Modify: `harness/experiments/execution_viability/adapter.py` — the runner resolves the arm's allowance before the call
 - Modify: `harness/experiments/execution_viability/cli.py` — one command, `exp report`
-- Create: `tests/test_exp_arms.py`, `tests/test_exp_episodes.py`, `tests/test_exp_report.py`
+- Create: `tests/test_exp_arms.py`, `tests/test_exp_episodes.py`, `tests/test_exp_report.py`, `tests/test_exp_outcomes.py`
 - Modify: `tests/test_exec_plan.py` — the byte-identical corpus assertion
 
 **Depends on:** T3. Serialized with T3 over `adapter.py`.
@@ -2439,12 +2962,19 @@ class ArmSpec:
     def as_manifest_entry(self) -> dict          # choice 3: what Manifest.arms holds
     def spec_hash(self) -> str
 ARMS: dict[str, ArmSpec]               # "A", "B" (C is built only by T7, with its own preflight)
-def cadence_allowance_for(sport, kickoffs, tz, tick_budget_s, exec_period_s, window
-                          ) -> CadenceAllowance
+def cadence_allowance_for(sport: str, kickoffs_at, tz, *, tick_budget_s: int,
+                          exec_period_s: int, window_start: datetime,
+                          interval_fn=interval_for) -> CadenceAllowance
 
 # episodes.py
 def gap_rule_s(cadence_in_force: int) -> int      # max(600, 3 * cadence_in_force)
 def episodes_for(sightings, *, cadence_in_force) -> list[Episode]
+
+# outcomes.py — §1.9(a)'s one schedule, applied to every arm (ruling C2)
+HORIZONS: tuple[str, ...] = ("t0", "1800", "close")     # §1.9(a): entry, 30 min, market close
+MISSING_REASONS: tuple[str, ...] = ("no_mid_at_horizon", "book_absent", "market_settled_early")
+def record_outcomes(session, writer, *, run_id: str, arm_id: str, orders: Sequence[dict],
+                    now: datetime, horizons=HORIZONS) -> list[dict]   # exp_outcome rows
 
 # report.py
 def arm_table(rows, *, run_id, manifest_hash) -> str
@@ -2462,29 +2992,49 @@ class PortfolioSumRefused(RuntimeError): ...
       writing it first means the field cannot be added without it:
 
 ```python
-def test_plan_actions_with_no_policy_is_byte_identical_over_the_whole_corpus():
+# tests/test_exec_plan.py already has everything these two cases need: the module-level helpers
+# `plan()` (line 121), `market()` (line 70), `intent()` (line 90) and `order()` (line 105), and
+# the constants NOW, KICKOFF, S, VARIANTS and SIDES. There is no `CORPUS` and no `_serialise`;
+# `plan()` is the corpus call, and `repr()` is the comparison.
+from harness.execution.policy import BASELINE
+
+
+def test_a_default_policy_and_an_explicit_baseline_plan_identically():
     """6D.1 §7 item 3 (ii): the `cadence_allowance` branch is dead while the field is None.
 
-    Every fixture in this module's corpus is replanned with the default policy and with an
-    explicit `BASELINE`, and the two action lists must serialise identically. A difference means
-    the experiment's field reached the live path.
+    Three shapes this module already exercises -- a place, an edge-decay cancel and a
+    fair-stale pair -- are planned twice: once through `plan()`, which passes no policy at all,
+    and once through `plan_actions` with an explicit `BASELINE`. The two action lists must
+    `repr()` identically. A difference means the experiment's field reached the live path.
     """
-    for case in CORPUS:            # the module's existing fixture list
-        default = plan_actions(*case.args, **case.kwargs)
-        explicit = plan_actions(*case.args, **{**case.kwargs, "policy": BASELINE})
-        assert _serialise(default) == _serialise(explicit)
+    stale_ts = NOW - timedelta(seconds=300)
+    cases = [
+        {"intents": [intent()], "orders": [], "markets": {1: market()}},
+        {"intents": [], "orders": [order()], "markets": {1: market(fair="0.30")}},
+        {"intents": [intent(vm_id=2, n=2)], "orders": [order()],
+         "markets": {1: market(fair_ts=stale_ts), 2: market(vm_id=2, fair_ts=stale_ts)}},
+    ]
+    for case in cases:
+        default = plan(**case)
+        explicit = plan_actions(list(case["intents"]), list(case["orders"]), case["markets"],
+                                {}, VARIANTS, False, NOW, S, policy=BASELINE)
+        assert repr(default) == repr(explicit)
 
 
-def test_fair_stale_is_unchanged_when_cadence_allowance_is_none():
-    market = _market(fair_ts=NOW - timedelta(seconds=221), stale_allowance_s=220)
-    cfg = {"stale_s": 180}
-    assert _fair_stale(market, cfg, NOW) is True                  # 221 > max(180, 220) is False…
-    market = _market(fair_ts=NOW - timedelta(seconds=219), stale_allowance_s=220)
-    assert _fair_stale(market, cfg, NOW) is False
+@pytest.mark.parametrize("side", SIDES)
+def test_fair_stale_is_unchanged_when_cadence_allowance_is_none(side):
+    """The before-picture of `test_fair_stale_uses_allowance` (line 255), which this task's
+    branch must not move. Both expectations are hand-derived from F36's rule
+    `age > max(cfg["stale_s"], stale_allowance_s)` with the variant's `stale_s` of 180."""
+    old = NOW - timedelta(seconds=300)
+    tight = {1: market(side=side, fair_ts=old, stale_allowance_s=0)}      # 300 > max(180, 0)
+    loose = {1: market(side=side, fair_ts=old, stale_allowance_s=1000)}   # 300 < max(180, 1000)
+    assert plan(orders=[order(side=side)], markets=tight) == [Cancel(1, "fair_stale")]
+    assert plan(orders=[order(side=side)], markets=loose) == []
 ```
 
-      Derive the two expectations by hand from F36's rule (`age > max(cfg["stale_s"], stale_allowance_s)` = `age > 220`),
-      not by running the function first.
+      Both expectations are derived by hand from F36's rule, not by running the function first. Add them beside
+      `test_fair_stale_uses_allowance` (tests/test_exec_plan.py:255), which is the case they are the before-picture of.
 
 - [ ] 3. Run: `timeout 1500 make test TEST_ARGS='tests/test_exec_plan.py -q'`. It must be **green already** — these two
       cases pass against unmodified code. That is the point: they are the before-picture the next step must not move.
@@ -2496,11 +3046,13 @@ def test_fair_stale_is_unchanged_when_cadence_allowance_is_none():
     #: allowance in seconds; `None` — the baseline, and every live construction — leaves
     #: `_fair_stale` exactly as F36 states it. `BASELINE` is unchanged, so no registered
     #: configuration and no `config_hash` moves (§7 item 3 (i)).
-    cadence_allowance: object | None = None
+    cadence_allowance: "Callable[..., int] | None" = None
 ```
 
-      (`object | None` rather than a `Callable` alias, because `policy.py` must not import the experiment package; the
-      alias `CadenceAllowance` lives in `arms.py` and is what the experiment annotates against.)
+      The annotation is `Callable[..., int] | None` from `collections.abc` (choice 9), not the experiment's
+      `CadenceAllowance` alias: `policy.py` must not import `harness/experiments/` (§0.4), and `object | None` would type
+      the one experiment-facing field as untyped. `arms.py` keeps `CadenceAllowance = Callable[[MarketNow], int]` as the
+      narrower alias it constructs against.
 
 - [ ] 5. Add the branch to `_fair_stale`, exactly where ruling I2 places it — after today's `allowance =` line and
       **before** the existing `policy.stale_allowance_s` widening:
@@ -2525,7 +3077,33 @@ def test_fair_stale_is_unchanged_when_cadence_allowance_is_none():
 
 ```python
 """§1.6: what arm B's allowance is in each regime, and what B is not."""
-NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)        # Wednesday, outside any window
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from harness.experiments.execution_viability import arms
+from harness.feeds.espn import Kickoff
+from tests.test_exec_plan import market as exec_market       # the executor's own MarketNow builder
+
+CT = ZoneInfo("America/Chicago")
+NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)      # Wednesday, outside any window
+TICK_BUDGET_S = 100
+EXEC_PERIOD_S = 15
+STALE_S = 180                        # the variant's `cfg["stale_s"]`, the floor `_fair_stale` keeps
+
+
+def _kickoff(offset):
+    return Kickoff(sport="nfl", espn_event_id="e1", kickoff_utc=NOW + offset, home="DET",
+                   away="BAL", status="pre")
+
+
+def _allowance(interval_fn, *, kickoffs=(), window_start=NOW - timedelta(hours=12)):
+    return arms.cadence_allowance_for("nfl", lambda at: list(kickoffs), CT,
+                                      tick_budget_s=TICK_BUDGET_S, exec_period_s=EXEC_PERIOD_S,
+                                      window_start=window_start, interval_fn=interval_fn)
+
 
 @pytest.mark.parametrize("label,interval,expected", [
     ("nfl_burst", 20, 180),        # the cfg["stale_s"] floor wins; B is TIGHTER than A's 220
@@ -2534,49 +3112,151 @@ NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)        # Wednesday, outs
     ("weekday_offwindow", 900, 1000),
 ])
 def test_bs_allowance_follows_the_regime_table(label, interval, expected):
-    allowance = arms.cadence_allowance_for(... interval_stub(interval) ...)
-    assert allowance(_market()) == expected     # interval + tick_budget_s = interval + 100
+    allowance = _allowance(lambda sport, at, kickoffs, tz: interval)
+    market = exec_market(fair_ts=NOW - timedelta(seconds=30))
+    # `_fair_stale` takes `max(cfg["stale_s"], allowance)`, which is where the burst row's floor
+    # comes from: 20 + 100 = 120 seconds, raised to the variant's 180.
+    assert max(STALE_S, allowance(market)) == expected
 
 
-def test_overnight_walks_back_to_the_last_finite_interval(...):
-    # I4's closed form: `interval_for` at the latest exec_period_s step at or before fair_ts that
-    # returns a finite value. Fixture: finite 300 at 07:59:45, None from 08:00:00; fair_ts
-    # 02:00:00 with a finite 900 at 01:59:45 -> allowance 1,000.
-    ...
+def test_overnight_walks_back_to_the_last_finite_interval():
+    # I4's closed form: the latest `exec_period_s` step at or before fair_ts whose `interval_for`
+    # is finite. Here 900 at 01:59:45 and None from 02:00:00 onwards -> 900 + 100 = 1,000.
+    anchor = datetime(2026, 9, 16, 1, 59, 45, tzinfo=timezone.utc)
+
+    def interval_fn(sport, at, kickoffs, tz):
+        return 900 if at <= anchor else None
+
+    allowance = _allowance(interval_fn, window_start=anchor - timedelta(hours=1))
+    market = exec_market(fair_ts=datetime(2026, 9, 16, 2, 0, tzinfo=timezone.utc))
+    assert allowance(market) == 1000
 
 
-def test_an_unanchored_overnight_row_takes_one_thousand_seconds_and_is_labelled(...):
-    allowance, label = arms.cadence_allowance_with_label(...)
-    assert allowance(_market()) == 1000 and label == "overnight_unanchored"
+def test_an_unanchored_overnight_row_takes_one_thousand_seconds_and_is_labelled():
+    allowance, label = arms.cadence_allowance_with_label(
+        "nfl", lambda at: [], CT, tick_budget_s=TICK_BUDGET_S, exec_period_s=EXEC_PERIOD_S,
+        window_start=NOW - timedelta(hours=2),
+        interval_fn=lambda sport, at, kickoffs, tz: None)
+    market = exec_market(fair_ts=NOW)
+    assert allowance(market) == arms.OVERNIGHT_UNANCHORED_S == 1000
+    assert label(market) == "overnight_unanchored"
 
 
-def test_a_missed_fetch_does_not_extend_its_own_deadline(...):
+def test_a_missed_fetch_does_not_extend_its_own_deadline():
     # The allowance is a function of the *scheduled* interval at fair_ts, never of the elapsed
-    # gap to the next actual row (§1.6d).
-    ...
+    # gap to the next actual row (§1.6d): the same fair row gets the same number however late
+    # the following fetch arrives.
+    seen = []
+
+    def interval_fn(sport, at, kickoffs, tz):
+        seen.append(at)
+        return 300
+
+    allowance = _allowance(interval_fn)
+    fair_ts = NOW - timedelta(seconds=30)
+    early = exec_market(fair_ts=fair_ts)
+    assert allowance(early) == 400
+    assert allowance(early) == 400            # evaluated 20 minutes later: the same number
+    assert seen == [fair_ts, fair_ts]         # and always at fair_ts, never at `now`
 
 
-def test_b_receives_a_print_that_as_stale_cancel_blocked_for_a(...):
+def test_b_receives_a_print_that_as_stale_cancel_blocked_for_a(db_session, env_settings):
     # §1.6's expected result, computed by hand: a Tuesday 12:00:00 fair, off-window; A cancels at
     # 12:03:40 (220 s) and records no fill; the hitting print lands at 12:09:00; B holds to
     # 12:16:40 (1,000 s) and receives it.
-    assert a_actions == [("cancel", datetime(..., 12, 3, 40, ...))]
-    assert b_fill.filled_at == datetime(..., 12, 9, 0, tzinfo=timezone.utc)
+    a_actions, b_actions, a_fills, b_fills = run_arm_pair(
+        db_session, env_settings, fair_ts=NOW, print_at=NOW + timedelta(minutes=9),
+        interval_s=900)
+    assert [(a["kind"], a["instant"]) for a in a_actions][-1] == (
+        "cancel", NOW + timedelta(seconds=220))
+    assert a_fills == []
+    assert b_fills[0]["filled_at"] == NOW + timedelta(minutes=9)
+    assert [b["kind"] for b in b_actions][-1] == "fill"
 
 
-def test_new_information_reprices_b_exactly_as_it_reprices_a(...):
-    # A 1.5-point fair move at 12:05:00 reprices both; the apparent counterfactual gain does not
-    # survive it (§1.6's second required fixture).
-    ...
+def test_new_information_reprices_b_exactly_as_it_reprices_a(db_session, env_settings):
+    # A 1.5-point fair move at 12:05:00 reprices both arms, so the apparent counterfactual gain
+    # does not survive it (§1.6's second required fixture).
+    a_actions, b_actions, a_fills, b_fills = run_arm_pair(
+        db_session, env_settings, fair_ts=NOW, print_at=NOW + timedelta(minutes=9),
+        interval_s=900, fair_move=(NOW + timedelta(minutes=5), Decimal("0.0150")))
+    repriced = [x["instant"] for x in b_actions if x["kind"] == "place"]
+    assert NOW + timedelta(minutes=5) in repriced
+    assert [x["kind"] for x in a_actions if x["kind"] == "place"] == \
+        [x["kind"] for x in b_actions if x["kind"] == "place"]
+    assert b_fills == []          # the 12:09 print no longer hits B's new price either
 
 
-def test_rest_to_expiry_produces_a_different_action_list_from_b(...): ...
-def test_b_does_not_widen_the_strategys_own_not_stale_filter(...): ...
-def test_b_does_not_suppress_repricing_edge_decay_or_the_venue_move_check(...): ...
-def test_a_and_b_cannot_read_c_only_observations(db_session): ...
-def test_no_row_whose_availability_stamp_is_after_the_decision_is_visible(db_session): ...
-def test_the_arm_spec_records_every_distinction_and_hashes_them(): ...
+def test_rest_to_expiry_produces_a_different_action_list_from_b(db_session, env_settings):
+    # §1.6(c) distinction 1: B is not "rest to expiry". An arm that never cancels keeps the
+    # order past 12:16:40; B cancels there.
+    _, b_actions, _, _ = run_arm_pair(db_session, env_settings, fair_ts=NOW,
+                                      print_at=NOW + timedelta(minutes=30), interval_s=900)
+    rest_actions, _, _, _ = run_arm_pair(db_session, env_settings, fair_ts=NOW,
+                                         print_at=NOW + timedelta(minutes=30), interval_s=900,
+                                         arm="rest_to_expiry")
+    assert [x["kind"] for x in b_actions] != [x["kind"] for x in rest_actions]
+    assert ("cancel", NOW + timedelta(seconds=1000)) in [(x["kind"], x["instant"])
+                                                         for x in b_actions]
+
+
+def test_b_does_not_widen_the_strategys_own_not_stale_filter():
+    # §1.6(c) distinction 2: the signal-side filter is untouched; only `_fair_stale` reads the
+    # allowance, and `arms.py` names no other consumer.
+    source = Path(arms.__file__).read_text()
+    assert "candidate_signals" not in source and "edge_min" not in source
+    assert arms.ARMS["B"].policy.cadence_allowance is not None
+    assert arms.ARMS["B"].policy.stale_allowance_s is None
+
+
+def test_b_does_not_suppress_repricing_edge_decay_or_the_venue_move_check(db_session,
+                                                                          env_settings):
+    # §1.6(c) distinctions 3 and 4: every other cancel reason still fires under B.
+    _, b_actions, _, _ = run_arm_pair(db_session, env_settings, fair_ts=NOW,
+                                      print_at=NOW + timedelta(minutes=30), interval_s=900,
+                                      fair_move=(NOW + timedelta(minutes=2), Decimal("0.1000")))
+    reasons = [x.get("reason") for x in b_actions if x["kind"] == "cancel"]
+    assert "edge_decay" in reasons
+    assert "fair_stale" not in reasons        # 120 s is well inside B's 1,000 s allowance
+
+
+def test_a_and_b_cannot_read_c_only_observations(db_session, env_settings):
+    run_id = seed_c_observations(db_session, env_settings)     # arm C rows, same run
+    a_actions, b_actions, _, _ = run_arm_pair(db_session, env_settings, fair_ts=NOW,
+                                              print_at=NOW + timedelta(minutes=9),
+                                              interval_s=900, run_id=run_id)
+    for action in a_actions + b_actions:
+        assert action.get("source") != "exp_observation"
+    assert db_session.execute(text(
+        "select count(*) from exp_observation where run_id = :r and arm_id = 'C'"),
+        {"r": run_id}).scalar() > 0
+
+
+def test_no_row_whose_availability_stamp_is_after_the_decision_is_visible(db_session,
+                                                                          env_settings):
+    # The same guard T2 asserts for the adapter, asserted here for the arm: a fair row taped
+    # after the instant cannot change an arm's decision at it.
+    a_actions, b_actions, _, _ = run_arm_pair(db_session, env_settings, fair_ts=NOW,
+                                              print_at=NOW + timedelta(minutes=9),
+                                              interval_s=900,
+                                              late_fair=(NOW, NOW + timedelta(minutes=3)))
+    assert all(x["instant"] <= NOW + timedelta(minutes=3) or x["kind"] != "place"
+               for x in a_actions + b_actions)
+
+
+def test_the_arm_spec_records_every_distinction_and_hashes_them():
+    spec = arms.ARMS["B"]
+    assert len(spec.notes) == 4                     # §1.6(c)'s four distinctions
+    entry = spec.as_manifest_entry()
+    assert entry["notes"] == list(spec.notes)
+    changed = arms.ArmSpec(**{**spec.__dict__, "notes": spec.notes[:3]})
+    assert changed.spec_hash() != spec.spec_hash()  # the notes are inside the hash, not beside it
 ```
+
+      `run_arm_pair` and `seed_c_observations` are this file's own two helpers, written above the cases: `run_arm_pair`
+      seeds one market's fair rows, book and prints from the fixture stamps, runs arms A and B over the same resolved
+      instants through T3's runner and returns `(a_actions, b_actions, a_fills, b_fills)`; `seed_c_observations` writes
+      `exp_observation` rows for arm C in the same run so the isolation case has something to fail to see.
 
 - [ ] 8. Write `arms.py`. `cadence_allowance_for` closes over the **as-of** kickoff list (T2's `kickoffs_asof`, ruling I3)
       and returns a callable evaluated at the market's `fair_ts` — the fair row's **creation** instant, so entering a game
@@ -2584,14 +3264,17 @@ def test_the_arm_spec_records_every_distinction_and_hashes_them(): ...
 
 ```python
 def cadence_allowance_for(sport: str, kickoffs_at, tz, *, tick_budget_s: int, exec_period_s: int,
-                          window_start: datetime) -> CadenceAllowance:
+                          window_start: datetime, interval_fn=interval_for) -> CadenceAllowance:
+    """`kickoffs_at(at)` is `capture.kickoffs_asof` bound to this run: it returns the `Kickoff`
+    rows (feeds/espn.py:19) reconstructed **as of** `at`, which is what `interval_for` takes.
+    `interval_fn` is injected only so the regime table can be exercised without a feed."""
     def allowance(market) -> int:
         fair_ts = market.fair_ts
-        interval = interval_for(sport, fair_ts, kickoffs_at(fair_ts), tz)
+        interval = interval_fn(sport, fair_ts, kickoffs_at(fair_ts), tz)
         if interval is None:                       # I4's closed form, walking back in steps
             probe = fair_ts
             while probe >= window_start:
-                interval = interval_for(sport, probe, kickoffs_at(probe), tz)
+                interval = interval_fn(sport, probe, kickoffs_at(probe), tz)
                 if interval is not None:
                     break
                 probe -= timedelta(seconds=exec_period_s)
@@ -2618,17 +3301,146 @@ def cadence_allowance_for(sport: str, kickoffs_at, tz, *, tick_budget_s: int, ex
       identities raises `PortfolioSumRefused`:
 
 ```python
-def test_two_portfolios_produce_two_rows_and_no_summed_row(): ...
-def test_summing_two_portfolio_identities_raises(): ...
-def test_registered_and_exploratory_results_are_in_separate_tables(): ...
-def test_every_exploratory_cell_carries_the_exp_label(): ...
-def test_the_order_weighted_result_is_primary_and_the_sensitivities_sit_beside_it(): ...
-def test_source_age_travels_with_every_outcome_number(): ...
+"""§1.9: two tables, two captions, and a number no reader can mistake for another."""
+import pytest
+
+from harness.experiments.execution_viability import report
+from harness.experiments.execution_viability.report import PortfolioSumRefused
+
+RUN = "0198e2b0-0000-7000-8000-000000000001"
+HASH = "a" * 64
+ROWS = [{"arm_id": "A", "portfolio": "sharp_two_sided", "orders": 40, "fills": 3,
+         "markout_1800": "0.0120", "source_age_s": 45, "registered": True},
+        {"arm_id": "B", "portfolio": "sharp_two_sided", "orders": 40, "fills": 11,
+         "markout_1800": "0.0090", "source_age_s": 45, "registered": True},
+        {"arm_id": "B", "portfolio": "wide_edge", "orders": 12, "fills": 4,
+         "markout_1800": "0.0300", "source_age_s": 45, "registered": False}]
+
+
+def test_two_portfolios_produce_two_rows_and_no_summed_row():
+    out = report.arm_table([r for r in ROWS if r["arm_id"] == "B"], run_id=RUN,
+                           manifest_hash=HASH)
+    assert out.count("sharp_two_sided") == 1 and out.count("wide_edge") == 1
+    assert "total" not in out.lower() and "combined" not in out.lower()
+
+
+def test_summing_two_portfolio_identities_raises():
+    with pytest.raises(PortfolioSumRefused):
+        report.sum_rows([r for r in ROWS if r["arm_id"] == "B"])
+
+
+def test_registered_and_exploratory_results_are_in_separate_tables():
+    out = report.render([r for r in ROWS if r["registered"]],
+                        [r for r in ROWS if not r["registered"]], run_id=RUN, manifest_hash=HASH)
+    registered_at, exploratory_at = out.index("Registered results"), out.index("Exploratory")
+    assert registered_at < exploratory_at
+    assert out.index("wide_edge") > exploratory_at      # the one exploratory row is below it
+
+
+def test_every_exploratory_cell_carries_the_exp_label():
+    out = report.render([], [r for r in ROWS if not r["registered"]], run_id=RUN,
+                        manifest_hash=HASH)
+    label = exp_label(RUN, "B", HASH)
+    assert out.count(label) == 1
+    for cell in ("0.0300", "12", "4"):
+        line = [ln for ln in out.splitlines() if cell in ln][0]
+        assert label in line
+
+
+def test_the_order_weighted_result_is_primary_and_the_sensitivities_sit_beside_it():
+    out = report.arm_table(ROWS, run_id=RUN, manifest_hash=HASH)
+    header = [ln for ln in out.splitlines() if "markout" in ln][0]
+    assert header.index("order-weighted") < header.index("game-weighted")
+    assert "primary" in header and header.count("primary") == 1
+
+
+def test_source_age_travels_with_every_outcome_number():
+    out = report.arm_table(ROWS, run_id=RUN, manifest_hash=HASH)
+    for line in [ln for ln in out.splitlines() if "0.0" in ln]:
+        assert "45 s" in line          # §1.9(d): no outcome number without its source age
 ```
 
-- [ ] 11. Run: `timeout 1500 make test TEST_ARGS='tests/test_exp_arms.py tests/test_exp_episodes.py tests/test_exp_report.py -q'`,
+- [ ] 10b. Write `outcomes.py` and `tests/test_exp_outcomes.py` — §1.9(a)'s **common outcome schedule**, the one every
+      arm's numbers are computed by (ruling C2). One horizon set, one maturity rule, one missing-value vocabulary and one
+      writer of `exp_outcome`: arm C's prospective observations (T7) land in the same schedule, and `report.py` reads
+      `exp_outcome` rather than computing a markout of its own.
+
+```python
+"""§1.9(a): one outcome schedule for every arm, and what it does at a horizon it cannot see."""
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+from harness.experiments.execution_viability.outcomes import (HORIZONS, MISSING_REASONS,
+                                                              record_outcomes)
+
+RUN = "0198e2b0-0000-7000-8000-000000000001"
+NOW = datetime(2026, 9, 16, 14, 0, tzinfo=timezone.utc)
+FILLED_AT = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+
+
+def _order(oid, *, filled_at=FILLED_AT, prob="0.4800"):
+    return {"id": oid, "ticker": "KXNFLGAME-26SEP20DETBAL-DET", "venue_market_id": 1,
+            "side": "yes", "prob": Decimal(prob), "contracts": Decimal("10"),
+            "filled_at": filled_at}
+
+
+def test_a_matured_horizon_is_computed_from_the_mid_at_that_horizon(db_session, env_settings):
+    seed_mids(db_session, venue_market_id=1,
+              mids={FILLED_AT: Decimal("0.4800"),
+                    FILLED_AT + timedelta(seconds=1800): Decimal("0.5100")})
+    rows = record_outcomes(db_session, writer_for(db_session, env_settings), run_id=RUN,
+                           arm_id="A", orders=[_order(1)], now=NOW)
+    by_horizon = {r["horizon"]: r for r in rows}
+    assert set(by_horizon) == set(HORIZONS)
+    assert by_horizon["1800"]["value"] == Decimal("0.0300")      # 0.5100 - 0.4800, YES space
+    assert by_horizon["1800"]["status"] == "matured"
+    assert by_horizon["1800"]["missing_reason"] is None
+    assert by_horizon["1800"]["source_age_s"] is not None        # §1.9(d) travels with the number
+
+
+def test_a_horizon_that_has_not_arrived_yet_is_censored_not_zero(db_session, env_settings):
+    # An order filled 20 minutes ago cannot have a 30-minute markout at `now`.
+    fresh = NOW - timedelta(minutes=20)
+    seed_mids(db_session, venue_market_id=1, mids={fresh: Decimal("0.4800")})
+    rows = record_outcomes(db_session, writer_for(db_session, env_settings), run_id=RUN,
+                           arm_id="A", orders=[_order(2, filled_at=fresh)], now=NOW)
+    censored = [r for r in rows if r["horizon"] == "1800"][0]
+    assert censored["status"] == "censored"
+    assert censored["value"] is None                             # never 0, never carried forward
+    assert censored["matures_at"] == fresh + timedelta(seconds=1800)
+
+
+def test_a_horizon_with_no_mid_is_missing_with_a_named_reason(db_session, env_settings):
+    seed_mids(db_session, venue_market_id=1, mids={FILLED_AT: Decimal("0.4800")})
+    rows = record_outcomes(db_session, writer_for(db_session, env_settings), run_id=RUN,
+                           arm_id="A", orders=[_order(3)], now=NOW)
+    missing = [r for r in rows if r["horizon"] == "1800"][0]
+    assert missing["status"] == "missing"
+    assert missing["value"] is None
+    assert missing["missing_reason"] == "no_mid_at_horizon"
+    assert missing["missing_reason"] in MISSING_REASONS
+
+
+def test_every_arm_uses_the_same_schedule(db_session, env_settings):
+    seed_mids(db_session, venue_market_id=1,
+              mids={FILLED_AT: Decimal("0.4800"),
+                    FILLED_AT + timedelta(seconds=1800): Decimal("0.5100")})
+    writer = writer_for(db_session, env_settings)
+    for arm_id in ("A", "B", "C"):
+        rows = record_outcomes(db_session, writer, run_id=RUN, arm_id=arm_id,
+                               orders=[_order(4)], now=NOW)
+        assert [r["horizon"] for r in rows] == list(HORIZONS)
+        assert {r["arm_id"] for r in rows} == {arm_id}
+```
+
+      `seed_mids` and `writer_for` are this file's two helpers: `seed_mids` writes `venue_quotes` rows at the given
+      instants, and `writer_for` opens T1's `ExperimentWriter` on the test session. `record_outcomes` writes through the
+      writer only — it reads production tables and writes `exp_outcome`, nothing else.
+
+- [ ] 11. Run: `timeout 1500 make test TEST_ARGS='tests/test_exp_arms.py tests/test_exp_episodes.py tests/test_exp_report.py tests/test_exp_outcomes.py -q'`,
       then the guard suites: `timeout 1500 make test TEST_ARGS='tests/test_exec_plan.py tests/test_policy_compare.py tests/test_execution_regressions.py -q'`.
-      The 6 `xfailed` cases in the last file stay xfailed; a strict XPASS stops this task.
+      `tests/test_execution_regressions.py` has no markers left, so nothing there is expected to xfail; the suite's one
+      strict xfail is `tests/test_replay_execute.py:276`, and a strict XPASS anywhere stops this task.
 
 - [ ] 12. Commit:
 
@@ -2637,10 +3449,11 @@ git add harness/execution/policy.py harness/execution/plan.py \
         harness/experiments/execution_viability/arms.py \
         harness/experiments/execution_viability/episodes.py \
         harness/experiments/execution_viability/report.py \
+        harness/experiments/execution_viability/outcomes.py \
         harness/experiments/execution_viability/adapter.py \
         harness/experiments/execution_viability/cli.py \
         tests/test_exp_arms.py tests/test_exp_episodes.py tests/test_exp_report.py \
-        tests/test_exec_plan.py
+        tests/test_exp_outcomes.py tests/test_exec_plan.py
 git commit -m "$(cat <<'MSG'
 6D.1 T4: arms A and B, the cadence allowance, and the reporting contract
 
@@ -2673,7 +3486,7 @@ Spec: addendum §1.6 (e)-(i), §4.2, §4.6, §2's `exp_observation` row, §3 row
 
 **Files:**
 - Create: `harness/experiments/execution_viability/observer.py` (`observe_once`, `select_cohort`, `budget_ok`, `CREDITS_PER_CALL`, `SKIPPED_BUDGET`)
-- Modify: `harness/research/worker.py` — **one** `register_pass(...)` line (line 88's neighbourhood)
+- Modify: `harness/research/worker.py` — **one string** appended to `PASS_MODULES` (worker.py:60), and nothing else: no symbol of `harness/experiments/` may be imported into `worker.py` (ruling C1)
 - Modify: `harness/experiments/execution_viability/cli.py` — one command, `exp observe`
 - Create: `tests/test_exp_observer.py`
 
@@ -2688,7 +3501,9 @@ and is the controller's, with steps 0, 6 and 7 the user's.
 ```python
 from harness.feeds.odds_api import FEATURED_MARKETS, OddsApiClient, parse_credit_headers  # odds_api.py
 from harness.feeds.http import HttpClient
-from harness.research.worker import register_pass, PassFn                                  # worker.py:88
+from harness.research.worker import register_pass, PassFn        # worker.py:88 -- imported BY
+                                                                # observer.py, never the reverse
+from harness.feeds.http import FetchResult                       # http.py:17, what the client returns
 from harness.pricing.fair import ...      # the pure consensus/direct-fair arithmetic and
                                           # stale_allowance_s derivation only (I12)
 from harness.execution.plan import confidently_matched                                     # plan.py:138
@@ -2699,7 +3514,11 @@ from harness.execution.plan import confidently_matched                          
 CREDITS_PER_CALL: int = 3            # §1.6(i): unique markets returned x one region
 SKIPPED_BUDGET: str = "exp_skipped_budget"
 def budget_ok(s, *, credits_used: int, remaining: int | None) -> tuple[bool, str | None]
-def select_cohort(session, *, now, seed: int, freeze_at) -> list[CohortGame]   # ≤ 8, ≤ 4 per sport
+@dataclass(frozen=True, slots=True)
+class CohortSelection:
+    games: tuple[CohortGame, ...]        # ≤ 8, ≤ 4 per sport
+    strata: dict[str, str]               # sport -> "selected: n" | "unavailable: <reason>"
+def select_cohort(session, *, now, seed: int, freeze_at) -> CohortSelection
 def observe_once(session, now, s, client: OddsApiClient, *, run, writer) -> int
 def observer_pass(session, now, s) -> None       # the registered pass; inert unless enabled
 ```
@@ -2715,85 +3534,159 @@ def observer_pass(session, now, s) -> None       # the registered pass; inert un
       secret** (choice 8):
 
 ```python
+"""§1.6(e)-(i): a bounded cohort, a per-sport endpoint, and a refusal that never retries."""
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy import text
+
+from harness.experiments.execution_viability import observer
+from harness.experiments.execution_viability.observer import (CREDITS_PER_CALL, SKIPPED_BUDGET,
+                                                              budget_ok, observe_once,
+                                                              observer_pass, select_cohort)
+from harness.feeds.http import FetchResult
+
+NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+SPORTS = ["americanfootball_nfl", "americanfootball_ncaaf"]
+_PAYLOAD = json.dumps([{"id": "e1", "sport_key": "americanfootball_nfl",
+                        "commence_time": "2026-09-20T17:00:00Z", "home_team": "DET",
+                        "away_team": "BAL", "bookmakers": []}]).encode()
+
+
 class _FakeOdds:
-    """An OddsApiClient stand-in. Returns a canned featured payload and canned credit headers."""
+    """An `OddsApiClient` stand-in. `fetch_featured` returns a real `FetchResult`
+    (harness/feeds/http.py:17) -- the same object the production client returns, so the code
+    under test parses the same `.headers` and `.body` it will parse live."""
+
     def __init__(self, *, remaining: int, last: int = 3):
         self.calls: list[str] = []
         self._headers = {"x-requests-last": str(last), "x-requests-used": "12",
                          "x-requests-remaining": str(remaining)}
-    def fetch_featured(self, sport: str):
+
+    def fetch_featured(self, sport: str) -> FetchResult:
         self.calls.append(sport)
-        return _PAYLOAD, self._headers
+        return FetchResult(status=200, headers=dict(self._headers), body=_PAYLOAD,
+                           fetched_at=NOW, url=f"/v4/sports/{sport}/odds", elapsed_s=0.12)
 
 
-def test_the_endpoint_is_per_sport_so_the_cohort_size_does_not_change_the_cost(...):
+def _rows(session, run_id):
+    return session.execute(text(
+        "select status, credits, credits_last, credits_remaining, body_path, body_sha256 "
+        "from exp_observation where run_id = :r order by id"), {"r": run_id}).all()
+
+
+def test_the_endpoint_is_per_sport_so_the_cohort_size_does_not_change_the_cost(db_session,
+                                                                               env_settings):
     # §10 bullet 2: two calls per interval regardless of how many games are in the cohort.
-    observe_once(...)   # cohort of 8 games across both sports
-    assert client.calls == ["americanfootball_nfl", "americanfootball_ncaaf"]
+    run = seed_run_and_cohort(db_session, env_settings, games=8)     # 4 nfl + 4 ncaaf
+    client = _FakeOdds(remaining=4_000_000)
+    observe_once(db_session, NOW, env_settings, client, run=run, writer=writer_for(db_session))
+    assert client.calls == SPORTS
 
 
-def test_each_interval_costs_six_credits(...):
+def test_each_interval_costs_six_credits(db_session, env_settings):
+    run = seed_run_and_cohort(db_session, env_settings, games=8)
+    client = _FakeOdds(remaining=4_000_000)
+    credits_written = observe_once(db_session, NOW, env_settings, client, run=run,
+                                   writer=writer_for(db_session))
     assert credits_written == 2 * CREDITS_PER_CALL == 6
+    assert sum(r.credits for r in _rows(db_session, run.run_id) if r.credits) == 6
 
 
-def test_the_run_cap_stops_the_observer_and_labels_the_unmade_reads(...):
-    s.exp_observer_credit_cap = 6
-    ...
-    assert [r.status for r in rows][-1] == "exp_skipped_budget"
+def test_the_run_cap_stops_the_observer_and_labels_the_unmade_reads(db_session, env_settings):
+    object.__setattr__(env_settings, "exp_observer_credit_cap", 6)
+    run = seed_run_and_cohort(db_session, env_settings, games=8)
+    client = _FakeOdds(remaining=4_000_000)
+    writer = writer_for(db_session)
+    observe_once(db_session, NOW, env_settings, client, run=run, writer=writer)
+    observe_once(db_session, NOW + timedelta(minutes=2), env_settings, client, run=run,
+                 writer=writer)
+    rows = _rows(db_session, run.run_id)
+    assert rows[-1].status == SKIPPED_BUDGET == "exp_skipped_budget"
     assert rows[-1].credits_remaining is None
-    assert client.calls == ["americanfootball_nfl", "americanfootball_ncaaf"]   # no retry
+    assert client.calls == SPORTS                       # the second interval made no call at all
 
 
-def test_the_recorders_own_guard_refuses_on_the_providers_balance(...):
+def test_the_recorders_own_guard_refuses_on_the_providers_balance(env_settings):
     # tick.py:1411's expression, on the provider's number: 0.40 x 5,000,000 = 2,000,000.
-    ok, reason = budget_ok(s, credits_used=0, remaining=1_999_999)
+    ok, reason = budget_ok(env_settings, credits_used=0, remaining=1_999_999)
     assert ok is False and reason == "credits_watch_fraction"
-    assert budget_ok(s, credits_used=0, remaining=2_000_001)[0] is True
-    assert budget_ok(s, credits_used=0, remaining=None)[0] is False      # unknown is a refusal
+    assert budget_ok(env_settings, credits_used=0, remaining=2_000_001)[0] is True
+    assert budget_ok(env_settings, credits_used=0, remaining=None) == (
+        False, "credits_watch_fraction")                # unknown is a refusal, not a pass
 
 
-def test_every_row_carries_the_providers_last_and_remaining(...):
+def test_every_row_carries_the_providers_last_and_remaining(db_session, env_settings):
+    run = seed_run_and_cohort(db_session, env_settings, games=2)
+    client = _FakeOdds(remaining=4_000_000, last=3)
+    observe_once(db_session, NOW, env_settings, client, run=run, writer=writer_for(db_session))
+    rows = _rows(db_session, run.run_id)
     assert rows[0].credits_last == 3 and rows[0].credits_remaining == 4_000_000
+    assert all(r.credits_remaining == 4_000_000 for r in rows if r.status != SKIPPED_BUDGET)
 
 
-def test_the_observer_never_writes_source_state(...):
+def test_the_observer_never_writes_source_state():
     # I9: the shared aggregate is the provider's balance, not a row in our database.
-    text_ = open(observer.__file__).read()
-    assert "source_state" not in text_
+    source = Path(observer.__file__).read_text()
+    assert "source_state" not in source
+    assert "set_source_state" not in source
 
 
-def test_nothing_writes_fair_values_or_calls_a_compute_entry_point(...):
+def test_nothing_writes_fair_values_or_calls_a_compute_entry_point():
     # I12: the pure arithmetic only.
-    assert "compute_" not in text_ and "fair_values" not in text_
+    source = Path(observer.__file__).read_text()
+    assert "compute_" not in source and "fair_values" not in source
 
 
-def test_the_raw_body_goes_to_the_file_tree_and_the_row_carries_its_hash(tmp_path, ...):
-    assert rows[0].body_path.startswith(str(tmp_path)) and len(rows[0].body_sha256) == 64
+def test_the_raw_body_goes_to_the_file_tree_and_the_row_carries_its_hash(tmp_path, db_session,
+                                                                        env_settings):
+    object.__setattr__(env_settings, "exp_run_root", str(tmp_path))
+    run = seed_run_and_cohort(db_session, env_settings, games=2)
+    observe_once(db_session, NOW, env_settings, _FakeOdds(remaining=4_000_000), run=run,
+                 writer=writer_for(db_session))
+    row = _rows(db_session, run.run_id)[0]
+    assert row.body_path.startswith(str(tmp_path)) and len(row.body_sha256) == 64
+    assert Path(row.body_path).read_bytes() == _PAYLOAD
 
 
-def test_the_pass_is_inert_without_the_setting(...):
-    s.exp_observer_enabled = False
-    observer_pass(session, NOW, s)
+def test_the_pass_is_inert_without_the_setting(db_session, env_settings, monkeypatch):
+    object.__setattr__(env_settings, "exp_observer_enabled", False)
+    client = _FakeOdds(remaining=4_000_000)
+    monkeypatch.setattr(observer, "_client", lambda s: client)
+    observer_pass(db_session, NOW, env_settings)
     assert client.calls == []
 
 
-def test_the_pass_is_inert_without_a_frozen_run(...):
-    s.exp_observer_enabled = True          # but exp_run has no frozen row
-    observer_pass(session, NOW, s)
+def test_the_pass_is_inert_without_a_frozen_run(db_session, env_settings, monkeypatch):
+    object.__setattr__(env_settings, "exp_observer_enabled", True)   # but no frozen exp_run row
+    client = _FakeOdds(remaining=4_000_000)
+    monkeypatch.setattr(observer, "_client", lambda s: client)
+    observer_pass(db_session, NOW, env_settings)
     assert client.calls == []
+    assert db_session.execute(text("select count(*) from exp_observation")).scalar() == 0
 
 
 def test_the_cohort_is_at_most_eight_games_four_per_sport_between_24_and_120_hours(db_session):
-    picked = select_cohort(db_session, now=NOW, seed=20260916, freeze_at=NOW)
+    seed_eligible_games(db_session, now=NOW, nfl=12, ncaaf=12)
+    picked = select_cohort(db_session, now=NOW, seed=20260916, freeze_at=NOW).games
     assert len(picked) <= 8 and sum(1 for g in picked if g.sport == "nfl") <= 4
     assert all(timedelta(hours=24) <= g.kickoff_utc - NOW <= timedelta(hours=120) for g in picked)
 
 
 def test_the_cohort_selection_is_seed_deterministic_and_records_an_empty_stratum(db_session):
-    assert select_cohort(db_session, now=NOW, seed=1) == select_cohort(db_session, now=NOW, seed=1)
+    seed_eligible_games(db_session, now=NOW, nfl=12, ncaaf=0)
+    first = select_cohort(db_session, now=NOW, seed=1, freeze_at=NOW)
+    second = select_cohort(db_session, now=NOW, seed=1, freeze_at=NOW)
+    assert first.games == second.games
     # an unavailable stratum is recorded as unavailable, never backfilled with anchor teams
-    assert report.strata["ncaaf"] == "unavailable: 0 eligible games in the window"
+    assert first.strata["ncaaf"] == "unavailable: 0 eligible games in the window"
+    assert all(g.sport == "nfl" for g in first.games)
 ```
+
+      `seed_run_and_cohort`, `seed_eligible_games` and `writer_for` are this file's three helpers: the first writes a
+      frozen `exp_run` row and its cohort, the second writes `games` rows inside §1.6(f)'s 24-120 hour window, and the
+      third opens T1's `ExperimentWriter` on the test session.
 
 - [ ] 3. Run: `timeout 1500 make test TEST_ARGS='tests/test_exp_observer.py -q'` → `ModuleNotFoundError: ... observer`.
 
@@ -2816,19 +3709,39 @@ def budget_ok(s, *, credits_used: int, remaining: int | None) -> tuple[bool, str
 ```
 
       `observe_once` calls `client.fetch_featured(sport)` **unchanged** — same URL, same `FEATURED_MARKETS`, same
-      bookmakers string, so gate 5 is untouched — parses the headers with `parse_credit_headers`, writes the raw body
+      bookmakers string, so gate 5 is untouched. It returns a `FetchResult` (`harness/feeds/http.py:17`:
+      `status, headers, body, fetched_at, url, elapsed_s`), so the step is
+      `result = client.fetch_featured(sport)`, then `credits = parse_credit_headers(result.headers)` and
+      `payload = json.loads(result.body)` — never a `(payload, headers)` tuple, which the client does not return. It writes the raw body
       through `storage.write_body` and one `exp_observation` row per cohort market with `credits`, `credits_last`,
       `credits_remaining`, `body_path` and `body_sha256`. On a refusal it writes one `exp_skipped_budget` row per
       scheduled-but-unmade read with a null `credits_remaining` and **never retries** for the rest of the run.
       Prices come from `harness/pricing/fair.py`'s pure arithmetic called as functions on the fetched quotes; nothing calls
       a `compute_*_fair_values` entry point and nothing writes `fair_values` (I12).
 
-- [ ] 5. Register the pass — **one** line in `harness/research/worker.py`, beside the existing registrations:
+- [ ] 5. Register the pass the way `worker.py` registers passes (ruling C1): **one string** appended to `PASS_MODULES`
+      at `harness/research/worker.py:60`, and nothing else. `load_passes()` imports each listed module, and each module
+      registers itself at import time — `register_pass` is call-once, so a second import is a no-op:
 
 ```python
-register_pass("exp_observer", observer_pass)   # 6D.1 §4.2: inert unless exp_observer_enabled
-                                               # and a frozen exp_run row exists (§7 item 3 (vi))
+# harness/research/worker.py:60 -- the whole of this task's production diff outside the package
+PASS_MODULES: list[str] = [
+    "harness.research.veto",
+    "harness.research.annotate",
+    "harness.experiments.execution_viability.observer",   # 6D.1 §4.2: inert unless
+]                                                         # exp_observer_enabled and a frozen
+                                                          # exp_run row exists (§7 item 3 (vi))
+
+# harness/experiments/execution_viability/observer.py, at module scope -- the package imports
+# `worker`, never the reverse:
+register_pass("exp_observer", observer_pass)
 ```
+
+      **No symbol of `harness/experiments/` may be imported into `worker.py`** — not in a function body, not under
+      `TYPE_CHECKING`. The string is inert data until `load_passes()` reads it, which is why T1's
+      `test_no_production_module_imports_the_experiment_package` passes with this line in place: the module list is a list
+      of strings, and the one allowed occurrence of the substring `harness.experiments` in production code is this quoted
+      module path.
 
       `observer_pass` itself returns immediately when `not s.exp_observer_enabled`, and again when the bounded query
       `select run_id from exp_run where status = 'frozen' order by created_at desc limit 1` (rides `exp_run`'s primary key
@@ -2841,7 +3754,7 @@ register_pass("exp_observer", observer_pass)   # 6D.1 §4.2: inert unless exp_ob
       scope is reduced or C is reported unavailable; **no tier is bought and no cap is raised**.
 
 - [ ] 7. Run: `timeout 1500 make test TEST_ARGS='tests/test_exp_observer.py -q'`, then
-      `timeout 1500 make test TEST_ARGS='tests/test_research_worker.py tests/test_recorder_tick.py tests/test_odds_api.py -q'`
+      `timeout 1500 make test TEST_ARGS='tests/test_research_worker.py tests/test_tick.py tests/test_odds_api.py -q'`
       — the recorder's own guard and cadence must be untouched.
 
 - [ ] 8. Commit:
@@ -2954,12 +3867,22 @@ def test_a_partial_fill_row_is_not_counted_as_an_order():
 def test_a_counterfactual_fill_is_never_counted_as_an_observed_fill():
     # The three quantities stay apart: observed watched fills, stateful exploratory estimates,
     # conditional scenarios (§1.10).
-    ...
+    observed = _observed(orders=20, fills=3, distinct_games=12)
+    exploratory = _exploratory(fills=11)                # arm B's counterfactual fills
+    scenarios = {s.name: s for s in project(observed, exploratory)}
+    assert scenarios["baseline_continuation"].clean_book_eligible == 3
+    assert scenarios["arm_b_measured"].clean_book_eligible == 3      # still the observed count
+    out = render_forecast(list(scenarios.values()))
+    assert "observed fills: 3" in out and "exploratory (arm B, counterfactual): 11" in out
+    assert "observed fills: 11" not in out
 
 
 def test_the_capacity_bound_scenario_is_bounded_by_slots_times_turnover():
     # §5.3's caveat: 150 shared slots x the measured turnover, never more.
-    ...
+    observed = _observed(orders=20, fills=3, distinct_games=12, turnover_per_day=2.0)
+    bound = {s.name: s for s in project(observed, _exploratory())}["capacity_bound"]
+    assert bound.high <= 150 * 2.0
+    assert "150 shared slots" in render_forecast([bound])
 
 
 def test_every_scenario_states_its_distinct_game_count_and_its_unknowns():
@@ -3014,7 +3937,7 @@ def test_the_recommendation_is_one_of_four():
 
 - [ ] 6. Run: `timeout 1500 make test TEST_ARGS='tests/test_exp_forecast.py tests/test_exp_decision.py -q'`, then the
       whole experiment set:
-      `timeout 1500 make test TEST_ARGS='tests/test_exp_isolation.py tests/test_exp_manifest.py tests/test_exp_cli.py tests/test_exp_capture.py tests/test_exp_adapter.py tests/test_exp_baseline.py tests/test_exp_state.py tests/test_exp_liquidity.py tests/test_exp_arms.py tests/test_exp_episodes.py tests/test_exp_report.py tests/test_exp_bookhealth.py tests/test_exp_observer.py tests/test_veto_pacing.py -q'`.
+      `timeout 1500 make test TEST_ARGS='tests/test_exp_isolation.py tests/test_exp_manifest.py tests/test_exp_cli.py tests/test_exp_capture.py tests/test_exp_adapter.py tests/test_exp_baseline.py tests/test_exp_state.py tests/test_exp_liquidity.py tests/test_exp_arms.py tests/test_exp_episodes.py tests/test_exp_report.py tests/test_exp_outcomes.py tests/test_exp_bookhealth.py tests/test_exp_observer.py tests/test_veto_pacing.py -q'`.
 
 - [ ] 7. Commit, and put the rendered decision report in the **task report** for the controller to place under
       `docs/superpowers/autopilot/reports/` - do not write that directory from a worktree:
@@ -3086,12 +4009,17 @@ report. No Python symbol; this task ships no code.
       2, 3, 5 and 6 **without removing or loosening a single existing expectation**. A row that reads "deferred: no
       `exp_run` row" before the first run says so in the table rather than being omitted.
 
-- [ ] 4. Self-check before reporting: every query in the block runs against `harness` (no second database), no query reads
+- [ ] 4. Two column-level corrections the copied queries must carry: §3 row 4 filters `veto_decisions.decided_at`, which
+      is the column `models.py` declares — that table has **no** `created_at` (ruling I10) — and its reason-code list is
+      `daily` and `weekly` **before** the amendment and the single new code `daily_reserved` **after** it (ruling I11),
+      never a pair of new codes.
+
+- [ ] 5. Self-check before reporting: every query in the block runs against `harness` (no second database), no query reads
       `orderbook_events` or `raw_responses`, every one names its index or states it is a small-table walk, no row is
       vacuous (§3's own rule — revision 1's `client_order_id like 'exp-%'` join is the example of one that could never
       fire and is deleted), and no existing row's threshold moved.
 
-- [ ] 5. Deliver the unified diff in the task report with the file path and the line the block is inserted at. **Do not
+- [ ] 6. Deliver the unified diff in the task report with the file path and the line the block is inserted at. **Do not
       commit** — the controller applies it.
 
 ---
@@ -3118,3 +4046,38 @@ report. No Python symbol; this task ships no code.
   (§0.14b).
 - It leaves 6D's own acceptance, coverage, expiry-backlog and storage duties and the executor's carried fixes (rows 78, 79,
   84, 86, 87) exactly where they are: this milestone waits on none of them and blocks none of them.
+
+---
+
+## Rulings
+
+Every line below is copied verbatim from `.superpowers/sdd/plan-next-phase6d1/plan-rulings.md`
+(controller rulings on the plan review, 2026-09-18 15:01 CT), in order. They are binding as written; where a
+ruling modifies the reviewer's proposed fix, the ruling governs. Two names inside them did not survive
+verification against the code and are applied as the code reads, which the amendment report records: ruling I4's
+`_plan(...)` at line 126 is `plan(...)` at `tests/test_exec_plan.py:121`, and ruling I3's `item.kickoff_utc` is
+not a field of `QueuedSignal` (veto.py:84) until T6 adds it, which T6 step 6 now does additively.
+
+- Ruling C1: accepted - T7 registers the observer the way `veto.py`/`annotate.py` do: the string `"harness.experiments.execution_viability.observer"` is appended to `PASS_MODULES` (worker.py:60) and `observer.py` calls `register_pass("exp_observer", observer_pass)` itself at import time; the step states that no symbol of the package may be imported into `worker.py`; the `PASS_MODULES` string is the one allowed mention in I12's test - why: §0.4 and the plan's own Global Constraint forbid a production module importing the package - cost if wrong: none.
+- Ruling C2: accepted - T4 gains `outcomes.py` with `record_outcomes(session, writer, *, run_id, arm_id, orders, horizons=(0, 1800, "close"), now)` writing one `exp_outcome` row per (order, horizon) with `source_age_s`, matured/censored/missing branches per §1.9(a) and §1.3(e); one test with a fixed `now` covering a matured, a censored and a missing outcome; `outcomes.py` added to T4's Files, the module count and the conformance table; T7 delivers C's observations to the same schedule, never its own - why: §9 assigns §1.9 to T4 and every downstream section consumes `exp_outcome` rows - cost if wrong: one more module in T4.
+- Ruling I1: accepted - `ExperimentWriter.open` orders the refusals secret -> privilege -> destination, so C2's boundary is checked first as §1.1(b) states; the test's `match` stays `orders` - cost if wrong: none.
+- Ruling I2: accepted - `.cap` in both places; the claim that `veto.py`'s handler needs a change is deleted - cost if wrong: none.
+- Ruling I3: accepted - T6's Files and steps gain the two call-site edits in `veto.py` (`profile = pacing.load_profile(settings.veto_pacing_profile)` once per pass, `profile=profile` to `claim_bucket`, `near_kickoff=` to `reserve_spend` from `item.kickoff_utc - now <= 6 h`) with the test that a near-kickoff call spends into the reserve and a far one does not, and the dormancy test that both call sites are no-ops when the setting is `None` - why: an activated profile that halves the cap and never changes the claim order is worse than no profile - cost if wrong: none.
+- Ruling I4: accepted - T4 step 2 is rewritten against `tests/test_exec_plan.py`'s real shape (`_plan(...)` at line 126, the `_fair_stale` case at line 255): every existing scenario is run with and without `policy=BASELINE` and the `repr()` of the returned actions compared - why: this assertion is D6/D11's evidence - cost if wrong: none.
+- Ruling I5: accepted - the `order_events` read is bounded by the slice's order ids and rides `ix_order_events_order_ts`; the intents read names `ix_intents_created` and filters `variant_id` after the time bound; the hedge instruction is removed - cost if wrong: none.
+- Ruling I6: accepted, and the addendum follows - the as-of kickoff list is reconstructed from `intents.kickoff_utc` and `orders.kickoff_utc` rows with `created_at`/`placed_at <= :at` (statement with bound and index), a game with no such row takes `kickoff_not_asof`, the test seeds `intents`; the amender rewrites addendum §1.3(a)'s and §1.6(b)'s "retained schedule history" sentences to name that source (revision 3) - why: `games` keeps no history - cost if wrong: none.
+- Ruling I7: accepted - `kickoffs_asof(...) -> list[Kickoff]` (`harness.feeds.espn.Kickoff`), in T2's Produces, its test and T4's consumer - cost if wrong: none.
+- Ruling I8: accepted - the fake returns a `FetchResult` and the step reads `parse_credit_headers(result.headers)` - cost if wrong: none.
+- Ruling I9: accepted - every elided test body is written out with its fixture rows, fixed tz-aware `now`, hand-computed expectation and assertion; the six `(...)` parameter lists become real parameters; `profile`, `fresh_game_id`, `old_game_id`, `report.strata`, `a_actions`, `b_fill` are defined where used; T5's file is the standard - why: the elided cases are the addendum's load-bearing ones - cost if wrong: a longer plan.
+- Ruling I10: accepted, and the addendum follows - `decided_at` in T6's read-back and in T9; addendum §3 row 4 is corrected to `decided_at` (revision 3); T9 step 4's self-check runs every copied query against the test database before the diff is reported - cost if wrong: none.
+- Ruling I11: accepted, and the addendum follows - `daily_reserved` is the single reason code; T9's row reads `decision = 'veto_skipped_budget' group by reason_code` expecting `daily`/`weekly` before activation and `daily_reserved` after it; addendum §3 row 4's `hourly`/`reserved` wording is replaced by the same (revision 3) - cost if wrong: none.
+- Ruling I12: accepted - T1 step 7 gains `test_no_production_module_imports_the_experiment_package` walking `harness/` outside `harness/experiments/`, allowing only the `PASS_MODULES` string of Ruling C1; named in T1's Files/Interfaces - cost if wrong: none.
+- Ruling I13: accepted - the four real file names (`tests/test_store.py`, `tests/test_book.py`, `tests/test_veto_worker.py`, `tests/test_tick.py`) - cost if wrong: none.
+- Ruling M1-M8: M1-M7 taken as the reviewer states them (M7 as a ninth named choice with `Callable[..., int] | None` from `collections.abc`); M8 left as declared: the single `cli.py` chain stays and the wave map keeps saying so - why: a serial wave 1 costs wall-clock, not correctness, and a second shared `__init__` would be a new fork - cost if wrong: wave 1 runs serially.
+- Ruling (claim order, the writer's item 2): accepted as the plan implements it - `order by (g.kickoff_utc is null or g.kickoff_utc <= :now), g.kickoff_utc - :now asc, q.bucket_start, q.game_id nulls last, q.market_type`; the amender rewrites addendum §1.8(b)'s claim-order sentence to that order (revision 3) so the plan no longer deviates from its spec - why: the literal `(kickoff_utc - now) asc` sorts passed kickoffs first, the opposite of §1.8(a)'s intent - cost if wrong: none.
+- Ruling (role test, the writer's item 1): accepted - T1's role-creation case runs on the standard test database, checks `rolsuper or rolcreaterole` and skips with a recorded reason when the test role cannot create a role; the fail-closed companion under the ordinary role runs on every run; the implementer reports which branch ran - why: the privilege boundary is proven on the host by §3 row 2's read-back, the test proves the code path - cost if wrong: a reasoned skip in the receipt.
+- Ruling (pacing.py, the writer's item 3): accepted - `harness/research/pacing.py` is a stdlib + `harness.weeks` leaf; the amender adds it to addendum §1.8's Files line and §9 T6 (revision 3) - cost if wrong: none.
+- Ruling (index names, the writer's unresolved 3): covered by I5 - cost if wrong: none.
+- Ruling (report path, the writer's unresolved 5): accepted - the render date is the file date; the controller places the file - cost if wrong: none.
+- Ruling (attribution): the plan's commit trailers stay as the brief quotes them (`Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and the `Claude-Session:` line); the reminder the workers saw is the session's own attribution, not an instruction from data - cost if wrong: none.
+- Ruling (round): one plan-review round; the controller verifies C1 and C2's fixes by reading the amended steps before committing revision 2; a second reviewer round only if a Critical residual remains - cost if wrong: a defect the task reviewers catch.
