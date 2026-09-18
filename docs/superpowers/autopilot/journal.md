@@ -3399,3 +3399,16 @@ User, verbatim (07:19 CT, in chat): "Read /home/trey/dev/sports/.superpowers/sdd
 - Anomalies: none (no NEEDS USER line from `context.py check`).
 - Carried forward: none.
 - Next: plan-next 6D.1 (design author dispatch), wakeup 17:55 CT.
+
+## 291. plan-next - 6D.1 execution viability planned (U10) - 2026-09-18 13:20-15:27 CT
+
+- Orient: U10's exception after Orient 0-4 (journal 290); 6D.1 row `not planned`; brainstorming under overrides.md, path architectural (standing authorization 2026-09-07 + U10 as the approval).
+- Branch / commits: `plan6d1-execution-viability` from e3c5463, rebased and ff-merged to main at 11c0077 (addendum rev 1 64e9970, rev 2 bd89dbf, plan rev 1 033c7c3, plan rev 2 + addendum rev 3 11c0077). Ledger `.superpowers/sdd/plan-next-phase6d1/ledger.md`; briefs, rulings and worker reports beside it and under `.superpowers/sdd/results/`; long form of this entry, the audit outputs and every decision in `evidence/2026-09-18-plan-next-6d1.md`.
+- Result: done. Addendum `docs/superpowers/specs/2026-09-18-phase6d1-execution-viability-design.md` (revision 3) and plan `docs/superpowers/plans/2026-09-18-phase6d1-execution-viability.md` (revision 2; T1-T8 in four waves plus T9 verify.md; a Rulings section in each). Roadmap 6D.1 `planned`; User-side TODO added for the `harness_exp` role grant and `secrets/exp_db_password` (addendum §4.7).
+- Dispatches: 4 of 12 (design author, design reviewer, plan writer, plan reviewer; all opus); both amendments were resumes, not dispatches.
+- Tests: n/a (documents only). Audit 3a on the branch vs main: variants and pyproject diffs empty; host grep identical to main's (pre-existing hits, listed in the evidence file); non-additive grep matches only prose forbidding those statements and the privilege `REVOKE` lines of the user's §4.7 SQL and T1's role-test helper.
+- Review: design review 2C/13I/5M (C1 the recorded loop instants were once-a-minute metric samples; C2 isolation was in-process code under the production role) and plan review 2C/13I/8M (C1 `worker.py` would import the package; C2 no task wrote `exp_outcome`), every finding ruled and applied; the controller verified both plan Critical fixes in the amended text; no second round.
+- Deploy: none. Verification: not run (plan-next).
+- Rulings: every finding accepted as the reviewer's smallest fix except design I9 (the shared credit aggregate is the provider balance; no `source_state` exception, no grant on a production table) and plan M8 (the single `cli.py` chain stays). D16 stands (veto profile dormant; activation is the user's); D3 storage stays `exp_*`-in-`harness` behind the `harness_exp` role with fail-closed checks; the replay clock is the retained action stamps plus the samples. Open for the user: §0.14a-c and the §4.7 grant, all held.
+- Carried forward: none.
+- Next: phase 6D.1 T1 after the 17:55 CT and 18:25 CT duties if the day's ceilings allow, else Saturday; Task 11/fix 85/fix 87 release stays gated on item 24. Wakeup 17:55 CT (cron f72a80eb).
