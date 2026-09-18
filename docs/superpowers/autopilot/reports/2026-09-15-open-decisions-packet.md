@@ -136,3 +136,30 @@ Ruled 09:50 CT Thu (journal 262): (a) amended by your review session. The print 
 
 **Still open from the ruling file's OPTIONAL lines:** (1) may the loop-metrics row read FAIL through these two releases without tripping "the same verify item failing twice running"; (2) do the executor-coupled 6B section 3 and 6D acceptance rows move to Friday's or Saturday's NCAAF window.
 
+
+## Added Thu 2026-09-17 19:39 CT (journal 267-269)
+
+### 20. Status
+
+The print cache (fix 79) is reviewed (opus, approved with minors), suite-green (4,216) and merged to main as 2cb2219; the runtime stays 1a12781 until Friday morning by your ruling. Tonight's BEFORE half is in `evidence/2026-09-17-window-1935.txt`: 0 fills since 16:38 CT with both games in progress, which is structural (orders expire at kickoff minus 10 min, R8) and explained (of the 2,220 rows that expired tonight, 4 had a print at or through their price before expiry, none filled); liquidity conservation 0 / no rows; no post-expiry fill 0. Fills per hour over the last 30 h peak at 964 in the Wed 19:00 CT hour, all counterfactual fills on Saturday's game 469.
+
+### 21. 6D coverage contract reads 0.678 on its first game day; the row FAILs again Friday unless you rule
+
+The 6D acceptance row expects `completed / scheduled >= 0.95` for the gate variant and the primary on a game day. Thursday reads 0.678 for every variant (381,174 of 561,920 units; 0.65-0.70 in every hour since the 6D release). The entire shortfall is one class: `no_fair` with reason `no_sharp_line`, markets no variant can price because there is no sharp line at all. Row 84 is in `fixes.md` Watch as phase work (journal 268): a hotfix may not change the check or the spec's denominator. Friday's morning verify is the second consecutive FAIL of the same item, which is a ceiling (gate 12) unless ruled first.
+
+- **(a) Amend §1.1's scheduled set** to markets with a sharp line at schedule time, keep `coverage_min` 0.95 on that denominator, and report `no_sharp_line` beside it as an excluded class (a dated amendment, your edit or a 6F task). *Loop's lean.*
+- **(b) Keep the definition and waive the FAIL** with a date, as journal 263 did for loop metrics.
+- **(c) Set the tolerance to the observed 0.68.** Not recommended: it declares the tolerance after seeing the period.
+- **(d) Something else.**
+
+### 22. Paper placement costs about 145 ms per order
+
+Row 82's timers attribute the 27-44 s placement waves entirely to `exec.phase_place_ms`: 21.0-22.4 s on every loop that placed 150 orders (15 such loops between 11:06 and 15:31 CT), about 145 ms per paper placement, with the loop otherwise accounted within 1 s. Row 82 is closed PASS on its covering test (journal 267). A batched placement write is executor value-path work like row 79 was; it needs your ruling before the loop touches it. No option list yet: say whether you want a brief, and when.
+
+### 23. The expiry cohort: 85-225 ms per expiring row, minutes-long loops at kickoff minus 10
+
+At 18:20 CT the loop that carried the NCAAF cohort (1,116 rows expiring) ran 125 s, all of it in the per-row path (85 ms per row). The NFL cohort at 19:05 CT was worse: four consecutive loops of 184, 253, 204 and 116 s (19:05-19:16 CT) carried 1,104, 1,042, 868 and 868 expiring rows at 150-225 ms per row, with `placed` 0 throughout; heartbeat p95 41,207 ms afterwards. Saturday's 11,356 expiries arrive in kickoff cohorts; at these rates the 11:00, 14:30 and 18:00 CT slates each cost the executor several minutes of no placements around kickoff minus 10 min, on 1a12781 and on the print cache alike (the cache does not touch the per-row path). Your review session named the cliffs; this is the measured rate and the repeat-across-loops behaviour. Bringing it to you as a finding, not a proposal; a proposal needs a design read of why a cohort takes four loops to drain.
+
+### T18b (4.6): no watched window yet
+
+`player_stat_events` is written only for carded players of placed or alive cards, and no card exists, so tonight is not a "watched NFL window" in the plan's sense: the T18b measurement and T19's rows wait for your first card. The plan's cadence query is not valid SQL as written (WINDOW before WHERE and an aggregate over a window function); the corrected form is in `evidence/2026-09-17-window-1830.txt` for T19.

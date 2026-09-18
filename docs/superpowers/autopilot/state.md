@@ -1,6 +1,6 @@
 # Autopilot checkpoint
 
-Updated 2026-09-17 18:35 CT by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 268 (260 was a separate user-directed session: sports.tunderwood.com behind Authelia, U9 amended, no release). Paper-only. Runtime build: **1a12781** (journal 264, app-only 11:06 CT Sep 17, fix 82 timers; 747791c full 10:04 CT Sep 16, journal 257). Main = the runtime; deploy trigger empty. origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
+Updated 2026-09-17 19:40 CT by controller session sports-26 in `/home/trey/dev/sports` on Omarchy. Last journal entry: 269 (260 was a separate user-directed session: sports.tunderwood.com behind Authelia, U9 amended, no release). Paper-only. Runtime build: **1a12781** (journal 264, app-only 11:06 CT Sep 17, fix 82 timers; 747791c full 10:04 CT Sep 16, journal 257). Main = the runtime; deploy trigger empty. origin/main pushed 2026-09-16 at the user's request (journal 259; U7 pushes after phases and on Mondays); main's upstream is origin/main.
 
 ## Right now
 
@@ -20,7 +20,7 @@ Journal 224 item 17, as it stands:
 
 ## Active units
 
-- **Thu window (journal 267/268)**: read 1 done 18:30 CT (6B PASS, 6D coverage FAIL row 84, 125 s expiry loop at 18:20 CT); read 2 at 19:35 CT: fills per hour (BEFORE half), the 19:05 CT NFL expiry loop, T18b during-window queries, `variants_derived.elapsed_ms`; docket update.
+- **Thu window (journal 267-269)**: done. 6B PASS; 6D coverage FAIL (row 84, Watch); BEFORE half recorded (0 fills since 16:38 CT, explained); NFL expiry cohort drained over four loops of 116-253 s; T18b unwatched (no card). Docket v11 items 21-23; packet appended.
 - **hotfix fix 79**: worktree `/home/trey/dev/sports-wt/fix-2026-09-17-executor-prints` on 1a12781; reviewed APPROVED WITH MINORS, suite 4,216 passed, **merged to main 2cb2219** (journal 266), grant revoked, receipt matches main's release tree; worktree, branch and test db kept; rollback is 1a12781 app-only; HOLD: **Friday morning release** (main ahead overnight, ruling 262).
 - **phase 6D**: on main, released b69b880 (journal 221); ledger `.superpowers/sdd/2026-09-13-phase6d-sustained-evaluation/progress.md`, dispatches 30. Remaining: 6D acceptance rows at the first game window, §4 read-backs at real ticks, exec-health baseline on 0d04804 (item 12), ledger re-archive and final review, then roadmap `done`; worktree phase6d-merge-main removable after acceptance.
 - **phase 4.6**: on main, released c1066b5. Remaining: T18b (watched NFL-window queries), T19 (verification rows), walkthrough items; the user's LAN files.
@@ -28,7 +28,7 @@ Journal 224 item 17, as it stands:
 
 ## Pending results
 
-- Agents: none. Suites: none. Wakeups: cron one-shots Thu 18:25 CT (6ff52321, window acceptance), Fri 07:27 CT (8d9728d0, fix 79 release); durable reminder 2026091702.
+- Agents: none. Suites: none. Wakeups: cron one-shot Fri 07:27 CT (8d9728d0, fix 79 release); durable reminders 2026091801, 2026091802 (2026091702 consumed).
 - Receipts by stage: code 33ceeb1 (fix 81); test: full suite 4,196 passed at 33ceeb1 on its branch db (receipt test-harness_test_fix_2026_09_16_recorder_sink_lag.json, release tree 3c9be15f); review: fix-81-review.md APPROVED WITH MINORS 0/0/2; merge: main 33ceeb1 09:54 CT; deploy: /srv/sports-harness/releases/20260916T145941Z-747791c (full, healthy 10:04 CT; journal 257); verify: journal 258 PASS (evidence/2026-09-16-fix81-judgement-1027.txt); fix 78 part 3: eac4414 judged PASS (journal 256, evidence/2026-09-16-fix78c-judgement-0957.txt); preflight: evidence/2026-09-15-preflight-2120.txt.
 - Fixture grant UPDATE(indisvalid) ON: harness_test_main (+ shards), phase6d_merge_main, phase6d_merge_review, harness_test_fix_2026_09_15_executor_batch_2 (the Sep 16 branch databases revoked 10:00 and 10:05 CT). Older fix_20260915 databases remain until `make testdb-prune`.
 - Worktrees: fix-2026-09-15-executor-batch-2 (merged, removable); phase6d-merge-main; the Mac-era fix-45/fix-48/recovery worktrees unchanged (preserved).
@@ -37,7 +37,7 @@ Journal 224 item 17, as it stands:
 
 - CT day Sep 17: dispatches 4 (fix-82, rev-fix-82, fix-79, rev-fix-79; timers batch closed at 2 of 12, 10:03-11:06 CT; fix 79 batch 2 of 12 from 11:10 CT); failed deploys 0; implementers running 0 of 3. Sep 16 closed at 5 dispatches, 0 failed deploys.
 - Next duties: **Fri 2026-09-18 07:30 CT release of fix 79 app-only, judge, tell the user (reminder 2026091801)**; daily 09:00 CT line Fri 2026-09-18 and the alias pass the morning after the Thursday games; T18b after-window read Friday morning (game 115 final), then T19 (verify.md rows, the plan's last task); storage retention decision is the user's by 2026-09-22.
-- Wakeups: cron one-shot Thu 18:25 CT (this session only); cron one-shot Fri 07:27 CT (8d9728d0, fix 79 release); durable reminders 2026091702, 2026091801 and 2026091802 (Fri 18:25 CT after read; cron armed at Friday's release). Reminders through 2026091701 are consumed.
+- Wakeups: cron one-shot Fri 07:27 CT (8d9728d0, fix 79 release); durable reminders 2026091702, 2026091801 and 2026091802 (Fri 18:25 CT after read; cron armed at Friday's release). Reminders through 2026091701 are consumed.
 
 ## Constraints
 

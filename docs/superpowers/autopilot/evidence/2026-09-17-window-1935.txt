@@ -1,0 +1,385 @@
+# Thu 2026-09-17 game-window read 2, 19:36-19:45 CT, runtime 1a12781 (NCAAF 460 and NFL 115 in progress). Query files window3-5.sql and outputs.
+
+## window3.sql
+\pset footer off
+select 'verify_at_utc', now();
+select 'games_now', id, sport, status, home_score, away_score, kickoff_utc at time zone 'America/Chicago' from games where kickoff_utc between now() - interval '3 hours' and now() + interval '2 hours' order by kickoff_utc;
+select 'in_progress', count(*) from games where status = 'in_progress';
+select 'heartbeat', last_loop_at, last_loop_ms, p95_loop_ms, loops, loops_skipped, last_error from exec_heartbeat;
+select 'loops_1h', count(*) as samples, count(*) filter (where value > 15000) as over_15s, count(*) filter (where value > 25000) as over_25s, round(percentile_disc(0.5) within group (order by value)) as p50, round(percentile_disc(0.95) within group (order by value)) as p95, round(avg(value)) as mean, max(value) as max from metric_samples where name = 'exec.loop_ms' and ts > now() - interval '1 hour';
+select 'skips_1h', reason, sum(v) from (select labels->>'reason' as reason, value as v from metric_samples where name = 'exec.skipped' and ts > now() - interval '1 hour') x group by 2 order by 3 desc;
+with slow as (select ts from metric_samples where name='exec.loop_ms' and ts > '2026-09-17 23:35Z' and value > 25000)
+select 'slow_phases', s.ts, max(value) filter (where name='exec.loop_ms') as loop_ms, max(value) filter (where name='exec.phase_load_ms') as load, max(value) filter (where name='exec.phase_place_ms') as place, max(value) filter (where name='exec.phase_tape_ms') as tape, max(value) filter (where name='exec.phase_walk_ms') as walk, max(value) filter (where name='exec.phase_batch_ms') as batch, max(value) filter (where name='exec.phase_per_row_ms') as per_row, max(value) filter (where name='exec.placed') as placed, max(value) filter (where name='exec.per_row_n') as per_row_n, max(value) filter (where name='exec.expiring_n') as expiring, max(value) filter (where name='exec.working_rows') as working, max(value) filter (where name='exec.tape_print_rows') as prints, max(value) filter (where name='exec.tape_delta_rows') as deltas from slow s join metric_samples m on m.ts = s.ts and m.name like 'exec.%' group by s.ts order by s.ts;
+select 'expiring_samples', ts, value from metric_samples where name='exec.expiring_n' and value > 0 and ts > now() - interval '3 hours' order by ts;
+select 'nw_pending', ts, value from metric_samples where name = 'exec.nw_pending' order by ts desc limit 1;
+select 'open_orders', status, count(*) from orders where status in ('open','partially_filled') group by 2;
+select 'dirty_markets', ts, value from metric_samples where name = 'exec.dirty_markets' order by ts desc limit 1;
+select 'orders_placed_by_hour', date_trunc('hour', placed_at) at time zone 'America/Chicago', count(*) from orders where replay=false and placed_at > now() - interval '6 hours' group by 2 order by 2;
+-- BEFORE half
+select 'fills_per_hour', date_trunc('hour', filled_at) at time zone 'America/Chicago' as hour_ct, count(*), sum(contracts), count(*) filter (where fill_method='queue_model') as queue_model, count(*) filter (where has_print) as with_print from fills where replay = false and filled_at > now() - interval '30 hours' group by 2 order by 2;
+select 'fills_total', count(*), max(id), max(filled_at) from fills where replay = false;
+select 'fill_methods_24h', fill_method, count(*) from fills where replay=false and filled_at > now() - interval '24 hours' group by 2;
+select '6b2_post_expiry_fill', count(*) from fills f join orders o on o.id = f.order_id where f.replay = false and f.id > 1878 and o.expiry is not null and f.filled_at > o.expiry;
+select '6b4_no_print_fills', count(*) from fills where replay = false and id > 1878 and fill_method = 'queue_model' and has_print = false;
+select '6b4_conservation', o.id, o.filled_contracts, sum(t.count) as hitting_volume from orders o join fills f on f.order_id = o.id and f.replay = false and f.fill_method = 'queue_model' join venue_trades t on t.ticker = o.ticker and t.ts >= o.placed_at and t.ts <= coalesce(o.cancelled_at, o.expiry) and t.taker_side = case when o.side = 'yes' then 'no' else 'yes' end and case when o.side = 'yes' then t.yes_price else 1 - t.yes_price end <= o.prob where o.replay = false and o.id > 10886 group by o.id, o.filled_contracts having o.filled_contracts > sum(t.count) limit 10;
+select '6b4_sample_n', count(distinct o.id) from orders o join fills f on f.order_id = o.id and f.replay = false and f.fill_method = 'queue_model' where o.replay = false and o.id > 10886;
+select 'prints_per_hour', date_trunc('hour', ts) at time zone 'America/Chicago', count(*) from venue_trades where ts > now() - interval '6 hours' group by 2 order by 2;
+-- 6D stage costs
+select 'stage_costs', r.id, r.started_at, (select e from jsonb_array_elements(r.notes->'pricing'->'stages') e where e->>'name'='variants_derived') as vd, r.notes->'pricing'->'rescore_suppressed' as rescore_suppressed, r.notes->'pricing'->>'gaps' as gaps from (select id, started_at, notes from runs order by id desc limit 300) r where r.notes ? 'pricing' and r.notes->'pricing' <> '{}'::jsonb order by r.id desc limit 3;
+-- T18b during
+select 't18b_stat_rows_8h', count(*) filter (where correction) as corrections, count(*) as rows, min(ts), max(ts), count(distinct game_id) as games, count(distinct player_id) as players from player_stat_events where ts >= now() - interval '8 hours';
+select 't18b_cadence', player_id, stat, count(*) as rows, round(avg(gap)) as mean_gap_s, max(gap) as max_gap_s from (select player_id, stat, extract(epoch from ts - lag(ts) over (partition by player_id, stat order by ts)) as gap from player_stat_events where ts >= now() - interval '8 hours') g group by player_id, stat order by rows desc limit 20;
+select 't18b_legs', market_type, status, count(*) from parlay_legs group by 2,3 order by 2,3;
+select 't18b_cards', status, count(*) from parlay_cards group by 2;
+select 't18b_source_state', key, credits_used, last_fetched_at from source_state where key like 'odds_props%' or key like 'espn_final%' or key like 'espn_stat%' or key = 'parlay_reprice' order by 1 limit 20;
+select 't18b_stat_sources', source, count(*), max(ts) from player_stat_events group by 2;
+select 'ws_recorder', name, max(ts), round(max(value)) from metric_samples where name in ('recorder.tick_ms','recorder.rss_mb','ws.subscribed_tickers','ws.gaps') and ts > now() - interval '30 minutes' group by 2 order by 2;
+
+## window3 output
+   ?column?    |              now              
+---------------+-------------------------------
+ verify_at_utc | 2026-09-18 00:36:34.271566+00
+
+ ?column?  | id  | sport |   status    | home_score | away_score |      timezone       
+-----------+-----+-------+-------------+------------+------------+---------------------
+ games_now | 460 | ncaaf | in_progress |         14 |          0 | 2026-09-17 18:35:00
+ games_now | 115 | nfl   | in_progress |          7 |          0 | 2026-09-17 19:17:36
+
+  ?column?   | count 
+-------------+-------
+ in_progress |     2
+
+ ?column?  |         last_loop_at          | last_loop_ms | p95_loop_ms | loops | loops_skipped | last_error 
+-----------+-------------------------------+--------------+-------------+-------+---------------+------------
+ heartbeat | 2026-09-18 00:36:14.077855+00 |        12990 |       41207 | 45541 |          5058 | 
+
+ ?column? | samples | over_15s | over_25s |  p50  |  p95   | mean  |      max      
+----------+---------+----------+----------+-------+--------+-------+---------------
+ loops_1h |      40 |       34 |        6 | 17935 | 184438 | 35376 | 253471.000000
+
+ ?column? |     reason      |     sum     
+----------+-----------------+-------------
+ skips_1h | exec_capacity   | 3258.000000
+ skips_1h | book_dirty      | 1517.000000
+ skips_1h | signal_rejected |   14.000000
+ skips_1h | kickoff         |   12.000000
+
+  ?column?   |              ts               |    loop_ms    |    load     |   place    |     tape     |    walk     |   batch    |    per_row    |  placed  |  per_row_n  |  expiring   |   working    |    prints     |    deltas     
+-------------+-------------------------------+---------------+-------------+------------+--------------+-------------+------------+---------------+----------+-------------+-------------+--------------+---------------+---------------
+ slow_phases | 2026-09-17 23:41:59.077805+00 |  36994.000000 | 4283.847000 | 354.436000 | 15947.946000 | 1103.594000 | 159.692000 |  13971.242000 | 0.000000 |  157.000000 |    0.000000 | 24836.000000 | 193544.000000 | 564415.000000
+ slow_phases | 2026-09-18 00:05:14.077977+00 | 184438.000000 | 4303.140000 | 228.439000 | 12176.918000 | 1351.452000 | 158.435000 | 165398.932000 | 0.000000 | 1305.000000 | 1104.000000 | 24839.000000 | 209091.000000 | 571506.000000
+ slow_phases | 2026-09-18 00:08:29.077912+00 | 253471.000000 | 4734.383000 | 210.932000 |  9745.745000 | 1649.839000 | 317.114000 | 235229.419000 | 0.000000 | 1200.000000 | 1042.000000 | 24777.000000 | 207390.000000 | 534162.000000
+ slow_phases | 2026-09-18 00:12:44.07801+00  | 204287.000000 | 2296.064000 | 224.736000 | 10599.762000 | 1757.291000 | 215.501000 | 187524.452000 | 0.000000 | 1053.000000 |  868.000000 | 24603.000000 | 187450.000000 | 526008.000000
+ slow_phases | 2026-09-18 00:16:14.07803+00  | 116450.000000 | 2259.111000 | 206.041000 |  9169.206000 | 1461.459000 | 272.812000 | 101784.028000 | 0.000000 | 1030.000000 |  868.000000 | 24603.000000 | 190069.000000 | 518100.000000
+ slow_phases | 2026-09-18 00:22:44.077804+00 |  28422.000000 | 3547.919000 | 286.165000 | 21052.871000 |  553.624000 | 337.323000 |   1666.514000 | 0.000000 |  174.000000 |    0.000000 | 23735.000000 |  89465.000000 | 494048.000000
+
+     ?column?     |              ts               |    value    
+------------------+-------------------------------+-------------
+ expiring_samples | 2026-09-17 23:20:29.078122+00 | 1116.000000
+ expiring_samples | 2026-09-18 00:05:14.077977+00 | 1104.000000
+ expiring_samples | 2026-09-18 00:08:29.077912+00 | 1042.000000
+ expiring_samples | 2026-09-18 00:12:44.07801+00  |  868.000000
+ expiring_samples | 2026-09-18 00:16:14.07803+00  |  868.000000
+
+  ?column?  |              ts               |    value     
+------------+-------------------------------+--------------
+ nw_pending | 2026-09-18 00:35:29.078094+00 | 23738.000000
+
+  ?column?   | status | count 
+-------------+--------+-------
+ open_orders | open   |   150
+
+   ?column?    |              ts               |   value   
+---------------+-------------------------------+-----------
+ dirty_markets | 2026-09-18 00:35:29.078094+00 | 20.000000
+
+       ?column?        |      timezone       | count 
+-----------------------+---------------------+-------
+ orders_placed_by_hour | 2026-09-17 13:00:00 |   300
+ orders_placed_by_hour | 2026-09-17 14:00:00 |   600
+ orders_placed_by_hour | 2026-09-17 15:00:00 |   486
+ orders_placed_by_hour | 2026-09-17 16:00:00 |    33
+ orders_placed_by_hour | 2026-09-17 17:00:00 |    16
+ orders_placed_by_hour | 2026-09-17 18:00:00 |    11
+ orders_placed_by_hour | 2026-09-17 19:00:00 |     3
+
+    ?column?    |       hour_ct       | count |   sum    | queue_model | with_print 
+----------------+---------------------+-------+----------+-------------+------------
+ fills_per_hour | 2026-09-16 13:00:00 |    34 |   188.37 |           0 |         34
+ fills_per_hour | 2026-09-16 14:00:00 |   141 |  1453.16 |           0 |        141
+ fills_per_hour | 2026-09-16 15:00:00 |    23 |   142.94 |           0 |         23
+ fills_per_hour | 2026-09-16 16:00:00 |    75 |   488.78 |           0 |         75
+ fills_per_hour | 2026-09-16 19:00:00 |   964 | 18725.84 |           0 |        964
+ fills_per_hour | 2026-09-16 20:00:00 |     9 |   427.00 |           0 |          9
+ fills_per_hour | 2026-09-16 22:00:00 |    20 |    27.54 |           0 |         20
+ fills_per_hour | 2026-09-16 23:00:00 |     4 |     8.82 |           0 |          4
+ fills_per_hour | 2026-09-17 01:00:00 |    48 |   326.88 |           0 |         48
+ fills_per_hour | 2026-09-17 04:00:00 |    10 |   137.10 |           0 |         10
+ fills_per_hour | 2026-09-17 16:00:00 |    10 |    25.65 |           0 |         10
+
+  ?column?   | count | max  |            max             
+-------------+-------+------+----------------------------
+ fills_total |  3565 | 3565 | 2026-09-17 21:38:56.003+00
+
+     ?column?     |  fill_method   | count 
+------------------+----------------+-------
+ fill_methods_24h | snapshot_cross |    70
+ fill_methods_24h | no_watcher     |   980
+
+       ?column?       | count 
+----------------------+-------
+ 6b2_post_expiry_fill |     0
+
+      ?column?      | count 
+--------------------+-------
+ 6b4_no_print_fills |     0
+
+ ?column? | id | filled_contracts | hitting_volume 
+----------+----+------------------+----------------
+
+   ?column?   | count 
+--------------+-------
+ 6b4_sample_n |     2
+
+    ?column?     |      timezone       | count 
+-----------------+---------------------+-------
+ prints_per_hour | 2026-09-17 13:00:00 |  3202
+ prints_per_hour | 2026-09-17 14:00:00 |  9119
+ prints_per_hour | 2026-09-17 15:00:00 | 11390
+ prints_per_hour | 2026-09-17 16:00:00 | 14754
+ prints_per_hour | 2026-09-17 17:00:00 | 20754
+ prints_per_hour | 2026-09-17 18:00:00 | 44028
+ prints_per_hour | 2026-09-17 19:00:00 | 58152
+
+  ?column?   |  id   |          started_at           |                                                           vd                                                           |                                                       rescore_suppressed                                                       | gaps 
+-------------+-------+-------------------------------+------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+------
+ stage_costs | 24387 | 2026-09-18 00:32:28.971237+00 | {"name": "variants_derived", "cause": null, "units": 4201, "status": "ran", "elapsed_ms": 2400, "remaining_ms": 10374} | {"nfl_only": 4004, "wide_band": 4004, "constrained": 4004, "no_velocity": 4004, "sharp_direct": 4004, "sharp_two_sided": 8008} | 4201
+ stage_costs | 24386 | 2026-09-18 00:29:58.97109+00  | {"name": "variants_derived", "cause": null, "units": 4201, "status": "ran", "elapsed_ms": 2497, "remaining_ms": 10167} | {"nfl_only": 4004, "wide_band": 4004, "constrained": 4004, "no_velocity": 4004, "sharp_direct": 4004, "sharp_two_sided": 8008} | 4201
+ stage_costs | 24385 | 2026-09-18 00:27:28.971102+00 | {"name": "variants_derived", "cause": null, "units": 4201, "status": "ran", "elapsed_ms": 2575, "remaining_ms": 10122} | {"nfl_only": 4005, "wide_band": 4005, "constrained": 4005, "no_velocity": 4005, "sharp_direct": 4005, "sharp_two_sided": 8010} | 4201
+
+     ?column?      | corrections | rows | min | max | games | players 
+-------------------+-------------+------+-----+-----+-------+---------
+ t18b_stat_rows_8h |           0 |    0 |     |     |     0 |       0
+
+ ?column? | player_id | stat | rows | mean_gap_s | max_gap_s 
+----------+-----------+------+------+------------+-----------
+
+ ?column? | market_type | status | count 
+----------+-------------+--------+-------
+
+ ?column? | status | count 
+----------+--------+-------
+
+     ?column?      |        key         | credits_used |        last_fetched_at        
+-------------------+--------------------+--------------+-------------------------------
+ t18b_source_state | odds_props:2026-09 |          873 | 2026-09-17 20:23:58.971187+00
+ t18b_source_state | odds_props         |              | 2026-09-17 20:23:58.971187+00
+ t18b_source_state | parlay_reprice     |              | 2026-09-17 20:23:58.971187+00
+
+ ?column? | source | count | max 
+----------+--------+-------+-----
+
+  ?column?   |         name          |              max              | round  
+-------------+-----------------------+-------------------------------+--------
+ ws_recorder | recorder.rss_mb       | 2026-09-18 00:34:28.971191+00 |    236
+ ws_recorder | recorder.tick_ms      | 2026-09-18 00:34:28.971191+00 | 124991
+ ws_recorder | ws.gaps               | 2026-09-18 00:36:04.311843+00 |      1
+ ws_recorder | ws.subscribed_tickers | 2026-09-18 00:36:04.311843+00 |    500
+
+
+## window4.sql
+\pset footer off
+select 'verify_at_utc', now();
+-- tonight's expired cohort (expiry between 22:50Z and 00:20Z)
+select 'tonight_cohort', count(*) as rows, count(*) filter (where nw_done) as nw_done, count(*) filter (where not nw_done) as nw_pending, sum(nw_filled_contracts) as nw_filled, count(*) filter (where nw_filled_contracts > 0) as rows_filled, min(expiry), max(expiry), count(distinct game_id) games from orders where replay=false and expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z';
+select 'tonight_cohort_status', status, nw_done, count(*) from orders where replay=false and expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z' group by 2,3 order by 2,3;
+select 'tonight_cohort_recon', nw_recon_state->>'state' as st, jsonb_typeof(nw_recon_state), count(*) from orders where replay=false and expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z' group by 2,3;
+select 'tonight_fills', count(*), sum(f.contracts) from fills f join orders o on o.id=f.order_id where o.replay=false and o.expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z';
+-- the Wed 19:00 CT hour fills: what were they
+select 'wed_fills', o.game_id, g.sport, g.kickoff_utc at time zone 'America/Chicago' as ko_ct, count(*) as fills, sum(f.contracts), min(o.expiry) at time zone 'America/Chicago', max(o.expiry) at time zone 'America/Chicago', string_agg(distinct f.fill_method, ',') from fills f join orders o on o.id=f.order_id left join games g on g.id=o.game_id where f.replay=false and f.filled_at between '2026-09-17 00:00Z' and '2026-09-17 01:00Z' group by 2,3,4 order by 5 desc limit 8;
+-- previous cohorts: expiry cohort per game over the last 3 days: rows, nw fills
+select 'cohorts_3d', o.game_id, g.sport, g.kickoff_utc at time zone 'America/Chicago' as ko_ct, count(*) as rows, count(*) filter (where nw_done) as done, sum(nw_filled_contracts) as nw_filled, count(*) filter (where nw_filled_contracts>0) as rows_filled, (select count(*) from fills f where f.order_id = any(array_agg(o.id))) as fill_rows from orders o left join games g on g.id=o.game_id where o.replay=false and o.expiry > now() - interval '3 days' and o.expiry < now() group by 2,3,4 order by 4;
+-- nw fill timing on the last cohort with fills: when were the fills written relative to expiry
+select 'fill_lag_wed', round(percentile_disc(0.5) within group (order by extract(epoch from f.filled_at - o.expiry))) as p50_s, min(f.filled_at) at time zone 'America/Chicago', max(f.filled_at) at time zone 'America/Chicago' from fills f join orders o on o.id=f.order_id where f.replay=false and f.filled_at between '2026-09-17 00:00Z' and '2026-09-17 01:00Z';
+-- tonight's cohort: last_print_ts / tape coverage vs expiry
+select 'tonight_tape', count(*) filter (where nw_last_print_ts is null) as no_print_ts, count(*) filter (where nw_last_print_ts >= expiry) as tape_past_expiry, count(*) filter (where nw_last_print_ts < expiry) as tape_short, max(nw_last_print_ts) from orders where replay=false and expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z';
+select 'tonight_attempts', nw_attempts, count(*) from orders where replay=false and expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z' group by 2 order by 2;
+select 'order_events_tonight', kind, coalesce(reason,''), count(*) from order_events where ts > '2026-09-17 22:50Z' group by 2,3 order by 4 desc limit 12;
+
+## window4 output
+   ?column?    |              now              
+---------------+-------------------------------
+ verify_at_utc | 2026-09-18 00:37:33.414306+00
+
+    ?column?    | rows | nw_done | nw_pending | nw_filled | rows_filled |          min           |          max           | games 
+----------------+------+---------+------------+-----------+-------------+------------------------+------------------------+-------
+ tonight_cohort | 2220 |    2220 |          0 |      0.00 |           0 | 2026-09-17 23:20:00+00 | 2026-09-18 00:05:00+00 |     2
+
+       ?column?        |  status   | nw_done | count 
+-----------------------+-----------+---------+-------
+ tonight_cohort_status | cancelled | t       |  2220
+
+       ?column?       | st | jsonb_typeof | count 
+----------------------+----+--------------+-------
+ tonight_cohort_recon |    | object       |  2220
+
+   ?column?    | count | sum 
+---------------+-------+-----
+ tonight_fills |     0 |    
+
+ ?column?  | game_id | sport |        ko_ct        | fills |   sum    |      timezone       |      timezone       |        string_agg         
+-----------+---------+-------+---------------------+-------+----------+---------------------+---------------------+---------------------------
+ wed_fills |     469 | ncaaf | 2026-09-19 18:30:00 |   949 | 18050.74 | 2026-09-19 18:20:00 | 2026-09-19 18:20:00 | no_watcher,snapshot_cross
+ wed_fills |     549 | ncaaf | 2026-09-19 18:00:00 |    15 |   675.10 | 2026-09-19 17:50:00 | 2026-09-19 17:50:00 | no_watcher,snapshot_cross
+
+  ?column?  | game_id | sport |        ko_ct        | rows | done | nw_filled | rows_filled | fill_rows 
+------------+---------+-------+---------------------+------+------+-----------+-------------+-----------
+ cohorts_3d |     460 | ncaaf | 2026-09-17 18:35:00 | 1116 | 1116 |      0.00 |           0 |         0
+ cohorts_3d |     115 | nfl   | 2026-09-17 19:17:36 | 1104 | 1104 |      0.00 |           0 |         0
+
+   ?column?   |  p50_s  |        timezone         |        timezone         
+--------------+---------+-------------------------+-------------------------
+ fill_lag_wed | -254195 | 2026-09-16 19:22:23.854 | 2026-09-16 19:44:42.775
+
+   ?column?   | no_print_ts | tape_past_expiry | tape_short |            max             
+--------------+-------------+------------------+------------+----------------------------
+ tonight_tape |         709 |                0 |       1511 | 2026-09-18 00:01:10.168+00
+
+     ?column?     | nw_attempts | count 
+------------------+-------------+-------
+ tonight_attempts |           0 |   437
+ tonight_attempts |             |  1783
+
+       ?column?       |   kind   |    coalesce     | count 
+----------------------+----------+-----------------+-------
+ order_events_tonight | skipped  | exec_capacity   |  8061
+ order_events_tonight | cap_gate | cap_daily       |  7382
+ order_events_tonight | skipped  | book_dirty      |  2586
+ order_events_tonight | cap_gate | cap_per_game    |   564
+ order_events_tonight | skipped  | signal_rejected |   113
+ order_events_tonight | skipped  | kickoff         |    18
+ order_events_tonight | place    |                 |    15
+ order_events_tonight | cancel   | signal_rejected |     8
+ order_events_tonight | cancel   | reprice         |     7
+
+
+## window5.sql
+\pset footer off
+select 'cohorts_7d', o.game_id, g.sport, g.kickoff_utc at time zone 'America/Chicago' as ko_ct, count(*) as rows, count(*) filter (where nw_done) as done, sum(nw_filled_contracts) as nw_filled, count(*) filter (where nw_filled_contracts>0) as rows_filled, count(*) filter (where filled_contracts>0) as live_filled, (select count(*) from fills f where f.order_id = any(array_agg(o.id))) as fill_rows, (select count(*) from fills f where f.order_id = any(array_agg(o.id)) and f.fill_method='queue_model') as qm_rows from orders o left join games g on g.id=o.game_id where o.replay=false and o.expiry > now() - interval '7 days' and o.expiry < now() group by 2,3,4 order by 4;
+select 'fills_by_method_7d', date_trunc('day', filled_at at time zone 'America/Chicago') as d, fill_method, count(*) from fills where replay=false and filled_at > now() - interval '7 days' group by 2,3 order by 2,3;
+select 'tonight_price_vs_prints', o.side, round(avg(o.prob)::numeric,3) as avg_prob, count(*) from orders o where o.replay=false and o.expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z' group by 2;
+select 'tonight_hitting', count(distinct o.id) as rows_with_hitting_print from orders o join venue_trades t on t.ticker=o.ticker and t.ts >= o.placed_at and t.ts <= coalesce(o.cancelled_at, o.expiry) and t.taker_side = case when o.side='yes' then 'no' else 'yes' end and case when o.side='yes' then t.yes_price else 1 - t.yes_price end <= o.prob where o.replay=false and o.expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z';
+select 'tonight_cancelled_at', min(cancelled_at) at time zone 'America/Chicago', max(cancelled_at) at time zone 'America/Chicago', round(avg(extract(epoch from cancelled_at - placed_at))) as avg_rest_s from orders where replay=false and expiry between '2026-09-17 22:50Z' and '2026-09-18 00:20Z';
+
+## window5 output
+  ?column?  | game_id | sport |        ko_ct        | rows | done | nw_filled | rows_filled | live_filled | fill_rows | qm_rows 
+------------+---------+-------+---------------------+------+------+-----------+-------------+-------------+-----------+---------
+ cohorts_7d |     372 | ncaaf | 2026-09-11 18:00:00 |   31 |   31 |    603.00 |           6 |           0 |        28 |       0
+ cohorts_7d |     373 | ncaaf | 2026-09-11 18:00:00 |   46 |   46 |     85.00 |           1 |           0 |         2 |       0
+ cohorts_7d |     428 | ncaaf | 2026-09-11 18:00:00 |   25 |   25 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     374 | ncaaf | 2026-09-11 18:30:00 |  201 |  201 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     376 | ncaaf | 2026-09-11 19:00:00 |  127 |  127 |    282.00 |           3 |           0 |         7 |       0
+ cohorts_7d |     377 | ncaaf | 2026-09-12 11:00:00 |  309 |  309 |  10517.00 |          93 |           0 |       290 |       0
+ cohorts_7d |     378 | ncaaf | 2026-09-12 11:00:00 |   22 |   22 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     380 | ncaaf | 2026-09-12 11:00:00 |  219 |  219 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     381 | ncaaf | 2026-09-12 11:00:00 |    4 |    4 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     382 | ncaaf | 2026-09-12 11:00:00 |   27 |   27 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     383 | ncaaf | 2026-09-12 11:00:00 |  251 |  251 |   1954.00 |          21 |           0 |        63 |       0
+ cohorts_7d |     386 | ncaaf | 2026-09-12 11:00:00 |   14 |   14 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     387 | ncaaf | 2026-09-12 11:00:00 |  161 |  161 |    114.00 |           1 |           0 |         5 |       0
+ cohorts_7d |     438 | ncaaf | 2026-09-12 11:00:00 |    6 |    6 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     443 | ncaaf | 2026-09-12 11:00:00 |    3 |    3 |     78.00 |           1 |           0 |         6 |       0
+ cohorts_7d |     450 | ncaaf | 2026-09-12 11:00:00 |    2 |    2 |     78.00 |           1 |           0 |         5 |       0
+ cohorts_7d |     388 | ncaaf | 2026-09-12 11:45:00 |   72 |   72 |    146.00 |           2 |           0 |         2 |       0
+ cohorts_7d |     432 | ncaaf | 2026-09-12 12:00:00 |    2 |    2 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     384 | ncaaf | 2026-09-12 12:30:00 |    3 |    3 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     390 | ncaaf | 2026-09-12 14:30:00 |  100 |  100 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     391 | ncaaf | 2026-09-12 14:30:00 |  293 |  293 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     392 | ncaaf | 2026-09-12 14:30:00 |  185 |  185 |    410.00 |           5 |           0 |        35 |       0
+ cohorts_7d |     393 | ncaaf | 2026-09-12 14:30:00 |  233 |  233 |      0.00 |           0 |           0 |        78 |       0
+ cohorts_7d |     394 | ncaaf | 2026-09-12 14:30:00 |   66 |   66 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     395 | ncaaf | 2026-09-12 14:30:00 |   10 |   10 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     396 | ncaaf | 2026-09-12 14:30:00 |   93 |   93 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     397 | ncaaf | 2026-09-12 14:30:00 |  231 |  231 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     398 | ncaaf | 2026-09-12 14:30:00 |   92 |   92 |    395.00 |           5 |           0 |         5 |       0
+ cohorts_7d |     399 | ncaaf | 2026-09-12 14:30:00 |  232 |  232 |      0.00 |           0 |           0 |        76 |       0
+ cohorts_7d |     425 | ncaaf | 2026-09-12 14:30:00 |  125 |  125 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     433 | ncaaf | 2026-09-12 14:30:00 |    4 |    4 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     434 | ncaaf | 2026-09-12 14:30:00 |    3 |    3 |     83.00 |           1 |           0 |         2 |       0
+ cohorts_7d |     451 | ncaaf | 2026-09-12 14:30:00 |    3 |    3 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     400 | ncaaf | 2026-09-12 14:45:00 |  256 |  256 |   3332.65 |          38 |           0 |        68 |       0
+ cohorts_7d |     441 | ncaaf | 2026-09-12 15:00:00 |    3 |    3 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     458 | ncaaf | 2026-09-12 15:00:00 |    2 |    2 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     401 | ncaaf | 2026-09-12 15:15:00 |    8 |    8 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     402 | ncaaf | 2026-09-12 17:00:00 |  201 |  201 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     403 | ncaaf | 2026-09-12 17:00:00 |  142 |  142 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     404 | ncaaf | 2026-09-12 17:00:00 |  314 |  314 |   1690.00 |          19 |           0 |        38 |       0
+ cohorts_7d |     406 | ncaaf | 2026-09-12 18:00:00 |  285 |  285 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     407 | ncaaf | 2026-09-12 18:00:00 |    2 |    2 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     408 | ncaaf | 2026-09-12 18:00:00 |   60 |   60 |    182.00 |           2 |           1 |        12 |       2
+ cohorts_7d |     409 | ncaaf | 2026-09-12 18:00:00 |   52 |   52 |   2453.00 |          29 |           0 |        41 |       0
+ cohorts_7d |     410 | ncaaf | 2026-09-12 18:00:00 |  408 |  408 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     445 | ncaaf | 2026-09-12 18:00:00 |    3 |    3 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     448 | ncaaf | 2026-09-12 18:00:00 |    3 |    3 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     452 | ncaaf | 2026-09-12 18:00:00 |    3 |    3 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     411 | ncaaf | 2026-09-12 18:15:00 |   89 |   89 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     413 | ncaaf | 2026-09-12 18:30:00 |  414 |  414 |    570.00 |           6 |           0 |        12 |       0
+ cohorts_7d |     414 | ncaaf | 2026-09-12 18:30:00 |    4 |    4 |    141.00 |           1 |           0 |         1 |       0
+ cohorts_7d |     416 | ncaaf | 2026-09-12 18:30:00 |  348 |  348 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     417 | ncaaf | 2026-09-12 18:30:00 |   12 |   12 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     418 | ncaaf | 2026-09-12 19:50:00 |   16 |   16 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     412 | ncaaf | 2026-09-12 20:30:00 |  105 |  105 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     419 | ncaaf | 2026-09-12 21:00:00 |  180 |  180 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     379 | ncaaf | 2026-09-12 21:30:00 |    5 |    5 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     440 | ncaaf | 2026-09-12 21:30:00 |    3 |    3 |     98.00 |           1 |           0 |         1 |       0
+ cohorts_7d |     421 | ncaaf | 2026-09-12 22:00:00 |    6 |    6 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     422 | ncaaf | 2026-09-12 22:59:00 |  334 |  334 |    819.00 |           7 |           0 |        12 |       0
+ cohorts_7d |       3 | nfl   | 2026-09-13 12:00:00 |  262 |  262 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |       4 | nfl   | 2026-09-13 12:00:00 |  271 |  271 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |       5 | nfl   | 2026-09-13 12:00:00 |   73 |   73 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |       6 | nfl   | 2026-09-13 12:00:00 |  361 |  361 |   3574.00 |          39 |           0 |       156 |       0
+ cohorts_7d |       7 | nfl   | 2026-09-13 12:00:00 |  240 |  240 |   8393.00 |          87 |           0 |       470 |       0
+ cohorts_7d |       8 | nfl   | 2026-09-13 12:00:00 |  214 |  214 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |       9 | nfl   | 2026-09-13 12:00:00 |  150 |  150 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |      10 | nfl   | 2026-09-13 12:00:00 |  189 |  189 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |      11 | nfl   | 2026-09-13 15:25:00 |  306 |  306 |   4651.68 |          53 |           0 |       267 |       0
+ cohorts_7d |      12 | nfl   | 2026-09-13 15:25:00 |  203 |  203 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |      13 | nfl   | 2026-09-13 15:25:00 |  299 |  299 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |      14 | nfl   | 2026-09-13 15:25:00 |  167 |  167 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |      15 | nfl   | 2026-09-13 19:20:00 |  127 |  127 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |      16 | nfl   | 2026-09-14 19:15:00 |  208 |  208 |   4139.00 |          48 |           0 |       193 |       0
+ cohorts_7d |     460 | ncaaf | 2026-09-17 18:35:00 | 1116 | 1116 |      0.00 |           0 |           0 |         0 |       0
+ cohorts_7d |     115 | nfl   | 2026-09-17 19:17:36 | 1104 | 1104 |      0.00 |           0 |           0 |         0 |       0
+
+      ?column?      |          d          |  fill_method   | count 
+--------------------+---------------------+----------------+-------
+ fills_by_method_7d | 2026-09-10 00:00:00 | no_watcher     |    41
+ fills_by_method_7d | 2026-09-10 00:00:00 | snapshot_cross |    12
+ fills_by_method_7d | 2026-09-11 00:00:00 | no_watcher     |   371
+ fills_by_method_7d | 2026-09-11 00:00:00 | snapshot_cross |     1
+ fills_by_method_7d | 2026-09-12 00:00:00 | no_watcher     |   280
+ fills_by_method_7d | 2026-09-12 00:00:00 | snapshot_cross |   158
+ fills_by_method_7d | 2026-09-13 00:00:00 | no_watcher     |   176
+ fills_by_method_7d | 2026-09-14 00:00:00 | no_watcher     |   195
+ fills_by_method_7d | 2026-09-15 00:00:00 | no_watcher     |   283
+ fills_by_method_7d | 2026-09-15 00:00:00 | queue_model    |     4
+ fills_by_method_7d | 2026-09-15 00:00:00 | snapshot_cross |     5
+ fills_by_method_7d | 2026-09-16 00:00:00 | no_watcher     |  1251
+ fills_by_method_7d | 2026-09-16 00:00:00 | snapshot_cross |    77
+ fills_by_method_7d | 2026-09-17 00:00:00 | no_watcher     |    68
+
+        ?column?         | side | avg_prob | count 
+-------------------------+------+----------+-------
+ tonight_price_vs_prints | no   |    0.448 |   731
+ tonight_price_vs_prints | yes  |    0.441 |  1489
+
+    ?column?     | rows_with_hitting_print 
+-----------------+-------------------------
+ tonight_hitting |                       0
+
+       ?column?       |          timezone          |          timezone          | avg_rest_s 
+----------------------+----------------------------+----------------------------+------------
+ tonight_cancelled_at | 2026-09-14 10:24:00.393373 | 2026-09-17 18:54:29.077801 |        459
+
+
+## hitting prints over the full counterfactual interval (to expiry): 4 of 2,220 rows
